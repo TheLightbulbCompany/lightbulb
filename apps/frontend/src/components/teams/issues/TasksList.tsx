@@ -28,10 +28,12 @@ import {
   Check,
   ChevronRight,
   Columns3,
+  EyeOff,
   Layers,
   List,
   ListChecks,
   ListTree,
+  MoreHorizontal,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
@@ -40,6 +42,12 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { StatusIcon } from "@/components/teams/shared/components/StatusIcon";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { PanelEmptyState } from "@/components/teams/shell";
@@ -492,6 +500,40 @@ function TaskRow({
 
       {/* Relative activity timestamp */}
       <span className="shrink-0 text-xs text-[var(--mute)]">{updatedLabel}</span>
+
+      {/* Row-level overflow menu — revealed on row hover. Like the status
+          circle, every handler stops propagation so opening the menu or
+          picking Hide never triggers the row's Link navigation. */}
+      <span
+        className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100"
+        onClick={stop}
+      >
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              onClick={stop}
+              aria-label="Task actions"
+              className="inline-flex h-6 w-6 items-center justify-center rounded text-[var(--mute)] transition-colors hover:bg-[var(--cream)] hover:text-[var(--ink)]"
+            >
+              <MoreHorizontal className="h-3.5 w-3.5" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem
+              onSelect={(e) => {
+                e.preventDefault();
+                onUpdateIssue(issue.id, {
+                  hiddenAt: new Date().toISOString(),
+                });
+              }}
+            >
+              <EyeOff className="h-4 w-4" />
+              Hide
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </span>
     </Link>
   );
 }

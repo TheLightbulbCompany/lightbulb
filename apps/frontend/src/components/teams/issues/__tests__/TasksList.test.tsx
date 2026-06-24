@@ -2,6 +2,10 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { TasksList } from "@/components/teams/issues/TasksList";
+import {
+  InlineTeamsNavProvider,
+  type InlineTeamsNavValue,
+} from "@/components/chat/InlineTeamsNav";
 import type { Issue } from "@/components/teams/shared/types";
 
 function issue(partial: Partial<Issue> & Pick<Issue, "id" | "title" | "status">): Issue {
@@ -58,6 +62,32 @@ describe("TasksList", () => {
     const done = await screen.findByText("Done");
     await user.click(done);
     expect(onUpdateIssue).toHaveBeenCalledWith("iso-9", { status: "done" });
+  });
+
+  it("hides a task from the row menu without navigating the row link", async () => {
+    const user = userEvent.setup();
+    const openDetail = vi.fn();
+    const nav: InlineTeamsNavValue = { openDetail };
+    const issues = [issue({ id: "iso-7", title: "Archive me", status: "todo" })];
+    render(
+      <InlineTeamsNavProvider value={nav}>
+        <TasksList
+          issues={issues}
+          onUpdateIssue={onUpdateIssue}
+          onNewTask={onNewTask}
+        />
+      </InlineTeamsNavProvider>,
+    );
+
+    // Open the row's overflow menu and pick Hide.
+    await user.click(screen.getByRole("button", { name: /task actions/i }));
+    await user.click(await screen.findByText("Hide"));
+
+    expect(onUpdateIssue).toHaveBeenCalledWith("iso-7", {
+      hiddenAt: expect.any(String),
+    });
+    // Interacting with the menu must not trigger the row's detail navigation.
+    expect(openDetail).not.toHaveBeenCalled();
   });
 
   it("switches to the board view when the board toggle is pressed", () => {

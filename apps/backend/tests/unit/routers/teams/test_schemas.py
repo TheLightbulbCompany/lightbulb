@@ -82,3 +82,33 @@ def test_patch_issue_accepts_hidden_at_for_hide_and_restore():
 
     restored = PatchIssueBody.model_validate({"hiddenAt": None})
     assert restored.model_dump(exclude_unset=True, by_alias=True) == {"hiddenAt": None}
+
+
+def test_create_issue_accepts_work_mode_and_status():
+    """The composer can file a task straight into a status and pick an
+    execution work mode — both forward camelCase to upstream's
+    createIssueSchema (workMode default 'standard', status default 'backlog')."""
+    from routers.teams.schemas import CreateIssueBody
+
+    body = CreateIssueBody(title="ship it", status="todo", work_mode="planning")
+    assert body.model_dump(exclude_none=True, by_alias=True) == {
+        "title": "ship it",
+        "status": "todo",
+        "workMode": "planning",
+    }
+
+
+def test_create_issue_rejects_unknown_work_mode_and_status():
+    from routers.teams.schemas import CreateIssueBody
+
+    with pytest.raises(ValidationError):
+        CreateIssueBody(title="x", work_mode="turbo")
+    with pytest.raises(ValidationError):
+        CreateIssueBody(title="x", status="frozen")
+
+
+def test_patch_issue_accepts_work_mode():
+    from routers.teams.schemas import PatchIssueBody
+
+    body = PatchIssueBody(work_mode="ask")
+    assert body.model_dump(exclude_unset=True, by_alias=True) == {"workMode": "ask"}

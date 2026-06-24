@@ -62,6 +62,14 @@ class CreateIssueBody(_Strict):
     project_id: Optional[str] = None
     assignee_agent_id: Optional[str] = None
     priority: Optional[str] = Field(default=None, pattern=r"^(critical|high|medium|low)$")
+    # Compose-time status preset + execution work mode — both forward to
+    # upstream's createIssueSchema. Without these the composer can only file
+    # into the default backlog/standard and must round-trip a PATCH.
+    status: Optional[str] = Field(
+        default=None,
+        pattern=r"^(backlog|todo|in_progress|in_review|done|blocked|cancelled)$",
+    )
+    work_mode: Optional[str] = Field(default=None, pattern=r"^(standard|ask|planning)$")
 
 
 class PatchIssueBody(_Strict):
@@ -81,6 +89,10 @@ class PatchIssueBody(_Strict):
     # string) and excludes hiddenAt-set rows from the issues list. An ISO
     # timestamp hides the task; an explicit null restores it.
     hidden_at: Optional[str] = Field(default=None, max_length=40)
+    # Execution work mode (standard / ask / planning) — upstream
+    # updateIssueSchema accepts it; lets the detail surface change how a task
+    # runs without recreating it.
+    work_mode: Optional[str] = Field(default=None, pattern=r"^(standard|ask|planning)$")
 
 
 class AddIssueCommentBody(_Strict):

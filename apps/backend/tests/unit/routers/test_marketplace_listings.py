@@ -394,6 +394,59 @@ def test_deploy_free_listing_succeeds(
     assert pair_kwargs["gateway_token"] == "gw-tok"
 
 
+@patch("routers.marketplace_listings._recreate_routines_for_buyer", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.ensure_operator_device_paired", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.get_ecs_manager")
+@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_deploy_recreates_captured_routines_remapped_to_buyer_agent(
+    mock_get_published, mock_get_catalog, mock_boto, mock_create_pc, mock_get_ecs, mock_pair, mock_recreate, client
+):
+    """A listing whose manifest carries ``routines`` recreates them on the
+    buyer, remapped to the freshly-minted agent id (and DORMANT — the helper
+    always emits enabled:false). Here we assert the deploy hook wires the
+    manifest routines + minted id into the recreate helper."""
+    listing = _published_listing(price_cents=0)
+    listing["manifest_json"] = {
+        "name": "Demo Agent",
+        "format": "openclaw",
+        "routines": [
+            {"title": "Morning sweep", "description": "do it", "cron": "0 6 * * *", "timezone": "UTC"},
+            {"title": "Weekly report", "description": "wk", "cron": "0 8 * * 1", "timezone": "UTC"},
+        ],
+    }
+    mock_get_published.return_value = listing
+    mock_create_pc.return_value = {"id": "paperclip-uuid-1234", "name": "Demo Agent"}
+    mock_get_ecs.return_value = _stub_ecs_manager()
+    mock_boto.return_value = _stub_s3_get_object(_slice={"agent": {"name": "Demo Agent"}, "cron_jobs": []})
+    catalog = MagicMock()
+    catalog.deploy_from_artifact = AsyncMock(
+        return_value={
+            "slug": "demo-agent",
+            "version": 1,
+            "agent_id": "paperclip-uuid-1234",
+            "name": "Demo Agent",
+            "skills_added": [],
+            "plugins_enabled": [],
+            "cron_jobs_added": 0,
+            "config_registered": True,
+        }
+    )
+    mock_get_catalog.return_value = catalog
+
+    resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
+    assert resp.status_code == 200, resp.text
+
+    mock_recreate.assert_awaited_once()
+    rk = mock_recreate.await_args.kwargs
+    # Remapped to the minted buyer agent.
+    assert rk["new_agent_id"] == "paperclip-uuid-1234"
+    # The captured routines flow through verbatim.
+    assert [r["title"] for r in rk["manifest_routines"]] == ["Morning sweep", "Weekly report"]
+
+
 @patch("routers.marketplace_listings.get_ecs_manager")
 @patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.boto3.client")

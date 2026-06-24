@@ -79,7 +79,8 @@ async function main() {
   };
 
   process.stdout.write(JSON.stringify(result));
-  process.exit(alerts.length > 0 ? 1 : 0);
+  // exit 0 always: a silent-source alert is a branch, not a run error — has_alerts in JSON carries it.
+  process.exit(0);
 }
 
 function getDiagnosis(source, daysSilent) {

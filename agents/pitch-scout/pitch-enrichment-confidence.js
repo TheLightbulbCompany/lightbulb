@@ -91,7 +91,8 @@ async function main() {
   };
 
   process.stdout.write(JSON.stringify(result));
-  process.exit(passesThreshold ? 0 : 1);
+  // exit 0 always: below-threshold confidence (quarantine) is a branch, not a run error — pass in JSON carries it.
+  process.exit(0);
 }
 
 function readStdin() {

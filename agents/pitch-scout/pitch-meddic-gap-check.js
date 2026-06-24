@@ -100,7 +100,8 @@ async function main() {
   };
 
   process.stdout.write(JSON.stringify(output));
-  process.exit(dealsWithGaps.length > 0 ? 1 : 0);
+  // exit 0 always: deals-with-gaps is a branch, not a run error — deals_with_gaps/has_gaps in JSON carries it.
+  process.exit(0);
 }
 
 function readStdin() {

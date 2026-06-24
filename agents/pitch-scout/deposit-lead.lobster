@@ -1,243 +1,251 @@
 name: deposit-lead
-# Requirements 39-43, 54, 55, 59, 60, 64: Dedup, volume limit, deposit with full dossier.
-# Triggered after enrich-and-score completes for each qualified lead.
-# LLM calls: 0 (fully deterministic)
+# Deposit a qualified, enriched lead into Attio + the Scout->Pitch lead-queue.
+# Fully deterministic (0 LLM). The Scout agent runs this after enrich-and-score.
+#
+# Contract notes (see the lobster-authoring skill):
+#  - DSL verbs (state.get/set) run under `pipeline:`; real programs under `command:`.
+#  - Durable state via state.get/set on the per-owner EFS mount (LOBSTER_STATE_DIR).
+#    The Scout queue + Pitch sequences are single-key index arrays (state.* has no
+#    prefix-list), appended in a node step then re-written.
+#  - Attio is the CRM, reached gateway-free via the baked `mcporter` CLI; its output
+#    is YAML-ish TEXT, so a node step parses stdout (never JSON.parse).
+#  - Notifications can't post to Slack from an embedded pipeline (401), so the lead
+#    summary is written to a `scout/notifications` queue for the agent to deliver.
+#  - Scripts always exit 0 and carry status in JSON; steps branch via `condition:`.
 
 args:
   lead_domain:
     required: true
   dossier:
-    required: true
+    required: true        # full lead dossier (JSON object)
   scoring:
-    required: true
+    required: true        # { score, tier }
 
 steps:
-  # Step 1: Score threshold check (Req 59)
-  - id: threshold-check
+  # 1. Threshold gate — archive-tier leads are not deposited.
+  - id: gate
     command: >
-      exec --json --shell 'node -e "
-        const input = JSON.parse(require(\"fs\").readFileSync(\"/dev/stdin\", \"utf8\"));
-        const score = input.scoring.score || 0;
-        const tier = input.scoring.tier;
-        if (tier === \"archive\") {
-          process.stdout.write(JSON.stringify({pass: false, action: \"archive\", score, reason: \"Below threshold. Routed to research archive.\"}));
-          process.exit(1);
-        }
-        process.stdout.write(JSON.stringify({pass: true, score, tier}));
-      "'
+      node -e 'const s=JSON.parse(require("fs").readFileSync(0,"utf8"));
+        process.stdout.write(JSON.stringify({pass: s.tier!=="archive", score: s.score||0, tier: s.tier}));'
     stdin: $scoring
 
-  # Step 2: Load connected CRM config
-  - id: load-crm-config
+  # 2. Search Attio for this domain (CRM dedup source). mcporter -> text -> parse.
+  - id: crm-search
+    condition: $gate.json.pass
     command: >
-      openclaw.invoke --tool fast-io --action read --args-json '{
-        "key": "scout-config/connected-crm"
-      }'
-    condition: $threshold-check.json.pass
-
-  # Step 2b: CRM dedup — conditional per connected platform (Req 39)
-  - id: load-crm-hubspot
-    command: >
-      exec --json --shell 'curl -s "https://api.hubapi.com/crm/v3/objects/contacts/search" \
-        -H "Authorization: Bearer $HUBSPOT_ACCESS_TOKEN" \
-        -H "Content-Type: application/json" \
-        -d "{\"filterGroups\":[{\"filters\":[{\"propertyName\":\"domain\",\"operator\":\"EQ\",\"value\":\"{{lead_domain}}\"}]}]}"'
-    condition: $load-crm-config.json.platform == "hubspot"
-
-  - id: load-crm-salesforce
-    command: >
-      exec --json --shell 'curl -s "$SALESFORCE_INSTANCE_URL/services/data/v59.0/query?q=SELECT+Id,Name,Email,StageName+FROM+Contact+WHERE+Domain__c='"'"'{{lead_domain}}'"'"'" \
-        -H "Authorization: Bearer $SALESFORCE_ACCESS_TOKEN"'
-    condition: $load-crm-config.json.platform == "salesforce"
-
-  - id: load-crm-attio
-    command: >
-      openclaw.invoke --tool attio-enhanced --action search --args-json '{
-        "query": "{{lead_domain}}",
-        "include": ["contacts", "deals", "status"]
-      }'
-    condition: $load-crm-config.json.platform == "attio"
-
-  - id: load-crm-pipedrive
-    command: >
-      exec --json --shell 'curl -s "https://api.pipedrive.com/v1/persons/search?term={{lead_domain}}&api_token=$PIPEDRIVE_API_TOKEN"'
-    condition: $load-crm-config.json.platform == "pipedrive"
-
-  # Step 2c: Normalize CRM dedup results
-  - id: load-crm
-    command: >
-      exec --json --shell 'node -e "
-        const h = JSON.parse(process.env.HUBSPOT || \"null\");
-        const s = JSON.parse(process.env.SALESFORCE || \"null\");
-        const a = JSON.parse(process.env.ATTIO || \"null\");
-        const p = JSON.parse(process.env.PIPEDRIVE || \"null\");
-        const data = h || s || a || p || {results:[]};
-        const results = data.results || data.records || data.data?.items || [];
-        process.stdout.write(JSON.stringify({contacts: Array.isArray(results) ? results : [], source: h ? \"hubspot\" : s ? \"salesforce\" : a ? \"attio\" : p ? \"pipedrive\" : \"none\"}));
-      "'
-
-  # Step 3: Load Scout queue for dedup (Req 40)
-  - id: load-queue
-    command: >
-      openclaw.invoke --tool fast-io --action list --args-json '{
-        "prefix": "lead-queue/"
-      }'
-
-  # Step 4: Load Pitch active sequences for dedup (Req 41)
-  - id: load-pitch-sequences
-    command: >
-      openclaw.invoke --tool fast-io --action list --args-json '{
-        "prefix": "sequences/active/"
-      }'
-
-  # Step 5: Run dedup check
-  - id: dedup-check
-    command: >
-      exec --json --shell 'node scripts/scout-dedup-check.js'
-
-  # Step 6: Handle dedup result
-  - id: handle-dedup
-    command: >
-      exec --json --shell 'node -e "
-        const result = JSON.parse(require(\"fs\").readFileSync(\"/dev/stdin\", \"utf8\"));
-        if (result.hard_block) {
-          process.stdout.write(JSON.stringify({action: \"drop\", reason: result.duplicates}));
-          process.exit(1);
+      node -e 'const {execSync}=require("child_process");
+        const d=process.env.LOBSTER_ARG_LEAD_DOMAIN||"";
+        let txt=""; try { txt=execSync("mcporter call attio.search-records --args "
+          +JSON.stringify(JSON.stringify({object:"companies",query:d,limit:5}))+" --output text",
+          {encoding:"utf8",timeout:45000}); } catch (e) { txt=""; }
+        const records=[];
+        for (const p of txt.split(/-\s*record_id:\s*/).slice(1)) {
+          const id=(p.match(/^([0-9a-f-]{36})/)||[])[1]||"";
+          const doms=[...p.matchAll(/domains\[\d+\]:\s*([^\s"]+)/g)].map(m=>m[1].toLowerCase());
+          const name=((p.match(/\n\s*name:\s*"?([^"\n]+)"?/)||[])[1]||"").trim();
+          records.push({record_id:id, domain:doms[0]||"", domains:doms, name, status:"contact"});
         }
-        if (result.action === \"append_signal\") {
-          process.stdout.write(JSON.stringify({action: \"append_signal\", target: result.duplicates[0]}));
-          process.exit(0);
-        }
-        if (result.action === \"append_signal_to_sequence\") {
-          process.stdout.write(JSON.stringify({action: \"append_to_pitch\", target: result.duplicates[0]}));
-          process.exit(0);
-        }
-        process.stdout.write(JSON.stringify({action: \"deposit\"}));
-      "'
-    stdin: $dedup-check.stdout
+        process.stdout.write(JSON.stringify({records, count:records.length}));'
 
-  # Step 7: Volume limit check (Req 54, 64)
-  - id: volume-check
-    command: >
-      openclaw.invoke --tool fast-io --action read --args-json '{
-        "key": "scout-state/today-deposits"
-      }'
-      | exec --json --shell 'node scripts/scout-volume-limiter.js'
-    condition: $handle-dedup.json.action == "deposit"
+  # 3. Scout's own queue (single-key index array) — already-deposited dedup.
+  - id: queue
+    condition: $gate.json.pass
+    pipeline: state.get scout/lead-queue
 
-  # Step 8: Check if Pitch is installed (Req 55)
-  - id: check-pitch
-    command: >
-      openclaw.invoke --tool fast-io --action read --args-json '{
-        "key": "scout-config/pitch-installed"
-      }'
-    condition: $volume-check.json.deposited_count > 0
+  # 4. Pitch's active sequences (single-key index array) — in-flight dedup.
+  #    Reads Pitch's producer key (Scout + Pitch share one per-owner state store).
+  - id: sequences
+    condition: $gate.json.pass
+    pipeline: state.get pitch/sequences
 
-  # Step 9a: Deposit to Pitch queue (when Pitch installed)
-  - id: deposit-to-pitch
+  # 5. Assemble the dedup input ({lead, crm_records, scout_queue, pitch_sequences}).
+  - id: dedup-input
+    condition: $gate.json.pass
     command: >
-      openclaw.invoke --tool fast-io --action write --args-json '{
-        "key": "$scoring.json.queue/{{lead_domain}}",
-        "data": $dossier
-      }'
-    condition: $check-pitch.json.value == true
+      node -e 'const d=JSON.parse(process.env.DOSSIER||"{}");
+        const crm=(JSON.parse(process.env.CRM||"{}").records)||[];
+        const q=JSON.parse(process.env.QUEUE||"null")||[];
+        const seq=JSON.parse(process.env.SEQ||"null")||[];
+        const c=d.contact||{}, co=d.company||{}, sig=d.trigger_signal||{};
+        const lead={email:c.email||"", domain:(process.env.LOBSTER_ARG_LEAD_DOMAIN||co.domain||"").toLowerCase(),
+          linkedin_url:c.linkedin_url||"", signal_type:sig.type||""};
+        process.stdout.write(JSON.stringify({lead, crm_records:crm, scout_queue:q, pitch_sequences:seq}));'
+    env:
+      DOSSIER: $dossier
+      CRM: $crm-search.stdout
+      QUEUE: $queue.stdout
+      SEQ: $sequences.stdout
 
-  # Step 9b: Deposit to CRM directly — conditional per connected platform (Req 55)
-  - id: deposit-to-crm-hubspot
-    command: >
-      exec --json --shell 'curl -s "https://api.hubapi.com/crm/v3/objects/contacts" \
-        -H "Authorization: Bearer $HUBSPOT_ACCESS_TOKEN" \
-        -H "Content-Type: application/json" \
-        -d "{\"properties\":{\"email\":\"$dossier.json.contact.email\",\"jobtitle\":\"$dossier.json.contact.title\",\"company\":\"$dossier.json.company.name\",\"icp_score\":\"$scoring.json.score\",\"signal_type\":\"$dossier.json.trigger_signal.type\",\"notes\":\"$dossier.json.trigger_signal.summary\"}}"'
-    condition: $check-pitch.json.value == false && $load-crm-config.json.platform == "hubspot"
+  # 6. Deterministic dedup (exits 0; carries action + hard_block).
+  - id: dedup
+    condition: $gate.json.pass
+    command: node scout-dedup-check.js
+    stdin: $dedup-input.stdout
 
-  - id: deposit-to-crm-salesforce
+  # 7. Decide: deposit only when dedup says "proceed".
+  - id: decide
+    condition: $gate.json.pass
     command: >
-      exec --json --shell 'curl -s "$SALESFORCE_INSTANCE_URL/services/data/v59.0/sobjects/Contact" \
-        -H "Authorization: Bearer $SALESFORCE_ACCESS_TOKEN" \
-        -H "Content-Type: application/json" \
-        -d "{\"Email\":\"$dossier.json.contact.email\",\"Title\":\"$dossier.json.contact.title\",\"Company\":\"$dossier.json.company.name\",\"ICP_Score__c\":\"$scoring.json.score\",\"Signal_Type__c\":\"$dossier.json.trigger_signal.type\",\"Description\":\"$dossier.json.trigger_signal.summary\"}"'
-    condition: $check-pitch.json.value == false && $load-crm-config.json.platform == "salesforce"
+      node -e 'const r=JSON.parse(require("fs").readFileSync(0,"utf8"));
+        process.stdout.write(JSON.stringify({deposit: r.action==="proceed", action:r.action, duplicates:r.duplicates||[]}));'
+    stdin: $dedup.stdout
 
-  - id: deposit-to-crm-attio
-    command: >
-      openclaw.invoke --tool attio-enhanced --action create-contact --args-json '{
-        "domain": "{{lead_domain}}",
-        "email": "$dossier.json.contact.email",
-        "title": "$dossier.json.contact.title",
-        "company": "$dossier.json.company.name",
-        "icp_score": "$scoring.json.score",
-        "signal_type": "$dossier.json.trigger_signal.type",
-        "notes": "$dossier.json.trigger_signal.summary"
-      }'
-    condition: $check-pitch.json.value == false && $load-crm-config.json.platform == "attio"
+  # 8. Today's deposit count (for the volume limit).
+  - id: today
+    condition: $decide.json.deposit
+    pipeline: state.get scout/today-deposits
 
-  - id: deposit-to-crm-pipedrive
+  # 9. Volume limit (50/day). Wrap the single lead as leads[] for the limiter.
+  - id: volume-input
+    condition: $decide.json.deposit
     command: >
-      exec --json --shell 'curl -s "https://api.pipedrive.com/v1/persons?api_token=$PIPEDRIVE_API_TOKEN" \
-        -H "Content-Type: application/json" \
-        -d "{\"name\":\"$dossier.json.contact.name\",\"email\":[{\"value\":\"$dossier.json.contact.email\",\"primary\":true}],\"org_id\":null,\"icp_score\":\"$scoring.json.score\",\"signal_type\":\"$dossier.json.trigger_signal.type\"}"'
-    condition: $check-pitch.json.value == false && $load-crm-config.json.platform == "pipedrive"
+      node -e 'const today=(JSON.parse(process.env.TODAY||"null")||{}).count||0;
+        const s=JSON.parse(process.env.SCORING||"{}");
+        process.stdout.write(JSON.stringify({leads:[{score:s.score||0, domain:process.env.LOBSTER_ARG_LEAD_DOMAIN}], today_deposits:today, daily_limit:50}));'
+    env:
+      TODAY: $today.stdout
+      SCORING: $scoring
 
-  # Step 9b-no-crm: No CRM connected and no Pitch — notify user
-  - id: no-crm-notice
-    command: >
-      openclaw.invoke --tool slack --action post --args-json '{
-        "channel": "#scout-alerts",
-        "text": "Lead {{lead_domain}} scored $scoring.json.score but cannot be deposited — no CRM connected and Pitch not installed. To deposit leads, connect your CRM in settings. Supported: HubSpot, Salesforce, Attio, Pipedrive."
-      }'
-    condition: $check-pitch.json.value == false && $load-crm-config.json.platform == null
+  - id: volume
+    condition: $decide.json.deposit
+    command: node scout-volume-limiter.js
+    stdin: $volume-input.stdout
 
-  # Step 9c: Slack notification with full dossier (when Pitch not installed)
-  - id: notify-slack
+  # 10. Deposit to Attio: upsert the company by domain, attach the signal as a note.
+  - id: deposit-attio
+    condition: $volume.json.deposited_count > 0
     command: >
-      openclaw.invoke --tool slack --action post --args-json '{
-        "channel": "#scout-leads",
-        "text": "🎯 NEW LEAD — {{lead_domain}}\n\nScore: $scoring.json.score ($scoring.json.tier)\nSignal: $dossier.json.trigger_signal.summary\nContact: $dossier.json.contact.title at $dossier.json.company.name\nAngle: $dossier.json.outreach_angle\nUrgency: $dossier.json.urgency"
-      }'
-    condition: $check-pitch.json.value == false
+      node -e 'const {execSync}=require("child_process");
+        const d=JSON.parse(process.env.DOSSIER||"{}"); const s=JSON.parse(process.env.SCORING||"{}");
+        const domain=process.env.LOBSTER_ARG_LEAD_DOMAIN; const co=d.company||{}, sig=d.trigger_signal||{};
+        const up={object:"companies", matching_attribute:"domains",
+          values:{domains:[domain], name:co.name||domain}};
+        let rec=""; try { rec=execSync("mcporter call attio.upsert-record --args "
+          +JSON.stringify(JSON.stringify(up))+" --output text",{encoding:"utf8",timeout:45000}); } catch(e){ rec="ERR:"+e.message; }
+        const rid=(rec.match(/record_id:\s*([0-9a-f-]{36})/)||[])[1]||"";
+        let note="skipped";
+        if (rid) { const n={parent_object:"companies", parent_record_id:rid,
+            title:"Scout signal: "+(sig.type||"lead"),
+            content:"ICP score "+(s.score||0)+" ("+(s.tier||"")+"). "+(sig.summary||"")};
+          try { execSync("mcporter call attio.create-note --args "+JSON.stringify(JSON.stringify(n))+" --output text",{encoding:"utf8",timeout:45000}); note="created"; } catch(e){ note="ERR:"+e.message; } }
+        process.stdout.write(JSON.stringify({deposited:!!rid, record_id:rid, note}));'
+    env:
+      DOSSIER: $dossier
+      SCORING: $scoring
 
-  # Step 10: Priority alert for urgent leads (score 90+ or visitor)
-  - id: urgency-alert
+  # 11. Enqueue the lead for Pitch (append to the single-key queue array).
+  - id: queue-next
+    condition: $volume.json.deposited_count > 0
     command: >
-      openclaw.invoke --tool slack --action post --args-json '{
-        "channel": "#scout-alerts",
-        "text": "🔥 URGENT LEAD — {{lead_domain}}\nScore: $scoring.json.score\nSignal: $dossier.json.trigger_signal.summary\nThis lead should be worked immediately."
-      }'
-    condition: $dossier.json.urgency
+      node -e 'const q=JSON.parse(process.env.QUEUE||"null")||[];
+        const d=JSON.parse(process.env.DOSSIER||"{}"); const s=JSON.parse(process.env.SCORING||"{}");
+        q.push({domain:process.env.LOBSTER_ARG_LEAD_DOMAIN, score:s.score||0, tier:s.tier,
+          dossier:d, queued_at:new Date().toISOString()});
+        process.stdout.write(JSON.stringify(q));'
+    env:
+      QUEUE: $queue.stdout
+      DOSSIER: $dossier
+      SCORING: $scoring
 
-  # Step 11: Update daily deposit counter
-  - id: update-counter
-    command: >
-      openclaw.invoke --tool fast-io --action write --args-json '{
-        "key": "scout-state/today-deposits",
-        "data": {"count": $volume-check.json.today_total, "date": "{{date}}"}'
-      }'
+  - id: enqueue
+    condition: $volume.json.deposited_count > 0
+    pipeline: state.set scout/lead-queue
+    stdin: $queue-next.stdout
 
-  # Step 12: Buffer overflow leads for next day (Req 64)
-  - id: buffer-overflow
+  # 12. Update the daily deposit counter.
+  - id: counter-next
+    condition: $volume.json.deposited_count > 0
     command: >
-      openclaw.invoke --tool fast-io --action write --args-json '{
-        "key": "lead-buffer/{{date}}/{{lead_domain}}",
-        "data": $dossier
-      }'
-    condition: $volume-check.json.at_limit
+      node -e 'const v=JSON.parse(require("fs").readFileSync(0,"utf8"));
+        process.stdout.write(JSON.stringify({count:v.today_total||0, date:new Date().toISOString().slice(0,10)}));'
+    stdin: $volume.stdout
 
-  # Step 13: Audit log
-  - id: audit-log
+  - id: counter
+    condition: $volume.json.deposited_count > 0
+    pipeline: state.set scout/today-deposits
+    stdin: $counter-next.stdout
+
+  # 13. Buffer overflow leads (when the daily limit is reached) for the next day.
+  - id: buffer-load
+    condition: $decide.json.deposit
+    pipeline: state.get scout/buffer
+
+  - id: buffer-next
+    condition: $volume.json.at_limit
     command: >
-      openclaw.invoke --tool fast-io --action write --args-json '{
-        "key": "audit/{{timestamp}}/deposit/{{lead_domain}}",
-        "data": {
-          "action": "lead_deposit",
-          "domain": "{{lead_domain}}",
-          "score": $scoring.json.score,
-          "tier": $scoring.json.tier,
-          "destination": "$check-pitch.json.value ? \"pitch_queue\" : \"crm_direct\"",
-          "dedup_result": $handle-dedup.json.action,
-          "urgency": $dossier.json.urgency,
-          "dossier_complete": $dossier.json.complete,
-          "authorized_by": "autonomous",
-          "timestamp": "{{timestamp}}"
-        }
-      }'
+      node -e 'const b=JSON.parse(process.env.BUFFER||"null")||[];
+        const d=JSON.parse(process.env.DOSSIER||"{}"); const s=JSON.parse(process.env.SCORING||"{}");
+        b.push({domain:process.env.LOBSTER_ARG_LEAD_DOMAIN, score:s.score||0, dossier:d, buffered_at:new Date().toISOString()});
+        process.stdout.write(JSON.stringify(b));'
+    env:
+      BUFFER: $buffer-load.stdout
+      DOSSIER: $dossier
+      SCORING: $scoring
+
+  - id: buffer
+    condition: $volume.json.at_limit
+    pipeline: state.set scout/buffer
+    stdin: $buffer-next.stdout
+
+  # 14. Queue a notification for the agent to deliver (Slack is unreachable here).
+  - id: notify-load
+    condition: $volume.json.deposited_count > 0
+    pipeline: state.get scout/notifications
+
+  - id: notify-next
+    condition: $volume.json.deposited_count > 0
+    command: >
+      node -e 'const n=JSON.parse(process.env.NOTIFS||"null")||[];
+        const d=JSON.parse(process.env.DOSSIER||"{}"); const s=JSON.parse(process.env.SCORING||"{}");
+        const sig=d.trigger_signal||{}, co=d.company||{}, c=d.contact||{};
+        n.push({kind:"new_lead", urgent: s.score>=90 || !!d.urgency,
+          domain:process.env.LOBSTER_ARG_LEAD_DOMAIN, score:s.score||0, tier:s.tier,
+          summary:sig.summary||"", contact:(c.title||"")+" at "+(co.name||""), angle:d.outreach_angle||"",
+          created_at:new Date().toISOString()});
+        process.stdout.write(JSON.stringify(n));'
+    env:
+      NOTIFS: $notify-load.stdout
+      DOSSIER: $dossier
+      SCORING: $scoring
+
+  - id: notify
+    condition: $volume.json.deposited_count > 0
+    pipeline: state.set scout/notifications
+    stdin: $notify-next.stdout
+
+  # 15. Append-only deposit audit trail (single-key index array). Durable record of
+  #     every deposited lead — read by weekly-report.lobster for conversion analysis.
+  #     Mirrors the lead-queue enqueue pattern: state.get -> node appends -> state.set.
+  - id: history-load
+    condition: $volume.json.deposited_count > 0
+    pipeline: state.get scout/deposit-history
+
+  - id: history-next
+    condition: $volume.json.deposited_count > 0
+    command: >
+      node -e 'const h=JSON.parse(process.env.HISTORY||"null")||[];
+        const d=JSON.parse(process.env.DOSSIER||"{}"); const s=JSON.parse(process.env.SCORING||"{}");
+        const att=JSON.parse(process.env.ATTIO||"null")||{}; const dec=JSON.parse(process.env.DECIDE||"null")||{};
+        h.push({
+          action:"lead_deposit",
+          domain:process.env.LOBSTER_ARG_LEAD_DOMAIN,
+          score:s.score||0,
+          tier:s.tier,
+          destination: att.deposited ? "attio_and_pitch_queue" : "pitch_queue",
+          dedup_result: dec.action||"proceed",
+          urgency: !!d.urgency,
+          dossier_complete: !!d.complete,
+          timestamp:new Date().toISOString()
+        });
+        process.stdout.write(JSON.stringify(h));'
+    env:
+      HISTORY: $history-load.stdout
+      DOSSIER: $dossier
+      SCORING: $scoring
+      ATTIO: $deposit-attio.stdout
+      DECIDE: $decide.stdout
+
+  - id: history
+    condition: $volume.json.deposited_count > 0
+    pipeline: state.set scout/deposit-history
+    stdin: $history-next.stdout

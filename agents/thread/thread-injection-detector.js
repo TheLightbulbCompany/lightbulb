@@ -79,7 +79,9 @@ async function main() {
   );
 
   process.stdout.write(JSON.stringify(result));
-  process.exit(result.flagged ? 1 : 0);
+  // "flagged" is a branch decision carried in JSON (message-inbound gates on
+  // $injection-check.json.flagged); detecting injection is not a script error.
+  process.exit(0);
 }
 
 function readStdin() {

@@ -94,7 +94,9 @@ async function main() {
   };
 
   process.stdout.write(JSON.stringify(result));
-  process.exit(overallStatus === 'red' ? 1 : 0);
+  // A red/disconnected health status is a normal finding, not a crash — the
+  // decision is carried in overall_status/alert; exit 0 so the workflow gates on JSON.
+  process.exit(0);
 }
 
 function getRemediation(type, errorCode) {

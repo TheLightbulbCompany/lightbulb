@@ -1,7 +1,36 @@
 name: content-generate
-# Requirements 1, 6, 8-11, 13-14, 16, 48: Full content generation with research, voice, GEO.
-# Triggered per content request from marketer or content calendar.
-# LLM calls: 3-5 (research synthesis, draft generation, voice tone check, per-adaptation)
+# Research a topic, run the deterministic content-quality gates, and queue an LLM
+# draft-generation INTENT for the agent loop. Triggered per content request.
+#
+# THE LINE (see AGENTS.md): the intelligence side runs here, deterministically and
+# gateway-free. The judgment side (draft generation, tone scoring, repurposing) and
+# the delivery side (Slack review package) CANNOT run in an embedded pipeline — every
+# openclaw.invoke / llm-task / slack call returns 401. So this workflow:
+#   1. Gates on the review-queue size (review fatigue == no approval gate).
+#   2. Pulls research via the REAL Perplexity sonar API (curl + node normalizer).
+#   3. Compiles a deterministic research brief (no LLM compression).
+#   4. Writes a `pulse/draft-intents` state queue describing the draft to generate,
+#      the brand voice + brief + platform tones, and which gates to re-run on the body.
+#   5. Bumps the queue counter and writes a `pulse/notifications` entry so the agent
+#      loop generates the draft, re-runs the body-dependent gates, and posts the
+#      review package to #pulse-content.
+#
+# Contract notes (lobster-authoring SKILL.md):
+#  - DSL verbs (state.get/set) run under `pipeline:`; real programs under `command:`.
+#  - Durable state via state.get/set on the per-owner EFS mount (LOBSTER_STATE_DIR).
+#    Config the marketer set (brand voice, platform tones, cultural calendar, approved
+#    claims, queue counter, review history) is READ-ONLY consumer state under pulse-*.
+#    The draft-intent + notification queues are single-key INDEX ARRAYS (state.* has
+#    no prefix-list): state.get -> a node step appends -> state.set.
+#  - Perplexity sonar is a deterministic structured-search API (same query -> same
+#    response shape), NOT an LLM reasoning call — so it stays in the pipeline.
+#  - Scripts always exit 0 and carry status in JSON; steps branch via `condition:`.
+#    NOTE: pulse-calendar-conflict-checker.js currently exits 1 when conflicts exist
+#    (a normal review outcome) — see the .js fix list; until patched, this workflow
+#    sets on_error:continue on calendar-check so a conflict never aborts the run.
+#  - Body-dependent gates (voice score, GEO check, claim check) need the DRAFT BODY,
+#    which only exists after the LLM generates it. They run in the agent loop on the
+#    generated body, NOT here — this workflow ships their inputs in the draft intent.
 
 args:
   topic:
@@ -14,247 +43,385 @@ args:
     default: true
 
 steps:
-  # Step 1: Queue limit check (Req 48)
+  # ---------------------------------------------------------------------------
+  # 1. Review-queue size gate (Req 48). Read the marketer's queue counter +
+  #    review history (consumer config the agent loop maintains) and run the
+  #    deterministic limiter. Pause generation when the queue is full or the
+  #    marketer is rubber-stamping.
+  # ---------------------------------------------------------------------------
+  - id: queue-size
+    pipeline: state.get pulse-state/queue-size
+
+  - id: review-history
+    pipeline: state.get pulse-state/review-history
+
+  - id: queue-input
+    command: >-
+      node -e 'const q=JSON.parse(process.env.QSIZE||"null")||{};
+        const hist=JSON.parse(process.env.HIST||"null")||[];
+        process.stdout.write(JSON.stringify({
+          current_queue_size: (typeof q==="number"?q:(q.count||q.size||0)),
+          max_queue_size: q.max_queue_size||10,
+          review_history: Array.isArray(hist)?hist:(hist.items||[])
+        }));'
+    env:
+      QSIZE: "$queue-size.json"
+      HIST: "$review-history.json"
+
   - id: queue-check
-    command: >
-      openclaw.invoke --tool fast-io --action read --args-json '{"key": "pulse-state/queue-size"}'
-      | exec --json --shell 'node scripts/pulse-queue-limiter.js'
+    command: node pulse-queue-limiter.js
+    stdin: $queue-input.stdout
 
-  - id: queue-gate
-    command: >
-      openclaw.invoke --tool slack --action post --args-json '{
-        "channel": "#pulse-content",
-        "text": "$queue-check.json.message"
-      }'
-    condition: $queue-check.json.at_limit || $queue-check.json.rubber_stamping_detected
+  # Explicit boolean for the proceed gate (NOT a .length test). When at_limit or
+  # rubber-stamping, every downstream step is skipped and a pause notice is queued.
+  - id: gate
+    command: >-
+      node -e 'const c=JSON.parse(require("fs").readFileSync(0,"utf8"));
+        const blocked=!!c.at_limit||!!c.rubber_stamping_detected;
+        process.stdout.write(JSON.stringify({proceed:blocked?0:1, blocked:blocked?1:0,
+          at_limit:!!c.at_limit, rubber_stamping:!!c.rubber_stamping_detected,
+          message:c.message||""}));'
+    stdin: $queue-check.stdout
 
-  # Step 2: Load brand voice document (Req 1)
+  # If blocked, queue a pause notification for the agent to deliver to #pulse-content.
+  - id: pause-notify-load
+    condition: $gate.json.blocked > 0
+    pipeline: state.get pulse/notifications
+
+  - id: pause-notify-next
+    condition: $gate.json.blocked > 0
+    command: >-
+      node -e 'const n=JSON.parse(process.env.NOTIFS||"null")||[];
+        const g=JSON.parse(process.env.GATE||"{}");
+        n.push({kind:"queue_paused", channel:"#pulse-content",
+          topic:process.env.LOBSTER_ARG_TOPIC||"",
+          at_limit:g.at_limit, rubber_stamping:g.rubber_stamping,
+          message:g.message||"Content generation paused — review queue is full.",
+          created_at:new Date().toISOString()});
+        process.stdout.write(JSON.stringify(n));'
+    env:
+      NOTIFS: "$pause-notify-load.json"
+      GATE: "$gate.stdout"
+
+  - id: pause-notify
+    condition: $gate.json.blocked > 0
+    pipeline: state.set pulse/notifications
+    stdin: $pause-notify-next.stdout
+
+  # ---------------------------------------------------------------------------
+  # 2. Load brand voice + platform tones (Req 1). Consumer config the marketer
+  #    set; the agent loop scores the generated draft against these.
+  # ---------------------------------------------------------------------------
   - id: load-voice
-    command: >
-      openclaw.invoke --tool fast-io --action read --args-json '{"key": "pulse-config/brand-voice"}'
-    condition: $queue-check.json.at_limit == false
+    condition: $gate.json.proceed > 0
+    pipeline: state.get pulse-config/brand-voice
 
-  # Step 3: Research pull — 5 sources (Req 8, 9)
-  # Structured search runs through the Perplexity sonar API via direct curl.
-  # Deterministic: same query → same structured response shape (content + citations).
-  # Wrapped as exec --shell curl | node normalizer, matching the Zoom curl pattern.
-  # This is NOT an LLM reasoning call — Perplexity sonar is a deterministic search API.
+  - id: load-platform-config
+    condition: $gate.json.proceed > 0
+    pipeline: state.get pulse-config/platform-tones
+
+  # ---------------------------------------------------------------------------
+  # 3. Research pull (Req 8, 9). Perplexity sonar via REAL curl. Four structured
+  #    searches: competitor content, community questions, search trends/data, and
+  #    industry analysis. The query is passed through env (LOBSTER_ARG_TOPIC) into
+  #    the node body builder, never interpolated into the shell command line.
+  # ---------------------------------------------------------------------------
   - id: research-competitors
-    command: >
-      exec --json --shell 'curl -sS https://api.perplexity.ai/chat/completions -H "Authorization: Bearer $PERPLEXITY_API_KEY" -H "Content-Type: application/json" -d @- | node -e "
-        const r = JSON.parse(require(\"fs\").readFileSync(\"/dev/stdin\", \"utf8\"));
-        const content = (r.choices && r.choices[0] && r.choices[0].message && r.choices[0].message.content) || \"\";
-        const citations = r.citations || [];
-        process.stdout.write(JSON.stringify({content: content, citations: citations, total: citations.length, top_urls: citations.slice(0, 10)}));
-      "'
-    stdin: '{"model":"sonar","messages":[{"role":"user","content":"Find recent competitor content and blog posts about {{topic}}. Return key URLs, headlines, and the competitor brands covering this topic."}]}'
+    condition: $gate.json.proceed > 0
+    command: >-
+      node -e 'const t=process.env.LOBSTER_ARG_TOPIC||"";
+        const body=JSON.stringify({model:"sonar",messages:[{role:"user",
+          content:"Find recent competitor content and blog posts about "+t+". Return key URLs, headlines, and the competitor brands covering this topic."}]});
+        const {execSync}=require("child_process");
+        let out="";
+        try { out=execSync("curl -sS https://api.perplexity.ai/chat/completions -H \"Authorization: Bearer $PERPLEXITY_API_KEY\" -H \"Content-Type: application/json\" -d @-",
+          {input:body,encoding:"utf8",timeout:60000}); } catch(e){ out=""; }
+        let r={}; try { r=JSON.parse(out)||{}; } catch(e){ r={}; }
+        const content=(r.choices&&r.choices[0]&&r.choices[0].message&&r.choices[0].message.content)||"";
+        const citations=r.citations||[];
+        process.stdout.write(JSON.stringify({lane:"competitors", content, citations,
+          total:citations.length, top_urls:citations.slice(0,10), ok:!!content}));'
 
   - id: research-community
-    command: >
-      exec --json --shell 'curl -sS https://api.perplexity.ai/chat/completions -H "Authorization: Bearer $PERPLEXITY_API_KEY" -H "Content-Type: application/json" -d @- | node -e "
-        const r = JSON.parse(require(\"fs\").readFileSync(\"/dev/stdin\", \"utf8\"));
-        const content = (r.choices && r.choices[0] && r.choices[0].message && r.choices[0].message.content) || \"\";
-        const citations = r.citations || [];
-        process.stdout.write(JSON.stringify({content: content, citations: citations, total: citations.length, top_urls: citations.slice(0, 10)}));
-      "'
-    stdin: '{"model":"sonar","messages":[{"role":"user","content":"Find Reddit discussions, Hacker News threads, and community questions about {{topic}}. Return thread URLs and the core questions being asked."}]}'
+    condition: $gate.json.proceed > 0
+    command: >-
+      node -e 'const t=process.env.LOBSTER_ARG_TOPIC||"";
+        const body=JSON.stringify({model:"sonar",messages:[{role:"user",
+          content:"Find Reddit discussions, Hacker News threads, and community questions about "+t+". Return thread URLs and the core questions being asked."}]});
+        const {execSync}=require("child_process");
+        let out="";
+        try { out=execSync("curl -sS https://api.perplexity.ai/chat/completions -H \"Authorization: Bearer $PERPLEXITY_API_KEY\" -H \"Content-Type: application/json\" -d @-",
+          {input:body,encoding:"utf8",timeout:60000}); } catch(e){ out=""; }
+        let r={}; try { r=JSON.parse(out)||{}; } catch(e){ r={}; }
+        const content=(r.choices&&r.choices[0]&&r.choices[0].message&&r.choices[0].message.content)||"";
+        const citations=r.citations||[];
+        process.stdout.write(JSON.stringify({lane:"community", content, citations,
+          total:citations.length, top_urls:citations.slice(0,10), ok:!!content}));'
 
   - id: research-search
-    command: >
-      exec --json --shell 'curl -sS https://api.perplexity.ai/chat/completions -H "Authorization: Bearer $PERPLEXITY_API_KEY" -H "Content-Type: application/json" -d @- | node -e "
-        const r = JSON.parse(require(\"fs\").readFileSync(\"/dev/stdin\", \"utf8\"));
-        const content = (r.choices && r.choices[0] && r.choices[0].message && r.choices[0].message.content) || \"\";
-        const citations = r.citations || [];
-        process.stdout.write(JSON.stringify({content: content, citations: citations, total: citations.length, top_urls: citations.slice(0, 10)}));
-      "'
-    stdin: '{"model":"sonar","messages":[{"role":"user","content":"Find recent search trends, industry data, and concrete statistics about {{topic}} for 2026. Return URLs and specific data points."}]}'
+    condition: $gate.json.proceed > 0
+    command: >-
+      node -e 'const t=process.env.LOBSTER_ARG_TOPIC||"";
+        const yr=new Date().getFullYear();
+        const body=JSON.stringify({model:"sonar",messages:[{role:"user",
+          content:"Find recent search trends, industry data, and concrete statistics about "+t+" for "+yr+". Return URLs and specific data points."}]});
+        const {execSync}=require("child_process");
+        let out="";
+        try { out=execSync("curl -sS https://api.perplexity.ai/chat/completions -H \"Authorization: Bearer $PERPLEXITY_API_KEY\" -H \"Content-Type: application/json\" -d @-",
+          {input:body,encoding:"utf8",timeout:60000}); } catch(e){ out=""; }
+        let r={}; try { r=JSON.parse(out)||{}; } catch(e){ r={}; }
+        const content=(r.choices&&r.choices[0]&&r.choices[0].message&&r.choices[0].message.content)||"";
+        const citations=r.citations||[];
+        process.stdout.write(JSON.stringify({lane:"search", content, citations,
+          total:citations.length, top_urls:citations.slice(0,10), ok:!!content}));'
 
   - id: research-industry
-    command: >
-      openclaw.invoke --tool agent-browser --action read --args-json '{
-        "query": "{{topic}} industry analysis report",
-        "max_results": 3
-      }'
+    condition: $gate.json.proceed > 0
+    command: >-
+      node -e 'const t=process.env.LOBSTER_ARG_TOPIC||"";
+        const body=JSON.stringify({model:"sonar",messages:[{role:"user",
+          content:t+" industry analysis report"}]});
+        const {execSync}=require("child_process");
+        let out="";
+        try { out=execSync("curl -sS https://api.perplexity.ai/chat/completions -H \"Authorization: Bearer $PERPLEXITY_API_KEY\" -H \"Content-Type: application/json\" -d @-",
+          {input:body,encoding:"utf8",timeout:60000}); } catch(e){ out=""; }
+        let r={}; try { r=JSON.parse(out)||{}; } catch(e){ r={}; }
+        const content=(r.choices&&r.choices[0]&&r.choices[0].message&&r.choices[0].message.content)||"";
+        const citations=r.citations||[];
+        process.stdout.write(JSON.stringify({lane:"industry", content, citations,
+          total:citations.length, top_urls:citations.slice(0,10), ok:!!content}));'
 
+  # Internal prior-art lookup. The original used fast-io list with a prefix filter
+  # (fictional). We read the agent's own published-content INDEX array and match by
+  # topic deterministically — no prefix-list needed.
   - id: research-internal
-    command: >
-      openclaw.invoke --tool fast-io --action list --args-json '{
-        "prefix": "pulse-content/published/",
-        "filter": "topic:{{topic}}"
-      }'
+    condition: $gate.json.proceed > 0
+    pipeline: state.get pulse/content-published
 
-  # Step 4: Compress research into structured brief
+  - id: research-internal-match
+    condition: $gate.json.proceed > 0
+    command: >-
+      node -e 'const idx=JSON.parse(process.env.IDX||"null")||[];
+        const list=Array.isArray(idx)?idx:(idx.items||[]);
+        const t=(process.env.LOBSTER_ARG_TOPIC||"").toLowerCase();
+        const matches=list.filter(p=>((p.topic||p.title||"")+"").toLowerCase().includes(t)).slice(0,10);
+        process.stdout.write(JSON.stringify({matches, count:matches.length}));'
+    env:
+      IDX: "$research-internal.json"
+
+  # ---------------------------------------------------------------------------
+  # 4. Compile a deterministic research brief (Req — replaces the fictional
+  #    summarize/llm compression). No model judgment: we collate the lane
+  #    contents + dedup the citation URLs into one structured object the agent
+  #    loop hands to the draft-generation model.
+  # ---------------------------------------------------------------------------
   - id: compile-brief
-    command: >
-      openclaw.invoke --tool summarize --action compress --args-json '{
-        "input": {
-          "competitors": $research-competitors.json,
-          "community": $research-community.json,
-          "search": $research-search.json,
-          "industry": $research-industry.json,
-          "internal": $research-internal.json
-        },
-        "format": "content-brief"
-      }'
+    condition: $gate.json.proceed > 0
+    command: >-
+      node -e 'const j=k=>{try{return JSON.parse(process.env[k]||"{}")||{};}catch(e){return {};}};
+        const comp=j("COMP"), comm=j("COMM"), srch=j("SRCH"), ind=j("IND");
+        const internal=(j("INT").matches)||[];
+        const lanes={competitors:comp, community:comm, search:srch, industry:ind};
+        const allUrls=[...new Set([].concat(comp.top_urls||[],comm.top_urls||[],srch.top_urls||[],ind.top_urls||[]))];
+        const brief={
+          topic:process.env.LOBSTER_ARG_TOPIC||"",
+          content_type:process.env.LOBSTER_ARG_CONTENT_TYPE||"blog_post",
+          target_platform:process.env.LOBSTER_ARG_TARGET_PLATFORM||"",
+          lanes,
+          internal_prior_art:internal,
+          all_citation_urls:allUrls,
+          citation_count:allUrls.length,
+          lanes_ok:[comp.ok,comm.ok,srch.ok,ind.ok].filter(Boolean).length,
+          compiled_at:new Date().toISOString()
+        };
+        process.stdout.write(JSON.stringify({brief, count:brief.lanes_ok}));'
+    env:
+      COMP: "$research-competitors.stdout"
+      COMM: "$research-community.stdout"
+      SRCH: "$research-search.stdout"
+      IND: "$research-industry.stdout"
+      INT: "$research-internal-match.stdout"
 
-  # Step 5: Load platform tone guidance and GEO requirements
-  - id: load-platform-config
-    command: >
-      openclaw.invoke --tool fast-io --action read --args-json '{"key": "pulse-config/platform-tones"}'
-
-  # Step 6: Generate draft — LLM CALL (Req 10)
-  - id: generate-draft
-    command: >
-      openclaw.invoke --tool llm-task --action json --args-json '{
-        "prompt": "Generate a {{content_type}} on the topic: {{topic}}. Apply the brand voice document strictly. Structure for GEO: direct answer in first 40-60 words, specific statistic with source every 150-200 words, definitive language, FAQ section, comparative tables where relevant. Ground every claim in the research brief — do not invent statistics or capabilities.",
-        "thinking": "low",
-        "input": {
-          "brand_voice": $load-voice.json,
-          "research_brief": $compile-brief.stdout,
-          "platform": "{{target_platform}}",
-          "content_type": "{{content_type}}"
-        },
-        "schema": {
-          "type": "object",
-          "properties": {
-            "title": {"type": "string"},
-            "body": {"type": "string"},
-            "meta_description": {"type": "string"},
-            "target_query": {"type": "string"},
-            "sources_used": {"type": "array", "items": {"type": "string"}}
-          },
-          "required": ["title", "body"]
-        }
-      }'
-
-  # Step 7: Voice score — deterministic + LLM tone check (Req 6)
-  - id: voice-score-deterministic
-    command: >
-      exec --json --shell 'node scripts/pulse-voice-scorer.js'
-    stdin: '{"mode": "score", "text": "$generate-draft.json.body", "voice_doc": $load-voice.json}'
-
-  - id: voice-score-tone
-    command: >
-      openclaw.invoke --tool llm-task --action json --args-json '{
-        "prompt": "Score this content against the brand voice tone scales. For each tone dimension, rate 1-10 and flag any sentences that pull the score down. Also check: does this sound like the brand, or does it sound like generic AI output?",
-        "thinking": "off",
-        "input": {
-          "text": "$generate-draft.json.body",
-          "tone_scales": $load-voice.json.tone_scales,
-          "adjectives": $load-voice.json.adjectives
-        },
-        "schema": {
-          "type": "object",
-          "properties": {
-            "tone_scores": {"type": "object"},
-            "overall_voice_score": {"type": "number"},
-            "flagged_sentences": {"type": "array", "items": {"type": "string"}},
-            "sounds_like_brand": {"type": "boolean"}
-          },
-          "required": ["overall_voice_score", "sounds_like_brand"]
-        }
-      }'
-
-  # Step 8: GEO structural check (Req 10, 11)
-  - id: geo-check
-    command: >
-      exec --json --shell 'node scripts/pulse-geo-checker.js'
-    stdin: '{"text": "$generate-draft.json.body", "target_platform": "{{target_platform}}"}'
-
-  # Step 9: Sensitive claim detection (Req 35)
-  - id: claim-check
-    command: >
-      openclaw.invoke --tool fast-io --action read --args-json '{"key": "pulse-state/approved-claims"}'
-      | exec --json --shell 'node scripts/pulse-sensitive-claim-detector.js'
-
-  # Step 10: Calendar conflict check (Req 17)
-  # The checker takes {scheduled_content, cultural_calendar, news_conflicts}. For a
-  # single draft, scheduled_content is a one-item list with the draft's target publish
-  # date (defaults to {{date}} when unset). News cycle input is empty here — the daily
-  # monitoring sweep owns news cycle checks.
+  # ---------------------------------------------------------------------------
+  # 5. Calendar conflict check (Req 17). This is the ONE quality gate that does
+  #    NOT need the draft body — it runs on the schedule metadata. So it runs
+  #    here. (Body-dependent gates — voice score, GEO, claim check — run in the
+  #    agent loop on the generated draft body; their config is shipped in the
+  #    intent below.)
+  #    News-cycle input is empty here; the daily monitoring sweep owns news checks.
+  #    on_error:continue defends against the script's current exit(1)-on-conflict.
+  # ---------------------------------------------------------------------------
   - id: load-cultural-calendar
-    command: >
-      openclaw.invoke --tool fast-io --action read --args-json '{"key": "pulse-config/cultural-calendar"}'
+    condition: $gate.json.proceed > 0
+    pipeline: state.get pulse-config/cultural-calendar
+
+  - id: calendar-input
+    condition: $gate.json.proceed > 0
+    command: >-
+      node -e 'const cal=JSON.parse(process.env.CAL||"null")||[];
+        const list=Array.isArray(cal)?cal:(cal.items||[]);
+        const now=new Date();
+        const stamp=now.toISOString().slice(0,19).replace(/[-:T]/g,"");
+        process.stdout.write(JSON.stringify({
+          scheduled_content:[{id:"draft-"+stamp,
+            title:process.env.LOBSTER_ARG_TOPIC||"",
+            scheduled_date:now.toISOString().slice(0,10)}],
+          cultural_calendar:list,
+          news_conflicts:[]
+        }));'
+    env:
+      CAL: "$load-cultural-calendar.json"
 
   - id: calendar-check
-    command: >
-      exec --json --shell 'node scripts/pulse-calendar-conflict-checker.js'
-    stdin: '{
-      "scheduled_content": [{"id": "draft-{{timestamp}}", "title": "{{topic}}", "scheduled_date": "{{date}}"}],
-      "cultural_calendar": $load-cultural-calendar.json,
-      "news_conflicts": []
-    }'
+    condition: $gate.json.proceed > 0
+    on_error: continue
+    command: node pulse-calendar-conflict-checker.js
+    stdin: $calendar-input.stdout
 
-  # Step 11: Generate repurposing set if requested (Req 13, 14)
-  - id: repurpose-set
-    command: >
-      openclaw.invoke --tool llm-task --action json --args-json '{
-        "prompt": "Repurpose this long-form content into platform-specific adaptations. Each is a DISTINCT piece with its own voice application — not a copy-paste. Apply the brand voice independently to each. LinkedIn should sound professional and insight-driven. Twitter should be punchy and quotable. Email should be personal and direct. Reddit-ready should sound like a genuine community member sharing expertise.",
-        "thinking": "off",
-        "input": {
-          "original": "$generate-draft.json.body",
-          "brand_voice": $load-voice.json,
-          "platform_tones": $load-platform-config.json
-        },
-        "schema": {
-          "type": "object",
-          "properties": {
-            "linkedin": {"type": "string"},
-            "twitter": {"type": "string"},
-            "email_snippet": {"type": "string"},
-            "reddit_ready": {"type": "string"},
-            "short_summary": {"type": "string"}
-          },
-          "required": ["linkedin", "twitter", "email_snippet"]
-        }
-      }'
-    condition: $repurpose == true
+  # ---------------------------------------------------------------------------
+  # 6. Build the DRAFT-GENERATION INTENT. The model work (draft body, tone score,
+  #    repurposing) happens in the agent loop. We assemble everything the loop
+  #    needs: brief, brand voice, platform tones, content params, the calendar
+  #    result already computed, and the marketer's approved-claims map (for the
+  #    body claim check the loop will run). Append to the pulse/draft-intents
+  #    single-key index array.
+  # ---------------------------------------------------------------------------
+  - id: approved-claims
+    condition: $gate.json.proceed > 0
+    pipeline: state.get pulse-state/approved-claims
 
-  # Step 12: Queue all content for review
-  - id: queue-draft
-    command: >
-      openclaw.invoke --tool fast-io --action write --args-json '{
-        "key": "pulse-content/drafts/{{timestamp}}",
-        "data": {
-          "draft": $generate-draft.json,
-          "repurposing_set": $repurpose-set.json,
-          "voice_score": {
-            "deterministic": $voice-score-deterministic.json,
-            "tone": $voice-score-tone.json,
-            "combined": $voice-score-tone.json.overall_voice_score
-          },
-          "geo_check": $geo-check.json,
-          "claim_flags": $claim-check.json,
-          "calendar_check": $calendar-check.json,
-          "research_brief": "$compile-brief.stdout",
-          "status": "pending_review",
-          "created_at": "{{timestamp}}"
-        }
-      }'
+  - id: intents-load
+    condition: $gate.json.proceed > 0
+    pipeline: state.get pulse/draft-intents
 
-  # Step 13: Notify marketer — full review package (Req 16)
-  - id: notify-review
-    command: >
-      openclaw.invoke --tool slack --action post --args-json '{
-        "channel": "#pulse-content",
-        "text": "📝 NEW DRAFT — $generate-draft.json.title\n\n🎯 Voice Score: $voice-score-tone.json.overall_voice_score/100\n$voice-score-deterministic.json.flags\n\n📊 GEO Score: $geo-check.json.geo_score/100 ($geo-check.json.passed/$geo-check.json.total checks passed)\n\n⚠️ Claims to verify: $claim-check.json.needs_review\n📅 Calendar conflicts: $calendar-check.json.has_conflicts\n\n📖 Read this aloud. If any sentence sounds like it came from a committee, flag it before approving.\n\n[Approve] [Revise] [Reject]"
-      }'
+  - id: intents-next
+    condition: $gate.json.proceed > 0
+    command: >-
+      node -e 'const j=k=>{try{return JSON.parse(process.env[k]||"null");}catch(e){return null;}};
+        const intents=j("INTENTS")||[];
+        const brief=(j("BRIEF")||{}).brief||{};
+        const voice=j("VOICE")||{};
+        const tones=j("TONES")||{};
+        const cal=j("CAL")||{};
+        const claims=j("CLAIMS")||{};
+        const now=new Date();
+        const stamp=now.toISOString().slice(0,19).replace(/[-:T]/g,"");
+        intents.push({
+          id:"draft-"+stamp,
+          status:"awaiting_generation",
+          topic:process.env.LOBSTER_ARG_TOPIC||"",
+          content_type:process.env.LOBSTER_ARG_CONTENT_TYPE||"blog_post",
+          target_platform:process.env.LOBSTER_ARG_TARGET_PLATFORM||"",
+          repurpose:(process.env.LOBSTER_ARG_REPURPOSE||"true")!=="false",
+          research_brief:brief,
+          brand_voice:voice,
+          platform_tones:tones,
+          approved_claims:claims&&typeof claims==="object"?claims:{},
+          calendar_check:cal,
+          gates_to_run_in_loop:["voice_score_deterministic","voice_score_tone","geo_check","claim_check"],
+          read_aloud_prompt:"Read this aloud. If any sentence sounds like it came from a committee, flag it before approving.",
+          created_at:now.toISOString()
+        });
+        process.stdout.write(JSON.stringify(intents));'
+    env:
+      INTENTS: "$intents-load.json"
+      BRIEF: "$compile-brief.stdout"
+      VOICE: "$load-voice.json"
+      TONES: "$load-platform-config.json"
+      CAL: "$calendar-check.stdout"
+      CLAIMS: "$approved-claims.json"
 
-  # Step 14: Audit log (Req 20)
-  - id: audit-log
-    command: >
-      openclaw.invoke --tool fast-io --action write --args-json '{
-        "key": "audit/{{timestamp}}/content-generate",
-        "data": {
-          "action": "content_generated",
-          "topic": "{{topic}}",
-          "content_type": "{{content_type}}",
-          "voice_score": $voice-score-tone.json.overall_voice_score,
-          "geo_score": $geo-check.json.geo_score,
-          "claims_flagged": $claim-check.json.needs_review,
-          "calendar_conflicts": $calendar-check.json.has_conflicts,
-          "repurposed": $repurpose,
-          "authorized_by": "autonomous_draft",
-          "timestamp": "{{timestamp}}"
-        }
-      }'
+  - id: intents
+    condition: $gate.json.proceed > 0
+    pipeline: state.set pulse/draft-intents
+    stdin: $intents-next.stdout
+
+  # ---------------------------------------------------------------------------
+  # 7. Bump the review-queue counter (Req 48). The agent loop decrements it when
+  #    the marketer clears a draft. Read-modify-write the single counter key.
+  # ---------------------------------------------------------------------------
+  - id: queue-bump-next
+    condition: $gate.json.proceed > 0
+    command: >-
+      node -e 'const q=JSON.parse(process.env.QSIZE||"null")||{};
+        const cur=(typeof q==="number"?q:(q.count||q.size||0));
+        const max=(typeof q==="object"&&q)?(q.max_queue_size||10):10;
+        process.stdout.write(JSON.stringify({count:cur+1, max_queue_size:max,
+          updated_at:new Date().toISOString()}));'
+    env:
+      QSIZE: "$queue-size.json"
+
+  - id: queue-bump
+    condition: $gate.json.proceed > 0
+    pipeline: state.set pulse-state/queue-size
+    stdin: $queue-bump-next.stdout
+
+  # ---------------------------------------------------------------------------
+  # 8. Notify the marketer (Req 16). Slack is unreachable from the embedded
+  #    runner, so we queue a `draft_ready` notification for the agent loop to
+  #    deliver to #pulse-content AFTER it generates the body and runs the
+  #    body-dependent gates (voice/GEO/claim). The loop fills in those scores.
+  # ---------------------------------------------------------------------------
+  - id: notify-load
+    condition: $gate.json.proceed > 0
+    pipeline: state.get pulse/notifications
+
+  - id: notify-next
+    condition: $gate.json.proceed > 0
+    command: >-
+      node -e 'const n=JSON.parse(process.env.NOTIFS||"null")||[];
+        const cal=JSON.parse(process.env.CAL||"{}")||{};
+        const brief=(JSON.parse(process.env.BRIEF||"{}")||{}).brief||{};
+        n.push({kind:"draft_ready", channel:"#pulse-content",
+          topic:process.env.LOBSTER_ARG_TOPIC||"",
+          content_type:process.env.LOBSTER_ARG_CONTENT_TYPE||"blog_post",
+          target_platform:process.env.LOBSTER_ARG_TARGET_PLATFORM||"",
+          research_citations:brief.citation_count||0,
+          calendar_conflicts:!!cal.has_conflicts,
+          calendar_high_severity:cal.high_severity||0,
+          read_aloud_prompt:"Read this aloud. If any sentence sounds like it came from a committee, flag it before approving.",
+          requires_agent_loop:["generate_draft","voice_score_tone","repurpose","post_review_package"],
+          created_at:new Date().toISOString()});
+        process.stdout.write(JSON.stringify(n));'
+    env:
+      NOTIFS: "$notify-load.json"
+      CAL: "$calendar-check.stdout"
+      BRIEF: "$compile-brief.stdout"
+
+  - id: notify
+    condition: $gate.json.proceed > 0
+    pipeline: state.set pulse/notifications
+    stdin: $notify-next.stdout
+
+  # ---------------------------------------------------------------------------
+  # 9. Audit log (Req 20). Append to the pulse/audit-log index array (fast-io
+  #    write was fictional). Deterministic; no LLM scores yet — the agent loop
+  #    appends the post-generation audit with voice/GEO scores once the body
+  #    exists.
+  # ---------------------------------------------------------------------------
+  - id: audit-load
+    condition: $gate.json.proceed > 0
+    pipeline: state.get pulse/audit-log
+
+  - id: audit-next
+    condition: $gate.json.proceed > 0
+    command: >-
+      node -e 'const log=JSON.parse(process.env.LOG||"null")||[];
+        const cal=JSON.parse(process.env.CAL||"{}")||{};
+        log.push({action:"content_intent_queued",
+          topic:process.env.LOBSTER_ARG_TOPIC||"",
+          content_type:process.env.LOBSTER_ARG_CONTENT_TYPE||"blog_post",
+          target_platform:process.env.LOBSTER_ARG_TARGET_PLATFORM||"",
+          repurpose:(process.env.LOBSTER_ARG_REPURPOSE||"true")!=="false",
+          calendar_conflicts:!!cal.has_conflicts,
+          authorized_by:"autonomous_intelligence_layer",
+          timestamp:new Date().toISOString()});
+        process.stdout.write(JSON.stringify(log));'
+    env:
+      LOG: "$audit-load.json"
+      CAL: "$calendar-check.stdout"
+
+  - id: audit
+    condition: $gate.json.proceed > 0
+    pipeline: state.set pulse/audit-log
+    stdin: $audit-next.stdout

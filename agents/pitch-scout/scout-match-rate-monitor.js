@@ -54,7 +54,8 @@ async function main() {
   };
 
   process.stdout.write(JSON.stringify(result));
-  process.exit(pass ? 0 : 1);
+  // exit 0 always: a below-threshold match rate is a branch, not a run error — pass in JSON carries it.
+  process.exit(0);
 }
 
 function readStdin() {

@@ -81,7 +81,9 @@ async function main() {
   };
 
   process.stdout.write(JSON.stringify(result));
-  process.exit(conflicts.length > 0 ? 1 : 0);
+  // Finding conflicts is a normal result, not a failure — the decision is
+  // carried in has_conflicts; exit 0 so the workflow can gate on the JSON.
+  process.exit(0);
 }
 
 function readStdin() {

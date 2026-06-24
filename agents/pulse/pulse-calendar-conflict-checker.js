@@ -96,7 +96,9 @@ async function main() {
   );
 
   process.stdout.write(JSON.stringify(result));
-  process.exit(result.has_conflicts ? 1 : 0);
+  // A conflict is a normal review outcome, not a failure — the workflow branches on
+  // result.has_conflicts via condition:, so exit 0 and let the caller gate.
+  process.exit(0);
 }
 
 function readStdin() {

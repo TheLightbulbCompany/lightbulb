@@ -171,7 +171,8 @@ async function main() {
   result.is_csuite = isCsuite(prospect.title);
 
   process.stdout.write(JSON.stringify(result));
-  process.exit(result.pass ? 0 : 1);
+  // exit 0 always: a compliance block is a branch, not a run error — pass/blocks in JSON carries it.
+  process.exit(0);
 }
 
 function readStdin() {

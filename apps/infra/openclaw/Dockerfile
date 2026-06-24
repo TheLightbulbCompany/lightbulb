@@ -343,16 +343,6 @@ RUN set -eux; \
 # (ecs_manager), which the agent's exec subprocess inherits.
 COPY skills/paperclip /app/skills/paperclip
 
-# ---- Layer 15: bundled lobster-authoring skill ----
-# Teaches the agent to author CORRECT .lobster pipelines. The only example workflows
-# OpenClaw ships (skills/taskflow/examples) bake the very bugs the agent then reproduces
-# fleet-wide — command:-for-DSL verbs, openclaw.invoke (401 in the embedded runner),
-# the fictional fast-io, {{}} templating, items[0] indexing — and they even contradict
-# the lobster docs' own embedded-runner warning. This skill is the corrected reference
-# (real CLIs, state.get/set, dot-index refs, real approval gates) plus a dry-run-validated
-# template, so every agent authors runnable workflows out of the box. Auto-discovered at
-# /app/skills/<name>/SKILL.md, same mechanism as the paperclip bake above.
-COPY skills/lobster-authoring /app/skills/lobster-authoring
 
 # ---- Restore runtime context ----
 USER node

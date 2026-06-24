@@ -1,177 +1,237 @@
 name: weekly-report
-# Requirements 22, 23, 25, 45, 46, 47: Weekly metrics + learning.
-# Runs Monday 8 AM on cron.
-# LLM calls: 2 (CSAT failure classification batch, KB gap clustering)
+# Weekly support metrics + learning digest (Req 22, 23, 25, 45, 46, 47).
+# Runs Monday 8 AM on cron. Fully deterministic, gateway-free.
+#
+# Contract notes (see the lobster-authoring skill):
+#  - DSL verbs (state.get/set) run under `pipeline:`; real programs under `command:`.
+#  - `fast-io` is fictional. The original loaders did `fast-io list --prefix vera-csat/`
+#    etc.; state.* has NO prefix-list, so the producer workflows (intake-resolve,
+#    escalation) append each event to a SINGLE-KEY INDEX ARRAY under `vera/...`.
+#    This report reads those arrays, windows them to the last 7 days in a node step,
+#    computes metrics deterministically, then COMPACTS the rolling arrays back so they
+#    don't grow unbounded (keeps the trailing 35 days).
+#  - The two original LLM steps (CSAT failure classification, KB-gap clustering) and
+#    all delivery (Slack post, Google Sheet/Doc write) CANNOT run in an embedded
+#    pipeline (llm-task / slack / openclaw.invoke all 401). They are written to a
+#    `vera/notifications` queue as an intent for the agent loop to pick up and finish
+#    (run llm-task, write the gog Sheet/Doc, post Slack). The pipeline itself produces
+#    the deterministic metrics + a delivery-ready payload and stops there.
+#  - `capability-evolver` is fictional — dropped; its pattern analysis is folded into
+#    the same notifications intent for the agent loop (which has model judgment).
+#  - Scripts always exit 0 and carry status in JSON; steps branch via `condition:`.
+#  - The .js is FLAT in the agent dir (`node vera-metrics-calculator.js`), NOT scripts/.
+
+args:
+  period:
+    default: "7d"          # reporting window label, passed through to the calculator
+  csat_threshold:
+    default: "3"           # CSAT <= this counts as a failure (string arg; calculator coerces)
 
 steps:
-  # Step 1: Load all ticket data for the week
+  # ---- 1-6. Load the rolling event index arrays (single-key, per-agent state) ----
+  # Each is an array the producer workflows append to; null when never written.
   - id: load-tickets
-    command: >
-      openclaw.invoke --tool fast-io --action list --args-json '{
-        "prefix": "audit/",
-        "filter": "action:ticket_handled AND timestamp:last_7d"
-      }'
+    pipeline: state.get vera/ticket-log
 
-  # Step 2: Load all escalation data
   - id: load-escalations
-    command: >
-      openclaw.invoke --tool fast-io --action list --args-json '{
-        "prefix": "audit/",
-        "filter": "action:escalation AND timestamp:last_7d"
-      }'
+    pipeline: state.get vera/escalation-log
 
-  # Step 3: Load CSAT scores
   - id: load-csat
-    command: >
-      openclaw.invoke --tool fast-io --action list --args-json '{
-        "prefix": "vera-csat/",
-        "filter": "timestamp:last_7d"
-      }'
+    pipeline: state.get vera/csat-log
 
-  # Step 4: Load KB gaps
   - id: load-kb-gaps
-    command: >
-      openclaw.invoke --tool fast-io --action list --args-json '{
-        "prefix": "vera-kb-gaps/",
-        "filter": "timestamp:last_7d"
-      }'
+    pipeline: state.get vera/kb-gap-log
 
-  # Step 5: Load KB conflicts
   - id: load-kb-conflicts
-    command: >
-      openclaw.invoke --tool fast-io --action list --args-json '{
-        "prefix": "vera-kb-conflicts/",
-        "filter": "timestamp:last_7d"
-      }'
+    pipeline: state.get vera/kb-conflict-log
 
-  # Step 6: Load stale articles
   - id: load-stale
-    command: >
-      openclaw.invoke --tool fast-io --action list --args-json '{
-        "prefix": "vera-kb-stale/"
-      }'
+    pipeline: state.get vera/kb-stale-log
 
-  # Step 7: Calculate all metrics deterministically (Req 45, 47)
+  # ---- 7. Window every array to the last 7 days + assemble the calculator's input ----
+  # The original `calculate-metrics` step had NO stdin, so the calculator always saw
+  # empty input. Here we build exactly the shape it reads:
+  # {tickets, csat_scores, kb_gaps, escalations, period, csat_threshold}.
+  # `_event_ts` helper accepts ISO `timestamp`/`created_at`/`queued_at`/`buffered_at`.
+  - id: window
+    command: >
+      node -e 'const cut=Date.now()-7*864e5;
+        const ts=o=>{const v=o&&(o.timestamp||o.created_at||o.queued_at||o.buffered_at||o.date);
+          const t=v?Date.parse(v):NaN; return Number.isNaN(t)?Date.now():t;};
+        const recent=a=>(Array.isArray(a)?a:[]).filter(o=>ts(o)>=cut);
+        const tickets=recent(JSON.parse(process.env.TICKETS||"null"));
+        const escalations=recent(JSON.parse(process.env.ESC||"null"));
+        const csat=recent(JSON.parse(process.env.CSAT||"null"));
+        const gaps=recent(JSON.parse(process.env.GAPS||"null"));
+        const conflicts=recent(JSON.parse(process.env.CONFLICTS||"null"));
+        const stale=(JSON.parse(process.env.STALE||"null"))||[];
+        process.stdout.write(JSON.stringify({
+          tickets, escalations, csat_scores:csat, kb_gaps:gaps,
+          kb_conflicts:conflicts, stale_articles:Array.isArray(stale)?stale:[],
+          period:process.env.PERIOD||"7d",
+          csat_threshold:parseInt(process.env.CSAT_THRESH||"3",10),
+          ticket_count:tickets.length, csat_count:csat.length, gap_count:gaps.length}));'
+    env:
+      TICKETS: "$load-tickets.json"
+      ESC: "$load-escalations.json"
+      CSAT: "$load-csat.json"
+      GAPS: "$load-kb-gaps.json"
+      CONFLICTS: "$load-kb-conflicts.json"
+      STALE: "$load-stale.json"
+      PERIOD: "${period}"
+      CSAT_THRESH: "${csat_threshold}"
+
+  # ---- 8. Deterministic metrics (Req 45, 47). Zero LLM. Reads the windowed input. ----
   - id: calculate-metrics
-    command: >
-      exec --json --shell 'node scripts/vera-metrics-calculator.js'
+    command: node vera-metrics-calculator.js
+    stdin: $window.stdout
 
-  # Step 8: Cluster KB gaps by topic — LLM CALL 1 (Req 22)
-  - id: cluster-gaps
+  # ---- 9. Emit an explicit flag for whether there is anything to cluster/classify ----
+  # The original gated LLM steps on `.length` (silently false). Emit counts instead.
+  - id: gates
     command: >
-      openclaw.invoke --tool llm-task --action json --args-json '{
-        "prompt": "Group these unanswered customer questions into themes. Questions that ask the same thing in different words should be in the same group. Return groups ranked by frequency.",
-        "thinking": "low",
-        "input": $load-kb-gaps.json,
-        "schema": {
-          "type": "object",
-          "properties": {
-            "gap_clusters": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "properties": {
-                  "theme": {"type": "string"},
-                  "count": {"type": "number"},
-                  "example_questions": {"type": "array", "items": {"type": "string"}},
-                  "recommended_kb_article": {"type": "string"}
-                },
-                "required": ["theme", "count"]
-              }
-            },
-            "total_gaps": {"type": "number"}
-          },
-          "required": ["gap_clusters"]
-        }
-      }'
-    condition: $load-kb-gaps.json.length > 0
+      node -e 'const w=JSON.parse(require("fs").readFileSync(0,"utf8"));
+        const csatFails=(w.csat_scores||[]).filter(c=>{
+          const s=(c&&typeof c.score==="number")?c.score:null;
+          return s!==null && s<=(w.csat_threshold||3);});
+        process.stdout.write(JSON.stringify({
+          gap_count:(w.kb_gaps||[]).length,
+          csat_fail_count:csatFails.length,
+          csat_failures:csatFails,
+          kb_gaps:w.kb_gaps||[]}));'
+    stdin: $window.stdout
 
-  # Step 9: Classify CSAT failures — LLM CALL 2 (Req 46)
-  - id: classify-failures
+  # ---- 10. Assemble the agent-loop intent payload (LLM + delivery work) ----
+  # Carries the deterministic metrics + the raw inputs the agent loop needs to:
+  #   - cluster KB gaps (llm-task, Req 22)            [only when gap_count > 0]
+  #   - classify CSAT failures (llm-task, Req 46)     [only when csat_fail_count > 0]
+  #   - run pattern analysis (model judgment; was the fictional capability-evolver)
+  #   - write the Google Sheet + Doc (gog) and post #vera-digest Slack
+  - id: build-notification
     command: >
-      openclaw.invoke --tool llm-task --action json --args-json '{
-        "prompt": "For each low-CSAT ticket, read the conversation and classify the failure root cause. Categories: kb_gap (answer wasnt in knowledge base), incorrect_escalation (should have escalated sooner or shouldnt have escalated), sentiment_failure (didnt acknowledge frustration appropriately), confidence_miscalibration (answered when it shouldnt have or escalated when it didnt need to), policy_boundary (customer wanted something outside policy). Be specific about what went wrong.",
-        "thinking": "low",
-        "input": $load-csat.json,
-        "schema": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "ticket_id": {"type": "string"},
-              "csat_score": {"type": "number"},
-              "failure_type": {"type": "string", "enum": ["kb_gap", "incorrect_escalation", "sentiment_failure", "confidence_miscalibration", "policy_boundary", "other"]},
-              "explanation": {"type": "string"},
-              "recommended_fix": {"type": "string"}
-            },
-            "required": ["ticket_id", "failure_type", "explanation"]
-          }
-        }
-      }'
-    condition: $load-csat.json.length > 0
+      node -e 'const m=JSON.parse(process.env.METRICS||"{}");
+        const g=JSON.parse(process.env.GATES||"{}");
+        const date=new Date().toISOString().slice(0,10);
+        process.stdout.write(JSON.stringify({
+          kind:"weekly_report",
+          period:process.env.PERIOD||"7d",
+          date,
+          metrics:m,
+          needs_gap_clustering:(g.gap_count||0)>0,
+          needs_csat_classification:(g.csat_fail_count||0)>0,
+          kb_gaps:g.kb_gaps||[],
+          csat_failures:g.csat_failures||[],
+          delivery:{
+            slack_channel:"#vera-digest",
+            sheet:"Vera Weekly Reports",
+            doc:"Vera Weekly Report — "+date,
+            doc_folder:"Vera Reports"},
+          created_at:new Date().toISOString()}));'
+    env:
+      METRICS: "$calculate-metrics.stdout"
+      GATES: "$gates.stdout"
+      PERIOD: "${period}"
 
-  # Step 10: Capability-evolver pattern analysis
-  - id: pattern-analysis
+  # ---- 11. Load + append to the notifications queue (single-key index array) ----
+  - id: notify-load
+    pipeline: state.get vera/notifications
+
+  - id: notify-next
     command: >
-      openclaw.invoke --tool capability-evolver --action analyze --args-json '{
-        "metrics": $calculate-metrics.stdout,
-        "failures": $classify-failures.json,
-        "gaps": $cluster-gaps.json,
-        "focus": "identify recurring patterns and recommend specific improvements"
-      }'
+      node -e 'const q=JSON.parse(process.env.QUEUE||"null")||[];
+        const item=JSON.parse(require("fs").readFileSync(0,"utf8"));
+        q.push(item);
+        process.stdout.write(JSON.stringify(q));'
+    env:
+      QUEUE: "$notify-load.json"
+    stdin: $build-notification.stdout
 
-  # Step 11: Compile full report (zero LLM — summarize CLI)
-  - id: compile-report
-    command: >
-      openclaw.invoke --tool summarize --action compress --args-json '{
-        "input": {
-          "metrics": $calculate-metrics.stdout,
-          "kb_gaps": $cluster-gaps.json,
-          "kb_conflicts": $load-kb-conflicts.json,
-          "stale_articles": $load-stale.json,
-          "csat_failures": $classify-failures.json,
-          "patterns": $pattern-analysis.json
-        },
-        "format": "weekly-support-report"
-      }'
-
-  # Step 12: Write to Google Sheet
-  - id: write-report
-    command: >
-      openclaw.invoke --tool gog --action sheets-write --args-json '{
-        "spreadsheet": "Vera Weekly Reports",
-        "sheet": "{{date}}",
-        "data": $calculate-metrics.stdout
-      }'
-
-  # Step 13: Write narrative report to Google Doc
-  - id: write-narrative
-    command: >
-      openclaw.invoke --tool gog --action drive-write --args-json '{
-        "file": "Vera Weekly Report — {{date}}",
-        "content": $compile-report.stdout,
-        "folder": "Vera Reports"
-      }'
-
-  # Step 14: Post to Slack
   - id: notify
-    command: >
-      openclaw.invoke --tool slack --action post --args-json '{
-        "channel": "#vera-digest",
-        "text": "📊 WEEKLY SUPPORT REPORT — {{date}}\n\n$compile-report.stdout\n\nFull report: $write-narrative.json.url\nMetrics sheet: $write-report.json.url"
-      }'
+    pipeline: state.set vera/notifications
+    stdin: $notify-next.stdout
 
-  # Step 15: Audit log
-  - id: audit-log
+  # ---- 12. Append this run to the audit log index array (was fast-io audit/ write) ----
+  - id: audit-load
+    pipeline: state.get vera/audit-log
+
+  - id: audit-next
     command: >
-      openclaw.invoke --tool fast-io --action write --args-json '{
-        "key": "audit/{{timestamp}}/weekly-report",
-        "data": {
-          "action": "weekly_report",
-          "metrics": $calculate-metrics.stdout,
-          "gap_clusters": $cluster-gaps.json,
-          "failure_classifications": $classify-failures.json,
-          "authorized_by": "autonomous",
-          "timestamp": "{{timestamp}}"
-        }
-      }'
+      node -e 'const log=JSON.parse(process.env.LOG||"null")||[];
+        const m=JSON.parse(process.env.METRICS||"{}");
+        const g=JSON.parse(process.env.GATES||"{}");
+        log.push({action:"weekly_report",
+          period:process.env.PERIOD||"7d",
+          total_tickets:m.total_tickets||0,
+          gap_count:g.gap_count||0,
+          csat_fail_count:g.csat_fail_count||0,
+          authorized_by:"autonomous",
+          timestamp:new Date().toISOString()});
+        process.stdout.write(JSON.stringify(log.slice(-500)));'
+    env:
+      LOG: "$audit-load.json"
+      METRICS: "$calculate-metrics.stdout"
+      GATES: "$gates.stdout"
+      PERIOD: "${period}"
+
+  - id: audit
+    pipeline: state.set vera/audit-log
+    stdin: $audit-next.stdout
+
+  # ---- 13. Compact the rolling event arrays to a trailing 35-day window ----
+  # Keeps the index arrays bounded so each weekly run stays cheap. Re-windows the
+  # SAME load steps (loaded before any state.set above, so values are unchanged).
+  - id: compact-tickets
+    command: >
+      node -e 'const cut=Date.now()-35*864e5;
+        const ts=o=>{const v=o&&(o.timestamp||o.created_at||o.queued_at||o.buffered_at||o.date);
+          const t=v?Date.parse(v):NaN; return Number.isNaN(t)?Date.now():t;};
+        const a=(JSON.parse(process.env.IN||"null")||[]).filter(o=>ts(o)>=cut);
+        process.stdout.write(JSON.stringify(a));'
+    env:
+      IN: "$load-tickets.json"
+
+  - id: save-tickets
+    pipeline: state.set vera/ticket-log
+    stdin: $compact-tickets.stdout
+
+  - id: compact-escalations
+    command: >
+      node -e 'const cut=Date.now()-35*864e5;
+        const ts=o=>{const v=o&&(o.timestamp||o.created_at||o.queued_at||o.buffered_at||o.date);
+          const t=v?Date.parse(v):NaN; return Number.isNaN(t)?Date.now():t;};
+        const a=(JSON.parse(process.env.IN||"null")||[]).filter(o=>ts(o)>=cut);
+        process.stdout.write(JSON.stringify(a));'
+    env:
+      IN: "$load-escalations.json"
+
+  - id: save-escalations
+    pipeline: state.set vera/escalation-log
+    stdin: $compact-escalations.stdout
+
+  - id: compact-csat
+    command: >
+      node -e 'const cut=Date.now()-35*864e5;
+        const ts=o=>{const v=o&&(o.timestamp||o.created_at||o.queued_at||o.buffered_at||o.date);
+          const t=v?Date.parse(v):NaN; return Number.isNaN(t)?Date.now():t;};
+        const a=(JSON.parse(process.env.IN||"null")||[]).filter(o=>ts(o)>=cut);
+        process.stdout.write(JSON.stringify(a));'
+    env:
+      IN: "$load-csat.json"
+
+  - id: save-csat
+    pipeline: state.set vera/csat-log
+    stdin: $compact-csat.stdout
+
+  - id: compact-gaps
+    command: >
+      node -e 'const cut=Date.now()-35*864e5;
+        const ts=o=>{const v=o&&(o.timestamp||o.created_at||o.queued_at||o.buffered_at||o.date);
+          const t=v?Date.parse(v):NaN; return Number.isNaN(t)?Date.now():t;};
+        const a=(JSON.parse(process.env.IN||"null")||[]).filter(o=>ts(o)>=cut);
+        process.stdout.write(JSON.stringify(a));'
+    env:
+      IN: "$load-kb-gaps.json"
+
+  - id: save-gaps
+    pipeline: state.set vera/kb-gap-log
+    stdin: $compact-gaps.stdout

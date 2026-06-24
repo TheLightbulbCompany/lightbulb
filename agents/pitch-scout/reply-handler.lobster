@@ -1,7 +1,21 @@
 name: reply-handler
-# Requirements 33, 34, 35, 42
-# Triggered by outbound platform reply webhook (Instantly/SmartLead/Mailshake/Lemlist).
-# LLM calls: 2 (reply draft thinking: medium, MEDDIC extraction thinking: low)
+# Process a prospect reply: detect opt-out, pause the sequence, load Attio MEDDIC
+# state + conversation history, and hand the reply off to the rep for a drafted
+# response (replies are conversations — never automated).
+#
+# Contract notes (see the lobster-authoring skill):
+#  - DSL verbs (state.get/set) run under `pipeline:`; real programs under `command:`.
+#  - Durable state via state.get/set on the per-owner EFS mount (LOBSTER_STATE_DIR).
+#    Opt-out list, sequence-pause state, audit trail and notification intents are
+#    single-key index arrays (state.* has no prefix-list), appended in a node step
+#    then re-written.
+#  - Attio is the ONLY CRM, reached gateway-free via the baked `mcporter` CLI; its
+#    output is YAML-ish TEXT, so a node step parses stdout (never JSON.parse).
+#  - Slack/Gmail are unreachable from an embedded pipeline (401), so the reply draft
+#    + send is queued as a notification intent on `pitch/notifications` for the agent
+#    to deliver. The actual reply DRAFT + MEDDIC extraction are model-judgment tasks,
+#    so they are left for the agent loop (see the `reply_review` intent payload).
+#  - Scripts always exit 0 and carry status in JSON; steps branch via `condition:`.
 
 args:
   prospect_domain:
@@ -12,217 +26,169 @@ args:
     default: ""
 
 steps:
-  # Step 1: Opt-out detection FIRST (Req 42)
+  # 1. Opt-out detection FIRST (Req 42) — keyword match, deterministic, exits 0.
+  - id: opt-out-input
+    command: >
+      node -e 'process.stdout.write(JSON.stringify({
+        reply_text: process.env.REPLY||"",
+        prospect_domain: process.env.LOBSTER_ARG_PROSPECT_DOMAIN||""}));'
+    env:
+      REPLY: $reply_content
+
   - id: opt-out-check
-    command: >
-      exec --json --shell 'node scripts/pitch-opt-out-detector.js'
-    stdin: '{"reply_text": "{{reply_content}}", "prospect_domain": "{{prospect_domain}}"}'
+    command: node pitch-opt-out-detector.js
+    stdin: $opt-out-input.stdout
 
-  # Step 2: If opt-out detected, process immediately (Req 42)
-  - id: process-opt-out
-    command: >
-      openclaw.invoke --tool fast-io --action write --args-json '{
-        "key": "opt-out/{{prospect_domain}}",
-        "data": {
-          "domain": "{{prospect_domain}}",
-          "opt_out_date": "{{timestamp}}",
-          "source": "reply_keyword_detection",
-          "jurisdiction": "pending_lookup"
-        }
-      }'
+  # 2. Record an opt-out into the durable opt-out list (single-key index array).
+  - id: optout-load
     condition: $opt-out-check.json.is_opt_out
+    pipeline: state.get pitch/opt-outs
 
-  # Step 3: Pause sequence (Req 29, 33)
+  - id: optout-next
+    condition: $opt-out-check.json.is_opt_out
+    command: >
+      node -e 'const list=JSON.parse(process.env.LIST||"null")||[];
+        const domain=process.env.LOBSTER_ARG_PROSPECT_DOMAIN;
+        list.push({domain, source:"reply_keyword_detection",
+          matched_patterns:(JSON.parse(process.env.DET||"{}").matched_patterns)||[],
+          jurisdiction:"pending_lookup", opt_out_date:new Date().toISOString()});
+        process.stdout.write(JSON.stringify(list));'
+    env:
+      LIST: $optout-load.stdout
+      DET: $opt-out-check.stdout
+
+  - id: optout-save
+    condition: $opt-out-check.json.is_opt_out
+    pipeline: state.set pitch/opt-outs
+    stdin: $optout-next.stdout
+
+  # 3. Pause the active sequence (always — a reply, opt-out or not, stops automation).
+  - id: pause-input
+    command: >
+      node -e 'process.stdout.write(JSON.stringify({
+        prospect_domain: process.env.LOBSTER_ARG_PROSPECT_DOMAIN,
+        reason: (JSON.parse(process.env.DET||"{}").is_opt_out) ? "opt_out" : "prospect_reply"}));'
+    env:
+      DET: $opt-out-check.stdout
+
   - id: pause-sequence
-    command: >
-      exec --json --shell 'node scripts/pitch-sequence-pauser.js'
-    stdin: '{"prospect_domain": "{{prospect_domain}}", "reason": "prospect_reply"}'
+    command: node pitch-sequence-pauser.js
+    stdin: $pause-input.stdout
 
-  # Step 4: Load conversation history (Req 33)
-  - id: load-history
+  # 4. Persist the sequence-pause into durable sequence state (single-key index array).
+  - id: seq-load
+    pipeline: state.get pitch/sequences
+
+  - id: seq-next
     command: >
-      openclaw.invoke --tool fast-io --action list --args-json '{
-        "prefix": "audit/*/{{prospect_domain}}"
-      }'
+      node -e 'const seqs=JSON.parse(process.env.SEQS||"null")||[];
+        const p=JSON.parse(process.env.PAUSE||"{}");
+        const domain=p.prospect_domain;
+        let found=false;
+        for (const s of seqs) { if (s.domain===domain) {
+          s.paused=true; s.pause_reason=p.pause_reason||p.reason||"prospect_reply";
+          s.pause_timestamp=p.pause_timestamp||new Date().toISOString(); found=true; } }
+        if (!found) seqs.push({domain, paused:true,
+          pause_reason:p.pause_reason||p.reason||"prospect_reply",
+          pause_timestamp:p.pause_timestamp||new Date().toISOString()});
+        process.stdout.write(JSON.stringify(seqs));'
+    env:
+      SEQS: $seq-load.stdout
+      PAUSE: $pause-sequence.stdout
+
+  - id: seq-save
+    pipeline: state.set pitch/sequences
+    stdin: $seq-next.stdout
+
+  # 5. NON-OPT-OUT PATH: load Attio MEDDIC state for this domain. mcporter -> text -> parse.
+  - id: crm-meddic
     condition: $opt-out-check.json.is_opt_out == false
-
-  # Step 5: Load MEDDIC state (Req 33, 35)
-  # Click-to-connect: reads from whichever CRM is connected
-  - id: load-crm-config
     command: >
-      openclaw.invoke --tool fast-io --action read --args-json '{"key": "pitch-config/connected-crm"}'
-    condition: $opt-out-check.json.is_opt_out == false
-
-  - id: load-meddic-hubspot
-    command: >
-      exec --json --shell 'curl -s "https://api.hubapi.com/crm/v3/objects/deals/search" \
-        -H "Authorization: Bearer $HUBSPOT_ACCESS_TOKEN" \
-        -H "Content-Type: application/json" \
-        -d "{\"filterGroups\":[{\"filters\":[{\"propertyName\":\"domain\",\"operator\":\"EQ\",\"value\":\"{{prospect_domain}}\"}]}],\"properties\":[\"meddic_metrics\",\"meddic_economic_buyer\",\"meddic_decision_criteria\",\"meddic_decision_process\",\"meddic_identify_pain\",\"meddic_champion\"]}"'
-    condition: $load-crm-config.json.platform == "hubspot" && $opt-out-check.json.is_opt_out == false
-
-  - id: load-meddic-salesforce
-    command: >
-      exec --json --shell 'curl -s "$SALESFORCE_INSTANCE_URL/services/data/v59.0/query?q=SELECT+MEDDIC_Metrics__c,MEDDIC_Economic_Buyer__c,MEDDIC_Decision_Criteria__c,MEDDIC_Decision_Process__c,MEDDIC_Identify_Pain__c,MEDDIC_Champion__c+FROM+Opportunity+WHERE+Domain__c='\''{{prospect_domain}}'\''" \
-        -H "Authorization: Bearer $SALESFORCE_ACCESS_TOKEN"'
-    condition: $load-crm-config.json.platform == "salesforce" && $opt-out-check.json.is_opt_out == false
-
-  - id: load-meddic-attio
-    command: >
-      exec --json --shell 'curl -s "https://api.attio.com/v2/objects/companies/records/query" \
-        -H "Authorization: Bearer $ATTIO_API_KEY" \
-        -H "Content-Type: application/json" \
-        -d "{\"filter\":{\"domain\":\"{{prospect_domain}}\"},\"select\":[\"meddic\"]}"'
-    condition: $load-crm-config.json.platform == "attio" && $opt-out-check.json.is_opt_out == false
-
-  - id: load-meddic-pipedrive
-    command: >
-      exec --json --shell 'curl -s "https://api.pipedrive.com/v1/deals?domain={{prospect_domain}}&api_token=$PIPEDRIVE_API_TOKEN"'
-    condition: $load-crm-config.json.platform == "pipedrive" && $opt-out-check.json.is_opt_out == false
-
-  - id: load-meddic
-    command: >
-      exec --json --shell 'node -e "
-        const input = JSON.parse(require(\"fs\").readFileSync(\"/dev/stdin\",\"utf8\"));
-        const data = input.hubspot || input.salesforce || input.attio || input.pipedrive || {};
-        const records = data.results || data.records || data.data || [data];
-        process.stdout.write(JSON.stringify(records[0] || {}));
-      "'
-    stdin: '{"hubspot": $load-meddic-hubspot.json, "salesforce": $load-meddic-salesforce.json, "attio": $load-meddic-attio.json, "pipedrive": $load-meddic-pipedrive.json}'
-    condition: $opt-out-check.json.is_opt_out == false
-
-  # Step 6: Draft suggested reply — LLM CALL 1 (Req 33)
-  - id: draft-reply
-    command: >
-      openclaw.invoke --tool llm-task --action json --args-json '{
-        "prompt": "Draft a reply to this prospect. Ground it in conversation history and MEDDIC state. Show what has been confirmed, what is still unknown, and the recommended strategic next step. This is a DRAFT for rep review.",
-        "thinking": "medium",
-        "input": {
-          "prospect_reply": "{{reply_content}}",
-          "reply_subject": "{{reply_subject}}",
-          "conversation_history": $load-history.json,
-          "meddic_state": $load-meddic.json,
-          "prospect_domain": "{{prospect_domain}}"
-        },
-        "schema": {
-          "type": "object",
-          "properties": {
-            "suggested_reply": {"type": "string"},
-            "confirmed_fields": {"type": "array", "items": {"type": "string"}},
-            "unknown_fields": {"type": "array", "items": {"type": "string"}},
-            "recommended_next_step": {"type": "string"},
-            "reply_tone": {"type": "string", "enum": ["positive", "skeptical", "question", "soft_decline", "hard_decline", "out_of_office"]}
-          },
-          "required": ["suggested_reply", "recommended_next_step", "reply_tone"]
+      node -e 'const {execSync}=require("child_process");
+        const d=process.env.LOBSTER_ARG_PROSPECT_DOMAIN||"";
+        let txt=""; try { txt=execSync("mcporter call attio.search-records --args "
+          +JSON.stringify(JSON.stringify({object:"companies",query:d,limit:5}))+" --output text",
+          {encoding:"utf8",timeout:45000}); } catch (e) { txt=""; }
+        let record_id="", name="", meddic="";
+        for (const p of txt.split(/-\s*record_id:\s*/).slice(1)) {
+          const id=(p.match(/^([0-9a-f-]{36})/)||[])[1]||"";
+          const doms=[...p.matchAll(/domains\[\d+\]:\s*([^\s"]+)/g)].map(m=>m[1].toLowerCase());
+          const nm=((p.match(/\n\s*name:\s*"?([^"\n]+)"?/)||[])[1]||"").trim();
+          const md=((p.match(/\n\s*meddic:\s*"?([^"\n]+)"?/)||[])[1]||"").trim();
+          if (!record_id || doms.includes(d.toLowerCase())) { record_id=id; name=nm; meddic=md; }
+          if (doms.includes(d.toLowerCase())) break;
         }
-      }'
+        process.stdout.write(JSON.stringify({found:!!record_id, record_id, name, meddic}));'
+
+  # 6. NON-OPT-OUT PATH: load durable conversation/audit history for this domain
+  #    (single-key index array, filtered to this prospect by the consumer below).
+  - id: history-load
     condition: $opt-out-check.json.is_opt_out == false
+    pipeline: state.get pitch/audit-log
 
-  # Step 7: MEDDIC extraction from reply — LLM CALL 2 (Req 35)
-  - id: meddic-extract
-    command: >
-      openclaw.invoke --tool llm-task --action json --args-json '{
-        "prompt": "Extract MEDDIC signals from this prospect reply. ONLY mark a field as confirmed if the prospect EXPLICITLY stated it. Include the source reference for every update. Do not infer from industry knowledge.",
-        "thinking": "low",
-        "input": {
-          "reply": "{{reply_content}}",
-          "current_meddic": $load-meddic.json
-        },
-        "schema": {
-          "type": "object",
-          "properties": {
-            "has_updates": {"type": "boolean"},
-            "updates": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "properties": {
-                  "field": {"type": "string", "enum": ["metrics", "economic_buyer", "decision_criteria", "decision_process", "identify_pain", "champion"]},
-                  "value": {"type": "string"},
-                  "confirmed": {"type": "boolean"},
-                  "source": {"type": "string"}
-                },
-                "required": ["field", "value", "confirmed", "source"]
-              }
-            }
-          },
-          "required": ["has_updates"]
-        }
-      }'
+  # 7. NON-OPT-OUT PATH: queue a reply-review intent for the agent loop.
+  #    The DRAFT reply and MEDDIC extraction are genuine model-judgment tasks
+  #    (the original llm-task calls): they cannot run in the embedded pipeline,
+  #    so the agent drafts the reply, extracts MEDDIC, and routes it to the rep
+  #    for approval before sending from the rep's real inbox via gog.
+  - id: notify-load
     condition: $opt-out-check.json.is_opt_out == false
+    pipeline: state.get pitch/notifications
 
-  # Step 8: Update MEDDIC in CRM (Req 35)
-  # Writes to whichever CRM is connected
-  - id: meddic-update-hubspot
-    command: >
-      exec --json --shell 'curl -s -X PATCH "https://api.hubapi.com/crm/v3/objects/deals/{{prospect_domain}}" \
-        -H "Authorization: Bearer $HUBSPOT_ACCESS_TOKEN" \
-        -H "Content-Type: application/json" \
-        -d "{\"properties\":$STDIN}"'
-    stdin: $meddic-extract.json.updates
-    condition: $meddic-extract.json.has_updates && $load-crm-config.json.platform == "hubspot"
-
-  - id: meddic-update-salesforce
-    command: >
-      exec --json --shell 'curl -s -X PATCH "$SALESFORCE_INSTANCE_URL/services/data/v59.0/sobjects/Opportunity/{{prospect_domain}}" \
-        -H "Authorization: Bearer $SALESFORCE_ACCESS_TOKEN" \
-        -H "Content-Type: application/json" \
-        -d "$STDIN"'
-    stdin: $meddic-extract.json.updates
-    condition: $meddic-extract.json.has_updates && $load-crm-config.json.platform == "salesforce"
-
-  - id: meddic-update-attio
-    command: >
-      exec --json --shell 'curl -s -X PATCH "https://api.attio.com/v2/objects/companies/records/{{prospect_domain}}" \
-        -H "Authorization: Bearer $ATTIO_API_KEY" \
-        -H "Content-Type: application/json" \
-        -d "{\"meddic\":$STDIN}"'
-    stdin: $meddic-extract.json.updates
-    condition: $meddic-extract.json.has_updates && $load-crm-config.json.platform == "attio"
-
-  - id: meddic-update-pipedrive
-    command: >
-      exec --json --shell 'curl -s -X PUT "https://api.pipedrive.com/v1/deals/{{prospect_domain}}?api_token=$PIPEDRIVE_API_TOKEN" \
-        -H "Content-Type: application/json" \
-        -d "$STDIN"'
-    stdin: $meddic-extract.json.updates
-    condition: $meddic-extract.json.has_updates && $load-crm-config.json.platform == "pipedrive"
-
-  # Step 9: Present reply + draft for approval — APPROVAL GATE (Req 33, 34)
-  - id: present-for-approval
-    command: >
-      openclaw.invoke --tool slack --action post --args-json '{
-        "channel": "#pitch-approvals",
-        "text": "💬 PROSPECT REPLIED — {{prospect_domain}}\n\n**Their reply:**\n{{reply_content}}\n\n**Tone:** $draft-reply.json.reply_tone\n**MEDDIC confirmed:** $draft-reply.json.confirmed_fields\n**Still unknown:** $draft-reply.json.unknown_fields\n**Next step:** $draft-reply.json.recommended_next_step\n\n**Suggested reply (DRAFT):**\n$draft-reply.json.suggested_reply"
-      }'
-    approval: required
+  - id: notify-next
     condition: $opt-out-check.json.is_opt_out == false
-
-  # Step 10: Send approved reply via Gmail (Req 5 — replies send from rep's real inbox)
-  - id: send-reply
     command: >
-      openclaw.invoke --tool gog --action gmail-send --args-json '{
-        "to": "{{prospect_email}}",
-        "subject": "Re: {{reply_subject}}",
-        "body": "$draft-reply.json.suggested_reply"
-      }'
-    condition: $present-for-approval.approved
+      node -e 'const n=JSON.parse(process.env.NOTIFS||"null")||[];
+        const crm=JSON.parse(process.env.CRM||"{}");
+        const hist=JSON.parse(process.env.HIST||"null")||[];
+        const domain=process.env.LOBSTER_ARG_PROSPECT_DOMAIN;
+        const history=hist.filter(h => (h && h.domain)===domain);
+        n.push({kind:"reply_review",
+          domain,
+          reply_content: process.env.REPLY||"",
+          reply_subject: process.env.SUBJECT||"",
+          meddic_record_id: crm.record_id||"",
+          meddic_found: !!crm.found,
+          meddic_state: crm.meddic||"",
+          conversation_history: history,
+          requires: ["draft_reply","meddic_extract","rep_approval","send_via_gog","write_meddic_to_attio"],
+          created_at: new Date().toISOString()});
+        process.stdout.write(JSON.stringify(n));'
+    env:
+      NOTIFS: $notify-load.stdout
+      CRM: $crm-meddic.stdout
+      HIST: $history-load.stdout
+      REPLY: $reply_content
+      SUBJECT: $reply_subject
 
-  # Step 11: Audit log (Req 38)
-  - id: audit-log
+  - id: notify-save
+    condition: $opt-out-check.json.is_opt_out == false
+    pipeline: state.set pitch/notifications
+    stdin: $notify-next.stdout
+
+  # 8. Audit log (Req 38) — append to the durable audit index array (always runs).
+  - id: audit-load
+    pipeline: state.get pitch/audit-log
+
+  - id: audit-next
     command: >
-      openclaw.invoke --tool fast-io --action write --args-json '{
-        "key": "audit/{{timestamp}}/reply/{{prospect_domain}}",
-        "data": {
-          "action": "reply_handling",
-          "domain": "{{prospect_domain}}",
-          "prospect_reply": "{{reply_content}}",
-          "reply_tone": "$draft-reply.json.reply_tone",
-          "suggested_reply": "$draft-reply.json.suggested_reply",
-          "approved": $present-for-approval.approved,
-          "meddic_updates": $meddic-extract.json.updates,
-          "was_opt_out": $opt-out-check.json.is_opt_out,
-          "authorized_by": "rep",
-          "timestamp": "{{timestamp}}"
-        }
-      }'
+      node -e 'const log=JSON.parse(process.env.LOG||"null")||[];
+        const det=JSON.parse(process.env.DET||"{}");
+        log.push({action:"reply_handling",
+          domain: process.env.LOBSTER_ARG_PROSPECT_DOMAIN,
+          prospect_reply: process.env.REPLY||"",
+          reply_subject: process.env.SUBJECT||"",
+          was_opt_out: !!det.is_opt_out,
+          sequence_paused: true,
+          authorized_by: det.is_opt_out ? "autonomous" : "rep_pending",
+          timestamp: new Date().toISOString()});
+        process.stdout.write(JSON.stringify(log));'
+    env:
+      LOG: $audit-load.stdout
+      DET: $opt-out-check.stdout
+      REPLY: $reply_content
+      SUBJECT: $reply_subject
+
+  - id: audit-save
+    pipeline: state.set pitch/audit-log
+    stdin: $audit-next.stdout

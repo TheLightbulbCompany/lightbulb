@@ -1,7 +1,35 @@
 name: research-execute
-# Requirements 6-30: Full research execution from request to deliverable.
-# Triggered per research request.
-# LLM calls: 3-8 (decomposition, query refinements, semantic cross-checks, synthesis narrative)
+# Run a verifiable research request end to end: decompose -> route -> multi-pass
+# web/academic search -> corroborate -> freshness -> cross-check -> format ->
+# archive. Deterministic + gateway-free; the model judgment (decomposition,
+# query refinement, synthesis narrative) and Slack delivery happen in the AGENT
+# LOOP, fed from a `lens/notifications` state queue this run writes.
+#
+# Contract notes (see the lobster-authoring skill):
+#  - DSL verbs (state.get/set) run under `pipeline:`; real programs (node/curl/gog)
+#    under `command:`. Perplexity + Semantic Scholar are plain HTTPS APIs hit with
+#    `node` (the scripts/TOOLS.md call them deterministic, NOT llm-task).
+#  - Durable state via native state.get/set on the per-owner EFS mount. Config the
+#    user sets (verticals, thresholds, source overrides, format preference) is
+#    read-only consumer state under `lens/config/*` and `lens/state/*`.
+#  - The .js are FLAT in the agent dir (`node lens-*.js`). They `process.exit(1)`
+#    on empty/garbage stdin and in their catch handler, so EVERY step that calls
+#    one (a) feeds it a fully-assembled non-empty JSON body and (b) sets
+#    `on_error: continue` so a script abort never kills the run. See the ".js
+#    fixes needed" note in the handoff — the durable fix is to make them exit 0.
+#  - LLM judgment + Slack CANNOT run in an embedded pipeline (openclaw.invoke /
+#    llm-task / slack all 401). The decomposition + query plan come in via args
+#    (the agent loop fills them before invoking); the synthesis narrative + the
+#    plan-review + the final delivery are written to `lens/notifications` for the
+#    agent loop to compose and post. No openclaw.invoke / slack / await-approval.
+#  - Human approval is a real step-level `approval: required` gate placed BEFORE
+#    the (cost-bearing) search side effects, NOT a fictional tool call.
+#
+# Intent preserved from the original: decompose, route per vertical hierarchy,
+# multi-pass discovery (Perplexity + Semantic Scholar) calibrated to stakes,
+# corroboration + confidence tiers, freshness flags, cross-vertical contradiction
+# surfacing, formatted synthesis with inline tiers + gap section + appendix,
+# archive to Drive + state. Verification mechanics stay deterministic.
 
 args:
   research_question:
@@ -9,295 +37,475 @@ args:
   vertical:
     default: ""
   stakes:
-    default: "standard"  # casual, standard, high_stakes
+    default: "standard"      # casual | standard | high_stakes
+  # The agent loop performs the model-side decomposition BEFORE invoking this run
+  # (llm-task can't run in-pipeline) and passes the result in. Shape:
+  #   [{ "id","question","vertical","target_tier","spans_tiers":[] }, ...]
+  sub_questions_json:
+    default: "[]"
+  # Optional pre-built query plan from the agent loop. If empty, this run derives
+  # one search query per sub-question from its `question` text. Shape:
+  #   [{ "sub_question_id","query","vertical","target_tier" }, ...]
+  query_plan_json:
+    default: "[]"
+  # Claims assembled by the agent loop from retrieved evidence, ready for the
+  # deterministic corroboration/freshness/format scripts. Shape per
+  # lens-corroboration-tracker.js: [{ id,text,vertical,sources:[{url,title,tier,
+  # date,independent,...}] }, ...]. Empty => synthesis-prep is deferred to the loop.
+  claims_json:
+    default: "[]"
 
 steps:
-  # Step 1: Load vertical configuration
+  # ---- Load consumer config FIRST (load-before-use). All read-only. ----------
   - id: load-verticals
-    command: >
-      openclaw.invoke --tool fast-io --action read --args-json '{"key": "lens-config/verticals"}'
+    pipeline: state.get lens/config/verticals
 
-  # Step 2: Load confidence and freshness thresholds
   - id: load-thresholds
-    command: >
-      openclaw.invoke --tool fast-io --action read --args-json '{"key": "lens-config/confidence-thresholds"}'
+    pipeline: state.get lens/config/confidence-thresholds
 
   - id: load-freshness
-    command: >
-      openclaw.invoke --tool fast-io --action read --args-json '{"key": "lens-config/freshness-thresholds"}'
+    pipeline: state.get lens/config/freshness-thresholds
 
-  # Step 3: Load user overrides (source reclassifications)
   - id: load-overrides
-    command: >
-      openclaw.invoke --tool fast-io --action read --args-json '{"key": "lens-state/source-overrides"}'
+    pipeline: state.get lens/state/source-overrides
 
-  # Step 4: Query decomposition — LLM CALL (Req 6)
+  - id: load-history
+    pipeline: state.get lens/state/historical-research
+
+  - id: load-format-pref
+    pipeline: state.get lens/state/user-format-preference
+
+  # ---- 1. Normalize the decomposition supplied by the agent loop. ------------
+  # If sub_questions_json is empty we emit a single whole-question sub-question so
+  # the run is still deterministic; we also flag that the loop should decompose.
   - id: decompose
     command: >
-      openclaw.invoke --tool llm-task --action json --args-json '{
-        "prompt": "Decompose this research question into sub-questions. For each, identify: the specific question, which vertical it belongs to, which source tier to target first (primary/secondary/community), and whether it spans multiple tiers. Be thorough but not redundant — every sub-question should be independently answerable.",
-        "thinking": "low",
-        "input": {
-          "question": "{{research_question}}",
-          "vertical": "{{vertical}}",
-          "available_verticals": $load-verticals.json
-        },
-        "schema": {
-          "type": "object",
-          "properties": {
-            "sub_questions": {"type": "array", "items": {
-              "type": "object",
-              "properties": {
-                "id": {"type": "string"},
-                "question": {"type": "string"},
-                "vertical": {"type": "string"},
-                "target_tier": {"type": "string"},
-                "spans_tiers": {"type": "array", "items": {"type": "string"}}
-              }
-            }},
-            "research_scope": {"type": "string"}
-          },
-          "required": ["sub_questions"]
+      node -e 'const q=process.env.LOBSTER_ARG_RESEARCH_QUESTION||"";
+        const v=process.env.LOBSTER_ARG_VERTICAL||"";
+        let subs=[]; try{subs=JSON.parse(process.env.SUBS||"[]")||[]}catch(e){subs=[]}
+        let needs_loop=false;
+        if(!Array.isArray(subs)||subs.length===0){
+          subs=[{id:"sq1",question:q,vertical:v,target_tier:"primary",spans_tiers:[]}];
+          needs_loop=true;
         }
-      }'
+        subs=subs.map((s,i)=>({id:s.id||("sq"+(i+1)),question:s.question||q,
+          vertical:s.vertical||v,target_tier:s.target_tier||"primary",
+          spans_tiers:Array.isArray(s.spans_tiers)?s.spans_tiers:[]}));
+        process.stdout.write(JSON.stringify({sub_questions:subs,count:subs.length,
+          needs_agent_loop_decompose:needs_loop}));'
+    env:
+      SUBS: $sub_questions_json
 
-  # Step 5: Route sub-questions to sources (Req 8)
+  # ---- 2. Route sub-questions to source tiers per the vertical hierarchy. -----
+  - id: route-input
+    command: >
+      node -e 'const sq=JSON.parse(process.env.SQ||"{}").sub_questions||[];
+        const vc=JSON.parse(process.env.VC||"null")||{};
+        const ov=JSON.parse(process.env.OV||"null")||{};
+        process.stdout.write(JSON.stringify({sub_questions:sq,vertical_config:vc,user_overrides:ov}));'
+    env:
+      SQ: $decompose.stdout
+      VC: $load-verticals.stdout
+      OV: $load-overrides.stdout
+
   - id: route
-    command: >
-      exec --json --shell 'node scripts/lens-source-router.js'
-    stdin: '{"sub_questions": $decompose.json.sub_questions, "vertical_config": $load-verticals.json, "user_overrides": $load-overrides.json}'
+    command: node lens-source-router.js
+    stdin: $route-input.stdout
+    on_error: continue
 
-  # Step 6: Estimate confidence per sub-question (Req 9)
+  # ---- 3. Confidence estimate per sub-question (pre-search expectation). ------
+  - id: estimate-input
+    command: >
+      node -e 'const sq=JSON.parse(process.env.SQ||"{}").sub_questions||[];
+        const vc=JSON.parse(process.env.VC||"null")||{};
+        const hist=JSON.parse(process.env.HIST||"null")||{};
+        process.stdout.write(JSON.stringify({sub_questions:sq,vertical_config:vc,historical_research:hist}));'
+    env:
+      SQ: $decompose.stdout
+      VC: $load-verticals.stdout
+      HIST: $load-history.stdout
+
   - id: estimate
-    command: >
-      openclaw.invoke --tool fast-io --action read --args-json '{"key": "lens-state/historical-research"}'
-      | exec --json --shell 'node scripts/lens-confidence-estimator.js'
+    command: node lens-confidence-estimator.js
+    stdin: $estimate-input.stdout
+    on_error: continue
 
-  # Step 7: Present plan to user — TIER 2 GATE (Req 7)
-  - id: present-plan
-    command: >
-      openclaw.invoke --tool slack --action post --args-json '{
-        "channel": "#lens-research",
-        "text": "🔍 RESEARCH PLAN — {{research_question}}\n\nSub-questions:\n$decompose.json.sub_questions\n\n⚠️ Thin areas: $estimate.json.thin_areas\n\nStakes: {{stakes}} (${stakes == \"casual\" ? \"2 passes\" : stakes == \"high_stakes\" ? \"5 passes\" : \"3 passes\"})\n\n[Approve Plan] [Modify] [Cancel]"
-      }'
+  # ---- 4. Queue a PLAN-REVIEW notification for the agent loop to deliver. -----
+  # Slack is 401 in-pipeline; the loop renders + posts the plan (and the per-stakes
+  # pass budget) and collects approval. We still hard-gate the run below.
+  - id: plan-notify-load
+    pipeline: state.get lens/notifications
 
-  - id: await-plan-approval
+  - id: plan-notify-next
     command: >
-      openclaw.invoke --tool lobster --action await-approval --args-json '{
-        "prompt": "Waiting for user to approve research plan",
-        "timeout_hours": 24
-      }'
+      node -e 'let n=JSON.parse(process.env.NOTIFS||"null");if(!Array.isArray(n))n=[];
+        const sub=JSON.parse(process.env.SUBS||"{}");
+        const est=JSON.parse(process.env.EST||"null")||{};
+        const stakes=process.env.LOBSTER_ARG_STAKES||"standard";
+        const passes=stakes==="casual"?2:stakes==="high_stakes"?5:3;
+        n.push({kind:"research_plan",channel:"#lens-research",
+          question:process.env.LOBSTER_ARG_RESEARCH_QUESTION||"",
+          vertical:process.env.LOBSTER_ARG_VERTICAL||"",
+          stakes,planned_passes:passes,
+          sub_questions:sub.sub_questions||[],
+          thin_areas:est.thin_areas||[],
+          needs_decompose:!!sub.needs_agent_loop_decompose,
+          created_at:new Date().toISOString()});
+        process.stdout.write(JSON.stringify(n));'
+    env:
+      NOTIFS: $plan-notify-load.stdout
+      SUBS: $decompose.stdout
+      EST: $estimate.stdout
 
-  # Step 8: Multi-pass research loop (Req 10-11)
-  # Pass 1 — Primary discovery via Perplexity + Semantic Scholar
-  - id: pass-1-search
-    command: >
-      exec --json --shell 'node -e "const https=require(\"https\");const input=JSON.parse(require(\"fs\").readFileSync(\"/dev/stdin\",\"utf8\"));const queries=input.queries||[];const results=[];let done=0;if(!queries.length){process.stdout.write(JSON.stringify({results:[],high_value_urls:[],total:0}));return;}queries.forEach((q,i)=>{const body=JSON.stringify({model:\"sonar\",messages:[{role:\"user\",content:typeof q===\"string\"?q:q.query||q.question||JSON.stringify(q)}]});const opts={hostname:\"api.perplexity.ai\",path:\"/chat/completions\",method:\"POST\",headers:{Authorization:\"Bearer \"+process.env.PERPLEXITY_API_KEY,\"Content-Type\":\"application/json\",\"Content-Length\":Buffer.byteLength(body)}};const req=https.request(opts,res=>{let d=\"\";res.on(\"data\",c=>d+=c);res.on(\"end\",()=>{try{const r=JSON.parse(d);results[i]={content:r.choices[0].message.content,citations:r.citations||[]};}catch(e){results[i]={content:\"\",citations:[]};}done++;if(done===queries.length){const urls=[...new Set(results.flatMap(r=>r.citations))];process.stdout.write(JSON.stringify({results,high_value_urls:urls.slice(0,20),total:urls.length}));}});});req.on(\"error\",()=>{results[i]={content:\"\",citations:[]};done++;if(done===queries.length){const urls=[...new Set(results.flatMap(r=>r.citations))];process.stdout.write(JSON.stringify({results,high_value_urls:urls.slice(0,20),total:urls.length}));}});req.write(body);req.end();});"'
-    stdin: '{"queries": $route.json.routed}'
-    condition: $await-plan-approval.json.approved
+  - id: plan-notify
+    pipeline: state.set lens/notifications
+    stdin: $plan-notify-next.stdout
 
-  - id: pass-1-academic
-    command: >
-      exec --json --shell 'node -e "const https=require(\"https\");const input=JSON.parse(require(\"fs\").readFileSync(\"/dev/stdin\",\"utf8\"));const queries=input.queries||[];const results=[];let done=0;if(!queries.length){process.stdout.write(JSON.stringify({results:[],papers:[]}));return;}queries.forEach((q,i)=>{const query=encodeURIComponent(typeof q===\"string\"?q:q.query||q.question||\"\");const opts={hostname:\"api.semanticscholar.org\",path:\"/graph/v1/paper/search?query=\"+query+\"&limit=10&fields=title,abstract,year,citationCount,authors,url,externalIds\",method:\"GET\"};const req=https.request(opts,res=>{let d=\"\";res.on(\"data\",c=>d+=c);res.on(\"end\",()=>{try{results[i]=JSON.parse(d);}catch{results[i]={data:[]};}done++;if(done===queries.length)process.stdout.write(JSON.stringify({results,papers:results.flatMap(r=>(r.data||[]))}));});});req.on(\"error\",()=>{results[i]={data:[]};done++;if(done===queries.length)process.stdout.write(JSON.stringify({results,papers:results.flatMap(r=>(r.data||[]))}));});req.end();});"'
-    stdin: '{"queries": $route.json.routed}'
+  # ---- 5. HUMAN APPROVAL GATE — before any cost-bearing search. --------------
+  # Real step-level gate (not a fictional await-approval tool). The run halts with
+  # a resumeToken; the user approves; $approve-plan.approved unblocks the search.
+  - id: approve-plan
+    approval:
+      prompt: "Approve this research plan before Lens spends search passes? Review the plan posted to #lens-research."
 
-  # Retrieve full content from high-value pages
-  - id: pass-1-retrieve
+  # ---- 6. Build the query plan (one query per sub-question if loop gave none). -
+  # Runs UNCONDITIONALLY so $query-plan.json.count always resolves for the many
+  # downstream `$query-plan.json.count > 0` gates (referencing a skipped step's
+  # .json is a dangling ref). The approval is enforced INSIDE: unless APPROVED is
+  # true the step emits count:0, which keeps every cost-bearing search step skipped.
+  - id: query-plan
     command: >
-      openclaw.invoke --tool agent-browser --action browse --args-json '{
-        "urls": $pass-1-search.json.high_value_urls,
-        "extract": "markdown"
-      }'
-
-  # Evaluate pass 1
-  - id: pass-1-eval
-    command: >
-      exec --json --shell 'node scripts/lens-pass-evaluator.js'
-    stdin: '{"sub_questions": $decompose.json.sub_questions, "evidence_map": $pass-1-retrieve.json, "academic_results": $pass-1-academic.json, "pass_number": 1, "stakes": "{{stakes}}", "confidence_thresholds": $load-thresholds.json}'
-
-  # Pass 2 — Refine and fill gaps
-  - id: pass-2-refine
-    command: >
-      openclaw.invoke --tool llm-task --action json --args-json '{
-        "prompt": "These sub-questions still need better sources. Refine the search queries based on what was found in pass 1. For sub-questions with zero results, broaden the query. For single-source results, find corroborating sources.",
-        "thinking": "off",
-        "input": {
-          "gaps": $pass-1-eval.json.evaluation,
-          "pass_1_results": $pass-1-search.json
-        },
-        "schema": {
-          "type": "object",
-          "properties": {
-            "refined_queries": {"type": "array", "items": {"type": "object", "properties": {"sub_question_id": {"type": "string"}, "query": {"type": "string"}, "target_sources": {"type": "array"}}}}
-          }
+      node -e 'const approved=process.env.APPROVED==="true";
+        let qp=[];try{qp=JSON.parse(process.env.QP||"[]")||[]}catch(e){qp=[]}
+        const subs=(JSON.parse(process.env.SUBS||"{}").sub_questions)||[];
+        if(!Array.isArray(qp)||qp.length===0){
+          qp=subs.map(s=>({sub_question_id:s.id,query:s.question,
+            vertical:s.vertical,target_tier:s.target_tier}));
         }
-      }'
-    condition: $pass-1-eval.json.should_continue
+        const queries=qp.map(x=>(typeof x==="string"?x:(x.query||x.question||""))).filter(Boolean);
+        process.stdout.write(JSON.stringify({query_plan:approved?qp:[],
+          queries:approved?queries:[],count:approved?queries.length:0,approved}));'
+    env:
+      APPROVED: $approve-plan.approved
+      QP: $query_plan_json
+      SUBS: $decompose.stdout
 
-  - id: pass-2-search
+  # ---- 7. PASS 1 — Perplexity structured web search (deterministic HTTPS). ----
+  # No API key => emit empty result + key_missing flag (exit 0); the loop surfaces
+  # the "connect PERPLEXITY_API_KEY" notice instead of bricking the run.
+  - id: pass1-web
+    condition: $query-plan.json.count > 0
     command: >
-      exec --json --shell 'node -e "const https=require(\"https\");const input=JSON.parse(require(\"fs\").readFileSync(\"/dev/stdin\",\"utf8\"));const queries=input.queries||[];const results=[];let done=0;if(!queries.length){process.stdout.write(JSON.stringify({results:[],high_value_urls:[],total:0}));return;}queries.forEach((q,i)=>{const body=JSON.stringify({model:\"sonar\",messages:[{role:\"user\",content:typeof q===\"string\"?q:q.query||q.question||JSON.stringify(q)}]});const opts={hostname:\"api.perplexity.ai\",path:\"/chat/completions\",method:\"POST\",headers:{Authorization:\"Bearer \"+process.env.PERPLEXITY_API_KEY,\"Content-Type\":\"application/json\",\"Content-Length\":Buffer.byteLength(body)}};const req=https.request(opts,res=>{let d=\"\";res.on(\"data\",c=>d+=c);res.on(\"end\",()=>{try{const r=JSON.parse(d);results[i]={content:r.choices[0].message.content,citations:r.citations||[]};}catch(e){results[i]={content:\"\",citations:[]};}done++;if(done===queries.length){const urls=[...new Set(results.flatMap(r=>r.citations))];process.stdout.write(JSON.stringify({results,high_value_urls:urls.slice(0,20),total:urls.length}));}});});req.on(\"error\",()=>{results[i]={content:\"\",citations:[]};done++;if(done===queries.length){const urls=[...new Set(results.flatMap(r=>r.citations))];process.stdout.write(JSON.stringify({results,high_value_urls:urls.slice(0,20),total:urls.length}));}});req.write(body);req.end();});"'
-    stdin: '{"queries": $pass-2-refine.json.refined_queries}'
-    condition: $pass-1-eval.json.should_continue
+      node -e 'const https=require("https");
+        const input=JSON.parse(require("fs").readFileSync(0,"utf8")||"{}");
+        const queries=(input.queries||[]).slice(0,12);
+        const key=process.env.PERPLEXITY_API_KEY||"";
+        if(!key){process.stdout.write(JSON.stringify({results:[],high_value_urls:[],total:0,key_missing:true}));return;}
+        if(!queries.length){process.stdout.write(JSON.stringify({results:[],high_value_urls:[],total:0}));return;}
+        const results=[];let done=0;
+        const finish=()=>{const urls=[...new Set(results.flatMap(r=>(r&&r.citations)||[]))];
+          process.stdout.write(JSON.stringify({results,high_value_urls:urls.slice(0,20),total:urls.length}));};
+        queries.forEach((q,i)=>{
+          const body=JSON.stringify({model:"sonar",messages:[{role:"user",content:String(q)}]});
+          const req=https.request({hostname:"api.perplexity.ai",path:"/chat/completions",method:"POST",
+            headers:{Authorization:"Bearer "+key,"Content-Type":"application/json","Content-Length":Buffer.byteLength(body)}},
+            res=>{let d="";res.on("data",c=>d+=c);res.on("end",()=>{
+              try{const r=JSON.parse(d);results[i]={content:(r.choices&&r.choices[0]&&r.choices[0].message.content)||"",citations:r.citations||[]};}
+              catch(e){results[i]={content:"",citations:[]};}
+              if(++done===queries.length)finish();});});
+          req.on("error",()=>{results[i]={content:"",citations:[]};if(++done===queries.length)finish();});
+          req.write(body);req.end();});'
+    stdin: $query-plan.stdout
+    on_error: continue
 
-  - id: pass-2-retrieve
+  # ---- 8. PASS 1 — Semantic Scholar academic search (free, no key). ----------
+  - id: pass1-academic
+    condition: $query-plan.json.count > 0
     command: >
-      openclaw.invoke --tool agent-browser --action browse --args-json '{
-        "urls": $pass-2-search.json.high_value_urls,
-        "extract": "markdown"
-      }'
-    condition: $pass-1-eval.json.should_continue
+      node -e 'const https=require("https");
+        const input=JSON.parse(require("fs").readFileSync(0,"utf8")||"{}");
+        const queries=(input.queries||[]).slice(0,12);
+        if(!queries.length){process.stdout.write(JSON.stringify({results:[],papers:[]}));return;}
+        const results=[];let done=0;
+        const finish=()=>process.stdout.write(JSON.stringify({results,papers:results.flatMap(r=>(r&&r.data)||[])}));
+        queries.forEach((q,i)=>{
+          const path="/graph/v1/paper/search?query="+encodeURIComponent(String(q))+
+            "&limit=10&fields=title,abstract,year,citationCount,authors,url,externalIds";
+          const req=https.request({hostname:"api.semanticscholar.org",path,method:"GET"},
+            res=>{let d="";res.on("data",c=>d+=c);res.on("end",()=>{
+              try{results[i]=JSON.parse(d);}catch(e){results[i]={data:[]};}
+              if(++done===queries.length)finish();});});
+          req.on("error",()=>{results[i]={data:[]};if(++done===queries.length)finish();});
+          req.end();});'
+    stdin: $query-plan.stdout
+    on_error: continue
 
-  - id: pass-2-eval
+  # ---- 9. Emit a search-result summary (explicit count; NEVER gate on .length).
+  - id: pass1-summary
+    condition: $query-plan.json.count > 0
     command: >
-      exec --json --shell 'node scripts/lens-pass-evaluator.js'
-    stdin: '{"sub_questions": $decompose.json.sub_questions, "evidence_map": {"pass_1": $pass-1-retrieve.json, "pass_2": $pass-2-retrieve.json}, "pass_number": 2, "stakes": "{{stakes}}", "confidence_thresholds": $load-thresholds.json}'
-    condition: $pass-1-eval.json.should_continue
+      node -e 'const web=JSON.parse(process.env.WEB||"null")||{};
+        const aca=JSON.parse(process.env.ACA||"null")||{};
+        const urls=web.high_value_urls||[];
+        const papers=aca.papers||[];
+        process.stdout.write(JSON.stringify({
+          high_value_urls:urls,url_count:urls.length,
+          paper_count:papers.length,
+          total_evidence:urls.length+papers.length,
+          key_missing:!!web.key_missing}));'
+    env:
+      WEB: $pass1-web.stdout
+      ACA: $pass1-academic.stdout
 
-  # Pass 3 — Deep retrieval for remaining gaps (high-stakes only continues to 4-5)
-  - id: pass-3-refine
+  # ---- 10. Queue a RETRIEVAL/refine notification for the agent loop. ----------
+  # Full-page retrieval of high-value URLs + any pass-2 query refinement is model/
+  # browser work (agent-browser + llm-task are unreachable here). Hand the loop the
+  # citation URLs + paper set + the per-stakes pass budget; it reads + refines.
+  - id: retrieve-notify-load
+    condition: $query-plan.json.count > 0
+    pipeline: state.get lens/notifications
+
+  - id: retrieve-notify-next
+    condition: $query-plan.json.count > 0
     command: >
-      openclaw.invoke --tool llm-task --action json --args-json '{
-        "prompt": "Final pass refinement. For remaining gaps, try: alternative databases, different search terms, primary source direct retrieval via agent-browser. For single-source claims, try domain-specific databases.",
-        "thinking": "off",
-        "input": {"gaps": $pass-2-eval.json.evaluation}
-      }'
-    condition: $pass-2-eval.json.should_continue
+      node -e 'let n=JSON.parse(process.env.NOTIFS||"null");if(!Array.isArray(n))n=[];
+        const sum=JSON.parse(process.env.SUM||"null")||{};
+        const web=JSON.parse(process.env.WEB||"null")||{};
+        const aca=JSON.parse(process.env.ACA||"null")||{};
+        const stakes=process.env.LOBSTER_ARG_STAKES||"standard";
+        n.push({kind:"research_retrieval",
+          question:process.env.LOBSTER_ARG_RESEARCH_QUESTION||"",
+          vertical:process.env.LOBSTER_ARG_VERTICAL||"",
+          stakes,min_passes:stakes==="casual"?2:stakes==="high_stakes"?5:3,
+          high_value_urls:sum.high_value_urls||[],
+          web_results:web.results||[],
+          academic_papers:aca.papers||[],
+          key_missing:!!sum.key_missing,
+          instruction:"Deep-read high_value_urls, assemble claims with tiered sources, then re-invoke research-execute with claims_json filled (and refined queries if gaps remain).",
+          created_at:new Date().toISOString()});
+        process.stdout.write(JSON.stringify(n));'
+    env:
+      NOTIFS: $retrieve-notify-load.stdout
+      SUM: $pass1-summary.stdout
+      WEB: $pass1-web.stdout
+      ACA: $pass1-academic.stdout
 
-  - id: pass-3-search
+  - id: retrieve-notify
+    condition: $query-plan.json.count > 0
+    pipeline: state.set lens/notifications
+    stdin: $retrieve-notify-next.stdout
+
+  # ---- 11. Count assembled claims (gate the deterministic synthesis chain). ---
+  - id: claims-count
     command: >
-      exec --json --shell 'node -e "const https=require(\"https\");const input=JSON.parse(require(\"fs\").readFileSync(\"/dev/stdin\",\"utf8\"));const queries=input.queries||[];const results=[];let done=0;if(!queries.length){process.stdout.write(JSON.stringify({results:[],high_value_urls:[],total:0}));return;}queries.forEach((q,i)=>{const body=JSON.stringify({model:\"sonar\",messages:[{role:\"user\",content:typeof q===\"string\"?q:q.query||q.question||JSON.stringify(q)}]});const opts={hostname:\"api.perplexity.ai\",path:\"/chat/completions\",method:\"POST\",headers:{Authorization:\"Bearer \"+process.env.PERPLEXITY_API_KEY,\"Content-Type\":\"application/json\",\"Content-Length\":Buffer.byteLength(body)}};const req=https.request(opts,res=>{let d=\"\";res.on(\"data\",c=>d+=c);res.on(\"end\",()=>{try{const r=JSON.parse(d);results[i]={content:r.choices[0].message.content,citations:r.citations||[]};}catch(e){results[i]={content:\"\",citations:[]};}done++;if(done===queries.length){const urls=[...new Set(results.flatMap(r=>r.citations))];process.stdout.write(JSON.stringify({results,high_value_urls:urls.slice(0,20),total:urls.length}));}});});req.on(\"error\",()=>{results[i]={content:\"\",citations:[]};done++;if(done===queries.length){const urls=[...new Set(results.flatMap(r=>r.citations))];process.stdout.write(JSON.stringify({results,high_value_urls:urls.slice(0,20),total:urls.length}));}});req.write(body);req.end();});"'
-    stdin: '{"queries": $pass-3-refine.json.refined_queries}'
-    condition: $pass-2-eval.json.should_continue
+      node -e 'let c=[];try{c=JSON.parse(process.env.CLAIMS||"[]")||[]}catch(e){c=[]}
+        if(!Array.isArray(c))c=[];
+        process.stdout.write(JSON.stringify({count:c.length}));'
+    env:
+      CLAIMS: $claims_json
 
-  - id: pass-3-retrieve
+  # ---- 12. Corroboration + confidence tiers (deterministic; needs claims). ----
+  - id: corroborate-input
+    condition: $claims-count.json.count > 0
     command: >
-      openclaw.invoke --tool agent-browser --action browse --args-json '{
-        "urls": $pass-3-search.json.high_value_urls,
-        "extract": "markdown"
-      }'
-    condition: $pass-2-eval.json.should_continue
+      node -e 'const claims=JSON.parse(process.env.CLAIMS||"[]")||[];
+        const th=JSON.parse(process.env.TH||"null")||{};
+        process.stdout.write(JSON.stringify({claims,confidence_thresholds:th}));'
+    env:
+      CLAIMS: $claims_json
+      TH: $load-thresholds.stdout
 
-  - id: pass-3-eval
+  - id: corroborate
+    condition: $claims-count.json.count > 0
+    command: node lens-corroboration-tracker.js
+    stdin: $corroborate-input.stdout
+    on_error: continue
+
+  # ---- 13. Freshness check across every source on every claim. ----------------
+  - id: freshness-input
+    condition: $claims-count.json.count > 0
     command: >
-      exec --json --shell 'node scripts/lens-pass-evaluator.js'
-    stdin: '{"sub_questions": $decompose.json.sub_questions, "evidence_map": {"pass_1": $pass-1-retrieve.json, "pass_2": $pass-2-retrieve.json, "pass_3": $pass-3-retrieve.json}, "pass_number": 3, "stakes": "{{stakes}}", "confidence_thresholds": $load-thresholds.json}'
-    condition: $pass-2-eval.json.should_continue
+      node -e 'const claims=JSON.parse(process.env.CLAIMS||"[]")||[];
+        const seen=new Set();const sources=[];
+        for(const c of claims){for(const s of (c.sources||[])){
+          if(!s||!s.url||seen.has(s.url))continue;seen.add(s.url);sources.push(s);}}
+        const fr=JSON.parse(process.env.FR||"null")||{};
+        process.stdout.write(JSON.stringify({sources,
+          vertical:process.env.LOBSTER_ARG_VERTICAL||"technology",
+          freshness_thresholds:fr}));'
+    env:
+      CLAIMS: $claims_json
+      FR: $load-freshness.stdout
 
-  # Step 9: Track corroboration and assign confidence tiers (Req 12-16)
-  - id: track-corroboration
+  - id: freshness
+    condition: $claims-count.json.count > 0
+    command: node lens-freshness-checker.js
+    stdin: $freshness-input.stdout
+    on_error: continue
+
+  # ---- 14. Cross-vertical contradiction surfacing (deterministic numerical). --
+  # Semantic contradictions are flagged needs_agent_loop in the output for the loop.
+  - id: cross-vertical-input
+    condition: $claims-count.json.count > 0
     command: >
-      exec --json --shell 'node scripts/lens-corroboration-tracker.js'
+      node -e 'const claims=JSON.parse(process.env.CLAIMS||"[]")||[];
+        const findings=claims.map(c=>({entity:c.entity||c.company||c.topic||null,
+          vertical:c.vertical,claim_type:c.claim_type||null,claim_text:c.text||"",
+          extracted_value:c.extracted_value,source_url:(c.sources&&c.sources[0]&&c.sources[0].url)||null}));
+        process.stdout.write(JSON.stringify({mode:"cross_vertical",findings}));'
+    env:
+      CLAIMS: $claims_json
 
-  # Step 10: Freshness check on all sources (Req 31)
-  - id: freshness-check
-    command: >
-      exec --json --shell 'node scripts/lens-freshness-checker.js'
-
-  # Step 11: Cross-check secondary against primary (Req 21, high-stakes)
-  - id: cross-check
-    command: >
-      exec --json --shell 'node scripts/lens-cross-checker.js'
-    condition: $stakes == "high_stakes"
-
-  # Step 12: Semantic cross-check for flagged items — LLM
-  - id: semantic-cross-check
-    command: >
-      openclaw.invoke --tool llm-task --action json --args-json '{
-        "prompt": "Compare these secondary source claims against their primary sources. For each pair, determine: does the secondary accurately represent the primary, or does it introduce distortion? Be specific about any discrepancies.",
-        "thinking": "off",
-        "input": $cross-check.json.secondary_primary
-      }'
-    condition: $cross-check.json.needs_agent_loop
-
-  # Step 13: Cross-vertical contradiction check (Req 29)
   - id: cross-vertical
-    command: >
-      exec --json --shell 'node scripts/lens-cross-checker.js'
-    stdin: '{"mode": "cross_vertical", "findings": $track-corroboration.json.claims}'
+    condition: $claims-count.json.count > 0
+    command: node lens-cross-checker.js
+    stdin: $cross-vertical-input.stdout
+    on_error: continue
 
-  # Step 14: Format synthesis (Req 23-27)
+  # ---- 15. Format synthesis: inline tiers + confidence summary + gap + appendix.
+  - id: format-input
+    condition: $claims-count.json.count > 0
+    command: >
+      node -e 'const tracked=(JSON.parse(process.env.CORR||"null")||{}).claims||[];
+        const pref=JSON.parse(process.env.PREF||"null");
+        process.stdout.write(JSON.stringify({tracked_claims:tracked,
+          vertical:process.env.LOBSTER_ARG_VERTICAL||"technology",
+          user_format_preference:pref||null}));'
+    env:
+      CORR: $corroborate.stdout
+      PREF: $load-format-pref.stdout
+
   - id: format-synthesis
-    command: >
-      openclaw.invoke --tool fast-io --action read --args-json '{"key": "lens-state/user-format-preference"}'
-      | exec --json --shell 'node scripts/lens-synthesis-formatter.js'
+    condition: $claims-count.json.count > 0
+    command: node lens-synthesis-formatter.js
+    stdin: $format-input.stdout
+    on_error: continue
 
-  # Step 15: Generate narrative synthesis — ADAPTIVE LLM (Req 23)
-  - id: generate-narrative
-    command: >
-      openclaw.invoke --tool llm-task --action json --args-json '{
-        "prompt": "Write the research synthesis narrative connecting these confidence-rated findings. Preserve every inline tier tag and source citation exactly as formatted. Adapt your writing style to the users preference. Structure per the vertical format. Do NOT fill any gaps with generated content — gaps are listed in the What We Could Not Verify section. Do NOT present uncertain findings with confident language.",
-        "thinking": "low",
-        "input": {
-          "formatted_claims": $format-synthesis.json.formatted_claims,
-          "confidence_summary": $format-synthesis.json.confidence_summary,
-          "gap_section": $format-synthesis.json.gap_section,
-          "source_appendix": $format-synthesis.json.source_appendix,
-          "vertical": "{{vertical}}",
-          "cross_vertical_issues": $cross-vertical.json,
-          "freshness_flags": $freshness-check.json
-        }
-      }'
+  # ---- 16. Queue the SYNTHESIS-narrative + DELIVERY notification for the loop. -
+  # Narrative writing (llm-task) + Slack post are unreachable here. We hand the loop
+  # the fully formatted, deterministic scaffold; it writes prose preserving every
+  # inline tier and posts to #lens-research. Gaps stay gaps — never filled here.
+  - id: deliver-notify-load
+    condition: $claims-count.json.count > 0
+    pipeline: state.get lens/notifications
 
-  # Step 16: Deliver to Slack
-  - id: deliver
+  - id: deliver-notify-next
+    condition: $claims-count.json.count > 0
     command: >
-      openclaw.invoke --tool slack --action post --args-json '{
-        "channel": "#lens-research",
-        "text": "📋 RESEARCH COMPLETE — {{research_question}}\n\n$format-synthesis.json.confidence_summary.text\n\n$generate-narrative.json.synthesis\n\n$format-synthesis.json.gap_section\n\n$format-synthesis.json.source_appendix"
-      }'
+      node -e 'let n=JSON.parse(process.env.NOTIFS||"null");if(!Array.isArray(n))n=[];
+        const f=JSON.parse(process.env.FMT||"null")||{};
+        const fr=JSON.parse(process.env.FRESH||"null")||{};
+        const cv=JSON.parse(process.env.CV||"null")||{};
+        n.push({kind:"research_complete",channel:"#lens-research",
+          question:process.env.LOBSTER_ARG_RESEARCH_QUESTION||"",
+          vertical:process.env.LOBSTER_ARG_VERTICAL||"",
+          stakes:process.env.LOBSTER_ARG_STAKES||"standard",
+          confidence_summary:f.confidence_summary||null,
+          formatted_claims:f.formatted_claims||[],
+          gap_section:f.gap_section||null,
+          source_appendix:f.source_appendix||null,
+          freshness_flags:fr.checked?fr.checked.filter(s=>s.is_stale):[],
+          cross_vertical_issues:cv.cross_vertical||[],
+          instruction:"Write the synthesis narrative preserving every inline [TIER] tag and citation exactly; do NOT fill gaps; then post to #lens-research.",
+          created_at:new Date().toISOString()});
+        process.stdout.write(JSON.stringify(n));'
+    env:
+      NOTIFS: $deliver-notify-load.stdout
+      FMT: $format-synthesis.stdout
+      FRESH: $freshness.stdout
+      CV: $cross-vertical.stdout
 
-  # Step 17: Store in fast-io + Google Drive for audit
-  - id: store-research
-    command: >
-      openclaw.invoke --tool fast-io --action write --args-json '{
-        "key": "lens-research/{{timestamp}}/{{research_question}}",
-        "data": {
-          "question": "{{research_question}}",
-          "vertical": "{{vertical}}",
-          "stakes": "{{stakes}}",
-          "claims": $track-corroboration.json.claims,
-          "confidence_summary": $format-synthesis.json.confidence_summary,
-          "source_appendix": $format-synthesis.json.source_appendix,
-          "gaps": $format-synthesis.json.gap_section,
-          "passes_completed": $pass-3-eval.json.pass_number,
-          "timestamp": "{{timestamp}}"
-        }
-      }'
+  - id: deliver-notify
+    condition: $claims-count.json.count > 0
+    pipeline: state.set lens/notifications
+    stdin: $deliver-notify-next.stdout
 
-  - id: store-drive
-    command: >
-      openclaw.invoke --tool gog --action drive-write --args-json '{
-        "path": "Lens Research Archive/{{date}}-{{research_question}}",
-        "content": $generate-narrative.json.synthesis
-      }'
+  # ---- 17. Archive the deterministic deliverable to durable state (index array).
+  # Persist the FULL research content (claims, source_appendix, gaps) so an archived
+  # entry is retrievable in full — not just summary counts. The summary stats stay
+  # alongside the content for cheap index scans. Entry count is capped to keep the
+  # single-key index array bounded.
+  - id: archive-load
+    condition: $claims-count.json.count > 0
+    pipeline: state.get lens/research-index
 
-  # Step 18: Update historical research data for future confidence estimates
-  - id: update-history
+  - id: archive-next
+    condition: $claims-count.json.count > 0
     command: >
-      openclaw.invoke --tool fast-io --action write --args-json '{
-        "key": "lens-state/historical-research/{{vertical}}",
-        "data": {
-          "avg_sources_found": $track-corroboration.json.claims,
-          "last_research": "{{timestamp}}"
-        }
-      }'
+      node -e 'let idx=JSON.parse(process.env.IDX||"null");if(!Array.isArray(idx))idx=[];
+        const f=JSON.parse(process.env.FMT||"null")||{};
+        const corr=JSON.parse(process.env.CORR||"null")||{};
+        const claims=corr.claims||[];
+        idx.push({question:process.env.LOBSTER_ARG_RESEARCH_QUESTION||"",
+          vertical:process.env.LOBSTER_ARG_VERTICAL||"",
+          stakes:process.env.LOBSTER_ARG_STAKES||"standard",
+          claims:claims,
+          confidence_summary:f.confidence_summary||null,
+          source_appendix:f.source_appendix||null,
+          gaps:f.gap_section||null,
+          verification_rate:(f.confidence_summary&&f.confidence_summary.verification_rate)||0,
+          claim_count:claims.length,
+          gap_count:(f.gap_section&&f.gap_section.count)||0,
+          source_count:(f.source_appendix&&f.source_appendix.total)||0,
+          archived_at:new Date().toISOString()});
+        if(idx.length>200)idx=idx.slice(idx.length-200);
+        process.stdout.write(JSON.stringify(idx));'
+    env:
+      IDX: $archive-load.stdout
+      FMT: $format-synthesis.stdout
+      CORR: $corroborate.stdout
 
-  # Step 19: Audit log
-  - id: audit-log
+  - id: archive
+    condition: $claims-count.json.count > 0
+    pipeline: state.set lens/research-index
+    stdin: $archive-next.stdout
+
+  # ---- 18. Build the human-readable markdown deliverable + hand it to the loop.
+  # We render the markdown deterministically here, but the Drive WRITE itself is a
+  # `gog` skill call whose exact write-subcommand surface we won't guess from a
+  # pipeline — the agent loop owns `gog` and persists this to "Lens Research
+  # Archive". The durable machine-readable archive already landed in state above.
+  - id: render-deliverable
+    condition: $claims-count.json.count > 0
     command: >
-      openclaw.invoke --tool fast-io --action write --args-json '{
-        "key": "audit/{{timestamp}}/research",
-        "data": {
-          "action": "research_completed",
-          "question": "{{research_question}}",
-          "vertical": "{{vertical}}",
-          "stakes": "{{stakes}}",
-          "sub_questions": $decompose.json.sub_questions.length,
-          "passes": $pass-3-eval.json.pass_number,
-          "confidence_summary": $format-synthesis.json.confidence_summary.tiers,
-          "verification_rate": $format-synthesis.json.confidence_summary.verification_rate,
-          "authorized_by": "user_approved_plan",
-          "timestamp": "{{timestamp}}"
-        }
-      }'
+      node -e 'const f=JSON.parse(process.env.FMT||"null")||{};
+        const q=(process.env.LOBSTER_ARG_RESEARCH_QUESTION||"research").replace(/[^a-zA-Z0-9 _-]/g,"").slice(0,80);
+        const date=new Date().toISOString().slice(0,10);
+        const lines=[];
+        lines.push("# "+q);
+        if(f.confidence_summary)lines.push("",f.confidence_summary.text||"");
+        lines.push("","## Findings");
+        for(const c of (f.formatted_claims||[]))lines.push("",c.formatted||"");
+        if(f.gap_section){lines.push("","## "+(f.gap_section.title||"GAPS"));
+          for(const g of (f.gap_section.gaps||[]))lines.push("- "+(g.question||""));}
+        if(f.source_appendix){lines.push("","## "+(f.source_appendix.title||"SOURCES"));
+          for(const s of (f.source_appendix.sources||[]))lines.push("- "+[s.title,s.url].filter(Boolean).join(" — "));}
+        process.stdout.write(JSON.stringify({filename:date+"-"+q+".md",
+          folder:"Lens Research Archive",markdown:lines.join("\n")}));'
+    env:
+      FMT: $format-synthesis.stdout
+
+  - id: drive-notify-load
+    condition: $claims-count.json.count > 0
+    pipeline: state.get lens/notifications
+
+  - id: drive-notify-next
+    condition: $claims-count.json.count > 0
+    command: >
+      node -e 'let n=JSON.parse(process.env.NOTIFS||"null");if(!Array.isArray(n))n=[];
+        const d=JSON.parse(process.env.DELIV||"null")||{};
+        n.push({kind:"drive_archive",
+          folder:d.folder||"Lens Research Archive",
+          filename:d.filename||"research.md",
+          markdown:d.markdown||"",
+          instruction:"Write this markdown to the named file in the Drive folder via the gog skill.",
+          created_at:new Date().toISOString()});
+        process.stdout.write(JSON.stringify(n));'
+    env:
+      NOTIFS: $drive-notify-load.stdout
+      DELIV: $render-deliverable.stdout
+
+  - id: drive-notify
+    condition: $claims-count.json.count > 0
+    pipeline: state.set lens/notifications
+    stdin: $drive-notify-next.stdout

@@ -180,7 +180,8 @@ async function main() {
   };
 
   process.stdout.write(JSON.stringify(result));
-  process.exit(flags.length === 0 ? 0 : 1);
+  // exit 0 always: content flags are a branch (action carries regenerate/approval/proceed), not a run error.
+  process.exit(0);
 }
 
 function readStdin() {

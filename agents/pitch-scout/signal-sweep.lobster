@@ -1,186 +1,319 @@
 name: signal-sweep
-# Requirements 8, 9, 10, 11
-# Runs every 4 hours on cron. Scans all signal sources, scores, filters, persists, notifies.
-# LLM calls: 1 (signal strength scoring via llm-task, thinking: off)
+# Pitch-mode buying-signal sweep (Reqs 8, 9, 10, 11). Runs every 4 hours on cron.
+# Scans signal sources, scores each signal deterministically, threshold-filters, persists
+# the qualified set, and queues a notification intent for the agent loop to deliver.
+#
+# Contract notes (see the lobster-authoring skill):
+#  - DSL verbs (state.get/set) run under `pipeline:`; real programs under `command:`.
+#  - Durable state via state.get/set on the per-owner EFS mount (LOBSTER_STATE_DIR).
+#    Activation inputs, the qualified-signal snapshot, and the agent inbox are single-key
+#    objects/arrays (state.* has no prefix-list); node steps read, edit, and re-write them.
+#  - CRM = Attio ONLY (HubSpot/Salesforce/Pipedrive dropped). Reached gateway-free via the
+#    baked `mcporter` CLI; output is YAML-ish TEXT, so a node step regex-parses stdout
+#    (never JSON.parse).
+#  - Perplexity is a direct deterministic API (curl + node normalize); not an llm-task.
+#    The social-intelligence scan (LinkedIn/Reddit/Twitter) was a fictional tool with no
+#    real source; it is substituted with a windowed Perplexity curl over those domains.
+#  - Apollo intent data is a key-gated direct curl inside a node step (try/catch, always
+#    exit 0, gated on APOLLO_API_KEY present, carries a connected flag) — matching the
+#    sibling signal-monitor's Apollo pattern. A missing key is a no-op empty result.
+#  - The one model-judgment step (signal-strength scoring) CANNOT run here (llm-task = 401).
+#    The deterministic scorer defaults strength to 50; signals needing strength judgment are
+#    flagged needs_agent_loop and handed to the agent via the notification intent. NO
+#    openclaw.invoke, slack, fast-io, hubspot, salesforce.
+#  - Scripts/inline node always exit 0 and carry status in JSON; steps branch via condition.
 
 steps:
-  # Step 1: Activation gate
+  # ---------------------------------------------------------------------------
+  # 1-4. Activation gate. pitch-activation-check.js needs a single stdin object
+  #       {icp_config, bounce_rate, launch_state, canspam_config}. Load each piece
+  #       from durable state, assemble it, then run the checker. (Load-before-use.)
+  # ---------------------------------------------------------------------------
+  - id: icp-load
+    pipeline: state.get pitch/icp
+
+  - id: launch-load
+    pipeline: state.get pitch/launch-state
+
+  - id: canspam-load
+    pipeline: state.get pitch/canspam
+
+  - id: bounce-load
+    pipeline: state.get pitch/bounce-rate
+
+  - id: activation-input
+    command: >
+      node -e 'const icp=JSON.parse(process.env.ICP||"null");
+        const launch=JSON.parse(process.env.LAUNCH||"null");
+        const canspam=JSON.parse(process.env.CANSPAM||"null");
+        const br=JSON.parse(process.env.BOUNCE||"null");
+        const bounce_rate=(br&&typeof br.bounce_rate==="number")?br.bounce_rate:(typeof br==="number"?br:null);
+        process.stdout.write(JSON.stringify({icp_config:icp, launch_state:launch, canspam_config:canspam, bounce_rate}));'
+    env:
+      ICP: $icp-load.stdout
+      LAUNCH: $launch-load.stdout
+      CANSPAM: $canspam-load.stdout
+      BOUNCE: $bounce-load.stdout
+
+  # Activation checker (exits 0 always; pass flag carried in JSON). Gate everything below.
   - id: activation-check
-    command: >
-      openclaw.invoke --tool fast-io --action read --args-json '{"key":"pitch-config/activation"}'
-      | exec --json --shell 'node scripts/pitch-activation-check.js'
-    approval: null
+    command: node pitch-activation-check.js
+    stdin: $activation-input.stdout
 
-  # Step 2: Perplexity API — company news, funding, product launches, regulatory (deterministic)
-  - id: perplexity-signals
-    command: >
-      exec --json --shell 'curl -sS https://api.perplexity.ai/chat/completions \
-        -H "Authorization: Bearer $PERPLEXITY_API_KEY" \
-        -H "Content-Type: application/json" \
-        -d "{\"model\":\"sonar\",\"messages\":[{\"role\":\"user\",\"content\":\"{{icp_keywords}} funding OR hiring OR expansion OR acquisition OR product launch. Return structured results with company name, signal type, date, and source URL.\"}]}" \
-        | node -e "
-          const raw = JSON.parse(require(\"fs\").readFileSync(\"/dev/stdin\",\"utf8\"));
-          const content = raw.choices?.[0]?.message?.content || \"\";
-          const citations = raw.citations || [];
-          process.stdout.write(JSON.stringify({content, citations, total: citations.length, source: \"perplexity\"}));
-        "'
+  # ---------------------------------------------------------------------------
+  # 5. Perplexity buying-signal scan (news, funding, hiring, expansion). Deterministic
+  #    direct API: curl -> inline node normalize. ICP keywords come from the loaded
+  #    ICP config (industries/tech-stack), passed in via env so nothing is interpolated
+  #    into the command line.
+  # ---------------------------------------------------------------------------
+  - id: perplexity-query
     condition: $activation-check.json.pass
+    command: >
+      node -e 'const icp=JSON.parse(process.env.ICP||"null")||{};
+        const kw=[].concat(icp.industries||[],icp.tech_stack_signals||[]).filter(Boolean).join(" OR ")||"target companies";
+        process.stdout.write(JSON.stringify({query:kw+" funding OR hiring OR expansion OR acquisition OR product launch. Return company name, signal type, date, and source URL for each."}));'
+    env:
+      ICP: $icp-load.stdout
 
-  # Step 3: Social intelligence — LinkedIn, Reddit, Twitter
+  - id: perplexity-signals
+    condition: $activation-check.json.pass
+    command: >
+      node -e 'const {execSync}=require("child_process");
+        const q=JSON.parse(process.env.QUERYIN||"{}").query||"";
+        const key=process.env.PERPLEXITY_API_KEY||"";
+        let content="", citations=[];
+        if (key) { try {
+          const body=JSON.stringify({model:"sonar",messages:[{role:"user",content:q}]});
+          const raw=execSync("curl -sS https://api.perplexity.ai/chat/completions "
+            +"-H \"Authorization: Bearer \"$PERPLEXITY_API_KEY "
+            +"-H \"Content-Type: application/json\" --data-binary @-",
+            {input:body, encoding:"utf8", timeout:60000, env:process.env});
+          const j=JSON.parse(raw);
+          content=(j.choices&&j.choices[0]&&j.choices[0].message&&j.choices[0].message.content)||"";
+          citations=j.citations||[];
+        } catch(e){ content=""; citations=[]; } }
+        process.stdout.write(JSON.stringify({content, citations, total:citations.length, source:"perplexity", available:!!key}));'
+    env:
+      QUERYIN: $perplexity-query.stdout
+
+  # ---------------------------------------------------------------------------
+  # 6. Social-intelligence substitute — the original openclaw.invoke social-intelligence
+  #    tool (LinkedIn/Reddit/Twitter scan) was fictional. Replace it with a windowed
+  #    Perplexity curl over those domains, matching the other Perplexity lanes (gated on
+  #    key + keywords; citations -> signals). ICP keywords come from the loaded ICP config.
+  # ---------------------------------------------------------------------------
   - id: social-signals
+    condition: $activation-check.json.pass
     command: >
-      openclaw.invoke --tool social-intelligence --action scan --args-json '{
-        "keywords": "{{icp_keywords}}",
-        "sources": ["linkedin", "reddit", "twitter"],
-        "since": "4h"
-      }'
+      node -e 'const {execSync}=require("child_process");
+        const icp=JSON.parse(process.env.ICP||"null")||{};
+        const kw=[].concat(icp.industries||[],icp.tech_stack_signals||[]).filter(Boolean).join(" OR ");
+        const key=process.env.PERPLEXITY_API_KEY||"";
+        let out={signals:[],source:"social",content:"",available:!!key};
+        if (key && kw) { try {
+          const body=JSON.stringify({model:"sonar",messages:[{role:"user",
+            content:"site:linkedin.com OR site:reddit.com OR site:x.com "+kw
+              +" funding OR hiring OR expansion OR pain OR switching. Recent posts; return company name, signal, and source URL."}]});
+          const raw=execSync("curl -sS https://api.perplexity.ai/chat/completions "
+            +"-H \"Authorization: Bearer \"$PERPLEXITY_API_KEY "
+            +"-H \"Content-Type: application/json\" --data-binary @-",
+            {input:body, encoding:"utf8", timeout:60000, env:process.env});
+          const d=JSON.parse(raw); const c=(((d.choices||[])[0]||{}).message||{}).content||"";
+          out.content=c;
+          out.signals=(d.citations||[]).map(u=>({url:u,content:c}));
+        } catch(e){ out.signals=[]; out.content=""; } }
+        process.stdout.write(JSON.stringify(out));'
+    env:
+      ICP: $icp-load.stdout
 
-  # Step 4: CRM re-engagement — closed-lost accounts with recent activity (Req 9)
-  # Click-to-connect: reads from whichever CRM the user has connected
-  - id: load-crm-config
-    command: >
-      openclaw.invoke --tool fast-io --action read --args-json '{"key": "pitch-config/connected-crm"}'
-
-  - id: crm-reengagement-hubspot
-    command: >
-      exec --json --shell 'curl -s "https://api.hubapi.com/crm/v3/objects/contacts/search" \
-        -H "Authorization: Bearer $HUBSPOT_ACCESS_TOKEN" \
-        -H "Content-Type: application/json" \
-        -d "{\"filterGroups\":[{\"filters\":[{\"propertyName\":\"hs_lead_status\",\"operator\":\"EQ\",\"value\":\"CLOSED_LOST\"},{\"propertyName\":\"notes_last_updated\",\"operator\":\"GTE\",\"value\":\"{{thirty_days_ago}}\"}]}],\"properties\":[\"domain\",\"notes_last_updated\",\"dealstage\"]}"'
-    condition: $load-crm-config.json.platform == "hubspot"
-
-  - id: crm-reengagement-salesforce
-    command: >
-      exec --json --shell 'curl -s "$SALESFORCE_INSTANCE_URL/services/data/v59.0/query?q=SELECT+Domain__c,LastActivityDate,StageName+FROM+Opportunity+WHERE+StageName='\''Closed+Lost'\''+AND+LastActivityDate>=LAST_N_DAYS:30" \
-        -H "Authorization: Bearer $SALESFORCE_ACCESS_TOKEN"'
-    condition: $load-crm-config.json.platform == "salesforce"
-
-  - id: crm-reengagement-attio
-    command: >
-      exec --json --shell 'curl -s "https://api.attio.com/v2/objects/companies/records/query" \
-        -H "Authorization: Bearer $ATTIO_API_KEY" \
-        -H "Content-Type: application/json" \
-        -d "{\"filter\":{\"status\":\"closed_lost\",\"activity_within\":\"30d\"},\"select\":[\"domain\",\"last_activity_date\",\"last_activity_type\",\"deal_history\"]}"'
-    condition: $load-crm-config.json.platform == "attio"
-
-  - id: crm-reengagement-pipedrive
-    command: >
-      exec --json --shell 'curl -s "https://api.pipedrive.com/v1/deals?status=lost&sort=update_time+DESC&api_token=$PIPEDRIVE_API_TOKEN" \
-        | node -e "
-          const raw = JSON.parse(require(\"fs\").readFileSync(\"/dev/stdin\",\"utf8\"));
-          const deals = (raw.data || []).filter(d => {
-            const updated = new Date(d.update_time);
-            const cutoff = new Date(Date.now() - 30*24*60*60*1000);
-            return updated >= cutoff;
-          });
-          process.stdout.write(JSON.stringify(deals));
-        "'
-    condition: $load-crm-config.json.platform == "pipedrive"
-
-  # Normalize CRM re-engagement data from whichever provider responded
+  # ---------------------------------------------------------------------------
+  # 7. CRM re-engagement (Req 9): closed-lost Attio companies with recent activity.
+  #    mcporter -> YAML-ish text -> regex parse (never JSON.parse). Best-effort: if the
+  #    CRM isn't connected or returns nothing, this is an empty array and the sweep
+  #    continues on the other sources.
+  # ---------------------------------------------------------------------------
   - id: crm-reengagement
+    condition: $activation-check.json.pass
     command: >
-      exec --json --shell 'node -e "
-        const input = JSON.parse(require(\"fs\").readFileSync(\"/dev/stdin\",\"utf8\"));
-        const hs = input.hubspot; const sf = input.salesforce; const at = input.attio; const pd = input.pipedrive;
-        const data = hs || sf || at || pd || [];
-        process.stdout.write(JSON.stringify(Array.isArray(data) ? data : data.results || []));
-      "'
-    stdin: '{"hubspot": $crm-reengagement-hubspot.json, "salesforce": $crm-reengagement-salesforce.json, "attio": $crm-reengagement-attio.json, "pipedrive": $crm-reengagement-pipedrive.json}'
-
-  # Step 5: Apollo intent data (Req 9)
-  - id: apollo-intent
-    command: >
-      exec --json --shell 'curl -s "https://api.apollo.io/v1/intent_signals?keywords={{icp_keywords}}&limit=20" -H "X-Api-Key: $APOLLO_API_KEY"'
-
-  # Step 6: (Visitor intelligence removed per audit)
-
-  # Step 7: Merge all signal sources
-  - id: merge-signals
-    command: >
-      exec --json --shell 'node -e "
-        const perplexity = JSON.parse(process.argv[1] || \"[]\");
-        const social = JSON.parse(process.argv[2] || \"[]\");
-        const crm = JSON.parse(process.argv[3] || \"[]\");
-        const apollo = JSON.parse(process.argv[4] || \"[]\");
-        const merged = [
-          ...((Array.isArray(perplexity) ? perplexity : [perplexity]).filter(Boolean)).map(s => ({...s, source_type: \"news\"})),
-          ...social.map(s => ({...s, source_type: \"social\"})),
-          ...crm.map(s => ({...s, source_type: \"crm_reengagement\", signal_type: \"reengagement\"})),
-          ...apollo.map(s => ({...s, source_type: \"intent_data\"}))
-        ];
-        process.stdout.write(JSON.stringify({signals: merged, count: merged.length}));
-      " $PERPLEXITY $SOCIAL $CRM $APOLLO'
-
-  # Step 8: Deterministic scoring — ICP fit, recency, relationship (Req 10)
-  - id: deterministic-score
-    command: >
-      exec --json --shell 'node scripts/pitch-signal-scorer.js'
-    stdin: $merge-signals.stdout
-
-  # Step 9: LLM signal strength scoring — the one LLM call (Req 10)
-  - id: llm-strength-score
-    command: >
-      openclaw.invoke --tool llm-task --action json --args-json '{
-        "prompt": "Score the buying intent strength of each signal 0-100. A prospect posting about a specific pain your product solves scores high. A generic company news post scores low. Return the array with strength_score added to each.",
-        "thinking": "off",
-        "input": $STDIN,
-        "schema": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "company": {"type": "string"},
-              "signal_type": {"type": "string"},
-              "strength_score": {"type": "number"},
-              "strength_rationale": {"type": "string"}
-            },
-            "required": ["company", "strength_score"]
+      node -e 'const {execSync}=require("child_process");
+        let txt=""; try { txt=execSync("mcporter call attio.list-records --args "
+          +JSON.stringify(JSON.stringify({object:"companies",limit:200}))+" --output text",
+          {encoding:"utf8",timeout:60000}); } catch(e){ txt=""; }
+        const cutoff=Date.now()-30*24*60*60*1000; const signals=[];
+        for (const p of txt.split(/-\s*record_id:\s*/).slice(1)) {
+          const id=(p.match(/^([0-9a-f-]{36})/)||[])[1]||"";
+          const doms=[...p.matchAll(/domains\[\d+\]:\s*([^\s"]+)/g)].map(m=>m[1].toLowerCase());
+          const name=((p.match(/\n\s*name:\s*"?([^"\n]+)"?/)||[])[1]||"").trim();
+          const status=((p.match(/\n\s*(?:status|stage|hs_lead_status):\s*"?([^"\n]+)"?/)||[])[1]||"").trim().toLowerCase().replace(/[\s-]+/g,"_");
+          const lastAct=((p.match(/\n\s*(?:last_activity_date|notes_last_updated|last_interaction):\s*"?([^"\n]+)"?/)||[])[1]||"").trim();
+          const isClosedLost=status.includes("closed_lost")||status.includes("lost");
+          const actTs=Date.parse(lastAct); const recent=!isNaN(actTs)&&actTs>=cutoff;
+          if (isClosedLost && recent && doms[0]) {
+            signals.push({company:name||doms[0], domain:doms[0], record_id:id, signal_type:"reengagement", timestamp:lastAct});
           }
         }
-      }'
+        process.stdout.write(JSON.stringify({signals, count:signals.length}));'
+
+  # ---------------------------------------------------------------------------
+  # 8. Apollo intent data (Req 9) — POST https://api.apollo.io/v1/intent_signals.
+  #    Key-gated direct curl inside a node step (try/catch, always exit 0, gated on
+  #    APOLLO_API_KEY present, carries a connected flag) — matching the sibling
+  #    signal-monitor's Apollo pattern. ICP keywords feed q_keywords; a missing key
+  #    or unconnected source is a no-op empty result, never a hard failure.
+  # ---------------------------------------------------------------------------
+  - id: apollo-intent
+    condition: $activation-check.json.pass
+    command: >
+      node -e 'const {execSync}=require("child_process");
+        const icp=JSON.parse(process.env.ICP||"null")||{};
+        const kw=[].concat(icp.industries||[],icp.tech_stack_signals||[]).filter(Boolean).join(" ");
+        const key=process.env.APOLLO_API_KEY||"";
+        let out={signals:[],source:"apollo_intent",connected:!!key};
+        if (key) { try {
+          const body=JSON.stringify({q_keywords:kw, per_page:20});
+          const raw=execSync("curl -sS https://api.apollo.io/v1/intent_signals "
+            +"-H \"Content-Type: application/json\" -H \"Cache-Control: no-cache\" "
+            +"-H \"X-Api-Key: "+key+"\" --data-binary @-",
+            {input:body, encoding:"utf8", timeout:45000});
+          const d=JSON.parse(raw); const rows=(d.intent_signals||d.organizations||d.accounts||[]);
+          out.signals=(Array.isArray(rows)?rows:[]).map(o=>({company:o.name||o.company||"",
+            domain:(o.primary_domain||o.domain||o.website_url||"").replace(/^https?:\/\//,"").replace(/\/.*$/,"").toLowerCase(),
+            topic:o.topic||o.intent_topic||"", intent_score:o.intent_score||o.score||null}));
+        } catch(e){ out.error=String(e.message||e); } }
+        process.stdout.write(JSON.stringify(out));'
+    env:
+      ICP: $icp-load.stdout
+
+  # ---------------------------------------------------------------------------
+  # 9. Merge all signal sources into a single normalized array. Perplexity + social
+  #    content are text blobs (source_type "news" / "social"); CRM re-engagement and
+  #    Apollo intent contribute structured rows. Each row is tagged source_type and
+  #    given a timestamp so the deterministic scorer can compute recency.
+  # ---------------------------------------------------------------------------
+  - id: merge-signals
+    condition: $activation-check.json.pass
+    command: >
+      node -e 'const px=JSON.parse(process.env.PX||"null")||{};
+        const social=JSON.parse(process.env.SOCIAL||"null")||{};
+        const crm=(JSON.parse(process.env.CRM||"null")||{}).signals||[];
+        const apollo=(JSON.parse(process.env.APOLLO||"null")||{}).signals||[];
+        const now=new Date().toISOString();
+        const merged=[];
+        if (px.content) merged.push({company:"", signal_type:"news", source_type:"news",
+          content:px.content, citations:px.citations||[], timestamp:now});
+        if (social.content) merged.push({company:"", signal_type:"social", source_type:"social",
+          content:social.content, citations:(social.signals||[]).map(s=>s.url).filter(Boolean), timestamp:now});
+        for (const s of crm) merged.push({...s, source_type:"crm_reengagement"});
+        for (const s of apollo) merged.push({...s, signal_type:"intent_data", source_type:"intent_data", timestamp:now});
+        process.stdout.write(JSON.stringify({signals:merged, count:merged.length}));'
+    env:
+      PX: $perplexity-signals.stdout
+      SOCIAL: $social-signals.stdout
+      CRM: $crm-reengagement.stdout
+      APOLLO: $apollo-intent.stdout
+
+  # ---------------------------------------------------------------------------
+  # 10. Deterministic composite scoring (Req 10) — ICP fit, recency, relationship.
+  #    pitch-signal-scorer.js needs {signals, icp_criteria, threshold}. Strength is the
+  #    one LLM dimension; the scorer defaults it to 50 and flags needs_agent_loop where
+  #    judgment is required. Assemble the scorer input (signals + icp from state).
+  # ---------------------------------------------------------------------------
+  - id: scorer-input
+    condition: $merge-signals.json.count > 0
+    command: >
+      node -e 'const merged=JSON.parse(process.env.MERGED||"{}").signals||[];
+        const icp=JSON.parse(process.env.ICP||"null")||{};
+        process.stdout.write(JSON.stringify({signals:merged, icp_criteria:icp, threshold:60}));'
+    env:
+      MERGED: $merge-signals.stdout
+      ICP: $icp-load.stdout
+
+  - id: deterministic-score
+    condition: $merge-signals.json.count > 0
+    command: node pitch-signal-scorer.js
+    stdin: $scorer-input.stdout
+
+  # ---------------------------------------------------------------------------
+  # 11. Threshold filter. The scorer already emits `qualified` (composite >= threshold)
+  #    and an explicit qualified_count. Re-emit a clean payload with an explicit count to
+  #    gate the persist/notify steps on (never gate on .length).
+  # ---------------------------------------------------------------------------
+  - id: final-filter
+    condition: $merge-signals.json.count > 0
+    command: >
+      node -e 'const d=JSON.parse(require("fs").readFileSync(0,"utf8"))||{};
+        const qualified=d.qualified||[];
+        const needs_agent=qualified.filter(s=>s.needs_agent_loop);
+        process.stdout.write(JSON.stringify({
+          qualified, count:qualified.length, threshold:d.threshold||60,
+          needs_agent_loop_count:needs_agent.length, total_scanned:d.total||0}));'
     stdin: $deterministic-score.stdout
 
-  # Step 10: Final composite scoring and threshold filter
-  - id: final-filter
-    command: >
-      exec --json --shell 'node -e "
-        const data = JSON.parse(require(\"fs\").readFileSync(\"/dev/stdin\", \"utf8\"));
-        const threshold = 60;
-        const qualified = (data.qualified || data).filter(s => s.composite_score >= threshold);
-        process.stdout.write(JSON.stringify({qualified, count: qualified.length, threshold}));
-      "'
-    stdin: $llm-strength-score.stdout
-
-  # Step 11: Persist to fast-io (Req 38)
+  # ---------------------------------------------------------------------------
+  # 12. Persist the qualified-signal snapshot to durable state (Req 38). Single key,
+  #     overwritten each sweep (the agent reads pitch/signals-latest to work the queue).
+  # ---------------------------------------------------------------------------
   - id: persist-signals
-    command: >
-      openclaw.invoke --tool fast-io --action write --args-json '{
-        "key": "signals/{{date}}",
-        "data": $STDIN
-      }'
+    condition: $final-filter.json.count > 0
+    pipeline: state.set pitch/signals-latest
     stdin: $final-filter.stdout
 
-  # Step 12: Notify via Slack
-  - id: notify
-    command: >
-      openclaw.invoke --tool slack --action post --args-json '{
-        "channel": "#pitch-signals",
-        "text": "{{count}} new qualified signals detected. Review queue ready."
-      }'
-    stdin: $persist-signals.stdout
+  # ---------------------------------------------------------------------------
+  # 13. Queue a notification intent for the agent loop (Slack is unreachable here, 401).
+  #     The intent carries the qualified count + the signals that need model judgment so
+  #     the agent can run the one llm-task strength pass and post to #pitch-signals.
+  # ---------------------------------------------------------------------------
+  - id: notify-load
+    condition: $final-filter.json.count > 0
+    pipeline: state.get pitch/notifications
 
-  # Step 13: Audit log (Req 38)
-  - id: audit-log
+  - id: notify-next
+    condition: $final-filter.json.count > 0
     command: >
-      openclaw.invoke --tool fast-io --action write --args-json '{
-        "key": "audit/{{timestamp}}/signal-sweep",
-        "data": {
-          "action": "signal_sweep",
-          "signals_scanned": $merge-signals.json.count,
-          "signals_qualified": $final-filter.json.count,
-          "sources": ["perplexity", "social-intelligence", "crm", "apollo"],
-          "authorized_by": "autonomous",
-          "timestamp": "{{timestamp}}"
-        }
-      }'
+      node -e 'const n=JSON.parse(process.env.NOTIFS||"null")||[];
+        const f=JSON.parse(process.env.FILTERED||"{}");
+        n.push({
+          kind:"new_signals",
+          needs_llm:(f.needs_agent_loop_count||0)>0,
+          deliver_to:"#pitch-signals",
+          qualified_count:f.count||0,
+          needs_agent_loop_count:f.needs_agent_loop_count||0,
+          threshold:f.threshold||60,
+          summary:(f.count||0)+" new qualified signals detected. Review queue ready.",
+          created_at:new Date().toISOString()});
+        process.stdout.write(JSON.stringify(n));'
+    env:
+      NOTIFS: $notify-load.stdout
+      FILTERED: $final-filter.stdout
+
+  - id: notify
+    condition: $final-filter.json.count > 0
+    pipeline: state.set pitch/notifications
+    stdin: $notify-next.stdout
+
+  # ---------------------------------------------------------------------------
+  # 14. Audit snapshot (Req 38) — durable, deterministic, no openclaw.invoke. The agent
+  #     can read pitch/signal-sweep-latest to answer "what did the last sweep find".
+  # ---------------------------------------------------------------------------
+  - id: audit-build
+    command: >
+      node -e 'const merged=JSON.parse(process.env.MERGED||"null")||{};
+        const f=JSON.parse(process.env.FILTERED||"null")||{};
+        const act=JSON.parse(process.env.ACT||"null")||{};
+        process.stdout.write(JSON.stringify({
+          action:"signal_sweep",
+          activation_pass:!!act.pass,
+          signals_scanned:merged.count||0,
+          signals_qualified:f.count||0,
+          needs_agent_loop_count:f.needs_agent_loop_count||0,
+          sources:["perplexity","social","attio_crm_reengagement","apollo_intent"],
+          authorized_by:"autonomous",
+          timestamp:new Date().toISOString()}));'
+    env:
+      MERGED: $merge-signals.stdout
+      FILTERED: $final-filter.stdout
+      ACT: $activation-check.stdout
+
+  - id: audit-save
+    pipeline: state.set pitch/signal-sweep-latest
+    stdin: $audit-build.stdout

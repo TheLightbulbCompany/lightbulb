@@ -138,7 +138,8 @@ async function main() {
   };
 
   process.stdout.write(JSON.stringify(result));
-  process.exit(allPassed ? 0 : 1);
+  // exit 0 always: a failed activation gate is a branch, not a run error — pass in JSON carries it.
+  process.exit(0);
 }
 
 function readStdin() {

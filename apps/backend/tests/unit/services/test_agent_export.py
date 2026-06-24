@@ -869,3 +869,127 @@ def test_preview_workspace_skills_autoship_global_entries_addable(monkeypatch, t
     assert sorted(out["auto_ship_skills"]) == ["researcher", "writer"]
     assert [s["name"] for s in out["available_skills"]] == ["image-lab"]
     assert all(s["name"] not in ("researcher", "writer") for s in out["available_skills"])
+
+
+# ---------------------------------------------------------------------------
+# capture_agent_routines — marketplace publish routine capture
+# ---------------------------------------------------------------------------
+
+
+class _StubRoutineFetch:
+    """Async-callable stub for the routine-detail fetcher."""
+
+    def __init__(self, details):
+        self.details = details
+        self.calls = 0
+
+    async def __call__(self, *, owner_id, agent_id):
+        self.calls += 1
+        return self.details
+
+
+@pytest.mark.asyncio
+async def test_capture_routines_strips_to_portable_shape():
+    """Each schedule trigger becomes a {title, description, cron, timezone}
+    entry; company/agent/instance ids and revision fields are dropped."""
+    fetch = _StubRoutineFetch(
+        [
+            {
+                "id": "routine-uuid",
+                "companyId": "co-uuid",
+                "assigneeAgentId": "agent-uuid",
+                "latestRevisionId": "rev-uuid",
+                "title": "Morning sweep",
+                "description": "do it",
+                "triggers": [
+                    {
+                        "id": "trig-uuid",
+                        "kind": "schedule",
+                        "cronExpression": "0 6 * * *",
+                        "timezone": "UTC",
+                        "enabled": True,
+                    }
+                ],
+            }
+        ]
+    )
+    out = await agent_export.capture_agent_routines(
+        owner_id="user_abc",
+        agent_id="agent-uuid",
+        fetch_routine_details=fetch,
+    )
+    assert out == [
+        {
+            "title": "Morning sweep",
+            "description": "do it",
+            "cron": "0 6 * * *",
+            "timezone": "UTC",
+        }
+    ]
+    # No ids / revision fields leak through.
+    assert all(k in {"title", "description", "cron", "timezone"} for entry in out for k in entry)
+
+
+@pytest.mark.asyncio
+async def test_capture_routines_skips_non_schedule_and_wrong_agent():
+    fetch = _StubRoutineFetch(
+        [
+            # Wrong agent — skipped.
+            {
+                "assigneeAgentId": "other-agent",
+                "title": "X",
+                "triggers": [{"kind": "schedule", "cronExpression": "0 6 * * *", "timezone": "UTC"}],
+            },
+            # Right agent but webhook trigger — no cron to port, skipped.
+            {
+                "assigneeAgentId": "agent-uuid",
+                "title": "Webhook one",
+                "triggers": [{"kind": "webhook"}],
+            },
+        ]
+    )
+    out = await agent_export.capture_agent_routines(
+        owner_id="user_abc",
+        agent_id="agent-uuid",
+        fetch_routine_details=fetch,
+    )
+    assert out == []
+
+
+@pytest.mark.asyncio
+async def test_capture_routines_returns_empty_on_fetch_failure():
+    """A Paperclip-side failure must never break the export — returns []."""
+
+    async def _boom(*, owner_id, agent_id):
+        raise RuntimeError("paperclip down")
+
+    out = await agent_export.capture_agent_routines(
+        owner_id="user_abc",
+        agent_id="agent-uuid",
+        fetch_routine_details=_boom,
+    )
+    assert out == []
+
+
+@pytest.mark.asyncio
+async def test_capture_routines_multiple_schedule_triggers_flatten():
+    fetch = _StubRoutineFetch(
+        [
+            {
+                "assigneeAgentId": "agent-uuid",
+                "title": "Two-trigger",
+                "description": "d",
+                "triggers": [
+                    {"kind": "schedule", "cronExpression": "0 6 * * *", "timezone": "UTC"},
+                    {"kind": "schedule", "cronExpression": "0 8 * * 1", "timezone": "UTC"},
+                ],
+            }
+        ]
+    )
+    out = await agent_export.capture_agent_routines(
+        owner_id="user_abc",
+        agent_id="agent-uuid",
+        fetch_routine_details=fetch,
+    )
+    assert [e["cron"] for e in out] == ["0 6 * * *", "0 8 * * 1"]
+    assert all(e["title"] == "Two-trigger" for e in out)

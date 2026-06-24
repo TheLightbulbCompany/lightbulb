@@ -1,324 +1,427 @@
 name: sequence-execute
-# Requirements 2, 24, 25, 28, 29, 30, 31, 32
-# Runs hourly on cron. Checks for due touches, validates, generates, sends.
-# LLM calls: 1 (follow-up draft generation via llm-task, thinking: low)
+# Pitch follow-up engine — runs hourly on cron. Finds due touches 2-5 across active
+# sequences, applies interrupts (reply / material change / CRM status / final-touch),
+# runs deterministic compliance on each prospect, then SPLITS the cleared work into:
+#   - autonomous touches  -> pitch/pending-drafts  (agent loop drafts + scans + sends)
+#   - C-suite / interrupted -> pitch/notifications  (agent surfaces to the rep)
+#
+# Contract notes (see the lobster-authoring skill):
+#  - DSL verbs (state.get/set) run under `pipeline:`; real programs (node/curl/mcporter)
+#    under `command:`. fast-io / openclaw.invoke / slack / llm-task are FICTIONAL or 401
+#    from the embedded runner — never called here.
+#  - Durable state via state.get/set on the per-owner EFS mount. Active sequences, the
+#    draft work-queue, and notifications are SINGLE-KEY INDEX ARRAYS (state.* has no
+#    prefix-list): state.get -> a node step edits -> state.set with stdin from that step.
+#  - CRM = Attio ONLY, reached gateway-free via the baked `mcporter` CLI. Its output is
+#    YAML-ish TEXT, so a node step REGEX-parses stdout (never JSON.parse). HubSpot /
+#    Salesforce / Pipedrive CRM paths are dropped.
+#  - The outbound email platform (Instantly / SmartLead / Mailshake / Lemlist) is a
+#    SEPARATE click-to-connect layer reached by `curl` with its own $*_API_KEY env. Its
+#    analytics (bounce rate) + reply feed are deterministic reads kept as curl.
+#  - The ONE follow-up DRAFT step is a genuine LLM task (thinking: low). The embedded
+#    runner can't call the model, so it is LEFT FOR THE AGENT LOOP: this pipeline writes
+#    the cleared touches to pitch/pending-drafts and the agent drafts, content-scans
+#    (pitch-content-scanner.js), and sends them in its own loop.
+#  - Scripts always exit 0 and carry status in JSON; steps branch via `condition:`.
+#    NEVER gate on .length — producing steps emit an explicit count.
 
 steps:
-  # Step 0: Bounce rate gate (Req 2)
-  # Reads analytics from whichever outbound platform the user connected
-  - id: load-outbound-config
-    command: >
-      openclaw.invoke --tool fast-io --action read --args-json '{"key": "pitch-config/connected-outbound"}'
+  # ------------------------------------------------------------------
+  # 1. Which outbound email platform is connected (drives bounce + reply curls).
+  # ------------------------------------------------------------------
+  - id: outbound-config
+    pipeline: state.get pitch/connected-outbound
 
-  - id: bounce-analytics-instantly
+  - id: outbound-platform
     command: >
-      exec --json --shell 'curl -s "https://api.instantly.ai/api/v1/analytics/campaign?api_key=$INSTANTLY_API_KEY&metric=bounce_rate"'
-    condition: $load-outbound-config.json.platform == "instantly"
+      node -e 'const c=JSON.parse(process.env.CFG||"null")||{};
+        const p=(c.platform||"none");
+        process.stdout.write(JSON.stringify({platform:p, has_platform: p!=="none"}));'
+    env:
+      CFG: $outbound-config.stdout
 
-  - id: bounce-analytics-smartlead
+  # ------------------------------------------------------------------
+  # 2. Bounce-rate gate (Req 2). Pull aggregate analytics from the connected
+  #    outbound platform via curl (real CLI, own API key). Each branch writes raw
+  #    JSON to stdout; a normalizer wraps it as {analytics:{...}} for the scorer.
+  # ------------------------------------------------------------------
+  - id: bounce-instantly
+    condition: $outbound-platform.json.platform == "instantly"
     command: >
-      exec --json --shell 'curl -s "https://server.smartlead.ai/api/v1/analytics?metric=bounce_rate" \
-        -H "Authorization: Bearer $SMARTLEAD_API_KEY"'
-    condition: $load-outbound-config.json.platform == "smartlead"
+      curl -s "https://api.instantly.ai/api/v1/analytics/campaign?api_key=$INSTANTLY_API_KEY&metric=bounce_rate"
 
-  - id: bounce-analytics-mailshake
+  - id: bounce-smartlead
+    condition: $outbound-platform.json.platform == "smartlead"
     command: >
-      exec --json --shell 'curl -s "https://api.mailshake.com/2017-04-01/analytics" \
-        -H "Authorization: Basic $MAILSHAKE_API_KEY"'
-    condition: $load-outbound-config.json.platform == "mailshake"
+      curl -s "https://server.smartlead.ai/api/v1/analytics?metric=bounce_rate" -H "Authorization: Bearer $SMARTLEAD_API_KEY"
 
-  - id: bounce-analytics-lemlist
+  - id: bounce-mailshake
+    condition: $outbound-platform.json.platform == "mailshake"
     command: >
-      exec --json --shell 'curl -s "https://api.lemlist.com/api/campaigns/analytics" \
-        -H "Authorization: Bearer $LEMLIST_API_KEY"'
-    condition: $load-outbound-config.json.platform == "lemlist"
+      curl -s "https://api.mailshake.com/2017-04-01/analytics" -H "Authorization: Basic $MAILSHAKE_API_KEY"
 
+  - id: bounce-lemlist
+    condition: $outbound-platform.json.platform == "lemlist"
+    command: >
+      curl -s "https://api.lemlist.com/api/campaigns/analytics" -H "Authorization: Bearer $LEMLIST_API_KEY"
+
+  # Normalize whichever branch produced raw analytics -> {analytics:{...}}.
+  # When no platform is connected there is no send history, so the scorer's
+  # "no data" path (pass:false) correctly blocks the run.
+  - id: bounce-input
+    command: >
+      node -e 'const pick=s=>{try{return JSON.parse(s)}catch{return null}};
+        const a=pick(process.env.I)||pick(process.env.S)||pick(process.env.M)||pick(process.env.L)||{};
+        const an=a.analytics||a.data||a||{};
+        process.stdout.write(JSON.stringify({analytics:an}));'
+    env:
+      I: $bounce-instantly.stdout
+      S: $bounce-smartlead.stdout
+      M: $bounce-mailshake.stdout
+      L: $bounce-lemlist.stdout
+
+  # on_error: continue — the script still emits its {pass,...} JSON to stdout before its
+  # non-zero exit on the fail / no-data paths; continue keeps the run alive so the
+  # bounce_pass flag flows into scheduler-input. (Proper fix: make the script exit 0 and
+  # carry status in JSON — see the .js fix list.)
   - id: bounce-check
-    command: >
-      exec --json --shell 'node -e "
-        const input = JSON.parse(require(\"fs\").readFileSync(\"/dev/stdin\",\"utf8\"));
-        const data = input.instantly || input.smartlead || input.mailshake || input.lemlist || {};
-        process.stdout.write(JSON.stringify({analytics: data}));
-      "'
-    stdin: '{"instantly": $bounce-analytics-instantly.json, "smartlead": $bounce-analytics-smartlead.json, "mailshake": $bounce-analytics-mailshake.json, "lemlist": $bounce-analytics-lemlist.json}'
-      | exec --json --shell 'node scripts/pitch-bounce-rate-check.js'
+    command: node pitch-bounce-rate-check.js
+    stdin: $bounce-input.stdout
+    on_error: continue
 
-  # Step 1: Load active sequences
-  - id: load-sequences
-    command: >
-      openclaw.invoke --tool fast-io --action list --args-json '{
-        "prefix": "sequences/active/"
-      }'
-    condition: $bounce-check.json.pass
+  # ------------------------------------------------------------------
+  # 3. Load active sequences (single-key index array) + learned timing weights.
+  #    These state reads + the scheduler run UNCONDITIONALLY so that check-due always
+  #    produces a real has_due_touches boolean — every downstream gate then references
+  #    only always-run steps (no condition ever points at a skipped step). The bounce
+  #    gate is enforced by zeroing the scheduler input when bounce-check failed.
+  # ------------------------------------------------------------------
+  - id: sequences-load
+    pipeline: state.get pitch/sequences
 
-  # Step 2: Check due touches (Req 28, 30, 31)
+  - id: timing-load
+    pipeline: state.get pitch/timing-weights
+
+  # Wrap the two arrays into the {sequences, timing_weights} shape the scheduler reads.
+  # When the bounce gate failed, feed an EMPTY sequence set so the scheduler finds no
+  # due touches and the whole follow-up path no-ops (Req 2 hard block). Emit an explicit
+  # count so the (unused but documented) gate never relies on .length.
+  - id: scheduler-input
+    command: >
+      node -e 'const pick=s=>{try{return JSON.parse(s)}catch{return null}};
+        const pass=(pick(process.env.BOUNCE)||{}).pass===true;
+        const seq=pass?((pick(process.env.SEQ))||[]):[];
+        const tw=pick(process.env.TW)||{};
+        process.stdout.write(JSON.stringify({sequences:seq, timing_weights:tw, count:seq.length, bounce_pass:pass}));'
+    env:
+      BOUNCE: $bounce-check.stdout
+      SEQ: $sequences-load.stdout
+      TW: $timing-load.stdout
+
+  # ------------------------------------------------------------------
+  # 4. Compute due touches (Req 24/28/30/31). Scheduler attaches requires_approval
+  #    (C-suite) per touch and emits has_due_touches. Runs unconditionally on the
+  #    always-present scheduler-input (empty when bounce-blocked => has_due_touches:false).
+  # ------------------------------------------------------------------
   - id: check-due
-    command: >
-      exec --json --shell 'node scripts/pitch-sequence-scheduler.js'
-    stdin: $load-sequences.stdout
+    command: node pitch-sequence-scheduler.js
+    stdin: $scheduler-input.stdout
 
-  # Step 3: Load recent signals for interrupt checking (Req 29)
-  - id: load-recent-signals
-    command: >
-      openclaw.invoke --tool fast-io --action read --args-json '{
-        "key": "signals/latest"
-      }'
+  # ------------------------------------------------------------------
+  # 5. Interrupt inputs (Req 29): recent signals, Attio CRM status changes, replies.
+  # ------------------------------------------------------------------
+  - id: signals-load
+    condition: $check-due.json.has_due_touches
+    pipeline: state.get pitch/signals-latest
 
-  # Step 4: Check CRM for status changes (Req 29)
-  # Click-to-connect: reads from whichever CRM the user connected
-  - id: load-crm-config
-    command: >
-      openclaw.invoke --tool fast-io --action read --args-json '{"key": "pitch-config/connected-crm"}'
-
-  - id: crm-changes-hubspot
-    command: >
-      exec --json --shell 'curl -s "https://api.hubapi.com/crm/v3/objects/deals/search" \
-        -H "Authorization: Bearer $HUBSPOT_ACCESS_TOKEN" \
-        -H "Content-Type: application/json" \
-        -d "{\"filterGroups\":[{\"filters\":[{\"propertyName\":\"hs_lastmodifieddate\",\"operator\":\"GTE\",\"value\":\"{{one_hour_ago}}\"}]}],\"properties\":[\"dealstage\",\"hs_lead_status\"]}"'
-    condition: $load-crm-config.json.platform == "hubspot"
-
-  - id: crm-changes-salesforce
-    command: >
-      exec --json --shell 'curl -s "$SALESFORCE_INSTANCE_URL/services/data/v59.0/query?q=SELECT+Id,StageName,Status__c+FROM+Opportunity+WHERE+LastModifiedDate>=LAST_N_HOURS:1" \
-        -H "Authorization: Bearer $SALESFORCE_ACCESS_TOKEN"'
-    condition: $load-crm-config.json.platform == "salesforce"
-
-  - id: crm-changes-attio
-    command: >
-      exec --json --shell 'curl -s "https://api.attio.com/v2/objects/companies/records/query" \
-        -H "Authorization: Bearer $ATTIO_API_KEY" \
-        -H "Content-Type: application/json" \
-        -d "{\"filter\":{\"modified_since\":\"1h\"},\"select\":[\"status\",\"deal_stage\"]}"'
-    condition: $load-crm-config.json.platform == "attio"
-
-  - id: crm-changes-pipedrive
-    command: >
-      exec --json --shell 'curl -s "https://api.pipedrive.com/v1/recents?since_timestamp={{one_hour_ago}}&items=deal&api_token=$PIPEDRIVE_API_TOKEN"'
-    condition: $load-crm-config.json.platform == "pipedrive"
-
+  # CRM status changes — Attio ONLY, via mcporter (text -> regex parse).
+  # list-records on companies returns record_id + attributes incl. status/deal_stage.
+  # We surface {prospect_domain, old_status, new_status} rows for the interrupt-checker.
   - id: crm-changes
+    condition: $check-due.json.has_due_touches
     command: >
-      exec --json --shell 'node -e "
-        const input = JSON.parse(require(\"fs\").readFileSync(\"/dev/stdin\",\"utf8\"));
-        const data = input.hubspot || input.salesforce || input.attio || input.pipedrive || [];
-        process.stdout.write(JSON.stringify(Array.isArray(data) ? data : data.results || data.data || []));
-      "'
-    stdin: '{"hubspot": $crm-changes-hubspot.json, "salesforce": $crm-changes-salesforce.json, "attio": $crm-changes-attio.json, "pipedrive": $crm-changes-pipedrive.json}'
+      node -e 'const {execSync}=require("child_process");
+        let txt=""; try { txt=execSync("mcporter call attio.list-records --args "
+          +JSON.stringify(JSON.stringify({object:"companies",limit:100}))+" --output text",
+          {encoding:"utf8",timeout:45000}); } catch(e){ txt=""; }
+        const changes=[];
+        for (const p of txt.split(/-\s*record_id:\s*/).slice(1)) {
+          const dom=((p.match(/domains\[\d+\]:\s*([^\s"]+)/)||[])[1]||"").toLowerCase();
+          const status=((p.match(/\n\s*status:\s*"?([^"\n]+)"?/)||[])[1]||"").trim();
+          if (dom && status) changes.push({prospect_domain:dom, new_status:status, old_status:""});
+        }
+        process.stdout.write(JSON.stringify(changes));'
 
-  # Step 5: Check for replies (Req 29)
-  # Reads reply data from the connected outbound platform
-  - id: check-replies-instantly
+  - id: replies-instantly
+    condition: $check-due.json.has_due_touches && $outbound-platform.json.platform == "instantly"
     command: >
-      exec --json --shell 'curl -s "https://api.instantly.ai/api/v1/leads/replies?api_key=$INSTANTLY_API_KEY&since=1h"'
-    condition: $load-outbound-config.json.platform == "instantly"
+      curl -s "https://api.instantly.ai/api/v1/leads/replies?api_key=$INSTANTLY_API_KEY&since=1h"
 
-  - id: check-replies-smartlead
+  - id: replies-smartlead
+    condition: $check-due.json.has_due_touches && $outbound-platform.json.platform == "smartlead"
     command: >
-      exec --json --shell 'curl -s "https://server.smartlead.ai/api/v1/replies?since=1h" \
-        -H "Authorization: Bearer $SMARTLEAD_API_KEY"'
-    condition: $load-outbound-config.json.platform == "smartlead"
+      curl -s "https://server.smartlead.ai/api/v1/replies?since=1h" -H "Authorization: Bearer $SMARTLEAD_API_KEY"
 
-  - id: check-replies-mailshake
+  - id: replies-mailshake
+    condition: $check-due.json.has_due_touches && $outbound-platform.json.platform == "mailshake"
     command: >
-      exec --json --shell 'curl -s "https://api.mailshake.com/2017-04-01/leads/replies?since=1h" \
-        -H "Authorization: Basic $MAILSHAKE_API_KEY"'
-    condition: $load-outbound-config.json.platform == "mailshake"
+      curl -s "https://api.mailshake.com/2017-04-01/leads/replies?since=1h" -H "Authorization: Basic $MAILSHAKE_API_KEY"
 
-  - id: check-replies-lemlist
+  - id: replies-lemlist
+    condition: $check-due.json.has_due_touches && $outbound-platform.json.platform == "lemlist"
     command: >
-      exec --json --shell 'curl -s "https://api.lemlist.com/api/activities?type=emailsReplied&since=1h" \
-        -H "Authorization: Bearer $LEMLIST_API_KEY"'
-    condition: $load-outbound-config.json.platform == "lemlist"
+      curl -s "https://api.lemlist.com/api/activities?type=emailsReplied&since=1h" -H "Authorization: Bearer $LEMLIST_API_KEY"
 
-  - id: check-replies
+  # ------------------------------------------------------------------
+  # 6. Assemble the interrupt-checker input. The checker reads
+  #    {due_touches, recent_signals, crm_changes, replies} — the original fed it only
+  #    the scheduler output (missing 3 of 4 keys), so it never fired. Fixed here.
+  # ------------------------------------------------------------------
+  - id: interrupt-input
+    condition: $check-due.json.has_due_touches
     command: >
-      exec --json --shell 'node -e "
-        const input = JSON.parse(require(\"fs\").readFileSync(\"/dev/stdin\",\"utf8\"));
-        const data = input.instantly || input.smartlead || input.mailshake || input.lemlist || [];
-        process.stdout.write(JSON.stringify(Array.isArray(data) ? data : []));
-      "'
-    stdin: '{"instantly": $check-replies-instantly.json, "smartlead": $check-replies-smartlead.json, "mailshake": $check-replies-mailshake.json, "lemlist": $check-replies-lemlist.json}'
+      node -e 'const pick=s=>{try{return JSON.parse(s)}catch{return null}};
+        const due=(pick(process.env.DUE)||{}).due_touches||[];
+        const sig=pick(process.env.SIG)||[];
+        const crmRaw=pick(process.env.CRM)||[];
+        const crm=Array.isArray(crmRaw)?crmRaw:[];
+        const rRaw=pick(process.env.RI)||pick(process.env.RS)||pick(process.env.RM)||pick(process.env.RL)||[];
+        const replies=Array.isArray(rRaw)?rRaw:(rRaw.replies||rRaw.data||rRaw.activities||[]);
+        process.stdout.write(JSON.stringify({due_touches:due, recent_signals:sig, crm_changes:crm, replies:replies}));'
+    env:
+      DUE: $check-due.stdout
+      SIG: $signals-load.stdout
+      CRM: $crm-changes.stdout
+      RI: $replies-instantly.stdout
+      RS: $replies-smartlead.stdout
+      RM: $replies-mailshake.stdout
+      RL: $replies-lemlist.stdout
 
-  # Step 6: Interrupt checker (Req 29)
   - id: interrupt-check
-    command: >
-      exec --json --shell 'node scripts/pitch-interrupt-checker.js'
-    stdin: $check-due.stdout
+    condition: $check-due.json.has_due_touches
+    command: node pitch-interrupt-checker.js
+    stdin: $interrupt-input.stdout
 
-  # Step 7: Route C-suite touches to approval (Req 24)
-  # Split: touches requiring approval go to draft-and-approve pipeline
-  # Autonomous touches proceed to step 8
+  # ------------------------------------------------------------------
+  # 7. Split cleared touches: C-suite (requires_approval) -> approval queue,
+  #    autonomous -> compliance -> draft queue. Emit explicit counts for gating.
+  #    Gated on the SAME has_due_touches as the notify/audit summary below, so those
+  #    unconditional summary steps never reference a skipped step. Tolerates an empty
+  #    cleared set internally (when every due touch was interrupted).
+  # ------------------------------------------------------------------
   - id: route-csuite
+    condition: $check-due.json.has_due_touches
     command: >
-      exec --json --shell 'node -e "
-        const data = JSON.parse(require(\"fs\").readFileSync(\"/dev/stdin\", \"utf8\"));
-        const autonomous = data.cleared_touches.filter(t => !t.requires_approval);
-        const needsApproval = data.cleared_touches.filter(t => t.requires_approval);
-        process.stdout.write(JSON.stringify({autonomous, needs_approval: needsApproval}));
-      "'
+      node -e 'const data=JSON.parse(require("fs").readFileSync(0,"utf8"));
+        const cleared=data.cleared_touches||[];
+        const autonomous=cleared.filter(t=>!t.requires_approval);
+        const needsApproval=cleared.filter(t=>t.requires_approval);
+        process.stdout.write(JSON.stringify({autonomous, needs_approval:needsApproval,
+          autonomous_count:autonomous.length, approval_count:needsApproval.length}));'
     stdin: $interrupt-check.stdout
-    condition: $interrupt-check.json.has_due_touches
 
-  # Step 8: Generate follow-up drafts — ONE LLM CALL for batch (Req 28, 32)
-  - id: generate-followups
+  # ------------------------------------------------------------------
+  # 8. Deterministic compliance on each autonomous touch's PROSPECT (Req 4/6/7/30/41).
+  #    pitch-compliance-check.js exports checkCompliance — map over all touches here so
+  #    we keep only prospects that pass the hard-stop checks. (The original wired the
+  #    content-scanner's flags into compliance, which never had a prospect to check.)
+  #    Gated on has_due_touches (not autonomous_count) so it runs whenever route-csuite
+  #    ran; an empty autonomous list just yields cleared_count:0.
+  # ------------------------------------------------------------------
+  - id: compliance-config
+    condition: $check-due.json.has_due_touches
+    pipeline: state.get pitch/compliance-config
+
+  - id: compliance-filter
+    condition: $check-due.json.has_due_touches
     command: >
-      openclaw.invoke --tool llm-task --action json --args-json '{
-        "prompt": "Generate follow-up touches for these prospects. RULES: 1) Do NOT reference previous non-responses — no following up, checking in, circling back, or touching base. 2) Each follow-up must take a NEW angle or value prop. 3) Ground each in the original signal or a new relevant data point.",
-        "thinking": "low",
-        "input": $STDIN,
-        "schema": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "prospect_domain": {"type": "string"},
-              "subject": {"type": "string"},
-              "body": {"type": "string"},
-              "touch_number": {"type": "number"},
-              "channel": {"type": "string"}
-            },
-            "required": ["prospect_domain", "subject", "body", "touch_number"]
-          }
+      node -e 'const {checkCompliance}=require("./pitch-compliance-check.js");
+        const data=JSON.parse(process.env.TOUCHES||"{}"); const cfg=JSON.parse(process.env.CFG||"null")||{};
+        const touches=data.autonomous||[];
+        const cleared=[], blocked=[], approval=[];
+        for (const t of touches) {
+          const prospect=Object.assign({}, t.prospect||{}, {touch_count:(t.touch_number||1)-1, touch_channel:t.channel, domain:t.domain});
+          const r=checkCompliance(prospect, cfg);
+          if (!r.pass) { blocked.push({domain:t.domain, blocks:r.blocks}); continue; }
+          if (r.requires_approval) { approval.push(Object.assign({}, t, {compliance:r})); continue; }
+          cleared.push(t);
         }
-      }'
-    stdin: $route-csuite.stdout
-    condition: $route-csuite.json.autonomous.length > 0
+        process.stdout.write(JSON.stringify({cleared, blocked, approval,
+          cleared_count:cleared.length, blocked_count:blocked.length, approval_count:approval.length}));'
+    env:
+      TOUCHES: $route-csuite.stdout
+      CFG: $compliance-config.stdout
 
-  # Step 9: Content scan all drafts (Req 25, 32)
-  - id: content-scan
-    command: >
-      exec --json --shell 'node scripts/pitch-content-scanner.js'
-    stdin: $generate-followups.stdout
+  # ------------------------------------------------------------------
+  # 9. Enqueue the compliant autonomous touches for the AGENT LOOP to draft.
+  #    The agent reads pitch/pending-drafts, generates one batch of follow-ups
+  #    (llm-task, thinking: low — NEW angle per touch, no non-response references),
+  #    runs them through pitch-content-scanner.js, then sends via the connected
+  #    outbound platform. The SEQUENCE STATE (touch_count / last_touch_date / 5-touch
+  #    auto-pause) is NOT left to the agent — it is advanced deterministically in-pipeline
+  #    below (sequences-state-* steps), keeping the 5-touch cap a pipeline guarantee.
+  # ------------------------------------------------------------------
+  #    All three steps share the has_due_touches gate so they reference only steps that
+  #    ran under that same gate; pushing zero cleared touches is a harmless no-op.
+  - id: pending-load
+    condition: $check-due.json.has_due_touches
+    pipeline: state.get pitch/pending-drafts
 
-  # Step 10: Compliance check all prospects (Req 4, 6, 7, 41)
-  - id: compliance-check
+  - id: pending-next
+    condition: $check-due.json.has_due_touches
     command: >
-      exec --json --shell 'node scripts/pitch-compliance-check.js'
-    stdin: $content-scan.stdout
-    condition: $content-scan.json.action != "regenerate"
-
-  # Step 11: Send cleared touches via connected outbound platform
-  - id: no-outbound-notice
-    command: >
-      openclaw.invoke --tool slack --action post --args-json '{
-        "channel": "#pitch-approvals",
-        "text": "To send outreach, connect your email platform in settings. Supported: Instantly, SmartLead, Mailshake, Lemlist."
-      }'
-    condition: $compliance-check.json.pass && $load-outbound-config.json.platform == null
-
-  - id: send-touches-instantly
-    command: >
-      exec --json --shell 'curl -s -X POST "https://api.instantly.ai/api/v1/leads/send-batch" \
-        -H "Content-Type: application/json" \
-        -d "{\"api_key\":\"$INSTANTLY_API_KEY\",\"touches\":$STDIN}"'
-    stdin: $compliance-check.stdout
-    condition: $compliance-check.json.pass && $load-outbound-config.json.platform == "instantly"
-
-  - id: send-touches-smartlead
-    command: >
-      exec --json --shell 'curl -s -X POST "https://server.smartlead.ai/api/v1/leads/send-batch" \
-        -H "Authorization: Bearer $SMARTLEAD_API_KEY" \
-        -H "Content-Type: application/json" \
-        -d "$STDIN"'
-    stdin: $compliance-check.stdout
-    condition: $compliance-check.json.pass && $load-outbound-config.json.platform == "smartlead"
-
-  - id: send-touches-mailshake
-    command: >
-      exec --json --shell 'curl -s -X POST "https://api.mailshake.com/2017-04-01/leads/send-batch" \
-        -H "Authorization: Basic $MAILSHAKE_API_KEY" \
-        -H "Content-Type: application/json" \
-        -d "$STDIN"'
-    stdin: $compliance-check.stdout
-    condition: $compliance-check.json.pass && $load-outbound-config.json.platform == "mailshake"
-
-  - id: send-touches-lemlist
-    command: >
-      exec --json --shell 'curl -s -X POST "https://api.lemlist.com/api/leads/send-batch" \
-        -H "Authorization: Bearer $LEMLIST_API_KEY" \
-        -H "Content-Type: application/json" \
-        -d "$STDIN"'
-    stdin: $compliance-check.stdout
-    condition: $compliance-check.json.pass && $load-outbound-config.json.platform == "lemlist"
-
-  # Normalize send results from whichever platform
-  - id: send-touches
-    command: >
-      exec --json --shell 'node -e "
-        const input = JSON.parse(require(\"fs\").readFileSync(\"/dev/stdin\",\"utf8\"));
-        const data = input.instantly || input.smartlead || input.mailshake || input.lemlist || [];
-        process.stdout.write(JSON.stringify(Array.isArray(data) ? data : []));
-      "'
-    stdin: '{"instantly": $send-touches-instantly.json, "smartlead": $send-touches-smartlead.json, "mailshake": $send-touches-mailshake.json, "lemlist": $send-touches-lemlist.json}'
-    condition: $compliance-check.json.pass
-
-  # Step 12: Update sequence state in fast-io
-  - id: update-sequences
-    command: >
-      exec --json --shell 'node -e "
-        const touches = JSON.parse(require(\"fs\").readFileSync(\"/dev/stdin\", \"utf8\"));
-        const updates = (touches || []).map(t => ({
-          key: \"sequences/active/\" + t.prospect_domain,
-          update: {
-            touch_count: t.touch_number,
-            last_touch_date: new Date().toISOString(),
-            paused: t.touch_number >= 5
-          }
-        }));
-        process.stdout.write(JSON.stringify(updates));
-      "'
-    stdin: $send-touches.stdout
-
-  # Step 13: CRM sync — log all sends (Req 17)
-  # Click-to-connect: logs to whichever CRM is connected
-  - id: crm-sync-hubspot
-    command: >
-      exec --json --shell 'curl -s -X POST "https://api.hubapi.com/crm/v3/objects/engagements/batch/create" \
-        -H "Authorization: Bearer $HUBSPOT_ACCESS_TOKEN" \
-        -H "Content-Type: application/json" \
-        -d "{\"inputs\":$STDIN}"'
-    stdin: $send-touches.stdout
-    condition: $load-crm-config.json.platform == "hubspot"
-
-  - id: crm-sync-salesforce
-    command: >
-      exec --json --shell 'curl -s -X POST "$SALESFORCE_INSTANCE_URL/services/data/v59.0/composite/sobjects" \
-        -H "Authorization: Bearer $SALESFORCE_ACCESS_TOKEN" \
-        -H "Content-Type: application/json" \
-        -d "{\"records\":$STDIN}"'
-    stdin: $send-touches.stdout
-    condition: $load-crm-config.json.platform == "salesforce"
-
-  - id: crm-sync-attio
-    command: >
-      exec --json --shell 'curl -s -X POST "https://api.attio.com/v2/objects/companies/records/batch/entries" \
-        -H "Authorization: Bearer $ATTIO_API_KEY" \
-        -H "Content-Type: application/json" \
-        -d "{\"entries\":$STDIN}"'
-    stdin: $send-touches.stdout
-    condition: $load-crm-config.json.platform == "attio"
-
-  - id: crm-sync-pipedrive
-    command: >
-      exec --json --shell 'curl -s -X POST "https://api.pipedrive.com/v1/activities?api_token=$PIPEDRIVE_API_TOKEN" \
-        -H "Content-Type: application/json" \
-        -d "$STDIN"'
-    stdin: $send-touches.stdout
-    condition: $load-crm-config.json.platform == "pipedrive"
-
-  # Step 14: Audit log (Req 38)
-  - id: audit-log
-    command: >
-      openclaw.invoke --tool fast-io --action write --args-json '{
-        "key": "audit/{{timestamp}}/sequence-execute",
-        "data": {
-          "action": "sequence_execute",
-          "touches_sent": $send-touches.json.length,
-          "touches_interrupted": $interrupt-check.json.interrupted_count,
-          "touches_csuite_routed": $route-csuite.json.needs_approval.length,
-          "bounce_rate": $bounce-check.json.bounce_rate,
-          "authorized_by": "autonomous",
-          "timestamp": "{{timestamp}}"
+      node -e 'const q=JSON.parse(process.env.QUEUE||"null")||[];
+        const f=JSON.parse(process.env.FILTER||"{}"); const plat=JSON.parse(process.env.PLAT||"{}").platform||"none";
+        const now=new Date().toISOString();
+        for (const t of (f.cleared||[])) {
+          q.push({kind:"followup_draft", domain:t.domain, touch_number:t.touch_number,
+            channel:t.channel, sequence_id:t.sequence_id, prospect:t.prospect||{},
+            outbound_platform:plat, needs_llm_draft:true, needs_content_scan:true,
+            requires:["draft_followup","content_scan","send_via_outbound","crm_activity_log","audit_send"],
+            queued_at:now});
         }
-      }'
+        process.stdout.write(JSON.stringify(q));'
+    env:
+      QUEUE: $pending-load.stdout
+      FILTER: $compliance-filter.stdout
+      PLAT: $outbound-platform.json
+
+  - id: pending-save
+    condition: $check-due.json.has_due_touches
+    pipeline: state.set pitch/pending-drafts
+    stdin: $pending-next.stdout
+
+  # ------------------------------------------------------------------
+  # 9b. Deterministic SEQUENCE-STATE advance (restores the original update-sequences
+  #     write). For every compliant autonomous touch just enqueued, advance the matched
+  #     sequence in pitch/sequences: touch_count := touch_number, last_touch_date := now,
+  #     paused := touch_number >= 5 (the 5-touch auto-pause). This is the in-pipeline,
+  #     load-before-use index-array edit (state.get -> node match-and-merge -> state.set),
+  #     NOT deferred to the agent loop — so the scheduler's 5-touch cap + min-gap timing
+  #     are honoured on the very next run regardless of when the agent drafts/sends.
+  #     Match by sequence_id when present, else by prospect_domain. Same has_due_touches
+  #     gate so compliance-filter is always a resolved producer.
+  # ------------------------------------------------------------------
+  - id: sequences-state-load
+    condition: $check-due.json.has_due_touches
+    pipeline: state.get pitch/sequences
+
+  - id: sequences-state-next
+    condition: $check-due.json.has_due_touches
+    command: >
+      node -e 'const seqs=JSON.parse(process.env.SEQS||"null")||[];
+        const f=JSON.parse(process.env.FILTER||"{}");
+        const now=new Date().toISOString();
+        for (const t of (f.cleared||[])) {
+          const tn=t.touch_number;
+          const s=seqs.find(x => (t.sequence_id && x.sequence_id===t.sequence_id)
+            || (x.prospect_domain===t.domain));
+          if (!s) continue;
+          s.touch_count=tn;
+          s.last_touch_date=now;
+          s.paused=tn>=5;
+        }
+        process.stdout.write(JSON.stringify(seqs));'
+    env:
+      SEQS: $sequences-state-load.stdout
+      FILTER: $compliance-filter.stdout
+
+  - id: sequences-state-save
+    condition: $check-due.json.has_due_touches
+    pipeline: state.set pitch/sequences
+    stdin: $sequences-state-next.stdout
+
+  # ------------------------------------------------------------------
+  # 10. Notifications queue (Slack is unreachable here): C-suite approvals,
+  #     interrupts, compliance blocks, and the no-outbound-platform notice.
+  #     The agent loop drains pitch/notifications and delivers them. Gated on the
+  #     same has_due_touches so route/filter/interrupt refs always resolved.
+  # ------------------------------------------------------------------
+  - id: notify-load
+    condition: $check-due.json.has_due_touches
+    pipeline: state.get pitch/notifications
+
+  - id: notify-next
+    condition: $check-due.json.has_due_touches
+    command: >
+      node -e 'const pick=s=>{try{return JSON.parse(s)}catch{return null}};
+        const n=pick(process.env.NOTIFS)||[];
+        const route=pick(process.env.ROUTE)||{};
+        const filt=pick(process.env.FILTER)||{};
+        const inter=pick(process.env.INTER)||{};
+        const plat=(pick(process.env.PLAT)||{}).platform||"none";
+        const now=new Date().toISOString();
+        for (const t of (route.needs_approval||[])) {
+          n.push({kind:"csuite_approval_required", channel_hint:"#pitch-approvals",
+            domain:t.domain, touch_number:t.touch_number,
+            reason:t.approval_reason||"C-suite contact — follow-up requires rep approval.", created_at:now});
+        }
+        for (const t of (filt.approval||[])) {
+          n.push({kind:"compliance_approval_required", channel_hint:"#pitch-approvals",
+            domain:t.domain, touch_number:t.touch_number, compliance:t.compliance, created_at:now});
+        }
+        for (const b of (filt.blocked||[])) {
+          n.push({kind:"compliance_blocked", channel_hint:"#pitch-pipeline",
+            domain:b.domain, blocks:b.blocks, created_at:now});
+        }
+        for (const i of (inter.interrupts||[])) {
+          n.push({kind:"sequence_interrupt", channel_hint:"#pitch-pipeline",
+            domain:i.domain, touch_number:i.touch_number, interrupt_type:i.interrupt_type,
+            reason:i.reason, created_at:now});
+        }
+        if (plat==="none" && ((route.autonomous_count||0)>0 || (filt.cleared_count||0)>0)) {
+          n.push({kind:"no_outbound_platform", channel_hint:"#pitch-approvals",
+            reason:"Due follow-ups are ready but no outbound email platform is connected. To send outreach, connect your email platform in settings. Supported: Instantly, SmartLead, Mailshake, Lemlist.", created_at:now});
+        }
+        process.stdout.write(JSON.stringify(n));'
+    env:
+      NOTIFS: $notify-load.stdout
+      ROUTE: $route-csuite.stdout
+      FILTER: $compliance-filter.stdout
+      INTER: $interrupt-check.stdout
+      PLAT: $outbound-platform.json
+
+  - id: notify-save
+    condition: $check-due.json.has_due_touches
+    pipeline: state.set pitch/notifications
+    stdin: $notify-next.stdout
+
+  # ------------------------------------------------------------------
+  # 11. Audit row (Req 38) appended to a single-key audit-log index array.
+  #     Same has_due_touches gate keeps every step ref resolved.
+  # ------------------------------------------------------------------
+  - id: audit-load
+    condition: $check-due.json.has_due_touches
+    pipeline: state.get pitch/audit-log
+
+  - id: audit-next
+    condition: $check-due.json.has_due_touches
+    command: >
+      node -e 'const pick=s=>{try{return JSON.parse(s)}catch{return null}};
+        const log=pick(process.env.LOG)||[];
+        const bounce=pick(process.env.BOUNCE)||{};
+        const inter=pick(process.env.INTER)||{};
+        const route=pick(process.env.ROUTE)||{};
+        const filt=pick(process.env.FILTER)||{};
+        log.push({action:"sequence_execute", at:new Date().toISOString(),
+          authorized_by:"autonomous",
+          bounce_rate: bounce.bounce_rate!==undefined?bounce.bounce_rate:null,
+          due_cleared: inter.cleared_count||0,
+          interrupted: inter.interrupted_count||0,
+          csuite_routed: route.approval_count||0,
+          drafts_queued: filt.cleared_count||0,
+          compliance_blocked: filt.blocked_count||0,
+          compliance_approval: filt.approval_count||0});
+        if (log.length>500) log.splice(0, log.length-500);
+        process.stdout.write(JSON.stringify(log));'
+    env:
+      LOG: $audit-load.stdout
+      BOUNCE: $bounce-check.stdout
+      INTER: $interrupt-check.stdout
+      ROUTE: $route-csuite.stdout
+      FILTER: $compliance-filter.stdout
+
+  - id: audit-save
+    condition: $check-due.json.has_due_touches
+    pipeline: state.set pitch/audit-log
+    stdin: $audit-next.stdout

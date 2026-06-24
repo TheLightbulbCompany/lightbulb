@@ -71,7 +71,9 @@ async function main() {
   };
 
   process.stdout.write(JSON.stringify(result));
-  process.exit(detection.is_opt_out ? 1 : 0); // exit 1 to halt pipeline if opt-out
+  // exit 0 always: a detected opt-out is a branch, not a run error — is_opt_out in JSON carries it
+  // (exit 1 here would abort before the opt-out is recorded / sequence paused).
+  process.exit(0);
 }
 
 function readStdin() {

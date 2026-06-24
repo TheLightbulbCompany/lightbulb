@@ -226,7 +226,9 @@ async function main() {
   );
 
   process.stdout.write(JSON.stringify(result));
-  process.exit(result.pass ? 0 : 1);
+  // A non-compliant slot is a normal verdict, not a crash — the decision is
+  // carried in pass/violations/action; exit 0 so the workflow gates on the JSON.
+  process.exit(0);
 }
 
 function readStdin() {

@@ -1,5 +1,6 @@
 import { describe, test, expect, vi, beforeEach } from "vitest";
 import { render, fireEvent, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 vi.mock("@/components/teams/issues/hooks/useIssueMutations", () => ({
   useIssueMutations: vi.fn(),
@@ -20,6 +21,7 @@ beforeEach(() => {
     addComment: vi.fn(),
     remove: vi.fn(),
   });
+  mockCreate.mockResolvedValue({ id: "iss_new" });
 });
 
 const baseProps = {
@@ -30,68 +32,100 @@ const baseProps = {
 describe("NewIssueDialog", () => {
   test("renders dialog with title input and Create disabled when title empty", () => {
     render(<NewIssueDialog {...baseProps} />);
-    expect(screen.getByPlaceholderText("Issue title")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /create issue/i })).toBeDisabled();
+    expect(screen.getByPlaceholderText("Task title")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /create task/i })).toBeDisabled();
+  });
+
+  test("titles the dialog 'New task' and the primary button 'Create task'", () => {
+    render(<NewIssueDialog {...baseProps} />);
+    expect(screen.getByRole("heading", { name: "New task" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create task" })).toBeInTheDocument();
   });
 
   test("Create enabled once title is non-empty", () => {
     render(<NewIssueDialog {...baseProps} />);
-    fireEvent.change(screen.getByPlaceholderText("Issue title"), {
+    fireEvent.change(screen.getByPlaceholderText("Task title"), {
       target: { value: "Fix" },
     });
-    expect(screen.getByRole("button", { name: /create issue/i })).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: /create task/i })).not.toBeDisabled();
   });
 
-  test("submit fires create with trimmed inputs + priority default (status owned upstream)", async () => {
-    mockCreate.mockResolvedValue({ id: "iss_new" });
+  test("submit fires create with trimmed inputs + priority default", async () => {
     render(<NewIssueDialog {...baseProps} />);
-    fireEvent.change(screen.getByPlaceholderText("Issue title"), {
+    fireEvent.change(screen.getByPlaceholderText("Task title"), {
       target: { value: "  Fix bug  " },
     });
     fireEvent.change(screen.getByPlaceholderText("Optional details..."), {
       target: { value: "Details" },
     });
-    fireEvent.click(screen.getByRole("button", { name: /create issue/i }));
+    fireEvent.click(screen.getByRole("button", { name: /create task/i }));
     await waitFor(() =>
-      expect(mockCreate).toHaveBeenCalledWith({
-        title: "Fix bug",
-        description: "Details",
-        priority: "medium",
-        projectId: undefined,
-        assigneeAgentId: undefined,
+      expect(mockCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: "Fix bug",
+          description: "Details",
+          priority: "medium",
+        }),
+      ),
+    );
+  });
+
+  test("includes the chosen status + work mode in the create payload", async () => {
+    const user = userEvent.setup();
+    render(<NewIssueDialog {...baseProps} />);
+    await user.type(screen.getByPlaceholderText("Task title"), "Wire the composer");
+    // Status preset → Todo (native <select>).
+    await user.selectOptions(screen.getByLabelText("Status"), "todo");
+    // Work mode segmented control → Planning (radiogroup of pill buttons).
+    await user.click(screen.getByRole("radio", { name: "Planning" }));
+    await user.click(screen.getByRole("button", { name: "Create task" }));
+
+    expect(mockCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Wire the composer",
+        status: "todo",
+        workMode: "planning",
       }),
     );
   });
 
+  test("defaults to backlog/standard when the presets are left untouched", async () => {
+    const user = userEvent.setup();
+    render(<NewIssueDialog {...baseProps} />);
+    await user.type(screen.getByPlaceholderText("Task title"), "Default task");
+    await user.click(screen.getByRole("button", { name: "Create task" }));
+    expect(mockCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "backlog", workMode: "standard" }),
+    );
+  });
+
   test("onCreated fires with the created issue id", async () => {
-    mockCreate.mockResolvedValue({ id: "iss_new" });
     const onCreated = vi.fn();
     render(<NewIssueDialog {...baseProps} onCreated={onCreated} />);
-    fireEvent.change(screen.getByPlaceholderText("Issue title"), {
+    fireEvent.change(screen.getByPlaceholderText("Task title"), {
       target: { value: "Fix" },
     });
-    fireEvent.click(screen.getByRole("button", { name: /create issue/i }));
+    fireEvent.click(screen.getByRole("button", { name: /create task/i }));
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith("iss_new"));
   });
 
   test("onOpenChange(false) called after successful create", async () => {
-    mockCreate.mockResolvedValue({ id: "iss_new" });
     const onOpenChange = vi.fn();
     render(<NewIssueDialog open onOpenChange={onOpenChange} />);
-    fireEvent.change(screen.getByPlaceholderText("Issue title"), {
+    fireEvent.change(screen.getByPlaceholderText("Task title"), {
       target: { value: "Fix" },
     });
-    fireEvent.click(screen.getByRole("button", { name: /create issue/i }));
+    fireEvent.click(screen.getByRole("button", { name: /create task/i }));
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
   });
 
   test("error from create renders in alert", async () => {
     mockCreate.mockRejectedValue(new Error("server boom"));
     render(<NewIssueDialog {...baseProps} />);
-    fireEvent.change(screen.getByPlaceholderText("Issue title"), {
+    fireEvent.change(screen.getByPlaceholderText("Task title"), {
       target: { value: "Fix" },
     });
-    fireEvent.click(screen.getByRole("button", { name: /create issue/i }));
+    fireEvent.click(screen.getByRole("button", { name: /create task/i }));
     await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
     expect(screen.getByRole("alert")).toHaveTextContent(/server boom/);
   });
@@ -111,11 +145,10 @@ describe("NewIssueDialog", () => {
   });
 
   test("submit fires create with selected project + assignee", async () => {
-    mockCreate.mockResolvedValue({ id: "iss_new" });
     const projects: IssueProject[] = [{ id: "p1", name: "Inbox v1" }];
     const agents: CompanyAgent[] = [{ id: "ag_1", name: "Main Agent" }];
     render(<NewIssueDialog {...baseProps} projects={projects} agents={agents} />);
-    fireEvent.change(screen.getByPlaceholderText("Issue title"), {
+    fireEvent.change(screen.getByPlaceholderText("Task title"), {
       target: { value: "Fix" },
     });
     fireEvent.change(screen.getByLabelText(/project/i), {
@@ -124,7 +157,7 @@ describe("NewIssueDialog", () => {
     fireEvent.change(screen.getByLabelText(/assign to agent/i), {
       target: { value: "ag_1" },
     });
-    fireEvent.click(screen.getByRole("button", { name: /create issue/i }));
+    fireEvent.click(screen.getByRole("button", { name: /create task/i }));
     await waitFor(() =>
       expect(mockCreate).toHaveBeenCalledWith(
         expect.objectContaining({

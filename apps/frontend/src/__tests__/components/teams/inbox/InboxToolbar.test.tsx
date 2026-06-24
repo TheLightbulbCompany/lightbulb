@@ -111,17 +111,17 @@ describe("InboxToolbar", () => {
     expect(screen.getByRole("button", { name: /filter/i })).toBeInTheDocument();
   });
 
-  test("renders the primary 'New issue' button", () => {
+  test("renders the primary 'New task' button", () => {
     render(<InboxToolbar {...baseProps} />);
     expect(
-      screen.getByRole("button", { name: /new issue/i }),
+      screen.getByRole("button", { name: /new task/i }),
     ).toBeInTheDocument();
   });
 
-  test("clicking 'New issue' fires onNewIssue", () => {
+  test("clicking 'New task' fires onNewIssue", () => {
     const onNewIssue = vi.fn();
     render(<InboxToolbar {...baseProps} onNewIssue={onNewIssue} />);
-    fireEvent.click(screen.getByRole("button", { name: /new issue/i }));
+    fireEvent.click(screen.getByRole("button", { name: /new task/i }));
     expect(onNewIssue).toHaveBeenCalledTimes(1);
   });
 

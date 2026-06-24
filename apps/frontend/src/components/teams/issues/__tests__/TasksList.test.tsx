@@ -135,8 +135,9 @@ describe("TasksList", () => {
     );
     // Assignee resolves to the roster name (not the raw id).
     expect(screen.getByText("Friday")).toBeInTheDocument();
-    // Labels show the first two chips + a "+1" overflow marker for the third
-    // (the priority icon is glyph-only, so the chips carry the assertion).
+    // Priority icon renders (PriorityIcon's read-only span has no text; assert
+    // via the label chips + the absence of "Unassigned" instead). Labels show
+    // the first two chips + a "+1" overflow marker for the third.
     expect(screen.getByText("backend")).toBeInTheDocument();
     expect(screen.getByText("urgent")).toBeInTheDocument();
     expect(screen.getByText("+1")).toBeInTheDocument();
@@ -155,6 +156,93 @@ describe("TasksList", () => {
       />,
     );
     expect(screen.getByText("Unassigned")).toBeInTheDocument();
+  });
+
+  it("groups by priority into ordered priority buckets", async () => {
+    const user = userEvent.setup();
+    const issues = [
+      issue({ id: "iso-10", title: "Crit task", status: "todo", priority: "critical" }),
+      issue({ id: "iso-11", title: "Low task", status: "todo", priority: "low" }),
+      issue({ id: "iso-12", title: "No-pri task", status: "todo" }),
+    ];
+    render(
+      <TasksList
+        issues={issues}
+        agents={AGENTS}
+        onUpdateIssue={onUpdateIssue}
+        onNewTask={onNewTask}
+      />,
+    );
+    // Open the Group popover and pick "Priority".
+    await user.click(screen.getByRole("button", { name: /^group$/i }));
+    await user.click(await screen.findByText("Priority"));
+    // Group headers render for each present priority bucket + the no-priority
+    // bucket. statusLabel uppercases "critical"/"low" → "Critical"/"Low".
+    expect(screen.getByText("Critical")).toBeInTheDocument();
+    expect(screen.getByText("Low")).toBeInTheDocument();
+    expect(screen.getByText("No priority")).toBeInTheDocument();
+  });
+
+  it("applies a priority filter to narrow the list", async () => {
+    const user = userEvent.setup();
+    const issues = [
+      issue({ id: "iso-20", title: "High one", status: "todo", priority: "high" }),
+      issue({ id: "iso-21", title: "Low one", status: "todo", priority: "low" }),
+    ];
+    render(
+      <TasksList
+        issues={issues}
+        agents={AGENTS}
+        onUpdateIssue={onUpdateIssue}
+        onNewTask={onNewTask}
+      />,
+    );
+    expect(screen.getByText("High one")).toBeInTheDocument();
+    expect(screen.getByText("Low one")).toBeInTheDocument();
+
+    // Open the filters popover and tick the "High" priority facet.
+    await user.click(screen.getByRole("button", { name: /^filter$/i }));
+    const highRow = (await screen.findByText("High")).closest("label");
+    await user.click(within(highRow as HTMLElement).getByRole("checkbox"));
+
+    // The list narrows to just the high-priority task.
+    expect(screen.getByText("High one")).toBeInTheDocument();
+    expect(screen.queryByText("Low one")).not.toBeInTheDocument();
+  });
+
+  it("shows the filtered-empty state with a Clear-filters action when filters yield nothing", async () => {
+    const user = userEvent.setup();
+    // All tasks are low-priority; filtering to "Critical" empties the list.
+    const issues = [
+      issue({ id: "iso-30", title: "Only low", status: "todo", priority: "low" }),
+    ];
+    render(
+      <TasksList
+        issues={issues}
+        agents={AGENTS}
+        onUpdateIssue={onUpdateIssue}
+        onNewTask={onNewTask}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /^filter$/i }));
+    const critRow = (await screen.findByText("Critical")).closest("label");
+    await user.click(within(critRow as HTMLElement).getByRole("checkbox"));
+
+    // Distinct filtered-empty copy (NOT the "No tasks yet." create-prompt).
+    expect(screen.getByText(/no tasks match these filters/i)).toBeInTheDocument();
+    expect(screen.queryByText(/no tasks yet/i)).not.toBeInTheDocument();
+
+    // Clicking "Clear filters" resets the popover state → the task returns.
+    await user.click(screen.getByRole("button", { name: /clear filters/i }));
+    expect(screen.getByText("Only low")).toBeInTheDocument();
+  });
+
+  it("shows the create-prompt empty state (not filtered-empty) when there are genuinely no tasks", () => {
+    render(
+      <TasksList issues={[]} onUpdateIssue={onUpdateIssue} onNewTask={onNewTask} />,
+    );
+    expect(screen.getByText(/no tasks yet/i)).toBeInTheDocument();
+    expect(screen.queryByText(/no tasks match these filters/i)).not.toBeInTheDocument();
   });
 
   it("lights the board live indicator for tasks in liveIssueIds", () => {

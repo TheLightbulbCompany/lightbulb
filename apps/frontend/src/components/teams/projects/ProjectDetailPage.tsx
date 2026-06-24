@@ -25,6 +25,7 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { ChevronRight } from "lucide-react";
+import { useUser } from "@clerk/nextjs";
 import { PanelTabs } from "@/components/teams/shell";
 import { ProjectHeader } from "./ProjectHeader";
 import { ProjectProperties } from "./ProjectProperties";
@@ -63,6 +64,7 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
   // lighting the board "Live" badge + list-row live dot (same derivation as
   // the dashboard / IssuesPanel).
   const { runs: liveRuns } = useLiveRuns();
+  const { user } = useUser();
   const agents = agentsResp?.agents ?? [];
   const projects = projectsResp?.projects ?? [];
 
@@ -194,6 +196,7 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
           issues={issues}
           agents={agents}
           liveIssueIds={liveIssueIds}
+          currentUserId={user?.id ?? null}
           isLoading={issuesLoading}
           onUpdateIssue={handleUpdateIssue}
           onNewTask={() => setCreating(true)}

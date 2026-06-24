@@ -53,10 +53,17 @@ import { PriorityIcon } from "@/components/teams/shared/components/PriorityIcon"
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { PanelEmptyState } from "@/components/teams/shell";
+import { IssueFiltersPopover } from "@/components/teams/inbox/IssueFiltersPopover";
 import {
   KanbanBoard,
   type KanbanBoardProps,
 } from "@/components/teams/inbox/KanbanBoard";
+import {
+  applyIssueFilters,
+  countActiveIssueFilters,
+  defaultIssueFilterState,
+  type IssueFilterState,
+} from "@/components/teams/shared/lib/issueFilters";
 import type {
   IssueBlockerAttention,
   Issue,
@@ -71,9 +78,20 @@ const LABEL_CHIP_STYLE = {
 } as const;
 
 export type TasksViewMode = "list" | "board";
-export type TasksSortField = "status" | "title" | "updated" | "created";
+export type TasksSortField =
+  | "status"
+  | "title"
+  | "updated"
+  | "created"
+  | "priority";
 export type TasksSortDir = "asc" | "desc";
-export type TasksGroupBy = "none" | "status" | "assignee";
+export type TasksGroupBy =
+  | "none"
+  | "status"
+  | "assignee"
+  | "priority"
+  | "project"
+  | "parent";
 
 type Agent = NonNullable<KanbanBoardProps["agents"]>[number];
 
@@ -81,6 +99,15 @@ export interface TasksListProps {
   issues: Issue[];
   agents?: Agent[];
   liveIssueIds?: Set<string>;
+  /** Signed-in user id; passed to the filters popover for the "Me" assignee. */
+  currentUserId?: string | null;
+  /**
+   * True when the parent panel's search box is narrowing the `issues` it
+   * passes. Lets the empty state distinguish "search/filter emptied the list"
+   * (filtered-empty copy) from "the company genuinely has no tasks" (the
+   * create-prompt). The popover's own active filters are tracked internally.
+   */
+  searchActive?: boolean;
   isLoading?: boolean;
   /** Patches an issue (status / assignee / …). Routed to the BFF PATCH. */
   onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
@@ -149,6 +176,16 @@ function statusRank(status: string): number {
   return idx === -1 ? STATUS_ORDER.length : idx;
 }
 
+// Priority weight so a "Priority" sort/group reads critical → low. Issues with
+// no priority sort last (and bucket into their own "No priority" group).
+const PRIORITY_ORDER: string[] = ["critical", "high", "medium", "low"];
+
+function priorityRank(priority: string | null | undefined): number {
+  if (!priority) return PRIORITY_ORDER.length;
+  const idx = PRIORITY_ORDER.indexOf(priority);
+  return idx === -1 ? PRIORITY_ORDER.length : idx;
+}
+
 function issueTimestamp(issue: Issue, field: "updated" | "created"): number {
   const raw =
     field === "created"
@@ -167,6 +204,8 @@ function sortIssues(
     switch (field) {
       case "status":
         return mul * (statusRank(a.status) - statusRank(b.status));
+      case "priority":
+        return mul * (priorityRank(a.priority) - priorityRank(b.priority));
       case "title":
         return mul * a.title.localeCompare(b.title);
       case "created":
@@ -182,6 +221,7 @@ const SORT_OPTIONS: ReadonlyArray<readonly [TasksSortField, string]> = [
   ["updated", "Updated"],
   ["created", "Created"],
   ["status", "Status"],
+  ["priority", "Priority"],
   ["title", "Title"],
 ];
 
@@ -189,6 +229,9 @@ const GROUP_OPTIONS: ReadonlyArray<readonly [TasksGroupBy, string]> = [
   ["none", "None"],
   ["status", "Status"],
   ["assignee", "Assignee"],
+  ["priority", "Priority"],
+  ["project", "Project"],
+  ["parent", "Parent"],
 ];
 
 function statusLabel(status: string): string {
@@ -201,36 +244,93 @@ interface TasksGroup {
   items: Issue[];
 }
 
+interface GroupContext {
+  agentName: (id: string | null | undefined) => string | null;
+  /** Resolves a parent issue's identifier/title for the "Parent" grouping. */
+  issueLabel: (id: string) => string | null;
+}
+
+// Sentinel keys for the "no value" bucket of each grouping. Kept distinct so
+// the empty bucket sorts last and renders a readable header per dimension.
+const UNASSIGNED_KEY = "__unassigned";
+const NO_PRIORITY_KEY = "__no_priority";
+const NO_PROJECT_KEY = "__no_project";
+const NO_PARENT_KEY = "__no_parent";
+
+function groupKeyFor(issue: Issue, groupBy: TasksGroupBy): string {
+  switch (groupBy) {
+    case "status":
+      return issue.status;
+    case "assignee":
+      return issue.assigneeAgentId ?? UNASSIGNED_KEY;
+    case "priority":
+      return issue.priority ?? NO_PRIORITY_KEY;
+    case "project":
+      return issue.project?.id ?? NO_PROJECT_KEY;
+    case "parent":
+      return issue.parentId ?? NO_PARENT_KEY;
+    default:
+      return "__all";
+  }
+}
+
 function groupIssues(
   issues: Issue[],
   groupBy: TasksGroupBy,
-  agentName: (id: string | null | undefined) => string | null,
+  ctx: GroupContext,
 ): TasksGroup[] {
   if (groupBy === "none") {
     return [{ key: "__all", label: null, items: issues }];
   }
   const buckets = new Map<string, Issue[]>();
+  // Cache the project name off the first issue in each project bucket — the
+  // slim Issue carries the denormalized `project` object so no roster lookup
+  // is needed.
+  const projectNames = new Map<string, string>();
   for (const issue of issues) {
-    const key =
-      groupBy === "status"
-        ? issue.status
-        : (issue.assigneeAgentId ?? "__unassigned");
+    const key = groupKeyFor(issue, groupBy);
+    if (groupBy === "project" && issue.project) {
+      projectNames.set(issue.project.id, issue.project.name);
+    }
     const list = buckets.get(key) ?? [];
     list.push(issue);
     buckets.set(key, list);
   }
   const labelFor = (key: string): string => {
     if (groupBy === "status") return statusLabel(key);
-    if (key === "__unassigned") return "Unassigned";
-    return agentName(key) ?? key.slice(0, 8);
+    if (groupBy === "priority") {
+      if (key === NO_PRIORITY_KEY) return "No priority";
+      return statusLabel(key);
+    }
+    if (groupBy === "project") {
+      if (key === NO_PROJECT_KEY) return "No project";
+      return projectNames.get(key) ?? key.slice(0, 8);
+    }
+    if (groupBy === "parent") {
+      if (key === NO_PARENT_KEY) return "No parent";
+      return ctx.issueLabel(key) ?? key.slice(0, 8);
+    }
+    // assignee
+    if (key === UNASSIGNED_KEY) return "Unassigned";
+    return ctx.agentName(key) ?? key.slice(0, 8);
   };
+  const emptyKey =
+    groupBy === "priority"
+      ? NO_PRIORITY_KEY
+      : groupBy === "project"
+        ? NO_PROJECT_KEY
+        : groupBy === "parent"
+          ? NO_PARENT_KEY
+          : UNASSIGNED_KEY;
   const keys = [...buckets.keys()];
   if (groupBy === "status") {
     keys.sort((a, b) => statusRank(a) - statusRank(b));
+  } else if (groupBy === "priority") {
+    keys.sort((a, b) => priorityRank(a) - priorityRank(b));
   } else {
     keys.sort((a, b) => {
-      if (a === "__unassigned") return 1;
-      if (b === "__unassigned") return -1;
+      if (a === emptyKey) return 1;
+      if (b === emptyKey) return -1;
       return labelFor(a).localeCompare(labelFor(b));
     });
   }
@@ -624,6 +724,8 @@ export function TasksList({
   issues,
   agents,
   liveIssueIds,
+  currentUserId,
+  searchActive = false,
   isLoading,
   onUpdateIssue,
   onNewTask,
@@ -633,6 +735,9 @@ export function TasksList({
   const [sortDir, setSortDir] = useState<TasksSortDir>("desc");
   const [groupBy, setGroupBy] = useState<TasksGroupBy>("none");
   const [nestingEnabled, setNestingEnabled] = useState(true);
+  const [filterState, setFilterState] = useState<IssueFilterState>(
+    defaultIssueFilterState,
+  );
   const [collapsedParents, setCollapsedParents] = useState<Set<string>>(
     () => new Set(),
   );
@@ -645,14 +750,68 @@ export function TasksList({
     [agents],
   );
 
+  // Parent-issue label resolver for the "Group by parent" headers. Built from
+  // the in-page issue set so a parent that's itself a row reads as ISO-N Title.
+  const issueLabel = useCallback(
+    (id: string): string | null => {
+      const match = issues.find((i) => i.id === id);
+      if (!match) return null;
+      const ident = match.identifier ?? match.id.slice(0, 8);
+      return `${ident} ${match.title}`.trim();
+    },
+    [issues],
+  );
+
+  const activeFilterCount = useMemo(
+    () => countActiveIssueFilters(filterState),
+    [filterState],
+  );
+  const filtersActive = activeFilterCount > 0;
+
+  // Project + label facet options for the popover, derived from the
+  // denormalized objects on the in-page issues (the slim BFF doesn't fan out a
+  // separate labels endpoint, so the visible issue set is the source of truth).
+  const projectFilterOptions = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const issue of issues) {
+      if (issue.project) map.set(issue.project.id, issue.project.name);
+    }
+    return [...map].map(([id, name]) => ({ id, name }));
+  }, [issues]);
+
+  const labelFilterOptions = useMemo(() => {
+    const map = new Map<string, { name: string; color: string }>();
+    for (const issue of issues) {
+      for (const label of issue.labels ?? []) {
+        if (!map.has(label.id)) {
+          map.set(label.id, { name: label.name, color: label.color ?? "" });
+        }
+      }
+    }
+    return [...map].map(([id, { name, color }]) => ({ id, name, color }));
+  }, [issues]);
+
+  // Apply the popover filter state CLIENT-SIDE before sort/group — the same
+  // shared predicate InboxPage uses, so the two surfaces never drift. Search
+  // is applied upstream by the parent panel; this layer is the structured
+  // facet filter (status / priority / assignee / labels / project / live).
+  const filtered = useMemo(
+    () =>
+      applyIssueFilters(issues, filterState, {
+        currentUserId,
+        liveIssueIds,
+      }),
+    [issues, filterState, currentUserId, liveIssueIds],
+  );
+
   const sorted = useMemo(
-    () => sortIssues(issues, sortField, sortDir),
-    [issues, sortField, sortDir],
+    () => sortIssues(filtered, sortField, sortDir),
+    [filtered, sortField, sortDir],
   );
 
   const groups = useMemo(
-    () => groupIssues(sorted, groupBy, agentName),
-    [sorted, groupBy, agentName],
+    () => groupIssues(sorted, groupBy, { agentName, issueLabel }),
+    [sorted, groupBy, agentName, issueLabel],
   );
 
   const toggleParent = useCallback((id: string) => {
@@ -716,6 +875,23 @@ export function TasksList({
     <div className="flex flex-col gap-3">
       {/* Toolbar */}
       <div className="flex items-center justify-end gap-1.5">
+        {/* Filters apply to both list AND board, so the popover sits outside
+            the list-only view-mode gate. The popover takes Partial<state>
+            patches; merge them onto the current state here. */}
+        <IssueFiltersPopover
+          state={filterState}
+          onChange={(patch) =>
+            setFilterState((prev) => ({ ...prev, ...patch }))
+          }
+          activeFilterCount={activeFilterCount}
+          agents={agents}
+          projects={projectFilterOptions}
+          labels={labelFilterOptions}
+          currentUserId={currentUserId}
+          buttonVariant="outline"
+          iconOnly
+        />
+
         <ViewModeToggle viewMode={viewMode} onChange={setViewMode} />
 
         {viewMode === "list" && (
@@ -769,7 +945,27 @@ export function TasksList({
         <div className="font-editorial-serif text-xl italic text-[var(--mute)]">
           Loading…
         </div>
+      ) : filtered.length === 0 && (filtersActive || searchActive) ? (
+        // Tasks exist but the active search/filters yield nothing → distinct
+        // filtered-empty state with a Clear escape hatch (no create-prompt,
+        // which would be the wrong CTA here). `Clear filters` resets only the
+        // popover state we own; the parent's search box is cleared by the
+        // user. We still surface it whenever a search is narrowing the list.
+        <PanelEmptyState
+          icon={ListChecks}
+          headline="No tasks match these filters."
+          supporting="Try a different filter or clear them to see every task."
+          action={
+            filtersActive
+              ? {
+                  label: "Clear filters",
+                  onClick: () => setFilterState(defaultIssueFilterState),
+                }
+              : undefined
+          }
+        />
       ) : issues.length === 0 ? (
+        // The company genuinely has no tasks → create-prompt empty state.
         <PanelEmptyState
           icon={ListChecks}
           headline="No tasks yet."

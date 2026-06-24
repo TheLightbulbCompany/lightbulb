@@ -94,18 +94,56 @@ class AddIssueCommentBody(_Strict):
 
 
 class CreateRoutineBody(_Strict):
-    name: str = Field(min_length=1, max_length=80)
-    cron: str = Field(min_length=1, max_length=80)
-    agent_id: str
-    prompt: str = Field(min_length=1, max_length=20000)
-    enabled: bool = True
+    """Body for ``POST /teams/routines``.
+
+    Mirrors upstream's ``createRoutineSchema``
+    (paperclip/packages/shared/src/validators/routine.ts:52-65): a routine
+    is a titled, assignable unit of recurring work. The cron schedule is
+    NOT part of the routine row — it lives on a separate schedule trigger
+    created via ``POST /routines/{id}/triggers`` (``CreateRoutineTriggerBody``).
+    The old ``{name, cron, agent_id, prompt, enabled}`` shape 422'd at the
+    upstream boundary; ``description`` carries the prompt copy.
+    """
+
+    title: str = Field(min_length=1, max_length=200)
+    description: Optional[str] = Field(default=None, max_length=20000)
+    assignee_agent_id: Optional[str] = None
+    status: Optional[str] = Field(default=None, pattern=r"^(active|paused|draft|archived)$")
+    priority: Optional[str] = Field(default=None, pattern=r"^(critical|high|medium|low)$")
+    project_id: Optional[str] = None
 
 
 class PatchRoutineBody(_Strict):
-    name: Optional[str] = Field(default=None, min_length=1, max_length=80)
-    cron: Optional[str] = Field(default=None, min_length=1, max_length=80)
-    prompt: Optional[str] = Field(default=None, min_length=1, max_length=20000)
-    enabled: Optional[bool] = None
+    """Body for ``PATCH /teams/routines/{id}``.
+
+    Mirrors upstream's ``updateRoutineSchema`` (a partial of
+    ``createRoutineSchema``). The enable/disable toggle PATCHes
+    ``{status: "active" | "paused"}`` — there is no ``enabled`` field
+    on the upstream routine row.
+    """
+
+    title: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    description: Optional[str] = Field(default=None, max_length=20000)
+    assignee_agent_id: Optional[str] = None
+    status: Optional[str] = Field(default=None, pattern=r"^(active|paused|draft|archived)$")
+    priority: Optional[str] = Field(default=None, pattern=r"^(critical|high|medium|low)$")
+    project_id: Optional[str] = None
+
+
+class CreateRoutineTriggerBody(_Strict):
+    """Body for ``POST /teams/routines/{id}/triggers``.
+
+    Schedule-only subset of upstream's ``createRoutineTriggerSchema``
+    (paperclip/packages/shared/src/validators/routine.ts:118-132). The
+    Teams create dialog only wires the ``schedule`` kind (cron); webhook /
+    api triggers are deferred. ``kind`` is fixed to ``schedule`` so the
+    discriminated union resolves cleanly upstream.
+    """
+
+    kind: str = Field(default="schedule", pattern=r"^schedule$")
+    cron_expression: str = Field(min_length=1, max_length=200)
+    timezone: str = Field(default="UTC", min_length=1, max_length=64)
+    label: Optional[str] = Field(default=None, max_length=120)
 
 
 class CreateGoalBody(_Strict):
@@ -118,10 +156,12 @@ class PatchGoalBody(_Strict):
     title: Optional[str] = Field(default=None, min_length=1, max_length=200)
     description: Optional[str] = Field(default=None, max_length=20000)
     parent_id: Optional[str] = None
-    status: Optional[str] = None
-    # Upstream's updateGoalSchema accepts ``level`` (the goal-detail Properties
-    # panel exposes a Level picker); mirror it so the picker patches cleanly.
-    level: Optional[str] = None
+    # Upstream GOAL_STATUSES / GOAL_LEVELS — constrain to the enums so an
+    # invalid value is rejected at the BFF boundary (422) instead of being
+    # forwarded for upstream to reject opaquely. ``updateGoalSchema`` exposes
+    # ``level`` via the goal-detail Properties Level picker.
+    status: Optional[str] = Field(default=None, pattern=r"^(planned|active|achieved|cancelled)$")
+    level: Optional[str] = Field(default=None, pattern=r"^(company|team|agent|task)$")
 
 
 class CreateProjectBody(_Strict):
@@ -130,9 +170,13 @@ class CreateProjectBody(_Strict):
 
 
 class PatchProjectBody(_Strict):
+    # NOTE: no project-budget field. Upstream Paperclip has no
+    # ``budgetMonthlyCents`` on the project row — budgets live behind a
+    # separate ``budget_policies`` API the BFF does not proxy, so a
+    # ``budget_monthly_cents`` here would be silently stripped. Removed
+    # rather than left as a no-op that misleads the UI.
     name: Optional[str] = Field(default=None, min_length=1, max_length=80)
     description: Optional[str] = Field(default=None, max_length=20000)
-    budget_monthly_cents: Optional[int] = Field(default=None, ge=0)
 
 
 class ApproveApprovalBody(_Strict):

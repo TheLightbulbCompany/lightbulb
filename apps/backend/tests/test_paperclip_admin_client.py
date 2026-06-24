@@ -513,3 +513,69 @@ async def test_archive_member_targets_company_and_member(client_factory):
     assert captured["cookie"] == "sess_admin"
     assert captured["body"] == "{}"
     assert out["member"]["status"] == "archived"
+
+
+async def test_approve_approval_remaps_note_to_decision_note(client_factory):
+    """Upstream ``resolveApprovalSchema`` accepts only ``decisionNote``, so
+    the BFF's ``note`` input must land on the wire as ``decisionNote`` —
+    otherwise the reviewer note is silently stripped (data loss)."""
+    captured: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured["url"] = str(req.url)
+        captured["body"] = _json.loads(req.read().decode())
+        return httpx.Response(200, json={"ok": True})
+
+    client = client_factory(handler)
+    await client.approve_approval(session_cookie="sess", approval_id="ap_1", note="looks good")
+    assert "/api/approvals/ap_1/approve" in captured["url"]
+    assert captured["body"] == {"decisionNote": "looks good"}
+
+
+async def test_approve_approval_empty_note_sends_empty_body(client_factory):
+    captured: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured["body"] = req.read().decode()
+        return httpx.Response(200, json={"ok": True})
+
+    client = client_factory(handler)
+    await client.approve_approval(session_cookie="sess", approval_id="ap_1", note=None)
+    assert captured["body"] == "{}"
+
+
+async def test_reject_approval_remaps_reason_to_decision_note(client_factory):
+    """``reject_approval``'s ``reason`` maps to upstream ``decisionNote``."""
+    captured: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured["url"] = str(req.url)
+        captured["body"] = _json.loads(req.read().decode())
+        return httpx.Response(200, json={"ok": True})
+
+    client = client_factory(handler)
+    await client.reject_approval(session_cookie="sess", approval_id="ap_1", reason="not safe")
+    assert "/api/approvals/ap_1/reject" in captured["url"]
+    assert captured["body"] == {"decisionNote": "not safe"}
+
+
+async def test_create_routine_trigger_posts_to_triggers_endpoint(client_factory):
+    """Cron schedule lives on a trigger (POST /routines/{id}/triggers), not
+    the routine row."""
+    captured: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured["url"] = str(req.url)
+        captured["body"] = _json.loads(req.read().decode())
+        return httpx.Response(201, json={"trigger": {"id": "tr_1"}, "secretMaterial": None})
+
+    client = client_factory(handler)
+    out = await client.create_routine_trigger(
+        session_cookie="sess",
+        routine_id="r1",
+        body={"kind": "schedule", "cronExpression": "0 9 * * *", "timezone": "UTC"},
+    )
+    assert "/api/routines/r1/triggers" in captured["url"]
+    assert captured["body"]["kind"] == "schedule"
+    assert captured["body"]["cronExpression"] == "0 9 * * *"
+    assert out["trigger"]["id"] == "tr_1"

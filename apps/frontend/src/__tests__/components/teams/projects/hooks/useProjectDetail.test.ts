@@ -45,7 +45,7 @@ describe("useProjectDetail", () => {
       baseApi(
         makeRead({
           "/projects/p_1": {
-            data: { id: "p_1", name: "Marketing", budgetMonthlyCents: 5000 },
+            data: { id: "p_1", name: "Marketing" },
           },
           "/issues?project=p_1": {
             data: { issues: [{ id: "i_1", title: "Task", status: "todo" }] },
@@ -55,7 +55,7 @@ describe("useProjectDetail", () => {
     );
     const { result } = renderHook(() => useProjectDetail("p_1"));
     expect(result.current.project?.id).toBe("p_1");
-    expect(result.current.project?.budgetMonthlyCents).toBe(5000);
+    expect(result.current.project?.name).toBe("Marketing");
     expect(result.current.issues).toHaveLength(1);
   });
 

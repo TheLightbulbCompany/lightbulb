@@ -41,6 +41,7 @@ def admin(monkeypatch):
     for name in (
         "list_routines",
         "create_routine",
+        "create_routine_trigger",
         "patch_routine",
         "delete_routine",
         "run_routine",
@@ -72,33 +73,66 @@ def test_list_routines(client, admin):
 
 
 def test_create_routine(client, admin):
+    """Create body mirrors upstream ``createRoutineSchema``: a titled,
+    assignable routine row — cron is NOT here (it's on a trigger)."""
     r = client.post(
         "/api/v1/teams/routines",
         json={
-            "name": "nightly",
-            "cron": "0 0 * * *",
-            "agent_id": "a1",
-            "prompt": "Run nightly checks",
+            "title": "nightly",
+            "assignee_agent_id": "a1",
+            "description": "Run nightly checks",
+            "status": "active",
         },
         headers={"Authorization": "Bearer x"},
     )
     assert r.status_code == 200
     body = admin.create_routine.await_args.kwargs["body"]
-    assert body["name"] == "nightly"
-    assert body["cron"] == "0 0 * * *"
+    # camelCase emitted on the wire; cron must NOT leak into the routine body.
+    assert body["title"] == "nightly"
+    assert body["assigneeAgentId"] == "a1"
+    assert body["description"] == "Run nightly checks"
+    assert body["status"] == "active"
+    assert "cron" not in body
+    assert "name" not in body
 
 
 def test_create_routine_rejects_extra(client):
-    """``CreateRoutineBody`` is extra="forbid" — unknown keys must 422."""
+    """``CreateRoutineBody`` is extra="forbid" — unknown keys (and the
+    old ``cron``/``name`` flat fields) must 422."""
     r = client.post(
         "/api/v1/teams/routines",
         json={
-            "name": "x",
-            "cron": "x",
-            "agent_id": "a",
-            "prompt": "p",
-            "evil": 1,
+            "title": "x",
+            "cron": "0 0 * * *",  # cron is no longer a routine field
         },
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 422
+
+
+def test_create_routine_trigger(client, admin):
+    """POST /teams/routines/{id}/triggers forwards a schedule trigger
+    (cron lives here, not on the routine row)."""
+    r = client.post(
+        "/api/v1/teams/routines/r1/triggers",
+        json={"kind": "schedule", "cron_expression": "0 9 * * *", "timezone": "UTC"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    admin.create_routine_trigger.assert_awaited_once()
+    kwargs = admin.create_routine_trigger.await_args.kwargs
+    assert kwargs["routine_id"] == "r1"
+    body = kwargs["body"]
+    assert body["kind"] == "schedule"
+    assert body["cronExpression"] == "0 9 * * *"
+    assert body["timezone"] == "UTC"
+
+
+def test_create_routine_trigger_rejects_non_schedule(client, admin):
+    """The trigger body is schedule-only — a webhook kind 422s."""
+    r = client.post(
+        "/api/v1/teams/routines/r1/triggers",
+        json={"kind": "webhook", "cron_expression": "0 9 * * *"},
         headers={"Authorization": "Bearer x"},
     )
     assert r.status_code == 422
@@ -114,7 +148,7 @@ def test_run_routine_proxies_upstream(client, monkeypatch):
 
     r = client.post(
         "/api/v1/teams/routines/r1/run",
-        json={"reason": "manual"},
+        json={"source": "manual"},
         headers={"Authorization": "Bearer x"},
     )
 
@@ -122,7 +156,7 @@ def test_run_routine_proxies_upstream(client, monkeypatch):
     assert r.json()["runId"] == "run_test_123"
     admin.run_routine.assert_awaited_once_with(
         routine_id="r1",
-        body={"reason": "manual"},
+        body={"source": "manual"},
         session_cookie="cookie",
     )
 
@@ -225,6 +259,26 @@ def test_patch_goal_rejects_extra(client):
     r = client.patch(
         "/api/v1/teams/goals/g_1",
         json={"title": "x", "evil": 1},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 422
+
+
+def test_patch_goal_rejects_invalid_status(client):
+    """``PatchGoalBody.status`` is constrained to GOAL_STATUSES."""
+    r = client.patch(
+        "/api/v1/teams/goals/g_1",
+        json={"status": "in_progress"},  # not a GOAL_STATUS
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 422
+
+
+def test_patch_goal_rejects_invalid_level(client):
+    """``PatchGoalBody.level`` is constrained to GOAL_LEVELS."""
+    r = client.patch(
+        "/api/v1/teams/goals/g_1",
+        json={"level": "department"},  # not a GOAL_LEVEL
         headers={"Authorization": "Bearer x"},
     )
     assert r.status_code == 422

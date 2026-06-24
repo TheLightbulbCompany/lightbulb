@@ -12,8 +12,8 @@
 // out of the slim BFF's whitelist and deferred.
 //
 // Wire shape note: the Teams BFF's PatchProjectBody whitelists snake_case keys
-// (name, description, budget_monthly_cents) and re-emits camelCase to Paperclip
-// via its alias generator — that snake_case IS the wire shape the hook sends.
+// (name, description) and re-emits camelCase to Paperclip via its alias
+// generator — that snake_case IS the wire shape the hook sends.
 // ProjectUpdateInput already uses snake_case so it is forwarded verbatim.
 
 import { useCallback } from "react";
@@ -37,7 +37,7 @@ export function useProjectMutations(): UseProjectMutationsResult {
     async (projectId: string, input: ProjectUpdateInput): Promise<Project> => {
       const updated = await patch<Project>(`/projects/${projectId}`, input);
       // Invalidate the detail key + the company project list (the list row's
-      // name/description/budget reflect the change).
+      // name/description reflect the change).
       mutate(swrKey(teamsQueryKeys.projectDetail(projectId)));
       mutate(swrKey(teamsQueryKeys.projects()));
       return updated;

@@ -7,6 +7,7 @@ import { EditorialButton } from "@/components/teams/shell";
 import { notifyApiError } from "@/lib/notify";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { useApprovalMutations } from "@/components/teams/inbox/hooks/useApprovalMutations";
+import { approvalLabel } from "@/components/teams/inbox/lib/approvalLabel";
 import type { Approval } from "@/components/teams/shared/types";
 
 export function ApprovalRow({ approval }: { approval: Approval }) {
@@ -15,8 +16,15 @@ export function ApprovalRow({ approval }: { approval: Approval }) {
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
 
-  const title = approval.title?.trim() ? approval.title : "Approval requested";
-  const isPending = approval.status === "pending";
+  // Upstream never sends a top-level `title`, so the old `approval.title`
+  // read always fell back to a generic "Approval requested". Synthesize a
+  // contextual label from `type` + `payload` (ported from upstream's
+  // `approvalLabel`), e.g. "Hire Agent: Designer".
+  const title = approvalLabel(approval.type, approval.payload);
+  // Both `pending` and `revision_requested` are actionable — the reviewer can
+  // still approve/reject. (Only terminal states hide the action buttons.)
+  const isActionable =
+    approval.status === "pending" || approval.status === "revision_requested";
 
   async function run(fn: () => Promise<void>) {
     setBusy(true);
@@ -44,7 +52,7 @@ export function ApprovalRow({ approval }: { approval: Approval }) {
         >
           View
         </a>
-        {isPending && !rejecting && (
+        {isActionable && !rejecting && (
           <div className="flex gap-2">
             <EditorialButton size="sm" disabled={busy} onClick={() => run(() => approve(approval.id))}>
               Approve
@@ -54,11 +62,11 @@ export function ApprovalRow({ approval }: { approval: Approval }) {
             </EditorialButton>
           </div>
         )}
-        {!isPending && (
+        {!isActionable && (
           <span className="text-xs capitalize text-[var(--mute)]">{approval.status}</span>
         )}
       </div>
-      {isPending && rejecting && (
+      {isActionable && rejecting && (
         <div className="flex items-center gap-2">
           <input
             autoFocus

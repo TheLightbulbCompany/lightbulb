@@ -3,15 +3,15 @@
 // Ported from upstream Paperclip's pages/ProjectDetail.tsx properties block
 // (paperclip/ui/src/pages/ProjectDetail.tsx) (MIT, © 2025 Paperclip AI).
 // Mirrors IssueProperties.tsx / GoalProperties.tsx PropertyRow layout verbatim.
-// All rows are read-only summaries; editing (name/description/budget) lives in
-// the Overview + Budget tabs. Drops upstream's icon/color, budget-utilization
-// gauge, and membership rows (no slim-BFF data for them).
+// All rows are read-only summaries; editing (name/description) lives in the
+// Overview tab. Drops upstream's icon/color and membership rows (no slim-BFF
+// data for them). No budget row — upstream has no project-budget field (see
+// shared/types.ts).
 
 "use client";
 
 import type { ReactNode } from "react";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
-import { formatCents } from "@/components/teams/shared/lib/money";
 import { cn } from "@/lib/utils";
 import type { Project } from "@/components/teams/shared/types";
 
@@ -52,8 +52,6 @@ export function ProjectProperties({
   issueCount,
   className,
 }: ProjectPropertiesProps) {
-  const budget = project.budgetMonthlyCents;
-
   return (
     <dl className={cn("flex flex-col", className)}>
       {project.status && (
@@ -61,20 +59,6 @@ export function ProjectProperties({
           <span className="capitalize">{project.status.replace(/_/g, " ")}</span>
         </PropertyRow>
       )}
-      <PropertyRow label="Budget">
-        {typeof budget === "number" && budget > 0 ? (
-          <span className="tabular-nums" style={{ color: "var(--ink)" }}>
-            {formatCents(budget)}
-            <span className="ml-1 text-xs" style={{ color: "var(--mute)" }}>
-              / mo
-            </span>
-          </span>
-        ) : (
-          <span data-empty="true" style={EMPTY_DASH_STYLE}>
-            No cap
-          </span>
-        )}
-      </PropertyRow>
       <PropertyRow label="Issues">
         <span className="tabular-nums" style={{ color: "var(--ink)" }}>
           {issueCount}

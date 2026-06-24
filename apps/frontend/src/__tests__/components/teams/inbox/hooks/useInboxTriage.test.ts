@@ -65,10 +65,16 @@ describe("useInboxTriage", () => {
     expect(result.current.isError).toBe(false);
   });
 
-  test("counts pending approvals + failed runs, filtering acknowledged", () => {
+  test("counts actionable approvals (pending + revision_requested) + failed runs, filtering acknowledged", () => {
     installRead({
       "/approvals": {
-        data: { approvals: [{ id: "a1", status: "pending" }, { id: "a2", status: "resolved" }] },
+        data: {
+          approvals: [
+            { id: "a1", status: "pending" },
+            { id: "a2", status: "approved" }, // terminal — filtered out
+            { id: "a3", status: "revision_requested" }, // actionable — kept
+          ],
+        },
       },
       "/inbox/runs": {
         data: {
@@ -81,9 +87,9 @@ describe("useInboxTriage", () => {
       },
     });
     const { result } = renderHook(() => useInboxTriage(new Set(["r2"])));
-    expect(result.current.approvals).toHaveLength(1);
+    expect(result.current.approvals.map((a) => a.id)).toEqual(["a1", "a3"]);
     expect(result.current.failedRuns.map((r) => r.id)).toEqual(["r1"]);
-    expect(result.current.count).toBe(2);
+    expect(result.current.count).toBe(3);
     expect(result.current.isError).toBe(false);
   });
 });

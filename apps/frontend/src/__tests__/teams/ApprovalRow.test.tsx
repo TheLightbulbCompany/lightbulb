@@ -11,7 +11,13 @@ vi.mock("@/components/teams/inbox/hooks/useApprovalMutations", () => ({
 import { ApprovalRow } from "@/components/teams/inbox/ApprovalRow";
 import type { Approval } from "@/components/teams/shared/types";
 
-const A: Approval = { id: "a1", title: "Deploy to prod?", status: "pending", createdAt: "2026-05-29T00:00:00Z" };
+const A: Approval = {
+  id: "a1",
+  type: "hire_agent",
+  payload: { name: "Designer" },
+  status: "pending",
+  createdAt: "2026-05-29T00:00:00Z",
+};
 
 beforeEach(() => { approve.mockReset().mockResolvedValue(undefined); reject.mockReset().mockResolvedValue(undefined); });
 
@@ -20,6 +26,21 @@ describe("ApprovalRow", () => {
     render(<ApprovalRow approval={A} />);
     fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
     await waitFor(() => expect(approve).toHaveBeenCalledWith("a1"));
+  });
+
+  it("synthesizes a contextual label from type + payload", () => {
+    render(<ApprovalRow approval={A} />);
+    expect(screen.getByText("Hire Agent: Designer")).toBeInTheDocument();
+  });
+
+  it("treats revision_requested as actionable (shows Approve/Reject)", () => {
+    render(
+      <ApprovalRow
+        approval={{ id: "a3", type: "hire_agent", status: "revision_requested" }}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /^approve$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^reject$/i })).toBeInTheDocument();
   });
 
   it("Reject requires a reason: confirm disabled until typed, then posts reason", async () => {

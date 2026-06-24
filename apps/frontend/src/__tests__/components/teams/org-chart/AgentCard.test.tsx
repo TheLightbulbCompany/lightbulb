@@ -86,12 +86,11 @@ describe("AgentCard", () => {
     expect(screen.queryByText(/writes and ships/i)).not.toBeInTheDocument();
   });
 
-  test("renders avatar image when iconUrl is given", () => {
-    const { container } = render(
-      <AgentCard {...baseProps} iconUrl="https://example.com/a.png" />,
-    );
-    const img = container.querySelector("img");
-    expect(img).toHaveAttribute("src", "https://example.com/a.png");
+  test("renders a glyph avatar (no image) — Agent.icon is opaque, not a URL", () => {
+    const { container } = render(<AgentCard {...baseProps} />);
+    // No <img> avatar plumbing — every card uses the Bot glyph (an SVG).
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.querySelector("svg")).toBeInTheDocument();
   });
 
   test("renders the status label in the footer (capitalized)", () => {
@@ -107,11 +106,17 @@ describe("AgentCard", () => {
     expect(screen.getAllByText(/Error · adapter timeout/).length).toBeGreaterThan(0);
   });
 
-  test("appends the pause reason to the status when paused", () => {
-    render(
-      <AgentCard {...baseProps} status="paused" pauseReason="budget exhausted" />,
-    );
+  test("maps the pause-reason code to prose when paused", () => {
+    // Upstream sends the enum code ("budget"); the card humanizes it.
+    render(<AgentCard {...baseProps} status="paused" pauseReason="budget" />);
     expect(screen.getAllByText(/Paused · budget exhausted/).length).toBeGreaterThan(0);
+    // The raw code must not leak into the rendered label.
+    expect(screen.queryByText(/Paused · budget$/)).not.toBeInTheDocument();
+  });
+
+  test("falls back to the raw pause code for an unknown reason", () => {
+    render(<AgentCard {...baseProps} status="paused" pauseReason="mystery" />);
+    expect(screen.getAllByText(/Paused · mystery/).length).toBeGreaterThan(0);
   });
 
   test("renders a relative last-active line from lastHeartbeatAt", () => {

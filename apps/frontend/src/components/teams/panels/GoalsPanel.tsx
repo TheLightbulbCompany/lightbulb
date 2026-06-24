@@ -26,6 +26,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
+import { notifyApiError } from "@/lib/notify";
 import { useGoalMutations } from "@/components/teams/goals/hooks/useGoalMutations";
 import { GoalPicker } from "@/components/teams/goals/GoalPicker";
 import { GOAL_STATUSES } from "@/components/teams/shared/types";
@@ -180,6 +181,10 @@ export function GoalsPanel() {
       await goalMutations.remove(deleteTarget.id);
       setDeleteTarget(null);
       mutate();
+    } catch (e) {
+      // Surface the failure rather than silently leaving the row in place —
+      // the delete didn't happen and the user needs to know.
+      notifyApiError(e, "Couldn't delete the goal. Try again.");
     } finally {
       setDeleting(false);
     }

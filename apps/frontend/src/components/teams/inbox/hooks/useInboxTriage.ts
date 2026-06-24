@@ -35,7 +35,9 @@ function asRuns(data: RunsResponse): HeartbeatRun[] {
  * Merge the two triage sources for the "Needs attention" band.
  *
  * - Approvals: the real list endpoint `/approvals` (the `/inbox/approvals`
- *   query key is an empty tab stub — do NOT use it). Filtered to pending.
+ *   query key is an empty tab stub — do NOT use it). Filtered to the actionable
+ *   states: `pending` AND `revision_requested` (the agent asked for changes —
+ *   it still needs the reviewer to act, so it belongs in the band).
  * - Failed runs: `/inbox/runs` (BFF already forwards status=failed; we
  *   re-filter defensively) minus the locally-acknowledged ids.
  *
@@ -47,7 +49,9 @@ export function useInboxTriage(acknowledgedRunIds: Set<string>): UseInboxTriageR
   const approvalsRes = read<ApprovalsResponse>("/approvals");
   const runsRes = read<RunsResponse>("/inbox/runs");
 
-  const approvals = asApprovals(approvalsRes.data).filter((a) => a.status === "pending");
+  const approvals = asApprovals(approvalsRes.data).filter(
+    (a) => a.status === "pending" || a.status === "revision_requested",
+  );
   const failedRuns = asRuns(runsRes.data).filter(
     (r) => r.status === "failed" && !acknowledgedRunIds.has(r.id),
   );

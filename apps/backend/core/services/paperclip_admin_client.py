@@ -914,15 +914,23 @@ class PaperclipAdminClient:
         *,
         session_cookie: str,
         company_id: str,
+        min_count: Optional[int] = None,
     ) -> dict:
         """List currently-running heartbeat runs for the company.
 
         Maps to ``GET /api/companies/{companyId}/live-runs``. Used by the
-        Inbox UI to show a pulsing "Live" badge on issues with active runs.
+        Inbox UI to show a pulsing "Live" badge on issues with active runs,
+        and by the dashboard's Active-Agents strip.
+
+        ``min_count`` is upstream's ``minCount`` padding floor — when the
+        live-run set is short, upstream tops it up with recent runs so the
+        strip isn't under-populated (mirrors the UI's ``MIN_DASHBOARD_RUNS``).
         """
+        params = {"minCount": str(min_count)} if min_count is not None else None
         return await self._get(
             f"/api/companies/{company_id}/live-runs",
             session_cookie=session_cookie,
+            params=params,
         )
 
     async def get_heartbeat_run(
@@ -992,11 +1000,14 @@ class PaperclipAdminClient:
     ) -> dict:
         """Approve a pending approval, optionally with a reviewer note.
 
-        Maps to ``POST /api/approvals/{approvalId}/approve``. The body
-        is intentionally narrow — ``note`` only — to close the
-        ``payload.adapterType`` smuggling carrier flagged in the audit.
+        Maps to ``POST /api/approvals/{approvalId}/approve``. Upstream's
+        ``resolveApprovalSchema`` accepts only ``decisionNote`` (validators/
+        approval.ts), so the BFF's ``note`` input is remapped to
+        ``decisionNote`` here — sending ``note`` would be silently stripped
+        and the reviewer's note lost. The body stays narrow (``decisionNote``
+        only) to keep the ``payload.adapterType`` smuggling carrier closed.
         """
-        body: dict[str, Any] = {"note": note} if note else {}
+        body: dict[str, Any] = {"decisionNote": note} if note else {}
         return await self._post(
             f"/api/approvals/{approval_id}/approve",
             json=body,
@@ -1010,13 +1021,17 @@ class PaperclipAdminClient:
         approval_id: str,
         reason: str,
     ) -> dict:
-        """Reject a pending approval. ``reason`` is required upstream.
+        """Reject a pending approval with a required reviewer reason.
 
-        Maps to ``POST /api/approvals/{approvalId}/reject``.
+        Maps to ``POST /api/approvals/{approvalId}/reject``. Upstream's
+        ``resolveApprovalSchema`` accepts only ``decisionNote``, so the
+        BFF's ``reason`` input is remapped to ``decisionNote`` here —
+        sending ``reason`` would be silently stripped and the rejection
+        reason lost.
         """
         return await self._post(
             f"/api/approvals/{approval_id}/reject",
-            json={"reason": reason},
+            json={"decisionNote": reason},
             session_cookie=session_cookie,
         )
 
@@ -1357,6 +1372,27 @@ class PaperclipAdminClient:
             session_cookie=session_cookie,
         )
 
+    async def create_routine_trigger(
+        self,
+        *,
+        session_cookie: str,
+        routine_id: str,
+        body: dict,
+    ) -> dict:
+        """Attach a trigger (schedule/webhook/api) to a routine.
+
+        Maps to ``POST /api/routines/{routineId}/triggers`` upstream
+        (paperclip/server/src/routes/routines.ts:253). The cron schedule
+        lives on a schedule trigger, NOT the routine row — see
+        ``createRoutineTriggerSchema``. Body is whitelisted by the BFF
+        (``CreateRoutineTriggerBody``). Returns ``{trigger, secretMaterial}``.
+        """
+        return await self._post(
+            f"/api/routines/{routine_id}/triggers",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
     async def patch_routine(
         self,
         *,
@@ -1610,14 +1646,20 @@ class PaperclipAdminClient:
         *,
         session_cookie: str,
         company_id: str,
+        limit: Optional[int] = None,
     ) -> dict:
         """List company activity events.
 
-        Maps to ``GET /api/companies/{companyId}/activity``.
+        Maps to ``GET /api/companies/{companyId}/activity``. ``limit`` is
+        forwarded to upstream's ``normalizeActivityLimit`` (default 100,
+        max 500); without it the feed silently caps at 100 instead of the
+        200 the UI asks for.
         """
+        params = {"limit": str(limit)} if limit is not None else None
         return await self._get(
             f"/api/companies/{company_id}/activity",
             session_cookie=session_cookie,
+            params=params,
         )
 
     async def get_costs(

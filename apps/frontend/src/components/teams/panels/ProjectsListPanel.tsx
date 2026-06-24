@@ -13,16 +13,14 @@ import {
 } from "@/components/teams/shell";
 import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
-import { formatCents } from "@/components/teams/shared/lib/money";
 
-// The /projects envelope proxies the raw upstream project rows verbatim, so the
-// budget field is camelCase (`budgetMonthlyCents`) — NOT the snake_case the
-// PATCH body whitelist uses.
+// The /projects envelope proxies the raw upstream project rows verbatim. (No
+// budget column: upstream has no budget field on the project row — see the
+// note in shared/types.ts.)
 interface Project {
   id: string;
   name: string;
   description?: string;
-  budgetMonthlyCents?: number | null;
 }
 
 export function ProjectsListPanel() {
@@ -73,20 +71,6 @@ export function ProjectsListPanel() {
           {p.description ?? "—"}
         </span>
       ),
-    },
-    {
-      key: "budget",
-      header: "Budget",
-      align: "right",
-      cell: (p) =>
-        typeof p.budgetMonthlyCents === "number" && p.budgetMonthlyCents > 0 ? (
-          <span className="text-sm tabular-nums text-[var(--ink-soft)]">
-            {formatCents(p.budgetMonthlyCents)}
-            <span className="ml-1 text-xs text-[var(--mute)]">/ mo</span>
-          </span>
-        ) : (
-          <span className="text-sm text-[var(--mute)]">—</span>
-        ),
     },
     {
       key: "open",

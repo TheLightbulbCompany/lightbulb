@@ -19,6 +19,7 @@ import { GoalStatusIcon } from "./GoalStatusIcon";
 import { useGoalDetail } from "./hooks/useGoalDetail";
 import { useGoalMutations } from "./hooks/useGoalMutations";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
+import { notifyApiError } from "@/lib/notify";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -79,6 +80,10 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
       setDeleteOpen(false);
       // The goal is gone — leave the now-dead detail route for the goals list.
       router.push("/teams/goals");
+    } catch (e) {
+      // Surface the failure instead of silently leaving the dialog open with
+      // no feedback — the goal is still there; the user needs to know.
+      notifyApiError(e, "Couldn't delete the goal. Try again.");
     } finally {
       setDeleting(false);
     }

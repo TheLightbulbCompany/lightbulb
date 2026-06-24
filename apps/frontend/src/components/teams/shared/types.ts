@@ -182,8 +182,24 @@ export interface Issue {
 export interface Approval {
   id: string;
   issueId?: string | null;
+  /** Upstream never sends a top-level `title` on the list row — the label is
+   *  synthesized from `type` + `payload` (see `approvalLabel`). Kept optional
+   *  for forward-compat but should not be relied on. */
   title?: string | null;
-  status: "pending" | "approved" | "rejected";
+  /** Upstream approval `type` (e.g. "hire_agent", "request_board_approval");
+   *  drives the synthesized row label. */
+  type?: string | null;
+  /** Redacted payload subset upstream surfaces on the list row; the label
+   *  reads `title` / `name` / `summary` / `recommendedAction` from it. */
+  payload?: Record<string, unknown> | null;
+  /** Upstream APPROVAL_STATUSES. `revision_requested` is actionable (the agent
+   *  asked for changes) and must NOT be hidden from the triage band. */
+  status:
+    | "pending"
+    | "revision_requested"
+    | "approved"
+    | "rejected"
+    | "cancelled";
   createdAt?: string | null;
   decidedAt?: string | null;
 }
@@ -295,14 +311,15 @@ export interface CompanyMember {
 export interface CompanyAgent {
   id: string;
   name: string;
-  iconUrl?: string | null;
   /** Paperclip agent role e.g. "ceo" | "engineer" | "general". */
   role?: string | null;
   /** Short one-liner shown in the roster. */
   title?: string | null;
   /** Longer freeform description Friday reads when orchestrating. */
   capabilities?: string | null;
-  /** Paperclip icon-picker value (opaque AGENT_ICON_NAMES string). */
+  /** Paperclip icon-picker value (opaque AGENT_ICON_NAMES string) — NOT a URL.
+   *  There is no avatar-URL field on the agent wire shape; the org chart and
+   *  roster render a generic Bot glyph rather than an image. */
   icon?: string | null;
   /** Runtime status: "idle" | "running" | "error" | "paused" | "terminated". */
   status?: string | null;
@@ -430,14 +447,16 @@ export interface GoalUpdateInput {
 // `IssueProject` above (id/name/color) is the denormalized form embedded on
 // issues; this is the full detail row the Project-detail page consumes.
 
-/** Full project row from GET /teams/projects/{id} (upstream Project). */
+/** Full project row from GET /teams/projects/{id} (upstream Project).
+ *
+ * NOTE: no `budgetMonthlyCents` — upstream Paperclip has no budget field on
+ * the project row (project budgets live behind a separate `budget_policies`
+ * API the slim BFF does not proxy), so it would always be absent. */
 export interface Project {
   id: string;
   companyId?: string | null;
   name: string;
   description?: string | null;
-  /** Monthly budget in cents (upstream `budgetMonthlyCents`). */
-  budgetMonthlyCents?: number | null;
   status?: string | null;
   color?: string | null;
   icon?: string | null;
@@ -449,12 +468,11 @@ export interface Project {
  * Body for PATCH /teams/projects/{id}.
  *
  * The BFF's `PatchProjectBody` whitelists snake_case attribute names
- * (`name`, `description`, `budget_monthly_cents`) and re-emits camelCase to
- * Paperclip via its alias generator — so this snake_case shape IS the wire
- * shape the hook sends (mirrors `GoalUpdateInput`).
+ * (`name`, `description`) and re-emits camelCase to Paperclip via its alias
+ * generator — so this snake_case shape IS the wire shape the hook sends
+ * (mirrors `GoalUpdateInput`). No budget field (see `Project` above).
  */
 export interface ProjectUpdateInput {
   name?: string;
   description?: string | null;
-  budget_monthly_cents?: number;
 }

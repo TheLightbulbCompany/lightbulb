@@ -16,11 +16,12 @@ function mockRead(approvals: unknown, runs: unknown) {
 }
 
 describe("useInboxTriage", () => {
-  it("returns pending approvals + failed (non-acked) runs and a count", () => {
+  it("returns actionable approvals (pending + revision_requested) + failed (non-acked) runs and a count", () => {
     mockRead(
       { approvals: [
-        { id: "a1", title: "Deploy?", status: "pending" },
-        { id: "a2", title: "old", status: "approved" }, // filtered out
+        { id: "a1", type: "hire_agent", status: "pending" },
+        { id: "a2", type: "hire_agent", status: "approved" }, // terminal — filtered out
+        { id: "a4", type: "hire_agent", status: "revision_requested" }, // actionable — kept
       ] },
       { runs: [
         { id: "r1", agentId: "ag1", status: "failed" },
@@ -29,9 +30,9 @@ describe("useInboxTriage", () => {
       ] },
     );
     const { result } = renderHook(() => useInboxTriage(new Set(["r3"])));
-    expect(result.current.approvals.map((a) => a.id)).toEqual(["a1"]);
+    expect(result.current.approvals.map((a) => a.id)).toEqual(["a1", "a4"]);
     expect(result.current.failedRuns.map((r) => r.id)).toEqual(["r1"]);
-    expect(result.current.count).toBe(2);
+    expect(result.current.count).toBe(3);
   });
 
   it("normalizes bare-array run payloads and tolerates undefined", () => {

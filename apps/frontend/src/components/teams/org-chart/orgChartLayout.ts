@@ -34,8 +34,8 @@ export interface OrgChartAgent extends CompanyAgent {
   /** Display role e.g. "ceo" | "engineer" — optional, falls back to "Agent". */
   role?: string | null;
   // ── Enrichment fields the BFF proxies from the upstream Agent record.
-  // `title`, `capabilities`, `iconUrl` are already declared on CompanyAgent;
-  // these three are extra wire fields the org chart consumes. ──
+  // `title`, `capabilities` are already declared on CompanyAgent; these three
+  // are extra wire fields the org chart consumes. ──
   /** ISO timestamp of the agent's last heartbeat. */
   lastHeartbeatAt?: string | null;
   /** Reason the agent is paused (only meaningful when status is "paused"). */
@@ -60,8 +60,6 @@ export interface LayoutNode {
   title?: string | null;
   /** Longer freeform description (upstream `Agent.capabilities`). */
   capabilities?: string | null;
-  /** Avatar URL, when the BFF surfaces one (upstream `Agent.iconUrl`). */
-  iconUrl?: string | null;
   /** ISO timestamp of the agent's last heartbeat (upstream `Agent.lastHeartbeatAt`). */
   lastHeartbeatAt?: string | null;
   /** Why the agent is paused, when status is "paused" (upstream `Agent.pauseReason`). */
@@ -152,7 +150,6 @@ export function layoutTree(agents: OrgChartAgent[]): {
       children,
       title: a.title ?? null,
       capabilities: a.capabilities ?? null,
-      iconUrl: a.iconUrl ?? null,
       lastHeartbeatAt: a.lastHeartbeatAt ?? null,
       pauseReason: a.pauseReason ?? null,
       errorReason: a.errorReason ?? null,

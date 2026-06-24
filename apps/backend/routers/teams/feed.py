@@ -9,8 +9,9 @@ renders in a single round-trip.
 from __future__ import annotations
 
 import asyncio
+from typing import Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from . import agents as _agents
 from .deps import TeamsContext
@@ -20,11 +21,20 @@ _ctx = _agents._ctx
 
 
 @router.get("/activity")
-async def list_activity(ctx: TeamsContext = Depends(_ctx)):
-    """List company activity events."""
+async def list_activity(
+    ctx: TeamsContext = Depends(_ctx),
+    limit: Optional[int] = Query(default=None, ge=1, le=500),
+):
+    """List company activity events.
+
+    Forwards ``limit`` to upstream (bounded 1–500, upstream's
+    ``MAX_ACTIVITY_LIMIT``). The Activity feed asks for 200; without
+    forwarding it the feed silently caps at upstream's default of 100.
+    """
     return await _agents._admin().list_activity(
         company_id=ctx.company_id,
         session_cookie=ctx.session_cookie,
+        limit=limit,
     )
 
 

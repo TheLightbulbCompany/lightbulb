@@ -3,12 +3,17 @@
 // Ported + enriched from upstream Paperclip's OrgChart card render
 // (paperclip/ui/src/pages/OrgChart.tsx) (MIT, (c) 2025 Paperclip AI).
 //
-// Upstream shows avatar + status dot, name, title (falling back to a role
-// label), the adapter label, and capabilities (line-clamped). We mirror that
-// in the editorial theme, minus the adapter label (the BFF strips
+// Upstream shows a glyph avatar + status dot, name, title (falling back to a
+// role label), the adapter label, and capabilities (line-clamped). We mirror
+// that in the editorial theme, minus the adapter label (the BFF strips
 // `adapterType` from the agents list as a token-leak defense — see
 // routers/teams/agents.py `_redact_agent`), and add a relative "last active"
 // line plus the pause/error reason when the status carries one.
+//
+// No image avatar: upstream's `Agent.icon` is an opaque icon-picker name
+// (rendered via `<AgentIcon>`), NOT a URL — there is no avatar-URL field on
+// the agent wire shape. We render the Bot glyph for every card rather than
+// plumb a never-populated `iconUrl` through an `<img>` that would never load.
 //
 // Click navigates to the agent detail. The `data-org-card` marker lets the
 // pan/zoom viewport tell card clicks apart from drag-to-pan.
@@ -31,11 +36,9 @@ export interface AgentCardProps {
   title?: string | null;
   /** Longer freeform description, line-clamped to two lines. */
   capabilities?: string | null;
-  /** Avatar image URL; falls back to the Bot glyph when absent. */
-  iconUrl?: string | null;
   /** ISO timestamp → rendered as a relative "active <n> ago" line. */
   lastHeartbeatAt?: string | null;
-  /** Shown beside the status when paused. */
+  /** Shown beside the status when paused (upstream PauseReason code). */
   pauseReason?: string | null;
   /** Shown beside the status when errored. */
   errorReason?: string | null;
@@ -47,6 +50,21 @@ function statusLabel(status: string): string {
   return status.charAt(0).toUpperCase() + status.slice(1);
 }
 
+// Upstream PauseReason codes (packages/shared/src/constants.ts:469) → prose.
+// Rendering the raw code ("Paused · company_archived") leaks an internal enum
+// into the card; map it to a human label and fall back to the raw code for any
+// future value.
+const PAUSE_REASON_LABELS: Record<string, string> = {
+  manual: "paused manually",
+  budget: "budget exhausted",
+  system: "paused by system",
+  company_archived: "company archived",
+};
+
+function pauseReasonLabel(reason: string): string {
+  return PAUSE_REASON_LABELS[reason] ?? reason;
+}
+
 export function AgentCard({
   id,
   name,
@@ -56,7 +74,6 @@ export function AgentCard({
   y,
   title,
   capabilities,
-  iconUrl,
   lastHeartbeatAt,
   pauseReason,
   errorReason,
@@ -66,11 +83,12 @@ export function AgentCard({
 
   // A short status descriptor. When paused/errored and a reason is present,
   // append it so the card explains *why* without opening the detail page.
+  // Pause codes are humanized; error reasons are already prose.
   const reason =
     status === "error"
       ? errorReason?.trim()
-      : status === "paused"
-        ? pauseReason?.trim()
+      : status === "paused" && pauseReason?.trim()
+        ? pauseReasonLabel(pauseReason.trim())
         : null;
   const statusText = reason ? `${statusLabel(status)} · ${reason}` : statusLabel(status);
 
@@ -91,30 +109,19 @@ export function AgentCard({
         color: "var(--ink)",
       }}
     >
-      {/* Header: avatar + name + status dot */}
+      {/* Header: glyph avatar + name + status dot */}
       <div className="flex items-center gap-2 min-w-0">
         <span className="relative shrink-0">
-          {iconUrl ? (
-            // eslint-disable-next-line @next/next/no-img-element -- avatar URLs are
-            // arbitrary external hosts; next/image would require remotePatterns config.
-            <img
-              src={iconUrl}
-              alt=""
-              className="h-7 w-7 rounded-full object-cover"
-              style={{ border: "1px solid var(--edge)" }}
+          <span
+            className="flex h-7 w-7 items-center justify-center rounded-full"
+            style={{ backgroundColor: "var(--cream-deeper)" }}
+          >
+            <Bot
+              className="h-4 w-4"
+              style={{ color: "var(--mute)" }}
+              aria-hidden="true"
             />
-          ) : (
-            <span
-              className="flex h-7 w-7 items-center justify-center rounded-full"
-              style={{ backgroundColor: "var(--cream-deeper)" }}
-            >
-              <Bot
-                className="h-4 w-4"
-                style={{ color: "var(--mute)" }}
-                aria-hidden="true"
-              />
-            </span>
-          )}
+          </span>
           <span
             className={cn(
               "absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full",

@@ -163,7 +163,6 @@ export function OrgChart({ agents, className }: OrgChartProps) {
               y={c.y}
               title={c.title}
               capabilities={c.capabilities}
-              iconUrl={c.iconUrl}
               lastHeartbeatAt={c.lastHeartbeatAt}
               pauseReason={c.pauseReason}
               errorReason={c.errorReason}

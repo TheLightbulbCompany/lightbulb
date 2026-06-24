@@ -8,9 +8,10 @@
 
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { EyeOff, MoreHorizontal, Trash2 } from "lucide-react";
+import { Copy, EyeOff, MoreHorizontal, Trash2 } from "lucide-react";
+import { Textarea } from "@/components/ui/textarea";
 import { IssueHeader } from "./IssueHeader";
 import { IssueComments } from "./IssueComments";
 import { IssueProperties } from "./IssueProperties";
@@ -38,6 +39,119 @@ export interface IssueDetailPageProps {
   issueId: string;
 }
 
+/** Inline-editable description, mirroring IssueHeader's title-edit pattern so
+ * both editing surfaces feel the same. Empty descriptions show a muted
+ * "Add a description…" affordance so the field is discoverable. Saving goes
+ * through the same PATCH the rest of the detail page uses. */
+function IssueDescription({
+  description,
+  onSave,
+}: {
+  description: string;
+  onSave: (description: string) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(description);
+  const [saving, setSaving] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Re-sync when the description changes externally (mutation resolves and the
+  // parent re-renders) — only while not actively editing, so a stale prop
+  // never clobbers an in-progress edit.
+  useEffect(() => {
+    if (!editing) setDraft(description);
+  }, [description, editing]);
+
+  useEffect(() => {
+    if (editing && textareaRef.current) {
+      textareaRef.current.focus();
+      // Place the caret at the end rather than selecting the whole body.
+      const len = textareaRef.current.value.length;
+      textareaRef.current.setSelectionRange(len, len);
+    }
+  }, [editing]);
+
+  const save = async () => {
+    const trimmed = draft.trim();
+    if (trimmed === description.trim()) {
+      setDraft(description);
+      setEditing(false);
+      return;
+    }
+    setSaving(true);
+    try {
+      await onSave(trimmed);
+      setEditing(false);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const cancel = () => {
+    setDraft(description);
+    setEditing(false);
+  };
+
+  if (editing) {
+    return (
+      <Textarea
+        ref={textareaRef}
+        rows={4}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => void save()}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+            e.preventDefault();
+            void save();
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            cancel();
+          }
+        }}
+        disabled={saving}
+        placeholder="Add a description…"
+        aria-label="Issue description"
+        style={{
+          background: "var(--cream-deeper)",
+          border: "1px solid var(--edge)",
+          color: "var(--ink)",
+        }}
+      />
+    );
+  }
+
+  if (description) {
+    return (
+      <button
+        type="button"
+        onClick={() => setEditing(true)}
+        className="w-full text-left text-sm whitespace-pre-wrap pl-3"
+        style={{
+          borderLeft: "2px solid var(--edge)",
+          color: "var(--ink-soft)",
+        }}
+      >
+        {description}
+      </button>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => setEditing(true)}
+      className="w-full text-left text-sm italic pl-3"
+      style={{
+        borderLeft: "2px solid var(--edge)",
+        color: "var(--mute)",
+      }}
+    >
+      Add a description…
+    </button>
+  );
+}
+
 export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
   const { issue, comments, isLoading, isError, error } = useIssueDetail(issueId);
   const mutations = useIssueMutations();
@@ -61,6 +175,13 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
     } finally {
       setDeleting(false);
     }
+  };
+
+  const copyAsMarkdown = () => {
+    if (!issue) return;
+    const heading = issue.identifier ?? issue.id;
+    const markdown = `# ${heading}: ${issue.title}\n\n${issue.description ?? ""}`;
+    void navigator.clipboard.writeText(markdown);
   };
 
   const handleHide = async () => {
@@ -147,6 +268,15 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
               <DropdownMenuItem
                 onSelect={(e) => {
                   e.preventDefault();
+                  copyAsMarkdown();
+                }}
+              >
+                <Copy className="h-4 w-4" />
+                Copy as markdown
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onSelect={(e) => {
+                  e.preventDefault();
                   void handleHide();
                 }}
               >
@@ -166,17 +296,12 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
-        {issue.description && (
-          <div
-            className="text-sm whitespace-pre-wrap pl-3"
-            style={{
-              borderLeft: "2px solid var(--edge)",
-              color: "var(--ink-soft)",
-            }}
-          >
-            {issue.description}
-          </div>
-        )}
+        <IssueDescription
+          description={issue.description ?? ""}
+          onSave={async (description) => {
+            await mutations.update(issueId, { description });
+          }}
+        />
         <SubIssuesSection
           issueId={issueId}
           agents={agents}

@@ -1,15 +1,13 @@
 /**
- * Frontend mirror of OpenClaw's `normalizeAgentId`
- * (see openclaw `src/routing/session-key.ts`). Used by the two agent-create
- * surfaces (`components/chat/AgentDialogs.tsx#AgentCreateDialog` and
- * `components/control/panels/AgentCreateForm.tsx`) to derive the agent id
- * the backend will assign at create time, so the UI can preview the id
- * and reject duplicates client-side.
+ * Slugify an agent name into OpenClaw's `normalizeAgentId` shape
+ * (see openclaw `src/routing/session-key.ts`).
  *
- * Two surfaces, not one: the dialog renders as a modal popover from the
- * /chat sidebar, the form renders as an inline panel inside the control
- * Agents panel. Both are live UX surfaces — they share the normalize +
- * validate logic but not the surrounding UI shell.
+ * NOTE: this slug is NOT the id the backend assigns. Agent creation is
+ * intercepted server-side and Paperclip mints a UUID for the real
+ * workspace/agent id (e.g. `6f23fa6c-…`). So this slug must never be shown
+ * as "the id" — it is used only as a stable key for client-side
+ * name-uniqueness checks (comparing one proposed name against the existing
+ * names, both normalized the same way).
  */
 export function normalizeAgentId(name: string): string {
   return name
@@ -19,18 +17,26 @@ export function normalizeAgentId(name: string): string {
     .replace(/^-|-$/g, "");
 }
 
-/** Agent ids the system reserves and rejects on create. */
+/** Names the system reserves and rejects on create. */
 export const RESERVED_AGENT_IDS: readonly string[] = ["main"];
 
 /**
- * Validate a proposed agent name. Returns either `null` (valid) or a
- * user-facing error string. Caller is responsible for `name.trim() !== ""`
- * gating — an empty name is "not yet typed" rather than an error.
+ * Validate a proposed agent name against the existing agents' display
+ * names. Returns either `null` (valid) or a user-facing error string.
+ * Caller is responsible for `name.trim() !== ""` gating — an empty name is
+ * "not yet typed" rather than an error.
+ *
+ * `existingNames` are the other agents' display names (not their UUID ids):
+ * we normalize both sides so "Echo" collides with an existing "Echo".
+ * Comparing against the real UUID ids — as this once did — never matched a
+ * slug, so the duplicate guard was silently dead and let two same-named
+ * agents be created.
  */
-export function validateAgentName(name: string, existingIds: string[]): string | null {
+export function validateAgentName(name: string, existingNames: string[]): string | null {
   const id = normalizeAgentId(name);
   if (id === "") return null;
-  if (existingIds.includes(id)) return "An agent with this name already exists";
+  const existingSlugs = existingNames.map(normalizeAgentId);
+  if (existingSlugs.includes(id)) return "An agent with this name already exists";
   if (RESERVED_AGENT_IDS.includes(id)) return "This name is reserved";
   return null;
 }

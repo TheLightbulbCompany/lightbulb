@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import type { Agent } from "@/hooks/useAgents";
-import { normalizeAgentId, validateAgentName } from "@/lib/agentIdentity";
+import { validateAgentName } from "@/lib/agentIdentity";
 
 // =============================================================================
 // Notes on dialog state and lifecycle
@@ -46,19 +46,18 @@ import { normalizeAgentId, validateAgentName } from "@/lib/agentIdentity";
 
 interface CreateProps {
   open: boolean;
-  existingIds: string[];
+  existingNames: string[];
   onCancel: () => void;
   onCreate: (name: string) => Promise<void>;
 }
 
-export function AgentCreateDialog({ open, existingIds, onCancel, onCreate }: CreateProps) {
+export function AgentCreateDialog({ open, existingNames, onCancel, onCreate }: CreateProps) {
   const [name, setName] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const submittingRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
 
-  const id = normalizeAgentId(name);
-  const clientError = validateAgentName(name, existingIds);
+  const clientError = validateAgentName(name, existingNames);
   const canSubmit = name.trim() !== "" && clientError === null && !submitting;
 
   const handleSubmit = async () => {
@@ -99,9 +98,6 @@ export function AgentCreateDialog({ open, existingIds, onCancel, onCreate }: Cre
             disabled={submitting}
             className="w-full rounded-md border border-[#e0dbd0] bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#2d8a4e]/30 disabled:opacity-50"
           />
-          {id && !clientError && (
-            <p className="text-[11px] text-[#8a8578]">ID: {id}</p>
-          )}
           {(clientError || error) && (
             <p className="text-xs text-red-500">{clientError || error}</p>
           )}

@@ -71,13 +71,29 @@ export function useAgents() {
         .replace(/-+/g, "-")
         .replace(/^-|-$/g, "");
       const workspace = params.workspace ?? `.openclaw/workspaces/${normalizedId}`;
-      await callRpc("agents.create", { ...params, workspace });
-      capture("agent_created", {
-        agent_id: normalizedId,
-        agent_name: params.name,
-        workspace,
-      });
-      mutate();
+      // agents.create runs a long *serial* chain server-side: a Paperclip
+      // company create, two container RPCs (agents.create + agents.update),
+      // and an EFS-locked operator-device pairing. That regularly runs past
+      // the generic 30s RPC budget while still succeeding — which surfaced a
+      // successful create as "RPC timeout: agents.create" and dropped the new
+      // agent from the list until a manual refresh. Two consequences here:
+      //   1. a 90s budget for this one RPC, so the normal create no longer
+      //      false-times-out; and
+      //   2. revalidate agents.list in `finally`, so even a create that does
+      //      blow past 90s still surfaces the agent on the next poll instead
+      //      of vanishing. The agent must not silently disappear — a missing
+      //      agent invites a re-click, and create is deliberately
+      //      non-idempotent, so a second click mints a SECOND agent.
+      try {
+        await callRpc("agents.create", { ...params, workspace }, 90_000);
+        capture("agent_created", {
+          agent_id: normalizedId,
+          agent_name: params.name,
+          workspace,
+        });
+      } finally {
+        await mutate();
+      }
     },
     [callRpc, mutate],
   );

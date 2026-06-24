@@ -1,32 +1,10 @@
 "use client";
 
-import { useTeamsWorkspaceStatus } from "@/hooks/useTeamsApi";
-import { CommandPaletteProvider } from "./command-palette/CommandPaletteProvider";
-import { TeamsEventsProvider } from "./TeamsEventsProvider";
-import { TeamsSidebar } from "./TeamsSidebar";
-
-export function TeamsLayout({ children }: { children: React.ReactNode }) {
-  const status = useTeamsWorkspaceStatus();
-
-  return (
-    <div className="editorial-page flex h-screen overflow-hidden">
-      <TeamsSidebar />
-      <main className="flex-1 overflow-auto">
-        {status.kind === "provisioning" ? (
-          <ProvisioningOverlay />
-        ) : status.kind === "subscribe_required" ? (
-          <SubscribeOverlay />
-        ) : status.kind === "error" ? (
-          <ErrorOverlay error={status.error} />
-        ) : (
-          <TeamsEventsProvider>
-            <CommandPaletteProvider>{children}</CommandPaletteProvider>
-          </TeamsEventsProvider>
-        )}
-      </main>
-    </div>
-  );
-}
+// Workspace-status overlays for the inline Teams surface. The Teams panels
+// render inside the /chat shell (InlineTeamsPanel), which gates on
+// useTeamsWorkspaceStatus and shows one of these full-bleed overlays for the
+// provisioning / subscribe-required / error states instead of letting the
+// panels fall through to a generic loading/error.
 
 function OverlayShell({ children }: { children: React.ReactNode }) {
   return (

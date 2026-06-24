@@ -5,7 +5,7 @@ import {
   ProvisioningOverlay,
   SubscribeOverlay,
   ErrorOverlay,
-} from "@/components/teams/TeamsLayout";
+} from "@/components/teams/TeamsStatusOverlays";
 import { TeamsEventsProvider } from "@/components/teams/TeamsEventsProvider";
 import { CommandPaletteProvider } from "@/components/teams/command-palette/CommandPaletteProvider";
 import { TeamsPanelRouter } from "@/components/teams/TeamsPanelRouter";

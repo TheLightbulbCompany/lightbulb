@@ -1357,6 +1357,27 @@ class PaperclipAdminClient:
             session_cookie=session_cookie,
         )
 
+    async def create_routine_trigger(
+        self,
+        *,
+        session_cookie: str,
+        routine_id: str,
+        body: dict,
+    ) -> dict:
+        """Attach a trigger (schedule/webhook/api) to a routine.
+
+        Maps to ``POST /api/routines/{routineId}/triggers`` upstream
+        (paperclip/server/src/routes/routines.ts:253). The cron schedule
+        lives on a schedule trigger, NOT the routine row — see
+        ``createRoutineTriggerSchema``. Body is whitelisted by the BFF
+        (``CreateRoutineTriggerBody``). Returns ``{trigger, secretMaterial}``.
+        """
+        return await self._post(
+            f"/api/routines/{routine_id}/triggers",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
     async def patch_routine(
         self,
         *,

@@ -214,8 +214,10 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
   async function toggle(r: Routine, next: boolean) {
     setBusy(r.id);
     try {
-      // PatchRoutineBody whitelists `enabled` (Task 3).
-      await patch(`/routines/${r.id}`, { enabled: next });
+      // Upstream has no `enabled` field on the routine row — enable/disable
+      // is a status flip (`active` | `paused`), mirroring upstream's
+      // `nextRoutineStatus` (paperclip/ui/src/components/RoutineList.tsx).
+      await patch(`/routines/${r.id}`, { status: next ? "active" : "paused" });
       mutate();
     } finally {
       setBusy(null);
@@ -236,10 +238,11 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
   async function runNow(routine: Routine) {
     setBusy(routine.id);
     try {
-      // Body forwarded to upstream `runRoutineSchema` — `reason: "manual"`
-      // distinguishes UI-fired runs from cron/event-fired runs in upstream
-      // run history.
-      await post(`/routines/${routine.id}/run`, { reason: "manual" });
+      // Body forwarded to upstream `runRoutineSchema`, whose `source` enum
+      // ("manual" | "api") distinguishes UI-fired runs from cron/event-fired
+      // runs in upstream run history. (`reason` is not a field on that
+      // schema — it was silently dropped.)
+      await post(`/routines/${routine.id}/run`, { source: "manual" });
       mutate();
     } finally {
       setBusy(null);
@@ -501,26 +504,36 @@ function CreateRoutineDialog({
   onCreated: () => void;
 }) {
   const { post } = useTeamsApi();
-  const [name, setName] = useState("");
+  const [title, setTitle] = useState("");
   const [cron, setCron] = useState("0 9 * * *");
   const [agentId, setAgentId] = useState<string | null>(null);
-  const [prompt, setPrompt] = useState("");
-  const [enabled, setEnabled] = useState(true);
+  const [description, setDescription] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   async function submit() {
-    if (!agentId) return;
+    if (!title.trim() || !cron.trim()) return;
     setSubmitting(true);
     setErr(null);
     try {
-      // CreateRoutineBody fields (Task 3): name, cron, agent_id, prompt, enabled.
-      await post("/routines", {
-        name,
-        cron,
-        agent_id: agentId,
-        prompt,
-        enabled,
+      // Two-step create, mirroring upstream (paperclip/ui/src/pages/
+      // Routines.tsx + RoutineDetail.tsx): the routine row is a titled,
+      // assignable unit; the cron schedule is a SEPARATE schedule trigger.
+      // 1. Create the routine (no cron here — that 422s upstream). The old
+      //    "prompt" maps to `description`. Start it active.
+      const routine = await post<{ id: string }>("/routines", {
+        title: title.trim(),
+        assignee_agent_id: agentId ?? undefined,
+        description: description.trim() || undefined,
+        status: "active",
+      });
+      // 2. Attach the schedule trigger that carries the cron expression.
+      //    Timezone matches upstream's `getLocalTimezone()` (browser TZ).
+      await post(`/routines/${routine.id}/triggers`, {
+        kind: "schedule",
+        cron_expression: cron.trim(),
+        timezone:
+          Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
       });
       onCreated();
     } catch (e) {
@@ -537,25 +550,18 @@ function CreateRoutineDialog({
     >
       <div className="flex flex-col gap-3">
         <label className="block">
-          <span className="text-sm text-[var(--ink-soft)]">Name</span>
+          <span className="text-sm text-[var(--ink-soft)]">Title</span>
           <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
             className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
           />
         </label>
-        <label className="block">
-          <span className="text-sm text-[var(--ink-soft)]">Cron</span>
-          <input
-            value={cron}
-            onChange={(e) => setCron(e.target.value)}
-            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 font-mono text-[var(--ink)]"
-          />
-        </label>
         {/* Agent picker replaces the old raw "Agent ID" text input — the same
-            editorial AssigneePicker the issues surface uses. */}
+            editorial AssigneePicker the issues surface uses. Assignee is
+            optional upstream (a routine can be created unassigned). */}
         <div className="block">
-          <span className="text-sm text-[var(--ink-soft)]">Agent</span>
+          <span className="text-sm text-[var(--ink-soft)]">Assignee</span>
           <div className="mt-1">
             <AssigneePicker
               agents={agents}
@@ -567,21 +573,25 @@ function CreateRoutineDialog({
           </div>
         </div>
         <label className="block">
-          <span className="text-sm text-[var(--ink-soft)]">Prompt</span>
+          <span className="text-sm text-[var(--ink-soft)]">Schedule</span>
+          <input
+            value={cron}
+            onChange={(e) => setCron(e.target.value)}
+            placeholder="0 9 * * *"
+            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 font-mono text-[var(--ink)]"
+          />
+          <span className="text-xs text-[var(--mute)]">
+            Cron expression — when the routine fires.
+          </span>
+        </label>
+        <label className="block">
+          <span className="text-sm text-[var(--ink-soft)]">Description</span>
           <textarea
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
             className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
             rows={3}
           />
-        </label>
-        <label className="flex items-center gap-2 text-sm text-[var(--ink-soft)]">
-          <input
-            type="checkbox"
-            checked={enabled}
-            onChange={(e) => setEnabled(e.target.checked)}
-          />
-          <span>Enabled</span>
         </label>
         {err && (
           <div
@@ -604,7 +614,7 @@ function CreateRoutineDialog({
             variant="primary"
             size="sm"
             onClick={submit}
-            disabled={submitting || !name || !cron || !agentId || !prompt}
+            disabled={submitting || !title.trim() || !cron.trim()}
           >
             {submitting ? "Creating…" : "Create"}
           </EditorialButton>

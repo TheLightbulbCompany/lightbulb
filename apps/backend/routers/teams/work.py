@@ -18,6 +18,7 @@ from .schemas import (
     CreateGoalBody,
     CreateProjectBody,
     CreateRoutineBody,
+    CreateRoutineTriggerBody,
     PatchGoalBody,
     PatchProjectBody,
     PatchRoutineBody,
@@ -48,6 +49,24 @@ async def create_routine(
     """Create a routine."""
     return await _agents._admin().create_routine(
         company_id=ctx.company_id,
+        body=body.model_dump(exclude_none=True, by_alias=True),
+        session_cookie=ctx.session_cookie,
+    )
+
+
+@router.post("/routines/{routine_id}/triggers")
+async def create_routine_trigger(
+    routine_id: str,
+    body: CreateRoutineTriggerBody,
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """Attach a schedule trigger (cron) to a routine.
+
+    The cron schedule lives on a separate trigger, not the routine row —
+    the create dialog calls this after creating the routine itself.
+    """
+    return await _agents._admin().create_routine_trigger(
+        routine_id=routine_id,
         body=body.model_dump(exclude_none=True, by_alias=True),
         session_cookie=ctx.session_cookie,
     )

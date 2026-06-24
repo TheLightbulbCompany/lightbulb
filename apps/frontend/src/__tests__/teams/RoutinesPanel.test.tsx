@@ -1,7 +1,8 @@
 // Tests for RoutinesPanel — covers the upstream RoutineListItem shape
 // (title / assigneeAgentId / triggers[]), agent-name resolution, the standalone
-// agent filter + sort controls, the per-row enable toggle (PATCH {enabled}),
-// and the create dialog (whitelisted body, agent chosen via the picker).
+// agent filter + sort controls, the per-row enable toggle (PATCH {status}),
+// and the two-step create flow (POST routine → POST schedule trigger), matching
+// upstream's create model where cron lives on a trigger, not the routine row.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -100,7 +101,7 @@ describe("RoutinesPanel", () => {
     );
   });
 
-  it("toggle posts PATCH with only {enabled: false}", async () => {
+  it("toggle PATCHes {status: 'paused'} when disabling (no `enabled` field)", async () => {
     mockPatch.mockResolvedValue({});
     render(<RoutinesPanel />);
 
@@ -109,23 +110,27 @@ describe("RoutinesPanel", () => {
     await waitFor(() => {
       expect(mockPatch).toHaveBeenCalledTimes(1);
     });
-    expect(mockPatch).toHaveBeenCalledWith("/routines/rt1", { enabled: false });
+    // Upstream has no `enabled` field — enable/disable is a status flip.
+    expect(mockPatch).toHaveBeenCalledWith("/routines/rt1", { status: "paused" });
     const [, body] = mockPatch.mock.calls[0];
-    expect(Object.keys(body as Record<string, unknown>)).toEqual(["enabled"]);
+    expect(Object.keys(body as Record<string, unknown>)).toEqual(["status"]);
   });
 
-  it("create form posts whitelisted fields only, agent chosen via picker", async () => {
+  it("create flow: POST /routines (title/assignee/description) then POST the schedule trigger", async () => {
     const user = userEvent.setup();
-    mockPost.mockResolvedValue({ id: "rt2" });
+    // 1st POST returns the new routine row; 2nd POST is the trigger.
+    mockPost.mockResolvedValueOnce({ id: "rt2" }).mockResolvedValueOnce({
+      trigger: { id: "tr2" },
+    });
     render(<RoutinesPanel />);
 
     // "New routine" is both the masthead button and the dialog heading; click
-    // the button (role) to open, then locate the dialog by its heading.
+    // the button (role) to open, then fill the fields.
     await user.click(screen.getByRole("button", { name: "New routine" }));
-    fireEvent.change(screen.getByLabelText("Name"), {
+    fireEvent.change(screen.getByLabelText("Title"), {
       target: { value: "Weekly review" },
     });
-    fireEvent.change(screen.getByLabelText("Cron"), {
+    fireEvent.change(screen.getByLabelText("Schedule"), {
       target: { value: "0 10 * * 1" },
     });
     // Pick an agent through the AssigneePicker (no more raw "Agent ID" input).
@@ -136,22 +141,43 @@ describe("RoutinesPanel", () => {
     const dialog = screen.getByRole("dialog");
     await user.click(within(dialog).getByRole("button", { name: /unassigned/i }));
     await user.click(await screen.findByText("Friday"));
-    fireEvent.change(screen.getByLabelText("Prompt"), {
+    fireEvent.change(screen.getByLabelText("Description"), {
       target: { value: "review last week" },
     });
     await user.click(screen.getByText("Create"));
 
     await waitFor(() => {
-      expect(mockPost).toHaveBeenCalledTimes(1);
+      expect(mockPost).toHaveBeenCalledTimes(2);
     });
-    const [path, body] = mockPost.mock.calls[0];
-    expect(path).toBe("/routines");
-    const typed = body as Record<string, unknown>;
-    const allowed = new Set(["name", "cron", "agent_id", "prompt", "enabled"]);
-    for (const k of Object.keys(typed)) {
+
+    // 1st call: create the routine row — title/assignee/description/status only,
+    // NO cron (that 422s upstream).
+    const [routinePath, routineBody] = mockPost.mock.calls[0];
+    expect(routinePath).toBe("/routines");
+    const rb = routineBody as Record<string, unknown>;
+    const allowed = new Set([
+      "title",
+      "assignee_agent_id",
+      "description",
+      "status",
+      "priority",
+      "project_id",
+    ]);
+    for (const k of Object.keys(rb)) {
       expect(allowed.has(k)).toBe(true);
     }
-    expect(typed.agent_id).toBe("a1");
+    expect(rb.title).toBe("Weekly review");
+    expect(rb.assignee_agent_id).toBe("a1");
+    expect(rb.description).toBe("review last week");
+    expect(rb).not.toHaveProperty("cron");
+
+    // 2nd call: attach the schedule trigger carrying the cron expression.
+    const [triggerPath, triggerBody] = mockPost.mock.calls[1];
+    expect(triggerPath).toBe("/routines/rt2/triggers");
+    const tb = triggerBody as Record<string, unknown>;
+    expect(tb.kind).toBe("schedule");
+    expect(tb.cron_expression).toBe("0 10 * * 1");
+    expect(tb.timezone).toBeTruthy();
   });
 });
 

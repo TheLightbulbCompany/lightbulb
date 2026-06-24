@@ -513,3 +513,25 @@ async def test_archive_member_targets_company_and_member(client_factory):
     assert captured["cookie"] == "sess_admin"
     assert captured["body"] == "{}"
     assert out["member"]["status"] == "archived"
+
+
+async def test_create_routine_trigger_posts_to_triggers_endpoint(client_factory):
+    """Cron schedule lives on a trigger (POST /routines/{id}/triggers), not
+    the routine row."""
+    captured: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured["url"] = str(req.url)
+        captured["body"] = _json.loads(req.read().decode())
+        return httpx.Response(201, json={"trigger": {"id": "tr_1"}, "secretMaterial": None})
+
+    client = client_factory(handler)
+    out = await client.create_routine_trigger(
+        session_cookie="sess",
+        routine_id="r1",
+        body={"kind": "schedule", "cronExpression": "0 9 * * *", "timezone": "UTC"},
+    )
+    assert "/api/routines/r1/triggers" in captured["url"]
+    assert captured["body"]["kind"] == "schedule"
+    assert captured["body"]["cronExpression"] == "0 9 * * *"
+    assert out["trigger"]["id"] == "tr_1"

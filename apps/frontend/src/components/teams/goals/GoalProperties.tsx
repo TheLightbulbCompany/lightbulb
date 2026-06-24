@@ -80,7 +80,15 @@ function LevelPicker({
           {level}
         </button>
       </PopoverTrigger>
-      <PopoverContent className="w-40 p-1" align="start">
+      <PopoverContent
+        className="w-40 p-1"
+        align="start"
+        style={{
+          background: "var(--cream)",
+          border: "1px solid var(--edge)",
+          color: "var(--ink)",
+        }}
+      >
         {GOAL_LEVELS.map((l) => (
           <Button
             key={l}

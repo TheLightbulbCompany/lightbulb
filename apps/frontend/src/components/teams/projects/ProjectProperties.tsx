@@ -57,7 +57,15 @@ function StatusPicker({
           {statusLabel(status)}
         </button>
       </PopoverTrigger>
-      <PopoverContent className="w-44 p-1" align="start">
+      <PopoverContent
+        className="w-44 p-1"
+        align="start"
+        style={{
+          background: "var(--cream)",
+          border: "1px solid var(--edge)",
+          color: "var(--ink)",
+        }}
+      >
         {PROJECT_STATUSES.map((s) => (
           <Button
             key={s}

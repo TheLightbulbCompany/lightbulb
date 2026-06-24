@@ -88,7 +88,15 @@ export function GoalStatusIcon({
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>{trigger}</PopoverTrigger>
-      <PopoverContent className="w-40 p-1" align="start">
+      <PopoverContent
+        className="w-40 p-1"
+        align="start"
+        style={{
+          background: "var(--cream)",
+          border: "1px solid var(--edge)",
+          color: "var(--ink)",
+        }}
+      >
         {GOAL_STATUSES.map((s) => (
           <Button
             key={s}

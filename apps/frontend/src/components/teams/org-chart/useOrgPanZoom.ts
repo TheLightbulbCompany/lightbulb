@@ -156,15 +156,20 @@ export function useOrgPanZoom(
   // Kept in a ref so the effect can stay mounted across renders without
   // re-subscribing on every zoom change.
   const wheelHandlerRef = useRef<(e: WheelEvent) => void>(() => {});
-  wheelHandlerRef.current = (e: WheelEvent) => {
-    const container = containerRef.current;
-    if (!container) return;
-    e.preventDefault();
-    const rect = container.getBoundingClientRect();
-    const anchor = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-    const factor = e.deltaY < 0 ? ZOOM_STEP_IN : ZOOM_STEP_OUT;
-    zoomToward(zoom * factor, anchor);
-  };
+  // Refresh the ref to the latest closure each render (zoom/zoomToward change)
+  // inside an effect — writing a ref's .current during render is disallowed
+  // by react-hooks rules and is not safe under concurrent rendering.
+  useEffect(() => {
+    wheelHandlerRef.current = (e: WheelEvent) => {
+      const container = containerRef.current;
+      if (!container) return;
+      e.preventDefault();
+      const rect = container.getBoundingClientRect();
+      const anchor = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+      const factor = e.deltaY < 0 ? ZOOM_STEP_IN : ZOOM_STEP_OUT;
+      zoomToward(zoom * factor, anchor);
+    };
+  });
 
   useEffect(() => {
     const container = containerRef.current;

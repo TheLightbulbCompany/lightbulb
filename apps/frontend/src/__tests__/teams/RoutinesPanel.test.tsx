@@ -146,6 +146,92 @@ describe("RoutinesPanel", () => {
     expect(mockPatch).toHaveBeenCalledWith("/routines/rt1", { status: "active" });
   });
 
+  it("runs a variable-less routine directly — no dialog, body is {source}", async () => {
+    const user = userEvent.setup();
+    mockPost.mockResolvedValue({});
+    render(<RoutinesPanel />);
+
+    await user.click(screen.getByRole("button", { name: /run daily standup now/i }));
+
+    // No editor opens for a routine with no declared variables.
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(mockPost).toHaveBeenCalledTimes(1);
+    });
+    expect(mockPost).toHaveBeenCalledWith("/routines/rt1/run", {
+      source: "manual",
+    });
+    // The one-click body carries no `variables` key.
+    const [, body] = mockPost.mock.calls[0];
+    expect(body).not.toHaveProperty("variables");
+  });
+
+  it("opens the variables editor for a routine that declares variables, and includes {variables} in the run body", async () => {
+    const user = userEvent.setup();
+    mockPost.mockResolvedValue({});
+    routinesData = {
+      routines: [
+        routine({
+          variables: [
+            { name: "topic", label: "Topic", type: "text", required: true },
+            {
+              name: "tone",
+              type: "select",
+              options: ["formal", "casual"],
+              required: true,
+            },
+          ],
+        }),
+      ],
+    };
+    render(<RoutinesPanel />);
+
+    // Clicking "Run now" opens the editor instead of firing immediately.
+    await user.click(screen.getByRole("button", { name: /run daily standup now/i }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(/run daily standup/i)).toBeInTheDocument();
+    expect(mockPost).not.toHaveBeenCalled();
+
+    // Fill the text variable; pick a select option (Radix Select portals).
+    fireEvent.change(within(dialog).getByLabelText(/topic/i), {
+      target: { value: "Q3 launch" },
+    });
+    await user.click(within(dialog).getByRole("combobox"));
+    await user.click(await screen.findByRole("option", { name: "formal" }));
+
+    await user.click(within(dialog).getByRole("button", { name: /^Run$/ }));
+
+    await waitFor(() => {
+      expect(mockPost).toHaveBeenCalledTimes(1);
+    });
+    const [path, body] = mockPost.mock.calls[0];
+    expect(path).toBe("/routines/rt1/run");
+    const b = body as { source: string; variables: Record<string, unknown> };
+    expect(b.source).toBe("manual");
+    expect(b.variables).toEqual({ topic: "Q3 launch", tone: "formal" });
+  });
+
+  it("blocks the run while a required variable is empty", async () => {
+    const user = userEvent.setup();
+    mockPost.mockResolvedValue({});
+    routinesData = {
+      routines: [
+        routine({
+          variables: [{ name: "topic", type: "text", required: true }],
+        }),
+      ],
+    };
+    render(<RoutinesPanel />);
+
+    await user.click(screen.getByRole("button", { name: /run daily standup now/i }));
+    const dialog = await screen.findByRole("dialog");
+    // Required + empty → Run is disabled, so clicking it does nothing.
+    const runBtn = within(dialog).getByRole("button", { name: /^Run$/ });
+    expect(runBtn).toBeDisabled();
+    await user.click(runBtn);
+    expect(mockPost).not.toHaveBeenCalled();
+  });
+
   it("create flow: POST /routines (title/assignee/description) then POST the schedule trigger", async () => {
     const user = userEvent.setup();
     // 1st POST returns the new routine row; 2nd POST is the trigger.

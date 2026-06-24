@@ -290,6 +290,37 @@ export interface IssueRun {
   createdAt?: string | null;
 }
 
+/**
+ * A value a run-now caller can supply for a routine variable. Mirrors
+ * upstream `routineVariableValueSchema`
+ * (paperclip/packages/shared/src/validators/routine.ts) — a string, finite
+ * number, or boolean.
+ */
+export type RoutineVariableValue = string | number | boolean;
+
+/** The variable types a routine can declare (upstream ROUTINE_VARIABLE_TYPES). */
+export type RoutineVariableType =
+  | "text"
+  | "textarea"
+  | "number"
+  | "boolean"
+  | "select";
+
+/**
+ * One variable a routine DEFINES (upstream `RoutineVariable`). The run-now
+ * editor reads these to build its inputs: `select` renders a dropdown over
+ * `options`, `required` drives validation. The Run button collects one
+ * {@link RoutineVariableValue} per name into the run body's `variables` map.
+ */
+export interface RoutineVariable {
+  name: string;
+  label?: string | null;
+  type?: RoutineVariableType;
+  defaultValue?: RoutineVariableValue | null;
+  required?: boolean;
+  options?: string[];
+}
+
 /** Assignee summary on a routine (upstream RoutineAgentSummary subset). */
 export interface RoutineAgentSummary {
   id: string;
@@ -318,6 +349,9 @@ export interface RoutineDetail {
   assigneeAgentId?: string | null;
   assignee?: RoutineAgentSummary | null;
   triggers?: RoutineTriggerSummary[];
+  // Variable definitions the routine declares. A run-now caller must collect a
+  // value per variable; empty/absent means the routine takes no input.
+  variables?: RoutineVariable[];
   // Upstream Routine carries createdAt/updatedAt verbatim through the BFF;
   // surfaced in the detail page's Properties aside.
   createdAt?: string | null;

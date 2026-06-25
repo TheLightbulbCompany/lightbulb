@@ -5,7 +5,7 @@ import json
 import os
 import tarfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
@@ -849,10 +849,12 @@ def test_preview_surfaces_slice_leak_without_raising(fake_efs, tmp_path):
 
 
 def test_preview_workspace_skills_autoship_global_entries_addable(monkeypatch, tmp_path):
-    agent_dir = tmp_path / "ws"
+    # Dir name == the config agent id, mirroring production (the workspace dir
+    # name IS the agent's id in agents.list).
+    agent_dir = tmp_path / "agent_x"
     (agent_dir / "skills" / "researcher").mkdir(parents=True)
     (agent_dir / "skills" / "writer").mkdir(parents=True)
-    monkeypatch.setattr(agent_export, "_resolve_agent_dir", lambda *, seller_id, agent_id: agent_dir)
+    monkeypatch.setattr(agent_export, "_resolve_agent_dir", lambda *, seller_id, agent_id, config=None: agent_dir)
 
     config = {
         "agents": {"list": [{"id": "agent_x"}]},
@@ -993,3 +995,132 @@ async def test_capture_routines_multiple_schedule_triggers_flatten():
     )
     assert [e["cron"] for e in out] == ["0 6 * * *", "0 8 * * 1"]
     assert all(e["title"] == "Two-trigger" for e in out)
+
+
+# --------------------------------------------------------------------------- #
+# Legacy slug → workspace-UUID resolution (republish orphan fix)
+# --------------------------------------------------------------------------- #
+
+
+def _mock_workspace(live_dirs):
+    ws = MagicMock()
+    ws.list_workspace_agent_dirs.return_value = list(live_dirs)
+    return ws
+
+
+def test_slugify():
+    assert agent_export._slugify("Vera") == "vera"
+    assert agent_export._slugify("Pitch + Scout") == "pitch-scout"
+    assert agent_export._slugify("  My Agent!  ") == "my-agent"
+    assert agent_export._slugify("") == ""
+
+
+def test_resolve_workspace_id_direct_hit():
+    """A live UUID resolves to itself — zero behavior change for current listings."""
+    uuid = "f9fc524c-acef-4467-8387-91ac7cbd00ef"
+    ws = _mock_workspace([uuid])
+    cfg = {"agents": {"list": [{"id": uuid, "name": "Vera"}]}}
+    with patch.object(agent_export, "get_workspace", return_value=ws):
+        assert agent_export._resolve_workspace_id("seller", uuid, cfg) == uuid
+
+
+def test_resolve_workspace_id_slug_fallback():
+    """A legacy slug resolves to the live workspace UUID via the display name."""
+    uuid = "f9fc524c-acef-4467-8387-91ac7cbd00ef"
+    ws = _mock_workspace([uuid])
+    cfg = {"agents": {"list": [{"id": uuid, "name": "Vera"}]}}
+    with patch.object(agent_export, "get_workspace", return_value=ws):
+        assert agent_export._resolve_workspace_id("seller", "vera", cfg) == uuid
+
+
+def test_resolve_workspace_id_miss_returns_unchanged():
+    """An unresolvable id is handed back so the downstream existence check
+    raises the familiar 'agent dir not found' — no behavior change."""
+    ws = _mock_workspace(["f9fc524c-acef-4467-8387-91ac7cbd00ef"])
+    cfg = {"agents": {"list": [{"id": "f9fc524c-acef-4467-8387-91ac7cbd00ef", "name": "Vera"}]}}
+    with patch.object(agent_export, "get_workspace", return_value=ws):
+        assert agent_export._resolve_workspace_id("seller", "ghost", cfg) == "ghost"
+        # No config to scan → also a miss (returns unchanged).
+        assert agent_export._resolve_workspace_id("seller", "vera", None) == "vera"
+
+
+def test_resolve_workspace_id_ambiguous_raises():
+    """Two live agents slugifying the same way → refuse to guess."""
+    a = "11111111-1111-1111-1111-111111111111"
+    b = "22222222-2222-2222-2222-222222222222"
+    ws = _mock_workspace([a, b])
+    cfg = {"agents": {"list": [{"id": a, "name": "Vera"}, {"id": b, "name": "Vera"}]}}
+    with patch.object(agent_export, "get_workspace", return_value=ws):
+        with pytest.raises(agent_export.AgentNotFoundError, match="ambiguous"):
+            agent_export._resolve_workspace_id("seller", "vera", cfg)
+
+
+def test_resolve_workspace_id_ignores_non_live_config_ids():
+    """A config entry whose id is NOT a live workspace dir (e.g. a traversal
+    payload) can never be returned — the resolver only yields live-dir members."""
+    ws = _mock_workspace(["uuid-a-1111-1111-1111-111111111111"])
+    cfg = {"agents": {"list": [{"id": "../escape", "name": "Vera"}]}}
+    with patch.object(agent_export, "get_workspace", return_value=ws):
+        # '../escape' isn't a live dir → not a candidate → slug returned unchanged.
+        assert agent_export._resolve_workspace_id("seller", "vera", cfg) == "vera"
+
+
+def test_export_resolves_legacy_slug_to_uuid(fake_efs):
+    """End-to-end: publishing by the display-name slug resolves to the live
+    workspace dir and heals the manifest forward to that id."""
+    seller_id, agent_id, _ = fake_efs  # dir/id = 'my-agent-001', name 'MyAgent'
+    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id="myagent")
+    assert pkg.manifest["agent_id"] == agent_id
+
+
+def test_export_uuid_direct_unchanged(fake_efs):
+    """Publishing by the live id is unchanged — manifest carries that id."""
+    seller_id, agent_id, _ = fake_efs
+    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    assert pkg.manifest["agent_id"] == agent_id
+
+
+def test_export_unresolvable_slug_raises_not_found(fake_efs):
+    """A slug with no matching live agent still 404s (the residual manual class)."""
+    seller_id, _, _ = fake_efs
+    with pytest.raises(agent_export.AgentNotFoundError):
+        agent_export.export_agent_from_efs(seller_id=seller_id, agent_id="ghost")
+
+
+async def test_friday_guard_closed_for_legacy_slug(tmp_path):
+    """A legacy slug 'friday' resolves to the CEO's workspace UUID, so resolving
+    BEFORE the Friday guard (as the router now does) catches it — closing the
+    bypass where the raw slug slips past the guard's UUID comparison."""
+    from core.containers import workspace as workspace_module
+
+    friday_uuid = "f1111111-2222-3333-4444-555555555555"
+    seller_id = "user_owner_x"
+    user_root = tmp_path / "users" / seller_id
+    (user_root / "workspaces" / friday_uuid).mkdir(parents=True)
+    (user_root / "openclaw.json").write_text(
+        json.dumps({"agents": {"list": [{"id": friday_uuid, "name": "Friday"}]}}),
+        encoding="utf-8",
+    )
+    fake_ws = workspace_module.Workspace(mount_path=str(tmp_path / "users"))
+
+    async def _fetch(*, owner_id):
+        return [{"id": friday_uuid, "role": "ceo"}]
+
+    with patch.object(agent_export, "get_workspace", return_value=fake_ws):
+        # The raw slug bypasses the guard (the CEO's id is a UUID, not 'friday').
+        assert (
+            await agent_export.is_reserved_friday_agent(
+                owner_id=seller_id, agent_id="friday", fetch_paperclip_agents=_fetch
+            )
+            is False
+        )
+        # Resolving first maps 'friday' → the CEO UUID …
+        resolved = agent_export.resolve_workspace_agent_id(seller_id, "friday")
+        assert resolved == friday_uuid
+        # … which the guard then catches.
+        assert (
+            await agent_export.is_reserved_friday_agent(
+                owner_id=seller_id, agent_id=resolved, fetch_paperclip_agents=_fetch
+            )
+            is True
+        )

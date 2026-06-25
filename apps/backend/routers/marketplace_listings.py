@@ -801,9 +801,19 @@ async def my_agent_artifact_preview(
     """
     owner_id = resolve_owner_id(auth)
 
+    # Resolve a legacy slug → live workspace UUID BEFORE the Friday guard, so a
+    # slug like "friday" (which resolves to the CEO's workspace) can't slip past
+    # the guard and expose Friday's owner-keyed persona files.
+    try:
+        resolved_agent_id = agent_export.resolve_workspace_agent_id(owner_id, agent_id)
+    except agent_export.InvalidAgentIdError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except agent_export.AgentNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
     if await agent_export.is_reserved_friday_agent(
         owner_id=owner_id,
-        agent_id=agent_id,
+        agent_id=resolved_agent_id,
     ):
         raise HTTPException(
             status_code=400,
@@ -813,7 +823,7 @@ async def my_agent_artifact_preview(
     try:
         preview = agent_export.enumerate_for_preview(
             seller_id=owner_id,
-            agent_id=agent_id,
+            agent_id=resolved_agent_id,
         )
     except agent_export.InvalidAgentIdError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -880,12 +890,24 @@ async def upload_artifact_from_agent(
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
 
+    # Resolve a legacy slug → live workspace UUID up front so the Friday guard,
+    # routine capture, export, and persisted row all key off the same resolved
+    # id. This MUST precede the Friday guard: a slug like "friday" resolves to the
+    # CEO's workspace, and the guard must see that resolved id or it would slip
+    # past and leak Friday's owner-keyed persona files.
+    try:
+        resolved_agent_id = agent_export.resolve_workspace_agent_id(owner_id, payload.agent_id)
+    except agent_export.InvalidAgentIdError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except agent_export.AgentNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
     # Friday-publish guard: the per-owner CEO agent is reserved (its
     # IDENTITY/USER files are owner-keyed and Paperclip wires it into the
     # CEO slot). Run BEFORE the snapshot so we don't tar Friday's dir.
     if await agent_export.is_reserved_friday_agent(
         owner_id=owner_id,
-        agent_id=payload.agent_id,
+        agent_id=resolved_agent_id,
     ):
         raise HTTPException(
             status_code=400,
@@ -898,7 +920,7 @@ async def upload_artifact_from_agent(
     try:
         package = agent_export.export_agent_from_efs(
             seller_id=owner_id,
-            agent_id=payload.agent_id,
+            agent_id=resolved_agent_id,
             selected_mcps=selected_mcps,
             selected_skills=selected_skills,
             enable_acp=payload.enable_acp,
@@ -923,7 +945,7 @@ async def upload_artifact_from_agent(
     # block the publish. The deploy side recreates these DORMANT on the buyer.
     package.manifest["routines"] = await agent_export.capture_agent_routines(
         owner_id=owner_id,
-        agent_id=payload.agent_id,
+        agent_id=resolved_agent_id,
     )
 
     try:
@@ -933,7 +955,7 @@ async def upload_artifact_from_agent(
             artifact_bytes=package.tarball_bytes,
             manifest=package.manifest,
             openclaw_slice=package.openclaw_slice,
-            agent_id=payload.agent_id,
+            agent_id=resolved_agent_id,
             version=version,
             bundle_mcps=selected_mcps,
             bundle_skills=selected_skills,

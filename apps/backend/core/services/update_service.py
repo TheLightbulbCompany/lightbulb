@@ -210,8 +210,20 @@ async def apply_update(owner_id: str, update_id: str) -> bool:
                 update_id,
             )
 
-        # Step 4: mark as applied
-        await update_repo.mark_applied(owner_id, update_id)
+        # Step 4: mark as applied. The ECS/config changes above already took
+        # effect, so the apply itself succeeded regardless of this flip — but if
+        # the status write is rejected, surface it rather than silently leaving
+        # the row stuck in "applying" (the invisible-failure trap this hit when
+        # mark_applied's condition did not accept the "applying" state).
+        marked = await update_repo.mark_applied(owner_id, update_id)
+        if not marked:
+            logger.warning(
+                "Update %s changes took effect but status was not flipped to "
+                "'applied' (owner=%s, type=%s); row left in 'applying'",
+                update_id,
+                owner_id,
+                update_type,
+            )
         logger.info("Update %s applied successfully (owner=%s, type=%s)", update_id, owner_id, update_type)
         return True
 

@@ -215,3 +215,29 @@ async def test_mark_applied(dynamodb_table):
     # Should no longer show in pending
     results = await update_repo.get_pending("user_1")
     assert len(results) == 0
+
+
+@pytest.mark.asyncio
+async def test_mark_applied_from_applying_state(dynamodb_table):
+    """Regression: apply_update flips a row pending -> applying BEFORE doing the
+    work and calling mark_applied, so mark_applied must accept the "applying"
+    state. When its condition only accepted pending/scheduled, the flip to
+    "applied" silently failed (ConditionalCheckFailed -> swallowed) and the row
+    stayed stuck in "applying" forever even though the ECS change had run."""
+    from core.repositories import update_repo
+
+    item = await update_repo.create("user_1", "image_update", "Img", {"new_image": "repo:tag"})
+
+    # Mirror apply_update step 1: pending -> applying.
+    acquired = await update_repo.set_status_conditional(
+        "user_1", item["update_id"], "applying", ["pending", "scheduled"]
+    )
+    assert acquired is True
+
+    # mark_applied must now succeed from "applying" (the bug returned False here).
+    ok = await update_repo.mark_applied("user_1", item["update_id"])
+    assert ok is True
+
+    # Row is finalized: status "applied", no longer pending.
+    results = await update_repo.get_pending("user_1")
+    assert len(results) == 0

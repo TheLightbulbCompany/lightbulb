@@ -1351,6 +1351,138 @@ class PaperclipAdminClient:
             session_cookie=session_cookie,
         )
 
+    # ------------------------------------------------------------------
+    # Issue attachments
+    # ------------------------------------------------------------------
+
+    async def list_issue_attachments(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+    ) -> list | dict:
+        """List the binary attachments on an issue.
+
+        Maps to ``GET /api/issues/{issueId}/attachments`` (issue-scoped;
+        ``paperclip/server/src/routes/issues.ts``). Upstream returns a bare
+        array of rows, each carrying the asset metadata plus a server-built
+        ``contentPath`` (``/api/attachments/{id}/content``) and sibling
+        ``openPath`` / ``downloadPath`` (see ``withContentPath``). Those paths
+        are upstream-local, so the BFF rewrites them to its own
+        ``/teams/attachments/{id}/content`` proxy on the frontend.
+        """
+        return await self._get(
+            f"/api/issues/{issue_id}/attachments",
+            session_cookie=session_cookie,
+        )
+
+    async def upload_issue_attachment(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+        issue_id: str,
+        filename: str | None,
+        content_type: str,
+        body: bytes,
+    ) -> dict:
+        """Upload a file to an issue as multipart/form-data.
+
+        Maps to ``POST /api/companies/{companyId}/issues/{issueId}/attachments``
+        — the upstream route reads a SINGLE file from the ``"file"`` multipart
+        field (``upload.single("file")``), so the field name is load-bearing.
+
+        ``company_id`` MUST be the server-derived company of the caller (the
+        BFF passes ``ctx.company_id``, never a client param) — this route is
+        company-scoped and IDOR-sensitive.
+
+        Returns the created attachment row (upstream ``withContentPath`` shape:
+        the asset metadata + ``contentPath`` / ``openPath`` / ``downloadPath``).
+        Bypasses ``_post`` because that helper forces a JSON body + JSON
+        Content-Type; here httpx builds the multipart body (and its boundary
+        Content-Type) from ``files=``, and ``_headers`` JSON Content-Type is
+        dropped so it doesn't clobber the multipart boundary.
+        """
+        headers = self._headers(session_cookie)
+        # httpx must own the Content-Type so it can append the multipart
+        # boundary; leaving the JSON one set produces an unparseable body.
+        headers.pop("Content-Type", None)
+        resp = await self._send(
+            lambda: self._http.post(
+                f"/api/companies/{company_id}/issues/{issue_id}/attachments",
+                files={"file": (filename or "attachment", body, content_type)},
+                headers=headers,
+            )
+        )
+        if resp.status_code >= 500:
+            _emit_upstream_error("5xx")
+        if resp.status_code >= 400:
+            raise PaperclipApiError(
+                f"POST /api/companies/{company_id}/issues/{issue_id}/attachments -> {resp.status_code}",
+                status_code=resp.status_code,
+                body=resp.text,
+            )
+        return resp.json() if resp.content else {}
+
+    async def open_attachment_stream(
+        self,
+        *,
+        session_cookie: str,
+        attachment_id: str,
+    ) -> httpx.Response:
+        """Open a streaming GET for an attachment's bytes and return the response.
+
+        Maps to ``GET /api/attachments/{attachmentId}/content``. The response
+        is opened with ``stream=True`` so its body is NOT buffered — the caller
+        pipes ``resp.aiter_bytes()`` into a ``StreamingResponse`` and is
+        responsible for calling ``resp.aclose()`` when the pump finishes (the
+        BFF route does this in a ``finally``). Returning the open response
+        (rather than yielding from a context manager) lets the route read the
+        upstream headers up front and surface a >=400 as an HTTP error BEFORE
+        the streaming body starts.
+
+        Raises ``PaperclipApiError`` on a >=400 status, closing the response
+        first so the connection isn't leaked on the error path.
+        """
+        req = self._http.build_request(
+            "GET",
+            f"/api/attachments/{attachment_id}/content",
+            headers=self._headers(session_cookie),
+        )
+        resp = await self._send(lambda: self._http.send(req, stream=True))
+        if resp.status_code >= 500:
+            _emit_upstream_error("5xx")
+        if resp.status_code >= 400:
+            # Drain + close before raising so the error body is readable and
+            # the streamed connection is released.
+            await resp.aread()
+            await resp.aclose()
+            raise PaperclipApiError(
+                f"GET /api/attachments/{attachment_id}/content -> {resp.status_code}",
+                status_code=resp.status_code,
+                body=resp.text,
+            )
+        return resp
+
+    async def delete_attachment(
+        self,
+        *,
+        session_cookie: str,
+        attachment_id: str,
+    ) -> dict:
+        """Delete an attachment.
+
+        Maps to ``DELETE /api/attachments/{attachmentId}``. Upstream resolves
+        the attachment, then runs ``assertCompanyAccess`` against the session
+        cookie's company — so a cross-tenant id is rejected upstream (403)
+        rather than relying on a BFF-side ownership check. ``_delete`` treats
+        404 as already-gone, keeping a double-delete idempotent.
+        """
+        return await self._delete(
+            f"/api/attachments/{attachment_id}",
+            session_cookie=session_cookie,
+        )
+
     async def list_company_labels(
         self,
         *,

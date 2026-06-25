@@ -336,11 +336,15 @@ RUN set -eux; \
 # OpenClaw auto-discovers bundled skills at /app/skills/<name>/SKILL.md (see
 # the fork's src/skills/loading), so we COPY the vendored skill there. COPY
 # lands it root-owned, matching /app and the externalized-plugin bakes above.
-# Vendored from the Paperclip skills-catalog, kept in lockstep with the baked
-# @paperclipai/mcp-server (2026.529.0). The skill drives Paperclip's REST API
-# directly; its auth env (PAPERCLIP_API_KEY / API_URL / COMPANY_ID / AGENT_ID)
-# is injected into the per-user ECS task environment at provision time
-# (ecs_manager), which the agent's exec subprocess inherits.
+# Vendored from the Paperclip skills-catalog at the 2026.6 (June) line, kept in
+# step with the deployed Paperclip backend in paperclip-version.json (NOT with
+# the @paperclipai/mcp-server bin baked above, which is unwired and pinned
+# separately). The skill drives Paperclip's REST API directly; each agent
+# authenticates with its OWN company-scoped key, loaded from a per-agent
+# workspace file (~/.openclaw/workspaces/{agent_id}/paperclip-claimed-api-key.json,
+# staged at provision — see core/services/{paperclip_api_key,friday_identity}).
+# The agent's AGENTS.md seed exports PAPERCLIP_API_KEY / API_URL / COMPANY_ID /
+# AGENT_ID from that file itself; they are NOT container-wide task env.
 COPY skills/paperclip /app/skills/paperclip
 
 

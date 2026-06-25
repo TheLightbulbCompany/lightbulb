@@ -53,6 +53,22 @@ export function IssuesPanel() {
   const [creating, setCreating] = useState(false);
   const [search, setSearch] = useState("");
 
+  // The sidebar create pill's "New task" routes here with ?new=task. Derive the
+  // dialog-open from that intent OR local state — rather than a setState-in-
+  // effect, which would cascade renders — and strip the param on close so a
+  // refresh or Back doesn't re-open it. Mirrors the ?agent filter-read above:
+  // the URL stays the single source of truth.
+  const wantsNewTask = searchParams.get("new") === "task";
+  const newTaskOpen = creating || wantsNewTask;
+  const closeNewTask = () => {
+    setCreating(false);
+    if (searchParams.get("new")) {
+      const params = new URLSearchParams(searchParams.toString());
+      params.delete("new");
+      router.replace(`/chat?${params.toString()}`, { scroll: false });
+    }
+  };
+
   const liveIssueIds = useMemo(() => {
     const ids = new Set<string>();
     for (const run of liveRuns) {
@@ -160,12 +176,12 @@ export function IssuesPanel() {
       />
 
       <NewIssueDialog
-        open={creating}
-        onOpenChange={setCreating}
+        open={newTaskOpen}
+        onOpenChange={(open) => (open ? setCreating(true) : closeNewTask())}
         agents={agentsData?.agents ?? []}
         projects={projectsData?.projects ?? []}
         onCreated={() => {
-          setCreating(false);
+          closeNewTask();
           mutate();
         }}
       />

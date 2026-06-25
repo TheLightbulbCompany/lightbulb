@@ -139,6 +139,48 @@
   background: #0a5138;
   color: #faf7f2;
 }
+/* Co-equal create pill: two first-class create actions (agent | task) in one
+   forest control, reusing the primary-button treatment (same forest #06402B,
+   cream #faf7f2, 8px radius, 13px/500 type, and sidebar margins). Each half is
+   an equal flex segment; a whisper-quiet cream hairline divides them, and only
+   the hovered half lightens so the affordance is per-action. */
+.create-pill {
+  display: flex;
+  align-items: stretch;
+  margin: 4px 16px 8px;
+  border: 1.5px solid #06402B;
+  border-radius: 8px;
+  background: #06402B;
+  overflow: hidden;
+}
+.create-pill__seg {
+  flex: 1 1 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 10px;
+  background: transparent;
+  border: none;
+  color: #faf7f2;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.create-pill__seg:hover {
+  background: #0a5138;
+}
+.create-pill__seg:focus-visible {
+  outline: 2px solid #faf7f2;
+  outline-offset: -3px;
+}
+.create-pill__divider {
+  flex: 0 0 auto;
+  width: 1px;
+  align-self: stretch;
+  background: rgba(250, 247, 242, 0.22);
+}
 .agent-list {
   flex: 1;
   overflow-y: auto;

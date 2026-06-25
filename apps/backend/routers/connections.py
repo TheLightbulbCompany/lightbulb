@@ -268,6 +268,18 @@ async def disconnect(provider: str, account: str | None = None, auth: AuthContex
             # secret before deleting it. Actor-refresh providers have none
             # (get -> {}), and their removers (gog) ignore the credential.
             cred = await integration_secret_store.get(owner_id, provider) or {}
+            # gog (google) holds many accounts in one keyring and must tell a full
+            # provider disconnect (drop everything) apart from a failed-connect
+            # rollback (leave the keyring intact). Signal disconnect_all + hand it
+            # the account inventory so each grant is revoked at Google before the
+            # wipe. Scoped to google: only gog reads these keys, and the other
+            # materializers fully remove on any disconnect.
+            if provider == "google":
+                cred = {
+                    **cred,
+                    "disconnect_all": True,
+                    "accounts": [a["email"] for a in await google_accounts_repo.list_accounts(owner_id)],
+                }
             # Offload to a worker thread: a remover may drive an async
             # config_patcher via asyncio.run (mcp_oauth), which can't run on the
             # request loop. Matches the write path's run_in_thread offload.

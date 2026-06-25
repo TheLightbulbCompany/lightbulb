@@ -219,7 +219,14 @@ async def mark_applied(owner_id: str, update_id: str) -> bool:
                 ":now2": now,
                 ":ttl": ttl_epoch,
             },
-            ConditionExpression=Attr("status").is_in(["pending", "scheduled"]),
+            # "applying" MUST be accepted: apply_update transitions the row
+            # pending/scheduled -> applying BEFORE doing the work and calling
+            # this, so at this call site the row is "applying". Omitting it left
+            # the condition unsatisfiable there, so the row was never flipped to
+            # "applied" and stayed stuck in "applying" forever (the ECS change
+            # had already taken effect). "pending"/"scheduled" stay for callers
+            # that mark a row applied without an intervening "applying" hop.
+            ConditionExpression=Attr("status").is_in(["applying", "pending", "scheduled"]),
         )
         return True
     except table.meta.client.exceptions.ConditionalCheckFailedException:

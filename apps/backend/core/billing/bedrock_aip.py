@@ -24,6 +24,7 @@ Shared contracts other plans import:
 from __future__ import annotations
 
 import json
+import logging
 import os
 
 import boto3
@@ -31,6 +32,8 @@ from botocore.exceptions import ClientError
 
 from core.config import settings
 from core.repositories import container_repo
+
+logger = logging.getLogger(__name__)
 
 # The three AIP tiers. Order matters only for deterministic iteration.
 TIERS: tuple[str, str, str] = ("opus", "sonnet", "haiku")
@@ -368,16 +371,34 @@ def _fan_out_regions() -> tuple[str, ...]:
     return tuple(r.strip() for r in raw.split(",") if r.strip())
 
 
-_ASSUME_ROLE_DOC = {
-    "Version": "2012-10-17",
-    "Statement": [
-        {
-            "Effect": "Allow",
-            "Principal": {"Service": "ecs-tasks.amazonaws.com"},
-            "Action": "sts:AssumeRole",
-        }
-    ],
-}
+def _assume_role_doc(account_id: str) -> dict:
+    """Trust policy for the per-owner ECS task role.
+
+    Conditions the ``ecs-tasks.amazonaws.com`` assumption on
+    ``aws:SourceAccount`` (our account) AND ``aws:SourceArn`` (any ECS task in
+    this account/region) so a confused deputy in another account or service
+    cannot assume the per-owner role. ECS populates both keys when it assumes
+    the task role. The task id is unknown at provision time, so ``SourceArn``
+    uses an account-wide task wildcard — this avoids coupling to the cluster
+    name (which drifts on stack recreation) while still blocking cross-account
+    and any non-ECS-task assumption. ``ExternalId`` is the wrong tool here: it
+    is for third-party cross-account principal assumption, not a service
+    principal assuming on our behalf.
+    """
+    return {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Principal": {"Service": "ecs-tasks.amazonaws.com"},
+                "Action": "sts:AssumeRole",
+                "Condition": {
+                    "StringEquals": {"aws:SourceAccount": account_id},
+                    "ArnLike": {"aws:SourceArn": f"arn:aws:ecs:{settings.AWS_REGION}:{account_id}:task/*"},
+                },
+            }
+        ],
+    }
 
 
 async def ensure_owner_bedrock_role(
@@ -406,6 +427,31 @@ async def ensure_owner_bedrock_role(
     try:
         got = await run_in_thread(client.get_role, RoleName=role_name)
         role_arn = got["Role"]["Arn"]
+        # Backfill: converge a role minted before the trust hardening onto the
+        # SourceAccount/SourceArn-conditioned trust policy — exactly ONCE. The
+        # `trust_hardened` tag marks convergence so this is not a dead IAM
+        # round-trip on every re-provision / container-status poll. Account is
+        # parsed from the existing ARN, so this needs no STS call. Best-effort —
+        # a transient IAM failure (or the iam:UpdateAssumeRolePolicy grant not
+        # yet propagated) must not break provisioning of an otherwise-working
+        # role; the old (permissive) trust keeps functioning, and the missing
+        # tag means the next provision retries the converge.
+        existing_tags = {t["Key"]: t["Value"] for t in got["Role"].get("Tags", [])}
+        if existing_tags.get("trust_hardened") != "1":
+            account_id = role_arn.split(":")[4]
+            try:
+                await run_in_thread(
+                    client.update_assume_role_policy,
+                    RoleName=role_name,
+                    PolicyDocument=json.dumps(_assume_role_doc(account_id)),
+                )
+                await run_in_thread(
+                    client.tag_role,
+                    RoleName=role_name,
+                    Tags=[{"Key": "trust_hardened", "Value": "1"}],
+                )
+            except ClientError as e:
+                logger.warning("bedrock trust-policy backfill failed for %s: %s", role_name, e)
     except ClientError as e:
         # boto3's typed iam NoSuchEntityException IS a ClientError subclass, so
         # one `except ClientError` catches both the real-client typed raise and
@@ -447,13 +493,21 @@ async def ensure_owner_bedrock_role(
 async def _create_owner_role(client, role_name: str, owner_id: str) -> str:
     from core.dynamodb import run_in_thread
 
+    # First-mint path only (rare). Resolve the account id for the
+    # SourceAccount/SourceArn-conditioned trust policy; one STS call here is
+    # negligible alongside CreateRole, and the common existing-role path parses
+    # the account from the role ARN instead (no STS).
+    account_id = await _caller_account_id()
     create_kwargs: dict = {
         "RoleName": role_name,
-        "AssumeRolePolicyDocument": json.dumps(_ASSUME_ROLE_DOC),
+        "AssumeRolePolicyDocument": json.dumps(_assume_role_doc(account_id)),
         "Description": f"Isol8 per-owner Bedrock role for {owner_id}",
         "Tags": [
             {"Key": "owner_id", "Value": owner_id},
             {"Key": "ManagedBy", "Value": "isol8-backend"},
+            # Born with the conditioned trust policy → mark converged so the
+            # existing-role path's backfill skips it on every later call.
+            {"Key": "trust_hardened", "Value": "1"},
         ],
     }
     if settings.BEDROCK_OWNER_BOUNDARY_ARN:

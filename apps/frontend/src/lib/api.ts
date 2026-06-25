@@ -161,6 +161,18 @@ interface ApiMethods {
   del: (endpoint: string, opts?: ApiCallOptions) => Promise<unknown>;
   patchConfig: (patch: Record<string, unknown>) => Promise<{ status: string; owner_id: string }>;
   uploadFiles: (files: File[], agentId: string) => Promise<UploadResponse>;
+  /**
+   * POST a `multipart/form-data` body. The caller builds the `FormData` (so it
+   * can pick the exact field names a given endpoint expects); `authenticatedFetch`
+   * lets the browser set the multipart `Content-Type` with its boundary.
+   */
+  upload: (endpoint: string, formData: FormData, opts?: ApiCallOptions) => Promise<unknown>;
+  /**
+   * GET a binary body as a `Blob`. Needed for authenticated downloads — a plain
+   * `<a href>` can't carry the Clerk bearer header, so the bytes are fetched here
+   * and handed to the caller (which makes an object URL to trigger the download).
+   */
+  downloadBlob: (endpoint: string, opts?: ApiCallOptions) => Promise<Blob>;
   saveWorkspaceFile: (agentId: string, path: string, content: string, tab: "workspace" | "config") => Promise<{ status: string; path: string }>;
 }
 
@@ -243,6 +255,46 @@ export function useApi(): ApiMethods {
     [getToken]
   );
 
+  // Authenticated GET that returns the raw bytes as a Blob. Kept separate from
+  // `authenticatedFetch` because that helper always parses the body as JSON on
+  // success — a binary download must read `.blob()` instead. Mirrors the
+  // bearer-header + `credentials`-opt-in posture so Teams downloads carry both
+  // the Clerk token and the `.isol8.co` Paperclip cookie.
+  const blobFetch = useCallback(
+    async function (endpoint: string, apiOpts: ApiCallOptions = {}): Promise<Blob> {
+      const token = await getToken();
+      if (!token) {
+        throw new Error("No authentication token available");
+      }
+      const response = await fetch(`${BACKEND_URL}${endpoint}`, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${token}` },
+        ...(apiOpts.credentials ? { credentials: apiOpts.credentials } : {}),
+      });
+      const requestId = response.headers.get(REQUEST_ID_HEADER);
+      recordRequestId(requestId);
+      if (!response.ok) {
+        const ct = response.headers.get("Content-Type") ?? "";
+        let body: unknown = null;
+        if (ct.includes("application/json")) {
+          try {
+            body = await response.json();
+          } catch {
+            // non-JSON / empty error body — leave null
+          }
+        }
+        const detail =
+          body && typeof body === "object" && "detail" in body
+            ? (body as { detail?: unknown }).detail
+            : undefined;
+        const message = typeof detail === "string" ? detail : undefined;
+        throw new ApiError(response.status, body, message, requestId);
+      }
+      return response.blob();
+    },
+    [getToken],
+  );
+
   return useMemo(
     () => ({
       syncUser(): Promise<unknown> {
@@ -288,6 +340,12 @@ export function useApi(): ApiMethods {
           { method: "POST", body: formData },
         ) as Promise<UploadResponse>;
       },
+      upload(endpoint: string, formData: FormData, opts?: ApiCallOptions): Promise<unknown> {
+        return authenticatedFetch(endpoint, { method: "POST", body: formData }, opts);
+      },
+      downloadBlob(endpoint: string, opts?: ApiCallOptions): Promise<Blob> {
+        return blobFetch(endpoint, opts);
+      },
       saveWorkspaceFile(
         agentId: string,
         path: string,
@@ -300,6 +358,6 @@ export function useApi(): ApiMethods {
         }) as Promise<{ status: string; path: string }>;
       },
     }),
-    [authenticatedFetch]
+    [authenticatedFetch, blobFetch]
   );
 }

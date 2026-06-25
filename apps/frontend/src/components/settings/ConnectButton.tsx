@@ -183,6 +183,12 @@ export function ConnectButton({
         )}
         <ol className="list-decimal pl-4 text-xs text-[#8a8578] space-y-0.5">
           <li>Create an OAuth client ID — application type <strong>Web application</strong>.</li>
+          {provider === "google" && (
+            <li>
+              Enable the <strong>Gmail</strong>, <strong>Google Calendar</strong> and{" "}
+              <strong>Google Drive</strong> APIs for the project.
+            </li>
+          )}
           <li>Add the authorized redirect URI shown below.</li>
           <li>On the OAuth consent screen, add your Google account as a <strong>Test user</strong>.</li>
           <li>Paste the Client ID and secret here.</li>

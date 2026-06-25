@@ -428,21 +428,30 @@ async def ensure_owner_bedrock_role(
         got = await run_in_thread(client.get_role, RoleName=role_name)
         role_arn = got["Role"]["Arn"]
         # Backfill: converge a role minted before the trust hardening onto the
-        # SourceAccount/SourceArn-conditioned trust policy. Idempotent (same doc
-        # each call). Account is parsed from the existing ARN, so this needs no
-        # STS call. Best-effort — a transient IAM failure (or a missing
-        # iam:UpdateAssumeRolePolicy grant) must not break provisioning of an
-        # otherwise-working role; the old (permissive) trust keeps functioning
-        # until the next converge.
-        account_id = role_arn.split(":")[4]
-        try:
-            await run_in_thread(
-                client.update_assume_role_policy,
-                RoleName=role_name,
-                PolicyDocument=json.dumps(_assume_role_doc(account_id)),
-            )
-        except ClientError as e:
-            logger.warning("bedrock trust-policy backfill failed for %s: %s", role_name, e)
+        # SourceAccount/SourceArn-conditioned trust policy — exactly ONCE. The
+        # `trust_hardened` tag marks convergence so this is not a dead IAM
+        # round-trip on every re-provision / container-status poll. Account is
+        # parsed from the existing ARN, so this needs no STS call. Best-effort —
+        # a transient IAM failure (or the iam:UpdateAssumeRolePolicy grant not
+        # yet propagated) must not break provisioning of an otherwise-working
+        # role; the old (permissive) trust keeps functioning, and the missing
+        # tag means the next provision retries the converge.
+        existing_tags = {t["Key"]: t["Value"] for t in got["Role"].get("Tags", [])}
+        if existing_tags.get("trust_hardened") != "1":
+            account_id = role_arn.split(":")[4]
+            try:
+                await run_in_thread(
+                    client.update_assume_role_policy,
+                    RoleName=role_name,
+                    PolicyDocument=json.dumps(_assume_role_doc(account_id)),
+                )
+                await run_in_thread(
+                    client.tag_role,
+                    RoleName=role_name,
+                    Tags=[{"Key": "trust_hardened", "Value": "1"}],
+                )
+            except ClientError as e:
+                logger.warning("bedrock trust-policy backfill failed for %s: %s", role_name, e)
     except ClientError as e:
         # boto3's typed iam NoSuchEntityException IS a ClientError subclass, so
         # one `except ClientError` catches both the real-client typed raise and
@@ -496,6 +505,9 @@ async def _create_owner_role(client, role_name: str, owner_id: str) -> str:
         "Tags": [
             {"Key": "owner_id", "Value": owner_id},
             {"Key": "ManagedBy", "Value": "isol8-backend"},
+            # Born with the conditioned trust policy → mark converged so the
+            # existing-role path's backfill skips it on every later call.
+            {"Key": "trust_hardened", "Value": "1"},
         ],
     }
     if settings.BEDROCK_OWNER_BOUNDARY_ARN:

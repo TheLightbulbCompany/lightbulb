@@ -517,6 +517,63 @@ class TestEnsureRole:
         stmt = trust["Statement"][0]
         assert stmt["Condition"]["StringEquals"]["aws:SourceAccount"] == "877352799272"
         assert stmt["Condition"]["ArnLike"]["aws:SourceArn"] == "arn:aws:ecs:us-east-1:877352799272:task/*"
+        # Convergence is marked so later calls skip the backfill.
+        fake.tag_role.assert_called_once()
+        assert fake.tag_role.call_args.kwargs["Tags"] == [{"Key": "trust_hardened", "Value": "1"}]
+
+    @pytest.mark.asyncio
+    async def test_already_hardened_role_skips_trust_backfill(self, aip_tables, monkeypatch):
+        """A role already tagged trust_hardened=1 must NOT re-run the trust
+        backfill on every ensure call — avoids a dead IAM round-trip on each
+        re-provision / container-status poll once the fleet is converged."""
+        import core.billing.bedrock_aip as mod
+
+        arns = _aip_arns()
+        fake = MagicMock()
+        fake.get_role.return_value = {
+            "Role": {
+                "Arn": "arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-org_abc",
+                "Tags": [{"Key": "trust_hardened", "Value": "1"}],
+            }
+        }
+        monkeypatch.setattr(mod, "_iam_client", lambda: fake)
+        monkeypatch.setattr(mod.settings, "AWS_REGION", "us-east-1", raising=False)
+        monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
+        monkeypatch.setattr(mod.settings, "BEDROCK_AIP_FAN_OUT_REGIONS", "us-east-1", raising=False)
+
+        await mod.ensure_owner_bedrock_role("org_abc", arns)
+
+        fake.update_assume_role_policy.assert_not_called()
+        fake.tag_role.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_trust_backfill_clienterror_is_swallowed(self, aip_tables, monkeypatch):
+        """A ClientError from update_assume_role_policy (e.g. the new
+        iam:UpdateAssumeRolePolicy grant has not propagated yet) must NOT break
+        provisioning — the role is still usable on its old trust, and the
+        scoped policy + DDB write still happen."""
+        import core.billing.bedrock_aip as mod
+
+        arns = _aip_arns()
+        fake = MagicMock()
+        fake.get_role.return_value = {"Role": {"Arn": "arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-org_abc"}}
+        fake.update_assume_role_policy.side_effect = ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "not propagated"}}, "UpdateAssumeRolePolicy"
+        )
+        monkeypatch.setattr(mod, "_iam_client", lambda: fake)
+        monkeypatch.setattr(mod.settings, "AWS_REGION", "us-east-1", raising=False)
+        monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
+        monkeypatch.setattr(
+            mod.settings, "BEDROCK_OWNER_BASE_POLICY_ARN", "arn:aws:iam::877352799272:policy/base", raising=False
+        )
+        monkeypatch.setattr(mod.settings, "BEDROCK_AIP_FAN_OUT_REGIONS", "us-east-1", raising=False)
+
+        role_arn = await mod.ensure_owner_bedrock_role("org_abc", arns)
+
+        assert role_arn.endswith("isol8-dev-owner-bedrock-org_abc")  # provisioning completed
+        fake.put_role_policy.assert_called_once()  # scoped policy still applied
+        # not tagged, so the next provision retries the converge
+        fake.tag_role.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_idempotent_existing_role_repts_policy_no_create(self, aip_tables, monkeypatch):

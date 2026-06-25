@@ -519,9 +519,10 @@ class TestDisconnect:
         self, mock_repo, mock_store, mock_patcher, mock_removers, mock_accounts, async_client
     ):
         # google is a materializer-backed (gog_cli) actor-refresh provider. It
-        # never stored a Secrets Manager credential, so get() returns None and
-        # the remover is called with an empty credential (gog's remover keys off
-        # owner/provider and ignores the credential anyway).
+        # never stored a Secrets Manager credential, so get() returns None. A
+        # provider-level disconnect signals disconnect_all (so the gog remover
+        # wipes the keyring rather than treating it as a failed-connect rollback)
+        # and carries the account inventory so each grant is revoked at Google.
         mock_repo.delete = AsyncMock()
         mock_store.delete = AsyncMock()
         mock_store.get = AsyncMock(return_value=None)
@@ -537,9 +538,10 @@ class TestDisconnect:
         assert response.status_code == 200
         assert response.json() == {"status": "disconnected", "provider": "google"}
 
-        # Materialized credential files cleaned up; no SM secret -> empty cred.
+        # Materialized credential files cleaned up; no SM secret -> base cred is
+        # empty, plus the provider-level disconnect_all signal + (empty) inventory.
         mock_removers.get.assert_called_once_with("gog_cli")
-        remover.assert_called_once_with("user_test_123", "google", {})
+        remover.assert_called_once_with("user_test_123", "google", {"disconnect_all": True, "accounts": []})
         # Secret + status row both dropped (actor provider stored no secret -> no-op delete).
         mock_store.delete.assert_awaited_once_with("user_test_123", "google")
         mock_repo.delete.assert_awaited_once_with("user_test_123", "google")
@@ -576,8 +578,9 @@ class TestDisconnect:
         assert response.status_code == 200
 
         mock_store.get.assert_awaited_once_with("user_test_123", "google")
-        # The retained credential — not {} — is handed to the remover.
-        remover.assert_called_once_with("user_test_123", "google", retained)
+        # The retained credential fields reach the remover — not {} — alongside the
+        # provider-level disconnect_all signal + google's (empty) account inventory.
+        remover.assert_called_once_with("user_test_123", "google", {**retained, "disconnect_all": True, "accounts": []})
 
     @pytest.mark.asyncio
     @patch("routers.connections.config_patcher")
@@ -669,8 +672,11 @@ class TestDisconnect:
         assert response.status_code == 200
         assert response.json() == {"status": "disconnected", "provider": "google"}
 
-        # Whole-keyring remove: remover called with empty credential (no email).
-        remover.assert_called_once_with("user_test_123", "google", {})
+        # Whole-keyring remove: provider-level disconnect_all + the account
+        # inventory, so the remover revokes each grant at Google before the wipe.
+        remover.assert_called_once_with(
+            "user_test_123", "google", {"disconnect_all": True, "accounts": ["a@x.com", "b@x.com"]}
+        )
         # Provider-level status row + secret dropped.
         mock_repo.delete.assert_awaited_once_with("user_test_123", "google")
         # Every inventory account removed.

@@ -35,6 +35,38 @@ def _patch_keyring_password(monkeypatch):
     monkeypatch.setattr("core.config.settings.GOG_KEYRING_PASSWORD", "kp")
 
 
+def _fake_run_factory(runs):
+    """A subprocess.run fake that records every gog invocation and, for the token
+    `export` step, writes the token file gog would produce so the revoke path can
+    read it back. The exported refresh token is deterministic per email."""
+
+    def _fake_run(argv, input=None, env=None, check=None, capture_output=None, text=None):
+        runs.append({"argv": argv, "env": env, "check": check, "input": input})
+        if "export" in argv:
+            email = argv[4]
+            out_path = argv[argv.index("--out") + 1]
+            Path(out_path).write_text(json.dumps({"email": email, "refresh_token": f"rt-{email}"}))
+
+        class _CP:
+            returncode = 0
+
+        return _CP()
+
+    return _fake_run
+
+
+def _fake_post_factory(posts):
+    def _fake_post(url, data=None, timeout=None):
+        posts.append({"url": url, "data": data})
+
+        class _R:
+            status_code = 200
+
+        return _R()
+
+    return _fake_post
+
+
 def test_write_seeds_client_and_token_via_gog(monkeypatch, tmp_path, cred):
     _patch_efs(monkeypatch, tmp_path)
     _patch_keyring_password(monkeypatch)
@@ -191,7 +223,41 @@ def test_write_propagates_gog_failure(monkeypatch, tmp_path, cred):
         gog_cli.write("org_1", "google", cred)
 
 
-def test_remove_with_email_removes_one_account_and_keeps_keyring(monkeypatch, tmp_path):
+def test_write_rolls_back_only_new_account_on_partial_failure(monkeypatch, tmp_path, cred):
+    import subprocess as _sp
+
+    _patch_efs(monkeypatch, tmp_path)
+    _patch_keyring_password(monkeypatch)
+    monkeypatch.setattr(gog_cli.httpx, "get", lambda url, headers=None: _FakeResp("new@example.com"))
+
+    runs = []
+
+    def _fake_run(argv, input=None, env=None, check=None, capture_output=None, text=None):
+        runs.append(argv)
+        # `credentials set` lands; the token import fails partway through the connect.
+        if argv[:4] == ["gog", "auth", "tokens", "import"]:
+            raise _sp.CalledProcessError(1, argv, stderr="boom")
+
+        class _CP:
+            returncode = 0
+
+        return _CP()
+
+    rmtree_calls = []
+    monkeypatch.setattr(gog_cli.subprocess, "run", _fake_run)
+    monkeypatch.setattr(gog_cli.shutil, "rmtree", lambda *a, **k: rmtree_calls.append(a))
+    monkeypatch.setattr(gog_cli.os, "geteuid", lambda: 1000)
+
+    with pytest.raises(_sp.CalledProcessError):
+        gog_cli.write("org_1", "google", cred)
+
+    # The scoped rollback removed ONLY the in-flight account; the keyring was never
+    # wiped, so the owner's other accounts survive a single failed connect.
+    assert ["gog", "auth", "remove", "new@example.com", "--no-input", "--force"] in runs
+    assert rmtree_calls == []
+
+
+def test_remove_with_email_revokes_then_removes_one_account(monkeypatch, tmp_path):
     _patch_efs(monkeypatch, tmp_path)
     _patch_keyring_password(monkeypatch)
 
@@ -202,24 +268,25 @@ def test_remove_with_email_removes_one_account_and_keeps_keyring(monkeypatch, tm
     (gogcli_dir / "keyring.jwe").write_text("blob")
 
     runs = []
-
-    def _fake_run(argv, input=None, env=None, check=None, capture_output=None, text=None):
-        runs.append({"argv": argv, "env": env, "check": check})
-
-        class _CP:
-            returncode = 0
-
-        return _CP()
-
+    posts = []
     rmtree_calls = []
-    monkeypatch.setattr(gog_cli.subprocess, "run", _fake_run)
+    monkeypatch.setattr(gog_cli.subprocess, "run", _fake_run_factory(runs))
+    monkeypatch.setattr(gog_cli.httpx, "post", _fake_post_factory(posts))
     monkeypatch.setattr(gog_cli.shutil, "rmtree", lambda *a, **k: rmtree_calls.append((a, k)))
 
     gog_cli.remove("org_1", "google", {"email": "a@x.com"})
 
-    # Exactly one per-account remove; the email is an argv element, never a shell string.
-    assert len(runs) == 1
-    run = runs[0]
+    # The grant is revoked at Google FIRST (token exported from the keyring, then
+    # POSTed to the revoke endpoint) — gog's local remove does not revoke server-side.
+    export_runs = [r for r in runs if "export" in r["argv"]]
+    assert len(export_runs) == 1
+    assert export_runs[0]["argv"][:5] == ["gog", "auth", "tokens", "export", "a@x.com"]
+    assert posts == [{"url": "https://oauth2.googleapis.com/revoke", "data": {"token": "rt-a@x.com"}}]
+
+    # Then exactly one per-account remove; the email is an argv element, never a shell string.
+    remove_runs = [r for r in runs if r["argv"][:3] == ["gog", "auth", "remove"]]
+    assert len(remove_runs) == 1
+    run = remove_runs[0]
     assert run["argv"] == ["gog", "auth", "remove", "a@x.com", "--no-input", "--force"]
     assert run["check"] is True
 
@@ -239,8 +306,61 @@ def test_remove_with_email_removes_one_account_and_keeps_keyring(monkeypatch, tm
     assert gogcli_dir.exists()
 
 
-def test_remove_without_email_deletes_keyring_and_config(monkeypatch, tmp_path):
+def test_remove_revoke_failure_does_not_block_local_removal(monkeypatch, tmp_path):
     _patch_efs(monkeypatch, tmp_path)
+    _patch_keyring_password(monkeypatch)
+
+    runs = []
+
+    def _fake_run(argv, input=None, env=None, check=None, capture_output=None, text=None):
+        runs.append(argv)
+        # The token export fails (e.g. keyring drift) — revoke is best-effort and
+        # must not stop the authoritative local removal.
+        if "export" in argv:
+            raise RuntimeError("export boom")
+
+        class _CP:
+            returncode = 0
+
+        return _CP()
+
+    posts = []
+    monkeypatch.setattr(gog_cli.subprocess, "run", _fake_run)
+    monkeypatch.setattr(gog_cli.httpx, "post", _fake_post_factory(posts))
+
+    gog_cli.remove("org_1", "google", {"email": "a@x.com"})
+
+    # Revoke was skipped (export failed) but the local remove still ran.
+    assert posts == []
+    assert ["gog", "auth", "remove", "a@x.com", "--no-input", "--force"] in runs
+
+
+def test_remove_no_email_no_flag_is_noop(monkeypatch, tmp_path):
+    _patch_efs(monkeypatch, tmp_path)
+
+    # An existing keyring holding the owner's accounts.
+    data_gogcli = Path(tmp_path) / "org_1" / ".local" / "share" / "gogcli"
+    data_gogcli.mkdir(parents=True)
+    (data_gogcli / "keyring.jwe").write_text("blob")
+
+    runs = []
+    rmtree_calls = []
+    monkeypatch.setattr(gog_cli.subprocess, "run", lambda *a, **k: runs.append(a))
+    monkeypatch.setattr(gog_cli.shutil, "rmtree", lambda *a, **k: rmtree_calls.append(a))
+
+    # The failed-connect rollback path: the credential is the raw OAuth payload (no
+    # email, no disconnect_all). It must NOT wipe the owner's keyring — write()
+    # already scoped-cleaned its own in-flight account.
+    gog_cli.remove("org_1", "google", {"access_token": "at", "refresh_token": "rt", "client_id": "cid"})
+
+    assert runs == []
+    assert rmtree_calls == []
+    assert data_gogcli.exists()
+
+
+def test_disconnect_all_revokes_each_account_then_deletes_keyring_and_config(monkeypatch, tmp_path):
+    _patch_efs(monkeypatch, tmp_path)
+    _patch_keyring_password(monkeypatch)
     # The keyring lives under .local/share/gogcli; the OAuth client config under
     # .config/gogcli. A full disconnect must drop BOTH.
     data_gogcli = Path(tmp_path) / "org_1" / ".local" / "share" / "gogcli"
@@ -250,21 +370,26 @@ def test_remove_without_email_deletes_keyring_and_config(monkeypatch, tmp_path):
     config_gogcli.mkdir(parents=True)
     (config_gogcli / "client.json").write_text("client")
 
-    # No per-account subprocess may run on the disconnect-ALL path.
     runs = []
-    monkeypatch.setattr(
-        gog_cli.subprocess,
-        "run",
-        lambda *a, **k: runs.append((a, k)),
-    )
+    posts = []
+    monkeypatch.setattr(gog_cli.subprocess, "run", _fake_run_factory(runs))
+    monkeypatch.setattr(gog_cli.httpx, "post", _fake_post_factory(posts))
 
-    gog_cli.remove("org_1", "google", {})
+    gog_cli.remove("org_1", "google", {"disconnect_all": True, "accounts": ["a@x.com", "b@x.com"]})
+
+    # Every account's grant is revoked at Google (token exported, then POSTed)
+    # before the keyring is dropped — two exports, two revokes, no per-account remove.
+    assert sorted(r["argv"][4] for r in runs if "export" in r["argv"]) == ["a@x.com", "b@x.com"]
+    assert {p["data"]["token"] for p in posts} == {"rt-a@x.com", "rt-b@x.com"}
+    assert not any(r["argv"][:3] == ["gog", "auth", "remove"] for r in runs)
+
+    # Both on-disk trees are gone after the wipe.
     assert not data_gogcli.exists()
     assert not config_gogcli.exists()
-    assert runs == []
 
 
-def test_remove_is_idempotent_when_missing(monkeypatch, tmp_path):
+def test_disconnect_all_is_idempotent_when_missing(monkeypatch, tmp_path):
     _patch_efs(monkeypatch, tmp_path)
-    # No keyring dir exists — remove must not raise.
-    gog_cli.remove("org_1", "google", {})
+    _patch_keyring_password(monkeypatch)
+    # No keyring dir and no accounts — a full disconnect must not raise.
+    gog_cli.remove("org_1", "google", {"disconnect_all": True, "accounts": []})

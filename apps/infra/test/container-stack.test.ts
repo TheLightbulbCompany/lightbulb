@@ -145,7 +145,12 @@ describe("ContainerStack — dev", () => {
     });
   });
 
-  test("openclaw container sets XDG_CONFIG_HOME + GOG_KEYRING_BACKEND for the gog file keyring", () => {
+  test("openclaw container sets XDG_CONFIG_HOME + XDG_DATA_HOME + GOG_KEYRING_BACKEND for the gog file keyring", () => {
+    // XDG_DATA_HOME is the load-bearing one: gog stores its file keyring under
+    // the data home (verified: setting XDG_DATA_HOME=/x puts the keyring at
+    // /x/gogcli/keyring), NOT the config home. Both must point at the EFS mount
+    // or the OAuth tokens land on the ephemeral overlay fs and are wiped on
+    // every task restart.
     template.hasResourceProperties("AWS::ECS::TaskDefinition", {
       Family: "isol8-dev-openclaw",
       ContainerDefinitions: Match.arrayWith([
@@ -155,6 +160,10 @@ describe("ContainerStack — dev", () => {
             {
               Name: "XDG_CONFIG_HOME",
               Value: "/home/node/.openclaw/.config",
+            },
+            {
+              Name: "XDG_DATA_HOME",
+              Value: "/home/node/.openclaw/.local/share",
             },
             { Name: "GOG_KEYRING_BACKEND", Value: "file" },
           ]),

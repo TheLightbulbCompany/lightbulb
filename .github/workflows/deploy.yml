@@ -1152,6 +1152,7 @@ jobs:
     needs:
       - Build-Synth
       - Assets-FileAsset15
+      - Assets-FileAsset16
       - dev-isol8-dev-database-Deploy
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-container-Deploy
@@ -1192,8 +1193,8 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset16
       - Assets-FileAsset17
+      - Assets-FileAsset16
       - Assets-DockerAsset1
       - dev-isol8-dev-network-Deploy
       - dev-isol8-dev-container-Deploy
@@ -1225,7 +1226,7 @@ jobs:
         with:
           name: isol8-dev-service
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset16.outputs.asset-hash }}.json
+            needs.Assets-FileAsset17.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1

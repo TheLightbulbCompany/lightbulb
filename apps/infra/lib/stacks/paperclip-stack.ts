@@ -4,6 +4,7 @@ import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as logs from "aws-cdk-lib/aws-logs";
 import * as rds from "aws-cdk-lib/aws-rds";
+import * as s3 from "aws-cdk-lib/aws-s3";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as servicediscovery from "aws-cdk-lib/aws-servicediscovery";
 import * as ecr from "aws-cdk-lib/aws-ecr";
@@ -282,6 +283,24 @@ export class PaperclipStack extends cdk.Stack {
     );
 
     // ─────────────────────────────────────────────────────────────────
+    // S3 attachment storage. Paperclip's pluggable StorageService defaults
+    // to the local-disk provider (ephemeral Fargate disk, lost on every
+    // redeploy); its s3-provider builds an S3Client with NO static
+    // credentials, so it picks up THIS task role via the SDK default
+    // credential chain. The provider uses only object-level ops
+    // (Put/Get/Head/Delete), which grantReadWrite covers.
+    // ─────────────────────────────────────────────────────────────────
+    const attachmentsBucket = new s3.Bucket(this, "PaperclipAttachmentsBucket", {
+      bucketName: `isol8-${env}-paperclip-attachments`,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      removalPolicy:
+        env === "prod" ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: env !== "prod",
+    });
+    attachmentsBucket.grantReadWrite(taskRole);
+
+    // ─────────────────────────────────────────────────────────────────
     // Task definition: 0.5 vCPU / 1 GB Fargate, upstream image
     // ─────────────────────────────────────────────────────────────────
     const taskDefinition = new ecs.FargateTaskDefinition(this, "PaperclipTaskDef", {
@@ -357,6 +376,13 @@ export class PaperclipStack extends cdk.Stack {
         // required for the pgvector CREATE EXTENSION step which lives
         // outside Drizzle.
         PAPERCLIP_MIGRATION_AUTO_APPLY: "true",
+        // Durable attachment storage. Without these Paperclip falls back to
+        // its local-disk provider on ephemeral Fargate storage (lost on every
+        // task restart/redeploy). The s3-provider resolves credentials from
+        // the task role (no static keys). Region defaults to the stack region.
+        PAPERCLIP_STORAGE_PROVIDER: "s3",
+        PAPERCLIP_STORAGE_S3_BUCKET: attachmentsBucket.bucketName,
+        PAPERCLIP_STORAGE_S3_REGION: this.region,
         // Drives the remote-agent heartbeat loop. Upstream sets this for
         // public ECS deploys; without it some scheduler-dependent flows
         // never fire.

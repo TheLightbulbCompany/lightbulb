@@ -93,15 +93,21 @@ def test_write_seeds_client_and_token_via_gog(monkeypatch, tmp_path, cred):
     assert token == {"email": "user@example.com", "refresh_token": "rt"}
     assert "account" not in token
 
-    # Env carries XDG_CONFIG_HOME at owner_efs_root/.config + keyring backend/password.
+    # Env carries XDG_CONFIG_HOME (gog reads config) AND XDG_DATA_HOME (gog stores
+    # the file keyring there — NOT under XDG_CONFIG_HOME), both on the owner's EFS,
+    # + keyring backend/password. Without XDG_DATA_HOME the keyring lands on the
+    # backend's ephemeral disk and never reaches the per-user container.
     expected_cfg = str(Path(tmp_path) / "org_1" / ".config")
+    expected_data = str(Path(tmp_path) / "org_1" / ".local" / "share")
     for run in (set_run, import_run):
         assert run["env"]["XDG_CONFIG_HOME"] == expected_cfg
+        assert run["env"]["XDG_DATA_HOME"] == expected_data
         assert run["env"]["GOG_KEYRING_BACKEND"] == "file"
         assert run["env"]["GOG_KEYRING_PASSWORD"] == "kp"
 
-    # The .config dir is created so gog can write its keyring under it.
+    # Both dirs are created on EFS: .config (client config) and .local/share (keyring).
     assert (Path(tmp_path) / "org_1" / ".config").is_dir()
+    assert (Path(tmp_path) / "org_1" / ".local" / "share").is_dir()
 
 
 def test_write_chowns_gogcli_tree_when_root(monkeypatch, tmp_path, cred):
@@ -110,12 +116,16 @@ def test_write_chowns_gogcli_tree_when_root(monkeypatch, tmp_path, cred):
 
     monkeypatch.setattr(gog_cli.httpx, "get", lambda url, headers=None: _FakeResp("u@example.com"))
 
-    # Simulate gog writing a keyring tree, since the real binary is mocked out.
-    gogcli_dir = Path(tmp_path) / "org_1" / ".config" / "gogcli"
+    # Simulate the real gog: it writes its OAuth client config under
+    # XDG_CONFIG_HOME/gogcli and its file KEYRING under XDG_DATA_HOME/gogcli.
+    config_gogcli = Path(tmp_path) / "org_1" / ".config" / "gogcli"
+    data_gogcli = Path(tmp_path) / "org_1" / ".local" / "share" / "gogcli"
 
     def _fake_run(argv, input=None, env=None, check=None, capture_output=None, text=None):
-        gogcli_dir.mkdir(parents=True, exist_ok=True)
-        (gogcli_dir / "keyring.jwe").write_text("blob")
+        config_gogcli.mkdir(parents=True, exist_ok=True)
+        (config_gogcli / "client.json").write_text("client")
+        data_gogcli.mkdir(parents=True, exist_ok=True)
+        (data_gogcli / "keyring.jwe").write_text("blob")
 
         class _CP:
             returncode = 0
@@ -132,8 +142,11 @@ def test_write_chowns_gogcli_tree_when_root(monkeypatch, tmp_path, cred):
     gog_cli.write("org_1", "google", cred)
 
     chowned_paths = {p for p, _, _ in chowned}
-    assert str(gogcli_dir) in chowned_paths
-    assert str(gogcli_dir / "keyring.jwe") in chowned_paths
+    # The KEYRING dir (data) must be chowned — else it lands on EFS root-owned and
+    # the container's uid-1000 gog cannot read it. The config dir is chowned too.
+    assert str(data_gogcli) in chowned_paths
+    assert str(data_gogcli / "keyring.jwe") in chowned_paths
+    assert str(config_gogcli) in chowned_paths
     # All chowns target node uid/gid 1000.
     assert all(uid == 1000 and gid == 1000 for _, uid, gid in chowned)
 
@@ -209,9 +222,13 @@ def test_remove_with_email_removes_one_account_and_keeps_keyring(monkeypatch, tm
     assert run["argv"] == ["gog", "auth", "remove", "a@x.com", "--no-input", "--force"]
     assert run["check"] is True
 
-    # Same env as write: XDG_CONFIG_HOME under owner_efs_root/.config + keyring backend/password.
+    # Same env as write: XDG_CONFIG_HOME + XDG_DATA_HOME under owner_efs_root +
+    # keyring backend/password. XDG_DATA_HOME is required or gog operates on the
+    # wrong (empty) keyring and the per-account remove silently no-ops.
     expected_cfg = str(Path(tmp_path) / "org_1" / ".config")
+    expected_data = str(Path(tmp_path) / "org_1" / ".local" / "share")
     assert run["env"]["XDG_CONFIG_HOME"] == expected_cfg
+    assert run["env"]["XDG_DATA_HOME"] == expected_data
     assert run["env"]["GOG_KEYRING_BACKEND"] == "file"
     assert run["env"]["GOG_KEYRING_PASSWORD"] == "kp"
 
@@ -219,11 +236,16 @@ def test_remove_with_email_removes_one_account_and_keeps_keyring(monkeypatch, tm
     assert rmtree_calls == []
 
 
-def test_remove_without_email_deletes_gogcli_dir(monkeypatch, tmp_path):
+def test_remove_without_email_deletes_keyring_and_config(monkeypatch, tmp_path):
     _patch_efs(monkeypatch, tmp_path)
-    gogcli_dir = Path(tmp_path) / "org_1" / ".config" / "gogcli"
-    gogcli_dir.mkdir(parents=True)
-    (gogcli_dir / "keyring.jwe").write_text("blob")
+    # The keyring lives under .local/share/gogcli; the OAuth client config under
+    # .config/gogcli. A full disconnect must drop BOTH.
+    data_gogcli = Path(tmp_path) / "org_1" / ".local" / "share" / "gogcli"
+    config_gogcli = Path(tmp_path) / "org_1" / ".config" / "gogcli"
+    data_gogcli.mkdir(parents=True)
+    (data_gogcli / "keyring.jwe").write_text("blob")
+    config_gogcli.mkdir(parents=True)
+    (config_gogcli / "client.json").write_text("client")
 
     # No per-account subprocess may run on the disconnect-ALL path.
     runs = []
@@ -234,7 +256,8 @@ def test_remove_without_email_deletes_gogcli_dir(monkeypatch, tmp_path):
     )
 
     gog_cli.remove("org_1", "google", {})
-    assert not gogcli_dir.exists()
+    assert not data_gogcli.exists()
+    assert not config_gogcli.exists()
     assert runs == []
 
 

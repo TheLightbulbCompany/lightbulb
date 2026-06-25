@@ -1,13 +1,18 @@
 """Materializer for Google via the `gog` CLI (baked into the backend image).
 
 The backend mounts every owner's per-user EFS and runs as root, so we seed gog by
-running the REAL gog binary on the backend against the owner's EFS config dir. gog's
+running the REAL gog binary on the backend against the owner's EFS dirs. gog's
 keyring is a password-derived JWE blob — only the real binary can produce it, so a
-hand-written token file is not a substitute. By pointing `XDG_CONFIG_HOME` at the
-owner's `.config`, gog writes its keyring under `.config/gogcli`, which maps to the
-container's `/home/node/.openclaw/.config/gogcli` (the per-user EFS access point
-mounts at `/home/node/.openclaw`). The container's gog reads that same keyring and is
-the runtime actor + self-refresher; it decrypts the JWE using the SAME shared
+hand-written token file is not a substitute. gog follows the XDG base-dir spec and
+splits config from data: it reads its OAuth client config from `XDG_CONFIG_HOME`
+(`.config/gogcli`) but stores the file KEYRING under `XDG_DATA_HOME`
+(`.local/share/gogcli`). BOTH must point at the owner's EFS — `XDG_DATA_HOME`
+especially, because the keyring (the actual tokens) lives there; left unset it
+defaults to the backend's own ephemeral `$HOME/.local/share`, off EFS, so the
+per-user container never sees it. These EFS dirs map to the container's
+`/home/node/.openclaw/{.config,.local/share}/gogcli` (the per-user access point
+mounts at `/home/node/.openclaw`). The container's gog reads that same keyring and
+is the runtime actor + self-refresher; it decrypts the JWE using the SAME shared
 `GOG_KEYRING_PASSWORD`, so the blob is portable between backend and container.
 
 Argv is fixed — caller data never touches the command line. The OAuth client and
@@ -48,6 +53,10 @@ def _chown_tree_to_node(path) -> None:
     # run non-root and skip this, matching the rest of the materializer rail.
     if os.geteuid() != 0:
         return
+    # gog may not create every dir on every run (e.g. config-only vs keyring-only
+    # writes); skip a missing path rather than raising FileNotFoundError.
+    if not os.path.exists(path):
+        return
     os.chown(path, NODE_UID, NODE_GID)
     for dirpath, dirnames, filenames in os.walk(path):
         for name in dirnames + filenames:
@@ -77,10 +86,16 @@ def write(owner_id: str, provider_key: str, credential: dict) -> str:
     token_json = json.dumps({"email": email, "refresh_token": credential["refresh_token"]})
 
     cfg = owner_efs_root(owner_id) / ".config"
+    data = owner_efs_root(owner_id) / ".local" / "share"
     cfg.mkdir(parents=True, exist_ok=True)
+    data.mkdir(parents=True, exist_ok=True)
     env = {
         **os.environ,
         "XDG_CONFIG_HOME": str(cfg),
+        # gog stores the file keyring under XDG_DATA_HOME (not XDG_CONFIG_HOME).
+        # Without this it lands on the backend's ephemeral disk and never reaches
+        # the per-user container; the container reads it from this EFS path.
+        "XDG_DATA_HOME": str(data),
         "GOG_KEYRING_BACKEND": "file",
         "GOG_KEYRING_PASSWORD": settings.GOG_KEYRING_PASSWORD,
     }
@@ -104,7 +119,11 @@ def write(owner_id: str, provider_key: str, credential: dict) -> str:
         text=True,
     )
 
+    # The backend writes as root; the container reads as uid 1000. Chown BOTH the
+    # config (OAuth client) and the data (keyring) trees, or the container's gog
+    # can't read the EFS-resident keyring.
     _chown_tree_to_node(cfg / "gogcli")
+    _chown_tree_to_node(data / "gogcli")
     return email
 
 
@@ -117,9 +136,14 @@ def remove(owner_id: str, provider_key: str, credential: dict) -> None:
         # removal needs BOTH --no-input (never prompt) and --force; without --force it
         # refuses non-interactive removal and exits non-zero.
         cfg = owner_efs_root(owner_id) / ".config"
+        data = owner_efs_root(owner_id) / ".local" / "share"
         env = {
             **os.environ,
             "XDG_CONFIG_HOME": str(cfg),
+            # Must match write(): gog reads the keyring from XDG_DATA_HOME, so an
+            # unset value would point the per-account remove at an empty keyring
+            # on the backend's ephemeral disk and silently drop nothing.
+            "XDG_DATA_HOME": str(data),
             "GOG_KEYRING_BACKEND": "file",
             "GOG_KEYRING_PASSWORD": settings.GOG_KEYRING_PASSWORD,
         }
@@ -134,5 +158,8 @@ def remove(owner_id: str, provider_key: str, credential: dict) -> None:
         )
         return
 
-    # No email means the caller intends to disconnect EVERY account — drop the keyring.
-    shutil.rmtree(owner_efs_root(owner_id) / ".config" / "gogcli", ignore_errors=True)
+    # No email means the caller intends to disconnect EVERY account — drop the
+    # keyring (.local/share/gogcli) AND the OAuth client config (.config/gogcli).
+    root = owner_efs_root(owner_id)
+    shutil.rmtree(root / ".local" / "share" / "gogcli", ignore_errors=True)
+    shutil.rmtree(root / ".config" / "gogcli", ignore_errors=True)

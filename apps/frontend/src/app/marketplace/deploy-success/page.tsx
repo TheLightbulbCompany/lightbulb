@@ -11,7 +11,7 @@ import { getListing } from "@/lib/marketplace/api";
 import type { ListingDetailResponse } from "@/lib/marketplace/types";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
-const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? "https://app.isol8.co";
+const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? "https://isol8.co";
 
 function titleCase(token: string): string {
   return token

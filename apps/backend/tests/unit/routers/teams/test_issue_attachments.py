@@ -126,6 +126,28 @@ def test_upload_rejects_oversized_file_with_413(client, monkeypatch):
     admin.upload_issue_attachment.assert_not_awaited()
 
 
+def test_upload_rejects_by_content_length_before_parsing(client, monkeypatch):
+    """An oversized Content-Length is rejected 413 BEFORE the multipart body is
+    parsed/spooled — so a huge upload never buffers. We send a small body but
+    spoof a large Content-Length to prove the fence fires on the header alone."""
+    admin = MagicMock()
+    admin.upload_issue_attachment = AsyncMock(return_value={})
+    _patch_admin(monkeypatch, admin)
+
+    huge = str(issues_mod._ATTACHMENT_REQUEST_MAX_BYTES + 1)
+    r = client.post(
+        "/api/v1/teams/issues/iss1/attachments",
+        content=b"x",  # tiny actual body
+        headers={
+            "Authorization": "Bearer x",
+            "Content-Type": "multipart/form-data; boundary=z",
+            "Content-Length": huge,
+        },
+    )
+    assert r.status_code == 413
+    admin.upload_issue_attachment.assert_not_awaited()
+
+
 def test_upload_passes_octet_stream_when_content_type_missing(client, monkeypatch):
     """A file part with no content-type falls back to application/octet-stream."""
     admin = MagicMock()

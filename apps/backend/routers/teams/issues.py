@@ -9,8 +9,12 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
+
+# ``request.form()`` yields Starlette's ``UploadFile`` (the base class FastAPI's
+# subclasses); isinstance-check against the base so it matches both.
+from starlette.datastructures import UploadFile
 
 from . import agents as _agents
 from .deps import TeamsContext, envelope_list
@@ -25,6 +29,10 @@ _ctx = _agents._ctx
 # the two — this cap is the early-reject fence so the backend never buffers a
 # multi-hundred-MB body just to forward it and have upstream 422 it.
 _ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
+# Multipart framing (boundary + part headers) adds a little above the raw file
+# bytes; allow ~1 MB headroom for the pre-read Content-Length fence.
+_ATTACHMENT_REQUEST_MAX_BYTES = _ATTACHMENT_MAX_BYTES + 1024 * 1024
+_ATTACHMENT_READ_CHUNK = 1024 * 1024
 
 # Paperclip ``projects.id`` is a Postgres ``uuid`` column, so a malformed
 # ``project`` filter makes upstream throw a uuid-cast error → 500 (whose
@@ -339,7 +347,7 @@ async def list_issue_attachments(issue_id: str, ctx: TeamsContext = Depends(_ctx
 @router.post("/issues/{issue_id}/attachments")
 async def upload_issue_attachment(
     issue_id: str,
-    file: UploadFile = File(...),
+    request: Request,
     ctx: TeamsContext = Depends(_ctx),
 ):
     """Upload a binary attachment to an issue.
@@ -347,31 +355,51 @@ async def upload_issue_attachment(
     Forwards to upstream ``POST /api/companies/{company}/issues/{issue}/
     attachments`` as multipart (field name ``"file"``).
 
-    SECURITY: the company segment is taken from ``ctx.company_id`` — the
-    server-derived company on the resolved ``TeamsContext`` — NEVER from a
-    client-supplied param. This route is IDOR-sensitive (see the unscoped-route
-    IDOR guidance), so the company id must come from the authenticated context
-    only. The issue id from the path is then validated upstream against that
-    company (``issue.companyId !== companyId`` → 422), closing the cross-tenant
-    issue-id hole too.
+    SECURITY — company scoping: the company segment is taken from
+    ``ctx.company_id`` (the server-derived company on the resolved
+    ``TeamsContext``), NEVER from a client-supplied param. This route is
+    IDOR-sensitive, so the company id comes from the authenticated context
+    only; upstream then validates the path issue id against that company
+    (``issue.companyId !== companyId`` → 422).
 
-    The file is read fully into memory to (a) enforce the size cap deterministically
-    and (b) hand httpx a concrete multipart body. A >``_ATTACHMENT_MAX_BYTES``
-    upload is rejected 413 before any upstream call.
+    SECURITY — body size: a huge upload must not OOM the task. We (1) reject by
+    ``Content-Length`` BEFORE parsing the multipart, so an honestly-sized
+    oversized body never spools, and (2) read the file in bounded chunks and
+    abort the moment the cap is exceeded — so memory stays bounded even if the
+    header is absent or lies. (We take ``request`` directly rather than a
+    ``File(...)`` param so the length fence runs before form parsing.)
     """
-    body = await file.read()
-    if len(body) > _ATTACHMENT_MAX_BYTES:
+    content_length = request.headers.get("content-length")
+    if content_length is not None and content_length.isdigit() and int(content_length) > _ATTACHMENT_REQUEST_MAX_BYTES:
         raise HTTPException(
             status_code=413,
             detail=f"Attachment exceeds the {_ATTACHMENT_MAX_BYTES} byte limit",
         )
+
+    form = await request.form()
+    upload = form.get("file")
+    if not isinstance(upload, UploadFile):
+        raise HTTPException(status_code=422, detail="Missing 'file' upload field")
+
+    chunks = bytearray()
+    while True:
+        chunk = await upload.read(_ATTACHMENT_READ_CHUNK)
+        if not chunk:
+            break
+        chunks.extend(chunk)
+        if len(chunks) > _ATTACHMENT_MAX_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Attachment exceeds the {_ATTACHMENT_MAX_BYTES} byte limit",
+            )
+
     return await _agents._admin().upload_issue_attachment(
         session_cookie=ctx.session_cookie,
         company_id=ctx.company_id,
         issue_id=issue_id,
-        filename=file.filename,
-        content_type=file.content_type or "application/octet-stream",
-        body=body,
+        filename=upload.filename,
+        content_type=upload.content_type or "application/octet-stream",
+        body=bytes(chunks),
     )
 
 
@@ -403,7 +431,19 @@ async def get_attachment_content(attachment_id: str, ctx: TeamsContext = Depends
     )
 
     headers: dict[str, str] = {}
-    for h in ("content-disposition", "content-length", "x-content-type-options"):
+    # Copy the upstream's content-serving safety headers through verbatim:
+    # ``content-disposition`` (upstream forces ``attachment`` for dangerous
+    # types) and ``content-security-policy`` (upstream's inline-SVG sandbox) are
+    # the inline-render / stored-XSS defenses — forwarding the CSP keeps that
+    # defense intact if the allowed-types set is ever widened. ``cache-control``
+    # keeps a private attachment out of shared caches.
+    for h in (
+        "content-disposition",
+        "content-length",
+        "x-content-type-options",
+        "content-security-policy",
+        "cache-control",
+    ):
         v = upstream.headers.get(h)
         if v:
             headers[h] = v

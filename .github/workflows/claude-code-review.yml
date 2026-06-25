@@ -101,8 +101,14 @@ jobs:
           fi
           # Whitespace-strip so the key match is tolerant of pretty-printing.
           compact="$(tr -d ' \n\t\r' < "${EXECUTION_FILE}")"
-          if printf '%s' "$compact" | grep -q '"is_error":true'; then
-            echo "::error::Claude review ended with is_error=true — it crashed before reviewing the diff (the action still reports the step 'success'). Most likely an expired CLAUDE_CODE_OAUTH_TOKEN secret or a Claude usage cap. Rotate the token (claude setup-token → gh secret set CLAUDE_CODE_OAUTH_TOKEN) and re-run."
+          # Check is_error on the FINAL result object ONLY — the stream contains
+          # many messages and a successful review legitimately includes
+          # intermediate tool results with "is_error":true (a recovered tool
+          # call). Greping the whole file matched those and red-failed clean
+          # reviews; scope to the flat `{"type":"result",...}` object instead.
+          result_is_error="$(printf '%s' "$compact" | grep -oE '"type":"result"[^}]*' | grep -oE '"is_error":(true|false)' | head -1)"
+          if [ "$result_is_error" = '"is_error":true' ]; then
+            echo "::error::Claude review's result reported is_error=true — it crashed before completing the review (the action still reports the step 'success'). Most likely an expired CLAUDE_CODE_OAUTH_TOKEN secret or a Claude usage cap. Rotate the token (claude setup-token → gh secret set CLAUDE_CODE_OAUTH_TOKEN) and re-run."
             exit 1
           fi
           echo "Claude review completed without error."

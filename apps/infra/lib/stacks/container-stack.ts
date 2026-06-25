@@ -579,13 +579,19 @@ export class ContainerStack extends cdk.Stack {
         // this, clawhub falls through to agents.defaults.workspace and lands
         // at /home/node/.openclaw/workspaces/skills — a path no scanner checks.
         CLAWHUB_WORKDIR: "/home/node/.openclaw",
-        // Point the gog CLI's config discovery (and thus its file keyring) at a
-        // path under the EFS-backed .openclaw mount so the owner's Google OAuth
-        // keyring persists across task restarts. gog reads XDG_CONFIG_HOME to
-        // locate its config dir; GOG_KEYRING_BACKEND=file selects the
-        // password-encrypted file keyring (the password comes in via the
-        // GOG_KEYRING_PASSWORD secret below).
+        // Point the gog CLI at the EFS-backed .openclaw mount so the owner's
+        // Google OAuth keyring survives task restarts. gog follows the XDG
+        // base-dir spec and splits config from data: it reads its config from
+        // XDG_CONFIG_HOME but stores the file keyring under XDG_DATA_HOME. BOTH
+        // must be on EFS — XDG_DATA_HOME especially, because the keyring (the
+        // actual OAuth tokens) lives there; its default (~/.local/share) is the
+        // Fargate ephemeral overlay filesystem, which is wiped on every task
+        // replacement. Setting XDG_CONFIG_HOME alone persists only gog's config
+        // and leaves the tokens on ephemeral storage.
+        // GOG_KEYRING_BACKEND=file selects the password-encrypted file keyring
+        // (the password comes in via the GOG_KEYRING_PASSWORD secret below).
         XDG_CONFIG_HOME: "/home/node/.openclaw/.config",
+        XDG_DATA_HOME: "/home/node/.openclaw/.local/share",
         GOG_KEYRING_BACKEND: "file",
         // Skip mDNS/bonjour service advertising. OpenClaw advertises itself
         // on the LAN via bonjour for desktop auto-discovery; in Fargate

@@ -40,10 +40,12 @@ def _fake_run_factory(runs):
     `export` step, writes the token file gog would produce so the revoke path can
     read it back. The exported refresh token is deterministic per email."""
 
-    def _fake_run(argv, input=None, env=None, check=None, capture_output=None, text=None):
-        runs.append({"argv": argv, "env": env, "check": check, "input": input})
+    def _fake_run(argv, **kwargs):
+        runs.append(
+            {"argv": argv, "env": kwargs.get("env"), "check": kwargs.get("check"), "input": kwargs.get("input")}
+        )
         if "export" in argv:
-            email = argv[4]
+            email = argv[argv.index("export") + 1]
             out_path = argv[argv.index("--out") + 1]
             Path(out_path).write_text(json.dumps({"email": email, "refresh_token": f"rt-{email}"}))
 
@@ -79,8 +81,10 @@ def test_write_seeds_client_and_token_via_gog(monkeypatch, tmp_path, cred):
 
     runs = []
 
-    def _fake_run(argv, input=None, env=None, check=None, capture_output=None, text=None):
-        runs.append({"argv": argv, "input": input, "env": env, "check": check})
+    def _fake_run(argv, **kwargs):
+        runs.append(
+            {"argv": argv, "input": kwargs.get("input"), "env": kwargs.get("env"), "check": kwargs.get("check")}
+        )
 
         class _CP:
             returncode = 0
@@ -153,7 +157,7 @@ def test_write_chowns_gogcli_tree_when_root(monkeypatch, tmp_path, cred):
     config_gogcli = Path(tmp_path) / "org_1" / ".config" / "gogcli"
     data_gogcli = Path(tmp_path) / "org_1" / ".local" / "share" / "gogcli"
 
-    def _fake_run(argv, input=None, env=None, check=None, capture_output=None, text=None):
+    def _fake_run(argv, **kwargs):
         config_gogcli.mkdir(parents=True, exist_ok=True)
         (config_gogcli / "client.json").write_text("client")
         data_gogcli.mkdir(parents=True, exist_ok=True)
@@ -189,7 +193,7 @@ def test_write_skips_chown_when_non_root(monkeypatch, tmp_path, cred):
 
     monkeypatch.setattr(gog_cli.httpx, "get", lambda url, headers=None: _FakeResp("u@example.com"))
 
-    def _fake_run(argv, input=None, env=None, check=None, capture_output=None, text=None):
+    def _fake_run(argv, **kwargs):
         class _CP:
             returncode = 0
 
@@ -232,8 +236,8 @@ def test_write_rolls_back_only_new_account_on_partial_failure(monkeypatch, tmp_p
 
     runs = []
 
-    def _fake_run(argv, input=None, env=None, check=None, capture_output=None, text=None):
-        runs.append(argv)
+    def _fake_run(argv, **kwargs):
+        runs.append({"argv": argv, "env": kwargs.get("env")})
         # `credentials set` lands; the token import fails partway through the connect.
         if argv[:4] == ["gog", "auth", "tokens", "import"]:
             raise _sp.CalledProcessError(1, argv, stderr="boom")
@@ -253,6 +257,45 @@ def test_write_rolls_back_only_new_account_on_partial_failure(monkeypatch, tmp_p
 
     # The scoped rollback removed ONLY the in-flight account; the keyring was never
     # wiped, so the owner's other accounts survive a single failed connect.
+    rollback = [r for r in runs if r["argv"] == ["gog", "auth", "remove", "new@example.com", "--no-input", "--force"]]
+    assert len(rollback) == 1
+    # The rollback runs against the same EFS keyring (XDG paths), or it would
+    # operate on the wrong/empty keyring and clean nothing.
+    assert rollback[0]["env"]["XDG_DATA_HOME"] == str(Path(tmp_path) / "org_1" / ".local" / "share")
+    assert rmtree_calls == []
+
+
+def test_write_rolls_back_account_when_chown_fails_after_import(monkeypatch, tmp_path, cred):
+    # The token import succeeds, then the post-import chown fails (e.g. an EFS
+    # ownership hiccup while running as root). write() must still scoped-clean THIS
+    # account so no orphaned token lingers in the keyring after the connect reports
+    # failure — the chown lives inside the try for exactly this reason.
+    _patch_efs(monkeypatch, tmp_path)
+    _patch_keyring_password(monkeypatch)
+    monkeypatch.setattr(gog_cli.httpx, "get", lambda url, headers=None: _FakeResp("new@example.com"))
+
+    runs = []
+
+    def _fake_run(argv, **kwargs):
+        runs.append(argv)
+
+        class _CP:
+            returncode = 0
+
+        return _CP()
+
+    def _boom_chown(path):
+        raise OSError("chown boom")
+
+    rmtree_calls = []
+    monkeypatch.setattr(gog_cli.subprocess, "run", _fake_run)
+    monkeypatch.setattr(gog_cli, "_chown_tree_to_node", _boom_chown)
+    monkeypatch.setattr(gog_cli.shutil, "rmtree", lambda *a, **k: rmtree_calls.append(a))
+
+    with pytest.raises(OSError):
+        gog_cli.write("org_1", "google", cred)
+
+    # The just-imported account was scoped-removed, and the keyring was not wiped.
     assert ["gog", "auth", "remove", "new@example.com", "--no-input", "--force"] in runs
     assert rmtree_calls == []
 
@@ -312,7 +355,7 @@ def test_remove_revoke_failure_does_not_block_local_removal(monkeypatch, tmp_pat
 
     runs = []
 
-    def _fake_run(argv, input=None, env=None, check=None, capture_output=None, text=None):
+    def _fake_run(argv, **kwargs):
         runs.append(argv)
         # The token export fails (e.g. keyring drift) — revoke is best-effort and
         # must not stop the authoritative local removal.
@@ -379,7 +422,8 @@ def test_disconnect_all_revokes_each_account_then_deletes_keyring_and_config(mon
 
     # Every account's grant is revoked at Google (token exported, then POSTed)
     # before the keyring is dropped — two exports, two revokes, no per-account remove.
-    assert sorted(r["argv"][4] for r in runs if "export" in r["argv"]) == ["a@x.com", "b@x.com"]
+    exported = sorted(r["argv"][r["argv"].index("export") + 1] for r in runs if "export" in r["argv"])
+    assert exported == ["a@x.com", "b@x.com"]
     assert {p["data"]["token"] for p in posts} == {"rt-a@x.com", "rt-b@x.com"}
     assert not any(r["argv"][:3] == ["gog", "auth", "remove"] for r in runs)
 

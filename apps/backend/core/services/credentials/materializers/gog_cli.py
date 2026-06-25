@@ -55,6 +55,11 @@ _GMAIL_PROFILE_URL = "https://gmail.googleapis.com/gmail/v1/users/me/profile"
 # only deletes the LOCAL keyring entry and leaves the server-side grant standing.
 _GOOGLE_REVOKE_URL = "https://oauth2.googleapis.com/revoke"
 
+# Every gog invocation reads/writes the EFS-resident keyring; these run via
+# run_in_thread on the connect/disconnect request path, so cap each call — an NFS
+# stall must not block the worker thread (and its pool slot) indefinitely.
+_GOG_TIMEOUT_S = 30
+
 
 def _fetch_account_email(access_token: str) -> str:
     resp = httpx.get(
@@ -113,6 +118,7 @@ def _remove_account_quietly(owner_id: str, email: str, env: dict[str, str]) -> N
             check=True,
             capture_output=True,
             text=True,
+            timeout=_GOG_TIMEOUT_S,
         )
     except Exception:
         logger.warning(
@@ -141,10 +147,18 @@ def _revoke_grant_at_google(owner_id: str, email: str, env: dict[str, str]) -> N
             check=True,
             capture_output=True,
             text=True,
+            timeout=_GOG_TIMEOUT_S,
         )
         with open(out_path) as f:
             refresh_token = json.load(f).get("refresh_token")
         if not refresh_token:
+            # Export succeeded but carried no token — likely gog format drift or an
+            # incomplete keyring entry. Surface it instead of silently skipping, so
+            # a revocation that never happens is visible in logs.
+            logger.warning(
+                "google grant revoke skipped for owner=%s: exported token file had no refresh_token",
+                owner_id,
+            )
             return
         # Form-encoded token= per RFC 7009; Google answers 200 on success and 400
         # for an already-expired/revoked token — neither is worth raising on.
@@ -186,10 +200,11 @@ def write(owner_id: str, provider_key: str, credential: dict) -> str:
 
     env = _gog_env(owner_id)
     # Fixed argv; all caller data flows through stdin/env. check=True so a gog failure
-    # raises. A failure between the two steps (e.g. `credentials set` lands but
-    # `tokens import` fails) must not strand THIS account's partial entry — and must
-    # never touch the owner's OTHER accounts in the shared keyring — so we self-clean
-    # only this email and re-raise for the caller to surface.
+    # raises. Everything from the first keyring mutation through the chown lives in the
+    # try: any failure after `tokens import` lands the token (e.g. a chown error while
+    # running as root) must still self-clean THIS account — otherwise the connect
+    # reports failure while an orphaned token lingers in the keyring. The cleanup is
+    # scoped to this email and never touches the owner's other accounts.
     try:
         subprocess.run(
             ["gog", "auth", "credentials", "set", "-", "--no-input"],
@@ -198,6 +213,7 @@ def write(owner_id: str, provider_key: str, credential: dict) -> str:
             check=True,
             capture_output=True,
             text=True,
+            timeout=_GOG_TIMEOUT_S,
         )
         subprocess.run(
             ["gog", "auth", "tokens", "import", "-", "--no-input"],
@@ -206,16 +222,17 @@ def write(owner_id: str, provider_key: str, credential: dict) -> str:
             check=True,
             capture_output=True,
             text=True,
+            timeout=_GOG_TIMEOUT_S,
         )
+        # The backend writes as root; the container reads as uid 1000. Chown BOTH the
+        # config (OAuth client) and the data (keyring) trees, or the container's gog
+        # can't read the EFS-resident keyring.
+        _chown_tree_to_node(owner_efs_root(owner_id) / ".config" / "gogcli")
+        _chown_tree_to_node(owner_efs_root(owner_id) / ".local" / "share" / "gogcli")
     except Exception:
         _remove_account_quietly(owner_id, email, env)
         raise
 
-    # The backend writes as root; the container reads as uid 1000. Chown BOTH the
-    # config (OAuth client) and the data (keyring) trees, or the container's gog
-    # can't read the EFS-resident keyring.
-    _chown_tree_to_node(owner_efs_root(owner_id) / ".config" / "gogcli")
-    _chown_tree_to_node(owner_efs_root(owner_id) / ".local" / "share" / "gogcli")
     return email
 
 
@@ -254,6 +271,7 @@ def remove(owner_id: str, provider_key: str, credential: dict) -> None:
             check=True,
             capture_output=True,
             text=True,
+            timeout=_GOG_TIMEOUT_S,
         )
         return
 

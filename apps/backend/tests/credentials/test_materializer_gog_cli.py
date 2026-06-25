@@ -415,6 +415,27 @@ def test_remove_revoke_failure_does_not_block_local_removal(monkeypatch, tmp_pat
     assert ["gog", "auth", "remove", "a@x.com", "--no-input", "--force"] in runs
 
 
+def test_remove_revoke_non_2xx_still_removes_locally(monkeypatch, tmp_path):
+    _patch_efs(monkeypatch, tmp_path)
+    _patch_keyring_password(monkeypatch)
+
+    runs = []
+    monkeypatch.setattr(gog_cli.subprocess, "run", _fake_run_factory(runs))
+
+    def _fake_post_500(url, data=None, timeout=None):
+        class _R:
+            status_code = 500
+
+        return _R()
+
+    monkeypatch.setattr(gog_cli.httpx, "post", _fake_post_500)
+
+    # A non-200/400 revoke response (grant may still be live) is logged but must
+    # NOT block the authoritative local removal.
+    gog_cli.remove("org_1", "google", {"email": "a@x.com"})
+    assert ["gog", "auth", "remove", "a@x.com", "--no-input", "--force"] in [r["argv"] for r in runs]
+
+
 def test_remove_no_email_no_flag_is_noop(monkeypatch, tmp_path):
     _patch_efs(monkeypatch, tmp_path)
 

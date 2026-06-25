@@ -177,9 +177,18 @@ def _revoke_grant_at_google(owner_id: str, email: str, env: dict[str, str]) -> N
                 owner_id,
             )
             return
-        # Form-encoded token= per RFC 7009; Google answers 200 on success and 400
-        # for an already-expired/revoked token — neither is worth raising on.
-        httpx.post(_GOOGLE_REVOKE_URL, data={"token": refresh_token}, timeout=10)
+        # Form-encoded token= per RFC 7009. 200 = revoked; 400 = the token was
+        # already expired/revoked at Google (also fine). Any other status means the
+        # grant may still be live — surface it so a failed revoke is observable. We
+        # still proceed to drop the local keyring: that is the authoritative
+        # disconnect, and a Google-side outage must not wedge it.
+        resp = httpx.post(_GOOGLE_REVOKE_URL, data={"token": refresh_token}, timeout=10)
+        if resp.status_code not in (200, 400):
+            logger.warning(
+                "google grant revoke returned %s for owner=%s; the grant may still be live",
+                resp.status_code,
+                owner_id,
+            )
     except Exception:
         logger.warning(
             "google grant revoke failed for owner=%s; the token was left for manual revocation",

@@ -224,7 +224,8 @@ async def apply_update(owner_id: str, update_id: str) -> bool:
                 owner_id,
                 update_type,
             )
-        logger.info("Update %s applied successfully (owner=%s, type=%s)", update_id, owner_id, update_type)
+        else:
+            logger.info("Update %s applied successfully (owner=%s, type=%s)", update_id, owner_id, update_type)
         return True
 
     except Exception:
@@ -406,20 +407,31 @@ async def _paperclip_provision_retry_pass() -> None:
                 continue
 
             # Success: mark the row as applied so we don't re-run it.
+            # mark_applied swallows ConditionalCheckFailed and returns False
+            # rather than raising, so a try/except/else can't tell a rejected
+            # flip from a real one — check the return value and only count a
+            # genuine flip as succeeded.
             try:
-                await update_repo.mark_applied(owner_id, update_id)
+                marked = await update_repo.mark_applied(owner_id, update_id)
             except Exception:
                 logger.exception(
                     "paperclip_provision_retry_pass: mark_applied failed for %s/%s",
                     owner_id,
                     update_id,
                 )
-            else:
+                marked = False
+            if marked:
                 succeeded += 1
                 logger.info(
                     "paperclip_provision_retry_pass: succeeded op=%s owner=%s",
                     op,
                     owner_id,
+                )
+            else:
+                logger.warning(
+                    "paperclip_provision_retry_pass: mark_applied did not flip %s/%s to applied",
+                    owner_id,
+                    update_id,
                 )
     finally:
         try:

@@ -137,6 +137,10 @@ def remove(owner_id: str, provider_key: str, credential: dict) -> None:
         # refuses non-interactive removal and exits non-zero.
         cfg = owner_efs_root(owner_id) / ".config"
         data = owner_efs_root(owner_id) / ".local" / "share"
+        # Mirror write(): make sure both XDG dirs exist so gog is never handed a
+        # path that doesn't exist (check=True would surface that as a failure).
+        cfg.mkdir(parents=True, exist_ok=True)
+        data.mkdir(parents=True, exist_ok=True)
         env = {
             **os.environ,
             "XDG_CONFIG_HOME": str(cfg),

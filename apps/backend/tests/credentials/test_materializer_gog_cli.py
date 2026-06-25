@@ -196,7 +196,8 @@ def test_remove_with_email_removes_one_account_and_keeps_keyring(monkeypatch, tm
     _patch_keyring_password(monkeypatch)
 
     # A keyring with multiple accounts must survive disconnecting one account.
-    gogcli_dir = Path(tmp_path) / "org_1" / ".config" / "gogcli"
+    # The keyring lives under .local/share/gogcli (XDG_DATA_HOME), not .config.
+    gogcli_dir = Path(tmp_path) / "org_1" / ".local" / "share" / "gogcli"
     gogcli_dir.mkdir(parents=True)
     (gogcli_dir / "keyring.jwe").write_text("blob")
 
@@ -232,8 +233,10 @@ def test_remove_with_email_removes_one_account_and_keeps_keyring(monkeypatch, tm
     assert run["env"]["GOG_KEYRING_BACKEND"] == "file"
     assert run["env"]["GOG_KEYRING_PASSWORD"] == "kp"
 
-    # The whole keyring is NOT nuked when removing a single account.
+    # The whole keyring is NOT nuked when removing a single account — no rmtree,
+    # and the keyring dir survives (gog removes just the one account's entry).
     assert rmtree_calls == []
+    assert gogcli_dir.exists()
 
 
 def test_remove_without_email_deletes_keyring_and_config(monkeypatch, tmp_path):

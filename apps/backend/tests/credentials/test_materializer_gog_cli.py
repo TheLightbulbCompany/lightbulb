@@ -108,13 +108,8 @@ def test_write_seeds_client_and_token_via_gog(monkeypatch, tmp_path, cred):
         )
     ]
 
-    # write() does a pre-flight `tokens export` to detect re-auth; the keyring
-    # mutations are the credentials-set + tokens-import pair.
-    keyring_runs = [
-        r for r in runs if r["argv"][:4] in (["gog", "auth", "credentials", "set"], ["gog", "auth", "tokens", "import"])
-    ]
-    assert len(keyring_runs) == 2
-    set_run, import_run = keyring_runs
+    assert len(runs) == 2
+    set_run, import_run = runs
 
     # Exact argv — fixed, no caller data interpolated.
     assert set_run["argv"] == ["gog", "auth", "credentials", "set", "-", "--no-input"]
@@ -232,7 +227,12 @@ def test_write_propagates_gog_failure(monkeypatch, tmp_path, cred):
         gog_cli.write("org_1", "google", cred)
 
 
-def test_write_rolls_back_only_new_account_on_partial_failure(monkeypatch, tmp_path, cred):
+def test_write_rollback_never_deletes_token_on_import_failure(monkeypatch, tmp_path, cred):
+    # `credentials set` lands, then the token import fails. The rollback must NOT
+    # delete any keyring entry (no `gog auth remove`, no rmtree): a connect rollback
+    # never destroys a credential — a re-auth would lose the user's existing token,
+    # and a brand-new account's partial state is harmless (absent from the inventory,
+    # overwritten on retry, dropped on full disconnect).
     import subprocess as _sp
 
     _patch_efs(monkeypatch, tmp_path)
@@ -242,8 +242,7 @@ def test_write_rolls_back_only_new_account_on_partial_failure(monkeypatch, tmp_p
     runs = []
 
     def _fake_run(argv, **kwargs):
-        runs.append({"argv": argv, "env": kwargs.get("env")})
-        # `credentials set` lands; the token import fails partway through the connect.
+        runs.append(argv)
         if argv[:4] == ["gog", "auth", "tokens", "import"]:
             raise _sp.CalledProcessError(1, argv, stderr="boom")
 
@@ -260,21 +259,15 @@ def test_write_rolls_back_only_new_account_on_partial_failure(monkeypatch, tmp_p
     with pytest.raises(_sp.CalledProcessError):
         gog_cli.write("org_1", "google", cred)
 
-    # The scoped rollback removed ONLY the in-flight account; the keyring was never
-    # wiped, so the owner's other accounts survive a single failed connect.
-    rollback = [r for r in runs if r["argv"] == ["gog", "auth", "remove", "new@example.com", "--no-input", "--force"]]
-    assert len(rollback) == 1
-    # The rollback runs against the same EFS keyring (XDG paths), or it would
-    # operate on the wrong/empty keyring and clean nothing.
-    assert rollback[0]["env"]["XDG_DATA_HOME"] == str(Path(tmp_path) / "org_1" / ".local" / "share")
+    assert not any(a[:3] == ["gog", "auth", "remove"] for a in runs)
     assert rmtree_calls == []
 
 
-def test_write_rolls_back_account_when_chown_fails_after_import(monkeypatch, tmp_path, cred):
-    # The token import succeeds, then the post-import chown fails (e.g. an EFS
-    # ownership hiccup while running as root). write() must still scoped-clean THIS
-    # account so no orphaned token lingers in the keyring after the connect reports
-    # failure — the chown lives inside the try for exactly this reason.
+def test_write_rollback_never_deletes_token_on_chown_failure(monkeypatch, tmp_path, cred):
+    # The token import succeeds, then the post-import chown fails (an EFS ownership
+    # hiccup while running as root). The error propagates, but the rollback still must
+    # not delete the keyring entry — the imported token (new or re-auth) is left
+    # intact rather than destroyed on a reported-failed connect.
     _patch_efs(monkeypatch, tmp_path)
     _patch_keyring_password(monkeypatch)
     monkeypatch.setattr(gog_cli.httpx, "get", lambda url, headers=None: _FakeResp("new@example.com"))
@@ -300,8 +293,7 @@ def test_write_rolls_back_account_when_chown_fails_after_import(monkeypatch, tmp
     with pytest.raises(OSError):
         gog_cli.write("org_1", "google", cred)
 
-    # The just-imported account was scoped-removed, and the keyring was not wiped.
-    assert ["gog", "auth", "remove", "new@example.com", "--no-input", "--force"] in runs
+    assert not any(a[:3] == ["gog", "auth", "remove"] for a in runs)
     assert rmtree_calls == []
 
 
@@ -340,46 +332,6 @@ def test_write_rollback_restores_shared_config_ownership_when_root(monkeypatch, 
 
     # The shared client config left root-owned by the failed connect is re-chowned.
     assert str(config_gogcli) in chowned
-
-
-def test_write_keeps_preexisting_account_token_on_failed_reauth(monkeypatch, tmp_path, cred):
-    # Re-authorizing an already-connected account: the pre-flight snapshot finds an
-    # existing token, so a connect that then fails must NOT delete that account's
-    # token — the rollback removes only genuinely new accounts.
-    import subprocess as _sp
-
-    _patch_efs(monkeypatch, tmp_path)
-    _patch_keyring_password(monkeypatch)
-    monkeypatch.setattr(gog_cli.httpx, "get", lambda url, headers=None: _FakeResp("dup@example.com"))
-
-    runs = []
-
-    def _fake_run(argv, **kwargs):
-        runs.append(argv)
-        if "export" in argv:
-            # Pre-flight export finds an EXISTING token for this account (re-auth).
-            Path(argv[argv.index("--out") + 1]).write_text(
-                json.dumps({"email": "dup@example.com", "refresh_token": "old-rt"})
-            )
-        if argv[:4] == ["gog", "auth", "tokens", "import"]:
-            raise _sp.CalledProcessError(1, argv, stderr="boom")
-
-        class _CP:
-            returncode = 0
-
-        return _CP()
-
-    monkeypatch.setattr(gog_cli.subprocess, "run", _fake_run)
-    monkeypatch.setattr(gog_cli.os, "geteuid", lambda: 1000)
-
-    with pytest.raises(_sp.CalledProcessError):
-        gog_cli.write("org_1", "google", cred)
-
-    # The pre-existing account's token is preserved — no scoped remove ran — even
-    # though the connect failed. The pre-flight snapshot did run (the gate had real
-    # information to act on).
-    assert any("export" in a for a in runs)
-    assert not any(a[:3] == ["gog", "auth", "remove"] for a in runs)
 
 
 def test_remove_with_email_revokes_then_removes_one_account(monkeypatch, tmp_path):

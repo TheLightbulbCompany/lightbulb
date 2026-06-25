@@ -105,29 +105,6 @@ def _gog_env(owner_id: str) -> dict[str, str]:
     }
 
 
-def _remove_account_quietly(owner_id: str, email: str, env: dict[str, str]) -> None:
-    """Best-effort scoped removal of ONE account's keyring entry.
-
-    Used to roll back a partially-written connect without disturbing the owner's
-    other accounts. Swallows errors: the entry may not have landed (nothing to
-    remove), and a cleanup failure must not mask the original error being re-raised."""
-    try:
-        subprocess.run(
-            ["gog", "auth", "remove", email, "--no-input", "--force"],
-            env=env,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=_GOG_TIMEOUT_S,
-        )
-    except Exception:
-        logger.warning(
-            "gog scoped rollback failed for owner=%s; keyring may retain a partial entry",
-            owner_id,
-            exc_info=True,
-        )
-
-
 def _restore_gogcli_ownership(owner_id: str) -> None:
     """Best-effort re-chown of the gog config + keyring trees to the container uid.
 
@@ -236,18 +213,14 @@ def write(owner_id: str, provider_key: str, credential: dict) -> str:
     token_json = json.dumps({"email": email, "refresh_token": credential["refresh_token"]})
 
     env = _gog_env(owner_id)
-    # A connect for an email already in the keyring is a supported re-auth (the
-    # inventory treats re-adding the same account as idempotent). Snapshot whether
-    # the account pre-existed BEFORE mutating the keyring, so the rollback below only
-    # deletes a genuinely new account — a failed re-auth must leave the user's
-    # existing valid token in place.
-    account_pre_existed = _export_refresh_token(owner_id, email, env) is not None
     # Fixed argv; all caller data flows through stdin/env. check=True so a gog failure
-    # raises. Everything from the first keyring mutation through the chown lives in the
-    # try: any failure after `tokens import` lands the token (e.g. a chown error while
-    # running as root) must self-clean a NEWLY-added account — otherwise the connect
-    # reports failure while an orphaned token lingers in the keyring. The cleanup is
-    # scoped to this email and never touches the owner's other accounts.
+    # raises. `credentials set` rewrites the SHARED .config/gogcli as root and
+    # `tokens import` writes the keyring; on any failure we restore ownership (so the
+    # root-written config stays readable by the container) and re-raise, but we
+    # DELIBERATELY do not delete the account's keyring entry. A connect rollback must
+    # never destroy a credential: a re-auth would lose the user's existing token, and
+    # a brand-new account's partial token is harmless — it is absent from the
+    # inventory, overwritten on the next connect, and dropped on full disconnect.
     try:
         subprocess.run(
             ["gog", "auth", "credentials", "set", "-", "--no-input"],
@@ -273,10 +246,7 @@ def write(owner_id: str, provider_key: str, credential: dict) -> str:
         _chown_tree_to_node(owner_efs_root(owner_id) / ".config" / "gogcli")
         _chown_tree_to_node(owner_efs_root(owner_id) / ".local" / "share" / "gogcli")
     except Exception:
-        if not account_pre_existed:
-            _remove_account_quietly(owner_id, email, env)
-        # `credentials set` rewrote the shared .config/gogcli as root; restore
-        # container ownership or the surviving accounts become unreadable too.
+        # Restore ownership of the root-written config/keyring; never delete tokens.
         _restore_gogcli_ownership(owner_id)
         raise
 

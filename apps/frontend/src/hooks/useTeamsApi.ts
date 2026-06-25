@@ -107,7 +107,21 @@ export function useTeamsApi() {
     return (await api.del(`/teams${path}`, TEAMS_API_OPTS)) as T;
   }
 
-  return { read: useRead, post, patch, del };
+  // Multipart upload for Teams BFF routes that take a file (e.g. issue
+  // attachments). The caller builds the FormData so it can name the field
+  // exactly as the route expects ("file" for attachments).
+  async function upload<T = unknown>(path: string, formData: FormData): Promise<T> {
+    return (await api.upload(`/teams${path}`, formData, TEAMS_API_OPTS)) as T;
+  }
+
+  // Authenticated binary download (attachment content). Returns a Blob the
+  // caller turns into an object URL — a bare <a href> can't carry the Clerk
+  // bearer header, so the bytes are fetched here first.
+  async function download(path: string): Promise<Blob> {
+    return api.downloadBlob(`/teams${path}`, TEAMS_API_OPTS);
+  }
+
+  return { read: useRead, post, patch, del, upload, download };
 }
 
 export type TeamsWorkspaceStatus =

@@ -439,6 +439,24 @@ export interface IssueDocument {
   createdAt?: string | null;
 }
 
+/**
+ * A binary file attached to an issue (upstream IssueAttachment + asset join,
+ * `paperclip/server/src/routes/issues.ts` `withContentPath`). `contentPath` is
+ * the upstream-relative content URL; the BFF download goes through
+ * `/teams/attachments/{id}/content`, so the UI builds its own path from `id`
+ * rather than trusting `contentPath` for routing.
+ */
+export interface IssueAttachment {
+  id: string;
+  /** Original upload filename (may be null for unnamed uploads). */
+  originalFilename?: string | null;
+  contentType: string;
+  byteSize: number;
+  /** Upstream-relative content path (`/api/attachments/{id}/content`). */
+  contentPath?: string | null;
+  createdAt?: string | null;
+}
+
 export interface CompanyMember {
   userId: string;
   name?: string | null;

@@ -107,38 +107,6 @@
 .tab-btn:not(.active):hover {
   color: #1a1a1a;
 }
-.new-agent-btn {
-  margin: 4px 16px 8px;
-  padding: 8px 12px;
-  border: 1.5px dashed #cdc7ba;
-  border-radius: 8px;
-  background: transparent;
-  color: #8a8578;
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  transition: all 0.15s;
-}
-.new-agent-btn:hover {
-  border-color: #8a8578;
-  color: #1a1a1a;
-  background: rgba(255,255,255,0.5);
-}
-.new-agent-btn--primary {
-  border-style: solid;
-  border-color: #06402B;
-  background: #06402B;
-  color: #faf7f2;
-  justify-content: center;
-}
-.new-agent-btn--primary:hover {
-  border-color: #0a5138;
-  background: #0a5138;
-  color: #faf7f2;
-}
 /* Co-equal create pill: two first-class create actions (agent | task) in one
    forest control, reusing the primary-button treatment (same forest #06402B,
    cream #faf7f2, 8px radius, 13px/500 type, and sidebar margins). Each half is

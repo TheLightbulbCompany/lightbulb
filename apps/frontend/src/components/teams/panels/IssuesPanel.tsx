@@ -65,7 +65,11 @@ export function IssuesPanel() {
     if (searchParams.get("new")) {
       const params = new URLSearchParams(searchParams.toString());
       params.delete("new");
-      router.replace(`/chat?${params.toString()}`, { scroll: false });
+      const qs = params.toString();
+      // Relative replace (matches clearAgentFilter below) — IssuesPanel only
+      // mounts under /chat, but the relative form avoids navigating the user
+      // away if it's ever mounted elsewhere.
+      router.replace(qs ? `?${qs}` : "?", { scroll: false });
     }
   };
 

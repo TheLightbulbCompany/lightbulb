@@ -9,20 +9,23 @@
 # Stage: gog-builder — compiles the gog CLI binary
 # -----------------------------------------------------------------------------
 # The gog_cli materializer runs `gog` as a server-side subprocess to seed an
-# owner's Google keyring during provisioning. That keyring file is later read
-# by the gog binary baked into the per-user OpenClaw image. Pinned to v0.11.0 —
-# the gogcli release whose headless auth contract (credentials set / tokens
-# import field names) we verified. The 99designs file-keyring format is stable
-# across gog versions, so an exact match with the OpenClaw image's gog is not
-# required; the connect smoke test validates real cross-version compatibility.
-# gogcli@v0.11.0's go.mod requires Go >= 1.25.
+# owner's Google keyring during provisioning. That keyring file is later read by
+# the gog baked into the per-user OpenClaw image, so the backend's gog MUST match
+# the OpenClaw image's gog: the keyring PATH is version-dependent. v0.11.0 stored
+# the keyring under os.UserConfigDir()/gogcli (XDG_CONFIG_HOME on Linux), but
+# newer gog follows the XDG spec and stores it under XDG_DATA_HOME/gogcli — so a
+# version mismatch makes the backend write the keyring where the container never
+# reads it (and there is no smoke test catching that). Pinned to v0.31.0 to match
+# the OpenClaw image's gog@latest; the headless auth contract (credentials set /
+# tokens import / remove) is verified on v0.31.0. v0.31.0's go.mod requires
+# Go >= 1.26.2.
 #
 # Multi-stage so the ~600 MB Go toolchain never lands in the runtime image —
 # only the static `gog` binary is copied across.
-FROM golang:1.25-bookworm AS gog-builder
+FROM golang:1.26-bookworm AS gog-builder
 # Official golang image sets GOPATH=/go (no GOBIN), so `go install` drops the
 # binary at /go/bin/gog.
-RUN go install github.com/steipete/gogcli/cmd/gog@v0.11.0
+RUN go install github.com/steipete/gogcli/cmd/gog@v0.31.0
 
 FROM python:3.12-slim
 

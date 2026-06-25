@@ -128,6 +128,23 @@ def _remove_account_quietly(owner_id: str, email: str, env: dict[str, str]) -> N
         )
 
 
+def _restore_gogcli_ownership(owner_id: str) -> None:
+    """Best-effort re-chown of the gog config + keyring trees to the container uid.
+
+    Runs on the connect rollback path: ``credentials set`` rewrites the SHARED
+    ``.config/gogcli`` as root, so a connect that fails before the normal end-of-
+    write chown would leave it root-owned and unreadable by the container's
+    uid-1000 gog — breaking the owner's OTHER accounts that share that client
+    config. Best-effort: a chown failure must not mask the original error being
+    re-raised (and is itself a no-op when running non-root)."""
+    root = owner_efs_root(owner_id)
+    for tree in (root / ".config" / "gogcli", root / ".local" / "share" / "gogcli"):
+        try:
+            _chown_tree_to_node(tree)
+        except Exception:
+            logger.warning("gog rollback chown failed for owner=%s path=%s", owner_id, tree, exc_info=True)
+
+
 def _revoke_grant_at_google(owner_id: str, email: str, env: dict[str, str]) -> None:
     """Invalidate the account's grant at Google before dropping the local keyring.
 
@@ -231,6 +248,9 @@ def write(owner_id: str, provider_key: str, credential: dict) -> str:
         _chown_tree_to_node(owner_efs_root(owner_id) / ".local" / "share" / "gogcli")
     except Exception:
         _remove_account_quietly(owner_id, email, env)
+        # `credentials set` rewrote the shared .config/gogcli as root; restore
+        # container ownership or the surviving accounts become unreadable too.
+        _restore_gogcli_ownership(owner_id)
         raise
 
     return email

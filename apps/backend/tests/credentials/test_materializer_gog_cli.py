@@ -300,6 +300,43 @@ def test_write_rolls_back_account_when_chown_fails_after_import(monkeypatch, tmp
     assert rmtree_calls == []
 
 
+def test_write_rollback_restores_shared_config_ownership_when_root(monkeypatch, tmp_path, cred):
+    # When running as root, `gog auth credentials set` rewrites the SHARED
+    # .config/gogcli as root before the connect fails. The rollback must re-chown it
+    # to the container uid, or the owner's OTHER accounts (which share that client
+    # config) become unreadable by the container's uid-1000 gog.
+    import subprocess as _sp
+
+    _patch_efs(monkeypatch, tmp_path)
+    _patch_keyring_password(monkeypatch)
+    monkeypatch.setattr(gog_cli.httpx, "get", lambda url, headers=None: _FakeResp("new@example.com"))
+
+    config_gogcli = Path(tmp_path) / "org_1" / ".config" / "gogcli"
+
+    def _fake_run(argv, **kwargs):
+        if argv[:4] == ["gog", "auth", "credentials", "set"]:
+            config_gogcli.mkdir(parents=True, exist_ok=True)
+            (config_gogcli / "client.json").write_text("client")
+        if argv[:4] == ["gog", "auth", "tokens", "import"]:
+            raise _sp.CalledProcessError(1, argv, stderr="boom")
+
+        class _CP:
+            returncode = 0
+
+        return _CP()
+
+    monkeypatch.setattr(gog_cli.subprocess, "run", _fake_run)
+    monkeypatch.setattr(gog_cli.os, "geteuid", lambda: 0)
+    chowned = []
+    monkeypatch.setattr(gog_cli.os, "chown", lambda p, uid, gid: chowned.append(str(p)))
+
+    with pytest.raises(_sp.CalledProcessError):
+        gog_cli.write("org_1", "google", cred)
+
+    # The shared client config left root-owned by the failed connect is re-chowned.
+    assert str(config_gogcli) in chowned
+
+
 def test_remove_with_email_revokes_then_removes_one_account(monkeypatch, tmp_path):
     _patch_efs(monkeypatch, tmp_path)
     _patch_keyring_password(monkeypatch)

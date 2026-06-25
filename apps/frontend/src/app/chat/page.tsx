@@ -109,6 +109,20 @@ function ChatPageInner() {
     },
     [router, searchParams],
   );
+  // Sidebar create pill → "New task": route to the Tasks panel with a
+  // ?new=task intent that IssuesPanel reads to auto-open its create dialog.
+  // Keeps task-create a first-class action reachable from anywhere in the
+  // shell, while reusing the full dialog (and its agent/project pickers) in
+  // its home panel rather than a degraded shell-level copy.
+  const startNewTask = useCallback(() => {
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("panel", `${TEAMS_PANEL_PREFIX}issues`);
+    params.set("view", "control");
+    params.set("new", "task");
+    params.delete("agent");
+    params.delete("detailId");
+    router.push(`/chat?${params.toString()}`, { scroll: false });
+  }, [router, searchParams]);
 
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [fileViewerOpen, setFileViewerOpen] = useState(false);
@@ -146,6 +160,7 @@ function ChatPageInner() {
           openAgentIssues={openAgentIssues}
           openAgentInspector={openAgentInspector}
           onClearPanel={clearPanel}
+          onNewTask={startNewTask}
           fileViewerOpen={fileViewerOpen}
           activeFilePath={activeFilePath}
           onOpenFile={handleOpenFile}

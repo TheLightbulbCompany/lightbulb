@@ -43,6 +43,7 @@ interface ChatLayoutProps {
   openAgentIssues?: (agentId: string) => void;
   openAgentInspector?: (agentId: string) => void;
   onClearPanel?: () => void;
+  onNewTask?: () => void;
   fileViewerOpen?: boolean;
   activeFilePath?: string | null;
   onOpenFile?: (path: string) => void;
@@ -62,6 +63,7 @@ export function ChatLayout({
   openAgentIssues,
   openAgentInspector,
   onClearPanel,
+  onNewTask,
   fileViewerOpen,
   activeFilePath,
   onOpenFile,
@@ -372,11 +374,31 @@ export function ChatLayout({
               both chat and control. The view is derived from ?panel (selecting
               an agent shows chat; a Company/System panel shows that panel), so
               there's no Chat|Control tab-switcher. */}
-          {/* New Agent Button */}
-          <button className="new-agent-btn new-agent-btn--primary" onClick={handleCreateAgent}>
-            <Plus size={14} />
-            New agent
-          </button>
+          {/* Co-equal create pill: the two central creation actions — New
+              agent and New task — as equal halves of one forest control.
+              New agent adds to the roster directly; New task routes to the
+              Tasks panel and auto-opens its dialog (chat/page → onNewTask). */}
+          <div className="create-pill" role="group" aria-label="Create">
+            <button
+              type="button"
+              className="create-pill__seg"
+              onClick={handleCreateAgent}
+              aria-label="New agent"
+            >
+              <Plus size={13} />
+              Agent
+            </button>
+            <span className="create-pill__divider" aria-hidden="true" />
+            <button
+              type="button"
+              className="create-pill__seg"
+              onClick={() => onNewTask?.()}
+              aria-label="New task"
+            >
+              <Plus size={13} />
+              Task
+            </button>
+          </div>
 
               {/* Agent List + CompanyNav + Gallery share a single
                   `.sidebar-scroll` region so the roster keeps its natural

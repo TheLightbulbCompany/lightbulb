@@ -145,16 +145,15 @@ def _restore_gogcli_ownership(owner_id: str) -> None:
             logger.warning("gog rollback chown failed for owner=%s path=%s", owner_id, tree, exc_info=True)
 
 
-def _revoke_grant_at_google(owner_id: str, email: str, env: dict[str, str]) -> None:
-    """Invalidate the account's grant at Google before dropping the local keyring.
+def _export_refresh_token(owner_id: str, email: str, env: dict[str, str]) -> str | None:
+    """Export an account's refresh token from the keyring, or None if it has no
+    entry (or the export fails).
 
-    gog's local ``remove`` does not revoke server-side, so we export the refresh
-    token from the keyring and POST it to Google's revocation endpoint. Export
-    requires a file (``--out``), so we route it through a private temp file that is
-    deleted immediately — the token is also already on EFS in the keyring, so this
-    adds no durable exposure. Best-effort end to end: a revoke failure must not
-    block the disconnect, since dropping the local keyring is the authoritative
-    action (the leftover grant can still be revoked manually at Google)."""
+    Used both to revoke a grant and to detect whether an account already exists, so
+    a failed re-auth never deletes a pre-existing token. Export requires a file
+    (``--out``), so the secret is routed through a private temp file deleted
+    immediately — the token is also already on EFS in the keyring, so this adds no
+    durable exposure."""
     out_fd, out_path = tempfile.mkstemp(suffix=".json")
     os.close(out_fd)
     try:
@@ -167,16 +166,33 @@ def _revoke_grant_at_google(owner_id: str, email: str, env: dict[str, str]) -> N
             timeout=_GOG_TIMEOUT_S,
         )
         with open(out_path) as f:
-            refresh_token = json.load(f).get("refresh_token")
-        if not refresh_token:
-            # Export succeeded but carried no token — likely gog format drift or an
-            # incomplete keyring entry. Surface it instead of silently skipping, so
-            # a revocation that never happens is visible in logs.
-            logger.warning(
-                "google grant revoke skipped for owner=%s: exported token file had no refresh_token",
-                owner_id,
-            )
-            return
+            return json.load(f).get("refresh_token")
+    except Exception:
+        return None
+    finally:
+        try:
+            os.remove(out_path)
+        except OSError:
+            pass
+
+
+def _revoke_grant_at_google(owner_id: str, email: str, env: dict[str, str]) -> None:
+    """Invalidate the account's grant at Google before dropping the local keyring.
+
+    gog's local ``remove`` does not revoke server-side, so we export the refresh
+    token and POST it to Google's revocation endpoint. Best-effort: a revoke
+    failure must not block the disconnect, since dropping the local keyring is the
+    authoritative action (the leftover grant can still be revoked manually)."""
+    refresh_token = _export_refresh_token(owner_id, email, env)
+    if not refresh_token:
+        # No exportable token (gog format drift / incomplete or missing entry).
+        # Surface it instead of silently skipping the revocation.
+        logger.warning(
+            "google grant revoke skipped for owner=%s: no exportable refresh token for the account",
+            owner_id,
+        )
+        return
+    try:
         # Form-encoded token= per RFC 7009. 200 = revoked; 400 = the token was
         # already expired/revoked at Google (also fine). Any other status means the
         # grant may still be live — surface it so a failed revoke is observable. We
@@ -195,11 +211,6 @@ def _revoke_grant_at_google(owner_id: str, email: str, env: dict[str, str]) -> N
             owner_id,
             exc_info=True,
         )
-    finally:
-        try:
-            os.remove(out_path)
-        except OSError:
-            pass
 
 
 def write(owner_id: str, provider_key: str, credential: dict) -> str:
@@ -225,10 +236,16 @@ def write(owner_id: str, provider_key: str, credential: dict) -> str:
     token_json = json.dumps({"email": email, "refresh_token": credential["refresh_token"]})
 
     env = _gog_env(owner_id)
+    # A connect for an email already in the keyring is a supported re-auth (the
+    # inventory treats re-adding the same account as idempotent). Snapshot whether
+    # the account pre-existed BEFORE mutating the keyring, so the rollback below only
+    # deletes a genuinely new account — a failed re-auth must leave the user's
+    # existing valid token in place.
+    account_pre_existed = _export_refresh_token(owner_id, email, env) is not None
     # Fixed argv; all caller data flows through stdin/env. check=True so a gog failure
     # raises. Everything from the first keyring mutation through the chown lives in the
     # try: any failure after `tokens import` lands the token (e.g. a chown error while
-    # running as root) must still self-clean THIS account — otherwise the connect
+    # running as root) must self-clean a NEWLY-added account — otherwise the connect
     # reports failure while an orphaned token lingers in the keyring. The cleanup is
     # scoped to this email and never touches the owner's other accounts.
     try:
@@ -256,7 +273,8 @@ def write(owner_id: str, provider_key: str, credential: dict) -> str:
         _chown_tree_to_node(owner_efs_root(owner_id) / ".config" / "gogcli")
         _chown_tree_to_node(owner_efs_root(owner_id) / ".local" / "share" / "gogcli")
     except Exception:
-        _remove_account_quietly(owner_id, email, env)
+        if not account_pre_existed:
+            _remove_account_quietly(owner_id, email, env)
         # `credentials set` rewrote the shared .config/gogcli as root; restore
         # container ownership or the surviving accounts become unreadable too.
         _restore_gogcli_ownership(owner_id)

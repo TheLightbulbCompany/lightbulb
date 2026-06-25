@@ -108,8 +108,13 @@ def test_write_seeds_client_and_token_via_gog(monkeypatch, tmp_path, cred):
         )
     ]
 
-    assert len(runs) == 2
-    set_run, import_run = runs
+    # write() does a pre-flight `tokens export` to detect re-auth; the keyring
+    # mutations are the credentials-set + tokens-import pair.
+    keyring_runs = [
+        r for r in runs if r["argv"][:4] in (["gog", "auth", "credentials", "set"], ["gog", "auth", "tokens", "import"])
+    ]
+    assert len(keyring_runs) == 2
+    set_run, import_run = keyring_runs
 
     # Exact argv — fixed, no caller data interpolated.
     assert set_run["argv"] == ["gog", "auth", "credentials", "set", "-", "--no-input"]
@@ -335,6 +340,46 @@ def test_write_rollback_restores_shared_config_ownership_when_root(monkeypatch, 
 
     # The shared client config left root-owned by the failed connect is re-chowned.
     assert str(config_gogcli) in chowned
+
+
+def test_write_keeps_preexisting_account_token_on_failed_reauth(monkeypatch, tmp_path, cred):
+    # Re-authorizing an already-connected account: the pre-flight snapshot finds an
+    # existing token, so a connect that then fails must NOT delete that account's
+    # token — the rollback removes only genuinely new accounts.
+    import subprocess as _sp
+
+    _patch_efs(monkeypatch, tmp_path)
+    _patch_keyring_password(monkeypatch)
+    monkeypatch.setattr(gog_cli.httpx, "get", lambda url, headers=None: _FakeResp("dup@example.com"))
+
+    runs = []
+
+    def _fake_run(argv, **kwargs):
+        runs.append(argv)
+        if "export" in argv:
+            # Pre-flight export finds an EXISTING token for this account (re-auth).
+            Path(argv[argv.index("--out") + 1]).write_text(
+                json.dumps({"email": "dup@example.com", "refresh_token": "old-rt"})
+            )
+        if argv[:4] == ["gog", "auth", "tokens", "import"]:
+            raise _sp.CalledProcessError(1, argv, stderr="boom")
+
+        class _CP:
+            returncode = 0
+
+        return _CP()
+
+    monkeypatch.setattr(gog_cli.subprocess, "run", _fake_run)
+    monkeypatch.setattr(gog_cli.os, "geteuid", lambda: 1000)
+
+    with pytest.raises(_sp.CalledProcessError):
+        gog_cli.write("org_1", "google", cred)
+
+    # The pre-existing account's token is preserved — no scoped remove ran — even
+    # though the connect failed. The pre-flight snapshot did run (the gate had real
+    # information to act on).
+    assert any("export" in a for a in runs)
+    assert not any(a[:3] == ["gog", "auth", "remove"] for a in runs)
 
 
 def test_remove_with_email_revokes_then_removes_one_account(monkeypatch, tmp_path):

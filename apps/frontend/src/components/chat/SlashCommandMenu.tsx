@@ -38,20 +38,24 @@ export function SlashCommandMenu({
 }: SlashCommandMenuProps) {
   const sections = buildSections(commands, query);
   if (sections.length === 0) return null;
-  let idx = -1;
+  // Global row index per section start, computed functionally (no render-time
+  // mutation — the react-hooks/immutability rule forbids reassigning a counter
+  // during render). Row order matches flattenVisible 1:1 for keyboard nav.
+  const sectionStarts = sections.map((_, i) =>
+    sections.slice(0, i).reduce((n, s) => n + s.items.length, 0),
+  );
   return (
     <div
       role="listbox"
       className="absolute bottom-full mb-2 left-0 right-0 max-h-80 overflow-y-auto rounded-2xl border border-[#e0dbd0] bg-white shadow-lg z-20"
     >
-      {sections.map((section) => (
+      {sections.map((section, si) => (
         <div key={section.label} className="py-1">
           <div className="px-3 py-1 text-[0.65rem] uppercase tracking-wide text-[#8a8578]">
             {section.label}
           </div>
-          {section.items.map((cmd) => {
-            idx += 1;
-            const here = idx;
+          {section.items.map((cmd, ii) => {
+            const here = sectionStarts[si] + ii;
             const hasArgs = cmd.acceptsArgs && !!cmd.args?.[0]?.choices?.length;
             return (
               <button

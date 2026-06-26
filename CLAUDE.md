@@ -481,7 +481,7 @@ gh run view <run-id> --repo Isol8AI/isol8 --json status,jobs
 - **Backend:** GitHub Actions (`backend.yml`) → ECR Docker build → ECS Fargate service deploy
 - **Infrastructure (CDK):** GitHub Actions (`deploy.yml`) → `cdk synth` → `cdk deploy` per environment
 - **Extended OpenClaw image:** GitHub Actions (`build-openclaw-image.yml`) → build on Dockerfile/`openclaw-version.json` changes → push to ECR `isol8/openclaw-extended`
-- **Desktop app:** GitHub Actions (`desktop-build.yml`) → signed DMG via Tauri
+- **Desktop app:** GitHub Actions (`desktop-build.yml`) → signed DMG via Tauri. Standalone workflow (NOT part of `deploy.yml`), path-filtered on `apps/desktop/**`, runs on a **self-hosted macOS runner** (`runs-on: [self-hosted, macos-desktop]`). Version is `0.4.${{ github.run_number }}`.
 - **E2E gate:** GitHub Actions (`e2e-dev.yml`) runs Playwright journey test on dev before prod promotion
 
 ---
@@ -1013,6 +1013,6 @@ Tauri 2 app at `apps/desktop/`. Bundle ID: `co.isol8.desktop`. Product name: `Is
 - Bundled binaries (`src-tauri/bin/`): `isol8-browser-service` (externalBin), per-arch `node` and `openclaw-host` copies for macOS (aarch64 + x86_64)
 - Protocol handler: `isol8://` deep links (via `tauri-plugin-deep-link`)
 - Single-instance lock (`tauri-plugin-single-instance`)
-- Signed DMG for macOS, built by `.github/workflows/desktop-build.yml`
+- Signed DMG for macOS (arm64), built by the standalone `.github/workflows/desktop-build.yml` on a self-hosted macOS runner (label `macos-desktop`) — dev + prod jobs, auto-publishing `desktop-dev-v0.4.*` / `desktop-v0.4.*` GitHub Releases consumed by the Tauri auto-updater
 - Auth flow uses the backend's `/desktop-auth` device-code endpoints + the frontend's `/auth/desktop-callback` page
 - Requirement driver: WebAuthn/passkey support (see `project_desktop_app_tauri` memory)

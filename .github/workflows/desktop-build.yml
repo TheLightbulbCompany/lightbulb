@@ -180,19 +180,24 @@ jobs:
         VERSION="0.4.${{ github.run_number }}"
         DMG="Isol8_${VERSION}_aarch64.dmg"
         TAG="desktop-dev-v${VERSION}"
-        # Stage the .app plus an Applications symlink so the DMG is drag-to-install.
-        STAGE="$(mktemp -d)"
-        ditto "$APP" "$STAGE/Isol8.app"
-        ln -s /Applications "$STAGE/Applications"
-        # Build the DMG WITHOUT mounting a scratch volume. Tauri's bundle_dmg.sh
-        # mounts under /Volumes and copies via Finder, which needs Full Disk Access
-        # the self-hosted runner doesn't have. makehybrid writes the image tree
-        # directly and convert reads blocks — neither touches /Volumes.
-        RAW="$RUNNER_TEMP/Isol8_raw.dmg"
-        rm -f "$RAW" "$DMG"
-        hdiutil makehybrid -hfs -hfs-volume-name "Isol8" -o "$RAW" "$STAGE"
-        hdiutil convert "$RAW" -format UDZO -o "$DMG"
-        rm -f "$RAW"; rm -rf "$STAGE"
+        # Build the DMG by mounting a scratch image under $RUNNER_TEMP, NOT under
+        # /Volumes. Tauri's bundle_dmg.sh (and a plain `hdiutil create -srcfolder`)
+        # mount at /Volumes/<name>, which a self-hosted runner can't write to
+        # without Full Disk Access. Mounting at an explicit path under $RUNNER_TEMP
+        # sidesteps that TCC wall. ditto (not makehybrid) is required because a
+        # shell-script binary's code signature lives in extended attributes, which
+        # makehybrid drops -> notarization rejects the DMG as "not signed".
+        RW="$RUNNER_TEMP/isol8_rw.dmg"
+        MNT="$RUNNER_TEMP/isol8_dmgmnt"
+        rm -f "$RW" "$DMG"; rm -rf "$MNT"; mkdir -p "$MNT"
+        SIZE_MB=$(( $(du -sm "$APP" | cut -f1) + 200 ))
+        hdiutil create -size "${SIZE_MB}m" -fs HFS+ -volname "Isol8" "$RW"
+        hdiutil attach "$RW" -nobrowse -mountpoint "$MNT"
+        ditto "$APP" "$MNT/Isol8.app"
+        ln -s /Applications "$MNT/Applications"
+        hdiutil detach "$MNT" -force
+        hdiutil convert "$RW" -format UDZO -o "$DMG"
+        rm -f "$RW"; rm -rf "$MNT"
         # Sign, notarize, staple the DMG (the .app inside is already notarized+stapled).
         codesign --force --timestamp --keychain "$KEYCHAIN_PATH" --sign "$SIGN_ID" "$DMG"
         xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
@@ -358,19 +363,24 @@ jobs:
         VERSION="0.4.${{ github.run_number }}"
         DMG="Isol8_${VERSION}_aarch64.dmg"
         TAG="desktop-v${VERSION}"
-        # Stage the .app plus an Applications symlink so the DMG is drag-to-install.
-        STAGE="$(mktemp -d)"
-        ditto "$APP" "$STAGE/Isol8.app"
-        ln -s /Applications "$STAGE/Applications"
-        # Build the DMG WITHOUT mounting a scratch volume. Tauri's bundle_dmg.sh
-        # mounts under /Volumes and copies via Finder, which needs Full Disk Access
-        # the self-hosted runner doesn't have. makehybrid writes the image tree
-        # directly and convert reads blocks — neither touches /Volumes.
-        RAW="$RUNNER_TEMP/Isol8_raw.dmg"
-        rm -f "$RAW" "$DMG"
-        hdiutil makehybrid -hfs -hfs-volume-name "Isol8" -o "$RAW" "$STAGE"
-        hdiutil convert "$RAW" -format UDZO -o "$DMG"
-        rm -f "$RAW"; rm -rf "$STAGE"
+        # Build the DMG by mounting a scratch image under $RUNNER_TEMP, NOT under
+        # /Volumes. Tauri's bundle_dmg.sh (and a plain `hdiutil create -srcfolder`)
+        # mount at /Volumes/<name>, which a self-hosted runner can't write to
+        # without Full Disk Access. Mounting at an explicit path under $RUNNER_TEMP
+        # sidesteps that TCC wall. ditto (not makehybrid) is required because a
+        # shell-script binary's code signature lives in extended attributes, which
+        # makehybrid drops -> notarization rejects the DMG as "not signed".
+        RW="$RUNNER_TEMP/isol8_rw.dmg"
+        MNT="$RUNNER_TEMP/isol8_dmgmnt"
+        rm -f "$RW" "$DMG"; rm -rf "$MNT"; mkdir -p "$MNT"
+        SIZE_MB=$(( $(du -sm "$APP" | cut -f1) + 200 ))
+        hdiutil create -size "${SIZE_MB}m" -fs HFS+ -volname "Isol8" "$RW"
+        hdiutil attach "$RW" -nobrowse -mountpoint "$MNT"
+        ditto "$APP" "$MNT/Isol8.app"
+        ln -s /Applications "$MNT/Applications"
+        hdiutil detach "$MNT" -force
+        hdiutil convert "$RW" -format UDZO -o "$DMG"
+        rm -f "$RW"; rm -rf "$MNT"
         # Sign, notarize, staple the DMG (the .app inside is already notarized+stapled).
         codesign --force --timestamp --keychain "$KEYCHAIN_PATH" --sign "$SIGN_ID" "$DMG"
         xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait

@@ -55,6 +55,32 @@ def test_single_paperclip_agent_replaces_main():
     assert agents[0]["name"] == "Friday"
 
 
+def test_paperclip_role_synced_into_params_paperclip():
+    """The Paperclip role/title/capabilities must land in
+    ``params.paperclip`` so the agent inspector renders the real role
+    (e.g. CEO for Friday) instead of defaulting to "general" — and so a
+    Save from that form doesn't demote the agent. An unknown role is
+    coerced to "general" (write_to_agent_entry is strict)."""
+    cfg = build_openclaw_config_dict(
+        user_id="user_abc",
+        gateway_token="t" * 32,
+        provider_choice="bedrock_claude",
+        aip_arns=_AIPS,
+        paperclip_agents=[
+            {"id": "u-friday", "name": "Friday", "role": "ceo", "title": "Chief", "capabilities": "Runs the show"},
+            {"id": "u-atlas", "name": "Atlas", "role": "general"},
+            {"id": "u-weird", "name": "Weird", "role": "bogus-role"},
+        ],
+    )
+    by_name = {a["name"]: a for a in cfg["agents"]["list"]}
+    assert by_name["Friday"]["params"]["paperclip"]["role"] == "ceo"
+    assert by_name["Friday"]["params"]["paperclip"]["title"] == "Chief"
+    assert by_name["Friday"]["params"]["paperclip"]["capabilities"] == "Runs the show"
+    assert by_name["Atlas"]["params"]["paperclip"]["role"] == "general"
+    # Unknown/typo role must not crash the build — coerced to general.
+    assert by_name["Weird"]["params"]["paperclip"]["role"] == "general"
+
+
 def test_paperclip_agent_without_name_omits_field():
     """Agents without a name (legacy or partially-seeded rows) emit no
     name field — let OpenClaw fall back to the UUID-as-display-name

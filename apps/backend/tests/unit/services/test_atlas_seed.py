@@ -225,3 +225,71 @@ async def test_bridge_url_no_placeholder_leaves_loop_to_write(workspace_stub, fa
     await pre_stage_atlas(owner_id="user_x", paperclip_agents=agents, workspace=workspace_stub)
     build_writes = [p for (_u, p) in workspace_stub.calls if p.endswith("/build.lobster")]
     assert build_writes == ["workspaces/uuid-atlas/build.lobster"]
+
+
+@pytest.fixture
+def force_ws():
+    """Workspace stub that distinguishes write_file (unconditional overwrite)
+    from write_file_if_missing (skip-if-exists). write_file_if_missing always
+    returns False (pretend every file already exists) so that the only way a
+    file gets staged is via write_file — proving the force path overwrites
+    where the default path would skip."""
+    ws = MagicMock()
+    ws.overwrote = []  # paths written via write_file
+    ws.if_missing_calls = []  # paths attempted via write_file_if_missing
+
+    def _write_file(user_id, path, content):
+        ws.overwrote.append(path)
+        return None
+
+    def _write_if_missing(user_id, path, content):
+        ws.if_missing_calls.append(path)
+        return False  # already exists -> default path would skip
+
+    ws.write_file.side_effect = _write_file
+    ws.write_file_if_missing.side_effect = _write_if_missing
+    return ws
+
+
+@pytest.mark.asyncio
+async def test_force_overwrites_existing_files(force_ws, fake_files_dir):
+    """force=True overwrites every staged file via write_file even when the file
+    already exists (where write_file_if_missing would skip) — so an existing
+    container picks up the rewritten bundle. write_file_if_missing is never used."""
+    agents = [{"id": "uuid-atlas", "role": "general", "name": "Atlas"}]
+    result = await pre_stage_atlas(owner_id="user_x", paperclip_agents=agents, workspace=force_ws, force=True)
+    # Force path NEVER touches the skip-if-exists writer.
+    assert force_ws.if_missing_calls == []
+    # IDENTITY.md exists (write_if_missing would return False) yet was overwritten.
+    assert "workspaces/uuid-atlas/IDENTITY.md" in force_ws.overwrote
+    # workspace-state.json + the 3 bundle files (IDENTITY.md, build.lobster,
+    # skills/fast-io/SKILL.md) all force-written.
+    assert "workspaces/uuid-atlas/.openclaw/workspace-state.json" in force_ws.overwrote
+    assert result["force"] is True
+    assert result["reason"] is None
+    assert result["overwritten"] == len(force_ws.overwrote) == 4
+
+
+@pytest.mark.asyncio
+async def test_force_does_not_clobber_substituted_build_lobster(force_ws, monkeypatch, tmp_path):
+    """Under force, the URL-substituted build.lobster from the pre-write must
+    survive — the generic loop must NOT overwrite it with the placeholder copy."""
+    _bridge_files_dir(tmp_path, monkeypatch)
+    monkeypatch.setattr("core.config.settings.ENVIRONMENT", "dev")
+    # Capture the last-written content per path (write_file overwrites) while
+    # still recording the path in overwrote (the fixture's default behavior).
+    written: dict[str, str] = {}
+
+    def _wf(user_id, path, content):
+        force_ws.overwrote.append(path)
+        written[path] = content
+
+    force_ws.write_file.side_effect = _wf
+    agents = [{"id": "uuid-atlas", "role": "general", "name": "Atlas"}]
+    await pre_stage_atlas(owner_id="org_abc", paperclip_agents=agents, workspace=force_ws, force=True)
+    build = written["workspaces/uuid-atlas/build.lobster"]
+    assert "{{ISOL8_BRIDGE_URL}}" not in build
+    assert "https://api-dev.isol8.co/api/v1/agent-builder/u/org_abc/register-built-agent" in build
+    # build.lobster written exactly once under force (loop skipped it).
+    build_writes = [p for p in force_ws.overwrote if p.endswith("/build.lobster")]
+    assert build_writes == ["workspaces/uuid-atlas/build.lobster"]

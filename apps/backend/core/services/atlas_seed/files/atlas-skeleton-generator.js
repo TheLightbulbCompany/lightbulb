@@ -24,9 +24,14 @@ const crypto = require('crypto');
 const REQUIRED_HEADING_NEVER_DOES = 'What [Agent] Never Does — Non-Negotiable';
 const REQUIRED_PRD_TEMPLATE = 'As a {{agent_name}}, I should {{action}} so that {{outcome}}';
 
+// Gateway-free skill core for agents Atlas builds. Excludes fast-io / taskr /
+// summarize / n8n-workflow: those route through the gateway tool-call proxy,
+// which 401s on the embedded runner the built agents deploy to. Durable state
+// uses native lobster state.get/state.set instead. The genuine gateway-free
+// integrations (gog, slack) plus the security/capability stack remain.
 const UNIVERSAL_SKILL_CORE = Object.freeze([
-  'gog', 'slack', 'fast-io', 'taskr', 'summarize', 'n8n-workflow',
-  'capability-evolver', 'skill-vetter', 'sona-security-audit'
+  'gog', 'slack',
+  'capability-evolver', 'skill-vetter', 'sona-security-audit', 'agentgate'
 ]);
 
 function parseArgs(argv) {
@@ -215,10 +220,14 @@ ${(spec.pipelines || []).map(p => `- \`${p.name}.lobster\` — ${p.purpose}`).jo
 
 Used for structured LLM subtasks within pipelines. Always specify thinking level (off/low/medium/high), schema for structured output, minimal input. Never use llm-task when a Node script can do the job.
 
-## fast-io (Persistent Storage)
+## Persistent State (lobster state.get / state.set)
 
-Key structure (initial; expand as needed during refinement):
-${(spec.fast_io_keys || []).map(k => `- \`${k.key}\` — ${k.purpose}`).join('\n') || '- (define key namespace during refinement)'}
+Durable key/value state lives in the lobster runtime's native store — read with a
+\`state.get <key>\` pipeline step and written with \`state.set <key>\` (the embedded
+runner has no fast-io gateway tool; gateway tool calls 401). Use plain string keys
+(no interpolation); to namespace per-run, key a map by the run id INSIDE the value.
+Initial keys (expand as needed during refinement):
+${(spec.fast_io_keys || []).map(k => `- \`${k.key}\` — ${k.purpose}`).join('\n') || '- (define state keys during refinement)'}
 
 ## Skills Installed
 
@@ -252,20 +261,23 @@ Required environment variables:
 - \`OPENCLAW_HOOK_TOKEN\`
 ${(spec.required_env_vars || []).map(v => `- \`${v}\``).join('\n')}
 
-## Step 2: Initialize Default fast-io State
+## Step 2: Initialize Default Pipeline State
 
-${(spec.fast_io_keys || []).map(k => `\`\`\`\nfast-io write ${k.key} ${k.default_value || '{}'}\n\`\`\``).join('\n') || '(define initial state during refinement)'}
+Seed each persistent-state key with its default by piping the value into a
+\`state.set <key>\` pipeline step (or let the first pipeline run create it lazily):
+${(spec.fast_io_keys || []).map(k => `- \`${k.key}\` — default \`${k.default_value || '{}'}\``).join('\n') || '(define initial state during refinement)'}
 
 ## Step 3: Register Cron Jobs
 
 ${(spec.cron_jobs || []).map(c => `\`\`\`\nopenclaw cron add ${c.name} "${c.schedule}" "${c.command}" --session isolated --light-context\n\`\`\``).join('\n') || '(no cron jobs declared)'}
 
-## Step 4: Run Security Checks
+## Step 4: Verify the Security Stack
 
-\`\`\`
-openclaw.invoke --tool skill-vetter --action audit --args-json '{"target": "all_installed_skills"}'
-openclaw.invoke --tool sona-security-audit --action enable
-\`\`\`
+The security skills (\`skill-vetter\`, \`sona-security-audit\`, \`agentgate\`) are
+enabled in \`openclaw.json\` under \`skills\` and load with the agent at boot — there
+is no gateway invoke step on the embedded runner. Confirm each is present in the
+agent's skill list and that \`openclaw.json\` \`tools.deny\` carries the denied-tool
+list before going live.
 
 ## Step 5: Run Activation Check
 
@@ -304,6 +316,13 @@ Free-text. Use this for context the agent should know about you and your prefere
 
 function generateLobsterPipeline(pipeline) {
   // Real working starter file. Refined through the agent loop.
+  //
+  // Gateway-free contract (the embedded runner has NO gateway — gateway tool
+  // calls 401 and shelling to the exec proxy exits 127): real programs run under
+  // a bare `command: node x.js` (input via `stdin:`), durable state uses native
+  // `state.get`/`state.set` (NOT a fast-io tool call), and the audit trail is a
+  // load-append-save on a single state key. Refine the steps to the real workflow.
+  const procScript = pipeline.processing_script || 'PROCESSING_SCRIPT';
   return `name: ${pipeline.name}
 
 # ${pipeline.purpose}
@@ -313,37 +332,45 @@ args:
 ${(pipeline.args || []).map(a => `  ${a.name}:\n    default: "${a.default || ''}"`).join('\n')}
 
 steps:
-  # Step 1: Load required input from fast-io
+  # Step 1: Load durable input from native pipeline state.
   - id: load-input
-    command: >
-      openclaw.invoke --tool fast-io --action read --args-json '{
-        "key": "{{input_key_path}}"
-      }'
+    pipeline: state.get ${pipeline.name}/input
 
-  # Step 2: Run deterministic processing (refine to your needs)
+  # Step 2: Run deterministic processing (refine to your needs). Bare node
+  #         program; input arrives on stdin, the result is written to stdout.
   - id: process
-    command: >
-      exec --json --shell 'echo "$load-input.json" | node ${pipeline.processing_script || 'PROCESSING_SCRIPT'}.js'
-    stdin: $load-input.json
+    command: node ${procScript}.js
+    stdin: $load-input.stdout
+    on_error: continue
 
-  # Step 3: Persist result
+  # Step 3: Persist the result back to durable state.
   - id: persist
-    command: >
-      openclaw.invoke --tool fast-io --action write --args-json '{
-        "key": "{{output_key_path}}",
-        "data": $process.json
-      }'
+    pipeline: state.set ${pipeline.name}/output
+    stdin: $process.stdout
 
-  # Audit log
-  - id: audit-log
+  # Audit log — load-append-save on a single state key. NO on_error: continue on
+  # the append so a throwing append HALTS before its -save rather than overwriting
+  # the shared audit array with empty stdin. Defaults its input so it never
+  # references a crashed producer; timestamp computed in-node.
+  - id: audit-load
+    pipeline: state.get ${pipeline.name}/audit-log
+
+  - id: audit-next
     command: >
-      openclaw.invoke --tool fast-io --action write --args-json '{
-        "key": "audit/{{timestamp}}/${pipeline.name}",
-        "data": {
-          "action": "${pipeline.name}_complete",
-          "result_summary": $process.json.summary
-        }
-      }'
+      node -e 'const log=JSON.parse(process.env.AUDIT||"null")||[];
+        const r=JSON.parse(process.env.RESULT||"null")||{};
+        log.push({action:"${pipeline.name}_complete",
+          result_summary:r.summary||null,
+          timestamp:new Date().toISOString()});
+        if (log.length>500) log.splice(0,log.length-500);
+        process.stdout.write(JSON.stringify(log));'
+    env:
+      AUDIT: $audit-load.stdout
+      RESULT: $process.stdout
+
+  - id: audit-save
+    pipeline: state.set ${pipeline.name}/audit-log
+    stdin: $audit-next.stdout
 `;
 }
 

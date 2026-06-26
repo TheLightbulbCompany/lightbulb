@@ -390,9 +390,53 @@ export function ChatLayout({
   // the provisioning window this fix is meant to keep quiet.
   const { allIssues } = useInboxData({ enabled: chatReady });
   const taskExists = allIssues.length > 0;
+  // `hire` complete = the user has at least one marketplace-installed
+  // specialist. The truest persistent signal is the set of `.template`
+  // sidecars EFS writes on every marketplace deploy (catalog_service), which
+  // `/marketplace/me/installed-templates` enumerates. It mirrors the
+  // `emitStep("hire")` producer (a fresh install) but survives reloads, so a
+  // user who hired BEFORE the guide shipped still sees the step ticked. The
+  // gateway roster (`agents.list`) carries NO installed-from-marketplace
+  // marker — `agents.update`'s schema is strict, so no source/listing field
+  // survives a deploy — and a "count past Friday + Atlas" heuristic can't tell
+  // a hired specialist from a user-created agent (Atlas isn't even reliably
+  // identifiable in the gateway roster), so the sidecar list is the only sound
+  // source. Null SWR key until `chatReady`, low-frequency (mirrors the
+  // seller-listings fetch) so it never fires during the cold-start window.
+  const { data: installedTemplates } = useSWR<{ installed: { agent_id: string }[] }>(
+    chatReady ? "/marketplace/me/installed-templates" : null,
+    () =>
+      api.get("/marketplace/me/installed-templates") as Promise<{
+        installed: { agent_id: string }[];
+      }>,
+    { revalidateOnFocus: false, dedupingInterval: 300_000 },
+  );
+  const hireDone = (installedTemplates?.installed?.length ?? 0) > 0;
+  // `chat` complete = the user has ever held a real conversation. OpenClaw
+  // creates a session the first time a user actually chats, and `sessions.list`
+  // enumerates them — the cheap persistent read that backfills the step for
+  // users who chatted before the guide shipped (the in-app `emitStep("chat")`
+  // producer only covers chats sent while the guide is mounted). We exclude the
+  // implicit `global` session (it can exist on a fresh container before any
+  // user message) so an untouched container reads as zero, and keep the payload
+  // tiny (`limit: 1`, no last-message / derived-title enrichment). Gated on
+  // `chatReady` via a null method (the gateway pool is connected by then) and
+  // low-frequency (dedupingInterval bumped to 5min, overriding the hook's 10s)
+  // so it is not an always-on poll; the hook's event-driven revalidation stays
+  // throttled.
+  const { data: sessionsData } = useGatewayRpc<
+    { count?: number; sessions?: unknown[] } | unknown[]
+  >(
+    chatReady ? "sessions.list" : null,
+    { includeGlobal: false, includeUnknown: true, limit: 1 },
+    { dedupingInterval: 300_000 },
+  );
+  const chatStarted = Array.isArray(sessionsData)
+    ? sessionsData.length > 0
+    : (sessionsData?.sessions?.length ?? sessionsData?.count ?? 0) > 0;
   const getStartedDerived = useMemo(
-    () => ({ channel: channelLinked, task: taskExists }),
-    [channelLinked, taskExists],
+    () => ({ chat: chatStarted, hire: hireDone, channel: channelLinked, task: taskExists }),
+    [chatStarted, hireDone, channelLinked, taskExists],
   );
 
   function handleSelectAgent(agentId: string): void {

@@ -15,6 +15,11 @@ function sideOf(item: ChatRenderItem): RenderSide {
   if (item.kind === "message") {
     return lowerRole(item.message) === "user" ? "user" : "assistant";
   }
+  // `/btw` answers are a non-thread side card — their own side so they never
+  // merge into the assistant thread bubble.
+  if (item.kind === "btw") {
+    return "btw";
+  }
   // stream-segment, stream, live-thinking, divider — all assistant-side.
   return "assistant";
 }

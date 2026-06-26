@@ -116,6 +116,19 @@ export interface QueuedMessage {
   sendError?: string;
 }
 
+/**
+ * An ephemeral `/btw` (detached side-channel) answer. Held in transient state
+ * only — NEVER pushed into `_messageCache` or `chatMessages`, so it vanishes on
+ * refresh, mirroring OpenClaw's "Not saved to chat history" side card. `id` is
+ * the side run's runId (deduped) when present, else a minted fallback.
+ */
+interface BtwSideResult {
+  id: string;
+  question: string;
+  text: string;
+  isError?: boolean;
+}
+
 export interface UseAgentChatReturn {
   /** Final rendered groups, ready for MessageList to walk. */
   renderGroups: RenderGroup[];
@@ -371,6 +384,17 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   }, []);
 
   const [error, setError] = useState<string | null>(null);
+
+  // Ephemeral `/btw` side-result cards. Transient by design: never written to
+  // _messageCache or chatMessages, so they don't survive a refresh and are not
+  // part of the persisted transcript — matching OpenClaw's "Not saved to chat
+  // history" side card. Reset when the agent/session (cacheKey) changes so a
+  // previous session's asides don't bleed into another.
+  const [btwResults, setBtwResults] = useState<BtwSideResult[]>([]);
+  useEffect(() => {
+    setBtwResults([]);
+  }, [cacheKey]);
+
   const [historyLoadState, setHistoryLoadState] = useState<"idle" | "loading" | "done">("idle");
   const isLoadingHistory = historyLoadState === "loading";
   // Bumped to force the history-fetch effect below to re-run after a
@@ -658,6 +682,33 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       const isUntaggedBroadcast = msg.type === "heartbeat" || msg.type === "update_available";
       const isUntaggedError = msg.type === "error" && msg.agent_id === undefined;
       if (!isUntaggedBroadcast && !isUntaggedError && msg.agent_id !== agentIdRef.current) {
+        return;
+      }
+
+      // `/btw` side-channel ANSWER. OpenClaw renders these on a distinct channel
+      // it surfaces as a side card "Not saved to chat history"; the backend maps
+      // chat.side_result → this `btw_result` frame. Hold it in transient
+      // btwResults state (never folded into chatMessages / _messageCache) and
+      // render it as an ephemeral side card. This MUST run BEFORE the side-run
+      // segregation below: a btw_result carries the side run's runId (tracked in
+      // sideRunIdsRef), so the segregation's blanket drop would otherwise swallow
+      // it. It never touches the primary turn's live state or busy gate — it is
+      // purely additive. Dedupe by runId so a re-delivered frame can't double-add.
+      if (msg.type === "btw_result") {
+        const id = msg.runId ?? `btw-${crypto.randomUUID()}`;
+        setBtwResults((prev) =>
+          prev.some((b) => b.id === id)
+            ? prev
+            : [
+                ...prev,
+                {
+                  id,
+                  question: msg.question,
+                  text: msg.text,
+                  ...(msg.isError ? { isError: true } : {}),
+                },
+              ],
+        );
         return;
       }
 
@@ -1709,6 +1760,8 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     chatStreamThinkingRunIdRef.current = null;
     setChatStreamSegments([]);
     setChatToolMessages([]);
+    // Ephemeral /btw side cards are part of the local view — wipe them too.
+    setBtwResults([]);
     toolStreamByIdRef.current.clear();
     toolStreamOrderRef.current = [];
     const key = agentIdRef.current ? `${agentIdRef.current}:${sessionName}` : null;
@@ -1737,20 +1790,31 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   // ---- External interface ----
 
   // Compute render output from state. memo for stability.
-  const renderItems = useMemo<ChatRenderItem[]>(
-    () =>
-      buildChatItems({
-        chatMessages,
-        chatStream,
-        chatStreamRunId: chatStreamRunIdRef.current,
-        chatStreamThinking,
-        chatStreamThinkingRunId: chatStreamThinkingRunIdRef.current,
-        chatStreamSegments,
-        chatToolMessages,
-        sessionKey: `agent:${agentId ?? ""}:${sessionName}`,
-      }),
-    [chatMessages, chatStream, chatStreamThinking, chatStreamSegments, chatToolMessages, agentId, sessionName],
-  );
+  const renderItems = useMemo<ChatRenderItem[]>(() => {
+    const items = buildChatItems({
+      chatMessages,
+      chatStream,
+      chatStreamRunId: chatStreamRunIdRef.current,
+      chatStreamThinking,
+      chatStreamThinkingRunId: chatStreamThinkingRunIdRef.current,
+      chatStreamSegments,
+      chatToolMessages,
+      sessionKey: `agent:${agentId ?? ""}:${sessionName}`,
+    });
+    // Append ephemeral `/btw` side-result cards at the tail. They live in
+    // transient state only (never in chatMessages / _messageCache), so they
+    // disappear on refresh — matching OpenClaw's "Not saved to chat history".
+    for (const b of btwResults) {
+      items.push({
+        kind: "btw",
+        key: `btw:${b.id}`,
+        question: b.question,
+        text: b.text,
+        ...(b.isError ? { isError: true } : {}),
+      });
+    }
+    return items;
+  }, [chatMessages, chatStream, chatStreamThinking, chatStreamSegments, chatToolMessages, agentId, sessionName, btwResults]);
 
   const renderGroups = useMemo<RenderGroup[]>(() => groupBySide(renderItems), [renderItems]);
 

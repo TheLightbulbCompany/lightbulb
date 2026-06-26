@@ -111,7 +111,10 @@ function audit({ buildId, stagingDir, _ioAdapter }) {
     }
 
     for (const t of triggers) {
-      if (t.pipeline === null || t.pipeline === undefined) continue;
+      // !t.pipeline catches null/undefined AND "" — an empty path would
+      // path.join to workspaceDir itself (which exists), silently passing the
+      // existsSync check below even though no pipeline file was actually bound.
+      if (!t.pipeline) continue;
       const pipelinePath = path.join(workspaceDir, t.pipeline);
       if (!fs.existsSync(pipelinePath)) {
         failures.push({

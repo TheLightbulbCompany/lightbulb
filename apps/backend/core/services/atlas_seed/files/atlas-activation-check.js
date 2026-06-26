@@ -44,7 +44,12 @@ function checkFastIoDefaults() {
     'atlas/audit-log',
     'atlas/citation-tracking',
     'atlas/cookbook-refresh-state',
-    'atlas/failure-cases'
+    'atlas/cookbook-docs',
+    'atlas/cookbook-agent-snapshots',
+    'atlas/failure-cases',
+    'atlas/vet-progress',
+    'atlas/recaps',
+    'atlas/cost-estimates'
   ];
   let present = null;
   try {

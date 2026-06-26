@@ -48,12 +48,17 @@ function readStdin() {
 
 function fetchUrl(url) {
   return new Promise((resolve) => {
-    https.get(url, { timeout: 10000 }, (res) => {
+    const req = https.get(url, { timeout: 10000 }, (res) => {
       if (res.statusCode !== 200) { resolve({ status: res.statusCode, body: null }); return; }
       let body = '';
       res.on('data', (c) => body += c);
       res.on('end', () => resolve({ status: 200, body }));
-    }).on('error', (e) => resolve({ status: 0, body: null, error: e.message }));
+    });
+    req.on('error', (e) => resolve({ status: 0, body: null, error: e.message }));
+    // The { timeout } option fires this event but does NOT destroy the request —
+    // without this, a server that accepts the TCP connection but never responds
+    // hangs fetchUrl forever, stalling the whole daily cookbook-refresh cron.
+    req.on('timeout', () => { req.destroy(); resolve({ status: 0, body: null, error: 'timeout' }); });
   });
 }
 

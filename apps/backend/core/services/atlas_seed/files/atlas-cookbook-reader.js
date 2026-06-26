@@ -32,6 +32,9 @@ const COOKBOOK_SOURCE_PREFERENCE = Object.freeze({
 });
 
 const OPENCLAW_DOCS_INDEX_URL = 'https://docs.openclaw.ai/llms.txt';
+// Per-file content cap for agent snapshots — the whole snapshot lives under one
+// state key, so unbounded full content would exceed the state value size ceiling.
+const SNAPSHOT_FILE_PREVIEW_BYTES = 8192;
 
 function parseArgs(argv) {
   const args = { action: 'read', maxFetches: 50 };
@@ -125,7 +128,14 @@ function snapshotAgents() {
         // Per-file try/catch so one unreadable file (perms, binary, etc.) is
         // recorded as an error rather than killing the whole snapshot walk.
         try {
-          files[f] = fs.readFileSync(path.join(agentPath, f), 'utf8');
+          // Cap per-file content to a preview — the whole snapshot is stored under
+          // ONE state key (atlas/cookbook-agent-snapshots); full content of many
+          // agents × files would blow the state value past its size ceiling. The
+          // preview is reference context for the research brief, not a reproduction.
+          const body = fs.readFileSync(path.join(agentPath, f), 'utf8');
+          files[f] = body.length > SNAPSHOT_FILE_PREVIEW_BYTES
+            ? { preview: body.slice(0, SNAPSHOT_FILE_PREVIEW_BYTES), truncated: true, full_bytes: body.length }
+            : body;
         } catch (e) {
           files[f] = { error: e.message };
         }

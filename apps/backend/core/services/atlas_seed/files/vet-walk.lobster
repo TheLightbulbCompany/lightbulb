@@ -170,7 +170,11 @@ steps:
         log.push({action:"vet_iteration_presented",
           build_id:process.env.LOBSTER_ARG_BUILD_ID,
           req_id:w.req_id||null,
-          more_outstanding:w.more_outstanding!==false,
+          // ===true (not !==false) so a CRASHED walker-iteration (w={}) records
+          // more_outstanding:false, matching the vetrow-notify steps which gate on
+          // more_outstanding == true — otherwise the audit says "outstanding" while
+          // the notification queue is empty and the run silently stalls.
+          more_outstanding:w.more_outstanding===true,
           decided_count:chk.completed_count||0,
           total_count:chk.total_count||0,
           timestamp:new Date().toISOString()});

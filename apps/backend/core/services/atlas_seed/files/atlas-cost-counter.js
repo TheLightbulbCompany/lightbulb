@@ -56,7 +56,7 @@ function rollupDay() {
   return {
     action: 'audit_rollup',
     date: new Date().toISOString().slice(0, 10),
-    note: 'Real implementation queries audit/{{date}}/* and emits per-action counts.'
+    note: 'Real implementation queries the audit log for <date> and emits per-action counts.'
   };
 }
 

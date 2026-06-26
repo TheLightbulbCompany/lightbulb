@@ -424,28 +424,42 @@ export function ChatLayout({
     { revalidateOnFocus: false, dedupingInterval: 300_000 },
   );
   const hireDone = (installedTemplates?.installed?.length ?? 0) > 0;
-  // `chat` complete = the user has ever held a real conversation. OpenClaw
+  // `chat` complete = the user has ever held a REAL conversation. OpenClaw
   // creates a session the first time a user actually chats, and `sessions.list`
   // enumerates them — the cheap persistent read that backfills the step for
   // users who chatted before the guide shipped (the in-app `emitStep("chat")`
-  // producer only covers chats sent while the guide is mounted). We exclude the
-  // implicit `global` session (it can exist on a fresh container before any
-  // user message) so an untouched container reads as zero, and keep the payload
-  // tiny (`limit: 1`, no last-message / derived-title enrichment). Gated on
+  // producer only covers chats sent while the guide is mounted).
+  //
+  // Two guards keep this from false-positiving on a brand-new container, where
+  // a bare session-exists count would pre-tick the step before the user types:
+  //   - `includeUnknown: false` (plus `includeGlobal: false`): the
+  //     Paperclip/openclaw adapter handshake (Friday/Atlas connecting) can
+  //     create a non-global "unknown" session at provision time, before any
+  //     user message. Counting those, or the implicit `global` session, would
+  //     tick "chat done" on first load. Only genuine agent sessions count.
+  //   - require `totalTokens > 0` on at least one session: even a genuine
+  //     session can be opened empty (handshake / focus) with no model
+  //     round-trip, so existence alone still mis-fires. A token-bearing
+  //     session is the truest "a real chat happened" signal.
+  // The newest session may itself be a zero-token shell, so fetch a small
+  // bounded window (not `limit: 1`) to be sure a token-bearing one is visible —
+  // still cheap (no last-message / derived-title enrichment). Gated on
   // `chatReady` via a null method (the gateway pool is connected by then) and
   // low-frequency (dedupingInterval bumped to 5min, overriding the hook's 10s)
   // so it is not an always-on poll; the hook's event-driven revalidation stays
-  // throttled.
+  // throttled. The `emitStep("chat")` event still completes real in-app chats
+  // instantly (OR'd in `useGetStarted`), so this read only backfills history.
   const { data: sessionsData } = useGatewayRpc<
-    { count?: number; sessions?: unknown[] } | unknown[]
+    { sessions?: { totalTokens?: number }[] } | { totalTokens?: number }[]
   >(
     chatReady ? "sessions.list" : null,
-    { includeGlobal: false, includeUnknown: true, limit: 1 },
+    { includeGlobal: false, includeUnknown: false, limit: 25 },
     { dedupingInterval: 300_000 },
   );
-  const chatStarted = Array.isArray(sessionsData)
-    ? sessionsData.length > 0
-    : (sessionsData?.sessions?.length ?? sessionsData?.count ?? 0) > 0;
+  const chatSessions = Array.isArray(sessionsData)
+    ? sessionsData
+    : sessionsData?.sessions ?? [];
+  const chatStarted = chatSessions.some((s) => (s.totalTokens ?? 0) > 0);
   const getStartedDerived = useMemo(
     () => ({ chat: chatStarted, hire: hireDone, channel: channelLinked, task: taskExists }),
     [chatStarted, hireDone, channelLinked, taskExists],

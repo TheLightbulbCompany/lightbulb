@@ -311,6 +311,30 @@ def test_export_skips_dotfiles_anywhere_in_tree(fake_efs, tmp_path):
     assert not any(".secret" in n for n in names), names
 
 
+def test_export_skips_backup_and_temp_files(fake_efs):
+    """Regression: editing backups (*.bak, *.bak.<ts>, *.orig) and temp files
+    (*.tmp, *~) ride along from in-place workspace edits but are inert cruft —
+    they must never reach a buyer's installed workspace."""
+    seller_id, agent_id, agent_dir = fake_efs
+    (agent_dir / "AGENTS.md.bak.20260624050826").write_text("old\n", encoding="utf-8")
+    (agent_dir / "BOOTSTRAP.md.bak").write_text("old\n", encoding="utf-8")
+    (agent_dir / "draft.tmp").write_text("tmp\n", encoding="utf-8")
+    (agent_dir / "merge.orig").write_text("orig\n", encoding="utf-8")
+    (agent_dir / "notes~").write_text("editor backup\n", encoding="utf-8")
+    (agent_dir / "pipelines").mkdir(exist_ok=True)
+    (agent_dir / "pipelines" / "x.lobster.bak.20260624032047").write_text("old\n", encoding="utf-8")
+    # Sanity: legit filenames that merely contain "bak" must still ship.
+    (agent_dir / "backup-notes.md").write_text("kept\n", encoding="utf-8")
+
+    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    names = _list_tar_names(pkg.tarball_bytes)
+    assert not any(".bak" in n for n in names), names
+    assert not any(n.endswith(".tmp") for n in names), names
+    assert not any(n.endswith(".orig") for n in names), names
+    assert not any(n.endswith("~") for n in names), names
+    assert any(n.endswith("backup-notes.md") for n in names), names
+
+
 def test_export_invalid_agent_id_format(fake_efs):
     seller_id, _, _ = fake_efs
     with pytest.raises(agent_export.InvalidAgentIdError):

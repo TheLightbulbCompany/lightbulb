@@ -400,6 +400,12 @@ def _build_tarball(agent_dir: Path) -> tuple[bytes, list[str]]:
             # defense in depth — if the file matches a credential shape,
             # we never tar it in the first place.
             basename = parts[-1]
+            # Skip editing backups / temp leftovers — *.bak, *.bak.<ts>, *.tmp,
+            # *~, *.orig. These ride along from in-place edits of workspace
+            # files (e.g. BOOTSTRAP.md.bak.20260624050826) and are inert cruft
+            # that should never reach a buyer's installed workspace.
+            if basename.endswith((".bak", ".tmp", ".orig", "~")) or ".bak." in basename:
+                return None
             if _looks_like_credential_file(basename):
                 return None
             # Reject symlinks defensively (catalog_package.untar already does

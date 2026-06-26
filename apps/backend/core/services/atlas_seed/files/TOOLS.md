@@ -76,9 +76,13 @@ The built agent's files are materialized to the EFS workspaces root (`ISOL8_AGEN
 
 The skills Atlas genuinely uses, all gateway-free (run as local skills / drained by the agent loop — never via a gateway tool proxy).
 
-### taskr (state-backed KV)
+### Durable storage — native `state.*` (no taskr)
 
-`taskr` is the gateway-free KV skill (the fast-io replacement). Atlas's own pipelines use native `state.get`/`state.set` under `atlas/*`; emitted agents use `taskr` as their durable per-key store. There is no gateway tool-call surface for it anymore — that path 401s gateway-free.
+Durable storage is the lobster runner's native `pipeline: state.get`/`state.set`
+under `atlas/*` — for BOTH Atlas's own pipelines AND the agents it emits (the
+generated `.lobster` uses `state.*`, not a KV skill). `fast-io` and `taskr` (the
+old gateway KV skills) are gone — they 401 gateway-free; `state.*` replaces them
+and is not a skill you install, it's the runtime.
 
 ### agentgate (approval backing)
 
@@ -267,10 +271,22 @@ Frozen exported constant `COOKBOOK_SOURCE_PREFERENCE` in `atlas-cookbook-reader.
 
 ## Universal Skill Core
 
-The gateway-free core every Atlas-emitted agent ships with (the standard isol8 agent shape):
+The gateway-free skill core every Atlas-emitted agent ships with in its
+`openclaw.json` `skills` (the standard isol8 agent shape) — this list MUST match
+`atlas-skeleton-generator.js`'s `UNIVERSAL_SKILL_CORE`:
 
 ```
-gog, slack, taskr, capability-evolver, skill-vetter, sona-security-audit, llm-task, message
+gog, slack, capability-evolver, skill-vetter, sona-security-audit, agentgate
 ```
 
-Durable storage is native `state.*` (with `taskr` as the per-key store); there is no `fast-io`, `summarize`, or `n8n-workflow` in the core — those were gateway-bound and 401 gateway-free, so they were dropped when the fleet moved gateway-free. The generator merges this core with the user-vetted skill additions, deduplicated. At S9 the user can selectively reject any core skill via the same selective-reject mechanism, with an explicit warning ("rejecting the core likely produces a non-functional agent that won't integrate with isol8's standard tooling").
+Durable storage is native `pipeline: state.get`/`state.set` under `atlas/*` — the
+lobster runner's own state, NOT a separate KV skill. `llm-task`, `message`, and
+`lobster` are platform tools the agent reaches via `alsoAllow` (not installable
+skills, so they're not in the list above). There is no `fast-io`, `taskr`,
+`summarize`, or `n8n-workflow` in the core — those were gateway-bound and 401
+gateway-free, so they were dropped when the fleet moved gateway-free (`state.*`
+is the durable store; the agent loop covers LLM/summarize work). The generator
+merges this core with the user-vetted skill additions, deduplicated. At S9 the
+user can selectively reject any core skill, with an explicit warning ("rejecting
+the core likely produces a non-functional agent that won't integrate with
+isol8's standard tooling").

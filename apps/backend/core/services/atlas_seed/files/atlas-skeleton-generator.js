@@ -5,9 +5,10 @@
 // workspace files + .lobster pipelines + .js Node scripts.
 //
 // Three modes:
-//   --action=draft (default, Step 2 staging into fast-io)
-//   --action=write-disk (Step 6 atomic write via staging-dir-then-mv per W7)
-//   --action=verify-write (Step 6 post-write verification)
+//   --action=draft (default) — returns all agent files as a JSON artifacts map
+//   --action=write-disk — materializes the drafted artifacts into a staging dir
+//                         then atomic-mv to the agent dir (staging-dir-then-mv per W7)
+//   --action=verify-write — post-write verification
 //
 // PRD format enforcement (R1/R3/R4):
 //   R1: user-story format with required {{outcome}} field
@@ -314,6 +315,15 @@ Free-text. Use this for context the agent should know about you and your prefere
 `;
 }
 
+// Slugify a build-supplied name to a safe token before embedding it in a
+// generated .lobster (which becomes a shell-executed `node -e '...'` + state
+// keys + filename). Pipeline/script names come from user requirements at build
+// time, so an unsanitized `'` or shell metachar would break or inject into the
+// generated command. Keep only [a-zA-Z0-9_-].
+function _safeName(name, fallback) {
+  return String(name || '').replace(/[^a-zA-Z0-9_-]/g, '-').replace(/^-+|-+$/g, '') || fallback;
+}
+
 function generateLobsterPipeline(pipeline) {
   // Real working starter file. Refined through the agent loop.
   //
@@ -322,19 +332,20 @@ function generateLobsterPipeline(pipeline) {
   // a bare `command: node x.js` (input via `stdin:`), durable state uses native
   // `state.get`/`state.set` (NOT a fast-io tool call), and the audit trail is a
   // load-append-save on a single state key. Refine the steps to the real workflow.
-  const procScript = pipeline.processing_script || 'PROCESSING_SCRIPT';
-  return `name: ${pipeline.name}
+  const name = _safeName(pipeline.name, 'pipeline');
+  const procScript = _safeName(pipeline.processing_script, 'PROCESSING_SCRIPT');
+  return `name: ${name}
 
 # ${pipeline.purpose}
 # Refine the steps below based on the actual workflow this pipeline implements.
 
 args:
-${(pipeline.args || []).map(a => `  ${a.name}:\n    default: "${a.default || ''}"`).join('\n')}
+${(pipeline.args || []).map(a => `  ${_safeName(a.name, 'arg')}:\n    default: "${String(a.default || '').replace(/["\\]/g, '')}"`).join('\n')}
 
 steps:
   # Step 1: Load durable input from native pipeline state.
   - id: load-input
-    pipeline: state.get ${pipeline.name}/input
+    pipeline: state.get ${name}/input
 
   # Step 2: Run deterministic processing (refine to your needs). Bare node
   #         program; input arrives on stdin, the result is written to stdout.
@@ -345,7 +356,7 @@ steps:
 
   # Step 3: Persist the result back to durable state.
   - id: persist
-    pipeline: state.set ${pipeline.name}/output
+    pipeline: state.set ${name}/output
     stdin: $process.stdout
 
   # Audit log — load-append-save on a single state key. NO on_error: continue on
@@ -353,13 +364,13 @@ steps:
   # the shared audit array with empty stdin. Defaults its input so it never
   # references a crashed producer; timestamp computed in-node.
   - id: audit-load
-    pipeline: state.get ${pipeline.name}/audit-log
+    pipeline: state.get ${name}/audit-log
 
   - id: audit-next
     command: >
       node -e 'const log=JSON.parse(process.env.AUDIT||"null")||[];
         const r=JSON.parse(process.env.RESULT||"null")||{};
-        log.push({action:"${pipeline.name}_complete",
+        log.push({action:"${name}_complete",
           result_summary:r.summary||null,
           timestamp:new Date().toISOString()});
         if (log.length>500) log.splice(0,log.length-500);
@@ -369,7 +380,7 @@ steps:
       RESULT: $process.stdout
 
   - id: audit-save
-    pipeline: state.set ${pipeline.name}/audit-log
+    pipeline: state.set ${name}/audit-log
     stdin: $audit-next.stdout
 `;
 }
@@ -494,10 +505,12 @@ function draftToFastIo(spec) {
   };
 
   for (const pipeline of (spec.pipelines || [])) {
-    underWorkspace[`workspace/${pipeline.name}.lobster`] = generateLobsterPipeline(pipeline);
+    // Sanitize the filename the same way generateLobsterPipeline sanitizes the
+    // workflow name + state keys, so the file, its `name:`, and its state keys align.
+    underWorkspace[`workspace/${_safeName(pipeline.name, 'pipeline')}.lobster`] = generateLobsterPipeline(pipeline);
   }
   for (const script of (spec.scripts || [])) {
-    underWorkspace[`workspace/${script.name}.js`] = generateScriptArchetype(script);
+    underWorkspace[`workspace/${_safeName(script.name, 'script')}.js`] = generateScriptArchetype(script);
   }
 
   const flatTriggers = _flattenTriggers(spec.requirements_with_triggers);

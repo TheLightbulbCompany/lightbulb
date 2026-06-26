@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import useSWR from "swr";
 
 import { capture } from "@/lib/analytics";
 import {
@@ -11,14 +10,13 @@ import {
   CheckCircle,
   Circle,
 } from "lucide-react";
-import { useOrganization, useAuth } from "@clerk/nextjs";
+import { useOrganization } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
 import { useBilling } from "@/hooks/useBilling";
 import { useProvisioningState, type ColdStartPhase } from "@/hooks/useProvisioningState";
 import { useGateway } from "@/hooks/useGateway";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
-import { BotSetupWizard } from "@/components/channels/BotSetupWizard";
 import { nextOnboardingCompletion } from "@/components/chat/onboardingAnalytics";
 import { ChatGPTOAuthStep } from "@/components/chat/ChatGPTOAuthStep";
 import { ByoKeyStep } from "@/components/chat/ByoKeyStep";
@@ -40,51 +38,22 @@ type Phase =
   | "gateway"
   | "channels-sidecars"
   | "agent"
-  | "channels"
   | "ready";
+
+/**
+ * Resolve the phase the stepper lands on once the gateway is up and the
+ * "agent" cold-start step has cleared. Channel setup is no longer forced
+ * before chat — it is nudged via the Get Started guide and remains
+ * available in Settings → Channels — so this always resolves to "ready".
+ */
+export function resolvePostAgentPhase(_: { gatewayHealth: boolean }): "ready" {
+  return "ready";
+}
 
 type ProviderChoice = "chatgpt_oauth" | "byo_key" | "bedrock_claude";
 
 function isProviderChoice(v: string | null): v is ProviderChoice {
   return v === "chatgpt_oauth" || v === "byo_key" || v === "bedrock_claude";
-}
-
-type Provider = "telegram" | "discord" | "slack";
-const PROVIDER_PRIORITY: readonly Provider[] = ["telegram", "discord", "slack"];
-
-interface BotEntry {
-  agent_id: string;
-  bot_username: string;
-  linked: boolean;
-}
-interface LinksMeResponse {
-  telegram: BotEntry[];
-  discord: BotEntry[];
-  slack: BotEntry[];
-  can_create_bots: boolean;
-}
-
-/**
- * Channel onboarding is always scoped to the `main` agent — additional bots
- * on user-created agents are managed in Settings, not here. Returns the first
- * provider (in PROVIDER_PRIORITY order) where a main-agent bot exists that
- * the current member has not yet paired their identity with. Returns null
- * when there's nothing to link (either no main bot configured at all, or the
- * member is already linked to every main bot).
- */
-function findFirstUnlinkedMainProvider(links: LinksMeResponse): Provider | null {
-  for (const provider of PROVIDER_PRIORITY) {
-    const mainBot = links[provider]?.find((b) => b.agent_id === "main");
-    if (mainBot && !mainBot.linked) return provider;
-  }
-  return null;
-}
-
-/** True if any provider has a configured main-agent bot. */
-function hasMainBot(links: LinksMeResponse): boolean {
-  return PROVIDER_PRIORITY.some((p) =>
-    links[p]?.some((b) => b.agent_id === "main"),
-  );
 }
 
 const STEPS_PAID: { phase: Phase; label: string; activeLabel: string }[] = [
@@ -173,22 +142,8 @@ export function ProvisioningStepper({
    *  "recovery" = skip billing, start from container provisioning. */
   trigger?: "onboarding" | "recovery";
 }) {
-  const { organization, membership } = useOrganization();
-  const { userId } = useAuth();
+  const { organization } = useOrganization();
   const isOrg = !!organization;
-  // Personal accounts (no org) and explicit org admins manage channels.
-  // Plain members see link-only flows or get sent straight to ready.
-  const isAdmin = !isOrg || membership?.role === "org:admin";
-  // Stable per-owner key (org_… for orgs, user_… for personal) used to
-  // remember that this owner dismissed/finished the OPTIONAL channel
-  // onboarding step. Without this the wizard treats "no main-agent bot yet"
-  // as "onboarding not done" and re-appears on every reload for an owner who
-  // simply never wants a channel.
-  const channelOnboardingDismissKey =
-    organization?.id || userId
-      ? `isol8:channel-onboarding-dismissed:${organization?.id ?? userId}`
-      : null;
-  const api = useApi();
   const { account, isLoading: billingLoading, isSubscribed } = useBilling();
   // Set when we first enter the container/gateway phase — _not_ at component
   // mount. Time spent on the pre-provision steps (provider choice, billing
@@ -198,48 +153,6 @@ export function ProvisioningStepper({
   const provisioningStartRef = useRef<number | null>(null);
   const [timedOut, setTimedOut] = useState(false);
   const [elapsedMs, setElapsedMs] = useState(0);
-  // `/channels/links/me` tells us whether a main-agent bot exists, but on its
-  // own that conflates "no bot yet" with "channel onboarding not done" — so an
-  // owner who never connects a channel got the Telegram wizard re-shoved over
-  // the dashboard every reload. We remember an explicit finish/cancel in
-  // localStorage (per owner) so the optional channels step shows once, not
-  // forever. Lazy-init covers the common case (Clerk ready at mount → no
-  // flash); the effect re-syncs if the key resolves late or the active org
-  // changes.
-  const [onboardingComplete, setOnboardingComplete] = useState<boolean>(() => {
-    if (typeof window === "undefined" || !channelOnboardingDismissKey) return false;
-    try {
-      return window.localStorage.getItem(channelOnboardingDismissKey) === "1";
-    } catch {
-      return false;
-    }
-  });
-
-  useEffect(() => {
-    if (typeof window === "undefined" || !channelOnboardingDismissKey) return;
-    try {
-      if (window.localStorage.getItem(channelOnboardingDismissKey) === "1") {
-        setOnboardingComplete(true);
-      }
-    } catch {
-      // localStorage unavailable (private mode / disabled): fall back to the
-      // in-session-only behavior rather than block the stepper on storage.
-    }
-  }, [channelOnboardingDismissKey]);
-
-  // Mark the optional channel onboarding done for this owner, persisted across
-  // reloads so the wizard does not re-nag. Shared by the wizard's finish and
-  // cancel paths.
-  const dismissChannelOnboarding = useCallback(() => {
-    if (typeof window !== "undefined" && channelOnboardingDismissKey) {
-      try {
-        window.localStorage.setItem(channelOnboardingDismissKey, "1");
-      } catch {
-        // best-effort; the in-memory flag below still hides it this session
-      }
-    }
-    setOnboardingComplete(true);
-  }, [channelOnboardingDismissKey]);
 
   // Plan 3 (flat-fee pivot): `?provider=` is set by the landing page CTA
   // (/sign-up?provider=chatgpt_oauth|byo_key|bedrock_claude) and preserved
@@ -332,33 +245,6 @@ export function ProvisioningStepper({
     { refreshInterval: 3000, dedupingInterval: 2000 },
   );
 
-  // Once the gateway is healthy, fetch the caller's channel-link state.
-  // `/channels/links/me` returns every bot configured in the org's
-  // openclaw.json plus a per-member `linked` flag — exactly what we need to
-  // decide whether to show the create wizard (admin), the link-only wizard
-  // (member needs to pair), or skip channel onboarding entirely.
-  //
-  // Gate the fetch on EITHER the legacy gatewayHealth probe OR the
-  // backend-reported phase=ready signal. /container/status polling stops
-  // once phase=ready arrives, which also stops the useGatewayRpc("health")
-  // fetch (it shares shouldPollContainer). If gatewayHealth is still null
-  // at that moment, this fetch would never fire, dropping the user back
-  // into the "agent" cold-start sub-phase forever.
-  const { data: linksData, error: linksError } = useSWR<LinksMeResponse>(
-    (gatewayHealth || container?.phase === "ready") && !onboardingComplete
-      ? "/channels/links/me"
-      : null,
-    () => api.get("/channels/links/me") as Promise<LinksMeResponse>,
-  );
-
-  // For members, the wizard target is the first main-agent bot they haven't
-  // linked yet. Computed once so the phase derivation and the channels-phase
-  // render below stay in sync.
-  const memberLinkTarget: Provider | null = useMemo(() => {
-    if (isAdmin || !linksData) return null;
-    return findFirstUnlinkedMainProvider(linksData);
-  }, [isAdmin, linksData]);
-
   // Track previous backend phase via a ref so we can detect regression
   // edges *during* render. When the backend goes ready -> not-ready
   // (e.g., scale-to-zero brought it back to provisioning) the
@@ -415,24 +301,11 @@ export function ProvisioningStepper({
       return gatewayHealth ? "agent" : "channels-sidecars";
     }
 
-    // backend phase="ready" (or legacy: gatewayHealth present) — fall
-    // through to channel onboarding logic.
-    if (onboardingComplete) return "ready";
-    if (linksError) return "ready";
-    // CRITICAL: don't fall back to "agent" (a cold-start sub-phase) while
-    // linksData is still loading. That triggers the regression-reset
-    // effect (which sees us re-enter a cold-start phase and clears
-    // elapsedMs/timedOut), trapping the user behind a stepper with a
-    // freshly-zeroed timer even though the gateway is fully ready.
-    // Render chat optimistically; if linksData later returns and channel
-    // onboarding is needed, the next render flips to "channels".
-    if (!linksData) return "ready";
-
-    if (isAdmin) {
-      return hasMainBot(linksData) ? "ready" : "channels";
-    }
-    return memberLinkTarget !== null ? "channels" : "ready";
-  }, [trigger, isSubscribed, container, containerReady, gatewayHealth, linksData, linksError, onboardingComplete, isAdmin, memberLinkTarget, needsProviderStep]);
+    // backend phase="ready" (or legacy: gatewayHealth present) — chat is
+    // ready. Channel setup is no longer forced here; it is nudged via the
+    // Get Started guide and lives in Settings → Channels.
+    return resolvePostAgentPhase({ gatewayHealth: Boolean(gatewayHealth) });
+  }, [trigger, isSubscribed, container, containerReady, gatewayHealth, needsProviderStep]);
 
   // Analytics: fire `onboarding_step_completed` once per step transition.
   const prevPhaseRef = useRef<Phase | null>(null);
@@ -461,7 +334,7 @@ export function ProvisioningStepper({
       phase === "channels-sidecars" ||
       phase === "agent";
     if (!isColdStartPhase) {
-      wasPreviouslyAdvancedRef.current = phase === "ready" || phase === "channels";
+      wasPreviouslyAdvancedRef.current = phase === "ready";
       return;
     }
     // Only reset when re-entering after having previously left this
@@ -645,35 +518,6 @@ export function ProvisioningStepper({
   // the picker for fresh users.
   if (gatePhase === "needs-signup") {
     return <ProviderPicker isOrg={isOrg} orgName={organization?.name} />;
-  }
-
-  // Channel onboarding — admins set up the first main-agent bot, members
-  // pair their identity with an existing one. Always scoped to `main`.
-  if (phase === "channels") {
-    const wizardMode = isAdmin ? "create" : "link-only";
-    // Admin creates always default to telegram; member link-only uses
-    // whichever main-agent provider they haven't paired with yet.
-    const wizardProvider: Provider = isAdmin ? "telegram" : (memberLinkTarget ?? "telegram");
-    // Look up the actual bot handle so the link-only pair step can tell the
-    // member which bot to DM. linksData is guaranteed loaded here because
-    // we only enter the channels phase after it resolves.
-    const wizardBotUsername = !isAdmin
-      ? linksData?.[wizardProvider]?.find((b) => b.agent_id === "main")?.bot_username
-      : undefined;
-    return (
-      <div className="flex-1 flex items-center justify-center p-6 bg-[#faf7f2]">
-        <div className="w-full max-w-md">
-          <BotSetupWizard
-            mode={wizardMode}
-            provider={wizardProvider}
-            agentId="main"
-            botUsername={wizardBotUsername}
-            onComplete={() => { capture("onboarding_completed"); dismissChannelOnboarding(); }}
-            onCancel={dismissChannelOnboarding}
-          />
-        </div>
-      </div>
-    );
   }
 
   // Provider-specific signup step. Renders the right component based on
@@ -1043,32 +887,6 @@ export function ProvisioningStepper({
           100% { transform: translateY(-18px); opacity: 0; }
         }
 
-        /* Gateway */
-        .anim-gate { position: relative; width: 56px; height: 56px; }
-        .gate-frame {
-          position: absolute; inset: 4px; border: 2px solid #06402B;
-          border-radius: 12px 12px 4px 4px; overflow: hidden;
-        }
-        .gate-glow {
-          position: absolute; inset: 0; background: #a8e6c6; opacity: 0;
-          transition: opacity 500ms ease-out;
-        }
-        .gate-opening .gate-glow { opacity: 0.3; }
-        .gate-door-l, .gate-door-r {
-          position: absolute; top: 0; bottom: 0; width: 50%;
-          background: #06402B; transition: transform 600ms ease-out;
-        }
-        .gate-door-l { left: 0; }
-        .gate-door-r { right: 0; }
-        .gate-opening .gate-door-l { transform: translateX(-100%); }
-        .gate-opening .gate-door-r { transform: translateX(100%); }
-        .gate-signal {
-          position: absolute; inset: 0; display: flex;
-          align-items: center; justify-content: center;
-          opacity: 0; transition: opacity 400ms ease-out 400ms;
-        }
-        .gate-opening .gate-signal { opacity: 1; }
-
         /* Done check */
         .anim-done { display: flex; align-items: center; justify-content: center; }
         .check-path {
@@ -1225,22 +1043,6 @@ export function ProvisioningStepper({
                 <div className="pod-steam-line" /><div className="pod-steam-line" /><div className="pod-steam-line" />
                 <div className="pod-lid-l" /><div className="pod-lid-r" />
                 <div className="pod-body"><div className="pod-window" /></div>
-              </div>
-            </div>
-
-            {/* Step: channels (channel onboarding wizard, post-cold-start) — gate opening */}
-            <div className={`provision-anim ${(phase as string) === "channels" ? "active" : ""}`}>
-              <div className={`anim-gate ${(phase as string) === "channels" ? "gate-opening" : ""}`}>
-                <div className="gate-frame">
-                  <div className="gate-glow" />
-                  <div className="gate-door-l" /><div className="gate-door-r" />
-                  <div className="gate-signal">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#06402B" strokeWidth="2.5" strokeLinecap="round">
-                      <path d="M5 12.55a11 11 0 0 1 14.08 0" /><path d="M8.53 16.11a6 6 0 0 1 6.95 0" />
-                      <circle cx="12" cy="20" r="1" fill="#06402B" />
-                    </svg>
-                  </div>
-                </div>
               </div>
             </div>
 

@@ -1,5 +1,6 @@
 import pytest
 
+from core.config import settings
 from core.crypto.operator_device import device_identity_from_pem
 from core.services.paperclip_adapter_config import (
     synthesize_openclaw_adapter,
@@ -50,7 +51,9 @@ def test_validate_gateway_url_rejects_unknown_formats(url):
         validate_gateway_url(url)
 
 
-def test_synthesize_returns_canonical_shape():
+def test_synthesize_returns_canonical_shape(monkeypatch):
+    # With no internal URL configured, no paperclipApiUrl override is added.
+    monkeypatch.setattr(settings, "PAPERCLIP_INTERNAL_URL", "")
     cfg = synthesize_openclaw_adapter(
         gateway_url="wss://ws-dev.isol8.co",
         service_token="JWT_TOKEN_HERE",
@@ -72,6 +75,22 @@ def test_synthesize_returns_canonical_shape():
         "sessionKey",
         "devicePrivateKeyPem",
     }
+
+
+def test_synthesize_pins_paperclip_api_url_to_internal_host(monkeypatch):
+    """When PAPERCLIP_INTERNAL_URL is configured, the adapter carries a
+    ``paperclipApiUrl`` override so the agent's wake run curls the in-VPC host
+    instead of Paperclip's default origin(PAPERCLIP_PUBLIC_URL) — which is the
+    public auth origin, unreachable from inside the VPC."""
+    monkeypatch.setattr(
+        settings, "PAPERCLIP_INTERNAL_URL", "http://paperclip.isol8-prod.local:3100"
+    )
+    cfg = synthesize_openclaw_adapter(
+        gateway_url="wss://ws.isol8.co",
+        service_token="t" * 40,
+        user_id="user_abc",
+    )
+    assert cfg["paperclipApiUrl"] == "http://paperclip.isol8-prod.local:3100"
 
 
 def test_synthesize_rejects_bad_url():

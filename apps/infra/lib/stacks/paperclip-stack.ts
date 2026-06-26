@@ -328,24 +328,32 @@ export class PaperclipStack extends cdk.Stack {
       props.paperclipBetterAuthSecretName,
     );
 
-    // `company.isol8.co` was RETIRED (#510, 2026-05-03 — NXDOMAIN; #509 replaced
-    // the proxy with the native isol8.co/teams surface). The Teams UI is now
-    // served by the isol8 frontend, which talks to the isol8 backend, which talks
-    // to Paperclip over PAPERCLIP_INTERNAL_URL — so NOTHING browser-facing uses
-    // PAPERCLIP_PUBLIC_URL anymore.
+    // PAPERCLIP_PUBLIC_URL is Better Auth's ORIGIN IDENTITY — it feeds the auth
+    // baseURL, the trustedOrigins set, the secure-cookie scheme, and the `Origin`
+    // header the backend BFF sends on /api/auth/* calls (server/src/auth/better-auth.ts).
+    // It is NEVER dereferenced over the network (the Teams UI is native in the isol8
+    // frontend; the backend reaches Paperclip over PAPERCLIP_INTERNAL_URL), so the
+    // fact that `company.isol8.co` is NXDOMAIN does not matter here — it just has to
+    // be a STABLE https origin that the backend's Origin header matches. Pointing it
+    // at the http in-VPC host (PR #1073) broke Better Auth's secure-cookie sign-in
+    // with a 403, so keep it https.
     //
-    // What still reads it: the DEPLOYED (pinned) Paperclip image derives the
-    // `PAPERCLIP_API_URL` it injects into every agent heartbeat run from
-    // PAPERCLIP_PUBLIC_URL (choosePrimaryRuntimeApiUrl → authPublicBaseUrl) and
-    // ignores an explicit PAPERCLIP_API_URL env (that override only exists on
-    // newer upstream). So pointing PUBLIC_URL at the dead host made every agent
-    // run 000 on DNS. Point it at the in-VPC Cloud Map host the per-user agent
-    // containers can actually resolve + reach (same value the backend uses as
-    // PAPERCLIP_INTERNAL_URL; VPC-CIDR ingress on 3100 below already permits the
-    // containers). PAPERCLIP_API_URL is set to the same host for newer images
-    // that honor it. No more `company.isol8.co` anywhere in the runtime.
+    // It is NOT the agent's Paperclip API URL. The deployed image derives the agent's
+    // injected URL from PAPERCLIP_RUNTIME_API_URL (= origin(authPublicBaseUrl)), BUT
+    // the per-agent adapterConfig `paperclipApiUrl` override takes precedence
+    // (openclaw-gateway execute.ts:351). The backend sets that override to the in-VPC
+    // host in synthesize_openclaw_adapter, so agents reach Paperclip independently of
+    // this value. That decoupling is what lets PUBLIC_URL stay the auth origin.
+    const paperclipPublicUrl =
+      env === "prod"
+        ? "https://company.isol8.co"
+        : `https://${env}.company.isol8.co`;
+
+    // In-VPC Cloud Map host. Kept on PAPERCLIP_API_URL for parity / newer images that
+    // read it, but on the deployed image this env is dead on the wake path (the wake
+    // reads PAPERCLIP_RUNTIME_API_URL first); the live agent path is the adapterConfig
+    // override above, not this.
     const paperclipInternalApiUrl = `http://paperclip.${props.cloudMapNamespace.namespaceName}:3100`;
-    const paperclipPublicUrl = paperclipInternalApiUrl;
 
     taskDefinition.addContainer("paperclip", {
       // Paperclip publishes to GitHub Container Registry, not Docker Hub

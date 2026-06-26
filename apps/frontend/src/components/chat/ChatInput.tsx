@@ -5,6 +5,9 @@ import { Button } from "@/components/ui/button";
 import { capture } from "@/lib/analytics";
 import { SendHorizontal, Paperclip, X, FileIcon, Loader2, Square, CornerDownRight, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { parseSlashInput } from "@/lib/slashCommands";
+import { useSlashCommands } from "@/hooks/useSlashCommands";
+import { SlashCommandMenu, flattenVisible } from "@/components/chat/SlashCommandMenu";
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
 
@@ -16,6 +19,11 @@ interface PendingFile {
 interface ChatInputProps {
   onSend: (message: string, files?: File[]) => void;
   onStop?: () => void;
+  /**
+   * The active agent. Scopes the slash-command menu's `commands.list` RPC so
+   * the menu offers the agent's own commands (skills/plugins vary per agent).
+   */
+  agentId?: string | null;
   disabled?: boolean;
   centered?: boolean;
   isUploading?: boolean;
@@ -48,6 +56,7 @@ function formatFileSize(bytes: number): string {
 export function ChatInput({
   onSend,
   onStop,
+  agentId,
   disabled,
   centered,
   isUploading,
@@ -61,12 +70,30 @@ export function ChatInput({
   onRetryQueued,
 }: ChatInputProps) {
   const [input, setInput] = React.useState("");
+  const [activeIndex, setActiveIndex] = React.useState(0);
   const [pendingFiles, setPendingFiles] = React.useState<PendingFile[]>([]);
   const [sizeError, setSizeError] = React.useState<{ id: number; message: string } | null>(null);
   const sizeErrorTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const sizeErrorIdRef = React.useRef(0);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
+
+  // Slash-command menu. The menu is "open" only when the whole input is a
+  // bare command token (`/foo`) with no argument text yet — once the user
+  // types an argument (`/foo bar`) the menu yields to normal typing. Keyboard
+  // routing (↑↓/Tab/Enter/Esc) is handled FIRST in handleKeyDown but ONLY
+  // while menuOpen, so the existing suggested-message / Enter-to-send logic
+  // is untouched when the menu is closed.
+  const slash = parseSlashInput(input);
+  const { commands } = useSlashCommands(agentId ?? null);
+  const visible = slash.isCommand ? flattenVisible(commands, slash.query) : [];
+  const menuOpen = slash.isCommand && visible.length > 0 && !slash.argText;
+
+  // Keep the highlighted row in range as the query (and therefore the visible
+  // set) changes — resetting to the top is the least-surprising behavior.
+  React.useEffect(() => {
+    setActiveIndex(0);
+  }, [slash.query]);
 
   // Clear timer on unmount
   React.useEffect(() => {
@@ -170,6 +197,41 @@ export function ChatInput({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // Slash menu owns the arrow / Tab / Enter / Esc keys while it's open, then
+    // returns so the existing logic below never sees them. When the menu is
+    // closed this block is inert and the original handling runs unchanged.
+    if (menuOpen) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setActiveIndex((i) => (i + 1) % visible.length);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setActiveIndex((i) => (i - 1 + visible.length) % visible.length);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setInput("");
+        return;
+      }
+      if (e.key === "Tab" || e.key === "Enter") {
+        e.preventDefault();
+        const cmd = visible[activeIndex];
+        if (!cmd) return;
+        if (cmd.acceptsArgs) {
+          setInput(`/${cmd.name} `); // fill, await arg
+          setActiveIndex(0);
+        } else if (e.key === "Enter") {
+          onSend(`/${cmd.name}`); // run no-arg command now
+          setInput("");
+        } else {
+          setInput(`/${cmd.name}`); // Tab fills, no run
+        }
+        return;
+      }
+    }
     if (e.key === "Tab" && suggestedMessage && !input) {
       e.preventDefault();
       setInput(suggestedMessage);
@@ -379,6 +441,22 @@ export function ChatInput({
           </Button>
 
           <div className="relative flex-1">
+            {menuOpen && (
+              <SlashCommandMenu
+                commands={commands}
+                query={slash.query}
+                activeIndex={activeIndex}
+                onSelect={(c) => {
+                  if (c.acceptsArgs) {
+                    setInput(`/${c.name} `);
+                  } else {
+                    onSend(`/${c.name}`);
+                    setInput("");
+                  }
+                }}
+                onActiveIndexChange={setActiveIndex}
+              />
+            )}
             {suggestedMessage && !input && (
               <div className="absolute inset-0 pointer-events-none text-[#b5ae9e] text-sm leading-6 py-1 truncate">
                 {suggestedMessage}

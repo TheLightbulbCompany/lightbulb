@@ -49,7 +49,14 @@ function enumerateAgents() {
 }
 
 function extractCitationsFromAgentsMd(filepath) {
-  const content = fs.readFileSync(filepath, 'utf8');
+  // Return [] on an unreadable file rather than throwing — otherwise one bad
+  // AGENTS.md (perms, etc.) kills citation extraction for every other agent.
+  let content;
+  try {
+    content = fs.readFileSync(filepath, 'utf8');
+  } catch (e) {
+    return [];
+  }
   const citations = [];
 
   const urlRegex = /https?:\/\/[^\s)\]]+/g;

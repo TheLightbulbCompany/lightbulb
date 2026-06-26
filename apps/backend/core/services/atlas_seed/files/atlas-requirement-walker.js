@@ -128,7 +128,12 @@ function applyTriggerEdits(buildId, reqId, edits) {
 function checkLoop(buildId, matrix, decisions) {
   const meta = loadMatrix(buildId, matrix);
   const total = meta.error ? 0 : meta.requirement_count;
-  const completedCount = Object.keys(decisions || {}).length;
+  // Count only decisions whose key is an actual matrix requirement id (the same
+  // domain presentNext walks) — a decision written under a non-matching key
+  // would otherwise inflate completed_count and report more_outstanding:false
+  // (finalize fires) while presentNext still finds un-vetted rows.
+  const reqIdSet = new Set(meta.error ? [] : (meta.requirement_ids || []));
+  const completedCount = Object.keys(decisions || {}).filter(k => reqIdSet.has(k)).length;
   return {
     more_outstanding: completedCount < total,
     completed_count: completedCount,

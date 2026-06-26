@@ -78,17 +78,28 @@ function buildListing(buildId, agentName) {
   };
 }
 
+function _walkFiles(dir, base) {
+  // Recurse so subdirectory content (workspace/, nested skills) is part of the
+  // hash — a flat top-level-only hash would let a bundle diverge in a subdir and
+  // still pass the S10/S11 continuity check, bypassing the Marketplace Boundary.
+  const out = [];
+  for (const d of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, d.name);
+    const rel = base ? `${base}/${d.name}` : d.name;
+    if (d.isDirectory()) out.push(..._walkFiles(full, rel));
+    else if (d.isFile()) out.push({ full, rel });
+  }
+  return out;
+}
+
 function bundleHash(agentName) {
   const agentDir = path.join(os.homedir(), '.openclaw', 'agents', agentName);
   if (!fs.existsSync(agentDir)) return { error: `agent dir missing: ${agentDir}` };
   const hash = crypto.createHash('sha256');
-  const files = fs.readdirSync(agentDir, { withFileTypes: true })
-    .filter(d => d.isFile())
-    .map(d => path.join(agentDir, d.name))
-    .sort();
+  const files = _walkFiles(agentDir, '').sort((a, b) => a.rel.localeCompare(b.rel));
   for (const f of files) {
-    hash.update(path.basename(f));
-    hash.update(fs.readFileSync(f));
+    hash.update(f.rel);            // relative path (incl. subdirs) so moves are detected
+    hash.update(fs.readFileSync(f.full));
   }
   return { sha256: hash.digest('hex'), file_count: files.length, agent_dir: agentDir };
 }

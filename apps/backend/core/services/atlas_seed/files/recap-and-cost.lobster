@@ -117,7 +117,10 @@ steps:
     stdin: $recaps-next.stdout
 
   # Step 5.4 — Count deterministic vs LLM nodes (architectural ratio per L7).
+  #            Gated on the hash match like the recap steps — never count cost on
+  #            a matrix that failed W5 verification (modified since snapshot).
   - id: cost-count
+    condition: $verify-matrix-hash.json.hash_matches == true
     command: node atlas-cost-counter.js --build-id="$LOBSTER_ARG_BUILD_ID"
     env:
       MATRIX: $matrix-of-build.stdout
@@ -125,9 +128,11 @@ steps:
 
   # Step 5.5 — Persist the cost estimate into the per-build map. Load-merge-save.
   - id: costs-load
+    condition: $verify-matrix-hash.json.hash_matches == true
     pipeline: state.get atlas/cost-estimates
 
   - id: costs-next
+    condition: $verify-matrix-hash.json.hash_matches == true
     command: >
       node -e 'const map=JSON.parse(process.env.MAP||"null")||{};
         const id=process.env.LOBSTER_ARG_BUILD_ID||"build_unknown";
@@ -139,6 +144,7 @@ steps:
       COST: $cost-count.stdout
 
   - id: costs-save
+    condition: $verify-matrix-hash.json.hash_matches == true
     pipeline: state.set atlas/cost-estimates
     stdin: $costs-next.stdout
 
@@ -211,7 +217,10 @@ steps:
         n.push({kind:"determinism_audit_failed", channel:"atlas-vet",
           build_id:process.env.LOBSTER_ARG_BUILD_ID,
           payload:{failure_count:fails.length, failures:fails,
-            ask:"S9.5 determinism audit failed: each listed requirement needs either a trigger binding or a reclassification to llm/hybrid. Re-vet, then re-run recap before Step 6 build."},
+            error:a.error||null,
+            ask:a.error
+              ? "S9.5 determinism audit CRASHED ("+a.error+") — no requirements were checked. Fix the audit tool / staging path and re-run recap before Step 6 build."
+              : "S9.5 determinism audit failed: each listed requirement needs either a trigger binding or a reclassification to llm/hybrid. Re-vet, then re-run recap before Step 6 build."},
           created_at:new Date().toISOString()});
         process.stdout.write(JSON.stringify(n));'
     env:

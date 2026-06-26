@@ -108,7 +108,7 @@ function formFromListing(listing: Listing): PublishForm {
 }
 
 export function PublishWizard() {
-  const { setView, state } = useMarketplaceDrawer();
+  const { setView, state, openListingDetail } = useMarketplaceDrawer();
   const api = useApi();
   const { getToken } = useAuth();
   const { restricted } = useMarketplaceWriteGate();
@@ -139,6 +139,10 @@ export function PublishWizard() {
   );
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  // Set when the backend 409s because this agent already has a published
+  // listing — we surface a "manage the existing one" banner instead of a
+  // generic error so the seller republishes under the same id.
+  const [duplicateListingId, setDuplicateListingId] = useState<string | null>(null);
   const [draftListingId, setDraftListingId] = useState<string | null>(
     editingListing?.listing_id ?? null,
   );
@@ -248,6 +252,7 @@ export function PublishWizard() {
   async function submit() {
     setSubmitting(true);
     setSubmitError(null);
+    setDuplicateListingId(null);
     try {
       if (!(await ensurePayoutsForPaid())) {
         return;
@@ -314,9 +319,30 @@ export function PublishWizard() {
       const e = err as Error & {
         status?: number;
         detail?: string;
-        body?: { detail?: string };
+        body?: { detail?: unknown };
       };
-      const errMsg = e.body?.detail || e.detail || e.message || "";
+      // Publish-dedupe 409: the agent already has a published listing. The
+      // backend returns a structured detail {error, existing_listing_id} (an
+      // object, not a string) so we can route the seller to that listing to
+      // republish under the same id instead of minting a duplicate.
+      const detailObj =
+        e.body && typeof e.body.detail === "object" && e.body.detail
+          ? (e.body.detail as { error?: string; existing_listing_id?: string })
+          : null;
+      if (
+        e.status === 409 &&
+        detailObj?.error === "agent_already_published" &&
+        detailObj.existing_listing_id
+      ) {
+        setDuplicateListingId(detailObj.existing_listing_id);
+        setSubmitError(null);
+        return;
+      }
+      const errMsg =
+        (typeof e.body?.detail === "string" ? e.body.detail : "") ||
+        e.detail ||
+        e.message ||
+        "";
       if (e.status === 409 && /seller_profile_required/i.test(errMsg)) {
         // Backend gated the publish on the seller having a marketplace
         // handle. Surface the picker inline; on save we'll let the seller
@@ -488,6 +514,27 @@ export function PublishWizard() {
                 : "Continue →"}
             </button>
           </div>
+        </div>
+      )}
+
+      {duplicateListingId && (
+        <div
+          role="alert"
+          className="mt-3 rounded-md border border-[#d8c9a3] bg-[#faf6ec] px-3 py-2.5 text-[13px] text-[#5c4a1f]"
+        >
+          <p>
+            This agent is already published. Publishing again would create a
+            duplicate — open the existing listing to publish a new version under
+            the same listing.
+          </p>
+          <button
+            type="button"
+            data-testid="open-existing-listing"
+            onClick={() => openListingDetail(duplicateListingId)}
+            className="mt-2 font-medium text-[#1f6f4a] underline underline-offset-2 hover:text-[#155236]"
+          >
+            Manage the existing listing →
+          </button>
         </div>
       )}
 

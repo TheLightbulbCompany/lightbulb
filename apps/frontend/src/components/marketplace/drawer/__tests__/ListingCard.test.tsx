@@ -28,6 +28,13 @@ vi.mock("../useHire", () => ({
   useHire: () => ({ hire: mockHire, isHiring: false }),
 }));
 
+// ListingCard reads openListingDetail from the drawer context for the "Manage"
+// (own-listing) branch — mock it so the leaf component renders without a provider.
+const mockOpenListingDetail = vi.fn();
+vi.mock("../MarketplaceDrawerProvider", () => ({
+  useMarketplaceDrawer: () => ({ openListingDetail: mockOpenListingDetail }),
+}));
+
 function listing(overrides: Partial<Listing> = {}): Listing {
   return {
     listing_id: "lst_atlas",
@@ -49,6 +56,7 @@ function listing(overrides: Partial<Listing> = {}): Listing {
 describe("Drawer ListingCard — org-admin gate", () => {
   beforeEach(() => {
     mockHire.mockReset();
+    mockOpenListingDetail.mockReset();
     mockUseOrganization.mockReturnValue({ membership: null });
   });
 
@@ -82,5 +90,36 @@ describe("Drawer ListingCard — org-admin gate", () => {
     // listing reflects past entitlement, not a current write attempt.
     expect(screen.getByRole("button", { name: /Hired/i })).toBeInTheDocument();
     expect(screen.queryByTestId("hire-restricted")).toBeNull();
+  });
+});
+
+describe("Drawer ListingCard — own-listing (Manage)", () => {
+  beforeEach(() => {
+    mockHire.mockReset();
+    mockOpenListingDetail.mockReset();
+    mockUseOrganization.mockReturnValue({ membership: null });
+  });
+
+  it("shows Manage (not Hire) for the viewer's own listing and opens detail", async () => {
+    const { default: userEvent } = await import("@testing-library/user-event");
+    render(<ListingCard listing={listing({ seller_id: "u_viewer" })} installed={false} />);
+    const manage = screen.getByTestId("manage-listing");
+    expect(manage).toHaveTextContent(/Manage/i);
+    expect(screen.queryByRole("button", { name: /^Hire$/i })).toBeNull();
+    await userEvent.click(manage);
+    expect(mockOpenListingDetail).toHaveBeenCalledWith("lst_atlas");
+    expect(mockHire).not.toHaveBeenCalled();
+  });
+
+  it("shows Manage for an own listing even when installed (own beats Hired)", () => {
+    render(<ListingCard listing={listing({ seller_id: "u_viewer" })} installed={true} />);
+    expect(screen.getByTestId("manage-listing")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Hired/i })).toBeNull();
+  });
+
+  it("still shows Hire for another seller's listing", () => {
+    render(<ListingCard listing={listing({ seller_id: "u_other_seller" })} installed={false} />);
+    expect(screen.getByRole("button", { name: /^Hire$/i })).toBeInTheDocument();
+    expect(screen.queryByTestId("manage-listing")).toBeNull();
   });
 });

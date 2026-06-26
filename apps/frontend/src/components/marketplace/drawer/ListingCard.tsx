@@ -5,6 +5,7 @@ import Link from "next/link";
 import type { Listing } from "@/lib/marketplace/types";
 import { useMarketplaceWriteGate } from "@/lib/marketplace/useMarketplaceWriteGate";
 import { useHire } from "./useHire";
+import { useMarketplaceDrawer } from "./MarketplaceDrawerProvider";
 
 const FALLBACK_BYLINE = "Community member";
 
@@ -30,9 +31,14 @@ export function ListingCard({ listing, installed }: { listing: Listing; installe
   const { hire, isHiring } = useHire();
   const { userId } = useAuth();
   const { restricted } = useMarketplaceWriteGate();
+  const { openListingDetail } = useMarketplaceDrawer();
   const tagline =
     listing.description_md.split(/\n{2,}/, 1)[0]?.replace(/[#*_`]/g, "").trim() || "";
   const byline = bylineFor(listing, userId);
+  // The seller never "hires" their own agent. Browse only surfaces published
+  // listings, so an own listing here is live — send them to its detail page to
+  // manage / republish instead of offering Hire.
+  const isOwn = !!userId && listing.seller_id === userId;
 
   return (
     <article
@@ -58,7 +64,16 @@ export function ListingCard({ listing, installed }: { listing: Listing; installe
       <p className="text-[13px] text-[#5b5b5b] leading-snug flex-1 line-clamp-2">{tagline}</p>
       <div className="flex items-center justify-between pt-2.5 border-t border-dashed border-[#e0dbd0]">
         <span className="text-[11.5px] italic text-[#5b5b5b]">by {byline}</span>
-        {installed ? (
+        {isOwn ? (
+          <button
+            type="button"
+            data-testid="manage-listing"
+            onClick={() => openListingDetail(listing.listing_id)}
+            className="text-[#06402b] border border-[#06402b] bg-transparent px-3.5 py-1.5 rounded-full text-[12.5px] font-semibold hover:bg-[#06402b] hover:text-white transition"
+          >
+            Manage
+          </button>
+        ) : installed ? (
           <button
             type="button"
             disabled

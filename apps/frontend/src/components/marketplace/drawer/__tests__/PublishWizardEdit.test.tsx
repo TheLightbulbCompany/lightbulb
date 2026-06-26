@@ -327,3 +327,73 @@ describe("PublishWizard — org-admin gate", () => {
     expect(await screen.findByDisplayValue("Ray")).toBeInTheDocument();
   });
 });
+
+describe("PublishWizard — publish-dedupe 409 routes to existing listing", () => {
+  beforeEach(() => {
+    mockApiGet.mockReset();
+    mockApiPost.mockReset();
+    mockUpdateListing.mockReset();
+    mockArtifactPreview.mockReset();
+    mockGetMySellerProfile.mockReset();
+    mockUseOrganization.mockReturnValue({ membership: null });
+    mockApiGet.mockResolvedValue({ dashboard_url: null });
+    mockUpdateListing.mockResolvedValue({});
+    mockGetMySellerProfile.mockResolvedValue({ handle: "seller-handle", display_name: "Seller" });
+    mockArtifactPreview.mockResolvedValue({
+      available_mcps: [],
+      available_skills: [],
+      auto_ship_skills: [],
+      persona_files: [],
+      safety_flags: [],
+    });
+  });
+
+  it("surfaces the 'manage existing listing' banner and does not submit", async () => {
+    // The backend 409s the artifact upload with a structured detail when the
+    // agent already has a published listing under a different listing_id.
+    mockApiPost.mockImplementation((url: unknown) => {
+      if (typeof url === "string" && url.includes("artifact-from-agent")) {
+        return Promise.reject(
+          Object.assign(new Error("API 409"), {
+            status: 409,
+            body: {
+              detail: { error: "agent_already_published", existing_listing_id: "lst_live" },
+            },
+          }),
+        );
+      }
+      return Promise.resolve({});
+    });
+
+    renderEditing(
+      listing({
+        listing_id: "lst_ray",
+        version: 2,
+        status: "draft",
+        price_cents: 0,
+        rejection_notes: null,
+        rejected_at: null,
+      }),
+    );
+
+    const continueBtn = await screen.findByText("Continue →");
+    fireEvent.click(continueBtn); // Details → Bundle
+    await screen.findByTestId("bundle-mcps");
+    fireEvent.click(screen.getByText("Continue →")); // Bundle → Pricing
+    fireEvent.click(screen.getByText("Continue →")); // Pricing → Review
+    fireEvent.click(await screen.findByText("Resubmit for review →"));
+
+    const banner = await screen.findByTestId("open-existing-listing");
+    expect(banner).toHaveTextContent(/Manage the existing listing/i);
+    // submit() returned early on the dedupe 409 — /submit must never fire.
+    expect(mockApiPost).not.toHaveBeenCalledWith(
+      expect.stringContaining("/submit"),
+      expect.anything(),
+    );
+
+    // Clicking the banner routes to the existing listing's detail view, which
+    // clears editListing and unmounts the wizard (harness returns null).
+    fireEvent.click(banner);
+    await waitFor(() => expect(screen.queryByTestId("open-existing-listing")).toBeNull());
+  });
+});

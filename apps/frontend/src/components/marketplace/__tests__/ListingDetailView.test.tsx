@@ -295,3 +295,40 @@ describe("<ListingDetailView> actions", () => {
     );
   });
 });
+
+describe("<ListingDetailView> version history", () => {
+  it("lists every version newest-first under a Version history tab", async () => {
+    // Published v3 atop two retired predecessors — all versions in one place.
+    vi.mocked(myListings).mockResolvedValueOnce({
+      items: [
+        { ...baseListing, version: 2, status: "retired" },
+        { ...baseListing, version: 3, status: "published" },
+        { ...baseListing, version: 1, status: "retired" },
+      ],
+    });
+    render(<ListingDetailView listingId="lst_x" mode="drawer" />);
+    await waitFor(() => expect(screen.getByText(/Live/)).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("tab", { name: /version history/i }));
+    const list = await screen.findByTestId("version-history");
+    expect(list).toBeInTheDocument();
+    // Newest-first order: v3, v2, v1.
+    const rows = list.querySelectorAll("[data-testid^='version-row-']");
+    expect(Array.from(rows).map((r) => r.getAttribute("data-testid"))).toEqual([
+      "version-row-3",
+      "version-row-2",
+      "version-row-1",
+    ]);
+    expect(screen.getByTestId("version-row-3")).toHaveTextContent(/v3/);
+    expect(screen.getByTestId("version-row-3")).toHaveTextContent(/Live/);
+    expect(screen.getByTestId("version-row-2")).toHaveTextContent(/Retired/);
+  });
+
+  it("hides the Version history tab for a single-version listing", async () => {
+    // Default mock is a single published row → nothing to compare.
+    render(<ListingDetailView listingId="lst_x" mode="drawer" />);
+    await waitFor(() => expect(screen.getByText("My Agent")).toBeInTheDocument());
+    expect(
+      screen.queryByRole("tab", { name: /version history/i }),
+    ).toBeNull();
+  });
+});

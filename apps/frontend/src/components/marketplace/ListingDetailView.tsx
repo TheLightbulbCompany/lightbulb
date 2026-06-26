@@ -10,7 +10,7 @@ import {
 import type { Listing } from "@/lib/marketplace/types";
 import { useMarketplaceDrawer } from "./drawer/MarketplaceDrawerProvider";
 
-type Tab = "overview" | "bundle" | "pending";
+type Tab = "overview" | "bundle" | "pending" | "history";
 
 interface Props {
   listingId: string;
@@ -23,6 +23,10 @@ export function ListingDetailView({ listingId, mode }: Props) {
   const { isLoaded, userId, getToken } = useAuth();
   const [live, setLive] = useState<Listing | null>(null);
   const [pending, setPending] = useState<Listing | null>(null);
+  // Every version row for this listing (published + retired predecessors +
+  // any in-flight draft/review), newest first — backs the History tab so all
+  // versions live in one place.
+  const [versions, setVersions] = useState<Listing[]>([]);
   const [tab, setTab] = useState<Tab>("overview");
   const [loadState, setLoadState] = useState<LoadState>("loading");
   // Bump to force the fetch effect to re-run after a mutation (discard).
@@ -75,6 +79,8 @@ export function ListingDetailView({ listingId, mode }: Props) {
         setLoadState("not-found");
         return;
       }
+      // Keep the full version set (newest first) for the History tab.
+      setVersions([...rows].sort((a, b) => b.version - a.version));
       const publishedRow = rows.find((r) => r.status === "published") ?? null;
       const nonTerminalRow =
         rows.find((r) => r.status === "draft" || r.status === "review") ?? null;
@@ -107,7 +113,10 @@ export function ListingDetailView({ listingId, mode }: Props) {
     // external-data→React sync, which the rule sanctions.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     if (tab === "pending" && !pending) setTab("overview");
-  }, [pending, tab]);
+    // History tab only shows with >1 version; bounce off if a discard
+    // collapsed the listing back to a single version.
+    if (tab === "history" && versions.length <= 1) setTab("overview");
+  }, [pending, tab, versions.length]);
 
   if (loadState === "not-found") {
     return (
@@ -138,10 +147,18 @@ export function ListingDetailView({ listingId, mode }: Props) {
         onPendingChange={() => setRefreshKey((k) => k + 1)}
       />
       <Stats live={live} />
-      <Tabs tab={tab} setTab={setTab} showPending={!!pending} />
+      <Tabs
+        tab={tab}
+        setTab={setTab}
+        showPending={!!pending}
+        showHistory={versions.length > 1}
+      />
       {tab === "overview" && <OverviewTab listing={live} />}
       {tab === "bundle" && <BundleTab listing={live} />}
       {tab === "pending" && pending && <PendingTab pending={pending} />}
+      {tab === "history" && (
+        <VersionHistoryTab versions={versions} liveVersion={live.version} />
+      )}
     </div>
   );
 }
@@ -344,10 +361,12 @@ function Tabs({
   tab,
   setTab,
   showPending,
+  showHistory,
 }: {
   tab: Tab;
   setTab: (t: Tab) => void;
   showPending: boolean;
+  showHistory: boolean;
 }) {
   return (
     <div role="tablist" className="border-b border-[#e0dbd0] mb-5 flex gap-5">
@@ -360,6 +379,11 @@ function Tabs({
       {showPending && (
         <TabBtn name="pending" tab={tab} setTab={setTab}>
           Pending update
+        </TabBtn>
+      )}
+      {showHistory && (
+        <TabBtn name="history" tab={tab} setTab={setTab}>
+          Version history
         </TabBtn>
       )}
     </div>
@@ -499,6 +523,82 @@ function PendingTab({ pending }: { pending: Listing }) {
         {wasRejected ? "Revise & resubmit →" : "Continue editing →"}
       </button>
     </div>
+  );
+}
+
+function versionStatusLabel(l: Listing): string {
+  switch (l.status) {
+    case "published":
+      return "Live";
+    case "review":
+      return "In review";
+    case "draft":
+      return l.rejection_notes ? "Rejected" : "Draft";
+    case "retired":
+      return "Retired";
+    case "taken_down":
+      return "Taken down";
+    default:
+      return l.status;
+  }
+}
+
+function versionStatusCls(status: string): string {
+  switch (status) {
+    case "published":
+      return "bg-[#e3efe6] text-[#06402b]";
+    case "review":
+      return "bg-[#fef4e3] text-[#a07520]";
+    case "draft":
+      return "bg-[#f3eee5] text-[#5b5b5b]";
+    default:
+      return "bg-[#f3eee5] text-[#8a8578]";
+  }
+}
+
+function VersionHistoryTab({
+  versions,
+  liveVersion,
+}: {
+  versions: Listing[];
+  liveVersion: number;
+}) {
+  return (
+    <ul data-testid="version-history" className="space-y-2">
+      {versions.map((v) => {
+        const installs =
+          (v as unknown as { install_count?: number }).install_count ?? 0;
+        const stamp = v.published_at ?? v.created_at;
+        return (
+          <li
+            key={v.version}
+            data-testid={`version-row-${v.version}`}
+            className={`flex items-center justify-between gap-3 rounded-xl border px-4 py-3 ${
+              v.version === liveVersion
+                ? "border-[#aac6b4] bg-[#f4f8f4]"
+                : "border-[#e0dbd0] bg-white"
+            }`}
+          >
+            <div className="flex items-center gap-3">
+              <span className="font-editorial-serif text-base text-[#1a1a1a]">
+                v{v.version}
+              </span>
+              <span
+                className={`text-[10px] tracking-widest uppercase font-bold px-2 py-0.5 rounded-full ${versionStatusCls(
+                  v.status,
+                )}`}
+              >
+                {versionStatusLabel(v)}
+              </span>
+            </div>
+            <div className="flex items-center gap-5 text-[12.5px] text-[#5b5b5b]">
+              <span>{installs.toLocaleString()} installs</span>
+              <span>{stamp ? new Date(stamp).toLocaleDateString() : "—"}</span>
+            </div>
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 

@@ -66,6 +66,7 @@ export function ChatInput({
   const sizeErrorTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const sizeErrorIdRef = React.useRef(0);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+  const textareaRef = React.useRef<HTMLTextAreaElement>(null);
 
   // Clear timer on unmount
   React.useEffect(() => {
@@ -74,6 +75,16 @@ export function ChatInput({
         clearTimeout(sizeErrorTimerRef.current);
       }
     };
+  }, []);
+
+  // "Get started" guide hand-off: when the chat step fires its action it
+  // selects the agent then asks the composer to focus so the user lands
+  // ready to type. Window-scoped CustomEvent keeps ChatLayout decoupled
+  // from this component's ref.
+  React.useEffect(() => {
+    const focus = () => textareaRef.current?.focus();
+    window.addEventListener("getstarted:focus-composer", focus);
+    return () => window.removeEventListener("getstarted:focus-composer", focus);
   }, []);
 
   const showSizeError = React.useCallback((message: string) => {
@@ -345,6 +356,7 @@ export function ChatInput({
               </div>
             )}
             <textarea
+              ref={textareaRef}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}

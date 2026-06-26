@@ -35,7 +35,23 @@ import { myListings } from "@/lib/marketplace/api";
 import { DesktopUpdater } from "@/components/desktop/DesktopUpdater";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { emitStep } from "@/components/getstarted/getStartedEvents";
+import { GetStarted } from "@/components/getstarted/GetStarted";
+import { useProvisioningState } from "@/hooks/useProvisioningState";
+import { TEAMS_PANEL_PREFIX } from "@/components/chat/InlineTeamsPanel";
+import { useInboxData } from "@/components/teams/inbox/hooks/useInboxData";
 import { useAgentMutations } from "@/components/teams/agents/hooks/useAgentMutations";
+
+/** Minimal shape of `/channels/links/me` — only what the guide's
+ *  `channel`-complete derivation reads (a main-agent bot on any provider). */
+interface ChannelBotEntry {
+  agent_id: string;
+}
+interface ChannelLinksResponse {
+  telegram: ChannelBotEntry[];
+  discord: ChannelBotEntry[];
+  slack: ChannelBotEntry[];
+  can_create_bots: boolean;
+}
 
 interface ChatLayoutProps {
   children: React.ReactNode;
@@ -258,7 +274,7 @@ export function ChatLayout({
   // `freshlyInstalledAgentId` so the matching sidebar row plays the
   // `slideIn` animation. Clear the flag after the animation has had time
   // to finish so the class isn't reapplied on subsequent renders.
-  const { state: drawerState, setFreshlyInstalled } = useMarketplaceDrawer();
+  const { state: drawerState, setFreshlyInstalled, open: openMarketplace } = useMarketplaceDrawer();
 
   useEffect(() => {
     if (!drawerState.freshlyInstalledAgentId) return;
@@ -294,6 +310,33 @@ export function ChatLayout({
     }
     return ids;
   }, [sellerListings]);
+
+  // "Get started" guide. Gate the floating guide on the same readiness the
+  // chat surface uses (phase === "normal" means a live container), and feed
+  // it real backend-derived completion signals so steps stay marked done
+  // across leave→return AND for users who already did them before the guide
+  // shipped — the event-flags from the actions alone would forget on reload.
+  const { phase } = useProvisioningState();
+  // `channel` complete = a main-agent bot is wired on any provider. Same
+  // derivation as ProvisioningStepper's `hasMainBot`, computed inline.
+  const { data: channelLinks } = useSWR<ChannelLinksResponse>(
+    "/channels/links/me",
+    () => api.get("/channels/links/me") as Promise<ChannelLinksResponse>,
+  );
+  const channelLinked =
+    !!channelLinks &&
+    (["telegram", "discord", "slack"] as const).some((p) =>
+      channelLinks[p]?.some((b) => b.agent_id === "main"),
+    );
+  // `task` complete = the team already has >= 1 task. useInboxData is
+  // arg-free and bearer-only (same useTeamsApi the roster fetch above uses),
+  // so it's safe to derive here without any teams-provider context.
+  const { allIssues } = useInboxData();
+  const taskExists = allIssues.length > 0;
+  const getStartedDerived = useMemo(
+    () => ({ channel: channelLinked, task: taskExists }),
+    [channelLinked, taskExists],
+  );
 
   function handleSelectAgent(agentId: string): void {
     capture("agent_selected", { agent_id: agentId });
@@ -602,6 +645,24 @@ export function ChatLayout({
               <ProvisioningStepper>{children}</ProvisioningStepper>
             )}
           </div>
+
+          {phase === "normal" && (
+            <GetStarted
+              derived={getStartedDerived}
+              actions={{
+                chat: () => {
+                  handleSelectAgent(defaultId ?? agents[0]?.id ?? "");
+                  window.dispatchEvent(new CustomEvent("getstarted:focus-composer"));
+                },
+                task: () => {
+                  onPanelChange?.(`${TEAMS_PANEL_PREFIX}inbox`);
+                  router.push(`?panel=${TEAMS_PANEL_PREFIX}inbox&newIssue=1`);
+                },
+                hire: () => openMarketplace({ view: "browse" }),
+                channel: () => router.push("/settings?panel=channels"),
+              }}
+            />
+          )}
         </div>
 
         {fileViewerOpen && (

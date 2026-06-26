@@ -5,7 +5,7 @@
 
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import { Inbox as InboxIcon } from "lucide-react";
@@ -135,6 +135,19 @@ export function InboxPage({
 
   // 3b. NewIssueDialog open state.
   const [newIssueOpen, setNewIssueOpen] = useState(false);
+
+  // Deep-link entry: the "Get started" guide (and the New-task pill on the
+  // chat shell) routes here with ?newIssue=1 to pop the dialog straight
+  // open. Fire once, then strip the param so a refresh / back-nav doesn't
+  // reopen it.
+  useEffect(() => {
+    if (searchParams.get("newIssue") === "1") {
+      setNewIssueOpen(true);
+      const params = new URLSearchParams(searchParams.toString());
+      params.delete("newIssue");
+      router.replace(`?${params.toString()}`, { scroll: false });
+    }
+  }, [searchParams, router]);
 
   // 4. Data + side-effect hooks.
   const { mineIssues, touchedIssues, allIssues, isLoading, isError } =

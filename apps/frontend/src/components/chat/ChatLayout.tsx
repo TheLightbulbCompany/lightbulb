@@ -168,6 +168,11 @@ export function ChatLayout({
     }
   }
 
+  // Per-mount latch so the /users/sync effect (which re-runs on every render
+  // because `api` identity churns) fires the sync at most once. See the effect
+  // below for the full rationale.
+  const syncStartedRef = useRef(false);
+
   const subscriptionStatus = account?.subscription_status ?? null;
   const userName = user?.fullName || user?.firstName || "User";
   const userInitials = userName
@@ -182,9 +187,22 @@ export function ChatLayout({
   // backend no longer does that write, but we gate here too so other
   // context-sensitive endpoints called from sync paths (future-proofing)
   // don't misresolve owner_id either.
+  //
+  // Synchronous in-flight latch (`syncStartedRef`): this effect depends on
+  // `api`, which `useApi()` returns as a fresh object every render, so it
+  // re-runs on every re-render — and ChatLayout re-renders frequently while
+  // data hooks settle (e.g. `useProvisioningState` polling `/container/status`).
+  // The sessionStorage guard below is only written *after* the async
+  // `syncUser()` resolves, so during that in-flight window the re-render
+  // burst would re-fire `syncUser` several times (a real over-fetch, since
+  // sync is a network POST). The ref latches synchronously before the call
+  // so the effect fires sync at most once per mount; sessionStorage handles
+  // the cross-mount / cross-session dedupe. On failure we release the latch
+  // (sessionStorage is only written on success) so a genuine error can retry.
   useEffect(() => {
     if (!isSignedIn) return;
     if (onboardingPhase !== "ready") return;
+    if (syncStartedRef.current) return;
     // Once per browser session: sync is an idempotent Clerk→DDB upsert and
     // ChatLayout remounts on every view switch / page load — re-firing it
     // each time is pure backend load.
@@ -194,6 +212,7 @@ export function ChatLayout({
     } catch {
       // sessionStorage unavailable (privacy mode) — fall through and sync.
     }
+    syncStartedRef.current = true;
     api
       .syncUser()
       .then(() => {
@@ -203,7 +222,12 @@ export function ChatLayout({
           // best effort
         }
       })
-      .catch((err: unknown) => console.error("User sync failed:", err));
+      .catch((err: unknown) => {
+        // Release the latch so the next render can retry — the session
+        // guard is only set on success, so a failed sync must stay retryable.
+        syncStartedRef.current = false;
+        console.error("User sync failed:", err);
+      });
   }, [isSignedIn, api, onboardingPhase]);
 
   // Dispatch DOM event so page.tsx picks up the current agent (external system sync)
@@ -317,10 +341,17 @@ export function ChatLayout({
   // across leave→return AND for users who already did them before the guide
   // shipped — the event-flags from the actions alone would forget on reload.
   const { phase } = useProvisioningState();
+  // The guide only renders once the container is live (`phase === "normal"`),
+  // so its completion-signal fetches are gated on the same readiness. Before
+  // that, the user is mid-provisioning and there's nothing to derive — firing
+  // `/channels/links/me` + the inbox reads early is wasted backend load (and
+  // would churn re-renders against the still-settling provisioning state).
+  const guideReady = phase === "normal";
   // `channel` complete = a main-agent bot is wired on any provider. Same
-  // derivation as ProvisioningStepper's `hasMainBot`, computed inline.
+  // derivation as ProvisioningStepper's `hasMainBot`, computed inline. Null
+  // SWR key until ready is SWR's canonical conditional-fetch gate.
   const { data: channelLinks } = useSWR<ChannelLinksResponse>(
-    "/channels/links/me",
+    guideReady ? "/channels/links/me" : null,
     () => api.get("/channels/links/me") as Promise<ChannelLinksResponse>,
   );
   const channelLinked =
@@ -330,8 +361,9 @@ export function ChatLayout({
     );
   // `task` complete = the team already has >= 1 task. useInboxData is
   // arg-free and bearer-only (same useTeamsApi the roster fetch above uses),
-  // so it's safe to derive here without any teams-provider context.
-  const { allIssues } = useInboxData();
+  // so it's safe to derive here without any teams-provider context — gated on
+  // guide readiness so the three inbox reads don't fire pre-provision.
+  const { allIssues } = useInboxData({ enabled: guideReady });
   const taskExists = allIssues.length > 0;
   const getStartedDerived = useMemo(
     () => ({ channel: channelLinked, task: taskExists }),

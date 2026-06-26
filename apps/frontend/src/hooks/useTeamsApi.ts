@@ -60,18 +60,24 @@ export function useTeamsApi() {
   // the internal `useSWR` call. Exposed on the returned object as `read` for
   // ergonomic panel usage. Panels MUST call `read(...)` unconditionally at the
   // top of their component body (standard SWR rules of hooks apply).
-  function useRead<T = unknown>(path: string, swrOpts?: SWRConfiguration<T>): SWRResponse<T> {
+  //
+  // A `null` path is the canonical SWR "conditional fetching" signal — the
+  // call still happens unconditionally (rules of hooks), but SWR skips the
+  // request until the key flips from null to a real path. Consumers gate a
+  // read on readiness by passing null until it should run.
+  function useRead<T = unknown>(path: string | null, swrOpts?: SWRConfiguration<T>): SWRResponse<T> {
     // Diagnostic: trace every consumer call so we can correlate "Something went wrong"
     // overlays with the panel/hook that triggered them. Cheap (~one line per panel
     // mount), client-only (NEXT_PUBLIC_TEAMS_DEBUG gates it off in prod).
     if (
+      path !== null &&
       typeof window !== "undefined" &&
       process.env.NEXT_PUBLIC_TEAMS_DEBUG === "1"
     ) {
       console.debug(`[useTeamsApi.read] ${path}`);
     }
     return useSWR<T>(
-      `/teams${path}`,
+      path !== null ? `/teams${path}` : null,
       async () => {
         const body = (await api.get(`/teams${path}`, TEAMS_API_OPTS)) as T | { detail?: string };
         if (

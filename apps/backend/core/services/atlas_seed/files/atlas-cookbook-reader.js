@@ -14,6 +14,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const https = require('https');
+const http = require('http');
 
 // ============================================================================
 // FROZEN COOKBOOK SOURCE PREFERENCE TABLE
@@ -48,7 +49,10 @@ function readStdin() {
 
 function fetchUrl(url) {
   return new Promise((resolve) => {
-    const req = https.get(url, { timeout: 10000 }, (res) => {
+    // Pick the client by scheme — https.get throws "Protocol 'http:' not
+    // supported" for http:// index URLs, which would silently never cache them.
+    const client = url.startsWith('http://') ? http : https;
+    const req = client.get(url, { timeout: 10000 }, (res) => {
       if (res.statusCode !== 200) { resolve({ status: res.statusCode, body: null }); return; }
       let body = '';
       res.on('data', (c) => body += c);

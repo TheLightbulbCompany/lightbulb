@@ -44,6 +44,8 @@ steps:
     command: >
       node -e 'const docs=JSON.parse(process.env.DOCS||"null")||{};
         const fp=JSON.parse(process.env.FETCHED||"null")||{};
+        const diff=JSON.parse(process.env.DIFF||"null")||{};
+        for (const url of (diff.removed||[])) { delete docs[url]; }
         for (const p of (fp.fetched||[])) {
           if (p && p.url && p.body!=null) docs[p.url]={fetched_at:p.fetched_at, body:p.body};
         }
@@ -51,6 +53,7 @@ steps:
     env:
       DOCS: $docs-load.stdout
       FETCHED: $fetch-pages.stdout
+      DIFF: $diff-cache.stdout
 
   - id: docs-save
     condition: $diff-cache.json.changed_count > 0

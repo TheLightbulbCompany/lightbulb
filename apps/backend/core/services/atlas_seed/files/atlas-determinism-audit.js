@@ -157,7 +157,16 @@ function audit({ buildId, stagingDir, _ioAdapter }) {
 
 function main() {
   const args = parseArgs(process.argv);
-  const result = audit({ buildId: args.buildId, stagingDir: args.stagingDir });
+  // Wrap audit() so a runtime throw (e.g. fs.readdirSync on a bad path) emits a
+  // pass:false result WITH the error on stdout — rather than crashing with empty
+  // stdout, which the caller would read as null and surface as a misleading
+  // "determinism failed: 0 failures" with no actionable detail.
+  let result;
+  try {
+    result = audit({ buildId: args.buildId, stagingDir: args.stagingDir });
+  } catch (e) {
+    result = { pass: false, error: e.message, failures: [], build_id: args.buildId };
+  }
   // Report pass/fail on stdout — NEVER process.exit(1). A non-zero exit would
   // halt the pipeline before the caller's failure-notice step (conditioned on
   // pass == false) could run, hiding the very failure this gate must surface.

@@ -67,7 +67,10 @@ function buildListing(buildId, agentName) {
     requirements_partial_count: recapCounts.changed || 0,
     requirements_uncovered_count: (recapCounts.dropped || 0) + (recapCounts.unvetted || 0),
     vet_completion_status: recapCounts.unvetted === 0 ? 'complete' : 'partial',
-    security_stack: skills.filter(s => ['fast-io', 'taskr', 'summarize', 'n8n-workflow', 'capability-evolver', 'skill-vetter', 'sona-security-audit', 'agentgate'].includes(s)),
+    // Only genuine (non-gateway) security/capability skills — the gateway tools
+    // (fast-io/taskr/summarize/n8n-workflow) were removed in the gateway-free
+    // migration, so reporting them would mislead buyers on a gateway-free runtime.
+    security_stack: skills.filter(s => ['capability-evolver', 'skill-vetter', 'sona-security-audit', 'agentgate'].includes(s)),
     agentgate_gates: gates,
     never_does: neverDoes,
     listed_at: new Date().toISOString(),

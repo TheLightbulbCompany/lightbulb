@@ -135,7 +135,8 @@ jobs:
         MACHO_COUNT=$(tr -dc '\0' < "$MACHO_LIST" | wc -c | tr -d ' ')
         echo "Found $MACHO_COUNT Mach-O binaries to sign under $BIN_ROOT."
 
-        cat > /tmp/sign-one.sh <<'WORKER'
+        SIGN_SCRIPT="$RUNNER_TEMP/sign-one.sh"
+        cat > "$SIGN_SCRIPT" <<'WORKER'
         #!/usr/bin/env bash
         set -euo pipefail
         f="$1"
@@ -149,12 +150,12 @@ jobs:
           ${ENT_ARGS[@]+"${ENT_ARGS[@]}"} \
           --sign "$SIGN_ID" --keychain "$KEYCHAIN_PATH" "$f"
         WORKER
-        chmod +x /tmp/sign-one.sh
+        chmod +x "$SIGN_SCRIPT"
 
-        xargs -0 -P 8 -n 1 /tmp/sign-one.sh < "$MACHO_LIST"
-        rm -f "$MACHO_LIST"
+        xargs -0 -P 8 -n 1 "$SIGN_SCRIPT" < "$MACHO_LIST"
+        rm -f "$MACHO_LIST" "$SIGN_SCRIPT"
     - name: Build desktop app (aarch64-apple-darwin)
-      uses: tauri-apps/tauri-action@v0
+      uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
       with:
         projectPath: apps/desktop
         tagName: desktop-dev-v0.4.${{ github.run_number }}
@@ -278,7 +279,8 @@ jobs:
         MACHO_COUNT=$(tr -dc '\0' < "$MACHO_LIST" | wc -c | tr -d ' ')
         echo "Found $MACHO_COUNT Mach-O binaries to sign under $BIN_ROOT."
 
-        cat > /tmp/sign-one.sh <<'WORKER'
+        SIGN_SCRIPT="$RUNNER_TEMP/sign-one.sh"
+        cat > "$SIGN_SCRIPT" <<'WORKER'
         #!/usr/bin/env bash
         set -euo pipefail
         f="$1"
@@ -292,12 +294,12 @@ jobs:
           ${ENT_ARGS[@]+"${ENT_ARGS[@]}"} \
           --sign "$SIGN_ID" --keychain "$KEYCHAIN_PATH" "$f"
         WORKER
-        chmod +x /tmp/sign-one.sh
+        chmod +x "$SIGN_SCRIPT"
 
-        xargs -0 -P 8 -n 1 /tmp/sign-one.sh < "$MACHO_LIST"
-        rm -f "$MACHO_LIST"
+        xargs -0 -P 8 -n 1 "$SIGN_SCRIPT" < "$MACHO_LIST"
+        rm -f "$MACHO_LIST" "$SIGN_SCRIPT"
     - name: Build desktop app (aarch64-apple-darwin)
-      uses: tauri-apps/tauri-action@v0
+      uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
       with:
         projectPath: apps/desktop
         tagName: desktop-v0.4.${{ github.run_number }}

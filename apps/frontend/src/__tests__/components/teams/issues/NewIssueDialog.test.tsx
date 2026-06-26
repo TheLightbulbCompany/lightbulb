@@ -169,4 +169,32 @@ describe("NewIssueDialog", () => {
       ),
     );
   });
+
+  test("seeds Title/Description/assignee from default props", () => {
+    const agents: CompanyAgent[] = [
+      { id: "friday", name: "Friday", role: "ceo", seeded: true },
+    ];
+    render(
+      <NewIssueDialog
+        {...baseProps}
+        agents={agents}
+        defaultTitle="Build out my team for [your goal]"
+        defaultDescription="You are my CEO."
+        defaultAssigneeAgentId="friday"
+      />,
+    );
+    expect(screen.getByPlaceholderText("Task title")).toHaveValue(
+      "Build out my team for [your goal]",
+    );
+    expect(screen.getByPlaceholderText("Optional details...")).toHaveValue(
+      "You are my CEO.",
+    );
+    expect(screen.getByLabelText(/assign to agent/i)).toHaveValue("friday");
+  });
+
+  test("stays blank when no default props are given", () => {
+    render(<NewIssueDialog {...baseProps} />);
+    expect(screen.getByPlaceholderText("Task title")).toHaveValue("");
+    expect(screen.getByPlaceholderText("Optional details...")).toHaveValue("");
+  });
 });

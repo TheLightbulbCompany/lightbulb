@@ -65,6 +65,12 @@ export interface NewIssueDialogProps {
    * by the Project-detail Issues tab so a new task lands in that project.
    */
   defaultProjectId?: string;
+  /** Pre-fills the Title field and its reset baseline. */
+  defaultTitle?: string;
+  /** Pre-fills the Description field and its reset baseline. */
+  defaultDescription?: string;
+  /** Pre-selects the assignee and its reset baseline. */
+  defaultAssigneeAgentId?: string;
 }
 
 export function NewIssueDialog({
@@ -76,28 +82,33 @@ export function NewIssueDialog({
   parentId,
   parentLabel,
   defaultProjectId,
+  defaultTitle,
+  defaultDescription,
+  defaultAssigneeAgentId,
 }: NewIssueDialogProps) {
   const { create, createChild } = useIssueMutations();
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
+  const [title, setTitle] = useState(defaultTitle ?? "");
+  const [description, setDescription] = useState(defaultDescription ?? "");
   const [priority, setPriority] = useState<IssuePriority>("medium");
   // Resting choice mirrors the server default (backlog/standard) so leaving the
   // controls untouched produces the same task the bare composer always did.
   const [status, setStatus] = useState<IssueStatus>("backlog");
   const [workMode, setWorkMode] = useState<IssueWorkMode>("standard");
   const [projectId, setProjectId] = useState<string>(defaultProjectId ?? "");
-  const [assigneeAgentId, setAssigneeAgentId] = useState<string>("");
+  const [assigneeAgentId, setAssigneeAgentId] = useState<string>(
+    defaultAssigneeAgentId ?? "",
+  );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const reset = () => {
-    setTitle("");
-    setDescription("");
+    setTitle(defaultTitle ?? "");
+    setDescription(defaultDescription ?? "");
     setPriority("medium");
     setStatus("backlog");
     setWorkMode("standard");
     setProjectId(defaultProjectId ?? "");
-    setAssigneeAgentId("");
+    setAssigneeAgentId(defaultAssigneeAgentId ?? "");
     setError(null);
   };
 

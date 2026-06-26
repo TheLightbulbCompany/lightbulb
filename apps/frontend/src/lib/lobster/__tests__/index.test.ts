@@ -39,6 +39,37 @@ describe("lobsterToMermaid", () => {
     if (res.ok) expect(res.mermaid).toMatch(/approve_send\{/);
   });
 
+  // Real workflows embed multi-line `command: >` / `run: |` blocks. The vendored
+  // emitter copies that preview verbatim into the `["..."]` node label and only
+  // escapes quotes — so a raw newline from a folded/literal YAML scalar used to
+  // split the node statement across lines, which makes mermaid.render() throw.
+  // The label text must stay on a single line.
+  const MULTILINE_WF = [
+    "name: multiline",
+    "steps:",
+    "  - id: brief",
+    "    run: |",
+    "      node -e 'const a=1;",
+    "      const b=2;'",
+    "  - id: tail",
+    "    command: exec",
+    "    stdin: $brief.stdout",
+  ].join("\n");
+
+  it("keeps node labels single-line for multi-line commands", () => {
+    const res = lobsterToMermaid(MULTILINE_WF);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    // Every node-definition line must open AND close its label on the same line;
+    // a leaked newline would split `key["label` from `more"]`.
+    for (const line of res.mermaid.split("\n")) {
+      if (line.includes('["')) expect(line).toContain('"]');
+      if (line.includes('{"')) expect(line).toContain('"}');
+    }
+    // And no raw newline should survive inside a node label.
+    expect(/\["[^"\]\n]*\n/.test(res.mermaid)).toBe(false);
+  });
+
   it("returns reason 'empty' when there are no steps", () => {
     expect(lobsterToMermaid("name: x\n")).toEqual({
       ok: false,

@@ -7,7 +7,7 @@ describe("ProvisioningStepper has no forced channels phase", () => {
     // Get Started guide and remains available in Settings → Channels. The
     // post-agent phase derivation must always resolve to "ready", regardless
     // of whether a main-agent bot exists.
-    expect(Stepper.resolvePostAgentPhase({ gatewayHealth: true })).toBe("ready");
-    expect(Stepper.resolvePostAgentPhase({ gatewayHealth: false })).toBe("ready");
+    expect(Stepper.resolvePostAgentPhase()).toBe("ready");
+    expect(Stepper.resolvePostAgentPhase()).toBe("ready");
   });
 });

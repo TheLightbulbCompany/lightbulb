@@ -3,7 +3,7 @@
 import "./ChatLayout.css";
 import { useEffect, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
-import { useAuth, useOrganization, useUser, UserButton } from "@clerk/nextjs";
+import { useAuth, useUser, UserButton } from "@clerk/nextjs";
 
 import { capture } from "@/lib/analytics";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -100,7 +100,6 @@ export function ChatLayout({
   const onboardingPhase = useOnboardingGate();
   const { isSignedIn, getToken } = useAuth();
   const { user } = useUser();
-  const { organization } = useOrganization();
   const router = useRouter();
   const api = useApi();
   const { agents, defaultId, createAgent, deleteAgent, updateAgent } = useAgents();

@@ -241,7 +241,6 @@ export function BotSetupWizard({
       dirtyConfig.current = false;
     } catch (e) {
       // Best-effort cleanup; surface to console but don't block UI.
-      // eslint-disable-next-line no-console
       console.warn("Channel rollback failed", e);
     } finally {
       rollbackInFlight.current = false;

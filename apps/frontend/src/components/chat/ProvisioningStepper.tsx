@@ -46,7 +46,7 @@ type Phase =
  * before chat — it is nudged via the Get Started guide and remains
  * available in Settings → Channels — so this always resolves to "ready".
  */
-export function resolvePostAgentPhase(_: { gatewayHealth: boolean }): "ready" {
+export function resolvePostAgentPhase(): "ready" {
   return "ready";
 }
 
@@ -304,8 +304,8 @@ export function ProvisioningStepper({
     // backend phase="ready" (or legacy: gatewayHealth present) — chat is
     // ready. Channel setup is no longer forced here; it is nudged via the
     // Get Started guide and lives in Settings → Channels.
-    return resolvePostAgentPhase({ gatewayHealth: Boolean(gatewayHealth) });
-  }, [trigger, isSubscribed, container, containerReady, gatewayHealth, needsProviderStep]);
+    return resolvePostAgentPhase();
+  }, [trigger, isSubscribed, container, containerReady, gatewayHealth, needsProviderStep, isRegressingFromReady]);
 
   // Analytics: fire `onboarding_step_completed` once per step transition.
   const prevPhaseRef = useRef<Phase | null>(null);

@@ -9,7 +9,7 @@
 
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { EditorialButton, EditorialDialog } from "@/components/teams/shell";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -107,6 +107,20 @@ export function NewIssueDialog({
   );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // On a cold first-run the roster (and thus the resolved CEO) can arrive after
+  // the dialog has already opened. Seed the assignee the first time a non-empty
+  // default appears, without remounting — so in-progress title/description edits
+  // survive. The transition guard (prev was empty) means we never re-apply over a
+  // choice the user made afterward.
+  const prevDefaultAssignee = useRef(defaultAssigneeAgentId);
+  useEffect(() => {
+    const prev = prevDefaultAssignee.current;
+    prevDefaultAssignee.current = defaultAssigneeAgentId;
+    if (!prev && defaultAssigneeAgentId && !assigneeAgentId) {
+      setAssigneeAgentId(defaultAssigneeAgentId);
+    }
+  }, [defaultAssigneeAgentId, assigneeAgentId]);
 
   const reset = () => {
     setTitle(defaultTitle ?? "");

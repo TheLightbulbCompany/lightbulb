@@ -25,11 +25,11 @@ describe("getStartedFirstTask", () => {
     expect(resolveCeoAgentId(agents)).toBe("friday");
   });
 
-  it("falls back to a seeded agent named Friday when role is absent", () => {
+  it("does not infer the CEO from a seeded agent's name without role ceo", () => {
     const agents: CompanyAgent[] = [
       agent({ id: "friday", name: "Friday", seeded: true }),
     ];
-    expect(resolveCeoAgentId(agents)).toBe("friday");
+    expect(resolveCeoAgentId(agents)).toBeUndefined();
   });
 
   it("ignores a user-created agent named Friday / using role ceo", () => {

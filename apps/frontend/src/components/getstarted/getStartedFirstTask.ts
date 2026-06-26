@@ -14,15 +14,12 @@ export const ONBOARDING_FIRST_TASK_DESCRIPTION = `You are my CEO. Help me stand 
 - Report back with the plan and the first tasks you've kicked off.`;
 
 // Resolve the seeded CEO (Friday) so the onboarding first task is assigned to
-// the orchestrator. `seeded` is server-stamped from the persisted seeded-agent
-// IDs (never inferred from role/name), so a user-created agent named "Friday"
-// or using role "ceo" is never matched. Returns undefined when no seeded CEO is
-// present (e.g. roster not loaded yet) — the dialog then opens unassigned.
+// the orchestrator. The match is on the server-stamped invariant `seeded` +
+// `role === "ceo"` (both server-controlled), so a user-created agent named
+// "Friday" or one that merely uses role "ceo" is never matched. Returns
+// undefined when no seeded CEO is present (e.g. roster not loaded yet) — the
+// dialog then opens unassigned.
 export function resolveCeoAgentId(agents: CompanyAgent[]): string | undefined {
   const byRole = agents.find((a) => a.seeded === true && a.role === "ceo");
-  if (byRole) return byRole.id;
-  const byName = agents.find(
-    (a) => a.seeded === true && a.name.toLowerCase() === "friday",
-  );
-  return byName?.id;
+  return byRole?.id;
 }

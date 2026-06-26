@@ -198,6 +198,39 @@ describe("NewIssueDialog", () => {
     expect(screen.getByPlaceholderText("Optional details...")).toHaveValue("");
   });
 
+  test("seeds the assignee when the default arrives late, preserving edits", async () => {
+    const user = userEvent.setup();
+    const friday: CompanyAgent = {
+      id: "friday",
+      name: "Friday",
+      role: "ceo",
+      seeded: true,
+    };
+    // Cold first-run: roster present but the resolved CEO id not yet available,
+    // so the assignee starts "" (Unassigned).
+    const { rerender } = render(
+      <NewIssueDialog {...baseProps} agents={[friday]} />,
+    );
+    expect(screen.getByLabelText(/assign to agent/i)).toHaveValue("");
+
+    // User starts typing before the CEO id resolves.
+    await user.type(screen.getByPlaceholderText("Task title"), "My first task");
+
+    // The roster resolves → default assignee arrives. The dialog must seed it
+    // via effect (not a remount) so the typed title survives.
+    rerender(
+      <NewIssueDialog
+        {...baseProps}
+        agents={[friday]}
+        defaultAssigneeAgentId="friday"
+      />,
+    );
+    expect(screen.getByLabelText(/assign to agent/i)).toHaveValue("friday");
+    expect(screen.getByPlaceholderText("Task title")).toHaveValue(
+      "My first task",
+    );
+  });
+
   test("seeds the Status select from defaultStatus", () => {
     render(<NewIssueDialog {...baseProps} defaultStatus="todo" />);
     expect(screen.getByLabelText("Status")).toHaveValue("todo");

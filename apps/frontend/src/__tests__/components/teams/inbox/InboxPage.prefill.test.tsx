@@ -73,13 +73,20 @@ beforeEach(() => {
     undefined as unknown as ReturnType<typeof useInboxKeyboardNav>,
   );
   vi.mocked(useInboxArchiveStack).mockReturnValue({
-    archive: vi.fn(),
-    markRead: vi.fn(),
     archivingIssueIds: new Set<string>(),
+    hasUndoableArchive: false,
+    archive: vi.fn().mockResolvedValue(undefined),
+    undoArchive: vi.fn().mockResolvedValue(undefined),
+    markRead: vi.fn().mockResolvedValue(undefined),
+    markUnread: vi.fn().mockResolvedValue(undefined),
   } as unknown as ReturnType<typeof useInboxArchiveStack>);
   vi.mocked(useReadInboxItems).mockReturnValue({
-    markRead: vi.fn(),
+    readItemKeys: new Set(),
     isRead: () => false,
+    markRead: vi.fn(),
+    markUnread: vi.fn(),
+    markManyRead: vi.fn(),
+    clearAll: vi.fn(),
   } as unknown as ReturnType<typeof useReadInboxItems>);
   vi.mocked(useIssueMutations).mockReturnValue({
     create: vi.fn().mockResolvedValue({ id: "iss_new" }),

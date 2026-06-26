@@ -56,6 +56,34 @@ function isProviderChoice(v: string | null): v is ProviderChoice {
   return v === "chatgpt_oauth" || v === "byo_key" || v === "bedrock_claude";
 }
 
+// After the provider step writes its credential (OAuth token / BYO key /
+// credits), /container/status lags a few seconds before the gate evaluator
+// observes it, so the gate keeps returning a 402 block. During that window we
+// hold a calm "finishing" loader instead of the cold restart card, then reveal
+// whatever block remains once the window lapses — so a genuine or unrelated
+// block still surfaces. The status hook fast-polls (5s) while blocked, so the
+// gate normally clears well within this window; the timeout is only a backstop.
+const PROVIDER_SETTLE_MS = 30_000;
+
+const PROVIDER_SETTLE_COPY: Record<ProviderChoice | "default", { title: string; desc: string }> = {
+  chatgpt_oauth: {
+    title: "Finishing ChatGPT sign-in",
+    desc: "Connecting your ChatGPT account — this only takes a moment.",
+  },
+  byo_key: {
+    title: "Saving your API key",
+    desc: "Securing your key and starting your container.",
+  },
+  bedrock_claude: {
+    title: "Setting up your credits",
+    desc: "Getting Bedrock access ready and starting your container.",
+  },
+  default: {
+    title: "Finishing setup",
+    desc: "Just a moment while we get things ready.",
+  },
+};
+
 const STEPS_PAID: { phase: Phase; label: string; activeLabel: string }[] = [
   { phase: "payment", label: "Payment confirmed", activeLabel: "Confirming payment..." },
   { phase: "container", label: "Container ready", activeLabel: "Provisioning your container..." },
@@ -186,6 +214,23 @@ export function ProvisioningStepper({
     const remaining = params.toString();
     router.replace(`/chat${remaining ? `?${remaining}` : ""}`, { scroll: false });
   }, [providerStepDone, searchParams, router]);
+
+  // Which provider the user just finished in THIS session, captured at
+  // completion so the "finishing" copy stays specific even after ?provider= is
+  // stripped from the URL above. Null until the step completes; resets on remount.
+  const [completedProvider, setCompletedProvider] = useState<ProviderChoice | null>(null);
+
+  // Open a grace window when the provider step completes. While it is open and
+  // the gate is still blocked, the settling loader below wins over the cold
+  // gate card; once it lapses the real gate card takes over again. The dep is
+  // the rising edge of providerStepDone (false -> true), which fires once.
+  const [providerSettling, setProviderSettling] = useState(false);
+  useEffect(() => {
+    if (!providerStepDone) return;
+    setProviderSettling(true);
+    const timer = setTimeout(() => setProviderSettling(false), PROVIDER_SETTLE_MS);
+    return () => clearTimeout(timer);
+  }, [providerStepDone]);
 
   const [reachedReady, setReachedReady] = useState(false);
   const shouldPollContainer = isSubscribed && !reachedReady;
@@ -533,6 +578,7 @@ export function ProvisioningStepper({
       capture("onboarding_provider_completed", {
         provider_choice: providerChoice,
       });
+      setCompletedProvider(providerChoice);
       setProviderStepDone(true);
     };
     return (
@@ -572,6 +618,46 @@ export function ProvisioningStepper({
   // the gate would re-render the green "Sign in with ChatGPT" button on top
   // of what should be the provisioning loader. Suppressing the gate UI
   // entirely while `?provider=` is set closes that race.
+  //
+  // That URL-param guard only covers the one frame before the strip-effect
+  // runs; the gate's eventual-consistency lag is several seconds. Once
+  // ?provider= is stripped (providerChoice === null) while the gate is still
+  // catching up, the cold "sign in again" restart card below would flash —
+  // telling a user who JUST completed the step to redo it. While the grace
+  // window is open we instead hold a calm "finishing" loader; the status hook
+  // fast-polls (5s) so the gate clears itself, and after the window lapses the
+  // real gate card takes over so a genuinely-stuck or unrelated block surfaces.
+  if (gatePhase === "blocked" && blocked && providerStepDone && providerSettling) {
+    const copy = PROVIDER_SETTLE_COPY[completedProvider ?? "default"];
+    return (
+      <div className="flex-1 flex items-center justify-center bg-[#faf7f2]">
+        <div className="w-full max-w-[400px] px-8 py-12 text-center">
+          <div className="mb-8 flex justify-center">
+            <Logo size="lg" href={null} />
+          </div>
+          <div className="mx-auto mb-8 flex h-20 w-20 items-center justify-center">
+            <Loader2 className="h-10 w-10 animate-spin text-[#06402B]" aria-hidden="true" />
+          </div>
+          <h2
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+            className="mb-2 text-[22px] font-normal text-[#1a1a1a]"
+            style={{ fontFamily: "var(--font-lora-serif), serif" }}
+          >
+            {copy.title}
+          </h2>
+          <p
+            className="text-sm text-[#8a8578]"
+            style={{ fontFamily: "var(--font-dm-sans), sans-serif" }}
+          >
+            {copy.desc}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   if (gatePhase === "blocked" && blocked && providerChoice === null) {
     const showAction = !(blocked.action.admin_only && blocked.owner_role !== "admin");
     return (

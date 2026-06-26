@@ -474,4 +474,68 @@ describe("ProvisioningStepper blocked-state rendering", () => {
       screen.queryByText(/Complete the ChatGPT sign-in to start your container/),
     ).not.toBeInTheDocument();
   });
+
+  it("holds a 'finishing' loader (not the cold restart card) right after the provider step completes while the gate is still catching up", async () => {
+    // Repro of the post-sign-in flash: the device-code flow finishes and the
+    // OAuth row is written, but /container/status hasn't observed it yet so the
+    // gate still returns 402 oauth_required. Once ?provider= is stripped from
+    // the URL the cold "Sign in with ChatGPT" restart card used to render —
+    // telling a user who JUST signed in to do it again.
+    const { useSearchParams } = await import("next/navigation");
+    const search = useSearchParams as ReturnType<typeof vi.fn>;
+    search.mockReturnValue(new URLSearchParams({ provider: "chatgpt_oauth" }));
+
+    // The wizard's on-mount /status probe reports already-connected, so
+    // ChatGPTOAuthStep lands in "completed" and fires onComplete →
+    // setProviderStepDone(true).
+    apiGet.mockResolvedValue({ connected: true, account_id: "acct_test" });
+
+    useProvMock.mockReturnValue({
+      phase: "blocked",
+      container: null,
+      blocked: {
+        code: "oauth_required",
+        title: "Sign in with ChatGPT",
+        message: "Complete the ChatGPT sign-in to start your container.",
+        action: {
+          kind: "link",
+          label: "Sign in with ChatGPT",
+          href: "/chat?provider=chatgpt_oauth",
+          admin_only: false,
+        },
+        owner_role: "admin",
+      },
+      refreshInterval: 5000,
+      refresh: vi.fn(),
+      error: undefined,
+      isLoading: false,
+    });
+
+    const { rerender } = render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+
+    // The settling loader appears once the wizard completes...
+    expect(await screen.findByText(/Finishing ChatGPT sign-in/i)).toBeInTheDocument();
+
+    // ...and once ?provider= is stripped (simulating the strip-effect, which
+    // the router mock doesn't propagate back into useSearchParams), the cold
+    // restart card still must NOT take over while the grace window is open.
+    search.mockReturnValue(new URLSearchParams());
+    rerender(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+
+    expect(await screen.findByText(/Finishing ChatGPT sign-in/i)).toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: "Sign in with ChatGPT" }),
+    ).not.toBeInTheDocument();
+
+    // Restore the shared apiGet stub so later suites see the default.
+    apiGet.mockResolvedValue({});
+  });
 });

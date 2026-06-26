@@ -914,6 +914,26 @@ async def upload_artifact_from_agent(
             detail=agent_export.FRIDAY_PUBLISH_ERROR_MSG,
         )
 
+    # Publish-dedupe: one agent = one listing. If this seller already has a
+    # published listing for this agent under a DIFFERENT listing_id, they're
+    # re-publishing the agent through the fresh-publish wizard (which minted a
+    # new draft) rather than versioning the live listing. Block before the
+    # expensive snapshot and hand the frontend the live listing_id so it can
+    # redirect into republish-under-the-same-id. A legit republish targets the
+    # same listing_id (create_new_version), so it never trips this.
+    existing = await marketplace_service.find_active_listing_for_agent(
+        seller_id=auth.user_id,
+        agent_id=resolved_agent_id,
+    )
+    if existing and existing.get("listing_id") != listing_id:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "agent_already_published",
+                "existing_listing_id": existing["listing_id"],
+            },
+        )
+
     selected_mcps = payload.bundle.mcps if payload.bundle else None
     selected_skills = payload.bundle.skills if payload.bundle else None
 

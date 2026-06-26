@@ -1227,6 +1227,7 @@ def test_artifact_from_agent_blocks_friday(
     mock_export.assert_not_called()
 
 
+@patch("routers.marketplace_listings.marketplace_service.find_active_listing_for_agent", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.marketplace_service.replace_artifact", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.agent_export.is_reserved_friday_agent", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.agent_export.export_agent_from_efs")
@@ -1234,11 +1235,13 @@ def test_artifact_from_agent_allows_non_friday(
     mock_export,
     mock_is_friday,
     mock_replace,
+    mock_find_active,
     authed_client_factory,
 ):
     """Non-CEO agent_id passes the guard and proceeds to export + replace."""
     from core.services.catalog_package import CatalogPackage
 
+    mock_find_active.return_value = None
     mock_is_friday.return_value = False
     mock_export.return_value = CatalogPackage(
         format="openclaw",
@@ -1262,6 +1265,7 @@ def test_artifact_from_agent_allows_non_friday(
     mock_replace.assert_called_once()
 
 
+@patch("routers.marketplace_listings.marketplace_service.find_active_listing_for_agent", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.marketplace_service.replace_artifact", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.agent_export.is_reserved_friday_agent", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.agent_export.export_agent_from_efs")
@@ -1269,12 +1273,14 @@ def test_artifact_from_agent_passes_bundle_selection_through(
     mock_export,
     mock_is_friday,
     mock_replace,
+    mock_find_active,
     authed_client_factory,
 ):
     """The Bundle step's selection (MCPs + skills) must reach export_agent_from_efs
     as keyword args so the slice carries them with secrets scrubbed."""
     from core.services.catalog_package import CatalogPackage
 
+    mock_find_active.return_value = None
     mock_is_friday.return_value = False
     mock_export.return_value = CatalogPackage(
         format="openclaw",
@@ -1296,6 +1302,78 @@ def test_artifact_from_agent_passes_bundle_selection_through(
     call_kwargs = mock_export.call_args.kwargs
     assert call_kwargs["selected_mcps"] == ["jira-mcp"]
     assert call_kwargs["selected_skills"] == ["search", "jira"]
+
+
+# ---------------------------------------------------------------------------
+# Publish-dedupe guard on /listings/{id}/artifact-from-agent
+# ---------------------------------------------------------------------------
+
+
+@patch("routers.marketplace_listings.marketplace_service.find_active_listing_for_agent", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.marketplace_service.replace_artifact", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.agent_export.is_reserved_friday_agent", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.agent_export.export_agent_from_efs")
+def test_artifact_from_agent_blocks_duplicate_publish(
+    mock_export,
+    mock_is_friday,
+    mock_replace,
+    mock_find_active,
+    authed_client_factory,
+):
+    """When the agent already has a published listing under a DIFFERENT
+    listing_id, the fresh-publish upload 409s with the live listing_id so the
+    frontend can redirect into republish-under-the-same-id. Export/replace must
+    not run."""
+    mock_is_friday.return_value = False
+    mock_find_active.return_value = {"listing_id": "lst_live", "status": "published"}
+    tc = authed_client_factory("u_seller", "seller@example.com")
+    resp = tc.post(
+        "/api/v1/marketplace/listings/lst_new_dup/artifact-from-agent",
+        json={"agent_id": "custom-1"},
+    )
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert detail["error"] == "agent_already_published"
+    assert detail["existing_listing_id"] == "lst_live"
+    mock_export.assert_not_called()
+    mock_replace.assert_not_called()
+
+
+@patch("routers.marketplace_listings.marketplace_service.find_active_listing_for_agent", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.marketplace_service.replace_artifact", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.agent_export.is_reserved_friday_agent", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.agent_export.export_agent_from_efs")
+def test_artifact_from_agent_allows_republish_same_listing(
+    mock_export,
+    mock_is_friday,
+    mock_replace,
+    mock_find_active,
+    authed_client_factory,
+):
+    """A genuine republish targets the SAME listing_id (create_new_version path),
+    so the dedupe guard must NOT fire even though a published listing exists for
+    the agent."""
+    from core.services.catalog_package import CatalogPackage
+
+    mock_is_friday.return_value = False
+    # The live listing IS the one being versioned — same listing_id.
+    mock_find_active.return_value = {"listing_id": "lst_42", "status": "published"}
+    mock_export.return_value = CatalogPackage(
+        format="openclaw",
+        manifest={"name": "x", "agent_id": "custom-1"},
+        openclaw_slice={"agent": {"name": "x"}, "plugins": {}, "tools": {}, "cron_jobs": []},
+        tarball_bytes=b"fake",
+        tarball_contents=[],
+    )
+    mock_replace.return_value = {"listing_id": "lst_42", "version": 2, "manifest_sha256": "x"}
+    tc = authed_client_factory("u_seller", "seller@example.com")
+    resp = tc.post(
+        "/api/v1/marketplace/listings/lst_42/artifact-from-agent?version=2",
+        json={"agent_id": "custom-1"},
+    )
+    assert resp.status_code == 200
+    mock_export.assert_called_once()
+    mock_replace.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

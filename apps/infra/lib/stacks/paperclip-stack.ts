@@ -328,27 +328,24 @@ export class PaperclipStack extends cdk.Stack {
       props.paperclipBetterAuthSecretName,
     );
 
-    // Public URL for Paperclip's own deployment-mode banner / OAuth
-    // callback shape. Must match the value backend ServiceStack passes
-    // as PAPERCLIP_PUBLIC_URL — Paperclip uses this to build absolute
-    // URLs in HTML responses, and any drift means it emits links to a
-    // host the user can't reach.
-    const paperclipPublicUrl =
-      env === "prod"
-        ? "https://company.isol8.co"
-        : `https://${env}.company.isol8.co`;
-
-    // In-VPC Cloud Map host the per-user agent containers can actually reach
-    // (same value the backend uses as PAPERCLIP_INTERNAL_URL — see
-    // ServiceStack). Paperclip injects PAPERCLIP_API_URL into every agent
-    // heartbeat run (server/src/index.ts: configuredApiUrl =
-    // process.env.PAPERCLIP_API_URL || choosePrimaryRuntimeApiUrl(...)). Without
-    // this override it falls back to the PUBLIC_URL (company.isol8.co), which has
-    // no DNS record and is unreachable from inside the VPC — so the agent's
-    // `$PAPERCLIP_API_URL` curls all 000 and every run blocks. The VPC-CIDR
-    // ingress on 3100 (added below) already permits the per-user containers.
-    // PAPERCLIP_PUBLIC_URL is intentionally left as the browser-facing host.
+    // `company.isol8.co` was RETIRED (#510, 2026-05-03 — NXDOMAIN; #509 replaced
+    // the proxy with the native isol8.co/teams surface). The Teams UI is now
+    // served by the isol8 frontend, which talks to the isol8 backend, which talks
+    // to Paperclip over PAPERCLIP_INTERNAL_URL — so NOTHING browser-facing uses
+    // PAPERCLIP_PUBLIC_URL anymore.
+    //
+    // What still reads it: the DEPLOYED (pinned) Paperclip image derives the
+    // `PAPERCLIP_API_URL` it injects into every agent heartbeat run from
+    // PAPERCLIP_PUBLIC_URL (choosePrimaryRuntimeApiUrl → authPublicBaseUrl) and
+    // ignores an explicit PAPERCLIP_API_URL env (that override only exists on
+    // newer upstream). So pointing PUBLIC_URL at the dead host made every agent
+    // run 000 on DNS. Point it at the in-VPC Cloud Map host the per-user agent
+    // containers can actually resolve + reach (same value the backend uses as
+    // PAPERCLIP_INTERNAL_URL; VPC-CIDR ingress on 3100 below already permits the
+    // containers). PAPERCLIP_API_URL is set to the same host for newer images
+    // that honor it. No more `company.isol8.co` anywhere in the runtime.
     const paperclipInternalApiUrl = `http://paperclip.${props.cloudMapNamespace.namespaceName}:3100`;
+    const paperclipPublicUrl = paperclipInternalApiUrl;
 
     taskDefinition.addContainer("paperclip", {
       // Paperclip publishes to GitHub Container Registry, not Docker Hub

@@ -62,6 +62,16 @@ def _ts(val) -> float:
         return 0.0
 
 
+def _ver(row: dict) -> int:
+    """A row's version as int (0 if absent/malformed). DynamoDB's NUMBER type
+    enforces numerics at write time, but a hand-edited row shouldn't crash the
+    scan — fall back to 0 (treated as a sentinel and skipped)."""
+    try:
+        return int(row.get("version", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _plan_deletions(rows: list[dict], *, max_age_days: int, now: float) -> dict:
     """Partition raw listing rows into keep/delete (pure — no AWS).
 
@@ -78,11 +88,7 @@ def _plan_deletions(rows: list[dict], *, max_age_days: int, now: float) -> dict:
     delete: list[dict] = []
     kept_published: list[str] = []
     for r in rows:
-        try:
-            ver = int(r.get("version", 0) or 0)
-        except (TypeError, ValueError):
-            ver = 0
-        if ver == 0:
+        if _ver(r) == 0:
             continue  # v0 slug sentinel — owned by sweep_orphan_slug_sentinels
         st = r.get("status")
         if st == "published":
@@ -148,9 +154,9 @@ def main() -> int:
 
     rows = _scan_all(table)
     if args.seller_id:
-        rows = [r for r in rows if r.get("seller_id") == args.seller_id or int(r.get("version", 0) or 0) == 0]
+        rows = [r for r in rows if r.get("seller_id") == args.seller_id or _ver(r) == 0]
     if args.agent_id:
-        rows = [r for r in rows if r.get("agent_id") == args.agent_id or int(r.get("version", 0) or 0) == 0]
+        rows = [r for r in rows if r.get("agent_id") == args.agent_id or _ver(r) == 0]
 
     plan = _plan_deletions(rows, max_age_days=args.max_age_days, now=datetime.now(timezone.utc).timestamp())
 

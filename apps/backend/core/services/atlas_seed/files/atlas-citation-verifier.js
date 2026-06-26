@@ -1,15 +1,22 @@
 #!/usr/bin/env node
 // atlas-citation-verifier.js
 //
-// Carries from v0 unchanged. Quarterly cron pass on every external citation in
-// Atlas's AGENTS.md and any Atlas-generated agents' AGENTS.md.
-// On 2 consecutive 403/404/changed-content responses, surface stale-citation warning.
+// Quarterly cron pass on every external citation in Atlas's AGENTS.md and any
+// Atlas-generated agents' AGENTS.md. On 2 consecutive 403/404/changed-content
+// responses, surfaces a stale-citation warning.
+//
+// Gateway-free: this tool is a pure transform. The directory walk + AGENTS.md
+// reads use the local filesystem (genuine fs, not gateway state). Prior
+// consecutive-failure tracking arrives via the TRACKING env var (the calling
+// .lobster does a `state.get atlas/citation-tracking` and passes it); the verify
+// results arrive on stdin. The NEW tracking is returned on stdout under
+// `.tracking` for the .lobster to persist via `state.set` (stale info rides
+// alongside). No gateway tool calls.
 
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const https = require('https');
-const { execSync } = require('child_process');
 
 const CONSECUTIVE_FAILURE_THRESHOLD = 2;
 const FETCH_TIMEOUT_MS = 15000;
@@ -90,37 +97,23 @@ async function verifyCitations(citations) {
   };
 }
 
-function fastIoRead(key) {
-  try {
-    const result = execSync(
-      `openclaw.invoke --tool fast-io --action read --args-json '{"key":"${key}"}'`,
-      { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }
-    );
-    return JSON.parse(result);
-  } catch (e) { return null; }
-}
-
-function fastIoWrite(key, data) {
-  try {
-    execSync(
-      `openclaw.invoke --tool fast-io --action write --args-json '${JSON.stringify({ key, data }).replace(/'/g, `'\\''`)}'`,
-      { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }
-    );
-    return true;
-  } catch (e) { return false; }
-}
-
-function updateTracking(verifyResults) {
-  const tracking = fastIoRead('atlas-config/citation-tracking') || { citations: {} };
+// Pure transform: given the verify results and the PRIOR tracking object (loaded
+// from state by the caller), compute the new tracking + the stale list. The
+// caller persists `.tracking` back to state.
+function updateTracking(verifyResults, priorTracking) {
+  const prior = (priorTracking && typeof priorTracking === 'object' && priorTracking.citations)
+    ? priorTracking
+    : { citations: {} };
+  const tracking = { citations: { ...prior.citations } };
   const stale = [];
   for (const r of (verifyResults.results || [])) {
     const key = `${r.type}:${r.value}`;
-    const prior = tracking.citations[key] || { consecutive_failures: 0, last_checked: null };
+    const before = tracking.citations[key] || { consecutive_failures: 0, last_checked: null };
     if (r.passed) {
       tracking.citations[key] = { consecutive_failures: 0, last_checked: r.checked_at, last_status: r.status };
     } else {
       tracking.citations[key] = {
-        consecutive_failures: prior.consecutive_failures + 1,
+        consecutive_failures: before.consecutive_failures + 1,
         last_checked: r.checked_at,
         last_status: r.status,
         last_error: r.error
@@ -133,8 +126,8 @@ function updateTracking(verifyResults) {
       }
     }
   }
-  fastIoWrite('atlas-config/citation-tracking', tracking);
   return {
+    tracking,
     stale_count: stale.length,
     stale_summary: stale.map(s => `${s.citation.type}:${s.citation.value} (${s.consecutive_failures} consecutive failures, last status ${s.citation.status})`).join('; '),
     stale_details: stale
@@ -159,7 +152,9 @@ async function main() {
     const citations = stdin.citations || [];
     result = await verifyCitations(citations);
   } else if (args.action === 'update-tracking') {
-    result = updateTracking(stdin);
+    let priorTracking = null;
+    try { priorTracking = JSON.parse(process.env.TRACKING || 'null'); } catch (e) { priorTracking = null; }
+    result = updateTracking(stdin, priorTracking);
   } else {
     result = { error: `unknown action: ${args.action}` };
   }

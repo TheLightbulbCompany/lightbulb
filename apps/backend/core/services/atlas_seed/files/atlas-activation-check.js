@@ -1,11 +1,16 @@
 #!/usr/bin/env node
 // atlas-activation-check.js
 //
-// Bootstrap validator. Checks env vars, fast-io defaults, cron jobs, Slack channels,
-// security stack, ClawHavoc denylist completeness.
+// Bootstrap validator. Checks env vars, durable-state defaults, security stack,
+// ClawHavoc denylist completeness.
+//
+// Gateway-free: this tool reads only the local filesystem (openclaw.json) and an
+// optional state-keys manifest (ATLAS_STATE_KEYS env, a JSON array of present
+// `atlas/*` keys). It never calls the gateway tool proxy. The new state model creates
+// keys lazily on first `state.set`, so absent keys are informational (not a
+// blocker) unless a manifest is supplied to validate against.
 
 const fs = require('fs');
-const { execSync } = require('child_process');
 const { CLAWHAVOC_DENYLIST } = require('./atlas-clawhavoc-enforcer.js');
 const { STANDARD_SECURITY_STACK } = require('./atlas-skill-recommender.js');
 
@@ -25,32 +30,39 @@ function checkEnv() {
 }
 
 function checkFastIoDefaults() {
-  const requiredKeys = [
-    'atlas-config/identity-locks',
-    'atlas-config/cookbook-refresh-state',
-    'atlas-cookbook/openclaw-docs',
-    'atlas-cookbook/agent-snapshots',
-    'atlas-cookbook/failure-cases.json',
-    'atlas-cookbook/user-resolutions',
-    'atlas-builds',
-    'atlas-pending-submits'
+  // Durable state lives in native `atlas/*` state keys (state.get/state.set),
+  // not the old fast-io tool. These keys are created lazily on first write, so
+  // their absence at bootstrap is NOT a blocker. When ATLAS_STATE_KEYS is
+  // supplied (a JSON array of present keys), validate presence as info; with no
+  // manifest, report info-pass with the lazy-init note. No gateway read.
+  const expectedKeys = [
+    'atlas/intakes',
+    'atlas/research-briefs',
+    'atlas/requirement-matrix',
+    'atlas/decisions',
+    'atlas/notifications',
+    'atlas/audit-log',
+    'atlas/citation-tracking',
+    'atlas/cookbook-refresh-state',
+    'atlas/failure-cases'
   ];
+  let present = null;
+  try {
+    const parsed = JSON.parse(process.env.ATLAS_STATE_KEYS || 'null');
+    if (Array.isArray(parsed)) present = new Set(parsed);
+  } catch (e) { present = null; }
+
   const checks = [];
-  for (const key of requiredKeys) {
-    let exists = false;
-    try {
-      execSync(
-        `openclaw.invoke --tool fast-io --action read --args-json '{"key":"${key}"}'`,
-        { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }
-      );
-      exists = true;
-    } catch (e) { /* not initialized */ }
+  for (const key of expectedKeys) {
+    const known = present ? present.has(key) : null;
     checks.push({
-      check: `fast_io_default_${key}`,
-      pass: exists,
-      severity: 'blocker',
-      reason: exists ? null : `${key} not initialized`,
-      remediation: exists ? null : `Run BOOTSTRAP.md Step 2 to initialize default fast-io state.`
+      check: `state_default_${key}`,
+      // `info` severity, never `blocker` — a missing key self-heals on first
+      // state.set, so it must not fail the activation gate.
+      pass: known === false ? false : true,
+      severity: 'info',
+      reason: known === false ? `${key} not yet initialized (created lazily on first write)` : null,
+      remediation: known === false ? `Optional: pre-seed ${key} via BOOTSTRAP.md, or let it initialize on first use.` : null
     });
   }
   return checks;

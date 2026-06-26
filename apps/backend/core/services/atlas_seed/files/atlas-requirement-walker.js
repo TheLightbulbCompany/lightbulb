@@ -1,13 +1,22 @@
 #!/usr/bin/env node
 // atlas-requirement-walker.js
 //
-// Drives Step 4 vet loop. Iterates the requirement matrix in order, presents each row,
-// waits for user response, persists per-requirement decision after each gate confirmation.
-// Drop-resilient resume from next un-vetted row. Refuses to advance past unresolved row.
-// H6 anti-overcomplication signal-detection via fuzzy match.
+// Drives Step 4 vet loop. Iterates the requirement matrix in order, presents the
+// next un-vetted row, persists per-requirement decisions (drop-resilient resume
+// from the next un-vetted row), refuses to advance past an unresolved row. H6
+// anti-overcomplication signal-detection via fuzzy match.
+//
+// Gateway-free: this tool is a pure transform. The requirement matrix arrives via
+// the MATRIX env var (the caller does `state.get atlas/requirement-matrix` and
+// passes map[build_id]); the per-requirement decisions arrive via the DECISIONS
+// env var (a map req_id -> decision row, from `state.get atlas/decisions`
+// map[build_id]). The walker never writes state itself — the calling .lobster
+// queues a vet-row intent and the agent loop captures the user's decision,
+// normalizes it (apply-trigger-edits, below, reads the decision on stdin) and
+// writes it into atlas/decisions[build_id][req_id], then re-invokes the
+// pipeline for the next row. No gateway tool calls.
 
 const fs = require('fs');
-const { execSync } = require('child_process');
 
 const STRONG_SIGNAL_TOKENS = Object.freeze([
   'simple', 'cleanest', 'overthink', 'enough options', 'one shot', 'skip', 'stop'
@@ -25,27 +34,26 @@ function parseArgs(argv) {
 }
 
 function readStdinJson() {
-  try { return JSON.parse(require('fs').readFileSync(0, 'utf8')); } catch (e) { return {}; }
+  try { return JSON.parse(fs.readFileSync(0, 'utf8')); } catch (e) { return {}; }
 }
 
-function fastIoRead(key) {
-  try {
-    const result = execSync(
-      `openclaw.invoke --tool fast-io --action read --args-json '{"key":"${key}"}'`,
-      { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }
-    );
-    return JSON.parse(result);
-  } catch (e) { return null; }
+function readMatrixEnv() {
+  try { return JSON.parse(process.env.MATRIX || 'null'); } catch (e) { return null; }
 }
 
-function fastIoList(prefix) {
+function readDecisionsEnv() {
   try {
-    const result = execSync(
-      `openclaw.invoke --tool fast-io --action list --args-json '{"prefix":"${prefix}"}'`,
-      { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }
-    );
-    return JSON.parse(result);
-  } catch (e) { return []; }
+    const d = JSON.parse(process.env.DECISIONS || 'null') || {};
+    if (Array.isArray(d)) {
+      const map = {};
+      for (const row of d) {
+        const reqId = row.req_id || (row.key || '').split('/').pop();
+        if (reqId) map[reqId] = row;
+      }
+      return map;
+    }
+    return d;
+  } catch (e) { return {}; }
 }
 
 function detectAntiOvercomplicationSignal(message) {
@@ -58,37 +66,33 @@ function detectAntiOvercomplicationSignal(message) {
   return { fires: false, hits };
 }
 
-function loadMatrix(buildId) {
-  const matrix = fastIoRead(`atlas-builds/${buildId}/requirement-matrix`);
-  const matrixSha = fastIoRead(`atlas-builds/${buildId}/requirement-matrix.sha256`);
+function loadMatrix(buildId, matrix) {
   if (!matrix) return { error: 'matrix_not_found', build_id: buildId };
   const requirements = matrix.user_stories || matrix.classifications || [];
   return {
     build_id: buildId,
     requirement_count: requirements.length,
     requirement_ids: requirements.map(r => r.req_id || r.id),
-    matrix_sha256: matrixSha
+    matrix_sha256: matrix.matrix_sha256 || null
   };
 }
 
-function presentNext(buildId) {
-  const matrix = loadMatrix(buildId);
-  if (matrix.error) return matrix;
+function presentNext(buildId, matrix, decisions) {
+  const meta = loadMatrix(buildId, matrix);
+  if (meta.error) return meta;
 
-  const decided = fastIoList(`atlas-builds/${buildId}/decisions/`);
-  const decidedIds = new Set((decided || []).map(d => d.req_id || (d.key || '').split('/').pop()));
+  const decidedIds = new Set(Object.keys(decisions || {}));
 
-  for (const reqId of matrix.requirement_ids) {
+  for (const reqId of meta.requirement_ids) {
     if (!decidedIds.has(reqId)) {
-      const fullMatrix = fastIoRead(`atlas-builds/${buildId}/requirement-matrix`);
-      const req = (fullMatrix.user_stories || []).find(r => (r.req_id || r.id) === reqId) ||
-                  (fullMatrix.classifications || []).find(r => (r.req_id || r.id) === reqId) ||
+      const req = (matrix.user_stories || []).find(r => (r.req_id || r.id) === reqId) ||
+                  (matrix.classifications || []).find(r => (r.req_id || r.id) === reqId) ||
                   { req_id: reqId };
-      // Find triggers for this req in the matrix's requirements_with_triggers
+      // Triggers for this req live in the matrix's requirements_with_triggers
       // field (added by architect-proposal Step 3.6). Falls back to [] for
       // legacy matrices that pre-date the field.
       const triggersByReq = {};
-      for (const rt of (fullMatrix.requirements_with_triggers || [])) {
+      for (const rt of (matrix.requirements_with_triggers || [])) {
         triggersByReq[rt.req_id] = rt;
       }
       const triggerRow = triggersByReq[reqId] || { triggers: [], classification: req.classification || null };
@@ -104,7 +108,7 @@ function presentNext(buildId) {
       };
     }
   }
-  return { more_outstanding: false, completed_count: matrix.requirement_count };
+  return { more_outstanding: false, completed_count: meta.requirement_count };
 }
 
 function applyTriggerEdits(buildId, reqId, edits) {
@@ -121,14 +125,14 @@ function applyTriggerEdits(buildId, reqId, edits) {
   };
 }
 
-function checkLoop(buildId) {
-  const matrix = loadMatrix(buildId);
-  const decided = fastIoList(`atlas-builds/${buildId}/decisions/`);
-  const completedCount = (decided || []).length;
+function checkLoop(buildId, matrix, decisions) {
+  const meta = loadMatrix(buildId, matrix);
+  const total = meta.error ? 0 : meta.requirement_count;
+  const completedCount = Object.keys(decisions || {}).length;
   return {
-    more_outstanding: completedCount < matrix.requirement_count,
+    more_outstanding: completedCount < total,
     completed_count: completedCount,
-    total_count: matrix.requirement_count
+    total_count: total
   };
 }
 
@@ -138,11 +142,11 @@ function main() {
 
   let result;
   if (args.action === 'load') {
-    result = loadMatrix(args.buildId);
+    result = loadMatrix(args.buildId, readMatrixEnv());
   } else if (args.action === 'present-next') {
-    result = presentNext(args.buildId);
+    result = presentNext(args.buildId, readMatrixEnv(), readDecisionsEnv());
   } else if (args.action === 'check-loop') {
-    result = checkLoop(args.buildId);
+    result = checkLoop(args.buildId, readMatrixEnv(), readDecisionsEnv());
   } else if (args.action === 'detect-signal') {
     const message = fs.readFileSync(0, 'utf8');
     result = detectAntiOvercomplicationSignal(message);
@@ -159,4 +163,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { STRONG_SIGNAL_TOKENS, detectAntiOvercomplicationSignal, loadMatrix, presentNext, applyTriggerEdits };
+module.exports = { STRONG_SIGNAL_TOKENS, detectAntiOvercomplicationSignal, loadMatrix, presentNext, applyTriggerEdits, checkLoop };

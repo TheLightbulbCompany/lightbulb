@@ -13,11 +13,19 @@
 //
 // No agentgate override. Matches Atlas's existing hard-rule posture
 // (ClawHavoc denylist, file-write-gate).
+//
+// Gateway-free: this tool is a pure transform. The requirement matrix arrives via
+// the MATRIX env var and the per-requirement decisions via the DECISIONS env var
+// (the caller does `state.get atlas/requirement-matrix` + `state.get
+// atlas/decisions` and passes map[build_id] for each). The staging-dir pipeline
+// existence check uses the local filesystem (genuine fs, not gateway state).
+// It NEVER halts the pipeline on failure — pass/fail is reported on stdout so the
+// caller can surface the failure (mirrors how build.lobster surfaces verify
+// failures). No gateway tool calls.
 
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { execSync } = require('child_process');
 
 function parseArgs(argv) {
   const args = { buildId: null, stagingDir: null };
@@ -28,30 +36,22 @@ function parseArgs(argv) {
   return args;
 }
 
-function _fastIoRead(key) {
-  try {
-    const result = execSync(
-      `openclaw.invoke --tool fast-io --action read --args-json '{"key":"${key}"}'`,
-      { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }
-    );
-    return JSON.parse(result);
-  } catch (e) { return null; }
+function _readMatrixEnv() {
+  try { return JSON.parse(process.env.MATRIX || 'null'); } catch (e) { return null; }
 }
 
-function _fastIoList(prefix) {
+function _readDecisionsEnv() {
   try {
-    const result = execSync(
-      `openclaw.invoke --tool fast-io --action list --args-json '{"prefix":"${prefix}"}'`,
-      { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }
-    );
-    return JSON.parse(result);
+    const d = JSON.parse(process.env.DECISIONS || 'null') || {};
+    // decisions is a map req_id -> row; the audit consumes a list.
+    return Array.isArray(d) ? d : Object.values(d);
   } catch (e) { return []; }
 }
 
-function _defaultIoAdapter(buildId) {
+function _defaultIoAdapter() {
   return {
-    readMatrix: () => _fastIoRead(`atlas-builds/${buildId}/requirement-matrix`),
-    listDecisions: () => _fastIoList(`atlas-builds/${buildId}/decisions/`)
+    readMatrix: () => _readMatrixEnv(),
+    listDecisions: () => _readDecisionsEnv()
   };
 }
 
@@ -64,7 +64,7 @@ function audit({ buildId, stagingDir, _ioAdapter }) {
   if (!buildId) {
     return { pass: false, error: 'build_id_missing', failures: [] };
   }
-  const io = _ioAdapter || _defaultIoAdapter(buildId);
+  const io = _ioAdapter || _defaultIoAdapter();
   const staging = stagingDir || _defaultStagingDir(buildId);
   const workspaceDir = path.join(staging, 'workspace');
 
@@ -79,6 +79,14 @@ function audit({ buildId, stagingDir, _ioAdapter }) {
     const reqId = d.req_id || (d.key || '').split('/').pop();
     decisionsByReqId[reqId] = d;
   }
+  // Classification + triggers live in requirements_with_triggers (architect-
+  // proposal Step 3.6), the same field the walker reads. Index by req_id and
+  // fall back to the row's own inline fields for legacy matrices that carried
+  // classification/triggers directly on the requirement row.
+  const triggersByReqId = {};
+  for (const rt of (matrix.requirements_with_triggers || [])) {
+    if (rt && rt.req_id) triggersByReqId[rt.req_id] = rt;
+  }
 
   const failures = [];
 
@@ -87,10 +95,12 @@ function audit({ buildId, stagingDir, _ioAdapter }) {
     const decision = decisionsByReqId[reqId] || {};
     if (decision.decision === 'drop') continue;
 
-    const finalClassification = decision.classification_override || row.classification;
+    const triggerRow = triggersByReqId[reqId] || {};
+    const baseClassification = triggerRow.classification != null ? triggerRow.classification : row.classification;
+    const finalClassification = decision.classification_override || baseClassification;
     if (finalClassification !== 'deterministic') continue;
 
-    const triggers = row.triggers || [];
+    const triggers = (triggerRow.triggers != null ? triggerRow.triggers : row.triggers) || [];
     if (triggers.length === 0) {
       failures.push({
         req_id: reqId,
@@ -127,8 +137,12 @@ function audit({ buildId, stagingDir, _ioAdapter }) {
 function main() {
   const args = parseArgs(process.argv);
   const result = audit({ buildId: args.buildId, stagingDir: args.stagingDir });
+  // Report pass/fail on stdout — NEVER process.exit(1). A non-zero exit would
+  // halt the pipeline before the caller's failure-notice step (conditioned on
+  // pass == false) could run, hiding the very failure this gate must surface.
+  // The hard-gate semantics are preserved by the caller refusing to advance the
+  // build while `pass` is false (re-vet to bind triggers OR reclassify).
   process.stdout.write(JSON.stringify(result));
-  if (!result.pass) process.exit(1);
 }
 
 if (require.main === module) main();

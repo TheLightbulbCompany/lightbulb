@@ -3,8 +3,10 @@
 //
 // Counts deterministic vs LLM nodes per pipeline; emits architectural-replacement count.
 // Outputs labeled "projected" never "tested" per H5.
-
-const { execSync } = require('child_process');
+//
+// Gateway-free: this tool is a pure transform. The requirement matrix arrives via
+// the MATRIX env var (the caller does `state.get atlas/requirement-matrix` and
+// passes map[build_id]). No gateway tool calls.
 
 function parseArgs(argv) {
   const args = { buildId: null, rollupDay: false };
@@ -15,18 +17,11 @@ function parseArgs(argv) {
   return args;
 }
 
-function fastIoRead(key) {
-  try {
-    const result = execSync(
-      `openclaw.invoke --tool fast-io --action read --args-json '{"key":"${key}"}'`,
-      { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }
-    );
-    return JSON.parse(result);
-  } catch (e) { return null; }
+function readMatrixEnv() {
+  try { return JSON.parse(process.env.MATRIX || 'null'); } catch (e) { return null; }
 }
 
-function countNodesForBuild(buildId) {
-  const matrix = fastIoRead(`atlas-builds/${buildId}/requirement-matrix`);
+function countNodesForBuild(buildId, matrix) {
   const requirementCount = matrix ? ((matrix.user_stories || matrix.classifications || []).length) : 60;
 
   // Atlas's actual LLM calls per build (typical):
@@ -72,7 +67,7 @@ function main() {
     return;
   }
   if (!args.buildId) { console.error('--build-id required'); process.exit(2); }
-  process.stdout.write(JSON.stringify(countNodesForBuild(args.buildId)));
+  process.stdout.write(JSON.stringify(countNodesForBuild(args.buildId, readMatrixEnv())));
 }
 
 if (require.main === module) main();

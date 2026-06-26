@@ -3,12 +3,18 @@
 //
 // Step 7: zero-LLM deterministic extraction from already-vetted artifacts.
 // Cross-referenced from A10. Architectural property: can't drift from vetted state.
+//
+// Gateway-free: this tool is a pure transform. The build's vetted artifacts arrive
+// via env vars — MATRIX (`state.get atlas/requirement-matrix` map[build_id]),
+// RECAP (`atlas/recaps` map[build_id]), INTAKE (`atlas/intakes` map[build_id]) —
+// and the continuity S10 bundle hash via S10_HASH. The deployed openclaw.json,
+// AGENTS.md, and agent-dir bundle hash are read from the local filesystem
+// (genuine fs, not gateway state). No gateway tool calls.
 
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
-const { execSync } = require('child_process');
 
 function parseArgs(argv) {
   const args = { action: 'build', buildId: null, agentName: null, currentHash: null };
@@ -21,20 +27,14 @@ function parseArgs(argv) {
   return args;
 }
 
-function fastIoRead(key) {
-  try {
-    const result = execSync(
-      `openclaw.invoke --tool fast-io --action read --args-json '{"key":"${key}"}'`,
-      { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }
-    );
-    return JSON.parse(result);
-  } catch (e) { return null; }
+function readEnvJson(name) {
+  try { return JSON.parse(process.env[name] || 'null'); } catch (e) { return null; }
 }
 
 function buildListing(buildId, agentName) {
-  const matrix = fastIoRead(`atlas-builds/${buildId}/requirement-matrix`);
-  const recap = fastIoRead(`atlas-builds/${buildId}/recap`);
-  const intake = fastIoRead(`atlas-builds/${buildId}/intake`);
+  const matrix = readEnvJson('MATRIX');
+  const recap = readEnvJson('RECAP');
+  const intake = readEnvJson('INTAKE');
   const agentDir = path.join(os.homedir(), '.openclaw', 'agents', agentName);
   let openclawJson = null;
   try {
@@ -91,8 +91,9 @@ function bundleHash(agentName) {
 }
 
 function continuityCheck(buildId, currentHash) {
-  const audit = fastIoRead(`audit/${new Date().toISOString().slice(0,10)}/build/${buildId}`);
-  const s10Hash = audit && audit.bundle_sha256 ? audit.bundle_sha256 : null;
+  // The S10 build-time bundle hash arrives via S10_HASH (the caller pulls it
+  // from the build_complete record in atlas/audit-log and passes it in).
+  const s10Hash = (process.env.S10_HASH || '').trim() || null;
   if (!s10Hash) {
     return { continuity_holds: false, error: 'S10 hash not found in audit log; cannot verify continuity. HARD REFUSE per Marketplace Boundary Contract.' };
   }

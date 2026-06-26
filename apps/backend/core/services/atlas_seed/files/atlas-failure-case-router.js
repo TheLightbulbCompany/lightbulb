@@ -1,12 +1,16 @@
 #!/usr/bin/env node
 // atlas-failure-case-router.js
 //
-// Reads atlas-cookbook/failure-cases.json (refreshed twice-weekly), filters by archetype tag,
-// returns top-N relevant cases. Per H4: refuses to inject any case whose source URL isn't
-// marked `verified` in the corpus entry.
+// Filters the failure-case corpus by archetype tag, returns top-N relevant
+// cases. Per H4: refuses to inject any case whose source URL isn't marked
+// `verified` in the corpus entry.
+//
+// Gateway-free: this tool is a pure transform. The failure-case corpus arrives
+// via the CORPUS env var (the calling .lobster does `state.get
+// atlas/failure-cases` and passes it); the intake (for the archetype) arrives on
+// stdin. No gateway tool calls.
 
 const fs = require('fs');
-const { execSync } = require('child_process');
 
 function parseArgs(argv) {
   const args = { action: 'route', maxCases: 6 };
@@ -24,11 +28,9 @@ function readStdin() {
 
 function loadCorpus() {
   try {
-    const result = execSync(
-      `openclaw.invoke --tool fast-io --action read --args-json '{"key":"atlas-cookbook/failure-cases.json"}'`,
-      { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }
-    );
-    return JSON.parse(result);
+    const parsed = JSON.parse(process.env.CORPUS || 'null');
+    if (parsed && Array.isArray(parsed.cases)) return parsed;
+    return { version: 1, cases: [] };
   } catch (e) {
     return { version: 1, cases: [] };
   }

@@ -3,11 +3,16 @@
 //
 // Reads from two-source cookbook (OpenClaw docs cache + agent snapshots).
 // Applies frozen source-preference table per D2.
+//
+// Gateway-free: the doc-index fetch + page fetches use https, and the agent
+// snapshot walk uses the local filesystem (~/.openclaw/agents) — both genuine,
+// not gateway state. The only state input (the prior refresh-state, used to diff
+// the doc index) arrives via the REFRESH_STATE env var (the calling .lobster
+// does `state.get atlas/cookbook-refresh-state` and passes it). No gateway tool calls.
 
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execSync } = require('child_process');
 const https = require('https');
 
 // ============================================================================
@@ -62,13 +67,9 @@ async function diffIndex() {
   const newUrls = new Set(indexResult.body.split('\n').filter(l => l.startsWith('https://')));
   let cachedUrls = new Set();
   try {
-    const cacheState = execSync(
-      `openclaw.invoke --tool fast-io --action read --args-json '{"key":"atlas-config/cookbook-refresh-state"}'`,
-      { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }
-    );
-    const parsed = JSON.parse(cacheState);
-    cachedUrls = new Set(parsed.indexed_urls || []);
-  } catch (e) { /* first run */ }
+    const parsed = JSON.parse(process.env.REFRESH_STATE || 'null');
+    if (parsed && Array.isArray(parsed.indexed_urls)) cachedUrls = new Set(parsed.indexed_urls);
+  } catch (e) { /* first run / no prior state */ }
 
   const added = [...newUrls].filter(u => !cachedUrls.has(u));
   const removed = [...cachedUrls].filter(u => !newUrls.has(u));

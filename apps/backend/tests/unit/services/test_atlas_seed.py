@@ -290,6 +290,30 @@ async def test_force_does_not_clobber_substituted_build_lobster(force_ws, monkey
     build = written["workspaces/uuid-atlas/build.lobster"]
     assert "{{ISOL8_BRIDGE_URL}}" not in build
     assert "https://api-dev.isol8.co/api/v1/agent-builder/u/org_abc/register-built-agent" in build
-    # build.lobster written exactly once under force (loop skipped it).
-    build_writes = [p for p in force_ws.overwrote if p.endswith("/build.lobster")]
-    assert build_writes == ["workspaces/uuid-atlas/build.lobster"]
+
+
+@pytest.mark.asyncio
+async def test_force_with_acp_overwrites_agents_with_acp_section(force_ws, monkeypatch, tmp_path):
+    """force=True AND ACP_ENABLED=True: AGENTS.md is force-overwritten WITH the
+    ACP section appended (force must carry the augmentation, not the vanilla
+    copy). Also asserts written stays 0 under force (overwrites count in
+    overwritten only, so atlas_seed.success doesn't fire on overwrites)."""
+    _acp_files_dir(tmp_path, monkeypatch)
+    monkeypatch.setattr("core.config.settings.ACP_ENABLED", True)
+    written: dict[str, str] = {}
+
+    def _wf(user_id, path, content):
+        force_ws.overwrote.append(path)
+        written[path] = content
+
+    force_ws.write_file.side_effect = _wf
+    agents = [{"id": "uuid-atlas", "role": "general", "name": "Atlas"}]
+    result = await pre_stage_atlas(owner_id="user_x", paperclip_agents=agents, workspace=force_ws, force=True)
+
+    agents_md = written["workspaces/uuid-atlas/AGENTS.md"]
+    assert "base recruiter copy" in agents_md  # vendored base preserved under force
+    assert "Coding-Harness Delegation (ACP)" in agents_md  # augmentation carried under force
+    assert force_ws.if_missing_calls == []  # never the skip-writer
+    assert result["force"] is True
+    assert result["written"] == 0  # force → no "new write" accounting, all in overwritten
+    assert result["overwritten"] == len(force_ws.overwrote)

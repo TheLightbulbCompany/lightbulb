@@ -146,8 +146,13 @@ async def pre_stage_atlas(
     the current repo bundle.
 
     Returns a counts dict: ``atlas_uuid``, ``written``, ``skipped``,
-    ``errored``, ``overwritten`` (force writes; 0 when ``force=False``),
-    ``force``, and ``reason`` (``None`` on success; a skip reason otherwise).
+    ``errored``, ``overwritten``, ``force``, ``reason`` (``None`` on success).
+    Field semantics by mode:
+    - ``force=False``: ``written`` = genuinely-new files, ``skipped`` = existing
+      (O_EXCL no-op), ``overwritten`` = 0. ``atlas_seed.success`` fires on ``written``.
+    - ``force=True``: ``overwritten`` = files overwritten; ``written`` and
+      ``skipped`` stay 0 (everything is an overwrite, not a new write or a skip),
+      so ``atlas_seed.success`` does NOT fire — ``atlas_seed.overwritten`` does.
     Never raises.
     """
     matches = [a for a in paperclip_agents if a.get("name") == _ATLAS_AGENT_NAME and a.get("id")]
@@ -288,6 +293,11 @@ async def pre_stage_atlas(
             errored += 1
             put_metric("atlas_seed.error")
             logger.error("atlas_seed: write failed owner=%s file=%s: %s", owner_id, dest, exc)
+            continue
+        # Under force, _stage already counted the overwrite in `overwritten`; don't
+        # also count it as a new write or a skip (keeps `written`/`atlas_seed.success`
+        # meaning "genuinely new files", not force-overwrites of existing ones).
+        if force:
             continue
         if wrote:
             written += 1

@@ -183,7 +183,12 @@ async def main(*, apply: bool, env: str, owner_ids: list[str], all_from_containe
                     print(f"  SKIP {owner_id}: {reason}")
                     continue
                 n_ok += 1
-                would = bundle_n + 1  # + workspace-state.json
+                # Estimate: the vendored bundle file count (bundle_n) + the
+                # workspace-state.json guard file. Approximate (~) because the
+                # real overwrite count under --apply also reflects the ACP append
+                # / bridge-URL substitution writing the same paths once each — it
+                # won't exceed this, and is exact for the common no-ACP case.
+                would = bundle_n + 1
                 total_overwritten += would
                 print(f"  WOULD {owner_id}: atlas={atlas_uuid} would overwrite ~{would} file(s)")
                 continue

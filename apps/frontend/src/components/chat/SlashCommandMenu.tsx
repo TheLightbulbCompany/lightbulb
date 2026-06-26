@@ -1,6 +1,5 @@
 "use client";
 
-import * as React from "react";
 import { cn } from "@/lib/utils";
 import { filterAndGroupCommands, type SlashCommand } from "@/lib/slashCommands";
 
@@ -75,7 +74,7 @@ export function SlashCommandMenu({
           })}
         </div>
       ))}
-      <div className="px-3 py-1 text-[0.65rem] text-[#b5ae9e] border-t border-[#f0ece3]">
+      <div className="px-3 py-1 text-[0.65rem] text-[#b5ae9e] border-t border-[#e0dbd0]">
         ↑↓ navigate · Tab fill · ↵ run · esc close
       </div>
     </div>

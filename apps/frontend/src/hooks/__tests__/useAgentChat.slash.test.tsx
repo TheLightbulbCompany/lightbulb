@@ -171,6 +171,46 @@ describe("useAgentChat — T7 slash handling", () => {
     expect(historyFetchCount()).toBe(2);
   });
 
+  it("/reset typed mid-run aborts the active run first, then sends /reset and refetches history", async () => {
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    const { result } = renderHook(() => useAgentChat("agent-X", "session-1"));
+    expect(historyFetchCount()).toBe(1);
+
+    // Start a real turn so a run is in flight.
+    await act(async () => {
+      await result.current.sendMessage("work on task A");
+    });
+    expect(sendChat).toHaveBeenCalledTimes(1);
+    const runA = lastClientRunId();
+    act(() =>
+      dispatch({
+        type: "chunk",
+        agent_id: "agent-X",
+        runId: runA,
+        content: "starting task A",
+      } as ChatIncomingMessage),
+    );
+    expect(result.current.isStreaming).toBe(true);
+
+    // /reset mid-run must abort the in-flight run FIRST (mirrors /redirect)...
+    await act(async () => {
+      await result.current.sendMessage("/reset");
+    });
+
+    // ...emitting an agent_abort carrying the in-flight runId,
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledWith({
+      type: "agent_abort",
+      agent_id: "agent-X",
+      runId: runA,
+    });
+    // ...still sending /reset to the server as a fresh primary send,
+    expect(sendChat).toHaveBeenCalledTimes(2);
+    expect(sendChat.mock.calls[1]?.[1]).toBe("/reset");
+    // ...and triggering a history refetch.
+    expect(historyFetchCount()).toBe(2);
+  });
+
   it("/compact and /new also reach the server then refetch history", async () => {
     const { useAgentChat } = await import("@/hooks/useAgentChat");
     const { result } = renderHook(() => useAgentChat("agent-X", "session-1"));

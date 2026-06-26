@@ -220,14 +220,21 @@ export function ChatInput({
         e.preventDefault();
         const cmd = visible[activeIndex];
         if (!cmd) return;
-        if (cmd.acceptsArgs) {
-          setInput(`/${cmd.name} `); // fill, await arg
+        if (e.key === "Tab") {
+          // Tab fills the input. For an arg command, append a trailing space so
+          // the user can immediately type the argument (the space also closes
+          // the menu so normal Enter-to-send takes over once an arg is typed).
+          setInput(`/${cmd.name}${cmd.acceptsArgs ? " " : ""}`);
           setActiveIndex(0);
-        } else if (e.key === "Enter") {
-          onSend(`/${cmd.name}`); // run no-arg command now
-          setInput("");
         } else {
-          setInput(`/${cmd.name}`); // Tab fills, no run
+          // Enter commits the highlighted command immediately — even for an
+          // acceptsArgs command. The server handles optional/missing args (and
+          // returns an error message when one was required); Tab remains the
+          // path to fill-then-type-an-arg. Without this, an acceptsArgs command
+          // (e.g. /reset, /compact, /model) could never be submitted via Enter
+          // because the trailing-space fill keeps the menu open (infinite refill).
+          onSend(`/${cmd.name}`);
+          setInput("");
         }
         return;
       }

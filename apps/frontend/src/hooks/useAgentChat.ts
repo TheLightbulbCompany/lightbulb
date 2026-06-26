@@ -1586,10 +1586,15 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         if (rest) await dispatchNow(rest);
         return;
       }
-      // `/reset`, `/compact`, and `/new` mutate server-side session state. Let
-      // them reach the server, then invalidate the cached transcript + refetch
+      // `/reset`, `/compact`, and `/new` mutate server-side session state. If a
+      // run is still streaming, abort it FIRST (mirrors the `/redirect` path) —
+      // dispatching the command without aborting would start a concurrent run
+      // while the orphan keeps burning tokens server-side and its late
+      // chunk/done events repaint a ghost bubble after the refetch. Then let the
+      // command reach the server and invalidate the cached transcript + refetch
       // history so the displayed messages match the (reset/compacted) session.
       if (/^\/(reset|compact|new)(\s|$)/i.test(trimmed)) {
+        await cancelMessageRef.current();
         await dispatchNow(trimmed);
         invalidateHistoryAndRefetch();
         return;

@@ -90,6 +90,9 @@ jobs:
         CERT_PATH="$RUNNER_TEMP/cert.p12"
 
         echo "$APPLE_CERTIFICATE" | base64 --decode > "$CERT_PATH"
+        # Self-hosted runner: $RUNNER_TEMP survives a mid-job runner crash, so a
+        # stale keychain can linger and make create-keychain fail. Pre-delete it.
+        security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
         security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
         security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
         security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
@@ -171,6 +174,10 @@ jobs:
       run: gh release edit "desktop-dev-v0.4.${{ github.run_number }}" --repo Isol8AI/isol8 --draft=false
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    # Persistent runner: never leave the Apple signing key on disk between runs.
+    - name: Clean up signing keychain
+      if: always()
+      run: security delete-keychain "$RUNNER_TEMP/isol8-build.keychain-db" || true
   build-desktop-prod:
     name: BuildDesktopProd
     runs-on:
@@ -226,6 +233,9 @@ jobs:
         CERT_PATH="$RUNNER_TEMP/cert.p12"
 
         echo "$APPLE_CERTIFICATE" | base64 --decode > "$CERT_PATH"
+        # Self-hosted runner: $RUNNER_TEMP survives a mid-job runner crash, so a
+        # stale keychain can linger and make create-keychain fail. Pre-delete it.
+        security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
         security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
         security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
         security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
@@ -307,3 +317,7 @@ jobs:
       run: gh release edit "desktop-v0.4.${{ github.run_number }}" --repo Isol8AI/isol8 --draft=false
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    # Persistent runner: never leave the Apple signing key on disk between runs.
+    - name: Clean up signing keychain
+      if: always()
+      run: security delete-keychain "$RUNNER_TEMP/isol8-build.keychain-db" || true

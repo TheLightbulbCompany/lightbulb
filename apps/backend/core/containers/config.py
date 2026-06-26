@@ -1200,23 +1200,19 @@ def build_openclaw_config_dict(
             },
         },
         "update": {"checkOnStart": False},
-        # Enable the chat-command surfaces the owner needs to manage their
-        # own container from chat. All three are off-by-default upstream
-        # because they're privileged surfaces that should not be exposed
-        # in shared/public deployments — but per-user Isol8 containers
-        # are owner-operated, so flipping them on is the right call.
-        # Skipped:
-        #   - /config — too broad; the control panel + config_patcher own
-        #     config writes, and we don't want chat to mutate provider /
-        #     billing-relevant keys.
-        #   - /bash — host-shell access from chat. Channel-linked accounts
-        #     (Telegram/Discord/Slack) widen the trust boundary too far
-        #     even with allowFrom narrowing; revisit if there's a clear
-        #     ask with a tighter scoping story.
+        # Chat-command surfaces. isCommandFlagEnabled (OpenClaw
+        # config/commands.flags.ts) enables a privileged command only when its
+        # flag is `True`; `restart` is the exception (on unless `False`).
+        # Always-on commands (help/status/reset/model/…) are not gated here —
+        # the chat menu hides the irrelevant ones client-side (see
+        # lib/slashCommands.ts HIDDEN_COMMANDS).
+        #
+        # Curation: the control panel owns MCP/plugins/config writes, so those
+        # must not be mutable from chat; host-shell (/bash) and gateway
+        # /restart widen the trust boundary too far for chat.
         "commands": {
-            "mcp": True,  # /mcp — list/set/unset MCP servers (same data as the MCP Servers panel)
-            "plugins": True,  # /plugins — list discovered plugins + toggle enablement
             "debug": True,  # /debug — runtime-only overrides for diagnostics (not persisted)
+            "restart": False,  # /restart — gateway restart is operator-only, never from chat
         },
     }
 

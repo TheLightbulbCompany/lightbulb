@@ -118,7 +118,13 @@ function snapshotAgents() {
     const files = {};
     for (const f of fs.readdirSync(agentPath)) {
       if (/\.(json|md|lobster|js)$/.test(f)) {
-        files[f] = fs.readFileSync(path.join(agentPath, f), 'utf8');
+        // Per-file try/catch so one unreadable file (perms, binary, etc.) is
+        // recorded as an error rather than killing the whole snapshot walk.
+        try {
+          files[f] = fs.readFileSync(path.join(agentPath, f), 'utf8');
+        } catch (e) {
+          files[f] = { error: e.message };
+        }
       }
     }
     agents.push({ agent_name: dirName, files: files, snapshotted_at: new Date().toISOString() });

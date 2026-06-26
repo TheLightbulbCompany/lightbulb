@@ -95,7 +95,10 @@ async function verifyCitations(citations, concurrency = 10) {
       const [i, c] = entry;
       const url = c.url || c.value;
       const result = await fetchUrlStatus(url);
-      const passed = result.status === 200;
+      // Accept 2xx AND 3xx — https.get doesn't follow redirects, so a permanent
+      // 301/302 (common for docs/arxiv canonical URLs) is still a reachable
+      // citation; counting it as failed would falsely flag it stale after 2 runs.
+      const passed = result.status >= 200 && result.status < 400;
       results[i] = { ...c, url, status: result.status, passed, checked_at: result.checked_at, error: result.error };
     }
   }

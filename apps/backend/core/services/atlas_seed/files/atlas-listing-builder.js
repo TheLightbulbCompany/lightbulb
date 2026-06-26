@@ -65,7 +65,7 @@ function buildListing(buildId, agentName) {
     archetype: (intake && (intake.proposed_archetype || intake.archetype)) || (openclawJson.agents && openclawJson.agents.list && openclawJson.agents.list[0] && openclawJson.agents.list[0].archetype) || 'unknown',
     requirements_covered_count: recapCounts.no_change || 0,
     requirements_partial_count: recapCounts.changed || 0,
-    requirements_uncovered_count: recapCounts.dropped || recapCounts.unvetted || 0,
+    requirements_uncovered_count: (recapCounts.dropped || 0) + (recapCounts.unvetted || 0),
     vet_completion_status: recapCounts.unvetted === 0 ? 'complete' : 'partial',
     security_stack: skills.filter(s => ['fast-io', 'taskr', 'summarize', 'n8n-workflow', 'capability-evolver', 'skill-vetter', 'sona-security-audit', 'agentgate'].includes(s)),
     agentgate_gates: gates,

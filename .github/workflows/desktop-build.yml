@@ -72,6 +72,7 @@ jobs:
            --arg updateUrl "https://dev.isol8.co/api/desktop/update/{{target}}/{{current_version}}?x-vercel-protection-bypass=${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}&x-vercel-set-bypass-cookie=true" \
            --arg version "0.4.${{ github.run_number }}" '
           .version = $version |
+          .bundle.targets = ["app"] |
           .build.devUrl = $url |
           .build.frontendDist = $url |
           .app.windows[0].url = $url |
@@ -171,6 +172,44 @@ jobs:
         TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         ISOL8_CALLBACK_URL: https://dev.isol8.co/auth/desktop-callback
+    - name: Build, sign + notarize DMG (headless)
+      run: |-
+        set -euo pipefail
+        APP="apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Isol8.app"
+        SIGN_ID="Developer ID Application: Prasiddha Parthsarthy (WZX4U3C22Y)"
+        VERSION="0.4.${{ github.run_number }}"
+        DMG="Isol8_${VERSION}_aarch64.dmg"
+        TAG="desktop-dev-v${VERSION}"
+        # Build the DMG by mounting a scratch image under $RUNNER_TEMP, NOT under
+        # /Volumes. Tauri's bundle_dmg.sh (and a plain `hdiutil create -srcfolder`)
+        # mount at /Volumes/<name>, which a self-hosted runner can't write to
+        # without Full Disk Access. Mounting at an explicit path under $RUNNER_TEMP
+        # sidesteps that TCC wall. ditto (not makehybrid) is required because a
+        # shell-script binary's code signature lives in extended attributes, which
+        # makehybrid drops -> notarization rejects the DMG as "not signed".
+        RW="$RUNNER_TEMP/isol8_rw.dmg"
+        MNT="$RUNNER_TEMP/isol8_dmgmnt"
+        rm -f "$RW" "$DMG"; rm -rf "$MNT"; mkdir -p "$MNT"
+        SIZE_MB=$(( $(du -sm "$APP" | cut -f1) + 200 ))
+        hdiutil create -size "${SIZE_MB}m" -fs HFS+ -volname "Isol8" "$RW"
+        hdiutil attach "$RW" -nobrowse -mountpoint "$MNT"
+        ditto "$APP" "$MNT/Isol8.app"
+        ln -s /Applications "$MNT/Applications"
+        hdiutil detach "$MNT" -force
+        hdiutil convert "$RW" -format UDZO -o "$DMG"
+        rm -f "$RW"; rm -rf "$MNT"
+        # Sign, notarize, staple the DMG (the .app inside is already notarized+stapled).
+        codesign --force --timestamp --keychain "$KEYCHAIN_PATH" --sign "$SIGN_ID" "$DMG"
+        xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+        xcrun stapler staple "$DMG"
+        # Upload to the release tauri-action created (still a draft at this point).
+        gh release upload "$TAG" "$DMG" --repo Isol8AI/isol8 --clobber
+        echo "Published $DMG to $TAG"
+      env:
+        APPLE_ID: ${{ secrets.APPLE_ID }}
+        APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+        APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     - name: Publish draft release
       run: gh release edit "desktop-dev-v0.4.${{ github.run_number }}" --repo Isol8AI/isol8 --draft=false
       env:
@@ -216,6 +255,7 @@ jobs:
            --arg updateUrl "https://isol8.co/api/desktop/update/{{target}}/{{current_version}}" \
            --arg version "0.4.${{ github.run_number }}" '
           .version = $version |
+          .bundle.targets = ["app"] |
           .build.devUrl = $url |
           .build.frontendDist = $url |
           .app.windows[0].url = $url |
@@ -315,6 +355,44 @@ jobs:
         TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         ISOL8_CALLBACK_URL: https://isol8.co/auth/desktop-callback
+    - name: Build, sign + notarize DMG (headless)
+      run: |-
+        set -euo pipefail
+        APP="apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Isol8.app"
+        SIGN_ID="Developer ID Application: Prasiddha Parthsarthy (WZX4U3C22Y)"
+        VERSION="0.4.${{ github.run_number }}"
+        DMG="Isol8_${VERSION}_aarch64.dmg"
+        TAG="desktop-v${VERSION}"
+        # Build the DMG by mounting a scratch image under $RUNNER_TEMP, NOT under
+        # /Volumes. Tauri's bundle_dmg.sh (and a plain `hdiutil create -srcfolder`)
+        # mount at /Volumes/<name>, which a self-hosted runner can't write to
+        # without Full Disk Access. Mounting at an explicit path under $RUNNER_TEMP
+        # sidesteps that TCC wall. ditto (not makehybrid) is required because a
+        # shell-script binary's code signature lives in extended attributes, which
+        # makehybrid drops -> notarization rejects the DMG as "not signed".
+        RW="$RUNNER_TEMP/isol8_rw.dmg"
+        MNT="$RUNNER_TEMP/isol8_dmgmnt"
+        rm -f "$RW" "$DMG"; rm -rf "$MNT"; mkdir -p "$MNT"
+        SIZE_MB=$(( $(du -sm "$APP" | cut -f1) + 200 ))
+        hdiutil create -size "${SIZE_MB}m" -fs HFS+ -volname "Isol8" "$RW"
+        hdiutil attach "$RW" -nobrowse -mountpoint "$MNT"
+        ditto "$APP" "$MNT/Isol8.app"
+        ln -s /Applications "$MNT/Applications"
+        hdiutil detach "$MNT" -force
+        hdiutil convert "$RW" -format UDZO -o "$DMG"
+        rm -f "$RW"; rm -rf "$MNT"
+        # Sign, notarize, staple the DMG (the .app inside is already notarized+stapled).
+        codesign --force --timestamp --keychain "$KEYCHAIN_PATH" --sign "$SIGN_ID" "$DMG"
+        xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+        xcrun stapler staple "$DMG"
+        # Upload to the release tauri-action created (still a draft at this point).
+        gh release upload "$TAG" "$DMG" --repo Isol8AI/isol8 --clobber
+        echo "Published $DMG to $TAG"
+      env:
+        APPLE_ID: ${{ secrets.APPLE_ID }}
+        APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+        APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     - name: Publish draft release
       run: gh release edit "desktop-v0.4.${{ github.run_number }}" --repo Isol8AI/isol8 --draft=false
       env:

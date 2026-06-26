@@ -1,110 +1,215 @@
 name: architect-proposal
 
-# Step 3: Architecture proposal — skeleton, classifier, skill recommend, archetype synthesis
+# Step 3: Architecture proposal — skeleton, classifier, skill recommend, archetype synthesis.
+#
+# Gateway-free contract (see intake-and-research.lobster header). The deterministic
+# work (skeleton draft, det/LLM classification, skill recommend) runs as bare
+# `node` programs; the archetype synthesis (1 LLM call) is queued as an intent on
+# `atlas/notifications` for the agent loop, which writes user_stories / voice_tone /
+# requirements_with_triggers back into `atlas/requirement-matrix[build_id]`.
+# build.lobster reads that enriched matrix to materialize the agent's files.
+# state.* keys here: `atlas/research-briefs`, `atlas/intakes`,
+# `atlas/requirement-matrix`, `atlas/notifications`, `atlas/audit-log`.
 
 args:
   build_id:
     default: ""
 
 steps:
-  # Step 3.1 — Load research brief (required input from Step 2 per H1)
-  - id: load-brief
-    command: >
-      openclaw.invoke --tool fast-io --action read --args-json '{
-        "key": "atlas-builds/{{build_id}}/research-brief"
-      }'
+  # Step 3.1 + 3.2 — Load the research brief (from Step 2's agent-loop write) and the
+  #            locked intake (from Step 1), both keyed by build_id inside their maps.
+  - id: load-briefs
+    pipeline: state.get atlas/research-briefs
 
-  # Step 3.2 — Load intake (locked identity from Step 1)
-  - id: load-intake
-    command: >
-      openclaw.invoke --tool fast-io --action read --args-json '{
-        "key": "atlas-builds/{{build_id}}/intake"
-      }'
+  - id: load-intakes
+    pipeline: state.get atlas/intakes
 
-  # Step 3.3 — Generate deterministic skeleton
+  - id: select-inputs
+    command: >
+      node -e 'const briefs=JSON.parse(process.env.BRIEFS||"null")||{};
+        const intakes=JSON.parse(process.env.INTAKES||"null")||{};
+        const id=process.env.LOBSTER_ARG_BUILD_ID||"";
+        const brief=briefs[id]||null; const intake=intakes[id]||null;
+        process.stdout.write(JSON.stringify({brief, intake,
+          has_brief: brief?1:0, has_intake: intake?1:0}));'
+    env:
+      BRIEFS: $load-briefs.stdout
+      INTAKES: $load-intakes.stdout
+
+  # Step 3.2b — Missing-brief path: the agent loop has not produced a research brief
+  #            for this build yet (H1). Queue a notice and skip the proposal; the
+  #            always-run audit records the deferral.
+  - id: nobrief-load
+    condition: $select-inputs.json.has_brief == 0
+    pipeline: state.get atlas/notifications
+
+  # NOTE: notification-append (-next) steps that feed a `state.set` -save have NO
+  # `on_error: continue` on purpose — a throwing append must halt the pipeline so
+  # its -save never overwrites the shared queue with empty stdin. See
+  # intake-and-research.lobster for the full rationale.
+  - id: nobrief-next
+    condition: $select-inputs.json.has_brief == 0
+    command: >
+      node -e 'const n=JSON.parse(process.env.NOTIFS||"null")||[];
+        n.push({kind:"brief_not_ready", channel:"atlas-vet",
+          build_id:process.env.LOBSTER_ARG_BUILD_ID,
+          summary:"No research brief found for this build yet. Run intake-and-research first, then re-run architect-proposal.",
+          created_at:new Date().toISOString()});
+        process.stdout.write(JSON.stringify(n));'
+    env:
+      NOTIFS: $nobrief-load.stdout
+
+  - id: nobrief-save
+    condition: $select-inputs.json.has_brief == 0
+    pipeline: state.set atlas/notifications
+    stdin: $nobrief-next.stdout
+
+  # Step 3.3 — Generate the deterministic skeleton from {intake, brief}.
+  - id: skeleton-input
+    condition: $select-inputs.json.has_brief > 0
+    command: >
+      node -e 'const s=JSON.parse(process.env.SEL||"null")||{};
+        process.stdout.write(JSON.stringify({intake:s.intake, brief:s.brief,
+          build_id:process.env.LOBSTER_ARG_BUILD_ID}));'
+    env:
+      SEL: $select-inputs.stdout
+
   - id: skeleton-generate
-    command: >
-      exec --json --shell 'node atlas-skeleton-generator.js --action=draft'
-    stdin: { brief: $load-brief.json, intake: $load-intake.json }
+    condition: $select-inputs.json.has_brief > 0
+    command: node atlas-skeleton-generator.js --action=draft
+    stdin: $skeleton-input.stdout
+    on_error: continue
 
-  # Step 3.4 — Classify each requirement deterministic vs LLM
+  # Step 3.4 — Classify each requirement deterministic vs LLM.
   - id: det-llm-classify
-    command: >
-      exec --json --shell 'node atlas-det-llm-classifier.js'
-    stdin: $skeleton-generate.json
+    condition: $select-inputs.json.has_brief > 0
+    command: node atlas-det-llm-classifier.js
+    stdin: $skeleton-generate.stdout
+    on_error: continue
 
-  # Step 3.5 — Recommend skill stack (runs skill-vetter sub-process; refuses ClawHavoc-listed skills universally)
+  # Step 3.5 — Recommend skill stack (refuses ClawHavoc-listed skills universally).
+  - id: skill-input
+    condition: $select-inputs.json.has_brief > 0
+    command: >
+      node -e 'const s=JSON.parse(process.env.SEL||"null")||{};
+        process.stdout.write(JSON.stringify({skeleton:JSON.parse(process.env.SKEL||"null"),
+          brief:s.brief}));'
+    env:
+      SEL: $select-inputs.stdout
+      SKEL: $skeleton-generate.stdout
+
   - id: skill-recommend
-    command: >
-      exec --json --shell 'node atlas-skill-recommender.js'
-    stdin: { skeleton: $skeleton-generate.json, brief: $load-brief.json }
+    condition: $select-inputs.json.has_brief > 0
+    command: node atlas-skill-recommender.js
+    stdin: $skill-input.stdout
+    on_error: continue
 
-  # Step 3.6 — Archetype synthesis (1 LLM call; produces user-stories,
-  # voice/tone, AND per-requirement triggers[] binding in the same response.
-  # No new LLM call — triggers ride on the existing multi-field-output schema.
-  #
-  # Schema notes for the LLM:
-  #   requirements_with_triggers[i].req_id           — matches user_stories[].req_id
-  #   requirements_with_triggers[i].classification   — "deterministic" | "llm" | "hybrid"
-  #                                                    (echo the classifier's assignment)
-  #   requirements_with_triggers[i].triggers[]       — array of triggers; for `deterministic`
-  #                                                    classification MUST be non-empty
-  #   trigger kinds:
-  #     cron       — {kind, schedule, tz?, pipeline}   — pipeline ends in .lobster
-  #     hook       — {kind, route, pipeline}            — route starts with /hooks/
-  #     agent-call — {kind, callable_as, pipeline|null}
-  #   `channel` kind is NOT supported in v1.
-  - id: archetype-synthesis
-    command: >
-      openclaw.invoke --tool llm-task --action json --args-json '{
-        "prompt": "For each requirement: (1) phrase as user-story (As a [agent], I should [action] so that [outcome]); (2) propose triggers[] binding the requirement to runtime entry points. Triggers MUST be non-empty when classification is `deterministic`. Trigger kinds: cron (schedule + .lobster pipeline), hook (/hooks/ route + .lobster pipeline), agent-call (callable_as + optional .lobster pipeline). Also produce SOUL.md voice/tone for the archetype.",
-        "input": {"skeleton": $skeleton-generate.json, "classifications": $det-llm-classify.json, "intake": $load-intake.json, "brief": $load-brief.json},
-        "schema": {"type":"object","properties":{"schema_version":{"type":"string"},"user_stories":{"type":"array"},"voice_tone":{"type":"object"},"requirements_with_triggers":{"type":"array","items":{"type":"object","properties":{"req_id":{"type":"string"},"classification":{"type":"string","enum":["deterministic","llm","hybrid"]},"triggers":{"type":"array","items":{"type":"object","properties":{"kind":{"type":"string","enum":["cron","hook","agent-call"]},"schedule":{"type":"string"},"tz":{"type":"string"},"route":{"type":"string"},"callable_as":{"type":"string"},"pipeline":{"type":["string","null"]}},"required":["kind"]}}},"required":["req_id","classification","triggers"]}}},"required":["schema_version","user_stories","voice_tone","requirements_with_triggers"]},
-        "thinking": "low",
-        "maxTokens": 3500
-      }'
+  # Step 3.6 — Archetype synthesis (1 LLM call) — queue an intent for the agent loop.
+  #            The loop produces user_stories, voice_tone, AND per-requirement
+  #            triggers[] binding, then merges them into atlas/requirement-matrix
+  #            [build_id]. ALSO queue the user-facing audit surface in the same append.
+  - id: notify-load
+    condition: $select-inputs.json.has_brief > 0
+    pipeline: state.get atlas/notifications
 
-  # Step 3.7 — Snapshot original requirement matrix (W5 hash-verification pattern)
-  - id: snapshot-matrix
+  - id: notify-next
+    condition: $select-inputs.json.has_brief > 0
     command: >
-      openclaw.invoke --tool fast-io --action write --args-json '{
-        "key": "atlas-builds/{{build_id}}/requirement-matrix",
-        "data": {
-          "skeleton": $skeleton-generate.json,
-          "classifications": $det-llm-classify.json,
-          "skill_recommendations": $skill-recommend.json,
-          "user_stories": $archetype-synthesis.json.user_stories,
-          "voice_tone": $archetype-synthesis.json.voice_tone,
-          "requirements_with_triggers": $archetype-synthesis.json.requirements_with_triggers,
-          "snapshot_at": "{{timestamp}}"
-        }
-      }'
+      node -e 'const n=JSON.parse(process.env.NOTIFS||"null")||[];
+        const id=process.env.LOBSTER_ARG_BUILD_ID||"build_unknown";
+        const sk=JSON.parse(process.env.SKEL||"null")||{};
+        const sel=JSON.parse(process.env.SEL||"null")||{};
+        n.push({kind:"archetype_synthesis", channel:"atlas-vet", build_id:id,
+          payload:{skeleton:sk, classifications:JSON.parse(process.env.CLASS||"null"),
+            skill_recommendations:JSON.parse(process.env.SKILLS||"null"),
+            intake:sel.intake||null,
+            persist_to:"atlas/requirement-matrix",
+            instructions:"For each requirement: phrase as a user-story and propose triggers[] (cron | hook | agent-call). triggers MUST be non-empty when classification is deterministic. Also produce SOUL.md voice/tone. Merge user_stories, voice_tone, and requirements_with_triggers into atlas/requirement-matrix keyed by build_id."},
+          created_at:new Date().toISOString()});
+        n.push({kind:"architect_audit", channel:"atlas-vet", build_id:id,
+          summary:"Step 3 deterministic skeleton complete ("+(sk.requirement_count||0)+" requirements). Archetype synthesis queued; Step 4 vet starts on confirmation.",
+          created_at:new Date().toISOString()});
+        process.stdout.write(JSON.stringify(n));'
+    env:
+      NOTIFS: $notify-load.stdout
+      SKEL: $skeleton-generate.stdout
+      CLASS: $det-llm-classify.stdout
+      SKILLS: $skill-recommend.stdout
+      # Pass the raw stdout blob (a JSON string), not .json.intake (a nested
+      # object) — env vars are strings; a non-scalar .json path stringifies to
+      # "[object Object]" and JSON.parse throws, silently dropping the intent.
+      SEL: $select-inputs.stdout
 
-  # Step 3.8 — Write SHA256 of snapshot
-  - id: snapshot-sha256
-    command: >
-      openclaw.invoke --tool fast-io --action write --args-json '{
-        "key": "atlas-builds/{{build_id}}/requirement-matrix.sha256",
-        "data": "$snapshot-matrix.sha256"
-      }'
+  - id: notify-save
+    condition: $select-inputs.json.has_brief > 0
+    pipeline: state.set atlas/notifications
+    stdin: $notify-next.stdout
 
-  # Step 3.9 — Present audit table to user
-  - id: present-audit
+  # Step 3.7 + 3.8 — Snapshot the deterministic requirement matrix into the per-build
+  #            map and write its SHA256 (computed in-node via crypto — no $step.sha256
+  #            pseudo-accessor). The agent loop later merges synthesis output into the
+  #            same map[build_id]. Load-before-use, set [build_id], write.
+  - id: compute-matrix
+    condition: $select-inputs.json.has_brief > 0
     command: >
-      openclaw.invoke --tool slack --action post --args-json '{
-        "channel": "{{vet_channel}}",
-        "text": "Step 3 audit complete. Requirement matrix snapshotted (SHA256: $snapshot-matrix.sha256). Step 4 vet starts on confirmation."
-      }'
+      node -e 'const crypto=require("crypto");
+        const matrix={skeleton:JSON.parse(process.env.SKEL||"null"),
+          classifications:JSON.parse(process.env.CLASS||"null"),
+          skill_recommendations:JSON.parse(process.env.SKILLS||"null"),
+          snapshot_at:new Date().toISOString()};
+        const sha=crypto.createHash("sha256").update(JSON.stringify(matrix)).digest("hex");
+        const sk=JSON.parse(process.env.SKEL||"null")||{};
+        process.stdout.write(JSON.stringify({matrix:{...matrix, matrix_sha256:sha},
+          matrix_sha256:sha, requirement_count:sk.requirement_count||0}));'
+    env:
+      SKEL: $skeleton-generate.stdout
+      CLASS: $det-llm-classify.stdout
+      SKILLS: $skill-recommend.stdout
 
-  # Audit log
-  - id: audit-log
+  - id: matrix-load
+    condition: $select-inputs.json.has_brief > 0
+    pipeline: state.get atlas/requirement-matrix
+
+  - id: matrix-next
+    condition: $select-inputs.json.has_brief > 0
     command: >
-      openclaw.invoke --tool fast-io --action write --args-json '{
-        "key": "audit/{{timestamp}}/architect-proposal/{{build_id}}",
-        "data": {
-          "action": "architect_proposal_complete",
-          "build_id": "{{build_id}}",
-          "matrix_sha256": "$snapshot-matrix.sha256",
-          "requirement_count": $skeleton-generate.json.requirement_count
-        }
-      }'
+      node -e 'const map=JSON.parse(process.env.MAP||"null")||{};
+        const id=process.env.LOBSTER_ARG_BUILD_ID||"build_unknown";
+        const c=JSON.parse(process.env.COMPUTED||"null")||{};
+        map[id]={...(map[id]||{}), ...(c.matrix||{})};
+        process.stdout.write(JSON.stringify(map));'
+    env:
+      MAP: $matrix-load.stdout
+      COMPUTED: $compute-matrix.stdout
+
+  - id: matrix-save
+    condition: $select-inputs.json.has_brief > 0
+    pipeline: state.set atlas/requirement-matrix
+    stdin: $matrix-next.stdout
+
+  # Audit log — always runs; defaults its inputs so it never references a skipped
+  #            producer. Records the matrix SHA256 + requirement count (or the deferral).
+  - id: audit-load
+    pipeline: state.get atlas/audit-log
+
+  - id: audit-next
+    command: >
+      node -e 'const log=JSON.parse(process.env.AUDIT||"null")||[];
+        const sel=JSON.parse(process.env.SEL||"null")||{};
+        const c=JSON.parse(process.env.COMPUTED||"null")||{};
+        log.push({action:"architect_proposal_complete",
+          build_id:process.env.LOBSTER_ARG_BUILD_ID,
+          has_brief: sel.has_brief===1,
+          matrix_sha256: c.matrix_sha256||null,
+          requirement_count: c.requirement_count!=null?c.requirement_count:null,
+          timestamp:new Date().toISOString()});
+        if (log.length>500) log.splice(0,log.length-500);
+        process.stdout.write(JSON.stringify(log));'
+    env:
+      AUDIT: $audit-load.stdout
+      SEL: $select-inputs.stdout
+      COMPUTED: $compute-matrix.stdout
+
+  - id: audit-save
+    pipeline: state.set atlas/audit-log
+    stdin: $audit-next.stdout

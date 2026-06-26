@@ -176,3 +176,52 @@ async def test_acp_section_absent_when_flag_off(captured_ws, tmp_path, monkeypat
     agents_md = captured_ws.written["workspaces/uuid-atlas/AGENTS.md"]
     assert "base recruiter copy" in agents_md
     assert "Coding-Harness Delegation (ACP)" not in agents_md
+
+
+def _bridge_files_dir(tmp_path, monkeypatch):
+    """Files dir whose build.lobster carries the {{ISOL8_BRIDGE_URL}} placeholder
+    that pre_stage_atlas substitutes at stage time."""
+    root = tmp_path / "files"
+    root.mkdir(parents=True)
+    (root / "IDENTITY.md").write_text("# Atlas", encoding="utf-8")
+    (root / "build.lobster").write_text(
+        'name: build\nsteps:\n  - id: register\n    command: curl -sS -X POST "{{ISOL8_BRIDGE_URL}}"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(atlas_seed, "_FILES_DIR", root)
+    return root
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "env, expected_host",
+    [
+        ("dev", "https://api-dev.isol8.co"),
+        ("staging", "https://api-staging.isol8.co"),
+        ("prod", "https://api.isol8.co"),
+        ("production", "https://api.isol8.co"),  # "production" alias → prod host
+        ("", "https://api.isol8.co"),  # empty env resolves to the prod host
+    ],
+)
+async def test_bridge_url_substituted_into_build_lobster(captured_ws, tmp_path, monkeypatch, env, expected_host):
+    """pre_stage rewrites build.lobster's {{ISOL8_BRIDGE_URL}} placeholder to the
+    concrete per-env, per-owner agent-builder bridge URL, leaving none behind."""
+    _bridge_files_dir(tmp_path, monkeypatch)
+    monkeypatch.setattr("core.config.settings.ENVIRONMENT", env)
+    agents = [{"id": "uuid-atlas", "role": "general", "name": "Atlas"}]
+
+    await pre_stage_atlas(owner_id="org_abc", paperclip_agents=agents, workspace=captured_ws)
+
+    build_lobster = captured_ws.written["workspaces/uuid-atlas/build.lobster"]
+    assert "{{ISOL8_BRIDGE_URL}}" not in build_lobster
+    assert f"{expected_host}/api/v1/agent-builder/u/org_abc/register-built-agent" in build_lobster
+
+
+@pytest.mark.asyncio
+async def test_bridge_url_no_placeholder_leaves_loop_to_write(workspace_stub, fake_files_dir):
+    """When build.lobster has no placeholder, the templating helper no-ops and the
+    generic loop writes the file once (no double write)."""
+    agents = [{"id": "uuid-atlas", "role": "general", "name": "Atlas"}]
+    await pre_stage_atlas(owner_id="user_x", paperclip_agents=agents, workspace=workspace_stub)
+    build_writes = [p for (_u, p) in workspace_stub.calls if p.endswith("/build.lobster")]
+    assert build_writes == ["workspaces/uuid-atlas/build.lobster"]

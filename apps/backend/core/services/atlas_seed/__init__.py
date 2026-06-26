@@ -70,6 +70,39 @@ Step 4 like any other.
 _ATLAS_AGENT_NAME = "Atlas"
 _FILES_DIR = Path(__file__).parent / "files"
 
+# build.lobster's CREATE step (register-built-agent) curls the per-owner
+# agent-builder bridge. The vendored file ships a literal placeholder; the
+# concrete per-env, per-owner URL is substituted at stage time (see
+# pre_stage_atlas below). The placeholder string must match build.lobster.
+_BRIDGE_URL_PLACEHOLDER = "{{ISOL8_BRIDGE_URL}}"
+
+
+def _api_base_url(env_name: str) -> str:
+    """REST API base URL for the agent-builder bridge, per environment.
+
+    Mirrors the env-name convention in
+    ``paperclip_provisioning._ws_gateway_url`` and the frontend's
+    ``NEXT_PUBLIC_API_URL`` (``api-{env}.isol8.co``): ``prod``/``production``
+    and an empty env resolve to the bare ``api.isol8.co`` host (production drops
+    the ``-prod`` suffix). Any other (non-empty) env name maps to
+    ``api-{env}.isol8.co`` — e.g. ``dev`` → ``api-dev.isol8.co``.
+    """
+    # `not env_name` also catches a None ENVIRONMENT (the annotation says str,
+    # but guard defensively so a None never yields api-None.isol8.co).
+    if not env_name or env_name in ("prod", "production"):
+        return "https://api.isol8.co"
+    return f"https://api-{env_name}.isol8.co"
+
+
+def _bridge_url(owner_id: str) -> str:
+    """Concrete register-built-agent bridge URL for this owner + environment.
+
+    Mounted at ``/api/v1/agent-builder`` (main.py) with the route
+    ``/u/{owner_id}/register-built-agent`` (routers/agent_builder.py).
+    """
+    return f"{_api_base_url(settings.ENVIRONMENT)}/api/v1/agent-builder/u/{owner_id}/register-built-agent"
+
+
 # Junk that must never be seeded into a user's workspace, even if it sneaks
 # into the vendored tree (mirrors agent_export's hygiene filter).
 _SKIP = {".DS_Store", "__pycache__", ".git"}
@@ -139,6 +172,32 @@ async def pre_stage_atlas(
         except Exception as exc:  # noqa: BLE001 — best-effort, log + continue
             put_metric("atlas_seed.acp_section_error")
             logger.warning("atlas_seed: ACP AGENTS.md augmentation failed owner=%s: %s", owner_id, exc)
+
+    # Stage-time bridge-URL templating. build.lobster's CREATE step curls the
+    # per-owner agent-builder bridge but ships with a literal {{ISOL8_BRIDGE_URL}}
+    # placeholder (the URL is per-env + per-owner, not known until provision).
+    # Substitute it BEFORE the generic vendored-file loop so the loop's
+    # write_file_if_missing no-ops on build.lobster (the substituted copy wins) —
+    # same mechanism as the ACP AGENTS.md augmentation above. Guarded on the
+    # placeholder so the helper is a no-op (and the loop writes the file) if a
+    # future build.lobster drops it. Best-effort: a failure here just means the
+    # loop writes the un-substituted file, which fails closed (curl to a literal
+    # placeholder errors) rather than calling a wrong host.
+    try:
+        build_path = _FILES_DIR / "build.lobster"
+        if build_path.is_file():
+            build_src = build_path.read_text(encoding="utf-8")
+            if _BRIDGE_URL_PLACEHOLDER in build_src:
+                wrote_build = workspace.write_file_if_missing(
+                    owner_id,
+                    f"workspaces/{atlas_uuid}/build.lobster",
+                    build_src.replace(_BRIDGE_URL_PLACEHOLDER, _bridge_url(owner_id)),
+                )
+                if wrote_build:
+                    put_metric("atlas_seed.bridge_url_templated")
+    except Exception as exc:  # noqa: BLE001 — best-effort, log + continue
+        put_metric("atlas_seed.bridge_url_error")
+        logger.warning("atlas_seed: build.lobster bridge-URL templating failed owner=%s: %s", owner_id, exc)
 
     written = 0
     skipped = 0

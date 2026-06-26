@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, act } from "@testing-library/react";
 import React from "react";
 
@@ -139,6 +139,13 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     apiGet.mockClear();
     apiPut.mockClear();
     apiDel.mockClear();
+  });
+
+  afterEach(() => {
+    // beforeEach's mockClear resets call history but not the implementation, so
+    // a test that overrides apiGet's resolved value would leak it into later
+    // tests if it threw before restoring. Reset the default here unconditionally.
+    apiGet.mockResolvedValue({});
   });
 
   it("derives cold-start sub-phases from real signals, not elapsed time", () => {
@@ -534,8 +541,5 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     expect(
       screen.queryByRole("link", { name: "Sign in with ChatGPT" }),
     ).not.toBeInTheDocument();
-
-    // Restore the shared apiGet stub so later suites see the default.
-    apiGet.mockResolvedValue({});
   });
 });

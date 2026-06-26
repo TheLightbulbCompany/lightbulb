@@ -220,14 +220,16 @@ export function ProvisioningStepper({
   // stripped from the URL above. Null until the step completes; resets on remount.
   const [completedProvider, setCompletedProvider] = useState<ProviderChoice | null>(null);
 
-  // Open a grace window when the provider step completes. While it is open and
-  // the gate is still blocked, the settling loader below wins over the cold
-  // gate card; once it lapses the real gate card takes over again. The dep is
-  // the rising edge of providerStepDone (false -> true), which fires once.
+  // Grace window: while it is open and the gate is still blocked, the settling
+  // loader below wins over the cold gate card; once it lapses the real gate
+  // card takes over again. The window is OPENED synchronously in
+  // handleProviderComplete (so providerSettling lands in the same commit as
+  // providerStepDone — otherwise this effect, which runs post-commit, would lag
+  // one frame and flash the main stepper). This effect only schedules the
+  // backstop that closes the window.
   const [providerSettling, setProviderSettling] = useState(false);
   useEffect(() => {
     if (!providerStepDone) return;
-    setProviderSettling(true);
     const timer = setTimeout(() => setProviderSettling(false), PROVIDER_SETTLE_MS);
     return () => clearTimeout(timer);
   }, [providerStepDone]);
@@ -578,7 +580,10 @@ export function ProvisioningStepper({
       capture("onboarding_provider_completed", {
         provider_choice: providerChoice,
       });
+      // Open the settling window in the same commit as providerStepDone so the
+      // loader is shown on the very next render with no one-frame stepper flash.
       setCompletedProvider(providerChoice);
+      setProviderSettling(true);
       setProviderStepDone(true);
     };
     return (

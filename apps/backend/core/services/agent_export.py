@@ -416,6 +416,12 @@ def _build_tarball(agent_dir: Path) -> tuple[bytes, list[str]]:
             # and are inert cruft that should never reach a buyer's workspace.
             if ".bak" in basename or basename.endswith((".tmp", ".orig", "~")):
                 return None
+            # build-manifest.json is an Atlas-build artifact (file hashes + build
+            # metadata), never a real workspace file — exclude it so it can't ride
+            # into a deployed agent on the staging-export fallback path (where the
+            # staging root, not workspace/, is tarred).
+            if basename == "build-manifest.json":
+                return None
             if _looks_like_credential_file(basename):
                 return None
             # Reject symlinks defensively (catalog_package.untar already does
@@ -754,6 +760,13 @@ def export_built_agent_from_staging(owner_id: str, staging_agent_id: str) -> Cat
         raise BuiltAgentConfigError(
             f"built agent {built_agent_id!r} is not registered in its own openclaw.json agents.list"
         ) from exc
+
+    # Rewrite workspace-relative MCP arg paths to the __AGENT_DIR__ sentinel that
+    # deploy_from_artifact substitutes back to the new agent's workspace — same
+    # as the seller path. No-op today (built agents have no MCP servers) but
+    # required once the skeleton generator emits MCP config pointing at the
+    # staging workspace, else those paths would survive pointing at the staging dir.
+    _rewrite_mcp_args_paths(slice_, seller_agent_id=built_agent_id)
 
     # Same post-scrub credential-leak gate the seller path runs: the slice is a
     # separate artifact the tarball scan never walks, so block if a secret

@@ -148,6 +148,9 @@ def test_staging_export_falls_back_to_root_openclaw_json(tmp_path: Path):
     staging_dir.mkdir(parents=True)
     (staging_dir / "openclaw.json").write_text(json.dumps(_staging_openclaw_config()), encoding="utf-8")
     (staging_dir / "AGENTS.md").write_text("# flat\n", encoding="utf-8")
+    # Even on the fallback path (tarring the staging root), the build-manifest
+    # must NOT ship — it's an Atlas build artifact, not a workspace file.
+    (staging_dir / "build-manifest.json").write_text('{"build_id": "b1"}', encoding="utf-8")
 
     from core.containers import workspace as workspace_module
 
@@ -157,6 +160,7 @@ def test_staging_export_falls_back_to_root_openclaw_json(tmp_path: Path):
     names = _list_tar_names(pkg.tarball_bytes)
     assert "./openclaw.json" in names, names
     assert "./AGENTS.md" in names, names
+    assert not any("build-manifest.json" in n for n in names), names
     assert pkg.manifest["agent_id"] == "lex-legal"
 
 

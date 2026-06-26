@@ -961,10 +961,14 @@ export class ServiceStack extends cdk.Stack {
         // backend's /__paperclip_proxy__ path). The backend uses this
         // value for cookie-domain rewrites on Better Auth Set-Cookie
         // responses and for setting the proxy session cookie.
-        PAPERCLIP_PUBLIC_URL:
-          env === "prod"
-            ? "https://company.isol8.co"
-            : `https://${env}.company.isol8.co`,
+        // `company.isol8.co` is RETIRED (NXDOMAIN since #510). The Teams UI is
+        // native in the isol8 frontend now, so nothing browser-facing uses this.
+        // Its live consumers are the Origin header the Teams BFF sends to
+        // Paperclip (must match Paperclip's PUBLIC_URL or the board-mutation
+        // origin guard rejects writes) and the now-dead proxy's cookie rewrites.
+        // Point it at the same in-VPC host PaperclipStack now uses for
+        // PAPERCLIP_PUBLIC_URL so the Origin matches; no more dead host.
+        PAPERCLIP_PUBLIC_URL: `http://paperclip.${props.container.cloudMapNamespace.namespaceName}:3100`,
         // Cloud Map A record published by PaperclipStack at:
         //   `paperclip.<cloudMapNamespace.namespaceName>:3100`
         // Namespace name is `isol8-${env}.local` (ContainerStack). Reading

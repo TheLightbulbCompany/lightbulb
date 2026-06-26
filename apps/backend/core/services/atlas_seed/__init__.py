@@ -87,7 +87,9 @@ def _api_base_url(env_name: str) -> str:
     the ``-prod`` suffix). Any other (non-empty) env name maps to
     ``api-{env}.isol8.co`` — e.g. ``dev`` → ``api-dev.isol8.co``.
     """
-    if env_name in ("prod", "production", ""):
+    # `not env_name` also catches a None ENVIRONMENT (the annotation says str,
+    # but guard defensively so a None never yields api-None.isol8.co).
+    if not env_name or env_name in ("prod", "production"):
         return "https://api.isol8.co"
     return f"https://api-{env_name}.isol8.co"
 

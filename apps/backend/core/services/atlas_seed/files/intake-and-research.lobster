@@ -49,7 +49,7 @@ steps:
     command: >
       node -e 'const map=JSON.parse(process.env.INTAKES||"null")||{};
         const id=process.env.LOBSTER_ARG_BUILD_ID||"build_unknown";
-        map[id]=JSON.parse(process.env.ILOCK||"null")||{};
+        map[id]=JSON.parse(process.env.ILOCK||"null");
         process.stdout.write(JSON.stringify(map));'
     env:
       INTAKES: $intake-load.stdout
@@ -167,13 +167,14 @@ steps:
         log.push({action:"intake_and_research_complete",
           build_id:process.env.LOBSTER_ARG_BUILD_ID,
           overlap_recommendation:so.recommendation||null,
-          research_brief_queued:true,
+          research_brief_queued:process.env.GATE_APPROVED==="true",
           timestamp:new Date().toISOString()});
         if (log.length>500) log.splice(0,log.length-500);
         process.stdout.write(JSON.stringify(log));'
     env:
       AUDIT: $audit-load.stdout
       STACK: $stack-overlap.stdout
+      GATE_APPROVED: $surface-overlap-gate.approved
 
   - id: audit-save
     pipeline: state.set atlas/audit-log

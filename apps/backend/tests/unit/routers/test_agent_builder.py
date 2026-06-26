@@ -82,6 +82,29 @@ def test_register_happy_path(mock_get_container, mock_export, mock_create_pc, mo
 
 
 @patch("routers.agent_builder.delete_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.agent_builder.get_ecs_manager")
+@patch("routers.agent_builder.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.agent_builder.agent_export.export_agent_from_efs")
+@patch("routers.agent_builder.container_repo.get_by_owner_id", new_callable=AsyncMock)
+def test_container_down_503_before_mint(
+    mock_get_container, mock_export, mock_create_pc, mock_get_ecs, mock_delete_pc, client
+):
+    """A not-running container 503s BEFORE the Paperclip mint — so no agent is
+    created and there's nothing to roll back (avoids mint+delete on every retry
+    while the container starts)."""
+    mock_get_container.return_value = {"hook_token": TOKEN, "gateway_token": "gw-token"}
+    mock_export.return_value = _pkg()
+    ecs = MagicMock()
+    ecs.resolve_running_container = AsyncMock(return_value=(None, None))
+    mock_get_ecs.return_value = ecs
+
+    resp = client.post(URL, json=BODY, headers={"Authorization": f"Bearer {TOKEN}"})
+    assert resp.status_code == 503
+    mock_create_pc.assert_not_awaited()  # nothing minted
+    mock_delete_pc.assert_not_awaited()  # nothing to roll back
+
+
+@patch("routers.agent_builder.delete_paperclip_for_marketplace", new_callable=AsyncMock)
 @patch("routers.agent_builder.get_catalog_service")
 @patch("routers.agent_builder.get_ecs_manager")
 @patch("routers.agent_builder.create_paperclip_for_marketplace", new_callable=AsyncMock)
@@ -90,16 +113,19 @@ def test_register_happy_path(mock_get_container, mock_export, mock_create_pc, mo
 def test_deploy_failure_rolls_back_paperclip(
     mock_get_container, mock_export, mock_create_pc, mock_get_ecs, mock_get_catalog, mock_delete_pc, client
 ):
+    """Container is up and the agent is minted, but the deploy into the
+    container fails → roll back the orphan Paperclip agent."""
     mock_get_container.return_value = {"hook_token": TOKEN, "gateway_token": "gw-token"}
     mock_export.return_value = _pkg()
     mock_create_pc.return_value = {"id": "new-agent-uuid", "name": "Lex"}
     ecs = MagicMock()
-    # Container not running → 503 after the Paperclip mint → rollback.
-    ecs.resolve_running_container = AsyncMock(return_value=(None, None))
+    ecs.resolve_running_container = AsyncMock(return_value=({"gateway_token": "gw-token"}, "10.0.0.1"))
     mock_get_ecs.return_value = ecs
-    mock_get_catalog.return_value = MagicMock()
+    catalog = MagicMock()
+    catalog.deploy_from_artifact = AsyncMock(side_effect=RuntimeError("untar failed"))
+    mock_get_catalog.return_value = catalog
 
     resp = client.post(URL, json=BODY, headers={"Authorization": f"Bearer {TOKEN}"})
-    assert resp.status_code == 503
+    assert resp.status_code == 502
     mock_delete_pc.assert_awaited_once()
     assert mock_delete_pc.await_args.kwargs["agent_id"] == "new-agent-uuid"

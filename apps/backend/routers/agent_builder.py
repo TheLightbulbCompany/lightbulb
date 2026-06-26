@@ -102,7 +102,22 @@ async def register_built_agent(owner_id: str, payload: RegisterBuiltAgentRequest
     slice_ = package.openclaw_slice or {}
     meta = derive_from_listing(name=payload.name, description_md=None)
 
-    # 2. Mint the Paperclip agent (shares the UUID threaded into deploy as
+    # 2. Resolve the running container BEFORE minting Paperclip. The container
+    #    is often still starting while Atlas works; checking first means a
+    #    not-ready container returns 503 without minting — otherwise we'd create
+    #    a Paperclip agent and immediately roll it back on every retry until the
+    #    container stabilizes. gateway_token is fetched here too (single read).
+    ecs = get_ecs_manager()
+    container, container_ip = await ecs.resolve_running_container(owner_id)
+    if container is None or container_ip is None:
+        raise HTTPException(status_code=503, detail="container starting — retry in a moment")
+    container_token = container.get("gateway_token")
+    if not container_token:
+        # Row exists but predates gateway_token (or a partial write) — treat as
+        # not-ready rather than KeyError-into-misleading-rollback.
+        raise HTTPException(status_code=503, detail="container not ready (no gateway token) — retry in a moment")
+
+    # 3. Mint the Paperclip agent (shares the UUID threaded into deploy as
     #    new_agent_id). buyer_user_id = owner_id (the container's manual-wake key).
     paperclip_agent = await create_paperclip_for_marketplace(
         buyer_user_id=owner_id,
@@ -114,15 +129,10 @@ async def register_built_agent(owner_id: str, payload: RegisterBuiltAgentRequest
     )
     new_agent_id = paperclip_agent["id"]
 
-    # 3. Deploy the snapshot into the running container (write files + register
-    #    live in openclaw.json). Roll back the orphan Paperclip agent on any
-    #    post-mint failure — same envelope as the marketplace deploy path.
+    # 4. Deploy the snapshot into the container (write files + register live in
+    #    openclaw.json). Roll back the orphan Paperclip agent on any failure —
+    #    same envelope as the marketplace deploy path.
     try:
-        ecs = get_ecs_manager()
-        container, container_ip = await ecs.resolve_running_container(owner_id)
-        if container is None or container_ip is None:
-            raise HTTPException(status_code=503, detail="container starting — retry in a moment")
-
         catalog = get_catalog_service()
         await catalog.deploy_from_artifact(
             owner_id=owner_id,
@@ -132,11 +142,11 @@ async def register_built_agent(owner_id: str, payload: RegisterBuiltAgentRequest
             tar_bytes=package.tarball_bytes,
             new_agent_id=new_agent_id,
             container_ip=container_ip,
-            container_token=container["gateway_token"],
+            container_token=container_token,
         )
     except Exception as exc:  # noqa: BLE001 — roll back the orphan, re-raise
         logger.exception(
-            "register_built_agent: post-mint step failed for owner=%s staging=%s — rolling back %s",
+            "register_built_agent: deploy failed for owner=%s staging=%s — rolling back %s",
             owner_id,
             payload.staging_agent_id,
             new_agent_id,
@@ -147,7 +157,9 @@ async def register_built_agent(owner_id: str, payload: RegisterBuiltAgentRequest
             logger.exception("register_built_agent: rollback failed for agent %s", new_agent_id)
         if isinstance(exc, HTTPException):
             raise
-        raise HTTPException(status_code=503, detail="container unavailable — retry the build in a moment") from exc
+        raise HTTPException(
+            status_code=502, detail="deploy into container failed — retry the build in a moment"
+        ) from exc
 
     return {
         "agent_id": new_agent_id,

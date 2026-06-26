@@ -1,0 +1,105 @@
+"""Tests for the Atlas agent-builder bridge (register a built agent).
+
+Covers the hook-token auth gate, the happy path (snapshot → mint Paperclip →
+deploy), and the orphan-rollback when the post-mint deploy fails.
+"""
+
+import os
+
+os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
+
+from unittest.mock import AsyncMock, MagicMock, patch  # noqa: E402
+
+import pytest  # noqa: E402
+from fastapi import FastAPI  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+
+from routers import agent_builder  # noqa: E402
+
+OWNER = "org_abc"
+TOKEN = "hook-secret-123"
+URL = f"/u/{OWNER}/register-built-agent"
+BODY = {"staging_agent_id": "staging-uuid-1", "name": "Lex the Legal Bot"}
+
+
+@pytest.fixture
+def client():
+    app = FastAPI()
+    app.include_router(agent_builder.router)
+    return TestClient(app)
+
+
+def _pkg():
+    from core.services.catalog_package import CatalogPackage
+
+    return CatalogPackage(
+        format="openclaw",
+        manifest={"name": "Lex the Legal Bot", "agent_id": "staging-uuid-1"},
+        openclaw_slice={"agent": {"name": "Lex"}, "plugins": {}, "tools": {}, "cron_jobs": []},
+        tarball_bytes=b"fake-tar",
+        tarball_contents=["./openclaw.json"],
+    )
+
+
+def test_missing_token_401(client):
+    resp = client.post(URL, json=BODY)
+    assert resp.status_code == 401
+
+
+@patch("routers.agent_builder.container_repo.get_by_owner_id", new_callable=AsyncMock)
+def test_wrong_token_401(mock_get_container, client):
+    mock_get_container.return_value = {"hook_token": TOKEN, "gateway_token": "gw"}
+    resp = client.post(URL, json=BODY, headers={"Authorization": "Bearer nope"})
+    assert resp.status_code == 401
+
+
+@patch("routers.agent_builder.get_catalog_service")
+@patch("routers.agent_builder.get_ecs_manager")
+@patch("routers.agent_builder.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.agent_builder.agent_export.export_agent_from_efs")
+@patch("routers.agent_builder.container_repo.get_by_owner_id", new_callable=AsyncMock)
+def test_register_happy_path(mock_get_container, mock_export, mock_create_pc, mock_get_ecs, mock_get_catalog, client):
+    mock_get_container.return_value = {"hook_token": TOKEN, "gateway_token": "gw-token"}
+    mock_export.return_value = _pkg()
+    mock_create_pc.return_value = {"id": "new-agent-uuid", "name": "Lex the Legal Bot"}
+    ecs = MagicMock()
+    ecs.resolve_running_container = AsyncMock(return_value=({"gateway_token": "gw-token"}, "10.0.0.1"))
+    mock_get_ecs.return_value = ecs
+    catalog = MagicMock()
+    catalog.deploy_from_artifact = AsyncMock(return_value={"agent_id": "new-agent-uuid"})
+    mock_get_catalog.return_value = catalog
+
+    resp = client.post(URL, json=BODY, headers={"Authorization": f"Bearer {TOKEN}"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["agent_id"] == "new-agent-uuid"
+    assert resp.json()["registered"] is True
+
+    # Snapshot keyed by owner_id + the staging dir.
+    assert mock_export.call_args.kwargs["seller_id"] == OWNER
+    assert mock_export.call_args.kwargs["agent_id"] == "staging-uuid-1"
+    # Deploy threaded the minted UUID as new_agent_id.
+    assert catalog.deploy_from_artifact.await_args.kwargs["new_agent_id"] == "new-agent-uuid"
+
+
+@patch("routers.agent_builder.delete_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.agent_builder.get_catalog_service")
+@patch("routers.agent_builder.get_ecs_manager")
+@patch("routers.agent_builder.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.agent_builder.agent_export.export_agent_from_efs")
+@patch("routers.agent_builder.container_repo.get_by_owner_id", new_callable=AsyncMock)
+def test_deploy_failure_rolls_back_paperclip(
+    mock_get_container, mock_export, mock_create_pc, mock_get_ecs, mock_get_catalog, mock_delete_pc, client
+):
+    mock_get_container.return_value = {"hook_token": TOKEN, "gateway_token": "gw-token"}
+    mock_export.return_value = _pkg()
+    mock_create_pc.return_value = {"id": "new-agent-uuid", "name": "Lex"}
+    ecs = MagicMock()
+    # Container not running → 503 after the Paperclip mint → rollback.
+    ecs.resolve_running_container = AsyncMock(return_value=(None, None))
+    mock_get_ecs.return_value = ecs
+    mock_get_catalog.return_value = MagicMock()
+
+    resp = client.post(URL, json=BODY, headers={"Authorization": f"Bearer {TOKEN}"})
+    assert resp.status_code == 503
+    mock_delete_pc.assert_awaited_once()
+    assert mock_delete_pc.await_args.kwargs["agent_id"] == "new-agent-uuid"

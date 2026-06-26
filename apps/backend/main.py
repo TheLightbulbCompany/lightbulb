@@ -30,6 +30,7 @@ from core.repositories import container_repo
 from core.services.paperclip_admin_client import PaperclipApiError
 from core.services.update_service import run_scheduled_worker
 from routers import (
+    agent_builder,
     billing,
     channels,
     config,
@@ -761,6 +762,9 @@ app.include_router(oauth.router, prefix="/api/v1")
 # and we forward to the per-user OpenClaw container. See routers/hooks_proxy.py
 # for the auth model and forwarded-header rewriting rationale.
 app.include_router(hooks_proxy.router, prefix="/api/v1/hooks", tags=["hooks"])
+# Agent-callable bridge (hook_token auth, no Clerk) — Atlas registers built
+# agents into the owner's container. See routers/agent_builder.py.
+app.include_router(agent_builder.router, prefix="/api/v1/agent-builder", tags=["agent-builder"])
 
 # Clerk-authed read of the calling user's hook credentials. Backs the
 # Settings → Webhooks panel; the user's own browser fetches their own

@@ -31,8 +31,6 @@ const COOKBOOK_SOURCE_PREFERENCE = Object.freeze({
 });
 
 const OPENCLAW_DOCS_INDEX_URL = 'https://docs.openclaw.ai/llms.txt';
-const FAST_IO_DOCS_KEY_PREFIX = 'atlas-cookbook/openclaw-docs/';
-const FAST_IO_AGENTS_KEY_PREFIX = 'atlas-cookbook/agent-snapshots/';
 
 function parseArgs(argv) {
   const args = { action: 'read', maxFetches: 50 };
@@ -118,12 +116,14 @@ function snapshotAgents() {
 function readForBrief(intake) {
   return {
     sources: {
-      openclaw_docs: { fast_io_key_prefix: FAST_IO_DOCS_KEY_PREFIX, count: 'see cookbook-refresh-state' },
-      agent_snapshots: { fast_io_key_prefix: FAST_IO_AGENTS_KEY_PREFIX, count: 'see snapshot-agents' }
+      // Native state keys written by cookbook-refresh.lobster (the agent loop
+      // reads these via state.get — the old fast-io namespace is gone).
+      openclaw_docs: { state_key: 'atlas/cookbook-docs', count: 'see atlas/cookbook-refresh-state' },
+      agent_snapshots: { state_key: 'atlas/cookbook-agent-snapshots', count: 'see atlas/cookbook-agent-snapshots' }
     },
     source_preference: COOKBOOK_SOURCE_PREFERENCE,
     intake_archetype: intake.proposed_archetype || 'unknown',
-    note: 'Compress via summarize CLI before passing to compile-research-brief llm-task.'
+    note: 'The agent loop compresses these sources when synthesizing the research brief.'
   };
 }
 

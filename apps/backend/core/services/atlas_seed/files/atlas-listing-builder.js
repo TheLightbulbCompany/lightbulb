@@ -62,7 +62,7 @@ function buildListing(buildId, agentName) {
 
   return {
     name: agentName,
-    archetype: (intake && intake.archetype) || (openclawJson.agents.list[0].archetype) || 'unknown',
+    archetype: (intake && intake.archetype) || (openclawJson.agents && openclawJson.agents.list && openclawJson.agents.list[0] && openclawJson.agents.list[0].archetype) || 'unknown',
     requirements_covered_count: recapCounts.no_change || 0,
     requirements_partial_count: recapCounts.changed || 0,
     requirements_uncovered_count: recapCounts.dropped || recapCounts.unvetted || 0,

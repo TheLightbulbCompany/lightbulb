@@ -27,7 +27,7 @@ steps:
 
   # Step 3 — Verify each citation (https; record 200 vs 403/404/error).
   - id: verify-citations
-    command: node atlas-citation-verifier.js --action=verify --quarterly
+    command: node atlas-citation-verifier.js --action=verify
     stdin: $extract-citations.stdout
     on_error: continue
 

@@ -22,10 +22,9 @@ const CONSECUTIVE_FAILURE_THRESHOLD = 2;
 const FETCH_TIMEOUT_MS = 15000;
 
 function parseArgs(argv) {
-  const args = { action: 'verify', quarterly: false };
+  const args = { action: 'verify' };
   for (const a of argv.slice(2)) {
     if (a.startsWith('--action=')) args.action = a.split('=')[1];
-    else if (a === '--quarterly') args.quarterly = true;
   }
   return args;
 }

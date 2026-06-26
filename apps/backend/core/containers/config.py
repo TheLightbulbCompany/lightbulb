@@ -17,6 +17,11 @@ from pathlib import Path
 
 from core import openclaw_version
 from core.config import settings
+from core.services.paperclip_meta import (
+    PAPERCLIP_AGENT_ROLES,
+    PaperclipMeta,
+    write_to_agent_entry,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -615,6 +620,22 @@ def _build_agents_list(paperclip_agents: list[dict], ceo_model: str | None = Non
         friendly_name = agent.get("name")
         if friendly_name:
             entry["name"] = friendly_name
+        # Sync the Paperclip role/title/capabilities into params.paperclip so the
+        # agent inspector renders the agent's real role (e.g. CEO for Friday)
+        # instead of defaulting to "general". Without this the entry carries no
+        # role and the frontend's read_from_agent_entry falls back to "general"
+        # — and a Save from that stale form would demote the agent in Paperclip.
+        # Coerce an unknown/missing role to "general" (write_to_agent_entry is
+        # strict and would otherwise raise); title/capabilities/icon ride along
+        # when Paperclip has them.
+        agent_role = agent.get("role")
+        meta = PaperclipMeta(
+            role=agent_role if agent_role in PAPERCLIP_AGENT_ROLES else "general",
+            title=agent.get("title"),
+            capabilities=agent.get("capabilities"),
+            icon=agent.get("icon"),
+        )
+        write_to_agent_entry(entry, meta)
         if i == default_index:
             entry["default"] = True
             # The CEO (Friday) runs on the premium tier; everyone else

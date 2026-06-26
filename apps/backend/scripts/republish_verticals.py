@@ -137,9 +137,15 @@ async def _republish_one(row: dict, *, owner_id: str, apply: bool, approve: bool
     if not apply:
         return f"PLAN   {plan}"
 
+    # Resolve a legacy slug -> live workspace UUID once, up front. Reused for the
+    # bootstrap seed path, the snapshot, and the persisted row so all three key
+    # off the same id (a slug like "tally" otherwise seeds workspaces/tally/ —
+    # the wrong dir — while export resolves to the real UUID).
+    resolved_agent_id = agent_export.resolve_workspace_agent_id(owner_id, agent_id)
+
     # 1) Seed the real bootstrap onto EFS (ora/thread) so the snapshot carries it.
     if seeded:
-        agent_dir = agent_export._resolve_agent_dir(owner_id, agent_id)
+        agent_dir = agent_export._resolve_agent_dir(owner_id, resolved_agent_id)
         (agent_dir / "BOOTSTRAP.md").write_text(_SEED_BOOTSTRAPS[slug], encoding="utf-8")
 
     # 2) New version draft (clone of the published row).
@@ -154,13 +160,12 @@ async def _republish_one(row: dict, *, owner_id: str, apply: bool, approve: bool
     requires_desktop = bool((row.get("manifest_json") or {}).get("requires_desktop"))
     package = agent_export.export_agent_from_efs(
         seller_id=owner_id,
-        agent_id=agent_id,
+        agent_id=resolved_agent_id,
         selected_mcps=list(bundle_mcps) if bundle_mcps else None,
         selected_skills=list(bundle_skills) if bundle_skills else None,
         enable_acp=requires_acp,
         requires_desktop=requires_desktop,
     )
-    resolved_agent_id = agent_export.resolve_workspace_agent_id(owner_id, agent_id)
     # Preserve the agent's Paperclip routines in the manifest (mirrors the
     # artifact-from-agent endpoint; best-effort — never blocks the republish).
     package.manifest["routines"] = await agent_export.capture_agent_routines(

@@ -38,7 +38,7 @@ import { emitStep } from "@/components/getstarted/getStartedEvents";
 import { GetStarted } from "@/components/getstarted/GetStarted";
 import { useProvisioningState } from "@/hooks/useProvisioningState";
 import { TEAMS_PANEL_PREFIX } from "@/components/chat/InlineTeamsPanel";
-import { useInboxData } from "@/components/teams/inbox/hooks/useInboxData";
+import { teamsQueryKeys } from "@/components/teams/shared/queryKeys";
 import { useAgentMutations } from "@/components/teams/agents/hooks/useAgentMutations";
 
 /** Minimal shape of `/channels/links/me` — only what the guide's
@@ -372,24 +372,36 @@ export function ChatLayout({
   const { data: channelLinks } = useSWR<ChannelLinksResponse>(
     chatReady ? "/channels/links/me" : null,
     () => api.get("/channels/links/me") as Promise<ChannelLinksResponse>,
+    // Channel-link state changes rarely (only on a bot pairing) and feeds
+    // a single boolean — don't revalidate on every window focus. Mirrors
+    // the sibling seller-listings read.
+    { revalidateOnFocus: false, dedupingInterval: 300_000 },
   );
   const channelLinked =
     !!channelLinks &&
     (["telegram", "discord", "slack"] as const).some((p) =>
       channelLinks[p]?.some((b) => b.linked),
     );
-  // `task` complete = the team already has >= 1 task. useInboxData is
-  // arg-free and bearer-only (same useTeamsApi the roster fetch above uses),
-  // so it's safe to derive here without any teams-provider context — gated on
-  // `chatReady` so the three inbox reads don't fire during the cold-start
-  // window. Residual: a legacy pre-Paperclip owner whose container is live but
-  // whose Teams workspace was never provisioned can still see these reads
-  // error-retry once `chatReady` is true. We do NOT add a
-  // `useTeamsWorkspaceStatus` gate here because that hook has no `enabled`
-  // param and would itself fire an always-on `/teams/dashboard` poll during
-  // the provisioning window this fix is meant to keep quiet.
-  const { allIssues } = useInboxData({ enabled: chatReady });
-  const taskExists = allIssues.length > 0;
+  // `task` complete = the team already has >= 1 task. We only consume the
+  // task-exists boolean, so read just the `all` inbox tab directly (via the
+  // same bearer-only `useTeamsApi` the roster fetch above uses) rather than
+  // `useInboxData`, which fans out to three reads (mine/recent/all) for
+  // surfaces that render the full inbox — two of those are pure waste here.
+  // The key is `useInboxData`'s exact `all` key, so this shares SWR's cache
+  // with the inbox panel when it's open (no duplicate fetch). Gated on
+  // `chatReady` (null key) so it never fires during the cold-start window.
+  // Residual: a legacy pre-Paperclip owner whose container is live but whose
+  // Teams workspace was never provisioned can still see this read error-retry
+  // once `chatReady` is true. We do NOT add a `useTeamsWorkspaceStatus` gate
+  // here because that hook has no `enabled` param and would itself fire an
+  // always-on `/teams/dashboard` poll during the provisioning window this
+  // fix is meant to keep quiet.
+  const { data: allInbox } = readTeams<{ items?: unknown[] } | unknown[]>(
+    chatReady ? teamsQueryKeys.inbox.list("all", {}) : null,
+  );
+  const taskExists = Array.isArray(allInbox)
+    ? allInbox.length > 0
+    : (allInbox?.items?.length ?? 0) > 0;
   // `hire` complete = the user has at least one marketplace-installed
   // specialist. The truest persistent signal is the set of `.template`
   // sidecars EFS writes on every marketplace deploy (catalog_service), which
@@ -756,8 +768,21 @@ export function ChatLayout({
                   window.dispatchEvent(new CustomEvent("getstarted:focus-composer"));
                 },
                 task: () => {
-                  onPanelChange?.(`${TEAMS_PANEL_PREFIX}inbox`);
-                  router.push(`?panel=${TEAMS_PANEL_PREFIX}inbox&newIssue=1`);
+                  // ONE navigation to the inbox panel with the New-task
+                  // intent. Mirror what `setActivePanel` (page.tsx) would
+                  // build — set panel + view=control, drop stale agent/detailId
+                  // filters — and add `newIssue=1` so the inbox auto-opens its
+                  // New-task dialog (read by InboxPage). Calling `onPanelChange`
+                  // and then a second relative `?panel=…` push grew two history
+                  // entries (Back needed two presses) and the relative form
+                  // dropped the other query params setActivePanel preserves.
+                  const params = new URLSearchParams(searchParams.toString());
+                  params.set("panel", `${TEAMS_PANEL_PREFIX}inbox`);
+                  params.set("view", "control");
+                  params.delete("agent");
+                  params.delete("detailId");
+                  params.set("newIssue", "1");
+                  router.push(`/chat?${params.toString()}`, { scroll: false });
                 },
                 hire: () => openMarketplace({ view: "browse" }),
                 channel: () => {

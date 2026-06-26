@@ -111,7 +111,6 @@ export type AnalyticsEvent =
   // Plugins
   | "plugin_toggled"
   // Onboarding
-  | "onboarding_completed"
   | "onboarding_provider_completed"
   | "onboarding_step_completed"
   | "org_invitation_accepted"

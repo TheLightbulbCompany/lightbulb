@@ -154,6 +154,14 @@ function BillingPanel() {
   }
 
   const subscriptionStatus = account?.subscription_status ?? null;
+  const trialEndLabel =
+    account?.trial_end != null
+      ? new Date(account.trial_end * 1000).toLocaleDateString(undefined, {
+          month: "short",
+          day: "numeric",
+          year: "numeric",
+        })
+      : null;
 
   return (
     <div className="settings-panel" id="panel-billing" role="tabpanel">
@@ -181,7 +189,9 @@ function BillingPanel() {
             </div>
             <div className="settings-card-desc">
               {subscriptionStatus === "trialing"
-                ? "Free trial — Stripe will email you before it converts."
+                ? trialEndLabel
+                  ? `Free trial — full access until ${trialEndLabel}, then $50/mo. Cancel anytime before then.`
+                  : "Free trial — full access now, then $50/mo. Cancel anytime."
                 : isSubscribed
                   ? "Active subscription"
                   : "No active subscription"}

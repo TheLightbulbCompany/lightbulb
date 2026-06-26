@@ -116,7 +116,7 @@ steps:
     condition: $select-inputs.json.has_brief > 0
     command: >
       node -e 'const n=JSON.parse(process.env.NOTIFS||"null")||[];
-        const id=process.env.LOBSTER_ARG_BUILD_ID;
+        const id=process.env.LOBSTER_ARG_BUILD_ID||"build_unknown";
         const sk=JSON.parse(process.env.SKEL||"null")||{};
         const sel=JSON.parse(process.env.SEL||"null")||{};
         n.push({kind:"archetype_synthesis", channel:"atlas-vet", build_id:id,

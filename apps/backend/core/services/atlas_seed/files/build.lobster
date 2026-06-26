@@ -126,6 +126,11 @@ steps:
       -H "Content-Type: application/json"
       --data @-
     env:
+      # CONTRACT: the bridge snapshots workspaces/{staging_agent_id}/, so STAGING_ID
+      # must be the on-disk workspace dir name. verify-write returns agent_name =
+      # agents.list[0].id, and write-disk renames the staging dir to exactly that id
+      # (atlas-skeleton-generator.js writeDisk) — so .agent_name IS the dir name. If
+      # writeDisk's naming ever diverges from agents.list[0].id, update both together.
       STAGING_ID: $verify-write.json.agent_name
     on_error: continue
 
@@ -133,13 +138,6 @@ steps:
   - id: register-triggers
     condition: $register-built-agent.json.registered == true
     command: node atlas-trigger-registrar.js --mode=register --build-id="$LOBSTER_ARG_BUILD_ID" --agent-name="$LOBSTER_ARG_AGENT_NAME"
-    on_error: continue
-
-  # Step 6.11 — Deregister triggers if registration succeeded but trigger-registration
-  #            failed (cleans cron rows written this build).
-  - id: deregister-triggers
-    condition: "$register-built-agent.json.registered == true && $register-triggers.json.success == false"
-    command: node atlas-trigger-registrar.js --mode=deregister --build-id="$LOBSTER_ARG_BUILD_ID" --agent-name="$LOBSTER_ARG_AGENT_NAME"
     on_error: continue
 
   # Step 6.12 — Central build status (always runs; defaults all inputs so it never refs a
@@ -157,15 +155,30 @@ steps:
         const verified=v.success===true;
         const registered=r.registered===true;
         const verify_failed=gate_approved && !verified;
-        const needs_rollback=(verified && !registered) || (registered && t.success===false);
+        const triggers_ok=t.success===true;
+        // !==true (not ===false) so a trigger-registrar CRASH (success undefined
+        // under on_error: continue) is also treated as a failure — otherwise a
+        // crash would be invisible (no rollback, no success notification).
+        const needs_rollback=(verified && !registered) || (registered && !triggers_ok);
         process.stdout.write(JSON.stringify({verified, registered,
-          agent_id:r.agent_id||null, triggers_ok:t.success===true,
+          agent_id:r.agent_id||null, triggers_ok,
           file_write_confirmed:verified, verify_failed, needs_rollback}));'
     env:
       VERIFY: $verify-write.stdout
       REG: $register-built-agent.stdout
       TRIG: $register-triggers.stdout
       GATE: $file-write-gate.approved
+
+  # Step 6.12b — Deregister triggers when the agent registered but trigger-registration
+  #            did not cleanly succeed (cleans cron rows written this build). Gated on
+  #            build-status.triggers_ok == false (which is false for BOTH a clean
+  #            {success:false} AND a crash where success is undefined) — running after
+  #            build-status lets us use that computed flag instead of the register-triggers
+  #            success field, which a crash leaves null (so == false would miss it).
+  - id: deregister-triggers
+    condition: "$build-status.json.registered == true && $build-status.json.triggers_ok == false"
+    command: node atlas-trigger-registrar.js --mode=deregister --build-id="$LOBSTER_ARG_BUILD_ID" --agent-name="$LOBSTER_ARG_AGENT_NAME"
+    on_error: continue
 
   # Step 6.13a — Verify-failure notification. When the gate WAS approved (write was
   #            attempted) but verify-write failed (atomic rename / hash mismatch), no

@@ -62,7 +62,7 @@ export const ARTICLES: Article[] = [
   { id: "marketplace", tag: "Grow your team", title: "The marketplace",
     body: (<><p className={P}>Open <b>Browse</b> to hire a ready-made specialist — it’s deployed straight into your roster. Open <b>Publish</b> to package one of your own agents and share it with the community. Friday and Atlas can’t be published; everything else can.</p></>) },
   { id: "channels", tag: "Reach", title: "Channels",
-    body: (<><p className={P}>Connect Slack, Discord, Telegram or WhatsApp to talk to your agents from the apps you already use. Set it up in <b>Settings → Channels</b>; each agent can have its own bot.</p></>) },
+    body: (<><p className={P}>Connect Slack, Discord or Telegram to talk to your agents from the apps you already use. Set one up from an agent&rsquo;s <b>Channels</b> tab; each agent can have its own bot.</p></>) },
   { id: "billing-providers", tag: "Reference", title: "Billing & AI providers",
     body: (<><p className={P}>Your plan and AI provider were chosen at signup. There are three ways to power inference: managed <b>Claude credits</b>, your own <b>ChatGPT</b> account, or your own <b>API key</b>. Manage all of it in <b>Settings → Billing</b>.</p></>) },
 ];

@@ -42,9 +42,12 @@ import { useInboxData } from "@/components/teams/inbox/hooks/useInboxData";
 import { useAgentMutations } from "@/components/teams/agents/hooks/useAgentMutations";
 
 /** Minimal shape of `/channels/links/me` — only what the guide's
- *  `channel`-complete derivation reads (a main-agent bot on any provider). */
+ *  `channel`-complete derivation reads. A bot is keyed by its agent's UUID
+ *  (channels are created per-agent, not on a fixed "main" agent); `linked`
+ *  flips true once a member has paired their identity to the bot. */
 interface ChannelBotEntry {
   agent_id: string;
+  linked: boolean;
 }
 interface ChannelLinksResponse {
   telegram: ChannelBotEntry[];
@@ -356,10 +359,16 @@ export function ChatLayout({
   // additionally requires the gateway pool to have connected.
   const { container } = useProvisioningState();
   const chatReady = container?.phase === "ready";
-  // `channel` complete = a main-agent bot is wired on any provider. Same
-  // derivation as ProvisioningStepper's `hasMainBot`, computed inline. Null
-  // SWR key until `chatReady` is SWR's canonical conditional-fetch gate — so
-  // `/channels/links/me` never fires during the cold-start window.
+  // `channel` complete = the user has actually connected a channel: ANY
+  // provider has at least one bot a member has paired their identity to
+  // (`linked: true`), for ANY agent. Channels are created per-agent (keyed by
+  // the agent's UUID), so the old `agent_id === "main"` check matched no real
+  // bot and the step never ticked once channels moved to the per-agent tab.
+  // `linked` (not bare bot-exists) is the truest "connected" signal and mirrors
+  // the `emitStep("channel")` producer in BotSetupWizard, which fires on the
+  // same pairing success. Null SWR key until `chatReady` (SWR's canonical
+  // conditional-fetch gate) so `/channels/links/me` never fires during the
+  // cold-start window.
   const { data: channelLinks } = useSWR<ChannelLinksResponse>(
     chatReady ? "/channels/links/me" : null,
     () => api.get("/channels/links/me") as Promise<ChannelLinksResponse>,
@@ -367,7 +376,7 @@ export function ChatLayout({
   const channelLinked =
     !!channelLinks &&
     (["telegram", "discord", "slack"] as const).some((p) =>
-      channelLinks[p]?.some((b) => b.agent_id === "main"),
+      channelLinks[p]?.some((b) => b.linked),
     );
   // `task` complete = the team already has >= 1 task. useInboxData is
   // arg-free and bearer-only (same useTeamsApi the roster fetch above uses),
@@ -707,7 +716,21 @@ export function ChatLayout({
                   router.push(`?panel=${TEAMS_PANEL_PREFIX}inbox&newIssue=1`);
                 },
                 hire: () => openMarketplace({ view: "browse" }),
-                channel: () => router.push("/settings?panel=channels"),
+                channel: () => {
+                  // Route to a surface where a fresh user can actually CREATE
+                  // their first bot: the default agent's inspector Channels tab
+                  // (AgentChannelsSection). The old /settings?panel=channels
+                  // (MyChannelsSection) is link-only and dead-ends a zero-bot
+                  // user. ?inspectorTab=channels is read by AgentInspectorPanel
+                  // to open straight on that tab.
+                  const agentId = defaultId ?? agents[0]?.id ?? "";
+                  const params = new URLSearchParams(searchParams.toString());
+                  params.set("panel", "agent-inspector");
+                  params.set("agent", agentId);
+                  params.set("view", "control");
+                  params.set("inspectorTab", "channels");
+                  router.push(`/chat?${params.toString()}`, { scroll: false });
+                },
               }}
             />
           )}

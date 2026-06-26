@@ -35,10 +35,15 @@ vi.mock("@/components/teams/panels/RoutinesPanel", () => ({
   ),
 }));
 
-// ?agent drives which agent the inspector inspects.
+// ?agent drives which agent the inspector inspects; ?inspectorTab deep-links
+// the initial tab (set by the Get Started "Connect a channel" CTA).
 let agentParam: string | null = "agent_42";
+let inspectorTabParam: string | null = null;
 vi.mock("next/navigation", () => ({
-  useSearchParams: () => ({ get: (k: string) => (k === "agent" ? agentParam : null) }),
+  useSearchParams: () => ({
+    get: (k: string) =>
+      k === "agent" ? agentParam : k === "inspectorTab" ? inspectorTabParam : null,
+  }),
 }));
 
 // agents.list feeds the header (name/emoji), mirroring AgentsPanel.
@@ -90,6 +95,7 @@ vi.mock("@/hooks/useTeamsApi", () => ({
 describe("AgentInspectorPanel", () => {
   beforeEach(() => {
     agentParam = "agent_42";
+    inspectorTabParam = null;
     subscribed = true;
     rosterData = { agents: [{ id: "agent_42", name: "Scout" }] };
     rosterError = undefined;
@@ -129,6 +135,31 @@ describe("AgentInspectorPanel", () => {
     render(<AgentInspectorPanel />);
     expect(screen.getByTestId("overview-tab")).toHaveTextContent("overview:agent_42");
     expect(screen.queryByTestId("tools-tab")).not.toBeInTheDocument();
+  });
+
+  it("opens the Channels tab when ?inspectorTab=channels deep-links in", () => {
+    inspectorTabParam = "channels";
+    render(<AgentInspectorPanel />);
+    expect(screen.getByTestId("channels-tab")).toHaveTextContent("channels:agent_42");
+    expect(screen.queryByTestId("overview-tab")).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Channels" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+  });
+
+  it("falls back to Overview when ?inspectorTab=channels but the owner is unsubscribed", () => {
+    subscribed = false;
+    inspectorTabParam = "channels";
+    render(<AgentInspectorPanel />);
+    expect(screen.getByTestId("overview-tab")).toHaveTextContent("overview:agent_42");
+    expect(screen.queryByTestId("channels-tab")).not.toBeInTheDocument();
+  });
+
+  it("falls back to Overview for an unknown ?inspectorTab value", () => {
+    inspectorTabParam = "bogus";
+    render(<AgentInspectorPanel />);
+    expect(screen.getByTestId("overview-tab")).toHaveTextContent("overview:agent_42");
   });
 
   it("switches the mounted tab when a tab is clicked", () => {

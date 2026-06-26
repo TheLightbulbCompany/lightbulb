@@ -1,4 +1,5 @@
 "use client";
+import { capture } from "@/lib/analytics";
 import { GetStartedLauncher } from "./GetStartedLauncher";
 import { GetStartedCard } from "./GetStartedCard";
 import { useGetStarted } from "./useGetStarted";
@@ -11,6 +12,7 @@ export function GetStarted({ derived, actions }: { derived: Partial<Record<StepI
   if (gs.dismissed) return <GetStartedLauncher done={gs.progress.done} total={gs.progress.total} pulse={false} onClick={gs.open} />;
 
   const onAction = (id: Exclude<StepId, "meet">) => {
+    capture("get_started_step_clicked", { step: id });
     gs.minimize();            // hand off: card steps aside, destination opens
     actions[id]();
   };

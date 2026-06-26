@@ -96,6 +96,12 @@ export type AnalyticsEvent =
   | "cron_job_deleted"
   | "cron_job_toggled"
   | "cron_job_triggered"
+  // Get started guide
+  | "get_started_article_opened"
+  | "get_started_completed"
+  | "get_started_dismissed"
+  | "get_started_opened"
+  | "get_started_step_clicked"
   // Landing
   | "landing_cta_clicked"
   | "landing_download_clicked"

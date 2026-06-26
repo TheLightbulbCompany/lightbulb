@@ -3,6 +3,8 @@ import { renderHook, act } from "@testing-library/react";
 import { useGetStarted } from "../useGetStarted";
 import { emitStep } from "../getStartedEvents";
 
+vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
+
 const update = vi.fn().mockResolvedValue(undefined);
 type ClerkUser = { unsafeMetadata: Record<string, unknown>; update: typeof update } | null;
 // Mutable so a test can drive Clerk's async load: `isLoaded`/`user` change

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useUser } from "@clerk/nextjs";
+import { capture } from "@/lib/analytics";
 import { STEPS, type StepId } from "./getStartedConfig";
 import type { ArticleId } from "./getStartedContent";
 import { onStep } from "./getStartedEvents";
@@ -59,7 +60,7 @@ export function useGetStarted(opts: { derived: Partial<Record<StepId, boolean>> 
     setRead(s.read ?? []);
     setDismissed(!!s.dismissed);
     setSeen(!!s.seen);
-    if (!s.seen) { setIsOpen(true); setSeen(true); persist({ seen: true }); }
+    if (!s.seen) { capture("get_started_opened"); setIsOpen(true); setSeen(true); persist({ seen: true }); }
   }, [isLoaded, user, persist]);
 
   // Event-bus completions (chat/task/hire) → append + persist (idempotent).
@@ -90,7 +91,18 @@ export function useGetStarted(opts: { derived: Partial<Record<StepId, boolean>> 
     total: STEPS.length,
   }), [completed]);
 
+  // Fire the completion event exactly once, the first time every step is done.
+  const completedFiredRef = useRef(false);
+  useEffect(() => {
+    if (completedFiredRef.current) return;
+    if (progress.total > 0 && progress.done === progress.total) {
+      completedFiredRef.current = true;
+      capture("get_started_completed");
+    }
+  }, [progress.done, progress.total]);
+
   const openArticle = useCallback((id: ArticleId) => {
+    capture("get_started_article_opened", { id });
     setActiveArticle(id);
     if (read.includes(id)) return;
     const next = [...read, id];
@@ -100,10 +112,10 @@ export function useGetStarted(opts: { derived: Partial<Record<StepId, boolean>> 
 
   return {
     isOpen, minimized, tab, activeArticle,
-    open: () => { setIsOpen(true); setMinimized(false); },
+    open: () => { capture("get_started_opened"); setIsOpen(true); setMinimized(false); },
     minimize: () => setMinimized(true),
     close: () => setIsOpen(false),
-    dismiss: () => { setDismissed(true); setIsOpen(false); persist({ dismissed: true }); },
+    dismiss: () => { capture("get_started_dismissed"); setDismissed(true); setIsOpen(false); persist({ dismissed: true }); },
     setTab,
     openArticle,
     backToLearn: () => setActiveArticle(null),

@@ -3,6 +3,8 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { GetStarted } from "../GetStarted";
 
+vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
+
 vi.mock("../useGetStarted", () => ({
   useGetStarted: () => ({
     isOpen: true, minimized: false, dismissed: false, tab: "do", activeArticle: null,

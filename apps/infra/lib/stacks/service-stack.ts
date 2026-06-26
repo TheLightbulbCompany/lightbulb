@@ -956,14 +956,16 @@ export class ServiceStack extends cdk.Stack {
         // instead of being rewritten to the paperclip_proxy router. Mirrors
         // the env-derivation in paperclip-stack.ts so the two stay in lockstep
         // (keeps ServiceStack independent of PaperclipStack synth order).
-        // `company.isol8.co` is RETIRED (NXDOMAIN since #510). The Teams UI is
-        // native in the isol8 frontend now, so nothing browser-facing uses this.
-        // Its live consumers are the Origin header the Teams BFF sends to
-        // Paperclip (must match Paperclip's PUBLIC_URL or the board-mutation
-        // origin guard rejects writes) and the now-dead proxy's cookie rewrites.
-        // Point it at the same in-VPC host PaperclipStack now uses for
-        // PAPERCLIP_PUBLIC_URL so the Origin matches; no more dead host.
-        PAPERCLIP_PUBLIC_URL: `http://paperclip.${props.container.cloudMapNamespace.namespaceName}:3100`,
+        // The `Origin` header the Teams BFF sends on Paperclip /api/auth/* +
+        // board-mutation calls. MUST match PaperclipStack's PAPERCLIP_PUBLIC_URL
+        // (Better Auth's trustedOrigins / origin guard), so keep the two in lockstep
+        // at the same https origin. NOT a live link and NOT the agent's API URL —
+        // see the PAPERCLIP_PUBLIC_URL comment in paperclip-stack.ts. Switching this
+        // to the http in-VPC host (PR #1073) broke Better Auth sign-in (403).
+        PAPERCLIP_PUBLIC_URL:
+          env === "prod"
+            ? "https://company.isol8.co"
+            : `https://${env}.company.isol8.co`,
         // Cloud Map A record published by PaperclipStack at:
         //   `paperclip.<cloudMapNamespace.namespaceName>:3100`
         // Namespace name is `isol8-${env}.local` (ContainerStack). Reading

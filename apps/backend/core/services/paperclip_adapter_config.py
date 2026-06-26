@@ -31,6 +31,7 @@ from __future__ import annotations
 import re
 from typing import Final
 
+from core.config import settings
 from core.crypto.operator_device import generate_operator_device, private_key_pem
 
 OPENCLAW_GATEWAY_TYPE: Final[str] = "openclaw_gateway"
@@ -132,6 +133,16 @@ def synthesize_openclaw_adapter(
         "sessionKey": user_id,
         "devicePrivateKeyPem": device_pem,
     }
+    # `paperclipApiUrl` is the host the agent's bundled `paperclip` skill curls at
+    # wake (`$PAPERCLIP_API_URL`). The Paperclip server's per-agent override
+    # (openclaw-gateway execute.ts: resolvePaperclipApiUrlOverride) takes precedence
+    # over its default — which is `origin(PAPERCLIP_PUBLIC_URL)` (Better Auth's
+    # public/auth origin, NOT reachable from inside the VPC). Without this override
+    # the per-user container curls that public origin and every heartbeat run blocks
+    # on DNS. Pin it to the in-VPC Cloud Map host the containers can actually reach.
+    # This is what lets PAPERCLIP_PUBLIC_URL stay the (https) auth origin.
+    if settings.PAPERCLIP_INTERNAL_URL:
+        cfg["paperclipApiUrl"] = settings.PAPERCLIP_INTERNAL_URL
     if agent_id:
         cfg["claimedApiKeyPath"] = claimed_api_key_path(agent_id)
     return cfg

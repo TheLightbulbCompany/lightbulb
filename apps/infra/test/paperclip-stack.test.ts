@@ -178,10 +178,10 @@ describe("PaperclipStack — Fargate service shape", () => {
     expect(envMap.PGDATABASE).toBe("paperclip");
     expect(envMap.PGPORT).toBe("5432");
     expect(envMap.PAPERCLIP_BIND).toBe("lan");
-    // company.isol8.co is retired (NXDOMAIN); PAPERCLIP_PUBLIC_URL now points at
-    // the in-VPC Cloud Map host so agent heartbeat runs (which derive their API
-    // URL from it on the deployed image) can resolve + reach Paperclip.
-    expect(envMap.PAPERCLIP_PUBLIC_URL).toBe("http://paperclip.isol8-dev.local:3100");
+    // PAPERCLIP_PUBLIC_URL is Better Auth's https origin identity (not the agent's
+    // API URL — that's the adapterConfig.paperclipApiUrl override). Dev shape is
+    // `<env>.company.isol8.co`.
+    expect(envMap.PAPERCLIP_PUBLIC_URL).toBe("https://dev.company.isol8.co");
   });
 
   test("container has DATABASE_URL-building shim with URL-encoded password and bypasses gosu", () => {
@@ -391,7 +391,7 @@ describe("PaperclipStack — prod public URL", () => {
     template = buildStack("prod");
   });
 
-  test("prod container env points PAPERCLIP_PUBLIC_URL at the in-VPC Cloud Map host (company.isol8.co retired)", () => {
+  test("prod container env sets PAPERCLIP_PUBLIC_URL to the https auth origin (no env suffix)", () => {
     const tasks = template.findResources("AWS::ECS::TaskDefinition", {
       Properties: { Family: "isol8-prod-paperclip-server" },
     });
@@ -402,7 +402,7 @@ describe("PaperclipStack — prod public URL", () => {
       Value: string;
     }>;
     const envMap = Object.fromEntries(envArr.map((e) => [e.Name, e.Value]));
-    expect(envMap.PAPERCLIP_PUBLIC_URL).toBe("http://paperclip.isol8-prod.local:3100");
+    expect(envMap.PAPERCLIP_PUBLIC_URL).toBe("https://company.isol8.co");
   });
 
   test("prod keeps public sign-up enabled (no out-of-band admin path upstream)", () => {

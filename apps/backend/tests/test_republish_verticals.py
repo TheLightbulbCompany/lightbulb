@@ -47,10 +47,11 @@ class _FakeTable:
         return {"Items": self._items}
 
 
-def test_published_listings_scopes_to_seller():
+def test_published_listings_filters_status_and_seller():
     items = [
-        {"listing_id": "a", "seller_id": "s1", "slug": "ora"},
-        {"listing_id": "b", "seller_id": "s2", "slug": "echo"},
+        {"listing_id": "a", "seller_id": "s1", "slug": "ora", "status": "published"},
+        {"listing_id": "b", "seller_id": "s2", "slug": "echo", "status": "published"},
+        {"listing_id": "c", "seller_id": "s1", "slug": "draft", "status": "draft"},  # excluded
     ]
     assert {r["listing_id"] for r in _published_listings(_FakeTable(items), None)} == {"a", "b"}
     assert {r["listing_id"] for r in _published_listings(_FakeTable(items), "s1")} == {"a"}
@@ -58,7 +59,7 @@ def test_published_listings_scopes_to_seller():
 
 def test_dry_run_returns_plan_without_mutating():
     row = {"listing_id": "lst_ora", "slug": "ora", "seller_id": "s1", "version": 1, "agent_id": "uuid-ora"}
-    out = asyncio.run(_republish_one(row, owner_id="org_x", apply=False, approve=False))
+    out = asyncio.run(_republish_one(row, owner_id="org_x", approved_by="__system__", apply=False, approve=False))
     assert out.startswith("PLAN")
     assert "ora" in out
     assert "v1->v2" in out
@@ -67,7 +68,7 @@ def test_dry_run_returns_plan_without_mutating():
 
 def test_dry_run_non_seed_agent_has_no_seed_marker():
     row = {"listing_id": "lst_echo", "slug": "echo", "seller_id": "s1", "version": 1, "agent_id": "uuid-echo"}
-    out = asyncio.run(_republish_one(row, owner_id="org_x", apply=False, approve=True))
+    out = asyncio.run(_republish_one(row, owner_id="org_x", approved_by="__system__", apply=False, approve=True))
     assert out.startswith("PLAN")
     assert "seed-bootstrap" not in out
     assert "approve" in out
@@ -75,5 +76,12 @@ def test_dry_run_non_seed_agent_has_no_seed_marker():
 
 def test_dry_run_skips_row_without_agent_id():
     row = {"listing_id": "lst_x", "slug": "x", "seller_id": "s1", "version": 1}
-    out = asyncio.run(_republish_one(row, owner_id="org_x", apply=False, approve=False))
+    out = asyncio.run(_republish_one(row, owner_id="org_x", approved_by="__system__", apply=False, approve=False))
     assert out.startswith("SKIP")
+
+
+def test_dry_run_skips_row_without_seller_id():
+    row = {"listing_id": "lst_y", "slug": "y", "version": 1, "agent_id": "uuid-y"}
+    out = asyncio.run(_republish_one(row, owner_id="org_x", approved_by="__system__", apply=False, approve=False))
+    assert out.startswith("SKIP")
+    assert "seller_id" in out

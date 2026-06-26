@@ -110,6 +110,10 @@ def _published_listings(table, seller_id: str | None) -> list[dict]:
         if not lek:
             break
         kwargs["ExclusiveStartKey"] = lek
+    # Belt-and-suspenders: DDB applies the status FilterExpression, but filter in
+    # Python too so the function is self-contained (and unit-testable without a
+    # filter-aware fake table).
+    rows = [r for r in rows if r.get("status") == "published"]
     if seller_id:
         rows = [r for r in rows if r.get("seller_id") == seller_id]
     return rows
@@ -119,7 +123,7 @@ def _stored_agent_id(row: dict) -> str | None:
     return row.get("agent_id") or (row.get("manifest_json") or {}).get("agent_id")
 
 
-async def _republish_one(row: dict, *, owner_id: str, apply: bool, approve: bool) -> str:
+async def _republish_one(row: dict, *, owner_id: str, approved_by: str, apply: bool, approve: bool) -> str:
     """Re-publish one listing from EFS. Returns a one-line status string."""
     from core.services import agent_export, marketplace_service
 
@@ -130,6 +134,8 @@ async def _republish_one(row: dict, *, owner_id: str, apply: bool, approve: bool
     agent_id = _stored_agent_id(row)
     if not agent_id:
         return f"SKIP   {slug:8} {listing_id[:8]} — no agent_id on row"
+    if not seller_id:
+        return f"SKIP   {slug:8} {listing_id[:8]} — no seller_id on row"
 
     seeded = slug in _SEED_BOOTSTRAPS
     tag = f"{slug:8} {listing_id[:8]} v{cur_version}->v{cur_version + 1}"
@@ -193,7 +199,7 @@ async def _republish_one(row: dict, *, owner_id: str, apply: bool, approve: bool
             listing_id=listing_id,
             prev_version=cur_version,
             new_version=new_version,
-            approved_by=seller_id,
+            approved_by=approved_by,
         )
         return f"PUBLISHED {tag}" + ("  (seeded)" if seeded else "")
     return f"IN-REVIEW {tag} v{new_version}" + ("  (seeded)" if seeded else "")
@@ -223,7 +229,15 @@ async def _amain(args) -> int:
     results = []
     for row in rows:
         try:
-            results.append(await _republish_one(row, owner_id=args.owner_id, apply=args.apply, approve=args.approve))
+            results.append(
+                await _republish_one(
+                    row,
+                    owner_id=args.owner_id,
+                    approved_by=args.approved_by,
+                    apply=args.apply,
+                    approve=args.approve,
+                )
+            )
         except Exception as exc:  # noqa: BLE001 — report per-listing + continue
             results.append(f"ERROR  {row.get('slug', '?'):8} {row['listing_id'][:8]} — {exc}")
     for line in results:
@@ -235,11 +249,18 @@ async def _amain(args) -> int:
 
 
 def main() -> int:
+    from core.constants import SYSTEM_ACTOR_ID
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--env", choices=["dev", "prod"], required=True)
     parser.add_argument("--owner-id", required=True, help="EFS owner id (org_…/user_…) whose workspaces to snapshot")
     parser.add_argument("--apply", action="store_true", help="execute (default: dry-run)")
     parser.add_argument("--approve", action="store_true", help="also publish each new version (else leave in review)")
+    parser.add_argument(
+        "--approved-by",
+        default=SYSTEM_ACTOR_ID,
+        help="audit id recorded as published_by on --approve (default: system sentinel)",
+    )
     parser.add_argument("--seller-id", help="scope to one seller_id")
     parser.add_argument("--only", help="comma-separated slugs to limit to (e.g. ora,thread,tally)")
     args = parser.parse_args()

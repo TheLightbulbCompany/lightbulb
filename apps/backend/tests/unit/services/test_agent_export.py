@@ -323,7 +323,10 @@ def test_export_skips_backup_and_temp_files(fake_efs):
     (agent_dir / "notes~").write_text("editor backup\n", encoding="utf-8")
     (agent_dir / "pipelines").mkdir(exist_ok=True)
     (agent_dir / "pipelines" / "x.lobster.bak.20260624032047").write_text("old\n", encoding="utf-8")
-    # Sanity: legit filenames that merely contain "bak" must still ship.
+    # Hyphen-separated backup (skills-install leftover) — the variant that
+    # slipped a dot-only ".bak." check.
+    (agent_dir / "openclaw.json.bak-20260620-0652-skills").write_text("old\n", encoding="utf-8")
+    # Sanity: legit filenames that merely contain "backup" (no ".bak") still ship.
     (agent_dir / "backup-notes.md").write_text("kept\n", encoding="utf-8")
 
     pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)

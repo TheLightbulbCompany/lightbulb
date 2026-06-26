@@ -400,11 +400,12 @@ def _build_tarball(agent_dir: Path) -> tuple[bytes, list[str]]:
             # defense in depth — if the file matches a credential shape,
             # we never tar it in the first place.
             basename = parts[-1]
-            # Skip editing backups / temp leftovers — *.bak, *.bak.<ts>, *.tmp,
-            # *~, *.orig. These ride along from in-place edits of workspace
-            # files (e.g. BOOTSTRAP.md.bak.20260624050826) and are inert cruft
-            # that should never reach a buyer's installed workspace.
-            if basename.endswith((".bak", ".tmp", ".orig", "~")) or ".bak." in basename:
+            # Skip editing backups / temp leftovers. Any name containing ".bak"
+            # is a backup (.bak, .bak.<ts>, .bak-<ts>); plus .tmp/.orig/editor ~
+            # files. These ride along from in-place edits of workspace files
+            # (e.g. BOOTSTRAP.md.bak.20260624050826, openclaw.json.bak-20260620-…)
+            # and are inert cruft that should never reach a buyer's workspace.
+            if ".bak" in basename or basename.endswith((".tmp", ".orig", "~")):
                 return None
             if _looks_like_credential_file(basename):
                 return None

@@ -398,6 +398,47 @@ async def update_draft(
     return resp.get("Attributes", {})
 
 
+async def find_active_listing_for_agent(*, seller_id: str, agent_id: str) -> dict | None:
+    """Return this seller's existing PUBLISHED listing for ``agent_id``, or None.
+
+    The publish path uses this to route a re-publish of an already-listed agent
+    into a new VERSION of the same listing instead of minting a second
+    listing_id (the duplicate-listing bug). Queries seller-created-index
+    (pk=seller_id) and filters to ``published`` rows whose ``agent_id`` matches.
+    There is at most one published version per listing_id; if the seller somehow
+    has two published listings for the same agent we return the most recently
+    published so the caller redirects to the live one.
+    """
+    if not agent_id:
+        return None
+    table = _listings_table()
+    rows: list[dict] = []
+    last_key: dict | None = None
+    while True:
+        kwargs = {
+            "IndexName": "seller-created-index",
+            "KeyConditionExpression": "seller_id = :sid",
+            "FilterExpression": "agent_id = :aid AND #s = :pub",
+            "ExpressionAttributeNames": {"#s": "status"},
+            "ExpressionAttributeValues": {
+                ":sid": seller_id,
+                ":aid": agent_id,
+                ":pub": "published",
+            },
+        }
+        if last_key is not None:
+            kwargs["ExclusiveStartKey"] = last_key
+        resp = table.query(**kwargs)
+        rows.extend(resp.get("Items", []))
+        last_key = resp.get("LastEvaluatedKey")
+        if last_key is None:
+            break
+    if not rows:
+        return None
+    rows.sort(key=lambda r: r.get("published_at") or "", reverse=True)
+    return rows[0]
+
+
 async def create_new_version(*, listing_id: str, seller_id: str) -> dict:
     """Clone the currently-published row into a new draft at max(version)+1.
 

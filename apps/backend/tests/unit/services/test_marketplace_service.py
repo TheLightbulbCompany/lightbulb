@@ -130,6 +130,73 @@ async def test_submit_blocks_only_on_missing_artifact(mock_listings):
 
 @pytest.mark.asyncio
 @patch("core.services.marketplace_service._listings_table")
+async def test_find_active_listing_for_agent_returns_published_match(mock_listings):
+    """Returns the seller's published listing for the agent (publish-dedupe lookup)."""
+    mock_listings.return_value.query = MagicMock(
+        return_value={
+            "Items": [
+                {
+                    "listing_id": "lst_live",
+                    "agent_id": "agent_x",
+                    "status": "published",
+                    "published_at": "2026-06-20T00:00:00Z",
+                },
+            ]
+        }
+    )
+    found = await marketplace_service.find_active_listing_for_agent(seller_id="user_abc", agent_id="agent_x")
+    assert found["listing_id"] == "lst_live"
+    # Query is scoped to the seller GSI and filters by agent_id + published.
+    kwargs = mock_listings.return_value.query.call_args.kwargs
+    assert kwargs["IndexName"] == "seller-created-index"
+    assert kwargs["ExpressionAttributeValues"][":aid"] == "agent_x"
+    assert kwargs["ExpressionAttributeValues"][":pub"] == "published"
+
+
+@pytest.mark.asyncio
+@patch("core.services.marketplace_service._listings_table")
+async def test_find_active_listing_for_agent_returns_none_when_no_match(mock_listings):
+    mock_listings.return_value.query = MagicMock(return_value={"Items": []})
+    found = await marketplace_service.find_active_listing_for_agent(seller_id="user_abc", agent_id="agent_x")
+    assert found is None
+
+
+@pytest.mark.asyncio
+async def test_find_active_listing_for_agent_none_agent_short_circuits():
+    """A falsy agent_id never queries — there's nothing to dedupe against."""
+    found = await marketplace_service.find_active_listing_for_agent(seller_id="user_abc", agent_id="")
+    assert found is None
+
+
+@pytest.mark.asyncio
+@patch("core.services.marketplace_service._listings_table")
+async def test_find_active_listing_for_agent_picks_most_recent(mock_listings):
+    """Defensive: if two published listings exist for one agent, the most
+    recently published wins so the caller redirects to the live one."""
+    mock_listings.return_value.query = MagicMock(
+        return_value={
+            "Items": [
+                {
+                    "listing_id": "lst_old",
+                    "agent_id": "agent_x",
+                    "status": "published",
+                    "published_at": "2026-06-01T00:00:00Z",
+                },
+                {
+                    "listing_id": "lst_new",
+                    "agent_id": "agent_x",
+                    "status": "published",
+                    "published_at": "2026-06-22T00:00:00Z",
+                },
+            ]
+        }
+    )
+    found = await marketplace_service.find_active_listing_for_agent(seller_id="user_abc", agent_id="agent_x")
+    assert found["listing_id"] == "lst_new"
+
+
+@pytest.mark.asyncio
+@patch("core.services.marketplace_service._listings_table")
 async def test_submit_for_review_populates_published_at_for_moderation_gsi(mock_listings):
     """Regression: status-published-index has published_at as its sort key.
     DynamoDB sparse-GSI semantics exclude items whose sort key is None, so

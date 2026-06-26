@@ -30,6 +30,9 @@ export interface Listing {
   version: number;
   published_at: string | null;
   created_at: string;
+  /** Lifetime deploy count. Written by the license service and returned on
+   * published storefront/seller rows; absent on draft/retired rows. */
+  install_count?: number;
   /** EFS agent id from the last artifact-from-agent call. Used by the
    * publish-wizard edit mode to lock the PickAgent step. Missing on
    * listings created before the column was added — fall back to

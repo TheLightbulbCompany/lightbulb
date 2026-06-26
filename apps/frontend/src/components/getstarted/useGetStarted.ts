@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useUser } from "@clerk/nextjs";
 import { STEPS, type StepId } from "./getStartedConfig";
 import type { ArticleId } from "./getStartedContent";
@@ -6,7 +6,25 @@ import { onStep } from "./getStartedEvents";
 
 interface GetStartedMeta { seen?: boolean; dismissed?: boolean; read?: ArticleId[]; done?: StepId[] }
 
-export function useGetStarted(opts: { derived: Partial<Record<StepId, boolean>> }) {
+export interface UseGetStarted {
+  isOpen: boolean;
+  minimized: boolean;
+  tab: "do" | "learn";
+  activeArticle: ArticleId | null;
+  open: () => void;
+  minimize: () => void;
+  close: () => void;
+  dismiss: () => void;
+  setTab: (tab: "do" | "learn") => void;
+  openArticle: (id: ArticleId) => void;
+  backToLearn: () => void;
+  completed: Record<StepId, boolean>;
+  progress: { done: number; total: number };
+  dismissed: boolean;
+  seen: boolean;
+}
+
+export function useGetStarted(opts: { derived: Partial<Record<StepId, boolean>> }): UseGetStarted {
   const { isLoaded, user } = useUser();
   const stored = (user?.unsafeMetadata?.getStarted as GetStartedMeta | undefined) ?? {};
 
@@ -27,32 +45,45 @@ export function useGetStarted(opts: { derived: Partial<Record<StepId, boolean>> 
     void user.update({ unsafeMetadata: { ...user.unsafeMetadata, getStarted: { ...prev, ...patch } } });
   }, [user]);
 
-  // Event-bus completions (chat/task/hire) → append + persist (idempotent).
-  useEffect(() => onStep((id) => {
-    setDone((cur) => {
-      if (cur.includes(id)) return cur;
-      const next = [...cur, id];
-      persist({ done: next });
-      return next;
-    });
-  }), [persist]);
-
-  // First-run auto-open, once, after Clerk loads.
+  // Hydrate local state from the loaded Clerk metadata exactly once. On a hard
+  // page load `useUser()` first returns `{ isLoaded: false, user: null }`, so a
+  // returning user's persisted state is not available at mount — without this
+  // we would auto-open the guide and reset completion on every reload. The
+  // first-run auto-open is folded in here so it respects the loaded `seen`.
+  const hydratedRef = useRef(false);
   useEffect(() => {
-    if (!isLoaded || seen) return;
-    setIsOpen(true);
-    setSeen(true);
-    persist({ seen: true });
-  }, [isLoaded, seen, persist]);
+    if (!isLoaded || hydratedRef.current) return;
+    hydratedRef.current = true;
+    const s = (user?.unsafeMetadata?.getStarted as GetStartedMeta | undefined) ?? {};
+    setDone(s.done ?? []);
+    setRead(s.read ?? []);
+    setDismissed(!!s.dismissed);
+    setSeen(!!s.seen);
+    if (!s.seen) { setIsOpen(true); setSeen(true); persist({ seen: true }); }
+  }, [isLoaded, user, persist]);
+
+  // Event-bus completions (chat/task/hire) → append + persist (idempotent).
+  // `done` is read through a ref so the subscription stays stable, and the
+  // persist side effect lives OUTSIDE the state updater (updaters must be pure;
+  // StrictMode double-invokes them).
+  const doneRef = useRef(done);
+  doneRef.current = done;
+  useEffect(() => onStep((id) => {
+    const cur = doneRef.current;
+    if (cur.includes(id)) return;
+    const next = [...cur, id];
+    setDone(next);
+    persist({ done: next });
+  }), [persist]);
 
   const d = opts.derived;
   const completed = useMemo<Record<StepId, boolean>>(() => ({
-    meet: read.includes("meet-friday-atlas"),
+    meet: !!d.meet || read.includes("meet-friday-atlas"),
     chat: !!d.chat || done.includes("chat"),
     task: !!d.task || done.includes("task"),
     hire: !!d.hire || done.includes("hire"),
     channel: !!d.channel || done.includes("channel"),
-  }), [read, done, d.chat, d.task, d.hire, d.channel]);
+  }), [read, done, d.meet, d.chat, d.task, d.hire, d.channel]);
 
   const progress = useMemo(() => ({
     done: STEPS.filter((s) => completed[s.id]).length,
@@ -61,8 +92,11 @@ export function useGetStarted(opts: { derived: Partial<Record<StepId, boolean>> 
 
   const openArticle = useCallback((id: ArticleId) => {
     setActiveArticle(id);
-    setRead((cur) => { if (cur.includes(id)) return cur; const next = [...cur, id]; persist({ read: next }); return next; });
-  }, [persist]);
+    if (read.includes(id)) return;
+    const next = [...read, id];
+    setRead(next);
+    persist({ read: next });
+  }, [read, persist]);
 
   return {
     isOpen, minimized, tab, activeArticle,

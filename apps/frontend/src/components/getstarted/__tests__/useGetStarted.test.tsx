@@ -4,16 +4,22 @@ import { useGetStarted } from "../useGetStarted";
 import { emitStep } from "../getStartedEvents";
 
 const update = vi.fn().mockResolvedValue(undefined);
-let meta: Record<string, unknown> = {};
+type ClerkUser = { unsafeMetadata: Record<string, unknown>; update: typeof update } | null;
+// Mutable so a test can drive Clerk's async load: `isLoaded`/`user` change
+// across renders (hard reload first returns `{ isLoaded: false, user: null }`).
+let clerkState: { isLoaded: boolean; user: ClerkUser } = {
+  isLoaded: true,
+  user: { unsafeMetadata: {}, update },
+};
 vi.mock("@clerk/nextjs", () => ({
-  useUser: (): { isLoaded: boolean; user: { unsafeMetadata: Record<string, unknown>; update: typeof update } } => ({
-    isLoaded: true,
-    user: { unsafeMetadata: meta, update },
-  }),
+  useUser: (): { isLoaded: boolean; user: ClerkUser } => clerkState,
 }));
 
 describe("useGetStarted", () => {
-  beforeEach(() => { meta = {}; update.mockClear(); });
+  beforeEach(() => {
+    clerkState = { isLoaded: true, user: { unsafeMetadata: {}, update } };
+    update.mockClear();
+  });
 
   it("marks steps done from derived live signals (channel + task)", () => {
     const { result } = renderHook(() => useGetStarted({ derived: { channel: true, task: true } }));
@@ -35,5 +41,25 @@ describe("useGetStarted", () => {
     expect(update).toHaveBeenCalledWith(
       expect.objectContaining({ unsafeMetadata: expect.objectContaining({ getStarted: expect.objectContaining({ seen: true }) }) }),
     );
+  });
+
+  it("re-hydrates a returning user once Clerk loads asynchronously (no auto-open, completion restored)", () => {
+    // Hard reload: Clerk first reports not-loaded with no user.
+    clerkState = { isLoaded: false, user: null };
+    const { result, rerender } = renderHook(() => useGetStarted({ derived: {} }));
+    expect(result.current.isOpen).toBe(false);
+    expect(result.current.completed.chat).toBe(false);
+    expect(update).not.toHaveBeenCalled();
+
+    // Clerk finishes loading a returning user who has seen the guide and
+    // already completed "chat".
+    clerkState = {
+      isLoaded: true,
+      user: { unsafeMetadata: { getStarted: { seen: true, done: ["chat"] } }, update },
+    };
+    rerender();
+
+    expect(result.current.isOpen).toBe(false); // does NOT auto-open for a returning user
+    expect(result.current.completed.chat).toBe(true); // completion re-hydrated from metadata
   });
 });

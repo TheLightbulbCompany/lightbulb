@@ -12,7 +12,7 @@ export function GetStartedChecklist({ completed, onAction, onMeet, onDismiss }: 
   const done = STEPS.filter((s) => completed[s.id]).length;
   return (
     <div>
-      <div className="text-[13.5px] leading-relaxed text-[var(--ink)] bg-[var(--forest-tint)] border border-[#d4e6dc] rounded-xl p-3.5 mb-3.5">
+      <div className="text-[13.5px] leading-relaxed text-[var(--ink)] bg-[var(--forest-tint)] border border-[var(--edge-forest)] rounded-xl p-3.5 mb-3.5">
         Isol8 runs like a tiny company. <b className="text-[var(--forest)]">Friday</b> is your CEO — you talk to it, it delegates. <b className="text-[var(--forest)]">Atlas</b> recruits new agents when a job needs a skill you don’t have yet. You’re set up — now put them to work.
       </div>
       <div className="flex items-center gap-2.5 flex-wrap bg-[var(--cream-deeper)] border border-dashed border-[var(--edge)] rounded-xl px-3 py-2.5 mb-5 text-xs text-[var(--mute)]">
@@ -27,14 +27,14 @@ export function GetStartedChecklist({ completed, onAction, onMeet, onDismiss }: 
         const isDone = completed[s.id];
         return (
           <div key={s.id} className={`flex gap-3 p-3 border rounded-xl mb-2.5 ${isDone ? "bg-[var(--cream-deeper)] border-[var(--edge)]" : "bg-white border-[var(--edge)] hover:border-[var(--forest-soft)]"}`}>
-            <span className={`flex-none w-[22px] h-[22px] rounded-full grid place-items-center mt-0.5 ${isDone ? "bg-[var(--forest)]" : "border-2 border-[var(--mute)]"}`}>{isDone && <Check size={12} className="text-white" />}</span>
+            <span className={`flex-none w-[22px] h-[22px] rounded-full grid place-items-center mt-0.5 ${isDone ? "bg-[var(--forest)]" : "border-2 border-[var(--mute)]"}`}>{isDone && <Check size={12} className="text-[var(--cream)]" />}</span>
             <span className="flex-none w-[34px] h-[34px] rounded-lg bg-[var(--forest-tint)] grid place-items-center text-[var(--forest)]"><Icon size={18} /></span>
             <div className="flex-1 min-w-0">
               <div className={`text-sm font-semibold ${isDone ? "text-[var(--mute)] line-through" : ""}`}>{s.title}</div>
               <div className="text-xs text-[var(--mute)] mt-0.5 mb-2 leading-snug">{s.description}</div>
               {!isDone && (s.id === "meet"
-                ? <button type="button" onClick={onMeet} className="inline-flex items-center gap-1.5 text-xs font-semibold text-[var(--forest)] bg-[var(--forest-tint)] border border-[#d4e6dc] rounded-lg px-2.5 py-1.5">Read <ArrowRight size={13} /></button>
-                : <button type="button" onClick={() => onAction(s.id as Exclude<StepId, "meet">)} className="inline-flex items-center gap-1.5 text-xs font-semibold text-[var(--forest)] bg-[var(--forest-tint)] border border-[#d4e6dc] rounded-lg px-2.5 py-1.5">{s.ctaLabel} <ArrowRight size={13} /></button>)}
+                ? <button type="button" onClick={onMeet} className="inline-flex items-center gap-1.5 text-xs font-semibold text-[var(--forest)] bg-[var(--forest-tint)] border border-[var(--edge-forest)] rounded-lg px-2.5 py-1.5">Read <ArrowRight size={13} /></button>
+                : <button type="button" onClick={() => onAction(s.id as Exclude<StepId, "meet">)} className="inline-flex items-center gap-1.5 text-xs font-semibold text-[var(--forest)] bg-[var(--forest-tint)] border border-[var(--edge-forest)] rounded-lg px-2.5 py-1.5">{s.ctaLabel} <ArrowRight size={13} /></button>)}
             </div>
           </div>
         );

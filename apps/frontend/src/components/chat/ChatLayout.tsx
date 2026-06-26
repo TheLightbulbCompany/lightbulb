@@ -304,7 +304,7 @@ export function ChatLayout({
 
   useEffect(() => {
     if (!drawerState.freshlyInstalledAgentId) return;
-    if (drawerState.freshlyInstalledAgentId) emitStep("hire");
+    emitStep("hire");
     const handle = setTimeout(() => setFreshlyInstalled(null), 600);
     return () => clearTimeout(handle);
   }, [drawerState.freshlyInstalledAgentId, setFreshlyInstalled]);
@@ -777,7 +777,11 @@ export function ChatLayout({
               derived={getStartedDerived}
               actions={{
                 chat: () => {
-                  handleSelectAgent(defaultId ?? agents[0]?.id ?? "");
+                  // Don't select/act on an empty id: if no real agent exists
+                  // yet, bail rather than passing "" to handleSelectAgent.
+                  const targetId = defaultId ?? agents[0]?.id;
+                  if (!targetId) return;
+                  handleSelectAgent(targetId);
                   window.dispatchEvent(new CustomEvent("getstarted:focus-composer"));
                 },
                 task: () => {
@@ -805,7 +809,10 @@ export function ChatLayout({
                   // (MyChannelsSection) is link-only and dead-ends a zero-bot
                   // user. ?inspectorTab=channels is read by AgentInspectorPanel
                   // to open straight on that tab.
-                  const agentId = defaultId ?? agents[0]?.id ?? "";
+                  // Bail without navigating if there's no real agent to target
+                  // rather than pushing ?agent= with an empty id.
+                  const agentId = defaultId ?? agents[0]?.id;
+                  if (!agentId) return;
                   const params = new URLSearchParams(searchParams.toString());
                   params.set("panel", "agent-inspector");
                   params.set("agent", agentId);

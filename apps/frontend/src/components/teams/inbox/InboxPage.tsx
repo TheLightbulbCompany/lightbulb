@@ -16,6 +16,11 @@ import { NeedsAttentionBand } from "@/components/teams/inbox/NeedsAttentionBand"
 import { PageSkeleton } from "@/components/teams/shared/components/PageSkeleton";
 import { NewIssueDialog } from "@/components/teams/issues/NewIssueDialog";
 import { PanelEmptyState, PanelMasthead } from "@/components/teams/shell";
+import {
+  ONBOARDING_FIRST_TASK_TITLE,
+  ONBOARDING_FIRST_TASK_DESCRIPTION,
+  resolveCeoAgentId,
+} from "@/components/getstarted/getStartedFirstTask";
 
 import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
 import { useInboxData } from "@/components/teams/inbox/hooks/useInboxData";
@@ -135,27 +140,36 @@ export function InboxPage({
 
   // 3b. NewIssueDialog open state.
   //
-  // Deep-link entry: the "Get started" guide (and the New-task pill on the
-  // chat shell) routes here with ?newIssue=1 to pop the dialog straight open.
-  // Opening is done WITHOUT an effect-driven setState (the lint rule forbids
-  // it, and it would cascade renders): the open state is lazily seeded from
-  // the param on first render, and a later same-page re-navigation (clicking
-  // the guide step again while the inbox panel is already mounted, which only
-  // changes the URL) is detected by comparing the param against its previous
-  // value DURING render — React's "adjust state when a prop changes" pattern,
-  // the same one the selection clamp below uses. The effect then ONLY strips
-  // the param via router.replace (not setState), so a refresh / back-nav can't
-  // reopen it.
+  // Deep-link entry: a navigation can route here to pop the dialog straight
+  // open. "1" = blank composer; "onboarding" = the Get Started first-task step,
+  // which pre-fills a CEO-directed task. Opening is done WITHOUT an effect-driven
+  // setState (the lint rule forbids it, and it would cascade renders): the open
+  // state is lazily seeded from the param on first render, and a later same-page
+  // re-navigation (re-triggering the step while this panel is already mounted,
+  // which only changes the URL) is detected by comparing the param against its
+  // previous value DURING render — React's "adjust state when a prop changes"
+  // pattern, the same one the selection clamp below uses. The effect then ONLY
+  // strips the param via router.replace (not setState), so a refresh / back-nav
+  // can't reopen it. The prefill intent is captured as STATE — not re-derived
+  // from the param — so it survives the strip and any later same-page re-open.
   const newIssueParam = searchParams.get("newIssue");
-  const [newIssueOpen, setNewIssueOpen] = useState(() => newIssueParam === "1");
+  const [newIssueOpen, setNewIssueOpen] = useState(
+    () => newIssueParam === "1" || newIssueParam === "onboarding",
+  );
+  const [newIssuePrefill, setNewIssuePrefill] = useState(
+    () => newIssueParam === "onboarding",
+  );
   const [prevNewIssueParam, setPrevNewIssueParam] = useState(newIssueParam);
   if (newIssueParam !== prevNewIssueParam) {
     setPrevNewIssueParam(newIssueParam);
-    if (newIssueParam === "1") setNewIssueOpen(true);
+    if (newIssueParam === "1" || newIssueParam === "onboarding") {
+      setNewIssueOpen(true);
+      setNewIssuePrefill(newIssueParam === "onboarding");
+    }
   }
 
   useEffect(() => {
-    if (newIssueParam !== "1") return;
+    if (newIssueParam !== "1" && newIssueParam !== "onboarding") return;
     const params = new URLSearchParams(searchParams.toString());
     params.delete("newIssue");
     router.replace(`?${params.toString()}`, { scroll: false });
@@ -370,12 +384,25 @@ export function InboxPage({
       </div>
 
       <NewIssueDialog
+        key={newIssuePrefill ? "onboarding" : "blank"}
         open={newIssueOpen}
-        onOpenChange={setNewIssueOpen}
+        onOpenChange={(next) => {
+          setNewIssueOpen(next);
+          if (!next) setNewIssuePrefill(false);
+        }}
         agents={agents}
         projects={projects}
+        defaultTitle={newIssuePrefill ? ONBOARDING_FIRST_TASK_TITLE : undefined}
+        defaultDescription={
+          newIssuePrefill ? ONBOARDING_FIRST_TASK_DESCRIPTION : undefined
+        }
+        defaultAssigneeAgentId={
+          newIssuePrefill ? resolveCeoAgentId(agents) : undefined
+        }
+        defaultStatus={newIssuePrefill ? "todo" : undefined}
         onCreated={(issueId) => {
           setNewIssueOpen(false);
+          setNewIssuePrefill(false);
           openIssue(issueId);
         }}
       />

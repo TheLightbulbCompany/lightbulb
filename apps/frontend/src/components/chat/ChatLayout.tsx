@@ -788,17 +788,19 @@ export function ChatLayout({
                   // ONE navigation to the inbox panel with the New-task
                   // intent. Mirror what `setActivePanel` (page.tsx) would
                   // build — set panel + view=control, drop stale agent/detailId
-                  // filters — and add `newIssue=1` so the inbox auto-opens its
-                  // New-task dialog (read by InboxPage). Calling `onPanelChange`
-                  // and then a second relative `?panel=…` push grew two history
-                  // entries (Back needed two presses) and the relative form
-                  // dropped the other query params setActivePanel preserves.
+                  // filters — and add `newIssue=onboarding` so the inbox
+                  // auto-opens its New-task dialog (read by InboxPage)
+                  // pre-filled with the CEO-directed first task. Calling
+                  // `onPanelChange` and then a second relative `?panel=…` push
+                  // grew two history entries (Back needed two presses) and the
+                  // relative form dropped the other query params setActivePanel
+                  // preserves.
                   const params = new URLSearchParams(searchParams.toString());
                   params.set("panel", `${TEAMS_PANEL_PREFIX}inbox`);
                   params.set("view", "control");
                   params.delete("agent");
                   params.delete("detailId");
-                  params.set("newIssue", "1");
+                  params.set("newIssue", "onboarding");
                   router.push(`/chat?${params.toString()}`, { scroll: false });
                 },
                 hire: () => openMarketplace({ view: "browse" }),

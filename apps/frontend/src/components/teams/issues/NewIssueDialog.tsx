@@ -9,7 +9,7 @@
 
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { EditorialButton, EditorialDialog } from "@/components/teams/shell";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -65,6 +65,18 @@ export interface NewIssueDialogProps {
    * by the Project-detail Issues tab so a new task lands in that project.
    */
   defaultProjectId?: string;
+  /** Pre-fills the Title field and its reset baseline. */
+  defaultTitle?: string;
+  /** Pre-fills the Description field and its reset baseline. */
+  defaultDescription?: string;
+  /** Pre-selects the assignee and its reset baseline. */
+  defaultAssigneeAgentId?: string;
+  /**
+   * Seeds the Status select (and its reset baseline). The onboarding first-task
+   * step opens at `todo` to mirror Paperclip's onboarding task; the bare
+   * composer omits this and falls back to the server-default `backlog`.
+   */
+  defaultStatus?: IssueStatus;
 }
 
 export function NewIssueDialog({
@@ -76,28 +88,48 @@ export function NewIssueDialog({
   parentId,
   parentLabel,
   defaultProjectId,
+  defaultTitle,
+  defaultDescription,
+  defaultAssigneeAgentId,
+  defaultStatus,
 }: NewIssueDialogProps) {
   const { create, createChild } = useIssueMutations();
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
+  const [title, setTitle] = useState(defaultTitle ?? "");
+  const [description, setDescription] = useState(defaultDescription ?? "");
   const [priority, setPriority] = useState<IssuePriority>("medium");
   // Resting choice mirrors the server default (backlog/standard) so leaving the
   // controls untouched produces the same task the bare composer always did.
-  const [status, setStatus] = useState<IssueStatus>("backlog");
+  const [status, setStatus] = useState<IssueStatus>(defaultStatus ?? "backlog");
   const [workMode, setWorkMode] = useState<IssueWorkMode>("standard");
   const [projectId, setProjectId] = useState<string>(defaultProjectId ?? "");
-  const [assigneeAgentId, setAssigneeAgentId] = useState<string>("");
+  const [assigneeAgentId, setAssigneeAgentId] = useState<string>(
+    defaultAssigneeAgentId ?? "",
+  );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // On a cold first-run the roster (and thus the resolved CEO) can arrive after
+  // the dialog has already opened. Seed the assignee the first time a non-empty
+  // default appears, without remounting — so in-progress title/description edits
+  // survive. The transition guard (prev was empty) means we never re-apply over a
+  // choice the user made afterward.
+  const prevDefaultAssignee = useRef(defaultAssigneeAgentId);
+  useEffect(() => {
+    const prev = prevDefaultAssignee.current;
+    prevDefaultAssignee.current = defaultAssigneeAgentId;
+    if (!prev && defaultAssigneeAgentId && !assigneeAgentId) {
+      setAssigneeAgentId(defaultAssigneeAgentId);
+    }
+  }, [defaultAssigneeAgentId, assigneeAgentId]);
+
   const reset = () => {
-    setTitle("");
-    setDescription("");
+    setTitle(defaultTitle ?? "");
+    setDescription(defaultDescription ?? "");
     setPriority("medium");
-    setStatus("backlog");
+    setStatus(defaultStatus ?? "backlog");
     setWorkMode("standard");
     setProjectId(defaultProjectId ?? "");
-    setAssigneeAgentId("");
+    setAssigneeAgentId(defaultAssigneeAgentId ?? "");
     setError(null);
   };
 

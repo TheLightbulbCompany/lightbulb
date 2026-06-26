@@ -215,6 +215,15 @@ class AgentNotInConfigError(Exception):
     """
 
 
+class BuiltAgentConfigError(Exception):
+    """An Atlas-built staging agent dir has no parseable openclaw.json (neither
+    ``workspace/openclaw.json`` nor a root-level fallback) or its config has no
+    ``agents.list[].id``. Unlike the seller path, the built agent is supposed to
+    be self-describing — without its own config we can't synthesize the slice
+    that registers it in the owner's openclaw.json. The router maps this to 400.
+    """
+
+
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 
@@ -406,6 +415,12 @@ def _build_tarball(agent_dir: Path) -> tuple[bytes, list[str]]:
             # (e.g. BOOTSTRAP.md.bak.20260624050826, openclaw.json.bak-20260620-…)
             # and are inert cruft that should never reach a buyer's workspace.
             if ".bak" in basename or basename.endswith((".tmp", ".orig", "~")):
+                return None
+            # build-manifest.json is an Atlas-build artifact (file hashes + build
+            # metadata), never a real workspace file — exclude it so it can't ride
+            # into a deployed agent on the staging-export fallback path (where the
+            # staging root, not workspace/, is tarred).
+            if basename == "build-manifest.json":
                 return None
             if _looks_like_credential_file(basename):
                 return None
@@ -639,6 +654,157 @@ def export_agent_from_efs(
         declared_skills=_agent_declared_skills(config, resolved_agent_id),
     )
     manifest.update(build_manifest_requirements(reqs, scan_incomplete))
+
+    return CatalogPackage(
+        format="openclaw",
+        manifest=manifest,
+        openclaw_slice=slice_,
+        tarball_bytes=tarball_bytes,
+        tarball_contents=contents,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Atlas agent-builder: snapshot a freshly-built STAGING agent
+# ---------------------------------------------------------------------------
+
+
+def _read_staging_openclaw_config(staging_dir: Path) -> dict | None:
+    """Read an Atlas-built agent's OWN openclaw.json out of its staging dir.
+
+    The skeleton-generator nests the agent's config (and persona files) under
+    a ``workspace/`` subdir — see atlas-skeleton-generator.js ``draftToFastIo``
+    (every generated artifact is keyed ``workspace/...``). We read
+    ``workspace/openclaw.json`` first, then fall back to a root-level
+    ``openclaw.json`` defensively. Returns the parsed dict, or ``None`` when
+    neither candidate exists / parses.
+    """
+    for candidate in (staging_dir / "workspace" / "openclaw.json", staging_dir / "openclaw.json"):
+        if candidate.is_file():
+            try:
+                data = json.loads(candidate.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if isinstance(data, dict):
+                return data
+    return None
+
+
+def export_built_agent_from_staging(owner_id: str, staging_agent_id: str) -> CatalogPackage:
+    """Snapshot an Atlas-built STAGING agent dir on EFS into a CatalogPackage.
+
+    Atlas (the in-container recruiter) builds a new specialist agent's files
+    into a staging workspace dir, then asks the backend to register it. Unlike
+    ``export_agent_from_efs`` — which sources the slice from the OWNER's root
+    openclaw.json and 400s if the agent isn't listed there — the staging agent
+    is **self-describing**: the skeleton-generator writes the agent's own
+    ``openclaw.json`` + persona files under a ``workspace/`` subdir of the
+    staging dir, plus a ``build-manifest.json`` at the staging-dir root. So we
+    tar the inner ``workspace/`` (files land at the tarball root —
+    ``./openclaw.json``, ``./AGENTS.md``, … — the convention
+    ``deploy_from_artifact`` expects) and build the slice from the staging
+    dir's OWN config.
+
+    ``build-manifest.json`` sits OUTSIDE ``workspace/`` so it never reaches the
+    shipped tarball (it documents the build, not the runtime workspace).
+
+    Args:
+        owner_id: Clerk/org id that owns the EFS dir (same role ``seller_id``
+            plays in ``export_agent_from_efs``).
+        staging_agent_id: The ``workspaces/{id}/`` dir name Atlas built into.
+
+    Raises:
+        InvalidAgentIdError: staging_agent_id failed format / path-traversal check.
+        AgentNotFoundError: no staging dir at workspaces/{staging_agent_id}.
+        BuiltAgentConfigError: the staging dir has no parseable openclaw.json
+            (or its config carries no ``agents.list[].id``).
+        CredentialLeakError: a credential survived scrubbing in the built slice.
+    """
+    # Resolve the staging workspace dir on EFS. owner_id is the EFS dir owner,
+    # exactly as seller_id is for export_agent_from_efs. Direct-hit resolution
+    # only (config=None) — the staging dir name IS a live workspace dir, so the
+    # legacy slug-forwarding the seller path needs doesn't apply here.
+    staging_dir = _resolve_agent_dir(seller_id=owner_id, agent_id=staging_agent_id, config=None)
+
+    # The shippable files live under workspace/ (see atlas-skeleton-generator.js
+    # draftToFastIo). Tar that subdir so files land at the tarball root; this
+    # also leaves build-manifest.json (staging root) out of the tarball. Fall
+    # back to the staging root if no workspace/ subdir exists (defensive).
+    workspace_subdir = staging_dir / "workspace"
+    tar_root = workspace_subdir if workspace_subdir.is_dir() else staging_dir
+    tarball_bytes, contents = _build_tarball(tar_root)
+
+    # Build the slice from the staging dir's OWN openclaw.json (not the owner's
+    # root config) — agents.list[0] is the built agent. Same extract_agent_slice
+    # logic as the seller path, just a different config source.
+    staging_config = _read_staging_openclaw_config(staging_dir)
+    if not staging_config:
+        raise BuiltAgentConfigError(
+            f"staging agent {staging_agent_id!r} has no parseable openclaw.json — "
+            "the build did not write its config (expected workspace/openclaw.json)"
+        )
+    agents = [a for a in _agents_list(staging_config) if isinstance(a, dict) and a.get("id")]
+    if not agents:
+        raise BuiltAgentConfigError(f"staging agent {staging_agent_id!r} openclaw.json has no agents.list[].id")
+    if len(agents) > 1:
+        # The skeleton generator always emits a single-agent config. More than
+        # one means a malformed build — fail loud rather than silently snapshot
+        # agents[0] and discard the rest.
+        ids = [a["id"] for a in agents]
+        raise BuiltAgentConfigError(
+            f"staging agent {staging_agent_id!r} openclaw.json lists multiple agents ({ids}); "
+            "a built agent must be single-agent"
+        )
+    agent_entry = agents[0]
+    built_agent_id = agent_entry["id"]
+
+    workspace_skill_names = _enumerate_workspace_skill_names(tar_root)
+    try:
+        slice_ = extract_agent_slice(
+            staging_config,
+            built_agent_id,
+            workspace_skill_names=workspace_skill_names,
+        )
+    except KeyError as exc:
+        raise BuiltAgentConfigError(
+            f"built agent {built_agent_id!r} is not registered in its own openclaw.json agents.list"
+        ) from exc
+
+    # Rewrite workspace-relative MCP arg paths to the __AGENT_DIR__ sentinel that
+    # deploy_from_artifact substitutes back to the new agent's workspace — same
+    # as the seller path. No-op today (built agents have no MCP servers) but
+    # required once the skeleton generator emits MCP config pointing at the
+    # staging workspace, else those paths would survive pointing at the staging dir.
+    _rewrite_mcp_args_paths(slice_, seller_agent_id=built_agent_id)
+
+    # Same post-scrub credential-leak gate the seller path runs: the slice is a
+    # separate artifact the tarball scan never walks, so block if a secret
+    # survived scrubbing. Names the field path, never the secret value.
+    slice_leak_flags = marketplace_safety.assert_slice_scrubbed(slice_)
+    if marketplace_safety.has_blocking_credential_findings(slice_leak_flags):
+        paths = ", ".join(f.snippet.split(" = ", 1)[0] for f in slice_leak_flags)
+        raise CredentialLeakError(
+            f"cannot register: a credential survived scrubbing in the built agent's slice ({paths}); "
+            "remove the secret from the agent's MCP/skill config and retry"
+        )
+
+    safety_flags = _scan_tarball_for_safety_flags(tarball_bytes)
+
+    # Name comes from the built agent's own entry (the skeleton-generator sets
+    # agents.list[0].id = the display name); fall back through identity → id.
+    identity = agent_entry.get("identity") if isinstance(agent_entry.get("identity"), dict) else {}
+    name = agent_entry.get("name") or identity.get("name") or built_agent_id
+    description = identity.get("description") or identity.get("vibe") or ""
+
+    manifest = {
+        "name": name,
+        "description": description,
+        "format": "openclaw",
+        "exported_at": int(time.time()),
+        "agent_id": built_agent_id,
+        "file_count": len(contents),
+        "safety_flags": safety_flags,
+    }
 
     return CatalogPackage(
         format="openclaw",

@@ -12,7 +12,6 @@
 
 const fs = require('fs');
 const { CLAWHAVOC_DENYLIST } = require('./atlas-clawhavoc-enforcer.js');
-const { STANDARD_SECURITY_STACK } = require('./atlas-skill-recommender.js');
 
 function checkEnv() {
   const checks = [];
@@ -87,9 +86,15 @@ function checkOpenclawJson() {
       remediation: `Add to openclaw.json tools.deny array: ${missing.join(', ')}`
     });
     const skills = (cfg.agents && cfg.agents.list && cfg.agents.list[0] && cfg.agents.list[0].skills) || [];
-    const missingSkills = STANDARD_SECURITY_STACK.filter(s => !skills.includes(s));
+    // Only the genuine SECURITY skills are activation blockers. The broader
+    // recommended stack (STANDARD_SECURITY_STACK) still includes gateway tools
+    // (fast-io, summarize, n8n-workflow) that the gateway-free migration removed
+    // from Atlas's runtime — blocking on those would fail a correctly-migrated
+    // agent. Recommend the rest, but don't block on it.
+    const SECURITY_BLOCKER_SKILLS = ['skill-vetter', 'sona-security-audit'];
+    const missingSkills = SECURITY_BLOCKER_SKILLS.filter(s => !skills.includes(s));
     checks.push({
-      check: 'standard_security_stack_present',
+      check: 'security_skills_present',
       pass: missingSkills.length === 0,
       severity: 'blocker',
       reason: missingSkills.length === 0 ? null : `agents.list[0].skills missing: ${missingSkills.join(', ')}`,

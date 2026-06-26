@@ -67,6 +67,13 @@ function audit({ buildId, stagingDir, _ioAdapter }) {
   const io = _ioAdapter || _defaultIoAdapter();
   const staging = stagingDir || _defaultStagingDir(buildId);
   const workspaceDir = path.join(staging, 'workspace');
+  // At RECAP time the agent isn't written to disk yet (build.lobster's write-disk
+  // materializes the staging workspace later), so the workspace dir won't exist.
+  // When it's absent, validate only that deterministic requirements DECLARE a
+  // pipeline binding (the no_triggers / empty-pipeline checks) — defer on-disk
+  // file existence to build (verify-write). Without this, every deterministic
+  // requirement would false-report pipeline_missing at recap.
+  const workspaceMaterialized = fs.existsSync(workspaceDir);
 
   const matrix = io.readMatrix();
   if (!matrix) {
@@ -100,7 +107,11 @@ function audit({ buildId, stagingDir, _ioAdapter }) {
     const finalClassification = decision.classification_override || baseClassification;
     if (finalClassification !== 'deterministic') continue;
 
-    const triggers = (triggerRow.triggers != null ? triggerRow.triggers : row.triggers) || [];
+    // Decision triggers (from a vet `change` via applyTriggerEdits) override the
+    // matrix's original bindings; then the trigger-row override; then the raw row.
+    const triggers = (decision.triggers != null
+      ? decision.triggers
+      : (triggerRow.triggers != null ? triggerRow.triggers : row.triggers)) || [];
     if (triggers.length === 0) {
       failures.push({
         req_id: reqId,
@@ -115,6 +126,10 @@ function audit({ buildId, stagingDir, _ioAdapter }) {
       // path.join to workspaceDir itself (which exists), silently passing the
       // existsSync check below even though no pipeline file was actually bound.
       if (!t.pipeline) continue;
+      // Skip the on-disk existence check until the workspace is materialized
+      // (recap runs before build's write-disk); the declared binding is enough
+      // here, and verify-write enforces actual file presence at build time.
+      if (!workspaceMaterialized) continue;
       const pipelinePath = path.join(workspaceDir, t.pipeline);
       if (!fs.existsSync(pipelinePath)) {
         failures.push({

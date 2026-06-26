@@ -83,18 +83,21 @@ async def register_built_agent(owner_id: str, payload: RegisterBuiltAgentRequest
     """
     await _require_hook_token(owner_id, request)
 
-    # 1. Snapshot the staging workspace Atlas built. Friday guard + credential
-    #    scrub run inside export_agent_from_efs. EFS is keyed by owner_id.
+    # 1. Snapshot the staging workspace Atlas built. The built agent is
+    #    self-describing — its slice comes from the staging dir's OWN
+    #    openclaw.json (under workspace/), not the owner's root config (which
+    #    doesn't list the not-yet-registered staging agent). EFS is keyed by
+    #    owner_id. Credential scrub gate runs inside the export.
     try:
-        package = agent_export.export_agent_from_efs(
-            seller_id=owner_id,
-            agent_id=payload.staging_agent_id,
+        package = agent_export.export_built_agent_from_staging(
+            owner_id=owner_id,
+            staging_agent_id=payload.staging_agent_id,
         )
     except agent_export.InvalidAgentIdError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except agent_export.AgentNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    except agent_export.AgentNotInConfigError as e:
+    except agent_export.BuiltAgentConfigError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except agent_export.CredentialLeakError as e:
         raise HTTPException(status_code=400, detail=str(e))

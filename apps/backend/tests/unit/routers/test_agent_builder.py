@@ -56,7 +56,7 @@ def test_wrong_token_401(mock_get_container, client):
 @patch("routers.agent_builder.get_catalog_service")
 @patch("routers.agent_builder.get_ecs_manager")
 @patch("routers.agent_builder.create_paperclip_for_marketplace", new_callable=AsyncMock)
-@patch("routers.agent_builder.agent_export.export_agent_from_efs")
+@patch("routers.agent_builder.agent_export.export_built_agent_from_staging")
 @patch("routers.agent_builder.container_repo.get_by_owner_id", new_callable=AsyncMock)
 def test_register_happy_path(mock_get_container, mock_export, mock_create_pc, mock_get_ecs, mock_get_catalog, client):
     mock_get_container.return_value = {"hook_token": TOKEN, "gateway_token": "gw-token"}
@@ -75,8 +75,8 @@ def test_register_happy_path(mock_get_container, mock_export, mock_create_pc, mo
     assert resp.json()["registered"] is True
 
     # Snapshot keyed by owner_id + the staging dir.
-    assert mock_export.call_args.kwargs["seller_id"] == OWNER
-    assert mock_export.call_args.kwargs["agent_id"] == "staging-uuid-1"
+    assert mock_export.call_args.kwargs["owner_id"] == OWNER
+    assert mock_export.call_args.kwargs["staging_agent_id"] == "staging-uuid-1"
     # Deploy threaded the minted UUID as new_agent_id.
     assert catalog.deploy_from_artifact.await_args.kwargs["new_agent_id"] == "new-agent-uuid"
 
@@ -84,7 +84,7 @@ def test_register_happy_path(mock_get_container, mock_export, mock_create_pc, mo
 @patch("routers.agent_builder.delete_paperclip_for_marketplace", new_callable=AsyncMock)
 @patch("routers.agent_builder.get_ecs_manager")
 @patch("routers.agent_builder.create_paperclip_for_marketplace", new_callable=AsyncMock)
-@patch("routers.agent_builder.agent_export.export_agent_from_efs")
+@patch("routers.agent_builder.agent_export.export_built_agent_from_staging")
 @patch("routers.agent_builder.container_repo.get_by_owner_id", new_callable=AsyncMock)
 def test_container_down_503_before_mint(
     mock_get_container, mock_export, mock_create_pc, mock_get_ecs, mock_delete_pc, client
@@ -108,7 +108,7 @@ def test_container_down_503_before_mint(
 @patch("routers.agent_builder.get_catalog_service")
 @patch("routers.agent_builder.get_ecs_manager")
 @patch("routers.agent_builder.create_paperclip_for_marketplace", new_callable=AsyncMock)
-@patch("routers.agent_builder.agent_export.export_agent_from_efs")
+@patch("routers.agent_builder.agent_export.export_built_agent_from_staging")
 @patch("routers.agent_builder.container_repo.get_by_owner_id", new_callable=AsyncMock)
 def test_deploy_failure_rolls_back_paperclip(
     mock_get_container, mock_export, mock_create_pc, mock_get_ecs, mock_get_catalog, mock_delete_pc, client

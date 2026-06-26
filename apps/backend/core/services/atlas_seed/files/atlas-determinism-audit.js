@@ -56,7 +56,10 @@ function _defaultIoAdapter() {
 }
 
 function _defaultStagingDir(buildId) {
-  const agentsRoot = process.env.ISOL8_AGENTS_DIR || path.join(os.homedir(), '.openclaw', 'agents');
+  // Default to 'workspaces' to match the deployed ISOL8_AGENTS_DIR
+  // (build.lobster sets /home/node/.openclaw/workspaces) so a direct invocation
+  // without the env resolves the same root the runtime uses.
+  const agentsRoot = process.env.ISOL8_AGENTS_DIR || path.join(os.homedir(), '.openclaw', 'workspaces');
   return path.join(agentsRoot, `.atlas-staging-${buildId}`);
 }
 

@@ -86,16 +86,24 @@ async function diffIndex() {
   };
 }
 
-async function fetchPages(urls, maxFetches) {
-  const fetched = [];
-  for (const url of urls.slice(0, maxFetches)) {
-    const result = await fetchUrl(url);
-    if (result.status === 200) {
-      fetched.push({ url, body: result.body, fetched_at: new Date().toISOString() });
-    } else {
-      fetched.push({ url, error: result.status, fetched_at: new Date().toISOString() });
+async function fetchPages(urls, maxFetches, concurrency = 8) {
+  // Bounded-concurrency pool: serial await would be maxFetches × timeout
+  // worst-case (50 × 10s = 500s), which could clip the daily cron on a cold
+  // first run. Same pattern as atlas-citation-verifier.verifyCitations.
+  const slice = urls.slice(0, maxFetches);
+  const fetched = new Array(slice.length);
+  const queue = [...slice.entries()];
+  async function worker() {
+    let entry;
+    while ((entry = queue.shift()) !== undefined) {
+      const [i, url] = entry;
+      const result = await fetchUrl(url);
+      fetched[i] = result.status === 200
+        ? { url, body: result.body, fetched_at: new Date().toISOString() }
+        : { url, error: result.status, fetched_at: new Date().toISOString() };
     }
   }
+  await Promise.all(Array.from({ length: Math.min(concurrency, slice.length || 1) }, worker));
   return fetched;
 }
 

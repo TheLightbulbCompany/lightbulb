@@ -98,7 +98,7 @@ function checkOpenclawJson() {
       pass: missingSkills.length === 0,
       severity: 'blocker',
       reason: missingSkills.length === 0 ? null : `agents.list[0].skills missing: ${missingSkills.join(', ')}`,
-      remediation: `Add to openclaw.json skills array: ${missingSkills.join(', ')}`
+      remediation: missingSkills.length === 0 ? null : `Add to openclaw.json skills array: ${missingSkills.join(', ')}`
     });
   } catch (e) {
     checks.push({

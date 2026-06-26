@@ -106,7 +106,10 @@ function diff(buildId, matrix, decisions) {
 
   const summary = {
     total: rows.length,
-    no_change: rows.filter(r => r.decision === 'approve' || (!r.decision && r.original_status === 'Covered')).length,
+    // Only explicitly approved rows are "no change". The old fallback also
+    // counted unvetted (no-decision) rows whose original_status was 'Covered',
+    // which double-counted them — they're already in `unvetted` below.
+    no_change: rows.filter(r => r.decision === 'approve').length,
     changed: rows.filter(r => r.decision === 'change').length,
     dropped: rows.filter(r => r.decision === 'drop').length,
     unvetted: rows.filter(r => !r.decision).length

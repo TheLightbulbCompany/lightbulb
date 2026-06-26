@@ -329,10 +329,7 @@ function Header({
 }
 
 function Stats({ live }: { live: Listing }) {
-  // install_count isn't on the typed Listing today — the backend includes
-  // it on storefront responses but it's optional on the seller-side rows.
-  const installs =
-    (live as unknown as { install_count?: number }).install_count ?? 0;
+  const installs = live.install_count ?? 0;
   return (
     <div className="flex gap-6 mb-6 text-[13px] text-[#5b5b5b]">
       <div>
@@ -551,7 +548,10 @@ function versionStatusCls(status: string): string {
       return "bg-[#fef4e3] text-[#a07520]";
     case "draft":
       return "bg-[#f3eee5] text-[#5b5b5b]";
+    case "taken_down":
+      return "bg-[#fbe9e7] text-[#8a3a2a]";
     default:
+      // retired + any future status — neutral grey
       return "bg-[#f3eee5] text-[#8a8578]";
   }
 }
@@ -566,8 +566,7 @@ function VersionHistoryTab({
   return (
     <ul data-testid="version-history" className="space-y-2">
       {versions.map((v) => {
-        const installs =
-          (v as unknown as { install_count?: number }).install_count ?? 0;
+        const installs = v.install_count ?? 0;
         const stamp = v.published_at ?? v.created_at;
         return (
           <li

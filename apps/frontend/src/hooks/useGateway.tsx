@@ -102,6 +102,11 @@ export type ChatIncomingMessage =
       agent_id?: string;
       runId: string;
     }
+  // A `/btw` (detached side-channel) answer. OpenClaw renders these as a
+  // separate side card ("Not saved to chat history"); the backend maps
+  // chat.side_result → this frame. Ephemeral — never folded into the
+  // transcript/history. runId is the side run's id (optional).
+  | { type: "btw_result"; question: string; text: string; isError?: boolean; agent_id?: string; runId?: string }
   | { type: "update_available" };
 
 /** Gateway event forwarded from OpenClaw */
@@ -279,6 +284,7 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
       msgType === "tool_progress" ||
       msgType === "command_output" ||
       msgType === "agent_activity" ||
+      msgType === "btw_result" ||
       msgType === "update_available"
     ) {
       const chatMsg = data as unknown as ChatIncomingMessage;

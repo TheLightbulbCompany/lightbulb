@@ -8,6 +8,16 @@ import { ChatInput } from "../ChatInput";
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 import { capture } from "@/lib/analytics";
 
+// ChatInput consumes useSlashCommands (gateway-backed) for the slash menu.
+// These tests render without a GatewayProvider, so stub the hook to an empty
+// command set — none of these cases exercise the menu.
+vi.mock("@/hooks/useSlashCommands", () => ({
+  useSlashCommands: (): { commands: never[]; isLoading: boolean } => ({
+    commands: [],
+    isLoading: false,
+  }),
+}));
+
 describe("ChatInput — analytics ownership", () => {
   it("does NOT capture chat_message_sent on submit — dispatchNow is the single capture point", () => {
     // A click is not a send: parked/queued messages must only count when

@@ -1407,6 +1407,27 @@ class GatewayConnection:
                             exc_info=True,
                         )
 
+            elif event_name == "chat.side_result":
+                # `/btw` answers ride a distinct channel OpenClaw's web UI
+                # renders as a side card; map it to a frontend chat-union frame
+                # so it surfaces instead of being silently dropped by the
+                # raw-forward path below. Side-channel only — it never touches
+                # `_active_runs`/`_side_run_ids` or the primary run's window.
+                if is_channel_session or is_cron_session or is_isolated_session:
+                    return
+                frame: dict = {
+                    "type": "btw_result",
+                    "question": payload.get("question", ""),
+                    "text": payload.get("text", ""),
+                    "runId": payload.get("runId"),
+                }
+                if payload.get("isError"):
+                    frame["isError"] = True
+                side_agent_id = parsed_key.get("agent_id")
+                if side_agent_id:
+                    frame["agent_id"] = side_agent_id
+                await self._forward_to_frontends(frame, target_member)
+
             else:
                 # Forward other events as-is for SWR revalidation (broadcast to all)
                 await self._forward_to_frontends(data)

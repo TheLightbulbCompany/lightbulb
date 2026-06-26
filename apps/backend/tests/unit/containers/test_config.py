@@ -280,17 +280,16 @@ class TestOpenclawConfigShape:
         assert config["update"]["checkOnStart"] is False
 
     def test_owner_chat_commands_enabled(self):
-        """The three owner-operated chat commands (/mcp, /plugins, /debug)
-        are off-by-default upstream. We flip them on for per-user Isol8
-        containers because the owner needs to manage their own container
-        from chat. /config and /bash stay off — broad config writes
-        belong to the control panel + config_patcher, and host-shell
-        access from chat widens the trust boundary too far given
-        channel-linked accounts."""
+        """The chat ``commands`` flag block is curated for the slash-command
+        menu. The control panel owns MCP/plugins/config writes, so /mcp,
+        /plugins, and /config must not be mutable from chat. /bash (host-shell)
+        and /restart (gateway lifecycle) widen the trust boundary too far for
+        chat. /debug stays on — runtime-only diagnostics that don't persist."""
         config = _cfg()
-        assert config["commands"]["mcp"] is True
-        assert config["commands"]["plugins"] is True
         assert config["commands"]["debug"] is True
+        assert config["commands"]["restart"] is False
+        assert "mcp" not in config["commands"], "/mcp must stay off — the control panel owns MCP server writes"
+        assert "plugins" not in config["commands"], "/plugins must stay off — the control panel owns plugin enablement"
         assert "config" not in config["commands"], (
             "/config must stay off — chat must not be able to mutate provider/billing keys"
         )

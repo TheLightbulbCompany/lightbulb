@@ -1,8 +1,17 @@
 // @vitest-environment jsdom
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { render } from "@testing-library/react";
 
 import { ChatInput } from "../ChatInput";
+
+// ChatInput consumes useSlashCommands (gateway-backed). This test renders
+// without a GatewayProvider, so stub the hook to an empty command set.
+vi.mock("@/hooks/useSlashCommands", () => ({
+  useSlashCommands: (): { commands: never[]; isLoading: boolean } => ({
+    commands: [],
+    isLoading: false,
+  }),
+}));
 
 describe("ChatInput focus event", () => {
   it("focuses the textarea on getstarted:focus-composer", () => {

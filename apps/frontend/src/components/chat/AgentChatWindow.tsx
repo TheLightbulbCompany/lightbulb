@@ -331,6 +331,7 @@ export function AgentChatWindow({
           <ChatInput
             onSend={handleSend}
             onStop={cancelMessage}
+            agentId={agentId}
             isConnected={isConnected}
             disabled={!agentId}
             isStreaming={isStreaming}
@@ -363,6 +364,7 @@ export function AgentChatWindow({
         <ChatInput
           onSend={handleSend}
           onStop={cancelMessage}
+          agentId={agentId}
           disabled
           isStreaming={isStreaming}
           isConnected={isConnected}
@@ -399,6 +401,7 @@ export function AgentChatWindow({
             <ChatInput
               onSend={handleSend}
               onStop={cancelMessage}
+              agentId={agentId}
               isConnected={isConnected}
               disabled={!agentId}
               isStreaming={isStreaming}
@@ -433,6 +436,7 @@ export function AgentChatWindow({
       <ChatInput
         onSend={handleSend}
         onStop={cancelMessage}
+        agentId={agentId}
         isConnected={isConnected}
         disabled={!agentId}
         isStreaming={isStreaming}

@@ -22,6 +22,7 @@ import type {
   ChatRenderItem,
   ContentBlock,
   RenderGroup,
+  RenderSide,
   HistoryMessage,
 } from "@/hooks/internal/types";
 // Approval rendering moved to ExecApprovalDialog (mounted at chat-shell level
@@ -507,6 +508,51 @@ function ItemRenderer({
 }
 
 /**
+ * A `/btw` (detached side-channel) answer rendered as a distinct, non-thread
+ * side card — labeled "BTW · not saved" (it is never written to the transcript
+ * / history), the question in muted text, the answer as the body. Error styling
+ * reuses the existing chat error tokens (#fce4ec / #a5311f / #f8bbd0). Mirrors
+ * OpenClaw's "Not saved to chat history" side card.
+ */
+function BtwSideCard({
+  question,
+  text,
+  isError,
+  onOpenFile,
+}: {
+  question: string;
+  text: string;
+  isError?: boolean;
+  onOpenFile?: (path: string) => void;
+}) {
+  return (
+    <div
+      data-testid="btw-card"
+      className={cn(
+        "rounded-lg border px-3 py-2.5 text-sm",
+        isError ? "border-[#f8bbd0] bg-[#fce4ec]" : "border-[#e0dbd0] bg-[#f3efe6]",
+      )}
+    >
+      <div className="flex items-center gap-1.5 mb-1.5">
+        <span
+          className={cn(
+            "text-[11px] font-semibold uppercase tracking-wide",
+            isError ? "text-[#a5311f]" : "text-[#06402B]",
+          )}
+        >
+          BTW
+        </span>
+        <span className="text-[11px] text-[#b5ae9e]">· not saved</span>
+      </div>
+      {question && <div className="text-xs text-[#8a8578] mb-1.5">{question}</div>}
+      <div className={cn("leading-7", isError ? "text-[#a5311f]" : "text-[#302d28]")}>
+        <MarkdownContent content={text} onOpenFile={onOpenFile} />
+      </div>
+    </div>
+  );
+}
+
+/**
  * One visual bubble group. User-side groups expand to one bubble per item
  * (each user message stands alone). Assistant-side groups render a single
  * rounded container with all items flowing inside it.
@@ -524,6 +570,25 @@ function BubbleGroup({
   isLastAssistantGroup?: boolean;
   onOpenFile?: (path: string) => void;
 }) {
+  if (group.side === "btw") {
+    return (
+      <div className="flex w-full justify-start" data-role="btw">
+        <div className="flex flex-col gap-2 min-w-0 max-w-[85%]">
+          {group.items.map((item) =>
+            item.kind === "btw" ? (
+              <BtwSideCard
+                key={item.key}
+                question={item.question}
+                text={item.text}
+                isError={item.isError}
+                onOpenFile={onOpenFile}
+              />
+            ) : null,
+          )}
+        </div>
+      </div>
+    );
+  }
   if (group.side === "user") {
     return (
       <>
@@ -583,7 +648,7 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
     const hasMountedRef = React.useRef(false);
     const prevTotalItemsRef = React.useRef(0);
     const prevLastTailLengthRef = React.useRef(0);
-    const prevLastSideRef = React.useRef<"user" | "assistant" | undefined>(undefined);
+    const prevLastSideRef = React.useRef<RenderSide | undefined>(undefined);
 
     React.useImperativeHandle(ref, () => ({
       scrollToBottom,

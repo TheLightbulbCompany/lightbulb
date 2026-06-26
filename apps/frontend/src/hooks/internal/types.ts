@@ -73,10 +73,14 @@ export type ChatRenderItem =
   | { kind: "stream-segment"; key: string; text: string; ts: number }
   | { kind: "stream"; key: string; text: string; runId: string }
   | { kind: "live-thinking"; key: string; text: string; runId: string }
-  | { kind: "divider"; key: string; label: string };
+  | { kind: "divider"; key: string; label: string }
+  // A `/btw` (detached side-channel) answer. Ephemeral — held in transient
+  // state, never folded into the transcript/history, mirroring OpenClaw's
+  // "Not saved to chat history" side card.
+  | { kind: "btw"; key: string; question: string; text: string; isError?: boolean };
 
 /** Visual side of a rendered group. */
-export type RenderSide = "user" | "assistant";
+export type RenderSide = "user" | "assistant" | "btw";
 
 /** A visual bubble group — consecutive items on the same side. */
 export interface RenderGroup {

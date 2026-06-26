@@ -107,10 +107,12 @@ export function useCatalog() {
   );
 
   const deploy = useCallback(
-    async (listingId: string): Promise<DeployResult> => {
+    async (listingId: string, reportsTo?: string | null): Promise<DeployResult> => {
+      // `reports_to` (org placement) is optional — omit the field when no
+      // manager was chosen so the backend leaves the new agent unparented.
       const result = (await api.post(
         `/marketplace/listings/${encodeURIComponent(listingId)}/deploy`,
-        {},
+        reportsTo ? { reports_to: reportsTo } : {},
       )) as DeployResult;
       await Promise.all([mutateFeatured(), mutateInstalled()]);
       return result;

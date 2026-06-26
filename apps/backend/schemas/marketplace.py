@@ -189,6 +189,25 @@ class ArtifactFromAgentRequest(BaseModel):
     requires_desktop: bool = False
 
 
+class DeployListingRequest(BaseModel):
+    """Optional body for ``POST /marketplace/listings/{id}/deploy``.
+
+    ``reports_to`` is the Paperclip agent id the buyer wants the new hire to
+    report to (its manager in the org chart). Omitted / null leaves the agent
+    unparented (Paperclip's default), so existing one-click deploys that send
+    no body keep working unchanged.
+    """
+
+    reports_to: str | None = None
+
+    @field_validator("reports_to")
+    @classmethod
+    def _blank_reports_to_is_none(cls, v: str | None) -> str | None:
+        # Paperclip's reportsTo accepts null but rejects "" — coerce a blank /
+        # whitespace string to None so a top-level hire never trips validation.
+        return (v or "").strip() or None
+
+
 class AvailableSkill(BaseModel):
     """A skill referenced by the seller's agent + where it lives."""
 

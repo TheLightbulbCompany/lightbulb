@@ -37,7 +37,7 @@ export function useHire() {
   const [isHiring, setIsHiring] = useState(false);
 
   const hire = useCallback(
-    async (listing: Listing) => {
+    async (listing: Listing, reportsTo?: string | null) => {
       setIsHiring(true);
       try {
         // Sellers can install their own listing without paying. The
@@ -48,7 +48,10 @@ export function useHire() {
         // product.
         const isSeller = !!user?.id && listing.seller_id === user.id;
         if (listing.price_cents === 0 || isSeller) {
-          const result = await deploy(listing.listing_id);
+          // Org placement: thread the buyer's chosen manager into the deploy.
+          // (Paid listings deploy post-Stripe-return — reports_to support on
+          // that path is a follow-up; all current listings are free.)
+          const result = await deploy(listing.listing_id, reportsTo);
           // Refresh the chat sidebar's agents.list cache BEFORE marking
           // freshly-installed, so the slide-in animation has a row to attach to.
           // useCatalog().deploy() only revalidates the marketplace catalog cache;

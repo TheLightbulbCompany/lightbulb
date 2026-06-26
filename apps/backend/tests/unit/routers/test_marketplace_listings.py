@@ -683,8 +683,69 @@ def test_deploy_mints_paperclip_agent_first_and_threads_uuid_to_catalog(
     deploy_kwargs = catalog.deploy_from_artifact.await_args.kwargs
     assert deploy_kwargs["new_agent_id"] == "paperclip-uuid-1234"
 
+    # No body → reports_to defaults to None (unparented), backward-compatible.
+    assert pc_kwargs["reports_to"] is None
+
     # Rollback NOT called on success.
     mock_delete_pc.assert_not_awaited()
+
+
+@patch("routers.marketplace_listings.get_ecs_manager")
+@patch("routers.marketplace_listings.delete_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_deploy_threads_reports_to_into_paperclip_create(
+    mock_get_published,
+    mock_get_catalog,
+    mock_boto,
+    mock_create_pc,
+    mock_delete_pc,
+    mock_get_ecs,
+    client,
+):
+    """Org placement: the buyer's chosen manager (reports_to) in the deploy
+    body is threaded into create_paperclip_for_marketplace so the new hire
+    lands under that agent in the Paperclip org chart."""
+    mock_get_published.return_value = _published_listing(price_cents=0)
+    mock_create_pc.return_value = {"id": "paperclip-uuid-1234", "name": "Demo"}
+    mock_get_ecs.return_value = _stub_ecs_manager()
+    mock_boto.return_value = _stub_s3_get_object(
+        _slice={"agent": {"name": "Demo", "role": "general"}, "plugins": {}, "tools": {}, "cron_jobs": []}
+    )
+    catalog = MagicMock()
+    catalog.deploy_from_artifact = AsyncMock(
+        return_value={
+            "slug": "demo-agent",
+            "version": 1,
+            "agent_id": "paperclip-uuid-1234",
+            "name": "Demo",
+            "skills_added": [],
+            "plugins_enabled": [],
+            "cron_jobs_added": 0,
+            "config_registered": True,
+        }
+    )
+    mock_get_catalog.return_value = catalog
+
+    resp = client.post(
+        "/api/v1/marketplace/listings/lst_1/deploy",
+        json={"reports_to": "friday-agent-id"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert mock_create_pc.await_args.kwargs["reports_to"] == "friday-agent-id"
+
+
+def test_deploy_request_blank_reports_to_coerced_to_none():
+    """Paperclip's reportsTo rejects "" (accepts null) — the schema coerces a
+    blank string to None so a top-level hire never trips Paperclip validation."""
+    from schemas.marketplace import DeployListingRequest
+
+    assert DeployListingRequest(reports_to="").reports_to is None
+    assert DeployListingRequest(reports_to="   ").reports_to is None
+    assert DeployListingRequest(reports_to="agent-x").reports_to == "agent-x"
+    assert DeployListingRequest().reports_to is None
 
 
 @patch("routers.marketplace_listings.get_ecs_manager")

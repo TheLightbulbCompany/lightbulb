@@ -141,6 +141,35 @@ def test_running_container_without_gateway_token_503_before_mint(
 @patch("routers.agent_builder.create_paperclip_for_marketplace", new_callable=AsyncMock)
 @patch("routers.agent_builder.agent_export.export_built_agent_from_staging")
 @patch("routers.agent_builder.container_repo.get_by_owner_id", new_callable=AsyncMock)
+def test_mint_failure_503_no_deploy_no_rollback(
+    mock_get_container, mock_export, mock_create_pc, mock_get_ecs, mock_get_catalog, mock_delete_pc, client
+):
+    """A Paperclip mint failure (or malformed response) 503s cleanly — the read
+    of new_agent_id stays inside the mint try, so it never escapes uncaught into
+    a 500, and deploy/rollback are never reached (nothing was created)."""
+    mock_get_container.return_value = {"hook_token": TOKEN, "gateway_token": "gw-token"}
+    mock_export.return_value = _pkg()
+    ecs = MagicMock()
+    ecs.resolve_running_container = AsyncMock(return_value=({"gateway_token": "gw-token"}, "10.0.0.1"))
+    mock_get_ecs.return_value = ecs
+    # Malformed mint response (no "id") → KeyError caught → 503.
+    mock_create_pc.return_value = {"name": "Lex"}
+    catalog = MagicMock()
+    catalog.deploy_from_artifact = AsyncMock()
+    mock_get_catalog.return_value = catalog
+
+    resp = client.post(URL, json=BODY, headers={"Authorization": f"Bearer {TOKEN}"})
+    assert resp.status_code == 503
+    catalog.deploy_from_artifact.assert_not_awaited()  # never reached deploy
+    mock_delete_pc.assert_not_awaited()  # nothing minted to roll back
+
+
+@patch("routers.agent_builder.delete_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.agent_builder.get_catalog_service")
+@patch("routers.agent_builder.get_ecs_manager")
+@patch("routers.agent_builder.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.agent_builder.agent_export.export_built_agent_from_staging")
+@patch("routers.agent_builder.container_repo.get_by_owner_id", new_callable=AsyncMock)
 def test_deploy_failure_rolls_back_paperclip(
     mock_get_container, mock_export, mock_create_pc, mock_get_ecs, mock_get_catalog, mock_delete_pc, client
 ):

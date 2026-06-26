@@ -122,7 +122,9 @@ async def register_built_agent(owner_id: str, payload: RegisterBuiltAgentRequest
     container, container_ip = await ecs.resolve_running_container(owner_id)
     if container is None or container_ip is None:
         raise HTTPException(status_code=503, detail="container starting — retry in a moment")
-    # Reuse the row _require_hook_token already read (no second DDB fetch).
+    # Take the token from the row _require_hook_token already read, rather than
+    # re-reading container["gateway_token"] (resolve_running_container does its
+    # own fetch for the IP/running-check; the token doesn't need a third).
     container_token = auth_container.get("gateway_token")
     if not container_token:
         # Row exists but predates gateway_token (or a partial write) — treat as
@@ -130,16 +132,29 @@ async def register_built_agent(owner_id: str, payload: RegisterBuiltAgentRequest
         raise HTTPException(status_code=503, detail="container not ready (no gateway token) — retry in a moment")
 
     # 3. Mint the Paperclip agent (shares the UUID threaded into deploy as
-    #    new_agent_id). buyer_user_id = owner_id (the container's manual-wake key).
-    paperclip_agent = await create_paperclip_for_marketplace(
-        buyer_user_id=owner_id,
-        owner_id=owner_id,
-        name=payload.name,
-        role=None,
-        meta=meta,
-        reports_to=payload.reports_to,
-    )
-    new_agent_id = paperclip_agent["id"]
+    #    new_agent_id). Wrap the mint so a failure (or a malformed response
+    #    missing "id") 503s cleanly instead of a naked 500 — and so new_agent_id
+    #    is read only on success, keeping the deploy rollback envelope coherent.
+    #    Mirrors marketplace_listings.deploy_listing.
+    try:
+        paperclip_agent = await create_paperclip_for_marketplace(
+            buyer_user_id=owner_id,
+            owner_id=owner_id,
+            name=payload.name,
+            role=None,
+            meta=meta,
+            reports_to=payload.reports_to,
+        )
+        new_agent_id = paperclip_agent["id"]
+    except Exception as exc:  # noqa: BLE001 — mint failure / malformed response
+        logger.exception(
+            "register_built_agent: Paperclip mint failed for owner=%s staging=%s",
+            owner_id,
+            payload.staging_agent_id,
+        )
+        if isinstance(exc, HTTPException):
+            raise
+        raise HTTPException(status_code=503, detail="paperclip unavailable — retry the build in a moment") from exc
 
     # 4. Deploy the snapshot into the container (write files + register live in
     #    openclaw.json). Roll back the orphan Paperclip agent on any failure —

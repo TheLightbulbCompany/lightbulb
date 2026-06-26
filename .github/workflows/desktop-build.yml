@@ -172,7 +172,7 @@ jobs:
         TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         ISOL8_CALLBACK_URL: https://dev.isol8.co/auth/desktop-callback
-    - name: Build, sign + notarize DMG (headless makehybrid)
+    - name: Build, sign + notarize DMG (headless)
       run: |-
         set -euo pipefail
         APP="apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Isol8.app"
@@ -355,7 +355,7 @@ jobs:
         TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         ISOL8_CALLBACK_URL: https://isol8.co/auth/desktop-callback
-    - name: Build, sign + notarize DMG (headless makehybrid)
+    - name: Build, sign + notarize DMG (headless)
       run: |-
         set -euo pipefail
         APP="apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Isol8.app"

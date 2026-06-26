@@ -78,6 +78,7 @@ _TEXT_EXTENSIONS: set[str] = {
     ".kt",
     ".r",
     ".lua",
+    ".lobster",
     ".env",
     ".cfg",
     ".ini",

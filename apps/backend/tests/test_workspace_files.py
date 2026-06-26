@@ -102,6 +102,7 @@ def populated_workspace(tmp_path: Path) -> tuple[Workspace, Path]:
     (root / "docs" / "readme.txt").write_text("Hello world", encoding="utf-8")
     (root / "image.png").write_bytes(_minimal_png())
     (root / "script.py").write_text('print("hi")\n', encoding="utf-8")
+    (root / "build.lobster").write_text("start -> build -> done\n", encoding="utf-8")
 
     # Visible-but-was-previously-hidden items
     (root / "openclaw.json").write_text("{}", encoding="utf-8")
@@ -323,6 +324,18 @@ class TestReadFileInfo:
         info = ws.read_file_info(USER_ID, "agents/my-agent/notes.md")
         assert info["binary"] is False
         assert "Notes" in info["content"]
+
+    def test_lobster_file_is_text(self, populated_workspace):
+        """.lobster workflows are text so the frontend graph viewer gets content.
+
+        Without this the file falls through to the binary branch and the
+        workspace viewer shows "Binary file — preview not available," which
+        makes the .lobster Graph/Code tabs unreachable.
+        """
+        ws, _ = populated_workspace
+        info = ws.read_file_info(USER_ID, "build.lobster")
+        assert info["binary"] is False
+        assert "build" in info["content"]
 
     def test_result_path_is_relative(self, populated_workspace):
         """'path' field in result is relative to user workspace root."""

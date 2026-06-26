@@ -373,7 +373,9 @@ function readStdin() {
   try { return JSON.parse(fs.readFileSync(0, 'utf8')); } catch (e) { return {}; }
 }
 
-function process(input) {
+// Named processInput (NOT process) so it doesn't shadow Node's global
+// process object — main() needs process.argv + process.stdout.write.
+function processInput(input) {
   // TODO: Replace this stub with the actual logic for ${script.purpose}.
   // Refine based on the user/agent loop interaction.
   return {
@@ -386,13 +388,13 @@ function process(input) {
 function main() {
   const args = parseArgs(process.argv);
   const input = readStdin();
-  const result = process(input);
+  const result = processInput(input);
   process.stdout.write(JSON.stringify(result));
 }
 
 if (require.main === module) main();
 
-module.exports = { process };
+module.exports = { processInput };
 `;
 }
 
@@ -524,13 +526,21 @@ function writeDisk(buildId, agentName, artifacts) {
     try {
       _materializeStaging(stagingDir, artifacts);
     } catch (e) {
+      // Clean up the partially-written staging dir so a retry starts clean —
+      // matches the mv_failed path. Best-effort; report if cleanup also fails.
+      let cleanupError = null;
+      try {
+        fs.rmSync(stagingDir, { recursive: true, force: true });
+      } catch (ce) { cleanupError = ce.message; }
       const err = {
         success: false,
         error: 'staging_write_failed',
         message: `Failed to materialize artifacts into staging dir: ${e.message}`,
         build_id: buildId,
         staging_dir: stagingDir,
-        destination_dir: null
+        destination_dir: null,
+        cleanup_succeeded: !cleanupError,
+        cleanup_error: cleanupError
       };
       process.stderr.write(JSON.stringify(err) + '\n');
       return err;

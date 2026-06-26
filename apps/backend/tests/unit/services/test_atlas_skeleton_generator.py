@@ -28,12 +28,24 @@ const g=require(process.env.GEN_PATH);
 const spec={ build_id:"b1", intake:{name:"lex-legal", build_id:"b1", archetype:"general"},
   user_stories:[{req_id:"US1", action:"summarize contracts", outcome:"the team saves time"}],
   never_does:["leak client PII"], what_you_are:"You are Lex.",
-  requirements_with_triggers:[], pipelines:[{name:"intake"}], scripts:[{name:"helper"}] };
+  requirements_with_triggers:[],
+  pipelines:[{name:"intake", purpose:"collect a contract to summarize"}],
+  scripts:[{name:"helper", purpose:"normalize a contract payload", archetype:"transform"}] };
 const draft=g.draftToFastIo(spec);
 const w=draft.pass ? g.writeDisk("b1","lex-legal",draft.artifacts_to_stage) : {};
 const v=draft.pass ? g.verifyWrite("b1","lex-legal") : {};
 const w2=draft.pass ? g.writeDisk("b1","lex-legal",draft.artifacts_to_stage) : {};
 const ws=path.join(tmp,"lex-legal","workspace");
+// The generated helper.js must actually RUN — it previously defined a local
+// `process` that shadowed Node's global, crashing main() at process.argv.
+let scriptRuns=false, scriptShadows=true;
+try {
+  const helperSrc=fs.readFileSync(path.join(ws,"helper.js"),"utf8");
+  scriptShadows=/function process\(/.test(helperSrc);
+  const cp=require("child_process");
+  const r=cp.spawnSync(process.execPath,[path.join(ws,"helper.js")],{input:"{}",encoding:"utf8"});
+  scriptRuns = r.status===0 && /"pass":true/.test(r.stdout||"");
+} catch(e){}
 const out={
   draft_pass: !!draft.pass,
   write_success: !!w.success,
@@ -43,6 +55,8 @@ const out={
   has_agents_md: fs.existsSync(path.join(ws,"AGENTS.md")),
   has_manifest: fs.existsSync(path.join(tmp,"lex-legal","build-manifest.json")),
   second_write_refused: w2.error==="destination_exists",
+  script_runs: scriptRuns,
+  script_shadows_process: scriptShadows,
 };
 fs.rmSync(tmp,{recursive:true,force:true});
 process.stdout.write(JSON.stringify(out));
@@ -70,3 +84,6 @@ def test_skeleton_generator_draft_write_verify():
     assert out["has_manifest"] is True
     # Idempotency: a second write to the same dest refuses rather than clobbers.
     assert out["second_write_refused"] is True
+    # The generated Node script must run — no `process` shadow crashing main().
+    assert out["script_shadows_process"] is False
+    assert out["script_runs"] is True

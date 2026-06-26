@@ -44,6 +44,7 @@ steps:
     pipeline: state.get atlas/notifications
 
   - id: nobrief-next
+    on_error: continue
     condition: $select-inputs.json.has_brief == 0
     command: >
       node -e 'const n=JSON.parse(process.env.NOTIFS||"null")||[];
@@ -109,6 +110,7 @@ steps:
     pipeline: state.get atlas/notifications
 
   - id: notify-next
+    on_error: continue
     condition: $select-inputs.json.has_brief > 0
     command: >
       node -e 'const n=JSON.parse(process.env.NOTIFS||"null")||[];
@@ -167,6 +169,7 @@ steps:
     pipeline: state.get atlas/requirement-matrix
 
   - id: matrix-next
+    on_error: continue
     condition: $select-inputs.json.has_brief > 0
     command: >
       node -e 'const map=JSON.parse(process.env.MAP||"null")||{};
@@ -189,6 +192,7 @@ steps:
     pipeline: state.get atlas/audit-log
 
   - id: audit-next
+    on_error: continue
     command: >
       node -e 'const log=JSON.parse(process.env.AUDIT||"null")||[];
         const sel=JSON.parse(process.env.SEL||"null")||{};

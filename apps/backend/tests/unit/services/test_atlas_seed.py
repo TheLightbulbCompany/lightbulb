@@ -199,6 +199,7 @@ def _bridge_files_dir(tmp_path, monkeypatch):
         ("dev", "https://api-dev.isol8.co"),
         ("staging", "https://api-staging.isol8.co"),
         ("prod", "https://api.isol8.co"),
+        ("production", "https://api.isol8.co"),  # "production" alias → prod host
         ("", "https://api.isol8.co"),  # empty env resolves to the prod host
     ],
 )

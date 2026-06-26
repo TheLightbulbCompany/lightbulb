@@ -146,6 +146,7 @@ steps:
   #            file steps only run when the gate is approved. needs_rollback covers a failed
   #            register (after a good verify) OR a registered-but-trigger-failed build.
   - id: build-status
+    on_error: continue
     command: >
       node -e 'const v=JSON.parse(process.env.VERIFY||"null")||{};
         const r=JSON.parse(process.env.REG||"null")||{};
@@ -171,6 +172,7 @@ steps:
     pipeline: state.get atlas/notifications
 
   - id: rollback-next
+    on_error: continue
     condition: $build-status.json.needs_rollback
     command: >
       node -e 'const n=JSON.parse(process.env.NOTIFS||"null")||[];
@@ -201,6 +203,7 @@ steps:
     pipeline: state.get atlas/notifications
 
   - id: success-next
+    on_error: continue
     condition: "$build-status.json.registered == true && $build-status.json.triggers_ok == true"
     command: >
       node -e 'const n=JSON.parse(process.env.NOTIFS||"null")||[];
@@ -227,6 +230,7 @@ steps:
     pipeline: state.get atlas/audit-log
 
   - id: audit-next
+    on_error: continue
     command: >
       node -e 'const log=JSON.parse(process.env.AUDIT||"null")||[];
         const cs=JSON.parse(process.env.CLAW||"null")||{};

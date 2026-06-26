@@ -74,6 +74,7 @@ steps:
     pipeline: state.get atlas/notifications
 
   - id: overlap-notify-next
+    on_error: continue
     condition: $stack-overlap.json.overlap_score >= 30 && $stack-overlap.json.overlap_score <= 70
     command: >
       node -e 'const n=JSON.parse(process.env.NOTIFS||"null")||[];
@@ -98,7 +99,7 @@ steps:
   - id: surface-overlap-gate
     approval:
       required: true
-      prompt: "Stack overlap check — recommendation: $stack-overlap.json.recommendation (score: $stack-overlap.json.overlap_score). If recommendation is null/empty the overlap script errored — check the tool output before approving. Review in #atlas-vet and approve to proceed to research."
+      prompt: "Stack overlap check — recommendation: $stack-overlap.json.recommendation (score: $stack-overlap.json.overlap_score). A recommendation is only produced when the score is ambiguous (30-70); a null recommendation outside that band is expected (clear extend/separate). A null recommendation WITH a 30-70 score means the overlap script errored — check the tool output before approving. Review in #atlas-vet and approve to proceed to research."
 
   # Step 2.1 — Cookbook read (two sources combined per source-preference table).
   - id: cookbook-read
@@ -125,6 +126,7 @@ steps:
     pipeline: state.get atlas/notifications
 
   - id: brief-notify-next
+    on_error: continue
     condition: $surface-overlap-gate.approved
     command: >
       node -e 'const n=JSON.parse(process.env.NOTIFS||"null")||[];
@@ -155,6 +157,7 @@ steps:
     pipeline: state.get atlas/audit-log
 
   - id: audit-next
+    on_error: continue
     command: >
       node -e 'const log=JSON.parse(process.env.AUDIT||"null")||[];
         const so=JSON.parse(process.env.STACK||"null")||{};

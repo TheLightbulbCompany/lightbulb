@@ -22,18 +22,21 @@ function getServerNow(): number {
   return 0;
 }
 
-// The /billing/account response does not currently surface
-// subscription_status / trial_end (the BillingAccountResponse pydantic
-// schema strips them), but the underlying DynamoDB row stores both
-// (set by the trial_will_end + customer.subscription.updated webhook
-// branches landed in Plan 3 Task 2). When the response model is
-// extended to include these fields, this banner lights up
-// automatically — until then, the trialing condition just never
-// matches and the banner stays hidden.
+// `/billing/account` surfaces `subscription_status` + `trial_end`
+// (BillingAccountResponse), set by the trial_will_end +
+// customer.subscription.updated webhook branches.
 type BillingAccount = {
   subscription_status?: string;
   trial_end?: number; // Unix seconds
 };
+
+// Only surface the in-app banner in the FINAL stretch of the trial. A
+// card-up-front trial already disclosed the terms at signup, and Stripe sends a
+// pre-charge reminder email — so a 14-day persistent countdown is a needless
+// cancel-prompt. A quiet heads-up in the last few days is the protective part
+// (avoids surprise-charge disputes) without nagging for two weeks. Calm trial
+// status lives on the Settings → Billing page year-round.
+const TRIAL_REMINDER_DAYS = 3;
 
 export function TrialBanner() {
   const api = useApi();
@@ -57,16 +60,20 @@ export function TrialBanner() {
     0,
     Math.ceil((data.trial_end * 1000 - now) / 86_400_000),
   );
+  // Quiet until the final few days — see TRIAL_REMINDER_DAYS.
+  if (daysLeft > TRIAL_REMINDER_DAYS) {
+    return null;
+  }
   const chargeDate = new Date(data.trial_end * 1000).toLocaleDateString();
 
   return (
     <div className="bg-primary/10 border-b border-primary/20 px-4 py-2 text-sm flex items-center justify-between">
       <span>
-        Your free trial ends in{" "}
+        Heads up — your free trial ends in{" "}
         <strong>
-          {daysLeft} day{daysLeft === 1 ? "" : "s"}
+          {daysLeft === 0 ? "today" : `${daysLeft} day${daysLeft === 1 ? "" : "s"}`}
         </strong>
-        . You&apos;ll be charged $50 on {chargeDate}.
+        {daysLeft === 0 ? "" : ` (${chargeDate})`}, then $50/mo.
       </span>
       <Link href="/settings?panel=billing" className="text-primary underline">
         Manage

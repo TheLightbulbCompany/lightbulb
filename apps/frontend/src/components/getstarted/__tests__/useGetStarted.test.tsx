@@ -3,7 +3,7 @@ import { renderHook, act } from "@testing-library/react";
 import { useGetStarted } from "../useGetStarted";
 import { emitStep } from "../getStartedEvents";
 
-vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
+vi.mock("@/lib/analytics", () => ({ capture: vi.fn(), captureException: vi.fn() }));
 
 const update = vi.fn().mockResolvedValue(undefined);
 type ClerkUser = { unsafeMetadata: Record<string, unknown>; update: typeof update } | null;
@@ -20,7 +20,10 @@ vi.mock("@clerk/nextjs", () => ({
 describe("useGetStarted", () => {
   beforeEach(() => {
     clerkState = { isLoaded: true, user: { unsafeMetadata: {}, update } };
-    update.mockClear();
+    // Re-apply the implementation each run: the global afterEach calls
+    // vi.restoreAllMocks(), which strips mockResolvedValue and would otherwise
+    // make update() return undefined (the persistence effect calls .catch on it).
+    update.mockReset().mockResolvedValue(undefined);
   });
 
   it("marks steps done from derived live signals (channel + task)", () => {
@@ -83,6 +86,45 @@ describe("useGetStarted", () => {
     expect(result.current.dismissed).toBe(false);
     expect(update).toHaveBeenCalledWith(
       expect.objectContaining({ unsafeMetadata: expect.objectContaining({ getStarted: expect.objectContaining({ dismissed: false }) }) }),
+    );
+  });
+
+  it("does NOT clobber: reading the final article + completion in one tick persists BOTH read and completedFired", async () => {
+    // A returning user (seen:true → no auto-open) who already has 4/5 steps
+    // satisfied via live derived signals. Reading the last article ("meet")
+    // completes step 5, which fires the completion effect — two state changes
+    // (read append + completedFired) cascade in the same interaction. Under the
+    // old partial-patch persist these raced on Clerk's stale base and the
+    // completion write dropped `read` (or vice-versa). With whole-object writes
+    // from local truth, every write is complete, so neither key is lost.
+    clerkState = {
+      isLoaded: true,
+      user: { unsafeMetadata: { getStarted: { seen: true, read: [], done: [] } }, update },
+    };
+    const { result } = renderHook(() =>
+      useGetStarted({ derived: { chat: true, task: true, hire: true, channel: true } }),
+    );
+    expect(result.current.progress).toEqual({ done: 4, total: 5 });
+
+    await act(async () => { result.current.openArticle("meet-friday-atlas"); });
+
+    expect(result.current.progress).toEqual({ done: 5, total: 5 });
+
+    // The write that carries the completion flag must ALSO carry the read
+    // article — i.e. completion did not clobber the read append.
+    const writes = update.mock.calls.map(
+      (c) => (c[0] as { unsafeMetadata: { getStarted: Record<string, unknown> } }).unsafeMetadata.getStarted,
+    );
+    const completionWrite = writes.find((g) => g.completedFired === true);
+    expect(completionWrite).toBeDefined();
+    expect(completionWrite).toEqual(
+      expect.objectContaining({ read: ["meet-friday-atlas"], completedFired: true }),
+    );
+
+    // And the final persisted snapshot (last write wins on Clerk) has both keys.
+    const last = writes[writes.length - 1];
+    expect(last).toEqual(
+      expect.objectContaining({ read: ["meet-friday-atlas"], completedFired: true }),
     );
   });
 });

@@ -15,9 +15,13 @@ const { CLAWHAVOC_DENYLIST, CROSS_AGENT_FLOOR } = require('./atlas-clawhavoc-enf
 
 const FULL_DENYLIST = Object.freeze([...CLAWHAVOC_DENYLIST, ...CROSS_AGENT_FLOOR]);
 
+// The recommender produces `recommended_skills` that agents Atlas builds ship
+// with — so it must NOT recommend gateway tools (fast-io, taskr, summarize,
+// n8n-workflow) that 401 on the embedded gateway-free runtime. Only the genuine
+// gateway-free security/capability skills remain (matches activation-check's
+// SECURITY_BLOCKER_SKILLS posture).
 const STANDARD_SECURITY_STACK = Object.freeze([
-  'fast-io', 'taskr', 'summarize', 'n8n-workflow', 'capability-evolver',
-  'skill-vetter', 'sona-security-audit', 'agentgate'
+  'capability-evolver', 'skill-vetter', 'sona-security-audit', 'agentgate'
 ]);
 
 const ARCHETYPE_RECOMMENDATIONS = Object.freeze({

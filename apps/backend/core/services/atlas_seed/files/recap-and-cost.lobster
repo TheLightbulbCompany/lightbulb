@@ -212,14 +212,20 @@ steps:
     condition: "$architecture-signoff.approved == true && !$determinism-audit.json.pass"
     command: >
       node -e 'const n=JSON.parse(process.env.NOTIFS||"null")||[];
-        const a=JSON.parse(process.env.AUDIT||"null")||{};
-        const fails=a.failures||[];
+        const a=JSON.parse(process.env.AUDIT||"null");
+        // Empty/unparseable AUDIT means the audit PROCESS died (OOM/SIGKILL)
+        // before emitting — distinct from a clean zero-failure run. The script
+        // itself try/catches thrown exceptions into {pass:false,error}, so a
+        // null here is a process-level crash, not a 0-failure pass.
+        const isCrash = !a || typeof a !== "object";
+        const fails = isCrash ? [] : (a.failures||[]);
+        const errMsg = isCrash ? "audit process died before emitting output" : (a.error||null);
         n.push({kind:"determinism_audit_failed", channel:"atlas-vet",
           build_id:process.env.LOBSTER_ARG_BUILD_ID,
           payload:{failure_count:fails.length, failures:fails,
-            error:a.error||null,
-            ask:a.error
-              ? "S9.5 determinism audit CRASHED ("+a.error+") — no requirements were checked. Fix the audit tool / staging path and re-run recap before Step 6 build."
+            error:errMsg,
+            ask:errMsg
+              ? "S9.5 determinism audit CRASHED ("+errMsg+") — no requirements were checked. Fix the audit tool / staging path and re-run recap before Step 6 build."
               : "S9.5 determinism audit failed: each listed requirement needs either a trigger binding or a reclassification to llm/hybrid. Re-vet, then re-run recap before Step 6 build."},
           created_at:new Date().toISOString()});
         process.stdout.write(JSON.stringify(n));'

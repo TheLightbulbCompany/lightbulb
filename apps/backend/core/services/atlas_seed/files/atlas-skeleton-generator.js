@@ -373,7 +373,9 @@ function readStdin() {
   try { return JSON.parse(fs.readFileSync(0, 'utf8')); } catch (e) { return {}; }
 }
 
-function process(input) {
+// Named processInput (NOT process) so it doesn't shadow Node's global
+// process object — main() needs process.argv + process.stdout.write.
+function processInput(input) {
   // TODO: Replace this stub with the actual logic for ${script.purpose}.
   // Refine based on the user/agent loop interaction.
   return {
@@ -386,13 +388,13 @@ function process(input) {
 function main() {
   const args = parseArgs(process.argv);
   const input = readStdin();
-  const result = process(input);
+  const result = processInput(input);
   process.stdout.write(JSON.stringify(result));
 }
 
 if (require.main === module) main();
 
-module.exports = { process };
+module.exports = { processInput };
 `;
 }
 
@@ -495,17 +497,69 @@ function draftToFastIo(spec) {
   };
 }
 
-// --- WRITE DISK (carries from v0 unchanged: staging-dir-then-mv via fs.renameSync, atomic on POSIX) ---
+// --- WRITE DISK (staging-dir-then-mv via fs.renameSync, atomic on POSIX) ---
 
-function writeDisk(buildId, agentName) {
+// Materialize the drafted artifacts onto disk under `stagingDir`. `artifacts`
+// is the { "<relpath>": "<string content>" } map returned by draftToFastIo as
+// `artifacts_to_stage`. Creates parent dirs; refuses path traversal outside the
+// staging dir. THIS is the create step that was missing — draft only RETURNED
+// the artifacts as JSON, so nothing ever populated the staging dir that the
+// atomic mv moves into place (every build hit `staging_dir_missing`).
+function _materializeStaging(stagingDir, artifacts) {
+  fs.mkdirSync(stagingDir, { recursive: true });
+  const root = path.resolve(stagingDir) + path.sep;
+  for (const [rel, content] of Object.entries(artifacts)) {
+    const full = path.join(stagingDir, rel);
+    if (!path.resolve(full).startsWith(root)) {
+      throw new Error(`refusing to write outside staging dir: ${rel}`);
+    }
+    fs.mkdirSync(path.dirname(full), { recursive: true });
+    fs.writeFileSync(full, typeof content === 'string' ? content : JSON.stringify(content, null, 2), 'utf8');
+  }
+}
+
+function writeDisk(buildId, agentName, artifacts) {
   const agentsRoot = process.env.ISOL8_AGENTS_DIR || path.join(os.homedir(), '.openclaw', 'agents');
   const stagingDir = path.join(agentsRoot, `.atlas-staging-${buildId}`);
 
-  if (!agentName) {
+  if (artifacts && typeof artifacts === 'object' && Object.keys(artifacts).length) {
     try {
-      const cfg = JSON.parse(fs.readFileSync(path.join(stagingDir, 'openclaw.json'), 'utf8'));
-      agentName = cfg && cfg.agents && cfg.agents.list && cfg.agents.list[0] && cfg.agents.list[0].id;
-    } catch (e) { /* handled below */ }
+      _materializeStaging(stagingDir, artifacts);
+    } catch (e) {
+      // Clean up the partially-written staging dir so a retry starts clean —
+      // matches the mv_failed path. Best-effort; report if cleanup also fails.
+      let cleanupError = null;
+      try {
+        fs.rmSync(stagingDir, { recursive: true, force: true });
+      } catch (ce) { cleanupError = ce.message; }
+      const err = {
+        success: false,
+        error: 'staging_write_failed',
+        message: `Failed to materialize artifacts into staging dir: ${e.message}`,
+        build_id: buildId,
+        staging_dir: stagingDir,
+        destination_dir: null,
+        cleanup_succeeded: !cleanupError,
+        cleanup_error: cleanupError
+      };
+      process.stderr.write(JSON.stringify(err) + '\n');
+      return err;
+    }
+  }
+
+  if (!agentName) {
+    // openclaw.json is staged under workspace/ (matches the artifact layout);
+    // fall back to the staging root for the legacy flat layout.
+    for (const candidate of [
+      path.join(stagingDir, 'workspace', 'openclaw.json'),
+      path.join(stagingDir, 'openclaw.json')
+    ]) {
+      try {
+        const cfg = JSON.parse(fs.readFileSync(candidate, 'utf8'));
+        agentName = cfg && cfg.agents && cfg.agents.list && cfg.agents.list[0] && cfg.agents.list[0].id;
+        if (agentName) break;
+      } catch (e) { /* try next candidate */ }
+    }
   }
   if (!agentName) {
     const err = {
@@ -673,7 +727,10 @@ function main() {
     return;
   }
   if (args.action === 'write-disk') {
-    process.stdout.write(JSON.stringify(writeDisk(args.buildId, args.agentName)));
+    // stdin carries the draft output; pass its artifacts_to_stage so write-disk
+    // materializes them into the staging dir before the atomic mv.
+    const artifacts = stdinData && stdinData.artifacts_to_stage ? stdinData.artifacts_to_stage : null;
+    process.stdout.write(JSON.stringify(writeDisk(args.buildId, args.agentName, artifacts)));
     return;
   }
   if (args.action === 'verify-write') {

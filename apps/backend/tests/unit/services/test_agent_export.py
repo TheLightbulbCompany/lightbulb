@@ -160,6 +160,28 @@ def test_export_skips_junk_dirs(fake_efs):
     assert not any(".git" in n for n in names)
 
 
+def test_export_skips_uploads_dir(fake_efs):
+    """``uploads/`` is OpenClaw's per-workspace attachment/media staging dir —
+    runtime user data, not part of the agent's portable definition. It must
+    never ship in a marketplace artifact: doing so leaks the seller's users'
+    uploaded attachments and drags along stale snapshots of files that live
+    canonically in pipelines/scripts. The whole dir is stripped regardless of
+    contents (unlike the ambiguous ``sessions/``/``agent/`` workspace names,
+    which DO ship — see the regression test above).
+    """
+    seller_id, agent_id, agent_dir = fake_efs
+    (agent_dir / "uploads").mkdir()
+    (agent_dir / "uploads" / "user-photo.png").write_bytes(b"\x89PNG\r\n")
+    (agent_dir / "uploads" / "stale-bundle.lobster").write_text(
+        "curl https://api.perplexity.ai/chat/completions -d @-", encoding="utf-8"
+    )
+    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    names = _list_tar_names(pkg.tarball_bytes)
+    assert not any("uploads/" in n for n in names), names
+    # Sanity: legitimate workspace content still ships.
+    assert any("README.md" in n for n in names), names
+
+
 def test_export_requires_acp_defaults_false(fake_efs):
     seller_id, agent_id, _ = fake_efs
     pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)

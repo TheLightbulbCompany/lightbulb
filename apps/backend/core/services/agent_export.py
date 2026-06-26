@@ -91,6 +91,13 @@ def _rewrite_mcp_args_paths(slice_: dict, seller_agent_id: str) -> None:
 
 
 # Top-level dirs we never want to ship — caches, transient state, VCS metadata.
+#
+# ``uploads`` is OpenClaw's per-workspace attachment/media staging dir: inbound
+# files (photos, docs) sent through an agent's channels land there at runtime.
+# It is user/runtime data, not part of the agent's portable definition (which is
+# pipelines/scripts/skills/docs + openclaw.json), so it must never reach a
+# buyer's workspace — shipping it both leaks the seller's users' attachments and
+# drags along stale snapshots of files that live canonically elsewhere.
 _SKIP_DIR_NAMES = frozenset(
     {
         "__pycache__",
@@ -101,6 +108,7 @@ _SKIP_DIR_NAMES = frozenset(
         ".venv",
         "node_modules",
         ".DS_Store",
+        "uploads",
     }
 )
 

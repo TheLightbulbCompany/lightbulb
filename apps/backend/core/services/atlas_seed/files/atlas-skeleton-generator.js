@@ -340,7 +340,7 @@ function generateLobsterPipeline(pipeline) {
 # Refine the steps below based on the actual workflow this pipeline implements.
 
 args:
-${(pipeline.args || []).map(a => `  ${_safeName(a.name, 'arg')}:\n    default: "${String(a.default || '').replace(/["\\]/g, '')}"`).join('\n')}
+${(pipeline.args || []).map(a => `  ${_safeName(a.name, 'arg')}:\n    default: "${String(a.default || '').replace(/["\\$]/g, '')}"`).join('\n')}
 
 steps:
   # Step 1: Load durable input from native pipeline state.

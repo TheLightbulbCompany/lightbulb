@@ -338,6 +338,18 @@ export class PaperclipStack extends cdk.Stack {
         ? "https://company.isol8.co"
         : `https://${env}.company.isol8.co`;
 
+    // In-VPC Cloud Map host the per-user agent containers can actually reach
+    // (same value the backend uses as PAPERCLIP_INTERNAL_URL — see
+    // ServiceStack). Paperclip injects PAPERCLIP_API_URL into every agent
+    // heartbeat run (server/src/index.ts: configuredApiUrl =
+    // process.env.PAPERCLIP_API_URL || choosePrimaryRuntimeApiUrl(...)). Without
+    // this override it falls back to the PUBLIC_URL (company.isol8.co), which has
+    // no DNS record and is unreachable from inside the VPC — so the agent's
+    // `$PAPERCLIP_API_URL` curls all 000 and every run blocks. The VPC-CIDR
+    // ingress on 3100 (added below) already permits the per-user containers.
+    // PAPERCLIP_PUBLIC_URL is intentionally left as the browser-facing host.
+    const paperclipInternalApiUrl = `http://paperclip.${props.cloudMapNamespace.namespaceName}:3100`;
+
     taskDefinition.addContainer("paperclip", {
       // Paperclip publishes to GitHub Container Registry, not Docker Hub
       // (see paperclip's `.github/workflows/docker.yml`). Without the
@@ -368,6 +380,11 @@ export class PaperclipStack extends cdk.Stack {
         PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
         PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
         PAPERCLIP_PUBLIC_URL: paperclipPublicUrl,
+        // The API host injected into agent heartbeat runs as PAPERCLIP_API_URL.
+        // Must be the in-VPC Cloud Map host (not PAPERCLIP_PUBLIC_URL) so the
+        // per-user agent containers can resolve + reach it. See the
+        // paperclipInternalApiUrl definition above for the full rationale.
+        PAPERCLIP_API_URL: paperclipInternalApiUrl,
         // CRITICAL: without this, server/src/index.ts refuses to boot on a
         // fresh Aurora cluster with the error "Refusing to start against a
         // stale schema." Auto-apply runs Drizzle migrations on startup;

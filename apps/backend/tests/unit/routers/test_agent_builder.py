@@ -34,7 +34,11 @@ def _pkg():
 
     return CatalogPackage(
         format="openclaw",
-        manifest={"name": "Lex the Legal Bot", "agent_id": "staging-uuid-1"},
+        manifest={
+            "name": "Lex the Legal Bot",
+            "agent_id": "staging-uuid-1",
+            "description": "Summarizes contracts",
+        },
         openclaw_slice={"agent": {"name": "Lex"}, "plugins": {}, "tools": {}, "cron_jobs": []},
         tarball_bytes=b"fake-tar",
         tarball_contents=["./openclaw.json"],
@@ -79,6 +83,10 @@ def test_register_happy_path(mock_get_container, mock_export, mock_create_pc, mo
     assert mock_export.call_args.kwargs["staging_agent_id"] == "staging-uuid-1"
     # Deploy threaded the minted UUID as new_agent_id.
     assert catalog.deploy_from_artifact.await_args.kwargs["new_agent_id"] == "new-agent-uuid"
+    # The built agent's description (from the manifest) reaches the Paperclip
+    # mint via meta — capabilities aren't empty.
+    minted_meta = mock_create_pc.await_args.kwargs["meta"]
+    assert "Summarizes contracts" in (minted_meta.capabilities or "")
 
 
 @patch("routers.agent_builder.delete_paperclip_for_marketplace", new_callable=AsyncMock)
@@ -102,6 +110,29 @@ def test_container_down_503_before_mint(
     assert resp.status_code == 503
     mock_create_pc.assert_not_awaited()  # nothing minted
     mock_delete_pc.assert_not_awaited()  # nothing to roll back
+
+
+@patch("routers.agent_builder.delete_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.agent_builder.get_ecs_manager")
+@patch("routers.agent_builder.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.agent_builder.agent_export.export_built_agent_from_staging")
+@patch("routers.agent_builder.container_repo.get_by_owner_id", new_callable=AsyncMock)
+def test_running_container_without_gateway_token_503_before_mint(
+    mock_get_container, mock_export, mock_create_pc, mock_get_ecs, mock_delete_pc, client
+):
+    """Container row exists + IP resolves, but gateway_token is absent (pre-token
+    row / partial write) → 503 before mint, no rollback. The token is read from
+    the auth row, so the absence is here, not in resolve_running_container."""
+    mock_get_container.return_value = {"hook_token": TOKEN}  # no gateway_token
+    mock_export.return_value = _pkg()
+    ecs = MagicMock()
+    ecs.resolve_running_container = AsyncMock(return_value=({"service_name": "svc"}, "10.0.0.1"))
+    mock_get_ecs.return_value = ecs
+
+    resp = client.post(URL, json=BODY, headers={"Authorization": f"Bearer {TOKEN}"})
+    assert resp.status_code == 503
+    mock_create_pc.assert_not_awaited()
+    mock_delete_pc.assert_not_awaited()
 
 
 @patch("routers.agent_builder.delete_paperclip_for_marketplace", new_callable=AsyncMock)

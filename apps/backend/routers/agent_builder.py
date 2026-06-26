@@ -44,8 +44,10 @@ class RegisterBuiltAgentRequest(BaseModel):
     """Body for ``POST /agent-builder/u/{owner_id}/register-built-agent``."""
 
     # The workspace dir name (``workspaces/{staging_agent_id}/``) Atlas built the
-    # new agent's files into. The backend snapshots this dir.
-    staging_agent_id: str = Field(..., min_length=4, max_length=64)
+    # new agent's files into. The backend snapshots this dir. min_length=3 to
+    # match the path-validation regex (_AGENT_ID_RE) inside _resolve_agent_dir,
+    # so a short-but-valid id reaches that gate instead of a confusing 422.
+    staging_agent_id: str = Field(..., min_length=3, max_length=64)
     # Display name for the new agent.
     name: str = Field(..., min_length=1, max_length=120)
     # Optional org placement (Paperclip agent id the new hire reports to).
@@ -59,8 +61,9 @@ def _slugify(name: str) -> str:
 async def _require_hook_token(owner_id: str, request: Request) -> dict:
     """Authorize via the owner's per-container ``hook_token`` (timing-safe).
 
-    Returns the ``containers`` row so the caller can reuse it. Mirrors
-    ``hooks_proxy.proxy_hook`` — same token, same compare.
+    Returns the ``containers`` row so the caller can reuse it (avoids a second
+    DDB read for ``gateway_token``). Same timing-safe token compare as
+    ``hooks_proxy.proxy_hook`` (which does it inline, not via a shared helper).
     """
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
@@ -81,7 +84,7 @@ async def register_built_agent(owner_id: str, payload: RegisterBuiltAgentRequest
     deploy the snapshot into the container (files + openclaw.json registration).
     Returns the new ``agent_id`` so Atlas can report it and the owner can publish it.
     """
-    await _require_hook_token(owner_id, request)
+    auth_container = await _require_hook_token(owner_id, request)
 
     # 1. Snapshot the staging workspace Atlas built. The built agent is
     #    self-describing — its slice comes from the staging dir's OWN
@@ -103,18 +106,24 @@ async def register_built_agent(owner_id: str, payload: RegisterBuiltAgentRequest
         raise HTTPException(status_code=400, detail=str(e))
 
     slice_ = package.openclaw_slice or {}
-    meta = derive_from_listing(name=payload.name, description_md=None)
+    # Carry the built agent's description (from its own identity block, surfaced
+    # in the manifest) into the Paperclip mint so capabilities aren't empty.
+    meta = derive_from_listing(
+        name=payload.name,
+        description_md=package.manifest.get("description") or None,
+    )
 
     # 2. Resolve the running container BEFORE minting Paperclip. The container
     #    is often still starting while Atlas works; checking first means a
     #    not-ready container returns 503 without minting — otherwise we'd create
     #    a Paperclip agent and immediately roll it back on every retry until the
-    #    container stabilizes. gateway_token is fetched here too (single read).
+    #    container stabilizes.
     ecs = get_ecs_manager()
     container, container_ip = await ecs.resolve_running_container(owner_id)
     if container is None or container_ip is None:
         raise HTTPException(status_code=503, detail="container starting — retry in a moment")
-    container_token = container.get("gateway_token")
+    # Reuse the row _require_hook_token already read (no second DDB fetch).
+    container_token = auth_container.get("gateway_token")
     if not container_token:
         # Row exists but predates gateway_token (or a partial write) — treat as
         # not-ready rather than KeyError-into-misleading-rollback.

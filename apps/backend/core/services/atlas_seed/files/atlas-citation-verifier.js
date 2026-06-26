@@ -1,24 +1,31 @@
 #!/usr/bin/env node
 // atlas-citation-verifier.js
 //
-// Carries from v0 unchanged. Quarterly cron pass on every external citation in
-// Atlas's AGENTS.md and any Atlas-generated agents' AGENTS.md.
-// On 2 consecutive 403/404/changed-content responses, surface stale-citation warning.
+// Quarterly cron pass on every external citation in Atlas's AGENTS.md and any
+// Atlas-generated agents' AGENTS.md. On 2 consecutive 403/404/changed-content
+// responses, surfaces a stale-citation warning.
+//
+// Gateway-free: this tool is a pure transform. The directory walk + AGENTS.md
+// reads use the local filesystem (genuine fs, not gateway state). Prior
+// consecutive-failure tracking arrives via the TRACKING env var (the calling
+// .lobster does a `state.get atlas/citation-tracking` and passes it); the verify
+// results arrive on stdin. The NEW tracking is returned on stdout under
+// `.tracking` for the .lobster to persist via `state.set` (stale info rides
+// alongside). No gateway tool calls.
 
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const https = require('https');
-const { execSync } = require('child_process');
+const http = require('http');
 
 const CONSECUTIVE_FAILURE_THRESHOLD = 2;
 const FETCH_TIMEOUT_MS = 15000;
 
 function parseArgs(argv) {
-  const args = { action: 'verify', quarterly: false };
+  const args = { action: 'verify' };
   for (const a of argv.slice(2)) {
     if (a.startsWith('--action=')) args.action = a.split('=')[1];
-    else if (a === '--quarterly') args.quarterly = true;
   }
   return args;
 }
@@ -42,7 +49,14 @@ function enumerateAgents() {
 }
 
 function extractCitationsFromAgentsMd(filepath) {
-  const content = fs.readFileSync(filepath, 'utf8');
+  // Return [] on an unreadable file rather than throwing — otherwise one bad
+  // AGENTS.md (perms, etc.) kills citation extraction for every other agent.
+  let content;
+  try {
+    content = fs.readFileSync(filepath, 'utf8');
+  } catch (e) {
+    return [];
+  }
   const citations = [];
 
   const urlRegex = /https?:\/\/[^\s)\]]+/g;
@@ -65,7 +79,10 @@ function extractCitationsFromAgentsMd(filepath) {
 
 function fetchUrlStatus(url) {
   return new Promise((resolve) => {
-    const req = https.get(url, { timeout: FETCH_TIMEOUT_MS, headers: { 'User-Agent': 'atlas-citation-verifier/1.0' } }, (res) => {
+    // Pick the client by protocol — https.get throws "Protocol 'http:' not
+    // supported" for http:// URLs, which would fail every http citation.
+    const client = url.startsWith('http://') ? http : https;
+    const req = client.get(url, { timeout: FETCH_TIMEOUT_MS, headers: { 'User-Agent': 'atlas-citation-verifier/1.0' } }, (res) => {
       resolve({ url, status: res.statusCode, checked_at: new Date().toISOString() });
       res.resume();
     });
@@ -74,53 +91,50 @@ function fetchUrlStatus(url) {
   });
 }
 
-async function verifyCitations(citations) {
-  const results = [];
-  for (const c of citations) {
-    const url = c.url || c.value;
-    const result = await fetchUrlStatus(url);
-    const passed = result.status === 200;
-    results.push({ ...c, url, status: result.status, passed, checked_at: result.checked_at, error: result.error });
+async function verifyCitations(citations, concurrency = 10) {
+  // Bounded-concurrency pool: sequential await would be total_count × timeout
+  // worst-case (e.g. 40 × 15s = 600s), timing out the quarterly cron.
+  const results = new Array(citations.length);
+  const queue = [...citations.entries()];
+  async function worker() {
+    let entry;
+    while ((entry = queue.shift()) !== undefined) {
+      const [i, c] = entry;
+      const url = c.url || c.value;
+      const result = await fetchUrlStatus(url);
+      // Accept 2xx AND 3xx — https.get doesn't follow redirects, so a permanent
+      // 301/302 (common for docs/arxiv canonical URLs) is still a reachable
+      // citation; counting it as failed would falsely flag it stale after 2 runs.
+      const passed = result.status >= 200 && result.status < 400;
+      results[i] = { ...c, url, status: result.status, passed, checked_at: result.checked_at, error: result.error };
+    }
   }
+  await Promise.all(Array.from({ length: Math.min(concurrency, citations.length || 1) }, worker));
   return {
     total_count: results.length,
-    passed_count: results.filter(r => r.passed).length,
-    failed_count: results.filter(r => !r.passed).length,
+    passed_count: results.filter(r => r && r.passed).length,
+    failed_count: results.filter(r => r && !r.passed).length,
     results
   };
 }
 
-function fastIoRead(key) {
-  try {
-    const result = execSync(
-      `openclaw.invoke --tool fast-io --action read --args-json '{"key":"${key}"}'`,
-      { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }
-    );
-    return JSON.parse(result);
-  } catch (e) { return null; }
-}
-
-function fastIoWrite(key, data) {
-  try {
-    execSync(
-      `openclaw.invoke --tool fast-io --action write --args-json '${JSON.stringify({ key, data }).replace(/'/g, `'\\''`)}'`,
-      { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }
-    );
-    return true;
-  } catch (e) { return false; }
-}
-
-function updateTracking(verifyResults) {
-  const tracking = fastIoRead('atlas-config/citation-tracking') || { citations: {} };
+// Pure transform: given the verify results and the PRIOR tracking object (loaded
+// from state by the caller), compute the new tracking + the stale list. The
+// caller persists `.tracking` back to state.
+function updateTracking(verifyResults, priorTracking) {
+  const prior = (priorTracking && typeof priorTracking === 'object' && priorTracking.citations)
+    ? priorTracking
+    : { citations: {} };
+  const tracking = { citations: { ...prior.citations } };
   const stale = [];
   for (const r of (verifyResults.results || [])) {
     const key = `${r.type}:${r.value}`;
-    const prior = tracking.citations[key] || { consecutive_failures: 0, last_checked: null };
+    const before = tracking.citations[key] || { consecutive_failures: 0, last_checked: null };
     if (r.passed) {
       tracking.citations[key] = { consecutive_failures: 0, last_checked: r.checked_at, last_status: r.status };
     } else {
       tracking.citations[key] = {
-        consecutive_failures: prior.consecutive_failures + 1,
+        consecutive_failures: before.consecutive_failures + 1,
         last_checked: r.checked_at,
         last_status: r.status,
         last_error: r.error
@@ -133,8 +147,8 @@ function updateTracking(verifyResults) {
       }
     }
   }
-  fastIoWrite('atlas-config/citation-tracking', tracking);
   return {
+    tracking,
     stale_count: stale.length,
     stale_summary: stale.map(s => `${s.citation.type}:${s.citation.value} (${s.consecutive_failures} consecutive failures, last status ${s.citation.status})`).join('; '),
     stale_details: stale
@@ -159,7 +173,9 @@ async function main() {
     const citations = stdin.citations || [];
     result = await verifyCitations(citations);
   } else if (args.action === 'update-tracking') {
-    result = updateTracking(stdin);
+    let priorTracking = null;
+    try { priorTracking = JSON.parse(process.env.TRACKING || 'null'); } catch (e) { priorTracking = null; }
+    result = updateTracking(stdin, priorTracking);
   } else {
     result = { error: `unknown action: ${args.action}` };
   }

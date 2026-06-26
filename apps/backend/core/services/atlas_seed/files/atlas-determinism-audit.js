@@ -13,11 +13,19 @@
 //
 // No agentgate override. Matches Atlas's existing hard-rule posture
 // (ClawHavoc denylist, file-write-gate).
+//
+// Gateway-free: this tool is a pure transform. The requirement matrix arrives via
+// the MATRIX env var and the per-requirement decisions via the DECISIONS env var
+// (the caller does `state.get atlas/requirement-matrix` + `state.get
+// atlas/decisions` and passes map[build_id] for each). The staging-dir pipeline
+// existence check uses the local filesystem (genuine fs, not gateway state).
+// It NEVER halts the pipeline on failure — pass/fail is reported on stdout so the
+// caller can surface the failure (mirrors how build.lobster surfaces verify
+// failures). No gateway tool calls.
 
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { execSync } = require('child_process');
 
 function parseArgs(argv) {
   const args = { buildId: null, stagingDir: null };
@@ -28,35 +36,30 @@ function parseArgs(argv) {
   return args;
 }
 
-function _fastIoRead(key) {
-  try {
-    const result = execSync(
-      `openclaw.invoke --tool fast-io --action read --args-json '{"key":"${key}"}'`,
-      { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }
-    );
-    return JSON.parse(result);
-  } catch (e) { return null; }
+function _readMatrixEnv() {
+  try { return JSON.parse(process.env.MATRIX || 'null'); } catch (e) { return null; }
 }
 
-function _fastIoList(prefix) {
+function _readDecisionsEnv() {
   try {
-    const result = execSync(
-      `openclaw.invoke --tool fast-io --action list --args-json '{"prefix":"${prefix}"}'`,
-      { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }
-    );
-    return JSON.parse(result);
+    const d = JSON.parse(process.env.DECISIONS || 'null') || {};
+    // decisions is a map req_id -> row; the audit consumes a list.
+    return Array.isArray(d) ? d : Object.values(d);
   } catch (e) { return []; }
 }
 
-function _defaultIoAdapter(buildId) {
+function _defaultIoAdapter() {
   return {
-    readMatrix: () => _fastIoRead(`atlas-builds/${buildId}/requirement-matrix`),
-    listDecisions: () => _fastIoList(`atlas-builds/${buildId}/decisions/`)
+    readMatrix: () => _readMatrixEnv(),
+    listDecisions: () => _readDecisionsEnv()
   };
 }
 
 function _defaultStagingDir(buildId) {
-  const agentsRoot = process.env.ISOL8_AGENTS_DIR || path.join(os.homedir(), '.openclaw', 'agents');
+  // Default to 'workspaces' to match the deployed ISOL8_AGENTS_DIR
+  // (build.lobster sets /home/node/.openclaw/workspaces) so a direct invocation
+  // without the env resolves the same root the runtime uses.
+  const agentsRoot = process.env.ISOL8_AGENTS_DIR || path.join(os.homedir(), '.openclaw', 'workspaces');
   return path.join(agentsRoot, `.atlas-staging-${buildId}`);
 }
 
@@ -64,9 +67,16 @@ function audit({ buildId, stagingDir, _ioAdapter }) {
   if (!buildId) {
     return { pass: false, error: 'build_id_missing', failures: [] };
   }
-  const io = _ioAdapter || _defaultIoAdapter(buildId);
+  const io = _ioAdapter || _defaultIoAdapter();
   const staging = stagingDir || _defaultStagingDir(buildId);
   const workspaceDir = path.join(staging, 'workspace');
+  // At RECAP time the agent isn't written to disk yet (build.lobster's write-disk
+  // materializes the staging workspace later), so the workspace dir won't exist.
+  // When it's absent, validate only that deterministic requirements DECLARE a
+  // pipeline binding (the no_triggers / empty-pipeline checks) — defer on-disk
+  // file existence to build (verify-write). Without this, every deterministic
+  // requirement would false-report pipeline_missing at recap.
+  const workspaceMaterialized = fs.existsSync(workspaceDir);
 
   const matrix = io.readMatrix();
   if (!matrix) {
@@ -79,6 +89,14 @@ function audit({ buildId, stagingDir, _ioAdapter }) {
     const reqId = d.req_id || (d.key || '').split('/').pop();
     decisionsByReqId[reqId] = d;
   }
+  // Classification + triggers live in requirements_with_triggers (architect-
+  // proposal Step 3.6), the same field the walker reads. Index by req_id and
+  // fall back to the row's own inline fields for legacy matrices that carried
+  // classification/triggers directly on the requirement row.
+  const triggersByReqId = {};
+  for (const rt of (matrix.requirements_with_triggers || [])) {
+    if (rt && rt.req_id) triggersByReqId[rt.req_id] = rt;
+  }
 
   const failures = [];
 
@@ -87,10 +105,16 @@ function audit({ buildId, stagingDir, _ioAdapter }) {
     const decision = decisionsByReqId[reqId] || {};
     if (decision.decision === 'drop') continue;
 
-    const finalClassification = decision.classification_override || row.classification;
+    const triggerRow = triggersByReqId[reqId] || {};
+    const baseClassification = triggerRow.classification != null ? triggerRow.classification : row.classification;
+    const finalClassification = decision.classification_override || baseClassification;
     if (finalClassification !== 'deterministic') continue;
 
-    const triggers = row.triggers || [];
+    // Decision triggers (from a vet `change` via applyTriggerEdits) override the
+    // matrix's original bindings; then the trigger-row override; then the raw row.
+    const triggers = (decision.triggers != null
+      ? decision.triggers
+      : (triggerRow.triggers != null ? triggerRow.triggers : row.triggers)) || [];
     if (triggers.length === 0) {
       failures.push({
         req_id: reqId,
@@ -101,7 +125,14 @@ function audit({ buildId, stagingDir, _ioAdapter }) {
     }
 
     for (const t of triggers) {
-      if (t.pipeline === null || t.pipeline === undefined) continue;
+      // !t.pipeline catches null/undefined AND "" — an empty path would
+      // path.join to workspaceDir itself (which exists), silently passing the
+      // existsSync check below even though no pipeline file was actually bound.
+      if (!t.pipeline) continue;
+      // Skip the on-disk existence check until the workspace is materialized
+      // (recap runs before build's write-disk); the declared binding is enough
+      // here, and verify-write enforces actual file presence at build time.
+      if (!workspaceMaterialized) continue;
       const pipelinePath = path.join(workspaceDir, t.pipeline);
       if (!fs.existsSync(pipelinePath)) {
         failures.push({
@@ -126,9 +157,22 @@ function audit({ buildId, stagingDir, _ioAdapter }) {
 
 function main() {
   const args = parseArgs(process.argv);
-  const result = audit({ buildId: args.buildId, stagingDir: args.stagingDir });
+  // Wrap audit() so a runtime throw (e.g. fs.readdirSync on a bad path) emits a
+  // pass:false result WITH the error on stdout — rather than crashing with empty
+  // stdout, which the caller would read as null and surface as a misleading
+  // "determinism failed: 0 failures" with no actionable detail.
+  let result;
+  try {
+    result = audit({ buildId: args.buildId, stagingDir: args.stagingDir });
+  } catch (e) {
+    result = { pass: false, error: e.message, failures: [], build_id: args.buildId };
+  }
+  // Report pass/fail on stdout — NEVER process.exit(1). A non-zero exit would
+  // halt the pipeline before the caller's failure-notice step (conditioned on
+  // pass == false) could run, hiding the very failure this gate must surface.
+  // The hard-gate semantics are preserved by the caller refusing to advance the
+  // build while `pass` is false (re-vet to bind triggers OR reclassify).
   process.stdout.write(JSON.stringify(result));
-  if (!result.pass) process.exit(1);
 }
 
 if (require.main === module) main();

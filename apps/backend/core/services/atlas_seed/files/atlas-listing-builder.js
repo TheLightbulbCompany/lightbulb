@@ -3,12 +3,18 @@
 //
 // Step 7: zero-LLM deterministic extraction from already-vetted artifacts.
 // Cross-referenced from A10. Architectural property: can't drift from vetted state.
+//
+// Gateway-free: this tool is a pure transform. The build's vetted artifacts arrive
+// via env vars — MATRIX (`state.get atlas/requirement-matrix` map[build_id]),
+// RECAP (`atlas/recaps` map[build_id]), INTAKE (`atlas/intakes` map[build_id]) —
+// and the continuity S10 bundle hash via S10_HASH. The deployed openclaw.json,
+// AGENTS.md, and agent-dir bundle hash are read from the local filesystem
+// (genuine fs, not gateway state). No gateway tool calls.
 
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
-const { execSync } = require('child_process');
 
 function parseArgs(argv) {
   const args = { action: 'build', buildId: null, agentName: null, currentHash: null };
@@ -21,20 +27,14 @@ function parseArgs(argv) {
   return args;
 }
 
-function fastIoRead(key) {
-  try {
-    const result = execSync(
-      `openclaw.invoke --tool fast-io --action read --args-json '{"key":"${key}"}'`,
-      { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }
-    );
-    return JSON.parse(result);
-  } catch (e) { return null; }
+function readEnvJson(name) {
+  try { return JSON.parse(process.env[name] || 'null'); } catch (e) { return null; }
 }
 
 function buildListing(buildId, agentName) {
-  const matrix = fastIoRead(`atlas-builds/${buildId}/requirement-matrix`);
-  const recap = fastIoRead(`atlas-builds/${buildId}/recap`);
-  const intake = fastIoRead(`atlas-builds/${buildId}/intake`);
+  const matrix = readEnvJson('MATRIX');
+  const recap = readEnvJson('RECAP');
+  const intake = readEnvJson('INTAKE');
   const agentDir = path.join(os.homedir(), '.openclaw', 'agents', agentName);
   let openclawJson = null;
   try {
@@ -62,12 +62,15 @@ function buildListing(buildId, agentName) {
 
   return {
     name: agentName,
-    archetype: (intake && intake.archetype) || (openclawJson.agents.list[0].archetype) || 'unknown',
+    archetype: (intake && (intake.proposed_archetype || intake.archetype)) || (openclawJson.agents && openclawJson.agents.list && openclawJson.agents.list[0] && openclawJson.agents.list[0].archetype) || 'unknown',
     requirements_covered_count: recapCounts.no_change || 0,
     requirements_partial_count: recapCounts.changed || 0,
-    requirements_uncovered_count: recapCounts.dropped || recapCounts.unvetted || 0,
+    requirements_uncovered_count: (recapCounts.dropped || 0) + (recapCounts.unvetted || 0),
     vet_completion_status: recapCounts.unvetted === 0 ? 'complete' : 'partial',
-    security_stack: skills.filter(s => ['fast-io', 'taskr', 'summarize', 'n8n-workflow', 'capability-evolver', 'skill-vetter', 'sona-security-audit', 'agentgate'].includes(s)),
+    // Only genuine (non-gateway) security/capability skills — the gateway tools
+    // (fast-io/taskr/summarize/n8n-workflow) were removed in the gateway-free
+    // migration, so reporting them would mislead buyers on a gateway-free runtime.
+    security_stack: skills.filter(s => ['capability-evolver', 'skill-vetter', 'sona-security-audit', 'agentgate'].includes(s)),
     agentgate_gates: gates,
     never_does: neverDoes,
     listed_at: new Date().toISOString(),
@@ -75,24 +78,36 @@ function buildListing(buildId, agentName) {
   };
 }
 
+function _walkFiles(dir, base) {
+  // Recurse so subdirectory content (workspace/, nested skills) is part of the
+  // hash — a flat top-level-only hash would let a bundle diverge in a subdir and
+  // still pass the S10/S11 continuity check, bypassing the Marketplace Boundary.
+  const out = [];
+  for (const d of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, d.name);
+    const rel = base ? `${base}/${d.name}` : d.name;
+    if (d.isDirectory()) out.push(..._walkFiles(full, rel));
+    else if (d.isFile()) out.push({ full, rel });
+  }
+  return out;
+}
+
 function bundleHash(agentName) {
   const agentDir = path.join(os.homedir(), '.openclaw', 'agents', agentName);
   if (!fs.existsSync(agentDir)) return { error: `agent dir missing: ${agentDir}` };
   const hash = crypto.createHash('sha256');
-  const files = fs.readdirSync(agentDir, { withFileTypes: true })
-    .filter(d => d.isFile())
-    .map(d => path.join(agentDir, d.name))
-    .sort();
+  const files = _walkFiles(agentDir, '').sort((a, b) => a.rel.localeCompare(b.rel));
   for (const f of files) {
-    hash.update(path.basename(f));
-    hash.update(fs.readFileSync(f));
+    hash.update(f.rel);            // relative path (incl. subdirs) so moves are detected
+    hash.update(fs.readFileSync(f.full));
   }
   return { sha256: hash.digest('hex'), file_count: files.length, agent_dir: agentDir };
 }
 
 function continuityCheck(buildId, currentHash) {
-  const audit = fastIoRead(`audit/${new Date().toISOString().slice(0,10)}/build/${buildId}`);
-  const s10Hash = audit && audit.bundle_sha256 ? audit.bundle_sha256 : null;
+  // The S10 build-time bundle hash arrives via S10_HASH (the caller pulls it
+  // from the build_complete record in atlas/audit-log and passes it in).
+  const s10Hash = (process.env.S10_HASH || '').trim() || null;
   if (!s10Hash) {
     return { continuity_holds: false, error: 'S10 hash not found in audit log; cannot verify continuity. HARD REFUSE per Marketplace Boundary Contract.' };
   }

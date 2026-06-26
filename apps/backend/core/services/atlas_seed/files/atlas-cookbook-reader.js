@@ -3,12 +3,18 @@
 //
 // Reads from two-source cookbook (OpenClaw docs cache + agent snapshots).
 // Applies frozen source-preference table per D2.
+//
+// Gateway-free: the doc-index fetch + page fetches use https, and the agent
+// snapshot walk uses the local filesystem (~/.openclaw/agents) — both genuine,
+// not gateway state. The only state input (the prior refresh-state, used to diff
+// the doc index) arrives via the REFRESH_STATE env var (the calling .lobster
+// does `state.get atlas/cookbook-refresh-state` and passes it). No gateway tool calls.
 
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execSync } = require('child_process');
 const https = require('https');
+const http = require('http');
 
 // ============================================================================
 // FROZEN COOKBOOK SOURCE PREFERENCE TABLE
@@ -26,8 +32,9 @@ const COOKBOOK_SOURCE_PREFERENCE = Object.freeze({
 });
 
 const OPENCLAW_DOCS_INDEX_URL = 'https://docs.openclaw.ai/llms.txt';
-const FAST_IO_DOCS_KEY_PREFIX = 'atlas-cookbook/openclaw-docs/';
-const FAST_IO_AGENTS_KEY_PREFIX = 'atlas-cookbook/agent-snapshots/';
+// Per-file content cap for agent snapshots — the whole snapshot lives under one
+// state key, so unbounded full content would exceed the state value size ceiling.
+const SNAPSHOT_FILE_PREVIEW_BYTES = 8192;
 
 function parseArgs(argv) {
   const args = { action: 'read', maxFetches: 50 };
@@ -45,12 +52,20 @@ function readStdin() {
 
 function fetchUrl(url) {
   return new Promise((resolve) => {
-    https.get(url, { timeout: 10000 }, (res) => {
+    // Pick the client by scheme — https.get throws "Protocol 'http:' not
+    // supported" for http:// index URLs, which would silently never cache them.
+    const client = url.startsWith('http://') ? http : https;
+    const req = client.get(url, { timeout: 10000 }, (res) => {
       if (res.statusCode !== 200) { resolve({ status: res.statusCode, body: null }); return; }
       let body = '';
       res.on('data', (c) => body += c);
       res.on('end', () => resolve({ status: 200, body }));
-    }).on('error', (e) => resolve({ status: 0, body: null, error: e.message }));
+    });
+    req.on('error', (e) => resolve({ status: 0, body: null, error: e.message }));
+    // The { timeout } option fires this event but does NOT destroy the request —
+    // without this, a server that accepts the TCP connection but never responds
+    // hangs fetchUrl forever, stalling the whole daily cookbook-refresh cron.
+    req.on('timeout', () => { req.destroy(); resolve({ status: 0, body: null, error: 'timeout' }); });
   });
 }
 
@@ -62,13 +77,9 @@ async function diffIndex() {
   const newUrls = new Set(indexResult.body.split('\n').filter(l => l.startsWith('https://')));
   let cachedUrls = new Set();
   try {
-    const cacheState = execSync(
-      `openclaw.invoke --tool fast-io --action read --args-json '{"key":"atlas-config/cookbook-refresh-state"}'`,
-      { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }
-    );
-    const parsed = JSON.parse(cacheState);
-    cachedUrls = new Set(parsed.indexed_urls || []);
-  } catch (e) { /* first run */ }
+    const parsed = JSON.parse(process.env.REFRESH_STATE || 'null');
+    if (parsed && Array.isArray(parsed.indexed_urls)) cachedUrls = new Set(parsed.indexed_urls);
+  } catch (e) { /* first run / no prior state */ }
 
   const added = [...newUrls].filter(u => !cachedUrls.has(u));
   const removed = [...cachedUrls].filter(u => !newUrls.has(u));
@@ -82,16 +93,24 @@ async function diffIndex() {
   };
 }
 
-async function fetchPages(urls, maxFetches) {
-  const fetched = [];
-  for (const url of urls.slice(0, maxFetches)) {
-    const result = await fetchUrl(url);
-    if (result.status === 200) {
-      fetched.push({ url, body: result.body, fetched_at: new Date().toISOString() });
-    } else {
-      fetched.push({ url, error: result.status, fetched_at: new Date().toISOString() });
+async function fetchPages(urls, maxFetches, concurrency = 8) {
+  // Bounded-concurrency pool: serial await would be maxFetches × timeout
+  // worst-case (50 × 10s = 500s), which could clip the daily cron on a cold
+  // first run. Same pattern as atlas-citation-verifier.verifyCitations.
+  const slice = urls.slice(0, maxFetches);
+  const fetched = new Array(slice.length);
+  const queue = [...slice.entries()];
+  async function worker() {
+    let entry;
+    while ((entry = queue.shift()) !== undefined) {
+      const [i, url] = entry;
+      const result = await fetchUrl(url);
+      fetched[i] = result.status === 200
+        ? { url, body: result.body, fetched_at: new Date().toISOString() }
+        : { url, error: result.status, fetched_at: new Date().toISOString() };
     }
   }
+  await Promise.all(Array.from({ length: Math.min(concurrency, slice.length || 1) }, worker));
   return fetched;
 }
 
@@ -106,7 +125,20 @@ function snapshotAgents() {
     const files = {};
     for (const f of fs.readdirSync(agentPath)) {
       if (/\.(json|md|lobster|js)$/.test(f)) {
-        files[f] = fs.readFileSync(path.join(agentPath, f), 'utf8');
+        // Per-file try/catch so one unreadable file (perms, binary, etc.) is
+        // recorded as an error rather than killing the whole snapshot walk.
+        try {
+          // Cap per-file content to a preview — the whole snapshot is stored under
+          // ONE state key (atlas/cookbook-agent-snapshots); full content of many
+          // agents × files would blow the state value past its size ceiling. The
+          // preview is reference context for the research brief, not a reproduction.
+          const body = fs.readFileSync(path.join(agentPath, f), 'utf8');
+          files[f] = body.length > SNAPSHOT_FILE_PREVIEW_BYTES
+            ? { preview: body.slice(0, SNAPSHOT_FILE_PREVIEW_BYTES), truncated: true, full_bytes: body.length }
+            : body;
+        } catch (e) {
+          files[f] = { error: e.message };
+        }
       }
     }
     agents.push({ agent_name: dirName, files: files, snapshotted_at: new Date().toISOString() });
@@ -117,12 +149,14 @@ function snapshotAgents() {
 function readForBrief(intake) {
   return {
     sources: {
-      openclaw_docs: { fast_io_key_prefix: FAST_IO_DOCS_KEY_PREFIX, count: 'see cookbook-refresh-state' },
-      agent_snapshots: { fast_io_key_prefix: FAST_IO_AGENTS_KEY_PREFIX, count: 'see snapshot-agents' }
+      // Native state keys written by cookbook-refresh.lobster (the agent loop
+      // reads these via state.get — the old fast-io namespace is gone).
+      openclaw_docs: { state_key: 'atlas/cookbook-docs', count: 'see atlas/cookbook-refresh-state' },
+      agent_snapshots: { state_key: 'atlas/cookbook-agent-snapshots', count: 'see atlas/cookbook-agent-snapshots' }
     },
     source_preference: COOKBOOK_SOURCE_PREFERENCE,
     intake_archetype: intake.proposed_archetype || 'unknown',
-    note: 'Compress via summarize CLI before passing to compile-research-brief llm-task.'
+    note: 'The agent loop compresses these sources when synthesizing the research brief.'
   };
 }
 

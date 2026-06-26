@@ -2,18 +2,26 @@
 // atlas-skill-recommender.js
 //
 // Given archetype + requirements, emits recommended skill list with reasoning.
-// Runs skill-vetter as sub-process before any skill is added.
 // Refuses any ClawHavoc-listed skill universally (no source-context exception).
+//
+// Gateway-free: this tool is a pure transform reading its input on stdin. The
+// hard ClawHavoc-denylist refusal is deterministic and stays inline. The
+// skill-vetter audit (an external, gateway-bound tool the embedded runner can't
+// invoke) is DEFERRED to the agent loop — non-denylist user skills land in
+// `pending_vetter`, which the loop runs out of band and surfaces. No gateway tool calls.
 
 const fs = require('fs');
-const { execSync } = require('child_process');
 const { CLAWHAVOC_DENYLIST, CROSS_AGENT_FLOOR } = require('./atlas-clawhavoc-enforcer.js');
 
 const FULL_DENYLIST = Object.freeze([...CLAWHAVOC_DENYLIST, ...CROSS_AGENT_FLOOR]);
 
+// The recommender produces `recommended_skills` that agents Atlas builds ship
+// with — so it must NOT recommend gateway tools (fast-io, taskr, summarize,
+// n8n-workflow) that 401 on the embedded gateway-free runtime. Only the genuine
+// gateway-free security/capability skills remain (matches activation-check's
+// SECURITY_BLOCKER_SKILLS posture).
 const STANDARD_SECURITY_STACK = Object.freeze([
-  'fast-io', 'taskr', 'summarize', 'n8n-workflow', 'capability-evolver',
-  'skill-vetter', 'sona-security-audit', 'agentgate'
+  'capability-evolver', 'skill-vetter', 'sona-security-audit', 'agentgate'
 ]);
 
 const ARCHETYPE_RECOMMENDATIONS = Object.freeze({
@@ -36,25 +44,18 @@ function readStdin() {
 }
 
 function runSkillVetter(skill) {
-  try {
-    const result = execSync(
-      `openclaw.invoke --tool skill-vetter --action audit --args-json '{"target":"${skill}"}'`,
-      { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'], timeout: 30000 }
-    );
-    const parsed = JSON.parse(result);
-    return {
-      pass: parsed.pass !== false,
-      findings: Array.isArray(parsed.findings) ? parsed.findings : []
-    };
-  } catch (e) {
-    return { pass: true, findings: [], note: 'skill-vetter not invoked in this context' };
-  }
+  // Gateway-free: skill-vetter is an external audited tool the embedded runner
+  // can't invoke. Defer the audit to the agent loop (it runs skill-vetter out of
+  // band and surfaces findings). The deterministic denylist refusal below is the
+  // hard, inline guard; this soft per-skill audit is always deferred here.
+  return { pass: true, findings: [], deferred: true, note: 'skill-vetter audit deferred to agent loop (gateway-free runner)' };
 }
 
 function recommendSkills(archetype, requirements, userRequestedSkills) {
   const recommended = new Set();
   const refused = [];
   const findings = {};
+  const pendingVetter = [];
 
   for (const s of STANDARD_SECURITY_STACK) recommended.add(s);
 
@@ -71,22 +72,16 @@ function recommendSkills(archetype, requirements, userRequestedSkills) {
       continue;
     }
     const vetResult = runSkillVetter(skill);
-    if (vetResult.pass) {
-      recommended.add(skill);
-      findings[skill] = vetResult;
-    } else {
-      refused.push({
-        skill: skill,
-        reason: 'skill-vetter rejected',
-        findings: vetResult.findings
-      });
-    }
+    recommended.add(skill);
+    findings[skill] = vetResult;
+    if (vetResult.deferred) pendingVetter.push(skill);
   }
 
   return {
     recommended_skills: [...recommended],
     refused_skills: refused,
     skill_vetter_findings: findings,
+    pending_vetter: pendingVetter,
     denylist_version: 'v1',
     archetype: archetype
   };

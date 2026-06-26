@@ -114,10 +114,18 @@ steps:
     on_error: continue
 
   # Step 2.2 — Failure-case routing (refuses any unverified-source case per H4).
+  #            The failure-case corpus loads from state and rides in on CORPUS;
+  #            the locked intake (for the archetype) arrives on stdin.
+  - id: failure-cases-load
+    condition: $surface-overlap-gate.approved
+    pipeline: state.get atlas/failure-cases
+
   - id: failure-case-route
     condition: $surface-overlap-gate.approved
     command: node atlas-failure-case-router.js
     stdin: $identity-lock.stdout
+    env:
+      CORPUS: $failure-cases-load.stdout
     on_error: continue
 
   # Step 2.3 + 2.4 — Compress cookbook reads + compile research brief. Both are LLM

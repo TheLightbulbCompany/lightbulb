@@ -1,11 +1,23 @@
 #!/usr/bin/env node
 // atlas-recap-diff.js
 //
-// Step 5: reads original requirement matrix (verifies SHA256), and final decisions/* set.
-// Emits original→final diff table. Aborts recap with clear error on hash mismatch.
+// Step 5: verifies the requirement matrix's SHA256 and emits an original→final
+// diff table. Aborts the recap with a clear error on hash mismatch (W5).
+//
+// Gateway-free: this tool is a pure transform. The matrix object arrives via the
+// MATRIX env var (the caller does `state.get atlas/requirement-matrix` and
+// passes map[build_id]); the per-requirement decisions arrive via the DECISIONS
+// env var (a map req_id -> decision row, from `state.get atlas/decisions`
+// map[build_id]). No gateway tool calls.
+//
+// W5 hash: architect-proposal stamps `matrix_sha256` = sha256(JSON.stringify(
+// {skeleton, classifications, skill_recommendations, snapshot_at})) onto the
+// matrix BEFORE the agent loop enriches it (user_stories / voice_tone /
+// requirements_with_triggers are appended after and are NOT part of the hash).
+// So we recompute over exactly that deterministic core, in that key order, and
+// compare against the stamped value — a tamper check on the deterministic core.
 
 const crypto = require('crypto');
-const { execSync } = require('child_process');
 
 function parseArgs(argv) {
   const args = { action: 'diff', buildId: null };
@@ -16,61 +28,69 @@ function parseArgs(argv) {
   return args;
 }
 
-function fastIoRead(key) {
-  try {
-    const result = execSync(
-      `openclaw.invoke --tool fast-io --action read --args-json '{"key":"${key}"}'`,
-      { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }
-    );
-    return JSON.parse(result);
-  } catch (e) { return null; }
+function readMatrixEnv() {
+  try { return JSON.parse(process.env.MATRIX || 'null'); } catch (e) { return null; }
 }
 
-function fastIoList(prefix) {
+function readDecisionsEnv() {
   try {
-    const result = execSync(
-      `openclaw.invoke --tool fast-io --action list --args-json '{"prefix":"${prefix}"}'`,
-      { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }
-    );
-    return JSON.parse(result);
-  } catch (e) { return []; }
+    const d = JSON.parse(process.env.DECISIONS || 'null') || {};
+    // decisions is a map req_id -> row; tolerate an array too.
+    if (Array.isArray(d)) {
+      const map = {};
+      for (const row of d) {
+        const reqId = row.req_id || (row.key || '').split('/').pop();
+        if (reqId) map[reqId] = row;
+      }
+      return map;
+    }
+    return d;
+  } catch (e) { return {}; }
 }
 
 function sha256(s) {
   return crypto.createHash('sha256').update(s).digest('hex');
 }
 
-function verifyHash(buildId) {
-  const matrix = fastIoRead(`atlas-builds/${buildId}/requirement-matrix`);
-  const expectedSha = fastIoRead(`atlas-builds/${buildId}/requirement-matrix.sha256`);
-  if (!matrix || !expectedSha) {
-    return { hash_matches: false, error: 'matrix or sha256 not found in fast-io' };
+function verifyHash(buildId, matrix) {
+  if (!matrix) {
+    return { hash_matches: false, error: 'requirement-matrix not found in state' };
   }
-  const computedSha = sha256(JSON.stringify(matrix, Object.keys(matrix).sort()));
-  const expectedHex = typeof expectedSha === 'string' ? expectedSha : (expectedSha.value || expectedSha.sha256 || '');
+  const expectedHex = matrix.matrix_sha256;
+  if (!expectedHex) {
+    return { hash_matches: false, error: 'matrix_sha256 missing from requirement-matrix' };
+  }
+  // Reconstruct the deterministic core in the exact key order architect-proposal
+  // hashed it (insertion order is preserved by JSON.stringify for string keys).
+  // Coerce undefined → null to match architect-proposal's compute-matrix, which
+  // stamps the hash over JSON.parse(env||"null") (always null, never an omitted
+  // key). Without this, a field absent here (undefined, dropped by JSON.stringify)
+  // would diverge from architect's explicit null and block every recap for the build.
+  const core = {
+    skeleton: matrix.skeleton ?? null,
+    classifications: matrix.classifications ?? null,
+    skill_recommendations: matrix.skill_recommendations ?? null,
+    snapshot_at: matrix.snapshot_at ?? null
+  };
+  const computedSha = sha256(JSON.stringify(core));
+  const matches = computedSha === expectedHex;
   return {
-    hash_matches: computedSha === expectedHex,
+    build_id: buildId,
+    hash_matches: matches,
     computed: computedSha,
     expected: expectedHex,
-    error: computedSha === expectedHex ? null : 'requirement-matrix has been modified since snapshot. Recap aborted per W5 hash-verification pattern.'
+    error: matches ? null : 'requirement-matrix has been modified since snapshot. Recap aborted per W5 hash-verification pattern.'
   };
 }
 
-function diff(buildId) {
-  const hashCheck = verifyHash(buildId);
+function diff(buildId, matrix, decisions) {
+  const hashCheck = verifyHash(buildId, matrix);
   if (!hashCheck.hash_matches) {
     return { error: hashCheck.error, hash_check: hashCheck };
   }
 
-  const original = fastIoRead(`atlas-builds/${buildId}/requirement-matrix`);
-  const decisions = fastIoList(`atlas-builds/${buildId}/decisions/`);
-
-  const requirements = original.user_stories || original.classifications || [];
-  const decisionMap = {};
-  for (const d of (decisions || [])) {
-    const reqId = d.req_id || (d.key || '').split('/').pop();
-    decisionMap[reqId] = d;
-  }
+  const requirements = matrix.user_stories || matrix.classifications || [];
+  const decisionMap = decisions || {};
 
   const rows = requirements.map(req => {
     const reqId = req.req_id || req.id;
@@ -86,7 +106,10 @@ function diff(buildId) {
 
   const summary = {
     total: rows.length,
-    no_change: rows.filter(r => r.decision === 'approve' || (!r.decision && r.original_status === 'Covered')).length,
+    // Only explicitly approved rows are "no change". The old fallback also
+    // counted unvetted (no-decision) rows whose original_status was 'Covered',
+    // which double-counted them — they're already in `unvetted` below.
+    no_change: rows.filter(r => r.decision === 'approve').length,
     changed: rows.filter(r => r.decision === 'change').length,
     dropped: rows.filter(r => r.decision === 'drop').length,
     unvetted: rows.filter(r => !r.decision).length
@@ -105,11 +128,14 @@ function main() {
   const args = parseArgs(process.argv);
   if (!args.buildId) { console.error('--build-id required'); process.exit(2); }
 
+  const matrix = readMatrixEnv();
+  const decisions = readDecisionsEnv();
+
   let result;
   if (args.action === 'verify-hash') {
-    result = verifyHash(args.buildId);
+    result = verifyHash(args.buildId, matrix);
   } else {
-    result = diff(args.buildId);
+    result = diff(args.buildId, matrix, decisions);
   }
   process.stdout.write(JSON.stringify(result));
 }

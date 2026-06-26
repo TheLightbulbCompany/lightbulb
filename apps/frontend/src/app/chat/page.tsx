@@ -105,6 +105,10 @@ function ChatPageInner() {
       params.set("panel", "agent-inspector");
       params.set("agent", agentId);
       params.set("view", "control");
+      // A plain inspect always opens on Overview — drop any stale
+      // ?inspectorTab deep-link (set only by the Get Started "Connect a
+      // channel" CTA) so it never carries over to a later inspect.
+      params.delete("inspectorTab");
       router.push(`/chat?${params.toString()}`, { scroll: false });
     },
     [router, searchParams],

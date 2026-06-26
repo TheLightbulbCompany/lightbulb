@@ -66,6 +66,7 @@ export function ChatInput({
   const sizeErrorTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const sizeErrorIdRef = React.useRef(0);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+  const textareaRef = React.useRef<HTMLTextAreaElement>(null);
 
   // Clear timer on unmount
   React.useEffect(() => {
@@ -73,6 +74,46 @@ export function ChatInput({
       if (sizeErrorTimerRef.current) {
         clearTimeout(sizeErrorTimerRef.current);
       }
+    };
+  }, []);
+
+  // "Get started" guide hand-off: when the chat step fires its action it
+  // selects the agent (an async router navigation that switches the view
+  // from a control panel to chat) then asks the composer to focus so the
+  // user lands ready to type. When the guide is opened from a control
+  // panel, the chat surface — and this textarea — lives inside a
+  // `display:none` container until that navigation commits, so a focus()
+  // fired the same tick as the event no-ops (a hidden element can't take
+  // focus). Focus, then verify the element actually took it; if it didn't
+  // (still hidden), retry on the next animation frame a bounded number of
+  // times until the chat surface is visible. Checking the outcome
+  // (activeElement) rather than a layout precondition like
+  // `offsetParent === null` keeps this correct under jsdom, which has no
+  // layout and reports offsetParent === null even for visible nodes — so
+  // the visible-render focus test still passes synchronously. Window-scoped
+  // CustomEvent keeps ChatLayout decoupled from this component's ref.
+  React.useEffect(() => {
+    // ~1s at 60fps — bounded so a never-visible composer can't spin forever.
+    const MAX_ATTEMPTS = 60;
+    let raf = 0;
+    const tryFocus = (attempt: number) => {
+      const el = textareaRef.current;
+      if (!el) return;
+      el.focus();
+      // Focus landed (the chat surface is visible) — done.
+      if (document.activeElement === el) return;
+      if (attempt < MAX_ATTEMPTS) {
+        raf = requestAnimationFrame(() => tryFocus(attempt + 1));
+      }
+    };
+    const onFocusRequest = () => {
+      if (raf) cancelAnimationFrame(raf);
+      tryFocus(0);
+    };
+    window.addEventListener("getstarted:focus-composer", onFocusRequest);
+    return () => {
+      window.removeEventListener("getstarted:focus-composer", onFocusRequest);
+      if (raf) cancelAnimationFrame(raf);
     };
   }, []);
 
@@ -345,6 +386,7 @@ export function ChatInput({
               </div>
             )}
             <textarea
+              ref={textareaRef}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}

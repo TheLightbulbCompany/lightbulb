@@ -17,6 +17,7 @@ import { useApi } from "@/lib/api";
 import { useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 import { awaitChannelReady } from "@/lib/awaitChannelReady";
 import { SLACK_APP_MANIFEST } from "@/lib/slackManifest";
+import { emitStep } from "@/components/getstarted/getStartedEvents";
 
 type Provider = "telegram" | "discord" | "slack";
 type Mode = "create" | "link-only";
@@ -240,7 +241,6 @@ export function BotSetupWizard({
       dirtyConfig.current = false;
     } catch (e) {
       // Best-effort cleanup; surface to console but don't block UI.
-      // eslint-disable-next-line no-console
       console.warn("Channel rollback failed", e);
     } finally {
       rollbackInFlight.current = false;
@@ -452,6 +452,12 @@ export function BotSetupWizard({
         code: trimmed,
       })) as { status: string; peer_id: string };
       capture("channel_connected", { provider });
+      // Get Started "Connect a channel" producer: this is the single genuine
+      // success point for BOTH wizard surfaces (create flow ends here after
+      // pairing; link-only flow is only this step), so one emit covers
+      // AgentChannelsSection and MyChannelsSection. Fires on pairing success
+      // only — never on open/cancel/rollback.
+      emitStep("channel");
       setStepIndex(steps.indexOf("done"));
       onComplete({ peer_id: result.peer_id });
     } catch (e) {

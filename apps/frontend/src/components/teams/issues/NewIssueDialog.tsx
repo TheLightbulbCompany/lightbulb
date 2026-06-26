@@ -14,6 +14,7 @@ import { EditorialButton, EditorialDialog } from "@/components/teams/shell";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useIssueMutations } from "./hooks/useIssueMutations";
+import { emitStep } from "@/components/getstarted/getStartedEvents";
 import type {
   CompanyAgent,
   IssueProject,
@@ -121,6 +122,7 @@ export function NewIssueDialog({
         assigneeAgentId: assigneeAgentId || undefined,
       };
       const issue = parentId ? await createChild(parentId, payload) : await create(payload);
+      emitStep("task");
       onCreated?.(issue.id);
       reset();
       onOpenChange(false);

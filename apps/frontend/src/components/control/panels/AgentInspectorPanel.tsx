@@ -34,6 +34,10 @@ const TABS: { id: InspectorTab; icon: typeof Bot; label: string }[] = [
   { id: "schedule", icon: CalendarClock, label: "Schedule" },
 ];
 
+function isInspectorTab(v: string | null): v is InspectorTab {
+  return v !== null && TABS.some((t) => t.id === v);
+}
+
 /**
  * Per-agent inspector shell (increment 1 of the unified-nav migration).
  *
@@ -73,7 +77,19 @@ export function AgentInspectorPanel() {
     [rosterError, rosterAgents, agentId],
   );
 
-  const [activeTab, setActiveTab] = useState<InspectorTab>("overview");
+  // The Get Started "Connect a channel" CTA deep-links here with
+  // ?inspectorTab=channels so a fresh user lands directly on the bot-create
+  // surface. Read once at mount (mirroring AgentsPanel's ?agent deep-link);
+  // manual tab clicks own the state thereafter. Falls back to Overview for a
+  // missing/unknown tab, or when the requested Channels tab is hidden because
+  // the owner has no active subscription.
+  const requestedTab = searchParams.get("inspectorTab");
+  const [activeTab, setActiveTab] = useState<InspectorTab>(() =>
+    isInspectorTab(requestedTab) &&
+    (requestedTab !== "channels" || channelsEnabled)
+      ? requestedTab
+      : "overview",
+  );
 
   if (!agentId) {
     return (

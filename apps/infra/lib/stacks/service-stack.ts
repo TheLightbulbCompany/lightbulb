@@ -956,11 +956,6 @@ export class ServiceStack extends cdk.Stack {
         // instead of being rewritten to the paperclip_proxy router. Mirrors
         // the env-derivation in paperclip-stack.ts so the two stay in lockstep
         // (keeps ServiceStack independent of PaperclipStack synth order).
-        // Public Paperclip ("Teams") hostname. Routed through Vercel
-        // (frontend project has a host-conditional rewrite to this same
-        // backend's /__paperclip_proxy__ path). The backend uses this
-        // value for cookie-domain rewrites on Better Auth Set-Cookie
-        // responses and for setting the proxy session cookie.
         // `company.isol8.co` is RETIRED (NXDOMAIN since #510). The Teams UI is
         // native in the isol8 frontend now, so nothing browser-facing uses this.
         // Its live consumers are the Origin header the Teams BFF sends to

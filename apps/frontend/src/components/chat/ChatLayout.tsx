@@ -335,23 +335,33 @@ export function ChatLayout({
     return ids;
   }, [sellerListings]);
 
-  // "Get started" guide. Gate the floating guide on the same readiness the
-  // chat surface uses (phase === "normal" means a live container), and feed
-  // it real backend-derived completion signals so steps stay marked done
-  // across leave→return AND for users who already did them before the guide
-  // shipped — the event-flags from the actions alone would forget on reload.
-  const { phase } = useProvisioningState();
-  // The guide only renders once the container is live (`phase === "normal"`),
-  // so its completion-signal fetches are gated on the same readiness. Before
-  // that, the user is mid-provisioning and there's nothing to derive — firing
-  // `/channels/links/me` + the inbox reads early is wasted backend load (and
-  // would churn re-renders against the still-settling provisioning state).
-  const guideReady = phase === "normal";
+  // "Get started" guide. Gate the floating guide — AND its completion-signal
+  // fetches — on the signal that the chat surface is actually live and
+  // interactive, NOT on `useProvisioningState().phase === "normal"`. That
+  // phase is "normal" for ANY 200 from /container/status, which includes the
+  // entire cold-start window (status="provisioning", phase="provisioning" /
+  // "starting"). Gating on it would mount the launcher + the auto-opened
+  // first-run card ON TOP of the ProvisioningStepper's "Provisioning your
+  // container…" loader — handing off to surfaces that don't exist yet (empty
+  // agents[], hidden composer) and burning the one-time `seen: true` flag
+  // before the user can act.
+  //
+  // The canonical "chat is live" signal is the backend-reported cold-start
+  // phase reaching "ready" — the exact gate the sibling ProvisioningStepper
+  // uses to stop its loader and render the chat `children` (it shares the
+  // `/container/status` SWR cache via the same `useProvisioningState` key, so
+  // `container.phase` here flips to "ready" in the same render the stepper
+  // does). It is strictly stronger than `phase === "normal"`: a non-null
+  // `container` already implies a 200 ("normal"), and `.phase === "ready"`
+  // additionally requires the gateway pool to have connected.
+  const { container } = useProvisioningState();
+  const chatReady = container?.phase === "ready";
   // `channel` complete = a main-agent bot is wired on any provider. Same
   // derivation as ProvisioningStepper's `hasMainBot`, computed inline. Null
-  // SWR key until ready is SWR's canonical conditional-fetch gate.
+  // SWR key until `chatReady` is SWR's canonical conditional-fetch gate — so
+  // `/channels/links/me` never fires during the cold-start window.
   const { data: channelLinks } = useSWR<ChannelLinksResponse>(
-    guideReady ? "/channels/links/me" : null,
+    chatReady ? "/channels/links/me" : null,
     () => api.get("/channels/links/me") as Promise<ChannelLinksResponse>,
   );
   const channelLinked =
@@ -362,8 +372,14 @@ export function ChatLayout({
   // `task` complete = the team already has >= 1 task. useInboxData is
   // arg-free and bearer-only (same useTeamsApi the roster fetch above uses),
   // so it's safe to derive here without any teams-provider context — gated on
-  // guide readiness so the three inbox reads don't fire pre-provision.
-  const { allIssues } = useInboxData({ enabled: guideReady });
+  // `chatReady` so the three inbox reads don't fire during the cold-start
+  // window. Residual: a legacy pre-Paperclip owner whose container is live but
+  // whose Teams workspace was never provisioned can still see these reads
+  // error-retry once `chatReady` is true. We do NOT add a
+  // `useTeamsWorkspaceStatus` gate here because that hook has no `enabled`
+  // param and would itself fire an always-on `/teams/dashboard` poll during
+  // the provisioning window this fix is meant to keep quiet.
+  const { allIssues } = useInboxData({ enabled: chatReady });
   const taskExists = allIssues.length > 0;
   const getStartedDerived = useMemo(
     () => ({ channel: channelLinked, task: taskExists }),
@@ -678,7 +694,7 @@ export function ChatLayout({
             )}
           </div>
 
-          {phase === "normal" && (
+          {chatReady && (
             <GetStarted
               derived={getStartedDerived}
               actions={{

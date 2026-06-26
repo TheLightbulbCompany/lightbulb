@@ -14,6 +14,7 @@ import pytest  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
+from core.services import agent_export  # noqa: E402
 from routers import agent_builder  # noqa: E402
 
 OWNER = "org_abc"
@@ -55,6 +56,18 @@ def test_wrong_token_401(mock_get_container, client):
     mock_get_container.return_value = {"hook_token": TOKEN, "gateway_token": "gw"}
     resp = client.post(URL, json=BODY, headers={"Authorization": "Bearer nope"})
     assert resp.status_code == 401
+
+
+@patch("routers.agent_builder.agent_export.export_built_agent_from_staging")
+@patch("routers.agent_builder.container_repo.get_by_owner_id", new_callable=AsyncMock)
+def test_credential_leak_in_built_slice_400(mock_get_container, mock_export, client):
+    """A credential surviving the scrub in the built agent's slice → 400 (the
+    export raises CredentialLeakError, which the router maps before any mint)."""
+    mock_get_container.return_value = {"hook_token": TOKEN, "gateway_token": "gw-token"}
+    mock_export.side_effect = agent_export.CredentialLeakError("secret survived: mcp.servers.x.env.API_KEY")
+    resp = client.post(URL, json=BODY, headers={"Authorization": f"Bearer {TOKEN}"})
+    assert resp.status_code == 400
+    assert "secret survived" in resp.json()["detail"]
 
 
 @patch("routers.agent_builder.get_catalog_service")

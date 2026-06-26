@@ -182,6 +182,26 @@ def test_staging_export_missing_config_raises(tmp_path: Path):
             agent_export.export_built_agent_from_staging(owner_id=owner_id, staging_agent_id=staging_agent_id)
 
 
+def test_staging_export_multi_agent_config_raises(tmp_path: Path):
+    """A built agent must be single-agent — a config listing >1 agent fails loud
+    rather than silently snapshotting agents[0] and discarding the rest."""
+    owner_id = "org_owner_multi"
+    staging_agent_id = "multi-staging-001"
+    user_root = tmp_path / "users" / owner_id
+    workspace_subdir = user_root / "workspaces" / staging_agent_id / "workspace"
+    workspace_subdir.mkdir(parents=True)
+    cfg = _staging_openclaw_config()
+    cfg["agents"]["list"].append({"id": "second-agent", "skills": []})
+    (workspace_subdir / "openclaw.json").write_text(json.dumps(cfg), encoding="utf-8")
+
+    from core.containers import workspace as workspace_module
+
+    fake_ws = workspace_module.Workspace(mount_path=str(tmp_path / "users"))
+    with patch.object(agent_export, "get_workspace", return_value=fake_ws):
+        with pytest.raises(agent_export.BuiltAgentConfigError, match="multiple agents"):
+            agent_export.export_built_agent_from_staging(owner_id=owner_id, staging_agent_id=staging_agent_id)
+
+
 def test_staging_export_missing_dir_raises_not_found(fake_staging):
     """A staging_agent_id with no workspace dir 404s (AgentNotFoundError)."""
     owner_id, _, _ = fake_staging

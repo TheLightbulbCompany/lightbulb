@@ -746,6 +746,15 @@ def export_built_agent_from_staging(owner_id: str, staging_agent_id: str) -> Cat
     agents = [a for a in _agents_list(staging_config) if isinstance(a, dict) and a.get("id")]
     if not agents:
         raise BuiltAgentConfigError(f"staging agent {staging_agent_id!r} openclaw.json has no agents.list[].id")
+    if len(agents) > 1:
+        # The skeleton generator always emits a single-agent config. More than
+        # one means a malformed build — fail loud rather than silently snapshot
+        # agents[0] and discard the rest.
+        ids = [a["id"] for a in agents]
+        raise BuiltAgentConfigError(
+            f"staging agent {staging_agent_id!r} openclaw.json lists multiple agents ({ids}); "
+            "a built agent must be single-agent"
+        )
     agent_entry = agents[0]
     built_agent_id = agent_entry["id"]
 

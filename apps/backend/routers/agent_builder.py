@@ -54,6 +54,17 @@ class RegisterBuiltAgentRequest(BaseModel):
     reports_to: str | None = None
 
 
+class RegisterBuiltAgentResponse(BaseModel):
+    """Response for ``POST /agent-builder/u/{owner_id}/register-built-agent``."""
+
+    agent_id: str
+    name: str
+    registered: bool
+    # Hint Atlas relays to the owner: the agent is registered but not yet listed;
+    # the owner publishes it via the seller wizard.
+    publish_hint: str
+
+
 def _slugify(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:64] or "agent"
 
@@ -76,7 +87,7 @@ async def _require_hook_token(owner_id: str, request: Request) -> dict:
     return container
 
 
-@router.post("/u/{owner_id}/register-built-agent")
+@router.post("/u/{owner_id}/register-built-agent", response_model=RegisterBuiltAgentResponse)
 async def register_built_agent(owner_id: str, payload: RegisterBuiltAgentRequest, request: Request):
     """Register an Atlas-built agent into the owner's container.
 

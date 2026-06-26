@@ -134,20 +134,32 @@ export function InboxPage({
   const [selectedIssueId, setSelectedIssueId] = useState<string | null>(null);
 
   // 3b. NewIssueDialog open state.
-  const [newIssueOpen, setNewIssueOpen] = useState(false);
-
+  //
   // Deep-link entry: the "Get started" guide (and the New-task pill on the
-  // chat shell) routes here with ?newIssue=1 to pop the dialog straight
-  // open. Fire once, then strip the param so a refresh / back-nav doesn't
+  // chat shell) routes here with ?newIssue=1 to pop the dialog straight open.
+  // Opening is done WITHOUT an effect-driven setState (the lint rule forbids
+  // it, and it would cascade renders): the open state is lazily seeded from
+  // the param on first render, and a later same-page re-navigation (clicking
+  // the guide step again while the inbox panel is already mounted, which only
+  // changes the URL) is detected by comparing the param against its previous
+  // value DURING render — React's "adjust state when a prop changes" pattern,
+  // the same one the selection clamp below uses. The effect then ONLY strips
+  // the param via router.replace (not setState), so a refresh / back-nav can't
   // reopen it.
+  const newIssueParam = searchParams.get("newIssue");
+  const [newIssueOpen, setNewIssueOpen] = useState(() => newIssueParam === "1");
+  const [prevNewIssueParam, setPrevNewIssueParam] = useState(newIssueParam);
+  if (newIssueParam !== prevNewIssueParam) {
+    setPrevNewIssueParam(newIssueParam);
+    if (newIssueParam === "1") setNewIssueOpen(true);
+  }
+
   useEffect(() => {
-    if (searchParams.get("newIssue") === "1") {
-      setNewIssueOpen(true);
-      const params = new URLSearchParams(searchParams.toString());
-      params.delete("newIssue");
-      router.replace(`?${params.toString()}`, { scroll: false });
-    }
-  }, [searchParams, router]);
+    if (newIssueParam !== "1") return;
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("newIssue");
+    router.replace(`?${params.toString()}`, { scroll: false });
+  }, [newIssueParam, searchParams, router]);
 
   // 4. Data + side-effect hooks.
   const { mineIssues, touchedIssues, allIssues, isLoading, isError } =

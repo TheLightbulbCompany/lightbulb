@@ -56,19 +56,27 @@ export function useGetStarted(opts: { derived: Partial<Record<StepId, boolean>> 
     if (!isLoaded || hydratedRef.current) return;
     hydratedRef.current = true;
     const s = (user?.unsafeMetadata?.getStarted as GetStartedMeta | undefined) ?? {};
+    // Hydrating local state from Clerk's asynchronously-loaded metadata — the
+    // external-system→React sync the rule explicitly sanctions. It can't run
+    // during render: it must fire when `isLoaded` flips and also dispatches
+    // analytics + persist side effects. Runs once (guarded by hydratedRef).
+    /* eslint-disable react-hooks/set-state-in-effect */
     setDone(s.done ?? []);
     setRead(s.read ?? []);
     setDismissed(!!s.dismissed);
     setSeen(!!s.seen);
     if (!s.seen) { capture("get_started_opened"); setIsOpen(true); setSeen(true); persist({ seen: true }); }
+    /* eslint-enable react-hooks/set-state-in-effect */
   }, [isLoaded, user, persist]);
 
   // Event-bus completions (chat/task/hire) → append + persist (idempotent).
   // `done` is read through a ref so the subscription stays stable, and the
   // persist side effect lives OUTSIDE the state updater (updaters must be pure;
-  // StrictMode double-invokes them).
+  // StrictMode double-invokes them). The ref is synced in an effect (not during
+  // render — writing a ref during render is disallowed); the onStep handler
+  // runs after commit, so it always reads the latest committed value.
   const doneRef = useRef(done);
-  doneRef.current = done;
+  useEffect(() => { doneRef.current = done; }, [done]);
   useEffect(() => onStep((id) => {
     const cur = doneRef.current;
     if (cur.includes(id)) return;

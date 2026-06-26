@@ -373,6 +373,10 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   const [error, setError] = useState<string | null>(null);
   const [historyLoadState, setHistoryLoadState] = useState<"idle" | "loading" | "done">("idle");
   const isLoadingHistory = historyLoadState === "loading";
+  // Bumped to force the history-fetch effect below to re-run after a
+  // server-side session mutation (/reset, /compact, /new) — see
+  // invalidateHistoryAndRefetch.
+  const [historyRefetchNonce, setHistoryRefetchNonce] = useState(0);
 
   // Analytics counters.
   const turnStartedAtRef = useRef<number | null>(null);
@@ -625,7 +629,24 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         historyLoadedRef.current.add(cacheKey);
         setHistoryLoadState("done");
       });
-  }, [agentId, cacheKey, sessionName, isConnected, sendReq]);
+  }, [agentId, cacheKey, sessionName, isConnected, sendReq, historyRefetchNonce]);
+
+  // ---- Invalidate + refetch history ----
+  //
+  // Used after a server-side session mutation (/reset, /compact, /new) so the
+  // displayed transcript can't diverge from the now-reset session. Drops the
+  // module-cache entry and the loaded-marker for this session, clears the live
+  // chatMessages state (covers the empty-history case, where the fetch leaves
+  // chatMessages untouched), then bumps a nonce so the history-fetch effect
+  // above re-runs its EXISTING fetch path — no duplicate fetch logic here.
+  const invalidateHistoryAndRefetch = useCallback(() => {
+    const key = agentIdRef.current ? `${agentIdRef.current}:${sessionName}` : null;
+    if (!key) return;
+    _messageCache.delete(key);
+    historyLoadedRef.current.delete(key);
+    setChatMessages([]);
+    setHistoryRefetchNonce((n) => n + 1);
+  }, [sessionName]);
 
   // ---- Chat message handler ----
   // Dependencies are intentionally minimal ([onChatMessage]) because all
@@ -1436,6 +1457,13 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     [isConnected, dispatchNow],
   );
 
+  // Refs to the latest clear/cancel callbacks so sendMessage (defined above
+  // them) can invoke the current closures for the local /clear and /redirect
+  // commands without a forward-reference / stale closure — same pattern as
+  // drainQueueRef. Populated by the effects beside each definition below.
+  const clearMessagesRef = useRef<() => void>(() => {});
+  const cancelMessageRef = useRef<() => Promise<void>>(async () => {});
+
   const sendMessage = useCallback(
     async (message: string): Promise<void> => {
       if (!agentIdRef.current) {
@@ -1487,6 +1515,35 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         return;
       }
 
+      // `/clear` and `/redirect` are control-ui-only in OpenClaw — there is no
+      // server handler for either, so we implement them locally (before the
+      // disconnected / busy gates below, which don't apply to a local-only
+      // command nor to an explicit redirect).
+      //
+      // `/clear` wipes the local transcript and sends NOTHING to the server.
+      const trimmedLower = trimmed.toLowerCase();
+      if (trimmedLower === "/clear") {
+        clearMessagesRef.current();
+        return;
+      }
+      // `/redirect <msg>` aborts the active run (the existing cancel path) and
+      // resends the remainder as a fresh message — interrupting rather than
+      // queuing behind the in-flight run.
+      if (/^\/redirect\s+/i.test(trimmed)) {
+        const rest = trimmed.replace(/^\/redirect\s+/i, "");
+        await cancelMessageRef.current();
+        if (rest) await dispatchNow(rest);
+        return;
+      }
+      // `/reset`, `/compact`, and `/new` mutate server-side session state. Let
+      // them reach the server, then invalidate the cached transcript + refetch
+      // history so the displayed messages match the (reset/compacted) session.
+      if (/^\/(reset|compact|new)(\s|$)/i.test(trimmed)) {
+        await dispatchNow(trimmed);
+        invalidateHistoryAndRefetch();
+        return;
+      }
+
       // Disconnected: park the send as waiting-reconnect instead of
       // dropping it. The reconnect rising-edge effect replays it (and
       // resumes the normal drain) once the socket is back. Mirrors upstream
@@ -1521,7 +1578,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
 
       await dispatchNow(trimmed);
     },
-    [isConnected, sessionName, dispatchNow, send],
+    [isConnected, sessionName, dispatchNow, send, invalidateHistoryAndRefetch],
   );
 
   // ---- Cancel / stop agent ----
@@ -1574,6 +1631,12 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       };
     }
   }, [isStreaming, isConnected, send]);
+
+  // Keep cancelMessageRef pointed at the latest cancelMessage so sendMessage's
+  // /redirect path invokes the current closure (fresh isStreaming/isConnected).
+  useEffect(() => {
+    cancelMessageRef.current = cancelMessage;
+  }, [cancelMessage]);
 
   // ---- Reconnect rising-edge: replay deferred abort + waiting sends ----
   //
@@ -1664,6 +1727,12 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     setChatStreamSegments,
     setChatToolMessages,
   ]);
+
+  // Keep clearMessagesRef pointed at the latest clearMessages so sendMessage's
+  // /clear path invokes the current closure (fresh sessionName-keyed cache).
+  useEffect(() => {
+    clearMessagesRef.current = clearMessages;
+  }, [clearMessages]);
 
   // ---- External interface ----
 

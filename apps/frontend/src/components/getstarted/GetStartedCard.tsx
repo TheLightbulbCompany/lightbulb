@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { Sparkles, X, Minus, ArrowRight, ChevronLeft } from "lucide-react";
 import { ARTICLES } from "./getStartedContent";
 import { GetStartedChecklist } from "./GetStartedChecklist";
@@ -9,8 +10,18 @@ export function GetStartedCard({ gs, onAction }: {
   onAction: (id: Exclude<StepId, "meet">) => void;
 }): React.ReactElement {
   const article = gs.activeArticle ? ARTICLES.find((a) => a.id === gs.activeArticle) : null;
+  // Escape closes the card — a baseline expectation for any role="dialog".
+  // The card is only mounted while open, so the listener is live exactly when a
+  // user could press Escape; it tears down on unmount. Closing here reuses the
+  // same handler the X button calls so the two dismiss paths can't diverge.
+  const { close } = gs;
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => { if (e.key === "Escape") close(); };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [close]);
   return (
-    <section role="dialog" aria-label="Get started"
+    <section role="dialog" aria-label="Get started" aria-modal={false}
       className="fixed right-5 bottom-[78px] z-50 w-[384px] max-h-[520px] flex flex-col bg-[var(--cream)] border border-[var(--edge)] rounded-2xl shadow-[0_18px_50px_-12px_rgba(6,64,43,.28)] overflow-hidden">
       <div className="px-4 pt-3.5">
         <div className="flex items-center gap-2.5 mb-3">

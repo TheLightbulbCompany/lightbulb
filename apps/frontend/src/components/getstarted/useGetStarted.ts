@@ -190,9 +190,12 @@ export function useGetStarted(opts: { derived: Partial<Record<StepId, boolean>> 
   const openArticle = useCallback((id: ArticleId) => {
     capture("get_started_article_opened", { id });
     setActiveArticle(id);
-    if (read.includes(id)) return;
-    setRead([...read, id]);
-  }, [read]);
+    // Functional updater: two quick opens must not each read the same stale
+    // `read` and drop one append. The de-dupe runs inside the updater against
+    // the committed value, so the callback needs no `read` dependency.
+    // Persistence is the coalesced effect keyed on `read`; no inline persist.
+    setRead((cur) => (cur.includes(id) ? cur : [...cur, id]));
+  }, []);
 
   return {
     isOpen, minimized, tab, activeArticle,

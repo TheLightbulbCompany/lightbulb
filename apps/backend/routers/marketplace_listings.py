@@ -362,6 +362,7 @@ async def get_listing(listing_id: str, response: Response):
 async def deploy_listing(
     listing_id: str,
     auth: Annotated[AuthContext, Depends(get_current_user)],
+    payload: schemas.DeployListingRequest | None = None,
 ):
     """One-click deploy: land a published listing into the buyer's container.
 
@@ -503,6 +504,10 @@ async def deploy_listing(
         )
 
     agent_name = slice_agent.get("name") or listing.get("name") or listing.get("slug")
+    # Org placement: the buyer optionally picks who the new hire reports to
+    # (its manager in the Paperclip org chart) at Hire time. None leaves it
+    # unparented — one-click deploys with no body land here unchanged.
+    reports_to = payload.reports_to if payload else None
     try:
         paperclip_agent = await create_paperclip_for_marketplace(
             buyer_user_id=auth.user_id,
@@ -512,6 +517,7 @@ async def deploy_listing(
             # with the chat path (see resolve_create_agent_fields).
             role=None,
             meta=meta,
+            reports_to=reports_to,
         )
     except Exception as exc:
         logger.exception(

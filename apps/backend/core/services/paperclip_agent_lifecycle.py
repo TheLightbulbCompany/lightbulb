@@ -160,6 +160,7 @@ async def create_paperclip_for_marketplace(
     name: str,
     role: str | None,
     meta: PaperclipMeta | None = None,
+    reports_to: str | None = None,
 ) -> dict:
     """Create a Paperclip agent for a marketplace install.
 
@@ -182,6 +183,9 @@ async def create_paperclip_for_marketplace(
         capabilities/icon derived from the listing's slice. When supplied,
         threads those fields into ``create_agent``. See
         :mod:`core.services.paperclip_meta`.
+    ``reports_to``: optional Paperclip agent id the new hire reports to
+        (its manager in the org chart, chosen by the buyer at Hire time).
+        None leaves the new agent unparented, matching Paperclip's default.
     """
     repo = PaperclipRepo(table_name="paperclip-companies")
     company_id = await resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
@@ -209,6 +213,7 @@ async def create_paperclip_for_marketplace(
             adapter_type=OPENCLAW_GATEWAY_TYPE,
             adapter_config=adapter_config,
             session_cookie=admin_cookie,
+            reports_to=reports_to,
             **fields,
         )
     finally:

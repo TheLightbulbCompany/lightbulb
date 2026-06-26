@@ -1,11 +1,13 @@
 "use client";
 
+import { useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 import Link from "next/link";
 import type { Listing } from "@/lib/marketplace/types";
 import { useMarketplaceWriteGate } from "@/lib/marketplace/useMarketplaceWriteGate";
 import { useHire } from "./useHire";
 import { useMarketplaceDrawer } from "./MarketplaceDrawerProvider";
+import { HireManagerDialog } from "./HireManagerDialog";
 
 const FALLBACK_BYLINE = "Community member";
 
@@ -32,6 +34,7 @@ export function ListingCard({ listing, installed }: { listing: Listing; installe
   const { userId } = useAuth();
   const { restricted } = useMarketplaceWriteGate();
   const { openListingDetail } = useMarketplaceDrawer();
+  const [showHire, setShowHire] = useState(false);
   const tagline =
     listing.description_md.split(/\n{2,}/, 1)[0]?.replace(/[#*_`]/g, "").trim() || "";
   const byline = bylineFor(listing, userId);
@@ -94,7 +97,7 @@ export function ListingCard({ listing, installed }: { listing: Listing; installe
         ) : (
           <button
             type="button"
-            onClick={() => hire(listing)}
+            onClick={() => setShowHire(true)}
             disabled={isHiring}
             className="bg-[#06402b] text-white px-3.5 py-1.5 rounded-full text-[12.5px] font-semibold hover:bg-[#0a5a3d] disabled:opacity-60"
           >
@@ -102,6 +105,17 @@ export function ListingCard({ listing, installed }: { listing: Listing; installe
           </button>
         )}
       </div>
+      {showHire && (
+        <HireManagerDialog
+          listing={listing}
+          isHiring={isHiring}
+          onConfirm={(reportsTo) => {
+            void hire(listing, reportsTo);
+            setShowHire(false);
+          }}
+          onClose={() => setShowHire(false)}
+        />
+      )}
     </article>
   );
 }

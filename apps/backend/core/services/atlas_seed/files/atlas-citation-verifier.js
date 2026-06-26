@@ -17,6 +17,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const https = require('https');
+const http = require('http');
 
 const CONSECUTIVE_FAILURE_THRESHOLD = 2;
 const FETCH_TIMEOUT_MS = 15000;
@@ -71,7 +72,10 @@ function extractCitationsFromAgentsMd(filepath) {
 
 function fetchUrlStatus(url) {
   return new Promise((resolve) => {
-    const req = https.get(url, { timeout: FETCH_TIMEOUT_MS, headers: { 'User-Agent': 'atlas-citation-verifier/1.0' } }, (res) => {
+    // Pick the client by protocol — https.get throws "Protocol 'http:' not
+    // supported" for http:// URLs, which would fail every http citation.
+    const client = url.startsWith('http://') ? http : https;
+    const req = client.get(url, { timeout: FETCH_TIMEOUT_MS, headers: { 'User-Agent': 'atlas-citation-verifier/1.0' } }, (res) => {
       resolve({ url, status: res.statusCode, checked_at: new Date().toISOString() });
       res.resume();
     });
@@ -80,18 +84,26 @@ function fetchUrlStatus(url) {
   });
 }
 
-async function verifyCitations(citations) {
-  const results = [];
-  for (const c of citations) {
-    const url = c.url || c.value;
-    const result = await fetchUrlStatus(url);
-    const passed = result.status === 200;
-    results.push({ ...c, url, status: result.status, passed, checked_at: result.checked_at, error: result.error });
+async function verifyCitations(citations, concurrency = 10) {
+  // Bounded-concurrency pool: sequential await would be total_count × timeout
+  // worst-case (e.g. 40 × 15s = 600s), timing out the quarterly cron.
+  const results = new Array(citations.length);
+  const queue = [...citations.entries()];
+  async function worker() {
+    let entry;
+    while ((entry = queue.shift()) !== undefined) {
+      const [i, c] = entry;
+      const url = c.url || c.value;
+      const result = await fetchUrlStatus(url);
+      const passed = result.status === 200;
+      results[i] = { ...c, url, status: result.status, passed, checked_at: result.checked_at, error: result.error };
+    }
   }
+  await Promise.all(Array.from({ length: Math.min(concurrency, citations.length || 1) }, worker));
   return {
     total_count: results.length,
-    passed_count: results.filter(r => r.passed).length,
-    failed_count: results.filter(r => !r.passed).length,
+    passed_count: results.filter(r => r && r.passed).length,
+    failed_count: results.filter(r => r && !r.passed).length,
     results
   };
 }

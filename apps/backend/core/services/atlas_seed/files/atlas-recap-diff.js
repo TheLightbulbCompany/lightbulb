@@ -62,11 +62,15 @@ function verifyHash(buildId, matrix) {
   }
   // Reconstruct the deterministic core in the exact key order architect-proposal
   // hashed it (insertion order is preserved by JSON.stringify for string keys).
+  // Coerce undefined → null to match architect-proposal's compute-matrix, which
+  // stamps the hash over JSON.parse(env||"null") (always null, never an omitted
+  // key). Without this, a field absent here (undefined, dropped by JSON.stringify)
+  // would diverge from architect's explicit null and block every recap for the build.
   const core = {
-    skeleton: matrix.skeleton,
-    classifications: matrix.classifications,
-    skill_recommendations: matrix.skill_recommendations,
-    snapshot_at: matrix.snapshot_at
+    skeleton: matrix.skeleton ?? null,
+    classifications: matrix.classifications ?? null,
+    skill_recommendations: matrix.skill_recommendations ?? null,
+    snapshot_at: matrix.snapshot_at ?? null
   };
   const computedSha = sha256(JSON.stringify(core));
   const matches = computedSha === expectedHex;

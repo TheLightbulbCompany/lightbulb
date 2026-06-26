@@ -83,7 +83,7 @@ function checkOpenclawJson() {
       pass: missing.length === 0,
       severity: 'blocker',
       reason: missing.length === 0 ? null : `tools.deny missing: ${missing.join(', ')}`,
-      remediation: `Add to openclaw.json tools.deny array: ${missing.join(', ')}`
+      remediation: missing.length === 0 ? null : `Add to openclaw.json tools.deny array: ${missing.join(', ')}`
     });
     const skills = (cfg.agents && cfg.agents.list && cfg.agents.list[0] && cfg.agents.list[0].skills) || [];
     // Only the genuine SECURITY skills are activation blockers. The broader

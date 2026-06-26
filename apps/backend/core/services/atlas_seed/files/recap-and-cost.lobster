@@ -14,8 +14,9 @@ name: recap-and-cost
 # Determinism-audit restructure: the audit script no longer process.exit(1)s on
 # failure (which used to halt the pipeline BEFORE the failure-notice — conditioned
 # on the same failure — could run). It now reports pass/fail on stdout, and a
-# following step branches on `$determinism-audit.json.pass == false` to surface
-# the failure (mirrors how build.lobster surfaces verify/trigger failures).
+# following step branches on `!$determinism-audit.json.pass` (catches an explicit
+# pass:false AND a crash where pass is null/missing — a crash must not bypass the
+# hard gate) to surface the failure (mirrors how build.lobster surfaces failures).
 
 args:
   build_id:
@@ -196,11 +197,11 @@ steps:
   # Step 5.9 — Surface determinism-audit failures so the user knows what to fix.
   #            Now reachable because the audit no longer halts the pipeline.
   - id: det-fail-load
-    condition: $determinism-audit.json.pass == false
+    condition: "!$determinism-audit.json.pass"
     pipeline: state.get atlas/notifications
 
   - id: det-fail-next
-    condition: $determinism-audit.json.pass == false
+    condition: "!$determinism-audit.json.pass"
     command: >
       node -e 'const n=JSON.parse(process.env.NOTIFS||"null")||[];
         const a=JSON.parse(process.env.AUDIT||"null")||{};
@@ -216,7 +217,7 @@ steps:
       AUDIT: $determinism-audit.stdout
 
   - id: det-fail-save
-    condition: $determinism-audit.json.pass == false
+    condition: "!$determinism-audit.json.pass"
     pipeline: state.set atlas/notifications
     stdin: $det-fail-next.stdout
 

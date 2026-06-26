@@ -70,3 +70,6 @@ apps/desktop/src-tauri/.sidecar-tmp/
 # Root-anchored so it only ignores the top-level clone — vendored copies of
 # Paperclip assets under apps/ (e.g. the baked `paperclip` skill) stay tracked.
 /paperclip/
+
+# Marketplace-agent source lives on the marketplace (S3 artifact + live EFS), not the repo.
+/agents/

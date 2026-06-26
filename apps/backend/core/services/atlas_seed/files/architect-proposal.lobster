@@ -114,10 +114,11 @@ steps:
       node -e 'const n=JSON.parse(process.env.NOTIFS||"null")||[];
         const id=process.env.LOBSTER_ARG_BUILD_ID;
         const sk=JSON.parse(process.env.SKEL||"null")||{};
+        const sel=JSON.parse(process.env.SEL||"null")||{};
         n.push({kind:"archetype_synthesis", channel:"atlas-vet", build_id:id,
           payload:{skeleton:sk, classifications:JSON.parse(process.env.CLASS||"null"),
             skill_recommendations:JSON.parse(process.env.SKILLS||"null"),
-            intake:JSON.parse(process.env.INTAKE||"null"),
+            intake:sel.intake||null,
             persist_to:"atlas/requirement-matrix",
             instructions:"For each requirement: phrase as a user-story and propose triggers[] (cron | hook | agent-call). triggers MUST be non-empty when classification is deterministic. Also produce SOUL.md voice/tone. Merge user_stories, voice_tone, and requirements_with_triggers into atlas/requirement-matrix keyed by build_id."},
           created_at:new Date().toISOString()});
@@ -130,7 +131,10 @@ steps:
       SKEL: $skeleton-generate.stdout
       CLASS: $det-llm-classify.stdout
       SKILLS: $skill-recommend.stdout
-      INTAKE: $select-inputs.json.intake
+      # Pass the raw stdout blob (a JSON string), not .json.intake (a nested
+      # object) — env vars are strings; a non-scalar .json path stringifies to
+      # "[object Object]" and JSON.parse throws, silently dropping the intent.
+      SEL: $select-inputs.stdout
 
   - id: notify-save
     condition: $select-inputs.json.has_brief > 0

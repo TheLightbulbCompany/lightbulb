@@ -114,11 +114,16 @@ steps:
   #            and deploys it into the container live. Returns {agent_id, registered:true}.
   - id: register-built-agent
     condition: $verify-write.json.success == true
+    # Build the JSON body with node (JSON.stringify) and pipe it to curl --data @-,
+    # rather than shell-interpolating $name into a -d string: an agent name with a
+    # quote/backslash/newline would otherwise produce malformed JSON or split the
+    # curl args. {{ISOL8_BRIDGE_URL}} is substituted per-owner at stage time.
     command: >
-      curl -sS -X POST "{{ISOL8_BRIDGE_URL}}"
+      node -e 'process.stdout.write(JSON.stringify({staging_agent_id:process.env.STAGING_ID,name:process.env.LOBSTER_ARG_AGENT_NAME,reports_to:null}))'
+      | curl -sS -X POST "{{ISOL8_BRIDGE_URL}}"
       -H "Authorization: Bearer $OPENCLAW_HOOK_TOKEN"
       -H "Content-Type: application/json"
-      -d "{\"staging_agent_id\":\"$STAGING_ID\",\"name\":\"$LOBSTER_ARG_AGENT_NAME\",\"reports_to\":null}"
+      --data @-
     env:
       STAGING_ID: $verify-write.json.agent_name
     on_error: continue

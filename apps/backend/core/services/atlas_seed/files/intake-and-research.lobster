@@ -98,7 +98,7 @@ steps:
   - id: surface-overlap-gate
     approval:
       required: true
-      prompt: "Stack overlap check: $stack-overlap.json.recommendation. Review the recommendation in #atlas-vet and approve to proceed to research."
+      prompt: "Stack overlap check — recommendation: $stack-overlap.json.recommendation (score: $stack-overlap.json.overlap_score). If recommendation is null/empty the overlap script errored — check the tool output before approving. Review in #atlas-vet and approve to proceed to research."
 
   # Step 2.1 — Cookbook read (two sources combined per source-preference table).
   - id: cookbook-read

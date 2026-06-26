@@ -34,6 +34,7 @@ import { useMarketplaceDrawer } from "@/components/marketplace/drawer/Marketplac
 import { myListings } from "@/lib/marketplace/api";
 import { DesktopUpdater } from "@/components/desktop/DesktopUpdater";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
+import { emitStep } from "@/components/getstarted/getStartedEvents";
 import { useAgentMutations } from "@/components/teams/agents/hooks/useAgentMutations";
 
 interface ChatLayoutProps {
@@ -261,6 +262,7 @@ export function ChatLayout({
 
   useEffect(() => {
     if (!drawerState.freshlyInstalledAgentId) return;
+    if (drawerState.freshlyInstalledAgentId) emitStep("hire");
     const handle = setTimeout(() => setFreshlyInstalled(null), 600);
     return () => clearTimeout(handle);
   }, [drawerState.freshlyInstalledAgentId, setFreshlyInstalled]);

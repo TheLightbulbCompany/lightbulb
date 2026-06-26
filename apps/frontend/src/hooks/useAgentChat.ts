@@ -26,6 +26,7 @@ import {
 } from "@/hooks/useGateway";
 import { useExecApprovalsContextOptional } from "@/hooks/useExecApprovals";
 import { capture } from "@/lib/analytics";
+import { emitStep } from "@/components/getstarted/getStartedEvents";
 import { notifyApiError } from "@/lib/notify";
 import type {
   HistoryMessage,
@@ -1249,6 +1250,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         agent_id: agentId,
         message_length: message.length,
       });
+      emitStep("chat");
 
       try {
         console.info(`[chat] dispatch runId=${newClientRunId} fromQueue=${!!opts?.queueItem}`);

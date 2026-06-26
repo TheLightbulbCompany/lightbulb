@@ -110,8 +110,10 @@ export function ListingCard({ listing, installed }: { listing: Listing; installe
           listing={listing}
           isHiring={isHiring}
           onConfirm={(reportsTo) => {
+            // Keep the dialog open (its button shows "Hiring…") while the
+            // deploy runs. On success the drawer closes and unmounts this; on
+            // failure isHiring resets so the buyer can retry or cancel.
             void hire(listing, reportsTo);
-            setShowHire(false);
           }}
           onClose={() => setShowHire(false)}
         />

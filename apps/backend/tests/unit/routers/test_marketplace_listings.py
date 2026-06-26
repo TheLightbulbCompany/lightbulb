@@ -737,6 +737,17 @@ def test_deploy_threads_reports_to_into_paperclip_create(
     assert mock_create_pc.await_args.kwargs["reports_to"] == "friday-agent-id"
 
 
+def test_deploy_request_blank_reports_to_coerced_to_none():
+    """Paperclip's reportsTo rejects "" (accepts null) — the schema coerces a
+    blank string to None so a top-level hire never trips Paperclip validation."""
+    from schemas.marketplace import DeployListingRequest
+
+    assert DeployListingRequest(reports_to="").reports_to is None
+    assert DeployListingRequest(reports_to="   ").reports_to is None
+    assert DeployListingRequest(reports_to="agent-x").reports_to == "agent-x"
+    assert DeployListingRequest().reports_to is None
+
+
 @patch("routers.marketplace_listings.get_ecs_manager")
 @patch("routers.marketplace_listings.delete_paperclip_for_marketplace", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)

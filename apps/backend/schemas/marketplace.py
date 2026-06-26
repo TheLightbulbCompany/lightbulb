@@ -200,6 +200,13 @@ class DeployListingRequest(BaseModel):
 
     reports_to: str | None = None
 
+    @field_validator("reports_to")
+    @classmethod
+    def _blank_reports_to_is_none(cls, v: str | None) -> str | None:
+        # Paperclip's reportsTo accepts null but rejects "" — coerce a blank /
+        # whitespace string to None so a top-level hire never trips validation.
+        return (v or "").strip() or None
+
 
 class AvailableSkill(BaseModel):
     """A skill referenced by the seller's agent + where it lives."""

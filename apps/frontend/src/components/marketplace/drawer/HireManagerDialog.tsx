@@ -23,7 +23,7 @@ export function HireManagerDialog({
   onClose: () => void;
 }) {
   const { read } = useTeamsApi();
-  const { data, isLoading } = read<{ agents: CompanyAgent[] }>("/agents");
+  const { data, isLoading, error } = read<{ agents: CompanyAgent[] }>("/agents");
   const agents = useMemo(() => data?.agents ?? [], [data]);
 
   // Default the manager to the CEO (Friday). `undefined` = "not chosen yet" so
@@ -69,6 +69,12 @@ export function HireManagerDialog({
             </option>
           ))}
         </select>
+        {error && (
+          <p className="mt-1.5 text-[12px] text-[#8a3a2a]">
+            Couldn&apos;t load your team — the agent will be added at the top
+            level. You can reassign it later in Teams.
+          </p>
+        )}
 
         <div className="mt-5 flex items-center justify-end gap-2">
           <button

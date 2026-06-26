@@ -73,8 +73,13 @@ steps:
     condition: $stack-overlap.json.overlap_score >= 30 && $stack-overlap.json.overlap_score <= 70
     pipeline: state.get atlas/notifications
 
+  # NOTE: notification-append (-next) steps that feed a `state.set` -save
+  # deliberately have NO `on_error: continue` — a throwing append must HALT the
+  # pipeline so its -save never runs with empty stdin (which would overwrite the
+  # shared atlas/notifications queue with ""). A surfaced failure beats silent
+  # queue corruption. (Only steps that don't feed a state.set, e.g. build-status,
+  # carry on_error: continue.)
   - id: overlap-notify-next
-    on_error: continue
     condition: $stack-overlap.json.overlap_score >= 30 && $stack-overlap.json.overlap_score <= 70
     command: >
       node -e 'const n=JSON.parse(process.env.NOTIFS||"null")||[];
@@ -126,7 +131,6 @@ steps:
     pipeline: state.get atlas/notifications
 
   - id: brief-notify-next
-    on_error: continue
     condition: $surface-overlap-gate.approved
     command: >
       node -e 'const n=JSON.parse(process.env.NOTIFS||"null")||[];
@@ -157,7 +161,6 @@ steps:
     pipeline: state.get atlas/audit-log
 
   - id: audit-next
-    on_error: continue
     command: >
       node -e 'const log=JSON.parse(process.env.AUDIT||"null")||[];
         const so=JSON.parse(process.env.STACK||"null")||{};

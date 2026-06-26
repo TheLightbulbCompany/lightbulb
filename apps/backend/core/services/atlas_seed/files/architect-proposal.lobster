@@ -43,8 +43,11 @@ steps:
     condition: $select-inputs.json.has_brief == 0
     pipeline: state.get atlas/notifications
 
+  # NOTE: notification-append (-next) steps that feed a `state.set` -save have NO
+  # `on_error: continue` on purpose — a throwing append must halt the pipeline so
+  # its -save never overwrites the shared queue with empty stdin. See
+  # intake-and-research.lobster for the full rationale.
   - id: nobrief-next
-    on_error: continue
     condition: $select-inputs.json.has_brief == 0
     command: >
       node -e 'const n=JSON.parse(process.env.NOTIFS||"null")||[];
@@ -110,7 +113,6 @@ steps:
     pipeline: state.get atlas/notifications
 
   - id: notify-next
-    on_error: continue
     condition: $select-inputs.json.has_brief > 0
     command: >
       node -e 'const n=JSON.parse(process.env.NOTIFS||"null")||[];
@@ -169,7 +171,6 @@ steps:
     pipeline: state.get atlas/requirement-matrix
 
   - id: matrix-next
-    on_error: continue
     condition: $select-inputs.json.has_brief > 0
     command: >
       node -e 'const map=JSON.parse(process.env.MAP||"null")||{};
@@ -192,7 +193,6 @@ steps:
     pipeline: state.get atlas/audit-log
 
   - id: audit-next
-    on_error: continue
     command: >
       node -e 'const log=JSON.parse(process.env.AUDIT||"null")||[];
         const sel=JSON.parse(process.env.SEL||"null")||{};

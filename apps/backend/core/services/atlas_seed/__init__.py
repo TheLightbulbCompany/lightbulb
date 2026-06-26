@@ -82,9 +82,10 @@ def _api_base_url(env_name: str) -> str:
 
     Mirrors the env-name convention in
     ``paperclip_provisioning._ws_gateway_url`` and the frontend's
-    ``NEXT_PUBLIC_API_URL`` (``api-{env}.isol8.co``): production drops the
-    ``-prod`` suffix. An empty/unknown env resolves to the prod host too — the
-    bridge is only ever reached over the public API host, never localhost.
+    ``NEXT_PUBLIC_API_URL`` (``api-{env}.isol8.co``): ``prod``/``production``
+    and an empty env resolve to the bare ``api.isol8.co`` host (production drops
+    the ``-prod`` suffix). Any other (non-empty) env name maps to
+    ``api-{env}.isol8.co`` — e.g. ``dev`` → ``api-dev.isol8.co``.
     """
     if env_name in ("prod", "production", ""):
         return "https://api.isol8.co"

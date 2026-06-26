@@ -171,8 +171,12 @@ steps:
     condition: $build-status.json.needs_rollback
     pipeline: state.get atlas/notifications
 
+  # NOTE: the notification-append (-next) steps below have NO `on_error: continue`
+  # on purpose — a throwing append must halt the pipeline so its -save never
+  # overwrites atlas/notifications with empty stdin. build-status (which feeds
+  # conditions, not a state.set) keeps on_error: continue. See
+  # intake-and-research.lobster for the full rationale.
   - id: rollback-next
-    on_error: continue
     condition: $build-status.json.needs_rollback
     command: >
       node -e 'const n=JSON.parse(process.env.NOTIFS||"null")||[];
@@ -203,7 +207,6 @@ steps:
     pipeline: state.get atlas/notifications
 
   - id: success-next
-    on_error: continue
     condition: "$build-status.json.registered == true && $build-status.json.triggers_ok == true"
     command: >
       node -e 'const n=JSON.parse(process.env.NOTIFS||"null")||[];
@@ -230,7 +233,6 @@ steps:
     pipeline: state.get atlas/audit-log
 
   - id: audit-next
-    on_error: continue
     command: >
       node -e 'const log=JSON.parse(process.env.AUDIT||"null")||[];
         const cs=JSON.parse(process.env.CLAW||"null")||{};

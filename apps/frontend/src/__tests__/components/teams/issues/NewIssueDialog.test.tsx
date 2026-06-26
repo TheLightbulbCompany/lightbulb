@@ -197,4 +197,14 @@ describe("NewIssueDialog", () => {
     expect(screen.getByPlaceholderText("Task title")).toHaveValue("");
     expect(screen.getByPlaceholderText("Optional details...")).toHaveValue("");
   });
+
+  test("seeds the Status select from defaultStatus", () => {
+    render(<NewIssueDialog {...baseProps} defaultStatus="todo" />);
+    expect(screen.getByLabelText("Status")).toHaveValue("todo");
+  });
+
+  test("Status defaults to backlog when defaultStatus is omitted", () => {
+    render(<NewIssueDialog {...baseProps} />);
+    expect(screen.getByLabelText("Status")).toHaveValue("backlog");
+  });
 });

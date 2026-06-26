@@ -2,6 +2,12 @@ import { describe, test, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import type { CompanyAgent, Issue } from "@/components/teams/shared/types";
 
+// Mutable holder so a test can flip the search params mid-lifecycle (the real
+// page's effect strips `?newIssue` via router.replace after the dialog opens).
+const params = vi.hoisted(() => ({
+  current: new URLSearchParams("newIssue=onboarding"),
+}));
+
 vi.mock("@/components/teams/inbox/hooks/useInboxData", () => ({
   useInboxData: vi.fn(),
 }));
@@ -39,7 +45,7 @@ vi.mock("next/navigation", () => ({
     back: vi.fn(),
   }),
   usePathname: () => "/",
-  useSearchParams: () => new URLSearchParams("newIssue=onboarding"),
+  useSearchParams: () => params.current,
 }));
 
 import { InboxPage } from "@/components/teams/inbox/InboxPage";
@@ -55,6 +61,7 @@ const agents: CompanyAgent[] = [
 
 beforeEach(() => {
   vi.clearAllMocks();
+  params.current = new URLSearchParams("newIssue=onboarding");
   vi.mocked(useInboxData).mockReturnValue({
     mineIssues: [] as Issue[],
     touchedIssues: [] as Issue[],
@@ -93,5 +100,24 @@ describe("InboxPage onboarding pre-fill", () => {
       "Build out my team for [your goal]",
     );
     expect(screen.getByLabelText(/assign to agent/i)).toHaveValue("friday");
+  });
+
+  test("stays open + pre-filled after the param is stripped", () => {
+    const { rerender } = render(
+      <InboxPage companyId="co_1" currentUserId="u_1" agents={agents} />,
+    );
+    expect(screen.getByPlaceholderText("Task title")).toHaveValue(
+      "Build out my team for [your goal]",
+    );
+
+    // Simulate the effect that strips `?newIssue` after the dialog opens: the
+    // param vanishes, but the prefill lives in React state so it must survive.
+    params.current = new URLSearchParams("");
+    rerender(
+      <InboxPage companyId="co_1" currentUserId="u_1" agents={agents} />,
+    );
+    expect(screen.getByPlaceholderText("Task title")).toHaveValue(
+      "Build out my team for [your goal]",
+    );
   });
 });

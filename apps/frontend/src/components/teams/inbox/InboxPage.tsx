@@ -384,7 +384,15 @@ export function InboxPage({
       </div>
 
       <NewIssueDialog
-        key={newIssuePrefill ? "onboarding" : "blank"}
+        // Fold the resolved CEO id into the key so a roster that arrives AFTER
+        // the onboarding dialog mounts (cold first-run: agents empty → CEO id
+        // undefined) remounts the dialog and re-seeds the assignee — otherwise
+        // it opens "Unassigned" and never updates.
+        key={
+          newIssuePrefill
+            ? `onboarding-${resolveCeoAgentId(agents) ?? "none"}`
+            : "blank"
+        }
         open={newIssueOpen}
         onOpenChange={(next) => {
           setNewIssueOpen(next);
@@ -399,6 +407,7 @@ export function InboxPage({
         defaultAssigneeAgentId={
           newIssuePrefill ? resolveCeoAgentId(agents) : undefined
         }
+        defaultStatus={newIssuePrefill ? "todo" : undefined}
         onCreated={(issueId) => {
           setNewIssueOpen(false);
           setNewIssuePrefill(false);

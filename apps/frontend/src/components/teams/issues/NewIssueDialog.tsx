@@ -71,6 +71,12 @@ export interface NewIssueDialogProps {
   defaultDescription?: string;
   /** Pre-selects the assignee and its reset baseline. */
   defaultAssigneeAgentId?: string;
+  /**
+   * Seeds the Status select (and its reset baseline). The onboarding first-task
+   * step opens at `todo` to mirror Paperclip's onboarding task; the bare
+   * composer omits this and falls back to the server-default `backlog`.
+   */
+  defaultStatus?: IssueStatus;
 }
 
 export function NewIssueDialog({
@@ -85,6 +91,7 @@ export function NewIssueDialog({
   defaultTitle,
   defaultDescription,
   defaultAssigneeAgentId,
+  defaultStatus,
 }: NewIssueDialogProps) {
   const { create, createChild } = useIssueMutations();
   const [title, setTitle] = useState(defaultTitle ?? "");
@@ -92,7 +99,7 @@ export function NewIssueDialog({
   const [priority, setPriority] = useState<IssuePriority>("medium");
   // Resting choice mirrors the server default (backlog/standard) so leaving the
   // controls untouched produces the same task the bare composer always did.
-  const [status, setStatus] = useState<IssueStatus>("backlog");
+  const [status, setStatus] = useState<IssueStatus>(defaultStatus ?? "backlog");
   const [workMode, setWorkMode] = useState<IssueWorkMode>("standard");
   const [projectId, setProjectId] = useState<string>(defaultProjectId ?? "");
   const [assigneeAgentId, setAssigneeAgentId] = useState<string>(
@@ -105,7 +112,7 @@ export function NewIssueDialog({
     setTitle(defaultTitle ?? "");
     setDescription(defaultDescription ?? "");
     setPriority("medium");
-    setStatus("backlog");
+    setStatus(defaultStatus ?? "backlog");
     setWorkMode("standard");
     setProjectId(defaultProjectId ?? "");
     setAssigneeAgentId(defaultAssigneeAgentId ?? "");

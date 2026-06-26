@@ -175,11 +175,14 @@ steps:
     command: >
       node -e 'const n=JSON.parse(process.env.NOTIFS||"null")||[];
         const s=JSON.parse(process.env.STATUS||"null")||{};
+        const name=process.env.LOBSTER_ARG_AGENT_NAME;
+        const summary=s.registered
+          ? "Triggers failed to register for agent "+name+" (agent_id: "+(s.agent_id||"unknown")+"). The agent IS registered in Paperclip but its cron/hooks are not active. Deregistration was attempted — retry trigger registration, or delete the agent and rebuild."
+          : "Build failed to register with the bridge. The bridge rolled back its own Paperclip mint/deploy; the local staging workspace is inert. Retry the build.";
         n.push({kind:"build_rollback", channel:"atlas-approvals",
           build_id:process.env.LOBSTER_ARG_BUILD_ID,
-          agent_name:process.env.LOBSTER_ARG_AGENT_NAME,
-          summary:"Build failed to fully register"+(s.registered?" triggers":"")+". The backend bridge rolled back its Paperclip mint/deploy; the local staging workspace is inert. Retry the build.",
-          created_at:new Date().toISOString()});
+          agent_name:name, agent_id:s.agent_id||null,
+          summary, created_at:new Date().toISOString()});
         process.stdout.write(JSON.stringify(n));'
     env:
       NOTIFS: $rollback-load.stdout
@@ -194,11 +197,11 @@ steps:
   #            publishes it via the seller wizard. Surface the agent_id so Atlas can tell
   #            the operator exactly which agent to publish.
   - id: success-load
-    condition: $build-status.json.registered
+    condition: "$build-status.json.registered == true && $build-status.json.triggers_ok == true"
     pipeline: state.get atlas/notifications
 
   - id: success-next
-    condition: $build-status.json.registered
+    condition: "$build-status.json.registered == true && $build-status.json.triggers_ok == true"
     command: >
       node -e 'const n=JSON.parse(process.env.NOTIFS||"null")||[];
         const s=JSON.parse(process.env.STATUS||"null")||{};
@@ -214,7 +217,7 @@ steps:
       STATUS: $build-status.stdout
 
   - id: success-save
-    condition: $build-status.json.registered
+    condition: "$build-status.json.registered == true && $build-status.json.triggers_ok == true"
     pipeline: state.set atlas/notifications
     stdin: $success-next.stdout
 

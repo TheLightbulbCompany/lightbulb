@@ -42,6 +42,10 @@ NEGATIVE_PASS_EXCLUSIONS: dict[str, str] = {
     # Webhook ingress that looks up a hook token then forwards to the container;
     # the hook-token table + container are absent hermetically.
     "POST /api/v1/hooks/u/{owner_id}/{hook_path}": "forwards to a live container; hook-token table not provisioned hermetically",
+    # Atlas register-built-agent bridge: hook-token lookup on the DDB containers
+    # table then snapshot + deploy into a live container; both absent hermetically.
+    # Covered by tests/unit/routers/test_agent_builder.py.
+    "POST /api/v1/agent-builder/u/{owner_id}/register-built-agent": "hook-token lookup + live container; containers table not provisioned hermetically",
     # Pure-DDB read, but the seller-profile table-name env is not wired into the
     # chaos fixture → boto ParamValidationError (empty TableName). FOLLOW-UP:
     # wire the seller table into the fixture to fuzz this endpoint for real.

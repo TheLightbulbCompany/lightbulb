@@ -132,6 +132,14 @@ schema = (
     .exclude(
         path_regex="^/api/v1/hooks/",
     )
+    # Agent-builder bridge (Atlas register-built-agent) is hook-token authed
+    # and reads the DDB ``containers`` table on every request, same as
+    # ``hooks_proxy`` — without a real DDB the boto3 GetItem raises 5xx.
+    # Coverage lives in tests/unit/routers/test_agent_builder.py which mocks
+    # container_repo + ecs_manager + the Paperclip/catalog services end-to-end.
+    .exclude(
+        path_regex="^/api/v1/agent-builder/",
+    )
     .exclude(
         path_regex="^/health$",
     )

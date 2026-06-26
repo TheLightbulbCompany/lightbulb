@@ -64,4 +64,25 @@ describe("useGetStarted", () => {
     expect(result.current.isOpen).toBe(false); // does NOT auto-open for a returning user
     expect(result.current.completed.chat).toBe(true); // completion re-hydrated from metadata
   });
+
+  it("reopening after dismiss clears the dismissed flag so the card is reachable again", () => {
+    const { result } = renderHook(() => useGetStarted({ derived: {} }));
+
+    // Dismiss: card closes and the dismissed flag is set + persisted.
+    act(() => { result.current.dismiss(); });
+    expect(result.current.isOpen).toBe(false);
+    expect(result.current.dismissed).toBe(true);
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({ unsafeMetadata: expect.objectContaining({ getStarted: expect.objectContaining({ dismissed: true }) }) }),
+    );
+
+    // Reopen via the launcher: dismissed is cleared (and persisted) so the
+    // card renders again instead of the launcher-only dead-button state.
+    act(() => { result.current.open(); });
+    expect(result.current.isOpen).toBe(true);
+    expect(result.current.dismissed).toBe(false);
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({ unsafeMetadata: expect.objectContaining({ getStarted: expect.objectContaining({ dismissed: false }) }) }),
+    );
+  });
 });

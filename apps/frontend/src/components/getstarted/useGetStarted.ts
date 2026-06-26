@@ -5,7 +5,7 @@ import { STEPS, type StepId } from "./getStartedConfig";
 import type { ArticleId } from "./getStartedContent";
 import { onStep } from "./getStartedEvents";
 
-interface GetStartedMeta { seen?: boolean; dismissed?: boolean; read?: ArticleId[]; done?: StepId[] }
+interface GetStartedMeta { seen?: boolean; dismissed?: boolean; read?: ArticleId[]; done?: StepId[]; completedFired?: boolean }
 
 export interface UseGetStarted {
   isOpen: boolean;
@@ -52,6 +52,11 @@ export function useGetStarted(opts: { derived: Partial<Record<StepId, boolean>> 
   // we would auto-open the guide and reset completion on every reload. The
   // first-run auto-open is folded in here so it respects the loaded `seen`.
   const hydratedRef = useRef(false);
+  // Guards the one-time `get_started_completed` emit. Seeded from the persisted
+  // `completedFired` flag so a fully-onboarded returning user never re-emits it;
+  // re-seeded in the hydration effect below for the hard-reload (null-at-mount)
+  // case where `stored` is empty at first render.
+  const completedFiredRef = useRef<boolean>(!!stored.completedFired);
   useEffect(() => {
     if (!isLoaded || hydratedRef.current) return;
     hydratedRef.current = true;
@@ -65,6 +70,7 @@ export function useGetStarted(opts: { derived: Partial<Record<StepId, boolean>> 
     setRead(s.read ?? []);
     setDismissed(!!s.dismissed);
     setSeen(!!s.seen);
+    completedFiredRef.current = !!s.completedFired;
     if (!s.seen) { capture("get_started_opened"); setIsOpen(true); setSeen(true); persist({ seen: true }); }
     /* eslint-enable react-hooks/set-state-in-effect */
   }, [isLoaded, user, persist]);
@@ -78,6 +84,9 @@ export function useGetStarted(opts: { derived: Partial<Record<StepId, boolean>> 
   const doneRef = useRef(done);
   useEffect(() => { doneRef.current = done; }, [done]);
   useEffect(() => onStep((id) => {
+    // Safe to read-then-append non-atomically: producers (chat send / task
+    // create / hire install) are distinct one-shot user actions that never
+    // co-fire in the same synchronous tick, so no completion can be dropped.
     const cur = doneRef.current;
     if (cur.includes(id)) return;
     const next = [...cur, id];
@@ -99,15 +108,16 @@ export function useGetStarted(opts: { derived: Partial<Record<StepId, boolean>> 
     total: STEPS.length,
   }), [completed]);
 
-  // Fire the completion event exactly once, the first time every step is done.
-  const completedFiredRef = useRef(false);
+  // Fire the completion event exactly once EVER per user (guard seeded above
+  // from persisted `completedFired`, persisted here so it survives reloads).
   useEffect(() => {
     if (completedFiredRef.current) return;
     if (progress.total > 0 && progress.done === progress.total) {
       completedFiredRef.current = true;
       capture("get_started_completed");
+      persist({ completedFired: true });
     }
-  }, [progress.done, progress.total]);
+  }, [progress.done, progress.total, persist]);
 
   const openArticle = useCallback((id: ArticleId) => {
     capture("get_started_article_opened", { id });
@@ -120,7 +130,7 @@ export function useGetStarted(opts: { derived: Partial<Record<StepId, boolean>> 
 
   return {
     isOpen, minimized, tab, activeArticle,
-    open: () => { capture("get_started_opened"); setIsOpen(true); setMinimized(false); },
+    open: () => { capture("get_started_opened"); setDismissed(false); persist({ dismissed: false }); setIsOpen(true); setMinimized(false); },
     minimize: () => setMinimized(true),
     close: () => setIsOpen(false),
     dismiss: () => { capture("get_started_dismissed"); setDismissed(true); setIsOpen(false); persist({ dismissed: true }); },

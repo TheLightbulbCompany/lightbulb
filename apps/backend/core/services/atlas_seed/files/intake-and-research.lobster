@@ -164,10 +164,11 @@ steps:
     command: >
       node -e 'const log=JSON.parse(process.env.AUDIT||"null")||[];
         const so=JSON.parse(process.env.STACK||"null")||{};
+        const truthy=(s)=>["true","1","yes"].includes((s||"").trim().toLowerCase());
         log.push({action:"intake_and_research_complete",
           build_id:process.env.LOBSTER_ARG_BUILD_ID,
           overlap_recommendation:so.recommendation||null,
-          research_brief_queued:process.env.GATE_APPROVED==="true",
+          research_brief_queued:truthy(process.env.GATE_APPROVED),
           timestamp:new Date().toISOString()});
         if (log.length>500) log.splice(0,log.length-500);
         process.stdout.write(JSON.stringify(log));'

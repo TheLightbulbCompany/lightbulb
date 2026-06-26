@@ -15,8 +15,9 @@ name: build
 #    `workspaces/{agentName}/` (ISOL8_AGENTS_DIR) where files land under `workspace/`.
 #  - CREATE is a curl to the backend bridge (register-built-agent), which snapshots the
 #    staging workspace, mints a Paperclip agent, and deploys it live. ${OPENCLAW_HOOK_TOKEN}
-#    is the per-container webhook token (a real process env var). {{ISOL8_BRIDGE_URL}} is a
-#    literal placeholder substituted per-env/per-owner at stage time (pre_stage_atlas).
+#    is the per-container webhook token (a real process env var). The bridge URL on the
+#    register step is a literal double-brace placeholder substituted per-env/per-owner at
+#    stage time by pre_stage_atlas (so this comment doesn't repeat the exact token).
 #  - This pipeline does NOT publish to the marketplace — the OWNER publishes via the seller
 #    wizard. It ends at register + a notification telling the owner which agent_id to publish.
 
@@ -117,7 +118,7 @@ steps:
     # Build the JSON body with node (JSON.stringify) and pipe it to curl --data @-,
     # rather than shell-interpolating $name into a -d string: an agent name with a
     # quote/backslash/newline would otherwise produce malformed JSON or split the
-    # curl args. {{ISOL8_BRIDGE_URL}} is substituted per-owner at stage time.
+    # curl args. The bridge URL below is substituted per-owner at stage time.
     command: >
       node -e 'process.stdout.write(JSON.stringify({staging_agent_id:process.env.STAGING_ID,name:process.env.LOBSTER_ARG_AGENT_NAME,reports_to:null}))'
       | curl -sS -X POST "{{ISOL8_BRIDGE_URL}}"
@@ -151,16 +152,48 @@ steps:
       node -e 'const v=JSON.parse(process.env.VERIFY||"null")||{};
         const r=JSON.parse(process.env.REG||"null")||{};
         const t=JSON.parse(process.env.TRIG||"null")||{};
+        const truthy=(s)=>["true","1","yes"].includes((s||"").trim().toLowerCase());
+        const gate_approved=truthy(process.env.GATE);
         const verified=v.success===true;
         const registered=r.registered===true;
+        const verify_failed=gate_approved && !verified;
         const needs_rollback=(verified && !registered) || (registered && t.success===false);
         process.stdout.write(JSON.stringify({verified, registered,
           agent_id:r.agent_id||null, triggers_ok:t.success===true,
-          file_write_confirmed:verified, needs_rollback}));'
+          file_write_confirmed:verified, verify_failed, needs_rollback}));'
     env:
       VERIFY: $verify-write.stdout
       REG: $register-built-agent.stdout
       TRIG: $register-triggers.stdout
+      GATE: $file-write-gate.approved
+
+  # Step 6.13a — Verify-failure notification. When the gate WAS approved (write was
+  #            attempted) but verify-write failed (atomic rename / hash mismatch), no
+  #            bridge call is made and needs_rollback is false — so without this the
+  #            build would stall silently. verify_failed is gated on gate-approval so a
+  #            deliberate gate REJECTION (write never attempted) does NOT notify here.
+  #            (No on_error: a throwing -next must halt before -save, not wipe the queue.)
+  - id: verify-fail-load
+    condition: $build-status.json.verify_failed
+    pipeline: state.get atlas/notifications
+
+  - id: verify-fail-next
+    condition: $build-status.json.verify_failed
+    command: >
+      node -e 'const n=JSON.parse(process.env.NOTIFS||"null")||[];
+        n.push({kind:"build_verify_failed", channel:"atlas-approvals",
+          build_id:process.env.LOBSTER_ARG_BUILD_ID,
+          agent_name:process.env.LOBSTER_ARG_AGENT_NAME,
+          summary:"File-write verification failed (no files on disk or hash mismatch) for agent "+process.env.LOBSTER_ARG_AGENT_NAME+". No bridge call was made and no agent was created. Retry the build.",
+          created_at:new Date().toISOString()});
+        process.stdout.write(JSON.stringify(n));'
+    env:
+      NOTIFS: $verify-fail-load.stdout
+
+  - id: verify-fail-save
+    condition: $build-status.json.verify_failed
+    pipeline: state.set atlas/notifications
+    stdin: $verify-fail-next.stdout
 
   # Step 6.13 — Rollback notification when the build needs it. The bridge already rolled
   #            back its own Paperclip mint + deploy on failure; the only local artifact is

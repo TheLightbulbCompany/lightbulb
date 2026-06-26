@@ -717,9 +717,14 @@ def test_deploy_threads_reports_to_into_paperclip_create(
     catalog = MagicMock()
     catalog.deploy_from_artifact = AsyncMock(
         return_value={
-            "slug": "demo-agent", "version": 1, "agent_id": "paperclip-uuid-1234",
-            "name": "Demo", "skills_added": [], "plugins_enabled": [],
-            "cron_jobs_added": 0, "config_registered": True,
+            "slug": "demo-agent",
+            "version": 1,
+            "agent_id": "paperclip-uuid-1234",
+            "name": "Demo",
+            "skills_added": [],
+            "plugins_enabled": [],
+            "cron_jobs_added": 0,
+            "config_registered": True,
         }
     )
     mock_get_catalog.return_value = catalog

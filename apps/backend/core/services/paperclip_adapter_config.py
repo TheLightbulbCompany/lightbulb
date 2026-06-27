@@ -46,6 +46,19 @@ PAPERCLIP_OPERATOR_CLIENT_ID: Final[str] = "paperclip-operator"
 # ws://localhost:{port} (local). Anchored. No path component allowed.
 _GATEWAY_URL_RE: Final[re.Pattern[str]] = re.compile(r"\A(?:wss://ws(?:-[a-z]+)?\.isol8\.co|ws://localhost:[0-9]+)\Z")
 
+# Per-run agent timeout (seconds) + the gateway's wait for that run (ms). The
+# openclaw-gateway adapter defaults BOTH to 120s (build-config.ts:67-68 —
+# `timeoutSec=120`, `waitTimeoutMs=120000`), a value tuned for short, single-step
+# heartbeat runs. Our agents (Friday/Atlas) do substantive single-run work that
+# routinely exceeds 2 min, so the gateway stamps a still-working run `timed_out`
+# at 120s and dispatches a retry while the original is mid-run; that retry queues
+# on the per-issue session lane and times out too — a cascade of `timed_out` runs
+# even though the work commits. 5 min covers observed run times with headroom and
+# stays under the API Gateway WebSocket ~10-minute idle ceiling (a single wait
+# can't outlast that without the socket dropping).
+AGENT_RUN_TIMEOUT_SEC: Final[int] = 300
+AGENT_RUN_WAIT_TIMEOUT_MS: Final[int] = 300_000
+
 
 def claimed_api_key_path(agent_id: str) -> str:
     """Per-agent path to the Paperclip claimed-key file the agent reads at wake.
@@ -132,6 +145,11 @@ def synthesize_openclaw_adapter(
         "sessionKeyStrategy": "issue",
         "sessionKey": user_id,
         "devicePrivateKeyPem": device_pem,
+        # Raise the run + wait timeout off the adapter's 120s default; our agents'
+        # runs routinely exceed 2 min and 120s mislabels them `timed_out` and
+        # triggers a retry/lane-contention cascade. See the constants above.
+        "timeoutSec": AGENT_RUN_TIMEOUT_SEC,
+        "waitTimeoutMs": AGENT_RUN_WAIT_TIMEOUT_MS,
     }
     # `paperclipApiUrl` is the host the agent's bundled `paperclip` skill curls at
     # wake (`$PAPERCLIP_API_URL`). The Paperclip server's per-agent override

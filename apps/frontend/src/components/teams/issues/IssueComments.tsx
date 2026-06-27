@@ -5,6 +5,12 @@
 // Thread list + plaintext composer with Cmd+Enter submit. Drops markdown
 // editor, @mentions, file upload, action flags, edit/delete. Submit action
 // uses <EditorialButton>.
+//
+// The thread interleaves plain comments with agent-initiated thread
+// interactions (suggest_tasks / ask_user_questions / request_confirmation /
+// request_checkbox_confirmation) in chronological order via
+// buildTeamsThreadItems. When no interaction props are supplied it renders a
+// comments-only list (backward compatible).
 
 "use client";
 
@@ -14,13 +20,50 @@ import { notifyApiError } from "@/lib/notify";
 import { Textarea } from "@/components/ui/textarea";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
-import type { CompanyAgent, IssueComment } from "@/components/teams/shared/types";
+import { IssueThreadInteractionCard } from "./IssueThreadInteractionCard";
+import { buildTeamsThreadItems } from "./lib/teams-thread-items";
+import type {
+  AskUserQuestionsAnswer,
+  AskUserQuestionsInteraction,
+  CompanyAgent,
+  IssueComment,
+  IssueThreadInteraction,
+  RequestCheckboxConfirmationInteraction,
+  RequestConfirmationInteraction,
+  SuggestTasksInteraction,
+} from "@/components/teams/shared/types";
 
 export interface IssueCommentsProps {
   comments: IssueComment[];
   agents: CompanyAgent[];
   isLoading?: boolean;
   onSubmit: (body: string) => Promise<void>;
+  /** Agent-initiated thread interactions to interleave with comments. */
+  interactions?: IssueThreadInteraction[];
+  /** Clerk user id of the viewer — disambiguates "You" in actor labels. */
+  currentUserId?: string | null;
+  onAcceptInteraction?: (
+    interaction:
+      | SuggestTasksInteraction
+      | RequestConfirmationInteraction
+      | RequestCheckboxConfirmationInteraction,
+    selectedClientKeys?: string[],
+    selectedOptionIds?: string[],
+  ) => Promise<void> | void;
+  onRejectInteraction?: (
+    interaction:
+      | SuggestTasksInteraction
+      | RequestConfirmationInteraction
+      | RequestCheckboxConfirmationInteraction,
+    reason?: string,
+  ) => Promise<void> | void;
+  onSubmitInteractionAnswers?: (
+    interaction: AskUserQuestionsInteraction,
+    answers: AskUserQuestionsAnswer[],
+  ) => Promise<void> | void;
+  onCancelInteraction?: (
+    interaction: AskUserQuestionsInteraction,
+  ) => Promise<void> | void;
 }
 
 function authorLabel(c: IssueComment, agents: CompanyAgent[]): string {
@@ -30,11 +73,40 @@ function authorLabel(c: IssueComment, agents: CompanyAgent[]): string {
   return "Comment";
 }
 
+function CommentRow({ comment, agents }: { comment: IssueComment; agents: CompanyAgent[] }) {
+  return (
+    <li
+      className="flex flex-col gap-1 pl-3"
+      style={{ borderLeft: "2px solid var(--edge)" }}
+    >
+      <div
+        className="flex items-baseline gap-2 text-xs"
+        style={{ color: "var(--mute)" }}
+      >
+        <span>{authorLabel(comment, agents)}</span>
+        <span aria-hidden="true">·</span>
+        <time dateTime={comment.createdAt} title={new Date(comment.createdAt).toLocaleString()}>
+          {timeAgo(comment.createdAt)}
+        </time>
+      </div>
+      <div className="text-sm" style={{ color: "var(--ink-soft)" }}>
+        <MarkdownView>{comment.body}</MarkdownView>
+      </div>
+    </li>
+  );
+}
+
 export function IssueComments({
   comments,
   agents,
   isLoading,
   onSubmit,
+  interactions,
+  currentUserId,
+  onAcceptInteraction,
+  onRejectInteraction,
+  onSubmitInteractionAnswers,
+  onCancelInteraction,
 }: IssueCommentsProps) {
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -53,10 +125,15 @@ export function IssueComments({
     }
   };
 
+  const threadInteractions = interactions ?? [];
+  const agentMap = new Map(agents.map((a) => [a.id, a] as const));
+  const items = buildTeamsThreadItems({ comments, interactions: threadInteractions });
+  const isEmpty = items.length === 0;
+
   return (
     <div className="flex flex-col gap-4">
-      {/* List */}
-      {isLoading && comments.length === 0 ? (
+      {/* Thread */}
+      {isLoading && isEmpty ? (
         <p
           className="text-sm italic"
           style={{
@@ -66,7 +143,7 @@ export function IssueComments({
         >
           Loading comments…
         </p>
-      ) : comments.length === 0 ? (
+      ) : isEmpty ? (
         <p
           className="text-sm italic"
           style={{
@@ -78,27 +155,23 @@ export function IssueComments({
         </p>
       ) : (
         <ul className="flex flex-col gap-3">
-          {comments.map((c) => (
-            <li
-              key={c.id}
-              className="flex flex-col gap-1 pl-3"
-              style={{ borderLeft: "2px solid var(--edge)" }}
-            >
-              <div
-                className="flex items-baseline gap-2 text-xs"
-                style={{ color: "var(--mute)" }}
-              >
-                <span>{authorLabel(c, agents)}</span>
-                <span aria-hidden="true">·</span>
-                <time dateTime={c.createdAt} title={new Date(c.createdAt).toLocaleString()}>
-                  {timeAgo(c.createdAt)}
-                </time>
-              </div>
-              <div className="text-sm" style={{ color: "var(--ink-soft)" }}>
-                <MarkdownView>{c.body}</MarkdownView>
-              </div>
-            </li>
-          ))}
+          {items.map((item) =>
+            item.kind === "comment" ? (
+              <CommentRow key={`comment-${item.id}`} comment={item.comment} agents={agents} />
+            ) : (
+              <li key={`interaction-${item.id}`}>
+                <IssueThreadInteractionCard
+                  interaction={item.interaction}
+                  agentMap={agentMap}
+                  currentUserId={currentUserId}
+                  onAcceptInteraction={onAcceptInteraction}
+                  onRejectInteraction={onRejectInteraction}
+                  onSubmitInteractionAnswers={onSubmitInteractionAnswers}
+                  onCancelInteraction={onCancelInteraction}
+                />
+              </li>
+            ),
+          )}
         </ul>
       )}
 

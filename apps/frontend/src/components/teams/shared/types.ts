@@ -676,3 +676,279 @@ export interface ProjectUpdateInput {
    * `undefined` leaves the links unchanged. */
   goal_ids?: string[];
 }
+
+// ─── Issue thread interactions ──────────────────────────────────────────────
+//
+// Ported from upstream Paperclip's IssueThreadInteraction shapes
+// (paperclip/packages/shared/src/types/issue.ts + constants.ts)
+// (MIT, © 2025 Paperclip AI). An interaction is an inline, agent-initiated
+// request that lives in an issue's conversation thread: the agent suggests
+// tasks, asks the user questions, or requests a confirmation, and the user
+// accepts / declines / answers it inline. Returned from
+// GET /teams/issues/{id}/interactions and resolved via the
+// {accept,reject,respond,cancel} POST endpoints.
+//
+// `createdAt`/`updatedAt`/`resolvedAt` are typed `Date | string` to match
+// upstream exactly so the ported helpers/card typecheck verbatim — over the
+// wire (BFF proxies upstream JSON) they always arrive as ISO strings.
+
+/** Upstream ISSUE_THREAD_INTERACTION_KINDS. */
+export const ISSUE_THREAD_INTERACTION_KINDS = [
+  "suggest_tasks",
+  "ask_user_questions",
+  "request_confirmation",
+  "request_checkbox_confirmation",
+] as const;
+export type IssueThreadInteractionKind =
+  (typeof ISSUE_THREAD_INTERACTION_KINDS)[number];
+
+/** Upstream ISSUE_THREAD_INTERACTION_STATUSES. */
+export const ISSUE_THREAD_INTERACTION_STATUSES = [
+  "pending",
+  "accepted",
+  "rejected",
+  "answered",
+  "cancelled",
+  "expired",
+  "failed",
+] as const;
+export type IssueThreadInteractionStatus =
+  (typeof ISSUE_THREAD_INTERACTION_STATUSES)[number];
+
+/** Upstream ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES — whether resolving
+ * the interaction wakes the assignee agent to continue the run. */
+export const ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES = [
+  "none",
+  "wake_assignee",
+  "wake_assignee_on_accept",
+] as const;
+export type IssueThreadInteractionContinuationPolicy =
+  (typeof ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES)[number];
+
+export interface IssueThreadInteractionActorFields {
+  createdByAgentId?: string | null;
+  createdByUserId?: string | null;
+  resolvedByAgentId?: string | null;
+  resolvedByUserId?: string | null;
+}
+
+// --- suggest_tasks ---
+
+export interface SuggestedTaskDraft {
+  clientKey: string;
+  parentClientKey?: string | null;
+  parentId?: string | null;
+  title: string;
+  description?: string | null;
+  priority?: IssuePriority | null;
+  workMode?: IssueWorkMode | null;
+  assigneeAgentId?: string | null;
+  assigneeUserId?: string | null;
+  projectId?: string | null;
+  goalId?: string | null;
+  billingCode?: string | null;
+  labels?: string[];
+  hiddenInPreview?: boolean;
+}
+
+export interface SuggestTasksPayload {
+  version: 1;
+  defaultParentId?: string | null;
+  tasks: SuggestedTaskDraft[];
+}
+
+export interface SuggestTasksResultCreatedTask {
+  clientKey: string;
+  issueId: string;
+  identifier?: string | null;
+  title?: string | null;
+  parentIssueId?: string | null;
+  parentIdentifier?: string | null;
+}
+
+export interface SuggestTasksResult {
+  version: 1;
+  createdTasks?: SuggestTasksResultCreatedTask[];
+  skippedClientKeys?: string[];
+  rejectionReason?: string | null;
+}
+
+// --- ask_user_questions ---
+
+export interface AskUserQuestionsQuestionOption {
+  id: string;
+  label: string;
+  description?: string | null;
+}
+
+export interface AskUserQuestionsQuestion {
+  id: string;
+  prompt: string;
+  helpText?: string | null;
+  selectionMode: "single" | "multi";
+  required?: boolean;
+  options: AskUserQuestionsQuestionOption[];
+}
+
+export interface AskUserQuestionsPayload {
+  version: 1;
+  title?: string | null;
+  submitLabel?: string | null;
+  questions: AskUserQuestionsQuestion[];
+}
+
+export interface AskUserQuestionsAnswer {
+  questionId: string;
+  optionIds: string[];
+  otherText?: string | null;
+}
+
+export interface AskUserQuestionsResult {
+  version: 1;
+  answers: AskUserQuestionsAnswer[];
+  cancelled?: true;
+  cancellationReason?: string | null;
+  summaryMarkdown?: string | null;
+}
+
+// --- request_confirmation / request_checkbox_confirmation ---
+
+export interface RequestConfirmationIssueDocumentTarget {
+  type: "issue_document";
+  issueId?: string | null;
+  documentId?: string | null;
+  key: string;
+  revisionId: string;
+  revisionNumber?: number | null;
+  label?: string | null;
+  href?: string | null;
+}
+
+export interface RequestConfirmationCustomTarget {
+  type: "custom";
+  key: string;
+  revisionId?: string | null;
+  revisionNumber?: number | null;
+  label?: string | null;
+  href?: string | null;
+}
+
+export type RequestConfirmationTarget =
+  | RequestConfirmationIssueDocumentTarget
+  | RequestConfirmationCustomTarget;
+
+export interface RequestConfirmationPayload {
+  version: 1;
+  prompt: string;
+  acceptLabel?: string | null;
+  rejectLabel?: string | null;
+  rejectRequiresReason?: boolean;
+  rejectReasonLabel?: string | null;
+  allowDeclineReason?: boolean;
+  declineReasonPlaceholder?: string | null;
+  detailsMarkdown?: string | null;
+  supersedeOnUserComment?: boolean;
+  target?: RequestConfirmationTarget | null;
+}
+
+export interface RequestCheckboxConfirmationOption {
+  id: string;
+  label: string;
+  description?: string | null;
+}
+
+export interface RequestCheckboxConfirmationPayload {
+  version: 1;
+  prompt: string;
+  detailsMarkdown?: string | null;
+  options: RequestCheckboxConfirmationOption[];
+  defaultSelectedOptionIds?: string[];
+  minSelected?: number;
+  maxSelected?: number | null;
+  acceptLabel?: string | null;
+  rejectLabel?: string | null;
+  rejectRequiresReason?: boolean;
+  rejectReasonLabel?: string | null;
+  allowDeclineReason?: boolean;
+  declineReasonPlaceholder?: string | null;
+  supersedeOnUserComment?: boolean;
+  target?: RequestConfirmationTarget | null;
+}
+
+export interface RequestConfirmationResult {
+  version: 1;
+  outcome: "accepted" | "rejected" | "superseded_by_comment" | "stale_target";
+  reason?: string | null;
+  commentId?: string | null;
+  staleTarget?: RequestConfirmationTarget | null;
+}
+
+export interface RequestCheckboxConfirmationResult
+  extends RequestConfirmationResult {
+  selectedOptionIds?: string[];
+}
+
+// --- the discriminated union ---
+
+export interface IssueThreadInteractionBase
+  extends IssueThreadInteractionActorFields {
+  id: string;
+  companyId: string;
+  issueId: string;
+  kind: IssueThreadInteractionKind;
+  idempotencyKey?: string | null;
+  sourceCommentId?: string | null;
+  sourceRunId?: string | null;
+  title?: string | null;
+  summary?: string | null;
+  status: IssueThreadInteractionStatus;
+  continuationPolicy: IssueThreadInteractionContinuationPolicy;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+  resolvedAt?: Date | string | null;
+}
+
+export interface SuggestTasksInteraction extends IssueThreadInteractionBase {
+  kind: "suggest_tasks";
+  payload: SuggestTasksPayload;
+  result?: SuggestTasksResult | null;
+}
+
+export interface AskUserQuestionsInteraction
+  extends IssueThreadInteractionBase {
+  kind: "ask_user_questions";
+  payload: AskUserQuestionsPayload;
+  result?: AskUserQuestionsResult | null;
+}
+
+export interface RequestConfirmationInteraction
+  extends IssueThreadInteractionBase {
+  kind: "request_confirmation";
+  payload: RequestConfirmationPayload;
+  result?: RequestConfirmationResult | null;
+}
+
+export interface RequestCheckboxConfirmationInteraction
+  extends IssueThreadInteractionBase {
+  kind: "request_checkbox_confirmation";
+  payload: RequestCheckboxConfirmationPayload;
+  result?: RequestCheckboxConfirmationResult | null;
+}
+
+export type IssueThreadInteraction =
+  | SuggestTasksInteraction
+  | AskUserQuestionsInteraction
+  | RequestConfirmationInteraction
+  | RequestCheckboxConfirmationInteraction;
+
+export type IssueThreadInteractionPayload =
+  | SuggestTasksPayload
+  | AskUserQuestionsPayload
+  | RequestConfirmationPayload
+  | RequestCheckboxConfirmationPayload;
+
+export type IssueThreadInteractionResult =
+  | SuggestTasksResult
+  | AskUserQuestionsResult
+  | RequestConfirmationResult
+  | RequestCheckboxConfirmationResult;

@@ -10,6 +10,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
+import { useUser } from "@clerk/nextjs";
 import { Copy, EyeOff, MoreHorizontal, Trash2 } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { IssueHeader } from "./IssueHeader";
@@ -23,6 +24,8 @@ import { IssueAttachmentsSection } from "./IssueAttachmentsSection";
 import { IssueParentBreadcrumb } from "./IssueParentBreadcrumb";
 import { useIssueDetail } from "./hooks/useIssueDetail";
 import { useIssueMutations } from "./hooks/useIssueMutations";
+import { useIssueInteractions } from "./hooks/useIssueInteractions";
+import { useInteractionMutations } from "./hooks/useInteractionMutations";
 import { patchExecutionPolicy } from "./executionPolicy";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import {
@@ -157,7 +160,10 @@ function IssueDescription({
 
 export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
   const { issue, comments, isLoading, isError, error } = useIssueDetail(issueId);
+  const { interactions } = useIssueInteractions(issueId);
   const mutations = useIssueMutations();
+  const interactionMutations = useInteractionMutations();
+  const { user } = useUser();
   const router = useRouter();
   const { read } = useTeamsApi();
   const { data: agentsResp } = read<{ agents: CompanyAgent[] }>("/agents");
@@ -329,6 +335,23 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
             isLoading={isLoading}
             onSubmit={async (body) => {
               await mutations.addComment(issueId, body);
+            }}
+            interactions={interactions}
+            currentUserId={user?.id ?? null}
+            onAcceptInteraction={async (interaction, selectedClientKeys, selectedOptionIds) => {
+              const body: Record<string, unknown> = {};
+              if (selectedClientKeys) body.selectedClientKeys = selectedClientKeys;
+              if (selectedOptionIds) body.selectedOptionIds = selectedOptionIds;
+              await interactionMutations.accept(issueId, interaction.id, body);
+            }}
+            onRejectInteraction={async (interaction, reason) => {
+              await interactionMutations.reject(issueId, interaction.id, reason);
+            }}
+            onSubmitInteractionAnswers={async (interaction, answers) => {
+              await interactionMutations.respond(issueId, interaction.id, { answers });
+            }}
+            onCancelInteraction={async (interaction) => {
+              await interactionMutations.cancel(issueId, interaction.id);
             }}
           />
         </div>

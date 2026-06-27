@@ -6,6 +6,7 @@ from . import agents as _agents
 from . import approvals as _approvals
 from . import feed as _feed
 from . import inbox as _inbox
+from . import interactions as _interactions
 from . import issues as _issues
 from . import runs as _runs
 from . import settings as _settings_r
@@ -17,6 +18,7 @@ router.include_router(_agents.router)
 router.include_router(_inbox.router)
 router.include_router(_approvals.router)
 router.include_router(_issues.router)
+router.include_router(_interactions.router)
 router.include_router(_runs.router)
 router.include_router(_work.router)
 router.include_router(_feed.router)

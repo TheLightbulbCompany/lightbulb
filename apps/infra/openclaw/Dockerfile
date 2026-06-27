@@ -339,7 +339,13 @@ RUN set -eux; \
 # Vendored from the Paperclip skills-catalog at the 2026.6 (June) line, kept in
 # step with the deployed Paperclip backend in paperclip-version.json (NOT with
 # the @paperclipai/mcp-server bin baked above, which is unwired and pinned
-# separately). The skill drives Paperclip's REST API directly; each agent
+# separately). NOTE: this vendored copy carries a deliberate Isol8 write-path
+# customization — every API write goes through skills/paperclip/scripts/paperclip-api.sh
+# (jq-built, string-safe bodies) instead of hand-written jq/inline JSON, because
+# a model-emitted malformed body (e.g. `{body:}`) once silently failed a write
+# and stalled a prod run forever. When re-vendoring from upstream, re-apply that
+# helper mandate (see the SKILL.md header comment) rather than letting it revert.
+# The skill drives Paperclip's REST API directly; each agent
 # authenticates with its OWN company-scoped key, loaded from a per-agent
 # workspace file (~/.openclaw/workspaces/{agent_id}/paperclip-claimed-api-key.json,
 # staged at provision — see core/services/{paperclip_api_key,friday_identity}).

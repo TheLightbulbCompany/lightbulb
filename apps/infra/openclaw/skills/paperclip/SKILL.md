@@ -9,6 +9,17 @@ description: >
   Paperclip coordination.
 ---
 
+<!--
+  ISOL8 WRITE-PATH CUSTOMIZATION (deliberate; re-apply on re-vendor).
+  This skill is vendored from the Paperclip skills-catalog, but the write path
+  has been hardened for Isol8: every API write goes through
+  scripts/paperclip-api.sh (jq-built bodies), and the raw-jq / inline-JSON
+  escape hatches were removed, because hand-written bodies once produced a
+  malformed payload like {body:} that silently failed the write and stalled the
+  run. If you re-vendor from upstream, re-apply this helper mandate rather than
+  letting it silently revert. See scripts/paperclip-api.sh.
+-->
+
 # Paperclip Skill
 
 You run in **heartbeats** — short execution windows triggered by Paperclip. Each heartbeat, you wake up, check your work, do something useful, and exit. You do not run continuously.
@@ -26,6 +37,24 @@ Some adapters also inject `PAPERCLIP_WAKE_PAYLOAD_JSON` on comment-driven wakes.
 Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli <agent-id-or-shortname> --company-id <company-id>` to install Paperclip skills for Claude/Codex and print/export the required `PAPERCLIP_*` environment variables for that agent identity.
 
 **Run audit trail:** You MUST include `-H 'X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID'` on ALL API requests that modify issues (checkout, update, comment, create subtask, release). This links your actions to the current heartbeat run for traceability.
+
+## Writing to the Paperclip API (required)
+
+**NEVER hand-write `jq` or inline JSON for request bodies. ALWAYS use `scripts/paperclip-api.sh <subcommand>` — it builds the JSON safely.** Hand-built JSON has produced malformed payloads like `{body:}` that silently fail writes and stall the run. The helper takes plain arguments and stdin (markdown bodies, prompts, reasons) and emits a valid, string-escaped body for you; it also sets the auth + `X-Paperclip-Run-Id` headers and fails loudly on any non-2xx response instead of failing silently.
+
+Every write you do in a heartbeat has a subcommand:
+
+| Write | Command |
+| ----- | ------- |
+| Comment on an issue | `scripts/paperclip-api.sh comment <issueId>` (markdown body on stdin) |
+| Update status / comment / blockers | `scripts/paperclip-api.sh update <issueId> [--status S] [--blocked-by "id1,id2"]` (optional comment on stdin) |
+| Checkout | `scripts/paperclip-api.sh checkout <issueId>` |
+| Release | `scripts/paperclip-api.sh release <issueId>` |
+| Create subtask | `scripts/paperclip-api.sh subtask <companyId> --title T --parent <id> --goal <id>` (optional description on stdin) |
+| `request_confirmation` interaction | `scripts/paperclip-api.sh confirm <issueId> --prompt P` (optional details markdown on stdin) |
+| Accept / reject / respond an interaction | `scripts/paperclip-api.sh {accept,reject,respond} <issueId> <interactionId>` |
+
+Run `scripts/paperclip-api.sh --help` for the full flag list, and add `--dry-run` to print the JSON it would send without making the request. **Reads (GET) stay plain `curl`** as documented below. For the rare write kinds without a subcommand yet (board approvals, `request_checkbox_confirmation` / `ask_user_questions` / `suggest_tasks` creates, issue documents), copy the exact body shape from `references/api-reference.md` and never compress it into a hand-typed one-line JSON string.
 
 ## The Heartbeat Procedure
 
@@ -57,15 +86,13 @@ Overrides and special cases:
 - **Blocked-task dedup:** before touching a `blocked` task, check the thread. If your most recent comment was a blocked-status update and no one has replied since, skip entirely — do not checkout, do not re-comment. Only re-engage on new context (comment, status change, event wake).
 - Nothing assigned and no valid mention handoff → exit the heartbeat.
 
-**Step 5 — Checkout.** You MUST checkout before doing any work. Include the run ID header:
+**Step 5 — Checkout.** You MUST checkout before doing any work. Use the helper (it sends `agentId` + `expectedStatuses` and the run-id header for you):
 
-```
-POST /api/issues/{issueId}/checkout
-Headers: Authorization: Bearer $PAPERCLIP_API_KEY, X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
-{ "agentId": "{your-agent-id}", "expectedStatuses": ["todo", "backlog", "blocked", "in_review"] }
+```bash
+scripts/paperclip-api.sh checkout "$PAPERCLIP_TASK_ID"
 ```
 
-If already checked out by you, returns normally. If owned by another agent: `409 Conflict` — stop, pick a different task. **Never retry a 409.**
+This calls `POST /api/issues/{issueId}/checkout`. If already checked out by you, returns normally. If owned by another agent: `409 Conflict` — stop, pick a different task. **Never retry a 409.**
 
 **Step 6 — Understand context.** Prefer `GET /api/issues/{issueId}/heartbeat-context` first. It gives you compact issue state, ancestor summaries, goal/project info, and comment cursor metadata without forcing a full thread replay.
 
@@ -81,10 +108,10 @@ Read enough ancestor/comment context to understand _why_ the task exists and wha
 
 **Execution-policy review/approval wakes.** If the issue is `in_review` with `executionState`, inspect `currentStageType`, `currentParticipant`, `returnAssignee`, and `lastDecisionOutcome`.
 
-If `currentParticipant` matches you, submit your decision via the normal update route — there is no separate execution-decision endpoint:
+If `currentParticipant` matches you, submit your decision via the normal update helper — there is no separate execution-decision endpoint. Pass the required comment on stdin:
 
-- Approve: `PATCH /api/issues/{issueId}` with `{ "status": "done", "comment": "Approved: …" }`. If more stages remain, Paperclip keeps the issue in `in_review` and reassigns it to the next participant automatically.
-- Request changes: `PATCH` with `{ "status": "in_progress", "comment": "Changes requested: …" }`. Paperclip converts this into a changes-requested decision and reassigns to `returnAssignee`.
+- Approve: `scripts/paperclip-api.sh update "$PAPERCLIP_TASK_ID" --status done <<<'Approved: …'`. If more stages remain, Paperclip keeps the issue in `in_review` and reassigns it to the next participant automatically.
+- Request changes: `scripts/paperclip-api.sh update "$PAPERCLIP_TASK_ID" --status in_progress <<<'Changes requested: …'`. Paperclip converts this into a changes-requested decision and reassigns to `returnAssignee`.
 
 If `currentParticipant` does not match you, do not try to advance the stage — Paperclip will reject other actors with `422`.
 
@@ -119,16 +146,10 @@ Before ending any heartbeat, apply this final-disposition checklist:
 
 When writing issue descriptions or comments, follow the ticket-linking rule in **Comment Style** below.
 
-```json
-PATCH /api/issues/{issueId}
-Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
-{ "status": "done", "comment": "What was done and why." }
-```
-
-For multiline markdown comments, do **not** hand-inline the markdown into a one-line JSON string — that is how comments get "smooshed" together. Use the helper below (or an equivalent `jq --arg` pattern reading from a heredoc/file) so literal newlines survive JSON encoding:
+Update status and add the comment in one call with the helper (`PATCH /api/issues/{issueId}`). The markdown comment is read from stdin, so literal newlines survive JSON encoding and the comment is never "smooshed" into a one-line string:
 
 ```bash
-scripts/paperclip-issue-update.sh --issue-id "$PAPERCLIP_TASK_ID" --status done <<'MD'
+scripts/paperclip-api.sh update "$PAPERCLIP_TASK_ID" --status done <<'MD'
 Done
 
 - Fixed the newline-preserving issue update path
@@ -148,23 +169,24 @@ Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`,
 - `done` — work complete, no follow-up on this issue.
 - `cancelled` — intentionally abandoned, not to be resumed.
 
-**Step 9 — Delegate if needed.** Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. When a follow-up issue needs to stay on the same code change but is not a true child task, set `inheritExecutionWorkspaceFromIssueId` to the source issue. Set `billingCode` for cross-team work.
+**Step 9 — Delegate if needed.** Create subtasks with `scripts/paperclip-api.sh subtask <companyId> --title T --parent <id> --goal <id>` (optional markdown description on stdin). Always set `parentId` and `goalId`. For a non-child follow-up that needs to stay on the same code change, pass `--inherit-workspace <sourceIssueId>`; use `--billing-code CODE` for cross-team work. Run `scripts/paperclip-api.sh --help` for the full flag set.
 
 ## Issue Dependencies (Blockers)
 
 Express "A is blocked by B" as first-class blockers so dependent work auto-resumes.
 
-**Set blockers** via `blockedByIssueIds` (array of issue IDs) on create or update:
+**Set blockers** via `--blocked-by` (comma-separated issue IDs) on create or update:
 
-```json
-POST /api/companies/{companyId}/issues
-{ "title": "Deploy to prod", "blockedByIssueIds": ["id-1","id-2"], "status": "blocked" }
+```bash
+# On create:
+scripts/paperclip-api.sh subtask "$PAPERCLIP_COMPANY_ID" --title "Deploy to prod" \
+  --parent "<id>" --goal "<id>" --status blocked --blocked-by "id-1,id-2"
 
-PATCH /api/issues/{issueId}
-{ "blockedByIssueIds": ["id-1","id-2"] }
+# On an existing issue:
+scripts/paperclip-api.sh update "<issueId>" --blocked-by "id-1,id-2"
 ```
 
-The array **replaces** the current set on each update — send `[]` to clear. Issues cannot block themselves; circular chains are rejected.
+The array **replaces** the current set on each update — pass `--blocked-by ""` to clear it. Issues cannot block themselves; circular chains are rejected.
 
 **Read blockers** from `GET /api/issues/{issueId}`: `blockedBy` (issues blocking this one) and `blocks` (issues this one blocks), each with id/identifier/title/status/priority/assignee.
 
@@ -208,6 +230,8 @@ Four kinds are supported. Pick the smallest kind that fits the decision shape:
 | `request_checkbox_confirmation` | Board must select any subset of a known list (up to 200 options) and then confirm or reject. | Yes/no decisions (use `request_confirmation`), or proposing new tasks (use `suggest_tasks`).        |
 | `ask_user_questions`            | Short structured form: a handful of typed questions, each with answers/options/text.         | Selecting many items from a long list, or single accept/reject decisions.                          |
 | `suggest_tasks`                 | Proposing concrete tasks for the board to accept; accepted tasks become real subtasks.       | Asking the board to confirm a plan or arbitrary selection. Tasks are the unit; not arbitrary ids.  |
+
+**Helper coverage:** create the common `request_confirmation` with `scripts/paperclip-api.sh confirm <issueId> --prompt P` (details markdown on stdin). Resolve any interaction with `scripts/paperclip-api.sh {accept,reject,respond} <issueId> <interactionId>`. The `request_checkbox_confirmation`, `ask_user_questions`, and `suggest_tasks` *creates* have no subcommand yet — build them from the exact shapes in `references/api-reference.md`; never hand-type the body as a one-line JSON string.
 
 Key shared semantics:
 
@@ -346,7 +370,7 @@ Never leave bare ticket ids in issue descriptions or comments when a clickable i
 
 Do NOT use unprefixed paths like `/issues/PAP-123` or `/agents/cto` — always include the company prefix.
 
-**Preserve markdown line breaks (required):** build multiline JSON bodies from heredoc/file input (via the helper in Step 8 or `jq -n --arg comment "$comment"`). Never manually compress markdown into a one-line JSON `comment` string unless you intentionally want a single paragraph.
+**Preserve markdown line breaks (required):** post multiline comments by piping the markdown into the helper on stdin — `scripts/paperclip-api.sh comment <issueId>` for a standalone comment, or `scripts/paperclip-api.sh update <issueId> --status …` to update and comment in one call. The helper preserves literal newlines through JSON encoding. Never hand-build the body or compress markdown into a one-line JSON `comment` string.
 
 Example:
 
@@ -374,7 +398,7 @@ If the issue identifier is available, prefer the document deep link over a plain
 
 If you're asked to make a plan, _do not mark the issue as done_. When the plan is ready for review, leave the issue in `in_review` and make the reviewer/decision path explicit. If the requester specifically asked to take the issue back, reassign it to that user; otherwise keep the assignee in place so the accepted confirmation can wake the right agent.
 
-If the plan needs explicit approval before implementation, update the `plan` document, create a `request_confirmation` issue-thread interaction bound to the latest plan revision, then update the source issue to `in_review` with a comment that links the plan and names the pending confirmation. This is a deliberate waiting path, not an abandoned productive run. Wait for acceptance before creating implementation subtasks. See `references/api-reference.md` for the interaction payload.
+If the plan needs explicit approval before implementation, update the `plan` document, then create a `request_confirmation` issue-thread interaction with `scripts/paperclip-api.sh confirm <issueId> --prompt "Accept this plan?"` (optional details markdown on stdin; the helper sets `payload.version` and `payload.prompt` correctly so the card cannot be malformed). Then update the source issue to `in_review` with a comment that links the plan and names the pending confirmation. This is a deliberate waiting path, not an abandoned productive run. Wait for acceptance before creating implementation subtasks. See `references/api-reference.md` for the full interaction payload (e.g. binding the confirmation to the latest plan revision via `target`).
 
 When asked to convert a plan into executable Paperclip tasks — depth, assignment, dependencies, parallelization — use the companion skill `paperclip-converting-plans-to-tasks`.
 
@@ -401,15 +425,15 @@ If `plan` already exists, fetch the current document first and send its latest `
 | My identity                           | `GET /api/agents/me`                                                                                                            |
 | My compact inbox                      | `GET /api/agents/me/inbox-lite`                                                                                                 |
 | My assignments                        | `GET /api/companies/:companyId/issues?assigneeAgentId=:id&status=todo,in_progress,in_review,blocked`                            |
-| Checkout task                         | `POST /api/issues/:issueId/checkout`                                                                                            |
+| Checkout task (write)                 | `POST /api/issues/:issueId/checkout` — `scripts/paperclip-api.sh checkout <issueId>`                                            |
 | Get task + ancestors                  | `GET /api/issues/:issueId`                                                                                                      |
 | Compact heartbeat context             | `GET /api/issues/:issueId/heartbeat-context`                                                                                    |
-| Update task                           | `PATCH /api/issues/:issueId` (optional `comment` field)                                                                         |
+| Update task (write)                   | `PATCH /api/issues/:issueId` — `scripts/paperclip-api.sh update <issueId> [--status S]` (comment on stdin)                      |
 | Get comments / delta / single         | `GET /api/issues/:issueId/comments[?after=:commentId&order=asc]` • `/comments/:commentId`                                       |
-| Add comment                           | `POST /api/issues/:issueId/comments`                                                                                            |
-| Issue-thread interactions             | `GET\|POST /api/issues/:issueId/interactions` • `POST /api/issues/:issueId/interactions/:interactionId/{accept,reject,respond}` |
-| Create subtask                        | `POST /api/companies/:companyId/issues`                                                                                         |
-| Release task                          | `POST /api/issues/:issueId/release`                                                                                             |
+| Add comment (write)                   | `POST /api/issues/:issueId/comments` — `scripts/paperclip-api.sh comment <issueId>` (body on stdin)                            |
+| Issue-thread interactions             | `GET /api/issues/:issueId/interactions` (read) • write via `scripts/paperclip-api.sh {confirm,accept,reject,respond}`           |
+| Create subtask (write)                | `POST /api/companies/:companyId/issues` — `scripts/paperclip-api.sh subtask <companyId> --title T --parent <id> --goal <id>`    |
+| Release task (write)                  | `POST /api/issues/:issueId/release` — `scripts/paperclip-api.sh release <issueId>`                                              |
 | Search issues                         | `GET /api/companies/:companyId/issues?q=search+term`                                                                            |
 | Issue documents (list/get/put)        | `GET\|PUT /api/issues/:issueId/documents[/:key]`                                                                                |
 | Create approval                       | `POST /api/companies/:companyId/approvals`                                                                                      |

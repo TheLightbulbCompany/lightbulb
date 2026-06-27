@@ -118,18 +118,121 @@ def detect_in_text(text: str, source: str) -> list[Hit]:
     return hits
 
 
-# Shell-level separators that chain independent commands. Splitting a command
-# value on these lets us see the tool AFTER a `cd x && tool` or `a; b` prefix,
-# not just the first head. `_NAME` + `_NON_TOOL_HEADS` reject any junk a split
-# through a quoted/JSON arg might produce.
-_SEGMENT_SPLIT = re.compile(r"\|\||&&|[|;]")
+# JS/TS keywords that show up as the first token of an inline script body
+# (`node -e 'const x = …'`, `return foo()`). They are never tool/plugin names,
+# so they're rejected as command heads even if a split somehow exposes them.
+_JS_KEYWORDS = frozenset(
+    {
+        "const",
+        "let",
+        "var",
+        "return",
+        "try",
+        "catch",
+        "typeof",
+        "for",
+        "new",
+        "if",
+        "else",
+        "while",
+        "function",
+        "async",
+        "await",
+        "do",
+        "switch",
+        "case",
+        "break",
+        "continue",
+        "throw",
+        "yield",
+        "delete",
+        "void",
+        "in",
+        "of",
+        "instanceof",
+        "class",
+        "this",
+        "super",
+        "import",
+        "export",
+        "default",
+        "from",
+        "null",
+        "true",
+        "false",
+        "undefined",
+    }
+)
+
+
+def _split_top_level(command: str) -> list[str]:
+    """Split a command line on the shell chain separators ``||``, ``&&``, ``|``,
+    and ``;`` — but ONLY at quote-depth 0.
+
+    The whole point is that an inline script passed to a runner with ``-e`` /
+    ``-c`` is a SINGLE quoted argument, NOT a chain of shell commands:
+    ``node -e 'const a=1; foo(); process.exit()'`` is one ``node`` invocation
+    whose ``;`` (and any ``|``) are JavaScript/Python syntax living inside the
+    quotes. A naive regex split on ``;``/``|`` cuts through that quoted body and
+    hands back ``const``/``process``/… as bogus "tool" heads. Tracking quote
+    state and splitting only outside quotes keeps the inline body intact, so its
+    head stays the runner (``node``/``python``, both plumbing heads we drop).
+
+    Walks char by char, toggling quote state on an unescaped ``'`` or ``"`` and
+    cutting only when not inside a quote. ``&`` alone is not a separator (only
+    ``&&`` is), matching the previous regex behaviour.
+    """
+    segments: list[str] = []
+    buf: list[str] = []
+    quote: str | None = None
+    i = 0
+    n = len(command)
+    while i < n:
+        ch = command[i]
+        if quote is not None:
+            buf.append(ch)
+            if ch == "\\" and i + 1 < n:
+                # Escaped char can't close the quote — keep it verbatim.
+                buf.append(command[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            buf.append(ch)
+            i += 1
+            continue
+        if ch == "|":
+            # `||` or a bare `|` — both chain commands at the shell level.
+            segments.append("".join(buf))
+            buf = []
+            i += 2 if (i + 1 < n and command[i + 1] == "|") else 1
+            continue
+        if ch == "&" and i + 1 < n and command[i + 1] == "&":
+            segments.append("".join(buf))
+            buf = []
+            i += 2
+            continue
+        if ch == ";":
+            segments.append("".join(buf))
+            buf = []
+            i += 1
+            continue
+        buf.append(ch)
+        i += 1
+    segments.append("".join(buf))
+    return segments
 
 
 def _tool_heads(command: str) -> list[str]:
     """Buyer-relevant tools a command line invokes via DIRECT CLI form, e.g.
     ``gog.gmail.search --query …`` → ``gog`` and ``cd /app && inbox list`` →
-    ``inbox``. Splits on shell separators (``|``, ``&&``, ``;``) and returns the
-    head of each segment.
+    ``inbox``. Splits on shell separators (``|``, ``&&``, ``;``) — quote-aware,
+    so an inline ``node -e '…;…'`` script body is one segment, not chopped on the
+    ``;`` inside its quotes — and returns the head of each segment.
 
     Skips execution plumbing (``openclaw.invoke``, ``exec``, shell runners):
     ``--tool`` already captures the wrapped tool and curl/wget hosts are caught
@@ -137,12 +240,16 @@ def _tool_heads(command: str) -> list[str]:
     (``gog.gmail.search`` is the ``gog`` plugin).
     """
     heads: list[str] = []
-    for segment in _SEGMENT_SPLIT.split(command):
+    for segment in _split_top_level(command):
         stripped = segment.strip().lstrip("(")
         if not stripped:
             continue
         head = stripped.split(maxsplit=1)[0].split(".", 1)[0]
-        if head and head not in _NON_TOOL_HEADS and _NAME.match(head):
+        # Reject plumbing heads, JS/TS keywords, single chars, and non-identifier
+        # junk. The keyword/short-name guard is defense-in-depth: the quote-aware
+        # split already keeps an inline script body whole, but should a split ever
+        # leak a script token we don't want `const`/`let`/`x` posing as a tool.
+        if head and len(head) >= 2 and head not in _NON_TOOL_HEADS and head not in _JS_KEYWORDS and _NAME.match(head):
             heads.append(head)
     return heads
 

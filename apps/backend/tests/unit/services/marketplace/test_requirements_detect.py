@@ -187,6 +187,61 @@ def test_scan_files_scopes_to_shipped(tmp_path):
     assert "gog" not in tools  # dropped.lobster not in the shipped list → not scanned
 
 
+def test_inline_node_script_body_yields_no_keyword_tools(tmp_path):
+    """An inline `node -e '…'` script body is a single quoted arg, not a chain of
+    shell commands — its `;`-separated JS statements must NOT surface as tools."""
+    from pathlib import Path
+
+    p = tmp_path / "pipelines" / "script.lobster"
+    p.parent.mkdir(parents=True)
+    p.write_text(
+        "steps:\n  - command: >-\n      node -e 'const q=t;const b=c;process.stdout.write(x)'\n",
+        encoding="utf-8",
+    )
+    tools = {h.value for h in detect_in_tree(Path(tmp_path)) if h.kind == "tool"}
+    # None of the JS keywords / var names inside the quoted body leak as tools.
+    assert not (tools & {"const", "b", "process", "x"})
+    # `node` is plumbing, never a tool dep.
+    assert "node" not in tools
+
+
+def test_inline_script_keeps_legit_dotted_head(tmp_path):
+    """A direct-CLI dotted head (gog.gmail.search) still resolves to its plugin."""
+    from pathlib import Path
+
+    p = tmp_path / "pipelines" / "mail.lobster"
+    p.parent.mkdir(parents=True)
+    p.write_text("steps:\n  - command: gog.gmail.search --query foo\n", encoding="utf-8")
+    tools = {h.value for h in detect_in_tree(Path(tmp_path)) if h.kind == "tool"}
+    assert "gog" in tools
+
+
+def test_inline_script_keeps_chained_bare_head(tmp_path):
+    """A bare command head after a `cd x && ` prefix still resolves."""
+    from pathlib import Path
+
+    p = tmp_path / "pipelines" / "chain.lobster"
+    p.parent.mkdir(parents=True)
+    p.write_text("steps:\n  - command: cd /app && inbox list\n", encoding="utf-8")
+    tools = {h.value for h in detect_in_tree(Path(tmp_path)) if h.kind == "tool"}
+    assert "inbox" in tools
+    assert "cd" not in tools
+
+
+def test_quote_aware_split_ignores_separators_inside_quotes(tmp_path):
+    """A `;` inside a quoted arg is not a shell separator, so the token after it
+    (`b`) must not become a tool head; the real pipe to `jq` still splits."""
+    from pathlib import Path
+
+    p = tmp_path / "pipelines" / "quoted.lobster"
+    p.parent.mkdir(parents=True)
+    p.write_text("steps:\n  - command: echo 'a;b' | jq\n", encoding="utf-8")
+    tools = {h.value for h in detect_in_tree(Path(tmp_path)) if h.kind == "tool"}
+    assert "b" not in tools
+    assert "jq" not in tools  # jq is plumbing
+    assert "echo" not in tools
+
+
 def test_identify_service_host_and_env():
     assert identify_service(Hit("host", "production.plaid.com", "s")) == ("plaid", "Plaid")
     assert identify_service(Hit("host", "api.perplexity.ai", "s")) == ("perplexity", "Perplexity")

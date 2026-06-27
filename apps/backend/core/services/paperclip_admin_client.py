@@ -1157,6 +1157,115 @@ class PaperclipAdminClient:
             session_cookie=session_cookie,
         )
 
+    # ------------------------------------------------------------------
+    # Issue-thread interactions
+    #
+    # The resolution routes (accept / reject / respond / cancel) are
+    # board-only (agents are 403'd) and company-scoped against the SESSION
+    # ACTOR upstream. They MUST be called with the caller's per-user
+    # Paperclip session cookie (``ctx.session_cookie``), NOT an
+    # instance-admin cookie — an admin cookie would bypass the upstream
+    # company scope and reach any tenant's interaction (cross-tenant IDOR).
+    # ------------------------------------------------------------------
+
+    async def list_issue_interactions(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+    ) -> list | dict:
+        """List the thread interactions for an issue.
+
+        Maps to ``GET /api/issues/{issueId}/interactions`` (issue-scoped).
+        Upstream returns a bare JSON array of interaction objects.
+        """
+        return await self._get(
+            f"/api/issues/{issue_id}/interactions",
+            session_cookie=session_cookie,
+        )
+
+    async def accept_interaction(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+        interaction_id: str,
+        body: dict,
+    ) -> dict:
+        """Accept a pending thread interaction.
+
+        Maps to ``POST /api/issues/{issueId}/interactions/{interactionId}/accept``.
+        Upstream's ``acceptIssueThreadInteractionSchema`` accepts optional
+        ``selectedClientKeys`` / ``selectedOptionIds``; an empty ``{}`` accepts
+        all/defaults. Board-only + company-scoped upstream (see class note).
+        """
+        return await self._post(
+            f"/api/issues/{issue_id}/interactions/{interaction_id}/accept",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
+    async def reject_interaction(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+        interaction_id: str,
+        body: dict,
+    ) -> dict:
+        """Reject a pending thread interaction.
+
+        Maps to ``POST /api/issues/{issueId}/interactions/{interactionId}/reject``.
+        Upstream's ``rejectIssueThreadInteractionSchema`` accepts an optional
+        ``reason``. Board-only + company-scoped upstream (see class note).
+        """
+        return await self._post(
+            f"/api/issues/{issue_id}/interactions/{interaction_id}/reject",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
+    async def respond_interaction(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+        interaction_id: str,
+        body: dict,
+    ) -> dict:
+        """Respond to an ``ask_user_questions`` thread interaction.
+
+        Maps to ``POST /api/issues/{issueId}/interactions/{interactionId}/respond``.
+        Upstream's ``respondIssueThreadInteractionSchema`` requires ``answers``
+        (an array of ``{questionId, optionIds, otherText?}``) plus an optional
+        ``summaryMarkdown``. Board-only + company-scoped upstream (see class note).
+        """
+        return await self._post(
+            f"/api/issues/{issue_id}/interactions/{interaction_id}/respond",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
+    async def cancel_interaction(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+        interaction_id: str,
+        body: dict,
+    ) -> dict:
+        """Cancel an ``ask_user_questions`` thread interaction.
+
+        Maps to ``POST /api/issues/{issueId}/interactions/{interactionId}/cancel``.
+        Upstream's ``cancelIssueThreadInteractionSchema`` accepts an optional
+        ``reason``. Board-only + company-scoped upstream (see class note).
+        """
+        return await self._post(
+            f"/api/issues/{issue_id}/interactions/{interaction_id}/cancel",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
     async def create_issue(
         self,
         *,

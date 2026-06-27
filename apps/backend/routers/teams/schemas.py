@@ -234,6 +234,77 @@ class RejectApprovalBody(_Strict):
     reason: str = Field(min_length=1, max_length=2000)
 
 
+# ---------------------------------------------------------------------------
+# Issue-thread interactions (accept / reject / respond / cancel)
+#
+# Whitelisted bodies for the board-only interaction resolution routes. As with
+# the approval bodies, ``extra="forbid"`` rejects any smuggled field (e.g.
+# ``adapterType``) with 422 at the FastAPI boundary. The snake_case attributes
+# alias to the camelCase shape upstream expects via ``_Strict``'s
+# ``to_camel`` generator — routers MUST forward with
+# ``model_dump(by_alias=True, exclude_none=True)``.
+# ---------------------------------------------------------------------------
+
+
+class AcceptInteractionBody(_Strict):
+    """Body for ``POST /teams/issues/{id}/interactions/{iid}/accept``.
+
+    Mirrors upstream ``acceptIssueThreadInteractionSchema``: both fields are
+    optional and an empty ``{}`` accepts all/defaults. ``selected_client_keys``
+    aliases to ``selectedClientKeys`` and ``selected_option_ids`` to
+    ``selectedOptionIds``.
+    """
+
+    selected_client_keys: Optional[list[str]] = Field(default=None, max_length=50)
+    selected_option_ids: Optional[list[str]] = Field(default=None, max_length=50)
+
+
+class RejectInteractionBody(_Strict):
+    """Body for ``POST /teams/issues/{id}/interactions/{iid}/reject``.
+
+    Mirrors upstream ``rejectIssueThreadInteractionSchema``: ``reason`` is
+    optional.
+    """
+
+    reason: Optional[str] = Field(default=None, max_length=4000)
+
+
+class InteractionAnswer(_Strict):
+    """A single answer in a ``respond`` body.
+
+    Mirrors upstream ``askUserQuestionsAnswerSchema``: ``question_id`` aliases
+    to ``questionId``, ``option_ids`` to ``optionIds``, ``other_text`` to
+    ``otherText``.
+    """
+
+    question_id: str = Field(min_length=1, max_length=120)
+    option_ids: list[str] = Field(max_length=20)
+    other_text: Optional[str] = Field(default=None, max_length=4000)
+
+
+class RespondInteractionBody(_Strict):
+    """Body for ``POST /teams/issues/{id}/interactions/{iid}/respond``
+    (``ask_user_questions`` only).
+
+    Mirrors upstream ``respondIssueThreadInteractionSchema``: ``answers`` is
+    required, ``summary_markdown`` (alias ``summaryMarkdown``) is optional.
+    """
+
+    answers: list[InteractionAnswer] = Field(max_length=20)
+    summary_markdown: Optional[str] = Field(default=None, max_length=20000)
+
+
+class CancelInteractionBody(_Strict):
+    """Body for ``POST /teams/issues/{id}/interactions/{iid}/cancel``
+    (``ask_user_questions`` only).
+
+    Mirrors upstream ``cancelIssueThreadInteractionSchema``: ``reason`` is
+    optional.
+    """
+
+    reason: Optional[str] = Field(default=None, max_length=4000)
+
+
 class PatchCompanySettingsBody(_Strict):
     """Tenant-safe subset of company PATCH. No instance settings, no
     branding overrides that affect other tenants, no adapter fields."""

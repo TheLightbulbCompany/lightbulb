@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import subprocess
 
 import httpx
@@ -9,12 +10,14 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
+from core.billing import bedrock_aip
 from core.config import settings
 from core.dynamodb import run_in_thread
 from core.repositories import google_accounts_repo, integrations_repo
 from core.services import config_patcher
 from core.services.credentials import (
     apply_connection,
+    aws_cfn,
     integration_secret_store,
     oauth_app_store,
     oauth_dance,
@@ -74,6 +77,18 @@ class PasteBody(BaseModel):
 class ByoAppRequest(BaseModel):
     client_id: str = Field(min_length=1, max_length=512)
     client_secret: str = Field(min_length=1, max_length=512)
+
+
+class AwsCompleteBody(BaseModel):
+    role_arn: str
+    region: str | None = None
+
+
+# A concrete IAM role ARN, capturing the 12-digit owning account. Deliberately
+# strict: no wildcards, no resource paths other than role/. The account capture
+# group is the confused-deputy guard — aws-complete rejects any ARN inside our
+# own account (bedrock_aip.OUR_ACCOUNT_ID) before granting sts:AssumeRole.
+_ROLE_ARN_RE = re.compile(r"^arn:aws:iam::(\d{12}):role/.+$")
 
 
 def _get_provider_or_404(provider: str) -> registry.Provider:
@@ -191,6 +206,124 @@ async def connect_paste(provider: str, body: PasteBody, auth: AuthContext = Depe
     return {"status": "connected", "provider": provider}
 
 
+@router.get("/{provider}/aws-setup")
+async def aws_setup(provider: str, auth: AuthContext = Depends(get_current_user)):
+    """Stage the AWS read-only connect: mint (or reuse) the per-owner STS
+    ExternalId and return everything the frontend needs to render the
+    CloudFormation quick-create flow. Does NOT mark the integration connected —
+    that is aws-complete's job, once the owner has stood up the cross-account
+    role and pasted its ARN back."""
+    require_org_admin(auth)
+    owner_id = resolve_owner_id(auth)
+    p = _get_provider_or_404(provider)
+    if p.acquisition != "aws_sts":
+        raise HTTPException(status_code=400, detail=f"{provider} is not an AWS STS integration")
+
+    # Reuse a previously-minted ExternalId so a repeated setup (or a half-finished
+    # connect) keeps the SAME id the owner already baked into their CloudFormation
+    # trust policy — minting a fresh one would silently break an already-created
+    # role's trust. The pending record is NOT a connected status: leave the
+    # integrations index untouched until aws-complete succeeds.
+    rec = await integration_secret_store.get(owner_id, "aws")
+    external_id = (rec or {}).get("external_id")
+    if not external_id:
+        external_id = aws_cfn.gen_external_id()
+        await integration_secret_store.put(owner_id, "aws", {"external_id": external_id})
+
+    principal_arn = aws_cfn.owner_task_role_arn(owner_id)
+    region = p.aws_sts.default_region
+
+    def _quick_create(policy_arn: str) -> str | None:
+        # The connector CFN template is unhosted until Plan 3, so there is no
+        # quick-create URL to build yet — return None rather than crash on a
+        # None template_url. The frontend/Plan 3 fills it in once hosted.
+        if not p.aws_sts.cfn_template_url:
+            return None
+        return aws_cfn.quick_create_url(
+            external_id=external_id,
+            principal_arn=principal_arn,
+            policy_arn=policy_arn,
+            region=region,
+            template_url=p.aws_sts.cfn_template_url,
+        )
+
+    return {
+        "external_id": external_id,
+        "principal_arn": principal_arn,
+        "our_account_id": bedrock_aip.OUR_ACCOUNT_ID,
+        "default_region": region,
+        "view_only": {
+            "policy_arn": p.aws_sts.view_only_policy_arn,
+            "quick_create_url": _quick_create(p.aws_sts.view_only_policy_arn),
+        },
+        "read_only": {
+            "policy_arn": p.aws_sts.read_only_policy_arn,
+            "quick_create_url": _quick_create(p.aws_sts.read_only_policy_arn),
+        },
+    }
+
+
+@router.post("/{provider}/aws-complete")
+async def aws_complete(provider: str, body: AwsCompleteBody, auth: AuthContext = Depends(get_current_user)):
+    """Finish the AWS read-only connect: the owner pastes back the ARN of the
+    cross-account role their CloudFormation stack created. We grant the per-owner
+    task role sts:AssumeRole on EXACTLY that ARN, materialize ~/.aws/config, and
+    mark the integration connected.
+
+    SECURITY: ``role_arn`` is owner-supplied, so it is validated HERE — before
+    any IAM grant — against two failure modes that would otherwise turn this into
+    a confused deputy:
+      * a malformed / wildcard ARN (the CDK boundary's broad sts:AssumeRole Allow
+        only denies our own account, so a wildcard that slips through could reach
+        arbitrary external accounts), and
+      * an ARN inside OUR OWN account (877352799272), which would point the grant
+        back at Isol8's own infrastructure.
+    The inline grant is scoped to the exact ARN; this validation is the gate that
+    keeps a bad ARN from ever being granted."""
+    require_org_admin(auth)
+    owner_id = resolve_owner_id(auth)
+    p = _get_provider_or_404(provider)
+    if p.acquisition != "aws_sts":
+        raise HTTPException(status_code=400, detail=f"{provider} is not an AWS STS integration")
+
+    role_arn = body.role_arn.strip()
+    match = _ROLE_ARN_RE.match(role_arn)
+    if not match:
+        raise HTTPException(status_code=400, detail="invalid role ARN")
+    if match.group(1) == bedrock_aip.OUR_ACCOUNT_ID:
+        raise HTTPException(status_code=400, detail="role must be in your own AWS account, not Isol8's")
+
+    rec = await integration_secret_store.get(owner_id, "aws")
+    if not rec or not rec.get("external_id"):
+        raise HTTPException(status_code=409, detail="run aws-setup first")
+
+    credential = {
+        "role_arn": role_arn,
+        "external_id": rec["external_id"],
+        "region": body.region or p.aws_sts.default_region,
+    }
+    # Overwrite the pending {external_id} record with the full credential
+    # (retained for reconcile, same as the paste flow). Then grant -> materialize
+    # -> mark connected, with the status row written ONLY after a clean grant +
+    # apply so the integration never reports a false "connected".
+    await integration_secret_store.put(owner_id, "aws", credential)
+    try:
+        await bedrock_aip.put_owner_aws_sts_policy(owner_id, [role_arn])
+        await apply_connection.apply_connection(owner_id, "aws", credential)
+        await integrations_repo.put_status(owner_id, "aws", "connected")
+    except Exception:
+        # Roll back every partial step so a failed connect leaves no IAM grant,
+        # no on-disk ~/.aws/config, and no retained secret.
+        await _remove_materialized_artifacts(owner_id, p, credential)
+        await bedrock_aip.delete_owner_aws_sts_policy(owner_id)
+        await integration_secret_store.delete(owner_id, "aws")
+        raise HTTPException(
+            status_code=502,
+            detail="failed to apply the AWS connection to your container; please retry",
+        )
+    return {"status": "connected", "provider": "aws"}
+
+
 async def _seed_identity_best_effort(owner_id: str, agent_id: str) -> None:
     """Re-seed an agent's IDENTITY.md gog-account block, swallowing failures.
 
@@ -284,6 +417,14 @@ async def disconnect(provider: str, account: str | None = None, auth: AuthContex
             # config_patcher via asyncio.run (mcp_oauth), which can't run on the
             # request loop. Matches the write path's run_in_thread offload.
             await run_in_thread(remover, owner_id, provider, cred)
+    # AWS read-only rail kill-switch: the aws_cli materializer already dropped
+    # ~/.aws/config above, but that only removes the on-disk profile — the
+    # per-owner task role still carries the "owner-aws-sts" inline grant. Tear it
+    # down so disconnect is a true kill-switch: the role can no longer assume the
+    # owner's cross-account role even if a stale config file lingered. Separate
+    # from the generic secret/status delete below.
+    if p.acquisition == "aws_sts":
+        await bedrock_aip.delete_owner_aws_sts_policy(owner_id)
     # Drop the retained secret (no-op for actor providers, which never stored
     # one) and the status row, then blank any per-agent openclaw.json slots.
     await integration_secret_store.delete(owner_id, provider)

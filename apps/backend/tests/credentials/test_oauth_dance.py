@@ -188,10 +188,12 @@ def fake_app_store(monkeypatch):
     async def _get(owner_id, provider):
         return store.get((owner_id, provider))
 
-    async def _put(owner_id, provider, *, client_id, client_secret, client_information=None):
+    async def _put(owner_id, provider, *, client_id, client_secret, client_information=None, scope=None):
         rec = {"client_id": client_id, "client_secret": client_secret}
         if client_information is not None:
             rec["client_information"] = client_information
+        if scope is not None:
+            rec["scope"] = scope
         store[(owner_id, provider)] = rec
         return "arn:secret"
 
@@ -243,6 +245,8 @@ async def test_start_registers_dcr_client_when_absent(monkeypatch, fake_app_stor
     assert cached["client_id"] == "dcr_cid"
     assert cached["client_secret"] == ""
     assert cached["client_information"]["token_endpoint_auth_method"] == "none"
+    # The requested scope is stored so start() can detect a later scope change.
+    assert cached["scope"] == "openid offline_access mcp"
 
     # The authorize URL uses the freshly registered client_id.
     q = parse_qs(urlsplit(url).query)
@@ -252,11 +256,14 @@ async def test_start_registers_dcr_client_when_absent(monkeypatch, fake_app_stor
 
 @pytest.mark.asyncio
 async def test_start_reuses_cached_dcr_client(monkeypatch, fake_app_store):
-    # A previously registered client must NOT trigger a second registration.
+    # A previously registered client with the SAME scope must NOT trigger a second
+    # registration.
     fake_app_store[("org_1", "attio")] = {
         "client_id": "existing_cid",
         "client_secret": "",
         "client_information": {"client_id": "existing_cid"},
+        # Matches attio's current registry scope list, so start() reuses it.
+        "scope": "openid offline_access mcp",
     }
 
     async def _fake_put_state(state, *, owner_id, provider, verifier, client_id=None):
@@ -276,6 +283,50 @@ async def test_start_reuses_cached_dcr_client(monkeypatch, fake_app_store):
     assert posts == []
     q = parse_qs(urlsplit(url).query)
     assert q["client_id"] == ["existing_cid"]
+
+
+@pytest.mark.asyncio
+async def test_start_reregisters_dcr_client_when_scope_changed(monkeypatch, fake_app_store):
+    # A cached client registered under an OLD scope set must be re-registered
+    # (overwritten) so authorize uses a client carrying the current scopes. This is
+    # the no-delete path that replaces clearing the secret on disconnect.
+    fake_app_store[("org_1", "attio")] = {
+        "client_id": "stale_cid",
+        "client_secret": "",
+        "client_information": {"client_id": "stale_cid"},
+        "scope": "openid offline_access",  # missing 'mcp' vs the current registry list
+    }
+
+    async def _fake_put_state(state, *, owner_id, provider, verifier, client_id=None):
+        pass
+
+    monkeypatch.setattr(oauth_dance.oauth_state_repo, "put", _fake_put_state)
+
+    posts = []
+
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"client_id": "fresh_cid", "redirect_uris": [REDIRECT], "token_endpoint_auth_method": "none"}
+
+    async def _fake_post(self, url, json=None, data=None, **kwargs):
+        posts.append((url, json))
+        return _Resp()
+
+    monkeypatch.setattr("httpx.AsyncClient.post", _fake_post)
+
+    url = await oauth_dance.start("org_1", "attio", redirect_uri=REDIRECT)
+
+    # Re-registration ran once, with the CURRENT scope, overwriting the cached client.
+    assert len(posts) == 1
+    assert posts[0][1]["scope"] == "openid offline_access mcp"
+    cached = fake_app_store[("org_1", "attio")]
+    assert cached["client_id"] == "fresh_cid"
+    assert cached["scope"] == "openid offline_access mcp"
+    q = parse_qs(urlsplit(url).query)
+    assert q["client_id"] == ["fresh_cid"]
 
 
 @pytest.mark.asyncio

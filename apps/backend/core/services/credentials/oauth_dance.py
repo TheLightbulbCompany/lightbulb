@@ -51,15 +51,17 @@ async def _register_dcr_client(owner_id: str, provider_key: str, p: registry.Pro
         resp = await http.post(p.oauth.registration_url, json=body)
     resp.raise_for_status()
     info = resp.json()
-    # Cache both the bare client_id/secret (what _oauth_client reads) and the full
+    # Cache the bare client_id/secret (what _oauth_client reads), the full
     # registration JSON (what the materializer writes as store.clientInformation),
-    # so a reconnect never re-registers and the SDK store stays bit-identical.
+    # and the scope this client was registered under (so start() can detect a scope
+    # change and re-register without deleting the secret).
     await oauth_app_store.put(
         owner_id,
         provider_key,
         client_id=info["client_id"],
         client_secret=info.get("client_secret") or "",
         client_information=info,
+        scope=body["scope"],
     )
     return info
 
@@ -87,11 +89,18 @@ async def start(owner_id: str, provider_key: str, *, redirect_uri: str) -> str:
     p = registry.get_provider(provider_key)
     if not p.oauth:
         raise ValueError(f"{provider_key} has no oauth spec")
-    # A DCR provider with no client yet registers one now, so authorize uses the
-    # registered client_id. BYO providers (no registration_url) skip this and rely
-    # on the owner's stored app — _oauth_client raises if it's missing.
-    if p.oauth.registration_url and not await oauth_app_store.get(owner_id, provider_key):
-        await _register_dcr_client(owner_id, provider_key, p, redirect_uri=redirect_uri)
+    # DCR providers register a public client on first connect, and RE-register
+    # (overwriting the cached one) whenever the requested scope set has changed since
+    # it was registered — the DCR registration body pins the scope, so a client
+    # registered under a stale scope list would cap the grant. We compare the stored
+    # scope and overwrite via put() rather than delete+recreate the secret, which
+    # would race AWS's async secret-name release on a quick reconnect. BYO providers
+    # (no registration_url) skip this and rely on the owner's stored app.
+    if p.oauth.registration_url:
+        cached = await oauth_app_store.get(owner_id, provider_key)
+        requested_scope = p.oauth.scope_separator.join(p.oauth.scopes)
+        if not (cached and cached.get("client_id")) or cached.get("scope") != requested_scope:
+            await _register_dcr_client(owner_id, provider_key, p, redirect_uri=redirect_uri)
     verifier, challenge = _pkce()
     state = secrets.token_urlsafe(32)
     # Resolve the client BEFORE persisting the state so the state records the exact

@@ -21,6 +21,29 @@ export function MarketplaceToast() {
     dismissToast();
   }
 
+  // Failure variant: a Hire that errored. No "Open in chat" (there's no
+  // agent), amber surface, manual dismiss.
+  if (toast.error) {
+    return (
+      <div
+        data-testid="toast-error"
+        role="alert"
+        className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[100] bg-[var(--danger)] text-white rounded-2xl px-5 py-3.5 shadow-xl"
+      >
+        <div className="flex items-center gap-3.5 text-sm">
+          <span>{toast.error}</span>
+          <button
+            type="button"
+            onClick={() => dismissToast()}
+            className="bg-white/20 hover:bg-white/30 px-3 py-1.5 rounded-full text-[12.5px] font-semibold"
+          >
+            Dismiss
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[100] bg-[#06402b] text-white rounded-2xl px-5 py-3.5 shadow-xl">
       <div className="flex items-center gap-3.5 text-sm">

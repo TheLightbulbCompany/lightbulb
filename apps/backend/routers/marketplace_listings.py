@@ -594,6 +594,12 @@ async def deploy_listing(
             listing.get("listing_id"),
             new_agent_id,
         )
+        # Unwind the container/EFS side effects (openclaw.json agent entry +
+        # on-EFS dirs) before deleting the Paperclip agent, so a failed Hire
+        # leaves no orphan in the buyer's container — the half-installed
+        # ``name=<uuid>`` ghost the incomplete rollback used to strand.
+        # Self-contained best-effort; never raises.
+        await catalog.unwind_partial_deploy(owner_id=owner_id, new_agent_id=new_agent_id)
         try:
             await delete_paperclip_for_marketplace(owner_id=owner_id, agent_id=new_agent_id)
         except Exception:

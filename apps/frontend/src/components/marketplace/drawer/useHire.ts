@@ -31,7 +31,8 @@ import type { Listing } from "@/lib/marketplace/types";
 export function useHire() {
   const { deploy } = useCatalog();
   const { refresh: refreshAgents } = useAgents();
-  const { close, showInstallToast, setFreshlyInstalled } = useMarketplaceDrawer();
+  const { close, showInstallToast, showErrorToast, setFreshlyInstalled, markInstalled } =
+    useMarketplaceDrawer();
   const { getToken } = useAuth();
   const { user } = useUser();
   const [isHiring, setIsHiring] = useState(false);
@@ -52,6 +53,11 @@ export function useHire() {
           // (Paid listings deploy post-Stripe-return — reports_to support on
           // that path is a follow-up; all current listings are free.)
           const result = await deploy(listing.listing_id, reportsTo);
+          // Flip this listing's card to "Hired ✓" immediately. The catalog's
+          // own installedSlugs lags the deploy (sidecar → chokidar reload), so
+          // without this optimistic mark a buyer who re-opens the drawer right
+          // after hiring still sees "Hire" and can stack a duplicate install.
+          markInstalled(listing.slug);
           // Refresh the chat sidebar's agents.list cache BEFORE marking
           // freshly-installed, so the slide-in animation has a row to attach to.
           // useCatalog().deploy() only revalidates the marketplace catalog cache;
@@ -91,11 +97,28 @@ export function useHire() {
           });
           window.location.href = result.checkout_url;
         }
+      } catch {
+        // A failed deploy/checkout used to escape as an unhandled rejection,
+        // leaving the Hire dialog frozen mid-spinner ("the screen bugging
+        // out"). Surface it as a toast and keep the dialog open so the buyer
+        // can retry — the backend leaves no orphan on failure, so a retry is
+        // clean. The drawer is NOT closed here (only the success path closes).
+        showErrorToast(`Couldn't hire ${listing.name}. Please try again.`);
       } finally {
         setIsHiring(false);
       }
     },
-    [deploy, refreshAgents, close, showInstallToast, setFreshlyInstalled, getToken, user],
+    [
+      deploy,
+      refreshAgents,
+      close,
+      showInstallToast,
+      showErrorToast,
+      setFreshlyInstalled,
+      markInstalled,
+      getToken,
+      user,
+    ],
   );
 
   return { hire, isHiring };

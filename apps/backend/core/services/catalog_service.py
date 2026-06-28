@@ -32,6 +32,7 @@ Depends on injected collaborators so unit tests can mock them:
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import logging
 import uuid
@@ -283,15 +284,14 @@ class CatalogService:
                 systems share the same id. Defaults to a locally-generated
                 ``agent_<hex>`` UUID for direct callers.
 
-        Rollback posture (v0): no rollback. A failed step lets the
-        exception propagate. Partial state on EFS is functionally
-        invisible — orphans without a sidecar don't show in the
-        installed-templates UI, and they share no openclaw.json or
-        cron/jobs.json identity with anything else. A successful pair
-        followed by a later failure leaves a live in-memory agent that
-        the buyer can chat with; wiping its workspace files would
-        phantom it. Same posture as channel-binding deep-merges and
-        plugin entries elsewhere in the codebase — none are reversible.
+        Rollback posture: a failed step lets the exception propagate to
+        the caller, which is the marketplace deploy router — the owner of
+        the deploy transaction (it also mints + rolls back the Paperclip
+        agent). On failure it calls ``unwind_partial_deploy`` to remove
+        the openclaw.json ``agents.list`` entry and the on-EFS agent dirs
+        this method created, so a failed Hire leaves no orphan and the
+        buyer can cleanly retry. ``new_agent_id`` is the shared handle
+        that makes the unwind precise.
         """
         if new_agent_id is None:
             new_agent_id = f"agent_{uuid.uuid4().hex[:12]}"
@@ -498,6 +498,50 @@ class CatalogService:
             "acp_requested": acp_requested,
             "acp_enabled": acp_enabled,
         }
+
+    async def unwind_partial_deploy(self, owner_id: str, new_agent_id: str) -> None:
+        """Reverse the container/EFS side effects of a failed deploy.
+
+        Called by the marketplace deploy router when any post-Paperclip step
+        raises, so a failed Hire leaves no orphan agent in the buyer's
+        container. Removes the ``agents.list`` entry the deploy added to
+        openclaw.json (the container's ``agents.create`` may persist it even
+        when its RPC response is lost) and the on-EFS agent dirs the tarball
+        extract created.
+
+        Both operations are idempotent and best-effort: a missing entry / dir
+        is a no-op, and a failure here is logged but never raised — the
+        caller must surface the ORIGINAL deploy error, not a cleanup error.
+        Removing the openclaw.json entry lets the container's file watcher
+        drop the now-orphaned agent from memory on its next reload.
+        """
+        from core.services.config_patcher import remove_from_openclaw_config_list
+
+        try:
+            await remove_from_openclaw_config_list(
+                owner_id,
+                ["agents", "list"],
+                lambda entry: isinstance(entry, dict) and entry.get("id") == new_agent_id,
+            )
+        except Exception:
+            logger.exception(
+                "unwind_partial_deploy: failed to remove openclaw.json agent entry %s for %s",
+                new_agent_id,
+                owner_id,
+            )
+
+        try:
+            # cleanup_agent_dirs is sync (shutil.rmtree) over EFS-backed dirs
+            # that can be large enough to block the event loop and stall
+            # unrelated WS chat traffic, so run it on a worker thread — same
+            # posture as the agents.delete path in websocket_chat.py.
+            await asyncio.to_thread(self._workspace.cleanup_agent_dirs, owner_id, new_agent_id)
+        except Exception:
+            logger.exception(
+                "unwind_partial_deploy: failed to clean EFS dirs for agent %s owner %s",
+                new_agent_id,
+                owner_id,
+            )
 
     async def _maybe_enable_acp(self, owner_id: str, manifest: dict) -> bool:
         """Turn on the buyer container's ACP coding-harness runtime when the

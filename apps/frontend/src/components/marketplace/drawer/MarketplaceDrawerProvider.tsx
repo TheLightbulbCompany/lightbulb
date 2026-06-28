@@ -27,7 +27,16 @@ export interface DrawerState {
    * on view changes keeps a stale id from leaking back into the page. */
   detailListingId?: string | null;
   freshlyInstalledAgentId: string | null;
-  toast: { agentName: string; agentId: string; acpNote?: AcpNote } | null;
+  /** Slugs hired in THIS session, set synchronously on a successful Hire.
+   * The catalog's own ``installedSlugs`` lags a deploy (it derives from
+   * template sidecars that land via the container's chokidar reload), so
+   * BrowseView unions this optimistic overlay in — without it a buyer who
+   * re-opens the drawer right after hiring still sees "Hire" and can stack
+   * a duplicate install. */
+  installedSlugs: Set<string>;
+  /** ``error`` set ⇒ the toast renders its failure variant (no "Open in
+   * chat"). Success toasts leave it undefined. */
+  toast: { agentName: string; agentId: string; acpNote?: AcpNote; error?: string } | null;
 }
 
 export interface OpenOptions {
@@ -44,8 +53,13 @@ interface DrawerContextValue {
   startEditListing: (listing: Listing) => void;
   openListingDetail: (listingId: string) => void;
   showInstallToast: (toast: { agentName: string; agentId: string; acpNote?: AcpNote }) => void;
+  /** Surface a failed Hire. Without this a rejected deploy was an unhandled
+   * promise rejection — the dialog just froze ("the screen bugging out"). */
+  showErrorToast: (message: string) => void;
   dismissToast: () => void;
   setFreshlyInstalled: (agentId: string | null) => void;
+  /** Record a just-hired slug so its card flips to "Hired ✓" immediately. */
+  markInstalled: (slug: string) => void;
 }
 
 const Ctx = createContext<DrawerContextValue | null>(null);
@@ -54,6 +68,7 @@ const INITIAL: DrawerState = {
   isOpen: false,
   view: "browse",
   freshlyInstalledAgentId: null,
+  installedSlugs: new Set(),
   toast: null,
 };
 
@@ -135,12 +150,25 @@ export function MarketplaceDrawerProvider({ children }: { children: ReactNode })
     [],
   );
 
+  const showErrorToast = useCallback((message: string) => {
+    setState((prev) => ({ ...prev, toast: { agentName: "", agentId: "", error: message } }));
+  }, []);
+
   const dismissToast = useCallback(() => {
     setState((prev) => ({ ...prev, toast: null }));
   }, []);
 
   const setFreshlyInstalled = useCallback((agentId: string | null) => {
     setState((prev) => ({ ...prev, freshlyInstalledAgentId: agentId }));
+  }, []);
+
+  const markInstalled = useCallback((slug: string) => {
+    setState((prev) => {
+      if (prev.installedSlugs.has(slug)) return prev;
+      const next = new Set(prev.installedSlugs);
+      next.add(slug);
+      return { ...prev, installedSlugs: next };
+    });
   }, []);
 
   const value = useMemo<DrawerContextValue>(
@@ -152,8 +180,10 @@ export function MarketplaceDrawerProvider({ children }: { children: ReactNode })
       startEditListing,
       openListingDetail,
       showInstallToast,
+      showErrorToast,
       dismissToast,
       setFreshlyInstalled,
+      markInstalled,
     }),
     [
       state,
@@ -163,8 +193,10 @@ export function MarketplaceDrawerProvider({ children }: { children: ReactNode })
       startEditListing,
       openListingDetail,
       showInstallToast,
+      showErrorToast,
       dismissToast,
       setFreshlyInstalled,
+      markInstalled,
     ],
   );
 

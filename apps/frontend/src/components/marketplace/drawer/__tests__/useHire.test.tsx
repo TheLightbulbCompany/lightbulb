@@ -19,11 +19,16 @@ vi.mock("@/hooks/useAgents", () => ({
 }));
 
 const mockShowInstallToast = vi.fn();
+const mockShowErrorToast = vi.fn();
+const mockMarkInstalled = vi.fn();
+const mockClose = vi.fn();
 vi.mock("../MarketplaceDrawerProvider", () => ({
   useMarketplaceDrawer: () => ({
-    close: vi.fn(),
+    close: mockClose,
     showInstallToast: mockShowInstallToast,
+    showErrorToast: mockShowErrorToast,
     setFreshlyInstalled: vi.fn(),
+    markInstalled: mockMarkInstalled,
   }),
 }));
 
@@ -69,6 +74,9 @@ describe("useHire — ACP note mapping", () => {
     mockDeploy.mockReset();
     mockRefreshAgents.mockReset();
     mockShowInstallToast.mockReset();
+    mockShowErrorToast.mockReset();
+    mockMarkInstalled.mockReset();
+    mockClose.mockReset();
     mockRefreshAgents.mockResolvedValue(undefined);
   });
 
@@ -109,5 +117,43 @@ describe("useHire — ACP note mapping", () => {
         expect.objectContaining({ acpNote: undefined }),
       ),
     );
+  });
+});
+
+describe("useHire — reliability", () => {
+  beforeEach(() => {
+    mockDeploy.mockReset();
+    mockRefreshAgents.mockReset();
+    mockShowInstallToast.mockReset();
+    mockShowErrorToast.mockReset();
+    mockMarkInstalled.mockReset();
+    mockClose.mockReset();
+    mockRefreshAgents.mockResolvedValue(undefined);
+  });
+
+  it("marks the listing slug installed on a successful hire (stops re-click duplicates)", async () => {
+    mockDeploy.mockResolvedValue(deployResult());
+    const { result } = renderHook(() => useHire());
+    await act(async () => {
+      await result.current.hire(listing({ slug: "atlas" }));
+    });
+    await waitFor(() => expect(mockMarkInstalled).toHaveBeenCalledWith("atlas"));
+  });
+
+  it("surfaces an error toast and does NOT close the drawer when deploy rejects", async () => {
+    mockDeploy.mockRejectedValue(new Error("500 Internal Server Error"));
+    const { result } = renderHook(() => useHire());
+
+    // The hook swallows the rejection (no unhandled promise) — the drawer
+    // used to freeze mid-spinner instead.
+    await act(async () => {
+      await result.current.hire(listing({ name: "Atlas" }));
+    });
+
+    expect(mockShowErrorToast).toHaveBeenCalledWith(expect.stringContaining("Atlas"));
+    expect(mockShowInstallToast).not.toHaveBeenCalled();
+    expect(mockClose).not.toHaveBeenCalled();
+    // isHiring resets so the buyer can retry.
+    expect(result.current.isHiring).toBe(false);
   });
 });

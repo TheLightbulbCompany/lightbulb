@@ -700,3 +700,44 @@ async def test_deploy_acp_failure_does_not_abort(monkeypatch):
 
     ws.write_template_sidecar.assert_called_once()
     assert result["acp_enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_unwind_partial_deploy_removes_config_entry_and_efs_dirs(monkeypatch):
+    """A failed deploy's unwind must drop the openclaw.json agents.list entry
+    (matched by id) AND clean the on-EFS agent dirs, so no name=<uuid> ghost
+    is stranded in the buyer's container."""
+    svc, ws, _aux, _pair, _gw = _make_service()
+    removed = AsyncMock(return_value=None)
+    monkeypatch.setattr("core.services.config_patcher.remove_from_openclaw_config_list", removed)
+
+    await svc.unwind_partial_deploy("user_buyer", "agent_ghost")
+
+    removed.assert_awaited_once()
+    owner_arg, path_arg, predicate = removed.await_args.args
+    assert owner_arg == "user_buyer"
+    assert path_arg == ["agents", "list"]
+    # predicate removes only the ghost entry, by id, and tolerates non-dicts.
+    assert predicate({"id": "agent_ghost"}) is True
+    assert predicate({"id": "agent_other"}) is False
+    assert predicate("not-a-dict") is False
+
+    ws.cleanup_agent_dirs.assert_called_once_with("user_buyer", "agent_ghost")
+
+
+@pytest.mark.asyncio
+async def test_unwind_partial_deploy_is_best_effort(monkeypatch):
+    """Cleanup failures must not raise — the caller has to surface the
+    ORIGINAL deploy error, not a rollback error. Both legs are attempted."""
+    svc, ws, _aux, _pair, _gw = _make_service()
+    monkeypatch.setattr(
+        "core.services.config_patcher.remove_from_openclaw_config_list",
+        AsyncMock(side_effect=RuntimeError("config locked")),
+    )
+    ws.cleanup_agent_dirs = MagicMock(side_effect=OSError("efs gone"))
+
+    # Must not raise despite both legs failing.
+    await svc.unwind_partial_deploy("user_buyer", "agent_ghost")
+
+    # EFS cleanup is still attempted even after the config removal raised.
+    ws.cleanup_agent_dirs.assert_called_once_with("user_buyer", "agent_ghost")

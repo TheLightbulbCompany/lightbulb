@@ -7,10 +7,15 @@ mcporter keeps its OWN credential store, independent of OpenClaw's MCP-SDK store
 the mcp_oauth materializer writes BOTH from the same OAuth connect: the OpenClaw
 store (for the LLM) and the two mcporter files here (for the workflows).
 
-mcporter reads ``~/.mcporter/{mcporter.json,credentials.json}``. The container startup
-command (container-stack.ts) symlinks ``~/.mcporter`` -> ``<stateDir>/mcporter`` — the
-same EFS-relocation idiom as the npm cache — so the files we write here under
-``owner_efs_root/mcporter`` are exactly what mcporter reads, and they survive restarts.
+mcporter splits its files across two locations: it reads the server CONFIG from
+``~/.mcporter/mcporter.json`` (the container symlinks ``~/.mcporter`` ->
+``<stateDir>/mcporter``, so we write ``mcporter.json`` under ``owner_efs_root/mcporter``),
+but it reads/writes the OAuth VAULT from ``$XDG_DATA_HOME/mcporter/credentials.json``.
+The container sets ``XDG_DATA_HOME`` to ``<stateDir>/.local/share`` (on EFS, so creds
+survive restarts), so we write ``credentials.json`` under
+``owner_efs_root/.local/share/mcporter``. Writing the vault under ``~/.mcporter`` does
+NOT work — mcporter ignores it (``mcporter list`` reports "auth required" / 401 "No token
+provided"); its own ``mcporter vault set`` writes to the XDG path.
 The vault entry carries ``{tokens, clientInfo}`` — the SAME MCP-SDK snake_case shapes
 our materializer already builds — and, given a ``refresh_token`` +
 ``clientInfo.client_id``, mcporter auto-refreshes the access token on every call and
@@ -37,10 +42,15 @@ _MCPORTER_DIR = "mcporter"
 
 
 def _vault_path(owner_id: str) -> Path:
-    return owner_efs_root(owner_id) / _MCPORTER_DIR / "credentials.json"
+    # mcporter reads/writes its OAuth vault from $XDG_DATA_HOME/mcporter, NOT
+    # ~/.mcporter. The container sets XDG_DATA_HOME=<stateDir>/.local/share (on EFS),
+    # so the vault lives under owner_efs_root/.local/share/mcporter.
+    return owner_efs_root(owner_id) / ".local" / "share" / _MCPORTER_DIR / "credentials.json"
 
 
 def _config_path(owner_id: str) -> Path:
+    # Server config, by contrast, is read from ~/.mcporter (symlinked to
+    # <stateDir>/mcporter by the container startup command).
     return owner_efs_root(owner_id) / _MCPORTER_DIR / "mcporter.json"
 
 

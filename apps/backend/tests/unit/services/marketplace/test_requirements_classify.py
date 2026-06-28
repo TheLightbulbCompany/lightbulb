@@ -10,9 +10,24 @@ def _classify(hits, **kw):
 
 
 def test_bundled_tool_is_included():
-    reqs = _classify([Hit("tool", "llm-task", "p")])
-    assert reqs["llm-task"].disposition == Disposition.INCLUDED
-    assert reqs["llm-task"].kind == "bundled"
+    reqs = _classify([Hit("tool", "summarize", "p")])
+    assert reqs["summarize"].disposition == Disposition.INCLUDED
+    assert reqs["summarize"].kind == "bundled"
+
+
+def test_engine_internals_are_suppressed():
+    """Lobster engine plumbing + the fictional fast-io skill never reach the
+    ledger, however they were detected (tool head, or a skills/ dir)."""
+    reqs = _classify(
+        [
+            Hit("tool", "state", "p"),
+            Hit("tool", "llm-task", "p"),
+            Hit("tool", "lobster", "p"),
+            Hit("tool", "fast-io", "p"),
+        ],
+        workspace_skills={"fast-io"},
+    )
+    assert reqs == {}
 
 
 def test_gog_tool_is_byo():

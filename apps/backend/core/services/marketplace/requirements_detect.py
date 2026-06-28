@@ -55,7 +55,7 @@ _SCANNABLE_SUFFIXES = frozenset(
 )
 # Dirs never scanned — mirrors the export tarball filter so the ledger can't
 # disclose a dep from a file that won't ship. Dotfiles/dotdirs are skipped too.
-_SKIP_SCAN_DIRS = frozenset({"node_modules", "__pycache__", ".git", ".venv", "venv", ".cache"})
+_SKIP_SCAN_DIRS = frozenset({"node_modules", "__pycache__", ".git", ".venv", "venv", ".cache", "uploads"})
 
 # YAML keys whose string values are command lines in the .lobster DSL.
 _COMMAND_KEYS = frozenset({"command", "run", "pipeline", "cmd"})
@@ -108,12 +108,23 @@ class Hit:
     source: str
 
 
-def detect_in_text(text: str, source: str) -> list[Hit]:
+def detect_in_text(text: str, source: str, *, include_tools: bool = True) -> list[Hit]:
+    """Pull tool/cli/env/host references out of a file's text.
+
+    ``include_tools`` gates the tool-flag (``--tool X``) and ``npx``/``uvx``
+    package scans. Those run ONLY on pipeline files (``.lobster``/``.yaml``),
+    where they reflect a declared workflow step. Helper sources (``.js``/``.ts``
+    /``.md``) are the agent's own implementation — their internal ``npx tsc`` /
+    ``npx vitest`` and stray tokens are NOT buyer-facing dependencies, so they'd
+    only pollute the ledger. Env/host (the known-service mapping that surfaces
+    real integrations like Stripe/Google) always run, on every scanned file.
+    """
     hits: list[Hit] = []
-    for m in _TOOL_FLAG.finditer(text):
-        hits.append(Hit("tool", m.group(1), source))
-    for m in _NPX.finditer(text):
-        hits.append(Hit("cli_pkg", m.group(1), source))
+    if include_tools:
+        for m in _TOOL_FLAG.finditer(text):
+            hits.append(Hit("tool", m.group(1), source))
+        for m in _NPX.finditer(text):
+            hits.append(Hit("cli_pkg", m.group(1), source))
     for m in _ENV.finditer(text):
         hits.append(Hit("env", m.group(1), source))
     for m in _HOST.finditer(text):
@@ -344,10 +355,13 @@ def detect_in_tree(agent_dir, scan_files: list[str] | None = None) -> list[Hit]:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        hits.extend(detect_in_text(text, source=rel.name))
+        # Tool/cli scraping is scoped to pipeline files; helper sources
+        # (.js/.ts/.md) contribute only env/host (real-integration) signal.
+        is_pipeline = path.suffix in _YAML_SUFFIXES
+        hits.extend(detect_in_text(text, source=rel.name, include_tools=is_pipeline))
         # Pipeline files are YAML: also pull direct-CLI tool heads
         # (gog.gmail.search, inbox list) that the --tool regex can't see.
-        if path.suffix in _YAML_SUFFIXES:
+        if is_pipeline:
             hits.extend(_detect_in_yaml(text, source=rel.name))
     return hits
 

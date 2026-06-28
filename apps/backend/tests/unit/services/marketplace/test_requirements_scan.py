@@ -23,7 +23,7 @@ def test_tally_shaped_pipeline_classifies_each_dependency(tmp_path):
     reqs, incomplete = requirements_scan({}, tmp_path)
     assert incomplete is False
     d = {r.key: r.disposition for r in reqs}
-    assert d["llm-task"] == Disposition.INCLUDED
+    assert "llm-task" not in d  # engine-internal pipeline verb — suppressed, not a buyer dep
     assert d["slack"] == Disposition.CONNECT
     # `gog` resolves to the byo-required google provider → BYO, keyed under "google".
     assert d["google"] == Disposition.BYO
@@ -36,7 +36,7 @@ def test_scan_orders_worst_first(tmp_path):
     _write(
         tmp_path,
         "pipelines/p.lobster",
-        "--tool llm-task ; --tool gog ; curl https://production.plaid.com $PLAID_SECRET",
+        "--tool summarize ; --tool gog ; curl https://production.plaid.com $PLAID_SECRET",
     )
     reqs, _ = requirements_scan({}, tmp_path)
     order = [r.disposition.value for r in reqs]

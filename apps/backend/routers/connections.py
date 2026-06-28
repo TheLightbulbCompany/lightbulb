@@ -85,10 +85,19 @@ class AwsCompleteBody(BaseModel):
 
 
 # A concrete IAM role ARN, capturing the 12-digit owning account. Deliberately
-# strict: no wildcards, no resource paths other than role/. The account capture
-# group is the confused-deputy guard — aws-complete rejects any ARN inside our
-# own account (bedrock_aip.OUR_ACCOUNT_ID) before granting sts:AssumeRole.
-_ROLE_ARN_RE = re.compile(r"^arn:aws:iam::(\d{12}):role/.+$")
+# strict: the role-path portion is the IAM name charset (letters, digits and
+# +=,.@-_ plus / for paths), which excludes wildcards — so ``role/*`` is
+# rejected rather than granting sts:AssumeRole on every role in the account. The
+# account capture group is the confused-deputy guard — aws-complete rejects any
+# ARN inside our own account (bedrock_aip.OUR_ACCOUNT_ID) before granting.
+_ROLE_ARN_RE = re.compile(r"^arn:aws:iam::(\d{12}):role/[\w+=,.@/-]+$")
+
+# AWS region names are lowercase alphanumerics + hyphens. ``region`` is
+# owner-supplied and gets materialized into ~/.aws/config (an INI file), so it
+# is validated against this charset — a newline would otherwise inject a second
+# profile/section. Matched with fullmatch so a trailing newline can't slip past
+# the ``$`` anchor.
+_REGION_RE = re.compile(r"^[a-z0-9-]+$")
 
 
 def _get_provider_or_404(provider: str) -> registry.Provider:
@@ -293,13 +302,20 @@ async def aws_complete(provider: str, body: AwsCompleteBody, auth: AuthContext =
     if match.group(1) == bedrock_aip.OUR_ACCOUNT_ID:
         raise HTTPException(status_code=400, detail="role must be in your own AWS account, not Isol8's")
 
+    # ``region`` is owner-supplied and gets written into ~/.aws/config. Validate
+    # it (when given) before storing or using it so a newline can't inject a
+    # second INI section. An empty/omitted region falls through to the default.
+    if body.region and not _REGION_RE.fullmatch(body.region):
+        raise HTTPException(status_code=400, detail="invalid region")
+
     rec = await integration_secret_store.get(owner_id, "aws")
     if not rec or not rec.get("external_id"):
         raise HTTPException(status_code=409, detail="run aws-setup first")
 
+    external_id = rec["external_id"]
     credential = {
         "role_arn": role_arn,
-        "external_id": rec["external_id"],
+        "external_id": external_id,
         "region": body.region or p.aws_sts.default_region,
     }
     # Overwrite the pending {external_id} record with the full credential
@@ -312,11 +328,37 @@ async def aws_complete(provider: str, body: AwsCompleteBody, auth: AuthContext =
         await apply_connection.apply_connection(owner_id, "aws", credential)
         await integrations_repo.put_status(owner_id, "aws", "connected")
     except Exception:
-        # Roll back every partial step so a failed connect leaves no IAM grant,
-        # no on-disk ~/.aws/config, and no retained secret.
-        await _remove_materialized_artifacts(owner_id, p, credential)
-        await bedrock_aip.delete_owner_aws_sts_policy(owner_id)
-        await integration_secret_store.delete(owner_id, "aws")
+        # Best-effort rollback: a failed connect must leave no IAM grant and no
+        # on-disk ~/.aws/config. Each teardown step is wrapped independently so
+        # one failure doesn't skip the others. Rather than deleting the whole
+        # secret, RE-PUT the pending {external_id} record: the owner has already
+        # baked this ExternalId into their CloudFormation trust policy, and
+        # aws-setup is documented to reuse it — dropping it would silently break
+        # the already-created role on a retry. Then always re-raise as a 5xx.
+        try:
+            await _remove_materialized_artifacts(owner_id, p, credential)
+        except Exception:
+            logger.warning(
+                "aws-complete rollback: failed to remove materialized artifacts for owner=%s",
+                owner_id,
+                exc_info=True,
+            )
+        try:
+            await bedrock_aip.delete_owner_aws_sts_policy(owner_id)
+        except Exception:
+            logger.warning(
+                "aws-complete rollback: failed to delete sts:AssumeRole grant for owner=%s",
+                owner_id,
+                exc_info=True,
+            )
+        try:
+            await integration_secret_store.put(owner_id, "aws", {"external_id": external_id})
+        except Exception:
+            logger.warning(
+                "aws-complete rollback: failed to reset pending secret for owner=%s",
+                owner_id,
+                exc_info=True,
+            )
         raise HTTPException(
             status_code=502,
             detail="failed to apply the AWS connection to your container; please retry",

@@ -1365,6 +1365,63 @@ class TestAwsComplete:
     @patch("routers.connections.apply_connection")
     @patch("routers.connections.integration_secret_store")
     @patch("routers.connections.integrations_repo")
+    async def test_aws_complete_rejects_wildcard_arn(self, mock_repo, mock_store, mock_apply, mock_aip, async_client):
+        # SECURITY: a ``role/*`` wildcard ARN is syntactically an IAM ARN but
+        # would let the inline grant assume ANY role in the (external) account.
+        # The role-path charset rejects ``*`` -> 400 BEFORE any IAM grant is put.
+        mock_aip.OUR_ACCOUNT_ID = "877352799272"
+        mock_aip.put_owner_aws_sts_policy = AsyncMock()
+        mock_store.get = AsyncMock(return_value={"external_id": "ext_abc"})
+        mock_store.put = AsyncMock()
+        mock_apply.apply_connection = AsyncMock()
+        mock_repo.put_status = AsyncMock()
+
+        resp = await async_client.post(
+            "/api/v1/connections/aws/aws-complete",
+            json={"role_arn": "arn:aws:iam::111122223333:role/*"},
+        )
+        assert resp.status_code == 400
+        # No grant, no wiring, no status, no secret write when the guard fires.
+        mock_aip.put_owner_aws_sts_policy.assert_not_called()
+        mock_apply.apply_connection.assert_not_called()
+        mock_repo.put_status.assert_not_called()
+        mock_store.put.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.bedrock_aip")
+    @patch("routers.connections.apply_connection")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    async def test_aws_complete_rejects_region_with_newline(
+        self, mock_repo, mock_store, mock_apply, mock_aip, async_client
+    ):
+        # SECURITY: ``region`` is owner-supplied and is materialized into
+        # ~/.aws/config (an INI file). A newline could inject a second
+        # profile/section, so any region outside the [a-z0-9-] charset is
+        # rejected with 400 BEFORE the credential is stored or used.
+        mock_aip.OUR_ACCOUNT_ID = "877352799272"
+        mock_aip.put_owner_aws_sts_policy = AsyncMock()
+        mock_store.get = AsyncMock(return_value={"external_id": "ext_abc"})
+        mock_store.put = AsyncMock()
+        mock_apply.apply_connection = AsyncMock()
+        mock_repo.put_status = AsyncMock()
+
+        resp = await async_client.post(
+            "/api/v1/connections/aws/aws-complete",
+            json={"role_arn": self._GOOD_ARN, "region": "us-east-1\n[evil]"},
+        )
+        assert resp.status_code == 400
+        # No grant, no wiring, no status, no secret write when the guard fires.
+        mock_aip.put_owner_aws_sts_policy.assert_not_called()
+        mock_apply.apply_connection.assert_not_called()
+        mock_repo.put_status.assert_not_called()
+        mock_store.put.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.bedrock_aip")
+    @patch("routers.connections.apply_connection")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
     async def test_aws_complete_without_prior_setup_returns_409(
         self, mock_repo, mock_store, mock_apply, mock_aip, async_client
     ):
@@ -1456,7 +1513,10 @@ class TestAwsComplete:
         self, mock_repo, mock_store, mock_apply, mock_aip, mock_remove, async_client
     ):
         # apply_connection raising AFTER the grant must roll back the IAM grant +
-        # the on-disk artifact + the retained secret, and never mark connected.
+        # the on-disk artifact, and never mark connected. Instead of deleting the
+        # whole secret, the rollback RE-PUTS the pending {external_id} record so
+        # the owner's already-created CFN trust + documented ExternalId reuse
+        # survive a transient apply failure.
         mock_aip.OUR_ACCOUNT_ID = "877352799272"
         mock_aip.put_owner_aws_sts_policy = AsyncMock()
         mock_aip.delete_owner_aws_sts_policy = AsyncMock()
@@ -1471,12 +1531,52 @@ class TestAwsComplete:
             json={"role_arn": self._GOOD_ARN},
         )
         assert resp.status_code == 502
-        # Grant was attempted, then fully torn back down.
+        # Grant was attempted, then torn back down.
         mock_aip.put_owner_aws_sts_policy.assert_awaited_once()
         mock_aip.delete_owner_aws_sts_policy.assert_awaited_once_with("user_test_123")
         mock_remove.assert_awaited_once()
-        mock_store.delete.assert_awaited_once_with("user_test_123", "aws")
+        # The secret is reset to the pending {external_id}-only record, NOT fully
+        # deleted -> ExternalId survives for a retry.
+        mock_store.delete.assert_not_called()
+        assert mock_store.put.await_args_list[-1].args == ("user_test_123", "aws", {"external_id": "ext_abc"})
         # Never reports a false "connected".
+        mock_repo.put_status.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("routers.connections._remove_materialized_artifacts", new_callable=AsyncMock)
+    @patch("routers.connections.bedrock_aip")
+    @patch("routers.connections.apply_connection")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    async def test_aws_complete_rollback_is_best_effort_when_a_teardown_step_raises(
+        self, mock_repo, mock_store, mock_apply, mock_aip, mock_remove, async_client
+    ):
+        # Each rollback teardown step is wrapped independently, so one failing
+        # step does not skip the others. Here the artifact-removal step ITSELF
+        # raises, yet the IAM grant is still torn down AND the secret is still
+        # reset to the pending {external_id} record. The endpoint still surfaces
+        # the original 5xx and never marks connected.
+        mock_aip.OUR_ACCOUNT_ID = "877352799272"
+        mock_aip.put_owner_aws_sts_policy = AsyncMock()
+        mock_aip.delete_owner_aws_sts_policy = AsyncMock()
+        mock_store.get = AsyncMock(return_value={"external_id": "ext_abc"})
+        mock_store.put = AsyncMock()
+        mock_store.delete = AsyncMock()
+        mock_apply.apply_connection = AsyncMock(side_effect=RuntimeError("efs write failed"))
+        mock_repo.put_status = AsyncMock()
+        # Simulate a teardown step ALSO failing during rollback.
+        mock_remove.side_effect = RuntimeError("artifact remove blew up")
+
+        resp = await async_client.post(
+            "/api/v1/connections/aws/aws-complete",
+            json={"role_arn": self._GOOD_ARN},
+        )
+        assert resp.status_code == 502
+        # Despite the artifact-removal step raising, the remaining teardown ran:
+        mock_aip.delete_owner_aws_sts_policy.assert_awaited_once_with("user_test_123")
+        assert mock_store.put.await_args_list[-1].args == ("user_test_123", "aws", {"external_id": "ext_abc"})
+        # Secret never fully deleted; status never flips to connected.
+        mock_store.delete.assert_not_called()
         mock_repo.put_status.assert_not_called()
 
     @pytest.mark.asyncio

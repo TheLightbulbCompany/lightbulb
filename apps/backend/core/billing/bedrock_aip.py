@@ -595,6 +595,13 @@ def _build_owner_aws_sts_doc(role_arns: list[str]) -> dict:
     This is a SEPARATE inline policy from "owner-bedrock": the Bedrock
     kill-switch (revoke_owner_bedrock) deletes "owner-bedrock", and AWS
     read-only access must survive that.
+
+    CALLERS MUST validate the role ARNs before calling: each ARN must be a
+    concrete role ARN (no wildcards) and must NOT live in our own account. The
+    CDK boundary's broad ``sts:AssumeRole`` Allow ceiling only denies our own
+    account, so an unvalidated wildcard or external-account ARN that slips
+    through here could reach roles in arbitrary external accounts. That
+    validation lives in the Plan 2 connect endpoint, NOT here.
     """
     return {
         "Version": "2012-10-17",
@@ -621,6 +628,11 @@ async def put_owner_aws_sts_policy(owner_id: str, role_arns: list[str]) -> None:
     per-owner role. A SEPARATE policy from "owner-bedrock" so the Bedrock
     kill-switch never strips AWS access. Mirrors the scoped-Bedrock put_role_policy
     pattern (same IAM client + run_in_thread)."""
+    # An empty Allow Resource is an IAM MalformedPolicyDocument. Fail fast here
+    # rather than letting put_role_policy reject it after a network round-trip.
+    if not role_arns:
+        raise ValueError("role_arns must be non-empty")
+
     from core.dynamodb import run_in_thread
 
     client = _iam_client()

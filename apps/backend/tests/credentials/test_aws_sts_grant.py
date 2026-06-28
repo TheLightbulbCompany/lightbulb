@@ -50,6 +50,20 @@ async def test_put_uses_owner_aws_sts_policy_name_on_owner_role(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_put_rejects_empty_role_arns(monkeypatch):
+    # An empty Allow Resource is an IAM MalformedPolicyDocument — the guard must
+    # raise ValueError before any IAM call is made.
+    fake = MagicMock()
+    monkeypatch.setattr(bedrock_aip, "_iam_client", lambda: fake)
+    monkeypatch.setattr(bedrock_aip.settings, "ENVIRONMENT", "dev", raising=False)
+
+    with pytest.raises(ValueError):
+        await bedrock_aip.put_owner_aws_sts_policy("some_owner", [])
+
+    fake.put_role_policy.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_delete_uses_owner_aws_sts_policy_name_on_owner_role(monkeypatch):
     fake = MagicMock()
     monkeypatch.setattr(bedrock_aip, "_iam_client", lambda: fake)

@@ -217,8 +217,10 @@ class TestBedrockProvisionMint:
         monkeypatch.setattr("core.billing.bedrock_aip.ensure_owner_bedrock_role", ensure_role)
         monkeypatch.setattr("core.containers.ecs_manager.put_metric", MagicMock())
 
-        # Revoked owner row. The C6 guard reads bedrock_revoked via its own
-        # get_by_owner_id inside the mint block (runs before the main fetch);
+        # Revoked owner row. The C6 guard reads the row ONCE up front (the
+        # single get_by_owner_id at ecs_manager.py:1554, before the mint block)
+        # and checks existing.get("bedrock_revoked") (ecs_manager.py:1586) — a
+        # single-read approach, no second round-trip inside the mint block.
         # _service_exists -> None routes to the fresh-provision branch, which is
         # fine — the load-bearing assertion is skip_bedrock_grant=True.
         monkeypatch.setattr(

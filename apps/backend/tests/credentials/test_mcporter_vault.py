@@ -35,7 +35,9 @@ def _cred(access="at1", refresh="rt1", client_id="cid1"):
 
 
 def _vault(efs, owner="owner1"):
-    return json.loads((efs / owner / "mcporter" / "credentials.json").read_text())
+    # mcporter reads the OAuth vault from $XDG_DATA_HOME/mcporter (= the EFS state
+    # dir's .local/share), not ~/.mcporter.
+    return json.loads((efs / owner / ".local" / "share" / "mcporter" / "credentials.json").read_text())
 
 
 def _config(efs, owner="owner1"):

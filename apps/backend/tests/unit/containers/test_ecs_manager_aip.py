@@ -240,3 +240,112 @@ class TestBedrockProvisionMint:
         await manager.provision_user_container("org_rev", provider_choice="bedrock_claude", owner_type="org")
 
         ensure_role.assert_awaited_once_with("org_rev", arns, skip_bedrock_grant=True)
+
+
+class TestNonBedrockProvisionMint:
+    """Every owner — not just Bedrock owners — runs under the per-owner ECS task
+    role isol8-<env>-owner-bedrock-<owner_id>. A non-Bedrock owner mints the role
+    SHELL (base policy + permissions boundary) with skip_bedrock_grant=True so it
+    carries NO Bedrock inline grant and NO Bedrock AIPs, and the registered task
+    def's taskRoleArn is the per-owner role — never the shared base role."""
+
+    @pytest.mark.asyncio
+    async def test_chatgpt_oauth_mints_owner_role_shell_no_aips(self, manager, monkeypatch):
+        role_arn = "arn:aws:iam::123456789:role/isol8-dev-owner-bedrock-user_oauth"
+
+        ensure_aips = AsyncMock()
+        ensure_role = AsyncMock(return_value=role_arn)
+        monkeypatch.setattr("core.billing.bedrock_aip.ensure_owner_aips", ensure_aips)
+        monkeypatch.setattr("core.billing.bedrock_aip.ensure_owner_bedrock_role", ensure_role)
+        monkeypatch.setattr("core.containers.ecs_manager.put_metric", MagicMock())
+        # chatgpt_oauth pre-task setup — stub both the token-owner resolve and
+        # the EFS oauth.json pre-stage so no real OAuth row is needed.
+        monkeypatch.setattr("core.services.oauth_service.resolve_token_owner", AsyncMock(return_value="user_oauth"))
+        manager._pre_stage_oauth_for_user = AsyncMock()
+
+        monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))
+        manager._service_exists = MagicMock(return_value=None)
+        create_svc = AsyncMock(return_value="openclaw-user_oauth-hash")
+        manager.create_user_service = create_svc
+        manager.write_user_configs = AsyncMock()
+        manager.start_user_service = AsyncMock()
+
+        await manager.provision_user_container("user_oauth", provider_choice="chatgpt_oauth", owner_type="personal")
+
+        # Role minted as a SHELL: empty AIP map + skip_bedrock_grant=True.
+        ensure_role.assert_awaited_once_with("user_oauth", {}, skip_bedrock_grant=True)
+        # No Bedrock AIPs for a non-Bedrock owner.
+        ensure_aips.assert_not_awaited()
+        # The per-owner role is threaded to the task-def register — NOT the shared base.
+        assert create_svc.call_args.kwargs["task_role_arn"] == role_arn
+        # No AIP map written for a non-Bedrock owner.
+        assert manager.write_user_configs.call_args.kwargs["aip_arns"] is None
+
+    @pytest.mark.asyncio
+    async def test_byo_key_mints_owner_role_shell_no_aips(self, manager, monkeypatch):
+        role_arn = "arn:aws:iam::123456789:role/isol8-dev-owner-bedrock-user_byo"
+
+        ensure_aips = AsyncMock()
+        ensure_role = AsyncMock(return_value=role_arn)
+        monkeypatch.setattr("core.billing.bedrock_aip.ensure_owner_aips", ensure_aips)
+        monkeypatch.setattr("core.billing.bedrock_aip.ensure_owner_bedrock_role", ensure_role)
+        monkeypatch.setattr("core.containers.ecs_manager.put_metric", MagicMock())
+        # byo_key pre-task setup — stub the per-user Secrets Manager wiring.
+        manager._build_byo_secrets_for_user = AsyncMock(return_value=[])
+
+        monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))
+        manager._service_exists = MagicMock(return_value=None)
+        create_svc = AsyncMock(return_value="openclaw-user_byo-hash")
+        manager.create_user_service = create_svc
+        manager.write_user_configs = AsyncMock()
+        manager.start_user_service = AsyncMock()
+
+        await manager.provision_user_container(
+            "user_byo", provider_choice="byo_key", byo_provider="anthropic", owner_type="personal"
+        )
+
+        ensure_role.assert_awaited_once_with("user_byo", {}, skip_bedrock_grant=True)
+        ensure_aips.assert_not_awaited()
+        assert create_svc.call_args.kwargs["task_role_arn"] == role_arn
+
+    @pytest.mark.asyncio
+    async def test_non_bedrock_restart_uses_owner_role_not_base(self, manager, monkeypatch):
+        """A non-Bedrock owner whose service exists but is scaled to zero
+        restarts on the freshly minted per-owner role (the in-memory mint), never
+        falling back to the shared base task role."""
+        role_arn = "arn:aws:iam::123456789:role/isol8-dev-owner-bedrock-user_oauth"
+
+        monkeypatch.setattr("core.billing.bedrock_aip.ensure_owner_aips", AsyncMock())
+        monkeypatch.setattr("core.billing.bedrock_aip.ensure_owner_bedrock_role", AsyncMock(return_value=role_arn))
+        monkeypatch.setattr("core.containers.ecs_manager.put_metric", MagicMock())
+        monkeypatch.setattr("core.services.oauth_service.resolve_token_owner", AsyncMock(return_value="user_oauth"))
+        manager._pre_stage_oauth_for_user = AsyncMock()
+
+        # Service exists, scaled to zero -> restart/scale-up branch.
+        monkeypatch.setattr(
+            "core.repositories.container_repo.get_by_owner_id",
+            AsyncMock(
+                return_value={
+                    "owner_id": "user_oauth",
+                    "service_name": "openclaw-user_oauth-hash",
+                    "access_point_id": "fsap-user",
+                    "hook_token": "ht",
+                    "gateway_token": "gt",
+                    # NOTE: row carries NO bedrock_role_arn (legacy non-Bedrock row).
+                }
+            ),
+        )
+        monkeypatch.setattr("core.repositories.container_repo.update_fields", AsyncMock())
+        manager._service_exists = MagicMock(return_value={"status": "ACTIVE", "desiredCount": 0, "runningCount": 0})
+        manager.write_user_configs = AsyncMock()
+        register = MagicMock(return_value="arn:aws:ecs:us-east-1:123456789:task-definition/isol8-dev-openclaw-user:9")
+        manager._register_task_definition = register
+        manager._ecs.update_service = MagicMock()
+        manager._deregister_task_definition = MagicMock()
+        manager._await_running_transition = AsyncMock()
+
+        await manager.provision_user_container("user_oauth", provider_choice="chatgpt_oauth", owner_type="personal")
+
+        # The restart re-register used the freshly-minted per-owner role, even
+        # though the (legacy) row carried no bedrock_role_arn.
+        assert register.call_args.kwargs["task_role_arn"] == role_arn

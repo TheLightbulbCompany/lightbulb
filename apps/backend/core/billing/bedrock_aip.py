@@ -423,10 +423,16 @@ async def ensure_owner_bedrock_role(
     picked up) but never re-creates an existing role.
 
     skip_bedrock_grant=True creates/keeps the role + base (EFS/logs/ssm) policy
-    but does NOT (re)put the scoped Bedrock inline policy. Used by provision for
-    a revoked owner so a re-provision/restart does not silently un-revoke the
-    kill-switch (review C6). Plan 4's restore_owner_bedrock is the only path
-    that re-grants Bedrock.
+    + permissions boundary but does NOT (re)put the scoped Bedrock inline policy.
+    Two callers pass it:
+      * provision for a NON-Bedrock owner (chatgpt_oauth / byo_key) so every
+        owner gets a unique per-owner task-role principal (the AWS read-only
+        integration pins each owner's cross-account trust to it) WITHOUT being
+        granted Bedrock — such an owner has no AIPs, so ``aip_arns`` is ``{}``
+        and goes unread here.
+      * provision for a REVOKED Bedrock owner so a re-provision/restart does not
+        silently un-revoke the kill-switch (review C6). Plan 4's
+        restore_owner_bedrock is the only path that re-grants Bedrock.
     """
     from core.dynamodb import run_in_thread
 

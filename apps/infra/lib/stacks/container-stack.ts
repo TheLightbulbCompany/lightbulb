@@ -324,6 +324,25 @@ export class ContainerStack extends cdk.Stack {
           ],
           resources: ["*"],
         }),
+        // Scoped STS for the AWS read-only integration. The boundary is the
+        // ceiling; the actual scoping to the exact owner-connected role ARN is
+        // done by the per-owner inline `owner-aws-sts` policy. The broad Allow
+        // here just keeps the boundary from being the bottleneck — without it
+        // the inline grant would be silently denied (boundary AND identity).
+        new iam.PolicyStatement({
+          sid: "BoundaryStsAssumeRole",
+          actions: ["sts:AssumeRole"],
+          resources: ["arn:aws:iam::*:role/*"],
+        }),
+        // Defense in depth: never let a per-owner role assume into OUR account,
+        // even if a misconfigured inline policy tried to. Mirrors the explicit
+        // Deny in the per-owner inline policy. An explicit Deny always wins.
+        new iam.PolicyStatement({
+          sid: "BoundaryDenyAssumeIntoOurAccount",
+          effect: iam.Effect.DENY,
+          actions: ["sts:AssumeRole"],
+          resources: [`arn:aws:iam::${this.account}:role/*`],
+        }),
       ],
     });
 

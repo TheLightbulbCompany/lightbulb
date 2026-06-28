@@ -35,6 +35,15 @@ from core.repositories import container_repo
 
 logger = logging.getLogger(__name__)
 
+# Our own AWS account (dev + prod share account 877352799272). The owner-aws-sts
+# Deny statement blocks the per-owner task role from assuming ANY role in our
+# account, so a misconfigured or hostile owner-supplied role ARN can never be
+# pointed back at our own infrastructure. Elsewhere the module resolves the live
+# account via STS (_caller_account_id) for runtime ARNs, but _build_owner_aws_sts_doc
+# is a PURE, synchronous builder that must not make an AWS call — so the account
+# is named once here and reused, never inlined twice.
+OUR_ACCOUNT_ID: str = "877352799272"
+
 # The three AIP tiers. Order matters only for deterministic iteration.
 TIERS: tuple[str, str, str] = ("opus", "sonnet", "haiku")
 
@@ -414,10 +423,16 @@ async def ensure_owner_bedrock_role(
     picked up) but never re-creates an existing role.
 
     skip_bedrock_grant=True creates/keeps the role + base (EFS/logs/ssm) policy
-    but does NOT (re)put the scoped Bedrock inline policy. Used by provision for
-    a revoked owner so a re-provision/restart does not silently un-revoke the
-    kill-switch (review C6). Plan 4's restore_owner_bedrock is the only path
-    that re-grants Bedrock.
+    + permissions boundary but does NOT (re)put the scoped Bedrock inline policy.
+    Two callers pass it:
+      * provision for a NON-Bedrock owner (chatgpt_oauth / byo_key) so every
+        owner gets a unique per-owner task-role principal (the AWS read-only
+        integration pins each owner's cross-account trust to it) WITHOUT being
+        granted Bedrock — such an owner has no AIPs, so ``aip_arns`` is ``{}``
+        and goes unread here.
+      * provision for a REVOKED Bedrock owner so a re-provision/restart does not
+        silently un-revoke the kill-switch (review C6). Plan 4's
+        restore_owner_bedrock is the only path that re-grants Bedrock.
     """
     from core.dynamodb import run_in_thread
 
@@ -562,3 +577,88 @@ async def restore_owner_bedrock(owner_id: str) -> None:
         )
     await ensure_owner_bedrock_role(owner_id, arns)
     await container_repo.update_fields(owner_id, {"bedrock_revoked": False})
+
+
+def _build_owner_aws_sts_doc(role_arns: list[str]) -> dict:
+    """Build the per-owner inline IAM policy granting sts:AssumeRole on EXACTLY
+    the owner-connected read-only role ARN(s), with our own account denied (PURE
+    — no boto3, so it is safe to call synchronously under no AWS credentials).
+
+    Two statements:
+    - An ``Allow sts:AssumeRole`` whose Resource is the exact owner-supplied ARN
+      list — NEVER a wildcard. The task role can assume only the roles the owner
+      explicitly connected.
+    - A ``Deny sts:AssumeRole`` on ``arn:aws:iam::<our account>:role/*`` that
+      fails closed: even if an owner supplies an ARN inside our own account, the
+      task role can never assume it (an explicit Deny always beats an Allow).
+
+    This is a SEPARATE inline policy from "owner-bedrock": the Bedrock
+    kill-switch (revoke_owner_bedrock) deletes "owner-bedrock", and AWS
+    read-only access must survive that.
+
+    CALLERS MUST validate the role ARNs before calling: each ARN must be a
+    concrete role ARN (no wildcards) and must NOT live in our own account. The
+    CDK boundary's broad ``sts:AssumeRole`` Allow ceiling only denies our own
+    account, so an unvalidated wildcard or external-account ARN that slips
+    through here could reach roles in arbitrary external accounts. That
+    validation lives in the Plan 2 connect endpoint, NOT here.
+    """
+    return {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Sid": "OwnerScopedAssumeReadonly",
+                "Effect": "Allow",
+                "Action": "sts:AssumeRole",
+                "Resource": list(role_arns),
+            },
+            {
+                "Sid": "DenyAssumeIntoOurAccount",
+                "Effect": "Deny",
+                "Action": "sts:AssumeRole",
+                "Resource": f"arn:aws:iam::{OUR_ACCOUNT_ID}:role/*",
+            },
+        ],
+    }
+
+
+async def put_owner_aws_sts_policy(owner_id: str, role_arns: list[str]) -> None:
+    """Put the per-owner "owner-aws-sts" inline policy granting the task role
+    sts:AssumeRole on exactly ``role_arns`` (our account denied) onto the
+    per-owner role. A SEPARATE policy from "owner-bedrock" so the Bedrock
+    kill-switch never strips AWS access. Mirrors the scoped-Bedrock put_role_policy
+    pattern (same IAM client + run_in_thread)."""
+    # An empty Allow Resource is an IAM MalformedPolicyDocument. Fail fast here
+    # rather than letting put_role_policy reject it after a network round-trip.
+    if not role_arns:
+        raise ValueError("role_arns must be non-empty")
+
+    from core.dynamodb import run_in_thread
+
+    client = _iam_client()
+    await run_in_thread(
+        client.put_role_policy,
+        RoleName=_owner_role_name(owner_id),
+        PolicyName="owner-aws-sts",
+        PolicyDocument=json.dumps(_build_owner_aws_sts_doc(role_arns)),
+    )
+
+
+async def delete_owner_aws_sts_policy(owner_id: str) -> None:
+    """Delete the per-owner "owner-aws-sts" inline policy (disconnect AWS access)
+    from the per-owner role. Idempotent: a missing policy (NoSuchEntity) is
+    treated as already-deleted, mirroring revoke_owner_bedrock's delete_role_policy
+    handling — one ``except ClientError`` covers both the real iam typed
+    exception (a ClientError subclass) and a unit test's generic ClientError."""
+    from core.dynamodb import run_in_thread
+
+    client = _iam_client()
+    try:
+        await run_in_thread(
+            client.delete_role_policy,
+            RoleName=_owner_role_name(owner_id),
+            PolicyName="owner-aws-sts",
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "NoSuchEntity":
+            raise

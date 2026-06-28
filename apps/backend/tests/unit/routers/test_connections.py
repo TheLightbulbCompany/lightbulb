@@ -603,11 +603,12 @@ class TestDisconnect:
         mock_patcher.delete_openclaw_config_path.assert_awaited_once_with("user_test_123", ["mcp", "servers", "stripe"])
 
     @pytest.mark.asyncio
+    @patch("routers.connections.oauth_app_store")
     @patch("routers.connections.config_patcher")
     @patch("routers.connections.integration_secret_store")
     @patch("routers.connections.integrations_repo")
     async def test_disconnect_mcp_oauth_provider_does_not_raise(
-        self, mock_repo, mock_store, mock_patcher, async_client, monkeypatch, tmp_path
+        self, mock_repo, mock_store, mock_patcher, mock_app_store, async_client, monkeypatch, tmp_path
     ):
         # attio rides the mcp_oauth materializer, whose remover drives the async
         # config_patcher via asyncio.run. The disconnect handler runs on the request
@@ -630,6 +631,9 @@ class TestDisconnect:
         mock_store.delete = AsyncMock()
         mock_store.get = AsyncMock(return_value=None)  # actor-refresh: no retained secret
         mock_patcher.delete_openclaw_config_path = AsyncMock()
+        # attio is a DCR provider, so disconnect now clears the cached DCR client —
+        # mock the app store so it doesn't hit Secrets Manager.
+        mock_app_store.delete = AsyncMock()
 
         response = await async_client.delete("/api/v1/connections/attio")
         assert response.status_code == 200

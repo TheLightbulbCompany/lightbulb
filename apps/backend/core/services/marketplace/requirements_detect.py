@@ -92,6 +92,9 @@ _NON_TOOL_HEADS = frozenset(
         "false",
         "sleep",
         "test",
+        # Lobster durable-KV DSL verb (`pipeline: state.get/state.set`), not a
+        # buyer-facing tool dep — the engine ships it, it's never a dependency.
+        "state",
     }
 )
 

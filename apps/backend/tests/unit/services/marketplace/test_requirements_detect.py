@@ -216,6 +216,20 @@ def test_inline_script_keeps_legit_dotted_head(tmp_path):
     assert "gog" in tools
 
 
+def test_pipeline_state_dsl_verb_not_a_tool(tmp_path):
+    """Lobster state.get/state.set DSL verbs are engine plumbing, not tool deps."""
+    from pathlib import Path
+
+    p = tmp_path / "pipelines" / "queue.lobster"
+    p.parent.mkdir(parents=True)
+    p.write_text(
+        "steps:\n  - pipeline: state.get queue-size\n  - command: state.set queue-size 0\n",
+        encoding="utf-8",
+    )
+    tools = {h.value for h in detect_in_tree(Path(tmp_path)) if h.kind == "tool"}
+    assert "state" not in tools
+
+
 def test_inline_script_keeps_chained_bare_head(tmp_path):
     """A bare command head after a `cd x && ` prefix still resolves."""
     from pathlib import Path

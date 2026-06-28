@@ -28,7 +28,7 @@ export function MarketplaceToast() {
       <div
         data-testid="toast-error"
         role="alert"
-        className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[100] bg-[#7a3b16] text-white rounded-2xl px-5 py-3.5 shadow-xl"
+        className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[100] bg-[var(--danger)] text-white rounded-2xl px-5 py-3.5 shadow-xl"
       >
         <div className="flex items-center gap-3.5 text-sm">
           <span>{toast.error}</span>

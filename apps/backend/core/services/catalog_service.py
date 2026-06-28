@@ -32,6 +32,7 @@ Depends on injected collaborators so unit tests can mock them:
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import logging
 import uuid
@@ -530,7 +531,11 @@ class CatalogService:
             )
 
         try:
-            self._workspace.cleanup_agent_dirs(owner_id, new_agent_id)
+            # cleanup_agent_dirs is sync (shutil.rmtree) over EFS-backed dirs
+            # that can be large enough to block the event loop and stall
+            # unrelated WS chat traffic, so run it on a worker thread — same
+            # posture as the agents.delete path in websocket_chat.py.
+            await asyncio.to_thread(self._workspace.cleanup_agent_dirs, owner_id, new_agent_id)
         except Exception:
             logger.exception(
                 "unwind_partial_deploy: failed to clean EFS dirs for agent %s owner %s",

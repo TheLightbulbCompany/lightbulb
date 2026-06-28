@@ -299,3 +299,18 @@ def test_pipeline_npx_still_detected_after_scoping(tmp_path):
     p.write_text("steps:\n  - command: npx -y @notionhq/notion-mcp-server\n", encoding="utf-8")
     hits = detect_in_tree(Path(tmp_path))
     assert any(h.kind == "cli_pkg" and h.value == "@notionhq/notion-mcp-server" for h in hits)
+
+
+def test_shell_builtins_are_not_tools(tmp_path):
+    """Coreutils / shell builtins (printf, grep, sort, …) are plumbing, never
+    buyer-facing deps, even when they head a pipeline segment."""
+    from pathlib import Path
+
+    p = tmp_path / "workflows" / "x.lobster"
+    p.parent.mkdir(parents=True)
+    p.write_text(
+        "steps:\n  - command: printf '%s' x | node scripts/s.js\n  - command: grep foo bar.txt ; sort | uniq\n",
+        encoding="utf-8",
+    )
+    tools = {h.value for h in detect_in_tree(Path(tmp_path)) if h.kind == "tool"}
+    assert not ({"printf", "grep", "sort", "uniq"} & tools)

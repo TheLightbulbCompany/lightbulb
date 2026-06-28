@@ -29,7 +29,7 @@ def test_scan_tarball_detects_requirements():
         {
             "./openclaw.json": json.dumps({"identity": {"name": "T"}}),
             "./pipelines/daily-feed.lobster": (
-                "--tool slack\n--tool llm-task\ncurl https://production.plaid.com/x $PLAID_SECRET\n"
+                "--tool slack\n--tool summarize\ncurl https://production.plaid.com/x $PLAID_SECRET\n"
             ),
         }
     )
@@ -37,10 +37,10 @@ def test_scan_tarball_detects_requirements():
     keys = {r["key"]: r["disposition"] for r in fragment["requirements"]}
     assert keys["plaid"] == "byo"
     assert keys["slack"] == "connect"
-    assert keys["llm-task"] == "included"
+    assert keys["summarize"] == "included"
     assert fragment["scan_incomplete"] is False
     # requires.credentials carries only non-channel connect rows: slack is a
-    # channel (gated via the Channels tab), plaid is byo, llm-task is included
+    # channel (gated via the Channels tab), plaid is byo, summarize is included
     # — so none feed the credential hire gate here.
     assert fragment["requires"]["credentials"] == []
 

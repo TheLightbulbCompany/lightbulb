@@ -114,7 +114,7 @@ def test_export_manifest_carries_requirements(fake_efs):
         "\n".join(
             [
                 "--tool slack",
-                "--tool llm-task",
+                "--tool summarize",
                 "curl https://api.stripe.com/v1/charges",
                 "curl https://production.plaid.com/x -d $PLAID_SECRET",
             ]
@@ -123,7 +123,7 @@ def test_export_manifest_carries_requirements(fake_efs):
     )
     pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
     keys = {r["key"]: r["disposition"] for r in pkg.manifest["requirements"]}
-    assert keys["llm-task"] == "included"
+    assert keys["summarize"] == "included"
     assert keys["slack"] == "connect"
     assert keys["stripe"] == "connect"  # host-only, no env -> connectable
     assert keys["plaid"] == "byo"
@@ -142,14 +142,14 @@ def test_preview_includes_requirements(fake_efs):
     seller_id, agent_id, agent_dir = fake_efs
     (agent_dir / "pipelines").mkdir()
     (agent_dir / "pipelines" / "p.lobster").write_text(
-        "--tool llm-task\ncurl https://production.plaid.com/x $PLAID_SECRET\n",
+        "--tool summarize\ncurl https://production.plaid.com/x $PLAID_SECRET\n",
         encoding="utf-8",
     )
     preview = agent_export.enumerate_for_preview(seller_id=seller_id, agent_id=agent_id)
     assert "requirements" in preview
     keys = {r["key"]: r["disposition"] for r in preview["requirements"]}
     assert keys["plaid"] == "byo"
-    assert keys["llm-task"] == "included"
+    assert keys["summarize"] == "included"
 
 
 def test_export_skips_junk_dirs(fake_efs):

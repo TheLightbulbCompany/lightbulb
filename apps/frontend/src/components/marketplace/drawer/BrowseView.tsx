@@ -7,6 +7,7 @@ import { searchListings } from "@/lib/marketplace/api";
 import { useCatalog } from "@/hooks/useCatalog";
 import type { Listing } from "@/lib/marketplace/types";
 import { ListingCard } from "./ListingCard";
+import { useMarketplaceDrawer } from "./MarketplaceDrawerProvider";
 
 const CATEGORIES = ["all", "sales", "engineering", "operations", "research", "finance"] as const;
 
@@ -16,6 +17,10 @@ export function BrowseView() {
   const [category, setCategory] = useState<string>("all");
   const [loading, setLoading] = useState(true);
   const { installedSlugs } = useCatalog();
+  // Optimistic overlay: slugs hired this session, before the catalog cache
+  // reflects them. Unioned with the catalog set so a just-hired card shows
+  // "Hired ✓" instantly and can't be re-hired into a duplicate.
+  const { state } = useMarketplaceDrawer();
 
   useEffect(() => {
     let alive = true;
@@ -85,7 +90,10 @@ export function BrowseView() {
             <ListingCard
               key={listing.listing_id}
               listing={listing}
-              installed={installedSlugs?.has?.(listing.slug) ?? false}
+              installed={
+                (installedSlugs?.has?.(listing.slug) ?? false) ||
+                state.installedSlugs.has(listing.slug)
+              }
             />
           ))
         )}

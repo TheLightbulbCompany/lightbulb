@@ -22,6 +22,7 @@ that provisions a container should call
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import secrets
 from typing import Any
@@ -36,6 +37,15 @@ from core.services.paperclip_admin_client import (
 from core.services.paperclip_admin_session import get_admin_session_cookie
 
 logger = logging.getLogger(__name__)
+
+# A single dropped gateway RPC response (transient WebSocket teardown mid-call)
+# surfaces as ``TimeoutError`` and would otherwise fail the whole pairing — and
+# with it a marketplace Hire. One extra attempt heals it: ``agents.create`` is
+# idempotent (an existing agent falls through to the rename below), so a retry
+# after a half-completed first attempt completes the friendly-name update
+# instead of leaving the agent stuck at ``name=<uuid>``.
+_PAIR_MAX_ATTEMPTS = 2
+_PAIR_RETRY_BACKOFF_S = 0.5
 
 
 def _is_org_owner_id(owner_id: str) -> bool:
@@ -498,27 +508,6 @@ async def pair_with_openclaw(
     if paperclip_agent.get("model"):
         create_params["model"] = paperclip_agent["model"]
 
-    try:
-        await gateway_pool.send_rpc(
-            user_id=owner_id,  # gateway pool is keyed by owner_id
-            req_id=f"pair-create-{secrets.token_hex(8)}",
-            method="agents.create",
-            params=create_params,
-            ip=ip,
-            token=token,
-        )
-    except RuntimeError as e:
-        # OpenClaw returns INVALID_REQUEST with "already exists" when the
-        # agent is registered. Treat as idempotent success.
-        if "already exists" in str(e):
-            logger.info(
-                "pair_with_openclaw: agent %s already exists in container for owner %s — skipping update",
-                pc_uuid,
-                owner_id,
-            )
-            return
-        raise
-
     # Build update params: start from caller extras (if any), then
     # overlay the helper-owned fields (agentId, name) so they always
     # win. Caller cannot accidentally re-point the update at a
@@ -527,11 +516,52 @@ async def pair_with_openclaw(
     update_params["agentId"] = pc_uuid
     update_params["name"] = friendly_name
 
-    await gateway_pool.send_rpc(
-        user_id=owner_id,  # gateway pool is keyed by owner_id
-        req_id=f"pair-update-{secrets.token_hex(8)}",
-        method="agents.update",
-        params=update_params,
-        ip=ip,
-        token=token,
-    )
+    # Bounded retry on a transient dropped RPC response only. ``CancelledError``
+    # (cooperative task cancellation) is BaseException, not Exception, so it
+    # propagates untouched — we never fight a real cancel. Any other RuntimeError
+    # (a genuine schema/protocol rejection) also propagates immediately.
+    for attempt in range(1, _PAIR_MAX_ATTEMPTS + 1):
+        try:
+            try:
+                await gateway_pool.send_rpc(
+                    user_id=owner_id,  # gateway pool is keyed by owner_id
+                    req_id=f"pair-create-{secrets.token_hex(8)}",
+                    method="agents.create",
+                    params=create_params,
+                    ip=ip,
+                    token=token,
+                )
+            except RuntimeError as e:
+                # OpenClaw returns INVALID_REQUEST with "already exists" when the
+                # agent is registered. Fall through to the rename rather than
+                # returning early — a prior attempt that created the agent but
+                # lost its update response left ``name=<uuid>``; applying the
+                # update now heals it. agents.update is itself idempotent.
+                if "already exists" not in str(e):
+                    raise
+                logger.info(
+                    "pair_with_openclaw: agent %s already exists in container for owner %s — applying update to heal display name",
+                    pc_uuid,
+                    owner_id,
+                )
+
+            await gateway_pool.send_rpc(
+                user_id=owner_id,  # gateway pool is keyed by owner_id
+                req_id=f"pair-update-{secrets.token_hex(8)}",
+                method="agents.update",
+                params=update_params,
+                ip=ip,
+                token=token,
+            )
+            return
+        except TimeoutError:
+            if attempt >= _PAIR_MAX_ATTEMPTS:
+                raise
+            logger.warning(
+                "pair_with_openclaw: agents RPC timed out for owner=%s agent=%s (attempt %d/%d) — retrying",
+                owner_id,
+                pc_uuid,
+                attempt,
+                _PAIR_MAX_ATTEMPTS,
+            )
+            await asyncio.sleep(_PAIR_RETRY_BACKOFF_S)

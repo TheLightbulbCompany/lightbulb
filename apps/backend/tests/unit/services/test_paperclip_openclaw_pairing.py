@@ -368,15 +368,21 @@ async def test_pair_calls_agents_create_with_uuid_then_update_for_display_name()
 
 
 @pytest.mark.asyncio
-async def test_pair_skips_if_agent_already_exists():
-    """If agents.create returns 'already exists' (idempotent reprovision
-    path), skip the update — the agent is already paired correctly."""
+async def test_pair_already_exists_still_applies_update_to_heal():
+    """If agents.create returns 'already exists' (idempotent reprovision /
+    a prior attempt that lost its update response), fall through to the
+    agents.update so a stranded name=<uuid> gets renamed to the friendly
+    name. The update is itself idempotent."""
     pc_uuid = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+
+    def _side(*_args, **kwargs):
+        # create raises "already exists"; update succeeds.
+        if kwargs.get("method") == "agents.create":
+            raise RuntimeError('{"code":-32602,"message":"agent \\"' + pc_uuid + '\\" already exists"}')
+        return {"ok": True}
+
     pool = MagicMock()
-    # OpenClaw returns INVALID_REQUEST with "agent already exists" in message
-    pool.send_rpc = AsyncMock(
-        side_effect=RuntimeError('{"code":-32602,"message":"agent \\"' + pc_uuid + '\\" already exists"}')
-    )
+    pool.send_rpc = AsyncMock(side_effect=_side)
 
     # Should not raise — idempotent.
     await pair_with_openclaw(
@@ -387,7 +393,91 @@ async def test_pair_skips_if_agent_already_exists():
         token="gw_token",
     )
 
-    # Only the create attempt; update was skipped because create raised.
+    # Create raised "already exists" but the update still ran to heal the name.
+    assert pool.send_rpc.await_count == 2
+    update_call = pool.send_rpc.await_args_list[1]
+    assert update_call.kwargs["method"] == "agents.update"
+    assert update_call.kwargs["params"]["name"] == "Friday"
+
+
+@pytest.mark.asyncio
+async def test_pair_retries_once_on_timeout_then_succeeds(monkeypatch):
+    """A single dropped RPC response (TimeoutError) is retried and heals —
+    the whole Hire no longer fails on one transient gateway hiccup."""
+    import asyncio as _asyncio
+
+    monkeypatch.setattr(_asyncio, "sleep", AsyncMock())
+    pc_uuid = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+
+    calls = {"n": 0}
+
+    def _side(*_args, **_kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise TimeoutError()  # first create's response is lost
+        return {"ok": True}
+
+    pool = MagicMock()
+    pool.send_rpc = AsyncMock(side_effect=_side)
+
+    await pair_with_openclaw(
+        owner_id="user_abc",
+        paperclip_agent={"id": pc_uuid, "name": "Code Reviewer"},
+        gateway_pool=pool,
+        ip="10.0.0.5",
+        token="gw_token",
+    )
+
+    # attempt 1: create (timeout). attempt 2: create + update (ok). = 3 RPCs.
+    assert pool.send_rpc.await_count == 3
+    assert pool.send_rpc.await_args_list[-1].kwargs["method"] == "agents.update"
+
+
+@pytest.mark.asyncio
+async def test_pair_raises_after_exhausting_timeout_retries(monkeypatch):
+    """A persistent timeout still surfaces — the deploy router then unwinds
+    the partial deploy and rolls back the Paperclip agent."""
+    import asyncio as _asyncio
+
+    monkeypatch.setattr(_asyncio, "sleep", AsyncMock())
+    pc_uuid = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+
+    pool = MagicMock()
+    pool.send_rpc = AsyncMock(side_effect=TimeoutError())
+
+    with pytest.raises(TimeoutError):
+        await pair_with_openclaw(
+            owner_id="user_abc",
+            paperclip_agent={"id": pc_uuid, "name": "Code Reviewer"},
+            gateway_pool=pool,
+            ip="10.0.0.5",
+            token="gw_token",
+        )
+
+    # Two create attempts (the bounded retry), both timed out.
+    assert pool.send_rpc.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_pair_does_not_retry_non_timeout_error():
+    """A genuine protocol/schema RuntimeError (not 'already exists', not a
+    timeout) propagates immediately — retrying a deterministic rejection
+    would just stall the Hire."""
+    pc_uuid = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+
+    pool = MagicMock()
+    pool.send_rpc = AsyncMock(side_effect=RuntimeError("INVALID_REQUEST: bad workspace"))
+
+    with pytest.raises(RuntimeError, match="bad workspace"):
+        await pair_with_openclaw(
+            owner_id="user_abc",
+            paperclip_agent={"id": pc_uuid, "name": "Code Reviewer"},
+            gateway_pool=pool,
+            ip="10.0.0.5",
+            token="gw_token",
+        )
+
+    # No retry: single create attempt.
     assert pool.send_rpc.await_count == 1
 
 

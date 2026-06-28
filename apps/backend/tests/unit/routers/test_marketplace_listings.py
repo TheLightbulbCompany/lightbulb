@@ -775,11 +775,15 @@ def test_deploy_rolls_back_paperclip_on_catalog_failure(
     )
     catalog = MagicMock()
     catalog.deploy_from_artifact = AsyncMock(side_effect=RuntimeError("catalog boom"))
+    catalog.unwind_partial_deploy = AsyncMock()
     mock_get_catalog.return_value = catalog
 
     resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
     assert resp.status_code == 500, resp.text
-    # Rollback was called with the orphan id.
+    # Container/EFS side effects unwound (atomic deploy — no orphan agent
+    # entry left in the buyer's openclaw.json), THEN the Paperclip agent.
+    catalog.unwind_partial_deploy.assert_awaited_once()
+    assert catalog.unwind_partial_deploy.await_args.kwargs["new_agent_id"] == "paperclip-uuid-1234"
     mock_delete_pc.assert_awaited_once()
     delete_kwargs = mock_delete_pc.await_args.kwargs
     assert delete_kwargs["agent_id"] == "paperclip-uuid-1234"
@@ -842,13 +846,16 @@ def test_deploy_503s_when_container_not_reachable_and_rolls_back_paperclip(
     )
     catalog = MagicMock()
     catalog.deploy_from_artifact = AsyncMock()
+    catalog.unwind_partial_deploy = AsyncMock()
     mock_get_catalog.return_value = catalog
 
     resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
     assert resp.status_code == 503, resp.text
     # Catalog deploy never invoked — we short-circuited at container resolution.
     catalog.deploy_from_artifact.assert_not_awaited()
-    # Orphan Paperclip agent rolled back.
+    # Unwind still runs (idempotent no-op when no side effects landed) and the
+    # orphan Paperclip agent is rolled back.
+    catalog.unwind_partial_deploy.assert_awaited_once()
     mock_delete_pc.assert_awaited_once()
     assert mock_delete_pc.await_args.kwargs["agent_id"] == "paperclip-uuid-9999"
 
@@ -884,11 +891,13 @@ def test_deploy_rolls_back_paperclip_when_resolve_running_container_raises(
     )
     catalog = MagicMock()
     catalog.deploy_from_artifact = AsyncMock()
+    catalog.unwind_partial_deploy = AsyncMock()
     mock_get_catalog.return_value = catalog
 
     resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
     assert resp.status_code == 500, resp.text
     catalog.deploy_from_artifact.assert_not_awaited()
+    catalog.unwind_partial_deploy.assert_awaited_once()
     mock_delete_pc.assert_awaited_once()
     assert mock_delete_pc.await_args.kwargs["agent_id"] == "paperclip-uuid-9999"
 

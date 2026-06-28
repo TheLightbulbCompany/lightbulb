@@ -323,11 +323,10 @@ def test_aws_sts_requires_aws_sts_block():
 
 
 # Materializers a provider block already declares but whose implementation is
-# not registered yet. The `aws` provider's wiring points at `aws_cli`, which the
-# aws_sts rail delivers in a later task; the provider definition lands first so
-# the registry recognizes `aws`. These names are exempt from the materializer
-# consistency guard below until their implementation ships.
-_PENDING_MATERIALIZERS = {"aws_cli"}
+# not registered yet. Such names are exempt from the materializer consistency
+# guard below until their implementation ships. Empty today: every declared
+# materializer (including `aws_cli`) is now registered.
+_PENDING_MATERIALIZERS: set[str] = set()
 
 
 def test_registry_materializers_and_oauth_are_self_consistent():

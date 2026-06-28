@@ -42,6 +42,25 @@ def test_direct_oauth_provider_shape():
     assert p.wiring.materializer == "gog_cli"
 
 
+def test_posthog_oauth_requests_full_scope_set():
+    # The hosted PostHog MCP probes GET /api/users/@me/ on startup (needs user:read)
+    # and gates each tool's scope at call time, so we request its complete published
+    # scope set — openid + every read + every write — to cover all tools in one
+    # consent. A list missing user:read is the documented startup insufficient_scope.
+    p = registry.get_provider("posthog")
+    scopes = p.oauth.scopes
+    assert "user:read" in scopes  # the scope whose absence produced the 403
+    assert "openid" in scopes
+    reads = [s for s in scopes if s.endswith(":read")]
+    writes = [s for s in scopes if s.endswith(":write")]
+    assert len(reads) == 92
+    assert len(writes) == 92
+    # read/write are paired per resource: every read scope has a write twin.
+    assert {s[: -len(":read")] for s in reads} == {s[: -len(":write")] for s in writes}
+    assert len(scopes) == 185
+    assert len(scopes) == len(set(scopes))  # no duplicate scope slipped into the yaml
+
+
 def test_google_is_byo_required():
     from core.services.credentials import registry
 

@@ -288,6 +288,15 @@ async def disconnect(provider: str, account: str | None = None, auth: AuthContex
     # one) and the status row, then blank any per-agent openclaw.json slots.
     await integration_secret_store.delete(owner_id, provider)
     await integrations_repo.delete(owner_id, provider)
+    # DCR providers cache an auto-registered public client in oauth_app_store, and
+    # the DCR registration body carries the requested scope list. start() only
+    # re-registers when no client is cached, so reusing a client registered under an
+    # older scope set silently caps a reconnect to the stale scopes. Drop the cached
+    # client on disconnect so the next connect registers afresh with the current
+    # scopes. Guard on registration_url + not byo_required: a BYO provider stores the
+    # owner's OWN app in this same store, which must survive a disconnect.
+    if p.oauth and p.oauth.registration_url and not p.byo_required:
+        await oauth_app_store.delete(owner_id, provider)
     # Google holds a per-account inventory alongside the provider status row;
     # a provider-level disconnect must clear every account + assignment so no
     # stale record outlives the dropped keyring.

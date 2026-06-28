@@ -603,11 +603,12 @@ class TestDisconnect:
         mock_patcher.delete_openclaw_config_path.assert_awaited_once_with("user_test_123", ["mcp", "servers", "stripe"])
 
     @pytest.mark.asyncio
+    @patch("routers.connections.oauth_app_store")
     @patch("routers.connections.config_patcher")
     @patch("routers.connections.integration_secret_store")
     @patch("routers.connections.integrations_repo")
     async def test_disconnect_mcp_oauth_provider_does_not_raise(
-        self, mock_repo, mock_store, mock_patcher, async_client, monkeypatch, tmp_path
+        self, mock_repo, mock_store, mock_patcher, mock_app_store, async_client, monkeypatch, tmp_path
     ):
         # attio rides the mcp_oauth materializer, whose remover drives the async
         # config_patcher via asyncio.run. The disconnect handler runs on the request
@@ -630,6 +631,9 @@ class TestDisconnect:
         mock_store.delete = AsyncMock()
         mock_store.get = AsyncMock(return_value=None)  # actor-refresh: no retained secret
         mock_patcher.delete_openclaw_config_path = AsyncMock()
+        # attio is a DCR provider, so disconnect now clears the cached DCR client —
+        # mock the app store so it doesn't hit Secrets Manager.
+        mock_app_store.delete = AsyncMock()
 
         response = await async_client.delete("/api/v1/connections/attio")
         assert response.status_code == 200
@@ -640,6 +644,66 @@ class TestDisconnect:
         assert deleted == [("user_test_123", ["mcp", "servers", "attio"])]
         mock_store.delete.assert_awaited_once_with("user_test_123", "attio")
         mock_repo.delete.assert_awaited_once_with("user_test_123", "attio")
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.oauth_app_store")
+    @patch("routers.connections.config_patcher")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    async def test_disconnect_clears_cached_dcr_client_for_dcr_provider(
+        self, mock_repo, mock_store, mock_patcher, mock_app_store, async_client, monkeypatch, tmp_path
+    ):
+        # attio is a DCR provider (registration_url, not byo_required). Disconnect
+        # must drop the auto-registered public client so the next connect
+        # re-registers with the current scope list — a client cached under an older
+        # scope set would otherwise cap the reconnect's granted scopes. Mirrors the
+        # mcp_oauth disconnect setup so the real remover runs without raising.
+        from core.services.credentials.materializers import mcp_oauth
+
+        monkeypatch.setattr("core.config.settings.EFS_MOUNT_PATH", str(tmp_path))
+
+        async def _fake_delete(owner_id, path):
+            pass
+
+        monkeypatch.setattr(mcp_oauth.config_patcher, "delete_openclaw_config_path", _fake_delete)
+        mock_repo.delete = AsyncMock()
+        mock_store.delete = AsyncMock()
+        mock_store.get = AsyncMock(return_value=None)  # actor-refresh: no retained secret
+        mock_patcher.delete_openclaw_config_path = AsyncMock()
+        mock_app_store.delete = AsyncMock()
+
+        response = await async_client.delete("/api/v1/connections/attio")
+        assert response.status_code == 200
+        # The cached DCR client is cleared so the next connect re-registers fresh.
+        mock_app_store.delete.assert_awaited_once_with("user_test_123", "attio")
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.oauth_app_store")
+    @patch("routers.connections.seed_agent_google_identity", new_callable=AsyncMock)
+    @patch("routers.connections.google_accounts_repo")
+    @patch("routers.connections.MATERIALIZER_REMOVERS")
+    @patch("routers.connections.config_patcher")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    async def test_disconnect_preserves_byo_app_for_byo_provider(
+        self, mock_repo, mock_store, mock_patcher, mock_removers, mock_accounts, mock_seed, mock_app_store, async_client
+    ):
+        # google is byo_required: oauth_app_store holds the owner's OWN OAuth app,
+        # which must survive a disconnect. The DCR-clear guard skips byo providers
+        # (and google has no registration_url), so the app store is never deleted.
+        mock_repo.delete = AsyncMock()
+        mock_store.delete = AsyncMock()
+        mock_store.get = AsyncMock(return_value=None)
+        mock_patcher.set_openclaw_config_path = AsyncMock()
+        mock_accounts.list_accounts = AsyncMock(return_value=[])
+        mock_accounts.list_assignments = AsyncMock(return_value={})
+        mock_accounts.remove_account = AsyncMock()
+        mock_accounts.remove_assignment = AsyncMock()
+        mock_app_store.delete = AsyncMock()
+
+        response = await async_client.delete("/api/v1/connections/google")
+        assert response.status_code == 200
+        mock_app_store.delete.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_disconnect_unknown_provider_returns_404(self, async_client):

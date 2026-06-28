@@ -49,6 +49,7 @@ async def put(
     client_id: str,
     client_secret: str,
     client_information: dict[str, Any] | None = None,
+    scope: str | None = None,
 ) -> str:
     name = _secret_name(owner_id, provider)
     record: dict[str, Any] = {"client_id": client_id, "client_secret": client_secret}
@@ -56,6 +57,12 @@ async def put(
     # the id/secret pair, so omit the key entirely when absent.
     if client_information is not None:
         record["client_information"] = client_information
+    # The scope list a DCR client was registered under. start() re-registers (and
+    # overwrites this record) when the current requested scope differs, so a scope
+    # change propagates without deleting + recreating the secret — which would race
+    # AWS's async secret-name release on a quick reconnect.
+    if scope is not None:
+        record["scope"] = scope
     payload = json.dumps(record)
 
     def _put() -> str:

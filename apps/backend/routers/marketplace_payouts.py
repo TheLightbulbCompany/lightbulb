@@ -1,5 +1,6 @@
 """Stripe Connect Express onboarding + dashboard endpoints."""
 
+import logging
 from typing import Annotated
 
 import boto3
@@ -11,6 +12,8 @@ from core.auth import AuthContext, get_current_user, require_org_admin
 from core.config import settings
 from core.services import payout_service
 
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/marketplace/payouts", tags=["marketplace-payouts"])
 
@@ -80,13 +83,27 @@ async def dashboard(auth: Annotated[AuthContext, Depends(get_current_user)]):
     table = _payout_accounts_table()
     resp = table.get_item(Key={"seller_id": auth.user_id})
     pa = resp.get("Item", {}) or {}
-    account_id = pa.get("stripe_connect_account_id")
-    if not account_id:
-        return {"dashboard_url": None, "balance_held_cents": 0}
-    stripe.api_key = settings.STRIPE_SECRET_KEY
-    link = stripe.Account.create_login_link(account_id)
-    return {
-        "dashboard_url": link.url,
+    # Balance fields are sourced from DDB (not Stripe) so they always render,
+    # even when the Connect account is missing or unreachable below.
+    balance = {
         "balance_held_cents": pa.get("balance_held_cents", 0),
         "lifetime_earned_cents": pa.get("lifetime_earned_cents", 0),
     }
+    account_id = pa.get("stripe_connect_account_id")
+    if not account_id:
+        return {"dashboard_url": None, **balance}
+    stripe.api_key = settings.STRIPE_SECRET_KEY
+    try:
+        link = stripe.Account.create_login_link(account_id)
+    except stripe.error.StripeError:
+        # Graceful degrade: a Connect account that hasn't finished onboarding
+        # (or was deleted/invalidated) makes Stripe raise here. Returning the
+        # balance with a null dashboard_url lets the earnings page render its
+        # "finish payout setup" state instead of 500-ing the whole page.
+        logger.warning(
+            "Stripe login link unavailable for seller %s (account %s)",
+            auth.user_id,
+            account_id,
+        )
+        return {"dashboard_url": None, **balance}
+    return {"dashboard_url": link.url, **balance}

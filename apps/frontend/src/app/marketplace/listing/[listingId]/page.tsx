@@ -6,7 +6,7 @@ import { MarkdownDescription } from "@/components/marketplace/storefront/Listing
 import { OwnerManageLink } from "@/components/marketplace/storefront/Listing/OwnerManageLink";
 import { Monogram, AgentPill, SectionLabel } from "@/components/agents/AgentIdentity";
 import { fromListing } from "@/lib/agentDesign";
-import type { ListingManifest } from "@/lib/marketplace/types";
+import type { ListingManifest, RequirementRow } from "@/lib/marketplace/types";
 
 export default async function ListingDetail({
   params,
@@ -78,13 +78,52 @@ export default async function ListingDetail({
   );
 }
 
-function ManifestSummary({ manifest }: { manifest: ListingManifest }) {
-  const sections: Array<{ label: string; items: string[] | undefined }> = [
-    { label: "Required skills", items: manifest.required_skills },
-    { label: "Required plugins", items: manifest.required_plugins },
-    { label: "Required tools", items: manifest.required_tools },
-    { label: "Suggested channels", items: manifest.suggested_channels },
-  ];
+// Disposition groups rendered in worst-first → best order. Each row's
+// `disposition` (from the backend requirements ledger) maps to one labeled
+// group; empty groups are skipped.
+const REQUIREMENT_GROUPS: Array<{
+  disposition: RequirementRow["disposition"];
+  label: string;
+  hint: string;
+}> = [
+  {
+    disposition: "included",
+    label: "Included",
+    hint: "Ships with the agent — bundled skills & tools.",
+  },
+  {
+    disposition: "connect",
+    label: "Connect an integration",
+    hint: "Optional — connect these in Settings.",
+  },
+  {
+    disposition: "byo",
+    label: "Bring your own key",
+    hint: "Needs an API key you provide.",
+  },
+  {
+    disposition: "unavailable",
+    label: "Not available on Isol8",
+    hint: "Referenced by the agent but not supported here.",
+  },
+];
+
+function requirementLabel(req: RequirementRow): string {
+  const base = req.display_name || req.key;
+  // BYO rows surface the env-var name the buyer must supply, e.g.
+  // "Parallel · PARALLEL_API_KEY".
+  if (req.disposition === "byo" && req.env.length > 0) {
+    return `${base} · ${req.env[0]}`;
+  }
+  return base;
+}
+
+export function ManifestSummary({ manifest }: { manifest: ListingManifest }) {
+  const requirements = manifest.requirements ?? [];
+  const groups = REQUIREMENT_GROUPS.map((group) => ({
+    ...group,
+    rows: requirements.filter((req) => req.disposition === group.disposition),
+  })).filter((group) => group.rows.length > 0);
 
   return (
     <section className="mt-8 editorial-card p-7">
@@ -102,24 +141,30 @@ function ManifestSummary({ manifest }: { manifest: ListingManifest }) {
             <p className="font-mono text-sm text-[var(--forest)]">{manifest.suggested_model}</p>
           </Field>
         )}
-        {sections.map((section) => (
-          <Field key={section.label} label={section.label}>
-            {section.items && section.items.length > 0 ? (
+        {groups.length > 0 ? (
+          groups.map((group) => (
+            <Field key={group.disposition} label={group.label}>
               <div className="flex flex-wrap gap-1.5">
-                {section.items.map((item) => (
-                  <AgentPill key={item}>{item}</AgentPill>
+                {group.rows.map((req) => (
+                  <AgentPill key={req.key}>{requirementLabel(req)}</AgentPill>
                 ))}
               </div>
-            ) : (
-              <span className="text-sm italic text-[var(--mute)]">None</span>
-            )}
+              <p className="mt-2 text-xs leading-5 text-[var(--mute)]">{group.hint}</p>
+            </Field>
+          ))
+        ) : (
+          <Field label="Integrations">
+            <p className="text-sm italic text-[var(--mute)]">
+              Self-contained — no external integrations required.
+            </p>
           </Field>
-        ))}
+        )}
       </div>
-      <p className="mt-6 text-xs leading-5 text-[var(--mute)]">
-        Some skills referenced by this agent may not be bundled in the artifact. After deploy,
-        your container&apos;s <code className="rounded bg-[var(--cream-deeper)] px-1 py-0.5 font-mono text-[var(--forest)]">openclaw.json</code> may need a manual entry registering the agent.
-      </p>
+      {manifest.scan_incomplete === true && (
+        <p className="mt-6 text-xs leading-5 text-[var(--mute)]">
+          Some dependencies may not have been fully detected.
+        </p>
+      )}
     </section>
   );
 }

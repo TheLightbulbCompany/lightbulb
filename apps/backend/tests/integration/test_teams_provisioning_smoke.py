@@ -338,7 +338,9 @@ async def test_create_agent_through_bff_sends_canonical_adapter(
         f"got {upstream_body.get('adapterType')!r}"
     )
 
-    # 2. The adapterConfig dict carries exactly the canonical five fields.
+    # 2. The adapterConfig dict carries exactly the canonical fields. The last
+    #    two (timeoutSec/waitTimeoutMs) bound the gateway run timeout so a
+    #    long-running agent run isn't abandoned as a soft timeout mid-flight.
     adapter_config = upstream_body["adapterConfig"]
     assert set(adapter_config.keys()) == {
         "url",
@@ -346,7 +348,9 @@ async def test_create_agent_through_bff_sends_canonical_adapter(
         "sessionKeyStrategy",
         "sessionKey",
         "devicePrivateKeyPem",
-    }, f"adapterConfig must have exactly the canonical 5 keys; got {set(adapter_config.keys())}"
+        "timeoutSec",
+        "waitTimeoutMs",
+    }, f"adapterConfig must have exactly the canonical keys; got {set(adapter_config.keys())}"
     # devicePrivateKeyPem is the per-agent ed25519 key the operator relay signs
     # the gateway handshake with — minted at synth time as a PKCS8 PEM.
     assert adapter_config["devicePrivateKeyPem"].startswith("-----BEGIN PRIVATE KEY-----")

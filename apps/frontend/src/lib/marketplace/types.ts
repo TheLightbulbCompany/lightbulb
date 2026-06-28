@@ -66,15 +66,38 @@ export interface Purchase {
 }
 
 /**
+ * A single external-dependency the agent needs, classified into a buyer-facing
+ * disposition. Mirrors the backend `Requirement.to_manifest()` shape
+ * (core/services/marketplace/requirements.py). Secret values never appear —
+ * only env-var *names* in `env`.
+ */
+export interface RequirementRow {
+  key: string;
+  display_name: string;
+  /** e.g. "skill" | "tool" | "mcp" | "cli" | "channel" | "external_api" */
+  kind: string;
+  disposition: "included" | "connect" | "byo" | "unavailable";
+  /** Env-var names the buyer must supply, e.g. ["PARALLEL_API_KEY"]. Often empty. */
+  env: string[];
+  /** Source files the dependency was detected in. */
+  detected_via: string[];
+  bundled: boolean;
+  required: boolean;
+  note?: string | null;
+  reason?: string | null;
+}
+
+/**
  * Manifest fields the storefront surfaces on the listing-detail page.
  * Sourced from <s3_prefix>manifest.json — the backend's GET /listings/{slug}
  * fetches that file and includes it as `manifest`. May be null if the S3
  * fetch failed; storefront falls back to listing-only rendering.
  *
- * Marketplace publish currently writes a slimmer manifest (just name +
- * description + format + exported_at + agent_id + file_count), so most of
- * the rich fields below will commonly be missing — the storefront treats
- * any missing field as "None / unknown".
+ * The "What's bundled" section renders `requirements` — the classified
+ * dependency ledger the publish pipeline writes
+ * (`build_manifest_requirements`). When absent/empty the agent is
+ * self-contained. `name`/`description`/`vibe`/`suggested_model`/`emoji` are
+ * best-effort identity fields and may be missing on slimmer manifests.
  */
 export interface ListingManifest {
   name?: string;
@@ -83,10 +106,10 @@ export interface ListingManifest {
   emoji?: string;
   vibe?: string;
   suggested_model?: string;
-  required_skills?: string[];
-  required_plugins?: string[];
-  required_tools?: string[];
-  suggested_channels?: string[];
+  /** Classified dependency ledger. Empty/undefined → self-contained agent. */
+  requirements?: RequirementRow[];
+  /** True when the scanner couldn't fully analyze the agent. */
+  scan_incomplete?: boolean;
 }
 
 export interface ListingDetailResponse {

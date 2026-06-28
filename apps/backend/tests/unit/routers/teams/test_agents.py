@@ -114,6 +114,9 @@ def test_create_agent_synthesizes_adapter_config(client, monkeypatch):
         "authToken": "freshly-minted-token",
         "sessionKeyStrategy": "issue",
         "sessionKey": "u1",
+        # Gateway run-timeout bounds so a long agent run isn't soft-timed-out.
+        "timeoutSec": 300,
+        "waitTimeoutMs": 300_000,
     }
     # Service token MUST be minted with owner_id
     # (== org_id for org members) so the WS authorizer routes Paperclip

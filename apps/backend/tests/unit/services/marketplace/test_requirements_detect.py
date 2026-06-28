@@ -271,3 +271,31 @@ def test_quickbooks_marketing_host_is_not_a_requirement():
     assert identify_service(Hit("host", "quickbooks.api.intuit.com", "s")) == ("quickbooks", "QuickBooks")
     assert identify_service(Hit("host", "turbotax.intuit.com", "s")) is None
     assert identify_service(Hit("host", "quickbooks.intuit.com", "s")) is None
+
+
+def test_js_helper_not_scraped_for_cli_but_host_kept(tmp_path):
+    """Tool/cli scraping is scoped to pipeline files. A .js helper's internal
+    `npx tsc`/`npx vitest` are implementation, not buyer deps — but a real
+    integration host referenced in it still surfaces."""
+    from pathlib import Path
+
+    p = tmp_path / "scripts" / "build.js"
+    p.parent.mkdir(parents=True)
+    p.write_text(
+        "execSync('npx tsc'); execSync('npx vitest run');\nfetch('https://api.stripe.com/v1/charges');\n",
+        encoding="utf-8",
+    )
+    hits = detect_in_tree(Path(tmp_path))
+    assert not any(h.kind == "cli_pkg" for h in hits)
+    assert any(h.kind == "host" and "stripe.com" in h.value for h in hits)
+
+
+def test_pipeline_npx_still_detected_after_scoping(tmp_path):
+    """An npx package declared in a .lobster pipeline step still rides along."""
+    from pathlib import Path
+
+    p = tmp_path / "workflows" / "x.lobster"
+    p.parent.mkdir(parents=True)
+    p.write_text("steps:\n  - command: npx -y @notionhq/notion-mcp-server\n", encoding="utf-8")
+    hits = detect_in_tree(Path(tmp_path))
+    assert any(h.kind == "cli_pkg" and h.value == "@notionhq/notion-mcp-server" for h in hits)

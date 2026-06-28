@@ -23,15 +23,18 @@ from core.services.marketplace.requirements_detect import Hit, identify_service
 # extended image's bundled set + Atlas seed).
 BUNDLED_TOOLS = frozenset(
     {
-        "llm-task",
-        "fast-io",
         "summarize",
-        "lobster",
         "memory-core",
         "message",
         "capability-evolver",
     }
 )
+# Lobster engine internals + a fictional skill — never buyer-facing dependencies.
+# `state` (durable-KV) and `llm-task` are pipeline DSL the runtime ships; `lobster`
+# is the runner itself; `fast-io` is a non-functional skill that was scaffolded
+# but never wired. They tell a buyer nothing, so they're dropped from the ledger
+# entirely rather than listed as "bundled tools."
+_SUPPRESS_TOOLS = frozenset({"state", "llm-task", "lobster", "fast-io"})
 # The backend-provisionable channel providers (Channels tab). Imported from the
 # single source of truth so this can't drift — e.g. listing whatsapp here would
 # tell a buyer to "connect" a channel the backend never provisions.
@@ -115,6 +118,9 @@ def classify_hits(
     for hit in hits:
         if hit.kind == "tool":
             name = hit.value
+            if name in _SUPPRESS_TOOLS:
+                # Engine plumbing / fictional skill — not a buyer dependency.
+                continue
             if name in BUNDLED_TOOLS:
                 r = _ensure(name, name, "bundled", Disposition.INCLUDED)
             elif name in CHANNELS:
@@ -189,7 +195,10 @@ def classify_hits(
         if r.key in bundled_mcps or r.key in bundled_skills:
             r.bundled = True
         r.detected_via = sorted(set(r.detected_via))
-    return list(by_key.values())
+    # Drop engine-internal / fictional names regardless of how they were
+    # surfaced (a workspace `skills/fast-io/` dir would otherwise classify as an
+    # included skill).
+    return [r for r in by_key.values() if r.key not in _SUPPRESS_TOOLS]
 
 
 def _apply_wiring_mismatch(by_key: dict[str, Requirement]) -> None:

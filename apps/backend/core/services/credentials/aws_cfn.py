@@ -1,0 +1,46 @@
+"""Helpers for the AWS read-only connect flow: mint the STS ExternalId and build
+the CloudFormation console quick-create URL the owner clicks to stand up the
+cross-account role. The trusted principal is the owner's per-owner ECS task role
+(reused from ``bedrock_aip`` — never re-derive the role-name format or account)."""
+
+from __future__ import annotations
+
+import secrets
+from urllib.parse import quote
+
+from core.billing import bedrock_aip
+
+_STACK_NAME = "isol8-readonly-connector"
+
+
+def gen_external_id() -> str:
+    """A high-entropy STS ExternalId (≥128-bit, charset-safe for the trust policy)."""
+    return secrets.token_urlsafe(32)
+
+
+def owner_task_role_arn(owner_id: str) -> str:
+    """ARN of the owner's per-owner ECS task role — the principal Isol8 assumes
+    from, named identically to the Bedrock rail's per-owner role."""
+    return f"arn:aws:iam::{bedrock_aip.OUR_ACCOUNT_ID}:role/{bedrock_aip._owner_role_name(owner_id)}"
+
+
+def quick_create_url(
+    *,
+    external_id: str,
+    principal_arn: str,
+    policy_arn: str,
+    region: str,
+    template_url: str,
+) -> str:
+    """CloudFormation console quick-create URL pre-filled with the connector stack
+    template + parameters. ``template_url`` / ``principal_arn`` / ``policy_arn`` are
+    URL-encoded (``safe=""``) since they carry ``:`` / ``/`` that must not leak into
+    the query string."""
+    return (
+        f"https://{region}.console.aws.amazon.com/cloudformation/home?region={region}"
+        f"#/stacks/create/review?templateURL={quote(template_url, safe='')}"
+        f"&stackName={_STACK_NAME}"
+        f"&param_ExternalId={external_id}"
+        f"&param_TrustedPrincipalArn={quote(principal_arn, safe='')}"
+        f"&param_ManagedPolicyArn={quote(policy_arn, safe='')}"
+    )

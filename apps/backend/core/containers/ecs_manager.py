@@ -1553,21 +1553,27 @@ class EcsManager:
         # stale `existing` here cannot drop it.
         existing = await container_repo.get_by_owner_id(user_id)
 
+        # Every owner — regardless of provider_choice — runs under a UNIQUE
+        # per-owner ECS task role (isol8-<env>-owner-bedrock-<owner_id>), minted
+        # SYNCHRONOUSLY here before the service starts. The role NAME keeps the
+        # historical "owner-bedrock" prefix because the CDK
+        # PassRole/PutRolePolicy/permissions-boundary grants are scoped to it
+        # (renaming silently breaks them). A unique per-owner IAM principal is
+        # what the AWS read-only integration pins each owner's cross-account
+        # trust to — the shared base task role is a cross-tenant hole. Lazy
+        # import to avoid pulling bedrock_aip's boto3 clients into module load.
+        from core.billing.bedrock_aip import (
+            ensure_owner_aips,
+            ensure_owner_bedrock_role,
+        )
+
         bedrock_aip_arns: dict[str, str] | None = None
         bedrock_role_arn: str | None = None
         if provider_choice == "bedrock_claude":
-            # Mint the per-owner AIPs + scoped IAM role SYNCHRONOUSLY here,
-            # before the service starts. The container's openclaw.json model
-            # ids become the AIP ARNs and the task role is the scoped per-owner
-            # role; if either were absent at first boot the container would
-            # either run on the shared all-models role or AccessDenied on the
-            # AIP-scoped role. Lazy import to avoid pulling bedrock_aip's boto3
-            # clients into module load.
-            from core.billing.bedrock_aip import (
-                ensure_owner_aips,
-                ensure_owner_bedrock_role,
-            )
-
+            # Bedrock owner: mint the per-owner AIPs + scoped IAM role. The
+            # container's openclaw.json model ids become the AIP ARNs; if the
+            # AIPs were absent at first boot the container would AccessDenied on
+            # the AIP-scoped role.
             bedrock_aip_arns = await ensure_owner_aips(user_id)
 
             # KILL-SWITCH GUARD: ensure_owner_bedrock_role always re-puts the
@@ -1588,6 +1594,15 @@ class EcsManager:
             # so its inference is billed to the owner (see helper docstring).
             if settings.ACP_ENABLED and not is_revoked and bedrock_aip_arns:
                 environment_for_task.extend(_build_bedrock_acp_harness_env(bedrock_aip_arns))
+        else:
+            # Non-Bedrock owner (chatgpt_oauth / byo_key): mint/keep the
+            # per-owner role SHELL — base EFS/logs/ssm policy + permissions
+            # boundary — but pass skip_bedrock_grant=True so it carries NO
+            # Bedrock inline policy, and DO NOT mint Bedrock AIPs (the owner
+            # never uses Bedrock inference). The empty aip_arns map is unread
+            # under skip_bedrock_grant=True. This gives every owner a unique
+            # task-role principal without granting Bedrock to non-Bedrock owners.
+            bedrock_role_arn = await ensure_owner_bedrock_role(user_id, {}, skip_bedrock_grant=True)
 
         # Paperclip auth is no longer a container-wide task env. Each agent
         # authenticates as ITSELF via its own per-agent identity file
@@ -1679,9 +1694,11 @@ class EcsManager:
                         # Prefer the role just minted in THIS call (in-memory)
                         # over the row's value: `existing` was read before the
                         # mint, so for a re-provision its bedrock_role_arn may be
-                        # stale/absent. Fall back to the row for non-bedrock
-                        # providers (where bedrock_role_arn is None) so they keep
-                        # whatever per-owner role the row already carries.
+                        # stale/absent. The mint above runs for ALL providers now,
+                        # so bedrock_role_arn is normally set here; the row
+                        # fallback only covers a degenerate path where the mint
+                        # returned nothing — it must still resolve to a per-owner
+                        # role, never the shared base.
                         restart_task_role_arn = bedrock_role_arn or (
                             existing.get("bedrock_role_arn") if existing else None
                         )

@@ -10,6 +10,10 @@ on:
       # script) must rebuild + republish — otherwise promoted tags keep shipping
       # stale skill content.
       - "apps/infra/openclaw/skills/**"
+      # The Dockerfile also bakes apps/infra/openclaw/plugins/** (the in-repo
+      # aws-exec-profile plugin) into /app/dist/extensions, so a change there
+      # must rebuild + republish too.
+      - "apps/infra/openclaw/plugins/**"
       - "openclaw-version.json"
   workflow_dispatch: {}
 

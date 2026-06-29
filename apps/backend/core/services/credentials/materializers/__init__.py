@@ -3,6 +3,8 @@
 MATERIALIZERS write a CLI's credential file onto EFS; MATERIALIZER_REMOVERS
 mirror them to clean up on disconnect."""
 
+from core.services.credentials.materializers.aws_cli import remove as _aws_remove
+from core.services.credentials.materializers.aws_cli import write as _aws
 from core.services.credentials.materializers.gh_cli import remove as _gh_remove
 from core.services.credentials.materializers.gh_cli import write as _gh
 from core.services.credentials.materializers.gog_cli import remove as _gog_remove
@@ -20,6 +22,7 @@ MATERIALIZERS: dict[str, object] = {
     "gh_cli": _gh,
     "mcp_oauth": _mcp_oauth,
     "skill_cli": _skill_cli,
+    "aws_cli": _aws,
 }
 MATERIALIZER_REMOVERS: dict[str, object] = {
     "toml_cli": _toml_remove,
@@ -27,4 +30,5 @@ MATERIALIZER_REMOVERS: dict[str, object] = {
     "gh_cli": _gh_remove,
     "mcp_oauth": _mcp_oauth_remove,
     "skill_cli": _skill_cli_remove,
+    "aws_cli": _aws_remove,
 }

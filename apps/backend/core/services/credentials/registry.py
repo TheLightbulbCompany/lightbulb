@@ -142,6 +142,18 @@ class ValidateSpec(BaseModel):
     token_prefix: str | None = None
 
 
+class AwsStsSpec(BaseModel):
+    """AWS read-only access via STS AssumeRole. The owner runs a CloudFormation
+    stack that creates a cross-account role Isol8 can assume; the assumed role is
+    capped at read access by the two AWS-managed policy ARNs below. The aws_cli
+    materializer delivers the short-lived STS credentials into the container."""
+
+    view_only_policy_arn: str = "arn:aws:iam::aws:policy/ViewOnlyAccess"
+    read_only_policy_arn: str = "arn:aws:iam::aws:policy/ReadOnlyAccess"
+    default_region: str = "us-east-1"
+    cfn_template_url: str | None = None
+
+
 class Requires(BaseModel):
     bins: list[str] = Field(default_factory=list)
     config: list[str] = Field(default_factory=list)
@@ -171,6 +183,10 @@ class Provider(BaseModel):
     mcp_remote: McpRemote | None = None
     # Bundled skill delivered by a paste-token CLI integration (see SkillSpec).
     skill: SkillSpec | None = None
+    # AWS read-only STS rail config. Only set for the `aws` provider (acquisition
+    # aws_sts); carries the managed-policy ARNs that cap the assumed role + the
+    # default region.
+    aws_sts: AwsStsSpec | None = None
     validation: ValidateSpec | None = Field(default=None, alias="validate")
 
     # populate_by_name lets us pass either the `validate` alias (YAML) or the
@@ -181,6 +197,8 @@ class Provider(BaseModel):
     def _oauth_present_when_needed(self) -> "Provider":
         if self.acquisition == "direct_oauth" and self.oauth is None:
             raise ValueError(f"{self.key}: direct_oauth requires an `oauth` block")
+        if self.acquisition == "aws_sts" and self.aws_sts is None:
+            raise ValueError(f"{self.key}: aws_sts requires an aws_sts block")
         return self
 
 

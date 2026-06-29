@@ -649,23 +649,32 @@ def _build_agents_list(paperclip_agents: list[dict], ceo_model: str | None = Non
 
 
 def workflow_plugin_entries() -> dict:
-    """Bundled OpenClaw workflow extensions enabled on every container,
-    independent of the LLM provider.
+    """Bundled, provider-independent OpenClaw extensions enabled on every
+    container.
 
     Single source of truth so BOTH the provision-time builder
     (``build_openclaw_config_dict``) and the post-onboarding provider
     hot-swap path (``config_patcher.replace_provider_block``, which replaces
     ``plugins.entries`` wholesale) include them. Without this shared seam a
-    Bedrock ↔ ChatGPT switch would drop ``lobster`` / ``llm-task`` until the
-    next full reprovision.
+    Bedrock ↔ ChatGPT switch would drop these until the next full reprovision.
+
+    Entries:
+    - ``lobster`` — typed-pipeline workflow engine.
+    - ``llm-task`` — left unconfigured so it inherits the agent's default
+      provider/model at call time across every provider path.
+    - ``aws-exec-profile`` — baked in-repo plugin whose ``resolve_exec_env``
+      hook injects ``AWS_PROFILE=isol8-readonly`` into the agent's exec'd
+      commands only when the owner's read-only AWS profile is materialized.
+      Inert (returns ``{}``) until that profile exists, so it is safe to enable
+      fleet-wide regardless of provider.
 
     Returned fresh each call so callers may merge/mutate without corrupting
-    shared module state. ``llm-task`` is left unconfigured so it inherits the
-    agent's default provider/model at call time across every provider path.
+    shared module state.
     """
     return {
         "lobster": {"enabled": True},
         "llm-task": {"enabled": True},
+        "aws-exec-profile": {"enabled": True},
     }
 
 
@@ -1018,6 +1027,19 @@ def build_openclaw_config_dict(
                 # OpenClaw defaults to "off" which strips those fields before
                 # they reach our WebSocket subscriber.
                 "verboseDefault": "full",
+                # Agent-roster visibility. The `agents_list` tool resolves each
+                # agent's visible roster from `subagents.allowAgents`; when unset
+                # an agent sees ONLY itself (verified against the deployed tag:
+                # agents-list-tool.ts + subagent-target-policy.ts — undefined →
+                # [requesterAgentId]). That blinds every agent to the rest of the
+                # company: Atlas can't find a sibling (e.g. a user-made "Jarvis")
+                # to build it out, and Friday can't enumerate its team to
+                # orchestrate. `["*"]` widens each agent to the full configured
+                # roster (agents.list[]). This governs the agents tool ONLY;
+                # cross-agent *session* viewing (tools.sessions.visibility /
+                # tools.agentToAgent) is a separate gate we deliberately leave at
+                # its default. Not subject to the sandbox visibility clamp.
+                "subagents": {"allowAgents": ["*"]},
             },
             # Per-agent settings. reasoningDefault is not allowed in
             # agents.defaults (see openclaw zod-schema.agent-defaults.ts), so

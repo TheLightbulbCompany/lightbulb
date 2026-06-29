@@ -16,6 +16,5 @@ export const INTEGRATION_RECEIPTS: Record<string, IntegrationReceipt> = {
   linear: { delivers: "Linear issue & project tools" },
   github: { delivers: "repo, issue & PR tools scoped to your account" },
   google: { delivers: "Gmail, Calendar & Drive access" },
-  vercel: { delivers: "project, deployment & log tools for your Vercel teams" },
-  vercel_cli: { delivers: "Vercel CLI — deploy, logs, project & env tools for your account" },
+  vercel_cli: { delivers: "deploy, logs, project & env tools for your Vercel account" },
 };

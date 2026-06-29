@@ -331,6 +331,22 @@ def test_provider_skill_defaults_to_none():
     assert p.skill is None
 
 
+def test_vercel_cli_is_skill_paste_provider():
+    p = registry.get_provider("vercel_cli")
+    assert p.acquisition == "paste_token"
+    assert p.actor == "skill"
+    assert p.refresh_owner == "none"
+    assert p.wiring.materializer == "skill_cli"
+    assert p.wiring.mcp_server is None and p.wiring.openclaw_paths is None
+    assert p.skill is not None
+    assert p.skill.key == "vercel"
+    assert p.skill.primary_env == "VERCEL_TOKEN"
+    assert p.skill.package.startswith("vercel@")
+    assert p.validation is not None
+    assert p.validation.url == "https://api.vercel.com/v2/user"
+    assert p.validation.token_prefix is None
+
+
 def test_registry_materializers_and_oauth_are_self_consistent():
     from core.services.credentials.materializers import MATERIALIZER_REMOVERS, MATERIALIZERS
 

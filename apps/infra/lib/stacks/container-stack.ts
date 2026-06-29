@@ -615,7 +615,10 @@ export class ContainerStack extends cdk.Stack {
         // Point the AWS CLI v2 (baked into the extended image) at the EFS-backed
         // config the read-only-integration materializer writes. /home/node/.openclaw
         // is the per-user EFS mount, so this resolves to the same file written at
-        // owner_efs_root(owner)/.aws/config (a [default] profile with assume-role).
+        // owner_efs_root(owner)/.aws/config (a named [profile isol8-readonly] with
+        // assume-role — named, not [default], so it never enters the AWS SDK default
+        // chain the in-process Bedrock provider uses; the aws-exec-profile plugin
+        // selects it for the agent's shell via AWS_PROFILE in the exec env only).
         AWS_CONFIG_FILE: "/home/node/.openclaw/.aws/config",
         // Skip mDNS/bonjour service advertising. OpenClaw advertises itself
         // on the LAN via bonjour for desktop auto-discovery; in Fargate

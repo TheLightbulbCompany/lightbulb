@@ -44,3 +44,18 @@ test("returns {} when the file exists but lacks the readonly profile", () => {
     assert.deepEqual(resolve(cfg), {});
   });
 });
+
+test("returns {} when the header appears only as a comment", () => {
+  withTempDir((dir) => {
+    const cfg = join(dir, "config");
+    writeFileSync(cfg, `# ${AWS_READONLY_PROFILE_HEADER}\nregion = us-east-1\n`);
+    assert.deepEqual(resolve(cfg), {});
+  });
+});
+
+test("returns {} for undefined/empty path (falls back to a nonexistent default)", () => {
+  // No AWS_CONFIG_FILE -> DEFAULT_AWS_CONFIG_PATH, which does not exist in the
+  // test environment, so the read throws and degrades to {}.
+  assert.deepEqual(resolve(undefined), {});
+  assert.deepEqual(resolve(""), {});
+});

@@ -1,5 +1,10 @@
 // aws-exec-profile — baked OpenClaw plugin (no fork change).
 //
+// SYNC NOTE: this file and `./dist/index.js` are parallel plugin-registration
+// wrappers and MUST be kept in sync (identical hook wiring). They differ only
+// in the resolver import path. The resolver logic itself is single-sourced in
+// `./dist/resolve.js` — edit the resolver THERE only, never duplicate it here.
+//
 // Registers a `resolve_exec_env` hook that contributes AWS_PROFILE to the
 // agent's exec'd commands ONLY. The exec tool builds the child env as a copy
 // of process.env plus this override layer (bash-tools.exec.ts) and never

@@ -17,6 +17,16 @@ export const DEFAULT_AWS_CONFIG_PATH = "/home/node/.openclaw/.aws/config";
 // The literal section header an `aws` config file uses for a named profile.
 export const AWS_READONLY_PROFILE_HEADER = `[profile ${AWS_READONLY_PROFILE}]`;
 
+// Line-anchored matcher for a REAL INI section header. A plain substring scan
+// would false-positive on a commented-out header (e.g. `# [profile
+// isol8-readonly]`) and inject AWS_PROFILE for a profile the awscli can't find
+// ("profile not found"). Derived from AWS_READONLY_PROFILE (regex-escaped) so
+// it stays consistent with the constant — matches `[profile isol8-readonly]`
+// only when it starts a line.
+const HEADER_RE = new RegExp(
+  `(?:^|\\n)\\[profile ${AWS_READONLY_PROFILE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\](?:\\n|$)`,
+);
+
 /**
  * Decide whether the agent's exec'd commands should run as the owner's
  * read-only AWS identity.
@@ -40,7 +50,7 @@ export function resolve(configPathEnv) {
         ? configPathEnv
         : DEFAULT_AWS_CONFIG_PATH;
     const contents = readFileSync(path, "utf8");
-    if (contents.includes(AWS_READONLY_PROFILE_HEADER)) {
+    if (HEADER_RE.test(contents)) {
       return { AWS_PROFILE: AWS_READONLY_PROFILE };
     }
     return {};

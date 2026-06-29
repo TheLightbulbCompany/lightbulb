@@ -1018,6 +1018,19 @@ def build_openclaw_config_dict(
                 # OpenClaw defaults to "off" which strips those fields before
                 # they reach our WebSocket subscriber.
                 "verboseDefault": "full",
+                # Agent-roster visibility. The `agents_list` tool resolves each
+                # agent's visible roster from `subagents.allowAgents`; when unset
+                # an agent sees ONLY itself (verified against the deployed tag:
+                # agents-list-tool.ts + subagent-target-policy.ts — undefined →
+                # [requesterAgentId]). That blinds every agent to the rest of the
+                # company: Atlas can't find a sibling (e.g. a user-made "Jarvis")
+                # to build it out, and Friday can't enumerate its team to
+                # orchestrate. `["*"]` widens each agent to the full configured
+                # roster (agents.list[]). This governs the agents tool ONLY;
+                # cross-agent *session* viewing (tools.sessions.visibility /
+                # tools.agentToAgent) is a separate gate we deliberately leave at
+                # its default. Not subject to the sandbox visibility clamp.
+                "subagents": {"allowAgents": ["*"]},
             },
             # Per-agent settings. reasoningDefault is not allowed in
             # agents.defaults (see openclaw zod-schema.agent-defaults.ts), so

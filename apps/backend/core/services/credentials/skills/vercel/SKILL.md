@@ -42,6 +42,3 @@ then:
 If a command fails with a 401 / "not authorized" / "token expired", the user's Vercel
 token has expired or been revoked. Tell the user to reconnect Vercel in Settings →
 Integrations; do not retry.
-
-> The literal `{{PKG}}` is replaced with the exact pinned package spec (e.g.
-> `vercel@39.1.3`) at seed time by the materializer, sourced from `provider.skill.package`.

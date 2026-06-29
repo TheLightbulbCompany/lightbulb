@@ -22,6 +22,9 @@ Parameters:
     Description: >-
       The AWS managed read-only policy to attach (e.g.
       arn:aws:iam::aws:policy/ViewOnlyAccess or arn:aws:iam::aws:policy/ReadOnlyAccess).
+    AllowedValues:
+      - "arn:aws:iam::aws:policy/ViewOnlyAccess"
+      - "arn:aws:iam::aws:policy/ReadOnlyAccess"
 
 Resources:
   Isol8ReadOnlyRole:

@@ -8,6 +8,11 @@ per-owner agent container can assume.
   `connections/{provider}/aws-setup` endpoint builds (see
   `apps/backend/core/services/credentials/aws_cfn.py`). The link prefills the
   `ExternalId`, `TrustedPrincipalArn`, and `ManagedPolicyArn` parameters.
+- `ManagedPolicyArn` is constrained via `AllowedValues` to exactly the two
+  intended AWS managed read-only policies —
+  `arn:aws:iam::aws:policy/ViewOnlyAccess` and
+  `arn:aws:iam::aws:policy/ReadOnlyAccess` — so an owner can't fat-finger a
+  broader policy (e.g. `AdministratorAccess`) onto the role.
 - The template is hosted at the public URL configured in
   `apps/backend/core/services/credentials/providers.yaml` under
   `aws_sts.cfn_template_url` (wired in a separate deploy step — not here).

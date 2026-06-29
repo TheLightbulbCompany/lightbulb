@@ -233,11 +233,11 @@ async def aws_setup(provider: str, auth: AuthContext = Depends(get_current_user)
     # trust policy — minting a fresh one would silently break an already-created
     # role's trust. The pending record is NOT a connected status: leave the
     # integrations index untouched until aws-complete succeeds.
-    rec = await integration_secret_store.get(owner_id, "aws")
+    rec = await integration_secret_store.get(owner_id, provider)
     external_id = (rec or {}).get("external_id")
     if not external_id:
         external_id = aws_cfn.gen_external_id()
-        await integration_secret_store.put(owner_id, "aws", {"external_id": external_id})
+        await integration_secret_store.put(owner_id, provider, {"external_id": external_id})
 
     principal_arn = aws_cfn.owner_task_role_arn(owner_id)
     region = p.aws_sts.default_region
@@ -296,7 +296,7 @@ async def aws_complete(provider: str, body: AwsCompleteBody, auth: AuthContext =
         raise HTTPException(status_code=400, detail=f"{provider} is not an AWS STS integration")
 
     role_arn = body.role_arn.strip()
-    match = _ROLE_ARN_RE.match(role_arn)
+    match = _ROLE_ARN_RE.fullmatch(role_arn)
     if not match:
         raise HTTPException(status_code=400, detail="invalid role ARN")
     if match.group(1) == bedrock_aip.OUR_ACCOUNT_ID:
@@ -308,7 +308,7 @@ async def aws_complete(provider: str, body: AwsCompleteBody, auth: AuthContext =
     if body.region and not _REGION_RE.fullmatch(body.region):
         raise HTTPException(status_code=400, detail="invalid region")
 
-    rec = await integration_secret_store.get(owner_id, "aws")
+    rec = await integration_secret_store.get(owner_id, provider)
     if not rec or not rec.get("external_id"):
         raise HTTPException(status_code=409, detail="run aws-setup first")
 
@@ -322,11 +322,11 @@ async def aws_complete(provider: str, body: AwsCompleteBody, auth: AuthContext =
     # (retained for reconcile, same as the paste flow). Then grant -> materialize
     # -> mark connected, with the status row written ONLY after a clean grant +
     # apply so the integration never reports a false "connected".
-    await integration_secret_store.put(owner_id, "aws", credential)
+    await integration_secret_store.put(owner_id, provider, credential)
     try:
         await bedrock_aip.put_owner_aws_sts_policy(owner_id, [role_arn])
-        await apply_connection.apply_connection(owner_id, "aws", credential)
-        await integrations_repo.put_status(owner_id, "aws", "connected")
+        await apply_connection.apply_connection(owner_id, provider, credential)
+        await integrations_repo.put_status(owner_id, provider, "connected")
     except Exception:
         # Best-effort rollback: a failed connect must leave no IAM grant and no
         # on-disk ~/.aws/config. Each teardown step is wrapped independently so
@@ -352,7 +352,7 @@ async def aws_complete(provider: str, body: AwsCompleteBody, auth: AuthContext =
                 exc_info=True,
             )
         try:
-            await integration_secret_store.put(owner_id, "aws", {"external_id": external_id})
+            await integration_secret_store.put(owner_id, provider, {"external_id": external_id})
         except Exception:
             logger.warning(
                 "aws-complete rollback: failed to reset pending secret for owner=%s",
@@ -363,7 +363,7 @@ async def aws_complete(provider: str, body: AwsCompleteBody, auth: AuthContext =
             status_code=502,
             detail="failed to apply the AWS connection to your container; please retry",
         )
-    return {"status": "connected", "provider": "aws"}
+    return {"status": "connected", "provider": provider}
 
 
 async def _seed_identity_best_effort(owner_id: str, agent_id: str) -> None:

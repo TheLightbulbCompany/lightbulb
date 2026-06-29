@@ -1580,6 +1580,51 @@ class TestAwsComplete:
         mock_repo.put_status.assert_not_called()
 
     @pytest.mark.asyncio
+    @patch("routers.connections._remove_materialized_artifacts", new_callable=AsyncMock)
+    @patch("routers.connections.bedrock_aip")
+    @patch("routers.connections.apply_connection")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    async def test_aws_complete_rolls_back_when_grant_fails(
+        self, mock_repo, mock_store, mock_apply, mock_aip, mock_remove, async_client
+    ):
+        # The grant step (put_owner_aws_sts_policy) is the first thing in the try
+        # block — if IT raises (e.g. an IAM PutRolePolicy error), the same rollback
+        # must run: no apply, no connected status, the secret reset to the pending
+        # {external_id} record (NOT deleted), and the grant teardown still issued
+        # (delete_owner_aws_sts_policy is idempotent, so a failed put is safe to
+        # delete). This exercises the one rollback entry-point the apply-failure
+        # tests don't: a grant that raises before apply ever runs.
+        mock_aip.OUR_ACCOUNT_ID = "877352799272"
+        mock_aip.put_owner_aws_sts_policy = AsyncMock(side_effect=RuntimeError("grant failed"))
+        mock_aip.delete_owner_aws_sts_policy = AsyncMock()
+        mock_store.get = AsyncMock(return_value={"external_id": "ext_abc"})
+        mock_store.put = AsyncMock()
+        mock_store.delete = AsyncMock()
+        mock_apply.apply_connection = AsyncMock()
+        mock_repo.put_status = AsyncMock()
+
+        resp = await async_client.post(
+            "/api/v1/connections/aws/aws-complete",
+            json={"role_arn": self._GOOD_ARN},
+        )
+        assert resp.status_code == 502
+        # The grant was attempted (and raised).
+        mock_aip.put_owner_aws_sts_policy.assert_awaited_once()
+        # apply never runs — the grant raised before it.
+        mock_apply.apply_connection.assert_not_called()
+        # Grant teardown still issued during rollback (idempotent delete).
+        mock_aip.delete_owner_aws_sts_policy.assert_awaited_once_with("user_test_123")
+        # Artifact-removal step still attempted on the rollback path.
+        mock_remove.assert_awaited_once()
+        # Secret reset to the pending {external_id}-only record, NOT deleted ->
+        # the owner's already-baked ExternalId survives for a retry.
+        mock_store.delete.assert_not_called()
+        assert mock_store.put.await_args_list[-1].args == ("user_test_123", "aws", {"external_id": "ext_abc"})
+        # Never reports a false "connected".
+        mock_repo.put_status.assert_not_called()
+
+    @pytest.mark.asyncio
     @patch("routers.connections.bedrock_aip")
     @patch("routers.connections.apply_connection")
     @patch("routers.connections.integration_secret_store")

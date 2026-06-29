@@ -284,16 +284,70 @@ def test_attio_is_remote_mcp_oauth_provider():
     assert p.mcp_remote.transport == "streamable-http"
 
 
+def test_aws_provider_shape():
+    # AWS read-only rides the aws_sts acquisition: the owner runs a CloudFormation
+    # stack that grants a cross-account role, and the baked `aws` CLI delivers the
+    # assumed-role credentials via the aws_cli materializer rail. The managed
+    # ViewOnly/ReadOnly policy ARNs cap the role at read access.
+    p = registry.get_provider("aws")
+    assert p.acquisition == "aws_sts"
+    assert p.actor == "cli"
+    assert p.refresh_owner == "none"
+    assert p.requires.bins == ["aws"]
+    assert p.wiring.materializer == "aws_cli"
+    assert p.wiring.mcp_server is None and p.wiring.openclaw_paths is None
+    assert p.aws_sts is not None
+    assert p.aws_sts.view_only_policy_arn == "arn:aws:iam::aws:policy/ViewOnlyAccess"
+    assert p.aws_sts.read_only_policy_arn == "arn:aws:iam::aws:policy/ReadOnlyAccess"
+    assert p.aws_sts.default_region == "us-east-1"
+    assert p.aws_sts.cfn_template_url is None
+
+
+def test_aws_sts_requires_aws_sts_block():
+    # Mirrors test_direct_oauth_requires_oauth_block: an aws_sts provider with no
+    # aws_sts spec block is a misconfiguration and must fail to construct.
+    from pydantic import ValidationError
+
+    from core.services.credentials.registry import Provider, Wiring
+
+    with pytest.raises(ValidationError):
+        Provider(
+            key="x",
+            display_name="X",
+            acquisition="aws_sts",
+            actor="cli",
+            refresh_owner="none",
+            wiring=Wiring(materializer="aws_cli"),
+            aws_sts=None,
+        )  # no aws_sts block
+
+
+# Materializers a provider block already declares but whose implementation is
+# not registered yet. Such names are exempt from the materializer consistency
+# guard below until their implementation ships. Empty today: every declared
+# materializer (including `aws_cli`) is now registered.
+_PENDING_MATERIALIZERS: set[str] = set()
+
+
 def test_registry_materializers_and_oauth_are_self_consistent():
     from core.services.credentials.materializers import MATERIALIZER_REMOVERS, MATERIALIZERS
 
     for key, p in registry.all_providers().items():
         if p.acquisition == "direct_oauth":
             assert p.oauth and p.oauth.scopes, f"{key}: direct_oauth missing oauth scopes"
-        if p.wiring.materializer:
-            assert p.wiring.materializer in MATERIALIZERS, f"{key}: unknown materializer {p.wiring.materializer!r}"
+        mat = p.wiring.materializer
+        if mat and mat not in _PENDING_MATERIALIZERS:
+            assert mat in MATERIALIZERS, f"{key}: unknown materializer {mat!r}"
             # A materializer without a matching remover would silently skip
             # on-disk cleanup at disconnect, leaving credential residue on EFS.
-            assert p.wiring.materializer in MATERIALIZER_REMOVERS, (
-                f"{key}: materializer {p.wiring.materializer!r} has no remover"
-            )
+            assert mat in MATERIALIZER_REMOVERS, f"{key}: materializer {mat!r} has no remover"
+
+
+def test_pending_materializers_are_genuinely_unimplemented():
+    # Self-cleaning guard: once a pending materializer is actually registered it
+    # must be dropped from _PENDING_MATERIALIZERS so the consistency check above
+    # starts covering it. This assertion trips the moment that cleanup is missed.
+    from core.services.credentials.materializers import MATERIALIZERS
+
+    for mat in _PENDING_MATERIALIZERS:
+        assert mat not in MATERIALIZERS, f"{mat!r} is now implemented; drop it from _PENDING_MATERIALIZERS"

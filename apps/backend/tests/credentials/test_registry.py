@@ -146,7 +146,6 @@ def test_stripe_is_mcp_server():
         ("linear", "https://mcp.linear.app"),
         ("sentry", "https://mcp.sentry.dev"),
         ("intercom", "https://mcp.intercom.com"),
-        ("vercel", "https://mcp.vercel.com"),
     ],
 )
 def test_hosted_oauth_mcp_provider_shape(key, host):

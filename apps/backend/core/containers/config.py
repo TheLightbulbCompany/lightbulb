@@ -649,23 +649,32 @@ def _build_agents_list(paperclip_agents: list[dict], ceo_model: str | None = Non
 
 
 def workflow_plugin_entries() -> dict:
-    """Bundled OpenClaw workflow extensions enabled on every container,
-    independent of the LLM provider.
+    """Bundled, provider-independent OpenClaw extensions enabled on every
+    container.
 
     Single source of truth so BOTH the provision-time builder
     (``build_openclaw_config_dict``) and the post-onboarding provider
     hot-swap path (``config_patcher.replace_provider_block``, which replaces
     ``plugins.entries`` wholesale) include them. Without this shared seam a
-    Bedrock ↔ ChatGPT switch would drop ``lobster`` / ``llm-task`` until the
-    next full reprovision.
+    Bedrock ↔ ChatGPT switch would drop these until the next full reprovision.
+
+    Entries:
+    - ``lobster`` — typed-pipeline workflow engine.
+    - ``llm-task`` — left unconfigured so it inherits the agent's default
+      provider/model at call time across every provider path.
+    - ``aws-exec-profile`` — baked in-repo plugin whose ``resolve_exec_env``
+      hook injects ``AWS_PROFILE=isol8-readonly`` into the agent's exec'd
+      commands only when the owner's read-only AWS profile is materialized.
+      Inert (returns ``{}``) until that profile exists, so it is safe to enable
+      fleet-wide regardless of provider.
 
     Returned fresh each call so callers may merge/mutate without corrupting
-    shared module state. ``llm-task`` is left unconfigured so it inherits the
-    agent's default provider/model at call time across every provider path.
+    shared module state.
     """
     return {
         "lobster": {"enabled": True},
         "llm-task": {"enabled": True},
+        "aws-exec-profile": {"enabled": True},
     }
 
 

@@ -1,0 +1,10 @@
+{
+  "name": "aws-exec-profile",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Injects AWS_PROFILE=isol8-readonly into the agent's exec environment only.",
+  "type": "module",
+  "openclaw": {
+    "runtimeExtensions": ["./dist/index.js"]
+  }
+}

@@ -319,6 +319,28 @@ async def test_cache_retention_long_in_agent_defaults_params(tmp_path, provider_
 
 
 @pytest.mark.asyncio
+async def test_subagents_allow_agents_wildcard_in_defaults(tmp_path):
+    """agents.defaults.subagents.allowAgents is ["*"] so every agent can see the
+    full company roster via the agents_list tool.
+
+    OpenClaw resolves agents_list from subagents.allowAgents; unset → an agent
+    sees ONLY itself (agents-list-tool.ts + subagent-target-policy.ts), which
+    blinds Atlas to siblings it must build out and Friday to its own team. "*"
+    widens to the full configured roster. Governs the agents tool only — not
+    cross-agent session visibility.
+    """
+    await write_openclaw_config(
+        config_path=tmp_path / "openclaw.json",
+        gateway_token="test-token",
+        provider_choice="bedrock_claude",
+        user_id="u_1",
+        aip_arns=_AIPS,
+    )
+    cfg = json.loads((tmp_path / "openclaw.json").read_text())
+    assert cfg["agents"]["defaults"]["subagents"]["allowAgents"] == ["*"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "provider_choice,byo_provider",
     [

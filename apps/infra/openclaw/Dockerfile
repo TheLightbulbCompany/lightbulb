@@ -88,8 +88,14 @@ USER root
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
       ffmpeg jq ripgrep tmux poppler-utils \
       socat python3-pip sqlite3 python3 \
-      curl wget ca-certificates gnupg git \
+      curl wget ca-certificates gnupg git unzip \
     && rm -rf /var/lib/apt/lists/*
+
+# ---- AWS CLI v2 (official bundled installer; apt/pip ship only v1) ----
+RUN curl -sSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-2.17.0.zip" -o /tmp/awscliv2.zip && \
+    unzip -q /tmp/awscliv2.zip -d /tmp && \
+    /tmp/aws/install && \
+    rm -rf /tmp/aws /tmp/awscliv2.zip
 
 # ---- Layer 2: 1Password CLI (apt repo) ----
 RUN curl -sS https://downloads.1password.com/linux/keys/1password.asc \

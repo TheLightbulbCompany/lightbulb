@@ -88,8 +88,14 @@ USER root
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
       ffmpeg jq ripgrep tmux poppler-utils \
       socat python3-pip sqlite3 python3 \
-      curl wget ca-certificates gnupg git \
+      curl wget ca-certificates gnupg git unzip \
     && rm -rf /var/lib/apt/lists/*
+
+# ---- AWS CLI v2 (official bundled installer; apt/pip ship only v1) ----
+RUN curl -sSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-2.17.0.zip" -o /tmp/awscliv2.zip && \
+    unzip -q /tmp/awscliv2.zip -d /tmp && \
+    /tmp/aws/install && \
+    rm -rf /tmp/aws /tmp/awscliv2.zip
 
 # ---- Layer 2: 1Password CLI (apt repo) ----
 RUN curl -sS https://downloads.1password.com/linux/keys/1password.asc \
@@ -328,7 +334,22 @@ RUN set -eux; \
     rm -rf /opt/stage-acpx; \
     chown -R root:root /app/dist/extensions/acpx
 
-# ---- Layer 14: bundled Paperclip skill ----
+# ---- Layer 14: baked aws-exec-profile plugin ----
+# Hand-written, dependency-free OpenClaw plugin (lives in-repo, NOT an npm
+# package). Registers a `resolve_exec_env` hook that injects
+# AWS_PROFILE=isol8-readonly into the agent's exec'd commands ONLY when the
+# owner's read-only AWS profile has been materialized at AWS_CONFIG_FILE — the
+# node/harness process (and Bedrock's in-process AWS SDK) keeps the host ECS
+# task-role identity. COPY lands it root-owned in the stock plugin root (the
+# loader rejects any plugin dir not owned by uid 0); it auto-activates from
+# plugins.entries.aws-exec-profile.enabled (set by core/containers/config.py).
+# Its only import is the host SDK (`openclaw/plugin-sdk/plugin-entry`), resolved
+# by self-referencing the `openclaw` package from /app — same mechanism the
+# baked extensions above use — so it ships no node_modules of its own.
+COPY plugins/aws-exec-profile /app/dist/extensions/aws-exec-profile
+RUN chown -R root:root /app/dist/extensions/aws-exec-profile
+
+# ---- Layer 15: bundled Paperclip skill ----
 # The `paperclip` skill is the agent's operating manual for the Paperclip
 # control plane — checking assignments, updating issues, posting comments,
 # approvals, and (critically) managing ROUTINES, the single governed home for

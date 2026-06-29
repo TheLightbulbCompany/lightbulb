@@ -1,0 +1,13 @@
+{
+  "id": "aws-exec-profile",
+  "name": "AWS exec profile",
+  "description": "Injects AWS_PROFILE=isol8-readonly into the agent's exec'd commands when the owner's read-only AWS profile is materialized, leaving the harness/node process on the host (ECS task role) identity.",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

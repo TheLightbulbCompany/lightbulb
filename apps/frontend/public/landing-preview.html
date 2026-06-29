@@ -12,7 +12,7 @@
   :root{
     --cream:#faf7f2;--cream-deeper:#f3efe6;--cream-deepest:#ebe5d6;--edge:#e0dbd0;--edge-forest:#d4e6dc;
     --forest:#06402B;--forest-soft:#4a9e74;--forest-tint:#e6efe9;
-    --ink:#1a1a1a;--ink-soft:#3d3d3d;--mute:#8a8578;--mute-soft:#b5af9f;--danger:#c0705f;--danger-soft:#d98a7a;--warn:#a8631a;
+    --ink:#1a1a1a;--ink-soft:#3d3d3d;--mute:#8a8578;--mute-soft:#b5af9f;--danger:#c0705f;--danger-soft:#d98a7a;--warn:#a8631a;--warn-bg:#faf1e3;--warn-edge:#ecd6b8;--ok:#2f7d52;--forest-hover:#0a5138;
     --serif:"Lora",Georgia,serif;--sans:"DM Sans",ui-sans-serif,system-ui,sans-serif;--mono:"Geist Mono",ui-monospace,monospace;
   }
   *{box-sizing:border-box;margin:0;padding:0}
@@ -29,7 +29,7 @@
   .nav-r a{font-size:14px;color:var(--ink-soft);transition:color .2s}
   .nav-r a:hover{color:var(--forest)}
   .btn-sm{padding:10px 20px;border-radius:999px;background:var(--forest);color:var(--cream)!important;font-weight:600;font-size:14px}
-  .btn-sm:hover{background:#0a5138}
+  .btn-sm:hover{background:var(--forest-hover)}
   @media(max-width:760px){.nav-r a:not(.btn-sm){display:none}nav{padding:16px 24px}}
 
   /* shared section bits */
@@ -47,7 +47,7 @@
   .rule span{font-family:var(--mono);font-size:9.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--mute-soft);white-space:nowrap}
 
   .btn{display:inline-flex;align-items:center;gap:10px;padding:15px 28px;border-radius:999px;background:var(--forest);color:var(--cream);font-size:15px;font-weight:600;border:1px solid var(--forest);transition:transform .3s cubic-bezier(.22,1,.36,1),box-shadow .3s,background .2s}
-  .btn:hover{background:#0a5138;transform:translateY(-2px);box-shadow:0 14px 34px rgba(6,64,43,.22)}
+  .btn:hover{background:var(--forest-hover);transform:translateY(-2px);box-shadow:0 14px 34px rgba(6,64,43,.22)}
   .btn .arr{transition:transform .3s}.btn:hover .arr{transform:translateX(4px)}
   .btn--ghost{background:transparent;color:var(--ink);border:1px solid var(--edge)}
   .btn--ghost:hover{background:var(--cream-deeper);border-color:var(--mute-soft);box-shadow:none;color:var(--ink)}
@@ -179,7 +179,7 @@
   .gtn-pill{font-family:var(--mono);font-size:9px;letter-spacing:.12em;background:var(--forest-tint);color:var(--forest);border:1px solid var(--edge-forest);padding:3px 7px;border-radius:5px;margin-left:6px}
   .gtn-form{margin-top:26px;display:flex;gap:10px;flex-wrap:wrap;max-width:430px}
   .gtn-input{flex:1;min-width:200px;border:1px solid var(--edge);border-radius:12px;padding:13px 16px;font-size:14px;background:var(--cream);color:var(--ink);outline:none}
-  .gtn-join{padding:13px 26px;border-radius:999px;background:var(--forest);color:var(--cream);font-weight:600;font-size:14px;border:none;cursor:pointer}.gtn-join:hover{background:#0a5138}
+  .gtn-join{padding:13px 26px;border-radius:999px;background:var(--forest);color:var(--cream);font-weight:600;font-size:14px;border:none;cursor:pointer}.gtn-join:hover{background:var(--forest-hover)}
   .gtn-game{border:1px solid var(--edge);border-radius:16px;overflow:hidden;background:#0a1f17;box-shadow:0 24px 60px rgba(6,64,43,.18)}
   .gtn-top{display:flex;align-items:center;justify-content:space-between;padding:11px 14px;background:#06170f;border-bottom:1px solid rgba(124,255,176,.12)}
   .gtn-top-logo{font-family:var(--mono);font-size:11px;letter-spacing:.18em;color:#7CFFB0}
@@ -215,7 +215,6 @@
   .ld-hub-row{display:flex;gap:36px}
   .ld-int{display:flex;flex-direction:column;align-items:center;gap:8px}
   .ld-int-bubble{width:56px;height:56px;border-radius:16px;background:#fff;border:1px solid var(--edge);display:flex;align-items:center;justify-content:center;box-shadow:0 10px 28px rgba(26,26,26,.07)}
-  .ld-int-bubble img{object-fit:contain}
   .ld-int span{font-family:var(--mono);font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--mute)}
   /* integration tree + orchestration diagrams */
   .intg,.orch{border:1px solid var(--edge);border-radius:18px;background:var(--cream-deeper);padding:12px}
@@ -325,7 +324,6 @@
   .af-t{margin-left:auto;font-family:var(--mono);font-size:9.5px;color:var(--mute-soft);text-transform:uppercase;letter-spacing:.08em;flex-shrink:0}
   .af-ck.spin{animation:afspin 1.6s linear infinite}
   @keyframes afspin{to{transform:rotate(360deg)}}
-  .m-badge img{width:27px;height:27px;object-fit:contain}
 
 
   .m-cluster{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:center;max-width:330px}
@@ -409,9 +407,9 @@
   .blg-eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.22em;text-transform:uppercase;color:var(--forest);margin-bottom:16px}
   .blg-h2{font-family:var(--serif);font-weight:500;font-size:clamp(32px,4.4vw,52px);line-height:1.05;letter-spacing:-.015em;color:var(--ink);max-width:18ch}
   .blg-h2 em{color:var(--forest)}
-  .tl-pill--ok{color:#2f7d52;border-color:#bfe0cd;background:#e9f4ed}
-  .tl-pill--sent{color:var(--forest);border-color:#cfe3d7;background:#eef6f1}
-  .tl-pill--warn{color:var(--warn);border-color:#ecd6b8;background:#faf1e3}
+  .tl-pill--ok{color:var(--ok);border-color:var(--edge-forest);background:var(--forest-tint)}
+  .tl-pill--sent{color:var(--forest);border-color:var(--edge-forest);background:var(--forest-tint)}
+  .tl-pill--warn{color:var(--warn);border-color:var(--warn-edge);background:var(--warn-bg)}
 </style>
 </head>
 <body>
@@ -647,7 +645,7 @@
             <div class="gtn-feat"><span class="sq">■</span> Virtual economy &amp; agent-to-agent sales <span class="gtn-pill">SOON</span></div>
           </div>
           <div class="gtn-form" data-reveal>
-            <input class="gtn-input" placeholder="your@email.com" />
+            <input class="gtn-input" type="email" placeholder="your@email.com" />
             <button class="gtn-join" id="gtn-join">JOIN</button>
           </div>
         </div>
@@ -704,7 +702,7 @@
   /* GooseTown signup */
   const gj=document.getElementById('gtn-join');
   /* mock only. no real signup; TODO: wire to a real waitlist endpoint on integration. */
-  if(gj) gj.addEventListener('click',()=>{const i=document.querySelector('.gtn-input'); if(i&&!i.value.includes('@')){i.focus();return;} gj.textContent='✓ IN'; if(i){i.value='';i.placeholder="You're on the list!";i.disabled=true;}});
+  if(gj) gj.addEventListener('click',()=>{const i=document.querySelector('.gtn-input'); if(i&&!i.value.includes('@')){i.focus();return;} gj.textContent='✓ IN'; gj.disabled=true; if(i){i.value='';i.placeholder="You're on the list!";i.disabled=true;}});
 
   /* ---- the hero orb: a breathing sphere that disperses as you leave the hero ---- */
   const cvs=document.getElementById('orb'), x=cvs.getContext('2d');
@@ -717,7 +715,8 @@
     pts.push({x:Math.cos(th)*r,y:y,z:Math.sin(th)*r,
       bx:(Math.cos(th)*r)+(((i*0.1234)%1)-0.5)*0.6, by:y+(((i*0.789)%1)-0.5)*0.6, bz:(Math.sin(th)*r)+(((i*0.456)%1)-0.5)*0.6,
       moss:((i*0.381966)%1)<0.17});}
-  let rot=0, t0=performance.now();
+  let rot=0, t0=performance.now(), running=true;
+  function startOrb(){ if(!running){ running=true; requestAnimationFrame(frame); } }
   const clamp01=v=>v<0?0:v>1?1:v, lerp=(a,b,t)=>a+(b-a)*t;
   function frame(){
    try{
@@ -726,7 +725,7 @@
     const hp=clamp01(scrollY/(innerHeight*0.9));
     const ex=hp*hp;                 // disperse as you leave
     cvs.style.opacity=(1-hp);
-    if(hp>=1){ requestAnimationFrame(frame); return; }   // fully gone: skip drawing
+    if(hp>=1){ running=false; return; }   // fully gone: stop the loop (restarts on scroll-up)
     rot+=0.0016+ex*0.01;
     const swell=1+Math.sin(t*0.5)*0.05+Math.sin(t*0.83)*0.022;
     x.clearRect(0,0,W,H);
@@ -752,6 +751,7 @@
    requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
+  addEventListener('scroll',()=>{ if(clamp01(scrollY/(innerHeight*0.9))<1) startOrb(); }, {passive:true});
 
   /* fade the hero text as you scroll into the page */
   const hpanel=document.getElementById('hero-panel');

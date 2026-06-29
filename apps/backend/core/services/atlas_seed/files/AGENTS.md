@@ -54,6 +54,35 @@ Five steps. Each maps to a `.lobster` pipeline. The methodology is the implement
 
 **There is no publish step.** Once the agent is registered, it appears in the owner's roster. **Publishing to the marketplace is the OWNER's action**, done through the seller wizard UI — Atlas does not publish, does not build listings, and does not submit anything. Atlas's job ends at "agent built + registered + here's the `agent_id`."
 
+## Knowing the Roster
+
+When someone asks "what agents exist", "do you know `<name>`", or you need the current fleet (for overlap, extend, or build-out), query the **agent roster** — never chat sessions. Sessions are transcripts; agents are the roster.
+
+- `GET /api/agents/me?include[agents]=true` with `$PAPERCLIP_API_KEY` returns the company's agents (names + ids). `GET /api/companies/{{companyId}}/agents` is equivalent.
+- An agent's workspace is `~/.openclaw/workspaces/{{agent_id}}/` (its `agents.list[].workspace`).
+- `sessions_list` answers "what conversations happened", **not** "what agents exist" — never use it to look up an agent. If you can't find an agent by name, list the roster and match — don't conclude it doesn't exist from a session search.
+
+## Building Out an Existing Agent
+
+The five-step pipeline above is for creating a **new** agent. Building out an agent that **already exists** (created via the `+ Agent` button — it is already a Paperclip agent with tools connected) is a different, lighter job: you edit its workspace files directly. **No identity-lock, no skeleton generator, no bridge, no Paperclip mint, no `.lobster` pipeline** — the agent and its gateway adapter already exist. This is plain file work via your native tools.
+
+Flow:
+
+1. **Locate** — find the agent in the roster (above) → its `workspaces/{{agent_id}}/` path.
+2. **Read** — read its current workspace (`AGENTS.md`, `IDENTITY.md`/`SOUL.md`/`USER.md`, `skills/`, `*.lobster`) so your edits are diffs against what's there, not a from-scratch rewrite.
+3. **Edit** — make targeted edits per the owner's requirements, using your native read/write/edit tools.
+4. **Back up + write** — copy any file you touch to `<file>.bak` first, then write.
+5. **Confirm** — show the owner a summary/diff of what changed (a plain chat confirm — this is not a create, so no S9/S10 gates).
+
+OpenClaw reads workspace files at runtime, so the agent picks up your edits on its next run — no deploy, no restart, no bridge.
+
+Guardrails:
+
+- **Workspace files only.** Never edit the global `~/.openclaw/openclaw.json` — it is the shared container config; a bad edit bricks every agent, and it is backend-managed. The per-workspace `openclaw.json` is an **inert** artifact: editing it does NOT change the agent's live tools.
+- **Live tools / skills / integrations are owner-managed** (the `+ Agent` flow + isol8 settings). Build-out changes the agent's prompt, skills, and behavior — not its live tool grants. If a build-out genuinely needs a tool the agent doesn't have, tell the owner to connect it in settings; do not pretend to wire it.
+- **Never wholesale-overwrite** a workspace — `skeleton-generator --action=write-disk` (dir-replace) is the create tool and is the wrong tool here. Make surgical edits.
+- **Never build out yourself** (Atlas editing Atlas's own workspace) without an explicit owner override — same spirit as the reserved-name rule.
+
 ## Hard Rules
 
 These six are non-negotiable. Plus a meta-rule on citation granularity from BSL catch #6.

@@ -1,0 +1,56 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Isol8 read-only connector — grants Isol8's per-owner agent container scoped,
+  read-only AssumeRole access to this account.
+
+Parameters:
+  ExternalId:
+    Type: String
+    NoEcho: true
+    Description: >-
+      The high-entropy STS ExternalId Isol8 generated for this connection.
+      Required on every AssumeRole call; without it the role cannot be assumed.
+
+  TrustedPrincipalArn:
+    Type: String
+    Description: >-
+      ARN of the Isol8 per-owner container task role that is allowed to assume
+      this role (e.g. arn:aws:iam::877352799272:role/isol8-<env>-owner-bedrock-<owner>).
+
+  ManagedPolicyArn:
+    Type: String
+    Description: >-
+      The AWS managed read-only policy to attach (e.g.
+      arn:aws:iam::aws:policy/ViewOnlyAccess or arn:aws:iam::aws:policy/ReadOnlyAccess).
+
+Resources:
+  Isol8ReadOnlyRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: isol8-readonly-connector
+      Description: >-
+        Read-only role assumed by Isol8's per-owner agent container. Trust is
+        pinned to a single Isol8 principal and gated by an STS ExternalId.
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Ref TrustedPrincipalArn
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref ExternalId
+      ManagedPolicyArns:
+        - !Ref ManagedPolicyArn
+      Tags:
+        - Key: ManagedBy
+          Value: isol8
+
+Outputs:
+  RoleArn:
+    Description: >-
+      ARN of the created read-only role — paste this back into Isol8 to complete
+      the AWS connection (aws-complete).
+    Value: !GetAtt Isol8ReadOnlyRole.Arn

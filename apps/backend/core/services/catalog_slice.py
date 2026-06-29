@@ -153,6 +153,41 @@ def _scrub_secret_fields(entry: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _scrub_tools_block(tools: dict[str, Any]) -> dict[str, Any]:
+    """Return a deep copy of the top-level ``tools`` block with every
+    secret-shaped value blanked, anywhere in the structure.
+
+    Unlike ``_scrub_secret_fields`` (which only inspects an entry's top
+    level, matching upstream's flat MCP/skill secret schema), the ``tools``
+    block is a free-form nested config (``tools.exec.env``,
+    ``tools.fetch.headers``, ...). A future mistake placing a credential
+    under any nested key would otherwise be deep-copied verbatim into the
+    published artifact. We walk the whole tree and blank any key in
+    ``_SECRET_FIELD_NAMES`` (dict → ``{kk: ""}``, list → ``[]``, else
+    ``""``), preserving key names so the buyer sees what to fill in.
+    """
+    out = copy.deepcopy(tools)
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, dict):
+            for k, v in list(node.items()):
+                if k in _SECRET_FIELD_NAMES:
+                    if isinstance(v, dict):
+                        node[k] = {kk: "" for kk in v}
+                    elif isinstance(v, list):
+                        node[k] = []
+                    else:
+                        node[k] = ""
+                else:
+                    _walk(v)
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    _walk(out)
+    return out
+
+
 def classify_skill(
     name: str,
     openclaw_json: dict[str, Any],
@@ -341,7 +376,7 @@ def extract_agent_slice(
     slice_: dict[str, Any] = {
         "agent": strip_removed_agent_entry_keys(strip_user_specific_fields(agent_entry)),
         "plugins": _strip_provider_plugins(openclaw_json.get("plugins") or {}),
-        "tools": copy.deepcopy(openclaw_json.get("tools") or {}),
+        "tools": _scrub_tools_block(openclaw_json.get("tools") or {}),
     }
 
     if selected_mcps is not None:

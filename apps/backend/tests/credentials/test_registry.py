@@ -284,6 +284,69 @@ def test_attio_is_remote_mcp_oauth_provider():
     assert p.mcp_remote.transport == "streamable-http"
 
 
+def test_skill_spec_model_shape():
+    # A SkillSpec carries what a paste-token CLI integration's materializer needs:
+    # the skills.entries.<key> it owns, the env var the credential is injected as,
+    # and the EXACT-pinned npm package the skill's SKILL.md tells the agent to npx.
+    from core.services.credentials.registry import SkillSpec
+
+    s = SkillSpec(key="vercel", primaryEnv="VERCEL_TOKEN", package="vercel@39.1.3")
+    assert s.key == "vercel"
+    # The `primaryEnv` alias (YAML camelCase) populates the `primary_env` field.
+    assert s.primary_env == "VERCEL_TOKEN"
+    assert s.package == "vercel@39.1.3"
+    # populate_by_name also accepts the field name directly (Python construction).
+    s2 = SkillSpec(key="vercel", primary_env="VERCEL_TOKEN", package="vercel@39.1.3")
+    assert s2.primary_env == "VERCEL_TOKEN"
+
+
+def test_provider_carries_optional_skill_block():
+    # A paste-token CLI integration that delivers a bundled skill rides the
+    # skill_cli materializer and carries its SkillSpec at the provider level.
+    from core.services.credentials.registry import Provider
+
+    p = Provider(
+        key="vercel_cli",
+        display_name="Vercel",
+        acquisition="paste_token",
+        actor="skill",
+        refresh_owner="none",
+        wiring={"materializer": "skill_cli"},
+        skill={"key": "vercel", "primaryEnv": "VERCEL_TOKEN", "package": "vercel@39.1.3"},
+        validate={"method": "GET", "url": "https://api.vercel.com/v2/user"},
+    )
+    assert p.skill is not None
+    assert p.skill.key == "vercel"
+    assert p.skill.primary_env == "VERCEL_TOKEN"
+    assert p.skill.package == "vercel@39.1.3"
+    # Validate by API call, never by token prefix.
+    assert p.validation is not None
+    assert p.validation.url == "https://api.vercel.com/v2/user"
+    assert p.validation.token_prefix is None
+
+
+def test_provider_skill_defaults_to_none():
+    # Providers without a bundled skill leave the field unset.
+    p = registry.get_provider("stripe")
+    assert p.skill is None
+
+
+def test_vercel_cli_is_skill_paste_provider():
+    p = registry.get_provider("vercel_cli")
+    assert p.acquisition == "paste_token"
+    assert p.actor == "skill"
+    assert p.refresh_owner == "none"
+    assert p.wiring.materializer == "skill_cli"
+    assert p.wiring.mcp_server is None and p.wiring.openclaw_paths is None
+    assert p.skill is not None
+    assert p.skill.key == "vercel"
+    assert p.skill.primary_env == "VERCEL_TOKEN"
+    assert p.skill.package.startswith("vercel@")
+    assert p.validation is not None
+    assert p.validation.url == "https://api.vercel.com/v2/user"
+    assert p.validation.token_prefix is None
+
+
 def test_aws_provider_shape():
     # AWS read-only rides the aws_sts acquisition: the owner runs a CloudFormation
     # stack that grants a cross-account role, and the baked `aws` CLI delivers the

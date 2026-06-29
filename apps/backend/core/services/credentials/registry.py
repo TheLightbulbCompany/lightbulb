@@ -76,6 +76,19 @@ class McpRemote(BaseModel):
         return {"transport": self.transport, "url": self.url, "auth": "oauth"}
 
 
+class SkillSpec(BaseModel):
+    """A bundled skill delivered by a paste-token CLI integration. The
+    materializer enables ``skills.entries.<key>`` and injects the credential as
+    the env var ``primary_env`` (OpenClaw's native skill env injection). ``package``
+    is the EXACT-pinned npm spec the skill's SKILL.md tells the agent to ``npx``."""
+
+    key: str  # skills.entries.<key> this integration owns
+    primary_env: str = Field(alias="primaryEnv")
+    package: str  # e.g. "vercel@<x.y.z>" — exact version, never a range/tag
+
+    model_config = {"populate_by_name": True}
+
+
 class Wiring(BaseModel):
     openclaw_paths: list[OpenclawPath] | None = None
     materializer: str | None = None
@@ -168,6 +181,8 @@ class Provider(BaseModel):
     # materializer. Only set for OAuth-protected remote MCP servers (e.g. Attio);
     # see McpRemote for why it lives at the provider level rather than in Wiring.
     mcp_remote: McpRemote | None = None
+    # Bundled skill delivered by a paste-token CLI integration (see SkillSpec).
+    skill: SkillSpec | None = None
     # AWS read-only STS rail config. Only set for the `aws` provider (acquisition
     # aws_sts); carries the managed-policy ARNs that cap the assumed role + the
     # default region.

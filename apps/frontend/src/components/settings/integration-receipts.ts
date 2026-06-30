@@ -17,4 +17,5 @@ export const INTEGRATION_RECEIPTS: Record<string, IntegrationReceipt> = {
   github: { delivers: "repo, issue & PR tools scoped to your account" },
   google: { delivers: "Gmail, Calendar & Drive access" },
   vercel_cli: { delivers: "deploy, logs, project & env tools for your Vercel account" },
+  aws: { delivers: "read-only AWS access — describe & list your account's resources" },
 };

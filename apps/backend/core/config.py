@@ -68,6 +68,14 @@ class Settings(BaseSettings):
     # --- S3 Config ---
     S3_CONFIG_BUCKET: str = os.getenv("S3_CONFIG_BUCKET", "")
 
+    # Public S3 URL of the hosted AWS read-only connector CloudFormation
+    # template (the public-read isol8-{env}-cfn-templates bucket, wired by CDK
+    # service-stack). The connections aws-setup endpoint feeds this as the
+    # quick-create TemplateURL so the "Create role in AWS" button works.
+    # CloudFormation requires an S3 URL it can fetch anonymously. Empty default
+    # keeps the button disabled (and the backend booting) in non-AWS contexts.
+    CFN_TEMPLATE_URL: str = os.getenv("CFN_TEMPLATE_URL", "")
+
     # --- PostHog (server-side, distinct from NEXT_PUBLIC_POSTHOG_KEY) ---
     # Used by core/services/posthog_admin.py to query the Persons API for the
     # admin dashboard's Activity tab. Empty defaults so the admin client

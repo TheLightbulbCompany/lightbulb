@@ -1300,6 +1300,46 @@ class TestAwsSetup:
         assert mock_store.put.await_count == 1
 
     @pytest.mark.asyncio
+    @patch("routers.connections.integration_secret_store")
+    async def test_aws_setup_builds_quick_create_url_when_template_hosted(self, mock_store, async_client, monkeypatch):
+        # With CFN_TEMPLATE_URL set (the hosted connector template wired by CDK),
+        # aws-setup returns real quick-create URLs carrying the URL-encoded
+        # template URL plus the ExternalId / principal / policy param prefills —
+        # the button auto-enables on the frontend. aws_cfn is left UNMOCKED so the
+        # real quick_create_url is exercised (its helpers are pure, no AWS calls).
+        from urllib.parse import quote
+
+        store: dict = {}
+
+        async def fake_get(owner, provider):
+            return store.get((owner, provider))
+
+        async def fake_put(owner, provider, cred):
+            store[(owner, provider)] = cred
+            return "secret-arn"
+
+        mock_store.get = AsyncMock(side_effect=fake_get)
+        mock_store.put = AsyncMock(side_effect=fake_put)
+
+        template_url = "https://isol8-dev-cfn-templates.s3.us-east-1.amazonaws.com/aws-readonly-connector.yaml"
+        monkeypatch.setattr(connections.settings, "CFN_TEMPLATE_URL", template_url)
+
+        r = await async_client.get("/api/v1/connections/aws/aws-setup")
+        assert r.status_code == 200
+        body = r.json()
+
+        external_id = body["external_id"]
+        principal_arn = body["principal_arn"]
+        encoded_template = quote(template_url, safe="")
+        for block in ("view_only", "read_only"):
+            url = body[block]["quick_create_url"]
+            assert url is not None
+            assert f"templateURL={encoded_template}" in url
+            assert f"param_ExternalId={external_id}" in url
+            assert quote(principal_arn, safe="") in url
+            assert quote(body[block]["policy_arn"], safe="") in url
+
+    @pytest.mark.asyncio
     async def test_aws_setup_non_aws_provider_returns_400(self, async_client):
         # stripe is paste_token, not aws_sts -> rejected at this AWS surface.
         response = await async_client.get("/api/v1/connections/stripe/aws-setup")

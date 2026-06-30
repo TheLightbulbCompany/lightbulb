@@ -243,17 +243,20 @@ async def aws_setup(provider: str, auth: AuthContext = Depends(get_current_user)
     region = p.aws_sts.default_region
 
     def _quick_create(policy_arn: str) -> str | None:
-        # The connector CFN template is unhosted until Plan 3, so there is no
-        # quick-create URL to build yet — return None rather than crash on a
-        # None template_url. The frontend/Plan 3 fills it in once hosted.
-        if not p.aws_sts.cfn_template_url:
+        # Prefer the env-wired hosted template URL (CFN_TEMPLATE_URL — the
+        # public-read S3 object the CDK service-stack uploads), falling back to
+        # the provider's static cfn_template_url. With neither set the template
+        # is unhosted, so return None rather than crash on a None template_url —
+        # the frontend renders the "Create role in AWS" button disabled.
+        template_url = settings.CFN_TEMPLATE_URL or p.aws_sts.cfn_template_url
+        if not template_url:
             return None
         return aws_cfn.quick_create_url(
             external_id=external_id,
             principal_arn=principal_arn,
             policy_arn=policy_arn,
             region=region,
-            template_url=p.aws_sts.cfn_template_url,
+            template_url=template_url,
         )
 
     return {

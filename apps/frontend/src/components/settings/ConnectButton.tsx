@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useApi, BACKEND_URL } from "@/lib/api";
 import { ApiError, type Connection } from "@/hooks/useConnections";
+import { AwsConnectCard } from "@/components/settings/AwsConnectCard";
 import { notifyApiError } from "@/lib/notify";
 
 interface ConnectButtonProps {
@@ -309,6 +310,18 @@ export function ConnectButton({
           </p>
         )}
       </div>
+    );
+  }
+
+  // AWS uses an STS assume-role flow, not a pasted key: a dedicated card walks
+  // the owner through ExternalId + principal ARN → create role → paste ARN.
+  if (acquisition === "aws_sts") {
+    return (
+      <AwsConnectCard
+        connection={connection}
+        canManage={canManage}
+        refreshConnections={refreshConnections}
+      />
     );
   }
 

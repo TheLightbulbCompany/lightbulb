@@ -11,6 +11,8 @@ import { ApiError, useApi } from "@/lib/api";
  * Acquisition mode decides the connect UX:
  *   - paste_token  → user pastes a provider API key (Linear, Stripe, …)
  *   - direct_oauth → user is redirected out to the provider (Google, …)
+ *   - aws_sts      → STS assume-role flow (AWS): ExternalId + principal ARN →
+ *                    create a cross-account role → paste its ARN (no key)
  *
  * `GET /connections` returns the FULL provider catalog already merged
  * with this owner's status, so the UI renders whatever comes back — it
@@ -19,7 +21,7 @@ import { ApiError, useApi } from "@/lib/api";
 export interface Connection {
   provider: string;
   display_name: string;
-  acquisition: "paste_token" | "direct_oauth";
+  acquisition: "paste_token" | "direct_oauth" | "aws_sts";
   status: "connected" | "disconnected";
   /**
    * BYO ("bring your own") OAuth app affordance:

@@ -68,7 +68,11 @@ export function ConnectionsList({ canManage }: ConnectionsListProps) {
               <p className="text-sm font-medium text-[#1c1917]">{connection.display_name}</p>
               <p className="text-xs text-[#8a8578]">
                 {connected ? "Connected" : "Not connected"}
-                {connection.acquisition === "direct_oauth" ? " · OAuth" : " · API key"}
+                {connection.acquisition === "direct_oauth"
+                  ? " · OAuth"
+                  : connection.acquisition === "aws_sts"
+                    ? " · AWS role"
+                    : " · API key"}
               </p>
               {receipt && (
                 <p className="text-xs text-[#8a8578] mt-0.5">

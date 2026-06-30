@@ -10,6 +10,7 @@ import * as iam from "aws-cdk-lib/aws-iam";
 import * as logs from "aws-cdk-lib/aws-logs";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as s3 from "aws-cdk-lib/aws-s3";
+import * as s3deploy from "aws-cdk-lib/aws-s3-deployment";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as servicediscovery from "aws-cdk-lib/aws-servicediscovery";
 import { Construct } from "constructs";
@@ -812,6 +813,59 @@ export class ServiceStack extends cdk.Stack {
     marketplaceArtifactsBucket.grantReadWrite(this.taskRole);
 
     // -------------------------------------------------------------------------
+    // CFN Templates S3 Bucket (public-read of the connector template only)
+    //
+    // Hosts the AWS read-only connector CloudFormation template so the
+    // "Create role in AWS" quick-create button works: CloudFormation requires
+    // the TemplateURL to be an S3 URL it can fetch ANONYMOUSLY (not a
+    // CloudFront/Vercel URL). The template (apps/infra/aws/
+    // aws-readonly-connector.yaml) is generic + fully parameterized — no
+    // secrets — so public READ of that single object is safe.
+    //
+    // Public-access posture: block public ACLs (we never use ACLs) but ALLOW a
+    // public bucket POLICY, and the policy below grants ONLY s3:GetObject on the
+    // one template object to everyone. No public write, no listing, no other
+    // objects (the deployment prunes the bucket to exactly this template). SSE-S3
+    // (not KMS) so anonymous CloudFormation GETs aren't blocked on decrypt.
+    // -------------------------------------------------------------------------
+    const CFN_TEMPLATE_KEY = "aws-readonly-connector.yaml";
+    const cfnTemplatesBucket = new s3.Bucket(this, "CfnTemplatesBucket", {
+      bucketName: `isol8-${env}-cfn-templates`,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      blockPublicAccess: new s3.BlockPublicAccess({
+        blockPublicAcls: true,
+        ignorePublicAcls: true,
+        blockPublicPolicy: false,
+        restrictPublicBuckets: false,
+      }),
+      removalPolicy:
+        env === "prod" ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: env !== "prod",
+    });
+
+    // Public READ of the single connector template object — nothing else.
+    cfnTemplatesBucket.addToResourcePolicy(
+      new iam.PolicyStatement({
+        sid: "PublicReadConnectorTemplate",
+        effect: iam.Effect.ALLOW,
+        principals: [new iam.AnyPrincipal()],
+        actions: ["s3:GetObject"],
+        resources: [cfnTemplatesBucket.arnForObjects(CFN_TEMPLATE_KEY)],
+      }),
+    );
+
+    // Upload the connector template. Exclude the dir's README so the bucket
+    // holds ONLY the template; `prune` (default true) keeps it to that object.
+    new s3deploy.BucketDeployment(this, "CfnTemplateDeployment", {
+      destinationBucket: cfnTemplatesBucket,
+      sources: [
+        s3deploy.Source.asset(path.join(__dirname, "..", "..", "aws"), {
+          exclude: ["*.md"],
+        }),
+      ],
+    });
+
+    // -------------------------------------------------------------------------
     // Marketplace browse / search is served by the backend's in-process
     // search service (apps/backend/core/services/marketplace_search.py) —
     // a 60s-TTL DDB scan over published listings. At v0 scale the listing
@@ -1088,6 +1142,12 @@ export class ServiceStack extends cdk.Stack {
         MARKETPLACE_SELLERS_TABLE:
           props.database.marketplaceSellersTable.tableName,
         MARKETPLACE_ARTIFACTS_BUCKET: marketplaceArtifactsBucket.bucketName,
+        // Deterministic public S3 URL of the hosted AWS read-only connector
+        // CloudFormation template. The connections aws-setup endpoint feeds this
+        // as the quick-create TemplateURL (CloudFormation must fetch it
+        // anonymously). Bucket name + key are fixed, so this is a literal string
+        // — no cross-stack output ref needed (the bucket lives in this stack).
+        CFN_TEMPLATE_URL: `https://isol8-${env}-cfn-templates.s3.us-east-1.amazonaws.com/${CFN_TEMPLATE_KEY}`,
         // Stripe Connect onboarding redirects — environment-specific so
         // dev/prod hit the correct marketplace host. Stripe-hosted onboarding
         // bounces sellers back here on refresh + completion.

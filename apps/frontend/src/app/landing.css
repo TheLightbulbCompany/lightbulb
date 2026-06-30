@@ -905,7 +905,7 @@
   padding: 46px 48px;
   border-radius: 20px;
   background: var(--forest);
-  color: #eef6f1;
+  color: var(--cream);
 }
 
 /* a soft moss bloom in the corner, same language as the hero pod */
@@ -931,7 +931,7 @@
   background: rgba(255, 255, 255, 0.1);
   display: grid;
   place-items: center;
-  color: #ffffff;
+  color: var(--cream);
   flex-shrink: 0;
 }
 
@@ -955,13 +955,13 @@
   font-size: clamp(24px, 2.8vw, 34px);
   font-weight: 500;
   line-height: 1.1;
-  color: #ffffff;
+  color: var(--cream);
   margin-bottom: 12px;
 }
 
 .ld-iso-body h3 em {
   font-style: italic;
-  color: var(--forest-soft);
+  color: #9fe6c2; /* mint — AA contrast on the forest band */
 }
 
 .ld-iso-body p {
@@ -995,6 +995,9 @@
     grid-template-columns: 1fr;
     gap: 20px;
     padding: 34px 26px;
+  }
+  .ld-iso-pill {
+    justify-self: start;
   }
 }
 

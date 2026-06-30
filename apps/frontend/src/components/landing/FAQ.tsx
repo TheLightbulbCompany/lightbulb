@@ -81,7 +81,6 @@ export function FAQ() {
       <div className="ld-section">
         <div className="ld-kicker" data-ld-reveal>
           faq
-          <span className="ld-kicker-index">07 — 08</span>
         </div>
         <h2 className="ld-h2" data-ld-reveal>
           Questions you probably <em>have.</em>

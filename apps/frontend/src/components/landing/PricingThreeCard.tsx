@@ -9,7 +9,6 @@ export function PricingThreeCard() {
       <div className="ld-section">
         <div className="ld-kicker" data-ld-reveal>
           pricing
-          <span className="ld-kicker-index">06 — 08</span>
         </div>
         <h2 className="ld-h2" data-ld-reveal>
           One price. <em>Three ways to power it.</em>

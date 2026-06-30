@@ -86,6 +86,35 @@ describe("AwsConnectCard", () => {
     expect(screen.getByText(/aws role template coming soon/i)).toBeInTheDocument();
   });
 
+  it("shows the managed-policy ARN to attach on the manual path, tracking the scope toggle", async () => {
+    renderCard();
+    fireEvent.click(screen.getByRole("button", { name: /connect aws/i }));
+    await screen.findByText(SETUP.external_id);
+
+    // ViewOnly default → ViewOnlyAccess policy surfaced for the hand-built role.
+    expect(screen.getByText(/managed policy to attach/i)).toBeInTheDocument();
+    expect(screen.getByText(SETUP.view_only.policy_arn)).toBeInTheDocument();
+
+    // Toggling to ReadOnly swaps the displayed policy ARN.
+    fireEvent.click(screen.getByRole("button", { name: "ReadOnly" }));
+    expect(screen.getByText(SETUP.read_only.policy_arn)).toBeInTheDocument();
+  });
+
+  it("offers an in-card Retry that re-runs aws-setup after a setup failure", async () => {
+    getMock.mockRejectedValueOnce(new Error("boom"));
+    renderCard();
+    fireEvent.click(screen.getByRole("button", { name: /connect aws/i }));
+
+    const retry = await screen.findByRole("button", { name: /retry setup/i });
+    expect(getMock).toHaveBeenCalledTimes(1);
+
+    getMock.mockResolvedValueOnce(SETUP);
+    fireEvent.click(retry);
+
+    expect(await screen.findByText(SETUP.external_id)).toBeInTheDocument();
+    expect(getMock).toHaveBeenCalledTimes(2);
+  });
+
   it("enables Connect only for a well-formed role ARN, then POSTs aws-complete", async () => {
     const { refreshConnections } = renderCard();
     fireEvent.click(screen.getByRole("button", { name: /connect aws/i }));

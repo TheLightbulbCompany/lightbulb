@@ -171,11 +171,6 @@ export function AwsConnectCard({ connection, canManage, refreshConnections }: Aw
         >
           Connect
         </Button>
-        {err && (
-          <p className="text-xs text-[#b63025]" role="alert">
-            {err}
-          </p>
-        )}
       </div>
     );
   }
@@ -237,6 +232,12 @@ export function AwsConnectCard({ connection, canManage, refreshConnections }: Aw
           <span className="text-[11px] text-[#8a8578]">broader — includes data-plane reads</span>
         )}
       </div>
+
+      {/* Which AWS-managed policy to attach to the hand-created role. Only shown
+          on the manual path: once the CFN quick-create link exists, the stack
+          attaches the policy automatically and surfacing the ARN is noise. */}
+      {setup && scopeOption && quickCreateUrl === null &&
+        renderCopyableField("policy_arn", "Managed policy to attach", scopeOption.policy_arn)}
 
       {loadingSetup && <p className="text-xs text-[#8a8578]">Loading setup…</p>}
 
@@ -300,14 +301,28 @@ export function AwsConnectCard({ connection, canManage, refreshConnections }: Aw
         <Button size="sm" variant="outline" disabled={busy} onClick={closeCard}>
           Cancel
         </Button>
-        <Button
-          size="sm"
-          disabled={busy || !canManage || !setup || !roleArnValid}
-          onClick={() => void connect()}
-          aria-label={`Connect ${display_name}`}
-        >
-          {busy ? "Connecting…" : "Connect"}
-        </Button>
+        {/* Setup failed (no staged ExternalId/principal). Connect is dead-ended
+            since there's no setup to complete — offer an in-card retry so the
+            user recovers without Cancel + reopen. */}
+        {err && !setup && !loadingSetup ? (
+          <Button
+            size="sm"
+            disabled={!canManage}
+            onClick={() => void loadSetup()}
+            aria-label="Retry setup"
+          >
+            Retry
+          </Button>
+        ) : (
+          <Button
+            size="sm"
+            disabled={busy || !canManage || !setup || !roleArnValid}
+            onClick={() => void connect()}
+            aria-label={`Connect ${display_name}`}
+          >
+            {busy ? "Connecting…" : "Connect"}
+          </Button>
+        )}
       </div>
 
       {err && (

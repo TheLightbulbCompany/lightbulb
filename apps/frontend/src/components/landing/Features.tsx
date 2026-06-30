@@ -88,7 +88,6 @@ export function Features() {
       <div className="ld-section">
         <div className="ld-kicker" data-ld-reveal>
           your pod
-          <span className="ld-kicker-index">03 — 08</span>
         </div>
         <h2 className="ld-h2" data-ld-reveal>
           Agents that fit into <em>your</em> tools.

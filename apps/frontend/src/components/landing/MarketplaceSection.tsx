@@ -20,7 +20,6 @@ export async function MarketplaceSection() {
           <div>
             <div className="ld-kicker" data-ld-reveal>
               the marketplace
-              <span className="ld-kicker-index">05 — 08</span>
             </div>
             <h2 className="ld-h2" data-ld-reveal>
               Hire an <em>agent.</em>

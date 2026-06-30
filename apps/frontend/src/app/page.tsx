@@ -2,8 +2,8 @@ import { SmoothScroll } from "@/components/providers/SmoothScroll";
 import { ScrollManager } from "@/components/landing/ScrollManager";
 import { Navbar } from "@/components/landing/Navbar";
 import { Hero } from "@/components/landing/Hero";
-import { HowItWorks } from "@/components/landing/HowItWorks";
 import { Features } from "@/components/landing/Features";
+import { Isolation } from "@/components/landing/Isolation";
 import { Team } from "@/components/landing/Team";
 import { MarketplaceSection } from "@/components/landing/MarketplaceSection";
 import { Pricing } from "@/components/landing/Pricing";
@@ -18,16 +18,19 @@ export default function LandingPage() {
         <ScrollManager />
         <Navbar />
         <Hero />
-        <HowItWorks />
-        <div className="ld-rule">
-          <span>pod_contents</span>
-        </div>
-        <Features />
         <div className="ld-rule">
           <span>org_chart</span>
         </div>
         <Team />
+        <div className="ld-rule">
+          <span>containment</span>
+        </div>
+        <Isolation />
         <MarketplaceSection />
+        <div className="ld-rule">
+          <span>pod_contents</span>
+        </div>
+        <Features />
         <Pricing />
         <div className="ld-rule">
           <span>open_questions</span>

@@ -47,7 +47,6 @@ export function Team() {
       <div className="ld-section">
         <div className="ld-kicker" data-ld-reveal>
           your team
-          <span className="ld-kicker-index">04 — 08</span>
         </div>
         <h2 className="ld-h2" data-ld-reveal>
           One brief. <em>The whole team listens.</em>

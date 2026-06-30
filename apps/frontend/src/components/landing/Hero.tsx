@@ -139,7 +139,8 @@ export function Hero() {
             One private pod, an entire team of agents. They connect to the
             tools you already use, run multi-step workflows on their own, and
             report back — led by <strong>Friday</strong>, your AI chief of
-            staff.
+            staff. Every pod is <strong>sandboxed in the cloud</strong>,
+            reaching only the tools you connect.
           </p>
 
           <div className="ld-hero-actions">

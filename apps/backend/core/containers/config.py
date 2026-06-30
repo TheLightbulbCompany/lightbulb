@@ -1102,6 +1102,17 @@ def build_openclaw_config_dict(
             **_build_exec_policy(),
             "web": {
                 "fetch": {"enabled": True},
+                # Route native web_search through Parallel's free, keyless Search
+                # MCP (search.parallel.ai/mcp) for every agent. OpenClaw stopped
+                # auto-selecting a keyless provider, so agents that call native
+                # web_search now throw "disabled or no provider" unless one is
+                # set. parallel-free needs no API key and is reliable from
+                # Fargate (unlike the rate-limited DuckDuckGo fallback); the
+                # @openclaw/parallel-plugin that provides it is baked into the
+                # extended image. Per-agent parallel-search.js scripts (the
+                # verticals) are unaffected — this fixes conversational agents
+                # like Atlas that reach for the native tool.
+                "search": {"provider": "parallel-free"},
             },
             "media": {
                 "image": {"enabled": True},
@@ -1167,6 +1178,11 @@ def build_openclaw_config_dict(
                 # memory_plugin_entries() seam so a Bedrock <-> ChatGPT switch
                 # doesn't drop it.
                 **memory_plugin_entries(),
+                # Parallel web-search provider plugin
+                # (@openclaw/parallel-plugin, baked into the extended image).
+                # Enables the keyless parallel-free provider that
+                # tools.web.search.provider selects above.
+                "parallel": {"enabled": True},
             },
         },
         # Channels: ship EMPTY until the user configures one. A provider block

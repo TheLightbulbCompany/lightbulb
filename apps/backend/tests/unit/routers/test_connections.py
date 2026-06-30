@@ -273,6 +273,19 @@ class TestByoRequiredGate:
         assert response.status_code == 200
         assert response.json()["authorize_url"].startswith("https://accounts.google.com")
 
+    @pytest.mark.asyncio
+    @patch("routers.connections.oauth_dance")
+    async def test_authorize_returns_502_not_500_when_oauth_start_fails(self, mock_dance, async_client, monkeypatch):
+        # A provider's OAuth/DCR endpoint can return 4xx/5xx (e.g. Vercel's DCR
+        # rejected our client registration with 400). That must surface as a
+        # clean, retryable error — NOT a 500 that reads as a crash in a demo.
+        monkeypatch.setattr(connections, "_byo_active", AsyncMock(return_value=True))
+        req = httpx.Request("POST", "https://example.com/oauth/register")
+        resp = httpx.Response(400, request=req)
+        mock_dance.start = AsyncMock(side_effect=httpx.HTTPStatusError("400 Bad Request", request=req, response=resp))
+        response = await async_client.get("/api/v1/connections/google/authorize")
+        assert response.status_code == 502
+
 
 class TestConnectPaste:
     """POST /api/v1/connections/{provider} — paste-key connect."""

@@ -556,7 +556,17 @@ async def authorize(provider: str, auth: AuthContext = Depends(get_current_user)
         raise HTTPException(status_code=400, detail=f"{provider} is not an OAuth integration")
     if p.byo_required and not await _byo_active(owner_id, provider):
         raise HTTPException(status_code=400, detail=f"Set up your own {p.display_name} app before connecting")
-    url = await oauth_dance.start(owner_id, provider, redirect_uri=_redirect_uri(provider))
+    # The OAuth dance hits the provider's endpoints (incl. Dynamic Client
+    # Registration). A 4xx/5xx there — e.g. a provider rejecting our DCR request —
+    # must surface as a clean, retryable error, not an uncaught 500 that reads as a
+    # crash in a demo. The callback leg already degrades the same way.
+    try:
+        url = await oauth_dance.start(owner_id, provider, redirect_uri=_redirect_uri(provider))
+    except httpx.HTTPError:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Couldn't start the {p.display_name} connection; please try again.",
+        )
     return {"authorize_url": url}
 
 

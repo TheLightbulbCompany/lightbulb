@@ -303,6 +303,27 @@ RUN set -eux; \
     rm -rf /opt/stage-lobster; \
     chown -R root:root /app/dist/extensions/lobster
 
+# ---- Layer 12b: externalized web-search provider (parallel) ----
+# OpenClaw 6.10 stopped auto-selecting a keyless web_search provider, so agents
+# that call the native web_search tool fail with "disabled or no provider"
+# unless one is explicitly configured. core/containers/config.py sets
+# tools.web.search.provider="parallel-free" + plugins.entries.parallel.enabled
+# on every container; parallel-free is Parallel's keyless hosted Search MCP
+# (search.parallel.ai/mcp), reliable from Fargate (unlike the rate-limited
+# DuckDuckGo fallback). The npm package is `@openclaw/parallel-plugin`; its
+# plugin id + discovery dir are `parallel`. Bake it root-owned, pinned in
+# lockstep with the FROM tag, same as the layers above.
+RUN set -eux; \
+    mkdir -p /opt/stage-parallel; \
+    npm install --prefix /opt/stage-parallel "@openclaw/parallel-plugin@2026.6.10"; \
+    mkdir -p /app/dist/extensions/parallel; \
+    cp -R /opt/stage-parallel/node_modules/@openclaw/parallel-plugin/. /app/dist/extensions/parallel/; \
+    mkdir -p /app/dist/extensions/parallel/node_modules; \
+    cp -R /opt/stage-parallel/node_modules/. /app/dist/extensions/parallel/node_modules/; \
+    rm -rf /app/dist/extensions/parallel/node_modules/@openclaw/parallel-plugin; \
+    rm -rf /opt/stage-parallel; \
+    chown -R root:root /app/dist/extensions/parallel
+
 # ---- Layer 13: externalized ACP runtime backend (acpx) ----
 # acpx is the official ACP runtime plugin that lets a native OpenClaw agent
 # (e.g. Jarvis) spawn external coding harnesses — Claude Code, Codex, Gemini —

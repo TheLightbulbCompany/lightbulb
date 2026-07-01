@@ -35,16 +35,16 @@ const RPC_TIMEOUT_MS = 30000;
 export type ToolResultBlock = { type: string; text?: string; bytes?: number; omitted?: boolean };
 
 export type ChatIncomingMessage =
-  | { type: "chunk"; content: string; agent_id?: string; runId: string }
-  | { type: "thinking"; content: string; agent_id?: string; runId: string }
-  | { type: "done"; agent_id?: string; runId: string }
-  | { type: "error"; message: string; code?: string; agent_id?: string; runId?: string }
+  | { type: "chunk"; content: string; agent_id?: string; runId: string; session_id?: string }
+  | { type: "thinking"; content: string; agent_id?: string; runId: string; session_id?: string }
+  | { type: "done"; agent_id?: string; runId: string; session_id?: string }
+  | { type: "error"; message: string; code?: string; agent_id?: string; runId?: string; session_id?: string }
   // Authoritative "run truly ended" frame. ADDITIONAL to done/error/aborted —
   // never a replacement. The backend forwards it EXACTLY ONCE per run on a
   // genuine termination (NOT on the interim chat.final that closes a
   // tool-approval bracket). The chat queue drains off this signal, not a
   // local terminal heuristic. See backend connection_pool.py run_ended forward.
-  | { type: "run_ended"; runId: string; outcome: "done" | "error" | "aborted"; agent_id?: string }
+  | { type: "run_ended"; runId: string; outcome: "done" | "error" | "aborted"; agent_id?: string; session_id?: string }
   | { type: "heartbeat" }
   | {
       type: "tool_start";
@@ -53,6 +53,7 @@ export type ChatIncomingMessage =
       args?: Record<string, unknown>;
       agent_id?: string;
       runId: string;
+      session_id?: string;
     }
   | {
       type: "tool_end";
@@ -62,6 +63,7 @@ export type ChatIncomingMessage =
       meta?: string;
       agent_id?: string;
       runId: string;
+      session_id?: string;
     }
   | {
       type: "tool_error";
@@ -71,6 +73,7 @@ export type ChatIncomingMessage =
       meta?: string;
       agent_id?: string;
       runId: string;
+      session_id?: string;
     }
   // Live incremental tool output (OpenClaw tool stream phase:"update").
   // Attached to the running tool pill addressed by toolCallId.
@@ -81,6 +84,7 @@ export type ChatIncomingMessage =
       partialResult?: ToolResultBlock[];
       agent_id?: string;
       runId: string;
+      session_id?: string;
     }
   // Live command stdout/stderr streamed mid-exec, appended to the tool pill
   // addressed by toolCallId.
@@ -90,6 +94,7 @@ export type ChatIncomingMessage =
       output?: string;
       agent_id?: string;
       runId: string;
+      session_id?: string;
     }
   // Low-noise agent-activity surfaces (proposed plan, patch summary, item
   // lifecycle, ACP step) folded into one pill. `detail` carries the full
@@ -101,12 +106,13 @@ export type ChatIncomingMessage =
       detail?: Record<string, unknown>;
       agent_id?: string;
       runId: string;
+      session_id?: string;
     }
   // A `/btw` (detached side-channel) answer. OpenClaw renders these as a
   // separate side card ("Not saved to chat history"); the backend maps
   // chat.side_result → this frame. Ephemeral — never folded into the
   // transcript/history. runId is the side run's id (optional).
-  | { type: "btw_result"; question: string; text: string; isError?: boolean; agent_id?: string; runId?: string }
+  | { type: "btw_result"; question: string; text: string; isError?: boolean; agent_id?: string; runId?: string; session_id?: string }
   | { type: "update_available" };
 
 /** Gateway event forwarded from OpenClaw */
@@ -132,7 +138,12 @@ interface GatewayContextValue {
    * cancelMessage detect the stale-isConnected race and park a retry). */
   send: (payload: unknown) => boolean;
   sendReq: (method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<unknown>;
-  sendChat: (agentId: string, message: string, clientRunId: string) => void;
+  sendChat: (
+    agentId: string,
+    message: string,
+    clientRunId: string,
+    sessionId?: string,
+  ) => void;
   onEvent: (handler: (event: string, data: unknown) => void) => () => void;
   onChatMessage: (handler: (msg: ChatIncomingMessage) => void) => () => void;
   reconnect: () => void;
@@ -531,7 +542,7 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
   // ---- sendChat ----
 
   const sendChat = useCallback(
-    (agentId: string, message: string, clientRunId: string) => {
+    (agentId: string, message: string, clientRunId: string, sessionId?: string) => {
       // Throw on closed socket instead of silently no-op'ing. Callers like
       // useAgentChat.dispatchNow rely on a thrown error to reset their per-
       // user-turn busy gate (clientRunIdRef). Silent no-op leaves the turn
@@ -546,6 +557,10 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
           agent_id: agentId,
           message,
           clientRunId,
+          // Omitted for the General session so the backend builds the legacy
+          // 3-part key; present only for a real session (validated server-side
+          // against _SESSION_ID_RE before the 4-part key is constructed).
+          ...(sessionId ? { session_id: sessionId } : {}),
         }),
       );
     },

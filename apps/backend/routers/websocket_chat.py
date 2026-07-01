@@ -13,6 +13,7 @@ import asyncio
 import hmac
 import json
 import logging
+import re
 import secrets
 from typing import Any, Dict, Optional
 from uuid import uuid4
@@ -57,6 +58,82 @@ from core.services.paperclip_openclaw_pairing import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Strict lowercase RFC-4122 v4 UUID. This is the load-bearing security guard for
+# the trailing session-id segment: OpenClaw lowercases the ENTIRE session key
+# before store/lookup, so a mixed-case id would alias-merge two sessions under
+# the case-fold. It also blocks colon child-key forks (`:thread:`/`:subagent:`)
+# and reserved tokens (`heartbeat` -> session reap; `group`/`channel`/`direct`/
+# `dashboard` -> kind misclassification) — none of those can match this regex.
+#
+# The pattern ends with ``\Z`` (absolute end), NOT ``$``: Python's ``$`` also
+# matches just before a trailing newline, so ``"<uuid>\n"`` would slip through
+# ``$`` and inject a newline into the session key. ``\Z`` has no such carve-out.
+_SESSION_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
+
+
+def build_chat_session_key(agent_id: str, user_id: str, session_id: str | None) -> str:
+    """Construct the OpenClaw session key for a /chat conversation.
+
+    - ``session_id is None`` -> legacy 3-part ``agent:{agent_id}:{user_id}`` (the
+      "General" session) so existing single-session history is never orphaned.
+    - Otherwise -> 4-part ``agent:{agent_id}:{user_id}:{session_id}`` where
+      ``session_id`` MUST be a strict lowercase v4 UUID (client-minted via
+      ``crypto.randomUUID()``).
+
+    ``agent_id`` and ``user_id`` are server-supplied (``user_id`` from the JWT),
+    never client-influenced — the client only ever sends the opaque trailing id.
+    """
+    if session_id is None:
+        return f"agent:{agent_id}:{user_id}"
+    if not _SESSION_ID_RE.match(session_id):
+        raise ValueError(f"invalid session_id: {session_id!r}")
+    return f"agent:{agent_id}:{user_id}:{session_id}"
+
+
+def _user_owns_session_key(key, user_id: str) -> bool:
+    """True iff the OpenClaw session ``key`` belongs to ``user_id``.
+
+    A key is owned when, after the ``agent:<agentId>:`` prefix, the remainder
+    is exactly the caller's user_id (legacy "General" 3-part key) or begins
+    with ``<user_id>:`` (a 4-part named session). The ``<user_id>:`` boundary
+    check (not a bare startswith) stops ``user_1`` from matching ``user_10``.
+
+    Non-``agent:`` keys (``paperclip:``/``cron:``/``channel``) and other org
+    members' keys are NOT owned — this is the ownership predicate that both the
+    sessions.list post-filter and the pre-forward mutation guard rely on.
+
+    The comparison is case-insensitive: OpenClaw lowercases the whole
+    sessionKey, so the ``rest`` segment parsed here is already lowercase, while
+    ``user_id`` is the original mixed-case Clerk id (base58, almost always has
+    uppercase). Comparing case-sensitively would drop every real user's own
+    rows. Mirrors the lowercased key/member comparisons in connection_pool.py.
+    """
+    if not isinstance(key, str):
+        return False
+    parts = key.split(":", 2)
+    if len(parts) < 3 or parts[0] != "agent":
+        return False
+    rest_l = parts[2].lower()  # everything after agent:<agentId>:, lowercased
+    uid_l = user_id.lower()
+    return rest_l == uid_l or rest_l.startswith(f"{uid_l}:")
+
+
+def _filter_sessions_for_user(result, user_id: str):
+    """Drop sessions.list rows the caller doesn't own.
+
+    sessions.list returns EVERY session on the shared per-owner container —
+    paperclip:/cron:/channel and other org members' rows included — all
+    collapsed to kind='direct'. Keep only rows the caller owns per
+    ``_user_owns_session_key``. Ownership guard, not cosmetic.
+    """
+    if not isinstance(result, dict):
+        return result
+    sessions = result.get("sessions")
+    if not isinstance(sessions, list):
+        return result
+    kept = [s for s in sessions if isinstance(s, dict) and _user_owns_session_key(s.get("key", ""), user_id)]
+    return {**result, "sessions": kept}
 
 
 def require_ws_internal_caller(
@@ -725,6 +802,21 @@ async def ws_message(
             )
             return Response(status_code=200)
 
+        # Optional client-minted session id (snake_case on the wire). None ->
+        # legacy "General" session. Reject a malformed id at the handler so a
+        # crafted trailing segment never reaches the key builder or gets queued.
+        session_id = body.get("session_id")
+        if session_id is not None:
+            try:
+                build_chat_session_key(agent_id, user_id, session_id)
+            except ValueError:
+                management_api = await get_management_api_client()
+                management_api.send_message(
+                    x_connection_id,
+                    {"type": "error", "agent_id": agent_id, "message": "Invalid session_id"},
+                )
+                return Response(status_code=200)
+
         # The gateway connection pool's gate_chat (called inside the
         # forwarder) is the authoritative pre-chat budget gate for card-3
         # (bedrock_claude) users; cards 1 + 2 carry their own provider
@@ -738,6 +830,7 @@ async def ws_message(
             message=message,
             client_run_id=client_run_id,
             side=side,
+            session_id=session_id,
         )
         return Response(status_code=200)
 
@@ -757,6 +850,22 @@ async def ws_message(
                 {"type": "error", "message": "Missing agent_id"},
             )
             return Response(status_code=200)
+
+        # Optional client-minted session id (snake_case on the wire). None ->
+        # legacy "General" session. Reject a malformed id at the handler so a
+        # crafted trailing segment never reaches the key builder or gets queued.
+        session_id = body.get("session_id")
+        if session_id is not None:
+            try:
+                build_chat_session_key(agent_id, user_id, session_id)
+            except ValueError:
+                management_api = await get_management_api_client()
+                management_api.send_message(
+                    x_connection_id,
+                    {"type": "error", "agent_id": agent_id, "message": "Invalid session_id"},
+                )
+                return Response(status_code=200)
+
         background_tasks.add_task(
             _process_agent_abort_background,
             connection_id=x_connection_id,
@@ -764,6 +873,7 @@ async def ws_message(
             owner_id=owner_id,
             agent_id=agent_id,
             run_id=run_id,
+            session_id=session_id,
         )
         return Response(status_code=200)
 
@@ -784,6 +894,22 @@ async def ws_message(
                 {"type": "error", "message": "Missing agent_id or text"},
             )
             return Response(status_code=200)
+
+        # Optional client-minted session id (snake_case on the wire). None ->
+        # legacy "General" session. Reject a malformed id at the handler so a
+        # crafted trailing segment never reaches the key builder or gets queued.
+        session_id = body.get("session_id")
+        if session_id is not None:
+            try:
+                build_chat_session_key(agent_id, user_id, session_id)
+            except ValueError:
+                management_api = await get_management_api_client()
+                management_api.send_message(
+                    x_connection_id,
+                    {"type": "error", "agent_id": agent_id, "message": "Invalid session_id"},
+                )
+                return Response(status_code=200)
+
         background_tasks.add_task(
             _process_agent_steer_background,
             connection_id=x_connection_id,
@@ -791,6 +917,7 @@ async def ws_message(
             owner_id=owner_id,
             agent_id=agent_id,
             text=text,
+            session_id=session_id,
         )
         return Response(status_code=200)
 
@@ -840,6 +967,71 @@ async def _guard_seeded_delete(
             "error": {
                 "message": "Friday and Atlas are managed by Isol8 and can't be deleted.",
             },
+        },
+    )
+    return True
+
+
+# Methods that carry a CLIENT-SUPPLIED session key which MUST be
+# ownership-checked before we forward it to the shared per-owner container.
+# Maps method -> the param name that holds the key. sessions.patch/reset/delete
+# use ``key``; the chat.history read uses ``sessionKey``.
+_SESSION_KEY_PARAM_BY_METHOD = {
+    "sessions.patch": "key",
+    "sessions.reset": "key",
+    "sessions.delete": "key",
+    "chat.history": "sessionKey",
+}
+
+
+async def _guard_session_key_ownership(
+    *,
+    user_id: str,
+    method: str,
+    params: dict | None,
+    connection_id: str,
+    req_id: str,
+) -> bool:
+    """Reject session-key-bearing RPCs whose key the caller doesn't own, BEFORE
+    forwarding to OpenClaw.
+
+    In an org, EVERY member shares ONE per-owner container, so member A could
+    hand-craft a ``key`` targeting member B's — or a ``paperclip:``/``cron:`` —
+    session and destroy/mutate it (sessions.reset/delete/patch) or read its
+    transcript (chat.history). That is a cross-tenant IDOR. sessions.list is
+    already post-filtered (``_filter_sessions_for_user``); this guards the
+    key-carrying mutators + the history read on the way IN, using the same
+    ownership predicate.
+
+    Returns True if it consumed the request (sent an error res; caller must
+    return without forwarding). False otherwise (caller forwards normally):
+    - method not in the key-bearing set, OR
+    - the call carries NO client key param (a key-less variant — nothing to
+      forge; leave it to the container / the sessions.list post-filter).
+    """
+    param_name = _SESSION_KEY_PARAM_BY_METHOD.get(method)
+    if param_name is None:
+        return False
+    key = (params or {}).get(param_name)
+    if not isinstance(key, str) or not key:
+        # No client-supplied key — nothing to validate. Forward as-is.
+        return False
+    if _user_owns_session_key(key, user_id):
+        return False
+    logger.warning(
+        "[%s] rejected %s targeting non-owned session key=%s",
+        user_id,
+        method,
+        key,
+    )
+    mgmt = management_api or await get_management_api_client()
+    mgmt.send_message(
+        connection_id,
+        {
+            "type": "res",
+            "id": req_id,
+            "ok": False,
+            "error": {"message": "You don't have access to that session."},
         },
     )
     return True
@@ -1300,6 +1492,18 @@ async def _process_rpc_background(
         ):
             return
 
+        # Cross-tenant IDOR guard: reject sessions.patch/reset/delete +
+        # chat.history whose client-supplied key belongs to another member or a
+        # paperclip:/cron: session on this shared per-owner container.
+        if await _guard_session_key_ownership(
+            user_id=user_id,
+            method=method,
+            params=params,
+            connection_id=connection_id,
+            req_id=req_id,
+        ):
+            return
+
         pool = get_gateway_pool()
         result = await pool.send_rpc(
             user_id=owner_id,
@@ -1309,6 +1513,10 @@ async def _process_rpc_background(
             ip=ip,
             token=container["gateway_token"],
         )
+        # Scope sessions.list to the caller — the container returns every
+        # session on the shared per-owner box (paperclip/cron/other members).
+        if method == "sessions.list":
+            result = _filter_sessions_for_user(result, user_id)
         management_api.send_message(
             connection_id,
             {
@@ -1438,6 +1646,7 @@ async def _process_agent_chat_background(
     message: str,
     client_run_id: str | None = None,
     side: bool = False,
+    session_id: str | None = None,
 ) -> None:
     """
     Process agent chat message via OpenClaw's native chat.send RPC.
@@ -1517,10 +1726,11 @@ async def _process_agent_chat_background(
         pool = get_gateway_pool()
         req_id = str(uuid4())
 
-        # Session key format: agent:{agentId}:{userId}
-        # Every user gets their own session, isolating their chat history
-        # from cron jobs, channels, and other system activity.
-        session_key = f"agent:{agent_id}:{user_id}"
+        # Session key: server-built agent:{agentId}:{userId}[:{sessionId}].
+        # Every user gets their own session, isolating their chat history from
+        # cron jobs, channels, and other system activity. session_id (client-
+        # minted UUID) opens a distinct conversation; None = the "General" session.
+        session_key = build_chat_session_key(agent_id, user_id, session_id)
 
         logger.info(
             "[%s] chat.send RPC agent=%s sessionKey=%s ip=%s",
@@ -1756,6 +1966,7 @@ async def _process_agent_abort_background(
     owner_id: str,
     agent_id: str,
     run_id: str | None = None,
+    session_id: str | None = None,
 ) -> None:
     """Cancel the in-flight run for ``agent:{agent_id}:{user_id}``.
 
@@ -1776,7 +1987,6 @@ async def _process_agent_abort_background(
         run_id or "-",
         connection_id[:12],
     )
-    session_key = f"agent:{agent_id}:{user_id}"
 
     async def _notify_aborted_terminal() -> None:
         """Tell the client the run is over so cancelMessage's server-reconciled
@@ -1803,6 +2013,10 @@ async def _process_agent_abort_background(
             pass
 
     try:
+        # Built inside the try (mirrors _process_agent_chat_background) so an
+        # invalid session_id surfaces the friendly aborted-terminal frame via
+        # the except below instead of an unhandled BackgroundTasks exception.
+        session_key = build_chat_session_key(agent_id, user_id, session_id)
         ecs_manager = get_ecs_manager()
         container, ip = await ecs_manager.resolve_running_container(owner_id)
         if not container or not ip:
@@ -1861,6 +2075,7 @@ async def _process_agent_steer_background(
     owner_id: str,
     agent_id: str,
     text: str,
+    session_id: str | None = None,
 ) -> None:
     """Inject ``text`` into the in-flight run for ``agent:{agent_id}:{user_id}``.
 
@@ -1881,8 +2096,11 @@ async def _process_agent_steer_background(
         len(text),
     )
     management_api = await get_management_api_client()
-    session_key = f"agent:{agent_id}:{user_id}"
     try:
+        # Built inside the try (mirrors _process_agent_chat_background) so an
+        # invalid session_id surfaces the friendly steer-failed error frame via
+        # the except below instead of an unhandled BackgroundTasks exception.
+        session_key = build_chat_session_key(agent_id, user_id, session_id)
         ecs_manager = get_ecs_manager()
         container, ip = await ecs_manager.resolve_running_container(owner_id)
         if not container:

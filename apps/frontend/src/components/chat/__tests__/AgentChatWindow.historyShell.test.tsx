@@ -21,6 +21,10 @@ vi.mock("@clerk/nextjs", () => ({
     isSignedIn: true,
     userId: "user_1",
   }),
+  // The real ModelEffortPill mounts here (via ChatInput's controls slot) and
+  // reaches useUser through useSessionModelControls — the local mock must
+  // provide it or the composer render throws.
+  useUser: () => ({ isSignedIn: true, isLoaded: true, user: { id: "user_1" } }),
   useOrganization: () => ({ organization: null, membership: null, isLoaded: true }),
 }));
 

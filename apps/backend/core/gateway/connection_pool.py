@@ -1120,6 +1120,13 @@ class GatewayConnection:
             # finals) parse to an empty source and still forward.
             is_isolated_session = session_source in ("paperclip", "unknown")
 
+            # Trailing opaque session id for the 4-part webchat key
+            # (build_chat_session_key). None for the legacy 3-part "General"
+            # key and for any non-webchat key. The client demuxes streamed
+            # frames per session by matching this to its active session.
+            session_parts = session_key.split(":") if session_key else []
+            session_id = session_parts[3] if len(session_parts) == 4 and session_source == "webchat" else None
+
             # Drop noisy periodic events (health, tick) entirely — they are
             # OpenClaw-internal keep-alives and should never reach frontends.
             if event_name in ("health", "tick"):
@@ -1211,6 +1218,8 @@ class GatewayConnection:
                     event_agent_id = parsed_key.get("agent_id")
                     if event_agent_id:
                         transformed["agent_id"] = event_agent_id
+                    if session_id is not None:
+                        transformed["session_id"] = session_id
                     await self._forward_to_frontends(transformed, target_member)
 
             elif event_name == "chat":
@@ -1292,6 +1301,8 @@ class GatewayConnection:
                         if event_agent_id:
                             fwd["agent_id"] = event_agent_id
                         fwd["runId"] = run_id
+                        if session_id is not None:
+                            fwd["session_id"] = session_id
                         await self._forward_to_frontends(fwd, target_member)
                     # Forward the assistant text from chat.final. For agent
                     # runs the streamed chunks already painted the same text
@@ -1305,11 +1316,15 @@ class GatewayConnection:
                         if event_agent_id:
                             fwd["agent_id"] = event_agent_id
                         fwd["runId"] = run_id
+                        if session_id is not None:
+                            fwd["session_id"] = session_id
                         await self._forward_to_frontends(fwd, target_member)
                     fwd = {"type": "done"}
                     if event_agent_id:
                         fwd["agent_id"] = event_agent_id
                     fwd["runId"] = run_id
+                    if session_id is not None:
+                        fwd["session_id"] = session_id
                     await self._forward_to_frontends(fwd, target_member)
                 elif state == "error":
                     # OpenClaw's `chat` terminal error event carries the
@@ -1343,6 +1358,8 @@ class GatewayConnection:
                     if event_agent_id:
                         fwd["agent_id"] = event_agent_id
                     fwd["runId"] = run_id
+                    if session_id is not None:
+                        fwd["session_id"] = session_id
                     await self._forward_to_frontends(fwd, target_member)
                 elif state == "aborted":
                     put_metric("chat.error", dimensions={"reason": "aborted"})
@@ -1350,6 +1367,8 @@ class GatewayConnection:
                     if event_agent_id:
                         fwd["agent_id"] = event_agent_id
                     fwd["runId"] = run_id
+                    if session_id is not None:
+                        fwd["session_id"] = session_id
                     await self._forward_to_frontends(fwd, target_member)
 
                 # Authoritative "run truly ended" frame. This is an Isol8-
@@ -1371,6 +1390,8 @@ class GatewayConnection:
                     }
                     if event_agent_id:
                         run_ended["agent_id"] = event_agent_id
+                    if session_id is not None:
+                        run_ended["session_id"] = session_id
                     await self._forward_to_frontends(run_ended, target_member)
 
                 # END of the chat.e2e.latency SLO span (alarm W9). Elapsed is
@@ -2158,6 +2179,20 @@ def _parse_session_key(session_key: str) -> dict:
         if parts[2] == "main":
             return {"agent_id": agent_id, "source": "webchat"}
         # Org webchat — parts[2] is a Clerk user_id
+        return {
+            "agent_id": agent_id,
+            "source": "webchat",
+            "member_id": parts[2],
+        }
+
+    # Webchat named session: agent:<agentId>:<userId>:<opaqueSessionId>
+    # (4-part, server-built by build_chat_session_key). parts[2] is the Clerk
+    # user_id (member routing target); parts[3] is the client-minted UUID.
+    # Cron/paperclip 4-part keys are already handled above, and channel keys are
+    # >=5 parts (group/room) or 6 (DM), so an exactly-4-part key here is
+    # unambiguously a webchat session. Must classify as webchat so it is NOT
+    # treated as isolated in _handle_message (which would drop streamed frames).
+    if len(parts) == 4:
         return {
             "agent_id": agent_id,
             "source": "webchat",

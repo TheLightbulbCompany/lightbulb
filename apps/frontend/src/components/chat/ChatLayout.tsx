@@ -40,6 +40,9 @@ import { useProvisioningState } from "@/hooks/useProvisioningState";
 import { TEAMS_PANEL_PREFIX } from "@/components/chat/InlineTeamsPanel";
 import { teamsQueryKeys } from "@/components/teams/shared/queryKeys";
 import { useAgentMutations } from "@/components/teams/agents/hooks/useAgentMutations";
+import { SessionList } from "@/components/chat/SessionList";
+import { useActiveSession } from "@/hooks/useActiveSession";
+import { useAgentSessions } from "@/hooks/useAgentSessions";
 
 /** Minimal shape of `/channels/links/me` — only what the guide's
  *  `channel`-complete derivation reads. A bot is keyed by its agent's UUID
@@ -98,7 +101,7 @@ export function ChatLayout({
   // user who was always meant to be an org member. The state machine +
   // the router.replace / setActive side effects live in the hook.
   const onboardingPhase = useOnboardingGate();
-  const { isSignedIn, getToken } = useAuth();
+  const { isSignedIn, getToken, userId: clerkUserId } = useAuth();
   const { user } = useUser();
   const router = useRouter();
   const api = useApi();
@@ -135,6 +138,12 @@ export function ChatLayout({
 
   // Derive effective agent: user selection > default > first agent
   const currentAgentId = userSelectedId ?? defaultId ?? agents[0]?.id ?? null;
+
+  // Per-agent session state. `useActiveSession` is a shared module store, so
+  // selecting a row here drives the transcript in AgentChatWindow's
+  // useAgentChat (same store) — no prop drilling across subtrees.
+  const { activeSessionId, newSession, selectSession } = useActiveSession(currentAgentId);
+  const { sessions: agentSessions } = useAgentSessions(currentAgentId, clerkUserId ?? null);
 
   // Header agent-action cluster (next to the file-tree button): pause/resume +
   // inspector/work deep links for the active agent, so the user can act on the
@@ -658,6 +667,20 @@ export function ChatLayout({
                         )}
                       </div>
                       <StatusDot status="active" />
+                      {currentAgentId === agent.id && (
+                        <SessionList
+                          sessions={agentSessions}
+                          activeSessionId={activeSessionId}
+                          onSelect={(sid) => {
+                            selectSession(sid);
+                            setSidebarOpen(false);
+                          }}
+                          onNew={() => {
+                            newSession();
+                            setSidebarOpen(false);
+                          }}
+                        />
+                      )}
                     </div>
                   );
                 })}

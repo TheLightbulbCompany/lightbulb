@@ -45,6 +45,12 @@ interface ChatInputProps {
   onClearQueue?: () => void;
   onSteerQueued?: (id: string) => void;
   onRetryQueued?: (id: string) => void;
+  /**
+   * Composer controls (the model · effort pill) rendered in a row directly
+   * above the input bar. Kept as a slot so ChatInput stays free of Clerk /
+   * billing / gateway coupling — AgentChatWindow supplies the wired pill.
+   */
+  controls?: React.ReactNode;
 }
 
 function formatFileSize(bytes: number): string {
@@ -68,6 +74,7 @@ export function ChatInput({
   onClearQueue,
   onSteerQueued,
   onRetryQueued,
+  controls,
 }: ChatInputProps) {
   const [input, setInput] = React.useState("");
   const [activeIndex, setActiveIndex] = React.useState(0);
@@ -425,6 +432,10 @@ export function ChatInput({
               );
             })}
           </div>
+        )}
+
+        {controls && (
+          <div className="flex items-center gap-2 mb-2 px-1">{controls}</div>
         )}
 
         <div className="relative flex items-end gap-2 border border-[#e0dbd0] rounded-full bg-white px-3 py-2 focus-within:ring-1 focus-within:ring-[#06402B]/20 focus-within:border-[#06402B]/30 transition-all">

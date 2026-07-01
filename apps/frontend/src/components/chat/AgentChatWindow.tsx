@@ -5,10 +5,14 @@ import useSWR from "swr";
 
 import { capture } from "@/lib/analytics";
 import { ChatInput } from "./ChatInput";
+import { ModelEffortPill } from "./ModelEffortPill";
+import { useBilling } from "@/hooks/useBilling";
 import { ExecApprovalCards } from "./ExecApprovalCards";
 import { MessageList, MessageListHandle } from "./MessageList";
 import { StreamingStatusBar } from "./StreamingStatusBar";
 import { useAgentChat, BOOTSTRAP_MESSAGE } from "@/hooks/useAgentChat";
+import { useAgentSessions } from "@/hooks/useAgentSessions";
+import { resolveSessionModelRef } from "@/lib/models";
 import { useAgents, agentDisplayName } from "@/hooks/useAgents";
 import { useApi } from "@/lib/api";
 import { isSnoozed, setSnoozed, updateSnoozeKey } from "@/lib/snooze";
@@ -248,7 +252,41 @@ export function AgentChatWindow({
     clearQueue,
     steerMessage,
     retryQueuedMessage,
+    activeSessionId,
   } = useAgentChat(agentId, sessionName);
+  const { account } = useBilling();
+
+  // Hydrate the composer pill from the ACTIVE session's persisted row so it
+  // reflects what sessions.patch wrote, not a stub. useAgentSessions shares its
+  // SWR cache with the sidebar (same key), so this is not a second fetch; the
+  // active row is matched on sessionId (null == the legacy "General" row).
+  const { sessions: agentSessions, mutate: mutateSessions } = useAgentSessions(
+    agentId,
+    userId ?? null,
+  );
+  const activeSessionRow = agentSessions.find((s) => s.sessionId === activeSessionId);
+
+  const modelEffortPill =
+    agentId != null ? (
+      <ModelEffortPill
+        agentId={agentId}
+        activeSessionId={activeSessionId}
+        isStreaming={isStreaming}
+        selectedModelRef={resolveSessionModelRef(
+          activeSessionRow?.model,
+          activeSessionRow?.modelProvider,
+        )}
+        thinkingLevel={activeSessionRow?.thinkingLevel ?? ""}
+        fastMode={activeSessionRow?.fastMode ?? false}
+        providerChoice={account?.provider_choice ?? null}
+        byoProvider={account?.byo_provider ?? null}
+        onChanged={() => {
+          // A patch persisted — revalidate sessions.list so the pill (and
+          // sidebar) reflect the new model/effort on the next render.
+          void mutateSessions();
+        }}
+      />
+    ) : null;
 
   const { agents } = useAgents();
   const activeAgent = agents.find((a) => a.id === agentId);
@@ -341,6 +379,7 @@ export function AgentChatWindow({
             onClearQueue={clearQueue}
             onSteerQueued={steerMessage}
             onRetryQueued={retryQueuedMessage}
+            controls={modelEffortPill}
           />
         </div>
       </div>
@@ -374,6 +413,7 @@ export function AgentChatWindow({
           onClearQueue={clearQueue}
           onSteerQueued={steerMessage}
           onRetryQueued={retryQueuedMessage}
+          controls={modelEffortPill}
         />
       </div>
     );
@@ -413,6 +453,7 @@ export function AgentChatWindow({
               onClearQueue={clearQueue}
               onSteerQueued={steerMessage}
               onRetryQueued={retryQueuedMessage}
+              controls={modelEffortPill}
             />
           </div>
         </div>
@@ -446,6 +487,7 @@ export function AgentChatWindow({
         onClearQueue={clearQueue}
         onSteerQueued={steerMessage}
         onRetryQueued={retryQueuedMessage}
+        controls={modelEffortPill}
       />
     </div>
   );

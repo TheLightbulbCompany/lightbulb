@@ -222,6 +222,14 @@ class TestOpenclawConfigShape:
         config = _cfg()
         assert config["session"]["dmScope"] == "per-account-channel-peer"
 
+    def test_session_maintenance_warn(self):
+        """OpenClaw's session store defaults to enforce mode (evict past
+        500 entries / 30d). Heavy Paperclip owners exceed 500 sessions on the
+        shared per-owner container, which would silently delete users' oldest
+        /chat conversations once one agent has many sessions. warn never deletes."""
+        config = _cfg()
+        assert config["session"]["maintenance"] == {"mode": "warn"}
+
     def test_browser_two_profiles_default_openclaw(self):
         """Both profiles are statically defined; default is the cloud
         Chromium profile so unbound sessions (channels, cron, unpaired

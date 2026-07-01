@@ -110,6 +110,12 @@ from core.gateway.connection_pool import _parse_session_key  # noqa: E402
             "agent:friday:paperclip",
             {"agent_id": "friday", "source": "paperclip"},
         ),
+        # 4-part webchat named session (server-built by build_chat_session_key).
+        # parts[2] = userId (member routing target), parts[3] = opaque UUID.
+        (
+            "agent:luna:user_1:3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+            {"agent_id": "luna", "source": "webchat", "member_id": "user_1"},
+        ),
         # Malformed
         ("garbage", {}),
         ("", {}),
@@ -143,6 +149,14 @@ def test_paperclip_issue_session_is_not_webchat():
     assert result["source"] not in ("webchat", "dm", "group", "channel")
     assert "member_id" not in result
     assert result["issue_id"] == "ADM-455"
+
+
+def test_four_part_webchat_is_not_isolated_source():
+    """The 4-part key must classify as webchat, not 'unknown' — otherwise
+    _handle_message treats it as isolated and silently drops streamed frames."""
+    parsed = _parse_session_key("agent:luna:user_1:3f2504e0-4f89-41d3-9a0c-0305e82c3301")
+    assert parsed["source"] == "webchat"
+    assert parsed["source"] not in ("paperclip", "unknown")
 
 
 def test_group_key_does_not_return_literal_channel_as_member_id():

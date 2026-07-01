@@ -186,6 +186,11 @@
 .agent-item {
   display: flex;
   align-items: center;
+  /* `flex-wrap` lets the nested `.session-list` (flex-basis:100%) drop onto its
+     own line BELOW the agent row instead of squeezing in as a horizontal flex
+     sibling of the monogram/name/actions. No effect on the row itself — the
+     other children already fit on one line. */
+  flex-wrap: wrap;
   padding: 8px 8px;
   border-radius: 10px;
   cursor: pointer;
@@ -272,6 +277,70 @@
 }
 .agent-row-action--danger:hover {
   color: #dc2626;
+}
+/* Nested per-agent session list — rendered under the active agent row. Mounted
+   inside `.agent-item` (a flex row); `flex-basis:100%` + the parent's
+   `flex-wrap:wrap` push it onto its own line, so it reads as an indented block
+   below the agent instead of an unstyled horizontal flex item. Cream/forest
+   sidebar palette, matching `.agent-item`. */
+.session-list {
+  flex-basis: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  /* Indent under the 28px monogram + the row's 10px gap. */
+  padding: 2px 2px 2px 38px;
+  margin-top: -2px;
+}
+.session-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 0;
+  background: transparent;
+  border-radius: 7px;
+  color: #6f6a5d;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.session-item:hover {
+  background: rgba(255, 255, 255, 0.9);
+  color: #1a1a1a;
+}
+.session-item.active {
+  background: rgba(45, 138, 78, 0.1);
+  color: #1a1a1a;
+  font-weight: 500;
+}
+.session-label {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.session-new {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 8px;
+  margin-top: 1px;
+  border: 0;
+  background: transparent;
+  border-radius: 7px;
+  color: #8a8578;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.session-new:hover {
+  background: rgba(255, 255, 255, 0.9);
+  color: #2d8a4e;
 }
 .sidebar-footer {
   border-top: 1px solid #e0dbd0;

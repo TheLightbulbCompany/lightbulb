@@ -214,6 +214,9 @@ class TestAgentChatBackgroundTask:
             # Default (non-side) send: side=False unless the payload opts into
             # the /btw side-channel.
             side=False,
+            # Payload omitted session_id -> forwarded as None (legacy "General"
+            # session key). A UUID here would open a distinct conversation.
+            session_id=None,
         )
 
 
@@ -434,6 +437,7 @@ class TestAgentAbortRouting:
             owner_id="test-user-456",
             agent_id="luna",
             run_id="run-9",
+            session_id=None,
         )
 
     @pytest.mark.asyncio
@@ -456,6 +460,7 @@ class TestAgentAbortRouting:
             owner_id="test-user-456",
             agent_id="luna",
             run_id=None,
+            session_id=None,
         )
 
     @pytest.mark.asyncio
@@ -640,6 +645,30 @@ class TestProcessAgentAbortBackground:
         assert frame["runId"] == "run-9"
         assert frame["message"] == "Agent run was cancelled"
 
+    @pytest.mark.asyncio
+    async def test_abort_invalid_session_id_emits_friendly_terminal_not_raise(
+        self, mock_ecs_manager, mock_pool, mock_mgmt_api, container_with_ip
+    ):
+        """An invalid session_id makes build_chat_session_key raise. Because the
+        key is now built INSIDE the try (mirroring the chat path), that raise
+        surfaces the synthetic aborted terminal via the except instead of an
+        unhandled BackgroundTasks exception. No abort RPC is forwarded — the key
+        never validated."""
+        # Must not raise despite the malformed trailing session id.
+        await _process_agent_abort_background(
+            connection_id="conn-1",
+            user_id="user-1",
+            owner_id="user-1",
+            agent_id="luna",
+            run_id="run-9",
+            session_id="not-a-uuid",
+        )
+        mock_pool.send_rpc.assert_not_called()
+        mock_mgmt_api.send_message.assert_called_once()
+        _, frame = mock_mgmt_api.send_message.call_args[0]
+        assert frame["type"] == "error"
+        assert frame["message"] == "Agent run was cancelled"
+
 
 # ---------------------------------------------------------------------------
 # agent_steer  ->  chat.send (deliver:false, fresh idempotencyKey)
@@ -671,6 +700,7 @@ class TestAgentSteerRouting:
             owner_id="test-user-456",
             agent_id="luna",
             text="actually, focus on the API",
+            session_id=None,
         )
 
     @pytest.mark.asyncio
@@ -764,6 +794,28 @@ class TestProcessAgentSteerBackground:
             text="focus on the API",
         )
         mock_pool.mark_run_active.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_steer_invalid_session_id_emits_steer_failed_not_raise(
+        self, mock_ecs_manager, mock_pool, mock_mgmt_api, container_with_ip
+    ):
+        """An invalid session_id makes build_chat_session_key raise. Built inside
+        the try (mirroring the chat path), it surfaces the steer_failed error
+        frame (which the frontend treats as a non-terminal notice) instead of an
+        unhandled exception. No chat.send is forwarded."""
+        await _process_agent_steer_background(
+            connection_id="conn-1",
+            user_id="user-1",
+            owner_id="user-1",
+            agent_id="luna",
+            text="focus on the API",
+            session_id="not-a-uuid",
+        )
+        mock_pool.send_rpc.assert_not_called()
+        mock_mgmt_api.send_message.assert_called_once()
+        _, frame = mock_mgmt_api.send_message.call_args[0]
+        assert frame["type"] == "error"
+        assert frame["code"] == "steer_failed"
 
 
 # ---------------------------------------------------------------------------

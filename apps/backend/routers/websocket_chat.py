@@ -87,6 +87,34 @@ def build_chat_session_key(agent_id: str, user_id: str, session_id: str | None) 
     return f"agent:{agent_id}:{user_id}:{session_id}"
 
 
+def _filter_sessions_for_user(result, user_id: str):
+    """Drop sessions.list rows the caller doesn't own.
+
+    sessions.list returns EVERY session on the shared per-owner container —
+    paperclip:/cron:/channel and other org members' rows included — all
+    collapsed to kind='direct'. Keep only rows whose key, after the
+    ``agent:<agentId>:`` prefix, is exactly the caller's user_id (legacy
+    "General" 3-part key) or starts with ``<user_id>:`` (a 4-part named
+    session). The ``<user_id>:`` boundary check (not a bare startswith) stops
+    ``user_1`` from matching ``user_10``. Ownership guard, not cosmetic.
+    """
+    if not isinstance(result, dict):
+        return result
+    sessions = result.get("sessions")
+    if not isinstance(sessions, list):
+        return result
+    kept = []
+    for s in sessions:
+        key = s.get("key", "") if isinstance(s, dict) else ""
+        parts = key.split(":", 2)
+        if len(parts) < 3 or parts[0] != "agent":
+            continue
+        rest = parts[2]  # everything after agent:<agentId>:
+        if rest == user_id or rest.startswith(f"{user_id}:"):
+            kept.append(s)
+    return {**result, "sessions": kept}
+
+
 def require_ws_internal_caller(
     x_isol8_ws_internal: Optional[str] = Header(None, alias="x-isol8-ws-internal"),
 ) -> None:
@@ -1387,6 +1415,10 @@ async def _process_rpc_background(
             ip=ip,
             token=container["gateway_token"],
         )
+        # Scope sessions.list to the caller — the container returns every
+        # session on the shared per-owner box (paperclip/cron/other members).
+        if method == "sessions.list":
+            result = _filter_sessions_for_user(result, user_id)
         management_api.send_message(
             connection_id,
             {

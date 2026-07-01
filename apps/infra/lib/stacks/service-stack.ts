@@ -708,6 +708,11 @@ export class ServiceStack extends cdk.Stack {
           "ec2:DescribeTags",
           "cloudformation:DescribeStacks",
           "cloudformation:DescribeStackEvents",
+          // Required to call DescribeStacks WITHOUT a StackName (enumerate all
+          // stacks): CloudFormation authorizes that form against ListStacks,
+          // not DescribeStacks. The deploy-status view lists every stack, so
+          // dropping this returns AccessDenied on the enumerate call.
+          "cloudformation:ListStacks",
         ],
         resources: ["*"],
       }),

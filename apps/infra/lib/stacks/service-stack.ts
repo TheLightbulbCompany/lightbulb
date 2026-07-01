@@ -57,6 +57,12 @@ export interface SecretNames {
    */
   paperclipServiceTokenKey: string;
   /**
+   * Dedicated symmetric secret for signing/verifying platform_ops tokens.
+   * Encrypted under the same CMK as the other auth secrets, so the existing
+   * KmsDecryptForSecrets policy covers it.
+   */
+  platformOpsTokenKey: string;
+  /**
    * Shared password for the gog CLI file-keyring backend. The backend
    * materializes the owner's Google OAuth keyring on EFS by running gog with
    * this password; the same secret is injected into every per-user OpenClaw
@@ -107,6 +113,7 @@ export interface ServiceStackProps extends cdk.StackProps {
     marketplaceTakedownsTable: dynamodb.Table;
     marketplaceSellersTable: dynamodb.Table;
     hookEventsTable: dynamodb.Table;
+    opsCacheTable: dynamodb.Table;
   };
   /** Pass secret names (strings) to avoid cross-stack KMS auto-grant cycles. */
   secretNames: SecretNames;
@@ -635,6 +642,16 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
+    // CloudWatch alarms read for the admin operator surface. DescribeAlarms
+    // is not resource-scoped, so it requires "*".
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "CloudWatchAlarmsReadForAdmin",
+        actions: ["cloudwatch:DescribeAlarms"],
+        resources: ["*"],
+      }),
+    );
+
     // Cloud Map (service discovery) — constrained to namespace + service
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
@@ -683,6 +700,8 @@ export class ServiceStack extends cdk.Stack {
           "ec2:DescribeInstances",
           "ec2:DescribeTags",
           "cloudformation:DescribeStacks",
+          "cloudformation:DescribeStackEvents",
+          "cloudformation:ListStacks",
         ],
         resources: ["*"],
       }),
@@ -1141,6 +1160,8 @@ export class ServiceStack extends cdk.Stack {
           props.database.marketplaceTakedownsTable.tableName,
         MARKETPLACE_SELLERS_TABLE:
           props.database.marketplaceSellersTable.tableName,
+        OPS_CACHE_TABLE: props.database.opsCacheTable.tableName,
+        PLATFORM_OPS_OWNER_ID: process.env.PLATFORM_OPS_OWNER_ID ?? "",
         MARKETPLACE_ARTIFACTS_BUCKET: marketplaceArtifactsBucket.bucketName,
         // Deterministic public S3 URL of the hosted AWS read-only connector
         // CloudFormation template. The connections aws-setup endpoint feeds this
@@ -1228,6 +1249,17 @@ export class ServiceStack extends cdk.Stack {
             this,
             "ImportPaperclipServiceTokenKey",
             props.secretNames.paperclipServiceTokenKey,
+          ),
+        ),
+        // Dedicated symmetric secret used to sign/verify platform_ops tokens.
+        // KMS decrypt for this secret is covered by the existing
+        // `KmsDecryptForSecrets` policy below — same CMK as the other auth
+        // secrets.
+        PLATFORM_OPS_TOKEN_KEY: ecs.Secret.fromSecretsManager(
+          secretsmanager.Secret.fromSecretNameV2(
+            this,
+            "ImportPlatformOpsTokenKey",
+            props.secretNames.platformOpsTokenKey,
           ),
         ),
         // Shared password for the gog CLI file keyring. The backend's gog_cli

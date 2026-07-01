@@ -103,6 +103,7 @@ export class LocalStage extends cdk.Stage {
         marketplaceTakedownsTable: database.marketplaceTakedownsTable,
         marketplaceSellersTable: database.marketplaceSellersTable,
         hookEventsTable: database.hookEventsTable,
+        opsCacheTable: database.opsCacheTable,
       },
       secretNames: {
         clerkIssuer: `isol8/${env}/clerk_issuer`,
@@ -112,6 +113,7 @@ export class LocalStage extends cdk.Stage {
         encryptionKey: `isol8/${env}/encryption_key`,
         posthogProjectApiKey: `isol8/${env}/posthog_project_api_key`,
         paperclipServiceTokenKey: auth.paperclipServiceTokenKey.secretName,
+        platformOpsTokenKey: auth.platformOpsTokenKey.secretName,
         gogKeyringPassword: auth.gogKeyringPassword.secretName,
         metronomeApiKey: auth.metronomeApiKey.secretName,
         metronomeWebhookSecret: auth.metronomeWebhookSecret.secretName,

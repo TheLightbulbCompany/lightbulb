@@ -140,6 +140,40 @@ export interface AdminApiError {
 }
 
 // ---------------------------------------------------------------------------
+// Platform-ops envelope (mirrors the backend Ops DTO in routers/ops.py)
+// ---------------------------------------------------------------------------
+
+export interface OpsEnvelope<T> {
+  data: T;
+  freshness_ts: string;
+  source_state: "ok" | "degraded" | "stale" | "unavailable" | "partial";
+  errors: { domain: string; reason: string }[];
+}
+
+export interface FleetGridItem {
+  owner_id: string;
+  service_name: string;
+  status: string;
+  desired_count: number;
+  running_count: number;
+  pending_count: number;
+  rollout_state: string | null;
+}
+
+export interface FleetData {
+  counts: Record<string, number> | null;
+  grid: FleetGridItem[] | null;
+}
+
+export interface DeployRow {
+  stack_name: string;
+  status: string;
+  status_reason: string | null;
+  last_updated: string | null;
+  root_cause: string | null;
+}
+
+// ---------------------------------------------------------------------------
 // Internal fetcher
 // ---------------------------------------------------------------------------
 
@@ -367,5 +401,17 @@ export async function listAvailableImages(
     { query: { limit } },
   );
   return result ?? { images: [] };
+}
+
+// ---------------------------------------------------------------------------
+// Platform-ops reads (fleet + deploys)
+// ---------------------------------------------------------------------------
+
+export async function getFleet(token: string): Promise<OpsEnvelope<FleetData> | null> {
+  return adminFetch<OpsEnvelope<FleetData>>(token, "/ops/fleet");
+}
+
+export async function getDeploys(token: string): Promise<OpsEnvelope<DeployRow[]> | null> {
+  return adminFetch<OpsEnvelope<DeployRow[]>>(token, "/ops/deploys");
 }
 

@@ -1223,6 +1223,12 @@ def build_openclaw_config_dict(
         "channels": {},
         "session": {
             "dmScope": "per-account-channel-peer",
+            # OpenClaw's session-store maintenance defaults to "enforce" (evict
+            # past 500 entries / 30 days). Heavy Paperclip owners blow past 500
+            # sessions on the shared per-owner container, which would silently
+            # reap users' oldest /chat conversations now that one agent has many
+            # sessions. "warn" logs pressure but never deletes.
+            "maintenance": {"mode": "warn"},
         },
         "web": {
             "enabled": True,

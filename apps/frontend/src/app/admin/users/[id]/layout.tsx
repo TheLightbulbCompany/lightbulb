@@ -9,6 +9,7 @@ const TABS: UserTab[] = [
   { label: "Container", segment: "container" },
   { label: "Activity", segment: "activity" },
   { label: "Actions", segment: "actions" },
+  { label: "Logs", segment: "logs" },
 ];
 
 interface UserLayoutProps {

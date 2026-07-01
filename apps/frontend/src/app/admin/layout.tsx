@@ -64,6 +64,18 @@ export default async function AdminLayout({
                 Marketplace
               </Link>
               <Link
+                href="/admin/deploys"
+                className="rounded-md px-3 py-1.5 text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100"
+              >
+                Deploys
+              </Link>
+              <Link
+                href="/admin/audit"
+                className="rounded-md px-3 py-1.5 text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100"
+              >
+                Audit
+              </Link>
+              <Link
                 href="/admin/health"
                 className="rounded-md px-3 py-1.5 text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100"
               >

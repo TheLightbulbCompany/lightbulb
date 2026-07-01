@@ -97,20 +97,27 @@ def _filter_sessions_for_user(result, user_id: str):
     "General" 3-part key) or starts with ``<user_id>:`` (a 4-part named
     session). The ``<user_id>:`` boundary check (not a bare startswith) stops
     ``user_1`` from matching ``user_10``. Ownership guard, not cosmetic.
+
+    The comparison is case-insensitive: OpenClaw lowercases the whole
+    sessionKey, so the ``rest`` segment parsed here is already lowercase, while
+    ``user_id`` is the original mixed-case Clerk id (base58, almost always has
+    uppercase). Comparing case-sensitively would drop every real user's own
+    rows. Mirrors the lowercased key/member comparisons in connection_pool.py.
     """
     if not isinstance(result, dict):
         return result
     sessions = result.get("sessions")
     if not isinstance(sessions, list):
         return result
+    uid_l = user_id.lower()
     kept = []
     for s in sessions:
         key = s.get("key", "") if isinstance(s, dict) else ""
         parts = key.split(":", 2)
         if len(parts) < 3 or parts[0] != "agent":
             continue
-        rest = parts[2]  # everything after agent:<agentId>:
-        if rest == user_id or rest.startswith(f"{user_id}:"):
+        rest_l = parts[2].lower()  # everything after agent:<agentId>:, lowercased
+        if rest_l == uid_l or rest_l.startswith(f"{uid_l}:"):
             kept.append(s)
     return {**result, "sessions": kept}
 

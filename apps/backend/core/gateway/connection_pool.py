@@ -2164,6 +2164,20 @@ def _parse_session_key(session_key: str) -> dict:
             "member_id": parts[2],
         }
 
+    # Webchat named session: agent:<agentId>:<userId>:<opaqueSessionId>
+    # (4-part, server-built by build_chat_session_key). parts[2] is the Clerk
+    # user_id (member routing target); parts[3] is the client-minted UUID.
+    # Cron/paperclip 4-part keys are already handled above, and channel keys are
+    # >=5 parts (group/room) or 6 (DM), so an exactly-4-part key here is
+    # unambiguously a webchat session. Must classify as webchat so it is NOT
+    # treated as isolated in _handle_message (which would drop streamed frames).
+    if len(parts) == 4:
+        return {
+            "agent_id": agent_id,
+            "source": "webchat",
+            "member_id": parts[2],
+        }
+
     # Channel DM (per-account-channel-peer):
     # agent:<agentId>:<channel>:<accountId>:direct:<peerId>
     # In our design accountId == agentId so we don't extract parts[3] separately.

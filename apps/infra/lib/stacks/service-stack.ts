@@ -564,6 +564,13 @@ export class ServiceStack extends cdk.Stack {
     // statement above (kmsKeyArn is the same CMK the table uses).
     props.database.hookEventsTable.grantReadWriteData(this.taskRole);
 
+    // Platform-ops fleet cache. The merged ops layer reads AND writes this
+    // table: ops_cache_repo.get()/put() are called from ecs_ops.fleet_grid()
+    // with no try/except, so without this grant the first get() raises
+    // AccessDeniedException and 500s the ops fleet endpoint. Its name is wired
+    // into OPS_CACHE_TABLE just below.
+    props.database.opsCacheTable.grantReadWriteData(this.taskRole);
+
     // Bedrock
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({

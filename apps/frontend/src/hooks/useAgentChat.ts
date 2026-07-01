@@ -25,6 +25,7 @@ import {
   type ChatIncomingMessage,
 } from "@/hooks/useGateway";
 import { useExecApprovalsContextOptional } from "@/hooks/useExecApprovals";
+import { useActiveSession } from "@/hooks/useActiveSession";
 import { capture } from "@/lib/analytics";
 import { emitStep } from "@/components/getstarted/getStartedEvents";
 import { notifyApiError } from "@/lib/notify";
@@ -83,6 +84,21 @@ function friendlyError(raw: string): string {
     if (pattern.test(raw)) return friendly;
   }
   return raw;
+}
+
+// Builds the OpenClaw session key the read path (chat.history) queries. The
+// write path constructs the authoritative key server-side; this must mirror
+// it: 4-part `agent:{agentId}:{userId}:{sessionId}` for a real session, or the
+// legacy 3-part `agent:{agentId}:{userId}` "General" session when sessionId is
+// null so no history is orphaned.
+function buildChatSessionKey(
+  agentId: string,
+  sessionName: string,
+  sessionId: string | null,
+): string {
+  return sessionId
+    ? `agent:${agentId}:${sessionName}:${sessionId}`
+    : `agent:${agentId}:${sessionName}`;
 }
 
 // =============================================================================
@@ -148,6 +164,12 @@ export interface UseAgentChatReturn {
   clearQueue: () => void;
   steerMessage: (id: string) => void;
   retryQueuedMessage: (id: string) => void;
+  /** The active session id for this agent; null == the legacy General session. */
+  activeSessionId: string | null;
+  /** Mint + switch to a fresh session. Returns the new session id. */
+  newSession: () => string;
+  /** Switch the active session (null selects General). */
+  selectSession: (sessionId: string | null) => void;
 }
 
 // =============================================================================
@@ -289,8 +311,18 @@ function renderPartial(partial: unknown): string {
 export function useAgentChat(agentId: string | null, sessionName: string): UseAgentChatReturn {
   const { isConnected, sendChat, send, onChatMessage, sendReq } = useGateway();
 
-  // Cache key includes session name so org members don't share history cache
-  const cacheKey = agentId ? `${agentId}:${sessionName}` : null;
+  const { activeSessionId, newSession, selectSession } =
+    useActiveSession(agentId);
+  const activeSessionIdRef = useRef(activeSessionId);
+  useEffect(() => {
+    activeSessionIdRef.current = activeSessionId;
+  }, [activeSessionId]);
+
+  // Cache key includes session name AND active session id so distinct sessions
+  // (and org members) keep independent history caches.
+  const cacheKey = agentId
+    ? `${agentId}:${sessionName}:${activeSessionId ?? ""}`
+    : null;
 
   // Persisted messages — from chat.history + chat.final synthesis.
   const [chatMessages, setChatMessages] = useState<HistoryMessage[]>(
@@ -631,7 +663,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       historyLoadedRef.current.add(cacheKey);
       return;
     }
-    const sessionKey = `agent:${agentId}:${sessionName}`;
+    const sessionKey = buildChatSessionKey(agentId, sessionName, activeSessionId);
     Promise.resolve().then(() => setHistoryLoadState("loading"));
     sendReq("chat.history", { sessionKey, limit: 200 })
       .then((result: unknown) => {
@@ -653,7 +685,40 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         historyLoadedRef.current.add(cacheKey);
         setHistoryLoadState("done");
       });
-  }, [agentId, cacheKey, sessionName, isConnected, sendReq, historyRefetchNonce]);
+  }, [agentId, cacheKey, sessionName, activeSessionId, isConnected, sendReq, historyRefetchNonce]);
+
+  // ---- Reset live + persisted view when the active session switches ----
+  // Agent switches are handled upstream (AgentChatWindow's prevAgentIdRef);
+  // this covers switching sessions WITHIN one agent, which shares the same
+  // useAgentChat instance.
+  const prevSessionRef = useRef<string | null>(activeSessionId);
+  useEffect(() => {
+    if (prevSessionRef.current === activeSessionId) return;
+    prevSessionRef.current = activeSessionId;
+    setChatMessages(cacheKey ? _messageCache.get(cacheKey) ?? [] : []);
+    setChatStream(null);
+    chatStreamRunIdRef.current = null;
+    streamCommittedOffsetRef.current = 0;
+    setChatStreamThinking(null);
+    chatStreamThinkingRunIdRef.current = null;
+    setChatStreamSegments([]);
+    setChatToolMessages([]);
+    toolStreamByIdRef.current.clear();
+    toolStreamOrderRef.current = [];
+    setBtwResults([]);
+    setError(null);
+    setIsStreaming(false);
+    clientRunIdRef.current = null;
+    resumeExpectedRef.current = false;
+  }, [
+    activeSessionId,
+    cacheKey,
+    setChatStream,
+    setChatStreamThinking,
+    setChatStreamSegments,
+    setChatToolMessages,
+    setIsStreaming,
+  ]);
 
   // ---- Invalidate + refetch history ----
   //
@@ -664,13 +729,15 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   // chatMessages untouched), then bumps a nonce so the history-fetch effect
   // above re-runs its EXISTING fetch path — no duplicate fetch logic here.
   const invalidateHistoryAndRefetch = useCallback(() => {
-    const key = agentIdRef.current ? `${agentIdRef.current}:${sessionName}` : null;
+    const key = agentIdRef.current
+      ? `${agentIdRef.current}:${sessionName}:${activeSessionIdRef.current ?? ""}`
+      : null;
     if (!key) return;
     _messageCache.delete(key);
     historyLoadedRef.current.delete(key);
     setChatMessages([]);
     setHistoryRefetchNonce((n) => n + 1);
-  }, [sessionName]);
+  }, [sessionName, activeSessionId]);
 
   // ---- Chat message handler ----
   // Dependencies are intentionally minimal ([onChatMessage]) because all
@@ -1525,7 +1592,9 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       if (!trimmed) return;
 
       setError(null);
-      const key = agentIdRef.current ? `${agentIdRef.current}:${sessionName}` : null;
+      const key = agentIdRef.current
+        ? `${agentIdRef.current}:${sessionName}:${activeSessionIdRef.current ?? ""}`
+        : null;
       if (key) _needsBootstrap.delete(key);
 
       // Side-channel `/btw` (or `/side`): a detached, non-blocking aside that
@@ -1769,7 +1838,9 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     setBtwResults([]);
     toolStreamByIdRef.current.clear();
     toolStreamOrderRef.current = [];
-    const key = agentIdRef.current ? `${agentIdRef.current}:${sessionName}` : null;
+    const key = agentIdRef.current
+      ? `${agentIdRef.current}:${sessionName}:${activeSessionIdRef.current ?? ""}`
+      : null;
     if (key) _messageCache.delete(key);
     setError(null);
     setIsStreaming(false);
@@ -1804,7 +1875,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       chatStreamThinkingRunId: chatStreamThinkingRunIdRef.current,
       chatStreamSegments,
       chatToolMessages,
-      sessionKey: `agent:${agentId ?? ""}:${sessionName}`,
+      sessionKey: buildChatSessionKey(agentId ?? "", sessionName, activeSessionId),
     });
     // Append ephemeral `/btw` side-result cards at the tail. They live in
     // transient state only (never in chatMessages / _messageCache), so they
@@ -1819,7 +1890,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       });
     }
     return items;
-  }, [chatMessages, chatStream, chatStreamThinking, chatStreamSegments, chatToolMessages, agentId, sessionName, btwResults]);
+  }, [chatMessages, chatStream, chatStreamThinking, chatStreamSegments, chatToolMessages, agentId, sessionName, activeSessionId, btwResults]);
 
   const renderGroups = useMemo<RenderGroup[]>(() => groupBySide(renderItems), [renderItems]);
 
@@ -1846,5 +1917,8 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     clearQueue,
     steerMessage,
     retryQueuedMessage,
+    activeSessionId,
+    newSession,
+    selectSession,
   };
 }

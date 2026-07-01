@@ -984,6 +984,24 @@ def build_openclaw_config_dict(
                     "midTurnPrecheck": {"enabled": True},
                     **({"model": cheap_model, "memoryFlush": {"model": cheap_model}} if cheap_model else {}),
                 },
+                # contextPruning trims STALE TOOL RESULTS out of the live
+                # transcript as it fills. This is the dominant cause of context
+                # overflow in practice: long, tool-heavy sessions accumulate
+                # hundreds of tool outputs that compaction never touches (it only
+                # summarizes conversation history, not tool results). It is
+                # OPT-IN upstream — disabled unless mode is explicitly
+                # "cache-ttl" — so a missing block means tool results grow
+                # unbounded until a turn dies with "input exceeds the context
+                # window". The remaining knobs inherit OpenClaw's defaults:
+                # soft-trim the oldest results once the transcript passes ~30% of
+                # the budget, hard-clear past ~50%, always keeping the most recent
+                # turns intact. Crucially the trigger ratios are measured against
+                # the EFFECTIVE context budget (contextTokens — ~272k on the
+                # ChatGPT/Codex path), not the model's advertised raw window, so
+                # it fires correctly even when a model reports a far larger window
+                # than it actually serves. Provider-agnostic (guards the context
+                # window, not cost), so set unconditionally like midTurnPrecheck.
+                "contextPruning": {"mode": "cache-ttl"},
                 # heartbeat is NOT a no-op: upstream treats a present
                 # `agents.defaults.heartbeat` as truthy and falls back to a
                 # 30m interval with `target: none`. That is OpenClaw's

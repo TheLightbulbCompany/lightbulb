@@ -561,6 +561,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         agent_id: agentIdRef.current,
         text,
         runId: activeRunId,
+        ...(activeSessionIdRef.current ? { session_id: activeSessionIdRef.current } : {}),
       });
       setQueuedMessages((prev) => prev.filter((m) => m.id !== id));
     },
@@ -1393,7 +1394,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
 
       try {
         console.info(`[chat] dispatch runId=${newClientRunId} fromQueue=${!!opts?.queueItem}`);
-        sendChat(agentId, message, newClientRunId);
+        sendChat(agentId, message, newClientRunId, activeSessionIdRef.current ?? undefined);
         return true;
       } catch (err) {
         console.warn(
@@ -1631,6 +1632,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
           message: trimmed,
           side: true,
           clientRunId: sideRunId,
+          ...(activeSessionIdRef.current ? { session_id: activeSessionIdRef.current } : {}),
         });
         return;
       }
@@ -1748,6 +1750,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       type: "agent_abort",
       agent_id: agentIdRef.current,
       ...(activeRunId ? { runId: activeRunId } : {}),
+      ...(activeSessionIdRef.current ? { session_id: activeSessionIdRef.current } : {}),
     });
     if (!delivered) {
       pendingAbortRef.current = {
@@ -1786,6 +1789,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         type: "agent_abort",
         agent_id: pending.agentId,
         ...(pending.runId ? { runId: pending.runId } : {}),
+        ...(activeSessionIdRef.current ? { session_id: activeSessionIdRef.current } : {}),
       });
     }
 

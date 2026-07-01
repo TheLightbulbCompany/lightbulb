@@ -132,7 +132,12 @@ interface GatewayContextValue {
    * cancelMessage detect the stale-isConnected race and park a retry). */
   send: (payload: unknown) => boolean;
   sendReq: (method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<unknown>;
-  sendChat: (agentId: string, message: string, clientRunId: string) => void;
+  sendChat: (
+    agentId: string,
+    message: string,
+    clientRunId: string,
+    sessionId?: string,
+  ) => void;
   onEvent: (handler: (event: string, data: unknown) => void) => () => void;
   onChatMessage: (handler: (msg: ChatIncomingMessage) => void) => () => void;
   reconnect: () => void;
@@ -531,7 +536,7 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
   // ---- sendChat ----
 
   const sendChat = useCallback(
-    (agentId: string, message: string, clientRunId: string) => {
+    (agentId: string, message: string, clientRunId: string, sessionId?: string) => {
       // Throw on closed socket instead of silently no-op'ing. Callers like
       // useAgentChat.dispatchNow rely on a thrown error to reset their per-
       // user-turn busy gate (clientRunIdRef). Silent no-op leaves the turn
@@ -546,6 +551,10 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
           agent_id: agentId,
           message,
           clientRunId,
+          // Omitted for the General session so the backend builds the legacy
+          // 3-part key; present only for a real session (validated server-side
+          // against _SESSION_ID_RE before the 4-part key is constructed).
+          ...(sessionId ? { session_id: sessionId } : {}),
         }),
       );
     },

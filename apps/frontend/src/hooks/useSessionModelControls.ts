@@ -1,6 +1,5 @@
 "use client";
 
-import { useCallback } from "react";
 import { useUser } from "@clerk/nextjs";
 import { useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 import { buildChatSessionKey } from "@/lib/sessionKey";
@@ -37,36 +36,30 @@ export function useSessionModelControls(
   const { user } = useUser();
   const callRpc = useGatewayRpcMutation();
 
-  const keyOf = useCallback((): string => {
+  // Plain functions: the project's React Compiler auto-memoizes hook returns, and
+  // a manual useCallback whose body can throw (keyOf) can't be preserved by the
+  // compiler (react-compiler/react-compiler "memoization could not be preserved").
+  const keyOf = (): string => {
     if (!agentId || !user?.id) throw new Error("No active agent or user");
     return buildChatSessionKey(agentId, user.id, activeSessionId);
-  }, [agentId, user?.id, activeSessionId]);
+  };
 
-  const setModel = useCallback(
-    async (entry: ModelEntry): Promise<void> => {
-      // Idle-only: a mid-run switch throws server-side (LiveSessionModelSwitchError).
-      if (isStreaming) throw new LiveSessionModelSwitchError();
-      await callRpc("sessions.patch", {
-        key: keyOf(),
-        model: buildModelRef(entry.provider, entry.id),
-      });
-    },
-    [callRpc, keyOf, isStreaming],
-  );
+  const setModel = async (entry: ModelEntry): Promise<void> => {
+    // Idle-only: a mid-run switch throws server-side (LiveSessionModelSwitchError).
+    if (isStreaming) throw new LiveSessionModelSwitchError();
+    await callRpc("sessions.patch", {
+      key: keyOf(),
+      model: buildModelRef(entry.provider, entry.id),
+    });
+  };
 
-  const setThinkingLevel = useCallback(
-    async (level: string): Promise<void> => {
-      await callRpc("sessions.patch", { key: keyOf(), thinkingLevel: level });
-    },
-    [callRpc, keyOf],
-  );
+  const setThinkingLevel = async (level: string): Promise<void> => {
+    await callRpc("sessions.patch", { key: keyOf(), thinkingLevel: level });
+  };
 
-  const setFastMode = useCallback(
-    async (fast: boolean): Promise<void> => {
-      await callRpc("sessions.patch", { key: keyOf(), fastMode: fast });
-    },
-    [callRpc, keyOf],
-  );
+  const setFastMode = async (fast: boolean): Promise<void> => {
+    await callRpc("sessions.patch", { key: keyOf(), fastMode: fast });
+  };
 
   return { setModel, setThinkingLevel, setFastMode };
 }

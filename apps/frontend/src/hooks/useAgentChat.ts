@@ -753,6 +753,21 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         return;
       }
 
+      // Session demux. Once one agent has many sessions (or background tabs),
+      // the owner-keyed fan-out delivers frames for OTHER sessions here. A
+      // session-bearing frame is only ours when its stamped session_id matches
+      // the active session (a missing/null id == the legacy "General" session).
+      // Broadcasts (heartbeat/update_available) carry no session_id; untagged
+      // errors were already allowed through above.
+      if (
+        !isUntaggedBroadcast &&
+        !isUntaggedError &&
+        "session_id" in msg &&
+        (msg.session_id ?? null) !== activeSessionIdRef.current
+      ) {
+        return;
+      }
+
       // `/btw` side-channel ANSWER. OpenClaw renders these on a distinct channel
       // it surfaces as a side card "Not saved to chat history"; the backend maps
       // chat.side_result → this `btw_result` frame. Hold it in transient

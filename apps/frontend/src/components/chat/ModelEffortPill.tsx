@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { ChevronDown } from "lucide-react";
+import { Check, ChevronDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
@@ -108,25 +108,25 @@ export function ModelEffortPill({
       <PopoverTrigger asChild>
         <Button
           type="button"
-          variant="outline"
+          variant="ghost"
           size="sm"
           data-testid="model-effort-pill"
-          className="gap-1.5 h-7 px-2.5 rounded-full bg-white border-[#e0dbd0] text-[#5a5549] hover:bg-[#f3efe6] text-xs"
+          className="gap-1 h-8 px-2.5 rounded-full text-xs font-normal text-[#5a5549] hover:bg-[#f3efe6] hover:text-[#1a1a1a]"
         >
           <span className="truncate max-w-40">{pillLabel}</span>
-          <ChevronDown className="h-3 w-3 opacity-50" />
+          <ChevronDown className="h-3 w-3 text-[#b5ae9e]" />
         </Button>
       </PopoverTrigger>
       <PopoverContent
         align="start"
         side="top"
         sideOffset={8}
-        className="!w-[300px] !p-0 border-[#333] text-white shadow-2xl"
-        style={{ background: "#111111", maxHeight: 360 }}
+        className="!w-[300px] !p-0 rounded-xl border-[#e0dbd0] bg-white text-[#1a1a1a] shadow-[0_2px_8px_rgba(26,26,26,0.04),0_12px_32px_rgba(26,26,26,0.10)]"
+        style={{ maxHeight: 360 }}
       >
         {/* Model section */}
-        <div className="p-2 border-b border-white/10">
-          <div className="px-2 py-1 text-[11px] uppercase tracking-wide text-white/40">Model</div>
+        <div className="p-2 border-b border-[#f0ece3]">
+          <div className="px-2 py-1 text-[11px] uppercase tracking-wide text-[#b5ae9e]">Model</div>
           <div className="max-h-48 overflow-y-auto">
             {models.map((m) => {
               const isSel = refOf(m) === selectedModelRef;
@@ -139,21 +139,26 @@ export function ModelEffortPill({
                   title={denied ? "Model access denied" : m.id}
                   onClick={() => pick(m)}
                   className={cn(
-                    "w-full flex items-center justify-between px-2 py-1.5 rounded text-sm transition-colors",
-                    isSel ? "bg-white/10 text-white" : "text-white/70 hover:bg-white/5",
+                    "w-full flex items-center justify-between px-2 py-1.5 rounded-lg text-sm transition-colors",
+                    isSel
+                      ? "bg-[#f3efe6] text-[#1a1a1a] font-medium"
+                      : "text-[#5a5549] hover:bg-[#f7f3ea] hover:text-[#1a1a1a]",
                     (isStreaming || denied) && "opacity-40 cursor-not-allowed",
                   )}
                 >
                   <span className="truncate text-left">{m.name ?? m.id}</span>
-                  <span className="ml-2 shrink-0 text-[10px] text-white/30">
-                    {providerLabelFor(m)}
+                  <span className="ml-2 flex shrink-0 items-center gap-1.5">
+                    {isSel && <Check className="h-3.5 w-3.5 text-[#06402B]" />}
+                    <span className="text-[10px] text-[#b5ae9e]">
+                      {providerLabelFor(m)}
+                    </span>
                   </span>
                 </button>
               );
             })}
           </div>
           {isStreaming && (
-            <div className="px-2 pt-1 text-[10px] text-white/30">
+            <div className="px-2 pt-1 text-[10px] text-[#b5ae9e]">
               Stop the run to switch model.
             </div>
           )}
@@ -161,21 +166,21 @@ export function ModelEffortPill({
 
         {/* Reasoning section — only for reasoning models */}
         {showEffort && (
-          <div className="p-2 border-b border-white/10">
-            <div className="px-2 py-1 text-[11px] uppercase tracking-wide text-white/40">
+          <div className="p-2 border-b border-[#f0ece3]">
+            <div className="px-2 py-1 text-[11px] uppercase tracking-wide text-[#b5ae9e]">
               Reasoning
             </div>
-            <div className="flex gap-1 px-1">
+            <div className="mx-1 flex gap-0.5 rounded-lg bg-[#f3efe6] p-0.5">
               {REASONING_LEVELS.map((lvl) => (
                 <button
                   key={lvl}
                   type="button"
                   onClick={() => pickEffort(lvl)}
                   className={cn(
-                    "flex-1 py-1 rounded text-xs capitalize transition-colors",
+                    "flex-1 py-1 rounded-md text-xs capitalize transition-colors",
                     thinkingLevel === lvl
-                      ? "bg-white/15 text-white"
-                      : "text-white/60 hover:bg-white/5",
+                      ? "bg-white text-[#1a1a1a] shadow-sm"
+                      : "text-[#8a8578] hover:text-[#5a5549]",
                   )}
                 >
                   {lvl}
@@ -188,19 +193,19 @@ export function ModelEffortPill({
         {/* Speed (fast-mode) — only BYO-OpenAI */}
         {showSpeed && (
           <div className="p-2">
-            <div className="px-2 py-1 text-[11px] uppercase tracking-wide text-white/40">Speed</div>
+            <div className="px-2 py-1 text-[11px] uppercase tracking-wide text-[#b5ae9e]">Speed</div>
             <button
               type="button"
               onClick={() => toggleFast(!fastMode)}
-              className="w-full flex items-center justify-between px-2 py-1.5 rounded text-sm text-white/70 hover:bg-white/5"
+              className="w-full flex items-center justify-between px-2 py-1.5 rounded-lg text-sm text-[#5a5549] hover:bg-[#f7f3ea]"
             >
               <span>Fast mode</span>
               <span
                 className={cn(
                   "text-[10px] px-1.5 py-0.5 rounded-full",
                   fastMode
-                    ? "bg-emerald-500/15 text-emerald-400"
-                    : "bg-white/5 text-white/40",
+                    ? "bg-[#06402B]/10 text-[#06402B]"
+                    : "bg-[#f3efe6] text-[#b5ae9e]",
                 )}
               >
                 {fastMode ? "On" : "Off"}
@@ -210,7 +215,7 @@ export function ModelEffortPill({
         )}
 
         {error && (
-          <div className="p-2 border-t border-white/10 text-[11px] text-red-400">{error}</div>
+          <div className="p-2 border-t border-[#f0ece3] text-[11px] text-[var(--danger)]">{error}</div>
         )}
       </PopoverContent>
     </Popover>

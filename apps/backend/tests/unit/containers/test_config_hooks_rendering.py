@@ -111,3 +111,25 @@ def test_hook_token_param_does_not_leak_into_rendered_config():
     # serialized output (catches even a hypothetical embed under a new key).
     serialized = json.dumps(cfg_with)
     assert secret not in serialized
+
+
+def test_context_pruning_enabled_on_every_provider_path():
+    """contextPruning must be ON (mode=cache-ttl) so stale tool results are
+    pruned before a long, tool-heavy session overflows the model's context.
+
+    It is OPT-IN upstream (disabled unless mode is explicitly ``cache-ttl``) and
+    provider-agnostic — it guards the context window, not cost — so every
+    provider path must emit it. The ChatGPT/Codex path is the one that was
+    hard-failing with "input exceeds the context window of this model", so it is
+    asserted alongside the others. DO NOT remove ``mode``: without it the whole
+    block is inert and tool results accumulate unbounded.
+    """
+    cases = [
+        {"provider_choice": "bedrock_claude", "aip_arns": _AIPS},
+        {"provider_choice": "chatgpt_oauth"},
+        {"provider_choice": "byo_key", "byo_provider": "anthropic"},
+    ]
+    for case in cases:
+        cfg = build_openclaw_config_dict(user_id="u_1", gateway_token="gw-token", **case)
+        pruning = cfg["agents"]["defaults"]["contextPruning"]
+        assert pruning["mode"] == "cache-ttl", case["provider_choice"]

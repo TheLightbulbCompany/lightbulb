@@ -753,6 +753,21 @@ async def ws_message(
             )
             return Response(status_code=200)
 
+        # Optional client-minted session id (snake_case on the wire). None ->
+        # legacy "General" session. Reject a malformed id at the handler so a
+        # crafted trailing segment never reaches the key builder or gets queued.
+        session_id = body.get("session_id")
+        if session_id is not None:
+            try:
+                build_chat_session_key(agent_id, user_id, session_id)
+            except ValueError:
+                management_api = await get_management_api_client()
+                management_api.send_message(
+                    x_connection_id,
+                    {"type": "error", "agent_id": agent_id, "message": "Invalid session_id"},
+                )
+                return Response(status_code=200)
+
         # The gateway connection pool's gate_chat (called inside the
         # forwarder) is the authoritative pre-chat budget gate for card-3
         # (bedrock_claude) users; cards 1 + 2 carry their own provider
@@ -766,6 +781,7 @@ async def ws_message(
             message=message,
             client_run_id=client_run_id,
             side=side,
+            session_id=session_id,
         )
         return Response(status_code=200)
 
@@ -785,6 +801,22 @@ async def ws_message(
                 {"type": "error", "message": "Missing agent_id"},
             )
             return Response(status_code=200)
+
+        # Optional client-minted session id (snake_case on the wire). None ->
+        # legacy "General" session. Reject a malformed id at the handler so a
+        # crafted trailing segment never reaches the key builder or gets queued.
+        session_id = body.get("session_id")
+        if session_id is not None:
+            try:
+                build_chat_session_key(agent_id, user_id, session_id)
+            except ValueError:
+                management_api = await get_management_api_client()
+                management_api.send_message(
+                    x_connection_id,
+                    {"type": "error", "agent_id": agent_id, "message": "Invalid session_id"},
+                )
+                return Response(status_code=200)
+
         background_tasks.add_task(
             _process_agent_abort_background,
             connection_id=x_connection_id,
@@ -792,6 +824,7 @@ async def ws_message(
             owner_id=owner_id,
             agent_id=agent_id,
             run_id=run_id,
+            session_id=session_id,
         )
         return Response(status_code=200)
 
@@ -812,6 +845,22 @@ async def ws_message(
                 {"type": "error", "message": "Missing agent_id or text"},
             )
             return Response(status_code=200)
+
+        # Optional client-minted session id (snake_case on the wire). None ->
+        # legacy "General" session. Reject a malformed id at the handler so a
+        # crafted trailing segment never reaches the key builder or gets queued.
+        session_id = body.get("session_id")
+        if session_id is not None:
+            try:
+                build_chat_session_key(agent_id, user_id, session_id)
+            except ValueError:
+                management_api = await get_management_api_client()
+                management_api.send_message(
+                    x_connection_id,
+                    {"type": "error", "agent_id": agent_id, "message": "Invalid session_id"},
+                )
+                return Response(status_code=200)
+
         background_tasks.add_task(
             _process_agent_steer_background,
             connection_id=x_connection_id,
@@ -819,6 +868,7 @@ async def ws_message(
             owner_id=owner_id,
             agent_id=agent_id,
             text=text,
+            session_id=session_id,
         )
         return Response(status_code=200)
 
@@ -1466,6 +1516,7 @@ async def _process_agent_chat_background(
     message: str,
     client_run_id: str | None = None,
     side: bool = False,
+    session_id: str | None = None,
 ) -> None:
     """
     Process agent chat message via OpenClaw's native chat.send RPC.
@@ -1545,10 +1596,11 @@ async def _process_agent_chat_background(
         pool = get_gateway_pool()
         req_id = str(uuid4())
 
-        # Session key format: agent:{agentId}:{userId}
-        # Every user gets their own session, isolating their chat history
-        # from cron jobs, channels, and other system activity.
-        session_key = f"agent:{agent_id}:{user_id}"
+        # Session key: server-built agent:{agentId}:{userId}[:{sessionId}].
+        # Every user gets their own session, isolating their chat history from
+        # cron jobs, channels, and other system activity. session_id (client-
+        # minted UUID) opens a distinct conversation; None = the "General" session.
+        session_key = build_chat_session_key(agent_id, user_id, session_id)
 
         logger.info(
             "[%s] chat.send RPC agent=%s sessionKey=%s ip=%s",
@@ -1784,6 +1836,7 @@ async def _process_agent_abort_background(
     owner_id: str,
     agent_id: str,
     run_id: str | None = None,
+    session_id: str | None = None,
 ) -> None:
     """Cancel the in-flight run for ``agent:{agent_id}:{user_id}``.
 
@@ -1804,7 +1857,7 @@ async def _process_agent_abort_background(
         run_id or "-",
         connection_id[:12],
     )
-    session_key = f"agent:{agent_id}:{user_id}"
+    session_key = build_chat_session_key(agent_id, user_id, session_id)
 
     async def _notify_aborted_terminal() -> None:
         """Tell the client the run is over so cancelMessage's server-reconciled
@@ -1889,6 +1942,7 @@ async def _process_agent_steer_background(
     owner_id: str,
     agent_id: str,
     text: str,
+    session_id: str | None = None,
 ) -> None:
     """Inject ``text`` into the in-flight run for ``agent:{agent_id}:{user_id}``.
 
@@ -1909,7 +1963,7 @@ async def _process_agent_steer_background(
         len(text),
     )
     management_api = await get_management_api_client()
-    session_key = f"agent:{agent_id}:{user_id}"
+    session_key = build_chat_session_key(agent_id, user_id, session_id)
     try:
         ecs_manager = get_ecs_manager()
         container, ip = await ecs_manager.resolve_running_container(owner_id)

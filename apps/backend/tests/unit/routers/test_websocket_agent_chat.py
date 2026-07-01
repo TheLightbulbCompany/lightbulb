@@ -214,6 +214,9 @@ class TestAgentChatBackgroundTask:
             # Default (non-side) send: side=False unless the payload opts into
             # the /btw side-channel.
             side=False,
+            # Payload omitted session_id -> forwarded as None (legacy "General"
+            # session key). A UUID here would open a distinct conversation.
+            session_id=None,
         )
 
 
@@ -434,6 +437,7 @@ class TestAgentAbortRouting:
             owner_id="test-user-456",
             agent_id="luna",
             run_id="run-9",
+            session_id=None,
         )
 
     @pytest.mark.asyncio
@@ -456,6 +460,7 @@ class TestAgentAbortRouting:
             owner_id="test-user-456",
             agent_id="luna",
             run_id=None,
+            session_id=None,
         )
 
     @pytest.mark.asyncio
@@ -671,6 +676,7 @@ class TestAgentSteerRouting:
             owner_id="test-user-456",
             agent_id="luna",
             text="actually, focus on the API",
+            session_id=None,
         )
 
     @pytest.mark.asyncio

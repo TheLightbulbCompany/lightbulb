@@ -71,18 +71,18 @@ class TestOpenclawConfigShape:
         assert config["meta"]["lastTouchedVersion"] == DEPLOYED_UPSTREAM_VERSION
 
     def test_agents_defaults_memory_search_enabled(self):
-        # memorySearch is ON. memory-core registers memory_search/memory_get,
-        # and the "Memory Recall" prompt section only renders while those tools
-        # exist — recall is what lets agents remember beyond the always-loaded
-        # MEMORY.md. The embeddings index is sqlite on EFS, which we keep on EFS
-        # because live container logs show no sqlite contention. provider/model
-        # stay pinned to Bedrock Titan (not upstream's "local" GGUF, which we
-        # don't ship and which historically hung on first embed).
+        # memorySearch is ON for every owner (memory-core registers
+        # memory_search/memory_get, and the "Memory Recall" prompt section only
+        # renders while those tools exist). _cfg() defaults to bedrock_claude,
+        # which resolves to FTS keyword recall (provider:"none", no model) —
+        # semantic embeddings would run Bedrock Titan on our AWS account, and we
+        # never pay for embeddings. Only byo_key+openai gets a vector provider
+        # (see test_config_provider_routing).
         config = _cfg()
         memory_search = config["agents"]["defaults"]["memorySearch"]
         assert memory_search["enabled"] is True
-        assert memory_search["provider"] == "bedrock"
-        assert memory_search["model"] == "amazon.titan-embed-text-v2:0"
+        assert memory_search["provider"] == "none"
+        assert "model" not in memory_search
 
     def test_agents_defaults_no_llm_key(self):
         # `agents.defaults.llm` was removed from AgentDefaultsSchema between

@@ -342,8 +342,14 @@ async def replace_provider_block(
             **copy.deepcopy(plugin_entries),
         }
 
-        # memorySearch stays at its provisioned value (enabled) — recall is
-        # intentionally on; do not force it off here.
+        # memorySearch is intentionally NOT rewritten here. Its embedding
+        # backend is provider-derived (config.memory_search_entry), but both
+        # providers this hot path ever swaps between — bedrock_claude and
+        # chatgpt_oauth — resolve to the same FTS-only value (provider:"none"),
+        # so there is nothing to change. The only path whose memorySearch
+        # differs (byo_key+openai -> provider:"openai") always takes the cold
+        # re-provision path, which rebuilds the block from scratch. Recall
+        # stays on regardless.
 
         return True
 

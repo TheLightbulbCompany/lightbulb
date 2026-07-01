@@ -114,10 +114,19 @@ async def fleet_grid() -> list[dict]:
     return grid
 
 
-async def fleet_counts_live() -> dict[str, int]:
-    grid = await fleet_grid()
+def counts_from_grid(grid: list[dict]) -> dict[str, int]:
+    """Aggregate status counts from an already-built fleet grid.
+
+    Pure (no I/O) so a caller that already has the grid (e.g. the /ops/fleet
+    router) can derive counts without a second live read.
+    """
     counts = {"running": 0, "provisioning": 0, "stopped": 0, "error": 0, "unknown": 0}
     for g in grid:
-        counts[g["status"]] = counts.get(g["status"], 0) + 1
+        status = g.get("status", "unknown")
+        counts[status] = counts.get(status, 0) + 1
     counts["total"] = sum(counts.values())
     return counts
+
+
+async def fleet_counts_live() -> dict[str, int]:
+    return counts_from_grid(await fleet_grid())

@@ -15,6 +15,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from core.auth import get_current_user, require_platform_admin
 from core.config import settings
 from core.services import platform_ops_token
+from core.services.admin_audit import audit_admin_action
 from core.services.ops import alarms, deploys, ecs_ops
 from core.services.ops import envelope as env
 
@@ -53,10 +54,12 @@ async def require_ops_access(
 
 @router.get("/fleet")
 async def get_fleet(_principal: str = Depends(require_ops_access)):
-    counts, cstate, cerr = await env.read_source("ecs", ecs_ops.fleet_counts_live)
-    grid, gstate, gerr = await env.read_source("ecs", ecs_ops.fleet_grid)
-    errors = cerr + gerr
-    state = env.OK if not errors else env.PARTIAL if (counts or grid) else env.UNAVAILABLE
+    # Single live read: fleet_counts_live() derives from fleet_grid() internally,
+    # so read the grid ONCE and compute counts locally — avoids a redundant
+    # second ECS/scan fan-out and a compound timeout. On failure the whole read
+    # degrades together (grid is None -> counts None -> source_state != ok).
+    grid, state, errors = await env.read_source("ecs", ecs_ops.fleet_grid)
+    counts = ecs_ops.counts_from_grid(grid) if grid is not None else None
     return env.envelope({"counts": counts, "grid": grid}, source_state=state, errors=errors)
 
 
@@ -73,6 +76,7 @@ async def get_alarms(_principal: str = Depends(require_ops_access)):
 
 
 @router.post("/token")
+@audit_admin_action("ops.mint_token", target_user_id_override="__platform__")
 async def mint_ops_token(auth=Depends(require_platform_admin)):
     """Mint a platform_ops token for the configured platform owner.
 

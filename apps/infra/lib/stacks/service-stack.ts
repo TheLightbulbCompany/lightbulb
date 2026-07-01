@@ -708,7 +708,6 @@ export class ServiceStack extends cdk.Stack {
           "ec2:DescribeTags",
           "cloudformation:DescribeStacks",
           "cloudformation:DescribeStackEvents",
-          "cloudformation:ListStacks",
         ],
         resources: ["*"],
       }),

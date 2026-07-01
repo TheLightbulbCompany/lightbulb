@@ -1987,7 +1987,6 @@ async def _process_agent_abort_background(
         run_id or "-",
         connection_id[:12],
     )
-    session_key = build_chat_session_key(agent_id, user_id, session_id)
 
     async def _notify_aborted_terminal() -> None:
         """Tell the client the run is over so cancelMessage's server-reconciled
@@ -2014,6 +2013,10 @@ async def _process_agent_abort_background(
             pass
 
     try:
+        # Built inside the try (mirrors _process_agent_chat_background) so an
+        # invalid session_id surfaces the friendly aborted-terminal frame via
+        # the except below instead of an unhandled BackgroundTasks exception.
+        session_key = build_chat_session_key(agent_id, user_id, session_id)
         ecs_manager = get_ecs_manager()
         container, ip = await ecs_manager.resolve_running_container(owner_id)
         if not container or not ip:
@@ -2093,8 +2096,11 @@ async def _process_agent_steer_background(
         len(text),
     )
     management_api = await get_management_api_client()
-    session_key = build_chat_session_key(agent_id, user_id, session_id)
     try:
+        # Built inside the try (mirrors _process_agent_chat_background) so an
+        # invalid session_id surfaces the friendly steer-failed error frame via
+        # the except below instead of an unhandled BackgroundTasks exception.
+        session_key = build_chat_session_key(agent_id, user_id, session_id)
         ecs_manager = get_ecs_manager()
         container, ip = await ecs_manager.resolve_running_container(owner_id)
         if not container:

@@ -97,10 +97,18 @@ async def test_member_rejected_mutating_another_users_key(method):
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "key",
-    [f"paperclip:agentX:{_UUID}", f"cron:job:{_UUID}", "paperclip:something"],
+    [
+        # Real OpenClaw key shapes (agent:<agentId>:...) for paperclip/cron
+        # sessions — see connection_pool._parse_session_key. These live on the
+        # shared per-owner container but are never owned by a /chat member, so
+        # the ownership guard must reject a member's attempt to mutate them.
+        "agent:agentX:paperclip",
+        f"agent:agentX:paperclip:issue:{_UUID}",
+        f"agent:agentX:cron:{_UUID}",
+    ],
 )
 async def test_member_rejected_mutating_paperclip_or_cron_key(key):
-    # Non-agent keys (Teams / cron sessions) are never owned by a /chat member.
+    # Paperclip (Teams) and cron sessions are never owned by a /chat member.
     consumed, payload = await _run_key_guard(
         user_id="user_A",
         method="sessions.delete",

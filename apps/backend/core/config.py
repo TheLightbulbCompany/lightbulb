@@ -261,6 +261,17 @@ class Settings(BaseSettings):
     # from Secrets Manager + KMS by the CDK service stack at deploy time.
     # Re-used by paperclip_proxy to sign the proxy's own session cookie.
     PAPERCLIP_SERVICE_TOKEN_KEY: str = os.getenv("PAPERCLIP_SERVICE_TOKEN_KEY", "")
+    # --- Platform Ops (operator console + owner-scoped ops API) ---
+    # The founder's owner_id (user_* or org_*). The platform_ops token's
+    # `sub` must equal this; it gates the agent path on /ops/*.
+    PLATFORM_OPS_OWNER_ID: str = os.getenv("PLATFORM_OPS_OWNER_ID", "")
+    # Dedicated HS256 key for signing/verifying platform_ops tokens. Distinct
+    # from PAPERCLIP_SERVICE_TOKEN_KEY so ops tokens are independently
+    # revocable. Populated from Secrets Manager + KMS by the CDK service stack.
+    PLATFORM_OPS_TOKEN_KEY: str = os.getenv("PLATFORM_OPS_TOKEN_KEY", "")
+    # DynamoDB table for the shared ops cache (fleet/cost/metrics snapshots),
+    # set by CDK. Empty in local tests.
+    OPS_CACHE_TABLE: str = os.getenv("OPS_CACHE_TABLE", "")
     # Clerk publishable key (the same value the frontend uses as
     # NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY). The paperclip-proxy bootstrap page
     # renders inline JS that loads the Clerk SDK and handshakes a session

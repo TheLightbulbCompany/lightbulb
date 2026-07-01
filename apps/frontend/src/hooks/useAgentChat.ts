@@ -176,12 +176,51 @@ export interface UseAgentChatReturn {
 // Module-level message cache
 //
 // Survives component unmounts (navigation away from /chat and back) but
-// clears on full page refresh. Keyed by agentId so each agent's history
-// is preserved independently.
+// clears on full page refresh. Keyed by `agentId:userId:sessionId` so each
+// session's history is preserved independently.
 // =============================================================================
 
 const _messageCache = new Map<string, HistoryMessage[]>();
 const _needsBootstrap = new Set<string>();
+
+/**
+ * The persisted transcript, bound to the active session's cache key.
+ *
+ * One useAgentChat instance serves ALL of an agent's sessions (a session
+ * switch does not remount — only an agent switch does, via the key prop on
+ * AgentChatWindow), so when `cacheKey` changes the previous session's
+ * messages are still sitting in state. They are swapped for the new key's
+ * cached transcript DURING render — React's "adjust state when a prop
+ * changes" pattern — not in an effect, so that every effect always observes
+ * a consistent (cacheKey, messages) pair. The cache write-back below relies
+ * on this: were the swap effect-based, the write-back would fire once with
+ * the new key and the old session's messages, poisoning the new session's
+ * cache entry — which then short-circuits its history fetch and renders the
+ * previous session's transcript.
+ */
+function useSessionScopedMessages(
+  cacheKey: string | null,
+): [HistoryMessage[], React.Dispatch<React.SetStateAction<HistoryMessage[]>>] {
+  const readCache = (): HistoryMessage[] =>
+    cacheKey ? _messageCache.get(cacheKey) ?? [] : [];
+
+  const [messages, setMessages] = useState<HistoryMessage[]>(readCache);
+  const [prevCacheKey, setPrevCacheKey] = useState(cacheKey);
+  if (prevCacheKey !== cacheKey) {
+    setPrevCacheKey(cacheKey);
+    setMessages(readCache());
+  }
+
+  // Persist so switching away and back (or leaving /chat and returning)
+  // restores this session instantly without a refetch.
+  useEffect(() => {
+    if (cacheKey && messages.length > 0) {
+      _messageCache.set(cacheKey, messages);
+    }
+  }, [cacheKey, messages]);
+
+  return [messages, setMessages];
+}
 
 // =============================================================================
 // foldLiveTurnIntoContent
@@ -324,10 +363,10 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     ? `${agentId}:${sessionName}:${activeSessionId ?? ""}`
     : null;
 
-  // Persisted messages — from chat.history + chat.final synthesis.
-  const [chatMessages, setChatMessages] = useState<HistoryMessage[]>(
-    () => (cacheKey ? _messageCache.get(cacheKey) ?? [] : []),
-  );
+  // Persisted messages — from chat.history + chat.final synthesis. Bound to
+  // the active session's cache key: a session switch swaps in that session's
+  // cached transcript (see useSessionScopedMessages).
+  const [chatMessages, setChatMessages] = useSessionScopedMessages(cacheKey);
 
   // Live state for the in-flight run. Refs mirror the state so the
   // onChatMessage handler (registered once per mount with stable deps)
@@ -572,13 +611,6 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     agentIdRef.current = agentId;
   }, [agentId]);
 
-  // ---- Sync chatMessages to module-level cache ----
-  useEffect(() => {
-    if (cacheKey && chatMessages.length > 0) {
-      _messageCache.set(cacheKey, chatMessages);
-    }
-  }, [cacheKey, chatMessages]);
-
   // ---- Tool stream sync (Map → state array) ----
   //
   // Sync toolStreamById Map → chatToolMessages array (state) for rendering.
@@ -678,25 +710,33 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
           return;
         }
         if (agentIdRef.current !== agentId) return;
-        setChatMessages(projected);
+        // Always cache under the key this fetch was issued for; only touch
+        // the live transcript if the user is still ON that session. A fetch
+        // that resolves after a session switch must not stomp the new view.
         _messageCache.set(cacheKey, projected);
+        if (activeSessionIdRef.current === (activeSessionId ?? null)) {
+          setChatMessages(projected);
+        }
       })
       .catch((err: unknown) => {
         console.warn("Failed to fetch chat history:", err);
-        historyLoadedRef.current.add(cacheKey);
+        // Deliberately NOT latched into historyLoadedRef: a failed fetch
+        // (gateway drop, container restart) must retry on the next visit or
+        // reconnect instead of leaving this session blank until page reload.
         setHistoryLoadState("done");
       });
-  }, [agentId, cacheKey, sessionName, activeSessionId, isConnected, sendReq, historyRefetchNonce]);
+  }, [agentId, cacheKey, sessionName, activeSessionId, isConnected, sendReq, setChatMessages, historyRefetchNonce]);
 
-  // ---- Reset live + persisted view when the active session switches ----
+  // ---- Reset live-run state when the active session switches ----
   // Agent switches are handled upstream (AgentChatWindow's prevAgentIdRef);
   // this covers switching sessions WITHIN one agent, which shares the same
-  // useAgentChat instance.
+  // useAgentChat instance. The persisted transcript (chatMessages) is swapped
+  // during render by useSessionScopedMessages; this effect only clears the
+  // in-flight run's stream/tool/error state, which is not cache-keyed.
   const prevSessionRef = useRef<string | null>(activeSessionId);
   useEffect(() => {
     if (prevSessionRef.current === activeSessionId) return;
     prevSessionRef.current = activeSessionId;
-    setChatMessages(cacheKey ? _messageCache.get(cacheKey) ?? [] : []);
     setChatStream(null);
     chatStreamRunIdRef.current = null;
     streamCommittedOffsetRef.current = 0;
@@ -713,7 +753,6 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     resumeExpectedRef.current = false;
   }, [
     activeSessionId,
-    cacheKey,
     setChatStream,
     setChatStreamThinking,
     setChatStreamSegments,
@@ -738,7 +777,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     historyLoadedRef.current.delete(key);
     setChatMessages([]);
     setHistoryRefetchNonce((n) => n + 1);
-  }, [sessionName, activeSessionId]);
+  }, [sessionName, setChatMessages]);
 
   // ---- Chat message handler ----
   // Dependencies are intentionally minimal ([onChatMessage]) because all
@@ -1453,7 +1492,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         return false;
       }
     },
-    [sendChat, isConnected, setIsStreaming],
+    [sendChat, isConnected, setIsStreaming, setChatMessages],
   );
 
   // Approval-pause release / resume signaling.
@@ -1874,6 +1913,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     resumeExpectedRef.current = false;
   }, [
     sessionName,
+    setChatMessages,
     setIsStreaming,
     setChatStream,
     setChatStreamThinking,

@@ -46,6 +46,12 @@ export default async function AdminLayout({
             </Link>
             <nav className="flex items-center gap-1 text-sm">
               <Link
+                href="/admin"
+                className="rounded-md px-3 py-1.5 text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100"
+              >
+                Overview
+              </Link>
+              <Link
                 href="/admin/users"
                 className="rounded-md px-3 py-1.5 text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100"
               >

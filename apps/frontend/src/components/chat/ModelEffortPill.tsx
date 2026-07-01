@@ -215,7 +215,7 @@ export function ModelEffortPill({
         )}
 
         {error && (
-          <div className="p-2 border-t border-[#f0ece3] text-[11px] text-[#a43e2c]">{error}</div>
+          <div className="p-2 border-t border-[#f0ece3] text-[11px] text-[var(--danger)]">{error}</div>
         )}
       </PopoverContent>
     </Popover>

@@ -328,12 +328,12 @@ export function ChatInput({
         )}
 
         {sizeError && (
-          <div className="flex items-center gap-1.5 mb-2 px-3 py-2 bg-[#fbf0ee] border border-[#f0d9d3] rounded-xl text-xs text-[#a43e2c]">
+          <div className="flex items-center gap-1.5 mb-2 px-3 py-2 bg-[rgba(179,36,36,0.06)] border border-[rgba(179,36,36,0.2)] rounded-xl text-xs text-[var(--danger)]">
             <span>{sizeError.message}</span>
             <button
               type="button"
               onClick={dismissSizeError}
-              className="ml-auto text-[#cf9c8f] hover:text-[#a43e2c]"
+              className="ml-auto text-[rgba(179,36,36,0.45)] hover:text-[var(--danger)]"
               aria-label="Dismiss size error"
             >
               <X className="h-3 w-3" />
@@ -425,7 +425,7 @@ export function ChatInput({
                     )}
                   </div>
                   {q.sendError && (
-                    <span className="text-xs text-[#a43e2c] truncate">
+                    <span className="text-xs text-[var(--danger)] truncate">
                       {q.sendError}
                     </span>
                   )}

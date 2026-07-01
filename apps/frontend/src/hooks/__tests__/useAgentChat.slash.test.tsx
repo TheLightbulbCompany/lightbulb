@@ -219,13 +219,14 @@ describe("useAgentChat — T7 slash handling", () => {
     await act(async () => {
       await result.current.sendMessage("/compact");
     });
-    expect(sendChat).toHaveBeenLastCalledWith("agent-X", "/compact", expect.any(String));
+    // 4th arg is the session id — undefined on the General session.
+    expect(sendChat).toHaveBeenLastCalledWith("agent-X", "/compact", expect.any(String), undefined);
     expect(historyFetchCount()).toBe(2);
 
     await act(async () => {
       await result.current.sendMessage("/new");
     });
-    expect(sendChat).toHaveBeenLastCalledWith("agent-X", "/new", expect.any(String));
+    expect(sendChat).toHaveBeenLastCalledWith("agent-X", "/new", expect.any(String), undefined);
     expect(historyFetchCount()).toBe(3);
   });
 

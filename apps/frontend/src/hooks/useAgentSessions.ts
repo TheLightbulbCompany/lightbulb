@@ -79,7 +79,17 @@ export function useAgentSessions(
         totalTokens: row.totalTokens,
       });
     }
+    // Surface the legacy 3-part conversation as a normal "General" session so
+    // no pre-sessions history is orphaned. The backend proxy has already
+    // scoped rows to this user, so the only 3-part row for agentId+userId is
+    // the legacy key `agent:{agentId}:{userId}`.
+    const legacyKey = `agent:${agentId}:${userId}`;
+    const hasGeneral = rows.some((row) => row?.key === legacyKey);
+
     out.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+    if (hasGeneral) {
+      out.unshift({ sessionId: null, key: legacyKey, label: "General" });
+    }
     return out;
   }, [data, agentId, userId]);
 

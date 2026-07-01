@@ -60,4 +60,18 @@ describe("SessionList", () => {
     const active = screen.getByText("Taxes").closest("[aria-current]");
     expect(active?.getAttribute("aria-current")).toBe("true");
   });
+
+  it("renders the General row and selects null when clicked", () => {
+    const onSelect = vi.fn();
+    render(
+      <SessionList
+        sessions={[{ sessionId: null, key: "agent:a:u", label: "General" }]}
+        activeSessionId={null}
+        onSelect={onSelect}
+        onNew={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByText("General"));
+    expect(onSelect).toHaveBeenCalledWith(null);
+  });
 });

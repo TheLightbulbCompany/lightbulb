@@ -17,6 +17,17 @@ export interface AgentSession {
   label: string;
   updatedAt?: number;
   totalTokens?: number;
+  // Per-session model/effort overrides sessions.list reports (all optional —
+  // an unset session inherits the agent/config defaults). The composer pill
+  // hydrates from these so it reflects persisted state rather than a stub.
+  /** Persisted model, either a full `${provider}/${id}` ref or a bare id. */
+  model?: string;
+  /** Provider for the persisted model, when reported separately from `model`. */
+  modelProvider?: string;
+  /** Persisted reasoning/effort override (e.g. "high"); absent == inherit. */
+  thinkingLevel?: string;
+  /** Persisted fast-mode toggle (BYO-OpenAI). */
+  fastMode?: boolean;
 }
 
 interface RawSessionRow {
@@ -26,6 +37,27 @@ interface RawSessionRow {
   lastMessage?: { text?: string };
   updatedAt?: number;
   totalTokens?: number;
+  model?: string;
+  modelProvider?: string;
+  thinkingLevel?: string;
+  fastMode?: boolean;
+}
+
+/**
+ * Defensive extraction of the per-session model/effort overrides. sessions.list
+ * rows are untyped over the wire, so each field is type-guarded and left
+ * `undefined` when absent or of the wrong shape (== inherit the default).
+ */
+function modelControlsOf(row: RawSessionRow): Pick<
+  AgentSession,
+  "model" | "modelProvider" | "thinkingLevel" | "fastMode"
+> {
+  return {
+    model: typeof row.model === "string" ? row.model : undefined,
+    modelProvider: typeof row.modelProvider === "string" ? row.modelProvider : undefined,
+    thinkingLevel: typeof row.thinkingLevel === "string" ? row.thinkingLevel : undefined,
+    fastMode: typeof row.fastMode === "boolean" ? row.fastMode : undefined,
+  };
 }
 
 function labelFor(row: RawSessionRow, sessionId: string): string {
@@ -77,6 +109,7 @@ export function useAgentSessions(
         label: labelFor(row, sessionId),
         updatedAt: row.updatedAt,
         totalTokens: row.totalTokens,
+        ...modelControlsOf(row),
       });
     }
     // Surface the legacy 3-part conversation as a normal "General" session so
@@ -84,11 +117,16 @@ export function useAgentSessions(
     // scoped rows to this user, so the only 3-part row for agentId+userId is
     // the legacy key `agent:{agentId}:{userId}`.
     const legacyKey = `agent:${agentId}:${userId}`;
-    const hasGeneral = rows.some((row) => row?.key === legacyKey);
+    const generalRow = rows.find((row) => row?.key === legacyKey);
 
     out.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
-    if (hasGeneral) {
-      out.unshift({ sessionId: null, key: legacyKey, label: "General" });
+    if (generalRow) {
+      out.unshift({
+        sessionId: null,
+        key: legacyKey,
+        label: "General",
+        ...modelControlsOf(generalRow),
+      });
     }
     return out;
   }, [data, agentId, userId]);

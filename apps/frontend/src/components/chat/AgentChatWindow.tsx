@@ -11,6 +11,8 @@ import { ExecApprovalCards } from "./ExecApprovalCards";
 import { MessageList, MessageListHandle } from "./MessageList";
 import { StreamingStatusBar } from "./StreamingStatusBar";
 import { useAgentChat, BOOTSTRAP_MESSAGE } from "@/hooks/useAgentChat";
+import { useAgentSessions } from "@/hooks/useAgentSessions";
+import { resolveSessionModelRef } from "@/lib/models";
 import { useAgents, agentDisplayName } from "@/hooks/useAgents";
 import { useApi } from "@/lib/api";
 import { isSnoozed, setSnoozed, updateSnoozeKey } from "@/lib/snooze";
@@ -254,17 +256,35 @@ export function AgentChatWindow({
   } = useAgentChat(agentId, sessionName);
   const { account } = useBilling();
 
+  // Hydrate the composer pill from the ACTIVE session's persisted row so it
+  // reflects what sessions.patch wrote, not a stub. useAgentSessions shares its
+  // SWR cache with the sidebar (same key), so this is not a second fetch; the
+  // active row is matched on sessionId (null == the legacy "General" row).
+  const { sessions: agentSessions, mutate: mutateSessions } = useAgentSessions(
+    agentId,
+    userId ?? null,
+  );
+  const activeSessionRow = agentSessions.find((s) => s.sessionId === activeSessionId);
+
   const modelEffortPill =
     agentId != null ? (
       <ModelEffortPill
         agentId={agentId}
         activeSessionId={activeSessionId}
         isStreaming={isStreaming}
-        selectedModelRef=""
-        thinkingLevel="medium"
-        fastMode={false}
+        selectedModelRef={resolveSessionModelRef(
+          activeSessionRow?.model,
+          activeSessionRow?.modelProvider,
+        )}
+        thinkingLevel={activeSessionRow?.thinkingLevel ?? ""}
+        fastMode={activeSessionRow?.fastMode ?? false}
         providerChoice={account?.provider_choice ?? null}
         byoProvider={account?.byo_provider ?? null}
+        onChanged={() => {
+          // A patch persisted — revalidate sessions.list so the pill (and
+          // sidebar) reflect the new model/effort on the next render.
+          void mutateSessions();
+        }}
       />
     ) : null;
 

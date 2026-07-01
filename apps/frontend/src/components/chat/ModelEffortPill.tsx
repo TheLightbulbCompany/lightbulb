@@ -58,7 +58,11 @@ export function ModelEffortPill({
 
   const showEffort = selected ? isReasoningModel(selected) : false;
   const showSpeed = providerChoice === "byo_key" && byoProvider === "openai";
-  const effortLabel = showEffort && thinkingLevel !== "off" ? ` · ${thinkingLevel}` : "";
+  // Only annotate the pill when a concrete reasoning level is set. An empty
+  // thinkingLevel means "inherit the default" — show no suffix rather than a
+  // dangling separator.
+  const effortLabel =
+    showEffort && thinkingLevel && thinkingLevel !== "off" ? ` · ${thinkingLevel}` : "";
   const pillLabel = `${selected?.name ?? "Model"}${effortLabel}`;
 
   const pick = async (entry: ModelEntry) => {

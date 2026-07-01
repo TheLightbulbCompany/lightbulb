@@ -3,6 +3,7 @@ import {
   buildModelRef,
   isReasoningModel,
   providerLabelFor,
+  resolveSessionModelRef,
   type ModelEntry,
 } from "@/lib/models";
 
@@ -48,5 +49,32 @@ describe("providerLabelFor", () => {
     expect(
       providerLabelFor(entry({ id: "us.anthropic.claude-x", provider: "amazon-bedrock" })),
     ).toBe("amazon-bedrock");
+  });
+});
+
+describe("resolveSessionModelRef", () => {
+  it("returns a model already stored as a full provider/id ref unchanged", () => {
+    expect(resolveSessionModelRef("openai/gpt-5", "openai")).toBe("openai/gpt-5");
+  });
+  it("joins a bare id with a separately-reported provider", () => {
+    expect(resolveSessionModelRef("gpt-5", "openai")).toBe("openai/gpt-5");
+  });
+  it("does not double-prefix a Bedrock ARN that already carries its provider", () => {
+    // ARNs contain internal '/', so a bare '/' test would misfire — the
+    // startsWith(provider + '/') guard keeps this a no-op.
+    const ref =
+      "amazon-bedrock/arn:aws:bedrock:us-east-1:1:application-inference-profile/abc.def";
+    expect(resolveSessionModelRef(ref, "amazon-bedrock")).toBe(ref);
+  });
+  it("joins a bare Bedrock ARN id (with internal slash) to its provider", () => {
+    const arn = "arn:aws:bedrock:us-east-1:1:application-inference-profile/abc.def";
+    expect(resolveSessionModelRef(arn, "amazon-bedrock")).toBe(`amazon-bedrock/${arn}`);
+  });
+  it("returns the model as-is when no provider is reported", () => {
+    expect(resolveSessionModelRef("openai/gpt-5")).toBe("openai/gpt-5");
+  });
+  it("returns empty string when no model is persisted (pill falls back to default)", () => {
+    expect(resolveSessionModelRef(undefined, "openai")).toBe("");
+    expect(resolveSessionModelRef("")).toBe("");
   });
 });

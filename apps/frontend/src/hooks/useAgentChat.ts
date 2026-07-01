@@ -755,15 +755,20 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
 
       // Session demux. Once one agent has many sessions (or background tabs),
       // the owner-keyed fan-out delivers frames for OTHER sessions here. A
-      // session-bearing frame is only ours when its stamped session_id matches
-      // the active session (a missing/null id == the legacy "General" session).
-      // Broadcasts (heartbeat/update_available) carry no session_id; untagged
-      // errors were already allowed through above.
+      // frame is ours only when its stamped session_id matches the active
+      // session. Compare NORMALIZED (a missing/undefined id == null == the
+      // legacy "General" session) so an UNTAGGED General frame is DROPPED while
+      // a named session is active. A bare `"session_id" in msg` guard would
+      // fail-open on that case and let a General run's chunks leak into the
+      // named-session view. Safe because the backend tags EVERY 4-part webchat
+      // frame and NEVER tags 3-part General frames. Broadcasts
+      // (heartbeat/update_available) carry no session_id and untagged errors
+      // were already allowed through above.
+      const frameSessionId = "session_id" in msg ? (msg.session_id ?? null) : null;
       if (
         !isUntaggedBroadcast &&
         !isUntaggedError &&
-        "session_id" in msg &&
-        (msg.session_id ?? null) !== activeSessionIdRef.current
+        frameSessionId !== activeSessionIdRef.current
       ) {
         return;
       }

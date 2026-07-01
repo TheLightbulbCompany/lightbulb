@@ -33,7 +33,7 @@ describe("useAgentSessions — filtered per-agent 4-part rows", () => {
       rpcReturn([
         { key: "agent:agent-X:user-1:11111111-1111-4111-8111-111111111111", derivedTitle: "Taxes", updatedAt: 200, totalTokens: 5 },
         { key: "agent:agent-X:user-1:22222222-2222-4222-8222-222222222222", updatedAt: 300 },
-        // legacy General (3-part) — surfaced as the pinned null row in Task 12
+        // legacy General (3-part) — surfaced as the pinned null row
         { key: "agent:agent-X:user-1", updatedAt: 100 },
         // other agent — excluded
         { key: "agent:agent-Y:user-1:33333333-3333-4333-8333-333333333333" },
@@ -47,7 +47,7 @@ describe("useAgentSessions — filtered per-agent 4-part rows", () => {
     const { result } = renderHook(() => useAgentSessions("agent-X", "user-1"));
 
     expect(result.current.sessions.map((s) => s.sessionId)).toEqual([
-      null, // legacy General pinned first (Task 12)
+      null, // legacy General pinned first
       "22222222-2222-4222-8222-222222222222", // newer first
       "11111111-1111-4111-8111-111111111111",
     ]);

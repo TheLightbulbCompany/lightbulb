@@ -30,6 +30,7 @@ def test_four_part_key_for_valid_lowercase_uuid():
         "dashboard",
         f"{_UUID}:thread:x",  # colon child-key fork injection
         "user_1:subagent:evil",
+        f"{_UUID}\n",  # trailing newline — Python `$` matches before it, `\Z` does not
         "",
     ],
 )
@@ -42,3 +43,5 @@ def test_regex_is_anchored():
     assert _SESSION_ID_RE.match(_UUID)
     assert not _SESSION_ID_RE.match(f" {_UUID}")  # leading space
     assert not _SESSION_ID_RE.match(f"{_UUID}x")  # trailing junk
+    # `\Z` (not `$`) so a trailing newline can't slip through — `$` would match.
+    assert not _SESSION_ID_RE.match(f"{_UUID}\n")

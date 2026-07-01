@@ -99,6 +99,28 @@ describe("useAgentChat — event demux by session_id", () => {
     expect(result.current.isStreaming).toBe(true);
   });
 
+  it("drops an untagged General frame while a named session is active (General→named leak)", async () => {
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    const { result } = renderHook(() => useAgentChat("agent-X", "user-1"));
+    act(() => {
+      result.current.newSession();
+    });
+    const runId = crypto.randomUUID();
+
+    // A legacy General run carries NO session_id. With a named session active,
+    // a `"session_id" in msg` guard would fail-open and let this leak in; the
+    // normalized guard drops it (undefined id == null != the active UUID).
+    act(() =>
+      dispatch({
+        type: "chunk",
+        agent_id: "agent-X",
+        runId,
+        content: "general-leak",
+      } as ChatIncomingMessage),
+    );
+    expect(result.current.isStreaming).toBe(false);
+  });
+
   it("General session (null) accepts frames with no session_id and drops 4-part frames", async () => {
     const { useAgentChat } = await import("@/hooks/useAgentChat");
     const { result } = renderHook(() => useAgentChat("agent-X", "user-1"));

@@ -54,11 +54,19 @@ export function useAgentModels(agentId: string | null): UseAgentModelsResult {
       primary(agentEntry?.model) ?? primary(cfg?.config?.agents?.defaults?.model) ?? "";
 
     if (error || raw.length === 0) {
+      // `defaultModel` is a full `provider/id` ref. The pill rebuilds the ref
+      // via buildModelRef(entry.provider, entry.id), so the entry's `id` MUST
+      // be the BARE id — passing the full ref double-prefixes it
+      // (openai/openai/gpt-5, and corrupts Bedrock ARNs). Strip the leading
+      // `provider/` segment; Bedrock ids are ARNs with internal slashes, so we
+      // slice past the FIRST separator only.
+      const provider = defaultModel.split("/")[0] || "unknown";
+      const bareId = defaultModel.slice(provider.length + 1) || defaultModel;
       const fallback: ModelEntry[] = defaultModel
         ? [
             {
-              id: defaultModel,
-              provider: defaultModel.split("/")[0] || "unknown",
+              id: bareId,
+              provider,
               name: defaultModel,
               available: true,
             },

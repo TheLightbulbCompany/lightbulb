@@ -65,7 +65,11 @@ logger = logging.getLogger(__name__)
 # the case-fold. It also blocks colon child-key forks (`:thread:`/`:subagent:`)
 # and reserved tokens (`heartbeat` -> session reap; `group`/`channel`/`direct`/
 # `dashboard` -> kind misclassification) — none of those can match this regex.
-_SESSION_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+#
+# The pattern ends with ``\Z`` (absolute end), NOT ``$``: Python's ``$`` also
+# matches just before a trailing newline, so ``"<uuid>\n"`` would slip through
+# ``$`` and inject a newline into the session key. ``\Z`` has no such carve-out.
+_SESSION_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
 
 
 def build_chat_session_key(agent_id: str, user_id: str, session_id: str | None) -> str:
@@ -87,16 +91,17 @@ def build_chat_session_key(agent_id: str, user_id: str, session_id: str | None) 
     return f"agent:{agent_id}:{user_id}:{session_id}"
 
 
-def _filter_sessions_for_user(result, user_id: str):
-    """Drop sessions.list rows the caller doesn't own.
+def _user_owns_session_key(key, user_id: str) -> bool:
+    """True iff the OpenClaw session ``key`` belongs to ``user_id``.
 
-    sessions.list returns EVERY session on the shared per-owner container —
-    paperclip:/cron:/channel and other org members' rows included — all
-    collapsed to kind='direct'. Keep only rows whose key, after the
-    ``agent:<agentId>:`` prefix, is exactly the caller's user_id (legacy
-    "General" 3-part key) or starts with ``<user_id>:`` (a 4-part named
-    session). The ``<user_id>:`` boundary check (not a bare startswith) stops
-    ``user_1`` from matching ``user_10``. Ownership guard, not cosmetic.
+    A key is owned when, after the ``agent:<agentId>:`` prefix, the remainder
+    is exactly the caller's user_id (legacy "General" 3-part key) or begins
+    with ``<user_id>:`` (a 4-part named session). The ``<user_id>:`` boundary
+    check (not a bare startswith) stops ``user_1`` from matching ``user_10``.
+
+    Non-``agent:`` keys (``paperclip:``/``cron:``/``channel``) and other org
+    members' keys are NOT owned — this is the ownership predicate that both the
+    sessions.list post-filter and the pre-forward mutation guard rely on.
 
     The comparison is case-insensitive: OpenClaw lowercases the whole
     sessionKey, so the ``rest`` segment parsed here is already lowercase, while
@@ -104,21 +109,30 @@ def _filter_sessions_for_user(result, user_id: str):
     uppercase). Comparing case-sensitively would drop every real user's own
     rows. Mirrors the lowercased key/member comparisons in connection_pool.py.
     """
+    if not isinstance(key, str):
+        return False
+    parts = key.split(":", 2)
+    if len(parts) < 3 or parts[0] != "agent":
+        return False
+    rest_l = parts[2].lower()  # everything after agent:<agentId>:, lowercased
+    uid_l = user_id.lower()
+    return rest_l == uid_l or rest_l.startswith(f"{uid_l}:")
+
+
+def _filter_sessions_for_user(result, user_id: str):
+    """Drop sessions.list rows the caller doesn't own.
+
+    sessions.list returns EVERY session on the shared per-owner container —
+    paperclip:/cron:/channel and other org members' rows included — all
+    collapsed to kind='direct'. Keep only rows the caller owns per
+    ``_user_owns_session_key``. Ownership guard, not cosmetic.
+    """
     if not isinstance(result, dict):
         return result
     sessions = result.get("sessions")
     if not isinstance(sessions, list):
         return result
-    uid_l = user_id.lower()
-    kept = []
-    for s in sessions:
-        key = s.get("key", "") if isinstance(s, dict) else ""
-        parts = key.split(":", 2)
-        if len(parts) < 3 or parts[0] != "agent":
-            continue
-        rest_l = parts[2].lower()  # everything after agent:<agentId>:, lowercased
-        if rest_l == uid_l or rest_l.startswith(f"{uid_l}:"):
-            kept.append(s)
+    kept = [s for s in sessions if isinstance(s, dict) and _user_owns_session_key(s.get("key", ""), user_id)]
     return {**result, "sessions": kept}
 
 
@@ -958,6 +972,71 @@ async def _guard_seeded_delete(
     return True
 
 
+# Methods that carry a CLIENT-SUPPLIED session key which MUST be
+# ownership-checked before we forward it to the shared per-owner container.
+# Maps method -> the param name that holds the key. sessions.patch/reset/delete
+# use ``key``; the chat.history read uses ``sessionKey``.
+_SESSION_KEY_PARAM_BY_METHOD = {
+    "sessions.patch": "key",
+    "sessions.reset": "key",
+    "sessions.delete": "key",
+    "chat.history": "sessionKey",
+}
+
+
+async def _guard_session_key_ownership(
+    *,
+    user_id: str,
+    method: str,
+    params: dict | None,
+    connection_id: str,
+    req_id: str,
+) -> bool:
+    """Reject session-key-bearing RPCs whose key the caller doesn't own, BEFORE
+    forwarding to OpenClaw.
+
+    In an org, EVERY member shares ONE per-owner container, so member A could
+    hand-craft a ``key`` targeting member B's — or a ``paperclip:``/``cron:`` —
+    session and destroy/mutate it (sessions.reset/delete/patch) or read its
+    transcript (chat.history). That is a cross-tenant IDOR. sessions.list is
+    already post-filtered (``_filter_sessions_for_user``); this guards the
+    key-carrying mutators + the history read on the way IN, using the same
+    ownership predicate.
+
+    Returns True if it consumed the request (sent an error res; caller must
+    return without forwarding). False otherwise (caller forwards normally):
+    - method not in the key-bearing set, OR
+    - the call carries NO client key param (a key-less variant — nothing to
+      forge; leave it to the container / the sessions.list post-filter).
+    """
+    param_name = _SESSION_KEY_PARAM_BY_METHOD.get(method)
+    if param_name is None:
+        return False
+    key = (params or {}).get(param_name)
+    if not isinstance(key, str) or not key:
+        # No client-supplied key — nothing to validate. Forward as-is.
+        return False
+    if _user_owns_session_key(key, user_id):
+        return False
+    logger.warning(
+        "[%s] rejected %s targeting non-owned session key=%s",
+        user_id,
+        method,
+        key,
+    )
+    mgmt = management_api or await get_management_api_client()
+    mgmt.send_message(
+        connection_id,
+        {
+            "type": "res",
+            "id": req_id,
+            "ok": False,
+            "error": {"message": "You don't have access to that session."},
+        },
+    )
+    return True
+
+
 async def _intercept_agents_create(
     *,
     connection_id: str,
@@ -1406,6 +1485,18 @@ async def _process_rpc_background(
 
         if await _guard_seeded_delete(
             owner_id=owner_id,
+            method=method,
+            params=params,
+            connection_id=connection_id,
+            req_id=req_id,
+        ):
+            return
+
+        # Cross-tenant IDOR guard: reject sessions.patch/reset/delete +
+        # chat.history whose client-supplied key belongs to another member or a
+        # paperclip:/cron: session on this shared per-owner container.
+        if await _guard_session_key_ownership(
+            user_id=user_id,
             method=method,
             params=params,
             connection_id=connection_id,

@@ -8,6 +8,7 @@ ops-cache (~20s TTL). Replaces the DDB-derived counts in system_health.
 from __future__ import annotations
 
 import asyncio
+import time
 
 import boto3
 
@@ -73,7 +74,14 @@ async def _build_grid() -> list[dict]:
     grid: list[dict] = []
     for r in named:
         svc = services.get(r["service_name"], {})
-        status = _classify(svc, r.get("status", ""))
+        # An indexed service absent from describe_services' returned services{}
+        # (deleted, or in the ignored failures[]) is a describe gap, not real
+        # state — classify it "unknown" rather than letting _classify read the
+        # empty dict's desiredCount=0 and mask the gap as "stopped".
+        if r["service_name"] not in services:
+            status = "unknown"
+        else:
+            status = _classify(svc, r.get("status", ""))
         grid.append(
             {
                 "owner_id": r.get("owner_id"),
@@ -92,8 +100,14 @@ async def _build_grid() -> list[dict]:
 
 
 async def fleet_grid() -> list[dict]:
+    # Read-through with a short TTL, enforced on read: DynamoDB TTL deletion is
+    # lazy (an item can linger hours past `ttl`), so honour the stored ttl here
+    # rather than trusting the row's presence. Spec §5.3's decoupled refresher
+    # (poll-and-cache off the render path) is the follow-up when the fleet grows;
+    # P1 stays a read-through with a short TTL.
     cached = await ops_cache_repo.get(_cache_key())
-    if cached is not None and "value" in cached:
+    now = int(time.time())
+    if cached is not None and "value" in cached and int(cached.get("ttl", 0)) > now:
         return cached["value"]
     grid = await _build_grid()
     await ops_cache_repo.put(_cache_key(), grid, ttl_seconds=_FLEET_CACHE_TTL_S)

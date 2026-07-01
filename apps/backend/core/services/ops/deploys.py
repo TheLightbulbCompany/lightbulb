@@ -40,8 +40,13 @@ async def _root_cause(stack_name: str) -> str | None:
         for ev in resp.get("StackEvents", []):  # newest-first
             rtype = ev.get("ResourceType")
             rstatus = ev.get("ResourceStatus", "")
-            # Boundary of the current operation: the stack's own *_IN_PROGRESS.
-            if rtype == "AWS::CloudFormation::Stack" and rstatus.endswith("_IN_PROGRESS"):
+            # Boundary of the current operation: the stack's own operation-START
+            # *_IN_PROGRESS (CREATE/UPDATE/REVIEW). A rollback IN_PROGRESS is NOT
+            # the start — for an auto-rolled-back stack the newest-first stream
+            # hits UPDATE_ROLLBACK_IN_PROGRESS before the failing resource's
+            # *_FAILED, so stopping there would drop the real cause. Walk past
+            # rollback stack events to collect the underlying *_FAILED reason.
+            if rtype == "AWS::CloudFormation::Stack" and rstatus.endswith("_IN_PROGRESS") and "ROLLBACK" not in rstatus:
                 return earliest_reason
             if rstatus.endswith("_FAILED"):
                 # newest-first walk → keep overwriting so we end with the earliest

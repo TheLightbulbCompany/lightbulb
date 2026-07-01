@@ -1,3 +1,4 @@
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -64,11 +65,54 @@ async def test_fleet_counts_live_shape():
 
 @pytest.mark.asyncio
 async def test_fleet_grid_served_from_cache_when_fresh():
-    cached = {"value": [{"owner_id": "org_a", "service_name": "openclaw-a-1", "status": "running"}]}
+    cached = {
+        "value": [{"owner_id": "org_a", "service_name": "openclaw-a-1", "status": "running"}],
+        "ttl": int(time.time()) + 60,  # not yet expired
+    }
     with (
         patch("core.services.ops.ecs_ops.ops_cache_repo.get", AsyncMock(return_value=cached)),
         patch("core.services.ops.ecs_ops.container_repo.scan_all", AsyncMock()) as scan,
     ):
         grid = await ecs_ops.fleet_grid()
     assert grid[0]["owner_id"] == "org_a"
-    scan.assert_not_called()  # cache hit → no live ECS enumeration
+    scan.assert_not_called()  # fresh cache hit → no live ECS enumeration
+
+
+@pytest.mark.asyncio
+async def test_fleet_grid_ignores_expired_cache_and_rebuilds():
+    # DDB TTL deletion is lazy, so an item can linger past `ttl`. fleet_grid must
+    # honour the stored ttl on read and rebuild rather than serve stale data.
+    expired = {
+        "value": [{"owner_id": "org_stale", "service_name": "openclaw-stale-1", "status": "running"}],
+        "ttl": int(time.time()) - 1,  # already expired
+    }
+    fake_ecs = MagicMock()
+    fake_ecs.describe_services.return_value = {"services": [_svc("openclaw-a-1", 1, 1, 0, "COMPLETED")]}
+    rows = [{"owner_id": "org_a", "service_name": "openclaw-a-1", "status": "running"}]
+    with (
+        patch.object(ecs_ops, "_ecs", return_value=fake_ecs),
+        patch("core.services.ops.ecs_ops.ops_cache_repo.get", AsyncMock(return_value=expired)),
+        patch("core.services.ops.ecs_ops.ops_cache_repo.put", AsyncMock()),
+        patch("core.services.ops.ecs_ops.container_repo.scan_all", AsyncMock(return_value=rows)) as scan,
+    ):
+        grid = await ecs_ops.fleet_grid()
+    scan.assert_called_once()  # expired cache ignored → live rebuild
+    assert grid[0]["owner_id"] == "org_a"  # rebuilt, not the stale org_stale row
+
+
+@pytest.mark.asyncio
+async def test_indexed_service_not_described_classifies_unknown():
+    # A DDB-indexed service absent from describe_services' services{} is a
+    # describe gap (deleted / in failures[]), not real state — it must classify
+    # "unknown", never "stopped" (which _classify would infer from desired=0).
+    rows = [{"owner_id": "org_gap", "service_name": "openclaw-gap-1", "status": "active"}]
+    fake_ecs = MagicMock()
+    fake_ecs.describe_services.return_value = {"services": []}  # not returned
+    with (
+        patch.object(ecs_ops, "_ecs", return_value=fake_ecs),
+        patch("core.services.ops.ecs_ops.container_repo.scan_all", AsyncMock(return_value=rows)),
+        patch("core.services.ops.ecs_ops.ops_cache_repo.get", AsyncMock(return_value=None)),
+        patch("core.services.ops.ecs_ops.ops_cache_repo.put", AsyncMock()),
+    ):
+        grid = await ecs_ops.fleet_grid()
+    assert grid[0]["status"] == "unknown"

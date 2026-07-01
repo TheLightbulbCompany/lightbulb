@@ -28,7 +28,9 @@ export default async function DeploysPage() {
       </div>
       <Card>
         {rows.length === 0 ? (
-          <p className="text-sm text-zinc-500">No isol8 stacks found.</p>
+          <p className="text-sm text-zinc-500">
+            {degraded ? "Deploy data unavailable." : "No isol8 stacks found."}
+          </p>
         ) : (
           <div className="space-y-2">
             {rows.map((r) => (

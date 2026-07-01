@@ -6,19 +6,60 @@ import { MetricStat } from "@/components/admin/MetricStat";
 import { StatusChip } from "@/components/admin/StatusChip";
 import { Tile } from "@/components/admin/Tile";
 
-import { getFleet } from "./_lib/api";
+import { getAlarms, getDeploys, getFleet } from "./_lib/api";
+
+type AttentionItem = {
+  key: string;
+  title: string;
+  label: string;
+  tone: "error" | "unknown";
+};
 
 export default async function AdminOverviewPage() {
   const { getToken } = await auth();
   const token = await getToken();
-  const fleet = token ? await getFleet(token) : null;
+  const [fleet, deploys, alarms] = token
+    ? await Promise.all([getFleet(token), getDeploys(token), getAlarms(token)])
+    : [null, null, null];
 
-  const degraded = !fleet || fleet.source_state !== "ok";
+  // Degraded when ANY of the three sources failed to read cleanly. On degraded
+  // we must never print a green all-clear (a null/partial read yields empty
+  // data that would otherwise look healthy).
+  const degraded =
+    !fleet ||
+    fleet.source_state !== "ok" ||
+    !deploys ||
+    deploys.source_state !== "ok" ||
+    !alarms ||
+    alarms.source_state !== "ok";
+
   const counts = fleet?.data.counts ?? null;
   const grid = fleet?.data.grid ?? [];
-  const attention = grid.filter(
-    (g) => g.status === "error" || g.status === "unknown",
-  );
+
+  const attention: AttentionItem[] = [
+    ...grid
+      .filter((g) => g.status === "error" || g.status === "unknown")
+      .map((g) => ({
+        key: `container:${g.service_name}`,
+        title: g.owner_id,
+        label: g.status,
+        tone: (g.status === "error" ? "error" : "unknown") as "error" | "unknown",
+      })),
+    ...(deploys?.data ?? [])
+      .filter((d) => d.status.endsWith("_FAILED") || d.status.includes("ROLLBACK"))
+      .map((d) => ({
+        key: `deploy:${d.stack_name}`,
+        title: d.stack_name,
+        label: d.status,
+        tone: "error" as const,
+      })),
+    ...(alarms?.data ?? []).map((a) => ({
+      key: `alarm:${a.name}`,
+      title: a.name,
+      label: "in alarm",
+      tone: "error" as const,
+    })),
+  ];
 
   return (
     <div className="space-y-6">
@@ -30,19 +71,18 @@ export default async function AdminOverviewPage() {
 
       {/* Attention strip */}
       <Card title="Needs attention">
-        {attention.length === 0 ? (
-          <p className="text-sm text-zinc-500">All containers healthy.</p>
-        ) : (
+        {attention.length > 0 ? (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            {attention.map((g) => (
-              <Tile
-                key={g.service_name}
-                title={g.owner_id}
-                label={g.status}
-                tone={g.status === "error" ? "error" : "unknown"}
-              />
+            {attention.map((a) => (
+              <Tile key={a.key} title={a.title} label={a.label} tone={a.tone} />
             ))}
           </div>
+        ) : degraded ? (
+          <p className="text-sm text-zinc-500">
+            Fleet data unavailable — unable to read one or more ops sources.
+          </p>
+        ) : (
+          <p className="text-sm text-zinc-500">All clear — nothing needs attention.</p>
         )}
       </Card>
 

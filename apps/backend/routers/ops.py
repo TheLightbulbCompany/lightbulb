@@ -15,7 +15,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from core.auth import get_current_user, require_platform_admin
 from core.config import settings
 from core.services import platform_ops_token
-from core.services.ops import deploys, ecs_ops
+from core.services.ops import alarms, deploys, ecs_ops
 from core.services.ops import envelope as env
 
 logger = logging.getLogger(__name__)
@@ -63,6 +63,12 @@ async def get_fleet(_principal: str = Depends(require_ops_access)):
 @router.get("/deploys")
 async def get_deploys(_principal: str = Depends(require_ops_access)):
     data, state, errors = await env.read_source("cloudformation", deploys.list_stacks)
+    return env.envelope(data if data is not None else [], source_state=state, errors=errors)
+
+
+@router.get("/alarms")
+async def get_alarms(_principal: str = Depends(require_ops_access)):
+    data, state, errors = await env.read_source("cloudwatch", alarms.alarms_in_alarm)
     return env.envelope(data if data is not None else [], source_state=state, errors=errors)
 
 

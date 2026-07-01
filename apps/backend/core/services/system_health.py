@@ -112,11 +112,12 @@ async def _all_probes() -> dict:
 async def _fleet_counts() -> dict[str, int]:
     """Containers by status — LIVE from ECS (was DDB-derived).
 
-    Delegates to ecs_ops.fleet_counts_live(); get_system_health()'s _safe
-    wrapper still degrades this to {} if ECS is unreachable, so the admin
-    health page always renders.
+    Delegates to ecs_ops.fleet_counts_live() under a 2s latency bound so a hung
+    ECS control plane can't block GET /admin/system/health; get_system_health()'s
+    _safe wrapper degrades a timeout (or any error) to {}, so the admin health
+    page always renders.
     """
-    return await ecs_ops.fleet_counts_live()
+    return await asyncio.wait_for(ecs_ops.fleet_counts_live(), timeout=2.0)
 
 
 def _background_tasks_status() -> dict[str, dict]:

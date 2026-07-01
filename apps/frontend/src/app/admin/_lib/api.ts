@@ -175,6 +175,11 @@ export interface DeployRow {
   root_cause: string | null;
 }
 
+export interface AlarmRow {
+  name: string;
+  metric: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // Internal fetcher
 // ---------------------------------------------------------------------------
@@ -469,5 +474,9 @@ export async function getFleet(token: string): Promise<OpsEnvelope<FleetData> | 
 
 export async function getDeploys(token: string): Promise<OpsEnvelope<DeployRow[]> | null> {
   return adminFetch<OpsEnvelope<DeployRow[]>>(token, "/ops/deploys");
+}
+
+export async function getAlarms(token: string): Promise<OpsEnvelope<AlarmRow[]> | null> {
+  return adminFetch<OpsEnvelope<AlarmRow[]>>(token, "/ops/alarms");
 }
 

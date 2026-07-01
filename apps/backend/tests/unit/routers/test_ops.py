@@ -62,3 +62,38 @@ def test_fleet_degrades_when_source_unavailable(client):
     body = res.json()
     assert body["source_state"] != "ok"  # NOT rendered as all-clear
     assert body["errors"] and body["errors"][0]["domain"] == "ecs"
+
+
+def test_alarms_accepts_platform_ops_token(client):
+    tok = platform_ops_token.mint("org_founder")
+    with patch.object(
+        ops_router.alarms,
+        "alarms_in_alarm",
+        AsyncMock(return_value=[{"name": "isol8-dev-5xx", "metric": "HTTPCode_Target_5XX_Count"}]),
+    ):
+        res = client.get("/api/v1/ops/alarms", headers=_auth(tok))
+    assert res.status_code == 200
+    body = res.json()
+    assert body["source_state"] == "ok"
+    assert body["data"][0]["name"] == "isol8-dev-5xx"
+
+
+def test_alarms_rejects_tenant_paperclip_token(client):
+    tenant = service_token.mint("org_founder")
+    res = client.get("/api/v1/ops/alarms", headers=_auth(tenant))
+    assert res.status_code == 401
+
+
+def test_alarms_degrades_when_source_unavailable(client):
+    tok = platform_ops_token.mint("org_founder")
+    with patch.object(
+        ops_router.alarms,
+        "alarms_in_alarm",
+        AsyncMock(side_effect=RuntimeError("throttled")),
+    ):
+        res = client.get("/api/v1/ops/alarms", headers=_auth(tok))
+    assert res.status_code == 200
+    body = res.json()
+    assert body["source_state"] != "ok"  # degrade, never all-clear
+    assert body["errors"] and body["errors"][0]["domain"] == "cloudwatch"
+    assert body["data"] == []

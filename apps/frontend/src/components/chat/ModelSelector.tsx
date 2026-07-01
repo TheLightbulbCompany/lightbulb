@@ -8,7 +8,7 @@ import {
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ChevronDown, ChevronRight, Search, Cpu } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Search, Cpu } from "lucide-react";
 import {
   Ai21Icon,
   AnthropicIcon,
@@ -213,16 +213,16 @@ export function ModelSelector({
         side="bottom"
         sideOffset={8}
         collisionPadding={16}
-        className="!w-[320px] !p-0 border-[#333] text-white shadow-2xl"
-        style={{ background: "#111111", maxHeight: 320 }}
+        className="!w-[320px] !p-0 rounded-xl border-[#e0dbd0] bg-white text-[#1a1a1a] shadow-[0_2px_8px_rgba(26,26,26,0.04),0_12px_32px_rgba(26,26,26,0.10)]"
+        style={{ maxHeight: 320 }}
       >
         {/* Search header */}
-        <div className="p-3 border-b border-white/10">
+        <div className="p-3 border-b border-[#f0ece3]">
           <div className="relative">
-            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-white/40" />
+            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-[#b5ae9e]" />
             <Input
               placeholder="Search models..."
-              className="pl-9 bg-white/5 border-white/10 text-white placeholder:text-white/30 h-9"
+              className="pl-9 bg-[#f7f3ea] border-[#e8e3d9] text-[#1a1a1a] placeholder:text-[#b5ae9e] h-9"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
@@ -231,7 +231,7 @@ export function ModelSelector({
 
         {/* Scrollable provider groups */}
         <div
-          className="overflow-y-auto overscroll-contain [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-white/20 [&::-webkit-scrollbar-thumb]:rounded-full"
+          className="overflow-y-auto overscroll-contain [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-[#e0dbd0] [&::-webkit-scrollbar-thumb]:rounded-full"
           style={{ maxHeight: 240 }}
           onWheel={(e) => {
             const el = e.currentTarget;
@@ -244,7 +244,7 @@ export function ModelSelector({
         >
             <div className="py-1">
             {groups.length === 0 ? (
-              <div className="px-4 py-8 text-center text-sm text-white/30">
+              <div className="px-4 py-8 text-center text-sm text-[#b5ae9e]">
                 No models found
               </div>
             ) : (
@@ -256,19 +256,19 @@ export function ModelSelector({
                     {/* Group header */}
                     <button
                       onClick={() => toggleProvider(group.providerId)}
-                      className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-white/5 transition-colors"
+                      className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-[#f7f3ea] transition-colors"
                     >
                       <ChevronRight
                         className={cn(
-                          "h-3.5 w-3.5 text-white/40 transition-transform duration-200",
+                          "h-3.5 w-3.5 text-[#b5ae9e] transition-transform duration-200",
                           isExpanded && "rotate-90"
                         )}
                       />
                       <ProviderIcon config={group.config} size={16} />
-                      <span className="font-medium text-white/90">
+                      <span className="font-medium text-[#1a1a1a]">
                         {group.config.displayName}
                       </span>
-                      <span className="ml-auto text-[11px] text-white/30 bg-white/5 px-1.5 py-0.5 rounded-full">
+                      <span className="ml-auto text-[11px] text-[#8a8578] bg-[#f3efe6] px-1.5 py-0.5 rounded-full">
                         {group.models.length}
                       </span>
                     </button>
@@ -289,8 +289,8 @@ export function ModelSelector({
                               className={cn(
                                 "w-full flex items-center justify-between pl-9 pr-3 py-1.5 text-sm transition-colors group",
                                 isSelected
-                                  ? "bg-white/10 text-white"
-                                  : "text-white/70 hover:bg-white/5 hover:text-white"
+                                  ? "bg-[#f3efe6] text-[#1a1a1a]"
+                                  : "text-[#5a5549] hover:bg-[#f7f3ea] hover:text-[#1a1a1a]"
                               )}
                             >
                               <div className="flex items-center gap-2 min-w-0">
@@ -298,13 +298,13 @@ export function ModelSelector({
                                   {model.name}
                                 </span>
                                 {tierModel && isTierModel(model.id, tierModel) && (
-                                  <span className="shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">
+                                  <span className="shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-[#06402B]/10 text-[#06402B] border border-[#06402B]/15">
                                     Included
                                   </span>
                                 )}
                               </div>
                               {isSelected && (
-                                <div className="h-1.5 w-1.5 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)] shrink-0 ml-2" />
+                                <Check className="h-3.5 w-3.5 text-[#06402B] shrink-0 ml-2" />
                               )}
                             </button>
                           );
@@ -319,8 +319,8 @@ export function ModelSelector({
         </div>
 
         {/* Footer */}
-        <div className="p-2 border-t border-white/10 bg-white/[0.02] shrink-0">
-          <div className="text-[10px] text-center text-white/30">
+        <div className="p-2 border-t border-[#f0ece3] bg-[#faf7f2] rounded-b-xl shrink-0">
+          <div className="text-[10px] text-center text-[#b5ae9e]">
             Powered by AWS Bedrock
           </div>
         </div>

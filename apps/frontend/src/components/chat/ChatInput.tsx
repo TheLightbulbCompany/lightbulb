@@ -3,7 +3,7 @@
 import * as React from "react";
 import { Button } from "@/components/ui/button";
 import { capture } from "@/lib/analytics";
-import { SendHorizontal, Paperclip, X, FileIcon, Loader2, Square, CornerDownRight, RefreshCw } from "lucide-react";
+import { ArrowUp, Plus, X, FileIcon, Loader2, Square, CornerDownRight, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { parseSlashInput } from "@/lib/slashCommands";
 import { useSlashCommands } from "@/hooks/useSlashCommands";
@@ -46,9 +46,10 @@ interface ChatInputProps {
   onSteerQueued?: (id: string) => void;
   onRetryQueued?: (id: string) => void;
   /**
-   * Composer controls (the model · effort pill) rendered in a row directly
-   * above the input bar. Kept as a slot so ChatInput stays free of Clerk /
-   * billing / gateway coupling — AgentChatWindow supplies the wired pill.
+   * Composer controls (the model · effort pill) rendered inside the
+   * composer card's bottom rail, next to the attach button. Kept as a slot
+   * so ChatInput stays free of Clerk / billing / gateway coupling —
+   * AgentChatWindow supplies the wired pill.
    */
   controls?: React.ReactNode;
 }
@@ -297,7 +298,7 @@ export function ChatInput({
   const isDisabled = disabled || isUploading;
 
   return (
-    <div className={cn("p-4", !centered && "bg-[#f3efe6] border-t border-[#e0dbd0]")}>
+    <div className={cn("px-4 pb-4", !centered && "pt-1")}>
       <div
         className="relative flex flex-col max-w-3xl mx-auto"
         onDrop={handleDrop}
@@ -327,12 +328,12 @@ export function ChatInput({
         )}
 
         {sizeError && (
-          <div className="flex items-center gap-1.5 mb-2 px-2 py-1.5 bg-red-50 border border-red-200 rounded-lg text-xs text-red-600">
+          <div className="flex items-center gap-1.5 mb-2 px-3 py-2 bg-[#fbf0ee] border border-[#f0d9d3] rounded-xl text-xs text-[#a43e2c]">
             <span>{sizeError.message}</span>
             <button
               type="button"
               onClick={dismissSizeError}
-              className="ml-auto text-red-400 hover:text-red-600"
+              className="ml-auto text-[#cf9c8f] hover:text-[#a43e2c]"
               aria-label="Dismiss size error"
             >
               <X className="h-3 w-3" />
@@ -341,14 +342,14 @@ export function ChatInput({
         )}
 
         {!isConnected && (
-          <div className="flex items-center gap-2 mb-2 px-2 py-1 rounded-md bg-[#fdf6e3] border border-[#ede3c4] text-xs text-[#8a7340]">
+          <div className="flex items-center gap-2 mb-2 px-3 py-2 rounded-xl bg-[#fdf6e3] border border-[#ede3c4] text-xs text-[#8a7340]">
             <span className="h-1.5 w-1.5 rounded-full bg-[#c9a227] animate-pulse" />
             <span>Reconnecting to your agent — messages you send will be delivered once back online.</span>
           </div>
         )}
 
         {queuedMessages.length > 0 && (
-          <div className="flex flex-col gap-1 mb-2 px-2 py-1 rounded-md bg-[#f3efe6] border border-[#e0dbd0]">
+          <div className="flex flex-col gap-1 mb-2 px-3 py-2 rounded-xl bg-[#f3efe6] border border-[#e8e3d9]">
             <div className="flex items-center justify-between text-xs text-[#8a8578]">
               <span>{queuedMessages.length} queued</span>
               {onClearQueue && (
@@ -424,7 +425,7 @@ export function ChatInput({
                     )}
                   </div>
                   {q.sendError && (
-                    <span className="text-xs text-red-600 truncate">
+                    <span className="text-xs text-[#a43e2c] truncate">
                       {q.sendError}
                     </span>
                   )}
@@ -434,11 +435,7 @@ export function ChatInput({
           </div>
         )}
 
-        {controls && (
-          <div className="flex items-center gap-2 mb-2 px-1">{controls}</div>
-        )}
-
-        <div className="relative flex items-end gap-2 border border-[#e0dbd0] rounded-full bg-white px-3 py-2 focus-within:ring-1 focus-within:ring-[#06402B]/20 focus-within:border-[#06402B]/30 transition-all">
+        <div className="relative flex flex-col rounded-2xl border border-[#e0dbd0] bg-white shadow-[0_1px_2px_rgba(26,26,26,0.03),0_4px_16px_rgba(26,26,26,0.05)] transition-[border-color,box-shadow] duration-200 focus-within:border-[#06402B]/25 focus-within:shadow-[0_1px_2px_rgba(26,26,26,0.03),0_6px_24px_rgba(26,26,26,0.08)]">
           <input
             ref={fileInputRef}
             type="file"
@@ -447,18 +444,8 @@ export function ChatInput({
             onChange={handleFileSelect}
             aria-label="Attach files"
           />
-          <Button
-            size="icon"
-            variant="ghost"
-            className="shrink-0 h-8 w-8 rounded-full text-[#8a8578] hover:text-[#1a1a1a] hover:bg-[#f3efe6]"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={isDisabled}
-            aria-label="Attach file"
-          >
-            <Paperclip className="h-4 w-4" />
-          </Button>
 
-          <div className="relative flex-1">
+          <div className="relative px-4 pt-3">
             {menuOpen && (
               <SlashCommandMenu
                 commands={commands}
@@ -476,9 +463,9 @@ export function ChatInput({
               />
             )}
             {suggestedMessage && !input && (
-              <div className="absolute inset-0 pointer-events-none text-[#b5ae9e] text-sm leading-6 py-1 truncate">
+              <div className="pointer-events-none absolute inset-x-4 top-3 truncate text-[15px] leading-6 text-[#b5ae9e]">
                 {suggestedMessage}
-                <span className="ml-2 text-[#cdc7ba] text-xs">[Tab]</span>
+                <span className="ml-2 text-xs text-[#cdc7ba]">[Tab]</span>
               </div>
             )}
             <textarea
@@ -488,47 +475,59 @@ export function ChatInput({
               onKeyDown={handleKeyDown}
               placeholder={suggestedMessage ? "" : "Ask anything"}
               rows={1}
-              className="w-full min-h-6 max-h-50 resize-none bg-transparent text-[#1a1a1a] placeholder:text-[#b5ae9e] focus:outline-none text-sm leading-6 py-1"
+              className="w-full min-h-6 max-h-50 resize-none bg-transparent text-[15px] leading-6 text-[#1a1a1a] placeholder:text-[#b5ae9e] focus:outline-none"
               disabled={isDisabled}
               style={{ fieldSizing: "content" } as React.CSSProperties}
             />
           </div>
 
-          <div className="flex items-center gap-2">
-            {isStreaming && onStop && (
+          <div className="flex items-center gap-1 px-2 pb-2 pt-1.5">
+            <Button
+              size="icon"
+              variant="ghost"
+              className="h-8 w-8 shrink-0 rounded-full text-[#8a8578] hover:bg-[#f3efe6] hover:text-[#1a1a1a]"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isDisabled}
+              aria-label="Attach file"
+            >
+              <Plus className="h-4 w-4" />
+            </Button>
+            {controls}
+            <div className="ml-auto flex items-center gap-1.5">
+              {isStreaming && onStop && (
+                <Button
+                  type="button"
+                  size="icon"
+                  className="h-8 w-8 shrink-0 rounded-full bg-[#1a1a1a] text-white hover:bg-[#3d382e]"
+                  onClick={() => { capture("chat_stopped"); onStop?.(); }}
+                  data-testid="stop-button"
+                  aria-label="Stop agent"
+                >
+                  <Square className="h-3 w-3 fill-current" />
+                </Button>
+              )}
               <Button
                 type="button"
                 size="icon"
-                variant="destructive"
-                className="shrink-0 h-8 w-8 rounded-full"
-                onClick={() => { capture("chat_stopped"); onStop?.(); }}
-                data-testid="stop-button"
-                aria-label="Stop agent"
+                className="h-8 w-8 shrink-0 rounded-full bg-[#06402B] text-white hover:bg-[#0a5c3e] disabled:bg-[#ece7dc] disabled:text-[#b5ae9e]"
+                onClick={handleSend}
+                disabled={(!input.trim() && pendingFiles.length === 0) || isDisabled}
+                data-testid="send-button"
+                // While a run is in flight a send doesn't fire immediately —
+                // useAgentChat enqueues it and drains on the server run-ended
+                // signal. Surface that as a "Queue" affordance so the button's
+                // accessible label / tooltip reflects the actual action.
+                // Mirrors upstream OpenClaw web UI (chat/run-controls.ts:83-91).
+                aria-label={isStreaming ? "Queue message" : "Send message"}
+                title={isStreaming ? "Queue" : "Send"}
               >
-                <Square className="h-3.5 w-3.5 fill-current" />
+                {isUploading ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <ArrowUp className="h-4 w-4" />
+                )}
               </Button>
-            )}
-            <Button
-              type="button"
-              size="icon"
-              className="shrink-0 h-8 w-8 rounded-full bg-[#06402B] hover:bg-[#0a5c3e] text-white disabled:bg-[#e0dbd0] disabled:text-[#b5ae9e]"
-              onClick={handleSend}
-              disabled={(!input.trim() && pendingFiles.length === 0) || isDisabled}
-              data-testid="send-button"
-              // While a run is in flight a send doesn't fire immediately —
-              // useAgentChat enqueues it and drains on the server run-ended
-              // signal. Surface that as a "Queue" affordance so the button's
-              // accessible label / tooltip reflects the actual action.
-              // Mirrors upstream OpenClaw web UI (chat/run-controls.ts:83-91).
-              aria-label={isStreaming ? "Queue message" : "Send message"}
-              title={isStreaming ? "Queue" : "Send"}
-            >
-              {isUploading ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <SendHorizontal className="h-4 w-4" />
-              )}
-            </Button>
+            </div>
           </div>
         </div>
       </div>

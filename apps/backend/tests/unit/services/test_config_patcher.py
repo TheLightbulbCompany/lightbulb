@@ -1056,15 +1056,16 @@ async def test_replace_provider_block_leaves_memory_search_enabled(tmp_efs_with_
     ``memorySearch.enabled: true`` keeps it after the swap."""
     from core.containers.config import memory_plugin_entries
 
-    # On-disk shape: memorySearch.enabled true (with the provider/model the
-    # builder pins).
+    # On-disk shape: the FTS-only value a bedrock/chatgpt owner is provisioned
+    # with (both hot-path providers resolve to provider:"none"). The swap must
+    # leave it byte-for-byte intact — memorySearch is provider-derived at
+    # provision time, never rewritten by the hot patch.
     config_path = os.path.join(tmp_efs_with_bedrock_provider, "user_p", "openclaw.json")
     with open(config_path) as f:
         cfg = json.load(f)
     cfg["agents"]["defaults"]["memorySearch"] = {
         "enabled": True,
-        "provider": "bedrock",
-        "model": "amazon.titan-embed-text-v2:0",
+        "provider": "none",
     }
     with open(config_path, "w") as f:
         json.dump(cfg, f)
@@ -1083,9 +1084,9 @@ async def test_replace_provider_block_leaves_memory_search_enabled(tmp_efs_with_
     assert result["agents"]["defaults"]["memorySearch"]["enabled"] is True
     assert "memory-core" in result["plugins"]["entries"]
     assert result["plugins"]["entries"]["memory-core"] == memory_plugin_entries()["memory-core"]
-    # The pinned provider/model survive.
-    assert result["agents"]["defaults"]["memorySearch"]["provider"] == "bedrock"
-    assert result["agents"]["defaults"]["memorySearch"]["model"] == "amazon.titan-embed-text-v2:0"
+    # The provider-derived value survives untouched (no model key on FTS-only).
+    assert result["agents"]["defaults"]["memorySearch"]["provider"] == "none"
+    assert "model" not in result["agents"]["defaults"]["memorySearch"]
 
 
 @pytest.mark.asyncio

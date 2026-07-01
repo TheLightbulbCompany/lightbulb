@@ -264,10 +264,13 @@ async def test_meta_shim_present_to_defeat_auto_restore(tmp_path):
         ("bedrock_claude", None),
     ],
 )
-async def test_memory_search_pinned_to_bedrock_across_auth_paths(tmp_path, provider_choice, byo_provider):
-    """memorySearch pin defends against openclaw defaulting to "local"
-    (a GGUF file we don't ship). Today's `builtin` memory backend doesn't
-    use embeddings, but future plugins will inherit this default."""
+async def test_memory_search_provider_resolves_per_auth_path(tmp_path, provider_choice, byo_provider):
+    """memorySearch's embedding backend is provider-derived: semantic (vector)
+    only where the owner's OWN credential pays, keyword-only (FTS) otherwise so
+    Isol8 never pays for embeddings. Only byo_key+openai has a native, owner-
+    billed embeddings path; chatgpt_oauth (OAuth can't hit /v1/embeddings),
+    byo_key+anthropic (no embeddings API), and bedrock_claude (Titan would bill
+    us, not the owner) all fall back to FTS. Recall stays enabled everywhere."""
     kwargs = {
         "config_path": tmp_path / "openclaw.json",
         "gateway_token": "test-token",
@@ -280,8 +283,13 @@ async def test_memory_search_pinned_to_bedrock_across_auth_paths(tmp_path, provi
     await write_openclaw_config(**kwargs)
     cfg = json.loads((tmp_path / "openclaw.json").read_text())
     memory_search = cfg["agents"]["defaults"]["memorySearch"]
-    assert memory_search["provider"] == "bedrock"
-    assert memory_search["model"] == "amazon.titan-embed-text-v2:0"
+    assert memory_search["enabled"] is True
+    if provider_choice == "byo_key" and byo_provider == "openai":
+        assert memory_search["provider"] == "openai"
+        assert memory_search["model"] == "text-embedding-3-small"
+    else:
+        assert memory_search["provider"] == "none"
+        assert "model" not in memory_search
 
 
 @pytest.mark.asyncio

@@ -727,6 +727,50 @@ def memory_plugin_entries() -> dict:
     }
 
 
+def memory_search_entry(provider_choice: str, byo_provider: str | None) -> dict:
+    """The ``agents.defaults.memorySearch`` block, resolved per provider path.
+
+    Memory recall (``memory_search`` / ``memory_get``) stays ENABLED for every
+    owner. What varies is the embedding backend, under one rule: use semantic
+    (vector) embeddings ONLY where the owner's OWN credential foots the bill;
+    fall back to keyword-only (SQLite FTS, ``provider: "none"``) everywhere else
+    so Isol8 never pays an embedding bill.
+
+    - ``byo_key`` + ``openai`` -> the owner's staged ``OPENAI_API_KEY`` runs
+      ``text-embedding-3-small`` (their account, ~pennies). memory-core's
+      ``openai`` embedding provider reads the key from that env var, so no extra
+      wiring is needed. This is the ONE path with real semantic recall.
+    - Every other path -> ``provider: "none"`` (FTS keyword recall), because
+      none of them can embed without Isol8 paying:
+        * ``chatgpt_oauth`` — ChatGPT-subscription OAuth tokens authenticate the
+          chat/Codex endpoint, NOT ``api.openai.com/v1/embeddings``; there is no
+          embeddings access to use.
+        * ``byo_key`` + ``anthropic`` — Anthropic ships no embeddings API.
+        * ``bedrock_claude`` — Titan embeddings run on the container task role
+          (our AWS account, and NOT drawn from the owner's Bedrock credits — the
+          per-owner AIP only wraps Claude), so semantic recall here would cost
+          Isol8. Metering fractions-of-a-cent back to the owner isn't worth
+          building, so Bedrock owners get keyword recall too.
+
+    ``provider: "none"`` still builds a working FTS index (meta row written, the
+    ``memory_search`` tool un-paused) — it is NOT disabled; only the vector
+    layer is skipped. Prior to this the block was pinned to Bedrock Titan for
+    everyone, but per-user container roles can't invoke Titan (grant is
+    AIP-only), so the index never built and ``memory_search`` returned "index
+    metadata is missing" fleet-wide.
+
+    SINGLE source of truth for the memorySearch block. The provider-switch hot
+    path (``config_patcher.replace_provider_block``) deliberately does NOT
+    rewrite it: both hot-path providers (``bedrock_claude``, ``chatgpt_oauth``)
+    resolve here to ``provider: "none"``, and the only path whose value differs
+    (``byo_key`` + ``openai``) always takes the cold re-provision path, which
+    rebuilds the whole config through this helper.
+    """
+    if provider_choice == "byo_key" and byo_provider == "openai":
+        return {"enabled": True, "provider": "openai", "model": "text-embedding-3-small"}
+    return {"enabled": True, "provider": "none"}
+
+
 def derive_enabled_harnesses(provider_choice: str, byo_provider: str | None) -> list[str]:
     """Which ACP coding harnesses the owner can spawn, DERIVED from their
     provider choice — no stored per-owner state.
@@ -1022,20 +1066,13 @@ def build_openclaw_config_dict(
                 # in which case the heartbeat inherits the default model.
                 "heartbeat": {"every": "30m", **({"model": heartbeat_model} if heartbeat_model else {})},
                 "workspace": "/home/node/.openclaw/workspaces",
-                # Memory recall stays ON (matches main): memory-core registers
+                # Memory recall stays ON for every owner (memory-core registers
                 # memory_search/memory_get, and the "Memory Recall" prompt
-                # section only renders while those tools exist. The per-agent
-                # embeddings index is sqlite on EFS; we keep it on EFS because
-                # live container logs show no sqlite contention and recall is
-                # what lets agents remember beyond the always-loaded MEMORY.md.
-                # provider/model pinned to Bedrock Titan (not upstream's
-                # "local" GGUF, which we don't ship and which historically
-                # hung on first embed).
-                "memorySearch": {
-                    "enabled": True,
-                    "provider": "bedrock",
-                    "model": "amazon.titan-embed-text-v2:0",
-                },
+                # section only renders while those tools exist). The embedding
+                # backend is resolved per provider path — semantic where the
+                # owner's own credential pays, keyword-only (FTS) otherwise so
+                # Isol8 never pays for embeddings. See memory_search_entry().
+                "memorySearch": memory_search_entry(provider_choice, byo_provider),
                 # Do NOT add `agents.defaults.llm.idleTimeoutSeconds` here:
                 # OpenClaw v2026.5.7's AgentDefaultsSchema is strict() and
                 # rejects the unknown key, so the gateway exits with

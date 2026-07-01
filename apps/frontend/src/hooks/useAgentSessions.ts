@@ -94,13 +94,20 @@ export function useAgentSessions(
 
   const sessions = useMemo<AgentSession[]>(() => {
     if (!agentId || !userId) return [];
+    // OpenClaw lowercases the whole session key on store/lookup, so sessions.list
+    // returns lowercased keys. Compare the agent/user segments case-insensitively
+    // — a mixed-case Clerk user id (the common case) would otherwise mismatch
+    // every row, rendering an empty session list and never hydrating the pill.
+    const agentIdL = agentId.toLowerCase();
+    const userIdL = userId.toLowerCase();
     const rows: RawSessionRow[] = Array.isArray(data) ? data : data?.sessions ?? [];
     const out: AgentSession[] = [];
     for (const row of rows) {
       if (typeof row?.key !== "string") continue;
       const parts = row.key.split(":");
       if (parts.length !== 4) continue;
-      if (parts[0] !== "agent" || parts[1] !== agentId || parts[2] !== userId) continue;
+      if (parts[0] !== "agent" || parts[1].toLowerCase() !== agentIdL || parts[2].toLowerCase() !== userIdL)
+        continue;
       const sessionId = parts[3];
       if (!SESSION_ID_RE.test(sessionId)) continue;
       out.push({
@@ -113,17 +120,18 @@ export function useAgentSessions(
       });
     }
     // Surface the legacy 3-part conversation as a normal "General" session so
-    // no pre-sessions history is orphaned. The backend proxy has already
-    // scoped rows to this user, so the only 3-part row for agentId+userId is
-    // the legacy key `agent:{agentId}:{userId}`.
-    const legacyKey = `agent:${agentId}:${userId}`;
-    const generalRow = rows.find((row) => row?.key === legacyKey);
+    // no pre-sessions history is orphaned. Match case-insensitively for the same
+    // reason as above; the backend proxy has already scoped rows to this user.
+    const legacyKey = `agent:${agentIdL}:${userIdL}`;
+    const generalRow = rows.find(
+      (row) => typeof row?.key === "string" && row.key.toLowerCase() === legacyKey,
+    );
 
     out.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
     if (generalRow) {
       out.unshift({
         sessionId: null,
-        key: legacyKey,
+        key: generalRow.key,
         label: "General",
         ...modelControlsOf(generalRow),
       });

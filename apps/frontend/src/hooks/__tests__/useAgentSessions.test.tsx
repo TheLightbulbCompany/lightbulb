@@ -101,4 +101,24 @@ describe("useAgentSessions — filtered per-agent 4-part rows", () => {
     expect(result.current.sessions).toEqual([]);
     expect(useGatewayRpc).toHaveBeenCalledWith(null, expect.anything(), expect.anything());
   });
+
+  it("matches case-insensitively — lowercased sessions.list keys vs a mixed-case Clerk id", async () => {
+    // OpenClaw lowercases the whole session key on store/lookup, so sessions.list
+    // returns lowercased keys while the Clerk user/agent id passed in is
+    // mixed-case. Regression guard: a case-sensitive compare dropped every row,
+    // rendering an empty sidebar and never hydrating the pill.
+    useGatewayRpc.mockReturnValue(
+      rpcReturn([
+        { key: "agent:agent-x:user_2abcdef:11111111-1111-4111-8111-111111111111", updatedAt: 200 },
+        { key: "agent:agent-x:user_2abcdef", updatedAt: 100 }, // legacy General, lowercased
+      ]),
+    );
+    const { useAgentSessions } = await import("@/hooks/useAgentSessions");
+    const { result } = renderHook(() => useAgentSessions("Agent-X", "user_2AbcDEF"));
+
+    expect(result.current.sessions.map((s) => s.sessionId)).toEqual([
+      null, // General still surfaces
+      "11111111-1111-4111-8111-111111111111",
+    ]);
+  });
 });

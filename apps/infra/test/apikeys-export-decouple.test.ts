@@ -90,6 +90,7 @@ function build(environment: "dev" | "prod"): {
       marketplaceTakedownsTable: database.marketplaceTakedownsTable,
       marketplaceSellersTable: database.marketplaceSellersTable,
       hookEventsTable: database.hookEventsTable,
+      opsCacheTable: database.opsCacheTable,
     },
     secretNames: {
       clerkIssuer: `isol8/${environment}/clerk_issuer`,
@@ -99,6 +100,7 @@ function build(environment: "dev" | "prod"): {
       encryptionKey: `isol8/${environment}/encryption_key`,
       posthogProjectApiKey: `isol8/${environment}/posthog_project_api_key`,
       paperclipServiceTokenKey: `isol8/${environment}/paperclip_service_token_key`,
+      platformOpsTokenKey: `isol8/${environment}/platform_ops_token_key`,
       gogKeyringPassword: `isol8/${environment}/gog-keyring-password`,
       metronomeApiKey: `isol8/${environment}/metronome_api_key`,
       metronomeWebhookSecret: `isol8/${environment}/metronome_webhook_secret`,

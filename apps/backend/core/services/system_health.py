@@ -1,7 +1,7 @@
 """/admin/health aggregator.
 
 Composes:
-- Container fleet counts grouped by status (DDB GSI scans).
+- Container fleet counts grouped by status (LIVE from ECS via ecs_ops).
 - Upstream probes for Clerk, Stripe, DDB — each 2s timeout, results
   cached for 30s (CEO P2) so the health page doesn't block on slow
   upstreams every render.
@@ -23,8 +23,8 @@ import boto3
 import httpx
 
 from core.config import settings
-from core.repositories import container_repo
 from core.services import cloudwatch_logs
+from core.services.ops import ecs_ops
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +36,6 @@ _probe_cache: dict[str, Any] = {"ts": 0.0, "value": None}
 # Set by main.py lifespan to {task_name: asyncio.Task}.
 # Read here to surface "is the IdleChecker still running" on /admin/health.
 BACKGROUND_TASKS: dict[str, asyncio.Task] = {}
-
-_KNOWN_CONTAINER_STATUSES = ("running", "provisioning", "stopped", "error")
 
 
 async def _probe_clerk() -> dict:
@@ -112,21 +110,14 @@ async def _all_probes() -> dict:
 
 
 async def _fleet_counts() -> dict[str, int]:
-    """Containers by status. Total = sum of known statuses (omits any
-    unknown status, which would indicate a schema drift worth surfacing
-    separately later)."""
-    per_status = await asyncio.gather(
-        *(container_repo.get_by_status(s) for s in _KNOWN_CONTAINER_STATUSES),
-        return_exceptions=True,
-    )
-    counts: dict[str, int] = {}
-    total = 0
-    for status, items in zip(_KNOWN_CONTAINER_STATUSES, per_status):
-        n = 0 if isinstance(items, BaseException) else len(items)
-        counts[status] = n
-        total += n
-    counts["total"] = total
-    return counts
+    """Containers by status — LIVE from ECS (was DDB-derived).
+
+    Delegates to ecs_ops.fleet_counts_live() under a 2s latency bound so a hung
+    ECS control plane can't block GET /admin/system/health; get_system_health()'s
+    _safe wrapper degrades a timeout (or any error) to {}, so the admin health
+    page always renders.
+    """
+    return await asyncio.wait_for(ecs_ops.fleet_counts_live(), timeout=2.0)
 
 
 def _background_tasks_status() -> dict[str, dict]:

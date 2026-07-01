@@ -40,39 +40,37 @@ def reset_background_tasks():
 
 
 @pytest.mark.asyncio
-async def test_fleet_counts_groups_by_status():
+async def test_fleet_counts_delegates_to_live_ecs():
+    """_fleet_counts now reads LIVE from ECS via ecs_ops (was DDB-derived)."""
+    from unittest.mock import AsyncMock
+
     from core.services import system_health
 
-    async def fake_get_by_status(status: str):
-        return {
-            "running": [{}, {}, {}],
-            "provisioning": [{}],
-            "stopped": [{}, {}],
-            "error": [],
-        }.get(status, [])
-
-    with patch("core.services.system_health.container_repo.get_by_status", new=fake_get_by_status):
+    with patch(
+        "core.services.system_health.ecs_ops.fleet_counts_live",
+        AsyncMock(return_value={"running": 3, "provisioning": 1, "stopped": 2, "error": 0, "unknown": 0, "total": 6}),
+    ):
         counts = await system_health._fleet_counts()
 
-    assert counts == {"running": 3, "provisioning": 1, "stopped": 2, "error": 0, "total": 6}
+    assert counts == {"running": 3, "provisioning": 1, "stopped": 2, "error": 0, "unknown": 0, "total": 6}
 
 
 @pytest.mark.asyncio
-async def test_fleet_counts_handles_repo_error_per_status():
-    """One status query failing doesn't break the whole panel — that status counts as 0."""
+async def test_fleet_counts_returns_live_shape_faithfully():
+    """_fleet_counts passes through whatever ecs_ops yields (incl. the unknown key)."""
+    from unittest.mock import AsyncMock
+
     from core.services import system_health
 
-    async def fake_get_by_status(status: str):
-        if status == "stopped":
-            raise RuntimeError("ddb_blip")
-        return [{}, {}]
-
-    with patch("core.services.system_health.container_repo.get_by_status", new=fake_get_by_status):
+    with patch(
+        "core.services.system_health.ecs_ops.fleet_counts_live",
+        AsyncMock(return_value={"running": 2, "provisioning": 0, "stopped": 0, "error": 1, "unknown": 1, "total": 4}),
+    ):
         counts = await system_health._fleet_counts()
 
-    assert counts["stopped"] == 0
-    assert counts["running"] == 2
-    assert counts["total"] == 6  # 3 statuses × 2 = 6, the failed status contributes 0
+    assert counts["error"] == 1
+    assert counts["unknown"] == 1
+    assert counts["total"] == 4
 
 
 @pytest.mark.asyncio

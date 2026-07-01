@@ -100,6 +100,7 @@ export class Isol8Stage extends cdk.Stage {
         marketplaceTakedownsTable: database.marketplaceTakedownsTable,
         marketplaceSellersTable: database.marketplaceSellersTable,
         hookEventsTable: database.hookEventsTable,
+        opsCacheTable: database.opsCacheTable,
       },
       // Pass secret names as plain strings to avoid cross-stack refs to AuthStack.
       // These names match the secretName used in AuthStack's createSecret helper.
@@ -111,6 +112,7 @@ export class Isol8Stage extends cdk.Stage {
         encryptionKey: `isol8/${env}/encryption_key`,
         posthogProjectApiKey: `isol8/${env}/posthog_project_api_key`,
         paperclipServiceTokenKey: auth.paperclipServiceTokenKey.secretName,
+        platformOpsTokenKey: auth.platformOpsTokenKey.secretName,
         gogKeyringPassword: auth.gogKeyringPassword.secretName,
         metronomeApiKey: auth.metronomeApiKey.secretName,
         metronomeWebhookSecret: auth.metronomeWebhookSecret.secretName,

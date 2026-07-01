@@ -10,6 +10,7 @@ import {
   listAvailableImages,
   type AvailableImage,
 } from "@/app/admin/_lib/api";
+import { AWS_REGION } from "@/lib/aws";
 
 import { ContainerActionsPanel } from "./ContainerActionsPanel";
 
@@ -85,7 +86,7 @@ function statusChipClasses(status?: string): string {
  */
 function buildEcsConsoleUrl(c: ContainerSlice): string | null {
   if (!c.task_arn) return null;
-  const region = "us-east-1";
+  const region = AWS_REGION;
   const cluster =
     c.cluster_name ??
     (c.cluster_arn ? c.cluster_arn.split("/").pop() : undefined);

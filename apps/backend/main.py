@@ -48,6 +48,7 @@ from routers import (
     integrations,
     metronome_webhook,
     oauth,
+    ops,
     orgs,
     paperclip_proxy,
     settings_keys,
@@ -762,6 +763,9 @@ app.include_router(oauth.router, prefix="/api/v1")
 # and we forward to the per-user OpenClaw container. See routers/hooks_proxy.py
 # for the auth model and forwarded-header rewriting rationale.
 app.include_router(hooks_proxy.router, prefix="/api/v1/hooks", tags=["hooks"])
+# Platform-ops operator console + owner-scoped agent access (dual auth). See
+# routers/ops.py for the Clerk-admin OR platform_ops-token model.
+app.include_router(ops.router, prefix="/api/v1/ops", tags=["ops"])
 # Agent-callable bridge (hook_token auth, no Clerk) — Atlas registers built
 # agents into the owner's container. See routers/agent_builder.py.
 app.include_router(agent_builder.router, prefix="/api/v1/agent-builder", tags=["agent-builder"])

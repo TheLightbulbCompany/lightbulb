@@ -27,6 +27,7 @@ export class AuthStack extends cdk.Stack {
   public readonly kmsKey: kms.Key;
   public readonly paperclipBetterAuthSecret: secretsmanager.Secret;
   public readonly paperclipServiceTokenKey: secretsmanager.Secret;
+  public readonly platformOpsTokenKey: secretsmanager.Secret;
   public readonly wsInternalSecret: secretsmanager.Secret;
   public readonly paperclipAdminCredentials: secretsmanager.Secret;
   public readonly gogKeyringPassword: secretsmanager.Secret;
@@ -103,6 +104,13 @@ export class AuthStack extends cdk.Stack {
       "paperclip_service_token_key",
       { passwordLength: 64, excludePunctuation: true },
       "Symmetric secret for signing/verifying OpenClaw service-token JWTs (used by paperclip_provisioning + Lambda Authorizer)",
+    );
+
+    this.platformOpsTokenKey = createSecret(
+      "PlatformOpsTokenKey",
+      "platform_ops_token_key",
+      { passwordLength: 64, excludePunctuation: true },
+      "Dedicated symmetric secret for signing/verifying platform_ops tokens (owner-scoped ops API).",
     );
 
     // Shared secret that authenticates the CALLER of the backend /api/v1/ws/*

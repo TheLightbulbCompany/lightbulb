@@ -23,6 +23,7 @@ import {
   startContainer,
   stopContainer,
 } from "@/app/admin/_actions/container";
+import { AWS_REGION } from "@/lib/aws";
 
 const CUSTOM_IMAGE_VALUE = "__custom__";
 
@@ -286,7 +287,7 @@ export function ContainerActionsPanel({
         {(usingCustom || !hasImages) && (
           <Input
             type="text"
-            placeholder="877352799272.dkr.ecr.us-east-1.amazonaws.com/isol8/openclaw-extended:2026.5.12-570e197"
+            placeholder={`877352799272.dkr.ecr.${AWS_REGION}.amazonaws.com/isol8/openclaw-extended:<tag>`}
             value={customImageUrl}
             onChange={(e) => setCustomImageUrl(e.target.value)}
             disabled={queueing}

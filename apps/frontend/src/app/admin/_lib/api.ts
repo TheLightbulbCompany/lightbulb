@@ -1,5 +1,7 @@
 import "server-only";
 
+import { randomUUID } from "crypto";
+
 import { apiUrl } from "./url";
 
 // ---------------------------------------------------------------------------
@@ -140,6 +142,45 @@ export interface AdminApiError {
 }
 
 // ---------------------------------------------------------------------------
+// Platform-ops envelope (mirrors the backend Ops DTO in routers/ops.py)
+// ---------------------------------------------------------------------------
+
+export interface OpsEnvelope<T> {
+  data: T;
+  freshness_ts: string;
+  source_state: "ok" | "degraded" | "stale" | "unavailable" | "partial";
+  errors: { domain: string; reason: string }[];
+}
+
+export interface FleetGridItem {
+  owner_id: string;
+  service_name: string;
+  status: string;
+  desired_count: number;
+  running_count: number;
+  pending_count: number;
+  rollout_state: string | null;
+}
+
+export interface FleetData {
+  counts: Record<string, number> | null;
+  grid: FleetGridItem[] | null;
+}
+
+export interface DeployRow {
+  stack_name: string;
+  status: string;
+  status_reason: string | null;
+  last_updated: string | null;
+  root_cause: string | null;
+}
+
+export interface AlarmRow {
+  name: string;
+  metric: string | null;
+}
+
+// ---------------------------------------------------------------------------
 // Internal fetcher
 // ---------------------------------------------------------------------------
 
@@ -164,42 +205,96 @@ function buildUrl(path: string, query?: FetchOptions["query"]): string {
   return url;
 }
 
+interface AdminHttpArgs {
+  method: "GET" | "POST" | "PATCH" | "DELETE";
+  path: string;
+  token: string;
+  query?: FetchOptions["query"];
+  body?: unknown;
+  /** When true, attach a per-request `Idempotency-Key` (mutations). */
+  idempotent?: boolean;
+}
+
+interface AdminHttpResult {
+  ok: boolean;
+  status: number;
+  data: unknown;
+}
+
 /**
- * Single-shot authenticated fetcher used by every admin API helper.
+ * Single request core shared by the read path (`adminFetch`) and the
+ * Server-Action mutation path (`_actions/_shared.ts adminRequest`).
  *
- * Always sets `cache: "no-store"` — admin data must never be cached. Network
- * errors and non-2xx responses are caught and surfaced via `T | null` so
- * callers (Server Components) can render an inline error banner instead of
- * blowing up the route. JSON parse failures degrade the same way.
+ * Builds the URL, sets `Authorization` / `Content-Type` / optional
+ * `Idempotency-Key`, always uses `cache: "no-store"` (admin data must never be
+ * cached), and returns `{ ok, status, data }`. The body is read as text then
+ * JSON-parsed, falling back to the raw string, so empty and non-JSON responses
+ * degrade instead of throwing. Network failures surface as
+ * `{ ok: false, status: 0, data: undefined }`.
+ */
+export async function adminHttp({
+  method,
+  path,
+  token,
+  query,
+  body,
+  idempotent,
+}: AdminHttpArgs): Promise<AdminHttpResult> {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${token}`,
+    "Content-Type": "application/json",
+  };
+  if (idempotent) {
+    // Dedupe double-clicks server-side on mutation paths.
+    headers["Idempotency-Key"] = randomUUID();
+  }
+  const init: RequestInit = {
+    method,
+    cache: "no-store",
+    headers,
+  };
+  if (body !== undefined) {
+    init.body = JSON.stringify(body);
+  }
+  try {
+    const res = await fetch(buildUrl(path, query), init);
+    const text = await res.text();
+    let data: unknown = undefined;
+    if (text) {
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = text;
+      }
+    }
+    return { ok: res.ok, status: res.status, data };
+  } catch {
+    return { ok: false, status: 0, data: undefined };
+  }
+}
+
+/**
+ * Single-shot authenticated fetcher used by every admin API read helper.
+ *
+ * Thin wrapper over {@link adminHttp}: network errors and non-2xx responses are
+ * surfaced as `null` so callers (Server Components) can render an inline error
+ * banner instead of blowing up the route. A 403 from `/me` is the normal
+ * "not an admin" signal and degrades the same way. Empty / unparseable bodies
+ * also degrade to `null`.
  */
 async function adminFetch<T>(
   token: string,
   path: string,
   opts: FetchOptions = {},
 ): Promise<T | null> {
-  try {
-    const url = buildUrl(path, opts.query);
-    const init: RequestInit = {
-      method: opts.method ?? "GET",
-      cache: "no-store",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-    };
-    if (opts.body !== undefined) {
-      init.body = JSON.stringify(opts.body);
-    }
-    const res = await fetch(url, init);
-    if (!res.ok) {
-      // 403 from /me is a normal "not an admin" signal — return null and let
-      // the caller (the layout) redirect appropriately.
-      return null;
-    }
-    return (await res.json()) as T;
-  } catch {
-    return null;
-  }
+  const { ok, data } = await adminHttp({
+    method: opts.method ?? "GET",
+    path,
+    token,
+    query: opts.query,
+    body: opts.body,
+  });
+  return ok ? ((data as T) ?? null) : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -367,5 +462,21 @@ export async function listAvailableImages(
     { query: { limit } },
   );
   return result ?? { images: [] };
+}
+
+// ---------------------------------------------------------------------------
+// Platform-ops reads (fleet + deploys)
+// ---------------------------------------------------------------------------
+
+export async function getFleet(token: string): Promise<OpsEnvelope<FleetData> | null> {
+  return adminFetch<OpsEnvelope<FleetData>>(token, "/ops/fleet");
+}
+
+export async function getDeploys(token: string): Promise<OpsEnvelope<DeployRow[]> | null> {
+  return adminFetch<OpsEnvelope<DeployRow[]>>(token, "/ops/deploys");
+}
+
+export async function getAlarms(token: string): Promise<OpsEnvelope<AlarmRow[]> | null> {
+  return adminFetch<OpsEnvelope<AlarmRow[]>>(token, "/ops/alarms");
 }
 

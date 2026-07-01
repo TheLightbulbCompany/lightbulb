@@ -56,6 +56,11 @@ export class DatabaseStack extends cdk.Stack {
   // into the per-user OpenClaw container. See T5 (repo) + T6 (proxy router).
   public readonly hookEventsTable: dynamodb.Table;
 
+  // Platform-ops read-through cache (platform-ops-phase1). TTL'd projections
+  // of expensive live reads (ECS fleet counts, CFN deploy/stack status) served
+  // to the operator ops API. Wipeable cache state — never a source of truth.
+  public readonly opsCacheTable: dynamodb.Table;
+
   constructor(scope: Construct, id: string, props: DatabaseStackProps) {
     super(scope, id, props);
 
@@ -145,6 +150,17 @@ export class DatabaseStack extends cdk.Stack {
       indexName: "status-index",
       partitionKey: { name: "status", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "scheduled_at", type: dynamodb.AttributeType.STRING },
+    });
+
+    this.opsCacheTable = new dynamodb.Table(this, "OpsCacheTable", {
+      tableName: `isol8-${env}-ops-cache`,
+      partitionKey: { name: "cache_key", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: config.removalPolicy,
+      pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: props.kmsKey,
+      timeToLiveAttribute: "ttl",
     });
 
     this.channelLinksTable = new dynamodb.Table(this, "ChannelLinksTable", {

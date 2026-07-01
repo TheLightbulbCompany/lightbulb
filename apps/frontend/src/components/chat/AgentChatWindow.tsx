@@ -5,6 +5,8 @@ import useSWR from "swr";
 
 import { capture } from "@/lib/analytics";
 import { ChatInput } from "./ChatInput";
+import { ModelEffortPill } from "./ModelEffortPill";
+import { useBilling } from "@/hooks/useBilling";
 import { ExecApprovalCards } from "./ExecApprovalCards";
 import { MessageList, MessageListHandle } from "./MessageList";
 import { StreamingStatusBar } from "./StreamingStatusBar";
@@ -248,7 +250,23 @@ export function AgentChatWindow({
     clearQueue,
     steerMessage,
     retryQueuedMessage,
+    activeSessionId,
   } = useAgentChat(agentId, sessionName);
+  const { account } = useBilling();
+
+  const modelEffortPill =
+    agentId != null ? (
+      <ModelEffortPill
+        agentId={agentId}
+        activeSessionId={activeSessionId}
+        isStreaming={isStreaming}
+        selectedModelRef=""
+        thinkingLevel="medium"
+        fastMode={false}
+        providerChoice={account?.provider_choice ?? null}
+        byoProvider={account?.byo_provider ?? null}
+      />
+    ) : null;
 
   const { agents } = useAgents();
   const activeAgent = agents.find((a) => a.id === agentId);
@@ -341,6 +359,7 @@ export function AgentChatWindow({
             onClearQueue={clearQueue}
             onSteerQueued={steerMessage}
             onRetryQueued={retryQueuedMessage}
+            controls={modelEffortPill}
           />
         </div>
       </div>
@@ -374,6 +393,7 @@ export function AgentChatWindow({
           onClearQueue={clearQueue}
           onSteerQueued={steerMessage}
           onRetryQueued={retryQueuedMessage}
+          controls={modelEffortPill}
         />
       </div>
     );
@@ -413,6 +433,7 @@ export function AgentChatWindow({
               onClearQueue={clearQueue}
               onSteerQueued={steerMessage}
               onRetryQueued={retryQueuedMessage}
+              controls={modelEffortPill}
             />
           </div>
         </div>
@@ -446,6 +467,7 @@ export function AgentChatWindow({
         onClearQueue={clearQueue}
         onSteerQueued={steerMessage}
         onRetryQueued={retryQueuedMessage}
+        controls={modelEffortPill}
       />
     </div>
   );

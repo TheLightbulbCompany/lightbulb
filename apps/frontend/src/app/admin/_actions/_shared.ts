@@ -1,10 +1,8 @@
 import "server-only";
 
-import { randomUUID } from "crypto";
-
 import { auth } from "@clerk/nextjs/server";
 
-import { apiUrl } from "@/app/admin/_lib/url";
+import { adminHttp } from "@/app/admin/_lib/api";
 
 /**
  * Shared HTTP helpers for admin Server Actions.
@@ -42,53 +40,26 @@ async function adminRequest(
     return { ok: false, status: 401, error: "missing_token" };
   }
 
-  const base = apiUrl().replace(/\/+$/, "");
-  const url = `${base}${path.startsWith("/") ? path : `/${path}`}`;
+  const { ok, status, data } = await adminHttp({
+    method,
+    path,
+    token,
+    body: method === "POST" ? body : undefined,
+    idempotent: method === "POST",
+  });
 
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${token}`,
-    "Content-Type": "application/json",
-  };
-  // Dedupe double-clicks server-side on mutation paths.
-  if (method === "POST") {
-    headers["Idempotency-Key"] = randomUUID();
-  }
-
-  try {
-    const res = await fetch(url, {
-      method,
-      headers,
-      body: method === "POST" && body ? JSON.stringify(body) : undefined,
-      cache: "no-store",
-    });
-    const text = await res.text();
-    let data: unknown = undefined;
-    if (text) {
-      try {
-        data = JSON.parse(text);
-      } catch {
-        data = text;
-      }
-    }
-    if (!res.ok) {
-      return {
-        ok: false,
-        status: res.status,
-        data,
-        error:
-          (data && typeof data === "object" && "detail" in data
-            ? String((data as { detail?: unknown }).detail)
-            : undefined) ?? `http_${res.status}`,
-      };
-    }
-    return { ok: true, status: res.status, data };
-  } catch (e) {
+  if (!ok) {
     return {
       ok: false,
-      status: 0,
-      error: e instanceof Error ? e.message : "network_error",
+      status,
+      data,
+      error:
+        (data && typeof data === "object" && "detail" in data
+          ? String((data as { detail?: unknown }).detail)
+          : undefined) ?? (status === 0 ? "network_error" : `http_${status}`),
     };
   }
+  return { ok: true, status, data };
 }
 
 export async function adminGet(path: string): Promise<ActionResult> {

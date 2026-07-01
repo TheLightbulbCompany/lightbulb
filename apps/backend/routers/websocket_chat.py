@@ -13,6 +13,7 @@ import asyncio
 import hmac
 import json
 import logging
+import re
 import secrets
 from typing import Any, Dict, Optional
 from uuid import uuid4
@@ -57,6 +58,33 @@ from core.services.paperclip_openclaw_pairing import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Strict lowercase RFC-4122 v4 UUID. This is the load-bearing security guard for
+# the trailing session-id segment: OpenClaw lowercases the ENTIRE session key
+# before store/lookup, so a mixed-case id would alias-merge two sessions under
+# the case-fold. It also blocks colon child-key forks (`:thread:`/`:subagent:`)
+# and reserved tokens (`heartbeat` -> session reap; `group`/`channel`/`direct`/
+# `dashboard` -> kind misclassification) — none of those can match this regex.
+_SESSION_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
+def build_chat_session_key(agent_id: str, user_id: str, session_id: str | None) -> str:
+    """Construct the OpenClaw session key for a /chat conversation.
+
+    - ``session_id is None`` -> legacy 3-part ``agent:{agent_id}:{user_id}`` (the
+      "General" session) so existing single-session history is never orphaned.
+    - Otherwise -> 4-part ``agent:{agent_id}:{user_id}:{session_id}`` where
+      ``session_id`` MUST be a strict lowercase v4 UUID (client-minted via
+      ``crypto.randomUUID()``).
+
+    ``agent_id`` and ``user_id`` are server-supplied (``user_id`` from the JWT),
+    never client-influenced — the client only ever sends the opaque trailing id.
+    """
+    if session_id is None:
+        return f"agent:{agent_id}:{user_id}"
+    if not _SESSION_ID_RE.match(session_id):
+        raise ValueError(f"invalid session_id: {session_id!r}")
+    return f"agent:{agent_id}:{user_id}:{session_id}"
 
 
 def require_ws_internal_caller(

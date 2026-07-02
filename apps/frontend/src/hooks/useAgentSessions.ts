@@ -1,7 +1,8 @@
 "use client";
 
 import { useMemo } from "react";
-import { useGatewayRpc } from "@/hooks/useGatewayRpc";
+import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
+import { notifyApiError } from "@/lib/notify";
 
 // Mirror of the backend guard (websocket_chat.py _SESSION_ID_RE): a strict
 // lowercase RFC-4122 v4. Anything else in the trailing segment is not a
@@ -14,7 +15,10 @@ export interface AgentSession {
   sessionId: string | null;
   /** The full OpenClaw session key. */
   key: string;
+  /** Display label — truncated to 48 chars. Seed edits from rawLabel. */
   label: string;
+  /** Untruncated source of `label`; what a rename editor must start from. */
+  rawLabel: string;
   updatedAt?: number;
   totalTokens?: number;
   // Per-session model/effort overrides sessions.list reports (all optional —
@@ -32,6 +36,7 @@ export interface AgentSession {
 
 interface RawSessionRow {
   key: string;
+  label?: string;
   derivedTitle?: string;
   title?: string;
   lastMessage?: { text?: string };
@@ -60,11 +65,18 @@ function modelControlsOf(row: RawSessionRow): Pick<
   };
 }
 
-function labelFor(row: RawSessionRow, sessionId: string): string {
-  const raw = (row.derivedTitle || row.title || row.lastMessage?.text || "").trim();
-  if (raw) return raw.length > 48 ? `${raw.slice(0, 48)}…` : raw;
+function labelsFor(
+  row: RawSessionRow,
+  sessionId: string,
+): { label: string; rawLabel: string } {
+  // A user-set label (sessions.patch {label}) always wins over derived titles.
+  const raw = (row.label || row.derivedTitle || row.title || row.lastMessage?.text || "").trim();
   // Never blank — fall back to a short id so the row is always clickable.
-  return `Session ${sessionId.slice(0, 8)}`;
+  const rawLabel = raw || `Session ${sessionId.slice(0, 8)}`;
+  // Display copy is truncated; rawLabel stays intact so a rename editor never
+  // starts from (and then persists) an ellipsis-truncated string.
+  const label = rawLabel.length > 48 ? `${rawLabel.slice(0, 48)}…` : rawLabel;
+  return { label, rawLabel };
 }
 
 /**
@@ -77,7 +89,13 @@ function labelFor(row: RawSessionRow, sessionId: string): string {
 export function useAgentSessions(
   agentId: string | null,
   userId: string | null,
-): { sessions: AgentSession[]; isLoading: boolean; mutate: () => Promise<unknown> } {
+): {
+  sessions: AgentSession[];
+  isLoading: boolean;
+  mutate: () => Promise<unknown>;
+  renameSession: (key: string, label: string) => Promise<void>;
+} {
+  const callRpc = useGatewayRpcMutation();
   const { data, isLoading, mutate } = useGatewayRpc<
     { sessions?: RawSessionRow[] } | RawSessionRow[]
   >(
@@ -113,7 +131,7 @@ export function useAgentSessions(
       out.push({
         sessionId,
         key: row.key,
-        label: labelFor(row, sessionId),
+        ...labelsFor(row, sessionId),
         updatedAt: row.updatedAt,
         totalTokens: row.totalTokens,
         ...modelControlsOf(row),
@@ -133,11 +151,25 @@ export function useAgentSessions(
         sessionId: null,
         key: generalRow.key,
         label: "General",
+        rawLabel: "General",
         ...modelControlsOf(generalRow),
       });
     }
     return out;
   }, [data, agentId, userId]);
 
-  return { sessions, isLoading, mutate };
+  const renameSession = async (key: string, label: string): Promise<void> => {
+    // sessions.patch {label} is OpenClaw's user-set session name; it wins over
+    // derivedTitle in labelFor. Revalidate so the sidebar reflects it. Failures
+    // surface as a toast — the inline editor has already closed by the time
+    // the RPC settles, so silence would read as a successful rename.
+    try {
+      await callRpc("sessions.patch", { key, label });
+      await mutate();
+    } catch (err) {
+      notifyApiError(err, "Failed to rename session", { dedupeKey: "session-rename" });
+    }
+  };
+
+  return { sessions, isLoading, mutate, renameSession };
 }

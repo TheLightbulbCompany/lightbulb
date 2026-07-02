@@ -253,6 +253,7 @@ export function AgentChatWindow({
     steerMessage,
     retryQueuedMessage,
     activeSessionId,
+    historyTruncated,
   } = useAgentChat(agentId, sessionName);
   const { account } = useBilling();
 
@@ -463,6 +464,11 @@ export function AgentChatWindow({
 
   return (
     <div className="flex flex-col h-full min-h-0 bg-[#faf7f2]">
+      {historyTruncated && (
+        <div className="shrink-0 px-4 py-1.5 text-center text-[11px] text-[#8a8578] bg-[#f3efe6] border-b border-[#e0dbd0]">
+          Older messages aren&apos;t shown — this conversation is too large to load in full.
+        </div>
+      )}
       <MessageList
         ref={messageListRef}
         renderGroups={renderGroups}

@@ -94,7 +94,9 @@ class ManagementApiClient:
             ManagementApiClientError: If sending fails for reasons other than
                                      a gone connection.
         """
-        data = json.dumps(payload).encode("utf-8")
+        # Compact separators: matches _trim_chat_history_for_frame's size
+        # estimate and keeps every pushed frame under the 128KiB limit longer.
+        data = json.dumps(payload, separators=(",", ":")).encode("utf-8")
 
         try:
             self._client.post_to_connection(

@@ -97,13 +97,14 @@ describe("AgentChatWindow — composer pill hydration", () => {
         sessionId: SID,
         key: `agent:a1:user_1:${SID}`,
         label: "Taxes",
+        rawLabel: "Taxes",
         model: "openai/gpt-5",
         modelProvider: "openai",
         thinkingLevel: "high",
         fastMode: true,
       },
       // A DIFFERENT session's row must not be the one that hydrates the pill.
-      { sessionId: null, key: "agent:a1:user_1", label: "General", model: "bedrock/other", thinkingLevel: "low" },
+      { sessionId: null, key: "agent:a1:user_1", label: "General", rawLabel: "General", model: "bedrock/other", thinkingLevel: "low" },
     ];
     chatState = { activeSessionId: SID };
     render(<AgentChatWindow agentId="a1" />);
@@ -119,7 +120,7 @@ describe("AgentChatWindow — composer pill hydration", () => {
 
   it("resolves a bare model id + separate provider into a full ref", () => {
     sessions = [
-      { sessionId: SID, key: `agent:a1:user_1:${SID}`, label: "x", model: "gpt-5", modelProvider: "openai" },
+      { sessionId: SID, key: `agent:a1:user_1:${SID}`, label: "x", rawLabel: "x", model: "gpt-5", modelProvider: "openai" },
     ];
     chatState = { activeSessionId: SID };
     render(<AgentChatWindow agentId="a1" />);
@@ -132,6 +133,7 @@ describe("AgentChatWindow — composer pill hydration", () => {
         sessionId: null,
         key: "agent:a1:user_1",
         label: "General",
+        rawLabel: "General",
         model: "bedrock/claude",
         thinkingLevel: "low",
         fastMode: false,
@@ -144,7 +146,7 @@ describe("AgentChatWindow — composer pill hydration", () => {
   });
 
   it("passes empty ref/effort (no stub) when the active row has no overrides", () => {
-    sessions = [{ sessionId: SID, key: `agent:a1:user_1:${SID}`, label: "x" }];
+    sessions = [{ sessionId: SID, key: `agent:a1:user_1:${SID}`, label: "x", rawLabel: "x" }];
     chatState = { activeSessionId: SID };
     render(<AgentChatWindow agentId="a1" />);
     expect(pillProps!.selectedModelRef).toBe("");
@@ -154,7 +156,7 @@ describe("AgentChatWindow — composer pill hydration", () => {
   });
 
   it("onChanged revalidates sessions.list so the pill re-reads what was persisted", () => {
-    sessions = [{ sessionId: SID, key: `agent:a1:user_1:${SID}`, label: "x", model: "openai/gpt-5" }];
+    sessions = [{ sessionId: SID, key: `agent:a1:user_1:${SID}`, label: "x", rawLabel: "x", model: "openai/gpt-5" }];
     chatState = { activeSessionId: SID };
     render(<AgentChatWindow agentId="a1" />);
     expect(mutateSessions).not.toHaveBeenCalled();

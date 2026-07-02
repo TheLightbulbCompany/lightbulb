@@ -173,6 +173,98 @@ describe("useAgentChat — per-session cache integrity on session switch", () =>
     expect(showsGeneralHistory(result.current.renderItems)).toBe(true);
   });
 
+  it("a run finishing in a BACKGROUND session invalidates its cache so switching back refetches the reply", async () => {
+    let generalFetches = 0;
+    sendReq.mockReset().mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+      if (method === "chat.history" && params?.sessionKey === GENERAL_KEY) {
+        generalFetches += 1;
+        if (generalFetches >= 2) {
+          const h = generalHistory();
+          h.messages.push({
+            role: "assistant",
+            content: [{ type: "text", text: "background reply" }],
+            timestamp: 3,
+          });
+          return h;
+        }
+        return generalHistory();
+      }
+      return { messages: [] };
+    });
+
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    const { result } = renderHook(() => useAgentChat("agent-X", "user-1"));
+    await waitFor(() => {
+      expect(showsGeneralHistory(result.current.renderItems)).toBe(true);
+    });
+
+    // Switch away; General's in-flight run then completes in the background.
+    act(() => {
+      result.current.newSession();
+    });
+    await waitFor(() => {
+      expect(result.current.renderItems).toHaveLength(0);
+    });
+    act(() => {
+      // Backend never tags General frames — an untagged done while a named
+      // session is active is exactly the dropped-frame path.
+      chatHandlers.forEach((h) => h({ type: "done", agent_id: "agent-X", runId: "r-bg" }));
+    });
+
+    // Switching back must refetch (the cached copy predates the reply).
+    act(() => {
+      result.current.selectSession(null);
+    });
+    await waitFor(() => {
+      expect(historyCallsFor(GENERAL_KEY)).toBe(2);
+    });
+    await waitFor(() => {
+      expect(JSON.stringify(result.current.renderItems)).toContain("background reply");
+    });
+  });
+
+  it("surfaces historyTruncated when the backend trimmed the payload to fit the frame limit", async () => {
+    sendReq.mockReset().mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+      if (method === "chat.history" && params?.sessionKey === GENERAL_KEY) {
+        return { ...generalHistory(), truncated: true };
+      }
+      return { messages: [] };
+    });
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    const { result } = renderHook(() => useAgentChat("agent-X", "user-1"));
+    await waitFor(() => {
+      expect(showsGeneralHistory(result.current.renderItems)).toBe(true);
+    });
+    expect(result.current.historyTruncated).toBe(true);
+
+    // A session whose history was NOT trimmed reports false.
+    act(() => {
+      result.current.newSession();
+    });
+    await waitFor(() => {
+      expect(result.current.renderItems).toHaveLength(0);
+    });
+    expect(result.current.historyTruncated).toBe(false);
+  });
+
+  it("sending a message does NOT clear historyTruncated — the older messages are still missing", async () => {
+    sendReq.mockReset().mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+      if (method === "chat.history" && params?.sessionKey === GENERAL_KEY) {
+        return { ...generalHistory(), truncated: true };
+      }
+      return { messages: [] };
+    });
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    const { result } = renderHook(() => useAgentChat("agent-X", "user-1"));
+    await waitFor(() => {
+      expect(result.current.historyTruncated).toBe(true);
+    });
+    await act(async () => {
+      await result.current.sendMessage("hello again");
+    });
+    expect(result.current.historyTruncated).toBe(true);
+  });
+
   it("a failed history fetch is retried on the next visit instead of latching the session blank", async () => {
     let failNext = true;
     sendReq.mockReset().mockImplementation(async (method: string, params?: Record<string, unknown>) => {

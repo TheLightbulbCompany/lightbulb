@@ -323,6 +323,45 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.session-row {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+}
+.session-row .session-item {
+  flex: 1;
+  min-width: 0;
+}
+.session-rename {
+  display: none;
+  flex-shrink: 0;
+  padding: 4px;
+  border: 0;
+  background: transparent;
+  border-radius: 6px;
+  color: #8a8578;
+  cursor: pointer;
+}
+.session-row:hover .session-rename,
+.session-row:focus-within .session-rename {
+  display: flex;
+}
+.session-rename:hover {
+  background: rgba(255, 255, 255, 0.9);
+  color: #2d8a4e;
+}
+.session-rename-input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid #c8e6c9;
+  border-radius: 7px;
+  background: #fff;
+  color: #1a1a1a;
+  font-size: 12px;
+  outline: none;
+}
 .session-new {
   display: flex;
   align-items: center;

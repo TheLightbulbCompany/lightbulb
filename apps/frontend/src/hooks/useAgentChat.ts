@@ -159,6 +159,8 @@ export interface UseAgentChatReturn {
   isConnected: boolean;
   isLoadingHistory: boolean;
   needsBootstrap: boolean;
+  /** The displayed history was trimmed to fit the transport frame limit. */
+  historyTruncated: boolean;
   queuedMessages: QueuedMessage[];
   removeQueuedMessage: (id: string) => void;
   clearQueue: () => void;
@@ -182,6 +184,10 @@ export interface UseAgentChatReturn {
 
 const _messageCache = new Map<string, HistoryMessage[]>();
 const _needsBootstrap = new Set<string>();
+// Sessions whose last chat.history response was trimmed by the backend to fit
+// the WS frame limit (payload carried `truncated: true`) — the transcript
+// starts mid-conversation and the UI says so.
+const _truncatedHistory = new Set<string>();
 
 /**
  * The persisted transcript, bound to the active session's cache key.
@@ -700,8 +706,13 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     Promise.resolve().then(() => setHistoryLoadState("loading"));
     sendReq("chat.history", { sessionKey, limit: 200 })
       .then((result: unknown) => {
-        const historyResult = result as { messages?: HistoryMessage[] };
+        const historyResult = result as { messages?: HistoryMessage[]; truncated?: boolean };
         historyLoadedRef.current.add(cacheKey);
+        if (historyResult?.truncated === true) {
+          _truncatedHistory.add(cacheKey);
+        } else {
+          _truncatedHistory.delete(cacheKey);
+        }
         setHistoryLoadState("done");
         const raw = Array.isArray(historyResult?.messages) ? historyResult.messages : [];
         const projected = projectChatHistoryMessages(raw);
@@ -809,6 +820,21 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         !isUntaggedError &&
         frameSessionId !== activeSessionIdRef.current
       ) {
+        // A terminal frame for ANOTHER session of this agent means that
+        // session's server-side transcript changed while it wasn't displayed.
+        // Never touch the live view — but drop the background session's
+        // history cache so switching back refetches instead of rendering the
+        // stale pre-run messages (the reply would otherwise be invisible
+        // until a full page reload).
+        if (msg.type === "done" || msg.type === "error" || msg.type === "run_ended") {
+          const staleKey = agentIdRef.current
+            ? `${agentIdRef.current}:${sessionName}:${frameSessionId ?? ""}`
+            : null;
+          if (staleKey) {
+            _messageCache.delete(staleKey);
+            historyLoadedRef.current.delete(staleKey);
+          }
+        }
         return;
       }
 
@@ -1655,6 +1681,9 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       const key = agentIdRef.current
         ? `${agentIdRef.current}:${sessionName}:${activeSessionIdRef.current ?? ""}`
         : null;
+      // Sending clears only the bootstrap hint — NOT _truncatedHistory: the
+      // send doesn't refetch history, so the loaded window is still missing
+      // its trimmed older messages and the banner must stay.
       if (key) _needsBootstrap.delete(key);
 
       // Side-channel `/btw` (or `/side`): a detached, non-blocking aside that
@@ -1958,6 +1987,8 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
 
   const renderGroups = useMemo<RenderGroup[]>(() => groupBySide(renderItems), [renderItems]);
 
+  const historyTruncated = !!(cacheKey && _truncatedHistory.has(cacheKey));
+
   const needsBootstrap = !!(
     cacheKey &&
     _needsBootstrap.has(cacheKey) &&
@@ -1976,6 +2007,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     isConnected,
     isLoadingHistory,
     needsBootstrap,
+    historyTruncated,
     queuedMessages,
     removeQueuedMessage,
     clearQueue,

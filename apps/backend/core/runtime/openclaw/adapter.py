@@ -4,7 +4,14 @@ The adapter delegates 1:1 — the pool IS the session surface (structural
 typing). It never filters or reshapes gateway traffic.
 """
 
-from core.runtime.base import Capabilities, SessionSurface
+import logging
+import uuid
+from typing import Any
+
+from core.gateway.operator_rpc import gateway_rpc_oneshot
+from core.runtime.base import Capabilities, ContainerNotRunningError, SessionSurface
+
+logger = logging.getLogger(__name__)
 
 OPENCLAW_CAPABILITIES = Capabilities(
     desktop_pairing=True,
@@ -26,6 +33,13 @@ def _get_pool():
     return get_gateway_pool()
 
 
+def _get_ecs():
+    # Lazy for the same import-lightness reason as _get_pool.
+    from core.containers import get_ecs_manager
+
+    return get_ecs_manager()
+
+
 class OpenClawRuntime:
     kind = "openclaw"
     capabilities = OPENCLAW_CAPABILITIES
@@ -34,4 +48,71 @@ class OpenClawRuntime:
     def sessions(self) -> SessionSurface:
         return _get_pool()
 
-    # call_rpc / revoke_provider / forward_hook are added in Tasks 4 and 7.
+    async def _resolve(self, owner_id: str) -> tuple[str, str]:
+        container, ip = await _get_ecs().resolve_running_container(owner_id)
+        if not container or not ip:
+            raise ContainerNotRunningError(f"no running container for {owner_id}")
+        return ip, container["gateway_token"]
+
+    async def call_rpc(
+        self,
+        owner_id: str,
+        method: str,
+        params: dict | None = None,
+        *,
+        fresh: bool = False,
+        timeout: float | None = None,
+    ) -> Any:
+        """Send an RPC to the owner's running container.
+
+        Default path reuses the persistent pooled connection. ``fresh=True``
+        opens a short-lived signed one-shot connection instead — required for
+        ``operator.admin``-scoped calls and for RPCs that must not ride a
+        connection the call itself may tear down (e.g. gateway restart).
+        Raises ``ContainerNotRunningError`` when the container is cold.
+        """
+        ip, token = await self._resolve(owner_id)
+        if fresh:
+            t = timeout if timeout is not None else 10.0
+            return await gateway_rpc_oneshot(
+                ip,
+                owner_id=owner_id,
+                token=token,
+                method=method,
+                params=params,
+                open_timeout=t,
+                recv_timeout=t,
+                rpc_timeout=t,
+            )
+        return await _get_pool().send_rpc(
+            user_id=owner_id,
+            req_id=f"rt-{method}-{uuid.uuid4().hex[:12]}",
+            method=method,
+            params=params or {},
+            ip=ip,
+            token=token,
+        )
+
+    async def revoke_provider(self, owner_id: str, *, provider: str) -> bool:
+        """Best-effort: drop ``provider``'s credential from the running
+        container's live auth store via ``models.authLogout``.
+
+        Returns ``True`` if the RPC succeeded, ``False`` otherwise. NEVER
+        raises — when the container is cold there is no live store to clear
+        (the EFS seed-file delete is the authoritative cleanup), and a
+        transient RPC failure is logged and self-heals on reprovision.
+        """
+        try:
+            await self.call_rpc(owner_id, "models.authLogout", {"provider": provider}, fresh=True)
+        except ContainerNotRunningError:
+            return False  # cold container — nothing live to clear
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            logger.warning("revoke_provider: models.authLogout failed for %s: %s", owner_id, exc)
+            return False
+        logger.info(
+            "revoked_provider_auth_in_container",
+            extra={"owner_id": owner_id, "provider": provider},
+        )
+        return True
+
+    # forward_hook lands with the hooks migration.

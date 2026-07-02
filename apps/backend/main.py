@@ -38,7 +38,6 @@ from routers import (
     container,
     container_files,
     container_recover,
-    control_ui_proxy,
     debug,
     desktop_auth,
     desktop_pair,
@@ -443,10 +442,6 @@ openapi_tags = [
         "description": "OpenClaw container RPC proxy for the control panel.",
     },
     {
-        "name": "control-ui",
-        "description": "Proxy for the embedded OpenClaw control UI SPA.",
-    },
-    {
         "name": "channels",
         "description": "Messaging channel management (Telegram, Discord, WhatsApp).",
     },
@@ -720,9 +715,6 @@ app.include_router(container_recover.router, prefix="/api/v1/container", tags=["
 
 # Container updates (pending updates, apply/schedule)
 app.include_router(updates.router, prefix=f"{settings.API_V1_STR}/container", tags=["container"])
-
-# Control UI proxy (embedded OpenClaw control UI SPA)
-app.include_router(control_ui_proxy.router, prefix="/api/v1/control-ui", tags=["control-ui"])
 
 # Channel management (Telegram, Discord, WhatsApp)
 app.include_router(channels.router, prefix="/api/v1/channels", tags=["channels"])

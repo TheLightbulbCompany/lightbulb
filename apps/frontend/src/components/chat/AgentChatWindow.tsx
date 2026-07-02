@@ -299,6 +299,15 @@ export function AgentChatWindow({
 
   const isInitialState = renderGroups.length === 0;
 
+  // sessions.list only changes server-side on run activity (materialization,
+  // derived titles, token counts) — SWR has no push channel for it, so
+  // revalidate on the run-completion edge to keep the sidebar rows current.
+  const prevStreamingRef = useRef(false);
+  useEffect(() => {
+    if (prevStreamingRef.current && !isStreaming) void mutateSessions();
+    prevStreamingRef.current = isStreaming;
+  }, [isStreaming, mutateSessions]);
+
   const prevAgentIdRef = useRef<string | null | undefined>(undefined);
 
   useEffect(() => {
@@ -338,6 +347,9 @@ export function AgentChatWindow({
 
         if (message.trim()) {
           await sendMessage(message);
+          // A first message materializes the session's sessions.list row —
+          // revalidate so the sidebar shows the new session immediately.
+          void mutateSessions();
           setTimeout(() => messageListRef.current?.scrollToBottom(), 50);
         }
       } catch (err) {

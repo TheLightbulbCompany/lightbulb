@@ -173,6 +173,37 @@ def _trim_chat_history_for_frame(result, budget: int = _WS_FRAME_BUDGET_BYTES):
     return {**result, "messages": messages[lo:], "truncated": True}
 
 
+# Methods whose result payload the frontend DISCARDS (it revalidates via a
+# follow-up read instead). When such a result is too big for one frame, the
+# payload can be replaced with a marker rather than letting the push 413 —
+# which would report failure for an operation that actually persisted.
+# sessions.patch echoes ~180KB (entry + model catalog) on some containers.
+_RPC_RESULT_DISCARDED_METHODS = {"sessions.patch"}
+
+
+def _fit_rpc_result_for_frame(method: str, result, budget: int = _WS_FRAME_BUDGET_BYTES):
+    """Keep any RPC res frame deliverable through the Management API.
+
+    chat.history gets a content-aware trim; discarded-payload methods get a
+    marker stub; anything else oversized passes through with a warning so we
+    learn about the next offender from logs instead of silent blank UIs.
+    """
+    if method == "chat.history":
+        return _trim_chat_history_for_frame(result, budget)
+    size = len(json.dumps(result, separators=(",", ":"), default=str).encode())
+    if size <= budget:
+        return result
+    if method in _RPC_RESULT_DISCARDED_METHODS:
+        logger.info("RPC %s result (%d bytes) exceeds frame budget; payload omitted", method, size)
+        return {"payloadOmitted": True}
+    logger.warning(
+        "RPC %s result is %d bytes — over the WS frame budget; push will likely 413",
+        method,
+        size,
+    )
+    return result
+
+
 def require_ws_internal_caller(
     x_isol8_ws_internal: Optional[str] = Header(None, alias="x-isol8-ws-internal"),
 ) -> None:
@@ -1554,9 +1585,8 @@ async def _process_rpc_background(
         # session on the shared per-owner box (paperclip/cron/other members).
         if method == "sessions.list":
             result = _filter_sessions_for_user(result, user_id)
-        # Keep huge histories deliverable — see _trim_chat_history_for_frame.
-        if method == "chat.history":
-            result = _trim_chat_history_for_frame(result)
+        # Keep every res frame deliverable — see _fit_rpc_result_for_frame.
+        result = _fit_rpc_result_for_frame(method, result)
         management_api.send_message(
             connection_id,
             {

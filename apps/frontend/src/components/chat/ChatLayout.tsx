@@ -676,10 +676,15 @@ export function ChatLayout({
                           activeSessionId={activeSessionId}
                           onSelect={(sid) => {
                             selectSession(sid);
+                            // Like handleSelectAgent: the view is derived from
+                            // ?panel, so picking a session from a panel view
+                            // must drop ?panel to land back on the chat.
+                            onClearPanel?.();
                             setSidebarOpen(false);
                           }}
                           onNew={() => {
                             newSession();
+                            onClearPanel?.();
                             setSidebarOpen(false);
                           }}
                           onRename={(s, label) => {

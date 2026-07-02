@@ -13,6 +13,7 @@ os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 from routers.websocket_chat import (  # noqa: E402
     _WS_FRAME_BUDGET_BYTES,
+    _fit_rpc_result_for_frame,
     _trim_chat_history_for_frame,
 )
 
@@ -77,3 +78,26 @@ def test_single_giant_message_still_yields_a_deliverable_frame():
     assert _payload_size(out) <= _WS_FRAME_BUDGET_BYTES
     assert out["messages"] == []
     assert out["truncated"] is True
+
+
+def test_fit_replaces_oversized_discarded_method_payload_with_marker():
+    # sessions.patch echoes a huge entry+catalog payload the frontend discards;
+    # pushing it would 413 and report failure for a persisted operation.
+    huge = {"entry": {"blob": "x" * 200_000}}
+    out = _fit_rpc_result_for_frame("sessions.patch", huge)
+    assert out == {"payloadOmitted": True}
+    assert _payload_size(out) <= _WS_FRAME_BUDGET_BYTES
+
+
+def test_fit_passes_small_payloads_and_unknown_oversized_methods_through():
+    small = {"ok": True}
+    assert _fit_rpc_result_for_frame("sessions.patch", small) is small
+    unknown_huge = {"blob": "x" * 200_000}
+    assert _fit_rpc_result_for_frame("agents.list", unknown_huge) is unknown_huge
+
+
+def test_fit_delegates_chat_history_to_the_trim():
+    result = _history(200, 2000)
+    out = _fit_rpc_result_for_frame("chat.history", result)
+    assert out["truncated"] is True
+    assert _payload_size(out) <= _WS_FRAME_BUDGET_BYTES

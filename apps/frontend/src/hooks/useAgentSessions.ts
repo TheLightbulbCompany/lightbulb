@@ -160,14 +160,21 @@ export function useAgentSessions(
 
   const renameSession = async (key: string, label: string): Promise<void> => {
     // sessions.patch {label} is OpenClaw's user-set session name; it wins over
-    // derivedTitle in labelFor. Revalidate so the sidebar reflects it. Failures
-    // surface as a toast — the inline editor has already closed by the time
-    // the RPC settles, so silence would read as a successful rename.
+    // derivedTitle in labelFor. Failures surface as a toast — the inline
+    // editor has already closed by the time the RPC settles, so silence would
+    // read as a successful rename.
     try {
       await callRpc("sessions.patch", { key, label });
-      await mutate();
     } catch (err) {
       notifyApiError(err, "Failed to rename session", { dedupeKey: "session-rename" });
+      return;
+    }
+    // The patch persisted; a failed revalidation only delays the sidebar
+    // refresh (SWR retries on focus) and must not read as a failed rename.
+    try {
+      await mutate();
+    } catch {
+      // revalidates on next focus
     }
   };
 

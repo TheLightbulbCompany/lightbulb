@@ -35,7 +35,7 @@ def test_capabilities_is_frozen():
 
 
 def test_protocols_are_runtime_checkable():
-    assert hasattr(Runtime, "__protocol_attrs__") or True  # Protocol classes import cleanly
+    assert "call_rpc" in Runtime.__protocol_attrs__
     assert issubclass(ContainerNotRunningError, Exception)
     assert SessionSurface is not None
 

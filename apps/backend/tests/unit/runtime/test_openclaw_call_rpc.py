@@ -57,9 +57,43 @@ async def test_call_rpc_fresh_path_uses_oneshot():
 
 
 @pytest.mark.asyncio
+async def test_call_rpc_pooled_with_timeout_raises():
+    # The guard fires before container resolution, so no mocks are needed.
+    rt = OpenClawRuntime()
+    with pytest.raises(ValueError, match="fresh=True"):
+        await rt.call_rpc("org_1", "channels.status", timeout=5)
+
+
+@pytest.mark.asyncio
 async def test_call_rpc_cold_container_raises():
     rt = OpenClawRuntime()
     with patch("core.runtime.openclaw.adapter._get_ecs", return_value=_mock_ecs(None, None)):
+        with pytest.raises(ContainerNotRunningError):
+            await rt.call_rpc("org_1", "anything")
+
+
+@pytest.mark.asyncio
+async def test_call_rpc_missing_token_raises_container_not_running():
+    # A container row without a gateway token is unreachable — same caller
+    # contract as a cold container.
+    rt = OpenClawRuntime()
+    container = {"service_name": "openclaw-org_1-abc"}  # row exists, token key absent
+    with patch(
+        "core.runtime.openclaw.adapter._get_ecs",
+        return_value=_mock_ecs(container, "10.0.0.5"),
+    ):
+        with pytest.raises(ContainerNotRunningError):
+            await rt.call_rpc("org_1", "anything")
+
+
+@pytest.mark.asyncio
+async def test_call_rpc_none_token_raises_container_not_running():
+    rt = OpenClawRuntime()
+    container = {"gateway_token": None}
+    with patch(
+        "core.runtime.openclaw.adapter._get_ecs",
+        return_value=_mock_ecs(container, "10.0.0.5"),
+    ):
         with pytest.raises(ContainerNotRunningError):
             await rt.call_rpc("org_1", "anything")
 

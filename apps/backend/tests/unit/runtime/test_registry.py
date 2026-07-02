@@ -1,3 +1,7 @@
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 
 from core.runtime import get_runtime, get_runtime_for_owner
@@ -36,3 +40,25 @@ def test_sessions_is_the_gateway_pool(monkeypatch):
 
     monkeypatch.setattr(adapter_mod, "_get_pool", lambda: sentinel)
     assert get_runtime("openclaw").sessions is sentinel
+
+
+def test_runtime_import_does_not_pull_core_containers():
+    # core.containers builds AWS clients at import time; the runtime package
+    # must stay import-light so adapters load without AWS plumbing. Runs in a
+    # subprocess because the test session itself imports core.containers
+    # elsewhere, which would mask a leak in-process.
+    code = (
+        "import sys\n"
+        "import core.runtime\n"
+        "import core.runtime.openclaw.adapter\n"
+        "leaked = [m for m in sys.modules if m.startswith('core.containers')]\n"
+        "assert not leaked, f'core.containers leaked into runtime import: {leaked}'\n"
+    )
+    backend_dir = Path(__file__).resolve().parents[3]
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=backend_dir,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr

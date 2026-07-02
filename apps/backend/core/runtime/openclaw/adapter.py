@@ -50,9 +50,13 @@ class OpenClawRuntime:
 
     async def _resolve(self, owner_id: str) -> tuple[str, str]:
         container, ip = await _get_ecs().resolve_running_container(owner_id)
-        if not container or not ip:
-            raise ContainerNotRunningError(f"no running container for {owner_id}")
-        return ip, container["gateway_token"]
+        token = container.get("gateway_token") if container else None
+        if not container or not ip or not token:
+            # A container row without a gateway token is as unreachable as a
+            # cold container — callers get the port's declared error either
+            # way, and no connection attempt is made.
+            raise ContainerNotRunningError(f"no running container or gateway token for {owner_id}")
+        return ip, token
 
     async def call_rpc(
         self,
@@ -69,8 +73,13 @@ class OpenClawRuntime:
         opens a short-lived signed one-shot connection instead — required for
         ``operator.admin``-scoped calls and for RPCs that must not ride a
         connection the call itself may tear down (e.g. gateway restart).
+        ``timeout`` applies only to ``fresh=True`` one-shot calls; the pooled
+        path uses the pool's own timeouts, so passing one there raises
+        ``ValueError`` rather than silently ignoring it.
         Raises ``ContainerNotRunningError`` when the container is cold.
         """
+        if timeout is not None and not fresh:
+            raise ValueError("timeout applies only to fresh=True one-shot calls")
         ip, token = await self._resolve(owner_id)
         if fresh:
             t = timeout if timeout is not None else 10.0
@@ -107,7 +116,9 @@ class OpenClawRuntime:
         except ContainerNotRunningError:
             return False  # cold container — nothing live to clear
         except Exception as exc:  # noqa: BLE001 — best-effort
-            logger.warning("revoke_provider: models.authLogout failed for %s: %s", owner_id, exc)
+            # Neutral wording: this branch catches both container-resolution
+            # failures and the RPC itself failing.
+            logger.warning("revoke_provider failed for %s: %s", owner_id, exc)
             return False
         logger.info(
             "revoked_provider_auth_in_container",

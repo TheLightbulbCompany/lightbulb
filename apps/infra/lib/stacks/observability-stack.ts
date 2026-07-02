@@ -39,6 +39,11 @@ export interface ObservabilityStackProps extends cdk.StackProps {
   backendLogGroupName: string;
   // Network / ALB
   alb: elbv2.ApplicationLoadBalancer;
+  // Backend target group — REQUIRED for the ALB host-count alarms (W28/W48).
+  // HealthyHostCount / UnHealthyHostCount are only published per (LoadBalancer,
+  // TargetGroup); an alarm scoped to LoadBalancer alone never gets datapoints.
+  // Concrete type (not the interface) so `targetGroupFullName` is available.
+  targetGroup: elbv2.ApplicationTargetGroup;
   // API Gateway
   wsApiId: string;
   // Container stack references
@@ -1053,6 +1058,10 @@ export class ObservabilityStack extends cdk.Stack {
     props: ObservabilityStackProps,
   ): void {
     const albFullName = props.alb.loadBalancerFullName;
+    // HealthyHostCount / UnHealthyHostCount are per-target-group metrics — both
+    // the LoadBalancer AND TargetGroup dimensions are required or CloudWatch
+    // publishes no datapoints for the alarm.
+    const tgFullName = props.targetGroup.targetGroupFullName;
 
     // -- Load balancer (W28-W29) --
 
@@ -1065,7 +1074,7 @@ export class ObservabilityStack extends cdk.Stack {
         metricName: "UnHealthyHostCount",
         statistic: "Maximum",
         period: cdk.Duration.minutes(1),
-        dimensionsMap: { LoadBalancer: albFullName },
+        dimensionsMap: { LoadBalancer: albFullName, TargetGroup: tgFullName },
       }),
       threshold: 0,
       evaluationPeriods: 5,
@@ -1737,7 +1746,7 @@ def handler(event, _ctx):
         metricName: "HealthyHostCount",
         statistic: "Minimum",
         period: cdk.Duration.minutes(1),
-        dimensionsMap: { LoadBalancer: albFullName },
+        dimensionsMap: { LoadBalancer: albFullName, TargetGroup: tgFullName },
       }),
       threshold: 0,
       evaluationPeriods: 1,

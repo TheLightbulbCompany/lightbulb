@@ -5,8 +5,8 @@ import type { AgentSession } from "@/hooks/useAgentSessions";
 
 function makeSessions(): AgentSession[] {
   return [
-    { sessionId: "11111111-1111-4111-8111-111111111111", key: "k1", label: "Taxes", updatedAt: 2 },
-    { sessionId: "22222222-2222-4222-8222-222222222222", key: "k2", label: "Trip plan", updatedAt: 1 },
+    { sessionId: "11111111-1111-4111-8111-111111111111", key: "k1", label: "Taxes", rawLabel: "Taxes", updatedAt: 2 },
+    { sessionId: "22222222-2222-4222-8222-222222222222", key: "k2", label: "Trip plan", rawLabel: "Trip plan", updatedAt: 1 },
   ];
 }
 
@@ -65,7 +65,7 @@ describe("SessionList", () => {
     const onSelect = vi.fn();
     render(
       <SessionList
-        sessions={[{ sessionId: null, key: "agent:a:u", label: "General" }]}
+        sessions={[{ sessionId: null, key: "agent:a:u", label: "General", rawLabel: "General" }]}
         activeSessionId={null}
         onSelect={onSelect}
         onNew={vi.fn()}
@@ -127,7 +127,7 @@ describe("SessionList", () => {
   it("offers no rename affordance on the General row", () => {
     render(
       <SessionList
-        sessions={[{ sessionId: null, key: "agent:a:u", label: "General" }]}
+        sessions={[{ sessionId: null, key: "agent:a:u", label: "General", rawLabel: "General" }]}
         activeSessionId={null}
         onSelect={vi.fn()}
         onNew={vi.fn()}
@@ -181,6 +181,35 @@ describe("SessionList", () => {
       input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
       input.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
     });
+    expect(onRename).not.toHaveBeenCalled();
+  });
+
+  it("seeds the rename editor from the UNTRUNCATED title, not the display label", () => {
+    const longTitle = "a".repeat(60);
+    const onRename = vi.fn();
+    render(
+      <SessionList
+        sessions={[
+          {
+            sessionId: "33333333-3333-4333-8333-333333333333",
+            key: "k3",
+            label: `${longTitle.slice(0, 48)}…`,
+            rawLabel: longTitle,
+          },
+        ]}
+        activeSessionId={null}
+        onSelect={vi.fn()}
+        onNew={vi.fn()}
+        onRename={onRename}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^Rename/ }));
+    const input = screen.getByRole("textbox");
+    // Editing must start from the full title — committing the truncated
+    // display copy would persist the ellipsis'd string as the real name.
+    expect((input as HTMLInputElement).value).toBe(longTitle);
+    // And saving the unchanged full title is a no-op, not a rename.
+    fireEvent.keyDown(input, { key: "Enter" });
     expect(onRename).not.toHaveBeenCalled();
   });
 

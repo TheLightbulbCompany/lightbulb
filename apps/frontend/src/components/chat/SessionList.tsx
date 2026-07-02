@@ -41,7 +41,9 @@ export function SessionList({
 
   const openEditor = (s: AgentSession): void => {
     editorClosedRef.current = false;
-    setEditing({ key: s.key, value: s.label });
+    // Seed from the untruncated title — s.label is display-truncated and
+    // committing it would persist the ellipsis'd string as the real name.
+    setEditing({ key: s.key, value: s.rawLabel });
   };
 
   const cancelRename = (): void => {
@@ -54,7 +56,7 @@ export function SessionList({
     editorClosedRef.current = true;
     const value = editing?.value.trim() ?? "";
     setEditing(null);
-    if (value && value !== s.label) onRename?.(s, value);
+    if (value && value !== s.rawLabel) onRename?.(s, value);
   };
 
   return (

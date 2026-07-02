@@ -247,6 +247,24 @@ describe("useAgentChat — per-session cache integrity on session switch", () =>
     expect(result.current.historyTruncated).toBe(false);
   });
 
+  it("sending a message does NOT clear historyTruncated — the older messages are still missing", async () => {
+    sendReq.mockReset().mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+      if (method === "chat.history" && params?.sessionKey === GENERAL_KEY) {
+        return { ...generalHistory(), truncated: true };
+      }
+      return { messages: [] };
+    });
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    const { result } = renderHook(() => useAgentChat("agent-X", "user-1"));
+    await waitFor(() => {
+      expect(result.current.historyTruncated).toBe(true);
+    });
+    await act(async () => {
+      await result.current.sendMessage("hello again");
+    });
+    expect(result.current.historyTruncated).toBe(true);
+  });
+
   it("a failed history fetch is retried on the next visit instead of latching the session blank", async () => {
     let failNext = true;
     sendReq.mockReset().mockImplementation(async (method: string, params?: Record<string, unknown>) => {

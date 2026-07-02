@@ -343,7 +343,8 @@
   color: #8a8578;
   cursor: pointer;
 }
-.session-row:hover .session-rename {
+.session-row:hover .session-rename,
+.session-row:focus-within .session-rename {
   display: flex;
 }
 .session-rename:hover {

@@ -15,7 +15,10 @@ export interface AgentSession {
   sessionId: string | null;
   /** The full OpenClaw session key. */
   key: string;
+  /** Display label — truncated to 48 chars. Seed edits from rawLabel. */
   label: string;
+  /** Untruncated source of `label`; what a rename editor must start from. */
+  rawLabel: string;
   updatedAt?: number;
   totalTokens?: number;
   // Per-session model/effort overrides sessions.list reports (all optional —
@@ -62,12 +65,18 @@ function modelControlsOf(row: RawSessionRow): Pick<
   };
 }
 
-function labelFor(row: RawSessionRow, sessionId: string): string {
+function labelsFor(
+  row: RawSessionRow,
+  sessionId: string,
+): { label: string; rawLabel: string } {
   // A user-set label (sessions.patch {label}) always wins over derived titles.
   const raw = (row.label || row.derivedTitle || row.title || row.lastMessage?.text || "").trim();
-  if (raw) return raw.length > 48 ? `${raw.slice(0, 48)}…` : raw;
   // Never blank — fall back to a short id so the row is always clickable.
-  return `Session ${sessionId.slice(0, 8)}`;
+  const rawLabel = raw || `Session ${sessionId.slice(0, 8)}`;
+  // Display copy is truncated; rawLabel stays intact so a rename editor never
+  // starts from (and then persists) an ellipsis-truncated string.
+  const label = rawLabel.length > 48 ? `${rawLabel.slice(0, 48)}…` : rawLabel;
+  return { label, rawLabel };
 }
 
 /**
@@ -122,7 +131,7 @@ export function useAgentSessions(
       out.push({
         sessionId,
         key: row.key,
-        label: labelFor(row, sessionId),
+        ...labelsFor(row, sessionId),
         updatedAt: row.updatedAt,
         totalTokens: row.totalTokens,
         ...modelControlsOf(row),
@@ -142,6 +151,7 @@ export function useAgentSessions(
         sessionId: null,
         key: generalRow.key,
         label: "General",
+        rawLabel: "General",
         ...modelControlsOf(generalRow),
       });
     }

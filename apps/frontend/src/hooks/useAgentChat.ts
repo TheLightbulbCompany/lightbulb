@@ -1681,10 +1681,10 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       const key = agentIdRef.current
         ? `${agentIdRef.current}:${sessionName}:${activeSessionIdRef.current ?? ""}`
         : null;
-      if (key) {
-        _needsBootstrap.delete(key);
-        _truncatedHistory.delete(key);
-      }
+      // Sending clears only the bootstrap hint — NOT _truncatedHistory: the
+      // send doesn't refetch history, so the loaded window is still missing
+      // its trimmed older messages and the banner must stay.
+      if (key) _needsBootstrap.delete(key);
 
       // Side-channel `/btw` (or `/side`): a detached, non-blocking aside that
       // runs alongside the main turn rather than queuing behind it. Send it

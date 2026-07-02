@@ -130,6 +130,23 @@ describe("useAgentSessions — filtered per-agent 4-part rows", () => {
       "11111111-1111-4111-8111-111111111111",
     ]);
   });
+  it("carries the untruncated title as rawLabel alongside the truncated display label", async () => {
+    const longTitle = "b".repeat(60);
+    useGatewayRpc.mockReturnValue(
+      rpcReturn([
+        {
+          key: "agent:agent-x:user-1:11111111-1111-4111-8111-111111111111",
+          derivedTitle: longTitle,
+          updatedAt: 200,
+        },
+      ]),
+    );
+    const { useAgentSessions } = await import("@/hooks/useAgentSessions");
+    const { result } = renderHook(() => useAgentSessions("agent-x", "user-1"));
+    expect(result.current.sessions[0].label).toBe(`${longTitle.slice(0, 48)}…`);
+    expect(result.current.sessions[0].rawLabel).toBe(longTitle);
+  });
+
   it("prefers a user-set label over derived titles", async () => {
     useGatewayRpc.mockReturnValue(
       rpcReturn([

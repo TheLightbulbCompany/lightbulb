@@ -223,6 +223,30 @@ describe("useAgentChat — per-session cache integrity on session switch", () =>
     });
   });
 
+  it("surfaces historyTruncated when the backend trimmed the payload to fit the frame limit", async () => {
+    sendReq.mockReset().mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+      if (method === "chat.history" && params?.sessionKey === GENERAL_KEY) {
+        return { ...generalHistory(), truncated: true };
+      }
+      return { messages: [] };
+    });
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    const { result } = renderHook(() => useAgentChat("agent-X", "user-1"));
+    await waitFor(() => {
+      expect(showsGeneralHistory(result.current.renderItems)).toBe(true);
+    });
+    expect(result.current.historyTruncated).toBe(true);
+
+    // A session whose history was NOT trimmed reports false.
+    act(() => {
+      result.current.newSession();
+    });
+    await waitFor(() => {
+      expect(result.current.renderItems).toHaveLength(0);
+    });
+    expect(result.current.historyTruncated).toBe(false);
+  });
+
   it("a failed history fetch is retried on the next visit instead of latching the session blank", async () => {
     let failNext = true;
     sendReq.mockReset().mockImplementation(async (method: string, params?: Record<string, unknown>) => {

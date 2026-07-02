@@ -159,6 +159,8 @@ export interface UseAgentChatReturn {
   isConnected: boolean;
   isLoadingHistory: boolean;
   needsBootstrap: boolean;
+  /** The displayed history was trimmed to fit the transport frame limit. */
+  historyTruncated: boolean;
   queuedMessages: QueuedMessage[];
   removeQueuedMessage: (id: string) => void;
   clearQueue: () => void;
@@ -182,6 +184,10 @@ export interface UseAgentChatReturn {
 
 const _messageCache = new Map<string, HistoryMessage[]>();
 const _needsBootstrap = new Set<string>();
+// Sessions whose last chat.history response was trimmed by the backend to fit
+// the WS frame limit (payload carried `truncated: true`) — the transcript
+// starts mid-conversation and the UI says so.
+const _truncatedHistory = new Set<string>();
 
 /**
  * The persisted transcript, bound to the active session's cache key.
@@ -700,8 +706,13 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     Promise.resolve().then(() => setHistoryLoadState("loading"));
     sendReq("chat.history", { sessionKey, limit: 200 })
       .then((result: unknown) => {
-        const historyResult = result as { messages?: HistoryMessage[] };
+        const historyResult = result as { messages?: HistoryMessage[]; truncated?: boolean };
         historyLoadedRef.current.add(cacheKey);
+        if (historyResult?.truncated === true) {
+          _truncatedHistory.add(cacheKey);
+        } else {
+          _truncatedHistory.delete(cacheKey);
+        }
         setHistoryLoadState("done");
         const raw = Array.isArray(historyResult?.messages) ? historyResult.messages : [];
         const projected = projectChatHistoryMessages(raw);
@@ -1670,7 +1681,10 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       const key = agentIdRef.current
         ? `${agentIdRef.current}:${sessionName}:${activeSessionIdRef.current ?? ""}`
         : null;
-      if (key) _needsBootstrap.delete(key);
+      if (key) {
+        _needsBootstrap.delete(key);
+        _truncatedHistory.delete(key);
+      }
 
       // Side-channel `/btw` (or `/side`): a detached, non-blocking aside that
       // runs alongside the main turn rather than queuing behind it. Send it
@@ -1973,6 +1987,8 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
 
   const renderGroups = useMemo<RenderGroup[]>(() => groupBySide(renderItems), [renderItems]);
 
+  const historyTruncated = !!(cacheKey && _truncatedHistory.has(cacheKey));
+
   const needsBootstrap = !!(
     cacheKey &&
     _needsBootstrap.has(cacheKey) &&
@@ -1991,6 +2007,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     isConnected,
     isLoadingHistory,
     needsBootstrap,
+    historyTruncated,
     queuedMessages,
     removeQueuedMessage,
     clearQueue,

@@ -2,6 +2,7 @@
 
 import { useMemo } from "react";
 import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
+import { notifyApiError } from "@/lib/notify";
 
 // Mirror of the backend guard (websocket_chat.py _SESSION_ID_RE): a strict
 // lowercase RFC-4122 v4. Anything else in the trailing segment is not a
@@ -149,9 +150,15 @@ export function useAgentSessions(
 
   const renameSession = async (key: string, label: string): Promise<void> => {
     // sessions.patch {label} is OpenClaw's user-set session name; it wins over
-    // derivedTitle in labelFor. Revalidate so the sidebar reflects it.
-    await callRpc("sessions.patch", { key, label });
-    await mutate();
+    // derivedTitle in labelFor. Revalidate so the sidebar reflects it. Failures
+    // surface as a toast — the inline editor has already closed by the time
+    // the RPC settles, so silence would read as a successful rename.
+    try {
+      await callRpc("sessions.patch", { key, label });
+      await mutate();
+    } catch (err) {
+      notifyApiError(err, "Failed to rename session", { dedupeKey: "session-rename" });
+    }
   };
 
   return { sessions, isLoading, mutate, renameSession };

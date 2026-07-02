@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Pencil, Plus } from "lucide-react";
 import type { AgentSession } from "@/hooks/useAgentSessions";
 
@@ -26,6 +26,11 @@ export function SessionList({
   onRename,
 }: SessionListProps): React.JSX.Element {
   const [editing, setEditing] = useState<{ key: string; value: string } | null>(null);
+  // Guards the editor's close: Enter (and Escape) unmount the focused input,
+  // which fires a synchronous blur in real browsers whose handler still sees
+  // the pre-close render's state — without the guard, Enter would commit
+  // twice and Escape's blur would commit the value the user just canceled.
+  const editorClosedRef = useRef(false);
 
   // A just-created session has no sessions.list row until its first message
   // materializes it server-side. Surface it as a placeholder row so clicking
@@ -34,7 +39,19 @@ export function SessionList({
   const activeIsUnmaterialized =
     activeSessionId !== null && !sessions.some((s) => s.sessionId === activeSessionId);
 
+  const openEditor = (s: AgentSession): void => {
+    editorClosedRef.current = false;
+    setEditing({ key: s.key, value: s.label });
+  };
+
+  const cancelRename = (): void => {
+    editorClosedRef.current = true;
+    setEditing(null);
+  };
+
   const commitRename = (s: AgentSession): void => {
+    if (editorClosedRef.current) return;
+    editorClosedRef.current = true;
     const value = editing?.value.trim() ?? "";
     setEditing(null);
     if (value && value !== s.label) onRename?.(s, value);
@@ -43,7 +60,8 @@ export function SessionList({
   return (
     <div className="session-list">
       {activeIsUnmaterialized && (
-        <button type="button" className="session-item active" aria-current="true">
+        /* Static indicator; disabled so keyboard users don't land on a no-op. */
+        <button type="button" className="session-item active" aria-current="true" disabled>
           <span className="session-label">New session</span>
         </button>
       )}
@@ -61,7 +79,7 @@ export function SessionList({
                 onChange={(e) => setEditing({ key: s.key, value: e.target.value })}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") commitRename(s);
-                  if (e.key === "Escape") setEditing(null);
+                  if (e.key === "Escape") cancelRename();
                 }}
                 onBlur={() => commitRename(s)}
                 onClick={(e) => e.stopPropagation()}
@@ -89,7 +107,7 @@ export function SessionList({
                     title="Rename session"
                     onClick={(e) => {
                       e.stopPropagation();
-                      setEditing({ key: s.key, value: s.label });
+                      openEditor(s);
                     }}
                   >
                     <Pencil size={11} />

@@ -3,6 +3,10 @@ import { renderHook } from "@testing-library/react";
 
 const useGatewayRpc = vi.fn();
 const callRpc = vi.fn().mockResolvedValue({});
+const notifyApiError = vi.fn();
+vi.mock("@/lib/notify", () => ({
+  notifyApiError: (...args: unknown[]): unknown => notifyApiError(...args),
+}));
 vi.mock("@/hooks/useGatewayRpc", () => ({
   useGatewayRpc: (...args: unknown[]): unknown => useGatewayRpc(...args),
   useGatewayRpcMutation: (): typeof callRpc => callRpc,
@@ -34,6 +38,7 @@ describe("useAgentSessions — filtered per-agent 4-part rows", () => {
     vi.resetModules();
     useGatewayRpc.mockReset();
     callRpc.mockClear().mockResolvedValue({});
+    notifyApiError.mockClear();
   });
 
   it("returns only this agent's user-owned 4-part sessions with a label", async () => {
@@ -139,6 +144,20 @@ describe("useAgentSessions — filtered per-agent 4-part rows", () => {
     const { useAgentSessions } = await import("@/hooks/useAgentSessions");
     const { result } = renderHook(() => useAgentSessions("agent-x", "user-1"));
     expect(result.current.sessions[0].label).toBe("Taxes 2026");
+  });
+
+  it("a failed rename surfaces a toast instead of rejecting silently", async () => {
+    useGatewayRpc.mockReturnValue(rpcReturn([]));
+    callRpc.mockRejectedValueOnce(new Error("gateway dropped"));
+    const { useAgentSessions } = await import("@/hooks/useAgentSessions");
+    const { result } = renderHook(() => useAgentSessions("agent-x", "user-1"));
+    // Must resolve (not reject) — the caller fire-and-forgets it.
+    await result.current.renameSession("agent:agent-x:user-1:11111111-1111-4111-8111-111111111111", "X");
+    expect(notifyApiError).toHaveBeenCalledWith(
+      expect.any(Error),
+      "Failed to rename session",
+      expect.anything(),
+    );
   });
 
   it("renameSession patches the label and revalidates", async () => {

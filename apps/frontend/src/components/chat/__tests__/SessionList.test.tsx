@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, act } from "@testing-library/react";
 import { SessionList } from "@/components/chat/SessionList";
 import type { AgentSession } from "@/hooks/useAgentSessions";
 
@@ -135,6 +135,53 @@ describe("SessionList", () => {
       />,
     );
     expect(screen.queryByRole("button", { name: "Rename General" })).toBeNull();
+  });
+
+  it("Enter followed by the unmount blur commits exactly once", () => {
+    const onRename = vi.fn();
+    render(
+      <SessionList
+        sessions={makeSessions()}
+        activeSessionId={null}
+        onSelect={vi.fn()}
+        onNew={vi.fn()}
+        onRename={onRename}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Rename Taxes" }));
+    const input = screen.getByRole("textbox", { name: "Rename session Taxes" });
+    fireEvent.change(input, { target: { value: "Taxes 2026" } });
+    // Real browsers fire a blur when the focused input unmounts on commit; both
+    // handlers then run against the SAME pre-close closure. Dispatching both in
+    // one act batch reproduces that: state updates don't flush between them.
+    act(() => {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      input.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    });
+    expect(onRename).toHaveBeenCalledTimes(1);
+  });
+
+  it("the blur after Escape does not commit the canceled value", () => {
+    const onRename = vi.fn();
+    render(
+      <SessionList
+        sessions={makeSessions()}
+        activeSessionId={null}
+        onSelect={vi.fn()}
+        onNew={vi.fn()}
+        onRename={onRename}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Rename Taxes" }));
+    const input = screen.getByRole("textbox", { name: "Rename session Taxes" });
+    fireEvent.change(input, { target: { value: "canceled edit" } });
+    // Same stale-closure shape as the Enter case: the blur that follows the
+    // Escape-triggered unmount must not commit the value the user canceled.
+    act(() => {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      input.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    });
+    expect(onRename).not.toHaveBeenCalled();
   });
 
   it("escape cancels a rename without committing", () => {

@@ -174,6 +174,7 @@ export class Isol8Stage extends cdk.Stage {
         backendService: service.service,
         backendLogGroupName: `/ecs/isol8-${env}`,
         alb: network.alb,
+        targetGroup: network.targetGroup,
         wsApiId: api.wsApiId,
         cluster: container.cluster,
         efsFileSystem: container.efsFileSystem,

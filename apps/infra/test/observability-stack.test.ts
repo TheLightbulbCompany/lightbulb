@@ -5,7 +5,7 @@ import * as efs from "aws-cdk-lib/aws-efs";
 import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as rds from "aws-cdk-lib/aws-rds";
-import { Template } from "aws-cdk-lib/assertions";
+import { Match, Template } from "aws-cdk-lib/assertions";
 import {
   ObservabilityStack,
   ObservabilityStackProps,
@@ -94,6 +94,7 @@ describe("ObservabilityStack", () => {
       backendService: service,
       backendLogGroupName: "/ecs/isol8-dev",
       alb,
+      targetGroup: tg,
       wsApiId: "test-ws-api-id",
       cluster,
       efsFileSystem: efsFs,
@@ -171,6 +172,25 @@ describe("ObservabilityStack", () => {
     template.hasResourceProperties("AWS::CloudWatch::Dashboard", {
       DashboardName: "isol8-dev-orr",
     });
+  });
+
+  test("ALB host-count alarms (W28/W48) carry BOTH LoadBalancer and TargetGroup dimensions", () => {
+    // HealthyHostCount / UnHealthyHostCount are per-target-group metrics: an
+    // alarm scoped to LoadBalancer alone receives no datapoints, so W48
+    // (TreatMissingData=breaching) sits in ALARM forever. Guard both alarms so
+    // the TargetGroup dimension cannot be dropped again.
+    for (const alarmName of [
+      "isol8-dev-W48-alb-healthy-hosts-drop",
+      "isol8-dev-W28-alb-unhealthy-hosts",
+    ]) {
+      template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+        AlarmName: alarmName,
+        Dimensions: Match.arrayWith([
+          Match.objectLike({ Name: "LoadBalancer" }),
+          Match.objectLike({ Name: "TargetGroup" }),
+        ]),
+      });
+    }
   });
 
   test("EventBridge rule captures ECS task stopped events", () => {

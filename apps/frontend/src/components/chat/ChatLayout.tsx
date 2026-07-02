@@ -143,7 +143,10 @@ export function ChatLayout({
   // selecting a row here drives the transcript in AgentChatWindow's
   // useAgentChat (same store) — no prop drilling across subtrees.
   const { activeSessionId, newSession, selectSession } = useActiveSession(currentAgentId);
-  const { sessions: agentSessions } = useAgentSessions(currentAgentId, clerkUserId ?? null);
+  const { sessions: agentSessions, renameSession } = useAgentSessions(
+    currentAgentId,
+    clerkUserId ?? null,
+  );
 
   // Header agent-action cluster (next to the file-tree button): pause/resume +
   // inspector/work deep links for the active agent, so the user can act on the
@@ -678,6 +681,9 @@ export function ChatLayout({
                           onNew={() => {
                             newSession();
                             setSidebarOpen(false);
+                          }}
+                          onRename={(s, label) => {
+                            void renameSession(s.key, label);
                           }}
                         />
                       )}

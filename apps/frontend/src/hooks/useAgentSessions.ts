@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
-import { useGatewayRpc } from "@/hooks/useGatewayRpc";
+import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 
 // Mirror of the backend guard (websocket_chat.py _SESSION_ID_RE): a strict
 // lowercase RFC-4122 v4. Anything else in the trailing segment is not a
@@ -32,6 +32,7 @@ export interface AgentSession {
 
 interface RawSessionRow {
   key: string;
+  label?: string;
   derivedTitle?: string;
   title?: string;
   lastMessage?: { text?: string };
@@ -61,7 +62,8 @@ function modelControlsOf(row: RawSessionRow): Pick<
 }
 
 function labelFor(row: RawSessionRow, sessionId: string): string {
-  const raw = (row.derivedTitle || row.title || row.lastMessage?.text || "").trim();
+  // A user-set label (sessions.patch {label}) always wins over derived titles.
+  const raw = (row.label || row.derivedTitle || row.title || row.lastMessage?.text || "").trim();
   if (raw) return raw.length > 48 ? `${raw.slice(0, 48)}…` : raw;
   // Never blank — fall back to a short id so the row is always clickable.
   return `Session ${sessionId.slice(0, 8)}`;
@@ -77,7 +79,13 @@ function labelFor(row: RawSessionRow, sessionId: string): string {
 export function useAgentSessions(
   agentId: string | null,
   userId: string | null,
-): { sessions: AgentSession[]; isLoading: boolean; mutate: () => Promise<unknown> } {
+): {
+  sessions: AgentSession[];
+  isLoading: boolean;
+  mutate: () => Promise<unknown>;
+  renameSession: (key: string, label: string) => Promise<void>;
+} {
+  const callRpc = useGatewayRpcMutation();
   const { data, isLoading, mutate } = useGatewayRpc<
     { sessions?: RawSessionRow[] } | RawSessionRow[]
   >(
@@ -139,5 +147,12 @@ export function useAgentSessions(
     return out;
   }, [data, agentId, userId]);
 
-  return { sessions, isLoading, mutate };
+  const renameSession = async (key: string, label: string): Promise<void> => {
+    // sessions.patch {label} is OpenClaw's user-set session name; it wins over
+    // derivedTitle in labelFor. Revalidate so the sidebar reflects it.
+    await callRpc("sessions.patch", { key, label });
+    await mutate();
+  };
+
+  return { sessions, isLoading, mutate, renameSession };
 }

@@ -74,4 +74,85 @@ describe("SessionList", () => {
     fireEvent.click(screen.getByText("General"));
     expect(onSelect).toHaveBeenCalledWith(null);
   });
+
+  it("shows a placeholder row when the active session has no sessions.list row yet", () => {
+    render(
+      <SessionList
+        sessions={makeSessions()}
+        activeSessionId="99999999-9999-4999-8999-999999999999"
+        onSelect={vi.fn()}
+        onNew={vi.fn()}
+      />,
+    );
+    // The placeholder is the aria-current row; the "+ New session" action is not.
+    const placeholder = screen.getByRole("button", { name: "New session", current: true });
+    expect(placeholder).toBeTruthy();
+  });
+
+  it("does not show the placeholder when the active session is materialized", () => {
+    render(
+      <SessionList
+        sessions={makeSessions()}
+        activeSessionId="11111111-1111-4111-8111-111111111111"
+        onSelect={vi.fn()}
+        onNew={vi.fn()}
+      />,
+    );
+    const buttons = screen.getAllByRole("button", { name: "New session" });
+    expect(buttons).toHaveLength(1);
+    expect(buttons[0].getAttribute("aria-current")).toBeNull();
+  });
+
+  it("renames a named session via the pencil → input → Enter flow", () => {
+    const onRename = vi.fn();
+    render(
+      <SessionList
+        sessions={makeSessions()}
+        activeSessionId={null}
+        onSelect={vi.fn()}
+        onNew={vi.fn()}
+        onRename={onRename}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Rename Taxes" }));
+    const input = screen.getByRole("textbox", { name: "Rename session Taxes" });
+    fireEvent.change(input, { target: { value: "Taxes 2026" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onRename).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "11111111-1111-4111-8111-111111111111" }),
+      "Taxes 2026",
+    );
+  });
+
+  it("offers no rename affordance on the General row", () => {
+    render(
+      <SessionList
+        sessions={[{ sessionId: null, key: "agent:a:u", label: "General" }]}
+        activeSessionId={null}
+        onSelect={vi.fn()}
+        onNew={vi.fn()}
+        onRename={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "Rename General" })).toBeNull();
+  });
+
+  it("escape cancels a rename without committing", () => {
+    const onRename = vi.fn();
+    render(
+      <SessionList
+        sessions={makeSessions()}
+        activeSessionId={null}
+        onSelect={vi.fn()}
+        onNew={vi.fn()}
+        onRename={onRename}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Rename Taxes" }));
+    const input = screen.getByRole("textbox", { name: "Rename session Taxes" });
+    fireEvent.change(input, { target: { value: "nope" } });
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(onRename).not.toHaveBeenCalled();
+    expect(screen.queryByRole("textbox")).toBeNull();
+  });
 });

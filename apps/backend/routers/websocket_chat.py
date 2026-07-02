@@ -136,6 +136,43 @@ def _filter_sessions_for_user(result, user_id: str):
     return {**result, "sessions": kept}
 
 
+# API Gateway's Management API rejects PostToConnection payloads over 128KiB
+# (413), and the whole res frame counts. Budget the chat.history payload well
+# below that so the envelope ({"type":"res","id":...}) always fits.
+_WS_FRAME_BUDGET_BYTES = 110_000
+
+
+def _trim_chat_history_for_frame(result, budget: int = _WS_FRAME_BUDGET_BYTES):
+    """Drop the OLDEST chat.history messages until the payload fits one frame.
+
+    OpenClaw caps chat.history by its own byte ceiling, but that ceiling is
+    above API Gateway's frame limit — a tool-heavy session's history 413s on
+    the push and the browser renders a blank transcript. Bisect for the
+    longest newest-suffix that fits and flag the result ``truncated``.
+    """
+    if not isinstance(result, dict):
+        return result
+    messages = result.get("messages")
+    if not isinstance(messages, list):
+        return result
+
+    def _size(candidate) -> int:
+        return len(json.dumps(candidate, separators=(",", ":"), default=str).encode())
+
+    if _size(result) <= budget:
+        return result
+
+    # Smallest drop count d such that messages[d:] fits.
+    lo, hi = 0, len(messages)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if _size({**result, "messages": messages[mid:], "truncated": True}) <= budget:
+            hi = mid
+        else:
+            lo = mid + 1
+    return {**result, "messages": messages[lo:], "truncated": True}
+
+
 def require_ws_internal_caller(
     x_isol8_ws_internal: Optional[str] = Header(None, alias="x-isol8-ws-internal"),
 ) -> None:
@@ -1517,6 +1554,9 @@ async def _process_rpc_background(
         # session on the shared per-owner box (paperclip/cron/other members).
         if method == "sessions.list":
             result = _filter_sessions_for_user(result, user_id)
+        # Keep huge histories deliverable — see _trim_chat_history_for_frame.
+        if method == "chat.history":
+            result = _trim_chat_history_for_frame(result)
         management_api.send_message(
             connection_id,
             {

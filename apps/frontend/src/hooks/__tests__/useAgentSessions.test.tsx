@@ -2,12 +2,15 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook } from "@testing-library/react";
 
 const useGatewayRpc = vi.fn();
+const callRpc = vi.fn().mockResolvedValue({});
 vi.mock("@/hooks/useGatewayRpc", () => ({
   useGatewayRpc: (...args: unknown[]): unknown => useGatewayRpc(...args),
+  useGatewayRpcMutation: (): typeof callRpc => callRpc,
 }));
 
 interface SessionRow {
   key: string;
+  label?: string;
   derivedTitle?: string;
   title?: string;
   updatedAt?: number;
@@ -30,6 +33,7 @@ describe("useAgentSessions — filtered per-agent 4-part rows", () => {
   beforeEach(() => {
     vi.resetModules();
     useGatewayRpc.mockReset();
+    callRpc.mockClear().mockResolvedValue({});
   });
 
   it("returns only this agent's user-owned 4-part sessions with a label", async () => {
@@ -120,5 +124,34 @@ describe("useAgentSessions — filtered per-agent 4-part rows", () => {
       null, // General still surfaces
       "11111111-1111-4111-8111-111111111111",
     ]);
+  });
+  it("prefers a user-set label over derived titles", async () => {
+    useGatewayRpc.mockReturnValue(
+      rpcReturn([
+        {
+          key: "agent:agent-x:user-1:11111111-1111-4111-8111-111111111111",
+          label: "Taxes 2026",
+          derivedTitle: "help me with my taxes",
+          updatedAt: 200,
+        },
+      ]),
+    );
+    const { useAgentSessions } = await import("@/hooks/useAgentSessions");
+    const { result } = renderHook(() => useAgentSessions("agent-x", "user-1"));
+    expect(result.current.sessions[0].label).toBe("Taxes 2026");
+  });
+
+  it("renameSession patches the label and revalidates", async () => {
+    useGatewayRpc.mockReturnValue(rpcReturn([]));
+    const { useAgentSessions } = await import("@/hooks/useAgentSessions");
+    const { result } = renderHook(() => useAgentSessions("agent-x", "user-1"));
+    await result.current.renameSession(
+      "agent:agent-x:user-1:11111111-1111-4111-8111-111111111111",
+      "Taxes 2026",
+    );
+    expect(callRpc).toHaveBeenCalledWith("sessions.patch", {
+      key: "agent:agent-x:user-1:11111111-1111-4111-8111-111111111111",
+      label: "Taxes 2026",
+    });
   });
 });

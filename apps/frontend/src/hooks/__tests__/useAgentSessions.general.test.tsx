@@ -4,6 +4,7 @@ import { renderHook } from "@testing-library/react";
 const useGatewayRpc = vi.fn();
 vi.mock("@/hooks/useGatewayRpc", () => ({
   useGatewayRpc: (...args: unknown[]): unknown => useGatewayRpc(...args),
+  useGatewayRpcMutation: (): ((...args: unknown[]) => Promise<unknown>) => async () => ({}),
 }));
 
 interface SessionRow { key: string; updatedAt?: number }

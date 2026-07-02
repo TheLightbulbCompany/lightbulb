@@ -99,6 +99,45 @@ async def test_call_rpc_none_token_raises_container_not_running():
 
 
 @pytest.mark.asyncio
+async def test_revoke_provider_missing_operator_seed_skips_network():
+    rt = OpenClawRuntime()
+    container = {"gateway_token": "tok-1"}  # no operator_priv_key_enc
+    with (
+        patch(
+            "core.runtime.openclaw.adapter._get_ecs",
+            return_value=_mock_ecs(container, "10.0.0.5"),
+        ),
+        patch(
+            "core.runtime.openclaw.adapter.gateway_rpc_oneshot",
+            new=AsyncMock(),
+        ) as oneshot,
+    ):
+        assert await rt.revoke_provider("org_1", provider="openai") is False
+    oneshot.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_revoke_provider_success_path():
+    rt = OpenClawRuntime()
+    container = {"gateway_token": "tok-1", "operator_priv_key_enc": "seed"}
+    with (
+        patch(
+            "core.runtime.openclaw.adapter._get_ecs",
+            return_value=_mock_ecs(container, "10.0.0.5"),
+        ),
+        patch(
+            "core.runtime.openclaw.adapter.gateway_rpc_oneshot",
+            new=AsyncMock(return_value={"ok": True}),
+        ) as oneshot,
+    ):
+        assert await rt.revoke_provider("org_1", provider="openai") is True
+    kwargs = oneshot.call_args.kwargs
+    assert kwargs["method"] == "models.authLogout"
+    assert kwargs["params"] == {"provider": "openai"}
+    assert kwargs["token"] == "tok-1"
+
+
+@pytest.mark.asyncio
 async def test_revoke_provider_never_raises_and_returns_false_when_cold():
     rt = OpenClawRuntime()
     with patch("core.runtime.openclaw.adapter._get_ecs", return_value=_mock_ecs(None, None)):

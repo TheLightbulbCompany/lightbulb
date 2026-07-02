@@ -112,9 +112,30 @@ class OpenClawRuntime:
         transient RPC failure is logged and self-heals on reprovision.
         """
         try:
-            await self.call_rpc(owner_id, "models.authLogout", {"provider": provider}, fresh=True)
-        except ContainerNotRunningError:
-            return False  # cold container — nothing live to clear
+            container, ip = await _get_ecs().resolve_running_container(owner_id)
+            if not container or not ip:
+                return False  # cold container — nothing live to clear
+            token = container.get("gateway_token")
+            if not token or not container.get("operator_priv_key_enc"):
+                # A row never paired with a signed operator device (or missing
+                # its gateway token) cannot complete the signed handshake, so
+                # skip the live logout without any network I/O — the EFS
+                # seed-file delete remains the authoritative cleanup.
+                logger.warning(
+                    "missing gateway_token/operator seed for %s — skipping live logout",
+                    owner_id,
+                )
+                return False
+            await gateway_rpc_oneshot(
+                ip,
+                owner_id=owner_id,
+                token=token,
+                method="models.authLogout",
+                params={"provider": provider},
+                open_timeout=10.0,
+                recv_timeout=10.0,
+                rpc_timeout=10.0,
+            )
         except Exception as exc:  # noqa: BLE001 — best-effort
             # Neutral wording: this branch catches both container-resolution
             # failures and the RPC itself failing.

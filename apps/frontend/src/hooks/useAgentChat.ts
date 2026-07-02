@@ -809,6 +809,21 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         !isUntaggedError &&
         frameSessionId !== activeSessionIdRef.current
       ) {
+        // A terminal frame for ANOTHER session of this agent means that
+        // session's server-side transcript changed while it wasn't displayed.
+        // Never touch the live view — but drop the background session's
+        // history cache so switching back refetches instead of rendering the
+        // stale pre-run messages (the reply would otherwise be invisible
+        // until a full page reload).
+        if (msg.type === "done" || msg.type === "error" || msg.type === "run_ended") {
+          const staleKey = agentIdRef.current
+            ? `${agentIdRef.current}:${sessionName}:${frameSessionId ?? ""}`
+            : null;
+          if (staleKey) {
+            _messageCache.delete(staleKey);
+            historyLoadedRef.current.delete(staleKey);
+          }
+        }
         return;
       }
 

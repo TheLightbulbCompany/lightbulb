@@ -177,6 +177,21 @@ describe("useAgentSessions — filtered per-agent 4-part rows", () => {
     );
   });
 
+  it("a failed revalidation after a successful patch does NOT toast a false failure", async () => {
+    const failingMutate = vi.fn().mockRejectedValue(new Error("revalidate hiccup"));
+    useGatewayRpc.mockReturnValue({
+      data: { sessions: [] },
+      error: undefined,
+      isLoading: false,
+      mutate: failingMutate,
+    });
+    const { useAgentSessions } = await import("@/hooks/useAgentSessions");
+    const { result } = renderHook(() => useAgentSessions("agent-x", "user-1"));
+    await result.current.renameSession("agent:agent-x:user-1:11111111-1111-4111-8111-111111111111", "X");
+    expect(failingMutate).toHaveBeenCalled();
+    expect(notifyApiError).not.toHaveBeenCalled();
+  });
+
   it("renameSession patches the label and revalidates", async () => {
     useGatewayRpc.mockReturnValue(rpcReturn([]));
     const { useAgentSessions } = await import("@/hooks/useAgentSessions");

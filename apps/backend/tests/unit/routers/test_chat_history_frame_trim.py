@@ -12,6 +12,7 @@ import os
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 from routers.websocket_chat import (  # noqa: E402
+    _SESSION_PREVIEW_MAX_CHARS,
     _WS_FRAME_BUDGET_BYTES,
     _fit_rpc_result_for_frame,
     _trim_chat_history_for_frame,
@@ -101,3 +102,21 @@ def test_fit_delegates_chat_history_to_the_trim():
     out = _fit_rpc_result_for_frame("chat.history", result)
     assert out["truncated"] is True
     assert _payload_size(out) <= _WS_FRAME_BUDGET_BYTES
+
+
+def test_fit_caps_sessions_list_previews_so_many_sessions_stay_frame_sized():
+    # 50 rows x 10KB previews = ~500KB unslimmed; the UI renders <=48 chars of
+    # each preview, so capping keeps the sidebar read deliverable.
+    rows = [
+        {"key": f"agent:a1:user_1:0000000{i}", "lastMessage": {"text": "y" * 10_000}, "updatedAt": i} for i in range(50)
+    ]
+    out = _fit_rpc_result_for_frame("sessions.list", {"sessions": rows})
+    assert _payload_size(out) <= _WS_FRAME_BUDGET_BYTES
+    assert all(len(r["lastMessage"]["text"]) == _SESSION_PREVIEW_MAX_CHARS for r in out["sessions"])
+    # Non-preview fields are untouched.
+    assert out["sessions"][7]["updatedAt"] == 7
+
+
+def test_fit_leaves_short_preview_rows_alone():
+    result = {"sessions": [{"key": "agent:a1:user_1", "lastMessage": {"text": "short"}}]}
+    assert _fit_rpc_result_for_frame("sessions.list", result) is result

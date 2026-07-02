@@ -157,7 +157,9 @@ export function SessionsPanel() {
     ) => {
       try {
         await callRpc("sessions.patch", { key, ...patch });
-        mutate();
+        // Unawaited revalidation: a rejection here must not become an
+        // unhandled promise rejection (the patch already persisted).
+        void mutate().catch(() => {});
       } catch (err) {
         console.error("Failed to patch session:", err);
       }
@@ -173,7 +175,7 @@ export function SessionsPanel() {
       if (!confirmed) return;
       try {
         await callRpc("sessions.delete", { key, deleteTranscript: true });
-        mutate();
+        void mutate().catch(() => {});
       } catch (err) {
         console.error("Failed to delete session:", err);
       }

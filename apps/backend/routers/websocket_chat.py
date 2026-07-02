@@ -180,16 +180,41 @@ def _trim_chat_history_for_frame(result, budget: int = _WS_FRAME_BUDGET_BYTES):
 # sessions.patch echoes ~180KB (entry + model catalog) on some containers.
 _RPC_RESULT_DISCARDED_METHODS = {"sessions.patch"}
 
+# sessions.list rows carry lastMessage previews of unbounded length; the UI
+# renders at most a short label from them. Cap generously so a many-session
+# user's sidebar read can't outgrow the frame limit.
+_SESSION_PREVIEW_MAX_CHARS = 280
+
+
+def _slim_sessions_list_previews(result):
+    """Cap per-row lastMessage previews so sessions.list stays frame-sized."""
+    if not isinstance(result, dict) or not isinstance(result.get("sessions"), list):
+        return result
+    slimmed = []
+    changed = False
+    for row in result["sessions"]:
+        lm = row.get("lastMessage") if isinstance(row, dict) else None
+        text = lm.get("text") if isinstance(lm, dict) else None
+        if isinstance(text, str) and len(text) > _SESSION_PREVIEW_MAX_CHARS:
+            slimmed.append({**row, "lastMessage": {**lm, "text": text[:_SESSION_PREVIEW_MAX_CHARS]}})
+            changed = True
+        else:
+            slimmed.append(row)
+    return {**result, "sessions": slimmed} if changed else result
+
 
 def _fit_rpc_result_for_frame(method: str, result, budget: int = _WS_FRAME_BUDGET_BYTES):
     """Keep any RPC res frame deliverable through the Management API.
 
-    chat.history gets a content-aware trim; discarded-payload methods get a
-    marker stub; anything else oversized passes through with a warning so we
-    learn about the next offender from logs instead of silent blank UIs.
+    chat.history gets a content-aware trim; sessions.list gets its previews
+    capped; discarded-payload methods get a marker stub; anything else
+    oversized passes through with a warning so we learn about the next
+    offender from logs instead of silent blank UIs.
     """
     if method == "chat.history":
         return _trim_chat_history_for_frame(result, budget)
+    if method == "sessions.list":
+        result = _slim_sessions_list_previews(result)
     size = len(json.dumps(result, separators=(",", ":"), default=str).encode())
     if size <= budget:
         return result

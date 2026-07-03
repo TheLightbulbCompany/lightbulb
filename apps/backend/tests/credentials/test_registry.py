@@ -283,6 +283,24 @@ def test_attio_is_remote_mcp_oauth_provider():
     assert p.mcp_remote.transport == "streamable-http"
 
 
+def test_posthog_mcp_remote_uses_cli_mode_and_list_timeout():
+    # PostHog's raw toolset (500+ tools, ~657K tokens of schemas) overflows a
+    # 272K-context model on its own, so the registry MUST pin ?mode=cli — the
+    # server then exposes one exec tool with on-demand schema discovery. The
+    # published block must also carry requestTimeoutMs: without an explicit
+    # request timeout OpenClaw caps catalog tools/list at 1.5s, which silently
+    # excludes the server under CPU contention.
+    p = registry.get_provider("posthog")
+    assert p.mcp_remote is not None
+    assert p.mcp_remote.url == "https://mcp.posthog.com/mcp?mode=cli"
+    assert p.mcp_remote.server_block() == {
+        "transport": "streamable-http",
+        "url": "https://mcp.posthog.com/mcp?mode=cli",
+        "auth": "oauth",
+        "requestTimeoutMs": 60000,
+    }
+
+
 def test_skill_spec_model_shape():
     # A SkillSpec carries what a paste-token CLI integration's materializer needs:
     # the skills.entries.<key> it owns, the env var the credential is injected as,

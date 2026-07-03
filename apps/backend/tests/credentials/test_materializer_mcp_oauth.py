@@ -97,7 +97,12 @@ def test_write_seeds_sdk_store_and_publishes_server_block(monkeypatch, tmp_path,
         (
             "org_1",
             ["mcp", "servers", "attio"],
-            {"transport": "streamable-http", "url": "https://mcp.attio.com/mcp", "auth": "oauth"},
+            {
+                "transport": "streamable-http",
+                "url": "https://mcp.attio.com/mcp",
+                "auth": "oauth",
+                "requestTimeoutMs": 60000,
+            },
         )
     ]
     assert captured_config["delete"] == []

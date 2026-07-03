@@ -63,8 +63,16 @@ class McpRemote(BaseModel):
     key: str  # the mcp.servers.<key> this integration owns
     url: str
     transport: str
+    # OpenClaw's catalog build caps each server's tools/list at a hardcoded 1.5s
+    # UNLESS the server block carries an explicit request timeout — and a remote
+    # server's list can exceed 1.5s whenever the 0.5-vCPU container is under CPU
+    # pressure (e.g. a sibling stdio server's npx cold-start), which silently
+    # excludes the server from the catalog ("failed to start server … -32001").
+    # 60s matches the MCP SDK's default per-request timeout, so runtime tool-call
+    # behavior is unchanged; only the list budget is lifted.
+    request_timeout_ms: int = Field(60_000, alias="requestTimeoutMs")
 
-    def server_block(self) -> dict[str, str]:
+    def server_block(self) -> dict[str, object]:
         """The mcp.servers.<key> block published into the live openclaw.json.
 
         ``auth: "oauth"`` is load-bearing: OpenClaw only attaches the MCP SDK's
@@ -73,7 +81,12 @@ class McpRemote(BaseModel):
         runtime treats the endpoint as a plain remote server, ignores the token
         store, and the server 401s. The materializer write and the reprovision
         rehydration both build the block from here, so they stay identical."""
-        return {"transport": self.transport, "url": self.url, "auth": "oauth"}
+        return {
+            "transport": self.transport,
+            "url": self.url,
+            "auth": "oauth",
+            "requestTimeoutMs": self.request_timeout_ms,
+        }
 
 
 class SkillSpec(BaseModel):

@@ -72,6 +72,8 @@ class McpRemote(BaseModel):
     # behavior is unchanged; only the list budget is lifted.
     request_timeout_ms: int = Field(60_000, alias="requestTimeoutMs")
 
+    model_config = {"populate_by_name": True}
+
     def server_block(self) -> dict[str, object]:
         """The mcp.servers.<key> block published into the live openclaw.json.
 

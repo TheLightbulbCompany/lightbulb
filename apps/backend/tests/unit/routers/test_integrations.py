@@ -452,3 +452,60 @@ class TestIntegrationsRouter:
             )
         app.dependency_overrides.pop(get_current_user, None)
         assert resp.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_put_strips_explicit_nulls_on_unset_shape(self, app, patched_router, auth_override):
+        """A PUT body carrying explicit nulls for the unset shape's keys must not
+        store them: a literal `transport: null` in openclaw.json fails OpenClaw's
+        config schema on hot reload, which bricks the container. The stored entry
+        is rebuilt from the validated model, never the raw client dict."""
+        app.dependency_overrides[get_current_user] = auth_override
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.put(
+                "/api/v1/integrations/mcp/servers",
+                json={
+                    "servers": {
+                        "linear": {
+                            "command": "npx",
+                            "args": ["-y", "@linear/mcp"],
+                            "env": {},
+                            "transport": None,
+                            "url": None,
+                        }
+                    }
+                },
+            )
+        app.dependency_overrides.pop(get_current_user, None)
+        assert resp.status_code == 200
+        stored = patched_router["store"]["config"]["mcp"]["servers"]["linear"]
+        assert "transport" not in stored
+        assert "url" not in stored
+        assert stored["connectionTimeoutMs"] == 120000
+
+    @pytest.mark.asyncio
+    async def test_put_remote_entry_normalized_like_patch(self, app, patched_router, auth_override):
+        """PUT and PATCH must store the same shape for a remote entry: request
+        timeout injected, headers preserved, and no stdio artifacts (command,
+        empty args/env) in the block."""
+        app.dependency_overrides[get_current_user] = auth_override
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.put(
+                "/api/v1/integrations/mcp/servers",
+                json={
+                    "servers": {
+                        "context7": {
+                            "transport": "streamable-http",
+                            "url": "https://mcp.context7.com/mcp",
+                            "headers": {"X-API-Key": "k"},
+                        }
+                    }
+                },
+            )
+        app.dependency_overrides.pop(get_current_user, None)
+        assert resp.status_code == 200
+        stored = patched_router["store"]["config"]["mcp"]["servers"]["context7"]
+        assert stored["requestTimeoutMs"] == 60000
+        assert stored["headers"] == {"X-API-Key": "k"}
+        assert "command" not in stored
+        assert "args" not in stored
+        assert "env" not in stored

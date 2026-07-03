@@ -43,6 +43,9 @@ class ServerEntry(BaseModel):
     env: Dict[str, str] = Field(default_factory=dict, description="Environment variables")
     transport: str | None = Field(None, description="Remote transport, e.g. streamable-http")
     url: str | None = Field(None, description="Remote server URL")
+    headers: Dict[str, str | int | bool] | None = Field(
+        None, description="HTTP headers for a remote server (e.g. API-key auth)"
+    )
     connectionTimeoutMs: int | None = Field(None, gt=0, description="MCP connect timeout override")
     requestTimeoutMs: int | None = Field(None, gt=0, description="Per-request timeout override")
 
@@ -68,14 +71,27 @@ _STDIO_CONNECT_TIMEOUT_MS = 120_000
 _REMOTE_REQUEST_TIMEOUT_MS = 60_000
 
 
-def _apply_timeout_defaults(entry: dict) -> dict:
-    """Inject the container-appropriate timeout when the user didn't set one.
+def _normalize_entry(model: "ServerEntry") -> dict:
+    """The dict actually written to openclaw.json for a validated entry.
 
-    An explicit user-provided value always wins; only absent keys are filled."""
+    ``exclude_none`` keeps the unset shape's keys (transport/url on a stdio
+    entry, command on a remote one) out of the stored block — a literal null
+    there fails OpenClaw's config schema on hot reload, which bricks the
+    container. Remote entries also drop the empty args/env artifacts of the
+    stdio-oriented defaults, matching the registry's canonical remote shape.
+
+    Timeout defaults are injected only when the user didn't set one — an
+    explicit user-provided value always wins."""
+    entry = model.model_dump(exclude_none=True)
+    if entry.get("url"):
+        if not entry.get("args"):
+            entry.pop("args", None)
+        if not entry.get("env"):
+            entry.pop("env", None)
+        if not entry.get("requestTimeoutMs"):
+            entry["requestTimeoutMs"] = _REMOTE_REQUEST_TIMEOUT_MS
     if entry.get("command") and not entry.get("connectionTimeoutMs"):
         entry["connectionTimeoutMs"] = _STDIO_CONNECT_TIMEOUT_MS
-    if entry.get("url") and not entry.get("requestTimeoutMs"):
-        entry["requestTimeoutMs"] = _REMOTE_REQUEST_TIMEOUT_MS
     return entry
 
 
@@ -91,15 +107,20 @@ class PatchServerRequest(ServerEntry):
     pass
 
 
-def _validate_servers(servers: dict) -> None:
-    """Validate each server entry against the ``ServerEntry`` schema.
+def _validate_servers(servers: dict) -> dict:
+    """Validate each server entry and return the normalized dict to store.
 
     Strict per-entry validation matters now that writes go straight into
     ``openclaw.json``: malformed shapes (e.g. ``args: "--stdio"``,
     ``env: {"K": 123}``) get past Pydantic's ``Dict[str, Any]`` body
     validation but then fail OpenClaw's chokidar hot-reload, leaving the
     API at 200 with the agent state silently broken. Reject at the API.
+
+    The RETURNED entries — not the raw client input — must be what gets
+    written: normalization strips explicit nulls on the unset shape's keys
+    (which would equally brick the hot reload) and injects timeout defaults.
     """
+    normalized: dict[str, dict] = {}
     for name, entry in servers.items():
         if not isinstance(entry, dict):
             raise HTTPException(
@@ -107,12 +128,14 @@ def _validate_servers(servers: dict) -> None:
                 detail=f"Server '{name}' must be an object",
             )
         try:
-            ServerEntry.model_validate(entry)
+            model = ServerEntry.model_validate(entry)
         except ValidationError as exc:
             raise HTTPException(
                 status_code=422,
                 detail=f"Server '{name}' is invalid: {exc.errors()}",
             ) from exc
+        normalized[name] = _normalize_entry(model)
+    return normalized
 
 
 async def _read_mcp_servers(owner_id: str) -> dict:
@@ -169,8 +192,7 @@ async def replace_mcp_servers(
     owner_id = resolve_owner_id(auth)
     if auth.is_org_context:
         require_org_admin(auth)
-    _validate_servers(body.servers)
-    servers = {name: _apply_timeout_defaults(dict(entry)) for name, entry in body.servers.items()}
+    servers = _validate_servers(body.servers)
     try:
         await set_openclaw_config_path(owner_id, ["mcp", "servers"], servers)
     except ConfigPatchError as exc:
@@ -207,10 +229,7 @@ async def upsert_mcp_server(
     owner_id = resolve_owner_id(auth)
     if auth.is_org_context:
         require_org_admin(auth)
-    # exclude_none keeps the unset shape's keys (transport/url on a stdio entry,
-    # command on a remote one) out of the stored block — a literal null there
-    # would fail OpenClaw's config schema on hot reload.
-    entry = _apply_timeout_defaults(body.model_dump(exclude_none=True))
+    entry = _normalize_entry(body)
     try:
         await set_openclaw_config_path(owner_id, ["mcp", "servers", name], entry)
     except ConfigPatchError as exc:

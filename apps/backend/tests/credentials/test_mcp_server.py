@@ -111,7 +111,12 @@ async def test_build_connected_map_emits_remote_block_without_retained_secret(mo
     # The rehydrated remote block carries auth: "oauth" so a reprovision re-arms the
     # SDK OAuth provider — identical to what the live materializer write publishes.
     assert servers == {
-        "attio": {"transport": "streamable-http", "url": "https://mcp.attio.com/mcp", "auth": "oauth"},
+        "attio": {
+            "transport": "streamable-http",
+            "url": "https://mcp.attio.com/mcp",
+            "auth": "oauth",
+            "requestTimeoutMs": 60000,
+        },
         "stripe": {
             "command": "npx",
             "args": ["-y", "@stripe/mcp", "--tools=all"],

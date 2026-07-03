@@ -2,19 +2,22 @@
 
 Dual auth: a Clerk platform-admin JWT (the admin UI) OR a platform_ops token
 bound to settings.PLATFORM_OPS_OWNER_ID (the founder's agent). Default-deny.
+
+The same token is also accepted on the read-only /admin/* debug endpoints —
+see core/services/admin_access.py for that surface's dependency.
 """
 
 from __future__ import annotations
 
 import logging
 
-import jwt
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from core.auth import get_current_user, require_platform_admin
 from core.config import settings
 from core.services import platform_ops_token
+from core.services.admin_access import verify_platform_ops_token
 from core.services.admin_audit import audit_admin_action
 from core.services.ops import alarms, deploys, ecs_ops
 from core.services.ops import envelope as env
@@ -33,16 +36,11 @@ async def require_ops_access(
     """
     if creds is None or not creds.credentials:
         raise HTTPException(status_code=401, detail="Missing credentials")
-    token = creds.credentials
 
-    # Agent path first — cheap local HS256 verify, no network.
-    owner = settings.PLATFORM_OPS_OWNER_ID
-    if owner:
-        try:
-            platform_ops_token.verify(token, expected_owner_id=owner)
-            return "platform_ops"
-        except (jwt.InvalidTokenError, jwt.ExpiredSignatureError, RuntimeError):
-            pass  # fall through to the admin path
+    # Agent path first — cheap local HS256 verify, no network. Returns None
+    # (fall through to the admin path) on any failure or when unconfigured.
+    if verify_platform_ops_token(creds.credentials) is not None:
+        return "platform_ops"
 
     # Admin path — Clerk JWT. get_current_user raises 401 on invalid tokens.
     try:

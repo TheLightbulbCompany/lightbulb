@@ -1,7 +1,9 @@
 """platform_ops service tokens.
 
 Owner-scoped JWTs the backend mints so the founder's agent (Friday) can call
-the ops API from its container over outbound HTTPS. Distinct from
+the ops API — plus the read-only /admin/* debug endpoints gated by
+core/services/admin_access.py — from its container over outbound HTTPS.
+Mutating admin endpoints never accept this token. Distinct from
 service_token.py (paperclip_service) in three deliberate ways:
   1. A dedicated signing key (PLATFORM_OPS_TOKEN_KEY) — independently revocable.
   2. A distinct `kind` ("platform_ops") — a tenant paperclip_service token is

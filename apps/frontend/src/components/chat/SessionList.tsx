@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { Pencil, Plus } from "lucide-react";
+import { Pencil, Plus, Trash2 } from "lucide-react";
 import type { AgentSession } from "@/hooks/useAgentSessions";
 
 interface SessionListProps {
@@ -11,6 +11,8 @@ interface SessionListProps {
   onNew: () => void;
   /** Persist a user-set name for a materialized session (sessions.patch {label}). */
   onRename?: (session: AgentSession, label: string) => void;
+  /** Ask to delete a session — the caller owns the confirm + sessions.delete. */
+  onDelete?: (session: AgentSession) => void;
 }
 
 /**
@@ -24,6 +26,7 @@ export function SessionList({
   onSelect,
   onNew,
   onRename,
+  onDelete,
 }: SessionListProps): React.JSX.Element {
   const [editing, setEditing] = useState<{ key: string; value: string } | null>(null);
   // Guards the editor's close: Enter (and Escape) unmount the focused input,
@@ -100,7 +103,7 @@ export function SessionList({
                   <span className="session-label">{s.label}</span>
                 </button>
                 {/* General (sessionId null) keeps its fixed identity — only
-                    named sessions are renameable. */}
+                    named sessions are renameable and deletable. */}
                 {onRename && s.sessionId !== null && (
                   <button
                     type="button"
@@ -113,6 +116,20 @@ export function SessionList({
                     }}
                   >
                     <Pencil size={11} />
+                  </button>
+                )}
+                {onDelete && s.sessionId !== null && (
+                  <button
+                    type="button"
+                    className="session-rename session-delete"
+                    aria-label={`Delete ${s.label}`}
+                    title="Delete session"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onDelete(s);
+                    }}
+                  >
+                    <Trash2 size={11} />
                   </button>
                 )}
               </>

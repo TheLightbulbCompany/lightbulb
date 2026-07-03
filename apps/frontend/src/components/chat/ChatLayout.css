@@ -356,6 +356,14 @@
   background: rgba(255, 255, 255, 0.9);
   color: #2d8a4e;
 }
+/* Shares .session-rename's base + hover-reveal; only the hover intent color
+   differs (destructive red, matching .agent-row-action--danger). The
+   .session-row ancestor isn't scoping — it lifts specificity above
+   .session-rename:hover so red wins even if these rules get reordered. */
+.session-row .session-delete:hover {
+  background: rgba(255, 255, 255, 0.9);
+  color: #dc2626;
+}
 .session-rename-input {
   flex: 1;
   min-width: 0;

@@ -27,7 +27,7 @@ import { CompanyNav } from "@/components/chat/CompanyNav";
 import { FileViewer } from "@/components/chat/FileViewer";
 import { Logo } from "@/components/Logo";
 import { useSupport } from "@/components/support/SupportProvider";
-import { AgentCreateDialog, AgentRenameDialog, AgentDeleteDialog } from "@/components/chat/AgentDialogs";
+import { AgentCreateDialog, AgentRenameDialog, AgentDeleteDialog, SessionDeleteDialog } from "@/components/chat/AgentDialogs";
 import { Monogram, StatusDot } from "@/components/agents/AgentIdentity";
 import { fromInstalledAgent } from "@/lib/agentDesign";
 import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
@@ -42,7 +42,7 @@ import { teamsQueryKeys } from "@/components/teams/shared/queryKeys";
 import { useAgentMutations } from "@/components/teams/agents/hooks/useAgentMutations";
 import { SessionList } from "@/components/chat/SessionList";
 import { useActiveSession } from "@/hooks/useActiveSession";
-import { useAgentSessions } from "@/hooks/useAgentSessions";
+import { useAgentSessions, type AgentSession } from "@/hooks/useAgentSessions";
 
 /** Minimal shape of `/channels/links/me` — only what the guide's
  *  `channel`-complete derivation reads. A bot is keyed by its agent's UUID
@@ -135,6 +135,7 @@ export function ChatLayout({
   const [createFormOpen, setCreateFormOpen] = useState(false);
   const [renameTarget, setRenameTarget] = useState<Agent | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Agent | null>(null);
+  const [deleteSessionTarget, setDeleteSessionTarget] = useState<AgentSession | null>(null);
 
   // Derive effective agent: user selection > default > first agent
   const currentAgentId = userSelectedId ?? defaultId ?? agents[0]?.id ?? null;
@@ -143,7 +144,7 @@ export function ChatLayout({
   // selecting a row here drives the transcript in AgentChatWindow's
   // useAgentChat (same store) — no prop drilling across subtrees.
   const { activeSessionId, newSession, selectSession } = useActiveSession(currentAgentId);
-  const { sessions: agentSessions, renameSession } = useAgentSessions(
+  const { sessions: agentSessions, renameSession, deleteSession } = useAgentSessions(
     currentAgentId,
     clerkUserId ?? null,
   );
@@ -690,6 +691,7 @@ export function ChatLayout({
                           onRename={(s, label) => {
                             void renameSession(s.key, label);
                           }}
+                          onDelete={(s) => setDeleteSessionTarget(s)}
                         />
                       )}
                     </div>
@@ -911,6 +913,21 @@ export function ChatLayout({
             await deleteAgent(deleteTarget.id);
             if (userSelectedId === deleteTarget.id) setUserSelectedId(null);
             setDeleteTarget(null);
+          }}
+        />
+
+        <SessionDeleteDialog
+          key={`delete-session-${deleteSessionTarget?.key ?? "closed"}`}
+          session={deleteSessionTarget}
+          onCancel={() => setDeleteSessionTarget(null)}
+          onDelete={async () => {
+            if (!deleteSessionTarget) return;
+            const wasActive = deleteSessionTarget.sessionId === activeSessionId;
+            await deleteSession(deleteSessionTarget.key);
+            // The displayed session no longer exists to stay selected — fall
+            // back to General, which always survives (it isn't deletable).
+            if (wasActive) selectSession(null);
+            setDeleteSessionTarget(null);
           }}
         />
       </div>

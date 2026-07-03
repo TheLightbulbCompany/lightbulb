@@ -94,6 +94,7 @@ export function useAgentSessions(
   isLoading: boolean;
   mutate: () => Promise<unknown>;
   renameSession: (key: string, label: string) => Promise<void>;
+  deleteSession: (key: string) => Promise<void>;
 } {
   const callRpc = useGatewayRpcMutation();
   const { data, isLoading, mutate } = useGatewayRpc<
@@ -178,5 +179,20 @@ export function useAgentSessions(
     }
   };
 
-  return { sessions, isLoading, mutate, renameSession };
+  const deleteSession = async (key: string): Promise<void> => {
+    // sessions.delete drops the session entry; deleteTranscript archives its
+    // transcript with it (matching the Sessions panel's delete semantics).
+    // Failures propagate — the confirm dialog is still open and shows them
+    // inline, unlike rename's fire-and-forget toast.
+    await callRpc("sessions.delete", { key, deleteTranscript: true });
+    // The delete persisted; a failed revalidation only delays the sidebar
+    // refresh (SWR retries on focus) and must not read as a failed delete.
+    try {
+      await mutate();
+    } catch {
+      // revalidates on next focus
+    }
+  };
+
+  return { sessions, isLoading, mutate, renameSession, deleteSession };
 }

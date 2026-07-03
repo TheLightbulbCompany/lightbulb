@@ -81,6 +81,7 @@ export type AnalyticsEvent =
   | "chat_file_uploaded"
   | "chat_message_sent"
   | "chat_stopped"
+  | "session_deleted"
   // Container / control panel
   | "control_panel_opened"
   | "file_browser_opened"

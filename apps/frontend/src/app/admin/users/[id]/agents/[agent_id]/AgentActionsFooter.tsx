@@ -3,6 +3,7 @@
 import * as React from "react";
 import { useRouter } from "next/navigation";
 
+import { Card } from "@/components/admin/Card";
 import { ConfirmActionDialog } from "@/components/admin/ConfirmActionDialog";
 import { ErrorBanner } from "@/components/admin/ErrorBanner";
 import { Button } from "@/components/ui/button";
@@ -58,34 +59,33 @@ export function AgentActionsFooter({
   }
 
   return (
-    <div className="space-y-3 rounded-md border border-border bg-card p-4">
-      <h2 className="text-sm font-medium uppercase tracking-wide text-zinc-400">
-        Destructive actions
-      </h2>
-      {error ? <ErrorBanner error={error} variant="error" /> : null}
-      {notice ? <ErrorBanner error={notice} variant="info" /> : null}
-      <div className="flex flex-wrap gap-2">
-        <ConfirmActionDialog
-          confirmText={agentId}
-          actionLabel="Delete agent"
-          destructive
-          onConfirm={handleDelete}
-        >
-          <Button type="button" variant="destructive" size="sm">
-            Delete agent
-          </Button>
-        </ConfirmActionDialog>
+    <Card title="Destructive actions">
+      <div className="space-y-3">
+        {error ? <ErrorBanner error={error} variant="error" /> : null}
+        {notice ? <ErrorBanner error={notice} variant="info" /> : null}
+        <div className="flex flex-wrap gap-2">
+          <ConfirmActionDialog
+            confirmText={agentId}
+            actionLabel="Delete agent"
+            destructive
+            onConfirm={handleDelete}
+          >
+            <Button type="button" variant="destructive" size="sm">
+              Delete agent
+            </Button>
+          </ConfirmActionDialog>
 
-        <ConfirmActionDialog
-          confirmText={agentId}
-          actionLabel="Clear sessions"
-          onConfirm={handleClear}
-        >
-          <Button type="button" variant="outline" size="sm">
-            Clear sessions
-          </Button>
-        </ConfirmActionDialog>
+          <ConfirmActionDialog
+            confirmText={agentId}
+            actionLabel="Clear sessions"
+            onConfirm={handleClear}
+          >
+            <Button type="button" variant="outline" size="sm">
+              Clear sessions
+            </Button>
+          </ConfirmActionDialog>
+        </div>
       </div>
-    </div>
+    </Card>
   );
 }

@@ -1,12 +1,14 @@
 import Link from "next/link";
 import { auth } from "@clerk/nextjs/server";
 
+import { Card } from "@/components/admin/Card";
 import { CodeBlock } from "@/components/admin/CodeBlock";
 import { DefRow } from "@/components/admin/DefRow";
 import { EmptyState } from "@/components/admin/EmptyState";
 import { ErrorBanner } from "@/components/admin/ErrorBanner";
 import { asArray, asRecord, asString } from "@/app/admin/_lib/narrow";
 import { getAgentDetail } from "@/app/admin/_lib/api";
+import { formatRelativeTime } from "@/app/admin/_lib/time";
 
 import { AgentActionsFooter } from "./AgentActionsFooter";
 
@@ -138,23 +140,29 @@ export default async function AdminAgentDetailPage({ params }: PageProps) {
       />
 
       {/* Identity */}
-      <section className="space-y-3 rounded-md border border-white/10 bg-white/[0.02] p-4">
-        <h2 className="text-sm font-medium uppercase tracking-wide text-zinc-400">
-          Identity
-        </h2>
+      <Card title="Identity">
         <dl className="grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
           <DefRow label="Agent ID" value={meta.agent_id ?? agentId} mono />
-          <DefRow label="Owner ID" value={meta.owner_id ?? id} mono />
+          <DefRow
+            label="Owner ID"
+            value={
+              <Link
+                href={`/admin/users/${encodeURIComponent(meta.owner_id ?? id)}`}
+                className="text-sky-300 hover:underline"
+                title={meta.owner_id ?? id}
+              >
+                {meta.owner_id ?? id}
+              </Link>
+            }
+            mono
+          />
           <DefRow label="Model" value={meta.model ?? "\u2014"} mono />
           <DefRow label="Tier" value={meta.tier ?? "\u2014"} />
         </dl>
-      </section>
+      </Card>
 
       {/* Skills */}
-      <section className="space-y-3 rounded-md border border-white/10 bg-white/[0.02] p-4">
-        <h2 className="text-sm font-medium uppercase tracking-wide text-zinc-400">
-          Skills
-        </h2>
+      <Card title="Skills">
         {skills.length === 0 ? (
           <p className="text-sm text-zinc-500">No skills installed.</p>
         ) : (
@@ -181,13 +189,10 @@ export default async function AdminAgentDetailPage({ params }: PageProps) {
             </table>
           </div>
         )}
-      </section>
+      </Card>
 
       {/* Config */}
-      <section className="space-y-3 rounded-md border border-white/10 bg-white/[0.02] p-4">
-        <h2 className="text-sm font-medium uppercase tracking-wide text-zinc-400">
-          openclaw.json (secrets redacted)
-        </h2>
+      <Card title="openclaw.json (secrets redacted)">
         {config === undefined || config === null ? (
           <p className="text-sm text-zinc-500">Config unavailable.</p>
         ) : (
@@ -201,13 +206,10 @@ export default async function AdminAgentDetailPage({ params }: PageProps) {
             maxHeight={500}
           />
         )}
-      </section>
+      </Card>
 
       {/* Recent sessions */}
-      <section className="space-y-3 rounded-md border border-white/10 bg-white/[0.02] p-4">
-        <h2 className="text-sm font-medium uppercase tracking-wide text-zinc-400">
-          Recent sessions (top 20)
-        </h2>
+      <Card title="Recent sessions (top 20)">
         {sessions.length === 0 ? (
           <p className="text-sm text-zinc-500">No recent sessions.</p>
         ) : (
@@ -221,9 +223,16 @@ export default async function AdminAgentDetailPage({ params }: PageProps) {
                 </tr>
               </thead>
               <tbody>
-                {sessions.map((session, i) => (
+                {sessions.map((session, i) => {
+                  const when = formatRelativeTime(session.timestamp);
+                  return (
                   <tr key={`${session.timestamp}-${i}`} className="border-t border-white/5 align-top">
-                    <td className="px-3 py-2 font-mono text-zinc-300">{session.timestamp}</td>
+                    <td
+                      className="px-3 py-2 font-mono text-zinc-300"
+                      title={when.iso ?? undefined}
+                    >
+                      {when.label}
+                    </td>
                     <td className="px-3 py-2 text-zinc-300">{session.status}</td>
                     <td className="px-3 py-2 text-zinc-200" title={session.excerpt}>
                       {session.excerpt
@@ -233,12 +242,13 @@ export default async function AdminAgentDetailPage({ params }: PageProps) {
                         : "\u2014"}
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
         )}
-      </section>
+      </Card>
 
       {/* Destructive actions footer */}
       <AgentActionsFooter userId={id} agentId={agentId} agentName={meta.name} />
@@ -259,6 +269,7 @@ function Header({
   subtitle?: string;
   lastActive?: string;
 }) {
+  const when = formatRelativeTime(lastActive);
   return (
     <div className="flex items-start justify-between gap-4">
       <div className="space-y-1">
@@ -281,7 +292,9 @@ function Header({
         {lastActive ? (
           <>
             <span className="block uppercase tracking-wide">Last active</span>
-            <span className="font-mono text-zinc-300">{lastActive}</span>
+            <span className="font-mono text-zinc-300" title={when.iso ?? undefined}>
+              {when.label}
+            </span>
           </>
         ) : null}
       </div>

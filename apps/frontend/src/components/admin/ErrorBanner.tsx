@@ -17,7 +17,7 @@ export interface ErrorBannerProps {
 
 const VARIANT_CLASSES: Record<ErrorBannerVariant, string> = {
   error: "border-red-500/40 bg-red-500/10 text-red-200",
-  warning: "border-yellow-500/40 bg-yellow-500/10 text-yellow-200",
+  warning: "border-amber-500/40 bg-amber-500/10 text-amber-200",
   info: "border-sky-500/40 bg-sky-500/10 text-sky-200",
 };
 

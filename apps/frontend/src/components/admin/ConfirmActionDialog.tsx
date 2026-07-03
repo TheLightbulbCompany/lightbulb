@@ -104,7 +104,7 @@ export function ConfirmActionDialog({
         {locked ? (
           <p
             role="alert"
-            className="rounded-md border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-sm text-yellow-200"
+            className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-200"
           >
             Locked. Reload the page to try again.
           </p>

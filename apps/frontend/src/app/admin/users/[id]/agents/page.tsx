@@ -9,6 +9,7 @@ import {
   type AdminOrgContext,
   type AgentSummary,
 } from "@/app/admin/_lib/api";
+import { formatRelativeTime } from "@/app/admin/_lib/time";
 
 export const metadata = { title: "Agents \u00b7 Admin" };
 
@@ -152,7 +153,9 @@ export default async function AdminUserAgentsPage({ params, searchParams }: Page
             </tr>
           </thead>
           <tbody>
-            {rows.map((row) => (
+            {rows.map((row) => {
+              const lastActive = formatRelativeTime(row.last_active);
+              return (
               <tr
                 key={row.agent_id}
                 className="border-t border-white/5 align-top text-zinc-200"
@@ -166,8 +169,11 @@ export default async function AdminUserAgentsPage({ params, searchParams }: Page
                 <td className="px-3 py-2 font-mono text-xs text-zinc-300">
                   {row.skills_count}
                 </td>
-                <td className="px-3 py-2 font-mono text-xs text-zinc-400">
-                  {row.last_active ?? "\u2014"}
+                <td
+                  className="px-3 py-2 font-mono text-xs text-zinc-400"
+                  title={lastActive.iso ?? undefined}
+                >
+                  {lastActive.label}
                 </td>
                 <td className="px-3 py-2 font-mono text-xs text-zinc-300">
                   {row.sessions_count}
@@ -181,7 +187,8 @@ export default async function AdminUserAgentsPage({ params, searchParams }: Page
                   </Link>
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>

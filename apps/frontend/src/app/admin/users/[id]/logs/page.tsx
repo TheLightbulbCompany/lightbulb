@@ -2,9 +2,10 @@ import Link from "next/link";
 import { auth } from "@clerk/nextjs/server";
 
 import { getCloudwatchUrl, getLogs } from "@/app/admin/_lib/api";
+import { asLogEntry } from "@/app/admin/_lib/narrow";
 import { EmptyState } from "@/components/admin/EmptyState";
 import { ErrorBanner } from "@/components/admin/ErrorBanner";
-import { LogRow, type LogEntry } from "@/components/admin/LogRow";
+import { LogRow } from "@/components/admin/LogRow";
 
 export const metadata = { title: "Logs \u00b7 Admin" };
 
@@ -39,24 +40,6 @@ function parseHours(input: string | string[] | undefined): number {
 function parseCursor(input: string | string[] | undefined): string | undefined {
   const v = Array.isArray(input) ? input[0] : input;
   return v && v.length > 0 ? v : undefined;
-}
-
-function asLogEntry(raw: unknown): LogEntry {
-  const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
-  return {
-    timestamp: typeof r.timestamp === "string" ? r.timestamp : "",
-    level:
-      typeof r.level === "string" || r.level === null
-        ? (r.level as LogEntry["level"])
-        : null,
-    message: typeof r.message === "string" ? r.message : "",
-    correlation_id:
-      typeof r.correlation_id === "string" ? r.correlation_id : null,
-    raw_json:
-      r.raw_json && typeof r.raw_json === "object"
-        ? (r.raw_json as Record<string, unknown>)
-        : null,
-  };
 }
 
 // ---------------------------------------------------------------------------

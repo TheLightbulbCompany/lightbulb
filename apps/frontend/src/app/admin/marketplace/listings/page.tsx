@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { StatusChip } from "@/components/admin/StatusChip";
 import { listListings } from "@/app/admin/_actions/marketplace";
 
 import { ModerationActions } from "./ModerationActions";
@@ -107,7 +108,7 @@ export default async function ListingsBrowse({
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-semibold text-neutral-100">Listings</h1>
+      <h1 className="text-2xl font-semibold text-zinc-100">Listings</h1>
 
       {/* Filter pills. Each pill is a Link that swaps ?status while preserving
           the current q so a search-then-filter flow doesn't lose the query. */}
@@ -221,7 +222,10 @@ export default async function ListingsBrowse({
                       {listing.name}
                     </Link>
                   </h3>
-                  <StatusBadge status={listing.status} />
+                  <StatusChip
+                    status={listing.status}
+                    label={listing.status.replace("_", " ")}
+                  />
                 </div>
                 <p className="mt-1 text-sm text-zinc-400">
                   <code className="font-mono">{listing.slug}</code> ·{" "}
@@ -235,7 +239,13 @@ export default async function ListingsBrowse({
                   </p>
                 ) : null}
                 <p className="mt-2 text-xs text-zinc-500">
-                  seller: <span className="font-mono">{listing.seller_id}</span>
+                  seller:{" "}
+                  <Link
+                    href={`/admin/users/${encodeURIComponent(listing.seller_id)}`}
+                    className="font-mono text-sky-300 hover:underline"
+                  >
+                    {listing.seller_id}
+                  </Link>
                 </p>
                 <Link
                   href={`/admin/marketplace/listings/${listing.listing_id}?version=${listing.version}`}
@@ -263,29 +273,5 @@ export default async function ListingsBrowse({
         </ul>
       )}
     </div>
-  );
-}
-
-/**
- * Small color-coded chip so a moderator scanning a mixed-status list can
- * triage by color before reading the slug. Colors stay within the dashboard
- * palette to avoid the "AI rainbow" look — review is the only one that pops.
- */
-function StatusBadge({ status }: { status: string }) {
-  const styles: Record<string, string> = {
-    draft: "border-zinc-600 bg-zinc-800/60 text-zinc-300",
-    review: "border-amber-500/50 bg-amber-500/10 text-amber-300",
-    published: "border-emerald-500/40 bg-emerald-500/10 text-emerald-300",
-    retired: "border-zinc-600 bg-zinc-800/60 text-zinc-400",
-    taken_down: "border-red-500/40 bg-red-500/10 text-red-300",
-  };
-  const className =
-    styles[status] ?? "border-zinc-600 bg-zinc-800/60 text-zinc-300";
-  return (
-    <span
-      className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide ${className}`}
-    >
-      {status.replace("_", " ")}
-    </span>
   );
 }

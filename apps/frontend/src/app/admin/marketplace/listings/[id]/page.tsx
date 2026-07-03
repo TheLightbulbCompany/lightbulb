@@ -215,7 +215,13 @@ export default async function ListingDetail({
             ${(preview.price_cents / 100).toFixed(2)} · status: {preview.status}
           </p>
           <p className="mt-2 text-xs text-zinc-500">
-            seller: <span className="font-mono">{preview.seller_id}</span>
+            seller:{" "}
+            <Link
+              href={`/admin/users/${encodeURIComponent(preview.seller_id)}`}
+              className="font-mono text-sky-300 hover:underline"
+            >
+              {preview.seller_id}
+            </Link>
           </p>
           <div className="mt-3 flex flex-wrap gap-1">
             {preview.tags.map((t) => (

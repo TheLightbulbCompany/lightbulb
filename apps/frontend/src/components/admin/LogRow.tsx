@@ -5,6 +5,7 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { CodeBlock } from "@/components/admin/CodeBlock";
+import { formatRelativeTime } from "@/app/admin/_lib/time";
 
 export interface LogEntry {
   timestamp: string;
@@ -45,6 +46,7 @@ export function LogRow({ entry }: LogRowProps) {
   const [expanded, setExpanded] = React.useState(false);
   const truncated = truncate(entry.message, MESSAGE_TRUNCATE);
   const levelLabel = entry.level ?? "DEBUG";
+  const when = formatRelativeTime(entry.timestamp);
 
   return (
     <div
@@ -63,11 +65,16 @@ export function LogRow({ entry }: LogRowProps) {
         ) : (
           <ChevronRight className="size-3 shrink-0 text-zinc-500" aria-hidden />
         )}
+        {/* suppressHydrationWarning: the relative label is a function of
+            Date.now(), so SSR and hydration can legitimately differ by a
+            minute tick. */}
         <time
           className="font-mono text-zinc-400"
-          dateTime={entry.timestamp}
+          dateTime={when.iso ?? entry.timestamp}
+          title={when.iso ?? undefined}
+          suppressHydrationWarning
         >
-          {entry.timestamp}
+          {when.label}
         </time>
         <span
           className={cn(

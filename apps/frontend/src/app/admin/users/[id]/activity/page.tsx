@@ -5,9 +5,11 @@ import {
   getLogs,
   getPosthog,
 } from "@/app/admin/_lib/api";
+import { asLogEntry } from "@/app/admin/_lib/narrow";
+import { formatRelativeTime } from "@/app/admin/_lib/time";
 import { EmptyState } from "@/components/admin/EmptyState";
 import { ErrorBanner } from "@/components/admin/ErrorBanner";
-import { LogRow, type LogEntry } from "@/components/admin/LogRow";
+import { LogRow } from "@/components/admin/LogRow";
 
 export const metadata = { title: "Activity \u00b7 Admin" };
 
@@ -41,24 +43,6 @@ function posthogUiHost(): string {
   // eu.i.posthog.com → eu.posthog.com ; us.i.posthog.com → us.posthog.com.
   // Self-hosted / unknown shapes pass through unchanged.
   return ingest.replace(/\.i\.posthog\.com(\/|$)/, ".posthog.com$1");
-}
-
-function asLogEntry(raw: unknown): LogEntry {
-  const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
-  return {
-    timestamp: typeof r.timestamp === "string" ? r.timestamp : "",
-    level:
-      typeof r.level === "string" || r.level === null
-        ? (r.level as LogEntry["level"])
-        : null,
-    message: typeof r.message === "string" ? r.message : "",
-    correlation_id:
-      typeof r.correlation_id === "string" ? r.correlation_id : null,
-    raw_json:
-      r.raw_json && typeof r.raw_json === "object"
-        ? (r.raw_json as Record<string, unknown>)
-        : null,
-  };
 }
 
 function asPosthogEvent(raw: unknown): PosthogEvent {
@@ -215,7 +199,9 @@ export default async function ActivityPage({ params }: ActivityPageProps) {
           />
         ) : (
           <ul className="space-y-1.5">
-            {posthogEvents.map((evt, i) => (
+            {posthogEvents.map((evt, i) => {
+              const when = formatRelativeTime(evt.timestamp);
+              return (
               <li
                 key={`${evt.timestamp ?? "ts"}-${i}`}
                 className="rounded-md border border-white/5 bg-white/[0.02] px-3 py-2 text-xs"
@@ -223,9 +209,10 @@ export default async function ActivityPage({ params }: ActivityPageProps) {
                 <div className="flex items-center gap-3">
                   <time
                     className="font-mono text-zinc-400"
-                    dateTime={evt.timestamp ?? ""}
+                    dateTime={when.iso ?? evt.timestamp ?? ""}
+                    title={when.iso ?? undefined}
                   >
-                    {evt.timestamp ?? "\u2014"}
+                    {when.label}
                   </time>
                   <span className="font-semibold text-zinc-100">
                     {evt.event ?? "(unnamed)"}
@@ -243,7 +230,8 @@ export default async function ActivityPage({ params }: ActivityPageProps) {
                 </div>
                 <PropertiesDetails properties={evt.properties} />
               </li>
-            ))}
+              );
+            })}
           </ul>
         )}
       </section>

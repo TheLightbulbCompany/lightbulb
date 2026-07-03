@@ -547,3 +547,18 @@ class TestIntegrationsRouter:
                 )
                 assert resp.status_code == 422, body
         app.dependency_overrides.pop(get_current_user, None)
+
+    @pytest.mark.asyncio
+    async def test_put_rejects_remote_entry_with_stray_args_or_env(self, app, patched_router, auth_override):
+        """The symmetric direction: a remote entry carrying non-empty stdio fields
+        (args/env) would write a mixed shape into openclaw.json — reject it."""
+        app.dependency_overrides[get_current_user] = auth_override
+        base = {"transport": "streamable-http", "url": "https://x/mcp"}
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            for stray in ({"args": ["--flag"]}, {"env": {"K": "v"}}):
+                resp = await client.put(
+                    "/api/v1/integrations/mcp/servers",
+                    json={"servers": {"weird": {**base, **stray}}},
+                )
+                assert resp.status_code == 422, stray
+        app.dependency_overrides.pop(get_current_user, None)

@@ -63,6 +63,8 @@ class ServerEntry(BaseModel):
         # partial overlap too, not just the complete one.
         if is_stdio and (self.transport is not None or self.url is not None or self.headers is not None):
             raise ValueError("a stdio (command) server must not set transport, url, or headers")
+        if is_remote and (self.args or self.env):
+            raise ValueError("a remote (transport+url) server must not set args or env")
         return self
 
 

@@ -7,8 +7,9 @@ from core.services.credentials.mcp_server import build_mcp_server_block
 def test_build_block_from_paste_credential():
     assert build_mcp_server_block("stripe", {"token": "sk_live_X"}) == {
         "command": "npx",
-        "args": ["-y", "@stripe/mcp", "--tools=all"],
+        "args": ["-y", "@stripe/mcp@0.3.3", "--tools=all"],
         "env": {"STRIPE_SECRET_KEY": "sk_live_X"},
+        "connectionTimeoutMs": 120000,
     }
 
 
@@ -75,8 +76,9 @@ async def test_build_connected_map_skips_actor_and_unretained(monkeypatch):
     assert servers == {
         "stripe": {
             "command": "npx",
-            "args": ["-y", "@stripe/mcp", "--tools=all"],
+            "args": ["-y", "@stripe/mcp@0.3.3", "--tools=all"],
             "env": {"STRIPE_SECRET_KEY": "sk_X"},
+            "connectionTimeoutMs": 120000,
         }
     }
 
@@ -119,8 +121,9 @@ async def test_build_connected_map_emits_remote_block_without_retained_secret(mo
         },
         "stripe": {
             "command": "npx",
-            "args": ["-y", "@stripe/mcp", "--tools=all"],
+            "args": ["-y", "@stripe/mcp@0.3.3", "--tools=all"],
             "env": {"STRIPE_SECRET_KEY": "sk_X"},
+            "connectionTimeoutMs": 120000,
         },
     }
 
@@ -165,8 +168,9 @@ async def test_build_connected_map_skips_orphan_unknown_provider(monkeypatch):
     assert servers == {
         "stripe": {
             "command": "npx",
-            "args": ["-y", "@stripe/mcp", "--tools=all"],
+            "args": ["-y", "@stripe/mcp@0.3.3", "--tools=all"],
             "env": {"STRIPE_SECRET_KEY": "sk_X"},
+            "connectionTimeoutMs": 120000,
         }
     }
 

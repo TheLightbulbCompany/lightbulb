@@ -36,6 +36,14 @@ class McpServer(BaseModel):
     # env var name -> credential source ("input.token", "credentials.access_token"),
     # resolved at delivery time via the same _resolve_source the openclaw_paths rail uses.
     env: dict[str, str] = Field(default_factory=dict)
+    # OpenClaw's default MCP connect timeout is 30s, but a stdio server spawned via
+    # npx takes 13s+ even with a warm cache on a 0.5-vCPU container — and the npx
+    # cache lives on ephemeral /tmp, so every task restart is a cold start that
+    # reliably exceeds 30s. 120s gives the spawn room; once connected the session
+    # is reused, so the cost is only paid on genuine cold starts.
+    connection_timeout_ms: int = Field(120_000, alias="connectionTimeoutMs")
+
+    model_config = {"populate_by_name": True}
 
     @model_validator(mode="after")
     def _stdio_or_remote(self) -> "McpServer":

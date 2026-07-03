@@ -104,8 +104,9 @@ async def test_apply_mcp_server_writes_full_block(monkeypatch):
             ["mcp", "servers", "stripe"],
             {
                 "command": "npx",
-                "args": ["-y", "@stripe/mcp", "--tools=all"],
+                "args": ["-y", "@stripe/mcp@0.3.3", "--tools=all"],
                 "env": {"STRIPE_SECRET_KEY": "sk_live_X"},
+                "connectionTimeoutMs": 120000,
             },
         )
     ]

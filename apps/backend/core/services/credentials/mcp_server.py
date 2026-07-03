@@ -33,6 +33,7 @@ def build_mcp_server_block(provider_key: str, credential: dict[str, Any]) -> dic
         "command": spec.command,
         "args": list(spec.args),
         "env": {var: _resolve_source(src, credential, credential) for var, src in spec.env.items()},
+        "connectionTimeoutMs": spec.connection_timeout_ms,
     }
 
 

@@ -154,6 +154,8 @@ export interface OpsEnvelope<T> {
 
 export interface FleetGridItem {
   owner_id: string;
+  /** Best-effort human label (user email / org name); null when unresolved. */
+  display_name?: string | null;
   service_name: string;
   status: string;
   desired_count: number;
@@ -178,6 +180,11 @@ export interface DeployRow {
 export interface AlarmRow {
   name: string;
   metric: string | null;
+  description?: string | null;
+  state_reason?: string | null;
+  severity?: "critical" | "warning" | "unknown";
+  /** CloudWatch console deep link to the alarm. */
+  console_url?: string | null;
 }
 
 // ---------------------------------------------------------------------------

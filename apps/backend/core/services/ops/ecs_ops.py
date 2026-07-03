@@ -13,10 +13,21 @@ import time
 import boto3
 
 from core.config import settings
-from core.repositories import container_repo, ops_cache_repo
+from core.repositories import container_repo, ops_cache_repo, user_repo
+from core.services import clerk_admin
 
 _FLEET_CACHE_TTL_S = 20
 _DESCRIBE_SERVICES_BATCH = 10
+
+# Owner display names come from DDB/Clerk, both slower and rate-limited
+# relative to the 20s overview auto-refresh — so resolutions live in a long
+# in-process TTL cache and each rebuild's fetch fan-out is hard-bounded.
+# Failures (and budget misses) are cached as None for the full TTL so a
+# flapping Clerk is not re-hit on every refresh.
+_NAME_CACHE_TTL_S = 600
+_NAME_FETCH_BUDGET_S = 3.0
+_NAME_FETCH_CONCURRENCY = 4
+_name_cache: dict[str, tuple[float, str | None]] = {}
 
 _client = None
 
@@ -67,10 +78,75 @@ async def _describe(service_names: list[str]) -> dict[str, dict]:
     return out
 
 
+def _clerk_user_email(user: dict) -> str | None:
+    primary_id = user.get("primary_email_address_id")
+    emails = [e for e in user.get("email_addresses") or [] if e.get("email_address")]
+    for e in emails:
+        if e.get("id") == primary_id:
+            return e["email_address"]
+    return emails[0]["email_address"] if emails else None
+
+
+async def _fetch_display_name(owner_id: str) -> str | None:
+    """Best-effort owner_id → human label: user_ → email, org_ → org name."""
+    if owner_id.startswith("user_"):
+        # The users table stores email best-effort (older rows predate the
+        # column) — cheap DDB read first, Clerk only on a miss.
+        row = await user_repo.get(owner_id)
+        if row and row.get("email"):
+            return row["email"]
+        user = await clerk_admin.get_user(owner_id)
+        return _clerk_user_email(user) if user else None
+    if owner_id.startswith("org_"):
+        org = await clerk_admin.get_organization(owner_id)
+        return (org or {}).get("name") or None
+    return None
+
+
+async def _display_names(owner_ids: list[str]) -> dict[str, str | None]:
+    """Resolve owner display names through the module TTL cache.
+
+    Never raises: per-owner failures resolve to None, and the whole miss
+    fan-out is capped by a semaphore + one overall budget so a slow upstream
+    cannot stall the fleet read.
+    """
+    now = time.monotonic()
+    names: dict[str, str | None] = {}
+    misses: list[str] = []
+    for oid in dict.fromkeys(o for o in owner_ids if o):
+        hit = _name_cache.get(oid)
+        if hit is not None and now - hit[0] < _NAME_CACHE_TTL_S:
+            names[oid] = hit[1]
+        else:
+            names[oid] = None
+            misses.append(oid)
+    if not misses:
+        return names
+
+    sem = asyncio.Semaphore(_NAME_FETCH_CONCURRENCY)
+
+    async def _one(oid: str) -> None:
+        async with sem:
+            try:
+                names[oid] = await _fetch_display_name(oid)
+            except Exception:  # noqa: BLE001 — enrichment must never break the grid
+                names[oid] = None
+
+    try:
+        await asyncio.wait_for(asyncio.gather(*(_one(o) for o in misses)), timeout=_NAME_FETCH_BUDGET_S)
+    except Exception:  # noqa: BLE001 — budget miss → unresolved owners stay None
+        pass
+    ts = time.monotonic()
+    for oid in misses:
+        _name_cache[oid] = (ts, names[oid])
+    return names
+
+
 async def _build_grid() -> list[dict]:
     rows = await container_repo.scan_all()
     named = [r for r in rows if r.get("service_name")]
     services = await _describe([r["service_name"] for r in named])
+    display_names = await _display_names([r.get("owner_id") for r in named])
     grid: list[dict] = []
     for r in named:
         svc = services.get(r["service_name"], {})
@@ -85,6 +161,7 @@ async def _build_grid() -> list[dict]:
         grid.append(
             {
                 "owner_id": r.get("owner_id"),
+                "display_name": display_names.get(r.get("owner_id")),
                 "service_name": r["service_name"],
                 "status": status,
                 "desired_count": svc.get("desiredCount", 0),

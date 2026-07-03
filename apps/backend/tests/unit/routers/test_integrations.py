@@ -562,3 +562,17 @@ class TestIntegrationsRouter:
                 )
                 assert resp.status_code == 422, stray
         app.dependency_overrides.pop(get_current_user, None)
+
+    @pytest.mark.asyncio
+    async def test_patch_respects_explicit_remote_request_timeout(self, app, patched_router, auth_override):
+        """Explicit-value-wins must hold for the remote shape too, not just stdio."""
+        app.dependency_overrides[get_current_user] = auth_override
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.patch(
+                "/api/v1/integrations/mcp/servers/slowlist",
+                json={"transport": "streamable-http", "url": "https://x/mcp", "requestTimeoutMs": 90000},
+            )
+        app.dependency_overrides.pop(get_current_user, None)
+        assert resp.status_code == 200
+        stored = patched_router["store"]["config"]["mcp"]["servers"]["slowlist"]
+        assert stored["requestTimeoutMs"] == 90000

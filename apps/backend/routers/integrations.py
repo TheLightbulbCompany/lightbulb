@@ -46,9 +46,7 @@ class ServerEntry(BaseModel):
     env: Dict[str, str] = Field(default_factory=dict, description="Environment variables")
     transport: str | None = Field(None, min_length=1, description="Remote transport, e.g. streamable-http")
     url: str | None = Field(None, min_length=1, description="Remote server URL")
-    headers: Dict[str, str | int | bool] | None = Field(
-        None, description="HTTP headers for a remote server (e.g. API-key auth)"
-    )
+    headers: Dict[str, str] | None = Field(None, description="HTTP headers for a remote server (e.g. API-key auth)")
     connectionTimeoutMs: int | None = Field(None, gt=0, description="MCP connect timeout override")
     requestTimeoutMs: int | None = Field(None, gt=0, description="Per-request timeout override")
 

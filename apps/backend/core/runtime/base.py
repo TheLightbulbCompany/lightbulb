@@ -72,6 +72,9 @@ class Runtime(Protocol):
         *,
         fresh: bool = False,
         timeout: float | None = None,
+        open_timeout: float | None = None,
+        recv_timeout: float | None = None,
+        rpc_timeout: float | None = None,
     ) -> Any: ...
 
     async def revoke_provider(self, owner_id: str, *, provider: str) -> bool: ...

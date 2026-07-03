@@ -66,6 +66,9 @@ class OpenClawRuntime:
         *,
         fresh: bool = False,
         timeout: float | None = None,
+        open_timeout: float | None = None,
+        recv_timeout: float | None = None,
+        rpc_timeout: float | None = None,
     ) -> Any:
         """Send an RPC to the owner's running container.
 
@@ -73,25 +76,29 @@ class OpenClawRuntime:
         opens a short-lived signed one-shot connection instead — required for
         ``operator.admin``-scoped calls and for RPCs that must not ride a
         connection the call itself may tear down (e.g. gateway restart).
-        ``timeout`` applies only to ``fresh=True`` one-shot calls; the pooled
-        path uses the pool's own timeouts, so passing one there raises
+        The timeouts apply only to ``fresh=True`` one-shot calls: ``timeout``
+        fans out to all three connection stages, while ``open_timeout`` /
+        ``recv_timeout`` / ``rpc_timeout`` override individual stages (each
+        falls back to ``timeout`` where unset, else 10s). The pooled path
+        uses the pool's own timeouts, so passing any of them there raises
         ``ValueError`` rather than silently ignoring it.
         Raises ``ContainerNotRunningError`` when the container is cold.
         """
-        if timeout is not None and not fresh:
-            raise ValueError("timeout applies only to fresh=True one-shot calls")
+        timeouts_given = (timeout, open_timeout, recv_timeout, rpc_timeout)
+        if any(t is not None for t in timeouts_given) and not fresh:
+            raise ValueError("timeout/open_timeout/recv_timeout/rpc_timeout apply only to fresh=True one-shot calls")
         ip, token = await self._resolve(owner_id)
         if fresh:
-            t = timeout if timeout is not None else 10.0
+            default = timeout if timeout is not None else 10.0
             return await gateway_rpc_oneshot(
                 ip,
                 owner_id=owner_id,
                 token=token,
                 method=method,
                 params=params,
-                open_timeout=t,
-                recv_timeout=t,
-                rpc_timeout=t,
+                open_timeout=open_timeout if open_timeout is not None else default,
+                recv_timeout=recv_timeout if recv_timeout is not None else default,
+                rpc_timeout=rpc_timeout if rpc_timeout is not None else default,
             )
         return await _get_pool().send_rpc(
             user_id=owner_id,

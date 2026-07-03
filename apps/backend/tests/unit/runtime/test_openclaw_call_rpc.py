@@ -65,6 +65,114 @@ async def test_call_rpc_pooled_with_timeout_raises():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "timeout_kwargs",
+    [
+        {"open_timeout": 5},
+        {"recv_timeout": 5},
+        {"rpc_timeout": 5},
+    ],
+)
+async def test_call_rpc_pooled_with_granular_timeout_raises(timeout_kwargs):
+    # Granular overrides are fresh-only, same as the scalar ``timeout``.
+    rt = OpenClawRuntime()
+    with pytest.raises(ValueError, match="fresh=True"):
+        await rt.call_rpc("org_1", "channels.status", **timeout_kwargs)
+
+
+@pytest.mark.asyncio
+async def test_call_rpc_fresh_granular_timeouts_reach_oneshot():
+    rt = OpenClawRuntime()
+    container = {"gateway_token": "tok-1"}
+    with (
+        patch(
+            "core.runtime.openclaw.adapter._get_ecs",
+            return_value=_mock_ecs(container, "10.0.0.5"),
+        ),
+        patch(
+            "core.runtime.openclaw.adapter.gateway_rpc_oneshot",
+            new=AsyncMock(return_value={"ok": True}),
+        ) as oneshot,
+    ):
+        await rt.call_rpc(
+            "org_1",
+            "health",
+            fresh=True,
+            open_timeout=5,
+            recv_timeout=5,
+            rpc_timeout=10,
+        )
+    kwargs = oneshot.call_args.kwargs
+    assert kwargs["open_timeout"] == 5
+    assert kwargs["recv_timeout"] == 5
+    assert kwargs["rpc_timeout"] == 10
+
+
+@pytest.mark.asyncio
+async def test_call_rpc_fresh_scalar_timeout_fans_out_to_all_three():
+    rt = OpenClawRuntime()
+    container = {"gateway_token": "tok-1"}
+    with (
+        patch(
+            "core.runtime.openclaw.adapter._get_ecs",
+            return_value=_mock_ecs(container, "10.0.0.5"),
+        ),
+        patch(
+            "core.runtime.openclaw.adapter.gateway_rpc_oneshot",
+            new=AsyncMock(return_value={"ok": True}),
+        ) as oneshot,
+    ):
+        await rt.call_rpc("org_1", "health", fresh=True, timeout=7)
+    kwargs = oneshot.call_args.kwargs
+    assert kwargs["open_timeout"] == 7
+    assert kwargs["recv_timeout"] == 7
+    assert kwargs["rpc_timeout"] == 7
+
+
+@pytest.mark.asyncio
+async def test_call_rpc_fresh_granular_overrides_scalar_default():
+    # Each granular value falls back to ``timeout`` only where unset.
+    rt = OpenClawRuntime()
+    container = {"gateway_token": "tok-1"}
+    with (
+        patch(
+            "core.runtime.openclaw.adapter._get_ecs",
+            return_value=_mock_ecs(container, "10.0.0.5"),
+        ),
+        patch(
+            "core.runtime.openclaw.adapter.gateway_rpc_oneshot",
+            new=AsyncMock(return_value={"ok": True}),
+        ) as oneshot,
+    ):
+        await rt.call_rpc("org_1", "health", fresh=True, timeout=7, rpc_timeout=30)
+    kwargs = oneshot.call_args.kwargs
+    assert kwargs["open_timeout"] == 7
+    assert kwargs["recv_timeout"] == 7
+    assert kwargs["rpc_timeout"] == 30
+
+
+@pytest.mark.asyncio
+async def test_call_rpc_fresh_no_timeouts_defaults_to_ten():
+    rt = OpenClawRuntime()
+    container = {"gateway_token": "tok-1"}
+    with (
+        patch(
+            "core.runtime.openclaw.adapter._get_ecs",
+            return_value=_mock_ecs(container, "10.0.0.5"),
+        ),
+        patch(
+            "core.runtime.openclaw.adapter.gateway_rpc_oneshot",
+            new=AsyncMock(return_value={"ok": True}),
+        ) as oneshot,
+    ):
+        await rt.call_rpc("org_1", "health", fresh=True)
+    kwargs = oneshot.call_args.kwargs
+    assert kwargs["open_timeout"] == 10.0
+    assert kwargs["recv_timeout"] == 10.0
+    assert kwargs["rpc_timeout"] == 10.0
+
+
+@pytest.mark.asyncio
 async def test_call_rpc_cold_container_raises():
     rt = OpenClawRuntime()
     with patch("core.runtime.openclaw.adapter._get_ecs", return_value=_mock_ecs(None, None)):

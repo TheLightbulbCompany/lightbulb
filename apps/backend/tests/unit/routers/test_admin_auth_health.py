@@ -10,9 +10,12 @@ The 4 endpoints under test:
 
 Auth model: `require_platform_admin` (see core/auth.py) gates the router at
 the dependency level by checking the caller's email domain against
-`@isol8.co`. Tests toggle access by re-binding `get_current_user` in
-`app.dependency_overrides` to return an AuthContext with either an
-`@isol8.co` email (admit) or some other email (deny).
+`@isol8.co`. Read endpoints resolve auth through the dual-auth
+`require_admin_read_access` (core/services/admin_access.py) whose Clerk
+fallback funnels into the same gate. Tests toggle access by re-binding both
+hooks in `app.dependency_overrides` to present an AuthContext with either an
+`@isol8.co` email (admit) or some other email (deny). The platform_ops-token
+side of the read surface is covered in test_admin_read_ops_token.py.
 """
 
 import os
@@ -20,25 +23,32 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from core.auth import AuthContext, get_current_user
+from core.auth import AuthContext, get_current_user, require_platform_admin
+from core.services.admin_access import require_admin_read_access
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 
 # ---------------------------------------------------------------------------
-# Helpers — local to this file; override get_current_user so
-# require_platform_admin sees the email claim it needs.
+# Helpers — local to this file; present the AuthContext (email claim) that
+# require_platform_admin needs, on both the Clerk-only and read-surface hooks.
 # ---------------------------------------------------------------------------
 
 
 def _admit_test_user(app, email: str = "admin@isol8.co"):
     """Override auth so the caller looks like an Isol8 team member."""
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_test_123", email=email)
+    ctx = AuthContext(user_id="user_test_123", email=email)
+    app.dependency_overrides[get_current_user] = lambda: ctx
+    app.dependency_overrides[require_admin_read_access] = lambda: ctx
 
 
 def _deny_all_admins(app):
     """Override auth so the caller has a non-@isol8.co email => 403."""
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_test_123", email="user@example.com")
+    ctx = AuthContext(user_id="user_test_123", email="user@example.com")
+    app.dependency_overrides[get_current_user] = lambda: ctx
+    # Run the real platform-admin gate so the deny path (403 + detail) is
+    # exercised on the read surface rather than stubbed.
+    app.dependency_overrides[require_admin_read_access] = lambda: require_platform_admin(ctx)
 
 
 # ---------------------------------------------------------------------------

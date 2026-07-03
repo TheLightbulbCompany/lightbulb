@@ -2,8 +2,8 @@
 
 `/recover` inspects current container + gateway state and dispatches the
 appropriate recovery action. `/gateway/restart` forces a config reload on a
-running gateway. Both reach the gateway through the shared signed one-shot
-helper.
+running gateway. Both reach the gateway through the runtime port's fresh
+one-shot path (signed, so `operator.admin`-scoped methods work).
 """
 
 import asyncio
@@ -13,8 +13,8 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.containers import get_ecs_manager
-from core.gateway.operator_rpc import gateway_rpc_oneshot
 from core.repositories import container_repo
+from core.runtime import get_runtime_for_owner
 from core.services.container_provision import (
     resolve_provider_choice as _resolve_provider_choice,
 )
@@ -35,25 +35,22 @@ def _get_lock(owner_id: str) -> asyncio.Lock:
 
 
 async def _call_gateway_rpc(
-    ip: str,
     owner_id: str,
-    token: str,
     method: str,
     params: dict | None = None,
 ) -> dict:
     """Short-lived signed RPC to the owner's gateway container.
 
-    Thin wrapper over the shared `gateway_rpc_oneshot` helper, keeping
+    Thin wrapper over the runtime port's fresh one-shot path, keeping
     recovery's tight timeouts: a wedged gateway should fail fast so the
     recovery flow escalates to restart / reprovision rather than hanging the
     request.
     """
-    return await gateway_rpc_oneshot(
-        ip,
-        owner_id=owner_id,
-        token=token,
-        method=method,
-        params=params,
+    return await get_runtime_for_owner(owner_id).call_rpc(
+        owner_id,
+        method,
+        params,
+        fresh=True,
         open_timeout=5,
         recv_timeout=5,
         rpc_timeout=10,
@@ -122,7 +119,6 @@ async def container_recover(
             }
 
         # 3. Container is running -> check gateway health
-        token = container.get("gateway_token", "")
         if not ip:
             logger.warning("Owner %s: running container but no IP, reprovisioning", owner_id)
             try:
@@ -144,7 +140,7 @@ async def container_recover(
 
         # Try gateway health check
         try:
-            health = await _call_gateway_rpc(ip, owner_id, token, "health")
+            health = await _call_gateway_rpc(owner_id, "health")
             if health.get("ok"):
                 return {
                     "action": "none",
@@ -157,7 +153,7 @@ async def container_recover(
         # 4. Gateway is down -> try restart via update.run RPC
         logger.info("Recovering owner %s: gateway restart", owner_id)
         try:
-            await _call_gateway_rpc(ip, owner_id, token, "update.run")
+            await _call_gateway_rpc(owner_id, "update.run")
             return {
                 "action": "gateway_restart",
                 "state": "GATEWAY_DOWN_DEAD",
@@ -210,15 +206,14 @@ async def gateway_restart(
 
     try:
         # config.apply is an operator.admin-reserved method, so this must use
-        # the signed one-shot (a token-only connect would have its scope
+        # the signed fresh one-shot (a token-only connect would have its scope
         # stripped and the apply rejected). Keep the original generous budget —
         # config.apply re-reads config and restarts the gateway.
-        await gateway_rpc_oneshot(
-            ip,
-            owner_id=owner_id,
-            token=container["gateway_token"],
-            method="config.apply",
-            params={},
+        await get_runtime_for_owner(owner_id).call_rpc(
+            owner_id,
+            "config.apply",
+            {},
+            fresh=True,
             open_timeout=30,
             recv_timeout=10,
             rpc_timeout=30,

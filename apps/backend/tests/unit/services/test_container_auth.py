@@ -1,10 +1,14 @@
 """Tests for revoke_provider_auth_in_container — the 6.6 live-store revoke.
 
 Deleting the EFS seed (oauth.json) does not clear the credential the running
-container already imported into its per-agent SQLite store; this helper calls
-the gateway ``models.authLogout`` RPC to drop it without a restart. It is
+container already imported into its per-agent SQLite store; this entry point
+drops it via the gateway ``models.authLogout`` RPC without a restart. It is
 strictly best-effort: never raises, returns False when there's no live store
 to clear.
+
+The revoke body delegates to the runtime port, so these tests patch the
+OpenClaw adapter's seams (container resolution + the signed one-shot) and
+assert the public contract end to end through the real adapter.
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -24,8 +28,8 @@ def _ecs_manager(container, ip):
 @pytest.mark.asyncio
 async def test_cold_container_skips_logout():
     with (
-        patch("core.services.container_auth.get_ecs_manager", return_value=_ecs_manager(None, None)),
-        patch("core.services.container_auth._logout_provider_via_gateway", new=AsyncMock()) as logout,
+        patch("core.runtime.openclaw.adapter._get_ecs", return_value=_ecs_manager(None, None)),
+        patch("core.runtime.openclaw.adapter.gateway_rpc_oneshot", new=AsyncMock()) as logout,
     ):
         assert await revoke_provider_auth_in_container("org_1") is False
         logout.assert_not_awaited()
@@ -36,15 +40,19 @@ async def test_running_container_calls_logout_for_openai():
     container = {"gateway_token": "tok", "operator_priv_key_enc": "enc-seed"}
     with (
         patch(
-            "core.services.container_auth.get_ecs_manager",
+            "core.runtime.openclaw.adapter._get_ecs",
             return_value=_ecs_manager(container, "10.0.0.5"),
         ),
-        patch("core.services.container_auth._logout_provider_via_gateway", new=AsyncMock()) as logout,
+        patch("core.runtime.openclaw.adapter.gateway_rpc_oneshot", new=AsyncMock()) as logout,
     ):
         assert await revoke_provider_auth_in_container("org_1") is True
-        # The shared signed one-shot re-loads the seed from the container row,
-        # so the wrapper takes (ip, owner_id, token, provider).
-        logout.assert_awaited_once_with("10.0.0.5", "org_1", "tok", "openai")
+        logout.assert_awaited_once()
+        assert logout.await_args.args[0] == "10.0.0.5"
+        kwargs = logout.await_args.kwargs
+        assert kwargs["owner_id"] == "org_1"
+        assert kwargs["token"] == "tok"
+        assert kwargs["method"] == "models.authLogout"
+        assert kwargs["params"] == {"provider": "openai"}
 
 
 @pytest.mark.asyncio
@@ -52,11 +60,11 @@ async def test_logout_rpc_failure_is_best_effort():
     container = {"gateway_token": "tok", "operator_priv_key_enc": "enc-seed"}
     with (
         patch(
-            "core.services.container_auth.get_ecs_manager",
+            "core.runtime.openclaw.adapter._get_ecs",
             return_value=_ecs_manager(container, "10.0.0.5"),
         ),
         patch(
-            "core.services.container_auth._logout_provider_via_gateway",
+            "core.runtime.openclaw.adapter.gateway_rpc_oneshot",
             new=AsyncMock(side_effect=RuntimeError("boom")),
         ),
     ):
@@ -67,7 +75,7 @@ async def test_logout_rpc_failure_is_best_effort():
 async def test_resolve_failure_is_best_effort():
     m = MagicMock()
     m.resolve_running_container = AsyncMock(side_effect=RuntimeError("aws down"))
-    with patch("core.services.container_auth.get_ecs_manager", return_value=m):
+    with patch("core.runtime.openclaw.adapter._get_ecs", return_value=m):
         assert await revoke_provider_auth_in_container("org_1") is False
 
 
@@ -79,10 +87,10 @@ async def test_missing_token_or_operator_seed_skips_logout():
     for container in ({"operator_priv_key_enc": "enc-seed"}, {"gateway_token": "tok"}):
         with (
             patch(
-                "core.services.container_auth.get_ecs_manager",
+                "core.runtime.openclaw.adapter._get_ecs",
                 return_value=_ecs_manager(container, "10.0.0.5"),
             ),
-            patch("core.services.container_auth._logout_provider_via_gateway", new=AsyncMock()) as logout,
+            patch("core.runtime.openclaw.adapter.gateway_rpc_oneshot", new=AsyncMock()) as logout,
         ):
             assert await revoke_provider_auth_in_container("org_1") is False
             logout.assert_not_awaited()

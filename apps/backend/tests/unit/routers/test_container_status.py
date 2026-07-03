@@ -842,10 +842,15 @@ class TestGatewayRestart:
             yield manager
 
     @pytest.fixture
-    def mock_call_gateway_rpc(self):
-        # gateway_restart now lives in container_recover and reaches the gateway
-        # through the shared signed one-shot helper.
-        with patch("routers.container_recover.gateway_rpc_oneshot", new_callable=AsyncMock) as mock_rpc:
+    def mock_call_gateway_rpc(self, mock_ecs_manager):
+        # gateway_restart reaches the gateway through the runtime port's fresh
+        # one-shot path. The adapter resolves the container itself, so point
+        # its resolver at the same mocked ECS manager the router uses and
+        # intercept the signed one-shot at the adapter seam.
+        with (
+            patch("core.runtime.openclaw.adapter._get_ecs", return_value=mock_ecs_manager),
+            patch("core.runtime.openclaw.adapter.gateway_rpc_oneshot", new_callable=AsyncMock) as mock_rpc,
+        ):
             mock_rpc.return_value = {}
             yield mock_rpc
 
@@ -877,6 +882,11 @@ class TestGatewayRestart:
         assert call.kwargs["method"] == "config.apply"
         assert call.kwargs["params"] == {}
         assert call.kwargs["owner_id"]  # signed handshake is scoped to the owner
+        # config.apply keeps its generous budget (it restarts the gateway) —
+        # distinct from recovery's tight 5/5/10 fail-fast timeouts.
+        assert call.kwargs["open_timeout"] == 30
+        assert call.kwargs["recv_timeout"] == 10
+        assert call.kwargs["rpc_timeout"] == 30
 
     @pytest.mark.asyncio
     async def test_gateway_restart_no_container(self, async_client, mock_ecs_manager, mock_call_gateway_rpc):

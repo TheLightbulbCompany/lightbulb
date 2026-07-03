@@ -38,11 +38,14 @@ class ServerEntry(BaseModel):
     Timeouts are optional here; absent values get container-appropriate defaults
     injected at write time (see _normalize_entry)."""
 
-    command: str | None = Field(None, description="Command to run a stdio MCP server")
+    # min_length=1: an empty-string command/transport/url is never a valid value,
+    # and allowing one would let a mixed shape slip past the presence checks below
+    # (e.g. command:"" alongside transport+url) and into openclaw.json.
+    command: str | None = Field(None, min_length=1, description="Command to run a stdio MCP server")
     args: list[str] = Field(default_factory=list, description="Command arguments")
     env: Dict[str, str] = Field(default_factory=dict, description="Environment variables")
-    transport: str | None = Field(None, description="Remote transport, e.g. streamable-http")
-    url: str | None = Field(None, description="Remote server URL")
+    transport: str | None = Field(None, min_length=1, description="Remote transport, e.g. streamable-http")
+    url: str | None = Field(None, min_length=1, description="Remote server URL")
     headers: Dict[str, str | int | bool] | None = Field(
         None, description="HTTP headers for a remote server (e.g. API-key auth)"
     )
@@ -51,14 +54,14 @@ class ServerEntry(BaseModel):
 
     @model_validator(mode="after")
     def _stdio_or_remote(self) -> "ServerEntry":
-        is_stdio = bool(self.command)
-        is_remote = bool(self.transport and self.url)
+        is_stdio = self.command is not None
+        is_remote = self.transport is not None and self.url is not None
         if is_stdio == is_remote:
             raise ValueError("server must be either stdio (command) or remote (transport+url), not neither/both")
         # A stdio entry carrying a stray remote field (or vice versa) would write
         # a mixed shape into openclaw.json that fails the hot reload — reject the
         # partial overlap too, not just the complete one.
-        if is_stdio and (self.transport or self.url or self.headers is not None):
+        if is_stdio and (self.transport is not None or self.url is not None or self.headers is not None):
             raise ValueError("a stdio (command) server must not set transport, url, or headers")
         return self
 

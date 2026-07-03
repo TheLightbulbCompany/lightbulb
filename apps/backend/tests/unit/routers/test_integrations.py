@@ -524,3 +524,26 @@ class TestIntegrationsRouter:
                 )
                 assert resp.status_code == 422, stray
         app.dependency_overrides.pop(get_current_user, None)
+
+    @pytest.mark.asyncio
+    async def test_put_rejects_empty_string_shape_fields(self, app, patched_router, auth_override):
+        """Empty-string command/transport/url must 422: they are never valid, and
+        a falsy-but-present value would otherwise slip past the shape checks and
+        write a mixed entry into openclaw.json."""
+        app.dependency_overrides[get_current_user] = auth_override
+        bodies = [
+            # command:"" alongside a complete remote shape
+            {"command": "", "transport": "streamable-http", "url": "https://x/mcp"},
+            # stray transport:"" on a stdio entry
+            {"command": "npx", "transport": ""},
+            # url:"" alone
+            {"transport": "streamable-http", "url": ""},
+        ]
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            for body in bodies:
+                resp = await client.put(
+                    "/api/v1/integrations/mcp/servers",
+                    json={"servers": {"weird": body}},
+                )
+                assert resp.status_code == 422, body
+        app.dependency_overrides.pop(get_current_user, None)

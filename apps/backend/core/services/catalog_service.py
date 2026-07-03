@@ -25,9 +25,10 @@ Depends on injected collaborators so unit tests can mock them:
     (from core.services.config_patcher)
   - pair_fn: async callable
     (from core.services.paperclip_openclaw_pairing.pair_with_openclaw)
-  - gateway_pool_factory: callable returning the gateway pool singleton;
-    lazy-imported by default so import-time test bootstrap doesn't drag
-    in the whole containers module.
+  - runtime_factory: callable returning the owner's Runtime; its
+    ``.sessions`` surface is the live gateway pool the deploy pairs over.
+    Lazy by default (``get_runtime("openclaw")``) so import-time test
+    bootstrap doesn't drag in the whole containers module.
 """
 
 from __future__ import annotations
@@ -37,10 +38,14 @@ import copy
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
+from core.runtime import get_runtime
 from core.services.catalog_slice import strip_removed_agent_entry_keys
 from core.services.credentials.mcp_server import reconcile_integrations
+
+if TYPE_CHECKING:
+    from core.runtime.base import Runtime
 
 logger = logging.getLogger(__name__)
 
@@ -232,19 +237,18 @@ class CatalogService:
         workspace,
         apply_deploy_aux_mutations: Callable[..., Awaitable[None]],
         pair_fn: Callable[..., Awaitable[None]],
-        gateway_pool_factory: Callable[[], Any] | None = None,
+        runtime_factory: Callable[[], Runtime] | None = None,
     ):
         self._workspace = workspace
         self._apply_aux = apply_deploy_aux_mutations
         self._pair_fn = pair_fn
-        self._gateway_pool_factory = gateway_pool_factory
+        # Lazy so import-time test bootstrap doesn't drag in the containers
+        # module (the adapter's ``.sessions`` pulls the gateway pool only
+        # when actually invoked, at deploy time).
+        self._runtime_factory = runtime_factory or (lambda: get_runtime("openclaw"))
 
-    def _get_gateway_pool(self):
-        if self._gateway_pool_factory is not None:
-            return self._gateway_pool_factory()
-        from core.containers import get_gateway_pool
-
-        return get_gateway_pool()
+    def _get_sessions(self):
+        return self._runtime_factory().sessions
 
     async def deploy_from_artifact(
         self,
@@ -362,7 +366,7 @@ class CatalogService:
             await self._pair_fn(
                 owner_id=owner_id,
                 paperclip_agent=paperclip_agent,
-                gateway_pool=self._get_gateway_pool(),
+                gateway_pool=self._get_sessions(),
                 ip=container_ip,
                 token=container_token,
                 extra_update_fields=extra_update_fields,

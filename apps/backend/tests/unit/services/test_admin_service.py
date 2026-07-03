@@ -6,7 +6,7 @@ router layer in Phase C.
 
 import asyncio
 import os
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -239,7 +239,7 @@ async def test_list_user_agents_handles_gateway_timeout(monkeypatch):
             new=AsyncMock(return_value={"status": "running"}),
         ),
         patch("core.services.admin_service.get_ecs_manager", return_value=ecs),
-        patch("core.services.admin_service.get_gateway_pool", return_value=pool),
+        patch("core.services.admin_service.get_runtime_for_owner", return_value=MagicMock(sessions=pool)),
     ):
         result = await admin_service.list_user_agents("u1")
 
@@ -260,7 +260,7 @@ async def test_list_user_agents_returns_agents_on_running_container():
             new=AsyncMock(return_value={"status": "running"}),
         ),
         patch("core.services.admin_service.get_ecs_manager", return_value=ecs),
-        patch("core.services.admin_service.get_gateway_pool", return_value=pool),
+        patch("core.services.admin_service.get_runtime_for_owner", return_value=MagicMock(sessions=pool)),
     ):
         result = await admin_service.list_user_agents("u1")
 
@@ -300,7 +300,7 @@ async def test_get_agent_detail_redacts_config_secrets():
             new=AsyncMock(return_value={"status": "running"}),
         ),
         patch("core.services.admin_service.get_ecs_manager", return_value=ecs),
-        patch("core.services.admin_service.get_gateway_pool", return_value=pool),
+        patch("core.services.admin_service.get_runtime_for_owner", return_value=MagicMock(sessions=pool)),
     ):
         result = await admin_service.get_agent_detail("u1", "a")
 

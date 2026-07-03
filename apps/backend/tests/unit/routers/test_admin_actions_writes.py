@@ -709,7 +709,7 @@ class TestAgentDelete:
         ecs = MagicMock()
         ecs.resolve_running_container = AsyncMock(return_value=({"gateway_token": "tok"}, "10.0.0.1"))
         with (
-            patch("routers.admin.get_gateway_pool", return_value=pool),
+            patch("routers.admin.get_runtime_for_owner", return_value=MagicMock(sessions=pool)),
             patch("routers.admin.get_ecs_manager", return_value=ecs),
         ):
             res = await async_client.post("/api/v1/admin/users/u_target/agents/agent_42/delete")
@@ -734,7 +734,7 @@ class TestAgentDelete:
         ecs = MagicMock()
         ecs.resolve_running_container = AsyncMock(return_value=({"gateway_token": "tok"}, "10.0.0.1"))
         with (
-            patch("routers.admin.get_gateway_pool", return_value=pool),
+            patch("routers.admin.get_runtime_for_owner", return_value=MagicMock(sessions=pool)),
             patch("routers.admin.get_ecs_manager", return_value=ecs),
         ):
             res = await async_client.post("/api/v1/admin/users/u_target/agents/agent_42/delete")
@@ -754,7 +754,7 @@ class TestAgentClearSessions:
         ecs = MagicMock()
         ecs.resolve_running_container = AsyncMock(return_value=({"gateway_token": "tok"}, "10.0.0.1"))
         with (
-            patch("routers.admin.get_gateway_pool", return_value=pool),
+            patch("routers.admin.get_runtime_for_owner", return_value=MagicMock(sessions=pool)),
             patch("routers.admin.get_ecs_manager", return_value=ecs),
         ):
             res = await async_client.post("/api/v1/admin/users/u_target/agents/agent_42/clear-sessions")
@@ -778,7 +778,7 @@ class TestAgentClearSessions:
         ecs = MagicMock()
         ecs.resolve_running_container = AsyncMock(return_value=({"gateway_token": "tok"}, "10.0.0.1"))
         with (
-            patch("routers.admin.get_gateway_pool", return_value=pool),
+            patch("routers.admin.get_runtime_for_owner", return_value=MagicMock(sessions=pool)),
             patch("routers.admin.get_ecs_manager", return_value=ecs),
         ):
             res = await async_client.post("/api/v1/admin/users/u_target/agents/agent_42/clear-sessions")

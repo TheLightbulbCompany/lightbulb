@@ -19,7 +19,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, require_platform_admin
-from core.containers import get_ecs_manager, get_gateway_pool
+from core.containers import get_ecs_manager
+from core.runtime import get_runtime_for_owner
 from core.repositories import admin_actions_repo, update_repo  # noqa: F401 — admin_actions_repo is patch target for tests
 from core.services import (
     admin_service,
@@ -501,7 +502,10 @@ async def _admin_agent_rpc(
     the same shared agent concurrently.
     """
     owner_id, _ = await resolve_admin_owner_id(user_id)
-    pool = get_gateway_pool()
+    # The runtime's session surface is the same live gateway pool the RPC
+    # rides; container reachability + the collision-safe req_id stay the
+    # caller's responsibility here (concurrent admins share one connection).
+    pool = get_runtime_for_owner(owner_id).sessions
     ecs = get_ecs_manager()
     container, ip = await ecs.resolve_running_container(owner_id)
     if not container or not ip:

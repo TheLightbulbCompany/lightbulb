@@ -44,13 +44,16 @@ def _make_service(call_order: list[str] | None = None):
     workspace.read_cron_jobs = MagicMock(return_value=[])
     workspace.cleanup_agent_dirs = MagicMock(return_value=None)
     gateway_pool = MagicMock()
-    gateway_pool_factory = MagicMock(return_value=gateway_pool)
+    # The runtime factory returns a runtime whose ``.sessions`` surface is the
+    # gateway pool the deploy pairs over (what pair_fn receives).
+    runtime = MagicMock()
+    runtime.sessions = gateway_pool
 
     svc = CatalogService(
         workspace=workspace,
         apply_deploy_aux_mutations=apply_aux,
         pair_fn=pair_fn,
-        gateway_pool_factory=gateway_pool_factory,
+        runtime_factory=lambda: runtime,
     )
     return svc, workspace, apply_aux, pair_fn, gateway_pool
 

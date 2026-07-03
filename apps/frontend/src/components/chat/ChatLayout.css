@@ -285,6 +285,11 @@
    sidebar palette, matching `.agent-item`. */
 .session-list {
   flex-basis: 100%;
+  /* Without this, the list's `min-width: auto` resolves to the longest label's
+     intrinsic (nowrap) width, so it refuses to shrink, overflows the sidebar,
+     and the labels hard-clip instead of truncating. The ellipsis chain needs
+     `min-width: 0` at every flex level — the item and label already set it. */
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 1px;

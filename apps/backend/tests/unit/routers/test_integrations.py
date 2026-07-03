@@ -509,3 +509,18 @@ class TestIntegrationsRouter:
         assert "command" not in stored
         assert "args" not in stored
         assert "env" not in stored
+
+    @pytest.mark.asyncio
+    async def test_put_rejects_stdio_entry_with_partial_remote_fields(self, app, patched_router, auth_override):
+        """A stdio entry carrying a stray remote field (url without transport, or
+        transport without url) is a mixed shape that would fail OpenClaw's hot
+        reload — reject the partial overlap, not just the complete one."""
+        app.dependency_overrides[get_current_user] = auth_override
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            for stray in ({"url": "https://x/mcp"}, {"transport": "streamable-http"}):
+                resp = await client.put(
+                    "/api/v1/integrations/mcp/servers",
+                    json={"servers": {"weird": {"command": "npx", **stray}}},
+                )
+                assert resp.status_code == 422, stray
+        app.dependency_overrides.pop(get_current_user, None)

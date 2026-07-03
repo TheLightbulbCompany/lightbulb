@@ -36,7 +36,7 @@ class ServerEntry(BaseModel):
 
     Mirrors the registry's McpServer invariant: exactly one of the two shapes.
     Timeouts are optional here; absent values get container-appropriate defaults
-    injected at write time (see _apply_timeout_defaults)."""
+    injected at write time (see _normalize_entry)."""
 
     command: str | None = Field(None, description="Command to run a stdio MCP server")
     args: list[str] = Field(default_factory=list, description="Command arguments")
@@ -55,6 +55,11 @@ class ServerEntry(BaseModel):
         is_remote = bool(self.transport and self.url)
         if is_stdio == is_remote:
             raise ValueError("server must be either stdio (command) or remote (transport+url), not neither/both")
+        # A stdio entry carrying a stray remote field (or vice versa) would write
+        # a mixed shape into openclaw.json that fails the hot reload — reject the
+        # partial overlap too, not just the complete one.
+        if is_stdio and (self.transport or self.url or self.headers is not None):
+            raise ValueError("a stdio (command) server must not set transport, url, or headers")
         return self
 
 

@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { auth } from "@clerk/nextjs/server";
 
 import { AutoRefresh } from "@/components/admin/AutoRefresh";
@@ -12,7 +13,9 @@ type AttentionItem = {
   key: string;
   title: string;
   label: string;
-  tone: "error" | "unknown";
+  tone: "error" | "warn" | "unknown";
+  sub?: string;
+  href?: string;
 };
 
 export default async function AdminOverviewPage() {
@@ -41,9 +44,11 @@ export default async function AdminOverviewPage() {
       .filter((g) => g.status === "error" || g.status === "unknown")
       .map((g) => ({
         key: `container:${g.service_name}`,
-        title: g.owner_id,
+        title: g.display_name ?? g.owner_id,
         label: g.status,
         tone: (g.status === "error" ? "error" : "unknown") as "error" | "unknown",
+        sub: g.owner_id,
+        href: `/admin/users/${encodeURIComponent(g.owner_id)}`,
       })),
     ...(deploys?.data ?? [])
       .filter((d) => d.status.endsWith("_FAILED") || d.status.includes("ROLLBACK"))
@@ -52,12 +57,16 @@ export default async function AdminOverviewPage() {
         title: d.stack_name,
         label: d.status,
         tone: "error" as const,
+        sub: d.root_cause ?? undefined,
+        href: "/admin/deploys",
       })),
     ...(alarms?.data ?? []).map((a) => ({
       key: `alarm:${a.name}`,
-      title: a.name,
-      label: "in alarm",
-      tone: "error" as const,
+      title: a.description ?? a.name,
+      label: a.severity ?? "in alarm",
+      tone: (a.severity === "warning" ? "warn" : "error") as "warn" | "error",
+      sub: a.name,
+      href: a.console_url ?? undefined,
     })),
   ];
 
@@ -74,7 +83,14 @@ export default async function AdminOverviewPage() {
         {attention.length > 0 ? (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             {attention.map((a) => (
-              <Tile key={a.key} title={a.title} label={a.label} tone={a.tone} />
+              <Tile
+                key={a.key}
+                title={a.title}
+                label={a.label}
+                tone={a.tone}
+                sub={a.sub}
+                href={a.href}
+              />
             ))}
           </div>
         ) : degraded ? (
@@ -89,27 +105,45 @@ export default async function AdminOverviewPage() {
       {/* Summary tiles */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
         {(["running", "provisioning", "stopped", "error", "unknown"] as const).map(
-          (k) => (
-            <Card key={k}>
-              <MetricStat label={k} value={counts ? (counts[k] ?? 0) : "—"} />
-            </Card>
-          ),
+          (k) => {
+            const value = counts ? (counts[k] ?? 0) : 0;
+            // Non-zero error counts go loud; non-zero unknowns stay calm zinc.
+            const tone =
+              value > 0 && (k === "error" || k === "unknown") ? k : "default";
+            return (
+              <Card key={k}>
+                <MetricStat label={k} value={counts ? value : "—"} tone={tone} />
+              </Card>
+            );
+          },
         )}
       </div>
 
       {/* Live fleet grid */}
       <Card title="Fleet">
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-          {grid.map((g) => (
-            <div
-              key={g.service_name}
-              className="flex items-center justify-between rounded border border-zinc-800 p-2"
-            >
-              <span className="truncate text-xs text-zinc-400">{g.owner_id}</span>
-              <StatusChip status={g.status} />
-            </div>
-          ))}
-        </div>
+        {grid.length > 0 ? (
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {grid.map((g) => (
+              <Link
+                key={g.service_name}
+                href={`/admin/users/${encodeURIComponent(g.owner_id)}`}
+                title={`${g.owner_id} · ${g.service_name}`}
+                className="flex items-center justify-between rounded border border-zinc-800 p-2 hover:bg-zinc-900/60"
+              >
+                <span className="truncate text-xs text-zinc-400">
+                  {g.display_name ?? g.owner_id}
+                </span>
+                <StatusChip status={g.status} />
+              </Link>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-zinc-500">
+            {degraded
+              ? "Fleet data unavailable."
+              : "No containers provisioned yet."}
+          </p>
+        )}
       </Card>
     </div>
   );

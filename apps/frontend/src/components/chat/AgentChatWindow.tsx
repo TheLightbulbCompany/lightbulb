@@ -407,11 +407,29 @@ export function AgentChatWindow({
     // be clobbered when setChatMessages replaces the message list.
     return (
       <div className="flex flex-col h-full min-h-0 bg-[#faf7f2]">
-        <div className="flex-1 min-h-0 p-6 space-y-4" aria-busy="true">
-          <div className="h-4 w-2/5 rounded bg-[#eee9df] animate-pulse" />
-          <div className="h-4 w-3/5 rounded bg-[#eee9df] animate-pulse" />
-          <div className="h-4 w-1/2 rounded bg-[#eee9df] animate-pulse ml-auto" />
-          <div className="h-4 w-2/4 rounded bg-[#eee9df] animate-pulse" />
+        {/* Mirror MessageList's geometry (same pane padding, max-w-3xl column,
+            space-y-10 turn rhythm) and anchor to the bottom, where a loaded
+            transcript sits — so the placeholder occupies the region the
+            history will actually replace, shaped like conversation turns. */}
+        <div
+          className="flex-1 min-h-0 overflow-hidden flex flex-col justify-end p-4 md:px-8"
+          aria-busy="true"
+        >
+          <div className="w-full max-w-3xl mx-auto space-y-10 py-8">
+            <div className="space-y-2.5">
+              <div className="h-3.5 w-11/12 rounded bg-[#eee9df] animate-pulse motion-reduce:animate-none" />
+              <div className="h-3.5 w-3/5 rounded bg-[#eee9df] animate-pulse motion-reduce:animate-none [animation-delay:150ms]" />
+            </div>
+            {/* Echoes the real user bubble: right-aligned, rounded-2xl/br-md. */}
+            <div className="flex justify-end">
+              <div className="h-9 w-2/5 rounded-2xl rounded-br-md bg-[#f0ebe2] animate-pulse motion-reduce:animate-none [animation-delay:300ms]" />
+            </div>
+            <div className="space-y-2.5">
+              <div className="h-3.5 w-4/5 rounded bg-[#eee9df] animate-pulse motion-reduce:animate-none [animation-delay:450ms]" />
+              <div className="h-3.5 w-full rounded bg-[#eee9df] animate-pulse motion-reduce:animate-none [animation-delay:600ms]" />
+              <div className="h-3.5 w-2/5 rounded bg-[#eee9df] animate-pulse motion-reduce:animate-none [animation-delay:750ms]" />
+            </div>
+          </div>
         </div>
         <ChatInput
           onSend={handleSend}

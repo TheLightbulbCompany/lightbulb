@@ -137,6 +137,51 @@ describe("SessionList", () => {
     expect(screen.queryByRole("button", { name: "Rename General" })).toBeNull();
   });
 
+  it("asks to delete a named session via the trash affordance", () => {
+    const onDelete = vi.fn();
+    render(
+      <SessionList
+        sessions={makeSessions()}
+        activeSessionId={null}
+        onSelect={vi.fn()}
+        onNew={vi.fn()}
+        onDelete={onDelete}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Delete Taxes" }));
+    expect(onDelete).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "11111111-1111-4111-8111-111111111111", key: "k1" }),
+    );
+  });
+
+  it("delete asks the caller — it never selects the row it sits on", () => {
+    const onSelect = vi.fn();
+    render(
+      <SessionList
+        sessions={makeSessions()}
+        activeSessionId={null}
+        onSelect={onSelect}
+        onNew={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Delete Taxes" }));
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("offers no delete affordance on the General row", () => {
+    render(
+      <SessionList
+        sessions={[{ sessionId: null, key: "agent:a:u", label: "General", rawLabel: "General" }]}
+        activeSessionId={null}
+        onSelect={vi.fn()}
+        onNew={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "Delete General" })).toBeNull();
+  });
+
   it("Enter followed by the unmount blur commits exactly once", () => {
     const onRename = vi.fn();
     render(

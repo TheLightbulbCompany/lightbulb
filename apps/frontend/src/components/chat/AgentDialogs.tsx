@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import type { Agent } from "@/hooks/useAgents";
+import type { AgentSession } from "@/hooks/useAgentSessions";
 import { validateAgentName } from "@/lib/agentIdentity";
 
 // =============================================================================
@@ -221,6 +222,53 @@ export function AgentDeleteDialog({ agent, onCancel, onDelete }: DeleteProps) {
           <AlertDialogTitle>Delete {displayName}?</AlertDialogTitle>
           <AlertDialogDescription>
             This removes the agent&apos;s workspace, files, and session history. This cannot be undone.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        {error && <p className="text-xs text-red-500">{error}</p>}
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={submitting}>Cancel</AlertDialogCancel>
+          <Button variant="destructive" onClick={handleSubmit} disabled={submitting}>
+            {submitting ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
+            Delete
+          </Button>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
+interface SessionDeleteProps {
+  session: AgentSession | null;
+  onCancel: () => void;
+  onDelete: () => Promise<void>;
+}
+
+export function SessionDeleteDialog({ session, onCancel, onDelete }: SessionDeleteProps) {
+  const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSubmit = async () => {
+    submittingRef.current = true;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await onDelete();
+      capture("session_deleted");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      submittingRef.current = false;
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <AlertDialog open={session !== null} onOpenChange={(next) => !next && !submittingRef.current && onCancel()}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete &ldquo;{session?.label}&rdquo;?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This deletes the session and archives its transcript. This cannot be undone.
           </AlertDialogDescription>
         </AlertDialogHeader>
         {error && <p className="text-xs text-red-500">{error}</p>}

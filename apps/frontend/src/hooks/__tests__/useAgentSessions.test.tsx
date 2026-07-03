@@ -205,4 +205,50 @@ describe("useAgentSessions — filtered per-agent 4-part rows", () => {
       label: "Taxes 2026",
     });
   });
+
+  it("deleteSession deletes the entry (archiving its transcript) and revalidates", async () => {
+    const mutate = vi.fn().mockResolvedValue(undefined);
+    useGatewayRpc.mockReturnValue({
+      data: { sessions: [] },
+      error: undefined,
+      isLoading: false,
+      mutate,
+    });
+    const { useAgentSessions } = await import("@/hooks/useAgentSessions");
+    const { result } = renderHook(() => useAgentSessions("agent-x", "user-1"));
+    await result.current.deleteSession(
+      "agent:agent-x:user-1:11111111-1111-4111-8111-111111111111",
+    );
+    expect(callRpc).toHaveBeenCalledWith("sessions.delete", {
+      key: "agent:agent-x:user-1:11111111-1111-4111-8111-111111111111",
+      deleteTranscript: true,
+    });
+    expect(mutate).toHaveBeenCalled();
+  });
+
+  it("deleteSession propagates RPC failure (the confirm dialog surfaces it)", async () => {
+    useGatewayRpc.mockReturnValue(rpcReturn([]));
+    callRpc.mockRejectedValueOnce(new Error("gateway unavailable"));
+    const { useAgentSessions } = await import("@/hooks/useAgentSessions");
+    const { result } = renderHook(() => useAgentSessions("agent-x", "user-1"));
+    await expect(
+      result.current.deleteSession("agent:agent-x:user-1:11111111-1111-4111-8111-111111111111"),
+    ).rejects.toThrow("gateway unavailable");
+  });
+
+  it("a failed revalidation after a successful delete does NOT read as a failed delete", async () => {
+    const failingMutate = vi.fn().mockRejectedValue(new Error("revalidate hiccup"));
+    useGatewayRpc.mockReturnValue({
+      data: { sessions: [] },
+      error: undefined,
+      isLoading: false,
+      mutate: failingMutate,
+    });
+    const { useAgentSessions } = await import("@/hooks/useAgentSessions");
+    const { result } = renderHook(() => useAgentSessions("agent-x", "user-1"));
+    await expect(
+      result.current.deleteSession("agent:agent-x:user-1:11111111-1111-4111-8111-111111111111"),
+    ).resolves.toBeUndefined();
+    expect(failingMutate).toHaveBeenCalled();
+  });
 });

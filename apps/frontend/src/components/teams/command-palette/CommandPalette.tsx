@@ -7,11 +7,12 @@
 // (NewIssueDialog) merges.
 
 import { useState, useMemo } from "react";
-import { useRouter } from "next/navigation";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { Dialog, DialogPortal, DialogTitle } from "@/components/ui/dialog";
 import { Search } from "lucide-react";
 import { filterNavActions, type CommandPaletteAction } from "./commandPaletteActions";
+import { teamsDetailUrl } from "@/lib/shellNav";
+import { agentInspectorUrl } from "@/components/teams/shared/lib/agentInspectorUrl";
 import { useFilteredCommandResults } from "./useFilteredCommandResults";
 
 type FlatItem = {
@@ -61,7 +62,6 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
 }
 
 function CommandPaletteContent({ open, onOpenChange }: CommandPaletteProps) {
-  const router = useRouter();
   const [query, setQuery] = useState("");
   const [rawSelectedIndex, setSelectedIndex] = useState(0);
 
@@ -71,9 +71,9 @@ function CommandPaletteContent({ open, onOpenChange }: CommandPaletteProps) {
   const flatItems = useMemo<FlatItem[]>(() => {
     const items: FlatItem[] = [];
     navResults.forEach((a) => items.push({ kind: "nav", id: a.id, label: a.label, path: a.path }));
-    agents.forEach((a) => items.push({ kind: "agent", id: a.id, label: a.name, path: `/teams/agents/${a.id}` }));
-    issues.forEach((i) => items.push({ kind: "issue", id: i.id, label: i.title, path: `/teams/issues/${i.id}` }));
-    projects.forEach((p) => items.push({ kind: "project", id: p.id, label: p.name, path: `/teams/projects/${p.id}` }));
+    agents.forEach((a) => items.push({ kind: "agent", id: a.id, label: a.name, path: agentInspectorUrl(a.id) }));
+    issues.forEach((i) => items.push({ kind: "issue", id: i.id, label: i.title, path: teamsDetailUrl("issue", i.id) }));
+    projects.forEach((p) => items.push({ kind: "project", id: p.id, label: p.name, path: teamsDetailUrl("project", p.id) }));
     return items;
   }, [navResults, agents, issues, projects]);
 
@@ -82,7 +82,10 @@ function CommandPaletteContent({ open, onOpenChange }: CommandPaletteProps) {
 
   const select = (item: FlatItem) => {
     onOpenChange(false);
-    router.push(item.path);
+    // Palette targets are all in-shell `/chat?...` URLs — commit them through
+    // the History API (same mechanism as handleShellLinkClick) so a jump
+    // costs no RSC round-trip on the force-dynamic /chat route.
+    window.history.pushState(null, "", item.path);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {

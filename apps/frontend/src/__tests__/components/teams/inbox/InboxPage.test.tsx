@@ -285,7 +285,8 @@ describe("InboxPage", () => {
     ).toBeInTheDocument();
   });
 
-  test("creating a new task navigates to /teams/issues/<id>", async () => {
+  test("creating a new task opens the canonical in-shell detail URL", async () => {
+    const pushStateSpy = vi.spyOn(window.history, "pushState");
     const create = vi
       .fn()
       .mockResolvedValue({ id: "iss_new_42", title: "Hello" } as Issue);
@@ -306,15 +307,26 @@ describe("InboxPage", () => {
       expect(create).toHaveBeenCalled();
     });
     await waitFor(() => {
-      expect(mockRouterPush).toHaveBeenCalledWith("/teams/issues/iss_new_42");
+      expect(pushStateSpy).toHaveBeenCalledWith(
+        null,
+        "",
+        "/chat?panel=teams-issue-detail&detailId=iss_new_42",
+      );
     });
+    pushStateSpy.mockRestore();
   });
 
-  test("keyboard-open routes through router.push when standalone (no nav shell)", () => {
+  test("keyboard-open falls back to the canonical URL when no nav provider is mounted", () => {
+    const pushStateSpy = vi.spyOn(window.history, "pushState");
     render(<InboxPage {...baseProps} />);
     const onOpen = captureOnOpen();
     onOpen({ id: "iss_kbd" });
-    expect(mockRouterPush).toHaveBeenCalledWith("/teams/issues/iss_kbd");
+    expect(pushStateSpy).toHaveBeenCalledWith(
+      null,
+      "",
+      "/chat?panel=teams-issue-detail&detailId=iss_kbd",
+    );
+    pushStateSpy.mockRestore();
   });
 
   test("keyboard-open opens the detail in-shell when a nav provider is present", () => {
@@ -325,9 +337,11 @@ describe("InboxPage", () => {
       </InlineTeamsNavProvider>,
     );
     const onOpen = captureOnOpen();
+    const pushStateSpy = vi.spyOn(window.history, "pushState");
     onOpen({ id: "iss_kbd" });
     expect(openDetail).toHaveBeenCalledWith("issue-detail", "iss_kbd");
-    expect(mockRouterPush).not.toHaveBeenCalled();
+    expect(pushStateSpy).not.toHaveBeenCalled();
+    pushStateSpy.mockRestore();
   });
 
   test("creating a new task opens the detail in-shell when a nav provider is present", async () => {
@@ -354,7 +368,6 @@ describe("InboxPage", () => {
     await waitFor(() => {
       expect(openDetail).toHaveBeenCalledWith("issue-detail", "iss_new_99");
     });
-    expect(mockRouterPush).not.toHaveBeenCalled();
   });
 
 });

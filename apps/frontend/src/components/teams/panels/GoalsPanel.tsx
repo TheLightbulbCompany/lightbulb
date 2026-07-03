@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
+import { teamsDetailUrl } from "@/lib/shellNav";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { notifyApiError } from "@/lib/notify";
 import { useGoalMutations } from "@/components/teams/goals/hooks/useGoalMutations";
@@ -169,13 +170,14 @@ export function GoalsPanel() {
 
   const tree = useMemo(() => buildTree(data?.goals ?? []), [data]);
 
-  // Inline (under /chat) opens the detail in-shell; standalone (/teams) does a
-  // hard navigation to the dedicated detail route. Mirrors RoutinesPanel.
+  // With a nav provider the detail opens through the shell's openDetail;
+  // without one, commit the canonical in-shell URL through the History API so
+  // the swap stays client-side either way. Mirrors RoutinesPanel.
   const openGoal = (id: string) => {
     if (nav) {
       nav.openDetail("goal-detail", id);
     } else if (typeof window !== "undefined") {
-      window.location.href = `/teams/goals/${id}`;
+      window.history.pushState(null, "", teamsDetailUrl("goal", id));
     }
   };
 

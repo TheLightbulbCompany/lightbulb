@@ -3,6 +3,7 @@
 
 import type { CompanyAgent } from "@/components/teams/shared/types";
 import { AgentOrgControls } from "@/components/teams/agents/AgentOrgControls";
+import { handleShellLinkClick } from "@/lib/shellNav";
 
 // `isSeededAgent` now lives alongside the org controls that gate on it.
 // Re-exported here so existing importers (AgentsListPanel + tests) keep their
@@ -38,15 +39,7 @@ export function AgentManageSection({
           <h3 className="font-editorial-serif text-lg">Profile</h3>
           <a
             href={`/chat?panel=agents&agent=${agent.id}`}
-            onClick={(e) => {
-              // Plain left-click swaps the shell panel client-side (this
-              // section only renders inside the /chat shell); modified
-              // clicks keep the href's native new-tab semantics. A bare
-              // href would trigger a full document reload.
-              if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-              e.preventDefault();
-              window.history.pushState(null, "", `/chat?panel=agents&agent=${agent.id}`);
-            }}
+            onClick={(e) => handleShellLinkClick(e, `/chat?panel=agents&agent=${agent.id}`)}
             className="text-sm hover:underline"
             style={{ color: "var(--forest)" }}
           >

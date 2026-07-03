@@ -6,6 +6,7 @@
 // state is not a primitive, so the breadcrumb / header-seed helpers degrade
 // to no-op stubs that preserve call-site signatures.
 
+import { teamsDetailUrl } from "@/lib/shellNav";
 import type { Issue } from "@/components/teams/shared/types";
 
 type IssueDetailBreadcrumb = {
@@ -30,9 +31,9 @@ export type IssueDetailLocationState = {
   issueDetailInboxQuickArchiveArmed?: boolean;
 };
 
-// Translate upstream `/issues/:id` to Isol8's `/teams/issues/:id`.
+// Translate upstream `/issues/:id` to Isol8's canonical in-shell detail URL.
 export function createIssueDetailPath(issuePathId: string): string {
-  return `/teams/issues/${issuePathId}`;
+  return teamsDetailUrl("issue", issuePathId);
 }
 
 // No-op stub: Next App Router has no Link `state` prop, so we just return

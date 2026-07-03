@@ -22,6 +22,7 @@ import { PriorityIcon } from "@/components/teams/shared/components/PriorityIcon"
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { cn } from "@/lib/utils";
+import { handleShellLinkClick, teamsDetailUrl } from "@/lib/shellNav";
 import type {
   Issue,
   IssueStatus,
@@ -146,9 +147,12 @@ function ParentLink({ parentId }: { parentId: string }) {
     ? (parent.identifier ?? parent.id.slice(0, 8))
     : parentId.slice(0, 8);
   const title = parent?.title?.trim() ?? "";
+  const parentUrl = teamsDetailUrl("issue", parentId);
   return (
     <Link
-      href={`/teams/issues/${parentId}`}
+      href={parentUrl}
+      prefetch={false}
+      onClick={(e) => handleShellLinkClick(e, parentUrl)}
       className="inline-flex min-w-0 items-baseline gap-1.5 hover:underline"
       style={{ color: "var(--forest)" }}
     >

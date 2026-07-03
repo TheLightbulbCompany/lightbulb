@@ -6,10 +6,10 @@ import Link from "next/link";
 import { Eye, X } from "lucide-react";
 import type { Issue } from "@/components/teams/shared/types";
 import {
-  createIssueDetailPath,
   rememberIssueDetailLocationState,
   withIssueDetailHeaderSeed,
 } from "@/components/teams/shared/lib/issueDetailBreadcrumb";
+import { teamsDetailUrl } from "@/lib/shellNav";
 import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
 import { cn } from "@/lib/utils";
 import { StatusIcon } from "@/components/teams/shared/components/StatusIcon";
@@ -66,15 +66,16 @@ export function IssueRow({
   archiveDisabled,
   className,
 }: IssueRowProps) {
-  // The detail route /teams/issues/{id} forwards through the BFF to upstream
-  // /api/issues/{id}, which resolves by the internal id ONLY — never the
-  // human-readable identifier (e.g. ENG-42). So link by id; the identifier is
-  // display-only (see `identifier` below).
+  // The detail view fetches upstream /api/issues/{id} through the BFF, which
+  // resolves by the internal id ONLY — never the human-readable identifier
+  // (e.g. ENG-42). So link by id; the identifier is display-only (see
+  // `identifier` below).
   const issuePathId = issue.id;
   // Inside the /chat shell a nav provider is present → intercept the row's
-  // own <Link> click and open the detail view in-shell. Standalone under
-  // /teams there's no provider (hook returns null) → the <Link href> drives
-  // navigation untouched, keeping middle-click / keyboard / direct-link intact.
+  // own <Link> click and open the detail view in-shell. Without a provider
+  // (hook returns null) the <Link href> drives navigation untouched — it is
+  // the canonical in-shell URL, so middle-click / keyboard / direct-link all
+  // still land in the right place.
   const nav = useInlineTeamsNav();
   const handleOpen = useCallback(
     (event: MouseEvent<HTMLAnchorElement>) => {
@@ -145,7 +146,8 @@ export function IssueRow({
   return (
     // TODO(#3d): re-evaluate quicklook/prefetch/state props when IssueDetail page lands.
     <Link
-      href={createIssueDetailPath(issuePathId)}
+      href={teamsDetailUrl("issue", issuePathId)}
+      prefetch={false}
       data-inbox-issue-link
       id={checklistRowId}
       aria-current={checklistCurrentStep ? "step" : undefined}

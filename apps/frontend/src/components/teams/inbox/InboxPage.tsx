@@ -6,7 +6,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 
 import { Inbox as InboxIcon } from "lucide-react";
 
@@ -23,7 +23,7 @@ import {
 } from "@/components/getstarted/getStartedFirstTask";
 
 import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
-import { replaceSearchParams } from "@/lib/shellNav";
+import { replaceSearchParams, teamsDetailUrl } from "@/lib/shellNav";
 import { useInboxData } from "@/components/teams/inbox/hooks/useInboxData";
 import { useInboxKeyboardNav } from "@/components/teams/inbox/hooks/useInboxKeyboardNav";
 import { useInboxArchiveStack } from "@/components/teams/inbox/hooks/useInboxArchiveStack";
@@ -95,11 +95,10 @@ export function InboxPage({
   projects = [],
   labels = [],
 }: InboxPageProps) {
-  const router = useRouter();
   const searchParams = useSearchParams();
   // Inside the /chat shell a nav provider is present → open the issue detail
-  // in-shell. Standalone under /teams there's no provider (hook returns null)
-  // → fall back to the native /teams/issues/{id} route via router.push.
+  // in-shell. Without one (bare mount), fall back to committing the canonical
+  // in-shell URL directly — same destination, no provider hop.
   const inlineNav = useInlineTeamsNav();
   const openIssue = useCallback(
     (issueId: string) => {
@@ -107,9 +106,9 @@ export function InboxPage({
         inlineNav.openDetail("issue-detail", issueId);
         return;
       }
-      router.push(`/teams/issues/${issueId}`);
+      window.history.pushState(null, "", teamsDetailUrl("issue", issueId));
     },
-    [inlineNav, router],
+    [inlineNav],
   );
 
   // 1. URL-synced tab. The URL wins on first render, falling back to
@@ -150,7 +149,7 @@ export function InboxPage({
   // which only changes the URL) is detected by comparing the param against its
   // previous value DURING render — React's "adjust state when a prop changes"
   // pattern, the same one the selection clamp below uses. The effect then ONLY
-  // strips the param via router.replace (not setState), so a refresh / back-nav
+  // strips the param via a URL replace (not setState), so a refresh / back-nav
   // can't reopen it. The prefill intent is captured as STATE — not re-derived
   // from the param — so it survives the strip and any later same-page re-open.
   const newIssueParam = searchParams.get("newIssue");

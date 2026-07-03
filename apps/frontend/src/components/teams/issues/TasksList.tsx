@@ -36,6 +36,7 @@ import {
   MoreHorizontal,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { teamsDetailUrl } from "@/lib/shellNav";
 import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
 import {
   Popover,
@@ -532,8 +533,9 @@ function TaskRow({
 
   const handleClick = (e: React.MouseEvent) => {
     // Mirror KanbanCard: keep native <a> behaviour for modified clicks
-    // (new tab/window) and standalone /teams (no nav provider); route a plain
-    // left-click to the in-shell detail panel when the provider is present.
+    // (new tab/window); route a plain left-click to the in-shell detail panel
+    // when the nav provider is present. Without a provider the href — the
+    // canonical in-shell URL — drives navigation natively.
     if (!nav) return;
     if (
       e.defaultPrevented ||
@@ -558,7 +560,8 @@ function TaskRow({
 
   return (
     <Link
-      href={`/teams/issues/${issue.id}`}
+      href={teamsDetailUrl("issue", issue.id)}
+      prefetch={false}
       onClick={handleClick}
       draggable={false}
       className="group flex items-center gap-2 border-b border-[var(--edge)] py-2.5 pr-2 text-sm no-underline transition-colors last:border-b-0 hover:bg-[var(--cream-deeper)]"

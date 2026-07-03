@@ -27,7 +27,10 @@ describe("ProjectsListPanel", () => {
     render(<ProjectsListPanel />);
     expect(screen.getByText("Marketing")).toBeInTheDocument();
     const link = screen.getByText("Open →");
-    expect(link.closest("a")).toHaveAttribute("href", "/teams/projects/p1");
+    expect(link.closest("a")).toHaveAttribute(
+      "href",
+      "/chat?panel=teams-project-detail&detailId=p1",
+    );
   });
 
   it("create form posts ONLY whitelisted fields (name + optional description)", async () => {

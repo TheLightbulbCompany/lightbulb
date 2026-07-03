@@ -16,6 +16,7 @@ import Link from "next/link";
 import { Target, X } from "lucide-react";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { cn } from "@/lib/utils";
+import { handleShellLinkClick, teamsDetailUrl } from "@/lib/shellNav";
 import {
   PROJECT_STATUSES,
   type Project,
@@ -175,7 +176,9 @@ function GoalsEditor({
           }}
         >
           <Link
-            href={`/teams/goals/${goal.id}`}
+            href={teamsDetailUrl("goal", goal.id)}
+            prefetch={false}
+            onClick={(e) => handleShellLinkClick(e, teamsDetailUrl("goal", goal.id))}
             className="min-w-0 truncate hover:underline"
             style={{ color: "var(--ink)" }}
           >

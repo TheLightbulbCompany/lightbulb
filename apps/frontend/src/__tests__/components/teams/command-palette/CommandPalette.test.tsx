@@ -1,13 +1,8 @@
-import { describe, test, expect, vi, beforeEach } from "vitest";
+import { test, expect, vi, beforeEach } from "vitest";
 import { render, fireEvent, screen } from "@testing-library/react";
 
 vi.mock("@/components/teams/command-palette/useFilteredCommandResults", () => ({
   useFilteredCommandResults: vi.fn(() => ({ agents: [], issues: [], projects: [] })),
-}));
-
-const mockPush = vi.fn();
-vi.mock("next/navigation", () => ({
-  useRouter: () => ({ push: mockPush }),
 }));
 
 import { CommandPalette } from "@/components/teams/command-palette/CommandPalette";
@@ -52,20 +47,29 @@ test("ArrowUp at top stays at 0", () => {
   expect(dashboardRow).toHaveAttribute("aria-selected", "true");
 });
 
-test("Enter on selected row calls router.push + closes dialog", () => {
+test("Enter on selected row pushes the canonical URL + closes dialog", () => {
+  // Palette navigation commits through the History API (pushState of the
+  // canonical in-shell URL), not the app router. Spy per-test — the global
+  // afterEach restoreAllMocks() would detach a module-scope spy.
+  const pushStateSpy = vi.spyOn(window.history, "pushState");
   const onOpenChange = vi.fn();
   render(<CommandPalette open onOpenChange={onOpenChange} />);
   const input = screen.getByPlaceholderText(/search/i);
   fireEvent.keyDown(input, { key: "Enter" });
-  expect(mockPush).toHaveBeenCalledWith("/teams/dashboard");
+  expect(pushStateSpy).toHaveBeenCalledWith(
+    null,
+    "",
+    "/chat?panel=teams-dashboard",
+  );
   expect(onOpenChange).toHaveBeenCalledWith(false);
 });
 
 test("clicking a row selects it + navigates", () => {
+  const pushStateSpy = vi.spyOn(window.history, "pushState");
   const onOpenChange = vi.fn();
   render(<CommandPalette open onOpenChange={onOpenChange} />);
   fireEvent.click(screen.getByText("Inbox").closest("[data-cmd-row]")!);
-  expect(mockPush).toHaveBeenCalledWith("/teams/inbox");
+  expect(pushStateSpy).toHaveBeenCalledWith(null, "", "/chat?panel=teams-inbox");
   expect(onOpenChange).toHaveBeenCalledWith(false);
 });
 

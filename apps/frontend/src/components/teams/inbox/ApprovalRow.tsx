@@ -45,13 +45,6 @@ export function ApprovalRow({ approval }: { approval: Approval }) {
         {approval.createdAt && (
           <span className="text-xs text-[var(--mute)]">{timeAgo(approval.createdAt)}</span>
         )}
-        <a
-          href={`/teams/approvals/${approval.id}`}
-          className="text-xs hover:underline"
-          style={{ color: "var(--forest)" }}
-        >
-          View
-        </a>
         {isActionable && !rejecting && (
           <div className="flex gap-2">
             <EditorialButton size="sm" disabled={busy} onClick={() => run(() => approve(approval.id))}>

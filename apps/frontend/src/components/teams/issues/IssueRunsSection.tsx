@@ -63,15 +63,6 @@ export function IssueRunsSection({
               </span>
               <span className="flex-1 truncate text-[var(--ink)]">{agentName(r.agentId)}</span>
               {when && <span className="text-xs text-[var(--mute)]">{timeAgo(when)}</span>}
-              {r.agentId && (
-                <a
-                  href={`/teams/agents/${r.agentId}/runs/${r.runId}`}
-                  className="text-sm hover:underline"
-                  style={{ color: "var(--forest)" }}
-                >
-                  View
-                </a>
-              )}
             </li>
           );
         })}

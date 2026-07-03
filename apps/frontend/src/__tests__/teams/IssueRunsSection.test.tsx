@@ -20,7 +20,7 @@ describe("IssueRunsSection", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it("renders runs newest-first with agent name, status, and a View link", () => {
+  it("renders runs newest-first with agent name and status", () => {
     read.mockReturnValue({
       data: { runs: [
         run("r-old", "ag1", "succeeded", "2026-05-01T00:00:00Z"),
@@ -30,19 +30,12 @@ describe("IssueRunsSection", () => {
     });
     render(<IssueRunsSection issueId="iss1" agents={[{ id: "ag1", name: "Atlas" } as never]} />);
     expect(screen.getByText(/Runs/)).toBeInTheDocument();
-    const links = screen.getAllByRole("link", { name: /view/i });
-    expect(links[0]).toHaveAttribute("href", "/teams/agents/ag1/runs/r-new"); // newest first
-    expect(links[1]).toHaveAttribute("href", "/teams/agents/ag1/runs/r-old");
+    // Newest first: the failed r-new row renders above the succeeded r-old row.
+    const statuses = screen
+      .getAllByRole("listitem")
+      .map((li) => li.textContent ?? "");
+    expect(statuses[0]).toMatch(/failed/i);
+    expect(statuses[1]).toMatch(/succeeded/i);
     expect(screen.getAllByText(/Atlas/).length).toBeGreaterThan(0);
-    expect(screen.getByText(/failed/i)).toBeInTheDocument();
-  });
-
-  it("hides the View link when a run has no agentId", () => {
-    read.mockReturnValue({
-      data: { runs: [run("r1", null, "succeeded", "2026-05-01T00:00:00Z")] },
-      isLoading: false, error: null, mutate: vi.fn(),
-    });
-    render(<IssueRunsSection issueId="iss1" agents={[]} />);
-    expect(screen.queryByRole("link", { name: /view/i })).toBeNull();
   });
 });

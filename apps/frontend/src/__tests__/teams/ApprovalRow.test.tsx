@@ -8,6 +8,10 @@ vi.mock("@/components/teams/inbox/hooks/useApprovalMutations", () => ({
   useApprovalMutations: () => ({ approve, reject }),
 }));
 
+// Failures surface as a toast via notifyApiError, not inline row text.
+const { notifyApiError } = vi.hoisted(() => ({ notifyApiError: vi.fn() }));
+vi.mock("@/lib/notify", () => ({ notifyApiError }));
+
 import { ApprovalRow } from "@/components/teams/inbox/ApprovalRow";
 import type { Approval } from "@/components/teams/shared/types";
 
@@ -19,7 +23,11 @@ const A: Approval = {
   createdAt: "2026-05-29T00:00:00Z",
 };
 
-beforeEach(() => { approve.mockReset().mockResolvedValue(undefined); reject.mockReset().mockResolvedValue(undefined); });
+beforeEach(() => {
+  approve.mockReset().mockResolvedValue(undefined);
+  reject.mockReset().mockResolvedValue(undefined);
+  notifyApiError.mockReset();
+});
 
 describe("ApprovalRow", () => {
   it("Approve calls approve(id)", async () => {
@@ -59,17 +67,14 @@ describe("ApprovalRow", () => {
     expect(screen.getByText(/approval requested/i)).toBeInTheDocument();
   });
 
-  it("renders a View link to the approval-detail page", () => {
-    render(<ApprovalRow approval={A} />);
-    const link = screen.getByRole("link", { name: /view/i });
-    expect(link).toHaveAttribute("href", "/teams/approvals/a1");
-  });
-
-  it("on approve failure shows an error and keeps the row", async () => {
-    approve.mockRejectedValueOnce(new Error("boom"));
+  it("on approve failure notifies the error and keeps the row", async () => {
+    const failure = new Error("boom");
+    approve.mockRejectedValueOnce(failure);
     render(<ApprovalRow approval={A} />);
     fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
-    await waitFor(() => expect(screen.getByText(/boom/i)).toBeInTheDocument());
+    await waitFor(() =>
+      expect(notifyApiError).toHaveBeenCalledWith(failure, expect.any(String)),
+    );
     // Row is kept — the Approve button is still present.
     expect(screen.getByRole("button", { name: /^approve$/i })).toBeInTheDocument();
   });

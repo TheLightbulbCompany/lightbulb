@@ -3,7 +3,7 @@
 // useActivityFeed so the panel exercises only its own composition logic.
 
 import { describe, test, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 
 vi.mock("@/hooks/useTeamsApi", () => ({ useTeamsApi: vi.fn() }));
 vi.mock("@/components/teams/dashboard/hooks/useActivityFeed", () => ({
@@ -86,10 +86,13 @@ describe("DashboardPanel", () => {
       }),
     );
     render(<DashboardPanel />);
-    expect(screen.getByText("Agents")).toBeInTheDocument();
-    expect(screen.getByText("Open Tasks")).toBeInTheDocument();
-    expect(screen.getByText("Month Spend")).toBeInTheDocument();
-    expect(screen.getByText("Pending Approvals")).toBeInTheDocument();
+    // Scoped to the metrics strip — "Agents" also names the ActiveAgentsPanel
+    // section heading.
+    const metrics = within(screen.getByLabelText("Key metrics"));
+    expect(metrics.getByText("Agents")).toBeInTheDocument();
+    expect(metrics.getByText("Open Tasks")).toBeInTheDocument();
+    expect(metrics.getByText("Month Spend")).toBeInTheDocument();
+    expect(metrics.getByText("Pending Approvals")).toBeInTheDocument();
   });
 
   test("renders 4 chart cards when dashboard loaded", () => {

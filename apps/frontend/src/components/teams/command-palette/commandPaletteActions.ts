@@ -1,8 +1,10 @@
 // Ported from upstream Paperclip's CommandPalette
 // (paperclip/ui/src/components/CommandPalette.tsx) (MIT, (c) 2025 Paperclip AI).
-// Static "Go to" entries that route between Teams panels. The `/teams/*` paths
-// redirect into the unified `/chat?panel=teams-*` shell via middleware.
+// Static "Go to" entries that route between Teams panels. Paths are the
+// canonical in-shell `/chat?panel=teams-*` URLs (there is no standalone
+// `/teams` route tree).
 
+import { teamsPanelUrl } from "@/lib/shellNav";
 import {
   LayoutDashboard, Inbox, Bot, CircleDot, ClipboardCheck, Repeat, Target,
   FolderOpen, History, DollarSign, Hexagon, Settings, Network,
@@ -18,19 +20,20 @@ export interface CommandPaletteAction {
 }
 
 export const NAV_ACTIONS: CommandPaletteAction[] = [
-  { id: "go-dashboard", label: "Dashboard", path: "/teams/dashboard", Icon: LayoutDashboard },
-  { id: "go-inbox", label: "Inbox", path: "/teams/inbox", Icon: Inbox, keywords: ["mine", "issues"] },
-  { id: "go-agents", label: "Agents", path: "/teams/agents", Icon: Bot, keywords: ["bot"] },
-  { id: "go-org-chart", label: "Org chart", path: "/teams/org-chart", Icon: Network, keywords: ["network", "hierarchy"] },
-  { id: "go-issues", label: "Issues", path: "/teams/issues", Icon: CircleDot, keywords: ["tasks", "tickets"] },
-  { id: "go-approvals", label: "Approvals", path: "/teams/inbox", Icon: ClipboardCheck },
-  { id: "go-routines", label: "Routines", path: "/teams/routines", Icon: Repeat, keywords: ["cron", "schedule"] },
-  { id: "go-goals", label: "Goals", path: "/teams/goals", Icon: Target },
-  { id: "go-projects", label: "Projects", path: "/teams/projects", Icon: FolderOpen },
-  { id: "go-activity", label: "Activity", path: "/teams/activity", Icon: History, keywords: ["events", "log"] },
-  { id: "go-costs", label: "Costs", path: "/teams/costs", Icon: DollarSign, keywords: ["billing", "spend"] },
-  { id: "go-skills", label: "Skills", path: "/teams/skills", Icon: Hexagon, keywords: ["tools"] },
-  { id: "go-settings", label: "Settings", path: "/teams/settings", Icon: Settings },
+  { id: "go-dashboard", label: "Dashboard", path: teamsPanelUrl("dashboard"), Icon: LayoutDashboard },
+  { id: "go-inbox", label: "Inbox", path: teamsPanelUrl("inbox"), Icon: Inbox, keywords: ["mine", "issues"] },
+  { id: "go-agents", label: "Agents", path: teamsPanelUrl("agents"), Icon: Bot, keywords: ["bot"] },
+  { id: "go-org-chart", label: "Org chart", path: teamsPanelUrl("org-chart"), Icon: Network, keywords: ["network", "hierarchy"] },
+  { id: "go-issues", label: "Issues", path: teamsPanelUrl("issues"), Icon: CircleDot, keywords: ["tasks", "tickets"] },
+  // Approvals fold into the inbox "Needs attention" band — same target.
+  { id: "go-approvals", label: "Approvals", path: teamsPanelUrl("inbox"), Icon: ClipboardCheck },
+  { id: "go-routines", label: "Routines", path: teamsPanelUrl("routines"), Icon: Repeat, keywords: ["cron", "schedule"] },
+  { id: "go-goals", label: "Goals", path: teamsPanelUrl("goals"), Icon: Target },
+  { id: "go-projects", label: "Projects", path: teamsPanelUrl("projects"), Icon: FolderOpen },
+  { id: "go-activity", label: "Activity", path: teamsPanelUrl("activity"), Icon: History, keywords: ["events", "log"] },
+  { id: "go-costs", label: "Costs", path: teamsPanelUrl("costs"), Icon: DollarSign, keywords: ["billing", "spend"] },
+  { id: "go-skills", label: "Skills", path: teamsPanelUrl("skills"), Icon: Hexagon, keywords: ["tools"] },
+  { id: "go-settings", label: "Settings", path: teamsPanelUrl("settings"), Icon: Settings },
 ];
 
 export function filterNavActions(query: string): CommandPaletteAction[] {

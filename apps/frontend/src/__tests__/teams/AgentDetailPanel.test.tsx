@@ -62,11 +62,8 @@ describe("AgentDetailPanel", () => {
     render(<AgentDetailPanel agentId="a1" />);
     await user.click(screen.getByRole("tab", { name: /runs/i }));
     expect(screen.getByText("ok")).toBeInTheDocument();
-    const link = screen.getByText("Open →");
-    expect(link.closest("a")).toHaveAttribute(
-      "href",
-      "/teams/agents/a1/runs/r1",
-    );
+    // Runs have no in-shell detail surface, so rows carry no link.
+    expect(screen.queryByRole("link")).toBeNull();
   });
 
   it("Manage tab shows read-only meta managed in the control panel (no edit form)", () => {

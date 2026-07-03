@@ -93,11 +93,11 @@ describe("RoutinesPanel", () => {
     expect(screen.getByText(/Atlas/)).toBeInTheDocument();
   });
 
-  it("renders an Open link to the routine detail page", () => {
+  it("renders an Open link to the routine detail view", () => {
     render(<RoutinesPanel />);
     expect(screen.getByRole("link", { name: /open/i })).toHaveAttribute(
       "href",
-      "/teams/routines/rt1",
+      "/chat?panel=teams-routine-detail&detailId=rt1",
     );
   });
 
@@ -246,7 +246,8 @@ describe("RoutinesPanel", () => {
     fireEvent.change(screen.getByLabelText("Title"), {
       target: { value: "Weekly review" },
     });
-    fireEvent.change(screen.getByLabelText("Schedule"), {
+    // Substring match — the wrapping label also contains the cron hint text.
+    fireEvent.change(screen.getByLabelText(/Schedule/), {
       target: { value: "0 10 * * 1" },
     });
     // Pick an agent through the AssigneePicker (no more raw "Agent ID" input).

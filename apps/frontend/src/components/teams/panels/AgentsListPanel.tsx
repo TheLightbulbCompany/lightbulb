@@ -12,6 +12,8 @@ import {
   type PanelDataColumn,
 } from "@/components/teams/shell";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
+import { handleShellLinkClick } from "@/lib/shellNav";
+import { agentInspectorUrl } from "@/components/teams/shared/lib/agentInspectorUrl";
 import { useAgentMutations } from "@/components/teams/agents/hooks/useAgentMutations";
 import { isSeededAgent } from "@/components/teams/agents/AgentManageSection";
 import type { CompanyAgent } from "@/components/teams/shared/types";
@@ -105,7 +107,8 @@ export function AgentsListPanel() {
       align: "right",
       cell: (a) => (
         <a
-          href={`/teams/agents/${a.id}`}
+          href={agentInspectorUrl(a.id)}
+          onClick={(e) => handleShellLinkClick(e, agentInspectorUrl(a.id))}
           className="text-sm hover:underline"
           style={{ color: "var(--forest)" }}
         >

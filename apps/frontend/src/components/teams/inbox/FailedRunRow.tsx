@@ -34,9 +34,9 @@ export function FailedRunRow({
   const title = `${agentName} — ${run.failureReason || "heartbeat run failed"}`;
 
   // Retry wakes the SAME agent that produced the failed run; without an agent
-  // id we have nothing to wake, so the control is hidden (same condition as
-  // the View link). A wake failure must not crash the row — fall back to an
-  // error phase that lets the operator try again.
+  // id we have nothing to wake, so the control is hidden. A wake failure must
+  // not crash the row — fall back to an error phase that lets the operator
+  // try again.
   async function onRetry() {
     if (!run.agentId || retry === "retrying") return;
     setRetry("retrying");
@@ -70,15 +70,6 @@ export function FailedRunRow({
       </div>
       {run.startedAt && <span className="text-xs text-[var(--mute)]">{timeAgo(run.startedAt)}</span>}
       <div className="flex items-center gap-2">
-        {run.agentId && (
-          <a
-            href={`/teams/agents/${run.agentId}/runs/${run.id}`}
-            className="text-sm hover:underline"
-            style={{ color: "var(--forest)" }}
-          >
-            View
-          </a>
-        )}
         {run.agentId && (
           <EditorialButton
             variant="secondary"

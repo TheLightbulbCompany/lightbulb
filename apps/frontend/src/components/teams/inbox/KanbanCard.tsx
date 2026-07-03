@@ -8,6 +8,7 @@ import Link from "next/link";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { cn } from "@/lib/utils";
+import { teamsDetailUrl } from "@/lib/shellNav";
 import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
 import { PriorityIcon } from "@/components/teams/shared/components/PriorityIcon";
 import { Identity } from "@/components/teams/shared/components/Identity";
@@ -32,11 +33,10 @@ interface CardContentProps {
 }
 
 // Always link by `id` — the rest of the inbox/panels surface (InboxPage,
-// IssuesPanel) does the same, and the BFF forwards /teams/issues/{id} to
-// upstream /api/issues/{id} which expects the internal id, NOT the
-// human-readable identifier (e.g. ENG-42).
+// IssuesPanel) does the same, and the BFF's upstream /api/issues/{id} read
+// expects the internal id, NOT the human-readable identifier (e.g. ENG-42).
 function issueHref(issue: Issue): string {
-  return `/teams/issues/${issue.id}`;
+  return teamsDetailUrl("issue", issue.id);
 }
 
 function CardContent({ issue, agents, isLive, isDragging }: CardContentProps) {
@@ -49,6 +49,7 @@ function CardContent({ issue, agents, isLive, isDragging }: CardContentProps) {
   return (
     <Link
       href={issueHref(issue)}
+      prefetch={false}
       className="block no-underline"
       style={{ color: "var(--ink)" }}
       // Native anchors are browser-draggable by default, which hijacks the
@@ -65,7 +66,8 @@ function CardContent({ issue, agents, isLive, isDragging }: CardContentProps) {
         }
         // Inside the /chat shell, route a plain left-click to the inline
         // detail view; keep native <Link> behavior for modified / non-primary
-        // clicks (new tab/window) and for standalone /teams (no nav provider).
+        // clicks (new tab/window). Without a nav provider the href — the
+        // canonical in-shell URL — drives navigation natively.
         if (!nav) return;
         if (
           e.defaultPrevented ||

@@ -75,7 +75,10 @@ describe("IssueProperties parent / sub-tasks / related rows", () => {
   it("renders the parent as an in-shell link to the parent issue", () => {
     renderProperties();
     const link = screen.getByRole("link", { name: /ISO-1/ });
-    expect(link).toHaveAttribute("href", "/teams/issues/iss_parent");
+    expect(link).toHaveAttribute(
+      "href",
+      "/chat?panel=teams-issue-detail&detailId=iss_parent",
+    );
     expect(within(link).getByText("The parent epic")).toBeInTheDocument();
   });
 

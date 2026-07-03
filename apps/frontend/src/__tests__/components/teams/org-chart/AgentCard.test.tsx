@@ -39,10 +39,10 @@ describe("AgentCard", () => {
     expect(dot).toHaveStyle({ backgroundColor: "var(--mute)" });
   });
 
-  test("link href points to /teams/agents/{id}", () => {
+  test("link href points to the shell's agent inspector", () => {
     render(<AgentCard {...baseProps} />);
     const link = screen.getByRole("link");
-    expect(link).toHaveAttribute("href", "/teams/agents/ag_1");
+    expect(link).toHaveAttribute("href", "/chat?panel=agent-inspector&agent=ag_1");
   });
 
   test("position style applies x/y from props", () => {

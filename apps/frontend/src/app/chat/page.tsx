@@ -1,7 +1,7 @@
 "use client";
 
 import { Suspense, useCallback, useEffect, useState } from "react";
-import { useSearchParams, useRouter } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { ChatLayout } from "@/components/chat/ChatLayout";
 import { AgentChatWindow } from "@/components/chat/AgentChatWindow";
 import { ControlPanelRouter } from "@/components/control/ControlPanelRouter";
@@ -14,12 +14,16 @@ import {
   isTeamsPanelKey,
   TEAMS_PANEL_PREFIX,
 } from "@/components/chat/InlineTeamsPanel";
+import { preloadTeamsPanels } from "@/components/teams/TeamsPanelRouter";
+import { pushSearchParams, replaceSearchParams } from "@/lib/shellNav";
 
 export default function ChatPage() {
   // useSearchParams() forces dynamic rendering; wrap in Suspense so the
-  // static-export step at build time doesn't error.
+  // static-export step at build time doesn't error. The fallback matches the
+  // shell's cream background so any suspension reads as the page settling,
+  // not a white flash.
   return (
-    <Suspense fallback={null}>
+    <Suspense fallback={<div className="h-dvh w-full" style={{ background: "var(--cream)" }} />}>
       <ChatPageInner />
     </Suspense>
   );
@@ -27,7 +31,6 @@ export default function ChatPage() {
 
 function ChatPageInner() {
   const searchParams = useSearchParams();
-  const router = useRouter();
   // Single source of truth for view + panel is the URL. ?panel=credits is a
   // legacy deep link — the panel router remaps it to the Model & Credits
   // panel. The view is derived purely from ?panel (a Company/System panel →
@@ -37,49 +40,48 @@ function ChatPageInner() {
   const activeView: "chat" | "control" = panelParam ? "control" : "chat";
   const activePanel: string = panelParam || "overview";
 
-  // Navigational transitions use router.push so each in-shell move (panel
-  // switch, list→detail) pushes a history entry the browser Back button can
-  // step through — Back from a task detail returns to the list, not the
-  // landing page. Param-canonicalizing effects (e.g. stripping ?checkout)
-  // keep using router.replace; only user-initiated navigation grows the
-  // history stack.
+  // Navigational transitions commit through the History API (shellNav) so
+  // each in-shell move (panel switch, list→detail) pushes a history entry the
+  // browser Back button can step through — Back from a task detail returns to
+  // the list, not the landing page — without the RSC round-trip a router.push
+  // on this force-dynamic route would pay. Param-canonicalizing moves
+  // (clearing the panel) use replace; only user-initiated navigation grows
+  // the history stack.
   const setActivePanel = useCallback(
     (next: string) => {
       const params = new URLSearchParams(searchParams.toString());
       params.set("panel", next);
-      params.set("view", "control");
       // Plain panel nav shows an UNFILTERED view: drop any stale agent
       // filter (from "See her work") and detail id (from an Open → row) so
       // switching panels never carries another panel's filter/detail state.
       params.delete("agent");
       params.delete("detailId");
-      router.push(`/chat?${params.toString()}`, { scroll: false });
+      pushSearchParams(params);
     },
-    [router, searchParams],
+    [searchParams],
   );
   // Drops ?panel (and the per-panel filter/detail state) so the view falls
   // back to chat. Used when selecting an agent — there's no tab-switcher, so
   // chat is shown by absence of ?panel. This is canonicalization back to the
-  // bare chat URL, so it uses router.replace.
+  // bare chat URL, so it replaces instead of pushing.
   const clearPanel = useCallback(() => {
     const params = new URLSearchParams(searchParams.toString());
     params.delete("panel");
     params.delete("agent");
     params.delete("detailId");
-    router.replace(`/chat?${params.toString()}`, { scroll: false });
-  }, [router, searchParams]);
+    replaceSearchParams(params);
+  }, [searchParams]);
   // Opens a Teams detail view inline: mirrors setActivePanel but also records
   // the row id in ?detailId so InlineTeamsPanel can resolve the detail panel.
-  // router.push so Back returns from the detail view to the list.
+  // Pushes so Back returns from the detail view to the list.
   const openDetail = useCallback(
     (panelKey: string, id: string) => {
       const params = new URLSearchParams(searchParams.toString());
       params.set("panel", `${TEAMS_PANEL_PREFIX}${panelKey}`);
       params.set("detailId", id);
-      params.set("view", "control");
-      router.push(`/chat?${params.toString()}`, { scroll: false });
+      pushSearchParams(params);
     },
-    [router, searchParams],
+    [searchParams],
   );
   // "See her work →": opens the inline Issues panel filtered to one agent.
   // Mirrors openDetail but records the agent id in ?agent (which IssuesPanel
@@ -89,10 +91,9 @@ function ChatPageInner() {
       const params = new URLSearchParams(searchParams.toString());
       params.set("panel", `${TEAMS_PANEL_PREFIX}issues`);
       params.set("agent", agentId);
-      params.set("view", "control");
-      router.push(`/chat?${params.toString()}`, { scroll: false });
+      pushSearchParams(params);
     },
-    [router, searchParams],
+    [searchParams],
   );
   // "Inspect agent": opens the per-agent inspector shell (Overview / Tools /
   // Channels) for one agent. Mirrors openAgentIssues but targets the plain
@@ -104,14 +105,13 @@ function ChatPageInner() {
       const params = new URLSearchParams(searchParams.toString());
       params.set("panel", "agent-inspector");
       params.set("agent", agentId);
-      params.set("view", "control");
       // A plain inspect always opens on Overview — drop any stale
       // ?inspectorTab deep-link (set only by the Get Started "Connect a
       // channel" CTA) so it never carries over to a later inspect.
       params.delete("inspectorTab");
-      router.push(`/chat?${params.toString()}`, { scroll: false });
+      pushSearchParams(params);
     },
-    [router, searchParams],
+    [searchParams],
   );
   // Sidebar create pill → "New task": route to the Tasks panel with a
   // ?new=task intent that IssuesPanel reads to auto-open its create dialog.
@@ -121,12 +121,34 @@ function ChatPageInner() {
   const startNewTask = useCallback(() => {
     const params = new URLSearchParams(searchParams.toString());
     params.set("panel", `${TEAMS_PANEL_PREFIX}issues`);
-    params.set("view", "control");
     params.set("new", "task");
     params.delete("agent");
     params.delete("detailId");
-    router.push(`/chat?${params.toString()}`, { scroll: false });
-  }, [router, searchParams]);
+    pushSearchParams(params);
+  }, [searchParams]);
+
+  // ?view is legacy: old deep links carried it alongside ?panel, but nothing
+  // reads it (the view derives from ?panel presence). Strip it from inbound
+  // URLs so copied links stay canonical.
+  useEffect(() => {
+    if (!searchParams.has("view")) return;
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("view");
+    replaceSearchParams(params);
+  }, [searchParams]);
+
+  // Warm the code-split Teams panel chunks while the browser is idle so the
+  // first open of a Teams panel mounts from the module cache instead of
+  // fetching its chunk on click.
+  useEffect(() => {
+    // Safari has no requestIdleCallback — fall back to a short timer.
+    if (typeof window.requestIdleCallback === "function") {
+      const id = window.requestIdleCallback(() => preloadTeamsPanels(), { timeout: 5000 });
+      return () => window.cancelIdleCallback(id);
+    }
+    const id = window.setTimeout(preloadTeamsPanels, 3000);
+    return () => window.clearTimeout(id);
+  }, []);
 
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [fileViewerOpen, setFileViewerOpen] = useState(false);

@@ -6,7 +6,7 @@ import useSWR from "swr";
 import { useAuth, useUser, UserButton } from "@clerk/nextjs";
 
 import { capture } from "@/lib/analytics";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { Settings, Plus, CheckCircle, CreditCard, Menu, X, FolderOpen, Pencil, Trash2, HelpCircle, ListTodo, SlidersHorizontal, Pause, Play } from "lucide-react";
 import Link from "next/link";
 
@@ -38,6 +38,7 @@ import { emitStep } from "@/components/getstarted/getStartedEvents";
 import { GetStarted } from "@/components/getstarted/GetStarted";
 import { useProvisioningState } from "@/hooks/useProvisioningState";
 import { TEAMS_PANEL_PREFIX } from "@/components/chat/InlineTeamsPanel";
+import { pushSearchParams, replaceSearchParams } from "@/lib/shellNav";
 import { teamsQueryKeys } from "@/components/teams/shared/queryKeys";
 import { useAgentMutations } from "@/components/teams/agents/hooks/useAgentMutations";
 import { SessionList } from "@/components/chat/SessionList";
@@ -103,7 +104,6 @@ export function ChatLayout({
   const onboardingPhase = useOnboardingGate();
   const { isSignedIn, getToken, userId: clerkUserId } = useAuth();
   const { user } = useUser();
-  const router = useRouter();
   const api = useApi();
   const { agents, defaultId, createAgent, deleteAgent, updateAgent } = useAgents();
   const { refresh: refreshBilling, account, isSubscribed } = useBilling();
@@ -267,12 +267,11 @@ export function ChatLayout({
     const params = new URLSearchParams(searchParams.toString());
     params.delete("checkout");
     params.delete("subscription");
-    const remaining = params.toString();
-    router.replace(`/chat${remaining ? `?${remaining}` : ""}`, { scroll: false });
+    replaceSearchParams(params);
 
     const dismissTimer = setTimeout(() => setShowSubscriptionSuccess(false), 5000);
     return () => clearTimeout(dismissTimer);
-  }, [showSubscriptionSuccess, refreshBilling, router, searchParams]);
+  }, [showSubscriptionSuccess, refreshBilling, searchParams]);
 
   // Post-credit-checkout return. Stripe sends users back with
   // ?credits=success (or =cancel) when they finish the credit top-up
@@ -285,9 +284,8 @@ export function ChatLayout({
     if (!cameFromCreditsCheckout) return;
     const params = new URLSearchParams(searchParams.toString());
     params.delete("credits");
-    const remaining = params.toString();
-    router.replace(`/chat${remaining ? `?${remaining}` : ""}`, { scroll: false });
-  }, [cameFromCreditsCheckout, router, searchParams]);
+    replaceSearchParams(params);
+  }, [cameFromCreditsCheckout, searchParams]);
 
   // Race against Stripe webhook delivery: the user returns from Checkout
   // before customer.subscription.created lands at our webhook endpoint
@@ -823,21 +821,19 @@ export function ChatLayout({
                 task: () => {
                   // ONE navigation to the inbox panel with the New-task
                   // intent. Mirror what `setActivePanel` (page.tsx) would
-                  // build — set panel + view=control, drop stale agent/detailId
-                  // filters — and add `newIssue=onboarding` so the inbox
-                  // auto-opens its New-task dialog (read by InboxPage)
-                  // pre-filled with the CEO-directed first task. Calling
-                  // `onPanelChange` and then a second relative `?panel=…` push
-                  // grew two history entries (Back needed two presses) and the
-                  // relative form dropped the other query params setActivePanel
-                  // preserves.
+                  // build — set panel, drop stale agent/detailId filters —
+                  // and add `newIssue=onboarding` so the inbox auto-opens its
+                  // New-task dialog (read by InboxPage) pre-filled with the
+                  // CEO-directed first task. Calling `onPanelChange` and then
+                  // a second relative `?panel=…` push grew two history
+                  // entries (Back needed two presses) and the relative form
+                  // dropped the other query params setActivePanel preserves.
                   const params = new URLSearchParams(searchParams.toString());
                   params.set("panel", `${TEAMS_PANEL_PREFIX}inbox`);
-                  params.set("view", "control");
                   params.delete("agent");
                   params.delete("detailId");
                   params.set("newIssue", "onboarding");
-                  router.push(`/chat?${params.toString()}`, { scroll: false });
+                  pushSearchParams(params);
                 },
                 hire: () => openMarketplace({ view: "browse" }),
                 channel: () => {
@@ -854,9 +850,8 @@ export function ChatLayout({
                   const params = new URLSearchParams(searchParams.toString());
                   params.set("panel", "agent-inspector");
                   params.set("agent", agentId);
-                  params.set("view", "control");
                   params.set("inspectorTab", "channels");
-                  router.push(`/chat?${params.toString()}`, { scroll: false });
+                  pushSearchParams(params);
                 },
               }}
             />

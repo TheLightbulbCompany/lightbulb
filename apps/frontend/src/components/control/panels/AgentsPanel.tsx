@@ -30,7 +30,7 @@ export function AgentsPanel() {
   // shouldn't see the Channels tab.
   const { isSubscribed } = useBilling();
   const channelsEnabled = isSubscribed;
-  // Deep-link: /chat?view=control&panel=agents&agent=<id> selects that agent on
+  // Deep-link: /chat?panel=agents&agent=<id> selects that agent on
   // first render. This is the single editing entry point for agent meta (the
   // Teams "Edit in control panel" link points here). An unknown id falls back
   // to the list (selected resolves to undefined below).

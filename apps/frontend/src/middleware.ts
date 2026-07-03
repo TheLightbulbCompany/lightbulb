@@ -13,7 +13,7 @@ const isProtectedRoute = createRouteMatcher([
 // the equivalent in-shell `/chat?panel=teams-*` deep link.
 //
 // List panels reachable as `/teams/<panel>`. Each maps to
-// `/chat?panel=teams-<panel>&view=control`. `members` is intentionally absent:
+// `/chat?panel=teams-<panel>`. `members` is intentionally absent:
 // the Members tab was retired and its in-shell key redirects to Settings.
 const TEAMS_LIST_PANELS = new Set([
   "dashboard",
@@ -46,7 +46,7 @@ const TEAMS_DETAIL_PANELS: Record<string, string> = {
  */
 export function decideTeamsRedirect(pathname: string): string | null {
   if (pathname === "/teams" || pathname === "/teams/") {
-    return "/chat?panel=teams-dashboard&view=control";
+    return "/chat?panel=teams-dashboard";
   }
   if (!pathname.startsWith("/teams/")) return null;
 
@@ -57,18 +57,18 @@ export function decideTeamsRedirect(pathname: string): string | null {
     const detailPanel = TEAMS_DETAIL_PANELS[segments[0]];
     if (detailPanel) {
       const id = encodeURIComponent(segments[1]);
-      return `/chat?panel=${detailPanel}&detailId=${id}&view=control`;
+      return `/chat?panel=${detailPanel}&detailId=${id}`;
     }
   }
 
   // List route: /teams/<panel>.
   if (segments.length === 1 && TEAMS_LIST_PANELS.has(segments[0])) {
-    return `/chat?panel=teams-${segments[0]}&view=control`;
+    return `/chat?panel=teams-${segments[0]}`;
   }
 
   // Any other /teams/* path (deeper detail routes like agent runs/approvals,
   // unknown panels) falls back to the dashboard rather than 404ing.
-  return "/chat?panel=teams-dashboard&view=control";
+  return "/chat?panel=teams-dashboard";
 }
 
 const DEFAULT_ADMIN_HOSTS = "admin.isol8.co,admin.dev.isol8.co,admin.localhost:3000";

@@ -3,18 +3,18 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import type { Issue } from "@/components/teams/shared/types";
 
 // `?agent=<id>` deep link from the /chat roster's "See her work" affordance.
-// `mockReplace` lets us assert the dismiss chip strips only the `agent` param.
-// These override tests/setup.ts's global next/navigation mock so we can drive
-// the panel with a specific search string + a spyable router.
-const { mockReplace, searchParamsRef } = vi.hoisted(() => ({
-  mockReplace: vi.fn(),
+// This overrides tests/setup.ts's global next/navigation mock so we can drive
+// the panel with a specific search string. The dismiss chip commits its param
+// strip through the History API (shellNav), so those tests spy on
+// window.history.replaceState rather than the router.
+const { searchParamsRef } = vi.hoisted(() => ({
   searchParamsRef: { current: new URLSearchParams() },
 }));
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({
     push: vi.fn(),
-    replace: mockReplace,
+    replace: vi.fn(),
     prefetch: vi.fn(),
     back: vi.fn(),
   }),
@@ -90,16 +90,18 @@ describe("IssuesPanel agent filter (?agent)", () => {
     expect(screen.queryByLabelText(/clear agent filter/i)).not.toBeInTheDocument();
   });
 
-  it("dismiss chip clears ONLY the agent param (preserving others) via router.replace", () => {
+  it("dismiss chip clears ONLY the agent param (preserving others) via history.replaceState", () => {
+    const replaceStateSpy = vi.spyOn(window.history, "replaceState");
     searchParamsRef.current = new URLSearchParams(
-      "panel=teams-issues&agent=agent_friday&view=control",
+      "panel=teams-issues&agent=agent_friday&other=kept",
     );
     render(<IssuesPanel />);
     fireEvent.click(screen.getByLabelText(/clear agent filter/i));
-    expect(mockReplace).toHaveBeenCalledTimes(1);
-    const target = mockReplace.mock.calls[0][0] as string;
+    expect(replaceStateSpy).toHaveBeenCalledTimes(1);
+    const target = replaceStateSpy.mock.calls[0][2] as string;
     expect(target).not.toMatch(/agent=/);
     expect(target).toMatch(/panel=teams-issues/);
-    expect(target).toMatch(/view=control/);
+    expect(target).toMatch(/other=kept/);
+    replaceStateSpy.mockRestore();
   });
 });

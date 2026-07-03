@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 
 import { capture } from "@/lib/analytics";
 import {
@@ -18,6 +18,7 @@ import { useProvisioningState, type ColdStartPhase } from "@/hooks/useProvisioni
 import { useGateway } from "@/hooks/useGateway";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
 import { nextOnboardingCompletion } from "@/components/chat/onboardingAnalytics";
+import { replaceSearchParams } from "@/lib/shellNav";
 import { ChatGPTOAuthStep } from "@/components/chat/ChatGPTOAuthStep";
 import { ByoKeyStep } from "@/components/chat/ByoKeyStep";
 import { CreditsStep } from "@/components/chat/CreditsStep";
@@ -193,7 +194,6 @@ export function ProvisioningStepper({
   // /onboarding, or the URL was scrubbed), the provider step is skipped
   // entirely and the legacy flow takes over. Plan 3 cutover (Task 16)
   // removes the legacy path.
-  const router = useRouter();
   const searchParams = useSearchParams();
   const rawProvider = searchParams.get("provider");
   const providerChoice: ProviderChoice | null = isProviderChoice(rawProvider) ? rawProvider : null;
@@ -211,9 +211,8 @@ export function ProvisioningStepper({
     if (!searchParams.get("provider")) return;
     const params = new URLSearchParams(searchParams.toString());
     params.delete("provider");
-    const remaining = params.toString();
-    router.replace(`/chat${remaining ? `?${remaining}` : ""}`, { scroll: false });
-  }, [providerStepDone, searchParams, router]);
+    replaceSearchParams(params);
+  }, [providerStepDone, searchParams]);
 
   // Which provider the user just finished in THIS session, captured at
   // completion so the "finishing" copy stays specific even after ?provider= is

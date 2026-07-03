@@ -78,7 +78,9 @@ describe("CreditsStep", () => {
 
   it("strips ?provider= when choosing a different provider, preserving other params", () => {
     // Stripping the provider param is the stepper's exit mechanism — the
-    // wizard then falls back to the provider picker / normal flow.
+    // wizard then falls back to the provider picker / normal flow. The strip
+    // commits through the History API (shellNav), not the router.
+    const replaceStateSpy = vi.spyOn(window.history, "replaceState");
     searchParams = new URLSearchParams({ provider: "bedrock_claude", checkout: "success" });
     mockBalance.mockReturnValue({
       balance_dollars: null,
@@ -87,6 +89,9 @@ describe("CreditsStep", () => {
     });
     render(<CreditsStep onComplete={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: /choose a different provider/i }));
-    expect(replaceMock).toHaveBeenCalledWith("/chat?checkout=success", { scroll: false });
+    const target = replaceStateSpy.mock.calls.at(-1)?.[2] as string;
+    expect(target).not.toMatch(/provider=/);
+    expect(target).toMatch(/checkout=success/);
+    replaceStateSpy.mockRestore();
   });
 });

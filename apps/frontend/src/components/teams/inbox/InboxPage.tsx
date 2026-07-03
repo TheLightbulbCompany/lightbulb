@@ -23,6 +23,7 @@ import {
 } from "@/components/getstarted/getStartedFirstTask";
 
 import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
+import { replaceSearchParams } from "@/lib/shellNav";
 import { useInboxData } from "@/components/teams/inbox/hooks/useInboxData";
 import { useInboxKeyboardNav } from "@/components/teams/inbox/hooks/useInboxKeyboardNav";
 import { useInboxArchiveStack } from "@/components/teams/inbox/hooks/useInboxArchiveStack";
@@ -125,9 +126,9 @@ export function InboxPage({
       saveLastInboxTab(companyId, next);
       const params = new URLSearchParams(searchParams.toString());
       params.set("tab", next);
-      router.replace(`?${params.toString()}`, { scroll: false });
+      replaceSearchParams(params);
     },
-    [companyId, router, searchParams],
+    [companyId, searchParams],
   );
 
   // 2. Search + filter state.
@@ -172,8 +173,8 @@ export function InboxPage({
     if (newIssueParam !== "1" && newIssueParam !== "onboarding") return;
     const params = new URLSearchParams(searchParams.toString());
     params.delete("newIssue");
-    router.replace(`?${params.toString()}`, { scroll: false });
-  }, [newIssueParam, searchParams, router]);
+    replaceSearchParams(params);
+  }, [newIssueParam, searchParams]);
 
   // 4. Data + side-effect hooks.
   const { mineIssues, touchedIssues, allIssues, isLoading, isError } =

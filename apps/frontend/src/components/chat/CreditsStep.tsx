@@ -1,7 +1,8 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { useCredits } from "@/hooks/useCredits";
+import { replaceSearchParams } from "@/lib/shellNav";
 
 type Props = { onComplete: () => void };
 
@@ -29,7 +30,6 @@ export function CreditsStep({ onComplete }: Props) {
   const [optIn, setOptIn] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const advancedRef = useRef(false);
-  const router = useRouter();
   const searchParams = useSearchParams();
   // Returning from a cancelled Checkout: surface it instead of a blank form.
   const checkoutCancelled = searchParams.get("credits") === "cancel";
@@ -60,9 +60,8 @@ export function CreditsStep({ onComplete }: Props) {
   const chooseDifferentProvider = useCallback(() => {
     const params = new URLSearchParams(searchParams.toString());
     params.delete("provider");
-    const remaining = params.toString();
-    router.replace(`/chat${remaining ? `?${remaining}` : ""}`, { scroll: false });
-  }, [router, searchParams]);
+    replaceSearchParams(params);
+  }, [searchParams]);
 
   // Credits lifecycle not wired for this environment: every top-up request
   // would 400, so the form is a dead end — offer the way back instead.

@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useCallback } from "react";
+import useSWR from "swr";
 import { Loader2, RefreshCw, AlertCircle } from "lucide-react";
 import { useOrganization } from "@clerk/nextjs";
 import { useBilling } from "@/hooks/useBilling";
@@ -30,31 +31,28 @@ export function UsagePanel() {
   const { membership } = useOrganization();
   const isOrgAdmin = !membership || membership.role === "org:admin";
 
-  const [usage, setUsage] = useState<UsageSummary | null>(null);
-  const [usageLoading, setUsageLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const loadUsage = useCallback(async () => {
-    setUsageLoading(true);
-    setError(null);
-    try {
-      const data = await fetchUsage();
-      setUsage(data);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to fetch usage data");
-    } finally {
-      setUsageLoading(false);
-    }
-  }, [fetchUsage]);
-
-  useEffect(() => {
-    loadUsage();
-  }, [loadUsage]);
+  // SWR-cached rather than fetched into local state on mount: panels
+  // unmount/remount on every shell navigation, and an uncached read here
+  // meant a spinner on every open. The cache serves the last summary
+  // instantly and revalidates in the background.
+  const {
+    data: usage,
+    error: usageError,
+    isLoading: usageLoading,
+    mutate: mutateUsage,
+  } = useSWR<UsageSummary | null>("/billing/usage", () => fetchUsage(), {
+    dedupingInterval: 30000,
+  });
+  const error = usageError
+    ? usageError instanceof Error
+      ? usageError.message
+      : "Failed to fetch usage data"
+    : null;
 
   const handleRefresh = useCallback(() => {
     refresh();
-    loadUsage();
-  }, [refresh, loadUsage]);
+    void mutateUsage();
+  }, [refresh, mutateUsage]);
 
   if (accountLoading && usageLoading) {
     return (

@@ -92,7 +92,13 @@ export function useTeamsApi() {
         }
         return body as T;
       },
-      swrOpts,
+      // Teams reads are the most expensive calls in the app (BFF-proxied,
+      // cookie + bearer). Panels unmount/remount on every shell navigation,
+      // so a mount-level dedup window keeps a reopen from re-hitting the BFF
+      // when the cached read is seconds old — TeamsEventsProvider's
+      // event-driven mutations keep the data live in between. Callers can
+      // override per read.
+      { dedupingInterval: 15000, ...swrOpts },
     );
   }
 
@@ -161,6 +167,10 @@ export function useTeamsWorkspaceStatus(): TeamsWorkspaceStatus {
     errorRetryCount: 30,
     shouldRetryOnError: (err: unknown) =>
       (err as TeamsApiError | undefined)?.status === 202,
+    // The 202-provisioning poll above revalidates every 3s; the read
+    // layer's mount-level dedup window would swallow those retries and
+    // stall the overlay, so restore SWR's default here.
+    dedupingInterval: 2000,
   });
   if (error) {
     const e = error as TeamsApiError;

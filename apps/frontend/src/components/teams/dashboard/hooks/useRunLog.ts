@@ -85,6 +85,10 @@ export function useRunLog(
     `/heartbeat-runs/${runId}/log`,
     {
       refreshInterval: active ? RUN_LOG_REFRESH_MS : 0,
+      // The read layer's mount-level dedup window equals the poll cadence,
+      // which would race and swallow alternate polls — restore SWR's default
+      // so every tick actually fetches.
+      dedupingInterval: 2000,
       // Pause ALL fetching for inactive runs — isPaused short-circuits the
       // fetcher entirely (no mount fetch, no revalidation), so an idle card
       // contributes zero BFF traffic.

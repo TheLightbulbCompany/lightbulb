@@ -71,6 +71,10 @@ export function useLiveRuns(): {
   const { read } = useTeamsApi();
   const { data, isLoading, error } = read<unknown>("/inbox/live-runs", {
     refreshInterval: LIVE_RUNS_REFRESH_MS,
+    // The read layer's mount-level dedup window equals the poll cadence,
+    // which would race and swallow alternate polls — restore SWR's default
+    // so every tick actually fetches.
+    dedupingInterval: 2000,
   });
   return {
     runs: normalizeRuns(data),

@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { X } from "lucide-react";
-import { useSearchParams, useRouter } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { useUser } from "@clerk/nextjs";
 import {
   EditorialButton,
@@ -14,6 +14,7 @@ import { TasksList } from "@/components/teams/issues/TasksList";
 import { useIssueMutations } from "@/components/teams/issues/hooks/useIssueMutations";
 import { useLiveRuns } from "@/components/teams/dashboard/hooks/useLiveRuns";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
+import { replaceSearchParams } from "@/lib/shellNav";
 import type {
   CompanyAgent,
   Issue,
@@ -32,7 +33,6 @@ export function IssuesPanel() {
   // filter client-side on `assigneeAgentId` (the inbox does the same).
   // Standalone /teams never sets this param → no filter.
   const searchParams = useSearchParams();
-  const router = useRouter();
   const agentFilter = searchParams.get("agent");
 
   const { data, isLoading, error, mutate } = read<{ issues: Issue[] }>(
@@ -65,11 +65,7 @@ export function IssuesPanel() {
     if (searchParams.get("new")) {
       const params = new URLSearchParams(searchParams.toString());
       params.delete("new");
-      const qs = params.toString();
-      // Relative replace (matches clearAgentFilter below) — IssuesPanel only
-      // mounts under /chat, but the relative form avoids navigating the user
-      // away if it's ever mounted elsewhere.
-      router.replace(qs ? `?${qs}` : "?", { scroll: false });
+      replaceSearchParams(params);
     }
   };
 
@@ -104,12 +100,11 @@ export function IssuesPanel() {
     return match?.name ?? "one agent";
   }, [agentFilter, agentsData]);
 
-  // Dismiss chip: strip ONLY the `agent` param, preserving panel/view/etc.
+  // Dismiss chip: strip ONLY the `agent` param, preserving panel/etc.
   const clearAgentFilter = () => {
     const params = new URLSearchParams(searchParams.toString());
     params.delete("agent");
-    const qs = params.toString();
-    router.replace(qs ? `?${qs}` : "?", { scroll: false });
+    replaceSearchParams(params);
   };
 
   // TasksList's inline status circle + board drag both patch the issue; route

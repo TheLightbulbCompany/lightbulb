@@ -37,7 +37,16 @@ export function AgentManageSection({
         <div className="flex items-center justify-between">
           <h3 className="font-editorial-serif text-lg">Profile</h3>
           <a
-            href={`/chat?view=control&panel=agents&agent=${agent.id}`}
+            href={`/chat?panel=agents&agent=${agent.id}`}
+            onClick={(e) => {
+              // Plain left-click swaps the shell panel client-side (this
+              // section only renders inside the /chat shell); modified
+              // clicks keep the href's native new-tab semantics. A bare
+              // href would trigger a full document reload.
+              if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+              e.preventDefault();
+              window.history.pushState(null, "", `/chat?panel=agents&agent=${agent.id}`);
+            }}
             className="text-sm hover:underline"
             style={{ color: "var(--forest)" }}
           >

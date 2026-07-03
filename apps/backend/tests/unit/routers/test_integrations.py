@@ -380,3 +380,235 @@ class TestIntegrationsRouter:
         app.dependency_overrides.pop(get_current_user, None)
         assert resp.status_code == 503
         assert "container_not_ready" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_put_injects_stdio_connect_timeout_default(self, app, patched_router, auth_override):
+        """A user-added stdio server gets connectionTimeoutMs=120000 injected —
+        npx cold starts on the 0.5-vCPU container reliably exceed OpenClaw's
+        default 30s connect timeout, which previously made every user-added npx
+        server fail its catalog connect while appearing configured."""
+        app.dependency_overrides[get_current_user] = auth_override
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.put(
+                "/api/v1/integrations/mcp/servers",
+                json={"servers": {"linear": {"command": "npx", "args": ["-y", "@linear/mcp"], "env": {}}}},
+            )
+        app.dependency_overrides.pop(get_current_user, None)
+        assert resp.status_code == 200
+        stored = patched_router["store"]["config"]["mcp"]["servers"]["linear"]
+        assert stored["connectionTimeoutMs"] == 120000
+
+    @pytest.mark.asyncio
+    async def test_patch_respects_explicit_timeout(self, app, patched_router, auth_override):
+        """An explicit user-provided timeout is never overridden by the default."""
+        app.dependency_overrides[get_current_user] = auth_override
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.patch(
+                "/api/v1/integrations/mcp/servers/fast",
+                json={"command": "fast-mcp", "args": [], "env": {}, "connectionTimeoutMs": 5000},
+            )
+        app.dependency_overrides.pop(get_current_user, None)
+        assert resp.status_code == 200
+        stored = patched_router["store"]["config"]["mcp"]["servers"]["fast"]
+        assert stored["connectionTimeoutMs"] == 5000
+
+    @pytest.mark.asyncio
+    async def test_patch_accepts_remote_server_and_injects_request_timeout(self, app, patched_router, auth_override):
+        """A remote (transport+url) server is a valid entry and gets
+        requestTimeoutMs=60000 injected, lifting OpenClaw's 1.5s catalog
+        tools/list cap that silently excludes slow-listing remote servers.
+        The stored block must not carry null command (a literal null fails
+        OpenClaw's config schema on hot reload)."""
+        app.dependency_overrides[get_current_user] = auth_override
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.patch(
+                "/api/v1/integrations/mcp/servers/notion",
+                json={"transport": "streamable-http", "url": "https://mcp.notion.com/mcp"},
+            )
+        app.dependency_overrides.pop(get_current_user, None)
+        assert resp.status_code == 200
+        stored = patched_router["store"]["config"]["mcp"]["servers"]["notion"]
+        assert stored["url"] == "https://mcp.notion.com/mcp"
+        assert stored["requestTimeoutMs"] == 60000
+        assert "command" not in stored
+
+    @pytest.mark.asyncio
+    async def test_put_rejects_entry_with_both_shapes(self, app, patched_router, auth_override):
+        """An entry that is both stdio and remote is ambiguous — reject at the API
+        rather than letting OpenClaw's hot reload fail on it."""
+        app.dependency_overrides[get_current_user] = auth_override
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.put(
+                "/api/v1/integrations/mcp/servers",
+                json={
+                    "servers": {
+                        "weird": {
+                            "command": "npx",
+                            "transport": "streamable-http",
+                            "url": "https://h/mcp",
+                        }
+                    }
+                },
+            )
+        app.dependency_overrides.pop(get_current_user, None)
+        assert resp.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_put_strips_explicit_nulls_on_unset_shape(self, app, patched_router, auth_override):
+        """A PUT body carrying explicit nulls for the unset shape's keys must not
+        store them: a literal `transport: null` in openclaw.json fails OpenClaw's
+        config schema on hot reload, which bricks the container. The stored entry
+        is rebuilt from the validated model, never the raw client dict."""
+        app.dependency_overrides[get_current_user] = auth_override
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.put(
+                "/api/v1/integrations/mcp/servers",
+                json={
+                    "servers": {
+                        "linear": {
+                            "command": "npx",
+                            "args": ["-y", "@linear/mcp"],
+                            "env": {},
+                            "transport": None,
+                            "url": None,
+                        }
+                    }
+                },
+            )
+        app.dependency_overrides.pop(get_current_user, None)
+        assert resp.status_code == 200
+        stored = patched_router["store"]["config"]["mcp"]["servers"]["linear"]
+        assert "transport" not in stored
+        assert "url" not in stored
+        assert stored["connectionTimeoutMs"] == 120000
+
+    @pytest.mark.asyncio
+    async def test_put_remote_entry_normalized_like_patch(self, app, patched_router, auth_override):
+        """PUT and PATCH must store the same shape for a remote entry: request
+        timeout injected, headers preserved, and no stdio artifacts (command,
+        empty args/env) in the block."""
+        app.dependency_overrides[get_current_user] = auth_override
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.put(
+                "/api/v1/integrations/mcp/servers",
+                json={
+                    "servers": {
+                        "context7": {
+                            "transport": "streamable-http",
+                            "url": "https://mcp.context7.com/mcp",
+                            "headers": {"X-API-Key": "k"},
+                        }
+                    }
+                },
+            )
+        app.dependency_overrides.pop(get_current_user, None)
+        assert resp.status_code == 200
+        stored = patched_router["store"]["config"]["mcp"]["servers"]["context7"]
+        assert stored["requestTimeoutMs"] == 60000
+        assert stored["headers"] == {"X-API-Key": "k"}
+        assert "command" not in stored
+        assert "args" not in stored
+        assert "env" not in stored
+
+    @pytest.mark.asyncio
+    async def test_put_rejects_stdio_entry_with_partial_remote_fields(self, app, patched_router, auth_override):
+        """A stdio entry carrying a stray remote field (url without transport, or
+        transport without url) is a mixed shape that would fail OpenClaw's hot
+        reload — reject the partial overlap, not just the complete one."""
+        app.dependency_overrides[get_current_user] = auth_override
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            for stray in ({"url": "https://x/mcp"}, {"transport": "streamable-http"}):
+                resp = await client.put(
+                    "/api/v1/integrations/mcp/servers",
+                    json={"servers": {"weird": {"command": "npx", **stray}}},
+                )
+                assert resp.status_code == 422, stray
+        app.dependency_overrides.pop(get_current_user, None)
+
+    @pytest.mark.asyncio
+    async def test_put_rejects_empty_string_shape_fields(self, app, patched_router, auth_override):
+        """Empty-string command/transport/url must 422: they are never valid, and
+        a falsy-but-present value would otherwise slip past the shape checks and
+        write a mixed entry into openclaw.json."""
+        app.dependency_overrides[get_current_user] = auth_override
+        bodies = [
+            # command:"" alongside a complete remote shape
+            {"command": "", "transport": "streamable-http", "url": "https://x/mcp"},
+            # stray transport:"" on a stdio entry
+            {"command": "npx", "transport": ""},
+            # url:"" alone
+            {"transport": "streamable-http", "url": ""},
+        ]
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            for body in bodies:
+                resp = await client.put(
+                    "/api/v1/integrations/mcp/servers",
+                    json={"servers": {"weird": body}},
+                )
+                assert resp.status_code == 422, body
+        app.dependency_overrides.pop(get_current_user, None)
+
+    @pytest.mark.asyncio
+    async def test_put_rejects_remote_entry_with_stray_args_or_env(self, app, patched_router, auth_override):
+        """The symmetric direction: a remote entry carrying non-empty stdio fields
+        (args/env) would write a mixed shape into openclaw.json — reject it."""
+        app.dependency_overrides[get_current_user] = auth_override
+        base = {"transport": "streamable-http", "url": "https://x/mcp"}
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            for stray in ({"args": ["--flag"]}, {"env": {"K": "v"}}):
+                resp = await client.put(
+                    "/api/v1/integrations/mcp/servers",
+                    json={"servers": {"weird": {**base, **stray}}},
+                )
+                assert resp.status_code == 422, stray
+        app.dependency_overrides.pop(get_current_user, None)
+
+    @pytest.mark.asyncio
+    async def test_patch_respects_explicit_remote_request_timeout(self, app, patched_router, auth_override):
+        """Explicit-value-wins must hold for the remote shape too, not just stdio."""
+        app.dependency_overrides[get_current_user] = auth_override
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.patch(
+                "/api/v1/integrations/mcp/servers/slowlist",
+                json={"transport": "streamable-http", "url": "https://x/mcp", "requestTimeoutMs": 90000},
+            )
+        app.dependency_overrides.pop(get_current_user, None)
+        assert resp.status_code == 200
+        stored = patched_router["store"]["config"]["mcp"]["servers"]["slowlist"]
+        assert stored["requestTimeoutMs"] == 90000
+
+    @pytest.mark.asyncio
+    async def test_put_rejects_stdio_entry_with_stray_headers(self, app, patched_router, auth_override):
+        """headers is a remote-only field; a stdio entry carrying it is a mixed shape."""
+        app.dependency_overrides[get_current_user] = auth_override
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.put(
+                "/api/v1/integrations/mcp/servers",
+                json={"servers": {"weird": {"command": "npx", "headers": {"X-K": "v"}}}},
+            )
+        app.dependency_overrides.pop(get_current_user, None)
+        assert resp.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_put_passes_through_unmodeled_openclaw_keys(self, app, patched_router, auth_override):
+        """OpenClaw's per-server schema is a catchall with keys this API doesn't
+        enumerate (toolFilter, supportsParallelToolCalls, ...) — they must pass
+        through to the stored block, neither rejected nor silently dropped."""
+        app.dependency_overrides[get_current_user] = auth_override
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.put(
+                "/api/v1/integrations/mcp/servers",
+                json={
+                    "servers": {
+                        "big-remote": {
+                            "transport": "streamable-http",
+                            "url": "https://x/mcp",
+                            "toolFilter": {"include": ["query-*"]},
+                        }
+                    }
+                },
+            )
+        app.dependency_overrides.pop(get_current_user, None)
+        assert resp.status_code == 200
+        stored = patched_router["store"]["config"]["mcp"]["servers"]["big-remote"]
+        assert stored["toolFilter"] == {"include": ["query-*"]}

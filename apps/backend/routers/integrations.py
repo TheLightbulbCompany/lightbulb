@@ -15,7 +15,7 @@ import logging
 from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.containers.config import read_openclaw_config_from_efs
@@ -32,9 +32,51 @@ router = APIRouter()
 
 
 class ServerEntry(BaseModel):
-    command: str = Field(..., description="Command to run the MCP server")
+    """One mcp.servers entry — stdio (command) or remote (transport+url).
+
+    Mirrors the registry's McpServer invariant: exactly one of the two shapes.
+    Timeouts are optional here; absent values get container-appropriate defaults
+    injected at write time (see _apply_timeout_defaults)."""
+
+    command: str | None = Field(None, description="Command to run a stdio MCP server")
     args: list[str] = Field(default_factory=list, description="Command arguments")
     env: Dict[str, str] = Field(default_factory=dict, description="Environment variables")
+    transport: str | None = Field(None, description="Remote transport, e.g. streamable-http")
+    url: str | None = Field(None, description="Remote server URL")
+    connectionTimeoutMs: int | None = Field(None, gt=0, description="MCP connect timeout override")
+    requestTimeoutMs: int | None = Field(None, gt=0, description="Per-request timeout override")
+
+    @model_validator(mode="after")
+    def _stdio_or_remote(self) -> "ServerEntry":
+        is_stdio = bool(self.command)
+        is_remote = bool(self.transport and self.url)
+        if is_stdio == is_remote:
+            raise ValueError("server must be either stdio (command) or remote (transport+url), not neither/both")
+        return self
+
+
+# A stdio server spawned via npx takes 13s+ to start even with a warm cache on a
+# 0.5-vCPU container, and the npx cache lives on ephemeral /tmp — so every task
+# restart is a cold start that reliably exceeds OpenClaw's default 30s connect
+# timeout. Sessions are reused once connected, so the budget is only spent on
+# genuine cold starts.
+_STDIO_CONNECT_TIMEOUT_MS = 120_000
+# OpenClaw caps catalog tools/list at a hardcoded 1.5s unless the server block
+# carries an explicit request timeout; a remote server's list can exceed that
+# under CPU contention, silently excluding it from the catalog. 60s matches the
+# MCP SDK's per-request default, so runtime tool-call behavior is unchanged.
+_REMOTE_REQUEST_TIMEOUT_MS = 60_000
+
+
+def _apply_timeout_defaults(entry: dict) -> dict:
+    """Inject the container-appropriate timeout when the user didn't set one.
+
+    An explicit user-provided value always wins; only absent keys are filled."""
+    if entry.get("command") and not entry.get("connectionTimeoutMs"):
+        entry["connectionTimeoutMs"] = _STDIO_CONNECT_TIMEOUT_MS
+    if entry.get("url") and not entry.get("requestTimeoutMs"):
+        entry["requestTimeoutMs"] = _REMOTE_REQUEST_TIMEOUT_MS
+    return entry
 
 
 class ServersResponse(BaseModel):
@@ -45,10 +87,8 @@ class PutServersRequest(BaseModel):
     servers: Dict[str, Any] = Field(..., description="Complete servers dict to replace")
 
 
-class PatchServerRequest(BaseModel):
-    command: str = Field(..., description="Command to run the MCP server")
-    args: list[str] = Field(default_factory=list, description="Command arguments")
-    env: Dict[str, str] = Field(default_factory=dict, description="Environment variables")
+class PatchServerRequest(ServerEntry):
+    pass
 
 
 def _validate_servers(servers: dict) -> None:
@@ -130,8 +170,9 @@ async def replace_mcp_servers(
     if auth.is_org_context:
         require_org_admin(auth)
     _validate_servers(body.servers)
+    servers = {name: _apply_timeout_defaults(dict(entry)) for name, entry in body.servers.items()}
     try:
-        await set_openclaw_config_path(owner_id, ["mcp", "servers"], body.servers)
+        await set_openclaw_config_path(owner_id, ["mcp", "servers"], servers)
     except ConfigPatchError as exc:
         raise HTTPException(status_code=503, detail=f"container_not_ready: {exc}") from exc
     # The whole-dict replace drops any integration-owned key the user's body
@@ -166,7 +207,10 @@ async def upsert_mcp_server(
     owner_id = resolve_owner_id(auth)
     if auth.is_org_context:
         require_org_admin(auth)
-    entry = body.model_dump()
+    # exclude_none keeps the unset shape's keys (transport/url on a stdio entry,
+    # command on a remote one) out of the stored block — a literal null there
+    # would fail OpenClaw's config schema on hot reload.
+    entry = _apply_timeout_defaults(body.model_dump(exclude_none=True))
     try:
         await set_openclaw_config_path(owner_id, ["mcp", "servers", name], entry)
     except ConfigPatchError as exc:

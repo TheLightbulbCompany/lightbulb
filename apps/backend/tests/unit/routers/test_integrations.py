@@ -380,3 +380,75 @@ class TestIntegrationsRouter:
         app.dependency_overrides.pop(get_current_user, None)
         assert resp.status_code == 503
         assert "container_not_ready" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_put_injects_stdio_connect_timeout_default(self, app, patched_router, auth_override):
+        """A user-added stdio server gets connectionTimeoutMs=120000 injected —
+        npx cold starts on the 0.5-vCPU container reliably exceed OpenClaw's
+        default 30s connect timeout, which previously made every user-added npx
+        server fail its catalog connect while appearing configured."""
+        app.dependency_overrides[get_current_user] = auth_override
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.put(
+                "/api/v1/integrations/mcp/servers",
+                json={"servers": {"linear": {"command": "npx", "args": ["-y", "@linear/mcp"], "env": {}}}},
+            )
+        app.dependency_overrides.pop(get_current_user, None)
+        assert resp.status_code == 200
+        stored = patched_router["store"]["config"]["mcp"]["servers"]["linear"]
+        assert stored["connectionTimeoutMs"] == 120000
+
+    @pytest.mark.asyncio
+    async def test_patch_respects_explicit_timeout(self, app, patched_router, auth_override):
+        """An explicit user-provided timeout is never overridden by the default."""
+        app.dependency_overrides[get_current_user] = auth_override
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.patch(
+                "/api/v1/integrations/mcp/servers/fast",
+                json={"command": "fast-mcp", "args": [], "env": {}, "connectionTimeoutMs": 5000},
+            )
+        app.dependency_overrides.pop(get_current_user, None)
+        assert resp.status_code == 200
+        stored = patched_router["store"]["config"]["mcp"]["servers"]["fast"]
+        assert stored["connectionTimeoutMs"] == 5000
+
+    @pytest.mark.asyncio
+    async def test_patch_accepts_remote_server_and_injects_request_timeout(self, app, patched_router, auth_override):
+        """A remote (transport+url) server is a valid entry and gets
+        requestTimeoutMs=60000 injected, lifting OpenClaw's 1.5s catalog
+        tools/list cap that silently excludes slow-listing remote servers.
+        The stored block must not carry null command (a literal null fails
+        OpenClaw's config schema on hot reload)."""
+        app.dependency_overrides[get_current_user] = auth_override
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.patch(
+                "/api/v1/integrations/mcp/servers/notion",
+                json={"transport": "streamable-http", "url": "https://mcp.notion.com/mcp"},
+            )
+        app.dependency_overrides.pop(get_current_user, None)
+        assert resp.status_code == 200
+        stored = patched_router["store"]["config"]["mcp"]["servers"]["notion"]
+        assert stored["url"] == "https://mcp.notion.com/mcp"
+        assert stored["requestTimeoutMs"] == 60000
+        assert "command" not in stored
+
+    @pytest.mark.asyncio
+    async def test_put_rejects_entry_with_both_shapes(self, app, patched_router, auth_override):
+        """An entry that is both stdio and remote is ambiguous — reject at the API
+        rather than letting OpenClaw's hot reload fail on it."""
+        app.dependency_overrides[get_current_user] = auth_override
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.put(
+                "/api/v1/integrations/mcp/servers",
+                json={
+                    "servers": {
+                        "weird": {
+                            "command": "npx",
+                            "transport": "streamable-http",
+                            "url": "https://h/mcp",
+                        }
+                    }
+                },
+            )
+        app.dependency_overrides.pop(get_current_user, None)
+        assert resp.status_code == 422

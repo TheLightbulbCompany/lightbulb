@@ -12,7 +12,12 @@ vi.mock("next/navigation", () => ({
 
 const mockBalance = vi.fn();
 const mockStartTopUp = vi.fn();
+const mockStartTopUpCheckout = vi.fn();
 const mockRefresh = vi.fn();
+// The one-click submit path only renders for owners who previously opted in
+// (autoChargeEnabled); everyone else gets the Stripe Checkout hand-off.
+// Tests flip this per-case to target the path under test.
+let mockAutoChargeEnabled = false;
 vi.mock("@/hooks/useCredits", () => ({
   useCredits: () => {
     const balance = mockBalance();
@@ -20,7 +25,9 @@ vi.mock("@/hooks/useCredits", () => ({
       balance,
       // Mirrors the real hook: false only when the backend explicitly says so.
       lifecycleEnabled: balance ? balance.lifecycle_enabled !== false : undefined,
+      autoChargeEnabled: mockAutoChargeEnabled,
       startTopUp: mockStartTopUp,
+      startTopUpCheckout: mockStartTopUpCheckout,
       refresh: mockRefresh,
     };
   },
@@ -30,7 +37,9 @@ describe("CreditsStep", () => {
   beforeEach(() => {
     mockBalance.mockReset();
     mockStartTopUp.mockReset();
+    mockStartTopUpCheckout.mockReset();
     mockRefresh.mockReset();
+    mockAutoChargeEnabled = false;
     replaceMock.mockReset();
     searchParams = new URLSearchParams();
   });
@@ -42,27 +51,40 @@ describe("CreditsStep", () => {
     expect(onComplete).toHaveBeenCalled();
   });
 
-  it("latches the submit button after a successful request", async () => {
+  it("latches the submit button after a successful one-click request", async () => {
     // The payment collects asynchronously — re-enabling after success would
     // invite a second identical submit (= a second card charge).
+    mockAutoChargeEnabled = true;
     mockBalance.mockReturnValue({ balance_dollars: "0.00", balance_microcents: 0 });
     mockStartTopUp.mockResolvedValueOnce({ status: "requested", amount_cents: 2000 });
     render(<CreditsStep onComplete={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: /^add \$20$/i }));
-    const latched = await screen.findByRole("button", { name: /top-up requested/i });
+    const latched = await screen.findByRole("button", { name: /payment requested/i });
     expect(latched).toBeDisabled();
-    expect(screen.getByText(/can take a few minutes to land/i)).toBeInTheDocument();
+    expect(screen.getByText(/advances automatically once the credits land/i)).toBeInTheDocument();
     fireEvent.click(latched);
     expect(mockStartTopUp).toHaveBeenCalledTimes(1);
   });
 
-  it("stays retryable after a failed request", async () => {
+  it("stays retryable after a failed one-click request", async () => {
+    mockAutoChargeEnabled = true;
     mockBalance.mockReturnValue({ balance_dollars: "0.00", balance_microcents: 0 });
     mockStartTopUp.mockRejectedValueOnce(new Error("billing offline"));
     render(<CreditsStep onComplete={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: /^add \$20$/i }));
     await waitFor(() => expect(screen.getByText("billing offline")).toBeInTheDocument());
     expect(screen.getByRole("button", { name: /^add \$20$/i })).not.toBeDisabled();
+  });
+
+  it("hands off to Stripe Checkout when one-click is not enabled", () => {
+    // Default path: no card-on-file opt-in → the submit is a Checkout
+    // hand-off, never an implicit charge.
+    mockBalance.mockReturnValue({ balance_dollars: "0.00", balance_microcents: 0 });
+    render(<CreditsStep onComplete={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: /^add \$/i })).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /continue to payment — \$20/i }),
+    ).toBeInTheDocument();
   });
 
   it("renders the credits-unavailable state instead of the form when the lifecycle is off", () => {

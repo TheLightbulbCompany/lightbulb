@@ -30,6 +30,11 @@ import { StatusIcon } from "@/components/teams/shared/components/StatusIcon";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
+import {
+  handleShellLinkClick,
+  teamsDetailUrl,
+  teamsPanelUrl,
+} from "@/lib/shellNav";
 import type {
   CompanyAgent,
   DashboardResponse,
@@ -111,8 +116,8 @@ const RECENT_TASKS_LIMIT = 6;
  * feed for the charts; reuse it to surface the most-recently-updated tasks as
  * a quick jump-back-in list. Rows mirror the TasksList row (status circle +
  * identifier + title + assignee + relative updated time) and open the task in
- * the /chat shell when the InlineTeamsNav provider is present, falling back to
- * an <a href> under standalone /teams. */
+ * the /chat shell when the InlineTeamsNav provider is present; the href is the
+ * canonical in-shell URL, so new-tab / no-provider clicks land there too. */
 function RecentTaskRow({
   issue,
   assigneeName,
@@ -142,7 +147,8 @@ function RecentTaskRow({
 
   return (
     <Link
-      href={`/teams/issues/${issue.id}`}
+      href={teamsDetailUrl("issue", issue.id)}
+      prefetch={false}
       onClick={handleClick}
       className="group flex items-center gap-2 border-b border-[var(--edge)] px-4 py-2.5 text-sm no-underline transition-colors last:border-b-0 hover:bg-[var(--cream-deeper)]"
       style={{ color: "var(--ink)" }}
@@ -263,7 +269,8 @@ export function DashboardPanel() {
           icon={Bot}
           value={agentsCount}
           label="Agents"
-          to="/teams/agents"
+          to={teamsPanelUrl("agents")}
+          onClick={(e) => handleShellLinkClick(e, teamsPanelUrl("agents"))}
           description={
             <span>
               {dashboard.agents.running ?? 0} running,{" "}
@@ -275,7 +282,8 @@ export function DashboardPanel() {
           icon={CircleDot}
           value={openTasks}
           label="Open Tasks"
-          to="/teams/issues"
+          to={teamsPanelUrl("issues")}
+          onClick={(e) => handleShellLinkClick(e, teamsPanelUrl("issues"))}
           description={
             <span>
               {openTasks} open, {blockedTasks} blocked
@@ -286,7 +294,8 @@ export function DashboardPanel() {
           icon={DollarSign}
           value={formatCents(dashboard.costs.monthSpendCents)}
           label="Month Spend"
-          to="/teams/costs"
+          to={teamsPanelUrl("costs")}
+          onClick={(e) => handleShellLinkClick(e, teamsPanelUrl("costs"))}
           description={
             dashboard.costs.monthBudgetCents > 0 ? (
               <span>
@@ -302,7 +311,8 @@ export function DashboardPanel() {
           icon={ShieldCheck}
           value={totalApprovals}
           label="Pending Approvals"
-          to="/teams/inbox"
+          to={teamsPanelUrl("inbox")}
+          onClick={(e) => handleShellLinkClick(e, teamsPanelUrl("inbox"))}
           description={
             dashboard.budgets.pendingApprovals > 0 ? (
               <span>
@@ -347,7 +357,9 @@ export function DashboardPanel() {
           </h2>
           {recentTasks.length > 0 && (
             <Link
-              href="/teams/issues"
+              href={teamsPanelUrl("issues")}
+              prefetch={false}
+              onClick={(e) => handleShellLinkClick(e, teamsPanelUrl("issues"))}
               className="text-[11px] transition-colors hover:underline"
               style={{ color: "var(--forest)" }}
             >
@@ -395,7 +407,9 @@ export function DashboardPanel() {
           </h2>
           {events.length > 0 && (
             <Link
-              href="/teams/activity"
+              href={teamsPanelUrl("activity")}
+              prefetch={false}
+              onClick={(e) => handleShellLinkClick(e, teamsPanelUrl("activity"))}
               className="text-[11px] transition-colors hover:underline"
               style={{ color: "var(--forest)" }}
             >

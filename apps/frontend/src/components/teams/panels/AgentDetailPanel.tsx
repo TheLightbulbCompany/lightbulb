@@ -1,8 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import { PanelMasthead, PanelTabs } from "@/components/teams/shell";
+import { replaceSearchParams } from "@/lib/shellNav";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type { CompanyAgent } from "@/components/teams/shared/types";
 import { AgentManageSection } from "@/components/teams/agents/AgentManageSection";
@@ -20,7 +20,6 @@ const TABS = [
 
 export function AgentDetailPanel({ agentId }: { agentId: string }) {
   const { read } = useTeamsApi();
-  const router = useRouter();
   const { data: agent } = read<CompanyAgent>(`/agents/${agentId}`);
   const { data: agentsData } = read<{ agents: CompanyAgent[] }>("/agents");
   const { data: runs } = read<{ runs: RunRow[] }>(`/agents/${agentId}/runs`);
@@ -49,7 +48,15 @@ export function AgentDetailPanel({ agentId }: { agentId: string }) {
         <AgentManageSection
           agent={agent}
           agents={agentsData?.agents ?? []}
-          onDeleted={() => router.push("/teams/agents")}
+          onDeleted={() => {
+            // The agent is gone — swap the dead detail view for the Agents
+            // list. Replaced (not pushed) so Back never lands on it.
+            const params = new URLSearchParams(window.location.search);
+            params.set("panel", "teams-agents");
+            params.delete("detailId");
+            params.delete("agent");
+            replaceSearchParams(params);
+          }}
         />
       )}
       {tab === "runs" && (
@@ -57,12 +64,6 @@ export function AgentDetailPanel({ agentId }: { agentId: string }) {
           {runRows.map((r) => (
             <li key={r.id} className="p-3 flex justify-between items-center">
               <span className="text-[var(--ink)]">{r.status}</span>
-              <a
-                href={`/teams/agents/${agentId}/runs/${r.id}`}
-                className="text-sm text-[var(--ink-soft)] hover:underline"
-              >
-                Open →
-              </a>
             </li>
           ))}
           {runRows.length === 0 && (

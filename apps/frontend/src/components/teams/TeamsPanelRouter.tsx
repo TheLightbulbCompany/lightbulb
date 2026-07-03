@@ -2,8 +2,8 @@
 
 import { useEffect } from "react";
 import dynamic from "next/dynamic";
-import { useRouter } from "next/navigation";
 import { PageSkeleton } from "@/components/teams/shared/components/PageSkeleton";
+import { replaceSearchParams } from "@/lib/shellNav";
 
 // Shown while a panel's code-split chunk loads. Without a loading fallback,
 // next/dynamic renders nothing and a first visit flashes a blank pane before
@@ -68,10 +68,12 @@ export function preloadTeamsPanels(): void {
   }
 }
 
-// Panels removed from the nav but still reachable by old URLs/bookmarks.
-const RETIRED_REDIRECTS: Record<string, string> = {
-  approvals: "/teams/inbox", // folded into the inbox "Needs attention" band
-  members: "/chat?panel=teams-settings", // members management lives in Settings now
+// Panel keys removed from the nav but still reachable by old bookmarks —
+// remapped in place (URL canonicalized, no history entry) to the surface
+// that absorbed them.
+const RETIRED_PANEL_ALIASES: Record<string, string> = {
+  approvals: "inbox", // folded into the inbox "Needs attention" band
+  members: "settings", // members management lives in Settings now
 };
 
 export function TeamsPanelRouter({
@@ -81,14 +83,17 @@ export function TeamsPanelRouter({
   panel: string;
   detailId?: string | null;
 }) {
-  const router = useRouter();
-  const redirectTo = RETIRED_REDIRECTS[panel];
+  const alias = RETIRED_PANEL_ALIASES[panel];
 
   useEffect(() => {
-    if (redirectTo) router.replace(redirectTo);
-  }, [redirectTo, router]);
+    if (!alias) return;
+    const params = new URLSearchParams(window.location.search);
+    params.set("panel", `teams-${alias}`);
+    params.delete("detailId");
+    replaceSearchParams(params);
+  }, [alias]);
 
-  if (redirectTo) return null;
+  if (alias) return null;
 
   // Detail branch — must precede the list map. A detail key without a
   // detailId falls through to "Unknown panel" below (no id to render).

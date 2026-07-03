@@ -37,6 +37,7 @@ import { useLiveRuns } from "@/components/teams/dashboard/hooks/useLiveRuns";
 import { useProjectDetail } from "./hooks/useProjectDetail";
 import { useProjectMutations } from "./hooks/useProjectMutations";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
+import { handleShellLinkClick, teamsPanelUrl } from "@/lib/shellNav";
 import { teamsQueryKeys } from "@/components/teams/shared/queryKeys";
 import { useSWRConfig } from "swr";
 import type {
@@ -161,7 +162,12 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
         style={{ color: "var(--mute)" }}
         aria-label="Breadcrumb"
       >
-        <Link href="/teams/projects" className="hover:underline">
+        <Link
+          href={teamsPanelUrl("projects")}
+          prefetch={false}
+          onClick={(e) => handleShellLinkClick(e, teamsPanelUrl("projects"))}
+          className="hover:underline"
+        >
           Projects
         </Link>
         <ChevronRight className="h-3 w-3" />

@@ -2,6 +2,7 @@
 // description?, parent_id?), status chip, and EditGoalDialog patch (H1).
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 const read = vi.fn();
 const patch = vi.fn().mockResolvedValue({});
@@ -120,8 +121,12 @@ describe("GoalsPanel", () => {
   });
 
   it("opens EditGoalDialog pre-filled and patches title/description/status on save", async () => {
+    const user = userEvent.setup();
     render(<GoalsPanel />);
-    fireEvent.click(screen.getByRole("button", { name: /edit/i }));
+    // Edit lives in the row's "Goal actions" dropdown (Radix menu — needs the
+    // full userEvent pointer sequence, and the items portal to document.body).
+    await user.click(screen.getByRole("button", { name: /goal actions/i }));
+    await user.click(await screen.findByRole("menuitem", { name: /edit goal/i }));
     const title = screen.getByDisplayValue("Ship v1") as HTMLInputElement;
     expect(title).toBeInTheDocument();
     const statusSelect = screen.getByLabelText(/status/i) as HTMLSelectElement;

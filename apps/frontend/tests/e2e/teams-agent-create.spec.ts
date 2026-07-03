@@ -60,8 +60,9 @@ test.describe('E2E: Teams agent create', () => {
     await signIn(user.page, process.env.BASE_URL, user.clerkUserId);
     expect(user.page.url()).not.toContain('/sign-in');
 
-    // 2. Navigate to the agents panel.
-    await user.page.goto('/teams/agents');
+    // 2. Navigate to the agents panel (canonical in-shell URL — the retired
+    //    /teams/* routes no longer exist).
+    await user.page.goto('/chat?panel=teams-agents');
 
     // 3. Skip if the feature flag is off (middleware rewrites to /404 →
     //    Next renders the App Router not-found UI; the "New agent" button

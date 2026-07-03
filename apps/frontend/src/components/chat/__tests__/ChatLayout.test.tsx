@@ -113,6 +113,7 @@ vi.mock("@/components/chat/AgentDialogs", () => ({
   AgentCreateDialog: () => null,
   AgentRenameDialog: () => null,
   AgentDeleteDialog: () => null,
+  SessionDeleteDialog: () => null,
 }));
 // Drawer provider is mounted on the chat page in production, but this test
 // renders <ChatLayout /> bare. Stub the hook so we don't have to wrap.

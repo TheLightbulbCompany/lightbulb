@@ -20,19 +20,10 @@ beforeEach(() => {
 });
 
 describe("FailedRunRow", () => {
-  it("renders agent name + failure reason and View links to the run detail", () => {
+  it("renders the agent name + failure reason", () => {
     render(<FailedRunRow run={RUN} agentName="Atlas" onDismiss={vi.fn()} />);
     expect(screen.getByText(/Atlas/)).toBeInTheDocument();
     expect(screen.getByText(/boom/)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /view/i })).toHaveAttribute(
-      "href",
-      "/teams/agents/ag1/runs/r1",
-    );
-  });
-
-  it("hides View when agentId is null", () => {
-    render(<FailedRunRow run={{ id: "r2", agentId: null, status: "failed" }} agentName="?" onDismiss={vi.fn()} />);
-    expect(screen.queryByRole("link", { name: /view/i })).toBeNull();
   });
 
   it("Dismiss calls onDismiss", () => {

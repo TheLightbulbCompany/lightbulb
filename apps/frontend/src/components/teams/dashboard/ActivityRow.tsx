@@ -10,6 +10,12 @@ import Link from "next/link";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { cn } from "@/lib/utils";
+import {
+  handleShellLinkClick,
+  teamsDetailUrl,
+  teamsPanelUrl,
+} from "@/lib/shellNav";
+import { agentInspectorUrl } from "@/components/teams/shared/lib/agentInspectorUrl";
 import type { ActivityEvent } from "@/components/teams/dashboard/hooks/useActivityFeed";
 
 const VERBS: Record<string, string> = {
@@ -46,15 +52,17 @@ function entityLink(entityType: string | null | undefined, entityId: string | nu
   if (!entityType || !entityId) return null;
   switch (entityType) {
     case "issue":
-      return `/teams/issues/${entityId}`;
+      return teamsDetailUrl("issue", entityId);
     case "agent":
-      return `/teams/agents/${entityId}`;
+      return agentInspectorUrl(entityId);
     case "project":
-      return `/teams/projects/${entityId}`;
+      return teamsDetailUrl("project", entityId);
     case "goal":
-      return `/teams/goals/${entityId}`;
+      return teamsDetailUrl("goal", entityId);
     case "approval":
-      return `/teams/approvals/${entityId}`;
+      // No per-approval detail surface — approvals live in the inbox's
+      // "Needs attention" band, so the row links to the list.
+      return teamsPanelUrl("inbox");
     default:
       return null;
   }
@@ -179,7 +187,12 @@ export function ActivityRow({ event, agentNames, className }: ActivityRowProps) 
 
   if (link) {
     return (
-      <Link href={link} className={cn(classes, "no-underline text-inherit block")}>
+      <Link
+        href={link}
+        prefetch={false}
+        onClick={(e) => handleShellLinkClick(e, link)}
+        className={cn(classes, "no-underline text-inherit block")}
+      >
         {inner}
       </Link>
     );

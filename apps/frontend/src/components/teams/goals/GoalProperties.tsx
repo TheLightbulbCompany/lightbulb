@@ -12,6 +12,8 @@ import { useState, type ReactNode } from "react";
 import Link from "next/link";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { cn } from "@/lib/utils";
+import { handleShellLinkClick, teamsDetailUrl } from "@/lib/shellNav";
+import { agentInspectorUrl } from "@/components/teams/shared/lib/agentInspectorUrl";
 import {
   GOAL_LEVELS,
   type Goal,
@@ -125,6 +127,9 @@ export function GoalProperties({
   const parentGoal = goal.parentId
     ? allGoals.find((g) => g.id === goal.parentId)
     : null;
+  const parentGoalUrl = goal.parentId
+    ? teamsDetailUrl("goal", goal.parentId)
+    : null;
 
   return (
     <dl className={cn("flex flex-col", className)}>
@@ -137,7 +142,9 @@ export function GoalProperties({
       <PropertyRow label="Owner">
         {ownerAgent ? (
           <Link
-            href={`/teams/agents/${ownerAgent.id}`}
+            href={agentInspectorUrl(ownerAgent.id)}
+            prefetch={false}
+            onClick={(e) => handleShellLinkClick(e, agentInspectorUrl(ownerAgent.id))}
             className="hover:underline"
             style={{ color: "var(--ink)" }}
           >
@@ -149,10 +156,12 @@ export function GoalProperties({
           </span>
         )}
       </PropertyRow>
-      {goal.parentId && (
+      {goal.parentId && parentGoalUrl && (
         <PropertyRow label="Parent">
           <Link
-            href={`/teams/goals/${goal.parentId}`}
+            href={parentGoalUrl}
+            prefetch={false}
+            onClick={(e) => handleShellLinkClick(e, parentGoalUrl)}
             className="hover:underline"
             style={{ color: "var(--ink)" }}
           >

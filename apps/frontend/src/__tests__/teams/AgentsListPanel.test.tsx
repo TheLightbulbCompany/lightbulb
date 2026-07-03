@@ -104,7 +104,10 @@ describe("AgentsListPanel", () => {
     render(<AgentsListPanel />);
     expect(screen.getByText("Alice")).toBeInTheDocument();
     const link = screen.getByText("Open →");
-    expect(link.closest("a")).toHaveAttribute("href", "/teams/agents/a1");
+    expect(link.closest("a")).toHaveAttribute(
+      "href",
+      "/chat?panel=agent-inspector&agent=a1",
+    );
   });
 
   it("row pause action calls pause; delete hidden for seeded agents", async () => {

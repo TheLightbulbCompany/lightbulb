@@ -73,7 +73,7 @@ describe("RoutineDetailPanel", () => {
     ).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Routines" })).toHaveAttribute(
       "href",
-      "/teams/routines",
+      "/chat?panel=teams-routines",
     );
 
     // Status swatch surfaces a real label (not an --edge pill).
@@ -81,10 +81,11 @@ describe("RoutineDetailPanel", () => {
     expect(propLabels.length).toBe(4);
     expect(screen.getByText("Active")).toBeInTheDocument();
 
-    // Assignee resolves to the agent name via the /agents roster.
+    // Assignee resolves to the agent name via the /agents roster and links to
+    // the shell's per-agent inspector (agents have no teams-* detail panel).
     expect(screen.getByRole("link", { name: "Friday" })).toHaveAttribute(
       "href",
-      "/teams/agents/ag_1",
+      "/chat?panel=agent-inspector&agent=ag_1",
     );
 
     // Schedule + run history rendered.

@@ -14,7 +14,10 @@ export interface MetricCardProps {
   description?: ReactNode;
   /** Optional: when set, the card becomes a link (`next/link`). */
   to?: string;
-  onClick?: () => void;
+  /** Receives the click event so callers can keep in-shell navigation
+   * client-side (preventDefault + pushState) while `to` stays the native
+   * new-tab / middle-click fallback. */
+  onClick?: (e: React.MouseEvent<HTMLElement>) => void;
 }
 
 /**
@@ -65,7 +68,12 @@ export function MetricCard({ icon: Icon, value, label, description, to, onClick 
 
   if (to) {
     return (
-      <Link href={to} className="no-underline text-inherit h-full block" onClick={onClick}>
+      <Link
+        href={to}
+        prefetch={false}
+        className="no-underline text-inherit h-full block"
+        onClick={onClick}
+      >
         {inner}
       </Link>
     );

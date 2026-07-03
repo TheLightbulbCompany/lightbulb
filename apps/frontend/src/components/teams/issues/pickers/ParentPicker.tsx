@@ -11,6 +11,7 @@ import {
 import { StatusIcon } from "@/components/teams/shared/components/StatusIcon";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { cn } from "@/lib/utils";
+import { handleShellLinkClick, teamsDetailUrl } from "@/lib/shellNav";
 import type { Issue } from "@/components/teams/shared/types";
 
 export interface ParentPickerProps {
@@ -83,12 +84,15 @@ export function ParentPicker({
       ? parentId.slice(0, 8)
       : null;
   const parentTitle = parent?.title?.trim() ?? "";
+  const parentUrl = parentId ? teamsDetailUrl("issue", parentId) : null;
 
   return (
     <span className={cn("inline-flex min-w-0 items-baseline gap-2", className)}>
-      {parentId && (
+      {parentUrl && (
         <Link
-          href={`/teams/issues/${parentId}`}
+          href={parentUrl}
+          prefetch={false}
+          onClick={(e) => handleShellLinkClick(e, parentUrl)}
           className="inline-flex min-w-0 items-baseline gap-1.5 hover:underline"
           style={{ color: "var(--forest)" }}
         >

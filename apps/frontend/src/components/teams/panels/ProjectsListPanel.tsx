@@ -13,6 +13,7 @@ import {
 } from "@/components/teams/shell";
 import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
+import { handleShellLinkClick, teamsDetailUrl } from "@/lib/shellNav";
 
 // The /projects envelope proxies the raw upstream project rows verbatim. (No
 // budget column: upstream has no budget field on the project row — see the
@@ -88,7 +89,10 @@ export function ProjectsListPanel() {
           </button>
         ) : (
           <a
-            href={`/teams/projects/${p.id}`}
+            href={teamsDetailUrl("project", p.id)}
+            onClick={(e) =>
+              handleShellLinkClick(e, teamsDetailUrl("project", p.id))
+            }
             className="text-sm hover:underline"
             style={{ color: "var(--forest)" }}
           >

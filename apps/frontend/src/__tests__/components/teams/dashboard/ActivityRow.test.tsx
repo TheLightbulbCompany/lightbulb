@@ -140,7 +140,10 @@ describe("ActivityRow", () => {
       />
     );
     const link = screen.getByRole("link");
-    expect(link).toHaveAttribute("href", "/teams/issues/iss_xyz");
+    expect(link).toHaveAttribute(
+      "href",
+      "/chat?panel=teams-issue-detail&detailId=iss_xyz",
+    );
   });
 
   test("does not wrap in a link for unsupported entity types", () => {

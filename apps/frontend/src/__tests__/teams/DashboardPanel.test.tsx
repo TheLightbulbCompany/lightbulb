@@ -4,7 +4,7 @@
 // __tests__/components/teams/panels/DashboardPanel.test.tsx; this file is
 // kept as a thin smoke test.
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 
 const mockRead = vi.fn((path: string) => {
   if (path === "/dashboard") {
@@ -55,11 +55,13 @@ describe("DashboardPanel", () => {
     // Header — PanelMasthead overline + h1 (editorial atom layer, PR 8)
     expect(screen.getByText("Operations")).toBeInTheDocument();
     expect(screen.getByText("Dashboard")).toBeInTheDocument();
-    // 4 tile labels
-    expect(screen.getByText("Agents")).toBeInTheDocument();
-    expect(screen.getByText("Open Tasks")).toBeInTheDocument();
-    expect(screen.getByText("Month Spend")).toBeInTheDocument();
-    expect(screen.getByText("Pending Approvals")).toBeInTheDocument();
+    // 4 tile labels — scoped to the metrics strip ("Agents" also names the
+    // ActiveAgentsPanel section heading).
+    const metrics = within(screen.getByLabelText("Key metrics"));
+    expect(metrics.getByText("Agents")).toBeInTheDocument();
+    expect(metrics.getByText("Open Tasks")).toBeInTheDocument();
+    expect(metrics.getByText("Month Spend")).toBeInTheDocument();
+    expect(metrics.getByText("Pending Approvals")).toBeInTheDocument();
     // 4250 cents → $42.50 (unique enough to avoid description-text collisions)
     expect(screen.getByText("$42.50")).toBeInTheDocument();
   });

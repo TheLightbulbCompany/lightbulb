@@ -87,6 +87,7 @@ vi.mock("@/components/chat/AgentDialogs", () => ({
   AgentCreateDialog: () => null,
   AgentRenameDialog: () => null,
   AgentDeleteDialog: () => null,
+  SessionDeleteDialog: () => null,
 }));
 vi.mock("@/components/marketplace/drawer/MarketplaceDrawerProvider", () => ({
   useMarketplaceDrawer: () => ({

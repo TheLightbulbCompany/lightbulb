@@ -18,11 +18,6 @@ vi.mock("@/hooks/useTeamsApi", () => ({
   useTeamsApi: vi.fn(),
 }));
 
-const mockRouterPush = vi.fn();
-vi.mock("next/navigation", () => ({
-  useRouter: () => ({ push: mockRouterPush }),
-}));
-
 import { IssueDetailPage } from "@/components/teams/issues/IssueDetailPage";
 import { useIssueDetail } from "@/components/teams/issues/hooks/useIssueDetail";
 import { useIssueMutations } from "@/components/teams/issues/hooks/useIssueMutations";
@@ -360,7 +355,7 @@ describe("IssueDetailPage", () => {
     expect(sent.executionPolicy.monitor).toEqual(monitor);
   });
 
-  test("Delete issue action confirms then removes + navigates back to /teams", async () => {
+  test("Delete issue action confirms then removes + leaves for the Tasks list", async () => {
     const user = userEvent.setup();
     mockRemove.mockResolvedValue(undefined);
     vi.mocked(useIssueDetail).mockReturnValue({
@@ -370,6 +365,14 @@ describe("IssueDetailPage", () => {
       isError: false,
       error: null,
     });
+    // Seed the URL with the (soon-to-be-dead) detail view's params so the
+    // test can prove the swap: panel -> teams-issues, detailId dropped, and
+    // replaceState (no history entry for Back to land on).
+    window.history.replaceState(
+      null,
+      "",
+      "/chat?panel=teams-issue-detail&detailId=iss_1",
+    );
 
     render(<IssueDetailPage issueId="iss_1" />);
 
@@ -382,6 +385,10 @@ describe("IssueDetailPage", () => {
     await user.click(confirm);
 
     await waitFor(() => expect(mockRemove).toHaveBeenCalledWith("iss_1"));
-    await waitFor(() => expect(mockRouterPush).toHaveBeenCalledWith("/teams"));
+    await waitFor(() => {
+      const params = new URLSearchParams(window.location.search);
+      expect(params.get("panel")).toBe("teams-issues");
+      expect(params.get("detailId")).toBeNull();
+    });
   });
 });

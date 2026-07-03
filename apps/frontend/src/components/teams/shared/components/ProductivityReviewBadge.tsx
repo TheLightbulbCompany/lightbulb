@@ -20,7 +20,7 @@
 import Link from "next/link";
 import { Eye } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { createIssueDetailPath } from "@/components/teams/shared/lib/issueDetailBreadcrumb";
+import { handleShellLinkClick, teamsDetailUrl } from "@/lib/shellNav";
 import type {
   IssueProductivityReview,
   IssueProductivityReviewTrigger,
@@ -64,7 +64,8 @@ export function ProductivityReviewBadge({
   const label = productivityReviewTriggerLabel(review.trigger);
   const reviewIdentifier =
     review.reviewIdentifier ?? review.reviewIssueId.slice(0, 8);
-  const reviewPath = createIssueDetailPath(
+  const reviewPath = teamsDetailUrl(
+    "issue",
     review.reviewIdentifier ?? review.reviewIssueId,
   );
   const statusLabel =
@@ -79,6 +80,8 @@ export function ProductivityReviewBadge({
   return (
     <Link
       href={reviewPath}
+      prefetch={false}
+      onClick={(e) => handleShellLinkClick(e, reviewPath)}
       className={cn(
         "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium shrink-0 transition-colors",
         className,

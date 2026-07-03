@@ -58,8 +58,11 @@ describe("RoutineDetailPanel", () => {
       ],
     );
     render(<RoutineDetailPanel routineId="r1" />);
-    expect(screen.getByText("Nightly digest")).toBeInTheDocument();
-    expect(screen.getByText("active")).toBeInTheDocument();
+    // The title renders twice (breadcrumb tail + h1) — target the heading.
+    expect(
+      screen.getByRole("heading", { name: "Nightly digest" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Active")).toBeInTheDocument();
     expect(screen.getByText("0 9 * * *")).toBeInTheDocument();
     // a future nextRunAt renders future-relative ("in Nd"), never "just now"
     expect(screen.getByText(/next in \d+d/i)).toBeInTheDocument();
@@ -69,7 +72,7 @@ describe("RoutineDetailPanel", () => {
     expect(screen.getByText("boom")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "ENG-9" })).toHaveAttribute(
       "href",
-      "/teams/issues/iss9",
+      "/chat?panel=teams-issue-detail&detailId=iss9",
     );
   });
 
@@ -88,7 +91,9 @@ describe("RoutineDetailPanel", () => {
       [],
     );
     render(<RoutineDetailPanel routineId="r1" />);
-    expect(screen.getByText("Empty routine")).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Empty routine" }),
+    ).toBeInTheDocument();
     expect(screen.getByText(/no runs yet/i)).toBeInTheDocument();
   });
 

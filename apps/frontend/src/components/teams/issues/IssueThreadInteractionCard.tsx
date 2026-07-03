@@ -42,6 +42,7 @@ import { MarkdownView } from "@/components/teams/shared/components/MarkdownView"
 import { PriorityIcon } from "@/components/teams/shared/components/PriorityIcon";
 import { formatAssigneeUserLabel } from "@/components/teams/shared/lib/assignees";
 import { createIssueDetailPath } from "@/components/teams/shared/lib/issueDetailBreadcrumb";
+import { handleShellLinkClick } from "@/lib/shellNav";
 import {
   buildSuggestedTaskTree,
   collectSuggestedTaskClientKeys,
@@ -266,6 +267,9 @@ function TaskTreeNode({
     .filter((child) => child.task.hiddenInPreview)
     .reduce((sum, child) => sum + countSuggestedTaskNodes(child), 0);
   const createdTask = createdByClientKey.get(node.task.clientKey);
+  const createdTaskUrl = createdTask?.issueId
+    ? createIssueDetailPath(createdTask.issueId)
+    : null;
   const isSelected = selectedClientKeys?.has(node.task.clientKey) ?? false;
   const isSkipped = skippedClientKeys?.has(node.task.clientKey) ?? false;
   const assigneeLabel = resolveActorLabel({
@@ -329,9 +333,11 @@ function TaskTreeNode({
             </div>
           </div>
 
-          {createdTask?.issueId ? (
+          {createdTask?.issueId && createdTaskUrl ? (
             <Link
-              href={createIssueDetailPath(createdTask.issueId)}
+              href={createdTaskUrl}
+              prefetch={false}
+              onClick={(e) => handleShellLinkClick(e, createdTaskUrl)}
               className="inline-flex shrink-0 items-center gap-1 rounded-sm border border-emerald-500/50 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-medium text-emerald-900 transition-colors hover:bg-emerald-500/15"
             >
               {createdTask.identifier ?? createdTask.issueId.slice(0, 8)}

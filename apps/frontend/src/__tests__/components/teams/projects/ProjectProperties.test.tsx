@@ -85,7 +85,10 @@ describe("ProjectProperties goals multi-select", () => {
     );
     const revenue = screen.getByRole("link", { name: "Grow revenue" });
     expect(revenue).toBeInTheDocument();
-    expect(revenue).toHaveAttribute("href", "/teams/goals/g_1");
+    expect(revenue).toHaveAttribute(
+      "href",
+      "/chat?panel=teams-goal-detail&detailId=g_1",
+    );
     expect(
       screen.getByRole("link", { name: "Improve retention" }),
     ).toBeInTheDocument();

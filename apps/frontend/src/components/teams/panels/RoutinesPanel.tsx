@@ -21,6 +21,7 @@ import { AssigneePicker } from "@/components/teams/issues/pickers/AssigneePicker
 import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { cn } from "@/lib/utils";
+import { handleShellLinkClick, teamsDetailUrl } from "@/lib/shellNav";
 import type {
   CompanyAgent,
   RoutineVariable,
@@ -417,7 +418,10 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
           </button>
         ) : (
           <a
-            href={`/teams/routines/${r.id}`}
+            href={teamsDetailUrl("routine", r.id)}
+            onClick={(e) =>
+              handleShellLinkClick(e, teamsDetailUrl("routine", r.id))
+            }
             className="text-sm text-[var(--forest)] hover:underline"
           >
             Open →

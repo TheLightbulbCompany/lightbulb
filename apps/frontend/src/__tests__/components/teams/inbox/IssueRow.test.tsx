@@ -24,13 +24,15 @@ test("renders the issue title + identifier", () => {
 });
 
 test("links by internal id, not the human-readable identifier", () => {
-  // The detail route /teams/issues/{id} resolves upstream by the internal id
-  // ONLY, so a row with identifier "PAP-1" must still link to its id "iss_1".
-  // The identifier stays the visible label.
+  // The detail view resolves upstream by the internal id ONLY, so a row with
+  // identifier "PAP-1" must still link to its id "iss_1". The identifier
+  // stays the visible label.
   const { container, getByText } = render(<IssueRow issue={issue} />);
   const link = container.querySelector("a[data-inbox-issue-link]");
   expect(link).not.toBeNull();
-  expect(link?.getAttribute("href")).toBe("/teams/issues/iss_1");
+  expect(link?.getAttribute("href")).toBe(
+    "/chat?panel=teams-issue-detail&detailId=iss_1",
+  );
   expect(getByText("PAP-1")).toBeInTheDocument();
 });
 
@@ -41,7 +43,9 @@ test("renders identifier label while linking by id", () => {
     />,
   );
   const link = container.querySelector("a[data-inbox-issue-link]");
-  expect(link?.getAttribute("href")).toBe("/teams/issues/uuid-1");
+  expect(link?.getAttribute("href")).toBe(
+    "/chat?panel=teams-issue-detail&detailId=uuid-1",
+  );
   expect(getByText("ENG-42")).toBeInTheDocument();
 });
 
@@ -66,7 +70,7 @@ test("archive button fires onArchive without following the link", () => {
 test("inside the inline nav shell, clicking the row opens the detail in-shell", () => {
   // Under /chat an InlineTeamsNavProvider is mounted: the row must intercept
   // its own <Link> click, preventDefault, and route the issue's internal id
-  // through openDetail("issue-detail", id) instead of navigating to /teams.
+  // through openDetail("issue-detail", id) instead of a full Link navigation.
   const openDetail = vi.fn();
   const { container } = render(
     <InlineTeamsNavProvider value={{ openDetail }}>
@@ -77,9 +81,11 @@ test("inside the inline nav shell, clicking the row opens the detail in-shell", 
     "a[data-inbox-issue-link]",
   ) as HTMLAnchorElement;
   expect(link).not.toBeNull();
-  // The <Link href> stays present (middle-click / keyboard / standalone all
-  // still resolve to the native detail route).
-  expect(link.getAttribute("href")).toBe("/teams/issues/iss_1");
+  // The <Link href> stays present (middle-click / keyboard / new-tab all
+  // still resolve to the canonical in-shell URL).
+  expect(link.getAttribute("href")).toBe(
+    "/chat?panel=teams-issue-detail&detailId=iss_1",
+  );
 
   const clickEvent = new MouseEvent("click", {
     bubbles: true,
@@ -95,8 +101,8 @@ test("inside the inline nav shell, clicking the row opens the detail in-shell", 
 
 test("inside the shell, a modified click keeps native link behavior (new tab)", () => {
   // Cmd/Ctrl-click → new tab, Shift → new window, middle-click must NOT be
-  // intercepted, or "open in new tab" on the /teams/issues/<id> href would be
-  // swallowed and replace the inline panel instead.
+  // intercepted, or "open in new tab" on the detail href would be swallowed
+  // and replace the inline panel instead.
   const openDetail = vi.fn();
   const { container } = render(
     <InlineTeamsNavProvider value={{ openDetail }}>
@@ -119,13 +125,15 @@ test("inside the shell, a modified click keeps native link behavior (new tab)", 
 });
 
 test("without a nav provider the row click is not intercepted", () => {
-  // Standalone /teams: no provider → no openDetail, no preventDefault, the
-  // <Link href> drives navigation exactly as before.
+  // No provider → no openDetail, no preventDefault, the <Link href> (the
+  // canonical in-shell URL) drives navigation.
   const { container } = render(<IssueRow issue={issue} />);
   const link = container.querySelector(
     "a[data-inbox-issue-link]",
   ) as HTMLAnchorElement;
-  expect(link.getAttribute("href")).toBe("/teams/issues/iss_1");
+  expect(link.getAttribute("href")).toBe(
+    "/chat?panel=teams-issue-detail&detailId=iss_1",
+  );
 
   const clickEvent = new MouseEvent("click", {
     bubbles: true,

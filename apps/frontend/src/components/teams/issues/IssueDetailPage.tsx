@@ -9,7 +9,6 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { useRouter } from "next/navigation";
 import { useUser } from "@clerk/nextjs";
 import { Copy, EyeOff, MoreHorizontal, Trash2 } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
@@ -28,6 +27,7 @@ import { useIssueInteractions } from "./hooks/useIssueInteractions";
 import { useInteractionMutations } from "./hooks/useInteractionMutations";
 import { patchExecutionPolicy } from "./executionPolicy";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
+import { replaceSearchParams } from "@/lib/shellNav";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -164,7 +164,6 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
   const mutations = useIssueMutations();
   const interactionMutations = useInteractionMutations();
   const { user } = useUser();
-  const router = useRouter();
   const { read } = useTeamsApi();
   const { data: agentsResp } = read<{ agents: CompanyAgent[] }>("/agents");
   const { data: projectsResp } = read<{ projects: IssueProject[] }>("/projects");
@@ -178,13 +177,22 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
+  // The issue is gone (deleted or hidden) — swap the now-dead detail view for
+  // the Tasks list. Replaced (not pushed) so Back never lands on the dead
+  // detail view of an issue that no longer exists.
+  const leaveForTasksList = () => {
+    const params = new URLSearchParams(window.location.search);
+    params.set("panel", "teams-issues");
+    params.delete("detailId");
+    replaceSearchParams(params);
+  };
+
   const confirmDelete = async () => {
     setDeleting(true);
     try {
       await mutations.remove(issueId);
       setDeleteOpen(false);
-      // The issue is gone — leave the now-dead detail route for the inbox.
-      router.push("/teams");
+      leaveForTasksList();
     } finally {
       setDeleting(false);
     }
@@ -200,9 +208,9 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
   const handleHide = async () => {
     // Hiding is reversible (it just stamps hiddenAt), so it skips the confirm
     // dialog that guards the destructive delete. The hidden task drops out of
-    // the Tasks list, so leave the detail route for the inbox afterwards.
+    // the Tasks list, so leave the detail view afterwards.
     await mutations.update(issueId, { hiddenAt: new Date().toISOString() });
-    router.push("/teams");
+    leaveForTasksList();
   };
 
   if (isLoading && !issue) {

@@ -15,6 +15,12 @@ import Link from "next/link";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { cn } from "@/lib/utils";
+import {
+  handleShellLinkClick,
+  teamsDetailUrl,
+  teamsPanelUrl,
+} from "@/lib/shellNav";
+import { agentInspectorUrl } from "@/components/teams/shared/lib/agentInspectorUrl";
 import type {
   CompanyAgent,
   RoutineDetail,
@@ -201,7 +207,12 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
           style={{ color: "var(--mute)" }}
           aria-label="Breadcrumb"
         >
-          <Link href="/teams/routines" className="hover:underline">
+          <Link
+            href={teamsPanelUrl("routines")}
+            prefetch={false}
+            onClick={(e) => handleShellLinkClick(e, teamsPanelUrl("routines"))}
+            className="hover:underline"
+          >
             Routines
           </Link>
           <ChevronRight className="h-3 w-3" />
@@ -283,6 +294,9 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
             <ul className="flex flex-col">
               {runs.map((r) => {
                 const when = r.triggeredAt ?? r.startedAt ?? r.createdAt;
+                const linkedIssueUrl = r.linkedIssue
+                  ? teamsDetailUrl("issue", r.linkedIssue.id)
+                  : null;
                 return (
                   <li
                     key={r.id}
@@ -307,9 +321,10 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
                           {r.trigger.label ?? r.trigger.kind}
                         </span>
                       )}
-                      {r.linkedIssue && (
+                      {r.linkedIssue && linkedIssueUrl && (
                         <a
-                          href={`/teams/issues/${r.linkedIssue.id}`}
+                          href={linkedIssueUrl}
+                          onClick={(e) => handleShellLinkClick(e, linkedIssueUrl)}
                           className="text-xs hover:underline"
                           style={{ color: "var(--forest)" }}
                         >
@@ -350,7 +365,11 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
           <PropertyRow label="Assignee">
             {assigneeAgent ? (
               <Link
-                href={`/teams/agents/${assigneeAgent.id}`}
+                href={agentInspectorUrl(assigneeAgent.id)}
+                prefetch={false}
+                onClick={(e) =>
+                  handleShellLinkClick(e, agentInspectorUrl(assigneeAgent.id))
+                }
                 className="hover:underline"
                 style={{ color: "var(--ink)" }}
               >

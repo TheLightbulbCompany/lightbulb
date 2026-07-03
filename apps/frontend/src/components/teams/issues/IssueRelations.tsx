@@ -22,6 +22,7 @@ import { EditorialButton, EditorialDialog } from "@/components/teams/shell";
 import { StatusIcon } from "@/components/teams/shared/components/StatusIcon";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { cn } from "@/lib/utils";
+import { handleShellLinkClick, teamsDetailUrl } from "@/lib/shellNav";
 import type { Issue, IssueRelationIssueSummary } from "@/components/teams/shared/types";
 
 /** A removable "Blocked by" chip: links to the blocker, with a hover X that
@@ -35,6 +36,7 @@ function RemovableRelationChip({
   onRemove: (issueId: string) => void;
 }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const issueUrl = teamsDetailUrl("issue", issue.id);
   const issueLabel = issue.identifier ?? issue.title;
   const confirmLabel = issue.identifier
     ? `${issue.identifier}: ${issue.title}`
@@ -76,7 +78,9 @@ function RemovableRelationChip({
         </button>
         {issue.identifier ? (
           <Link
-            href={`/teams/issues/${issue.id}`}
+            href={issueUrl}
+            prefetch={false}
+            onClick={(e) => handleShellLinkClick(e, issueUrl)}
             className="inline-flex min-w-0 items-center gap-1 no-underline hover:underline"
             aria-label={`Issue ${issueLabel}: ${issue.title}`}
           >
@@ -119,6 +123,7 @@ function RemovableRelationChip({
 
 /** A read-only "Blocking" chip linking to the blocked issue. */
 function RelationChip({ issue }: { issue: IssueRelationIssueSummary }) {
+  const issueUrl = teamsDetailUrl("issue", issue.id);
   const issueLabel = issue.identifier ?? issue.title;
   const content = (
     <>
@@ -128,7 +133,9 @@ function RelationChip({ issue }: { issue: IssueRelationIssueSummary }) {
   );
   return (
     <Link
-      href={`/teams/issues/${issue.id}`}
+      href={issueUrl}
+      prefetch={false}
+      onClick={(e) => handleShellLinkClick(e, issueUrl)}
       className="inline-flex min-w-0 items-center gap-1 rounded-full px-2 py-0.5 text-xs no-underline hover:underline"
       style={{
         border: "1px solid var(--edge)",

@@ -42,9 +42,12 @@ describe("KanbanCard", () => {
 
   it("links to the issue detail by id (not identifier — BFF expects id)", () => {
     render(wrap(<KanbanCard issue={baseIssue} agents={[]} />));
-    // baseIssue has identifier "ENG-42", but href must use id "iss-1" so the
-    // BFF /teams/issues/{id} → upstream /api/issues/{id} fetch resolves.
-    expect(screen.getByRole("link")).toHaveAttribute("href", "/teams/issues/iss-1");
+    // baseIssue has identifier "ENG-42", but the detailId must use id "iss-1"
+    // so the BFF /teams/issues/{id} → upstream /api/issues/{id} fetch resolves.
+    expect(screen.getByRole("link")).toHaveAttribute(
+      "href",
+      "/chat?panel=teams-issue-detail&detailId=iss-1",
+    );
   });
 
   it("disables native anchor drag so dnd-kit can drive the sort", () => {
@@ -54,7 +57,10 @@ describe("KanbanCard", () => {
     render(wrap(<KanbanCard issue={baseIssue} agents={[]} />));
     const link = screen.getByRole("link");
     expect(link).toHaveAttribute("draggable", "false");
-    expect(link).toHaveAttribute("href", "/teams/issues/iss-1");
+    expect(link).toHaveAttribute(
+      "href",
+      "/chat?panel=teams-issue-detail&detailId=iss-1",
+    );
   });
 
   it("renders agent name when assigneeAgentId resolves", () => {
@@ -83,7 +89,10 @@ describe("KanbanCardOverlay", () => {
 
   it("links by id (consistent with KanbanCard)", () => {
     render(<KanbanCardOverlay issue={baseIssue} agents={[]} />);
-    expect(screen.getByRole("link")).toHaveAttribute("href", "/teams/issues/iss-1");
+    expect(screen.getByRole("link")).toHaveAttribute(
+      "href",
+      "/chat?panel=teams-issue-detail&detailId=iss-1",
+    );
   });
 
   it("carries a data-kanban-card-overlay attribute (not -id) so it doesn't collide with the active card in queries", () => {
@@ -97,7 +106,9 @@ describe("Kanban card inline-shell routing", () => {
   // Rendered via the overlay (no dnd-kit / isDragging) — it shares CardContent
   // with the sortable KanbanCard, so it exercises the same onClick.
   const linkOf = (c: HTMLElement) =>
-    c.querySelector('a[href="/teams/issues/iss-1"]') as HTMLAnchorElement;
+    c.querySelector(
+      'a[href="/chat?panel=teams-issue-detail&detailId=iss-1"]',
+    ) as HTMLAnchorElement;
 
   it("routes a plain click through openDetail when inside the nav shell", () => {
     const openDetail = vi.fn();
@@ -129,7 +140,7 @@ describe("Kanban card inline-shell routing", () => {
     expect(cmdClick.defaultPrevented).toBe(false);
   });
 
-  it("is not intercepted without a nav provider (standalone /teams)", () => {
+  it("is not intercepted without a nav provider (href drives navigation)", () => {
     const { container } = render(
       <KanbanCardOverlay issue={baseIssue} agents={[]} />,
     );

@@ -127,16 +127,6 @@ function ChatPageInner() {
     pushSearchParams(params);
   }, [searchParams]);
 
-  // ?view is legacy: old deep links carried it alongside ?panel, but nothing
-  // reads it (the view derives from ?panel presence). Strip it from inbound
-  // URLs so copied links stay canonical.
-  useEffect(() => {
-    if (!searchParams.has("view")) return;
-    const params = new URLSearchParams(searchParams.toString());
-    params.delete("view");
-    replaceSearchParams(params);
-  }, [searchParams]);
-
   // Warm the code-split Teams panel chunks while the browser is idle so the
   // first open of a Teams panel mounts from the module cache instead of
   // fetching its chunk on click.

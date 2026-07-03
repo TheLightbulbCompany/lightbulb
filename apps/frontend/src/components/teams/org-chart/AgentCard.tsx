@@ -21,6 +21,8 @@
 import Link from "next/link";
 import { Bot } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { handleShellLinkClick } from "@/lib/shellNav";
+import { agentInspectorUrl } from "@/components/teams/shared/lib/agentInspectorUrl";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { statusDotClass, statusDotColor } from "./statusColors";
 import { CARD_W, CARD_H } from "./orgChartLayout";
@@ -94,7 +96,9 @@ export function AgentCard({
 
   return (
     <Link
-      href={`/teams/agents/${id}`}
+      href={agentInspectorUrl(id)}
+      prefetch={false}
+      onClick={(e) => handleShellLinkClick(e, agentInspectorUrl(id))}
       data-agent-card-id={id}
       data-org-card
       className={cn(

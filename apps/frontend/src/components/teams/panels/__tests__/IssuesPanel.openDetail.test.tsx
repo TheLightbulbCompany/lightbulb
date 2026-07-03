@@ -56,10 +56,13 @@ describe("IssuesPanel Open affordance", () => {
     expect(openDetail).toHaveBeenCalledWith("issue-detail", "iss_1");
   });
 
-  it("renders the row as an anchor to /teams/issues/<id> when there is no nav provider", () => {
+  it("renders the row as an anchor to the canonical detail URL when there is no nav provider", () => {
     render(<IssuesPanel />);
     const row = screen.getByText("Fix the thing").closest("a");
     expect(row).not.toBeNull();
-    expect(row).toHaveAttribute("href", "/teams/issues/iss_1");
+    expect(row).toHaveAttribute(
+      "href",
+      "/chat?panel=teams-issue-detail&detailId=iss_1",
+    );
   });
 });

@@ -10,7 +10,6 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { ChevronRight, MoreHorizontal, Target, Trash2 } from "lucide-react";
 import { GoalHeader } from "./GoalHeader";
@@ -20,6 +19,12 @@ import { useGoalDetail } from "./hooks/useGoalDetail";
 import { useGoalMutations } from "./hooks/useGoalMutations";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { notifyApiError } from "@/lib/notify";
+import {
+  handleShellLinkClick,
+  replaceSearchParams,
+  teamsDetailUrl,
+  teamsPanelUrl,
+} from "@/lib/shellNav";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -65,7 +70,6 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
   const { goal, allGoals, projects, isLoading, isError, error } =
     useGoalDetail(goalId);
   const mutations = useGoalMutations();
-  const router = useRouter();
   const { read } = useTeamsApi();
   const { data: agentsResp } = read<{ agents: CompanyAgent[] }>("/agents");
   const agents = agentsResp?.agents ?? [];
@@ -78,8 +82,12 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
     try {
       await mutations.remove(goalId);
       setDeleteOpen(false);
-      // The goal is gone — leave the now-dead detail route for the goals list.
-      router.push("/teams/goals");
+      // The goal is gone — swap the now-dead detail view for the Goals list.
+      // Replaced (not pushed) so Back never lands on the deleted goal.
+      const params = new URLSearchParams(window.location.search);
+      params.set("panel", "teams-goals");
+      params.delete("detailId");
+      replaceSearchParams(params);
     } catch (e) {
       // Surface the failure instead of silently leaving the dialog open with
       // no feedback — the goal is still there; the user needs to know.
@@ -150,7 +158,12 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
           style={{ color: "var(--mute)" }}
           aria-label="Breadcrumb"
         >
-          <Link href="/teams/goals" className="hover:underline">
+          <Link
+            href={teamsPanelUrl("goals")}
+            prefetch={false}
+            onClick={(e) => handleShellLinkClick(e, teamsPanelUrl("goals"))}
+            className="hover:underline"
+          >
             Goals
           </Link>
           <ChevronRight className="h-3 w-3" />
@@ -229,7 +242,11 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
                   className="last:border-b-0"
                 >
                   <Link
-                    href={`/teams/goals/${child.id}`}
+                    href={teamsDetailUrl("goal", child.id)}
+                    prefetch={false}
+                    onClick={(e) =>
+                      handleShellLinkClick(e, teamsDetailUrl("goal", child.id))
+                    }
                     className="flex items-center gap-2 p-3 transition-colors hover:bg-[var(--cream-deeper)]"
                   >
                     <GoalStatusIcon status={child.status} />
@@ -272,7 +289,11 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
                   className="last:border-b-0"
                 >
                   <Link
-                    href={`/teams/projects/${project.id}`}
+                    href={teamsDetailUrl("project", project.id)}
+                    prefetch={false}
+                    onClick={(e) =>
+                      handleShellLinkClick(e, teamsDetailUrl("project", project.id))
+                    }
                     className="flex items-center gap-2 p-3 transition-colors hover:bg-[var(--cream-deeper)]"
                   >
                     <Target

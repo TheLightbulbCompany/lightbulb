@@ -22,10 +22,10 @@
 //     scope for v1.
 
 import Link from "next/link";
-import { ExternalLink } from "lucide-react";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { cn } from "@/lib/utils";
+import { handleShellLinkClick, teamsDetailUrl } from "@/lib/shellNav";
 import type { Issue } from "@/components/teams/shared/types";
 import {
   isRunActive,
@@ -129,6 +129,7 @@ function AgentRunCard({
   // short id slug so the chip still links somewhere meaningful.
   const issueKey =
     issue?.identifier ?? (run.issueId ? run.issueId.slice(0, 8) : null);
+  const issueUrl = run.issueId ? teamsDetailUrl("issue", run.issueId) : null;
   const issueTitle = issue?.title ?? null;
   // The only "activity" signal the live-run row carries is `nextAction` (a
   // short upstream-stamped hint). Surface it in place of a transcript so the
@@ -148,7 +149,7 @@ function AgentRunCard({
           : undefined
       }
     >
-      {/* Header: live dot + agent identity, external link top-right */}
+      {/* Header: live dot + agent identity */}
       <div className="flex items-start justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2">
           {active ? (
@@ -171,18 +172,6 @@ function AgentRunCard({
           )}
           <Identity name={agentName} size="sm" />
         </div>
-
-        {run.agentId && (
-          <Link
-            href={`/teams/agents/${run.agentId}/runs/${run.id}`}
-            className="inline-flex shrink-0 items-center rounded-full border p-1 transition-colors hover:opacity-80"
-            style={{ borderColor: "var(--edge)", color: "var(--mute)" }}
-            aria-label="Open run"
-            title="Open run"
-          >
-            <ExternalLink className="size-3" />
-          </Link>
-        )}
       </div>
 
       {/* Live status line */}
@@ -191,9 +180,11 @@ function AgentRunCard({
       </div>
 
       {/* Linked task */}
-      {run.issueId && issueKey && (
+      {issueUrl && issueKey && (
         <Link
-          href={`/teams/issues/${run.issueId}`}
+          href={issueUrl}
+          prefetch={false}
+          onClick={(e) => handleShellLinkClick(e, issueUrl)}
           className="block rounded-lg border px-2.5 py-2 text-xs transition-colors hover:opacity-80"
           style={{
             borderColor: "var(--edge)",

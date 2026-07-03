@@ -1,10 +1,14 @@
 import Link from "next/link";
 import { auth } from "@clerk/nextjs/server";
 
+import { Card } from "@/components/admin/Card";
 import { ErrorBanner } from "@/components/admin/ErrorBanner";
+import { MetricStat } from "@/components/admin/MetricStat";
+import { StatusChip } from "@/components/admin/StatusChip";
+import { Tile } from "@/components/admin/Tile";
 import { getSystemHealth } from "@/app/admin/_lib/api";
 
-export const metadata = { title: "Health \u00b7 Admin" };
+export const metadata = { title: "Health · Admin" };
 
 // ---------------------------------------------------------------------------
 // Local response shape — the shared `SystemHealth` type in
@@ -55,45 +59,23 @@ const UPSTREAM_LABELS: Record<string, string> = {
 
 const UPSTREAM_ORDER = ["clerk", "stripe", "ddb"];
 
-function statusChipClasses(status?: string): string {
-  switch (status) {
-    case "ok":
-      return "bg-emerald-500/15 text-emerald-300 border-emerald-500/30";
-    case "degraded":
-      return "bg-amber-500/15 text-amber-300 border-amber-500/30";
-    case "down":
-      return "bg-red-500/15 text-red-300 border-red-500/30";
-    case "unconfigured":
-      return "bg-zinc-500/15 text-zinc-300 border-zinc-500/30";
-    default:
-      return "bg-zinc-500/15 text-zinc-300 border-zinc-500/30";
-  }
-}
-
-function taskBadgeClasses(status?: string): string {
-  switch (status) {
-    case "running":
-      return "bg-emerald-500/15 text-emerald-300";
-    case "stopped":
-    case "cancelled":
-      return "bg-amber-500/15 text-amber-300";
-    case "unregistered":
-      return "bg-zinc-500/15 text-zinc-300";
-    default:
-      return "bg-zinc-500/15 text-zinc-300";
-  }
-}
+const UPSTREAM_TONE: Record<string, "ok" | "warn" | "error" | "unknown"> = {
+  ok: "ok",
+  degraded: "warn",
+  down: "error",
+  unconfigured: "unknown",
+};
 
 function truncate(input: string, max: number): string {
   if (input.length <= max) return input;
-  return `${input.slice(0, max)}\u2026`;
+  return `${input.slice(0, max)}…`;
 }
 
-const FLEET_TILES: Array<{ key: keyof FleetCounts; label: string; tone: string }> = [
-  { key: "running", label: "Running", tone: "text-emerald-300" },
-  { key: "provisioning", label: "Provisioning", tone: "text-sky-300" },
-  { key: "stopped", label: "Stopped", tone: "text-zinc-300" },
-  { key: "error", label: "Error", tone: "text-red-300" },
+const FLEET_TILES: Array<{ key: keyof FleetCounts; label: string }> = [
+  { key: "running", label: "Running" },
+  { key: "provisioning", label: "Provisioning" },
+  { key: "stopped", label: "Stopped" },
+  { key: "error", label: "Error" },
 ];
 
 export default async function HealthPage() {
@@ -119,84 +101,65 @@ export default async function HealthPage() {
   const recentErrors = (health.recent_errors ?? []).slice(0, 10);
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       <h1 className="text-2xl font-semibold text-zinc-100">System health</h1>
 
       {/* Upstream probes */}
-      <section aria-labelledby="upstreams-heading" className="space-y-3">
-        <h2 id="upstreams-heading" className="text-sm font-medium uppercase tracking-wide text-zinc-400">
-          Upstreams
-        </h2>
+      <Card title="Upstreams">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           {UPSTREAM_ORDER.map((key) => {
             const probe = upstreams[key] ?? {};
             const label = UPSTREAM_LABELS[key] ?? key;
             return (
-              <div
+              <Tile
                 key={key}
-                className={`flex items-center justify-between rounded-md border px-4 py-3 ${statusChipClasses(probe.status)}`}
+                title={label}
+                label={probe.status ?? "unknown"}
+                sub={probe.error}
+                tone={UPSTREAM_TONE[probe.status ?? ""] ?? "unknown"}
               >
-                <div className="flex flex-col">
-                  <span className="text-sm font-semibold">{label}</span>
-                  <span className="text-xs uppercase tracking-wide opacity-80">
-                    {probe.status ?? "unknown"}
-                  </span>
-                </div>
-                <div className="text-right text-xs opacity-80">
-                  {probe.latency_ms !== undefined ? (
-                    <span className="font-mono">{probe.latency_ms}ms</span>
-                  ) : null}
-                  {probe.error ? (
-                    <div title={probe.error} className="mt-0.5 max-w-[10rem] truncate font-mono">
-                      {probe.error}
-                    </div>
-                  ) : null}
-                </div>
-              </div>
+                {probe.latency_ms !== undefined ? (
+                  <div className="mt-1 font-mono text-xs text-zinc-500">
+                    {probe.latency_ms}ms
+                  </div>
+                ) : null}
+              </Tile>
             );
           })}
         </div>
-      </section>
+      </Card>
 
-      {/* Fleet tiles */}
-      <section aria-labelledby="fleet-heading" className="space-y-3">
-        <h2 id="fleet-heading" className="text-sm font-medium uppercase tracking-wide text-zinc-400">
-          Container fleet
-        </h2>
+      {/* Fleet counts */}
+      <Card title="Container fleet">
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          {FLEET_TILES.map((tile) => (
-            <div
-              key={tile.key}
-              className="rounded-md border border-white/10 bg-white/[0.02] p-4"
-            >
-              <div className={`text-2xl font-semibold ${tile.tone}`}>
-                {fleet[tile.key] ?? 0}
-              </div>
-              <div className="mt-1 text-xs uppercase tracking-wide text-zinc-400">
-                {tile.label}
-              </div>
-            </div>
-          ))}
+          {FLEET_TILES.map((tile) => {
+            const value = fleet[tile.key] ?? 0;
+            return (
+              <MetricStat
+                key={tile.key}
+                label={tile.label}
+                value={value}
+                tone={tile.key === "error" && value > 0 ? "error" : "default"}
+              />
+            );
+          })}
         </div>
-        <div className="text-xs text-zinc-500">
+        <div className="mt-3 text-xs text-zinc-500">
           Total containers: <span className="font-mono text-zinc-300">{fleet.total ?? 0}</span>
         </div>
-      </section>
+      </Card>
 
       {/* Background tasks */}
-      <section aria-labelledby="tasks-heading" className="space-y-3">
-        <h2 id="tasks-heading" className="text-sm font-medium uppercase tracking-wide text-zinc-400">
-          Background tasks
-        </h2>
+      <Card title="Background tasks">
         {Object.keys(tasks).length === 0 ? (
           <p className="text-sm text-zinc-500">No background tasks registered.</p>
         ) : (
-          <div className="overflow-hidden rounded-md border border-white/10 bg-white/[0.02]">
+          <div className="overflow-hidden rounded border border-zinc-800">
             {Object.entries(tasks).map(([name, state], idx) => (
               <div
                 key={name}
                 className={`flex items-center justify-between px-4 py-2 text-sm ${
-                  idx > 0 ? "border-t border-white/5" : ""
+                  idx > 0 ? "border-t border-zinc-800" : ""
                 }`}
                 title={state.error ?? undefined}
               >
@@ -207,27 +170,20 @@ export default async function HealthPage() {
                       {state.error}
                     </span>
                   ) : null}
-                  <span
-                    className={`rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${taskBadgeClasses(state.status)}`}
-                  >
-                    {state.status ?? "unknown"}
-                  </span>
+                  <StatusChip status={state.status ?? "unknown"} />
                 </div>
               </div>
             ))}
           </div>
         )}
-      </section>
+      </Card>
 
       {/* Recent errors */}
-      <section aria-labelledby="recent-errors-heading" className="space-y-3">
-        <h2 id="recent-errors-heading" className="text-sm font-medium uppercase tracking-wide text-zinc-400">
-          Recent errors (last 24h)
-        </h2>
+      <Card title="Recent errors (last 24h)">
         {recentErrors.length === 0 ? (
           <p className="text-sm text-zinc-500">No recent errors logged.</p>
         ) : (
-          <div className="overflow-x-auto rounded-md border border-white/10">
+          <div className="overflow-x-auto rounded border border-zinc-800">
             <table className="w-full min-w-[720px] table-fixed text-xs sm:text-sm">
               <thead className="bg-zinc-900 text-left text-zinc-400">
                 <tr>
@@ -241,10 +197,10 @@ export default async function HealthPage() {
                 {recentErrors.map((err, i) => (
                   <tr
                     key={`${err.timestamp ?? "ts"}-${i}`}
-                    className="border-t border-white/5 align-top"
+                    className="border-t border-zinc-800 align-top"
                   >
                     <td className="px-3 py-2 font-mono text-zinc-300">
-                      {err.timestamp ?? "\u2014"}
+                      {err.timestamp ?? "—"}
                     </td>
                     <td className="px-3 py-2 font-mono text-zinc-300">
                       {err.user_id ? (
@@ -255,14 +211,14 @@ export default async function HealthPage() {
                           {truncate(err.user_id, 16)}
                         </Link>
                       ) : (
-                        <span className="text-zinc-500">{"\u2014"}</span>
+                        <span className="text-zinc-500">{"—"}</span>
                       )}
                     </td>
                     <td className="px-3 py-2 text-zinc-200" title={err.message ?? ""}>
                       {truncate(err.message ?? "", 120)}
                     </td>
                     <td className="px-3 py-2 font-mono text-zinc-400">
-                      {err.correlation_id ?? "\u2014"}
+                      {err.correlation_id ?? "—"}
                     </td>
                   </tr>
                 ))}
@@ -270,7 +226,7 @@ export default async function HealthPage() {
             </table>
           </div>
         )}
-      </section>
+      </Card>
     </div>
   );
 }

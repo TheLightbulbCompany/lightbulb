@@ -1,67 +1,12 @@
 import Link from "next/link";
 import { auth } from "@clerk/nextjs/server";
 
-import { getActions, type AdminAction } from "@/app/admin/_lib/api";
-import { AuditRow, type AuditEntry } from "@/components/admin/AuditRow";
+import { getActions } from "@/app/admin/_lib/api";
+import { asAuditEntry } from "@/app/admin/_lib/narrow";
+import { AuditRow } from "@/components/admin/AuditRow";
 import { Card } from "@/components/admin/Card";
 
 export const metadata = { title: "Platform audit · Admin" };
-
-// ---------------------------------------------------------------------------
-// AdminAction (intentionally permissive in `_lib/api.ts`) → AuditEntry (the
-// strict shape `<AuditRow>` expects). Mirrors `users/[id]/actions/page.tsx`;
-// defaults to safe values when the backend hasn't filled a field.
-// ---------------------------------------------------------------------------
-
-function asAuditEntry(raw: AdminAction): AuditEntry {
-  const compositeKey =
-    typeof (raw as Record<string, unknown>).timestamp_action_id === "string"
-      ? ((raw as Record<string, unknown>).timestamp_action_id as string)
-      : raw.timestamp && raw.action_id
-        ? `${raw.timestamp}#${raw.action_id}`
-        : (raw.timestamp ?? "");
-
-  const result =
-    raw.status === "error" || raw.status === "success"
-      ? raw.status
-      : (raw as Record<string, unknown>).result === "error" ||
-          (raw as Record<string, unknown>).result === "success"
-        ? ((raw as Record<string, unknown>).result as "success" | "error")
-        : "success";
-
-  const auditStatus =
-    (raw as Record<string, unknown>).audit_status === "panic" ||
-    (raw as Record<string, unknown>).audit_status === "written"
-      ? ((raw as Record<string, unknown>).audit_status as "written" | "panic")
-      : "written";
-
-  const httpStatus =
-    typeof (raw as Record<string, unknown>).http_status === "number"
-      ? ((raw as Record<string, unknown>).http_status as number)
-      : 0;
-
-  const elapsedMs =
-    typeof (raw as Record<string, unknown>).elapsed_ms === "number"
-      ? ((raw as Record<string, unknown>).elapsed_ms as number)
-      : 0;
-
-  const errorMessage =
-    typeof (raw as Record<string, unknown>).error_message === "string"
-      ? ((raw as Record<string, unknown>).error_message as string)
-      : undefined;
-
-  return {
-    admin_user_id: raw.admin_user_id ?? "",
-    timestamp_action_id: compositeKey,
-    target_user_id: raw.target_user_id ?? "",
-    action: raw.action ?? "",
-    result,
-    audit_status: auditStatus,
-    http_status: httpStatus,
-    elapsed_ms: elapsedMs,
-    error_message: errorMessage,
-  };
-}
 
 interface AuditPageProps {
   searchParams: Promise<{ admin_user_id?: string; cursor?: string }>;

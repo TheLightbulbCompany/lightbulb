@@ -1,9 +1,25 @@
 import { cn } from "@/lib/utils";
 
-export function Card({ title, children, className }: { title?: string; children: React.ReactNode; className?: string }) {
+export function Card({
+  title,
+  action,
+  children,
+  className,
+}: {
+  title?: string;
+  /** Optional header-right slot (status chip, link) rendered beside the title. */
+  action?: React.ReactNode;
+  children: React.ReactNode;
+  className?: string;
+}) {
   return (
     <div className={cn("rounded-lg border border-zinc-800 bg-zinc-900/40 p-4", className)}>
-      {title ? <h2 className="mb-3 text-sm font-semibold text-zinc-300">{title}</h2> : null}
+      {title || action ? (
+        <div className="mb-3 flex items-center justify-between gap-3">
+          {title ? <h2 className="text-sm font-semibold text-zinc-300">{title}</h2> : null}
+          {action ?? null}
+        </div>
+      ) : null}
       {children}
     </div>
   );

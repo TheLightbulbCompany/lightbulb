@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 import { listRecentTakedowns } from "@/app/admin/_actions/marketplace";
 
 export const metadata = { title: "Takedowns · Admin" };
@@ -51,7 +53,7 @@ export default async function RecentTakedownsPage() {
 
   return (
     <div className="space-y-3">
-      <h1 className="text-2xl font-semibold text-neutral-100">Takedowns</h1>
+      <h1 className="text-2xl font-semibold text-zinc-100">Takedowns</h1>
       <p className="text-sm text-zinc-500">
         Recent takedowns. Granted by admins on the listing detail page.
       </p>
@@ -67,9 +69,12 @@ export default async function RecentTakedownsPage() {
               <div className="mb-2 flex flex-wrap items-baseline justify-between gap-3">
                 <p className="font-semibold text-zinc-100">
                   listing:{" "}
-                  <span className="font-mono text-zinc-300">
+                  <Link
+                    href={`/admin/marketplace/listings/${encodeURIComponent(td.listing_id)}`}
+                    className="font-mono text-sky-300 hover:underline"
+                  >
                     {td.listing_id}
-                  </span>
+                  </Link>
                 </p>
                 <span className="text-xs text-zinc-500 font-mono">
                   {td.decided_at ?? "—"}

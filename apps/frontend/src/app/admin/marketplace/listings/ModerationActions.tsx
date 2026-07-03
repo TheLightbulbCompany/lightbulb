@@ -147,7 +147,7 @@ export function ModerationActions({
             <Button
               type="button"
               size="sm"
-              className="bg-green-700/30 text-green-300 hover:bg-green-700/40"
+              className="bg-emerald-700/30 text-emerald-300 hover:bg-emerald-700/40"
             >
               Approve
             </Button>

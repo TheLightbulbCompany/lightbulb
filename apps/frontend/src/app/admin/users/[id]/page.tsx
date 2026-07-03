@@ -1,10 +1,15 @@
 import { auth } from "@clerk/nextjs/server";
 
+import { Card } from "@/components/admin/Card";
+import { DefRow } from "@/components/admin/DefRow";
 import { ErrorBanner } from "@/components/admin/ErrorBanner";
 import { OrgBanner } from "@/components/admin/OrgBanner";
+import { StatusChip } from "@/components/admin/StatusChip";
 import { getOverview } from "@/app/admin/_lib/api";
+import { formatRelativeTime } from "@/app/admin/_lib/time";
+import { buildEcsConsoleUrl } from "@/lib/aws";
 
-export const metadata = { title: "Overview \u00b7 Admin" };
+export const metadata = { title: "Overview · Admin" };
 
 // ---------------------------------------------------------------------------
 // Section payload shapes (narrowed locally — `UserOverview.identity` etc.
@@ -38,6 +43,8 @@ interface ContainerRow extends ErrorPayload {
   status?: string;
   task_arn?: string | null;
   service_name?: string | null;
+  cluster_name?: string | null;
+  cluster_arn?: string | null;
   subscription_status?: string | null;
   created_at?: number | string | null;
 }
@@ -49,18 +56,6 @@ interface UsageRow extends ErrorPayload {
   total_cache_read_tokens?: number;
   total_cache_write_tokens?: number;
   period?: string;
-}
-
-const CONTAINER_STATUS_CLASSES: Record<string, string> = {
-  running: "bg-emerald-500/15 text-emerald-300",
-  provisioning: "bg-sky-500/15 text-sky-300",
-  stopped: "bg-zinc-500/15 text-zinc-300",
-  error: "bg-red-500/15 text-red-300",
-};
-
-function statusClass(status?: string): string {
-  if (!status) return "bg-zinc-500/15 text-zinc-400";
-  return CONTAINER_STATUS_CLASSES[status] ?? "bg-zinc-500/15 text-zinc-400";
 }
 
 function hasError(
@@ -78,16 +73,13 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-function formatDateValue(value: number | string | null | undefined): string {
-  if (value === null || value === undefined || value === "") return "\u2014";
-  if (typeof value === "number") {
-    try {
-      return new Date(value).toISOString().replace("T", " ").slice(0, 19) + "Z";
-    } catch {
-      return String(value);
-    }
-  }
-  return value;
+function RelativeTimestamp({ value }: { value: number | string | null | undefined }) {
+  const when = formatRelativeTime(value);
+  return (
+    <span className="font-mono text-xs" title={when.iso ?? undefined}>
+      {when.label}
+    </span>
+  );
 }
 
 /**
@@ -138,26 +130,12 @@ export default async function UserOverviewPage({ params }: UserOverviewPageProps
 // Cards
 // ---------------------------------------------------------------------------
 
-function Card({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <section className="rounded-md border border-white/10 bg-white/[0.02] p-4">
-      <h2 className="mb-3 text-sm font-medium uppercase tracking-wide text-zinc-400">
-        {title}
-      </h2>
-      {children}
-    </section>
-  );
+function Rows({ children }: { children: React.ReactNode }) {
+  return <dl className="grid grid-cols-1 gap-y-2 text-sm">{children}</dl>;
 }
 
-function Field({ label, value }: { label: string; value: React.ReactNode }) {
-  return (
-    <div className="flex items-start justify-between gap-3 border-t border-white/5 py-1.5 first:border-t-0">
-      <span className="text-xs text-zinc-400">{label}</span>
-      <span className="max-w-[60%] truncate text-right text-sm text-zinc-100">
-        {value}
-      </span>
-    </div>
-  );
+function None() {
+  return <span className="text-zinc-500">(none)</span>;
 }
 
 function IdentityCard({ identity }: { identity: unknown }) {
@@ -182,33 +160,25 @@ function IdentityCard({ identity }: { identity: unknown }) {
 
   return (
     <Card title="Identity">
-      <div className="space-y-0">
-        <Field
-          label="Email"
-          value={email ?? <span className="text-zinc-500">(none)</span>}
-        />
-        <Field
-          label="Name"
-          value={fullName || <span className="text-zinc-500">(none)</span>}
-        />
-        <Field label="Created" value={<span className="font-mono text-xs">{formatDateValue(data.created_at)}</span>} />
-        <Field
+      <Rows>
+        <DefRow label="Email" value={email ?? <None />} />
+        <DefRow label="Name" value={fullName || <None />} />
+        <DefRow label="Created" value={<RelativeTimestamp value={data.created_at} />} />
+        <DefRow
           label="Last sign-in"
-          value={<span className="font-mono text-xs">{formatDateValue(data.last_sign_in_at)}</span>}
+          value={<RelativeTimestamp value={data.last_sign_in_at} />}
         />
-        <Field
+        <DefRow
           label="Banned"
           value={
             data.banned ? (
-              <span className="rounded bg-red-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-red-300">
-                Yes
-              </span>
+              <StatusChip status="error" label="Yes" />
             ) : (
               <span className="text-xs text-zinc-500">No</span>
             )
           }
         />
-      </div>
+      </Rows>
     </Card>
   );
 }
@@ -235,39 +205,24 @@ function BillingCard({ billing }: { billing: unknown }) {
   const data = billing as BillingRow;
   return (
     <Card title="Billing">
-      <div className="space-y-0">
-        <Field label="Plan" value={data.subscription_status ?? <span className="text-zinc-500">(none)</span>} />
-        <Field
+      <Rows>
+        <DefRow label="Plan" value={data.subscription_status ?? <None />} />
+        <DefRow
           label="Stripe customer"
-          value={
-            data.stripe_customer_id ? (
-              <a
-                href={`https://dashboard.stripe.com/customers/${encodeURIComponent(data.stripe_customer_id)}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="font-mono text-xs text-sky-300 hover:underline"
-                title={data.stripe_customer_id}
-              >
-                {data.stripe_customer_id}
-              </a>
-            ) : (
-              <span className="text-zinc-500">(none)</span>
-            )
+          value={data.stripe_customer_id ?? <None />}
+          mono
+          href={
+            data.stripe_customer_id
+              ? `https://dashboard.stripe.com/customers/${encodeURIComponent(data.stripe_customer_id)}`
+              : undefined
           }
         />
-        <Field
+        <DefRow
           label="Subscription"
-          value={
-            data.stripe_subscription_id ? (
-              <span className="font-mono text-xs" title={data.stripe_subscription_id}>
-                {data.stripe_subscription_id}
-              </span>
-            ) : (
-              <span className="text-zinc-500">(none)</span>
-            )
-          }
+          value={data.stripe_subscription_id ?? <None />}
+          mono
         />
-      </div>
+      </Rows>
     </Card>
   );
 }
@@ -292,49 +247,29 @@ function ContainerCard({ container }: { container: unknown }) {
   }
 
   const data = container as ContainerRow;
+  const ecsUrl = buildEcsConsoleUrl({
+    task_arn: data.task_arn ?? undefined,
+    service_name: data.service_name ?? undefined,
+    cluster_name: data.cluster_name ?? undefined,
+    cluster_arn: data.cluster_arn ?? undefined,
+  });
   return (
     <Card title="Container">
-      <div className="space-y-0">
-        <Field
+      <Rows>
+        <DefRow
           label="Status"
-          value={
-            <span
-              className={`rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${statusClass(data.status)}`}
-            >
-              {data.status ?? "unknown"}
-            </span>
-          }
+          value={<StatusChip status={data.status ?? "unknown"} />}
         />
-        <Field label="Plan" value={data.subscription_status ?? <span className="text-zinc-500">(none)</span>} />
-        <Field
-          label="Service"
-          value={
-            data.service_name ? (
-              <span className="font-mono text-xs" title={data.service_name}>
-                {data.service_name}
-              </span>
-            ) : (
-              <span className="text-zinc-500">(none)</span>
-            )
-          }
-        />
-        <Field
+        <DefRow label="Plan" value={data.subscription_status ?? <None />} />
+        <DefRow label="Service" value={data.service_name ?? <None />} mono />
+        <DefRow
           label="Task ARN"
-          value={
-            data.task_arn ? (
-              <span className="font-mono text-xs" title={data.task_arn}>
-                {data.task_arn}
-              </span>
-            ) : (
-              <span className="text-zinc-500">(none)</span>
-            )
-          }
+          value={data.task_arn ?? <None />}
+          mono
+          href={ecsUrl ?? undefined}
         />
-        <Field
-          label="Created"
-          value={<span className="font-mono text-xs">{formatDateValue(data.created_at)}</span>}
-        />
-      </div>
+        <DefRow label="Created" value={<RelativeTimestamp value={data.created_at} />} />
+      </Rows>
     </Card>
   );
 }
@@ -367,28 +302,21 @@ function UsageCard({ usage }: { usage: unknown }) {
 
   return (
     <Card title="Usage">
-      <div className="space-y-0">
-        <Field
-          label="Period"
-          value={data.period ?? <span className="text-zinc-500">current</span>}
-        />
-        <Field
-          label="Spend"
-          value={<span className="font-mono">{formatUsd(data.total_spend_microdollars)}</span>}
-        />
-        <Field
-          label="Tokens (total)"
-          value={<span className="font-mono">{totalTokens.toLocaleString()}</span>}
-        />
-        <Field
+      <Rows>
+        <DefRow label="Period" value={data.period ?? "current"} />
+        <DefRow label="Spend" value={formatUsd(data.total_spend_microdollars)} mono />
+        <DefRow label="Tokens (total)" value={totalTokens.toLocaleString()} mono />
+        <DefRow
           label="Input tokens"
-          value={<span className="font-mono">{(data.total_input_tokens ?? 0).toLocaleString()}</span>}
+          value={(data.total_input_tokens ?? 0).toLocaleString()}
+          mono
         />
-        <Field
+        <DefRow
           label="Output tokens"
-          value={<span className="font-mono">{(data.total_output_tokens ?? 0).toLocaleString()}</span>}
+          value={(data.total_output_tokens ?? 0).toLocaleString()}
+          mono
         />
-      </div>
+      </Rows>
     </Card>
   );
 }

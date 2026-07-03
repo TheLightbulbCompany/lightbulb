@@ -1,5 +1,6 @@
 import { auth } from "@clerk/nextjs/server";
 
+import { Card } from "@/components/admin/Card";
 import { DefRow } from "@/components/admin/DefRow";
 import { ErrorBanner } from "@/components/admin/ErrorBanner";
 import { asNumber, asRecord, asString } from "@/app/admin/_lib/narrow";
@@ -106,10 +107,7 @@ export default async function AdminUserBillingPage({ params }: PageProps) {
       ) : null}
 
       {/* Billing card */}
-      <section className="space-y-3 rounded-md border border-white/10 bg-white/[0.02] p-4">
-        <h2 className="text-sm font-medium uppercase tracking-wide text-zinc-400">
-          Subscription
-        </h2>
+      <Card title="Subscription">
         <dl className="grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
           <DefRow label="Subscription" value={billing.subscription_status ?? "\u2014"} />
           <DefRow
@@ -142,13 +140,10 @@ export default async function AdminUserBillingPage({ params }: PageProps) {
             mono
           />
         </dl>
-      </section>
+      </Card>
 
       {/* Current invoice */}
-      <section className="space-y-3 rounded-md border border-white/10 bg-white/[0.02] p-4">
-        <h2 className="text-sm font-medium uppercase tracking-wide text-zinc-400">
-          Current invoice
-        </h2>
+      <Card title="Current invoice">
         {billing.current_invoice ? (
           <dl className="grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
             <DefRow
@@ -170,7 +165,7 @@ export default async function AdminUserBillingPage({ params }: PageProps) {
         ) : (
           <p className="text-sm text-zinc-500">No active invoice.</p>
         )}
-      </section>
+      </Card>
 
       {/* Actions */}
       <BillingActionsPanel userId={id} email={email} />

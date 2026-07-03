@@ -3,45 +3,26 @@ import { auth } from "@clerk/nextjs/server";
 
 import { EmptyState } from "@/components/admin/EmptyState";
 import { ErrorBanner } from "@/components/admin/ErrorBanner";
+import { StatusChip } from "@/components/admin/StatusChip";
 import {
   listUsers,
   type UserDirectoryRow,
   type UsersPage as UsersPageData,
 } from "@/app/admin/_lib/api";
+import { formatRelativeTime } from "@/app/admin/_lib/time";
 
 import { UsersClientHeader } from "./UsersClientHeader";
 
 export const metadata = { title: "Users \u00b7 Admin" };
-
-const CONTAINER_STATUS_CLASSES: Record<string, string> = {
-  running: "bg-emerald-500/15 text-emerald-300",
-  provisioning: "bg-sky-500/15 text-sky-300",
-  stopped: "bg-zinc-500/15 text-zinc-300",
-  error: "bg-red-500/15 text-red-300",
-  unknown: "bg-zinc-500/15 text-zinc-400",
-};
-
-function statusClass(status: string): string {
-  return CONTAINER_STATUS_CLASSES[status] ?? CONTAINER_STATUS_CLASSES.unknown;
-}
 
 function truncateId(id: string, head = 12): string {
   if (id.length <= head) return id;
   return `${id.slice(0, head)}\u2026`;
 }
 
-function formatTimestamp(value: number | string | null | undefined): string {
-  if (value === null || value === undefined || value === "") return "\u2014";
-  // Clerk timestamps come as numeric ms-since-epoch. DDB rows may store
-  // ISO strings. Render either gracefully.
-  if (typeof value === "number") {
-    try {
-      return new Date(value).toISOString().slice(0, 10);
-    } catch {
-      return String(value);
-    }
-  }
-  return value;
+function RelativeTimestamp({ value }: { value: number | string | null | undefined }) {
+  const when = formatRelativeTime(value);
+  return <span title={when.iso ?? undefined}>{when.label}</span>;
 }
 
 interface UsersPageProps {
@@ -148,23 +129,17 @@ function UsersTable({ users }: { users: UserDirectoryRow[] }) {
               </td>
               <td className="px-3 py-2 text-zinc-300">{u.subscription_status ?? "—"}</td>
               <td className="px-3 py-2">
-                <span
-                  className={`rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${statusClass(u.container_status)}`}
-                >
-                  {u.container_status}
-                </span>
+                <StatusChip status={u.container_status} />
               </td>
               <td className="px-3 py-2 font-mono text-xs text-zinc-300">
-                {formatTimestamp(u.created_at)}
+                <RelativeTimestamp value={u.created_at} />
               </td>
               <td className="px-3 py-2 font-mono text-xs text-zinc-300">
-                {formatTimestamp(u.last_sign_in_at)}
+                <RelativeTimestamp value={u.last_sign_in_at} />
               </td>
               <td className="px-3 py-2">
                 {u.banned ? (
-                  <span className="rounded bg-red-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-red-300">
-                    Yes
-                  </span>
+                  <StatusChip status="error" label="Yes" />
                 ) : (
                   <span className="text-xs text-zinc-500">No</span>
                 )}

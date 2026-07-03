@@ -1,16 +1,19 @@
 import { auth } from "@clerk/nextjs/server";
 
+import { Card } from "@/components/admin/Card";
 import { DefRow } from "@/components/admin/DefRow";
 import { EmptyState } from "@/components/admin/EmptyState";
 import { ErrorBanner } from "@/components/admin/ErrorBanner";
 import { OrgBanner } from "@/components/admin/OrgBanner";
+import { StatusChip } from "@/components/admin/StatusChip";
 import { asRecord, asString } from "@/app/admin/_lib/narrow";
 import {
   getOverview,
   listAvailableImages,
   type AvailableImage,
 } from "@/app/admin/_lib/api";
-import { AWS_REGION } from "@/lib/aws";
+import { formatRelativeTime } from "@/app/admin/_lib/time";
+import { buildEcsConsoleUrl } from "@/lib/aws";
 
 import { ContainerActionsPanel } from "./ContainerActionsPanel";
 
@@ -57,43 +60,9 @@ function pickContainer(raw: unknown): { container: ContainerSlice | null; raw: R
   };
 }
 
-function statusChipClasses(status?: string): string {
-  switch (status) {
-    case "running":
-      return "bg-emerald-500/15 text-emerald-300 border-emerald-500/30";
-    case "provisioning":
-    case "starting":
-      return "bg-sky-500/15 text-sky-300 border-sky-500/30";
-    case "stopped":
-    case "scaled_to_zero":
-      return "bg-amber-500/15 text-amber-300 border-amber-500/30";
-    case "error":
-    case "failed":
-    case "unreachable":
-      return "bg-red-500/15 text-red-300 border-red-500/30";
-    default:
-      return "bg-zinc-500/15 text-zinc-300 border-zinc-500/30";
-  }
-}
-
-/**
- * Build an ECS console deep-link for the user's container task.
- *
- * The cluster name component of the URL is best-effort: backend rows store
- * just `cluster_arn` in some cases. We extract the trailing segment when an
- * ARN is present and fall back to a generic console link otherwise so the
- * operator can still pivot.
- */
-function buildEcsConsoleUrl(c: ContainerSlice): string | null {
-  if (!c.task_arn) return null;
-  const region = AWS_REGION;
-  const cluster =
-    c.cluster_name ??
-    (c.cluster_arn ? c.cluster_arn.split("/").pop() : undefined);
-  if (cluster && c.service_name) {
-    return `https://${region}.console.aws.amazon.com/ecs/v2/clusters/${encodeURIComponent(cluster)}/services/${encodeURIComponent(c.service_name)}/tasks?region=${region}`;
-  }
-  return `https://${region}.console.aws.amazon.com/ecs/v2/clusters?region=${region}`;
+function RelativeTimestamp({ value }: { value: string | undefined }) {
+  const when = formatRelativeTime(value);
+  return <span title={when.iso ?? undefined}>{when.label}</span>;
 }
 
 export default async function AdminUserContainerPage({ params }: PageProps) {
@@ -155,17 +124,10 @@ export default async function AdminUserContainerPage({ params }: PageProps) {
       ) : null}
 
       {/* Container metadata */}
-      <section className="space-y-3 rounded-md border border-white/10 bg-white/[0.02] p-4">
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-medium uppercase tracking-wide text-zinc-400">
-            Container
-          </h2>
-          <span
-            className={`rounded border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${statusChipClasses(container.status)}`}
-          >
-            {container.status ?? "unknown"}
-          </span>
-        </div>
+      <Card
+        title="Container"
+        action={<StatusChip status={container.status ?? "unknown"} />}
+      >
         <dl className="grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
           <DefRow label="Subscription" value={container.subscription_status ?? "\u2014"} />
           <DefRow label="Service name" value={container.service_name ?? "\u2014"} mono />
@@ -180,10 +142,18 @@ export default async function AdminUserContainerPage({ params }: PageProps) {
             value={container.access_point_id ?? "\u2014"}
             mono
           />
-          <DefRow label="Created" value={container.created_at ?? "\u2014"} mono />
-          <DefRow label="Updated" value={container.updated_at ?? "\u2014"} mono />
+          <DefRow
+            label="Created"
+            value={<RelativeTimestamp value={container.created_at} />}
+            mono
+          />
+          <DefRow
+            label="Updated"
+            value={<RelativeTimestamp value={container.updated_at} />}
+            mono
+          />
         </dl>
-      </section>
+      </Card>
 
       {/* Actions */}
       <ContainerActionsPanel

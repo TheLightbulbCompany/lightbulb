@@ -1,6 +1,7 @@
 interface Props {
   label: string;
-  value: string;
+  /** String values get a hover `title`; nodes (chips, links, times) render as-is. */
+  value: React.ReactNode;
   mono?: boolean;
   href?: string;
 }
@@ -17,6 +18,7 @@ interface Props {
  */
 export function DefRow({ label, value, mono, href }: Props) {
   const valueCls = mono ? "truncate font-mono text-zinc-200" : "truncate text-zinc-200";
+  const title = typeof value === "string" ? value : undefined;
   return (
     <div className="flex items-baseline gap-3">
       <dt className="w-32 shrink-0 text-xs uppercase tracking-wide text-zinc-500">
@@ -29,12 +31,12 @@ export function DefRow({ label, value, mono, href }: Props) {
             target="_blank"
             rel="noopener noreferrer"
             className={`block ${valueCls} text-sky-300 hover:underline`}
-            title={value}
+            title={title}
           >
             {value}
           </a>
         ) : (
-          <span className={valueCls} title={value}>
+          <span className={valueCls} title={title}>
             {value}
           </span>
         )}

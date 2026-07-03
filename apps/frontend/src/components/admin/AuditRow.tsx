@@ -1,6 +1,8 @@
 import * as React from "react";
+import Link from "next/link";
 
 import { cn } from "@/lib/utils";
+import { formatRelativeTime } from "@/app/admin/_lib/time";
 
 export interface AuditEntry {
   admin_user_id: string;
@@ -32,10 +34,14 @@ function splitTimestamp(compositeKey: string): string {
  */
 export function AuditRow({ entry, onClick }: AuditRowProps) {
   const timestamp = splitTimestamp(entry.timestamp_action_id);
+  const when = formatRelativeTime(timestamp);
   const isPanic = entry.audit_status === "panic";
   const isError = entry.result === "error";
 
   const Wrapper: React.ElementType = onClick ? "button" : "div";
+  // A nested anchor inside a button wrapper would be invalid HTML, so the
+  // target-user link only renders on plain rows.
+  const linkTarget = !onClick && entry.target_user_id ? entry.target_user_id : null;
 
   return (
     <Wrapper
@@ -49,11 +55,26 @@ export function AuditRow({ entry, onClick }: AuditRowProps) {
       data-result={entry.result}
       data-audit-status={entry.audit_status ?? "written"}
     >
-      <time className="font-mono text-zinc-400" dateTime={timestamp}>
-        {timestamp}
+      <time
+        className="font-mono text-zinc-400"
+        dateTime={when.iso ?? timestamp}
+        title={when.iso ?? undefined}
+        suppressHydrationWarning
+      >
+        {when.label}
       </time>
       <span className="truncate font-mono text-zinc-100">{entry.action}</span>
-      <span className="truncate text-zinc-300">{entry.target_user_id}</span>
+      {linkTarget ? (
+        <Link
+          href={`/admin/users/${encodeURIComponent(linkTarget)}`}
+          className="truncate text-sky-300 hover:underline"
+          title={linkTarget}
+        >
+          {linkTarget}
+        </Link>
+      ) : (
+        <span className="truncate text-zinc-300">{entry.target_user_id}</span>
+      )}
       <span
         className={cn(
           "rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
@@ -66,7 +87,7 @@ export function AuditRow({ entry, onClick }: AuditRowProps) {
       </span>
       {isPanic ? (
         <span
-          className="rounded bg-yellow-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-yellow-300"
+          className="rounded bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-300"
           title="Audit row failed to write to DynamoDB; see CloudWatch"
         >
           {"audit panic \u2014 see CloudWatch"}

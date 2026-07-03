@@ -3,6 +3,7 @@
 import * as React from "react";
 import { useRouter } from "next/navigation";
 
+import { Card } from "@/components/admin/Card";
 import { ConfirmActionDialog } from "@/components/admin/ConfirmActionDialog";
 import { ErrorBanner } from "@/components/admin/ErrorBanner";
 import { Button } from "@/components/ui/button";
@@ -117,105 +118,104 @@ export function BillingActionsPanel({ userId, email }: BillingActionsPanelProps)
   const subscriptionDisabled = !email;
 
   return (
-    <div className="space-y-4 rounded-md border border-white/10 bg-white/[0.02] p-4">
-      <h2 className="text-sm font-medium uppercase tracking-wide text-zinc-400">
-        Billing actions
-      </h2>
-      {noEmailWarning}
-      {error ? <ErrorBanner error={error} variant="error" /> : null}
-      {notice ? <ErrorBanner error={notice} variant="info" /> : null}
+    <Card title="Billing actions">
+      <div className="space-y-4">
+        {noEmailWarning}
+        {error ? <ErrorBanner error={error} variant="error" /> : null}
+        {notice ? <ErrorBanner error={notice} variant="info" /> : null}
 
-      {/* Subscription lifecycle */}
-      <div className="flex flex-wrap gap-2">
-        <ConfirmActionDialog
-          confirmText={subscriptionConfirm}
-          actionLabel="Cancel subscription"
-          destructive
-          onConfirm={handleCancel}
-        >
-          <Button type="button" variant="destructive" size="sm" disabled={subscriptionDisabled}>
-            Cancel subscription
-          </Button>
-        </ConfirmActionDialog>
-        <ConfirmActionDialog
-          confirmText={subscriptionConfirm}
-          actionLabel="Pause subscription"
-          onConfirm={handlePause}
-        >
-          <Button type="button" variant="outline" size="sm" disabled={subscriptionDisabled}>
-            Pause subscription
-          </Button>
-        </ConfirmActionDialog>
-      </div>
-
-      {/* Issue credit */}
-      <div className="space-y-2 rounded-md border border-white/5 bg-white/[0.01] p-3">
-        <h3 className="text-xs font-medium uppercase tracking-wide text-zinc-500">
-          Issue credit
-        </h3>
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-[160px_1fr_auto]">
-          <Input
-            type="number"
-            min={1}
-            step={1}
-            placeholder="amount (cents)"
-            value={creditAmount}
-            onChange={(e) => setCreditAmount(e.target.value)}
-            aria-label="Credit amount in cents"
-          />
-          <Input
-            type="text"
-            placeholder="reason (audited)"
-            value={creditReason}
-            onChange={(e) => setCreditReason(e.target.value)}
-            aria-label="Credit reason"
-          />
+        {/* Subscription lifecycle */}
+        <div className="flex flex-wrap gap-2">
           <ConfirmActionDialog
-            confirmText={userId}
-            actionLabel="Issue credit"
-            onConfirm={handleCredit}
+            confirmText={subscriptionConfirm}
+            actionLabel="Cancel subscription"
+            destructive
+            onConfirm={handleCancel}
           >
-            <Button
-              type="button"
-              variant="default"
-              size="sm"
-              disabled={creditAmount.length === 0 || creditReason.trim().length === 0}
-            >
-              Issue credit
+            <Button type="button" variant="destructive" size="sm" disabled={subscriptionDisabled}>
+              Cancel subscription
+            </Button>
+          </ConfirmActionDialog>
+          <ConfirmActionDialog
+            confirmText={subscriptionConfirm}
+            actionLabel="Pause subscription"
+            onConfirm={handlePause}
+          >
+            <Button type="button" variant="outline" size="sm" disabled={subscriptionDisabled}>
+              Pause subscription
             </Button>
           </ConfirmActionDialog>
         </div>
-      </div>
 
-      {/* Mark invoice resolved */}
-      <div className="space-y-2 rounded-md border border-white/5 bg-white/[0.01] p-3">
-        <h3 className="text-xs font-medium uppercase tracking-wide text-zinc-500">
-          Mark invoice resolved
-        </h3>
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto]">
-          <Input
-            type="text"
-            placeholder="in_..."
-            value={invoiceId}
-            onChange={(e) => setInvoiceId(e.target.value)}
-            aria-label="Stripe invoice id"
-          />
-          <ConfirmActionDialog
-            confirmText={userId}
-            actionLabel="Mark invoice resolved"
-            onConfirm={handleInvoice}
-          >
-            <Button
-              type="button"
-              variant="default"
-              size="sm"
-              disabled={invoiceId.trim().length === 0}
+        {/* Issue credit */}
+        <div className="space-y-2 rounded-lg border border-zinc-800 p-3">
+          <h3 className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+            Issue credit
+          </h3>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-[160px_1fr_auto]">
+            <Input
+              type="number"
+              min={1}
+              step={1}
+              placeholder="amount (cents)"
+              value={creditAmount}
+              onChange={(e) => setCreditAmount(e.target.value)}
+              aria-label="Credit amount in cents"
+            />
+            <Input
+              type="text"
+              placeholder="reason (audited)"
+              value={creditReason}
+              onChange={(e) => setCreditReason(e.target.value)}
+              aria-label="Credit reason"
+            />
+            <ConfirmActionDialog
+              confirmText={userId}
+              actionLabel="Issue credit"
+              onConfirm={handleCredit}
             >
-              Mark resolved
-            </Button>
-          </ConfirmActionDialog>
+              <Button
+                type="button"
+                variant="default"
+                size="sm"
+                disabled={creditAmount.length === 0 || creditReason.trim().length === 0}
+              >
+                Issue credit
+              </Button>
+            </ConfirmActionDialog>
+          </div>
+        </div>
+
+        {/* Mark invoice resolved */}
+        <div className="space-y-2 rounded-lg border border-zinc-800 p-3">
+          <h3 className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+            Mark invoice resolved
+          </h3>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto]">
+            <Input
+              type="text"
+              placeholder="in_..."
+              value={invoiceId}
+              onChange={(e) => setInvoiceId(e.target.value)}
+              aria-label="Stripe invoice id"
+            />
+            <ConfirmActionDialog
+              confirmText={userId}
+              actionLabel="Mark invoice resolved"
+              onConfirm={handleInvoice}
+            >
+              <Button
+                type="button"
+                variant="default"
+                size="sm"
+                disabled={invoiceId.trim().length === 0}
+              >
+                Mark resolved
+              </Button>
+            </ConfirmActionDialog>
+          </div>
         </div>
       </div>
-    </div>
+    </Card>
   );
 }

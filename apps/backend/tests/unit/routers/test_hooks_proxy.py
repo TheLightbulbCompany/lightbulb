@@ -6,13 +6,21 @@ Clerk tokens. Auth is timing-safe bearer-token compare against
 ``containers.hook_token`` only.
 """
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 from main import app
+
+
+def _mock_ecs(container, ip):
+    """Container resolution now happens inside the runtime adapter's
+    ``forward_hook`` — mock it at the adapter's ``_get_ecs`` seam."""
+    ecs = MagicMock()
+    ecs.resolve_running_container = AsyncMock(return_value=(container, ip))
+    return ecs
 
 
 @pytest.fixture(autouse=True)
@@ -70,12 +78,12 @@ def test_unknown_owner_returns_404(client):
 
 
 def test_no_running_task_returns_503(client, fake_container):
-    """When EcsManager.resolve_running_container returns no IP, 503 + Retry-After."""
+    """When container resolution yields no task IP, 503 + Retry-After."""
     with (
         patch("routers.hooks_proxy.container_repo.get_by_owner_id", new=AsyncMock(return_value=fake_container)),
         patch(
-            "routers.hooks_proxy.ecs_manager.resolve_running_container",
-            new=AsyncMock(return_value=(fake_container, None)),
+            "core.runtime.openclaw.adapter._get_ecs",
+            return_value=_mock_ecs(fake_container, None),
         ),
     ):
         r = client.post(
@@ -102,10 +110,13 @@ def test_successful_forward_passes_body_and_writes_audit(client, fake_container)
     with (
         patch("routers.hooks_proxy.container_repo.get_by_owner_id", new=AsyncMock(return_value=fake_container)),
         patch(
-            "routers.hooks_proxy.ecs_manager.resolve_running_container",
-            new=AsyncMock(return_value=(fake_container, "10.0.42.17")),
+            "core.runtime.openclaw.adapter._get_ecs",
+            return_value=_mock_ecs(fake_container, "10.0.42.17"),
         ),
-        patch("routers.hooks_proxy._client_factory", lambda: httpx.AsyncClient(transport=StubTransport())),
+        patch(
+            "core.runtime.openclaw.adapter._hook_client_factory",
+            lambda: httpx.AsyncClient(transport=StubTransport()),
+        ),
         patch("routers.hooks_proxy.hook_event_repo.write_event", side_effect=lambda **kw: audit_writes.append(kw)),
     ):
         r = client.post(
@@ -151,10 +162,13 @@ def test_audit_write_failure_does_not_drop_proxied_call(client, fake_container):
     with (
         patch("routers.hooks_proxy.container_repo.get_by_owner_id", new=AsyncMock(return_value=fake_container)),
         patch(
-            "routers.hooks_proxy.ecs_manager.resolve_running_container",
-            new=AsyncMock(return_value=(fake_container, "10.0.42.17")),
+            "core.runtime.openclaw.adapter._get_ecs",
+            return_value=_mock_ecs(fake_container, "10.0.42.17"),
         ),
-        patch("routers.hooks_proxy._client_factory", lambda: httpx.AsyncClient(transport=StubTransport())),
+        patch(
+            "core.runtime.openclaw.adapter._hook_client_factory",
+            lambda: httpx.AsyncClient(transport=StubTransport()),
+        ),
         patch("routers.hooks_proxy.hook_event_repo.write_event", side_effect=Exception("DDB down")),
     ):
         r = client.post(
@@ -180,10 +194,13 @@ def test_query_string_is_forwarded_verbatim(client, fake_container):
     with (
         patch("routers.hooks_proxy.container_repo.get_by_owner_id", new=AsyncMock(return_value=fake_container)),
         patch(
-            "routers.hooks_proxy.ecs_manager.resolve_running_container",
-            new=AsyncMock(return_value=(fake_container, "10.0.42.17")),
+            "core.runtime.openclaw.adapter._get_ecs",
+            return_value=_mock_ecs(fake_container, "10.0.42.17"),
         ),
-        patch("routers.hooks_proxy._client_factory", lambda: httpx.AsyncClient(transport=StubTransport())),
+        patch(
+            "core.runtime.openclaw.adapter._hook_client_factory",
+            lambda: httpx.AsyncClient(transport=StubTransport()),
+        ),
         patch("routers.hooks_proxy.hook_event_repo.write_event"),
     ):
         r = client.post(
@@ -240,10 +257,13 @@ def test_rate_limiter_returns_429_after_60_per_minute(client, fake_container):
     with (
         patch("routers.hooks_proxy.container_repo.get_by_owner_id", new=AsyncMock(return_value=fake_container)),
         patch(
-            "routers.hooks_proxy.ecs_manager.resolve_running_container",
-            new=AsyncMock(return_value=(fake_container, "10.0.42.17")),
+            "core.runtime.openclaw.adapter._get_ecs",
+            return_value=_mock_ecs(fake_container, "10.0.42.17"),
         ),
-        patch("routers.hooks_proxy._client_factory", lambda: httpx.AsyncClient(transport=StubTransport())),
+        patch(
+            "core.runtime.openclaw.adapter._hook_client_factory",
+            lambda: httpx.AsyncClient(transport=StubTransport()),
+        ),
         patch("routers.hooks_proxy.hook_event_repo.write_event"),
     ):
         # Exhaust the bucket (60).

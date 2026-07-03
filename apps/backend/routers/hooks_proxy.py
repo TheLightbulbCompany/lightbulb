@@ -3,9 +3,9 @@
 External webhook senders (Zapier / Stripe / GitHub / custom integrations)
 POST to ``/api/v1/hooks/u/{owner_id}/{hook_path}`` with bearer-token
 auth. We validate the token at the edge against the ``containers`` row,
-look up the user's container IP via ``EcsManager.resolve_running_container``,
-rewrite X-Forwarded-* with the true caller IP, and forward to
-``http://<ip>:18789/hooks/{hook_path}``.
+rewrite X-Forwarded-* with the true caller IP, and hand the payload to
+the owner's runtime adapter, which resolves the container and forwards
+to its ``/hooks/{hook_path}`` ingress.
 
 **Auth model.** This router is the ONLY isol8 router that does NOT use
 ``Depends(get_current_user)``. External callers don't have Clerk tokens.
@@ -32,31 +32,21 @@ import time
 from collections import defaultdict, deque
 from urllib.parse import urlparse
 
-import httpx
 from fastapi import APIRouter, HTTPException, Request, Response
 
 from core.config import settings
-from core.containers import get_ecs_manager
 from core.repositories import container_repo, hook_event_repo
+from core.runtime import get_runtime_for_owner
+from core.runtime.base import ContainerNotRunningError
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-GATEWAY_PORT = 18789
 RATE_LIMIT_PER_MINUTE = 60
 
 # Module-level so the bucket survives across requests inside one process.
 # Multi-task fleets get independent buckets — fine for v1, flagged in spec.
 _RATE_BUCKETS_PER_OWNER: dict[str, deque[float]] = defaultdict(deque)
-
-# Module-level instance so tests can patch
-# ``routers.hooks_proxy.ecs_manager.resolve_running_container``.
-ecs_manager = get_ecs_manager()
-
-
-def _client_factory() -> httpx.AsyncClient:
-    """Build the upstream HTTP client. Module-level so tests can swap in a stub transport."""
-    return httpx.AsyncClient(timeout=httpx.Timeout(30.0))
 
 
 def _check_rate_limit(owner_id: str) -> bool:
@@ -87,8 +77,12 @@ def _extract_caller_ip(request: Request) -> str:
     return request.client.host if request.client else "0.0.0.0"
 
 
-def _build_forwarded_headers(request: Request, hook_token: str) -> dict[str, str]:
-    """Strip inbound X-Forwarded-* and re-assert them with values we control."""
+def _build_forwarded_headers(request: Request) -> dict[str, str]:
+    """Strip inbound X-Forwarded-* and re-assert them with values we control.
+
+    Inbound ``Authorization`` (the edge hook token) is stripped here; the
+    runtime adapter attaches the container-side auth header itself.
+    """
     caller_ip = _extract_caller_ip(request)
     headers: dict[str, str] = {}
     for k, v in request.headers.items():
@@ -98,7 +92,6 @@ def _build_forwarded_headers(request: Request, hook_token: str) -> dict[str, str
         if kl.startswith("x-forwarded-"):
             continue
         headers[k] = v
-    headers["Authorization"] = f"Bearer {hook_token}"
     headers["X-Forwarded-For"] = caller_ip
     headers["X-Forwarded-Proto"] = "https"
     # Derive from PUBLIC_API_BASE so dev/staging containers see their own
@@ -112,12 +105,12 @@ def _build_forwarded_headers(request: Request, hook_token: str) -> dict[str, str
 
 @router.post("/u/{owner_id}/{hook_path:path}")
 async def proxy_hook(owner_id: str, hook_path: str, request: Request) -> Response:
-    """Forward an external webhook call to the user's OpenClaw container.
+    """Forward an external webhook call to the user's agent container.
 
     Bearer-token authenticated against ``containers.hook_token`` via timing-safe
-    compare. Resolves the container's private IP via Cloud Map, rewrites
-    X-Forwarded-* with the true caller IP, and forwards to the container's
-    ``/hooks`` ingress. Audits every call to the ``hook-events`` DDB table.
+    compare. Rewrites X-Forwarded-* with the true caller IP, then delegates
+    container resolution + the forward itself to the owner's runtime adapter.
+    Audits every call to the ``hook-events`` DDB table.
 
     Returns the upstream's status code verbatim, or 401/404/429/503 for
     auth/lookup/rate-limit/availability failures.
@@ -156,9 +149,22 @@ async def proxy_hook(owner_id: str, hook_path: str, request: Request) -> Respons
             media_type="application/json",
         )
 
-    # 5. Resolve container IP
-    _, ip = await ecs_manager.resolve_running_container(owner_id)
-    if not ip:
+    # 5. Forward via the owner's runtime — container resolution, the
+    # container-side auth header, and the POST mechanics live in the adapter.
+    body = await request.body()
+    headers = _build_forwarded_headers(request)
+    # Preserve the inbound query string verbatim — webhook senders carry
+    # signature/verification material there (Slack URL-verification
+    # ``?challenge=``, custom ``?routing_key=``, etc.). Dropping it
+    # silently breaks those handshakes.
+    query = request.url.query  # raw query string (no leading '?'), '' if absent
+    target_path = f"{hook_path}?{query}" if query else hook_path
+
+    try:
+        upstream_status, upstream_headers, upstream_body = await get_runtime_for_owner(owner_id).forward_hook(
+            owner_id, target_path, headers, body
+        )
+    except ContainerNotRunningError:
         return Response(
             status_code=503,
             headers={"Retry-After": "30"},
@@ -166,36 +172,7 @@ async def proxy_hook(owner_id: str, hook_path: str, request: Request) -> Respons
             media_type="application/json",
         )
 
-    # 6. Forward
-    body = await request.body()
-    headers = _build_forwarded_headers(request, expected)
-    # Preserve the inbound query string verbatim — webhook senders carry
-    # signature/verification material there (Slack URL-verification
-    # ``?challenge=``, custom ``?routing_key=``, etc.). Dropping it
-    # silently breaks those handshakes.
-    query = request.url.query  # raw query string (no leading '?'), '' if absent
-    target = f"http://{ip}:{GATEWAY_PORT}/hooks/{hook_path}"
-    if query:
-        target = f"{target}?{query}"
-
-    upstream_status = 502
-    upstream_body = b""
-    upstream_headers: dict[str, str] = {}
-    try:
-        async with _client_factory() as client:
-            upstream = await client.post(target, headers=headers, content=body)
-        upstream_status = upstream.status_code
-        upstream_body = upstream.content
-        upstream_headers = {
-            k: v
-            for k, v in upstream.headers.items()
-            if k.lower() not in ("content-length", "transfer-encoding", "connection")
-        }
-    except httpx.RequestError as exc:
-        logger.warning("hook proxy upstream error owner=%s err=%s", owner_id, exc)
-        upstream_body = b'{"detail":"upstream_unreachable"}'
-
-    # 7. Audit (best-effort — DDB outage must not drop a real webhook)
+    # 6. Audit (best-effort — DDB outage must not drop a real webhook)
     try:
         hook_event_repo.write_event(
             owner_id=owner_id,

@@ -79,12 +79,19 @@ async def test_hooks_proxy_end_to_end(stub_container, monkeypatch):
     async def fake_resolve(owner_id):
         return (fake_container, "127.0.0.1")
 
-    # Point the proxy's GATEWAY_PORT at the stub.
-    from routers import hooks_proxy
+    # The forward mechanics live in the runtime adapter — point its
+    # GATEWAY_PORT at the stub and stub container resolution at its seam.
+    from types import SimpleNamespace
 
-    monkeypatch.setattr(hooks_proxy, "GATEWAY_PORT", stub_container["port"])
+    import core.runtime.openclaw.adapter as adapter_mod
+
+    monkeypatch.setattr(adapter_mod, "GATEWAY_PORT", stub_container["port"])
     monkeypatch.setattr(container_repo, "get_by_owner_id", fake_get)
-    monkeypatch.setattr(hooks_proxy.ecs_manager, "resolve_running_container", fake_resolve)
+    monkeypatch.setattr(
+        adapter_mod,
+        "_get_ecs",
+        lambda: SimpleNamespace(resolve_running_container=fake_resolve),
+    )
 
     client = TestClient(app)
     payload = {"text": "new email", "metadata": {"source": "stripe"}}

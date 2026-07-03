@@ -63,8 +63,14 @@ export default async function AdminOverviewPage() {
     ...(alarms?.data ?? []).map((a) => ({
       key: `alarm:${a.name}`,
       title: a.description ?? a.name,
-      label: a.severity ?? "in alarm",
-      tone: (a.severity === "warning" ? "warn" : "error") as "warn" | "error",
+      // Alarms outside the P/W naming convention have unknown severity: they
+      // stay amber (an active alarm never renders calm zinc) without claiming
+      // the red reserved for known-critical pages.
+      label:
+        a.severity === "critical" || a.severity === "warning"
+          ? a.severity
+          : "in alarm",
+      tone: (a.severity === "critical" ? "error" : "warn") as "warn" | "error",
       sub: a.name,
       href: a.console_url ?? undefined,
     })),

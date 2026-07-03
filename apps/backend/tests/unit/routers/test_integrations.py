@@ -576,3 +576,39 @@ class TestIntegrationsRouter:
         assert resp.status_code == 200
         stored = patched_router["store"]["config"]["mcp"]["servers"]["slowlist"]
         assert stored["requestTimeoutMs"] == 90000
+
+    @pytest.mark.asyncio
+    async def test_put_rejects_stdio_entry_with_stray_headers(self, app, patched_router, auth_override):
+        """headers is a remote-only field; a stdio entry carrying it is a mixed shape."""
+        app.dependency_overrides[get_current_user] = auth_override
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.put(
+                "/api/v1/integrations/mcp/servers",
+                json={"servers": {"weird": {"command": "npx", "headers": {"X-K": "v"}}}},
+            )
+        app.dependency_overrides.pop(get_current_user, None)
+        assert resp.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_put_passes_through_unmodeled_openclaw_keys(self, app, patched_router, auth_override):
+        """OpenClaw's per-server schema is a catchall with keys this API doesn't
+        enumerate (toolFilter, supportsParallelToolCalls, ...) — they must pass
+        through to the stored block, neither rejected nor silently dropped."""
+        app.dependency_overrides[get_current_user] = auth_override
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.put(
+                "/api/v1/integrations/mcp/servers",
+                json={
+                    "servers": {
+                        "big-remote": {
+                            "transport": "streamable-http",
+                            "url": "https://x/mcp",
+                            "toolFilter": {"include": ["query-*"]},
+                        }
+                    }
+                },
+            )
+        app.dependency_overrides.pop(get_current_user, None)
+        assert resp.status_code == 200
+        stored = patched_router["store"]["config"]["mcp"]["servers"]["big-remote"]
+        assert stored["toolFilter"] == {"include": ["query-*"]}

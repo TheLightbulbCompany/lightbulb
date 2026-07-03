@@ -36,7 +36,18 @@ class ServerEntry(BaseModel):
 
     Mirrors the registry's McpServer invariant: exactly one of the two shapes.
     Timeouts are optional here; absent values get container-appropriate defaults
-    injected at write time (see _normalize_entry)."""
+    injected at write time (see _normalize_entry). Both timeout fields are
+    deliberately shape-agnostic: OpenClaw applies a connect timeout and a
+    per-request timeout to either transport.
+
+    extra="allow": OpenClaw's per-server schema is a catchall with many
+    legitimate keys this model doesn't enumerate (toolFilter,
+    supportsParallelToolCalls, oauth, ...). Forbidding extras would 422
+    power users; ignoring them would silently drop what they configured.
+    Unknown keys pass through to the stored block instead — OpenClaw
+    tolerates keys it doesn't recognize."""
+
+    model_config = {"extra": "allow"}
 
     # min_length=1: an empty-string command/transport/url is never a valid value,
     # and allowing one would let a mixed shape slip past the presence checks below

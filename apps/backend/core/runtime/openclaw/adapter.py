@@ -8,7 +8,9 @@ import logging
 import uuid
 from typing import Any
 
-from core.gateway.operator_rpc import gateway_rpc_oneshot
+import httpx
+
+from core.gateway.operator_rpc import GATEWAY_PORT, gateway_rpc_oneshot
 from core.runtime.base import Capabilities, ContainerNotRunningError, SessionSurface
 
 logger = logging.getLogger(__name__)
@@ -38,6 +40,12 @@ def _get_ecs():
     from core.containers import get_ecs_manager
 
     return get_ecs_manager()
+
+
+def _hook_client_factory() -> httpx.AsyncClient:
+    """Build the upstream HTTP client for hook forwarding. Module-level so
+    tests can swap in a stub transport."""
+    return httpx.AsyncClient(timeout=httpx.Timeout(30.0))
 
 
 class OpenClawRuntime:
@@ -154,4 +162,42 @@ class OpenClawRuntime:
         )
         return True
 
-    # forward_hook lands with the hooks migration.
+    async def forward_hook(
+        self, owner_id: str, path: str, headers: dict[str, str], body: bytes
+    ) -> tuple[int, dict[str, str], bytes]:
+        """POST a webhook payload to the owner's container ``/hooks`` ingress.
+
+        ``path`` may carry the caller's raw query string (``wake?challenge=x``)
+        — it is spliced into the target URL verbatim, because webhook senders
+        put signature/verification material there. The container-side
+        ``Authorization: Bearer <hook_token>`` is attached here from the
+        container row (hooks ingress auth is the hook token, NOT the gateway
+        token); callers supply everything else in ``headers``.
+
+        Returns ``(status, headers, body)`` with hop-by-hop response headers
+        stripped so the caller can relay the tuple verbatim. An unreachable
+        upstream maps to a ``502`` tuple rather than raising. Raises
+        ``ContainerNotRunningError`` when the container is cold or its row
+        has no hook token (equally unforwardable).
+        """
+        container, ip = await _get_ecs().resolve_running_container(owner_id)
+        hook_token = container.get("hook_token") if container else None
+        if not container or not ip or not hook_token:
+            raise ContainerNotRunningError(f"no running container or hook token for {owner_id}")
+        target = f"http://{ip}:{GATEWAY_PORT}/hooks/{path}"
+        upstream_headers = {**headers, "Authorization": f"Bearer {hook_token}"}
+        try:
+            async with _hook_client_factory() as client:
+                upstream = await client.post(target, headers=upstream_headers, content=body)
+        except httpx.RequestError as exc:
+            logger.warning("hook proxy upstream error owner=%s err=%s", owner_id, exc)
+            return 502, {}, b'{"detail":"upstream_unreachable"}'
+        return (
+            upstream.status_code,
+            {
+                k: v
+                for k, v in upstream.headers.items()
+                if k.lower() not in ("content-length", "transfer-encoding", "connection")
+            },
+            upstream.content,
+        )

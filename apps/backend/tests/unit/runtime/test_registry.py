@@ -5,17 +5,14 @@ from pathlib import Path
 import pytest
 
 from core.runtime import get_runtime, get_runtime_for_owner
-from core.runtime.base import Capabilities
+from core.runtime.base import Capabilities, Runtime
 
 
 def test_get_runtime_openclaw():
     rt = get_runtime("openclaw")
     assert rt.kind == "openclaw"
-    # Full-Protocol isinstance(rt, Runtime) is deferred: the adapter grows
-    # call_rpc / revoke_provider / forward_hook later in the refactor, so
-    # assert the surface that exists today instead.
+    assert isinstance(rt, Runtime)
     assert isinstance(rt.capabilities, Capabilities)
-    assert isinstance(type(rt).sessions, property)
     assert rt.capabilities.desktop_pairing is True
     assert rt.capabilities.per_run_model is True
 

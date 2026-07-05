@@ -280,7 +280,7 @@ async def test_list_user_agents_uses_unique_req_ids_per_call():
             new=AsyncMock(return_value={"status": "running"}),
         ),
         patch("core.services.admin_service.get_ecs_manager", return_value=fake_ecs),
-        patch("core.services.admin_service.get_gateway_pool", return_value=fake_pool),
+        patch("core.services.admin_service.get_runtime_for_owner", return_value=MagicMock(sessions=fake_pool)),
     ):
         results = await asyncio.gather(
             admin_service.list_user_agents("user_abc"),
@@ -328,7 +328,7 @@ async def test_list_user_agents_sends_empty_params_to_openclaw():
             new=AsyncMock(return_value={"status": "running"}),
         ),
         patch("core.services.admin_service.get_ecs_manager", return_value=fake_ecs),
-        patch("core.services.admin_service.get_gateway_pool", return_value=fake_pool),
+        patch("core.services.admin_service.get_runtime_for_owner", return_value=MagicMock(sessions=fake_pool)),
     ):
         result = await admin_service.list_user_agents("user_abc", cursor="abc", limit=25)
 
@@ -388,7 +388,7 @@ async def test_get_agent_detail_redacts_secrets_in_config_raw_envelope():
             new=AsyncMock(return_value={"status": "running"}),
         ),
         patch("core.services.admin_service.get_ecs_manager", return_value=fake_ecs),
-        patch("core.services.admin_service.get_gateway_pool", return_value=fake_pool),
+        patch("core.services.admin_service.get_runtime_for_owner", return_value=MagicMock(sessions=fake_pool)),
     ):
         result = await admin_service.get_agent_detail("user_abc", "agt_1")
 
@@ -436,7 +436,7 @@ async def test_get_agent_detail_handles_malformed_config_raw_envelope():
             new=AsyncMock(return_value={"status": "running"}),
         ),
         patch("core.services.admin_service.get_ecs_manager", return_value=fake_ecs),
-        patch("core.services.admin_service.get_gateway_pool", return_value=fake_pool),
+        patch("core.services.admin_service.get_runtime_for_owner", return_value=MagicMock(sessions=fake_pool)),
     ):
         result = await admin_service.get_agent_detail("user_abc", "agt_1")
 
@@ -483,7 +483,7 @@ async def test_get_agent_detail_normalizes_sessions_list_array_response():
             new=AsyncMock(return_value={"status": "running"}),
         ),
         patch("core.services.admin_service.get_ecs_manager", return_value=fake_ecs),
-        patch("core.services.admin_service.get_gateway_pool", return_value=fake_pool),
+        patch("core.services.admin_service.get_runtime_for_owner", return_value=MagicMock(sessions=fake_pool)),
     ):
         result = await admin_service.get_agent_detail("user_abc", "agt_1")
 
@@ -531,7 +531,7 @@ async def test_get_agent_detail_normalizes_skills_status_array_response():
             new=AsyncMock(return_value={"status": "running"}),
         ),
         patch("core.services.admin_service.get_ecs_manager", return_value=fake_ecs),
-        patch("core.services.admin_service.get_gateway_pool", return_value=fake_pool),
+        patch("core.services.admin_service.get_runtime_for_owner", return_value=MagicMock(sessions=fake_pool)),
     ):
         result = await admin_service.get_agent_detail("user_abc", "agt_1")
 
@@ -572,7 +572,7 @@ async def test_get_agent_detail_uses_unique_req_ids_per_call():
             new=AsyncMock(return_value={"status": "running"}),
         ),
         patch("core.services.admin_service.get_ecs_manager", return_value=fake_ecs),
-        patch("core.services.admin_service.get_gateway_pool", return_value=fake_pool),
+        patch("core.services.admin_service.get_runtime_for_owner", return_value=MagicMock(sessions=fake_pool)),
         patch(
             "core.services.admin_service.redact_openclaw_config",
             side_effect=lambda x: x,
@@ -820,7 +820,7 @@ class TestAdminMutationOwnerResolution:
         ecs = MagicMock()
         ecs.resolve_running_container = AsyncMock(return_value=({"gateway_token": "tok"}, "10.0.0.1"))
         with (
-            patch("routers.admin.get_gateway_pool", return_value=pool),
+            patch("routers.admin.get_runtime_for_owner", return_value=MagicMock(sessions=pool)),
             patch("routers.admin.get_ecs_manager", return_value=ecs),
         ):
             res = await async_client.post("/api/v1/admin/users/user_123/agents/agt_42/delete")
@@ -843,7 +843,7 @@ class TestAdminMutationOwnerResolution:
         ecs = MagicMock()
         ecs.resolve_running_container = AsyncMock(return_value=({"gateway_token": "tok"}, "10.0.0.1"))
         with (
-            patch("routers.admin.get_gateway_pool", return_value=pool),
+            patch("routers.admin.get_runtime_for_owner", return_value=MagicMock(sessions=pool)),
             patch("routers.admin.get_ecs_manager", return_value=ecs),
         ):
             r1 = await async_client.post("/api/v1/admin/users/user_123/agents/agt_42/delete")
@@ -862,7 +862,7 @@ class TestAdminMutationOwnerResolution:
         ecs = MagicMock()
         ecs.resolve_running_container = AsyncMock(return_value=({"gateway_token": "tok"}, "10.0.0.1"))
         with (
-            patch("routers.admin.get_gateway_pool", return_value=pool),
+            patch("routers.admin.get_runtime_for_owner", return_value=MagicMock(sessions=pool)),
             patch("routers.admin.get_ecs_manager", return_value=ecs),
         ):
             res = await async_client.post("/api/v1/admin/users/user_123/agents/agt_42/clear-sessions")
@@ -949,7 +949,7 @@ async def test_get_agent_detail_uses_correct_rpc_methods():
             new=AsyncMock(return_value={"status": "running"}),
         ),
         patch("core.services.admin_service.get_ecs_manager", return_value=fake_ecs),
-        patch("core.services.admin_service.get_gateway_pool", return_value=fake_pool),
+        patch("core.services.admin_service.get_runtime_for_owner", return_value=MagicMock(sessions=fake_pool)),
         patch(
             "core.services.admin_service.redact_openclaw_config",
             side_effect=lambda x: x,
@@ -997,7 +997,7 @@ async def test_get_agent_detail_uses_camelcase_params():
             new=AsyncMock(return_value={"status": "running"}),
         ),
         patch("core.services.admin_service.get_ecs_manager", return_value=fake_ecs),
-        patch("core.services.admin_service.get_gateway_pool", return_value=fake_pool),
+        patch("core.services.admin_service.get_runtime_for_owner", return_value=MagicMock(sessions=fake_pool)),
         patch(
             "core.services.admin_service.redact_openclaw_config",
             side_effect=lambda x: x,
@@ -1072,7 +1072,7 @@ async def test_get_agent_detail_filters_sessions_by_agent_client_side():
             new=AsyncMock(return_value={"status": "running"}),
         ),
         patch("core.services.admin_service.get_ecs_manager", return_value=fake_ecs),
-        patch("core.services.admin_service.get_gateway_pool", return_value=fake_pool),
+        patch("core.services.admin_service.get_runtime_for_owner", return_value=MagicMock(sessions=fake_pool)),
         patch(
             "core.services.admin_service.redact_openclaw_config",
             side_effect=lambda x: x,

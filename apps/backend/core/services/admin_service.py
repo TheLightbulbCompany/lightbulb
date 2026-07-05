@@ -25,8 +25,9 @@ import uuid
 from typing import Any
 
 from core import openclaw_version
-from core.containers import get_ecs_manager, get_gateway_pool
+from core.containers import get_ecs_manager
 from core.repositories import admin_actions_repo, billing_repo, container_repo, usage_repo
+from core.runtime import get_runtime_for_owner
 from core.services import clerk_admin, cloudwatch_logs, cloudwatch_url, posthog_admin
 from core.services.admin_redact import redact_openclaw_config
 
@@ -275,7 +276,10 @@ async def list_user_agents(user_id: str, *, cursor: str | None = None, limit: in
     if not container or not ip:
         return {"agents": [], "cursor": None, "container_status": "unreachable", "org": org_context}
 
-    pool = get_gateway_pool()
+    # The runtime's session surface IS the live gateway pool; we keep the
+    # explicit resolve above so the RPC rides the same ip/token and the
+    # collision-safe req_id below stays under our control.
+    pool = get_runtime_for_owner(owner_id).sessions
     # uuid4 entropy in req_id: after switching to owner_id, all members of an
     # org share a single gateway connection whose pending-RPC dict is keyed by
     # req_id. A deterministic id would let concurrent admin requests overwrite
@@ -350,7 +354,9 @@ async def get_agent_detail(user_id: str, agent_id: str) -> dict:
     if not container or not ip:
         return {"error": "container_unreachable", "org": org_context}
 
-    pool = get_gateway_pool()
+    # Single resolve above, then fan four RPCs across the runtime's session
+    # surface (the live gateway pool). call_rpc would re-resolve per call.
+    pool = get_runtime_for_owner(owner_id).sessions
     token = container["gateway_token"]
 
     async def _rpc(method: str, params: dict, suffix: str) -> Any:

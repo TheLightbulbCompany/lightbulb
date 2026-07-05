@@ -21,6 +21,8 @@ from core.auth import (
 from core.observability.metrics import put_metric
 from core.containers.config import read_openclaw_config_from_efs
 from core.repositories import channel_link_repo
+from core.runtime import get_runtime_for_owner
+from core.runtime.base import ContainerNotRunningError
 from core.services import channel_link_service
 from core.services.config_patcher import (
     delete_openclaw_config_path,
@@ -82,33 +84,26 @@ async def get_links_me(auth: AuthContext = Depends(get_current_user)):
     # agent_id if the container isn't reachable or the probe fails.
     bot_usernames: dict[str, dict[str, str]] = {}  # provider -> accountId -> username
     try:
-        from core.containers import get_ecs_manager, get_gateway_pool
-
-        ecs_manager = get_ecs_manager()
-        container, ip = await ecs_manager.resolve_running_container(owner_id)
-        if container and ip:
-            pool = get_gateway_pool()
-            status = await pool.send_rpc(
-                user_id=owner_id,
-                req_id=f"links-me-{owner_id}",
-                method="channels.status",
-                params={"probe": True},
-                ip=ip,
-                token=container["gateway_token"],
-            )
-            for prov, accts in (status or {}).get("channelAccounts", {}).items():
-                if not isinstance(accts, list):
+        try:
+            status = await get_runtime_for_owner(owner_id).call_rpc(owner_id, "channels.status", {"probe": True})
+        except ContainerNotRunningError:
+            # Container cold / unreachable — fall through to the agent_id
+            # fallback, exactly as the old `if container and ip` guard did
+            # (silent skip, no error metric).
+            status = None
+        for prov, accts in (status or {}).get("channelAccounts", {}).items():
+            if not isinstance(accts, list):
+                continue
+            bot_usernames[prov] = {}
+            for acct in accts:
+                if not isinstance(acct, dict):
                     continue
-                bot_usernames[prov] = {}
-                for acct in accts:
-                    if not isinstance(acct, dict):
-                        continue
-                    acct_id = acct.get("accountId", "")
-                    probe = acct.get("probe") or {}
-                    bot = probe.get("bot") or {} if isinstance(probe, dict) else {}
-                    username = bot.get("username", "") if isinstance(bot, dict) else ""
-                    if acct_id and username:
-                        bot_usernames[prov][acct_id] = username
+                acct_id = acct.get("accountId", "")
+                probe = acct.get("probe") or {}
+                bot = probe.get("bot") or {} if isinstance(probe, dict) else {}
+                username = bot.get("username", "") if isinstance(bot, dict) else ""
+                if acct_id and username:
+                    bot_usernames[prov][acct_id] = username
     except Exception as e:
         put_metric("channel.rpc", dimensions={"provider": "all", "status": "error"})
         logger.debug("channels.status probe failed for links/me (using fallback): %s", e)

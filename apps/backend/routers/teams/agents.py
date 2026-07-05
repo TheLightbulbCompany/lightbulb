@@ -22,7 +22,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
-from core.containers import get_ecs_manager, get_gateway_pool
+from core.containers import get_ecs_manager
+from core.runtime import get_runtime_for_owner
 from core.encryption import decrypt  # noqa: F401 — re-exported for tests + downstream tasks.
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import service_token
@@ -596,20 +597,20 @@ async def create_agent(body: CreateAgentBody, ctx: TeamsContext = Depends(_ctx))
 
     # Pair with the owner's OpenClaw container if reachable. Failure is
     # non-fatal — the next container provision picks the agent up via
-    # ``fetch_paperclip_agents_for_owner``. ``get_gateway_pool()`` itself
-    # touches process-wide state (a singleton lazily wired to the AWS
-    # Management API client) so we resolve it inside the try block: if
-    # the env isn't fully wired (e.g. unit tests, CI without
+    # ``fetch_paperclip_agents_for_owner``. The runtime's session surface
+    # lazily wires the same process-wide gateway pool (a singleton tied to
+    # the AWS Management API client), so we resolve it inside the try block:
+    # if the env isn't fully wired (e.g. unit tests, CI without
     # ``WS_MANAGEMENT_API_URL``) we still surface a clean "deferred"
     # warning instead of a 500 from the route.
     reachable, ip, token = await _container_is_reachable(owner_id)
     if reachable and ip and token:
         try:
-            gateway_pool = get_gateway_pool()
+            sessions = get_runtime_for_owner(owner_id).sessions
             await pair_with_openclaw(
                 owner_id=owner_id,
                 paperclip_agent=paperclip_agent,
-                gateway_pool=gateway_pool,
+                gateway_pool=sessions,
                 ip=ip,
                 token=token,
             )

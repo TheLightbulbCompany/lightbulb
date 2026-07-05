@@ -1,0 +1,26 @@
+{
+  "name": "@isol8/shared",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Framework-neutral core shared by the web and mobile clients: API client, gateway WebSocket protocol, data hooks, and protocol types. No next/*, no react-native, no DOM globals — platform specifics are injected via PlatformAdapter.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src"
+  },
+  "peerDependencies": {
+    "react": ">=19"
+  },
+  "devDependencies": {
+    "@types/react": "^19",
+    "eslint": "^9",
+    "typescript": "^5",
+    "vitest": "^3.2.4"
+  }
+}

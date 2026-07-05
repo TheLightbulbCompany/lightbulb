@@ -41,10 +41,10 @@
 | D3 | **Admin surface + all ops tooling** | Permanently out of scope (see Scope boundary above) — never port `/admin`, admin components/hooks, marketplace moderation, or debug surfaces to mobile. |
 | D4 | **ChatGPT OAuth / BYOK flows** | Settings shows provider state; the OAuth dance and key entry use in-app browser (`expo-web-browser`) against existing web/API flows. Verify redirect URIs work with `isol8://` or universal links; if not, defer to "manage on web" like D1. |
 | D5 | **Desktop-node features** (exec approvals, browser proxy, iMessage) | Render approval cards read-only where they appear in chat; node pairing itself is desktop-only and out of scope. |
-| D6 | **Styling system** | NativeWind, to keep Tailwind muscle memory. If it fights Expo SDK versioning at scaffold time, fall back to StyleSheet + a tokens file; decide in Phase 0 Task 3 and record here. |
+| D6 | **Styling system** | ~~NativeWind vs StyleSheet~~ **Resolved in Phase 0:** scaffold ships plain StyleSheet + a future tokens file; NativeWind re-evaluated when Phase 2 builds the first real screens (adopting it later is additive, ripping it out isn't). |
 | R1 | **App Store review risk** | Full-parity app with real native UI clears Guideline 4.2 easily; the billing posture (D1/D2) is the main review surface. Have a demo account ready for review notes. |
 | R2 | **WS behind cellular/backgrounding** | iOS suspends sockets on background. Gateway hook must handle app-state transitions (reconnect on foreground) — covered in Phase 2 Task 6; push notifications (Phase 7) cover the "agent finished while backgrounded" gap. |
-| R3 | **pnpm hoisting side-effects** | `node-linker=hoisted` changes install layout repo-wide if applied globally. Prefer scoping to `apps/mobile` (per-project `.npmrc`) and CI-verify frontend/desktop builds in the Phase 0 gate. |
+| R3 | **pnpm hoisting side-effects** | ~~`node-linker=hoisted` may be needed~~ **Resolved in Phase 0: NOT needed.** Metro on Expo SDK 57 resolves pnpm's default isolated `.pnpm` symlink layout — `expo export --platform ios` bundles cleanly (1097 modules) with zero `.npmrc` changes, so the repo install layout is untouched. If a future native dep breaks resolution, revisit then. |
 
 ---
 
@@ -67,10 +67,12 @@
 
 **Exit gate:** `apps/mobile` boots in the iOS simulator showing a placeholder screen; `turbo run lint test` green across frontend + shared; frontend prod build unaffected.
 
-- [ ] **Task 1: Workspace wiring.** Scaffold `apps/mobile` with `create-expo-app` (TypeScript, expo-router template) named `@isol8/mobile`. Add scoped `.npmrc` (`node-linker=hoisted`), verify `pnpm install` from root, and that `next build` (frontend) and desktop `pnpm install` still succeed. Add `lint`/`typecheck` scripts wired into turbo.
-- [ ] **Task 2: `packages/shared` skeleton.** Create `@isol8/shared` (tsconfig, vitest, exports map). Define the adapter interface: `{ getToken(): Promise<string|null>; apiUrl: string; wsUrl?: string; uuid(): string }`. No logic moved yet — just the package, its test harness, and CI wiring.
-- [ ] **Task 3: Styling + navigation baseline.** Decide NativeWind vs StyleSheet (record in D6). Stand up expo-router skeleton: `(auth)` group, `(app)` group with a tab/drawer shell mirroring web's sidebar sections (Chat, Teams, Control, Settings). Placeholder screens only.
-- [ ] **Task 4: Env config.** `src/adapters/env.ts` reading `EXPO_PUBLIC_API_URL` (+ optional `EXPO_PUBLIC_WS_URL`), with dev/prod values documented in `apps/mobile/README.md`. Reuse `deriveWebSocketUrl` once shared (Phase 1).
+- [x] **Task 1: Workspace wiring.** Scaffolded `apps/mobile` with `create-expo-app` (Expo SDK 57 / RN 0.86 / React 19.2.3 — exact match with frontend's React). No `.npmrc` change needed (see R3). `pnpm install` green across all 7 workspace projects; `typecheck` task added to `turbo.json`.
+- [x] **Task 2: `packages/shared` skeleton.** `@isol8/shared` created with tsconfig (ES2022, no DOM lib), vitest harness, and the `PlatformAdapter` interface (`getToken`/`apiUrl`/`wsUrl?`/`uuid`). Smoke test passing.
+- [x] **Task 3: Styling + navigation baseline.** StyleSheet for now (D6). expo-router skeleton: `(auth)/sign-in` placeholder + `(app)` tab shell (Chat/Teams/Control/Settings), typed routes + React Compiler enabled. `expo lint` configured (flat config).
+- [x] **Task 4: Env config.** `src/config/env.ts` reads `EXPO_PUBLIC_API_URL`/`EXPO_PUBLIC_WS_URL` with the same WS-derivation rules as web (temporary duplicate; delegates to shared in Phase 1). Documented in `apps/mobile/README.md`.
+
+**Phase 0 verification record (2026-07-05, Linux CI container):** shared vitest 1/1 + tsc clean; mobile tsc clean + `expo lint` clean; `expo export --platform ios` bundles 1097 modules → 2.3MB Hermes bundle; frontend unaffected (lint 0 errors, targeted `api.test.ts` 13/13). Simulator/device verification pending a human with Expo Go (no macOS in CI).
 
 ## Phase 1 — Shared extraction + auth
 

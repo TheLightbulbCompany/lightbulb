@@ -30,7 +30,7 @@ def test_get_runtime_openclaw():
 
 def test_get_runtime_unknown_kind_raises():
     with pytest.raises(ValueError, match="unknown runtime kind"):
-        get_runtime("hermes")  # not registered until the Hermes adapter lands
+        get_runtime("frobnicate")  # a kind with no registered adapter
 
 
 def test_get_runtime_for_owner_defaults_openclaw():

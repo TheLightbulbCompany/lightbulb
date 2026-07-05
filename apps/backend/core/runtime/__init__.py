@@ -23,6 +23,10 @@ def get_runtime(kind: str) -> Runtime:
         from core.runtime.openclaw.adapter import OpenClawRuntime
 
         return OpenClawRuntime()
+    if kind == "hermes":
+        from core.runtime.hermes.adapter import HermesRuntime
+
+        return HermesRuntime()
     raise ValueError(f"unknown runtime kind: {kind!r}")
 
 

@@ -90,21 +90,27 @@
 
 **Why parallel:** independent of the backend refactor; it's the longest, least-certain pole (the fork is thousands of commits behind upstream). Start it alongside H0.
 
-### Task H1.1: Re-base the fork + tag
+### Task H1.1: Pin the fork tag — RESOLVED (H1.1 investigation, 2026-07-05)
 
 **Files:** the fork clone `~/Desktop/hermes-agent.nosync` (NOT this repo). Do not commit fork changes into isol8.
 
-**This is spike-shaped — conflicts discovered live, not pre-written.**
-- [ ] Decide rebase-vs-pin: either rebase `basis-v0.14.0-spec` onto a recent upstream tag, or pin a recent upstream tag directly and re-apply our patches on top. Given 5,464 commits of drift, **pinning a recent upstream release tag and applying the 2 patches on top is lower-risk than a full rebase** — prefer it unless a patch conflicts.
-- [ ] Re-verify the load-bearing `api_server.py` lines (SSE emit sites, `_handle_runs` body keys, `run.completed.usage`) and `hermes_state.apply_wal_with_fallback` still exist at the pinned tag; update the spec's citations if upstream moved them (upstream is actively building the usage/cost surface — the patch may already be partly upstream).
-- [ ] Tag `v<version>-isol8.1`. Checkpoint: report the chosen tag + any citation drift before H2 builds against it.
+**Decision: PIN `v2026.7.1` (= v0.18.0, 2026-07-01).** Verified: the fork's `basis-v0.14.0-spec` (`4c46c35e`) is a **pure upstream ancestor with ZERO Isol8 divergent commits** — so there is nothing to rebase and **no apply-conflict surface**; both patches are authored *fresh* on the pinned tag. `v2026.7.1` is the latest annotated release, a clean ancestor of `main` (only 366 unreleased commits behind main tip). Rebase-onto-main is explicitly rejected (fast-forwards to untested main for no benefit).
+
+**Citations re-verified against `v2026.7.1`** (all HOLD; new line numbers in `gateway/platforms/api_server.py` unless noted):
+- SSE emit sites: `message.delta` 4023, `tool.started` 3896, `tool.completed` 3904, `reasoning.available` 3913, `run.completed` 4145–4157, `run.failed` 4131/4183, `run.cancelled` 4166. No `id:`/resume (writes `data:` only, 4283; destructive queue pop 4275; queue deleted on disconnect 4288).
+- `_handle_runs` body keys: `input` 3944, `instructions` 3952, `previous_response_id` 3953, `conversation_history` 3958, `session_id` 4000, `model` 4036. `metadata` still dropped. `instructions` → `ephemeral_system_prompt` (4007), appended AFTER the built-in prompt.
+- `run.completed.usage`: still 3 ints (4117–4121), sourced from `agent.session_prompt/completion/total_tokens`; cache accumulators exist (`agent.session_cache_read_tokens/_write_tokens`).
+- `API_SERVER_KEY` read once at boot (779), no rotation; `API_SERVER_HOST` default `127.0.0.1` (89), needs `0.0.0.0`; startup guard requires key ≥16 chars.
+- `apply_wal_with_fallback` at `hermes_state.py:341` — single journal-mode chokepoint; no env override upstream; note it gained a read-only WAL probe (369) + on-disk-WAL guard (386) — our `DELETE` knob runs above them so it's unaffected.
+
+- [ ] Create branch `isol8/v2026.7.1-isol8.1` off tag `v2026.7.1` for the patches (H1.2). Local only until the patches + tests are green.
 
 ### Task H1.2: The two fork patches
 
-**Files (fork):** `gateway/platforms/api_server.py`, `hermes_state.py` + in-fork tests.
-- [ ] **Usage cache-fields (~3 lines):** in `_run_sync`'s `usage` dict (`api_server.py:~3046`), surface `cache_read_tokens`/`cache_write_tokens` and the non-cached `input_tokens` from the already-returned conversation-loop result dict (`conversation_loop.py:~3931`) — so the adapter can meter correctly. In-fork test asserting the payload shape.
-- [ ] **WAL→DELETE knob (~5 lines):** in `apply_wal_with_fallback` (`hermes_state.py:128`), honor an env `HERMES_SQLITE_JOURNAL_MODE=delete` at the top to force the NFS-safe rollback journal on EFS. In-fork test.
-- [ ] Commit on an `isol8/*` branch; these ride the fork's `docker-release.yml`.
+**Files (fork, on `isol8/v2026.7.1-isol8.1`):** `gateway/platforms/api_server.py`, `hermes_state.py` + in-fork tests.
+- [ ] **Usage cache-fields (~3 lines):** in the runs usage dict (`api_server.py:4117–4121`, and optionally the twin at 3833–3837), surface `cache_read_tokens`/`cache_write_tokens` (from `agent.session_cache_read_tokens`/`_write_tokens`) + non-cached `input_tokens` (= `input_tokens − cache_read`). Source values confirmed present. In-fork test on the payload shape. **NOTE: this is a short-lived BRIDGE** — upstream `main` already carries `cache_read_tokens/cache_write_tokens/reasoning_tokens/estimated_cost_usd/actual_cost_usd` in the runs usage (`main:api_server.py:1643-1645`); a future main-derived pin retires this patch. Keep it minimal.
+- [ ] **WAL→DELETE knob (~6 lines):** at the TOP of `apply_wal_with_fallback` (`hermes_state.py:341`, before the WAL probe at 369), honor env `HERMES_SQLITE_JOURNAL_MODE=delete` → run `PRAGMA journal_mode=DELETE` and return `"delete"`. **Gotcha: `hermes_state.py` does NOT import `os`** — the patch must add `import os` (hence ~6 lines). The on-disk-WAL guard doesn't block it (the knob runs the pragma directly, above the guard). In-fork test.
+- [ ] Commit LOCALLY on `isol8/v2026.7.1-isol8.1`; do NOT push until reviewed. These ride the fork's `docker-release.yml`.
 
 ### Task H1.3: Extended Hermes image + version pin
 
@@ -148,7 +154,8 @@
   | `run.completed` | `done` | `output`, `usage` |
   | `run.failed` / `run.cancelled` | `error` | `error` |
 
-  No `id:` framing / no resume: on a dropped SSE connection, **poll `GET /v1/runs/{id}` for terminal `output`/`usage`** (loses deltas, never the final answer). `approval.request`/`approval.responded` exist but map to in-stream approvals — surface minimally or defer (capability `device_exec_approval=False`).
+  No `id:` framing / no resume: on a dropped SSE connection, **poll `GET /v1/runs/{id}` for terminal `output`/`usage`** (loses deltas, never the final answer). The surface is **two-call**: `POST /v1/runs` → 202 `{run_id, status:"started"}`, then open `GET /v1/runs/{run_id}/events`; a disconnect is *lossy* (re-drive, don't re-attach).
+- **In-band approval — MUST handle (H1.1 finding):** Hermes emits `approval.request` (choices `once/session/always/deny`) for host-side dangerous exec and **blocks the run in the executor thread until answered via `POST /v1/runs/{run_id}/approval`**. If the adapter ignores it, the run hangs. For the spike: run the agent under a no-prompt exec policy (Hermes config so it never emits `approval.request`) **or** have the adapter auto-respond `approve` — the container is the user's own sandbox, equivalent trust to OpenClaw's `allowCommands`. Decide in H2.3's `config.yaml`; if config can't fully suppress prompts, the transport auto-approves. (`device_exec_approval=False` capability reflects there's no desktop-attested approval path.)
 - **Do not add speculative event filtering** (memory `feedback_no_speculative_event_filtering`) — translate the known events; pass through unknowns as they are handled for OpenClaw.
 
 - [ ] TDD against a mock SSE server (feed each event type, assert the translated `ChatEvent`s); a drop-mid-run test asserting the poll-fallback yields the terminal result.

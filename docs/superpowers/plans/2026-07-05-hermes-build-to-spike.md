@@ -112,14 +112,15 @@
 - [ ] **WAL→DELETE knob (~6 lines):** at the TOP of `apply_wal_with_fallback` (`hermes_state.py:341`, before the WAL probe at 369), honor env `HERMES_SQLITE_JOURNAL_MODE=delete` → run `PRAGMA journal_mode=DELETE` and return `"delete"`. **Gotcha: `hermes_state.py` does NOT import `os`** — the patch must add `import os` (hence ~6 lines). The on-disk-WAL guard doesn't block it (the knob runs the pragma directly, above the guard). In-fork test.
 - [ ] Commit LOCALLY on `isol8/v2026.7.1-isol8.1`; do NOT push until reviewed. These ride the fork's `docker-release.yml`.
 
-### Task H1.3: Extended Hermes image + version pin
+### Task H1.3: Extended Hermes image + CDK base task-def family + version pin
 
 **Files (isol8 repo):**
-- Create: `apps/infra/hermes/Dockerfile` (mirror `apps/infra/openclaw/` — `FROM` the fork image, bake `aiohttp` [not a core dep — api_server silently no-ops without it] + any runtime deps)
+- Create: `apps/infra/hermes/Dockerfile` (mirror `apps/infra/openclaw/` — `FROM ghcr.io/isol8ai/agent:v2026.7.1-isol8.1` [the H1.2 pinned tag], bake `aiohttp` [NOT a core dep — api_server silently no-ops without it, H1.1-confirmed] + runtime deps)
 - Create: `.github/workflows/build-hermes-image.yml` (mirror `build-openclaw-image.yml`; push to ECR `isol8/hermes-extended`)
 - Modify: `openclaw-version.json` → add a `hermes` block (`upstream`, `extendedImage`, per-env `dev.tag`/`prod.tag`) OR a sibling `hermes-version.json`; wire the CDK image resolver.
+- **Create the Hermes CDK base task-def family** in `apps/infra/lib/stacks/container-stack.ts` — `isol8-{env}-hermes` mirroring the OpenClaw base def, but with the Hermes image, container **port 8642** (not 18789), and the Hermes base env (`API_SERVER_HOST=0.0.0.0`, `HERMES_SQLITE_JOURNAL_MODE=delete`, `HERMES_UID=1000`). **This is where image/port/base-env live** (H0.2 finding: the launch path clones from a CDK base def; `container_spec.image` is a task-def *family name*, and the task-def registration is NOT sourced from the facet — it's CDK-owned). Regenerate `deploy.yml` if stack structure changes.
 
-- [ ] Build for the target arch, push to ECR, pin `dev.tag`. Checkpoint: image pullable by a per-user ECS task (anonymous or with the task role's ECR grant — confirm the pull path matches how OpenClaw's extended image is pulled).
+- [ ] Build for the target arch, push to ECR, pin `dev.tag`. Checkpoint: image pullable by a per-user ECS task (match the OpenClaw extended-image pull path), and the `isol8-{env}-hermes` base task def exists in dev.
 
 **Phase H1 gate:** a Hermes image tag exists in ECR and is pinned for dev; the 2 patches are in it; citations re-verified. No isol8 runtime change yet.
 
@@ -196,7 +197,13 @@
 **Off H0/H2.** Wires `runtime_kind` end-to-end so a dev owner can be pointed at Hermes.
 
 ### Task H3.1: `runtime_kind` on the owner record + provision branch
-- [ ] Add `runtime_kind` to the `containers`/`billing_accounts` write path (default `"openclaw"`). `user_provision` + `ecs_manager` already consume the runtime via H0's facets, so the branch is *automatic* once `get_runtime_for_owner` (H0.4) reads the field — verify the Hermes runtime flows through `container_spec`/`write_config`/`seed_owner_agents`. Commit `feat(hermes): runtime_kind on the owner record + provision routing`.
+
+**H0.2-review finding (load-bearing):** H0 makes **EFS, healthcheck, config-write, and auth-stage** brand-blind via the facet — but the **task-def registration** (image/port/env/cpu/mem) and **base-family selection** (`EcsManager._base_task_def_family`, `_build_register_kwargs_from_base`) stay OpenClaw-hardcoded, because ecs_manager clones a **CDK-managed base task-def** and image pinning is CDK-owned (the repo's IaC SSoT rule). So provisioning a Hermes container is NOT automatic from the facet — it needs the task-def path to select the runtime's base family.
+
+- [ ] Add `runtime_kind` to the `containers`/`billing_accounts` write path (default `"openclaw"`).
+- [ ] **Make base-family selection runtime-aware:** `_base_task_def_family` / `_build_register_kwargs_from_base` clone from `isol8-{env}-{runtime_kind}` (the H1.3 CDK Hermes base def carries the Hermes image/port/base-env), and source any per-runtime cpu/mem/env deltas from the runtime. This is the real "brand-blind provisioning" work the facet set up but did not itself complete. Guard with `get_runtime_for_owner` (H0.4) so OpenClaw owners are byte-identical.
+- [ ] Verify the config-write + seed paths (already facet-routed in H0) flow the Hermes runtime through `write_config`/`seed_owner_agents`.
+- [ ] Commit `feat(hermes): runtime_kind provisioning — per-runtime base task-def selection`.
 
 ### Task H3.2: per-container `API_SERVER_KEY` + single-writer
 - [ ] Mint a per-container `API_SERVER_KEY` (Secrets Manager, mirroring `gateway_token` storage) injected via `container_spec` env. Set **`maxPercent=100`** (single-writer) for Hermes services — WAL-on-EFS + volatile in-flight `/v1/runs` both demand it (`project_efs_sqlite_wal_two_task_corruption`). CDK changes in `container-stack.ts`/`service-stack.ts`; regenerate `deploy.yml` if stack structure changes (`feedback_cdk_pipelines_github_deployyml_drift_check`). Commit.

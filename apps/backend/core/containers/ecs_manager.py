@@ -1310,6 +1310,14 @@ class EcsManager:
             Tuple of (container_dict, task_ip) or (None, None) if no active container.
         """
         container = await container_repo.get_by_owner_id(user_id)
+        if container:
+            # Warm the runtime-kind cache off the row we already hold so the
+            # sync get_runtime_for_owner path resolves this owner's runtime
+            # without a DDB read. Fail-safe + immutable, so this is safe to
+            # fire on every resolution with no invalidation.
+            from core.runtime import prime_runtime_kind
+
+            await prime_runtime_kind(user_id, container_row=container)
         if not container or container.get("status") not in ("provisioning", "running"):
             return None, None
 

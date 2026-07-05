@@ -5,7 +5,7 @@ runtime brand; every runtime-specific divergence (wire protocol, on-disk
 formats) is contained inside ``core/runtime/<kind>/``.
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
@@ -196,6 +196,43 @@ class ProviderCreds:
     secrets: Mapping[str, Any]
 
 
+# ---------------------------------------------------------------------------
+# Chat-transport facet
+#
+# ``send_chat`` drives ONE user turn against a running container and streams
+# translated events back through ``on_event``. The event dicts it emits are the
+# internal ChatEvent shape the frontend already renders — the SAME shape
+# ``GatewayConnectionPool._transform_agent_event`` / the pool's chat-terminal
+# forwarding produce for OpenClaw (``{type:"chunk"|"thinking"|"tool_start"|
+# "tool_end"|"tool_error"|"done"|"error", ...}``). Each runtime translates its
+# own wire events into that shape so a second runtime renders identically.
+# ---------------------------------------------------------------------------
+
+# One translated ChatEvent handler: awaited once per emitted event. The dict is
+# an internal ChatEvent (see module note above), NOT a raw runtime wire event.
+ChatEventCallback = Callable[[dict], Awaitable[None]]
+
+
+@dataclass(frozen=True)
+class ChatResult:
+    """Terminal outcome of one ``send_chat`` run.
+
+    Returned once the run reaches a terminal state — either observed on the
+    live event stream or resolved by the poll-recovery fallback after a dropped
+    stream. Brand-neutral:
+      - ``run_id`` is the runtime's handle for the run.
+      - ``status`` is the terminal label ("completed" | "failed" | "cancelled"
+        | "unknown"), independent of any brand's wire vocabulary.
+      - ``output`` is the terminal payload the runtime reported, left opaque
+        here (the H2.5 usage facet reads ``usage`` off the same terminal frame;
+        this facet does not interpret it).
+    """
+
+    run_id: str
+    status: str
+    output: Any | None = None
+
+
 @runtime_checkable
 class Runtime(Protocol):
     """One agent-runtime adapter (OpenClaw today, Hermes later)."""
@@ -224,6 +261,17 @@ class Runtime(Protocol):
     async def forward_hook(
         self, owner_id: str, path: str, headers: dict[str, str], body: bytes
     ) -> tuple[int, dict[str, str], bytes]: ...
+
+    # --- Chat-transport facet: driving one user turn ----------------------
+
+    async def send_chat(
+        self,
+        owner_id: str,
+        agent_id: str,
+        message: str,
+        session_key: str,
+        on_event: ChatEventCallback,
+    ) -> "ChatResult | None": ...
 
     # --- Provisioner facet: launching / configuring a container -----------
 

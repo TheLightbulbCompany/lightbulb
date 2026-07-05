@@ -216,6 +216,30 @@ class OpenClawRuntime:
         )
 
     # ------------------------------------------------------------------
+    # Chat-transport facet: driving one user turn
+    # ------------------------------------------------------------------
+
+    async def send_chat(
+        self,
+        owner_id: str,
+        agent_id: str,
+        message: str,
+        session_key: str,
+        on_event,
+    ):
+        """Not routed through the port yet — deferred to Phase C.
+
+        OpenClaw chat drives through ``routers/websocket_chat`` + the gateway
+        pool's persistent connection (``chat.send`` RPC + the reader task's
+        ``_transform_agent_event`` forwarding), NOT this facet. Migrating that
+        hot path onto ``send_chat`` is Phase C; pulling it into H2 would drag
+        the whole websocket_chat/pool machinery along with it. The member is
+        present so ``OpenClawRuntime`` still satisfies the ``Runtime`` Protocol,
+        but calling it is a programming error until that migration lands.
+        """
+        raise NotImplementedError("OpenClaw chat routes through websocket_chat/the pool; port send_chat is Phase C")
+
+    # ------------------------------------------------------------------
     # Provisioner facet: launching / configuring a container
     # ------------------------------------------------------------------
 

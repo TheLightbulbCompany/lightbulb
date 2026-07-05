@@ -6,12 +6,24 @@ typing). It never filters or reshapes gateway traffic.
 
 import logging
 import uuid
+from pathlib import Path
 from typing import Any
 
 import httpx
 
+from core.config import settings
 from core.gateway.operator_rpc import GATEWAY_PORT, gateway_rpc_oneshot
-from core.runtime.base import Capabilities, ContainerNotRunningError, SessionSurface
+from core.runtime.base import (
+    Capabilities,
+    ConfigProfile,
+    ContainerNotRunningError,
+    ContainerSpec,
+    EfsMountLayout,
+    Healthcheck,
+    ProviderCreds,
+    ProvisionCtx,
+    SessionSurface,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -201,3 +213,89 @@ class OpenClawRuntime:
             },
             upstream.content,
         )
+
+    # ------------------------------------------------------------------
+    # Provisioner facet: launching / configuring a container
+    # ------------------------------------------------------------------
+
+    def container_spec(self, owner_id: str, ctx: ProvisionCtx) -> ContainerSpec:
+        """Describe the container to launch for ``owner_id``, brand-blind.
+
+        Returns the SAME launch values the ECS provisioning path uses today:
+        the port is the shared gateway port (18789); ``cpu``/``memory_mib`` are
+        the per-user task-size constants; ``image`` is the CDK base task-def
+        family the per-user clone inherits its image from; ``env`` is the one
+        per-user variable the backend injects (``OPENCLAW_HOOK_TOKEN``); the
+        healthcheck mirrors ``EcsManager.is_healthy`` (a TCP-accept on the
+        gateway port); and the EFS layout mirrors ``_create_access_point``.
+        This facet only DESCRIBES those values — the ECS path still owns the
+        launch today (a future task makes it consume this).
+        """
+        # Lazy: PER_USER_* + the base task-def family live in core.containers
+        # (AWS clients at import). Same import-lightness reason as _get_pool.
+        from core.containers.ecs_manager import (
+            PER_USER_CPU,
+            PER_USER_MEMORY_MIB,
+            EcsManager,
+        )
+
+        base_family = EcsManager._BASE_TASK_DEF_FAMILY.format(env=settings.ENVIRONMENT or "dev")
+        return ContainerSpec(
+            image=base_family,
+            container_port=GATEWAY_PORT,
+            cpu=PER_USER_CPU,
+            memory_mib=PER_USER_MEMORY_MIB,
+            env={"OPENCLAW_HOOK_TOKEN": ctx.hook_token},
+            healthcheck=Healthcheck(kind="tcp", port=GATEWAY_PORT, timeout_s=5.0),
+            efs_mount=EfsMountLayout(
+                mount_root=settings.EFS_MOUNT_PATH,
+                owner_subpath=f"/users/{owner_id}",
+                posix_uid=1000,
+                posix_gid=1000,
+                root_permissions="0755",
+            ),
+        )
+
+    async def write_config(self, owner_id: str, profile: ConfigProfile) -> None:
+        """Serialize ``profile`` into the owner's ``openclaw.json`` on EFS.
+
+        Thin delegation to ``config.write_openclaw_config`` — the brand-neutral
+        scalars map to its named params, and ``runtime_config`` (already-gathered
+        OpenClaw-specific inputs: ``paperclip_agents``, ``integration_mcp_servers``,
+        ``channel_accounts``, ``aip_arns``, ``acp_enabled``) is forwarded verbatim.
+        """
+        # Lazy import: core.containers.config pulls the container package
+        # (AWS clients at import). Same import-lightness reason as _get_pool.
+        from core.containers.config import write_openclaw_config
+
+        config_path = Path(settings.EFS_MOUNT_PATH) / owner_id / "openclaw.json"
+        await write_openclaw_config(
+            config_path=config_path,
+            gateway_token=profile.gateway_token,
+            provider_choice=profile.provider_choice,
+            user_id=owner_id,
+            byo_provider=profile.byo_provider,
+            hook_token=profile.hook_token,
+            owner_type=profile.owner_type,
+            **dict(profile.runtime_config),
+        )
+
+    async def write_auth(self, owner_id: str, creds: ProviderCreds) -> None:
+        """Stage ``creds`` into the owner's container before launch.
+
+        OpenClaw stages only OAuth material onto the container filesystem (the
+        container-global ``credentials/oauth.json`` EFS seed) — BYO keys ride
+        the task-definition secret path and Bedrock uses IAM, so neither is a
+        ``write_auth``. Thin delegation to ``workspace.pre_stage_auth_profile_store``.
+        """
+        if creds.kind != "oauth":
+            raise ValueError(
+                "OpenClaw write_auth stages only 'oauth' credentials to the container "
+                f"filesystem; got kind={creds.kind!r} (BYO keys ride task-def secrets, "
+                "Bedrock uses IAM)"
+            )
+        # Lazy import: core.containers.workspace pulls the container package
+        # (AWS clients at import). Same import-lightness reason as _get_pool.
+        from core.containers.workspace import pre_stage_auth_profile_store
+
+        await pre_stage_auth_profile_store(user_id=owner_id, oauth_tokens=dict(creds.secrets))

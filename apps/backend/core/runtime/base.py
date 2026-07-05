@@ -5,7 +5,8 @@ runtime brand; every runtime-specific divergence (wire protocol, on-disk
 formats) is contained inside ``core/runtime/<kind>/``.
 """
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 
@@ -54,6 +55,120 @@ class SessionSurface(Protocol):
     async def emit_running_gauges(self) -> None: ...
 
 
+# ---------------------------------------------------------------------------
+# Provisioner facet DTOs
+#
+# The types below describe *launching / configuring* one owner's container,
+# the counterpart to the session/RPC surface above which is about *talking to*
+# an already-running one. They stay brand-blind: only fields any runtime would
+# need, never a runtime's internal task-definition/on-disk mechanics. The
+# runtime adapter supplies the values; a launcher (ECS today, k8s later) maps
+# them onto its own primitives.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Healthcheck:
+    """How generic code decides a freshly-launched container is serving.
+
+    ``kind`` is the probe transport ("tcp" is all any runtime needs today);
+    ``port`` + ``timeout_s`` are its parameters. OpenClaw's readiness is a
+    bare TCP-accept on the gateway port.
+    """
+
+    kind: str
+    port: int
+    timeout_s: float
+
+
+@dataclass(frozen=True)
+class EfsMountLayout:
+    """Per-owner persistent-filesystem layout the runtime's durable state
+    lives under.
+
+    Generic code needs these to create the per-owner mount (EFS access point
+    today) and to reach the owner's files from the backend. Brand-blind: a
+    non-EFS runtime fills the same shape for its own persistent store.
+    """
+
+    mount_root: str
+    owner_subpath: str
+    posix_uid: int
+    posix_gid: int
+    root_permissions: str
+
+
+@dataclass(frozen=True)
+class ContainerSpec:
+    """Everything generic provisioning code needs to launch ONE owner's
+    container, with zero runtime-brand knowledge.
+
+    Values are supplied by the runtime adapter; the launcher maps them onto
+    its own primitives. Runtime-only task-definition mechanics (base-family
+    cloning, per-provider secret/env layering) stay inside the adapter — they
+    are deliberately NOT modelled here.
+    """
+
+    image: str
+    container_port: int
+    cpu: str
+    memory_mib: str
+    env: Mapping[str, str]
+    healthcheck: Healthcheck
+    efs_mount: EfsMountLayout
+
+
+@dataclass(frozen=True)
+class ProvisionCtx:
+    """Per-provision inputs that shape ONE owner's container launch,
+    independent of runtime brand.
+
+    ``hook_token`` is the per-owner inbound-webhook secret the runtime injects
+    into the container environment; ``owner_type`` ("personal"/"org") tags the
+    per-owner filesystem mount.
+    """
+
+    hook_token: str
+    owner_type: str = "personal"
+
+
+@dataclass(frozen=True)
+class ConfigProfile:
+    """Runtime-neutral description of ONE owner's agent config, handed to the
+    runtime to serialize into whatever form it uses (OpenClaw writes
+    ``openclaw.json``).
+
+    The scalar fields are brand-neutral (LLM provider selection, the
+    container's auth secrets, owner kind). ``runtime_config`` is an opaque bag
+    of already-gathered, runtime-specific config inputs the adapter forwards
+    verbatim — generic code never inspects it, so no runtime-brand shape leaks
+    onto this DTO.
+    """
+
+    provider_choice: str
+    gateway_token: str
+    byo_provider: str | None = None
+    hook_token: str | None = None
+    owner_type: str = "personal"
+    runtime_config: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ProviderCreds:
+    """Runtime-neutral provider credential to stage into ONE owner's container
+    before launch.
+
+    ``kind`` selects the credential family ("oauth" today — the only provider
+    whose material is staged onto the container's filesystem; BYO keys ride the
+    task-definition secret path and Bedrock uses IAM, so neither is a
+    ``write_auth``). ``secrets`` is the opaque credential material the adapter
+    maps onto its own staging; generic code never reads it.
+    """
+
+    kind: str
+    secrets: Mapping[str, Any]
+
+
 @runtime_checkable
 class Runtime(Protocol):
     """One agent-runtime adapter (OpenClaw today, Hermes later)."""
@@ -82,3 +197,11 @@ class Runtime(Protocol):
     async def forward_hook(
         self, owner_id: str, path: str, headers: dict[str, str], body: bytes
     ) -> tuple[int, dict[str, str], bytes]: ...
+
+    # --- Provisioner facet: launching / configuring a container -----------
+
+    def container_spec(self, owner_id: str, ctx: ProvisionCtx) -> ContainerSpec: ...
+
+    async def write_config(self, owner_id: str, profile: ConfigProfile) -> None: ...
+
+    async def write_auth(self, owner_id: str, creds: ProviderCreds) -> None: ...

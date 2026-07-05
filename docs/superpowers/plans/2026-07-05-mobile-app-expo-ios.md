@@ -6,7 +6,7 @@
 
 **Goal:** Ship a native iOS app (`apps/mobile`) with full parity to the **end-user web application** — auth, chat, control panel, teams inbox, marketplace, settings — reusing the web app's protocol/data layer via a new shared package, distributed through TestFlight → App Store with EAS-based CI/CD.
 
-**Scope boundary (hard):** end-user product surfaces ONLY. No admin dashboard, no ops/internal tooling of any kind — the `/admin` surface, admin routers/hooks (`useSystemHealth`, admin components), marketplace moderation, debug endpoints, and the unmaintained dark control panels (Config/Logs/Instances/Nodes/Debug) are all permanently out of scope for mobile, not deferred. The landing/marketing pages are also out — the app opens into sign-in/chat.
+**Scope boundary (hard):** end-user product surfaces ONLY. No admin dashboard, no ops/internal tooling of any kind — the `/admin` surface, admin routers/hooks (`useSystemHealth`, admin components), marketplace moderation, debug endpoints, and the unmaintained dark control panels (Config/Logs/Instances/Nodes/Debug) are all permanently out of scope for mobile, not deferred. The marketplace **seller** side (listing creation/publish, payouts) is also web-only — mobile is buyer-only (D2). The landing/marketing pages are out too — the app opens into sign-in/chat.
 
 **Architecture:** Expo (managed workflow) + expo-router app in `apps/mobile`, consuming a new framework-neutral `packages/shared` extracted from the web frontend's logic layer (API client core, gateway WebSocket protocol, chat/session/agent hooks, TypeScript contracts). The web app is refactored to consume the same package so the two clients cannot drift. All UI is rebuilt in React Native primitives (no DOM). Backend is untouched — the mobile app speaks the exact same REST (`/api/v1`) + WebSocket gateway protocol the browser does.
 
@@ -37,7 +37,7 @@
 | # | Item | Position |
 |---|------|----------|
 | D1 | **Subscription billing on iOS** | v1: no in-app purchase flow. Show plan status read-only + "Manage billing on isol8.co". Post-2025 US external-purchase-link rules allow an outbound link; keep copy neutral and revisit IAP only if App Store review forces it or conversion demands it. |
-| D2 | **Paid marketplace listings** | Same as D1: browse everything, deploy free/owned listings, paid purchase deep-links to web. |
+| D2 | **Marketplace is buyer-only** | Browse everything, deploy free/owned listings; paid purchase deep-links to web (same posture as D1). The seller side — listing creation, publish pipeline, payout accounts — is web-only, permanently. |
 | D3 | **Admin surface + all ops tooling** | Permanently out of scope (see Scope boundary above) — never port `/admin`, admin components/hooks, marketplace moderation, or debug surfaces to mobile. |
 | D4 | **ChatGPT OAuth / BYOK flows** | Settings shows provider state; the OAuth dance and key entry use in-app browser (`expo-web-browser`) against existing web/API flows. Verify redirect URIs work with `isol8://` or universal links; if not, defer to "manage on web" like D1. |
 | D5 | **Desktop-node features** (exec approvals, browser proxy, iMessage) | Render approval cards read-only where they appear in chat; node pairing itself is desktop-only and out of scope. |
@@ -126,11 +126,10 @@
 
 ## Phase 6 — Marketplace + settings parity
 
-**Exit gate:** search/browse listings, listing detail, deploy free/owned listing end-to-end on device; seller publish flow present (snapshot from agent → submit for review); settings parity minus admin.
+**Exit gate:** search/browse listings, listing detail, deploy free/owned listing end-to-end on device; settings parity minus admin. Marketplace is **buyer-only on mobile** — the entire seller side (create/publish listings, artifact-from-agent, payouts) stays web-only.
 
-- [ ] **Task 1: Buyer surface** — search (existing 60s-cached endpoint), listing detail, deploy (entitlement-aware); paid listings deep-link out (D2).
-- [ ] **Task 2: Seller surface** — create draft, artifact-from-agent, submit; payout account status read-only (Stripe onboarding → web).
-- [ ] **Task 3: Settings** — profile, channels (MyChannels), API keys (BYOK entry per D4), integrations list.
+- [ ] **Task 1: Buyer surface** — search (existing 60s-cached endpoint), listing detail, deploy (entitlement-aware); paid listings deep-link out (D2). No seller entry points anywhere in the mobile UI.
+- [ ] **Task 2: Settings** — profile, channels (MyChannels), API keys (BYOK entry per D4), integrations list.
 
 ## Phase 7 — Push notifications + polish
 

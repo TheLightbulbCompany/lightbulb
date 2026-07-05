@@ -4,7 +4,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Ship a native iOS app (`apps/mobile`) with full parity to the web frontend — auth, chat, control panel, teams inbox, marketplace, settings — reusing the web app's protocol/data layer via a new shared package, distributed through TestFlight → App Store with EAS-based CI/CD.
+**Goal:** Ship a native iOS app (`apps/mobile`) with full parity to the **end-user web application** — auth, chat, control panel, teams inbox, marketplace, settings — reusing the web app's protocol/data layer via a new shared package, distributed through TestFlight → App Store with EAS-based CI/CD.
+
+**Scope boundary (hard):** end-user product surfaces ONLY. No admin dashboard, no ops/internal tooling of any kind — the `/admin` surface, admin routers/hooks (`useSystemHealth`, admin components), marketplace moderation, debug endpoints, and the unmaintained dark control panels (Config/Logs/Instances/Nodes/Debug) are all permanently out of scope for mobile, not deferred. The landing/marketing pages are also out — the app opens into sign-in/chat.
 
 **Architecture:** Expo (managed workflow) + expo-router app in `apps/mobile`, consuming a new framework-neutral `packages/shared` extracted from the web frontend's logic layer (API client core, gateway WebSocket protocol, chat/session/agent hooks, TypeScript contracts). The web app is refactored to consume the same package so the two clients cannot drift. All UI is rebuilt in React Native primitives (no DOM). Backend is untouched — the mobile app speaks the exact same REST (`/api/v1`) + WebSocket gateway protocol the browser does.
 
@@ -36,7 +38,7 @@
 |---|------|----------|
 | D1 | **Subscription billing on iOS** | v1: no in-app purchase flow. Show plan status read-only + "Manage billing on isol8.co". Post-2025 US external-purchase-link rules allow an outbound link; keep copy neutral and revisit IAP only if App Store review forces it or conversion demands it. |
 | D2 | **Paid marketplace listings** | Same as D1: browse everything, deploy free/owned listings, paid purchase deep-links to web. |
-| D3 | **Admin surface** | Out of scope for mobile entirely (host-gated internal tool). |
+| D3 | **Admin surface + all ops tooling** | Permanently out of scope (see Scope boundary above) — never port `/admin`, admin components/hooks, marketplace moderation, or debug surfaces to mobile. |
 | D4 | **ChatGPT OAuth / BYOK flows** | Settings shows provider state; the OAuth dance and key entry use in-app browser (`expo-web-browser`) against existing web/API flows. Verify redirect URIs work with `isol8://` or universal links; if not, defer to "manage on web" like D1. |
 | D5 | **Desktop-node features** (exec approvals, browser proxy, iMessage) | Render approval cards read-only where they appear in chat; node pairing itself is desktop-only and out of scope. |
 | D6 | **Styling system** | NativeWind, to keep Tailwind muscle memory. If it fights Expo SDK versioning at scaffold time, fall back to StyleSheet + a tokens file; decide in Phase 0 Task 3 and record here. |

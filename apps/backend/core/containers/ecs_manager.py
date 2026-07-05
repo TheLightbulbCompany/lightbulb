@@ -13,7 +13,6 @@ import logging
 import re
 import secrets
 import socket
-from pathlib import Path
 
 import boto3
 from botocore.exceptions import ClientError
@@ -27,7 +26,6 @@ from core.containers.config import (
     generate_node_device_identity,
     load_node_device_identity,
     read_openclaw_config_from_efs,
-    write_openclaw_config,
 )
 from core.containers.workspace import get_workspace
 from core.repositories import container_repo
@@ -237,8 +235,8 @@ class EcsManager:
     def _create_access_point(self, user_id: str, owner_type: str = "personal") -> str:
         """Create a per-user EFS access point rooted at /users/{user_id}.
 
-        The access point enforces POSIX UID/GID 0 (matching the
-        container's root user) and creates the root directory
+        The access point enforces POSIX UID/GID 1000 (matching the
+        container's ``node`` user) and creates the root directory
         with 0755 permissions if it doesn't exist.
 
         Args:
@@ -250,16 +248,27 @@ class EcsManager:
         Raises:
             EcsManagerError: If the EFS API call fails.
         """
+        # Source the per-owner EFS layout (POSIX uid/gid, root path, perms) from
+        # the runtime's container spec so those launch values live in ONE place
+        # (the port), not restated as inline literals here.
+        from core.runtime import get_runtime_for_owner
+        from core.runtime.base import ProvisionCtx
+
+        efs = (
+            get_runtime_for_owner(user_id)
+            .container_spec(user_id, ProvisionCtx(hook_token="", owner_type=owner_type))
+            .efs_mount
+        )
         try:
             resp = self._efs.create_access_point(
                 FileSystemId=self._efs_file_system_id,
-                PosixUser={"Uid": 1000, "Gid": 1000},
+                PosixUser={"Uid": efs.posix_uid, "Gid": efs.posix_gid},
                 RootDirectory={
-                    "Path": f"/users/{user_id}",
+                    "Path": efs.owner_subpath,
                     "CreationInfo": {
-                        "OwnerUid": 1000,
-                        "OwnerGid": 1000,
-                        "Permissions": "0755",
+                        "OwnerUid": efs.posix_uid,
+                        "OwnerGid": efs.posix_gid,
+                        "Permissions": efs.root_permissions,
                     },
                 },
                 Tags=[
@@ -1274,8 +1283,15 @@ class EcsManager:
         Returns:
             True if healthy, False otherwise.
         """
+        # The readiness probe is owner-invariant, so read its transport (TCP
+        # port + timeout) off the runtime's healthcheck spec rather than
+        # restating the port/timeout literals here — one source, the port.
+        from core.runtime import get_runtime_for_owner
+        from core.runtime.base import ProvisionCtx
+
+        hc = get_runtime_for_owner("").container_spec("", ProvisionCtx(hook_token="")).healthcheck
         try:
-            with socket.create_connection((ip, GATEWAY_PORT), timeout=5):
+            with socket.create_connection((ip, hc.port), timeout=hc.timeout_s):
                 return True
         except Exception:
             return False
@@ -1468,21 +1484,24 @@ class EcsManager:
                 "caller should complete OAuth before provisioning",
                 user_id,
             )
-        from core.containers.workspace import pre_stage_auth_profile_store
-
-        # Stage the container-global oauth.json seed. We do NOT clear the
-        # default agent's auth row here: the container's per-agent SQLite auth
-        # store is the source of truth for the LIVE (rotating) token, and this
-        # DDB-sourced seed is a stale snapshot the instant the container's first
-        # refresh rotates it. The container's store-row-absent import gate
-        # already consumes this seed ONLY for a container with no credential yet
-        # (fresh provision) and ignores it on a populated store — so re-staging
-        # on a reprovision/recover/config-rewrite never clobbers a live token.
+        # Stage the container-global oauth.json seed through the runtime port's
+        # Provisioner facet (OAuth is the only credential family staged onto the
+        # container filesystem). We do NOT clear the default agent's auth row
+        # here: the container's per-agent SQLite auth store is the source of
+        # truth for the LIVE (rotating) token, and this DDB-sourced seed is a
+        # stale snapshot the instant the container's first refresh rotates it.
+        # The container's store-row-absent import gate already consumes this seed
+        # ONLY for a container with no credential yet (fresh provision) and
+        # ignores it on a populated store — so re-staging on a
+        # reprovision/recover/config-rewrite never clobbers a live token.
         # Force-reimport (clear_default_agent_auth_profile_row) happens ONLY on a
         # genuine fresh-token event: reconnect (routers/oauth.py /poll) and
         # provider switch (_hot_swap_provider). See
         # docs/superpowers/specs/2026-06-24-oauth-reprovision-stale-token-design.md.
-        await pre_stage_auth_profile_store(user_id=user_id, oauth_tokens=tokens)
+        from core.runtime import get_runtime_for_owner
+        from core.runtime.base import ProviderCreds
+
+        await get_runtime_for_owner(user_id).write_auth(user_id, ProviderCreds(kind="oauth", secrets=tokens))
 
     async def provision_user_container(
         self,
@@ -2240,19 +2259,30 @@ class EcsManager:
         # this every Telegram/Slack/Discord bot token + pairing is dropped.
         channel_accounts = await _provision_channel_accounts(owner_id)
 
-        config_path = Path(settings.EFS_MOUNT_PATH) / owner_id / "openclaw.json"
-        await write_openclaw_config(
-            config_path=config_path,
-            gateway_token=gateway_token,
-            provider_choice=provider_choice,
-            user_id=owner_id,
-            byo_provider=byo_provider,
-            paperclip_agents=paperclip_agents,
-            hook_token=hook_token,
-            owner_type=owner_type,
-            integration_mcp_servers=integration_mcp_servers,
-            aip_arns=aip_arns,
-            channel_accounts=channel_accounts,
+        # Serialize openclaw.json through the runtime port's Provisioner facet
+        # (was a direct write_openclaw_config call). The brand-neutral
+        # provider/auth scalars map to ConfigProfile fields; the
+        # already-gathered OpenClaw-specific inputs (paperclip agents, MCP
+        # servers, AIP ARNs, channel accounts) ride runtime_config verbatim.
+        # The adapter rebuilds the identical EFS config path + kwargs.
+        from core.runtime import get_runtime_for_owner
+        from core.runtime.base import ConfigProfile
+
+        await get_runtime_for_owner(owner_id).write_config(
+            owner_id,
+            ConfigProfile(
+                provider_choice=provider_choice,
+                gateway_token=gateway_token,
+                byo_provider=byo_provider,
+                hook_token=hook_token,
+                owner_type=owner_type,
+                runtime_config={
+                    "paperclip_agents": paperclip_agents,
+                    "integration_mcp_servers": integration_mcp_servers,
+                    "aip_arns": aip_arns,
+                    "channel_accounts": channel_accounts,
+                },
+            ),
         )
 
         # Seed Friday's IDENTITY/SOUL/USER/BOOTSTRAP files on EFS so they're

@@ -268,6 +268,25 @@ class OpenClawRuntime:
         # (AWS clients at import). Same import-lightness reason as _get_pool.
         from core.containers.config import write_openclaw_config
 
+        # Guard: runtime_config is splatted alongside the explicit params below,
+        # so a colliding key would raise an opaque "multiple values for keyword"
+        # TypeError. Reject it up front with a clear message instead.
+        extra = dict(profile.runtime_config)
+        reserved = {
+            "config_path",
+            "gateway_token",
+            "provider_choice",
+            "user_id",
+            "byo_provider",
+            "hook_token",
+            "owner_type",
+        }
+        clash = reserved & extra.keys()
+        if clash:
+            raise ValueError(
+                f"ConfigProfile.runtime_config collides with explicit write_openclaw_config params: {sorted(clash)}"
+            )
+
         config_path = Path(settings.EFS_MOUNT_PATH) / owner_id / "openclaw.json"
         await write_openclaw_config(
             config_path=config_path,
@@ -277,7 +296,7 @@ class OpenClawRuntime:
             byo_provider=profile.byo_provider,
             hook_token=profile.hook_token,
             owner_type=profile.owner_type,
-            **dict(profile.runtime_config),
+            **extra,
         )
 
     async def write_auth(self, owner_id: str, creds: ProviderCreds) -> None:

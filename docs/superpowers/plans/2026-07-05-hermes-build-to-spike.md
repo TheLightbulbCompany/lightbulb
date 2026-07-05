@@ -176,7 +176,9 @@
 
 **Files:** `core/runtime/hermes/seeder.py`; test.
 
-**Interface:** `seed_owner_agents` for Hermes. **Decision required (the deferred persona fork):** seed each agent's persona either as a `personalities[]` registry entry + `display.personality` pointer, OR by passing `instructions` per `/v1/runs` call. Recommend the **per-run `instructions`** path for the spike (simpler, uncapped, no config-registry surface) and revisit if identity must persist in config. Share `friday_identity._resolve_owner_profile` if H0.3 confirmed it's separable.
+**Interface:** `seed_owner_agents` for Hermes. **Decision required (the deferred persona fork):** seed each agent's persona either as a `personalities[]` registry entry + `display.personality` pointer, OR by passing `instructions` per `/v1/runs` call. Recommend the **per-run `instructions`** path for the spike (simpler, uncapped, no config-registry surface) and revisit if identity must persist in config.
+
+**H0.3-review finding — factor out shared owner facts:** `friday_identity._resolve_owner_profile` is NOT cleanly separable AS A WHOLE (kept OpenClaw-internal in H0.3), but its **fact-gathering is brand-blind**: Clerk `get_user`/`get_organization`, `lookup_owner_email`, billing `resolve_provider_choice` — only the *rendering* (`provider_label`, greeting/display fallbacks) is OpenClaw-specific. **Do this in H2.4:** extract a shared `resolve_owner_facts(owner_id) -> {display_name, first_name, email, provider_choice, owner_type, …}`, resolve it ONCE (at the facet/caller), carry it on `OwnerProfile`, and have each runtime render its own persona from those facts. Otherwise the Hermes seeder redoes the identical Clerk/billing lookups and two runtimes can disagree on "who is this owner." This enriches `OwnerProfile` beyond H0.3's `{agents, owner_type}` — an additive DTO change, no OpenClaw behavior change if OpenClaw keeps rendering from the same facts.
 
 - [ ] TDD: seeding produces the persona the transport later sends; Friday/Atlas resolvable.
 

@@ -30,6 +30,7 @@ from typing import Any
 import httpx
 
 from core.repositories.paperclip_repo import PaperclipRepo
+from core.runtime.base import SessionSurface
 from core.services.paperclip_admin_client import (
     PaperclipAdminClient,
     PaperclipApiError,
@@ -464,7 +465,7 @@ async def pair_with_openclaw(
     *,
     owner_id: str,
     paperclip_agent: dict[str, Any],
-    gateway_pool: Any,
+    gateway_pool: SessionSurface,
     ip: str,
     token: str,
     extra_update_fields: dict[str, Any] | None = None,
@@ -491,12 +492,13 @@ async def pair_with_openclaw(
 
     Other errors propagate so the caller (an HTTP handler or RPC
     interceptor) can return them to the user. Container reachability
-    is the caller's responsibility — this helper assumes the gateway
-    pool can reach the owner's container.
+    is the caller's responsibility — this helper assumes the session
+    surface can reach the owner's container.
 
-    Note: ``gateway_pool.send_rpc`` takes a ``user_id`` kwarg by name,
-    but the gateway pool is keyed by container owner. Always pass the
-    owner_id there.
+    ``gateway_pool`` is a runtime session surface (``Runtime.sessions``);
+    callers pass the port's surface, not the concrete pool. Its
+    ``send_rpc`` takes a ``user_id`` kwarg by name, but the surface is
+    keyed by container owner — always pass the owner_id there.
     """
     pc_uuid = paperclip_agent["id"]
     friendly_name = paperclip_agent.get("name") or pc_uuid

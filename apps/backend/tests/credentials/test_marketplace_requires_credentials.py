@@ -248,7 +248,7 @@ def test_deploy_returns_409_and_rolls_back_when_credential_missing(
         workspace=MagicMock(),
         apply_deploy_aux_mutations=AsyncMock(),
         pair_fn=AsyncMock(),
-        gateway_pool_factory=lambda: MagicMock(),
+        runtime_factory=lambda: MagicMock(),
     )
     mock_get_catalog.return_value = catalog
 

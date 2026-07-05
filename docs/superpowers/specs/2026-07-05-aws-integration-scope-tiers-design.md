@@ -84,6 +84,29 @@ the founder connect our own account through the real flow.
 
 ## Design
 
+### 0. Configuration — nothing hardcoded (hard requirement)
+
+**No owner ids, account ids, or role ARNs appear as literals in source.** All
+identity-specific values are configuration- or context-derived:
+
+- The self-account allowlist owner id is a new per-env setting
+  `PLATFORM_SELF_ACCOUNT_OWNER_ID`, wired exactly like `PLATFORM_OPS_OWNER_ID`:
+  `PLATFORM_SELF_ACCOUNT_OWNER_ID_DEV`/`_PROD` GitHub secrets → `app.ts` synth
+  env → `service-stack.ts` task env → `config.py` → backend. **Empty ⇒ no owner
+  may connect our own account (fail-closed).** For the CDK boundary carve
+  (`container-stack.ts`), the same value flows from the synth env — the founder
+  org id never appears in committed infra code.
+- The platform account id uses existing derived sources — `this.account` in
+  CDK, and the pre-existing `bedrock_aip.OUR_ACCOUNT_ID` in the backend (not a
+  new literal). No new account-id literals are introduced.
+- The connector role ARN the allowlisted owner may assume is *composed* from the
+  configured owner id + account + the fixed connector role name, not written as
+  a literal.
+
+This mirrors the repo's established no-Clerk-ids-in-git posture. The concrete
+founder-org id (`org_3DBS…`) named elsewhere in this spec is illustrative; it
+lives only in the deploy secret, never in code.
+
 ### 1. Scope tiers (uniform, pure AWS managed-policy presets)
 
 Expand the menu to a three-rung ladder, identical for every owner:
@@ -128,10 +151,9 @@ cherry-picked as a standalone hotfix if we want it out before the rest).
 
 Allow exactly one owner — the founder org `org_3DBS8G83oPrMm49yN2b70EjoFpN` — to
 connect account `877352799272`, and only to assume *its own* connector role.
-Every other owner remains fully blocked. A single allowlist constant (owner_id
-→ permitted, ideally env/config-driven, not hardcoded per the repo's
-no-ids-in-git posture — mirror the `PLATFORM_OPS_OWNER_ID` pattern) gates all
-three layers:
+Every other owner remains fully blocked. The allowlist is the configured
+`PLATFORM_SELF_ACCOUNT_OWNER_ID` (§0 — per-env config, never a source literal,
+fail-closed when unset). It gates all three layers:
 
 - **`connections.py:305`** — the 400-gate skips only when
   `owner_id == PLATFORM_SELF_ACCOUNT_OWNER_ID` (and the pasted role account ==
@@ -201,9 +223,10 @@ Flagged by design research; must be answered before/while building:
   connector-role ARN. No other owner, and no other role in our account, becomes
   assumable. Customer isolation is untouched.
 - **Rollback:** disconnect kills the grant (drops the inline grant + secret +
-  `~/.aws/config` profile). Full revert = remove the allowlist entry + redeploy
-  (backend + one CDK deploy for the boundary). The tier expansion + ARN fix are
-  independently revertible.
+  `~/.aws/config` profile). Full revert = unset the `PLATFORM_SELF_ACCOUNT_OWNER_ID`
+  secret + redeploy (backend + one CDK deploy for the boundary) — because the
+  allowlist is config, not code, this is a secret change, no code revert needed.
+  The tier expansion + ARN fix are independently revertible.
 - **Deploy dependency:** the boundary-deny carve requires a CDK deploy; the tier
   + ARN changes are backend/frontend. Sequence so the ARN fix can ship first.
 

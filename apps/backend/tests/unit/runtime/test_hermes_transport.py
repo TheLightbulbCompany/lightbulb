@@ -177,7 +177,12 @@ _RUN_ID = "run_1"
 
 
 def _sse(frames: list[tuple[str, dict]]) -> bytes:
-    return "".join(f"event: {name}\ndata: {json.dumps(payload)}\n\n" for name, payload in frames).encode()
+    # Real Hermes emits data-ONLY frames: ``data: {json}\n\n`` with the event
+    # name carried inside the JSON payload under an ``"event"`` key (live frames
+    # also carry ``run_id``/``timestamp``, which the transport ignores). Emitting
+    # the event name inside the JSON — not as an ``event:`` line — drives the
+    # data-only dispatch path of ``_iter_sse`` the live server actually hits.
+    return "".join(f"data: {json.dumps({'event': name, **payload})}\n\n" for name, payload in frames).encode()
 
 
 def _mock_client(handler) -> httpx.AsyncClient:
@@ -325,6 +330,30 @@ async def test_send_chat_drop_then_poll_reports_failure(monkeypatch):
     events, result = await _collect(HermesRuntime())
     assert events == [{"type": "error", "message": "oom"}]
     assert result == ChatResult(run_id=_RUN_ID, status="failed", output=None)
+
+
+async def test_send_chat_poll_all_attempts_404_emits_terminal_error(monkeypatch):
+    # The stream drops with no terminal event, then EVERY poll attempt 404s (the
+    # run's status was swept after its TTL, or the run_id is unknown). send_chat
+    # must NOT let the httpx 404 escape — it retries within the bound and, on
+    # exhaustion, emits the same generic terminal error the budget-exhaustion
+    # path emits so the UI always settles.
+    monkeypatch.setattr("core.runtime.hermes.adapter._POLL_MAX_ATTEMPTS", 3)
+    monkeypatch.setattr("core.runtime.hermes.adapter._POLL_INTERVAL_S", 0)
+
+    def handler(request):
+        if request.method == "POST" and request.url.path == "/v1/runs":
+            return httpx.Response(202, json={"run_id": _RUN_ID, "status": "started"})
+        if request.url.path == f"/v1/runs/{_RUN_ID}/events":
+            return httpx.Response(200, content=_sse([]))  # empty stream = drop
+        if request.url.path == f"/v1/runs/{_RUN_ID}":
+            return httpx.Response(404)  # every poll attempt 404s
+        return httpx.Response(404)
+
+    _install(monkeypatch, handler)
+    events, result = await _collect(HermesRuntime())
+    assert events == [{"type": "error", "message": "run did not reach a terminal state"}]
+    assert result == ChatResult(run_id=_RUN_ID, status="unknown", output=None)
 
 
 async def test_send_chat_auto_approves_and_continues(monkeypatch):

@@ -17,7 +17,10 @@ Every call carries ``Authorization: Bearer <API_SERVER_KEY>``; the host is
 ``_translate_event`` maps each Hermes SSE event onto the internal ChatEvent
 shape the frontend already renders (the SAME shape OpenClaw's
 ``GatewayConnectionPool._transform_agent_event`` + chat-terminal forwarding
-produce), so the UI renders Hermes identically to OpenClaw.
+produce). That match is over the VISIBLE-CONTENT shape only: Hermes events do
+NOT carry the ``runId``/``agent_id``/``session_id`` routing keys the frontend
+uses for multi-bubble routing + per-session demux — the routing envelope keys
+are added by the chat-routing layer at the ``on_event`` seam.
 
 Import-lightness is load-bearing: registering Hermes means importing
 ``core.runtime`` imports this module, and the subprocess tripwire in the runtime
@@ -111,8 +114,11 @@ def _translate_event(event: str, data: Mapping[str, Any]) -> dict | None:
 
     The output dicts match ``GatewayConnectionPool._transform_agent_event`` and
     the pool's chat-terminal forwarding EXACTLY (connection_pool.py:633-720 for
-    chunk/thinking/tool, :1322/:1355/:1366 for done/error/aborted) so the
-    frontend renders Hermes identically to OpenClaw:
+    chunk/thinking/tool, :1322/:1355/:1366 for done/error/aborted) — but only
+    for the VISIBLE-CONTENT shape. These ChatEvents do NOT carry the
+    ``runId``/``agent_id``/``session_id`` routing keys the frontend needs for
+    multi-bubble routing + per-session demux; the routing envelope keys are
+    added by the chat-routing layer at the ``on_event`` seam:
 
       - ``message.delta``       -> ``{type:"chunk", content}``
       - ``reasoning.available`` -> ``{type:"thinking", content}``
@@ -375,13 +381,28 @@ class HermesRuntime:
         import httpx
 
         for _ in range(_POLL_MAX_ATTEMPTS):
-            resp = await client.get(
-                f"{base}/v1/runs/{run_id}",
-                headers=headers,
-                timeout=httpx.Timeout(_POLL_TIMEOUT_S),
-            )
-            resp.raise_for_status()
-            body = resp.json()
+            try:
+                resp = await client.get(
+                    f"{base}/v1/runs/{run_id}",
+                    headers=headers,
+                    timeout=httpx.Timeout(_POLL_TIMEOUT_S),
+                )
+                resp.raise_for_status()
+                body = resp.json()
+            except httpx.HTTPError as exc:
+                # A single poll attempt failing must not escape send_chat with no
+                # terminal event: GET /v1/runs/{id} 404s once its ~3600s status
+                # TTL sweeps the run (or on an unknown run_id), and transport
+                # errors are transient. Retry within the existing bound; if every
+                # attempt errors the loop exhausts and falls through to the same
+                # generic terminal error the budget-exhaustion path emits.
+                logger.warning(
+                    "hermes poll attempt failed for run=%s: %s — retrying",
+                    run_id,
+                    exc,
+                )
+                await asyncio.sleep(_POLL_INTERVAL_S)
+                continue
             status = body.get("status")
             event_name = _POLL_STATUS_TO_EVENT.get(status)
             if event_name is not None:

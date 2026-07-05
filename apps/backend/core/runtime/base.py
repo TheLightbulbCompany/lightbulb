@@ -5,7 +5,7 @@ runtime brand; every runtime-specific divergence (wire protocol, on-disk
 formats) is contained inside ``core/runtime/<kind>/``.
 """
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
@@ -154,6 +154,33 @@ class ConfigProfile:
 
 
 @dataclass(frozen=True)
+class OwnerProfile:
+    """Runtime-neutral description of ONE owner and their seeded agent roster,
+    handed to the runtime to seed each agent's persona/identity in whatever
+    form it uses (OpenClaw writes IDENTITY/SOUL/USER markdown per agent).
+
+    Deliberately minimal and brand-blind:
+      - ``agents`` is the owner's Paperclip roster (each entry carries at least
+        ``id`` and the ``role``/``name`` a runtime keys its per-agent seeding
+        on). Paperclip is the same BFF for every runtime, so its agent records
+        are runtime-neutral; this is the input that DRIVES which agents get
+        seeded and under which workspace ids.
+      - ``owner_type`` ("personal"/"org") is the brand-blind owner kind, mirrored
+        from ``ProvisionCtx`` / ``ConfigProfile``.
+
+    It carries NO OpenClaw rendering internals: the display name, provider label,
+    and greeting-fallback strings are resolved from ``owner_id`` *inside* the
+    OpenClaw seeder (``friday_identity._resolve_owner_profile``) — that Clerk +
+    billing lookup is interleaved with OpenClaw-specific markdown rendering and
+    is not cleanly separable, so it stays a runtime-internal detail rather than
+    a field on this port.
+    """
+
+    agents: Sequence[Mapping[str, Any]] = ()
+    owner_type: str = "personal"
+
+
+@dataclass(frozen=True)
 class ProviderCreds:
     """Runtime-neutral provider credential to stage into ONE owner's container
     before launch.
@@ -205,3 +232,7 @@ class Runtime(Protocol):
     async def write_config(self, owner_id: str, profile: ConfigProfile) -> None: ...
 
     async def write_auth(self, owner_id: str, creds: ProviderCreds) -> None: ...
+
+    # --- IdentitySeeder facet: seeding an owner's agents ------------------
+
+    async def seed_owner_agents(self, owner_id: str, profile: OwnerProfile) -> None: ...

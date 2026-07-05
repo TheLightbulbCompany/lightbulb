@@ -2285,28 +2285,19 @@ class EcsManager:
             ),
         )
 
-        # Seed Friday's IDENTITY/SOUL/USER/BOOTSTRAP files on EFS so they're
-        # present before the container boots. Best-effort — failure here
-        # MUST NOT block provision; Friday boots with upstream defaults if
-        # this fails.
-        from core.services.friday_identity import (
-            pre_stage_friday_identity,
-            pre_stage_paperclip_identities,
-        )
+        # Seed each owner agent's persona/identity onto EFS (Friday's IDENTITY/
+        # SOUL/USER/... markdown + Atlas's vendored workspace bundle) so they're
+        # present before the container boots, through the runtime port's
+        # IdentitySeeder facet. Best-effort inside the facet — a seeder failure
+        # MUST NOT block provision; each agent boots with runtime defaults if its
+        # seed fails.
+        from core.runtime.base import OwnerProfile
+        from core.services.friday_identity import pre_stage_paperclip_identities
 
-        try:
-            await pre_stage_friday_identity(
-                owner_id=owner_id,
-                paperclip_agents=paperclip_agents,
-                workspace=get_workspace(),
-            )
-        except Exception as exc:  # noqa: BLE001 — best-effort.
-            put_metric("friday_identity.seed.error")
-            logger.warning(
-                "write_user_configs: pre_stage_friday_identity failed for owner=%s: %s",
-                owner_id,
-                exc,
-            )
+        await get_runtime_for_owner(owner_id).seed_owner_agents(
+            owner_id,
+            OwnerProfile(agents=paperclip_agents, owner_type=owner_type),
+        )
 
         # Stage each agent's per-agent Paperclip identity file
         # (paperclip-claimed-api-key.json) into its own workspace so it can
@@ -2326,28 +2317,6 @@ class EcsManager:
             put_metric("paperclip_identity.seed.error")
             logger.warning(
                 "write_user_configs: pre_stage_paperclip_identities failed for owner=%s: %s",
-                owner_id,
-                exc,
-            )
-
-        # Seed Atlas's recruiter workspace (files + skill bundles) on EFS,
-        # mirroring Friday. Best-effort — an Atlas failure MUST NOT block
-        # provision; Atlas boots with an empty workspace if this fails.
-        from core.services.atlas_seed import pre_stage_atlas
-
-        try:
-            await pre_stage_atlas(
-                owner_id=owner_id,
-                paperclip_agents=paperclip_agents,
-                workspace=get_workspace(),
-            )
-        except Exception as exc:  # noqa: BLE001 — best-effort.
-            # Distinct from the seeder's per-file `atlas_seed.error`: this fires
-            # only on a catastrophic failure (e.g. import error) where the seeder
-            # never ran, vs a single bad file the seeder logged and skipped.
-            put_metric("atlas_seed.invoke_error")
-            logger.warning(
-                "write_user_configs: pre_stage_atlas failed for owner=%s: %s",
                 owner_id,
                 exc,
             )

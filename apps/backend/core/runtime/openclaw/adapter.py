@@ -20,6 +20,7 @@ from core.runtime.base import (
     ContainerSpec,
     EfsMountLayout,
     Healthcheck,
+    OwnerProfile,
     ProviderCreds,
     ProvisionCtx,
     SessionSurface,
@@ -318,3 +319,71 @@ class OpenClawRuntime:
         from core.containers.workspace import pre_stage_auth_profile_store
 
         await pre_stage_auth_profile_store(user_id=owner_id, oauth_tokens=dict(creds.secrets))
+
+    # ------------------------------------------------------------------
+    # IdentitySeeder facet: seeding an owner's agents
+    # ------------------------------------------------------------------
+
+    async def seed_owner_agents(self, owner_id: str, profile: OwnerProfile) -> None:
+        """Seed Friday's + Atlas's persona/identity onto the owner's EFS.
+
+        Thin WRAP over the two existing best-effort EFS identity seeders:
+        ``friday_identity.pre_stage_friday_identity`` (Friday's IDENTITY/SOUL/
+        USER/BOOTSTRAP/AGENTS/MEMORY markdown, personalized from the owner's
+        Clerk + billing profile) and ``atlas_seed.pre_stage_atlas`` (Atlas's
+        vendored workspace bundle). Both key their target workspace off the
+        Paperclip roster carried on ``profile.agents``; the OpenClaw-specific
+        owner-profile resolution + markdown rendering stay inside
+        ``friday_identity`` (this facet does not restructure them).
+
+        Best-effort throughout — each seeder is already crash-safe on a single
+        file error, and this facet additionally guards the whole invocation so a
+        catastrophic failure (import error, etc.) of one seeder neither
+        propagates (provisioning must never be blocked) nor skips the other. The
+        per-seeder failure metrics mirror what the ECS provisioning path emitted
+        before this facet existed.
+        """
+        # Lazy imports: core.containers / core.services build AWS plumbing at
+        # import. Same import-lightness reason as _get_pool.
+        from core.containers import get_workspace
+        from core.observability.metrics import put_metric
+
+        workspace = get_workspace()
+        # Downstream seeders are annotated ``list[dict]``; hand them a concrete
+        # list even though OwnerProfile.agents is a generic Sequence.
+        agents = list(profile.agents)
+
+        from core.services.friday_identity import pre_stage_friday_identity
+
+        try:
+            await pre_stage_friday_identity(
+                owner_id=owner_id,
+                paperclip_agents=agents,
+                workspace=workspace,
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort, must not block provision.
+            put_metric("friday_identity.seed.error")
+            logger.warning(
+                "seed_owner_agents: pre_stage_friday_identity failed for owner=%s: %s",
+                owner_id,
+                exc,
+            )
+
+        from core.services.atlas_seed import pre_stage_atlas
+
+        try:
+            await pre_stage_atlas(
+                owner_id=owner_id,
+                paperclip_agents=agents,
+                workspace=workspace,
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort, must not block provision.
+            # Distinct from the seeder's per-file ``atlas_seed.error``: this fires
+            # only on a catastrophic failure (e.g. import error) where the seeder
+            # never ran, vs a single bad file the seeder logged and skipped.
+            put_metric("atlas_seed.invoke_error")
+            logger.warning(
+                "seed_owner_agents: pre_stage_atlas failed for owner=%s: %s",
+                owner_id,
+                exc,
+            )

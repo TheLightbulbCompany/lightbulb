@@ -61,7 +61,7 @@ export const PROVIDER_CARDS: ProviderCard[] = [
     id: "bedrock_claude",
     title: "Powered by Claude",
     subtitle: "$50 / month + Claude credits",
-    trialNote: "Pay-as-you-go credits, 1.4× markup",
+    trialNote: "Pay-as-you-go credits",
     bullets: [
       "Claude Sonnet 4.6 + Opus 4.7",
       "All channels",

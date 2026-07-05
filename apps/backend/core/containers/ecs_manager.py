@@ -1283,9 +1283,13 @@ class EcsManager:
         Returns:
             True if healthy, False otherwise.
         """
-        # The readiness probe is owner-invariant, so read its transport (TCP
-        # port + timeout) off the runtime's healthcheck spec rather than
-        # restating the port/timeout literals here — one source, the port.
+        # Read the probe transport (TCP port + timeout) off the runtime's
+        # healthcheck spec rather than restating the port/timeout literals —
+        # one source, the port. NOTE: resolved with an empty owner, so this is
+        # pinned to the default (OpenClaw) healthcheck. That is correct while
+        # OpenClaw is the only runtime, but the probe is NOT yet owner-blind:
+        # a runtime with a different probe port (e.g. Hermes 8642) needs the
+        # owner threaded through here so is_healthy probes the right port.
         from core.runtime import get_runtime_for_owner
         from core.runtime.base import ProvisionCtx
 

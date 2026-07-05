@@ -55,6 +55,13 @@ const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
       // bootstrap HTML needs it to load the Clerk SDK.
       NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_DEV: "${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_DEV }}",
       NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_PROD: "${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_PROD }}",
+      // Owner the platform_ops agent token binds to, per env — the founder's
+      // own owner_id. Different in the dev vs prod Clerk instance, so it is
+      // split like the Stripe/Clerk secrets above. Empty (secret unset) keeps
+      // the ops-token surface off in that env (verify_platform_ops_token
+      // fail-closes on an empty owner).
+      PLATFORM_OPS_OWNER_ID_DEV: "${{ secrets.PLATFORM_OPS_OWNER_ID_DEV }}",
+      PLATFORM_OPS_OWNER_ID_PROD: "${{ secrets.PLATFORM_OPS_OWNER_ID_PROD }}",
     },
     primaryOutputDirectory: "apps/infra/cdk.out",
   }),

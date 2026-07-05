@@ -1172,7 +1172,15 @@ export class ServiceStack extends cdk.Stack {
         MARKETPLACE_SELLERS_TABLE:
           props.database.marketplaceSellersTable.tableName,
         OPS_CACHE_TABLE: props.database.opsCacheTable.tableName,
-        PLATFORM_OPS_OWNER_ID: process.env.PLATFORM_OPS_OWNER_ID ?? "",
+        // Per-env owner the platform_ops agent token binds to (the founder's
+        // own owner_id). Read from the runner's secrets at synth time like the
+        // Stripe/Clerk per-env values above; the dev and prod Clerk instances
+        // mint different owner_ids for the same admin email. Empty ⇒ ops-token
+        // surface stays off in that env (fail-closed).
+        PLATFORM_OPS_OWNER_ID:
+          env === "prod"
+            ? (process.env.PLATFORM_OPS_OWNER_ID_PROD ?? "")
+            : (process.env.PLATFORM_OPS_OWNER_ID_DEV ?? ""),
         MARKETPLACE_ARTIFACTS_BUCKET: marketplaceArtifactsBucket.bucketName,
         // Deterministic public S3 URL of the hosted AWS read-only connector
         // CloudFormation template. The connections aws-setup endpoint feeds this

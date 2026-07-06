@@ -41,10 +41,10 @@
 | D3 | **Admin surface + all ops tooling** | Permanently out of scope (see Scope boundary above) — never port `/admin`, admin components/hooks, marketplace moderation, or debug surfaces to mobile. |
 | D4 | **ChatGPT OAuth / BYOK flows** | Settings shows provider state; the OAuth dance and key entry use in-app browser (`expo-web-browser`) against existing web/API flows. Verify redirect URIs work with `isol8://` or universal links; if not, defer to "manage on web" like D1. |
 | D5 | **Desktop-node features** (exec approvals, browser proxy, iMessage) | Render approval cards read-only where they appear in chat; node pairing itself is desktop-only and out of scope. |
-| D6 | **Styling system** | NativeWind, to keep Tailwind muscle memory. If it fights Expo SDK versioning at scaffold time, fall back to StyleSheet + a tokens file; decide in Phase 0 Task 3 and record here. |
+| D6 | **Styling system** | ~~NativeWind vs StyleSheet~~ **Resolved in Phase 0:** scaffold ships plain StyleSheet + a future tokens file; NativeWind re-evaluated when Phase 2 builds the first real screens (adopting it later is additive, ripping it out isn't). |
 | R1 | **App Store review risk** | Full-parity app with real native UI clears Guideline 4.2 easily; the billing posture (D1/D2) is the main review surface. Have a demo account ready for review notes. |
 | R2 | **WS behind cellular/backgrounding** | iOS suspends sockets on background. Gateway hook must handle app-state transitions (reconnect on foreground) — covered in Phase 2 Task 6; push notifications (Phase 7) cover the "agent finished while backgrounded" gap. |
-| R3 | **pnpm hoisting side-effects** | `node-linker=hoisted` changes install layout repo-wide if applied globally. Prefer scoping to `apps/mobile` (per-project `.npmrc`) and CI-verify frontend/desktop builds in the Phase 0 gate. |
+| R3 | **pnpm hoisting side-effects** | ~~`node-linker=hoisted` may be needed~~ **Resolved in Phase 0: NOT needed.** Metro on Expo SDK 57 resolves pnpm's default isolated `.pnpm` symlink layout — `expo export --platform ios` bundles cleanly (1097 modules) with zero `.npmrc` changes, so the repo install layout is untouched. If a future native dep breaks resolution, revisit then. |
 
 ---
 
@@ -67,20 +67,24 @@
 
 **Exit gate:** `apps/mobile` boots in the iOS simulator showing a placeholder screen; `turbo run lint test` green across frontend + shared; frontend prod build unaffected.
 
-- [ ] **Task 1: Workspace wiring.** Scaffold `apps/mobile` with `create-expo-app` (TypeScript, expo-router template) named `@isol8/mobile`. Add scoped `.npmrc` (`node-linker=hoisted`), verify `pnpm install` from root, and that `next build` (frontend) and desktop `pnpm install` still succeed. Add `lint`/`typecheck` scripts wired into turbo.
-- [ ] **Task 2: `packages/shared` skeleton.** Create `@isol8/shared` (tsconfig, vitest, exports map). Define the adapter interface: `{ getToken(): Promise<string|null>; apiUrl: string; wsUrl?: string; uuid(): string }`. No logic moved yet — just the package, its test harness, and CI wiring.
-- [ ] **Task 3: Styling + navigation baseline.** Decide NativeWind vs StyleSheet (record in D6). Stand up expo-router skeleton: `(auth)` group, `(app)` group with a tab/drawer shell mirroring web's sidebar sections (Chat, Teams, Control, Settings). Placeholder screens only.
-- [ ] **Task 4: Env config.** `src/adapters/env.ts` reading `EXPO_PUBLIC_API_URL` (+ optional `EXPO_PUBLIC_WS_URL`), with dev/prod values documented in `apps/mobile/README.md`. Reuse `deriveWebSocketUrl` once shared (Phase 1).
+- [x] **Task 1: Workspace wiring.** Scaffolded `apps/mobile` with `create-expo-app` (Expo SDK 57 / RN 0.86 / React 19.2.3 — exact match with frontend's React). No `.npmrc` change needed (see R3). `pnpm install` green across all 7 workspace projects; `typecheck` task added to `turbo.json`.
+- [x] **Task 2: `packages/shared` skeleton.** `@isol8/shared` created with tsconfig (ES2022, no DOM lib), vitest harness, and the `PlatformAdapter` interface (`getToken`/`apiUrl`/`wsUrl?`/`uuid`). Smoke test passing.
+- [x] **Task 3: Styling + navigation baseline.** StyleSheet for now (D6). expo-router skeleton: `(auth)/sign-in` placeholder + `(app)` tab shell (Chat/Teams/Control/Settings), typed routes + React Compiler enabled. `expo lint` configured (flat config).
+- [x] **Task 4: Env config.** `src/config/env.ts` reads `EXPO_PUBLIC_API_URL`/`EXPO_PUBLIC_WS_URL` with the same WS-derivation rules as web (temporary duplicate; delegates to shared in Phase 1). Documented in `apps/mobile/README.md`.
+
+**Phase 0 verification record (2026-07-05, Linux CI container):** shared vitest 1/1 + tsc clean; mobile tsc clean + `expo lint` clean; `expo export --platform ios` bundles 1097 modules → 2.3MB Hermes bundle; frontend unaffected (lint 0 errors, targeted `api.test.ts` 13/13). Simulator/device verification pending a human with Expo Go (no macOS in CI).
 
 ## Phase 1 — Shared extraction + auth
 
 **Exit gate:** web frontend fully on `@isol8/shared` with its existing tests passing; mobile signs in via Clerk and makes an authenticated `GET /users/me`-class call against dev.
 
-- [ ] **Task 1: Extract API core.** Move `ApiError`, `deriveWebSocketUrl`, `fetchJsonWithStatus`, and the `authenticatedFetch` body (incl. Teams `credentials`/`retryOn401` options) into `packages/shared/src/api/`, parameterized by the adapter. `apps/frontend/src/lib/api.ts` becomes a thin web-adapter wrapper preserving its exact exports. Port the relevant frontend tests to shared; frontend suites pass unmodified.
-- [ ] **Task 2: Extract gateway core.** Move the `useGateway` connection machine (reconnect/backoff table, ping, pending-RPC map, message router, `sendReq`/`sendChat`/`send`, chat/event subscription) + `ChatIncomingMessage` and protocol types into shared. Tauri branches stay in the web wrapper (they're desktop-webview-specific). `crypto.randomUUID` → adapter `uuid()`.
+- [x] **Task 1: Extract API core.** Done: `packages/shared/src/api/` (error/url/client) parameterized by `ApiClientConfig` (`getToken`/`apiUrl`/`onRequestId`); `apps/frontend/src/lib/api.ts` is now the web wrapper (env source, Clerk hook, request-id ring buffer) with its historical export surface intact. `transpilePackages: ["@isol8/shared"]` added to next.config. New shared tests cover the 401-retry-once, detail-message extraction, FormData content-type skip, and request-id reporting.
+- [x] **Task 2: Extract gateway core.** Done: `packages/shared/src/gateway/` (`types.ts` + `useGatewayConnection`) with `getToken`/`wsUrl`/`uuid` routed through refs to preserve the single-flight connect contract; web `useGateway.tsx` keeps React context + both Tauri effects (node:status via the new `setNodeConnected` escape hatch) and re-exports the protocol types.
 - [ ] **Task 3: Extract data hooks.** `useAgentChat`, `useAgents`, `useGatewayRpc`, `useContainerStatus`, `useProvisioningState`, and the teams data-layer hooks — moved to shared where framework-neutral; anything DOM-touching stays web-side and is noted here.
-- [ ] **Task 4: Mobile auth.** `@clerk/clerk-expo` with `expo-secure-store` token cache; sign-in/sign-up screens; navigation guard on the `(app)` group; mobile adapter implements `getToken()` from Clerk. Note: mobile Clerk usage may require enabling native API / allowed redirect config in the Clerk dashboard (dev instance first) — document what was flipped.
+- [x] **Task 4: Mobile auth.** Done: `@clerk/clerk-expo` + keychain token cache (`expo-secure-store`), headless email+password sign-in (other first factors deferred to web with an explicit message), `(auth)`/`(app)` navigation guards, sign-out in Settings, mobile adapter (`expo-crypto` randomUUID). Chat tab proves the plumbing with the real `GET /container/status` 200-vs-202 call through the shared client. **Clerk dashboard check still pending:** confirm the dev instance allows native-app requests; sign-in against dev is untested until a human runs Expo Go.
 - [ ] **Task 5: Cookie posture for Teams BFF.** Verify RN `fetch` cookie behavior for the `.isol8.co` Paperclip HttpOnly cookie + retry-on-401 reseed flow against dev; if RN cookie jar handling breaks it, record the fallback (e.g. explicit cookie header plumbing) before Phase 5.
+
+**Phase 1 verification record (2026-07-06, Linux CI container):** shared vitest 22/22 + tsc + eslint clean (incl. a `no-restricted-globals` ban on DOM-only APIs); frontend `api.test.ts` 13/13, `useGateway.connectRace` 2/2, `useAgentChat` queue/demux/reconnect/cancel/busyGate + `useBilling` + `useProvisioningState` 48/48, full frontend `tsc --noEmit` clean, lint 0 errors; mobile tsc + `expo lint` clean, `expo export --platform ios` bundles 1238 modules with Clerk + shared included. Pending human: Expo Go sign-in against dev.
 
 ## Phase 2 — Chat surface (the core product)
 

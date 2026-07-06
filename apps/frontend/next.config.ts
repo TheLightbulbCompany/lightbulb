@@ -41,6 +41,10 @@ const nextConfig: NextConfig = {
   /* config options here */
   reactCompiler: true,
 
+  // @isol8/shared ships TypeScript source (no build step) — Next must
+  // transpile it like first-party code.
+  transpilePackages: ["@isol8/shared"],
+
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];
   },

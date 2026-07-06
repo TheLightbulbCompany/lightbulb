@@ -4,6 +4,7 @@ import { Pressable, StyleSheet, Text, View } from "react-native";
 import { ApiError, fetchJsonWithStatus } from "@isol8/shared";
 
 import { API_URL } from "../../config/env";
+import { makeAdapter } from "../../lib/adapter";
 
 /**
  * Phase 1 proof-of-plumbing: the same GET /container/status poll the web
@@ -19,7 +20,7 @@ export default function Chat() {
     setResult("Checking container…");
     try {
       const { status, body } = await fetchJsonWithStatus(
-        { apiUrl: API_URL, getToken },
+        makeAdapter(getToken),
         "/container/status",
       );
       const summary =

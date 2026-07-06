@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Hermes image version",
+  "description": "Pinned Hermes images. The Hermes analog of openclaw-version.schema.json. Unlike OpenClaw there is no legacy public image fallback — Hermes' base is a private fork, so only the extended ECR image (with per-env tags) is deployed.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["upstream", "extendedImage", "dev", "prod"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "upstream": {
+      "type": "string",
+      "description": "Pinned base Hermes image+tag the Dockerfile FROMs — the Isol8 fork ghcr.io/isol8ai/hermes-agent (private GHCR package).",
+      "pattern": "^ghcr\\.io/[a-zA-Z0-9._/-]+:[a-zA-Z0-9._-]+$"
+    },
+    "extendedImage": {
+      "type": "string",
+      "description": "ECR repository URI for the custom extended Hermes image (without tag).",
+      "pattern": "^[0-9]{12}\\.dkr\\.ecr\\.[a-z0-9-]+\\.amazonaws\\.com/[a-z0-9._/-]+$"
+    },
+    "dev": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tag"],
+      "properties": {
+        "tag": {
+          "type": "string",
+          "description": "Tag of the extended Hermes image deployed to dev.",
+          "pattern": "^[a-zA-Z0-9._-]+$"
+        }
+      }
+    },
+    "prod": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tag"],
+      "properties": {
+        "tag": {
+          "type": "string",
+          "description": "Tag of the extended Hermes image deployed to prod.",
+          "pattern": "^[a-zA-Z0-9._-]+$"
+        }
+      }
+    },
+    "notes": { "type": "string" }
+  }
+}

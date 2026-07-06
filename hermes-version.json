@@ -1,0 +1,8 @@
+{
+  "$schema": "./hermes-version.schema.json",
+  "upstream": "ghcr.io/isol8ai/hermes-agent:v2026.7.1-isol8.1",
+  "extendedImage": "877352799272.dkr.ecr.us-east-1.amazonaws.com/isol8/hermes-extended",
+  "dev":  { "tag": "v2026.7.1-isol8.1-dev" },
+  "prod": { "tag": "v2026.7.1-isol8.1-prod" },
+  "notes": "Pinned images for the Hermes runtime (the Isol8 Hermes fork). This is the Hermes analog of openclaw-version.json. `upstream` is the base image apps/infra/hermes/Dockerfile FROMs — the Isol8 Hermes fork (Isol8AI/hermes-agent) published to GHCR at ghcr.io/isol8ai/hermes-agent; a PRIVATE GHCR package, pulled only by the authenticated build-hermes-image.yml workflow. Keep it in lockstep with the Dockerfile FROM line. `extendedImage` + per-env `dev.tag`/`prod.tag` are the ECR-published extended image deployed to dev and prod (ECR repo isol8/hermes-extended), re-stamped by build-hermes-image.yml on each build to `<upstream-version>-<short-sha>`; flip dev, validate, then prod. Unlike openclaw-version.json there is NO legacy public `image`/`tag`/`full` fallback — Hermes' base is a private fork with no anonymously-pullable upstream, so the ECR extended image is the only deploy target (container-stack.ts references the extended repo directly). The dev/prod tags below are PLACEHOLDERS until the first build-hermes-image.yml run publishes a real `<version>-<sha>` tag and a follow-up PR bumps them."
+}

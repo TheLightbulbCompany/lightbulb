@@ -30,6 +30,21 @@ const OPENCLAW_VERSION: OpenClawVersionConfig = JSON.parse(
   fs.readFileSync(path.join(__dirname, "..", "..", "..", "..", "openclaw-version.json"), "utf8"),
 );
 
+// Single source of truth for the pinned Hermes container image — the Hermes
+// analog of OPENCLAW_VERSION. Bump hermes-version.json at the repo root to
+// upgrade. Unlike OpenClaw there is NO legacy public image fallback (Hermes'
+// base is a private fork), so this shape has no image/tag/full fields.
+type HermesVersionConfig = {
+  upstream: string;
+  extendedImage: string;
+  dev: { tag: string };
+  prod: { tag: string };
+  notes?: string;
+};
+const HERMES_VERSION: HermesVersionConfig = JSON.parse(
+  fs.readFileSync(path.join(__dirname, "..", "..", "..", "..", "hermes-version.json"), "utf8"),
+);
+
 export interface ContainerStackProps extends cdk.StackProps {
   environment: string;
   vpc: ec2.IVpc;
@@ -64,11 +79,17 @@ export class ContainerStack extends cdk.Stack {
   public readonly ownerBedrockBasePolicy: iam.ManagedPolicy;
   public readonly ownerBedrockBoundary: iam.ManagedPolicy;
   public readonly openclawExtendedRepo: ecr.IRepository;
+  // Hermes counterparts of the OpenClaw ECR repo + base task-def family. The
+  // Hermes runtime clones `hermesTaskDef` (family isol8-{env}-hermes) per user,
+  // exactly as it clones openclawTaskDef; the backend's HermesRuntime.container_spec
+  // resolves the family by that name. Exported for parity with the OpenClaw pair.
+  public readonly hermesExtendedRepo: ecr.IRepository;
   // Exposed so service-stack can pin the backend's ECS_TASK_DEFINITION env to
   // a specific revision ARN — never the family name. The backend cloner
   // reads this ARN to build per-user task defs; pinning prevents per-user
   // clones (which register into the same family) from poisoning family-latest.
   public readonly openclawTaskDef: ecs.FargateTaskDefinition;
+  public readonly hermesTaskDef: ecs.FargateTaskDefinition;
   // SSM parameter carrying the current task-def ARN. Consumed by service-stack
   // via ecs.Secret.fromSsmParameter so the value travels through SSM rather
   // than a cross-stack Fn::ImportValue — the Fn::ImportValue path made every
@@ -377,6 +398,16 @@ export class ContainerStack extends cdk.Stack {
       "isol8/openclaw-extended",
     );
 
+    // Extended Hermes image repo — built + pushed by
+    // .github/workflows/build-hermes-image.yml. Same account-scoped,
+    // treat-as-existing model as the OpenClaw repo above: created once at the
+    // AWS level, referenced by name here so it outlives any stack teardown.
+    this.hermesExtendedRepo = ecr.Repository.fromRepositoryName(
+      this,
+      "HermesExtendedRepo",
+      "isol8/hermes-extended",
+    );
+
     if (props.environment === "dev") {
       // OIDC role for the build-openclaw-image workflow. Scoped to this repo
       // so the existing isol8-dev-github-actions role (which only has
@@ -409,6 +440,10 @@ export class ContainerStack extends cdk.Stack {
         }),
       );
       this.openclawExtendedRepo.grantPullPush(builderRole);
+
+      // build-hermes-image.yml assumes this same OIDC role to push the extended
+      // Hermes image (apps/infra/hermes/). Grant it pull+push on that repo too.
+      this.hermesExtendedRepo.grantPullPush(builderRole);
 
       // The build-paperclip-image workflow uses this same OIDC role to push the
       // extended Paperclip image (apps/infra/paperclip-extended/). Grant it
@@ -716,6 +751,125 @@ export class ContainerStack extends cdk.Stack {
     // Add EFS volume — the backend replaces the access point per user
     this.openclawTaskDef.addVolume({
       name: "openclaw-workspace",
+      efsVolumeConfiguration: {
+        fileSystemId: this.efsFileSystem.fileSystemId,
+        transitEncryption: "ENABLED",
+        authorizationConfig: { iam: "ENABLED" },
+      },
+    });
+
+    // =====================================================================
+    // Hermes base task definition — the Hermes analog of the OpenClaw base
+    // task def above. The Hermes runtime clones this per user (replacing the
+    // EFS access point for data isolation), exactly as it clones the OpenClaw
+    // one. The backend's HermesRuntime.container_spec returns the FAMILY NAME
+    // `isol8-${env}-hermes` and expects this task def to carry the Hermes
+    // image, container port 8642, and the static base env below.
+    // =====================================================================
+    const hermesLogGroup = new cdk.aws_logs.LogGroup(this, "HermesLogGroup", {
+      logGroupName: `/isol8/${env}/hermes`,
+      retention: cdk.aws_logs.RetentionDays.TWO_WEEKS,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    // Hermes image selection: ALWAYS the extended ECR image. Unlike OpenClaw,
+    // there is no public "bootstrap" fallback — Hermes' base is a private fork
+    // with no anonymously-pullable upstream, so the extended image is the only
+    // deploy target. dev/prod use their per-env tag; any other env (e.g. local)
+    // falls back to the dev tag so `cdk synth` succeeds. The referenced tag must
+    // exist in ECR (published by build-hermes-image.yml) before this task def is
+    // actually deployed — synth itself never pulls it.
+    const hermesEnvCfg =
+      props.environment === "dev" || props.environment === "prod"
+        ? HERMES_VERSION[props.environment]
+        : undefined;
+    const hermesTag = hermesEnvCfg?.tag ?? HERMES_VERSION.dev.tag;
+    const hermesImage = ecs.ContainerImage.fromEcrRepository(
+      this.hermesExtendedRepo,
+      hermesTag,
+    );
+
+    // Same single per-user task size as OpenClaw (flat-fee pivot).
+    this.hermesTaskDef = new ecs.FargateTaskDefinition(this, "HermesTaskDef", {
+      family: `isol8-${env}-hermes`,
+      cpu: PER_USER_TASK_RESOURCES.cpu,
+      memoryLimitMiB: PER_USER_TASK_RESOURCES.memoryMiB,
+      taskRole: this.taskRole,
+      executionRole: this.taskExecutionRole,
+    });
+
+    const hermesContainer = this.hermesTaskDef.addContainer("hermes", {
+      image: hermesImage,
+      essential: true,
+      // Launch the Hermes gateway as the container's main program. The base
+      // image ENTRYPOINT is s6-overlay's /init + docker/main-wrapper.sh; passing
+      // this as the CMD makes /init run `hermes gateway run` (dropping to the
+      // hermes user via s6-setuidgid), which starts the enabled gateway
+      // platforms — including the API server on 8642. The API server itself is
+      // gated by config.yaml (platforms.api_server.enabled) + API_SERVER_HOST /
+      // API_SERVER_KEY, written/injected at provision time (H3) — NOT here.
+      command: ["hermes", "gateway", "run"],
+      // Start as root (uid 0). The base image ends as USER root because
+      // s6-overlay's /init must be PID 1 to remap HERMES_UID + chown the data
+      // volume before dropping to the hermes user per service; main-wrapper.sh
+      // rejects an arbitrary non-root `--user`. This is the Hermes equivalent of
+      // OpenClaw's `user: "0:0"`.
+      user: "0:0",
+      environment: {
+        // Bind the API server on all interfaces so the backend can reach it via
+        // the intra-VPC container IP (Hermes' default bind is loopback-only).
+        API_SERVER_HOST: "0.0.0.0",
+        // EFS is NFS, where SQLite WAL mode's -wal/-shm shared-memory files are
+        // unsafe across hosts. `delete` journal mode avoids them entirely —
+        // the Hermes analog of the OpenClaw WAL-on-NFS mitigations.
+        HERMES_SQLITE_JOURNAL_MODE: "delete",
+        // Remap the in-container hermes user to UID 1000, matching the per-owner
+        // EFS access-point POSIX ownership (posix_uid=1000 in the adapter's
+        // ContainerSpec) so Hermes can read/write the mounted /opt/data state.
+        HERMES_UID: "1000",
+        // NOTE: API_SERVER_KEY is a per-container SECRET injected by the
+        // provisioning path (H3), NOT a static base-env value — it is
+        // deliberately absent here.
+      },
+      portMappings: [{ containerPort: 8642, protocol: ecs.Protocol.TCP }],
+      logging: ecs.LogDrivers.awsLogs({
+        logGroup: hermesLogGroup,
+        streamPrefix: "hermes",
+      }),
+      // TCP liveness probe on 8642 — mirrors the backend adapter's
+      // Healthcheck(kind="tcp", port=8642). A Python socket connect (python3 is
+      // baked into the base image) rather than curl/nc so we don't depend on the
+      // exact HTTP health path. Generous start period covers Hermes cold boot:
+      // s6 init + stage2-hook (UID remap, volume chown, config seed, skills
+      // sync) + gateway start + API-server bind.
+      healthCheck: {
+        command: [
+          "CMD-SHELL",
+          "python3 -c \"import socket,sys; s=socket.socket(); s.settimeout(3); sys.exit(0 if s.connect_ex(('127.0.0.1',8642))==0 else 1)\"",
+        ],
+        interval: cdk.Duration.seconds(30),
+        timeout: cdk.Duration.seconds(5),
+        retries: 6,
+        startPeriod: cdk.Duration.seconds(180),
+      },
+      // No Fargate init (initProcessEnabled) here — unlike OpenClaw, where Node
+      // runs as PID 1 and can't reap orphans, Hermes' base runs s6-overlay's
+      // /init as PID 1, which reaps zombies non-blockingly on SIGCHLD and
+      // supervises the service tree itself.
+    });
+
+    // Mount the per-owner EFS state at Hermes' writable home (HERMES_HOME =
+    // /opt/data, the base image's declared VOLUME + hermes-user home) — the
+    // Hermes analog of OpenClaw's /home/node/.openclaw mount. The backend
+    // replaces the access point per user for isolation.
+    hermesContainer.addMountPoints({
+      containerPath: "/opt/data",
+      sourceVolume: "hermes-workspace",
+      readOnly: false,
+    });
+
+    this.hermesTaskDef.addVolume({
+      name: "hermes-workspace",
       efsVolumeConfiguration: {
         fileSystemId: this.efsFileSystem.fileSystemId,
         transitEncryption: "ENABLED",

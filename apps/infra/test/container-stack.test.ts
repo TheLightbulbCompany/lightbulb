@@ -400,3 +400,66 @@ describe("ContainerStack — prod", () => {
     expect(builderRoles).toHaveLength(0);
   });
 });
+
+// Hermes base task-def family (H1.3). The Hermes runtime clones this per user,
+// mirroring the OpenClaw base task def; HermesRuntime.container_spec resolves it
+// by the family name isol8-{env}-hermes and expects the image/port/env below.
+describe("ContainerStack — hermes base task def", () => {
+  let devTemplate: Template;
+  beforeAll(() => {
+    devTemplate = buildStack("dev");
+  });
+
+  test("hermes task def carries family isol8-dev-hermes, port 8642, and the static base env", () => {
+    devTemplate.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      Family: "isol8-dev-hermes",
+      Cpu: "512",
+      Memory: "2048",
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Command: ["hermes", "gateway", "run"],
+          PortMappings: Match.arrayWith([
+            Match.objectLike({ ContainerPort: 8642, Protocol: "tcp" }),
+          ]),
+          Environment: Match.arrayWith([
+            { Name: "API_SERVER_HOST", Value: "0.0.0.0" },
+            { Name: "HERMES_SQLITE_JOURNAL_MODE", Value: "delete" },
+            { Name: "HERMES_UID", Value: "1000" },
+          ]),
+        }),
+      ]),
+    });
+  });
+
+  test("hermes container has a TCP healthcheck on 8642 and mounts EFS at /opt/data", () => {
+    devTemplate.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      Family: "isol8-dev-hermes",
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          HealthCheck: Match.objectLike({
+            Command: Match.arrayWith([
+              Match.stringLikeRegexp("127\\.0\\.0\\.1',8642"),
+            ]),
+          }),
+          MountPoints: Match.arrayWith([
+            Match.objectLike({
+              ContainerPath: "/opt/data",
+              SourceVolume: "hermes-workspace",
+            }),
+          ]),
+        }),
+      ]),
+    });
+  });
+
+  test("hermes task def injects NO API_SERVER_KEY secret (per-container secret is wired at provision time)", () => {
+    const taskDefs = devTemplate.findResources("AWS::ECS::TaskDefinition");
+    const hermesDef = Object.values(taskDefs).find(
+      (r: unknown) =>
+        (r as { Properties?: { Family?: string } }).Properties?.Family ===
+        "isol8-dev-hermes",
+    ) as { Properties: { ContainerDefinitions: Array<{ Secrets?: unknown }> } };
+    expect(hermesDef).toBeDefined();
+    expect(hermesDef.Properties.ContainerDefinitions[0].Secrets).toBeUndefined();
+  });
+});

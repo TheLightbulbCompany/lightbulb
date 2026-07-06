@@ -104,6 +104,27 @@ async def test_put_keeps_deny_for_non_connector_our_account_arn(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_put_keeps_deny_for_mixed_connector_and_other_our_account(monkeypatch):
+    # HARDENING (mixed list): the connector plus ANY other our-account ARN must
+    # KEEP the Deny — otherwise the Allow would grant the other role and the
+    # dropped Deny would leave it assumable. Only an all-connector our-account
+    # set drops the Deny.
+    fake = MagicMock()
+    monkeypatch.setattr(bedrock_aip, "_iam_client", lambda: fake)
+    monkeypatch.setattr(bedrock_aip.settings, "ENVIRONMENT", "dev", raising=False)
+
+    await bedrock_aip.put_owner_aws_sts_policy(
+        "org_x",
+        [
+            "arn:aws:iam::877352799272:role/isol8-readonly-connector",
+            "arn:aws:iam::877352799272:role/isol8-prod-service-x",
+        ],
+    )
+    doc = json.loads(fake.put_role_policy.call_args.kwargs["PolicyDocument"])
+    assert any(s["Effect"] == "Deny" for s in doc["Statement"])
+
+
+@pytest.mark.asyncio
 async def test_delete_uses_owner_aws_sts_policy_name_on_owner_role(monkeypatch):
     fake = MagicMock()
     monkeypatch.setattr(bedrock_aip, "_iam_client", lambda: fake)

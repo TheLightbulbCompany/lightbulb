@@ -641,10 +641,14 @@ async def put_owner_aws_sts_policy(owner_id: str, role_arns: list[str]) -> None:
         raise ValueError("role_arns must be non-empty")
 
     connector_arn = f"arn:aws:iam::{OUR_ACCOUNT_ID}:role/{CONNECTOR_ROLE_NAME}"
-    # Drop the self-account Deny ONLY for the exact connector role (never for any
-    # other our-account ARN) — keeps the tenant-protection Deny intact even if a
-    # bad ARN somehow reaches here.
-    has_connector = any(a == connector_arn for a in role_arns)
+    # Drop the self-account Deny ONLY when every our-account ARN in the list is
+    # the exact connector role. A mixed list (connector + any OTHER our-account
+    # ARN) must KEEP the Deny — otherwise the Allow would grant that other role
+    # and the dropped Deny would leave it assumable. External ARNs alongside the
+    # connector are fine (the our-account Deny never affected them).
+    our_account_prefix = f"arn:aws:iam::{OUR_ACCOUNT_ID}:role/"
+    our_account_arns = [a for a in role_arns if a.startswith(our_account_prefix)]
+    drop_self_account_deny = bool(our_account_arns) and all(a == connector_arn for a in our_account_arns)
 
     from core.dynamodb import run_in_thread
 
@@ -653,7 +657,9 @@ async def put_owner_aws_sts_policy(owner_id: str, role_arns: list[str]) -> None:
         client.put_role_policy,
         RoleName=_owner_role_name(owner_id),
         PolicyName="owner-aws-sts",
-        PolicyDocument=json.dumps(_build_owner_aws_sts_doc(role_arns, include_self_account_deny=not has_connector)),
+        PolicyDocument=json.dumps(
+            _build_owner_aws_sts_doc(role_arns, include_self_account_deny=not drop_self_account_deny)
+        ),
     )
 
 

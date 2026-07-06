@@ -12,6 +12,8 @@
   },
   "dependencies": {
     "@clerk/clerk-expo": "^2.19.31",
+    "@expo-google-fonts/dm-sans": "^0.4.2",
+    "@expo-google-fonts/lora": "^0.4.2",
     "@isol8/shared": "workspace:^",
     "expo": "~57.0.2",
     "expo-constants": "~57.0.3",

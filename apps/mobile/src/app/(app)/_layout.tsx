@@ -1,6 +1,8 @@
 import { useAuth } from "@clerk/clerk-expo";
 import { Redirect, Tabs } from "expo-router";
+import { StyleSheet } from "react-native";
 
+import { colors, fonts } from "../../config/theme";
 import { GatewayProvider } from "../../providers/gateway";
 
 // Tab shell mirroring the web sidebar's top-level sections, gated on Clerk
@@ -14,7 +16,32 @@ export default function AppLayout() {
 
   return (
     <GatewayProvider>
-      <Tabs screenOptions={{ headerShown: true }}>
+      <Tabs
+        screenOptions={{
+          headerShown: true,
+          sceneStyle: { backgroundColor: colors.cream },
+          headerStyle: {
+            backgroundColor: colors.cream,
+            borderBottomWidth: StyleSheet.hairlineWidth,
+            borderBottomColor: colors.border,
+          },
+          headerShadowVisible: false,
+          headerTitleStyle: {
+            fontFamily: fonts.dmSansBold,
+            fontSize: 17,
+            color: colors.ink,
+          },
+          headerTintColor: colors.forest,
+          tabBarStyle: {
+            backgroundColor: colors.cream,
+            borderTopWidth: StyleSheet.hairlineWidth,
+            borderTopColor: colors.border,
+          },
+          tabBarActiveTintColor: colors.forest,
+          tabBarInactiveTintColor: colors.muted,
+          tabBarLabelStyle: { fontFamily: fonts.dmSansMedium, fontSize: 11 },
+        }}
+      >
         <Tabs.Screen name="chat" options={{ title: "Chat" }} />
         <Tabs.Screen name="teams" options={{ title: "Teams" }} />
         <Tabs.Screen name="control" options={{ title: "Control" }} />

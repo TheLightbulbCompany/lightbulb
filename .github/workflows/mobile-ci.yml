@@ -30,7 +30,7 @@ env:
 
 jobs:
   eas-build:
-    name: EAS Build (${{ inputs.eas_build_profile }})
+    name: EAS Build
     if: github.event_name == 'workflow_dispatch'
     runs-on: ${{ vars.CI_RUNNER }}
     steps:

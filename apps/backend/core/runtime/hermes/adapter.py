@@ -1,8 +1,11 @@
 """Hermes runtime adapter: the second agent-runtime behind the brand-blind port.
 
-H2.2 lands the CHAT-TRANSPORT facet (``send_chat`` + the SSE→ChatEvent
-translation). The provisioner / seeder / usage facets remain
-``NotImplementedError`` stubs until H2.3–H2.5.
+Implements the chat-transport (``send_chat`` + SSE→ChatEvent translation),
+provisioner (``container_spec``/``write_config``/``write_auth``), identity
+seeder (``seed_owner_agents``), and usage-metering facets. The WS-RPC-shaped
+members (``sessions``/``call_rpc``/``revoke_provider``/``forward_hook``)
+remain deferred stubs — Hermes speaks HTTP+SSE, not the OpenClaw WS protocol,
+so those paths are Phase C, not part of the boot+chat spike.
 
 Hermes' chat surface is a two-call HTTP shape, NOT inline streaming:
   1. ``POST /v1/runs`` -> 202 ``{"run_id", "status":"started"}`` — starts the run.

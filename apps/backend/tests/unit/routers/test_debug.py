@@ -647,3 +647,54 @@ class TestDdbRows:
         finally:
             app.dependency_overrides.clear()
         assert res.status_code == 403
+
+
+class TestSetRuntimeKind:
+    """Test POST /api/v1/debug/runtime-kind — dev-only runtime switch."""
+
+    @pytest.mark.asyncio
+    @patch("routers.debug.prime_runtime_kind", new_callable=AsyncMock)
+    @patch("routers.debug.container_repo")
+    async def test_sets_hermes_updates_row_and_primes(self, mock_container_repo, mock_prime, async_client):
+        """Sets runtime_kind='hermes' on the row AND warms the process-local cache."""
+        mock_container_repo.update_fields = AsyncMock(
+            return_value={"owner_id": "user_test_123", "runtime_kind": "hermes"}
+        )
+        res = await async_client.post("/api/v1/debug/runtime-kind", params={"kind": "hermes"})
+        assert res.status_code == 200
+        body = res.json()
+        assert body["owner_id"] == "user_test_123"
+        assert body["runtime_kind"] == "hermes"
+        assert body["container_row_updated"] is True
+        mock_container_repo.update_fields.assert_called_once_with("user_test_123", {"runtime_kind": "hermes"})
+        mock_prime.assert_awaited_once_with("user_test_123", {"runtime_kind": "hermes"})
+
+    @pytest.mark.asyncio
+    @patch("routers.debug.prime_runtime_kind", new_callable=AsyncMock)
+    @patch("routers.debug.container_repo")
+    async def test_no_container_row_still_primes(self, mock_container_repo, mock_prime, async_client):
+        """A not-yet-provisioned owner has no row; priming still warms the cache
+        so the next provision writes runtime_kind onto the fresh row."""
+        mock_container_repo.update_fields = AsyncMock(return_value=None)
+        res = await async_client.post("/api/v1/debug/runtime-kind", params={"kind": "hermes"})
+        assert res.status_code == 200
+        assert res.json()["container_row_updated"] is False
+        mock_prime.assert_awaited_once_with("user_test_123", {"runtime_kind": "hermes"})
+
+    @pytest.mark.asyncio
+    @patch("routers.debug.prime_runtime_kind", new_callable=AsyncMock)
+    @patch("routers.debug.container_repo")
+    async def test_rejects_unknown_kind(self, mock_container_repo, mock_prime, async_client):
+        """An unknown runtime kind is rejected before any row write or prime."""
+        res = await async_client.post("/api/v1/debug/runtime-kind", params={"kind": "frobnicate"})
+        assert res.status_code == 400
+        mock_container_repo.update_fields.assert_not_called()
+        mock_prime.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch("routers.debug.settings")
+    async def test_disabled_in_prod(self, mock_settings, async_client):
+        """Endpoint returns 403 when ENVIRONMENT == 'prod'."""
+        mock_settings.ENVIRONMENT = "prod"
+        res = await async_client.post("/api/v1/debug/runtime-kind", params={"kind": "hermes"})
+        assert res.status_code == 403

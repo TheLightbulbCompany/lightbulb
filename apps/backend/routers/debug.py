@@ -24,6 +24,7 @@ from core.repositories import (
     usage_repo,
     user_repo,
 )
+from core.runtime import prime_runtime_kind
 from core.services import connection_service
 from core.services.credentials import integration_secret_store
 
@@ -160,6 +161,52 @@ async def redeploy_container(
     except EcsManagerError as e:
         logger.error("Dev redeploy failed for owner %s: %s", owner_id, e)
         raise HTTPException(status_code=503, detail=str(e))
+
+
+@router.post(
+    "/runtime-kind",
+    summary="Set the owner's agent runtime (dev only)",
+    description=(
+        "Flips the owner's runtime between 'openclaw' (default) and 'hermes'. "
+        "Persists runtime_kind on the containers row when one exists and warms "
+        "the process-local runtime-kind cache so the NEXT provision clones the "
+        "matching base task-def family (isol8-{env}-{kind}) and, for hermes, "
+        "mints a per-container API_SERVER_KEY. Dev/staging only; 403 in prod."
+    ),
+    operation_id="debug_set_runtime_kind",
+    dependencies=[Depends(require_non_production)],
+    responses={
+        400: {"description": "Unknown runtime kind"},
+        403: {"description": "Not available in production"},
+    },
+)
+async def set_runtime_kind(
+    kind: str = "hermes",
+    auth: AuthContext = Depends(get_current_user),
+):
+    owner_id = resolve_owner_id(auth)
+    # Runtime is shared org-scoped state — gate mutation to org admins, mirroring
+    # the DELETE handlers (no-ops in personal context).
+    if auth.is_org_context:
+        require_org_admin(auth)
+    if kind not in ("openclaw", "hermes"):
+        raise HTTPException(status_code=400, detail="kind must be 'openclaw' or 'hermes'")
+
+    # Persist on the containers row when one exists so the choice is durable +
+    # visible. A not-yet-provisioned owner has no row; priming the cache below is
+    # what makes the next provision write runtime_kind onto the fresh row.
+    updated = await container_repo.update_fields(owner_id, {"runtime_kind": kind})
+
+    # Warm the process-local cache so get_runtime_for_owner resolves this owner's
+    # runtime immediately (drives base-family selection, is_healthy probe port,
+    # and the hermes-only API_SERVER_KEY mint on the next provision).
+    await prime_runtime_kind(owner_id, {"runtime_kind": kind})
+
+    return {
+        "owner_id": owner_id,
+        "runtime_kind": kind,
+        "container_row_updated": updated is not None,
+    }
 
 
 @router.delete(

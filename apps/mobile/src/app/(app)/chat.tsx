@@ -6,6 +6,7 @@ import {
   type AgentsListResponse,
 } from "@isol8/shared";
 
+import { colors } from "../../config/theme";
 import { useGateway } from "../../providers/gateway";
 
 // Agent roster — entry point to per-agent chat. Streams over the same
@@ -78,7 +79,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 14,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#d5d0c4",
+    borderBottomColor: colors.border,
   },
   emoji: { fontSize: 24 },
   rowText: { flex: 1 },

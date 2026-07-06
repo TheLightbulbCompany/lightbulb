@@ -12,6 +12,7 @@ import {
   View,
 } from "react-native";
 
+import { colors } from "../../../config/theme";
 import { useGateway } from "../../../providers/gateway";
 
 interface ChatItem {
@@ -24,8 +25,15 @@ interface ChatItem {
 /**
  * Phase 2 MVP chat: streams one conversation with one agent over the shared
  * gateway. Transcript is in-memory only (history/sessions land later, per
- * plan Phase 2 Task 5); protocol handling follows the web contract — chunks
- * accumulate per runId, `run_ended` (not `done`) releases the busy gate.
+ * plan Phase 2 Task 5); protocol handling follows the web contract:
+ *
+ * - `chunk.content` is CUMULATIVE — the full assistant text from the start
+ *   of the run on every frame, not a delta (see backend connection_pool
+ *   "cumulative replacement" and web useAgentChat's segment model). Bubbles
+ *   REPLACE their text, and a per-run committed offset splits the cumulative
+ *   stream into per-segment bubbles when tool calls interleave.
+ * - `run_ended` (not `done`) releases the busy gate — `done` also fires on
+ *   interim tool-approval brackets.
  */
 export default function AgentChat() {
   const { agentId, name } = useLocalSearchParams<{ agentId: string; name?: string }>();
@@ -34,6 +42,13 @@ export default function AgentChat() {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const activeRunIdRef = useRef<string | null>(null);
+  // Cumulative-stream bookkeeping for the active run: how many chars of the
+  // cumulative text earlier segments already display, the current segment
+  // ordinal (keys stay unique when tools split the stream), and the last
+  // cumulative length seen (becomes the offset when a tool interrupts).
+  const committedOffsetRef = useRef(0);
+  const segmentRef = useRef(0);
+  const lastCumulativeLenRef = useRef(0);
   const listRef = useRef<FlatList<ChatItem>>(null);
 
   useEffect(() => {
@@ -45,16 +60,25 @@ export default function AgentChat() {
       if (runId && runId !== activeRunIdRef.current) return;
 
       if (msg.type === "chunk") {
+        const segmentId = `${runId}-s${segmentRef.current}`;
+        const segmentText = msg.content.slice(committedOffsetRef.current);
+        lastCumulativeLenRef.current = msg.content.length;
         setItems((prev) => {
-          const last = prev[prev.length - 1];
-          if (last?.streaming && last.role === "assistant" && last.id === runId) {
-            return [...prev.slice(0, -1), { ...last, text: last.text + msg.content }];
+          const idx = prev.findIndex((it) => it.id === segmentId);
+          if (idx >= 0) {
+            const next = [...prev];
+            next[idx] = { ...next[idx], text: segmentText };
+            return next;
           }
-          return [...prev, { id: runId!, role: "assistant", text: msg.content, streaming: true }];
+          return [...prev, { id: segmentId, role: "assistant", text: segmentText, streaming: true }];
         });
       } else if (msg.type === "tool_start") {
+        // A tool call splits the stream: freeze the current segment, and
+        // point the next segment past everything already rendered.
+        committedOffsetRef.current = lastCumulativeLenRef.current;
+        segmentRef.current += 1;
         setItems((prev) => [
-          ...prev,
+          ...prev.map((it) => (it.streaming ? { ...it, streaming: false } : it)),
           { id: `${msg.toolCallId ?? randomUUID()}`, role: "tool", text: `⚙ ${msg.tool}` },
         ]);
       } else if (msg.type === "error") {
@@ -63,9 +87,6 @@ export default function AgentChat() {
           { id: randomUUID(), role: "error", text: msg.message },
         ]);
       } else if (msg.type === "run_ended") {
-        // Authoritative end-of-run — releases the composer regardless of
-        // outcome (done/error/aborted). `done` alone is NOT sufficient (it
-        // also fires on interim tool-approval brackets).
         setItems((prev) =>
           prev.map((it) => (it.streaming ? { ...it, streaming: false } : it)),
         );
@@ -93,6 +114,9 @@ export default function AgentChat() {
       return;
     }
     activeRunIdRef.current = runId;
+    committedOffsetRef.current = 0;
+    segmentRef.current = 0;
+    lastCumulativeLenRef.current = 0;
     setBusy(true);
     setInput("");
     setItems((prev) => [...prev, { id: `u-${runId}`, role: "user", text }]);
@@ -161,42 +185,42 @@ const styles = StyleSheet.create({
   bubble: {
     alignSelf: "flex-start",
     maxWidth: "85%",
-    backgroundColor: "#f0ece2",
+    backgroundColor: colors.bubble,
     borderRadius: 14,
     paddingHorizontal: 14,
     paddingVertical: 10,
   },
-  userBubble: { alignSelf: "flex-end", backgroundColor: "#1a1a1a" },
+  userBubble: { alignSelf: "flex-end", backgroundColor: colors.ink },
   toolLine: { backgroundColor: "transparent", paddingVertical: 2 },
-  errorBubble: { backgroundColor: "#fbe9e7" },
+  errorBubble: { backgroundColor: colors.errorBg },
   bubbleText: { fontSize: 15, lineHeight: 21 },
-  userText: { color: "#fff" },
+  userText: { color: colors.white },
   toolText: { fontSize: 12, opacity: 0.5 },
-  errorText: { color: "#b3261e" },
+  errorText: { color: colors.error },
   composer: {
     flexDirection: "row",
     alignItems: "flex-end",
     gap: 8,
     padding: 10,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "#d5d0c4",
+    borderTopColor: colors.border,
   },
   input: {
     flex: 1,
     maxHeight: 120,
     borderWidth: 1,
-    borderColor: "#d5d0c4",
+    borderColor: colors.border,
     borderRadius: 18,
     paddingHorizontal: 14,
     paddingVertical: 9,
     fontSize: 15,
   },
   sendButton: {
-    backgroundColor: "#1a1a1a",
+    backgroundColor: colors.ink,
     borderRadius: 18,
     paddingHorizontal: 16,
     paddingVertical: 10,
   },
   sendDisabled: { opacity: 0.4 },
-  sendText: { color: "#fff", fontSize: 14, fontWeight: "600" },
+  sendText: { color: colors.white, fontSize: 14, fontWeight: "600" },
 });

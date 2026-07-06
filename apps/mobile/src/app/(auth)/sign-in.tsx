@@ -10,6 +10,8 @@ import {
   TextInput,
 } from "react-native";
 
+import { colors } from "../../config/theme";
+
 /**
  * Email + password sign-in via Clerk's headless flow. Deliberately minimal
  * for Phase 1: accounts that require another first factor (email code,
@@ -82,7 +84,7 @@ export default function SignIn() {
         disabled={!isLoaded || submitting}
       >
         {submitting ? (
-          <ActivityIndicator color="#fff" />
+          <ActivityIndicator color={colors.white} />
         ) : (
           <Text style={styles.buttonText}>Sign in</Text>
         )}
@@ -97,21 +99,21 @@ const styles = StyleSheet.create({
   logo: { fontSize: 36, fontWeight: "700", textAlign: "center", marginBottom: 24 },
   input: {
     borderWidth: 1,
-    borderColor: "#d5d0c4",
+    borderColor: colors.border,
     borderRadius: 10,
     paddingHorizontal: 14,
     paddingVertical: 12,
     fontSize: 16,
   },
   button: {
-    backgroundColor: "#1a1a1a",
+    backgroundColor: colors.ink,
     borderRadius: 10,
     paddingVertical: 14,
     alignItems: "center",
     marginTop: 4,
   },
   buttonDisabled: { opacity: 0.5 },
-  buttonText: { color: "#fff", fontSize: 16, fontWeight: "600" },
-  error: { color: "#b3261e", fontSize: 13 },
+  buttonText: { color: colors.white, fontSize: 16, fontWeight: "600" },
+  error: { color: colors.error, fontSize: 13 },
   hint: { textAlign: "center", fontSize: 13, opacity: 0.5, marginTop: 12 },
 });

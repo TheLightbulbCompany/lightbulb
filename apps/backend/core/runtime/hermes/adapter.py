@@ -465,6 +465,60 @@ def _read_persona(owner_id: str, agent_id: str) -> str | None:
     return text or None
 
 
+# ---------------------------------------------------------------------------
+# UsageMeter facet: feed run.completed usage into the platform counters.
+#
+# THE BILLING TRAP. Hermes' ``run.completed.usage`` reports an ``input_tokens``
+# that is CACHE-INCLUSIVE (the full prompt, incl. cached tokens). Metering that
+# as uncached input over-bills cache-heavy sessions (cache tokens can be ~99% of
+# a long turn). The H1.2 fork patch adds ``uncached_input_tokens``
+# (= ``input_tokens - cache_read``) plus ``cache_read_tokens`` /
+# ``cache_write_tokens`` so we can meter the NON-cache-inclusive figure as input
+# and the cache counts separately — the shape ``record_usage`` already expects
+# from OpenClaw's ``sessions.list``. We NEVER meter the raw ``input_tokens``.
+# ---------------------------------------------------------------------------
+
+
+def _resolve_uncached_input(usage: Mapping[str, Any]) -> tuple[int, int, int, bool]:
+    """Resolve ``(input_tokens, cache_read, cache_write, patched)`` from a Hermes
+    ``run.completed`` usage dict, applying the billing-trap handling.
+
+    ``input_tokens`` here is the NON-cache-inclusive figure to meter — never the
+    raw cache-inclusive ``input_tokens`` Hermes reports. Precedence:
+
+      1. Fork patch present (``uncached_input_tokens`` set) → use it verbatim.
+         ``patched=True``.
+      2. Patch field absent but ``cache_read_tokens`` present → reconstruct
+         ``max(0, input_tokens - cache_read)`` ourselves. ``patched=False``.
+      3. No cache fields at all (unpatched image / older payload) → best-effort
+         fall back to the raw ``input_tokens``. ``patched=False``.
+
+    ``patched=False`` signals the caller to log that the fork patch fields were
+    absent so H4 catches an unpatched image on a live boot.
+    """
+    cache_read = int(usage.get("cache_read_tokens", 0) or 0)
+    cache_write = int(usage.get("cache_write_tokens", 0) or 0)
+    if usage.get("uncached_input_tokens") is not None:
+        return int(usage["uncached_input_tokens"]), cache_read, cache_write, True
+    raw_input = int(usage.get("input_tokens", 0) or 0)
+    if usage.get("cache_read_tokens") is not None:
+        return max(0, raw_input - cache_read), cache_read, cache_write, False
+    return raw_input, cache_read, cache_write, False
+
+
+def _member_from_session_key(session_key: str, owner_id: str) -> str:
+    """Best-effort member (Clerk user) attribution from the session key, else the
+    owner. Mirrors OpenClaw's resolve-then-fallback-to-owner
+    (``connection_pool._resolve_member_from_session``) without the channel-link
+    lookups the Hermes routing bridge (H3) will own: the session key is
+    ``agent:{agent_id}:{member}[:...]`` and a real member is a Clerk ``user_`` id;
+    ``main`` (personal webchat) and anything else attribute to the owner."""
+    parts = session_key.split(":")
+    if len(parts) >= 3 and parts[0] == "agent" and parts[2].startswith("user_"):
+        return parts[2]
+    return owner_id
+
+
 class HermesRuntime:
     kind = "hermes"
     capabilities = HERMES_CAPABILITIES
@@ -574,6 +628,11 @@ class HermesRuntime:
                             await on_event(chat_event)
                         if event in _TERMINAL_EVENT_STATUS:
                             saw_terminal = True
+                            if event == "run.completed":
+                                # Meter usage AFTER the {type:"done"} event above
+                                # so the user is never blocked on the counter
+                                # write. Best-effort — never breaks the turn.
+                                await self._record_usage_from_run(owner_id, session_key, data)
                             return ChatResult(
                                 run_id=run_id,
                                 status=_TERMINAL_EVENT_STATUS[event],
@@ -594,6 +653,63 @@ class HermesRuntime:
                 return await self._poll_terminal(client, base, run_id, headers, on_event)
 
         return None
+
+    async def _record_usage_from_run(self, owner_id: str, session_key: str, data: Mapping[str, Any]) -> None:
+        """Meter one ``run.completed`` frame's usage into the platform counters.
+
+        Mirrors OpenClaw's usage path (``connection_pool._fetch_and_record_usage``)
+        so the DynamoDB counters stay consistent across runtimes: same
+        ``record_usage`` sink, same ``input/output/cache_read/cache_write`` shape,
+        same owner + per-member attribution. This is ANALYTICS, not the biller —
+        for a Bedrock owner the authoritative bill is the AWS-invocation meter
+        Lambda; for OAuth/BYO owners it is the owner's own vendor cost recorded at
+        spend 0. Either way the token counts must be right.
+
+        Billing trap: ``_resolve_uncached_input`` meters the NON-cache-inclusive
+        input (never Hermes' raw cache-inclusive ``input_tokens``); when the H1.2
+        fork patch fields are absent it reconstructs / falls back and we log a
+        debug so H4 catches an unpatched image.
+
+        Best-effort throughout: wrapped so a usage-recording failure (DDB outage,
+        pricing miss, anything) NEVER breaks the chat turn — the ``{type:"done"}``
+        was already emitted and the terminal ``ChatResult`` still returns.
+        """
+        try:
+            usage = data.get("usage")
+            if not isinstance(usage, Mapping):
+                return  # no usage on the frame — nothing to meter
+            input_tokens, cache_read, cache_write, patched = _resolve_uncached_input(usage)
+            output_tokens = int(usage.get("output_tokens", 0) or 0)
+            if not patched:
+                logger.debug(
+                    "hermes usage: fork-patch uncached_input_tokens absent for owner=%s "
+                    "(unpatched image?) — metered input=%d reconstructed from "
+                    "input_tokens/cache_read_tokens",
+                    owner_id,
+                    input_tokens,
+                )
+            # Model rides the terminal frame (or its usage block); fall back to
+            # "unknown" like OpenClaw's sessions.list path. No raw_cost override —
+            # Hermes reports no estimatedCostUsd, and Bedrock is billed at the AWS
+            # invocation level, so record_usage prices from tokens (analytics).
+            model = data.get("model") or usage.get("model") or "unknown"
+            member_id = _member_from_session_key(session_key, owner_id)
+
+            # Lazy import: keep the module import-light (the tripwire constraint),
+            # same posture as core.containers elsewhere in this adapter.
+            from core.services.usage_service import record_usage
+
+            await record_usage(
+                owner_id=owner_id,
+                user_id=member_id,
+                model=str(model),
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cache_read=cache_read,
+                cache_write=cache_write,
+            )
+        except Exception:  # noqa: BLE001 — best-effort; a usage failure must not break the turn.
+            logger.exception("hermes usage: failed to record run.completed usage for owner=%s", owner_id)
 
     async def _poll_terminal(
         self,

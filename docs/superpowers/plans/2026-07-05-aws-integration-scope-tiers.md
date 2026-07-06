@@ -290,19 +290,28 @@ git commit -m "feat(aws): grant backend iam:GetRole on the connector role for tr
 A role in our account may be connected **only if its trust policy pins the connecting owner** — i.e. it trusts that owner's per-owner principal (`aws_cfn.owner_task_role_arn(owner_id)`) AND requires that owner's ExternalId. Verified via `iam:GetRole`. This blocks every tenant (our infra roles aren't pinned to them; they can't create roles in our account) and even stops us from connecting a non-connector role. No owner-id allowlist.
 
 **Files:**
-- Modify: `apps/backend/core/services/credentials/aws_cfn.py:13` (add `CONNECTOR_ROLE_NAME`)
+- Modify: `apps/backend/core/billing/bedrock_aip.py` (add `CONNECTOR_ROLE_NAME` next to `OUR_ACCOUNT_ID` — single source, base module)
+- Modify: `apps/backend/core/services/credentials/aws_cfn.py:13` (point `_STACK_NAME` at it)
 - Modify: `apps/backend/routers/connections.py:87-99` (the helper + the account gate)
 - Test: `apps/backend/tests/unit/routers/test_connections.py`
 
 **Interfaces:**
 - Consumes: `bedrock_aip.OUR_ACCOUNT_ID`, `bedrock_aip._iam_client()`, `aws_cfn.owner_task_role_arn`, the pending record's `external_id`.
-- Produces: `_self_account_role_is_pinned(role_arn, owner_id, external_id) -> bool`; `aws_cfn.CONNECTOR_ROLE_NAME`.
+- Produces: `_self_account_role_is_pinned(role_arn, owner_id, external_id) -> bool`; `bedrock_aip.CONNECTOR_ROLE_NAME` (used by Task 6's exact-ARN check).
 
-- [ ] **Step 1: Add the connector-role constant (`aws_cfn.py`, at line 13 next to `_STACK_NAME`)**
+- [ ] **Step 1: Add the connector-role constant to `bedrock_aip.py`** (next to `OUR_ACCOUNT_ID`)
+
+`bedrock_aip` is the base module both `connections.py` and `bedrock_aip` itself can import; `aws_cfn` already imports `bedrock_aip`, so the constant can't live in `aws_cfn` without a cycle. The gate itself doesn't name-match (the scoped `iam:GetRole` from Task 4 already restricts verification to this role) — the constant exists for Task 6's exact-ARN deny-drop.
 
 ```python
-_STACK_NAME = "isol8-readonly-connector"
+OUR_ACCOUNT_ID: str = "877352799272"
 CONNECTOR_ROLE_NAME = "isol8-readonly-connector"
+```
+
+Then point `aws_cfn._STACK_NAME` at it to avoid a duplicate literal (`aws_cfn` already imports `bedrock_aip`):
+
+```python
+_STACK_NAME = bedrock_aip.CONNECTOR_ROLE_NAME
 ```
 
 - [ ] **Step 2: Write the failing tests (`test_connections.py`)**
@@ -312,8 +321,10 @@ Mirror the existing async_client + mocked-store pattern. Patch `routers.connecti
 ```python
 # (a) our-account CONNECTOR arn whose GetRole trust pins THIS owner + their
 #     ExternalId  -> passes the gate (status != 400; reaches grant).
-# (b) our-account arn whose trust does NOT pin the owner (e.g. trusts account-root)
-#     -> 400 "role must be in your own AWS account, not Isol8's".
+# (b) TENANT-CONTAINMENT: our-account arn whose trust does NOT pin the owner
+#     (e.g. trusts account-root, like a CDK role) -> 400. This is the guarantee
+#     that no tenant can ever connect one of our infra roles — their trust would
+#     never name them, and they can't create a role in our account.
 # (c) our-account CONNECTOR arn but GetRole ExternalId != the pending ExternalId
 #     -> 400.
 # (d) external-account arn -> unchanged (no GetRole; proceeds).
@@ -456,21 +467,25 @@ And build the statement list conditionally (replace the `return {...}` body):
 
 - [ ] **Step 4: Drive the flag from the connected ARNs in `put_owner_aws_sts_policy` (`bedrock_aip.py:625`)**
 
-After the empty-guard, decide from the ARNs themselves (a role in our account means the owner passed the Task 5 trust-pin gate). `OUR_ACCOUNT_ID` is a module constant already in scope — no new import:
+After the empty-guard, drop the Deny **only** for the EXACT connector ARN — not "any our-account role". This is the security hardening: the deny-drop is load-bearing on the Task 5 gate being the only path here, so if a bug or ungated caller ever passes a *different* our-account ARN, the Deny stays and the assume is still blocked. `OUR_ACCOUNT_ID` and `CONNECTOR_ROLE_NAME` are module constants already in scope — no new import:
 
 ```python
-    has_self_account = any(f":{OUR_ACCOUNT_ID}:role/" in a for a in role_arns)
+    connector_arn = f"arn:aws:iam::{OUR_ACCOUNT_ID}:role/{CONNECTOR_ROLE_NAME}"
+    # Drop the self-account Deny ONLY for the exact connector role (never for any
+    # other our-account ARN) — keeps the tenant-protection Deny intact even if a
+    # bad ARN somehow reaches here.
+    has_connector = any(a == connector_arn for a in role_arns)
     ...
         PolicyDocument=json.dumps(
-            _build_owner_aws_sts_doc(role_arns, include_self_account_deny=not has_self_account)
+            _build_owner_aws_sts_doc(role_arns, include_self_account_deny=not has_connector)
         ),
 ```
 
-- [ ] **Step 5: Add a `put`-level test (mirror `test_put_uses_owner_aws_sts_policy_name_on_owner_role`)**
+- [ ] **Step 5: Add `put`-level tests (mirror `test_put_uses_owner_aws_sts_policy_name_on_owner_role`)** — the deny-drop for the connector AND the hardening test proving a non-connector our-account ARN keeps the Deny:
 
 ```python
 @pytest.mark.asyncio
-async def test_put_omits_self_account_deny_for_our_account_role(monkeypatch):
+async def test_put_omits_self_account_deny_for_connector_arn(monkeypatch):
     fake = MagicMock()
     monkeypatch.setattr(bedrock_aip, "_iam_client", lambda: fake)
     monkeypatch.setattr(bedrock_aip.settings, "ENVIRONMENT", "dev", raising=False)
@@ -480,6 +495,22 @@ async def test_put_omits_self_account_deny_for_our_account_role(monkeypatch):
     )
     doc = json.loads(fake.put_role_policy.call_args.kwargs["PolicyDocument"])
     assert all(s["Effect"] != "Deny" for s in doc["Statement"])
+
+
+@pytest.mark.asyncio
+async def test_put_keeps_deny_for_non_connector_our_account_arn(monkeypatch):
+    # HARDENING: only the EXACT connector ARN drops the deny. Any OTHER
+    # our-account ARN (e.g. a bug or ungated caller) MUST keep the deny so the
+    # assume stays blocked — the tenant-protection guarantee.
+    fake = MagicMock()
+    monkeypatch.setattr(bedrock_aip, "_iam_client", lambda: fake)
+    monkeypatch.setattr(bedrock_aip.settings, "ENVIRONMENT", "dev", raising=False)
+
+    await bedrock_aip.put_owner_aws_sts_policy(
+        "org_x", ["arn:aws:iam::877352799272:role/isol8-prod-service-x"]
+    )
+    doc = json.loads(fake.put_role_policy.call_args.kwargs["PolicyDocument"])
+    assert any(s["Effect"] == "Deny" for s in doc["Statement"])
 ```
 
 - [ ] **Step 6: Run all grant tests to verify pass**

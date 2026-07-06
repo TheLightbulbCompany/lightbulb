@@ -290,6 +290,10 @@ export class ServiceStack extends cdk.Stack {
       new iam.PolicyStatement({
         sid: "ReadConnectorRoleForTrustCheck",
         actions: ["iam:GetRole"],
+        // Canonical connector role name = bedrock_aip.CONNECTOR_ROLE_NAME. Must
+        // match the CFN template RoleName and the backend constant; renaming
+        // any one silently breaks the self-account trust-pin check (GetRole
+        // scoped to the old name → AccessDenied → fail-closed 400).
         resources: [
           `arn:aws:iam::${this.account}:role/isol8-readonly-connector`,
         ],

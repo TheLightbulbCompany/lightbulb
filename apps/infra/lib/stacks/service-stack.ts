@@ -282,6 +282,20 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
+    // Self-account trust-pin gate (aws-sts scope tiers, Task 5): the backend
+    // reads the trust policy of a pasted our-account connector role before
+    // trusting it. Scoped to the single fixed role name CFN mints for this
+    // path — not a prefix wildcard like the owner-bedrock-* roles above.
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "ReadConnectorRoleForTrustCheck",
+        actions: ["iam:GetRole"],
+        resources: [
+          `arn:aws:iam::${this.account}:role/isol8-readonly-connector`,
+        ],
+      }),
+    );
+
     // Backend mints + scopes + kills per-owner Bedrock roles (Plan 2). These
     // three statements live in a dedicated ManagedPolicy attached to the task
     // role, NOT in the inline default policy: the backend role's inline policy

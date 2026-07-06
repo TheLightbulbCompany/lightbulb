@@ -223,7 +223,17 @@
 ### Task H3.3: dev-only switch
 - [ ] A dev-gated way to set one owner `runtime_kind="hermes"` (debug endpoint or a beta flag on the billing row; 403 in prod like the other debug endpoints). Commit `feat(hermes): dev-only runtime_kind switch (403 in prod)`.
 
+### Task H3.4: the Hermes chat bridge — REQUIRED (H2 whole-branch review found this unowned; without it the spike cannot chat)
+
+**The gap:** `send_chat` exists on the port and Hermes implements it, but **NOTHING calls it** — `routers/websocket_chat.py`'s hot path goes straight to `get_gateway_pool()` → `chat.send` WS-RPC. A Hermes owner (HTTP+SSE, port 8642) on that path fails the WS-RPC handshake. This bridge fell between H2 (built the facet, no caller) and H3.1–H3.3 (which own `runtime_kind`/base-family/switch, NOT chat-message routing). It is the single most load-bearing integration for the spike — H4.2 cannot run without it.
+
+- [ ] **Route the turn:** add a Hermes branch in `websocket_chat` — `if get_runtime_for_owner(owner_id).kind == "hermes": await runtime.send_chat(...)` — leaving OpenClaw owners on the existing pool path UNTOUCHED (a narrow spike branch, NOT the full Phase-C hot-path migration). At the `on_event` sink, **inject the routing envelope** `runId`/`agent_id`/`session_id` (H2.2-review requirement — the frontend needs them for multi-bubble + per-session demux) and **merge** per-run Paperclip/issue context WITH the seeded persona in `instructions` (H2.4-review; persona first, then context; do NOT replace), and set the **`X-Hermes-Session-Key` header**.
+- [ ] **The control-plane surface (H2-review #1b):** the `/chat` page on load fires `agents.list`, `sessions.list`, container-status, etc. — all WS-RPC today. For a Hermes owner, `call_rpc`/`sessions` are `NotImplementedError` stubs, so the page may not mount even if `send_chat` works. Decide + implement the minimal answer so the chat window renders: e.g. Hermes-owner branches that return the seeded Friday/Atlas roster for `agents.list` and an empty/`/v1`-backed `sessions.list`, and a container-status that reflects the Hermes container. Keep it minimal — just enough for the page to mount and the turn to route.
+- [ ] Commit `feat(hermes): spike chat bridge — route Hermes turns through send_chat + minimal control-plane`.
+
 **Phase H3 gate:** full suite green; `ACP_ENABLED`-style, still dark for real users. Open **PR H3** stacked on H2.
+
+**De-risking option (recommended):** validate the transport BEFORE the UI bridge. A tiny harness that calls `get_runtime_for_owner(dev_owner).send_chat(...)` directly against a booted Hermes container proves the container boots in Fargate + HTTP+SSE streams through our networking + the agent acts on wake-text — the real unknowns — WITHOUT the `websocket_chat`/control-plane plumbing. Do that first (H4.2a below), then the full `/chat` path (H4.2b) once H3.4 lands.
 
 ---
 
@@ -232,7 +242,8 @@
 **Not a PR — a live validation run in dev, after H0–H3 merge and the H1 image is pinned.** This is where "Hermes working" is proven and the four live unknowns close.
 
 - [ ] **H4.1 Boot:** flip the dev switch for a throwaway dev owner (own Clerk account, NOT the E2E account), provision, and confirm: the Hermes container reaches RUNNING, `api_server` binds on `0.0.0.0:8642`, `/health` responds, single-writer held. Capture the boot wall-time and **idle daemon RSS in Fargate** (validates the macOS-proxy measurement against real Debian/Fargate).
-- [ ] **H4.2 Chat:** send a chat turn through the normal `/chat` path; confirm the SSE→ChatEvent translation renders (chunks, tool markers, done) identically to OpenClaw in the UI. This exercises the whole port end-to-end through our WS→backend→container networking.
+- [ ] **H4.2a Transport (do FIRST — de-risks without UI plumbing):** call `get_runtime_for_owner(dev_owner).send_chat(...)` directly against the booted container (a small harness). Confirm the run POSTs, the SSE streams, `_translate_event` produces the ChatEvents, the agent acts on the wake-text, and usage meters. This proves the container + HTTP+SSE + networking + the whole adapter WITHOUT `websocket_chat`. Confirm here the H2-inferred unknowns: the approval `{"choice":"always"}` field name, the `run.completed.usage` cache fields (fork patch present), and JWT refresh (if OAuth path).
+- [ ] **H4.2b Chat via `/chat` (needs H3.4):** send a turn through the normal `/chat` path; confirm the SSE→ChatEvent translation renders (chunks, tool markers, done) identically to OpenClaw in the UI, the routing envelope is injected, and the page mounts (control-plane RPCs answered). End-to-end through WS→backend→container.
 - [ ] **H4.3 Close the live unknowns:**
   - **Wake-text context:** give Friday a task with embedded Paperclip issue/thread context in the wake text; confirm the agent *acts on it* (the mechanism is confirmed; reliable action is the open question).
   - **Approval field name (H2.2-review):** confirm live that `POST /v1/runs/{id}/approval` accepts `{"choice":"always"}` — the field name was inferred from the `choices` enum, not re-verified against `_handle_run_approval` source. If the run wedges on a dangerous-exec approval, this is the first thing to check.

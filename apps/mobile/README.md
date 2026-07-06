@@ -46,8 +46,14 @@ for both packages + a full iOS Metro bundle on every PR. No secrets needed.
 | `preview` | dev | internal-distribution device builds (pre-TestFlight QA) |
 | `production` | prod | TestFlight / App Store, auto-incrementing build number |
 
-`eas build --profile <name> --platform ios` once the Expo org + `EXPO_TOKEN`
-exist (pending: org creation, Apple Developer org enrollment for signing).
+The Expo org exists: **`isol8`** (project `@isol8/isol8-mobile`, id
+`2def259d-5e79-462b-9b0f-3d01d666ba66`, linked in app.json). CI auth is the
+`github-ci` robot (Developer role); its token lives in the repo secret
+`EXPO_TOKEN` (rotate from expo.dev → isol8 org → Access tokens). Kick a cloud
+build from the Actions tab → Mobile CI → Run workflow (profile: preview |
+production), or locally with `EXPO_TOKEN=… npx eas-cli build …`. Device
+builds + TestFlight still pend the Apple Developer org enrollment for
+signing.
 
 **Staying updated after release:** two lanes.
 - **JS-only changes** ship over-the-air with `eas update --channel production`

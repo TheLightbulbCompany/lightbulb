@@ -305,6 +305,29 @@ class EcsManager:
     # Per-user task definition revisions
     # ------------------------------------------------------------------
 
+    def _runtime_kind_for_owner(self, owner_id: str) -> str:
+        """The owner's runtime kind ("openclaw" | "hermes"), off the process-local
+        cache. Defaults to "openclaw" (cache miss / unknown), so every existing
+        owner resolves openclaw until a Hermes owner is explicitly primed."""
+        from core.runtime import get_runtime_for_owner
+
+        return get_runtime_for_owner(owner_id).kind
+
+    def _base_family_for_owner(self, owner_id: str | None) -> str:
+        """The CDK base task-def family the per-user service clones from.
+
+        OpenClaw owners — and every shared/no-owner caller (fleet image
+        updates, backfills) that passes ``owner_id=None`` — resolve
+        ``isol8-{env}-openclaw``, byte-identical to the historical hardcode.
+        A Hermes owner resolves ``isol8-{env}-hermes`` so the clone inherits
+        the Hermes image + port 8642 + static base env from the H1 base task
+        def. The runtime KIND is the sole discriminator (``get_runtime_for_owner``
+        reads the process-local runtime-kind cache primed off the container row).
+        """
+        if not owner_id:
+            return self._base_task_def_family
+        return f"isol8-{settings.ENVIRONMENT or 'dev'}-{self._runtime_kind_for_owner(owner_id)}"
+
     def _build_register_kwargs_from_base(
         self,
         access_point_id: str,
@@ -315,10 +338,13 @@ class EcsManager:
         environment_for_task: list[dict] | None = None,
         hook_token: str | None = None,
         task_role_arn: str | None = None,
+        owner_id: str | None = None,
+        api_server_key: str | None = None,
     ) -> dict:
         """Build register_task_definition kwargs by cloning the CDK-managed base.
 
-        Reads the latest revision from the base family (e.g. ``isol8-dev-openclaw``)
+        Reads the latest revision from the base family (e.g. ``isol8-dev-openclaw``,
+        or ``isol8-dev-hermes`` for a Hermes owner — see ``_base_family_for_owner``)
         live on every call — that family contains ONLY CDK-managed base
         revisions because per-user clones register into ``<base>-user`` (see
         the family below). This means the running backend always picks up
@@ -336,9 +362,16 @@ class EcsManager:
                               that re-register without a hook_token leave
                               the env var off and rely on a separate backfill
                               pass to land it.
+          - owner_id         (selects the base family per runtime; ``None`` keeps
+                              the OpenClaw default, byte-identical for the shared
+                              image-update/backfill callers).
+          - api_server_key   (Hermes only — the per-container bearer for its
+                              api_server, injected as ``API_SERVER_KEY`` env on
+                              the primary container. OpenClaw owners never get
+                              one, so ``None`` here leaves the env off).
         """
         desc_resp = self._ecs.describe_task_definition(
-            taskDefinition=self._base_task_def_family,
+            taskDefinition=self._base_family_for_owner(owner_id),
         )
         base = desc_resp["taskDefinition"]
 
@@ -383,6 +416,12 @@ class EcsManager:
                         hook_token=hook_token,
                         existing=per_user_env,
                     )
+                if api_server_key:
+                    # Hermes per-container api_server bearer. De-dupe any stale
+                    # entry (a half-complete prior re-register), then set the
+                    # fresh value — mirrors the hook_token de-dupe above.
+                    per_user_env = [e for e in per_user_env if e.get("name") != "API_SERVER_KEY"]
+                    per_user_env.append({"name": "API_SERVER_KEY", "value": api_server_key})
                 if per_user_env:
                     cd_copy["environment"] = base_env + per_user_env
             container_defs.append(cd_copy)
@@ -420,6 +459,8 @@ class EcsManager:
         environment_for_task: list[dict] | None = None,
         hook_token: str | None = None,
         task_role_arn: str | None = None,
+        owner_id: str | None = None,
+        api_server_key: str | None = None,
     ) -> str:
         """Clone the CDK base for a new per-user container.
 
@@ -449,6 +490,8 @@ class EcsManager:
                 environment_for_task=environment_for_task,
                 hook_token=hook_token,
                 task_role_arn=task_role_arn,
+                owner_id=owner_id,
+                api_server_key=api_server_key,
             )
             reg_resp = self._ecs.register_task_definition(**reg_kwargs)
             task_def_arn = reg_resp["taskDefinition"]["taskDefinitionArn"]
@@ -570,6 +613,7 @@ class EcsManager:
         hook_token: str | None = None,
         task_role_arn: str | None = None,
         bedrock_aip_arns: dict[str, str] | None = None,
+        api_server_key: str | None = None,
     ) -> str:
         """Create an ECS Service for a user with per-user EFS isolation.
 
@@ -626,7 +670,19 @@ class EcsManager:
             "status": "provisioning",
             "substatus": None,
             "owner_type": owner_type,
+            # Pin the owner's runtime on the row at creation so every later read
+            # (RPC resolution, is_healthy, base-family selection) resolves this
+            # container's runtime without guessing. Resolved off the process-local
+            # cache (primed by the dev switch for a Hermes owner); defaults to
+            # "openclaw", so an OpenClaw owner's row is byte-identical in meaning
+            # to a legacy row that carried no field (H0.4 reads absent as openclaw).
+            "runtime_kind": self._runtime_kind_for_owner(user_id),
         }
+        # Hermes' per-container api_server bearer. Persisted on the row (the field
+        # HermesRuntime._resolve reads) atomically with row creation — mirrors
+        # hook_token. OpenClaw owners pass None and never get one.
+        if api_server_key:
+            upsert_fields["api_server_key"] = api_server_key
         if hook_token:
             upsert_fields["hook_token"] = hook_token
             upsert_fields["hook_token_rotated_at"] = utc_now_iso()
@@ -676,6 +732,8 @@ class EcsManager:
                 environment_for_task=environment_for_task,
                 hook_token=hook_token,
                 task_role_arn=task_role_arn,
+                owner_id=user_id,
+                api_server_key=api_server_key,
             )
             await self._update_container(
                 user_id,
@@ -935,6 +993,10 @@ class EcsManager:
             # base would otherwise revert the container to the shared
             # all-models task role (same self-heal class as hook_token above).
             owner_task_role_arn = container.get("bedrock_role_arn")
+            # Clone from the OWNER's runtime base family and re-inject the Hermes
+            # api_server bearer off the row so a resize/image-update keeps the
+            # container on its own runtime + keeps API_SERVER_KEY (both no-ops for
+            # an OpenClaw owner: openclaw base family, api_server_key None).
             reg_kwargs = await asyncio.to_thread(
                 self._build_register_kwargs_from_base,
                 access_point_id,
@@ -943,6 +1005,8 @@ class EcsManager:
                 new_memory=new_memory,
                 hook_token=hook_token,
                 task_role_arn=owner_task_role_arn,
+                owner_id=user_id,
+                api_server_key=container.get("api_server_key"),
             )
 
             reg_resp = await asyncio.to_thread(self._ecs.register_task_definition, **reg_kwargs)
@@ -1271,29 +1335,32 @@ class EcsManager:
                 return attrs["AWS_INSTANCE_IPV4"]
         return None
 
-    def is_healthy(self, ip: str) -> bool:
-        """Check if a gateway at the given IP is responding.
+    def is_healthy(self, ip: str, owner_id: str) -> bool:
+        """Check if the owner's container is responding on its probe port.
 
-        Opens a TCP connection to the gateway port. If the connection
-        succeeds, the gateway is listening and healthy.
+        Opens a TCP connection to the runtime's probe port. If the connection
+        succeeds, the container is listening and healthy.
 
         Args:
             ip: The task's private IPv4 address.
+            owner_id: The container owner — resolves which runtime (and thus
+                which probe port) to probe. An OpenClaw owner probes the gateway
+                port (18789); a Hermes owner probes the api_server port (8642).
+                Callers resolve this off the container row (``resolve_running_container``
+                primes the runtime-kind cache before probing).
 
         Returns:
             True if healthy, False otherwise.
         """
-        # Read the probe transport (TCP port + timeout) off the runtime's
-        # healthcheck spec rather than restating the port/timeout literals —
-        # one source, the port. NOTE: resolved with an empty owner, so this is
-        # pinned to the default (OpenClaw) healthcheck. That is correct while
-        # OpenClaw is the only runtime, but the probe is NOT yet owner-blind:
-        # a runtime with a different probe port (e.g. Hermes 8642) needs the
-        # owner threaded through here so is_healthy probes the right port.
+        # Read the probe transport (TCP port + timeout) off the OWNER's runtime
+        # healthcheck spec rather than restating the port/timeout literals — one
+        # source, the port. Threaded through the owner so a Hermes owner probes
+        # 8642 while an OpenClaw owner probes 18789; both resolve openclaw today,
+        # so the value is 18789 either way until a hermes owner is provisioned.
         from core.runtime import get_runtime_for_owner
         from core.runtime.base import ProvisionCtx
 
-        hc = get_runtime_for_owner("").container_spec("", ProvisionCtx(hook_token="")).healthcheck
+        hc = get_runtime_for_owner(owner_id).container_spec(owner_id, ProvisionCtx(hook_token="")).healthcheck
         try:
             with socket.create_connection((ip, hc.port), timeout=hc.timeout_s):
                 return True
@@ -1347,7 +1414,7 @@ class EcsManager:
         # process is in NFS deadlock. Log loudly so the next iteration of
         # this bug shows up immediately in CloudWatch Insights:
         #   filter ip_unhealthy=true and ddb_status="running"
-        if container.get("status") == "running" and not self.is_healthy(ip):
+        if container.get("status") == "running" and not self.is_healthy(ip, user_id):
             logger.warning(
                 "resolve_running_container ip_unhealthy=true user=%s service=%s ip=%s last_handshake=%s",
                 user_id,
@@ -1360,7 +1427,7 @@ class EcsManager:
         # Also opportunistically capture the task ARN if we don't already have
         # one on the row — previously this field was silently missing on every
         # container row because no code path wrote it.
-        if container.get("status") == "provisioning" and self.is_healthy(ip):
+        if container.get("status") == "provisioning" and self.is_healthy(ip, user_id):
             try:
                 fields = {
                     "substatus": "gateway_healthy",
@@ -1733,6 +1800,10 @@ class EcsManager:
                         restart_task_role_arn = bedrock_role_arn or (
                             existing.get("bedrock_role_arn") if existing else None
                         )
+                        # Re-inject the Hermes api_server bearer off the row so a
+                        # scale-from-zero restart keeps API_SERVER_KEY on the new
+                        # revision (None for an OpenClaw owner — byte-identical).
+                        restart_api_server_key = existing.get("api_server_key") if existing else None
                         new_task_def_arn = await asyncio.to_thread(
                             self._register_task_definition,
                             access_point_id,
@@ -1740,6 +1811,8 @@ class EcsManager:
                             environment_for_task=environment_for_task,
                             hook_token=existing_hook_token,
                             task_role_arn=restart_task_role_arn,
+                            owner_id=user_id,
+                            api_server_key=restart_api_server_key,
                         )
                         await asyncio.to_thread(
                             self._ecs.update_service,
@@ -1886,6 +1959,10 @@ class EcsManager:
         # provisioning since the row doesn't exist yet.
         gateway_token = secrets.token_urlsafe(32)
         hook_token = secrets.token_urlsafe(32)
+        # Hermes authenticates every api_server call with a per-container bearer;
+        # OpenClaw has no such secret. Mint it ONLY for a Hermes owner so an
+        # OpenClaw owner's row + task-def env stay byte-identical (no API_SERVER_KEY).
+        api_server_key = secrets.token_urlsafe(32) if self._runtime_kind_for_owner(user_id) == "hermes" else None
 
         # Step 2: Create ECS service (desiredCount=0). Per-user secrets (only
         # set for byo_key) and per-user env (only set for chatgpt_oauth, to
@@ -1902,6 +1979,7 @@ class EcsManager:
             hook_token=hook_token,
             task_role_arn=bedrock_role_arn,
             bedrock_aip_arns=bedrock_aip_arns,
+            api_server_key=api_server_key,
         )
 
         # Step 3: Write configs to EFS
@@ -2001,7 +2079,7 @@ class EcsManager:
 
                 deployment_id = primary.get("id")
                 task_arn, ip = await self._poll_running_task(service_name, deployment_id)
-                if task_arn and ip and self.is_healthy(ip):
+                if task_arn and ip and self.is_healthy(ip, user_id):
                     await container_repo.update_fields(
                         user_id,
                         {

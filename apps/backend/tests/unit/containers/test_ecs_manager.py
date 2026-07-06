@@ -25,6 +25,29 @@ _TEST_AIP_ARNS = {
 
 
 @pytest.fixture(autouse=True)
+def _clear_runtime_kind_cache():
+    """runtime_kind is a process-local, immutable cache. Clear it between tests
+    so one test priming a hermes owner never bleeds into another (which would
+    flip an OpenClaw owner's base family / probe port and break byte-identity)."""
+    import core.runtime as runtime_mod
+
+    runtime_mod._RUNTIME_KIND_CACHE.clear()
+    yield
+    runtime_mod._RUNTIME_KIND_CACHE.clear()
+
+
+@pytest.fixture
+def prime_hermes():
+    """Prime an owner into the process-local runtime-kind cache as hermes."""
+    import core.runtime as runtime_mod
+
+    def _prime(owner_id: str) -> None:
+        runtime_mod._RUNTIME_KIND_CACHE[owner_id] = "hermes"
+
+    return _prime
+
+
+@pytest.fixture(autouse=True)
 def _mock_bedrock_mint(monkeypatch):
     """Stub the synchronous per-owner AIP + scoped-role mint that the
     bedrock_claude provision branch now runs (Task 9). These tests drive that
@@ -381,6 +404,52 @@ class TestRegisterTaskDefinition:
 
 
 # ---------------------------------------------------------------------------
+# Runtime-aware base-family selection + Hermes API_SERVER_KEY injection
+# ---------------------------------------------------------------------------
+
+
+class TestRuntimeAwareBaseFamily:
+    """The per-user clone must clone from the OWNER's runtime base family, and
+    Hermes owners get an API_SERVER_KEY env; OpenClaw owners stay byte-identical."""
+
+    def test_no_owner_clones_openclaw_default(self, manager, mock_ecs_client):
+        """No owner_id (shared image-update/backfill callers) → openclaw base."""
+        manager._register_task_definition("fsap-user123")
+        mock_ecs_client.describe_task_definition.assert_called_once_with(
+            taskDefinition="isol8-dev-openclaw",
+        )
+
+    def test_openclaw_owner_clones_openclaw_base_family(self, manager, mock_ecs_client):
+        """An OpenClaw owner (default) clones isol8-dev-openclaw — byte-identical."""
+        manager._register_task_definition("fsap-user123", owner_id="org_openclaw")
+        mock_ecs_client.describe_task_definition.assert_called_once_with(
+            taskDefinition="isol8-dev-openclaw",
+        )
+
+    def test_hermes_owner_clones_hermes_base_family(self, manager, mock_ecs_client, prime_hermes):
+        """A Hermes owner clones isol8-dev-hermes (the H1 base task def)."""
+        prime_hermes("org_hermes")
+        manager._register_task_definition("fsap-user123", owner_id="org_hermes")
+        mock_ecs_client.describe_task_definition.assert_called_once_with(
+            taskDefinition="isol8-dev-hermes",
+        )
+
+    def test_api_server_key_injected_when_present(self, manager, mock_ecs_client):
+        """api_server_key is injected as an API_SERVER_KEY env on the primary container."""
+        manager._register_task_definition("fsap-user123", api_server_key="hermes-key-xyz")
+        call_kwargs = mock_ecs_client.register_task_definition.call_args.kwargs
+        env = {e["name"]: e["value"] for e in call_kwargs["containerDefinitions"][0]["environment"]}
+        assert env["API_SERVER_KEY"] == "hermes-key-xyz"
+
+    def test_api_server_key_absent_when_none(self, manager, mock_ecs_client):
+        """OpenClaw owners pass None → no API_SERVER_KEY env (byte-identical)."""
+        manager._register_task_definition("fsap-user123")
+        call_kwargs = mock_ecs_client.register_task_definition.call_args.kwargs
+        env_names = {e["name"] for e in call_kwargs["containerDefinitions"][0].get("environment", [])}
+        assert "API_SERVER_KEY" not in env_names
+
+
+# ---------------------------------------------------------------------------
 # create_user_service
 # ---------------------------------------------------------------------------
 
@@ -399,7 +468,9 @@ class TestCreateUserService:
 
             assert service_name == "openclaw-user_test_123-f4ae64abb2db"
 
-            # Verify repo upsert called early
+            # Verify repo upsert called early. runtime_kind is pinned on the row
+            # at creation; an unprimed owner resolves the "openclaw" default, so
+            # this is byte-identical in meaning to a legacy row with no field.
             mock_repo.upsert.assert_called_once_with(
                 "user_test_123",
                 {
@@ -408,6 +479,7 @@ class TestCreateUserService:
                     "status": "provisioning",
                     "substatus": None,
                     "owner_type": "personal",
+                    "runtime_kind": "openclaw",
                 },
             )
 
@@ -429,6 +501,46 @@ class TestCreateUserService:
 
             # Verify update_fields called for substatus progression (3 calls)
             assert mock_repo.update_fields.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_hermes_owner_row_records_kind_and_api_server_key(
+        self, manager, mock_ecs_client, mock_efs_client, prime_hermes
+    ):
+        """A Hermes owner's row records runtime_kind='hermes' and the passed
+        api_server_key, and the key is injected as an API_SERVER_KEY task env."""
+        prime_hermes("org_hermes")
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict())
+
+            await manager.create_user_service("org_hermes", "token-abc", api_server_key="hermes-bearer-1")
+
+            upsert_fields = mock_repo.upsert.call_args.args[1]
+            assert upsert_fields["runtime_kind"] == "hermes"
+            assert upsert_fields["api_server_key"] == "hermes-bearer-1"
+
+            # The clone reads the Hermes base family and injects the bearer env.
+            mock_ecs_client.describe_task_definition.assert_called_once_with(
+                taskDefinition="isol8-dev-hermes",
+            )
+            reg_kwargs = mock_ecs_client.register_task_definition.call_args.kwargs
+            env = {e["name"]: e["value"] for e in reg_kwargs["containerDefinitions"][0]["environment"]}
+            assert env["API_SERVER_KEY"] == "hermes-bearer-1"
+
+    @pytest.mark.asyncio
+    async def test_openclaw_owner_row_omits_api_server_key(self, manager, mock_ecs_client, mock_efs_client):
+        """An OpenClaw owner (no api_server_key passed) never gets the field or env."""
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict())
+
+            await manager.create_user_service("user_test_123", "token-abc")
+
+            upsert_fields = mock_repo.upsert.call_args.args[1]
+            assert "api_server_key" not in upsert_fields
+            reg_kwargs = mock_ecs_client.register_task_definition.call_args.kwargs
+            env_names = {e["name"] for e in reg_kwargs["containerDefinitions"][0].get("environment", [])}
+            assert "API_SERVER_KEY" not in env_names
 
     @pytest.mark.asyncio
     async def test_create_service_enables_deployment_circuit_breaker(self, manager, mock_ecs_client, mock_efs_client):
@@ -922,13 +1034,13 @@ class TestIsHealthy:
     """Test gateway health checks via TCP socket."""
 
     def test_healthy_connection_succeeds(self, manager):
-        """Successful TCP connection means healthy."""
+        """Successful TCP connection means healthy — OpenClaw owner probes 18789."""
         with patch("core.containers.ecs_manager.socket.create_connection") as mock_conn:
             mock_socket = MagicMock()
             mock_conn.return_value.__enter__ = MagicMock(return_value=mock_socket)
             mock_conn.return_value.__exit__ = MagicMock(return_value=False)
 
-            assert manager.is_healthy("10.0.1.42") is True
+            assert manager.is_healthy("10.0.1.42", "user_test_123") is True
             mock_conn.assert_called_once_with(("10.0.1.42", GATEWAY_PORT), timeout=5)
 
     def test_unhealthy_connection_refused(self, manager):
@@ -936,7 +1048,7 @@ class TestIsHealthy:
         with patch("core.containers.ecs_manager.socket.create_connection") as mock_conn:
             mock_conn.side_effect = ConnectionRefusedError("refused")
 
-            assert manager.is_healthy("10.0.1.42") is False
+            assert manager.is_healthy("10.0.1.42", "user_test_123") is False
 
     def test_unhealthy_timeout(self, manager):
         """Timeout means unhealthy."""
@@ -945,7 +1057,29 @@ class TestIsHealthy:
         with patch("core.containers.ecs_manager.socket.create_connection") as mock_conn:
             mock_conn.side_effect = socket.timeout("timed out")
 
-            assert manager.is_healthy("10.0.1.42") is False
+            assert manager.is_healthy("10.0.1.42", "user_test_123") is False
+
+    def test_openclaw_owner_probes_gateway_port(self, manager):
+        """An OpenClaw owner (default) probes the gateway port 18789."""
+        with patch("core.containers.ecs_manager.socket.create_connection") as mock_conn:
+            mock_conn.return_value.__enter__ = MagicMock(return_value=MagicMock())
+            mock_conn.return_value.__exit__ = MagicMock(return_value=False)
+
+            manager.is_healthy("10.0.1.42", "org_openclaw")
+            args, kwargs = mock_conn.call_args
+            assert args[0] == ("10.0.1.42", 18789)
+            assert kwargs["timeout"] == 5
+
+    def test_hermes_owner_probes_api_server_port(self, manager, prime_hermes):
+        """A Hermes owner probes the api_server port 8642, not the gateway port."""
+        prime_hermes("org_hermes")
+        with patch("core.containers.ecs_manager.socket.create_connection") as mock_conn:
+            mock_conn.return_value.__enter__ = MagicMock(return_value=MagicMock())
+            mock_conn.return_value.__exit__ = MagicMock(return_value=False)
+
+            assert manager.is_healthy("10.0.1.42", "org_hermes") is True
+            args, _ = mock_conn.call_args
+            assert args[0] == ("10.0.1.42", 8642)
 
 
 # ---------------------------------------------------------------------------

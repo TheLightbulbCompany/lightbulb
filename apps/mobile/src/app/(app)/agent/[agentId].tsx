@@ -12,7 +12,7 @@ import {
   View,
 } from "react-native";
 
-import { colors } from "../../../config/theme";
+import { colors, fonts, radii, spacing, type } from "../../../config/theme";
 import { useGateway } from "../../../providers/gateway";
 
 interface ChatItem {
@@ -162,6 +162,7 @@ export default function AgentChat() {
         <TextInput
           style={styles.input}
           placeholder={gateway.isConnected ? "Message" : "Reconnecting…"}
+          placeholderTextColor={colors.muted}
           value={input}
           onChangeText={setInput}
           multiline
@@ -180,47 +181,63 @@ export default function AgentChat() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
-  list: { padding: 12, gap: 8 },
+  container: { flex: 1, backgroundColor: colors.cream },
+  list: { padding: spacing.md, gap: spacing.sm },
+  // Assistant bubbles: raised cream surface, ink text.
   bubble: {
     alignSelf: "flex-start",
     maxWidth: "85%",
-    backgroundColor: colors.creamTertiary,
-    borderRadius: 14,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    backgroundColor: colors.creamRaised,
+    borderRadius: radii.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
   },
-  userBubble: { alignSelf: "flex-end", backgroundColor: colors.ink },
-  toolLine: { backgroundColor: "transparent", paddingVertical: 2 },
-  errorBubble: { backgroundColor: colors.creamTertiary },
-  bubbleText: { fontSize: 15, lineHeight: 21 },
+  // User bubbles: forest with white text, matching the web chat.
+  userBubble: { alignSelf: "flex-end", backgroundColor: colors.forest },
+  toolLine: { backgroundColor: "transparent", paddingVertical: spacing.xs },
+  // Errors stay visibly distinct: error-bordered tinted card, error text.
+  errorBubble: {
+    backgroundColor: colors.creamRaised,
+    borderWidth: 1,
+    borderColor: colors.error,
+  },
+  bubbleText: { ...type.body },
   userText: { color: colors.white },
-  toolText: { fontSize: 12, opacity: 0.5 },
+  toolText: { ...type.caption },
   errorText: { color: colors.error },
   composer: {
     flexDirection: "row",
     alignItems: "flex-end",
-    gap: 8,
-    padding: 10,
+    gap: spacing.sm,
+    padding: spacing.md,
+    backgroundColor: colors.cream,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: colors.border,
   },
   input: {
     flex: 1,
     maxHeight: 120,
+    backgroundColor: colors.white,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: 18,
-    paddingHorizontal: 14,
-    paddingVertical: 9,
+    borderRadius: radii.lg,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    fontFamily: fonts.dmSans,
     fontSize: 15,
+    color: colors.ink,
   },
   sendButton: {
-    backgroundColor: colors.ink,
-    borderRadius: 18,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
+    backgroundColor: colors.forest,
+    borderRadius: radii.lg,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
   },
   sendDisabled: { opacity: 0.4 },
-  sendText: { color: colors.white, fontSize: 14, fontWeight: "600" },
+  sendText: {
+    color: colors.white,
+    fontFamily: fonts.dmSansMedium,
+    fontSize: 15,
+    lineHeight: 22,
+  },
 });

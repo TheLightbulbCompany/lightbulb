@@ -6,7 +6,7 @@ import {
   type AgentsListResponse,
 } from "@isol8/shared";
 
-import { colors } from "../../config/theme";
+import { colors, fonts, spacing, type } from "../../config/theme";
 import { useGateway } from "../../providers/gateway";
 
 // Agent roster — entry point to per-agent chat. Streams over the same
@@ -49,7 +49,7 @@ export default function Chat() {
       }
       renderItem={({ item }) => (
         <Pressable
-          style={styles.row}
+          style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
           onPress={() =>
             router.push({
               pathname: "/(app)/agent/[agentId]",
@@ -69,20 +69,28 @@ export default function Chat() {
 }
 
 const styles = StyleSheet.create({
-  center: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24 },
+  center: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: spacing.xl,
+  },
   centerGrow: { flexGrow: 1, alignItems: "center", justifyContent: "center" },
-  dim: { fontSize: 14, opacity: 0.5, textAlign: "center" },
+  dim: { ...type.body, color: colors.muted, textAlign: "center" },
+  // White hairline rows on the cream page, matching the web sidebar list.
   row: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
+    gap: spacing.md,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    backgroundColor: colors.white,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.border,
   },
-  emoji: { fontSize: 24 },
+  rowPressed: { backgroundColor: colors.creamHover },
+  emoji: { fontFamily: fonts.dmSans, fontSize: 24 },
   rowText: { flex: 1 },
-  name: { fontSize: 16, fontWeight: "600" },
-  id: { fontSize: 12, opacity: 0.4 },
+  name: { ...type.body, fontFamily: fonts.dmSansMedium },
+  id: { ...type.caption },
 });

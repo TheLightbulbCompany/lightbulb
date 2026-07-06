@@ -10,7 +10,7 @@ import {
   TextInput,
 } from "react-native";
 
-import { colors } from "../../config/theme";
+import { colors, fonts, radii, spacing, type } from "../../config/theme";
 
 /**
  * Email + password sign-in via Clerk's headless flow. Deliberately minimal
@@ -23,6 +23,8 @@ export default function SignIn() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Presentational only: which input shows the forest focus border.
+  const [focusedField, setFocusedField] = useState<"email" | "password" | null>(null);
 
   async function onSignIn() {
     if (!isLoaded || submitting) return;
@@ -61,21 +63,27 @@ export default function SignIn() {
     >
       <Text style={styles.logo}>isol8</Text>
       <TextInput
-        style={styles.input}
+        style={[styles.input, focusedField === "email" && styles.inputFocused]}
         placeholder="Email"
+        placeholderTextColor={colors.muted}
         autoCapitalize="none"
         autoComplete="email"
         keyboardType="email-address"
         value={email}
         onChangeText={setEmail}
+        onFocus={() => setFocusedField("email")}
+        onBlur={() => setFocusedField(null)}
       />
       <TextInput
-        style={styles.input}
+        style={[styles.input, focusedField === "password" && styles.inputFocused]}
         placeholder="Password"
+        placeholderTextColor={colors.muted}
         secureTextEntry
         autoComplete="current-password"
         value={password}
         onChangeText={setPassword}
+        onFocus={() => setFocusedField("password")}
+        onBlur={() => setFocusedField(null)}
       />
       {error ? <Text style={styles.error}>{error}</Text> : null}
       <Pressable
@@ -95,25 +103,46 @@ export default function SignIn() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, justifyContent: "center", padding: 24, gap: 12 },
-  logo: { fontSize: 36, fontWeight: "700", textAlign: "center", marginBottom: 24 },
+  container: {
+    flex: 1,
+    justifyContent: "center",
+    padding: spacing.xl,
+    gap: spacing.md,
+    backgroundColor: colors.cream,
+  },
+  // Lora wordmark, mirroring the web landing masthead.
+  logo: {
+    ...type.display,
+    fontFamily: fonts.loraBold,
+    textAlign: "center",
+    marginBottom: spacing.xl,
+  },
   input: {
+    backgroundColor: colors.white,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 16,
+    borderRadius: radii.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.md,
+    fontFamily: fonts.dmSans,
+    fontSize: 15,
+    color: colors.ink,
   },
+  inputFocused: { borderColor: colors.forest },
   button: {
-    backgroundColor: colors.ink,
-    borderRadius: 10,
-    paddingVertical: 14,
+    backgroundColor: colors.forest,
+    borderRadius: radii.md,
+    paddingVertical: spacing.md,
     alignItems: "center",
-    marginTop: 4,
+    marginTop: spacing.xs,
   },
   buttonDisabled: { opacity: 0.5 },
-  buttonText: { color: colors.white, fontSize: 16, fontWeight: "600" },
-  error: { color: colors.error, fontSize: 13 },
-  hint: { textAlign: "center", fontSize: 13, opacity: 0.5, marginTop: 12 },
+  buttonText: {
+    color: colors.white,
+    fontFamily: fonts.dmSansMedium,
+    fontSize: 15,
+    lineHeight: 22,
+  },
+  error: { ...type.caption, color: colors.error },
+  hint: { ...type.caption, textAlign: "center", marginTop: spacing.md },
 });

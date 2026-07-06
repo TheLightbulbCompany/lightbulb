@@ -23,6 +23,7 @@ point at dev.
 |----------|---------|---------|
 | `EXPO_PUBLIC_API_URL` | Backend REST API including `/api/v1` | `https://api-dev.isol8.co/api/v1` |
 | `EXPO_PUBLIC_WS_URL` | Explicit WS gateway override | derived (`api` host → `ws` host) |
+| `EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY` | Clerk publishable key (dev instance for dev builds) | required — app renders setup instructions without it |
 
 Prod values: `https://api.isol8.co/api/v1` / derived `wss://ws.isol8.co`.
 

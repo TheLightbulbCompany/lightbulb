@@ -51,7 +51,8 @@
     "swr": "^2.3.8",
     "tailwind-merge": "^3.4.0",
     "three": "^0.184.0",
-    "yaml": "^2.9.0"
+    "yaml": "^2.9.0",
+    "@isol8/shared": "workspace:*"
   },
   "devDependencies": {
     "@clerk/testing": "^1.13.28",

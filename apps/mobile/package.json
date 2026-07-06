@@ -11,12 +11,16 @@
     "export:ios": "expo export --platform ios"
   },
   "dependencies": {
+    "@clerk/clerk-expo": "^2.19.31",
+    "@isol8/shared": "workspace:^",
     "expo": "~57.0.2",
     "expo-constants": "~57.0.3",
+    "expo-crypto": "~15.0.0",
     "expo-font": "~57.0.0",
     "expo-image": "~57.0.0",
     "expo-linking": "~57.0.1",
     "expo-router": "~57.0.3",
+    "expo-secure-store": "~15.0.0",
     "expo-splash-screen": "~57.0.2",
     "expo-status-bar": "~57.0.0",
     "expo-system-ui": "~57.0.0",

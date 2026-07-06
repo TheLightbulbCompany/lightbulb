@@ -1,8 +1,13 @@
-import { Tabs } from "expo-router";
+import { useAuth } from "@clerk/clerk-expo";
+import { Redirect, Tabs } from "expo-router";
 
-// Tab shell mirroring the web sidebar's top-level sections. Icons and the
-// authenticated gateway provider arrive with Phases 1-2.
+// Tab shell mirroring the web sidebar's top-level sections, gated on Clerk
+// auth (the mobile equivalent of the web's middleware route protection).
 export default function AppLayout() {
+  const { isSignedIn, isLoaded } = useAuth();
+  if (!isLoaded) return null;
+  if (!isSignedIn) return <Redirect href="/(auth)/sign-in" />;
+
   return (
     <Tabs screenOptions={{ headerShown: true }}>
       <Tabs.Screen name="chat" options={{ title: "Chat" }} />

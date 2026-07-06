@@ -44,6 +44,12 @@ logger = logging.getLogger(__name__)
 # is named once here and reused, never inlined twice.
 OUR_ACCOUNT_ID: str = "877352799272"
 
+# The IAM role name of the read-only connector Isol8 stands up in its OWN account
+# for the AWS scope-tiers rail. Lives here (the base module both aws_cfn and
+# connections import) so the literal has a single home — aws_cfn already imports
+# bedrock_aip, so the constant can't live there without a cycle.
+CONNECTOR_ROLE_NAME = "isol8-readonly-connector"
+
 # The three AIP tiers. Order matters only for deterministic iteration.
 TIERS: tuple[str, str, str] = ("opus", "sonnet", "haiku")
 
@@ -579,7 +585,7 @@ async def restore_owner_bedrock(owner_id: str) -> None:
     await container_repo.update_fields(owner_id, {"bedrock_revoked": False})
 
 
-def _build_owner_aws_sts_doc(role_arns: list[str]) -> dict:
+def _build_owner_aws_sts_doc(role_arns: list[str], *, include_self_account_deny: bool = True) -> dict:
     """Build the per-owner inline IAM policy granting sts:AssumeRole on EXACTLY
     the owner-connected read-only role ARN(s), with our own account denied (PURE
     — no boto3, so it is safe to call synchronously under no AWS credentials).
@@ -603,23 +609,24 @@ def _build_owner_aws_sts_doc(role_arns: list[str]) -> dict:
     through here could reach roles in arbitrary external accounts. That
     validation lives in the Plan 2 connect endpoint, NOT here.
     """
-    return {
-        "Version": "2012-10-17",
-        "Statement": [
-            {
-                "Sid": "OwnerScopedAssumeReadonly",
-                "Effect": "Allow",
-                "Action": "sts:AssumeRole",
-                "Resource": list(role_arns),
-            },
+    statements: list[dict] = [
+        {
+            "Sid": "OwnerScopedAssumeReadonly",
+            "Effect": "Allow",
+            "Action": "sts:AssumeRole",
+            "Resource": list(role_arns),
+        },
+    ]
+    if include_self_account_deny:
+        statements.append(
             {
                 "Sid": "DenyAssumeIntoOurAccount",
                 "Effect": "Deny",
                 "Action": "sts:AssumeRole",
                 "Resource": f"arn:aws:iam::{OUR_ACCOUNT_ID}:role/*",
-            },
-        ],
-    }
+            }
+        )
+    return {"Version": "2012-10-17", "Statement": statements}
 
 
 async def put_owner_aws_sts_policy(owner_id: str, role_arns: list[str]) -> None:
@@ -633,6 +640,16 @@ async def put_owner_aws_sts_policy(owner_id: str, role_arns: list[str]) -> None:
     if not role_arns:
         raise ValueError("role_arns must be non-empty")
 
+    connector_arn = f"arn:aws:iam::{OUR_ACCOUNT_ID}:role/{CONNECTOR_ROLE_NAME}"
+    # Drop the self-account Deny ONLY when every our-account ARN in the list is
+    # the exact connector role. A mixed list (connector + any OTHER our-account
+    # ARN) must KEEP the Deny — otherwise the Allow would grant that other role
+    # and the dropped Deny would leave it assumable. External ARNs alongside the
+    # connector are fine (the our-account Deny never affected them).
+    our_account_prefix = f"arn:aws:iam::{OUR_ACCOUNT_ID}:role/"
+    our_account_arns = [a for a in role_arns if a.startswith(our_account_prefix)]
+    drop_self_account_deny = bool(our_account_arns) and all(a == connector_arn for a in our_account_arns)
+
     from core.dynamodb import run_in_thread
 
     client = _iam_client()
@@ -640,7 +657,9 @@ async def put_owner_aws_sts_policy(owner_id: str, role_arns: list[str]) -> None:
         client.put_role_policy,
         RoleName=_owner_role_name(owner_id),
         PolicyName="owner-aws-sts",
-        PolicyDocument=json.dumps(_build_owner_aws_sts_doc(role_arns)),
+        PolicyDocument=json.dumps(
+            _build_owner_aws_sts_doc(role_arns, include_self_account_deny=not drop_self_account_deny)
+        ),
     )
 
 

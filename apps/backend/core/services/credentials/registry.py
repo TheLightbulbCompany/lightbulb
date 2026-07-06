@@ -171,8 +171,9 @@ class AwsStsSpec(BaseModel):
     capped at read access by the two AWS-managed policy ARNs below. The aws_cli
     materializer delivers the short-lived STS credentials into the container."""
 
-    view_only_policy_arn: str = "arn:aws:iam::aws:policy/ViewOnlyAccess"
+    view_only_policy_arn: str = "arn:aws:iam::aws:policy/job-function/ViewOnlyAccess"
     read_only_policy_arn: str = "arn:aws:iam::aws:policy/ReadOnlyAccess"
+    power_user_policy_arn: str = "arn:aws:iam::aws:policy/PowerUserAccess"
     default_region: str = "us-east-1"
     cfn_template_url: str | None = None
 

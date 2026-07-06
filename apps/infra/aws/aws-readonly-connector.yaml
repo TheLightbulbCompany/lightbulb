@@ -21,15 +21,19 @@ Parameters:
     Type: String
     Description: >-
       The AWS managed read-only policy to attach (e.g.
-      arn:aws:iam::aws:policy/ViewOnlyAccess or arn:aws:iam::aws:policy/ReadOnlyAccess).
+      arn:aws:iam::aws:policy/job-function/ViewOnlyAccess or arn:aws:iam::aws:policy/ReadOnlyAccess).
     AllowedValues:
-      - "arn:aws:iam::aws:policy/ViewOnlyAccess"
+      - "arn:aws:iam::aws:policy/job-function/ViewOnlyAccess"
       - "arn:aws:iam::aws:policy/ReadOnlyAccess"
+      - "arn:aws:iam::aws:policy/PowerUserAccess"
 
 Resources:
   Isol8ReadOnlyRole:
     Type: AWS::IAM::Role
     Properties:
+      # Canonical name = backend bedrock_aip.CONNECTOR_ROLE_NAME. Must stay in
+      # lockstep with that constant and the service-stack iam:GetRole resource;
+      # a rename here silently breaks the self-account trust-pin check.
       RoleName: isol8-readonly-connector
       Description: >-
         Read-only role assumed by Isol8's per-owner agent container. Trust is

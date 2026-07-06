@@ -954,6 +954,16 @@ class EcsManager:
         if not container:
             raise EcsManagerError(f"No container found for user {user_id}", user_id)
 
+        # Warm the runtime-kind cache off the row we already hold so the base
+        # family selected below (_base_family_for_owner via the sync
+        # get_runtime_for_owner path) reflects THIS owner's runtime after a
+        # cold-cache backend restart — otherwise a hermes container would be
+        # cloned onto the isol8-{env}-openclaw base. No-op for an OpenClaw
+        # owner (runtime_kind absent/openclaw resolves openclaw).
+        from core.runtime import prime_runtime_kind
+
+        await prime_runtime_kind(user_id, container_row=container)
+
         access_point_id = container.get("access_point_id")
         if not access_point_id:
             raise EcsManagerError(f"No EFS access point for user {user_id}", user_id)
@@ -2050,6 +2060,17 @@ class EcsManager:
                 if not container or container.get("status") != "provisioning":
                     # External state change or row gone -- nothing to do.
                     return
+
+                # Warm the runtime-kind cache off the row we already hold so the
+                # readiness probe below (is_healthy → the sync
+                # get_runtime_for_owner path) targets THIS owner's port after a
+                # cold-cache backend restart — otherwise a hermes owner's probe
+                # would hit the OpenClaw gateway port (18789) instead of 8642
+                # and the container would hang in provisioning. No-op for an
+                # OpenClaw owner (runtime_kind absent/openclaw resolves openclaw).
+                from core.runtime import prime_runtime_kind
+
+                await prime_runtime_kind(user_id, container_row=container)
 
                 service_name = container["service_name"]
 

@@ -1240,6 +1240,91 @@ class TestAwaitRunningTransition:
             assert fields["task_arn"] == "arn:aws:ecs:us-east-1:123:task/cluster/abc"
 
     @pytest.mark.asyncio
+    async def test_cold_cache_hermes_owner_probes_api_server_port_from_row(self, manager, mock_ecs_client):
+        """Cold runtime-kind cache + a hermes container row → the readiness
+        probe must target the Hermes api_server port (8642), not the OpenClaw
+        gateway port (18789).
+
+        The poller self-primes the cache off the row it already holds, so the
+        port decision comes from the row — NOT a warm cache left over from
+        resolve_running_container. The autouse fixture clears the cache and this
+        test never calls prime_hermes, so a cold-cache backend restart is
+        simulated. Regression: without the self-prime the probe hits 18789 and a
+        hermes owner hangs in provisioning forever."""
+        mock_ecs_client.list_tasks.return_value = {"taskArns": ["arn:aws:ecs:us-east-1:123:task/cluster/abc"]}
+        mock_ecs_client.describe_tasks.return_value = {
+            "tasks": [
+                {
+                    "lastStatus": "RUNNING",
+                    "startedBy": "ecs-svc/primary",
+                    "attachments": [
+                        {
+                            "type": "ElasticNetworkInterface",
+                            "details": [{"name": "privateIPv4Address", "value": "10.0.1.42"}],
+                        }
+                    ],
+                }
+            ]
+        }
+        hermes_row = _make_container_dict(status="provisioning")
+        hermes_row["runtime_kind"] = "hermes"
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch("core.containers.ecs_manager.socket.create_connection") as mock_conn,
+            patch("core.containers.ecs_manager.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_conn.return_value.__enter__ = MagicMock(return_value=MagicMock())
+            mock_conn.return_value.__exit__ = MagicMock(return_value=False)
+            mock_repo.get_by_owner_id = AsyncMock(return_value=hermes_row)
+            mock_repo.update_fields = AsyncMock()
+
+            await manager._await_running_transition("org_hermes_cold")
+
+            # The probe resolved the Hermes port off the row, not the openclaw default.
+            args, _ = mock_conn.call_args
+            assert args[0] == ("10.0.1.42", 8642)
+            # Probe succeeded → transitioned to running.
+            fields = mock_repo.update_fields.call_args.args[1]
+            assert fields["status"] == "running"
+
+    @pytest.mark.asyncio
+    async def test_cold_cache_openclaw_owner_probes_gateway_port_from_row(self, manager, mock_ecs_client):
+        """An OpenClaw owner (runtime_kind absent) stays byte-identical under a
+        cold cache: the probe targets the gateway port 18789, exactly as before
+        the self-prime existed."""
+        mock_ecs_client.list_tasks.return_value = {"taskArns": ["arn:aws:ecs:us-east-1:123:task/cluster/abc"]}
+        mock_ecs_client.describe_tasks.return_value = {
+            "tasks": [
+                {
+                    "lastStatus": "RUNNING",
+                    "startedBy": "ecs-svc/primary",
+                    "attachments": [
+                        {
+                            "type": "ElasticNetworkInterface",
+                            "details": [{"name": "privateIPv4Address", "value": "10.0.1.42"}],
+                        }
+                    ],
+                }
+            ]
+        }
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch("core.containers.ecs_manager.socket.create_connection") as mock_conn,
+            patch("core.containers.ecs_manager.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_conn.return_value.__enter__ = MagicMock(return_value=MagicMock())
+            mock_conn.return_value.__exit__ = MagicMock(return_value=False)
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock()
+
+            await manager._await_running_transition("org_openclaw_cold")
+
+            args, _ = mock_conn.call_args
+            assert args[0] == ("10.0.1.42", GATEWAY_PORT)
+
+    @pytest.mark.asyncio
     async def test_transitions_to_error_when_circuit_breaker_trips(self, manager, mock_ecs_client):
         """ECS deployment rolloutState=FAILED -> write status=error and exit.
 
@@ -1766,6 +1851,50 @@ class TestResizeUserContainer:
             assert volumes[0]["efsVolumeConfiguration"]["authorizationConfig"]["accessPointId"] == "fsap-user-789"
             assert call_kwargs["cpu"] == "1024"
             assert call_kwargs["memory"] == "2048"
+
+    @pytest.mark.asyncio
+    async def test_resize_cold_cache_hermes_owner_clones_hermes_base_from_row(self, manager, mock_ecs_client):
+        """Cold runtime-kind cache + a hermes container row → resize must clone
+        from the isol8-{env}-hermes base family, not isol8-{env}-openclaw.
+
+        resize self-primes the cache off the row it already holds, so the
+        base-family decision comes from the row — NOT a warm cache. The autouse
+        fixture clears the cache and this test never calls prime_hermes, so a
+        cold-cache backend restart is simulated. Regression: without the
+        self-prime, resize clones a hermes container onto the OpenClaw base."""
+        mock_ecs_client.describe_services.return_value = {
+            "services": [
+                {
+                    "serviceName": "openclaw-user_test_123-f4ae64abb2db",
+                    "status": "ACTIVE",
+                    "desiredCount": 1,
+                    "runningCount": 1,
+                    "deployments": [{"id": "ecs-svc/primary", "status": "PRIMARY", "rolloutState": "IN_PROGRESS"}],
+                }
+            ]
+        }
+        hermes_row = _make_container_dict(status="running", access_point_id="fsap-user-789")
+        hermes_row["runtime_kind"] = "hermes"
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+            patch("core.containers.ecs_manager.asyncio.to_thread") as mock_to_thread,
+        ):
+
+            async def passthrough(fn, *args, **kwargs):
+                return fn(*args, **kwargs)
+
+            mock_to_thread.side_effect = passthrough
+            mock_repo.get_by_owner_id = AsyncMock(return_value=hermes_row)
+            mock_repo.update_fields = AsyncMock(return_value=hermes_row)
+
+            await manager.resize_user_container("org_hermes_cold", new_cpu="1024", new_memory="2048")
+
+            # Base-family cloned reflects the row's runtime_kind, not the openclaw default.
+            mock_ecs_client.describe_task_definition.assert_called_once_with(
+                taskDefinition="isol8-dev-hermes",
+            )
 
     @pytest.mark.asyncio
     async def test_resize_fires_running_transition_poller(self, manager, mock_ecs_client):

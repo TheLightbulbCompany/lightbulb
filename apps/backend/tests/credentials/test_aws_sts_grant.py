@@ -31,6 +31,21 @@ def test_aws_sts_policy_doc_allows_multiple_exact_arns_never_wildcard():
     assert doc["Version"] == "2012-10-17"
 
 
+def test_self_account_deny_omitted_when_flag_false():
+    doc = bedrock_aip._build_owner_aws_sts_doc(
+        ["arn:aws:iam::877352799272:role/isol8-readonly-connector"],
+        include_self_account_deny=False,
+    )
+    assert all(s["Effect"] != "Deny" for s in doc["Statement"])
+    allow = next(s for s in doc["Statement"] if s["Effect"] == "Allow")
+    assert allow["Resource"] == ["arn:aws:iam::877352799272:role/isol8-readonly-connector"]
+
+
+def test_self_account_deny_present_by_default():
+    doc = bedrock_aip._build_owner_aws_sts_doc(["arn:aws:iam::111122223333:role/ro"])
+    assert any(s["Effect"] == "Deny" for s in doc["Statement"])
+
+
 @pytest.mark.asyncio
 async def test_put_uses_owner_aws_sts_policy_name_on_owner_role(monkeypatch):
     fake = MagicMock()
@@ -61,6 +76,31 @@ async def test_put_rejects_empty_role_arns(monkeypatch):
         await bedrock_aip.put_owner_aws_sts_policy("some_owner", [])
 
     fake.put_role_policy.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_put_omits_self_account_deny_for_connector_arn(monkeypatch):
+    fake = MagicMock()
+    monkeypatch.setattr(bedrock_aip, "_iam_client", lambda: fake)
+    monkeypatch.setattr(bedrock_aip.settings, "ENVIRONMENT", "dev", raising=False)
+
+    await bedrock_aip.put_owner_aws_sts_policy("org_self", ["arn:aws:iam::877352799272:role/isol8-readonly-connector"])
+    doc = json.loads(fake.put_role_policy.call_args.kwargs["PolicyDocument"])
+    assert all(s["Effect"] != "Deny" for s in doc["Statement"])
+
+
+@pytest.mark.asyncio
+async def test_put_keeps_deny_for_non_connector_our_account_arn(monkeypatch):
+    # HARDENING: only the EXACT connector ARN drops the deny. Any OTHER
+    # our-account ARN (e.g. a bug or ungated caller) MUST keep the deny so the
+    # assume stays blocked — the tenant-protection guarantee.
+    fake = MagicMock()
+    monkeypatch.setattr(bedrock_aip, "_iam_client", lambda: fake)
+    monkeypatch.setattr(bedrock_aip.settings, "ENVIRONMENT", "dev", raising=False)
+
+    await bedrock_aip.put_owner_aws_sts_policy("org_x", ["arn:aws:iam::877352799272:role/isol8-prod-service-x"])
+    doc = json.loads(fake.put_role_policy.call_args.kwargs["PolicyDocument"])
+    assert any(s["Effect"] == "Deny" for s in doc["Statement"])
 
 
 @pytest.mark.asyncio

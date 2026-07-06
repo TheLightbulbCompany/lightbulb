@@ -585,7 +585,7 @@ async def restore_owner_bedrock(owner_id: str) -> None:
     await container_repo.update_fields(owner_id, {"bedrock_revoked": False})
 
 
-def _build_owner_aws_sts_doc(role_arns: list[str]) -> dict:
+def _build_owner_aws_sts_doc(role_arns: list[str], *, include_self_account_deny: bool = True) -> dict:
     """Build the per-owner inline IAM policy granting sts:AssumeRole on EXACTLY
     the owner-connected read-only role ARN(s), with our own account denied (PURE
     — no boto3, so it is safe to call synchronously under no AWS credentials).
@@ -609,23 +609,24 @@ def _build_owner_aws_sts_doc(role_arns: list[str]) -> dict:
     through here could reach roles in arbitrary external accounts. That
     validation lives in the Plan 2 connect endpoint, NOT here.
     """
-    return {
-        "Version": "2012-10-17",
-        "Statement": [
-            {
-                "Sid": "OwnerScopedAssumeReadonly",
-                "Effect": "Allow",
-                "Action": "sts:AssumeRole",
-                "Resource": list(role_arns),
-            },
+    statements: list[dict] = [
+        {
+            "Sid": "OwnerScopedAssumeReadonly",
+            "Effect": "Allow",
+            "Action": "sts:AssumeRole",
+            "Resource": list(role_arns),
+        },
+    ]
+    if include_self_account_deny:
+        statements.append(
             {
                 "Sid": "DenyAssumeIntoOurAccount",
                 "Effect": "Deny",
                 "Action": "sts:AssumeRole",
                 "Resource": f"arn:aws:iam::{OUR_ACCOUNT_ID}:role/*",
-            },
-        ],
-    }
+            }
+        )
+    return {"Version": "2012-10-17", "Statement": statements}
 
 
 async def put_owner_aws_sts_policy(owner_id: str, role_arns: list[str]) -> None:
@@ -639,6 +640,12 @@ async def put_owner_aws_sts_policy(owner_id: str, role_arns: list[str]) -> None:
     if not role_arns:
         raise ValueError("role_arns must be non-empty")
 
+    connector_arn = f"arn:aws:iam::{OUR_ACCOUNT_ID}:role/{CONNECTOR_ROLE_NAME}"
+    # Drop the self-account Deny ONLY for the exact connector role (never for any
+    # other our-account ARN) — keeps the tenant-protection Deny intact even if a
+    # bad ARN somehow reaches here.
+    has_connector = any(a == connector_arn for a in role_arns)
+
     from core.dynamodb import run_in_thread
 
     client = _iam_client()
@@ -646,7 +653,7 @@ async def put_owner_aws_sts_policy(owner_id: str, role_arns: list[str]) -> None:
         client.put_role_policy,
         RoleName=_owner_role_name(owner_id),
         PolicyName="owner-aws-sts",
-        PolicyDocument=json.dumps(_build_owner_aws_sts_doc(role_arns)),
+        PolicyDocument=json.dumps(_build_owner_aws_sts_doc(role_arns, include_self_account_deny=not has_connector)),
     )
 
 

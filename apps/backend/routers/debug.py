@@ -73,11 +73,18 @@ async def provision_container(
 
     try:
         gateway_token = secrets.token_urlsafe(32)
+        # Prime the runtime-kind cache off the (dev-switch-set) row so the
+        # runtime-aware config write below lands the right file, and mint the
+        # per-container Hermes bearer exactly as provision_user_container does.
+        # An OpenClaw owner resolves "openclaw" and gets no API_SERVER_KEY, so
+        # this path stays byte-identical for the common case.
+        runtime_kind = await prime_runtime_kind(owner_id, container_row=existing)
+        api_server_key = secrets.token_urlsafe(32) if runtime_kind == "hermes" else None
         ecs_manager = get_ecs_manager()
 
         # Step 1: Create ECS service (desiredCount=0) — creates access
         # point and EFS dir, but does NOT start the container yet.
-        service_name = await ecs_manager.create_user_service(owner_id, gateway_token)
+        service_name = await ecs_manager.create_user_service(owner_id, gateway_token, api_server_key=api_server_key)
 
         # Step 2: Write all configs to EFS before the container boots. This
         # is the single source of truth for per-container files — it writes

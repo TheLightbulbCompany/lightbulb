@@ -1,0 +1,59 @@
+# =============================================================================
+# Mobile CI (PRs only) — typecheck / lint / iOS Metro bundle for apps/mobile
+# and its @isol8/shared dependency. No EAS credentials needed: `expo export`
+# runs the full Metro resolution+bundle on Linux, which catches the dominant
+# failure class (RN-unresolvable imports) without a macOS builder.
+# =============================================================================
+name: Mobile CI
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'apps/mobile/**'
+      - 'packages/shared/**'
+      - '.github/workflows/mobile-ci.yml'
+      - 'pnpm-lock.yaml'
+
+env:
+  NODE_VERSION: "20"
+
+jobs:
+  check-and-bundle:
+    name: Check & Bundle
+    runs-on: ${{ vars.CI_RUNNER }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Shared tests
+        run: pnpm --filter @isol8/shared run test
+
+      - name: Shared type check
+        run: pnpm --filter @isol8/shared run typecheck
+
+      - name: Shared lint
+        run: pnpm --filter @isol8/shared run lint
+
+      - name: Mobile type check
+        run: pnpm --filter @isol8/mobile run typecheck
+
+      - name: Mobile lint
+        run: pnpm --filter @isol8/mobile run lint
+
+      - name: Mobile iOS bundle (Metro export)
+        env:
+          CI: "1"
+        run: pnpm --filter @isol8/mobile run export:ios

@@ -476,6 +476,24 @@ def _read_persona(owner_id: str, agent_id: str) -> str | None:
     return text or None
 
 
+def _merge_instructions(persona: str | None, context: str | None) -> str | None:
+    """Merge an agent's seeded ``persona`` with the caller's per-run ``context``
+    into the single ``instructions`` blob for ``POST /v1/runs``.
+
+    INVARIANT — persona FIRST, then context. The persona defines WHO the agent
+    is (identity/role/boundaries); the per-run context (Paperclip issue text,
+    etc.) is supplementary and must NEVER replace it. Either side may be absent:
+    persona-only (a plain webchat turn with no issue context), context-only (an
+    unseeded agent), or neither (``None`` → the run carries no instructions).
+    Blank/whitespace-only parts are dropped so the merge never emits a stray
+    separator.
+    """
+    parts = [p for p in (persona, context) if p and p.strip()]
+    if not parts:
+        return None
+    return "\n\n".join(part.strip() for part in parts)
+
+
 # ---------------------------------------------------------------------------
 # UsageMeter facet: feed run.completed usage into the platform counters.
 #
@@ -568,6 +586,7 @@ class HermesRuntime:
         message: str,
         session_key: str,
         on_event: ChatEventCallback,
+        context: str | None = None,
     ) -> ChatResult | None:
         """Drive ONE user turn against the owner's Hermes container.
 
@@ -590,27 +609,38 @@ class HermesRuntime:
         on the run body — any Paperclip/context must ride ``input``/``instructions``
         text.
 
-        Persona: the agent's seeded persona (``seed_owner_agents`` wrote it to
-        ``personas/{agent_id}.txt``) is read here and passed as ``instructions``
-        so the agent boots in-character. This closes the IdentitySeeder loop for
-        the spike. NOTE (H3): the routing bridge threads per-run Paperclip/issue
-        CONTEXT — it must MERGE that context WITH this persona in ``instructions``
-        (persona first, then context), not replace it.
+        Persona + per-run context: the agent's seeded persona
+        (``seed_owner_agents`` wrote it to ``personas/{agent_id}.txt``) is read
+        here and MERGED with the caller's optional per-run ``context`` (Paperclip
+        issue text, etc.) into the ``instructions`` blob — persona FIRST, then
+        context, never replacing the persona (``_merge_instructions``). The chat
+        bridge owns the context; a plain webchat turn passes none, so the run
+        boots on the persona alone.
+
+        ``X-Hermes-Session-Key``: the run also carries the session key as an HTTP
+        header (in addition to the body ``session_id``) because the container's
+        ``gateway.session_context`` bag that tools read is populated from the
+        header, not the body field.
         """
         import httpx
 
         ip, key = await self._resolve(owner_id)
         base = f"http://{ip}:{HERMES_API_PORT}"
-        headers = {"Authorization": f"Bearer {key}"}
+        headers = {
+            "Authorization": f"Bearer {key}",
+            # Populates the container's gateway.session_context bag (header-fed,
+            # not body-fed). Rides every run-scoped call on this headers dict.
+            "X-Hermes-Session-Key": session_key,
+        }
         # Hermes reads ``input`` (the user turn) + ``session_id`` (conversation
         # scope). ``metadata`` is dropped server-side, so nothing rides it.
         run_body: dict[str, Any] = {"input": message, "session_id": session_key}
-        # Boot the agent in-character with its seeded persona. Best-effort: an
-        # unseeded agent simply runs without instructions (H3 merges per-run
-        # context onto this).
-        persona = _read_persona(owner_id, agent_id)
-        if persona:
-            run_body["instructions"] = persona
+        # Boot the agent in-character with its seeded persona, merged persona-
+        # first with any per-run context. Best-effort: an unseeded agent with no
+        # context simply runs without instructions.
+        instructions = _merge_instructions(_read_persona(owner_id, agent_id), context)
+        if instructions:
+            run_body["instructions"] = instructions
 
         async with _client_factory() as client:
             resp = await client.post(f"{base}/v1/runs", json=run_body, headers=headers)

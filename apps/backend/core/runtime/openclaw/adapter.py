@@ -226,6 +226,7 @@ class OpenClawRuntime:
         message: str,
         session_key: str,
         on_event,
+        context: str | None = None,
     ):
         """Not routed through the port yet — deferred to Phase C.
 

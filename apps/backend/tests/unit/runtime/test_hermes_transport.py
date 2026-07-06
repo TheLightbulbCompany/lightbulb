@@ -20,6 +20,7 @@ from core.runtime.hermes.adapter import (
     HermesRuntime,
     _auto_approve_body,
     _iter_sse,
+    _merge_instructions,
     _translate_event,
 )
 
@@ -406,6 +407,81 @@ async def test_send_chat_cold_container_raises(monkeypatch):
 
     with pytest.raises(ContainerNotRunningError):
         await HermesRuntime().send_chat("org_1", "a", "hi", "agent:a:u1", on_event)
+
+
+# ---------------------------------------------------------------------------
+# _merge_instructions — persona-first-then-context invariant
+# ---------------------------------------------------------------------------
+
+
+def test_merge_instructions_persona_first_then_context():
+    merged = _merge_instructions("You are Friday.", "Issue #42 context.")
+    assert merged == "You are Friday.\n\nIssue #42 context."
+    # The load-bearing invariant: persona precedes context, never the reverse.
+    assert merged.index("You are Friday.") < merged.index("Issue #42 context.")
+
+
+def test_merge_instructions_persona_only():
+    assert _merge_instructions("You are Friday.", None) == "You are Friday."
+
+
+def test_merge_instructions_context_only():
+    # Unseeded agent + a per-run context → context stands alone.
+    assert _merge_instructions(None, "Issue context.") == "Issue context."
+
+
+def test_merge_instructions_neither_is_none():
+    assert _merge_instructions(None, None) is None
+    assert _merge_instructions("  ", "") is None
+
+
+async def test_send_chat_merges_persona_and_context_and_sets_session_header(monkeypatch):
+    # A seeded persona MERGED persona-first with the caller's per-run context,
+    # plus the X-Hermes-Session-Key header on the run POST.
+    monkeypatch.setattr("core.runtime.hermes.adapter._read_persona", lambda o, a: "You are Friday.")
+    captured: dict = {}
+
+    def handler(request):
+        if request.method == "POST" and request.url.path == "/v1/runs":
+            captured["body"] = json.loads(request.content)
+            captured["session_header"] = request.headers.get("x-hermes-session-key")
+            return httpx.Response(202, json={"run_id": _RUN_ID, "status": "started"})
+        return httpx.Response(200, content=_sse([("run.completed", {})]))
+
+    _install(monkeypatch, handler)
+
+    async def on_event(ev):
+        pass
+
+    await HermesRuntime().send_chat(
+        "org_1", "agent_x", "hi there", "agent:agent_x:u1", on_event, context="Issue #42 context."
+    )
+    instructions = captured["body"]["instructions"]
+    assert instructions == "You are Friday.\n\nIssue #42 context."
+    assert instructions.index("You are Friday.") < instructions.index("Issue #42 context.")
+    # The session key rides the header (bag is header-fed, not body-fed) AND the
+    # body session_id.
+    assert captured["session_header"] == "agent:agent_x:u1"
+    assert captured["body"]["session_id"] == "agent:agent_x:u1"
+
+
+async def test_send_chat_persona_only_when_no_context(monkeypatch):
+    monkeypatch.setattr("core.runtime.hermes.adapter._read_persona", lambda o, a: "You are Friday.")
+    captured: dict = {}
+
+    def handler(request):
+        if request.method == "POST" and request.url.path == "/v1/runs":
+            captured["body"] = json.loads(request.content)
+            return httpx.Response(202, json={"run_id": _RUN_ID, "status": "started"})
+        return httpx.Response(200, content=_sse([("run.completed", {})]))
+
+    _install(monkeypatch, handler)
+
+    async def on_event(ev):
+        pass
+
+    await HermesRuntime().send_chat("org_1", "agent_x", "hi", "agent:agent_x:u1", on_event)
+    assert captured["body"]["instructions"] == "You are Friday."
 
 
 async def test_openclaw_send_chat_is_phase_c_stub():

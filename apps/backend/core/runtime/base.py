@@ -319,6 +319,7 @@ class Runtime(Protocol):
         message: str,
         session_key: str,
         on_event: ChatEventCallback,
+        context: str | None = None,
     ) -> "ChatResult | None": ...
 
     # --- Provisioner facet: launching / configuring a container -----------

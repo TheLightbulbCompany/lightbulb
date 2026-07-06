@@ -86,26 +86,25 @@ the founder connect our own account through the real flow.
 
 ### 0. Configuration — nothing hardcoded (hard requirement)
 
-**No owner ids, account ids, or role ARNs appear as literals in source.** All
-identity-specific values are configuration- or context-derived:
+**No owner ids, account ids, or role ARNs appear as literals in source.**
 
-- The self-account allowlist owner id is a new per-env setting
-  `PLATFORM_SELF_ACCOUNT_OWNER_ID`, wired exactly like `PLATFORM_OPS_OWNER_ID`:
-  `PLATFORM_SELF_ACCOUNT_OWNER_ID_DEV`/`_PROD` GitHub secrets → `app.ts` synth
-  env → `service-stack.ts` task env → `config.py` → backend. **Empty ⇒ no owner
-  may connect our own account (fail-closed).** For the CDK boundary carve
-  (`container-stack.ts`), the same value flows from the synth env — the founder
-  org id never appears in committed infra code.
+- The self-account gate needs **no owner-id config at all** — it verifies the
+  connected role's *trust policy* (§3), not the caller's identity.
+- The one unavoidable founder-identity value is the static CDK permission
+  boundary (it cannot verify a trust policy at runtime). There we **reuse the
+  existing `PLATFORM_OPS_OWNER_ID`** — same founder org, already wired
+  (`PLATFORM_OPS_OWNER_ID_DEV`/`_PROD` GitHub secrets → `app.ts` synth env →
+  `service-stack.ts` → `config.py`, and readable at synth from
+  `process.env.PLATFORM_OPS_OWNER_ID_{DEV,PROD}`). **Empty ⇒ the boundary Deny
+  stays fully broad (fail-closed).** No new config knob is added. (The
+  coupling is benign: the boundary exemption grants nothing without a
+  separately trust-pinned connection.)
 - The platform account id uses existing derived sources — `this.account` in
-  CDK, and the pre-existing `bedrock_aip.OUR_ACCOUNT_ID` in the backend (not a
-  new literal). No new account-id literals are introduced.
-- The connector role ARN the allowlisted owner may assume is *composed* from the
-  configured owner id + account + the fixed connector role name, not written as
-  a literal.
+  CDK, `bedrock_aip.OUR_ACCOUNT_ID` in the backend. No new account-id literals.
 
-This mirrors the repo's established no-Clerk-ids-in-git posture. The concrete
-founder-org id (`org_3DBS…`) named elsewhere in this spec is illustrative; it
-lives only in the deploy secret, never in code.
+This mirrors the repo's no-Clerk-ids-in-git posture. The founder-org id
+(`org_3DBS…`) named elsewhere is illustrative; it lives only in the deploy
+secret, never in code.
 
 ### 1. Scope tiers (uniform, pure AWS managed-policy presets)
 
@@ -147,30 +146,35 @@ assertion so the malformed value can never pass again. This is a live-breaking
 default-path bug; it is the first commit in the stack (and could be
 cherry-picked as a standalone hotfix if we want it out before the rest).
 
-### 3. Self-account carve-out (narrow, exact-match)
+### 3. Self-account support — trust-pin verification (replaces the flat block)
 
-Allow exactly one owner — the founder org `org_3DBS8G83oPrMm49yN2b70EjoFpN` — to
-connect account `877352799272`, and only to assume *its own* connector role.
-Every other owner remains fully blocked. The allowlist is the configured
-`PLATFORM_SELF_ACCOUNT_OWNER_ID` (§0 — per-env config, never a source literal,
-fail-closed when unset). It gates all three layers:
+The self-account *block* becomes a *verification*: a role in our account may be
+connected **only if its trust policy pins the connecting owner** — it trusts
+that owner's per-owner principal AND requires that owner's unique ExternalId.
+Only we can create a role in our account, and our infra roles (which trust
+account-root, not a specific owner) never satisfy this — so tenants stay fully
+blocked, and even we cannot connect a non-connector role. **No owner-id
+allowlist.** The three layers:
 
-- **`connections.py:305`** — the 400-gate skips only when
-  `owner_id == PLATFORM_SELF_ACCOUNT_OWNER_ID` (and the pasted role account ==
-  our account). Still validates the ARN shape and that it is the expected
-  connector role.
-- **`bedrock_aip.py` inline deny** — for the allowlisted owner, the
-  `DenyAssumeIntoOurAccount` statement is narrowed so it does **not** cover the
-  one exact connector role ARN that owner is permitted to assume; the broad
-  deny into every other role in our account stays.
-- **`container-stack.ts` boundary deny** — same exact-ARN carve on the
-  permission boundary (requires a CDK deploy). This is the hardest floor; an
-  explicit `Deny` always wins, so the carve must be an exact-ARN exception, not
-  a blanket removal.
+- **`connections.py` account gate** — for an our-account ARN, `iam:GetRole` the
+  role and verify its trust Allow-statement lists the connecting owner's
+  principal (`aws_cfn.owner_task_role_arn(owner_id)`) and its
+  `Condition.StringEquals["sts:ExternalId"]` equals the owner's minted
+  ExternalId. Reject (400) otherwise. (Needs `iam:GetRole` granted to the
+  backend on the connector role — CDK.)
+- **`bedrock_aip.py` inline deny** — omit the `DenyAssumeIntoOurAccount`
+  statement when any connected ARN is in our account (data-driven from the ARN,
+  since it only got here by passing the trust-pin gate). The exact-ARN Allow is
+  then the sole grant; deny-by-default blocks everything else.
+- **`container-stack.ts` boundary deny** — static IAM, so it can't verify a
+  trust policy: exempt the founder's per-owner role via an `aws:PrincipalArn`
+  condition, reusing `PLATFORM_OPS_OWNER_ID` (§0). Every other owner stays
+  fully denied; unset ⇒ Deny stays fully broad.
 
 The result: the founder org's per-owner task role may `AssumeRole` into exactly
-`arn:aws:iam::877352799272:role/isol8-readonly-connector` (its own connector),
-nothing else; all customer isolation is preserved.
+`arn:aws:iam::877352799272:role/isol8-readonly-connector` (its own trust-pinned
+connector), nothing else; all customer isolation is preserved, and no owner —
+including us — can connect an arbitrary our-account role.
 
 ### 4. Approach A — connecting our own account is the live validation
 

@@ -2,15 +2,15 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make the `aws_sts` integration offer a three-tier scope choice (ViewOnly/ReadOnly/PowerUser), fix the broken default-path ViewOnly ARN, and let one config-allowlisted owner connect Isol8's own AWS account — proven live end-to-end.
+**Goal:** Make the `aws_sts` integration offer a three-tier scope choice (ViewOnly/ReadOnly/PowerUser), fix the broken default-path ViewOnly ARN, and let the founder org connect Isol8's own AWS account — gated by a **trust-pin check** (the connected role must trust the connecting owner + their ExternalId), not an owner allowlist — proven live end-to-end.
 
-**Architecture:** The integration delivers scoped AWS credentials into the agent's exec env via a cross-account `AssumeRole` (CloudFormation-created connector role, capped by an AWS managed policy the owner picks). This plan expands the pickable presets, fixes a malformed ARN, and carves a narrow, config-driven exception through the three self-account deny layers so the founder org can assume exactly its own connector role in account `877352799272`. The `aws-exec-profile` plugin and credential rail are unchanged.
+**Architecture:** The integration delivers scoped AWS credentials into the agent's exec env via a cross-account `AssumeRole` (CloudFormation-created connector role, capped by an AWS managed policy the owner picks). This plan expands the pickable presets, fixes a malformed ARN, and replaces the flat self-account *block* with a *verification*: a role in our account may be connected only if its trust policy pins the connecting owner (principal + their ExternalId) — something only we can create, and which our infra roles never satisfy. The `aws-exec-profile` plugin and credential rail are unchanged.
 
 **Tech Stack:** FastAPI + Pydantic (backend), AWS CDK / CloudFormation (infra), Next.js/React + TypeScript (frontend), pytest + vitest.
 
 ## Global Constraints
 
-- **Nothing hardcoded.** No owner ids, account ids, or role ARNs as source literals. The self-account allowlist owner id is the per-env setting `PLATFORM_SELF_ACCOUNT_OWNER_ID`, wired exactly like `PLATFORM_OPS_OWNER_ID` (GitHub secret → `app.ts` synth env → `service-stack.ts` → `config.py`). Empty ⇒ **no owner may connect our account (fail-closed)**. Account id uses existing `this.account` (CDK) / `bedrock_aip.OUR_ACCOUNT_ID` (backend) — introduce no new account literals.
+- **Nothing hardcoded.** No owner ids, account ids, or role ARNs as source literals. The self-account gate needs **no owner-id config** — it verifies the connected role's trust policy. The one place a founder-identity value is unavoidable is the static CDK permission boundary (it can't verify a trust policy at runtime); there we **reuse the existing `PLATFORM_OPS_OWNER_ID`** (same founder org, already wired via GitHub secret → `app.ts` synth env → `service-stack.ts` → `config.py`; also readable from `process.env.PLATFORM_OPS_OWNER_ID_{DEV,PROD}` at synth). Empty ⇒ boundary Deny stays fully broad (fail-closed). Account id uses existing `this.account` (CDK) / `bedrock_aip.OUR_ACCOUNT_ID` (backend).
 - **Correct managed-policy ARNs:** `arn:aws:iam::aws:policy/job-function/ViewOnlyAccess`, `arn:aws:iam::aws:policy/ReadOnlyAccess`, `arn:aws:iam::aws:policy/PowerUserAccess`. (`ViewOnlyAccess` is a job-function policy — the `/job-function/` segment is mandatory or IAM returns `NoSuchEntity`.)
 - **The connector role name is the fixed literal `isol8-readonly-connector`** (CFN `RoleName`) — do not rename (existing connections reference it).
 - **`AdministratorAccess` is never offered.**
@@ -24,13 +24,11 @@
 - `apps/backend/core/services/credentials/registry.py` — `AwsStsSpec` (the policy-ARN defaults). **Modify.**
 - `apps/backend/core/services/credentials/providers.yaml` — the `aws` provider's `aws_sts` block. **Modify.**
 - `apps/infra/aws/aws-readonly-connector.yaml` — the connector CFN template (`AllowedValues`). **Modify.**
-- `apps/backend/routers/connections.py` — `aws-setup` (tier response) + `aws-complete` (self-account gate). **Modify.**
+- `apps/backend/core/services/credentials/aws_cfn.py` — connect-flow helpers; add `CONNECTOR_ROLE_NAME`. **Modify.**
+- `apps/backend/routers/connections.py` — `aws-setup` (tier response) + `aws-complete` (self-account trust-pin gate). **Modify.**
 - `apps/backend/core/billing/bedrock_aip.py` — `_build_owner_aws_sts_doc` / `put_owner_aws_sts_policy` (inline grant + self-account deny). **Modify.**
-- `apps/backend/core/config.py` — new `PLATFORM_SELF_ACCOUNT_OWNER_ID` setting. **Modify.**
-- `apps/infra/lib/app.ts` — Synth `env:` block (new `_DEV`/`_PROD` secrets). **Modify.**
-- `apps/infra/lib/stacks/service-stack.ts` — backend task-env injection of the setting. **Modify.**
-- `apps/infra/lib/stacks/container-stack.ts` — `BoundaryDenyAssumeIntoOurAccount` carve. **Modify.**
-- `.github/workflows/deploy.yml` — regenerated by `cdk synth`. **Regenerate + commit.**
+- `apps/infra/lib/stacks/service-stack.ts` — grant the backend `iam:GetRole` on the connector role. **Modify.**
+- `apps/infra/lib/stacks/container-stack.ts` — `BoundaryDenyAssumeIntoOurAccount` carve (reuse `PLATFORM_OPS_OWNER_ID`). **Modify.**
 - `apps/frontend/src/components/settings/AwsConnectCard.tsx` — scope picker (add PowerUser). **Modify.**
 - Tests: `apps/backend/tests/unit/routers/test_connections.py`, `apps/backend/tests/credentials/test_aws_sts_grant.py`. **Modify/add.**
 
@@ -222,7 +220,7 @@ type AwsScope = "view_only" | "read_only" | "power_user";
         )}
 ```
 
-(Ensure the `power_user` `quick_create_url` / `policy_arn` is read from `setup.power_user` wherever `setup.view_only` / `setup.read_only` are consumed for the selected `scope` — mirror the existing `scope === "read_only" ? setup.read_only : setup.view_only` selection so the third branch resolves `setup.power_user`.)
+(Ensure the selected scope's `quick_create_url` / `policy_arn` is read from `setup.power_user` wherever `setup.view_only` / `setup.read_only` are consumed for the chosen `scope` — mirror the existing `scope === "read_only" ? setup.read_only : setup.view_only` selection so the third branch resolves `setup.power_user`. `tsc` will flag any exhaustive branch that misses `power_user`.)
 
 - [ ] **Step 3: Typecheck**
 
@@ -244,111 +242,123 @@ git commit -m "feat(aws): PowerUser tier in the AWS connect picker"
 
 ---
 
-### Task 4: `PLATFORM_SELF_ACCOUNT_OWNER_ID` config wiring (nothing hardcoded)
+### Task 4: Grant the backend `iam:GetRole` on the connector role
 
-Add the per-env setting, mirroring `PLATFORM_OPS_OWNER_ID` exactly. No behavior yet — just the plumbing later tasks read.
+The self-account trust-pin gate (Task 5) inspects a pasted our-account role's trust policy via `iam:GetRole`. Grant the backend that read, scoped to the fixed connector role.
 
 **Files:**
-- Modify: `apps/backend/core/config.py:271` (after `PLATFORM_OPS_TOKEN_KEY`)
-- Modify: `apps/infra/lib/app.ts:63-64` (Synth `env:` block)
-- Modify: `apps/infra/lib/stacks/service-stack.ts:1180-1183`
-- Regenerate: `.github/workflows/deploy.yml`
+- Modify: `apps/infra/lib/stacks/service-stack.ts` (the backend task role's IAM policy — grep for the statement granting the backend `iam:PutRolePolicy` on per-owner roles, used by `bedrock_aip`; add the read alongside it)
 
 **Interfaces:**
-- Produces: `settings.PLATFORM_SELF_ACCOUNT_OWNER_ID: str` (default `""`), consumed by Tasks 5-7.
+- Produces: the backend task role may call `iam:GetRole` on `arn:aws:iam::{account}:role/isol8-readonly-connector`.
 
-- [ ] **Step 1: Add the setting to `config.py` (after `PLATFORM_OPS_TOKEN_KEY`, line 271)**
+- [ ] **Step 1: Locate the backend's IAM grant**
 
-```python
-    # Owner (user_*/org_*) permitted to connect Isol8's OWN AWS account through
-    # the aws_sts integration — the self-account carve-out. Per-env (dev/prod
-    # Clerk mint different ids). Empty ⇒ NO owner may connect our account
-    # (fail-closed). Never a source literal.
-    PLATFORM_SELF_ACCOUNT_OWNER_ID: str = os.getenv("PLATFORM_SELF_ACCOUNT_OWNER_ID", "")
-```
+Run: `cd apps/infra && grep -n "PutRolePolicy\|iam:\|owner-bedrock" lib/stacks/service-stack.ts | head`
+Expected: find the `iam.PolicyStatement` where the backend is granted IAM permissions on per-owner roles.
 
-- [ ] **Step 2: Export the `_DEV`/`_PROD` secrets in the Synth env (`app.ts`, inside the `env:` block after the `PLATFORM_OPS_OWNER_ID_*` lines at 63-64)**
+- [ ] **Step 2: Add a scoped `iam:GetRole` statement to the backend task role**
+
+Add (adjacent to the existing backend IAM statement):
 
 ```typescript
-      PLATFORM_OPS_OWNER_ID_DEV: "${{ secrets.PLATFORM_OPS_OWNER_ID_DEV }}",
-      PLATFORM_OPS_OWNER_ID_PROD: "${{ secrets.PLATFORM_OPS_OWNER_ID_PROD }}",
-      // Owner permitted to connect Isol8's own AWS account (self-account
-      // carve-out), per env. Empty keeps the carve-out off (fail-closed).
-      PLATFORM_SELF_ACCOUNT_OWNER_ID_DEV: "${{ secrets.PLATFORM_SELF_ACCOUNT_OWNER_ID_DEV }}",
-      PLATFORM_SELF_ACCOUNT_OWNER_ID_PROD: "${{ secrets.PLATFORM_SELF_ACCOUNT_OWNER_ID_PROD }}",
+new iam.PolicyStatement({
+  sid: "ReadConnectorRoleForTrustCheck",
+  actions: ["iam:GetRole"],
+  resources: [`arn:aws:iam::${this.account}:role/isol8-readonly-connector`],
+}),
 ```
 
-- [ ] **Step 3: Inject it into the backend task env (`service-stack.ts`, after the `PLATFORM_OPS_OWNER_ID` ternary at lines 1180-1183)**
+- [ ] **Step 3: Validate synth**
 
-```typescript
-        PLATFORM_OPS_OWNER_ID:
-          env === "prod"
-            ? (process.env.PLATFORM_OPS_OWNER_ID_PROD ?? "")
-            : (process.env.PLATFORM_OPS_OWNER_ID_DEV ?? ""),
-        // Self-account carve-out owner, per env (empty ⇒ carve-out off).
-        PLATFORM_SELF_ACCOUNT_OWNER_ID:
-          env === "prod"
-            ? (process.env.PLATFORM_SELF_ACCOUNT_OWNER_ID_PROD ?? "")
-            : (process.env.PLATFORM_SELF_ACCOUNT_OWNER_ID_DEV ?? ""),
-```
+Run: `cd apps/infra && npx cdk synth >/dev/null 2>synth.err; echo "exit=$?"; grep -i error synth.err | head; rm -f synth.err`
+Expected: `exit=0`, no errors. `.github/workflows/deploy.yml` unchanged (no pipeline-structure change).
 
-- [ ] **Step 4: Regenerate `deploy.yml` and confirm only the two new secret exports changed**
-
-Run: `cd apps/infra && npx cdk synth >/dev/null 2>&1; cd .. && git diff --stat && git diff .github/workflows/deploy.yml | grep PLATFORM_SELF_ACCOUNT`
-Expected: `deploy.yml` diff shows exactly the two new `PLATFORM_SELF_ACCOUNT_OWNER_ID_DEV/_PROD` lines; no other drift.
-
-- [ ] **Step 5: Confirm nothing stray staged, then commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 cd /Users/prasiddhaparthsarthy/Desktop/isol8.nosync/.worktrees/aws-scope-tiers
-git status --short   # verify no cdk.out / node_modules
-git add apps/backend/core/config.py apps/infra/lib/app.ts apps/infra/lib/stacks/service-stack.ts .github/workflows/deploy.yml
-git commit -m "feat(aws): wire PLATFORM_SELF_ACCOUNT_OWNER_ID per-env config"
+git status --short   # no cdk.out / node_modules
+git add apps/infra/lib/stacks/service-stack.ts
+git commit -m "feat(aws): grant backend iam:GetRole on the connector role for trust checks"
 ```
 
 ---
 
-### Task 5: Self-account carve-out — `aws-complete` 400-gate
+### Task 5: Self-account gate — trust-pin verification (replaces the flat block)
 
-Let the allowlisted owner paste an ARN in our account, but only the exact connector role. Every other owner (and any non-connector our-account ARN) stays rejected.
+A role in our account may be connected **only if its trust policy pins the connecting owner** — i.e. it trusts that owner's per-owner principal (`aws_cfn.owner_task_role_arn(owner_id)`) AND requires that owner's ExternalId. Verified via `iam:GetRole`. This blocks every tenant (our infra roles aren't pinned to them; they can't create roles in our account) and even stops us from connecting a non-connector role. No owner-id allowlist.
 
 **Files:**
-- Modify: `apps/backend/routers/connections.py:95-99`
+- Modify: `apps/backend/core/services/credentials/aws_cfn.py:13` (add `CONNECTOR_ROLE_NAME`)
+- Modify: `apps/backend/routers/connections.py:87-99` (the helper + the account gate)
 - Test: `apps/backend/tests/unit/routers/test_connections.py`
 
 **Interfaces:**
-- Consumes: `settings.PLATFORM_SELF_ACCOUNT_OWNER_ID` (Task 4); `bedrock_aip.OUR_ACCOUNT_ID`.
-- Produces: allowlisted owner + connector ARN passes the gate; the value flows into `put_owner_aws_sts_policy` (Task 6).
+- Consumes: `bedrock_aip.OUR_ACCOUNT_ID`, `bedrock_aip._iam_client()`, `aws_cfn.owner_task_role_arn`, the pending record's `external_id`.
+- Produces: `_self_account_role_is_pinned(role_arn, owner_id, external_id) -> bool`; `aws_cfn.CONNECTOR_ROLE_NAME`.
 
-- [ ] **Step 1: Write the failing tests**
-
-Add a test class/methods to `test_connections.py` (mirror the existing async_client + mocked-store pattern; patch `routers.connections.settings.PLATFORM_SELF_ACCOUNT_OWNER_ID`, `bedrock_aip.put_owner_aws_sts_policy`, and `apply_connection.apply_connection` as AsyncMocks). Cover:
-
-```python
-    # allowlisted owner + our-account CONNECTOR arn → NOT rejected by the gate
-    # (assert status != 400 / reaches grant); use owner_id == the patched allowlist value.
-    # allowlisted owner + our-account NON-connector arn → 400.
-    # non-allowlisted owner + our-account arn → 400 (unchanged).
-    # empty allowlist + our-account arn → 400 (fail-closed).
-```
-
-Write these as four `@pytest.mark.asyncio` tests asserting the `POST /api/v1/connections/aws/aws-complete` status codes, with the connector ARN literal `arn:aws:iam::877352799272:role/isol8-readonly-connector` and a distinct non-connector ARN `arn:aws:iam::877352799272:role/isol8-prod-service-x`.
-
-- [ ] **Step 2: Run them to verify they fail**
-
-Run: `cd apps/backend && uv run pytest tests/unit/routers/test_connections.py -k self_account -q`
-Expected: FAIL — the allowlisted-owner+connector case currently 400s.
-
-- [ ] **Step 3: Expose the connector role name as a reusable constant (`aws_cfn.py`, alongside `_STACK_NAME` at line 13)**
+- [ ] **Step 1: Add the connector-role constant (`aws_cfn.py`, at line 13 next to `_STACK_NAME`)**
 
 ```python
 _STACK_NAME = "isol8-readonly-connector"
 CONNECTOR_ROLE_NAME = "isol8-readonly-connector"
 ```
 
-(The CFN template's `RoleName` is this exact string; referencing a single Python constant keeps the check and the template in lockstep — Global Constraint: no scattered literals.)
+- [ ] **Step 2: Write the failing tests (`test_connections.py`)**
 
-- [ ] **Step 4: Implement the gate (`connections.py`, replace lines 95-99)**
+Mirror the existing async_client + mocked-store pattern. Patch `routers.connections.bedrock_aip._iam_client` to a `MagicMock`, and `routers.connections.aws_cfn.owner_task_role_arn` to return the owner's principal. Cover, as four `@pytest.mark.asyncio` tests on `POST /api/v1/connections/aws/aws-complete`:
+
+```python
+# (a) our-account CONNECTOR arn whose GetRole trust pins THIS owner + their
+#     ExternalId  -> passes the gate (status != 400; reaches grant).
+# (b) our-account arn whose trust does NOT pin the owner (e.g. trusts account-root)
+#     -> 400 "role must be in your own AWS account, not Isol8's".
+# (c) our-account CONNECTOR arn but GetRole ExternalId != the pending ExternalId
+#     -> 400.
+# (d) external-account arn -> unchanged (no GetRole; proceeds).
+```
+
+For the mocked `get_role`, return `{"Role": {"AssumeRolePolicyDocument": {...trust...}}}` where the Allow statement's `Principal.AWS` is the owner principal and `Condition.StringEquals["sts:ExternalId"]` is the pending ExternalId (for the pass case), and a mismatching principal/ExternalId for the fail cases.
+
+- [ ] **Step 3: Run them to verify they fail**
+
+Run: `cd apps/backend && uv run pytest tests/unit/routers/test_connections.py -k pinned -q`
+Expected: FAIL — `_self_account_role_is_pinned` does not exist and our-account ARNs currently hard-400.
+
+- [ ] **Step 4: Add the trust-pin helper (`connections.py`, near the other module helpers)**
+
+```python
+async def _self_account_role_is_pinned(role_arn: str, owner_id: str, external_id: str) -> bool:
+    """True iff a role IN OUR account is a legitimate connector for THIS owner:
+    its trust policy allows the owner's per-owner principal AND requires the
+    owner's ExternalId. Only we can create such a role, and our infra roles
+    (which trust account-root, not a specific owner) never satisfy it — so this
+    blocks connecting an arbitrary our-account role (account-takeover) without an
+    owner-id allowlist. Any failure (GetRole error, shape mismatch) -> False."""
+    from core.dynamodb import run_in_thread
+
+    role_name = role_arn.split(":role/", 1)[1]
+    try:
+        resp = await run_in_thread(bedrock_aip._iam_client().get_role, RoleName=role_name)
+        trust = resp["Role"]["AssumeRolePolicyDocument"]  # boto3 returns a decoded dict
+    except Exception:
+        return False
+    expected_principal = aws_cfn.owner_task_role_arn(owner_id)
+    for stmt in trust.get("Statement", []):
+        if stmt.get("Effect") != "Allow":
+            continue
+        principal = stmt.get("Principal", {}).get("AWS")
+        principals = principal if isinstance(principal, list) else [principal]
+        if expected_principal not in principals:
+            continue
+        cond = stmt.get("Condition", {}).get("StringEquals", {})
+        if cond.get("sts:ExternalId") == external_id:
+            return True
+    return False
+```
+
+- [ ] **Step 5: Replace the flat account gate (`connections.py`, lines 95-99)**
 
 ```python
     role_arn = body.role_arn.strip()
@@ -356,41 +366,41 @@ CONNECTOR_ROLE_NAME = "isol8-readonly-connector"
     if not match:
         raise HTTPException(status_code=400, detail="invalid role ARN")
     if match.group(1) == bedrock_aip.OUR_ACCOUNT_ID:
-        # Our own account is blocked for everyone EXCEPT the config-allowlisted
-        # self-account owner, and even then only for the exact connector role.
-        self_owner = settings.PLATFORM_SELF_ACCOUNT_OWNER_ID
-        expected_connector = f"arn:aws:iam::{bedrock_aip.OUR_ACCOUNT_ID}:role/{aws_cfn.CONNECTOR_ROLE_NAME}"
-        if not (self_owner and owner_id == self_owner and role_arn == expected_connector):
+        # Our own account: allowed ONLY if the pasted role is trust-pinned to this
+        # owner (trusts their principal + requires their ExternalId) — verified
+        # against the live role. Blocks connecting an arbitrary our-account role
+        # (e.g. account-root-trusting CDK roles = account takeover). No allowlist.
+        rec_ext = ((await integration_secret_store.get(owner_id, provider)) or {}).get("external_id")
+        if not rec_ext or not await _self_account_role_is_pinned(role_arn, owner_id, rec_ext):
             raise HTTPException(status_code=400, detail="role must be in your own AWS account, not Isol8's")
 ```
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `cd apps/backend && uv run pytest tests/unit/routers/test_connections.py -q`
 Expected: PASS (all, including the pre-existing cases).
 
-- [ ] **Step 6: Lint + commit**
+- [ ] **Step 7: Lint + commit**
 
 ```bash
 cd apps/backend && uv run ruff format routers/connections.py core/services/credentials/aws_cfn.py tests/unit/routers/test_connections.py && uv run ruff check routers/connections.py core/services/credentials/aws_cfn.py
 cd /Users/prasiddhaparthsarthy/Desktop/isol8.nosync/.worktrees/aws-scope-tiers
 git add apps/backend/routers/connections.py apps/backend/core/services/credentials/aws_cfn.py apps/backend/tests/unit/routers/test_connections.py
-git commit -m "feat(aws): allow the config-allowlisted owner to connect the connector role in our account"
+git commit -m "feat(aws): trust-pin gate for connecting a role in our own account"
 ```
 
 ---
 
-### Task 6: Self-account carve-out — inline IAM policy (drop the self-account Deny for the founder)
+### Task 6: Inline policy — omit the self-account Deny when the connected role is in our account
 
-The per-owner inline `owner-aws-sts` policy carries a `Deny sts:AssumeRole` into our account. An explicit Deny beats the exact-ARN Allow, so for the allowlisted owner that Deny must be omitted (the exact-ARN Allow is then the sole grant; deny-by-default blocks everything else).
+The per-owner inline `owner-aws-sts` policy carries a `Deny sts:AssumeRole` into our account; an explicit Deny beats the exact-ARN Allow, so when the connected role is in our account that Deny must be omitted (the exact-ARN Allow becomes the sole grant; deny-by-default blocks all else). Data-driven from the connected ARN — no owner-id config.
 
 **Files:**
 - Modify: `apps/backend/core/billing/bedrock_aip.py:576-644`
 - Test: `apps/backend/tests/credentials/test_aws_sts_grant.py`
 
 **Interfaces:**
-- Consumes: `settings.PLATFORM_SELF_ACCOUNT_OWNER_ID`.
-- Produces: `_build_owner_aws_sts_doc(role_arns, *, include_self_account_deny: bool = True)`; `put_owner_aws_sts_policy` omits the Deny when the owner is the allowlisted self-account owner.
+- Produces: `_build_owner_aws_sts_doc(role_arns, *, include_self_account_deny: bool = True)`; `put_owner_aws_sts_policy` omits the Deny when any connected ARN is in our account.
 
 - [ ] **Step 1: Write the failing tests (`test_aws_sts_grant.py`)**
 
@@ -444,15 +454,15 @@ And build the statement list conditionally (replace the `return {...}` body):
     return {"Version": "2012-10-17", "Statement": statements}
 ```
 
-- [ ] **Step 4: Pass the flag from `put_owner_aws_sts_policy` (`bedrock_aip.py:625`)**
+- [ ] **Step 4: Drive the flag from the connected ARNs in `put_owner_aws_sts_policy` (`bedrock_aip.py:625`)**
 
-After the empty-guard, compute whether this owner is the allowlisted self-account owner and pass `include_self_account_deny=not is_self`. `settings` is already imported at module level in `bedrock_aip.py` (the existing tests monkeypatch `bedrock_aip.settings.*`), so do **not** add a local import:
+After the empty-guard, decide from the ARNs themselves (a role in our account means the owner passed the Task 5 trust-pin gate). `OUR_ACCOUNT_ID` is a module constant already in scope — no new import:
 
 ```python
-    is_self = bool(settings.PLATFORM_SELF_ACCOUNT_OWNER_ID) and owner_id == settings.PLATFORM_SELF_ACCOUNT_OWNER_ID
+    has_self_account = any(f":{OUR_ACCOUNT_ID}:role/" in a for a in role_arns)
     ...
         PolicyDocument=json.dumps(
-            _build_owner_aws_sts_doc(role_arns, include_self_account_deny=not is_self)
+            _build_owner_aws_sts_doc(role_arns, include_self_account_deny=not has_self_account)
         ),
 ```
 
@@ -460,11 +470,10 @@ After the empty-guard, compute whether this owner is the allowlisted self-accoun
 
 ```python
 @pytest.mark.asyncio
-async def test_put_omits_self_account_deny_for_allowlisted_owner(monkeypatch):
+async def test_put_omits_self_account_deny_for_our_account_role(monkeypatch):
     fake = MagicMock()
     monkeypatch.setattr(bedrock_aip, "_iam_client", lambda: fake)
     monkeypatch.setattr(bedrock_aip.settings, "ENVIRONMENT", "dev", raising=False)
-    monkeypatch.setattr(bedrock_aip.settings, "PLATFORM_SELF_ACCOUNT_OWNER_ID", "org_self", raising=False)
 
     await bedrock_aip.put_owner_aws_sts_policy(
         "org_self", ["arn:aws:iam::877352799272:role/isol8-readonly-connector"]
@@ -484,34 +493,33 @@ Expected: PASS (including the pre-existing default-Deny tests).
 cd apps/backend && uv run ruff format core/billing/bedrock_aip.py tests/credentials/test_aws_sts_grant.py && uv run ruff check core/billing/bedrock_aip.py
 cd /Users/prasiddhaparthsarthy/Desktop/isol8.nosync/.worktrees/aws-scope-tiers
 git add apps/backend/core/billing/bedrock_aip.py apps/backend/tests/credentials/test_aws_sts_grant.py
-git commit -m "feat(aws): omit self-account Deny in the inline grant for the allowlisted owner"
+git commit -m "feat(aws): omit self-account Deny in the inline grant for our-account connections"
 ```
 
 ---
 
-### Task 7: Self-account carve-out — CDK permission-boundary Deny
+### Task 7: Boundary carve — exempt the founder role (reuse `PLATFORM_OPS_OWNER_ID`)
 
-The shared boundary's `BoundaryDenyAssumeIntoOurAccount` denies every per-owner role from assuming any role in our account — including the founder's connector. Carve it with an `aws:PrincipalArn` condition that exempts **only** the founder's per-owner task role, so defense-in-depth stays intact for every other owner. Config-driven: the founder role ARN is composed from the per-env `PLATFORM_SELF_ACCOUNT_OWNER_ID_*` synth env; unset ⇒ no condition (Deny stays fully broad, fail-closed).
+The shared boundary's `BoundaryDenyAssumeIntoOurAccount` denies every per-owner role from assuming any role in our account — including the founder's connector. IAM boundaries are static (can't verify a trust policy), so this is the one place a founder-identity value is needed. Exempt **only** the founder's per-owner role via an `aws:PrincipalArn` condition; reuse the existing `PLATFORM_OPS_OWNER_ID` (same founder org). Unset ⇒ no condition (Deny stays fully broad, fail-closed).
 
 **Files:**
-- Modify: `apps/infra/lib/stacks/container-stack.ts:340-345`
-- Regenerate: `.github/workflows/deploy.yml` is unaffected (no pipeline-structure change); `cdk synth` still run to validate.
+- Modify: `apps/infra/lib/stacks/container-stack.ts:285, 340-345`
 
 **Interfaces:**
-- Consumes: `process.env.PLATFORM_SELF_ACCOUNT_OWNER_ID_{DEV,PROD}` (same synth env as Task 4).
+- Consumes: `process.env.PLATFORM_OPS_OWNER_ID_{DEV,PROD}` (already exported to the synth env by `app.ts`).
 - Produces: boundary Deny that exempts exactly the founder per-owner role ARN.
 
-- [ ] **Step 1: Compose the founder role ARN near the boundary definition (before `this.ownerBedrockBoundary = …` at line 285)**
+- [ ] **Step 1: Compose the founder role ARN before the boundary definition (before `this.ownerBedrockBoundary = …` at line 285)**
 
 ```typescript
-    // Self-account carve-out (config-driven, nothing hardcoded): the one owner
-    // permitted to connect our own account. Empty ⇒ no carve (boundary Deny
-    // stays fully broad; fail-closed). The per-owner role name mirrors the
-    // Bedrock rail: isol8-<env>-owner-bedrock-<owner>.
+    // Self-account carve-out (config-driven, nothing hardcoded): the founder
+    // org, reusing PLATFORM_OPS_OWNER_ID (same owner). Empty ⇒ no carve (Deny
+    // stays fully broad; fail-closed). Per-owner role name mirrors the Bedrock
+    // rail: isol8-<env>-owner-bedrock-<owner>.
     const selfAccountOwnerId =
       props.environment === "prod"
-        ? (process.env.PLATFORM_SELF_ACCOUNT_OWNER_ID_PROD ?? "")
-        : (process.env.PLATFORM_SELF_ACCOUNT_OWNER_ID_DEV ?? "");
+        ? (process.env.PLATFORM_OPS_OWNER_ID_PROD ?? "")
+        : (process.env.PLATFORM_OPS_OWNER_ID_DEV ?? "");
     const selfAccountRoleArn = selfAccountOwnerId
       ? `arn:aws:iam::${this.account}:role/isol8-${props.environment}-owner-bedrock-${selfAccountOwnerId}`
       : undefined;
@@ -522,9 +530,9 @@ The shared boundary's `BoundaryDenyAssumeIntoOurAccount` denies every per-owner 
 ```typescript
         // Defense in depth: never let a per-owner role assume into OUR account,
         // even if a misconfigured inline policy tried to. An explicit Deny always
-        // wins. The one config-allowlisted self-account owner's per-owner role is
-        // exempted by aws:PrincipalArn so it (and only it) can assume its own
-        // connector role; every other owner stays fully denied.
+        // wins. The founder's per-owner role is exempted by aws:PrincipalArn so it
+        // (and only it) can assume its own trust-pinned connector role; every other
+        // owner stays fully denied.
         new iam.PolicyStatement({
           sid: "BoundaryDenyAssumeIntoOurAccount",
           effect: iam.Effect.DENY,
@@ -536,56 +544,53 @@ The shared boundary's `BoundaryDenyAssumeIntoOurAccount` denies every per-owner 
         }),
 ```
 
-- [ ] **Step 3: Validate synth (with and without the env set)**
+- [ ] **Step 3: Validate synth (unset and set)**
 
 Run: `cd apps/infra && npx cdk synth >/dev/null 2>synth.err; echo "exit=$?"; grep -i error synth.err | head; rm -f synth.err`
-Expected: `exit=0`, no errors. (With `PLATFORM_SELF_ACCOUNT_OWNER_ID_*` unset in the shell, the Deny has no condition — confirm the synthesized boundary still contains `BoundaryDenyAssumeIntoOurAccount`.)
+Expected: `exit=0`. With `PLATFORM_OPS_OWNER_ID_*` unset in the shell, the Deny has no condition (still present, fully broad). `.github/workflows/deploy.yml` unchanged.
 
-- [ ] **Step 4: Confirm `deploy.yml` is unchanged by this task**
-
-Run: `cd /Users/prasiddhaparthsarthy/Desktop/isol8.nosync/.worktrees/aws-scope-tiers && git diff --stat .github/workflows/deploy.yml`
-Expected: empty (no pipeline-structure change; this task only edits a task-def boundary statement).
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 cd /Users/prasiddhaparthsarthy/Desktop/isol8.nosync/.worktrees/aws-scope-tiers
-git status --short   # ensure no cdk.out staged
+git status --short   # no cdk.out staged
 git add apps/infra/lib/stacks/container-stack.ts
-git commit -m "feat(aws): boundary carve-out for the self-account owner's connector assume"
+git commit -m "feat(aws): boundary carve-out for the founder role's connector assume"
 ```
 
 ---
 
 ### Task 8: Live end-to-end validation (Approach A) + open questions
 
-Not a code task — the acceptance gate. Performed after Tasks 1-7 are deployed to **dev** first (set `PLATFORM_SELF_ACCOUNT_OWNER_ID_DEV` to the dev founder-org id, deploy, connect a dev account), then repeated for prod (`org_3DBS…`).
+Not a code task — the acceptance gate. Performed after Tasks 1-7 are deployed to **dev** first, then repeated for prod. `PLATFORM_OPS_OWNER_ID` is already set for prod (`org_3DBS…`); set the dev value if the dev founder org should have it.
 
-- [ ] **Step 1: Set the dev secret + deploy**
+- [ ] **Step 1: Deploy**
 
-Set repo secret `PLATFORM_SELF_ACCOUNT_OWNER_ID_DEV` to the dev founder-org owner_id (found via the admin dashboard / `Clerk.session`), merge/deploy the branch, and confirm the dev backend + a CDK deploy have applied (the boundary carve requires the CDK deploy).
+Merge/deploy the branch. Confirm the dev backend + a CDK deploy applied (the boundary carve + the `iam:GetRole` grant need the CDK deploy). Ensure `PLATFORM_OPS_OWNER_ID_DEV` is set to the dev founder-org id if validating in dev.
 
 - [ ] **Step 2: Connect via the real flow (Approach A)**
 
-As the dev founder org, open the AWS connect card → pick a tier → deploy the CFN quick-create stack in the dev account → paste the connector role ARN back. Confirm `aws-complete` returns `{"status": "connected"}` (validates the default ViewOnly path now creates the role — the Task 1 fix).
+As the founder org, open the AWS connect card → pick a tier → deploy the CFN quick-create stack in our account → paste the connector role ARN back. Confirm `aws-complete` returns `{"status": "connected"}` (validates: the ViewOnly ARN fix, the trust-pin gate accepting the legit connector, and the whole rail end-to-end).
 
 - [ ] **Step 3: Assert the credential-routing invariant from a gateway agent exec**
 
 From the agent's exec (chat/agent exec path, NOT a root ECS-exec shell):
 - `aws sts get-caller-identity` → the returned `Arn` is the **assumed connector role** (`.../isol8-readonly-connector/...`), not the per-owner task role.
-- A write (`aws s3 mb s3://…` or similar) is **denied** under ViewOnly/ReadOnly and **permitted** under PowerUser (re-connect with PowerUser to spot-check).
-- Confirm the node process has **no** `AWS_PROFILE` and Bedrock inference still works (chat a message; it must not fail with AccessDenied).
+- A write (`aws s3 mb …`) is **denied** under ViewOnly/ReadOnly and **permitted** under PowerUser (re-connect with PowerUser to spot-check).
+- Confirm the node process has **no** `AWS_PROFILE` and Bedrock inference still works (chat a message; no AccessDenied).
 
 - [ ] **Step 4: Assert isolation holds**
 
-Confirm a **non-allowlisted** dev owner still gets 400 from `aws-complete` on an our-account ARN, and that the founder cannot assume any non-connector role in our account (e.g. `aws sts assume-role --role-arn arn:aws:iam::877352799272:role/isol8-dev-service-… ` from the agent exec is denied).
+- A **non-founder** owner still gets 400 from `aws-complete` when connecting any our-account ARN (their trust wouldn't pin them; and they can't create a role in our account).
+- The founder cannot connect a **non-connector** our-account role (paste a CDK/service role ARN → trust-pin fails → 400).
+- The founder's agent cannot assume any non-connector role in our account (e.g. `aws sts assume-role --role-arn arn:aws:iam::877352799272:role/isol8-dev-service-…` from the agent exec is denied).
 
 - [ ] **Step 5: Resolve the three open questions**
 
-- **Per-owner role exists for the founder org:** confirm `isol8-{env}-owner-bedrock-{owner}` exists for the founder org (without it the CFN trust has no principal). If the founder org's provider type never minted a per-owner role, that gap must be closed first.
+- **Per-owner role exists for the founder org:** confirm `isol8-{env}-owner-bedrock-{owner}` exists for the founder org (the CFN trust pins it; the boundary carve composes it). If the founder org's provider type never minted a per-owner role, close that gap first.
 - **Reprovision rehydration:** reprovision the dev container and confirm `~/.aws/config` is re-materialized (or add a rehydration path if it silently drops).
 - **Session refresh:** run a long agent exec spanning >1h and confirm the 3600s connector-role session refreshes cleanly (no mid-run expiry).
 
 - [ ] **Step 6: Promote to prod**
 
-Repeat Steps 1-5 with `PLATFORM_SELF_ACCOUNT_OWNER_ID_PROD = org_3DBS8G83oPrMm49yN2b70EjoFpN` and the prod account, once dev is green.
+Repeat Steps 1-5 against the prod account with the founder org (`PLATFORM_OPS_OWNER_ID_PROD = org_3DBS8G83oPrMm49yN2b70EjoFpN`, already set), once dev is green.

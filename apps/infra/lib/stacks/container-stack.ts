@@ -819,6 +819,12 @@ export class ContainerStack extends cdk.Stack {
         // Bind the API server on all interfaces so the backend can reach it via
         // the intra-VPC container IP (Hermes' default bind is loopback-only).
         API_SERVER_HOST: "0.0.0.0",
+        // Point Hermes' writable home at the EFS mount below. Defensive: the base
+        // image already sets HERMES_HOME=/opt/data (its declared VOLUME), but
+        // restate it here so a base-image change can't silently move Hermes' state
+        // off the per-owner EFS mount — the config/auth/persona files provisioning
+        // stages under ~/.hermes resolve against this path.
+        HERMES_HOME: "/opt/data",
         // EFS is NFS, where SQLite WAL mode's -wal/-shm shared-memory files are
         // unsafe across hosts. `delete` journal mode avoids them entirely —
         // the Hermes analog of the OpenClaw WAL-on-NFS mitigations.

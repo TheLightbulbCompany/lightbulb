@@ -16,6 +16,7 @@
     "@expo-google-fonts/lora": "^0.4.2",
     "@isol8/shared": "workspace:^",
     "expo": "~57.0.2",
+    "expo-auth-session": "~57.0.1",
     "expo-constants": "~57.0.3",
     "expo-crypto": "~15.0.0",
     "expo-font": "~57.0.0",

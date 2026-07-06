@@ -1290,6 +1290,8 @@ class TestAwsSetup:
         assert body1["read_only"]["policy_arn"] == "arn:aws:iam::aws:policy/ReadOnlyAccess"
         assert body1["view_only"]["quick_create_url"] is None
         assert body1["read_only"]["quick_create_url"] is None
+        assert body1["power_user"]["policy_arn"] == "arn:aws:iam::aws:policy/PowerUserAccess"
+        assert body1["power_user"]["quick_create_url"] is None
 
         r2 = await async_client.get("/api/v1/connections/aws/aws-setup")
         assert r2.status_code == 200

@@ -173,6 +173,7 @@ class AwsStsSpec(BaseModel):
 
     view_only_policy_arn: str = "arn:aws:iam::aws:policy/job-function/ViewOnlyAccess"
     read_only_policy_arn: str = "arn:aws:iam::aws:policy/ReadOnlyAccess"
+    power_user_policy_arn: str = "arn:aws:iam::aws:policy/PowerUserAccess"
     default_region: str = "us-east-1"
     cfn_template_url: str | None = None
 

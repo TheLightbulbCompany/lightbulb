@@ -379,6 +379,7 @@ def test_aws_provider_shape():
     assert p.aws_sts is not None
     assert p.aws_sts.view_only_policy_arn == "arn:aws:iam::aws:policy/job-function/ViewOnlyAccess"
     assert p.aws_sts.read_only_policy_arn == "arn:aws:iam::aws:policy/ReadOnlyAccess"
+    assert p.aws_sts.power_user_policy_arn == "arn:aws:iam::aws:policy/PowerUserAccess"
     assert p.aws_sts.default_region == "us-east-1"
     assert p.aws_sts.cfn_template_url is None
 

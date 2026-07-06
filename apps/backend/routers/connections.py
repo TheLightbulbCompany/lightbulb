@@ -272,6 +272,10 @@ async def aws_setup(provider: str, auth: AuthContext = Depends(get_current_user)
             "policy_arn": p.aws_sts.read_only_policy_arn,
             "quick_create_url": _quick_create(p.aws_sts.read_only_policy_arn),
         },
+        "power_user": {
+            "policy_arn": p.aws_sts.power_user_policy_arn,
+            "quick_create_url": _quick_create(p.aws_sts.power_user_policy_arn),
+        },
     }
 
 

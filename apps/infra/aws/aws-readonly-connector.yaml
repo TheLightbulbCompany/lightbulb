@@ -21,9 +21,9 @@ Parameters:
     Type: String
     Description: >-
       The AWS managed read-only policy to attach (e.g.
-      arn:aws:iam::aws:policy/ViewOnlyAccess or arn:aws:iam::aws:policy/ReadOnlyAccess).
+      arn:aws:iam::aws:policy/job-function/ViewOnlyAccess or arn:aws:iam::aws:policy/ReadOnlyAccess).
     AllowedValues:
-      - "arn:aws:iam::aws:policy/ViewOnlyAccess"
+      - "arn:aws:iam::aws:policy/job-function/ViewOnlyAccess"
       - "arn:aws:iam::aws:policy/ReadOnlyAccess"
 
 Resources:

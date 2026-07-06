@@ -1286,8 +1286,8 @@ class TestAwsSetup:
         assert body1["default_region"] == "us-east-1"
         # The CFN template is unhosted until Plan 3 -> both quick-create URLs are
         # None rather than crashing on a None template_url.
-        assert body1["view_only"]["policy_arn"].endswith("ViewOnlyAccess")
-        assert body1["read_only"]["policy_arn"].endswith("ReadOnlyAccess")
+        assert body1["view_only"]["policy_arn"] == "arn:aws:iam::aws:policy/job-function/ViewOnlyAccess"
+        assert body1["read_only"]["policy_arn"] == "arn:aws:iam::aws:policy/ReadOnlyAccess"
         assert body1["view_only"]["quick_create_url"] is None
         assert body1["read_only"]["quick_create_url"] is None
 

@@ -26,6 +26,7 @@ const SETUP = {
   // null → CFN template not hosted yet; the manual paste path must still work.
   view_only: { policy_arn: "arn:aws:iam::aws:policy/job-function/ViewOnlyAccess", quick_create_url: null },
   read_only: { policy_arn: "arn:aws:iam::aws:policy/ReadOnlyAccess", quick_create_url: null },
+  power_user: { policy_arn: "arn:aws:iam::aws:policy/PowerUserAccess", quick_create_url: null },
 };
 
 const awsRow: Connection = {

@@ -35,9 +35,10 @@ interface AwsSetupResponse {
   default_region: string;
   view_only: AwsScopeOption;
   read_only: AwsScopeOption;
+  power_user: AwsScopeOption;
 }
 
-type AwsScope = "view_only" | "read_only";
+type AwsScope = "view_only" | "read_only" | "power_user";
 
 const NON_ADMIN_MSG = "Only organization admins can manage connections.";
 
@@ -227,9 +228,21 @@ export function AwsConnectCard({ connection, canManage, refreshConnections }: Aw
           >
             ReadOnly
           </Button>
+          <Button
+            size="sm"
+            variant={scope === "power_user" ? "default" : "outline"}
+            disabled={!canManage}
+            onClick={() => setScope("power_user")}
+            aria-pressed={scope === "power_user"}
+          >
+            PowerUser
+          </Button>
         </div>
         {scope === "read_only" && (
           <span className="text-[11px] text-[#8a8578]">broader — includes data-plane reads</span>
+        )}
+        {scope === "power_user" && (
+          <span className="text-[11px] text-[#8a8578]">read + write; excludes IAM / Organizations</span>
         )}
       </div>
 

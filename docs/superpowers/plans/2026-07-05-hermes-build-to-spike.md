@@ -8,6 +8,18 @@
 
 **Tech Stack:** Python 3.12 FastAPI backend (`apps/backend/`, uv), AWS CDK TypeScript (`apps/infra/`), the Isol8 Hermes fork (`Isol8AI/hermes-agent`, clone at `~/Desktop/hermes-agent.nosync`), ECR, ECS Fargate, EFS, Secrets Manager.
 
+## Build status — 2026-07-05
+
+**All backend phases are IMPLEMENTED, REVIEWED, and PARKED as stacked PRs (nothing merged).** A final whole-stack integration review (`main..H3b`) returned **"Stack coherent + OpenClaw byte-identical: YES"** — all five cross-phase seams matched (api_server_key field, 3-way base-family name, probe port, registry fail-safety, DTOs); the Hermes config write is confirmed wired (`write_user_configs` → `get_runtime_for_owner(owner).write_config` → `config.yaml`).
+
+Parked stack (merge in order): B1 #1142 ← B2 #1146 ← B3 #1147 ← B4 #1148 ← H0 #1151 ← H2 #1153 ← H1 #1154 ← H3a #1156 ← H3b #1158. Plan #1149.
+
+**Fork changes are committed LOCAL-only (not pushed):** `~/Desktop/hermes-agent.nosync` branch `isol8/v2026.7.1-isol8.1` — usage cache-fields patch, WAL→DELETE knob, and the `docker.yml` repoint so the fork publishes `ghcr.io/isol8ai/hermes-agent`.
+
+**Only H4 (the live dev spike) remains — it needs the user's hands:** merge the stack (or a temp integration branch), `aws sso login --profile isol8-admin`, push the Hermes fork + cut the `v2026.7.1-isol8.1` release (publishes the base image), create the `isol8/hermes-extended` ECR repo, let the build workflow push the extended image, then dev-switch an owner to `runtime_kind="hermes"` and validate H4.2a (transport harness) → H4.2b (chat via /chat). Known live-unknowns are enumerated in the H4 section below.
+
+---
+
 ## Global Constraints
 
 - **Additive + dark by default.** New users stay `runtime_kind="openclaw"`; absent field ⇒ openclaw. No existing container migrates. Every phase is independently revertable; nothing user-visible ships until the spike validates. This mirrors the ACP `ACP_ENABLED` dark-launch pattern (`service-stack.ts`).

@@ -1,0 +1,96 @@
+# =============================================================================
+# Mobile CI (PRs only) — typecheck / lint / iOS Metro bundle for apps/mobile
+# and its @isol8/shared dependency. No EAS credentials needed: `expo export`
+# runs the full Metro resolution+bundle on Linux, which catches the dominant
+# failure class (RN-unresolvable imports) without a macOS builder.
+# =============================================================================
+name: Mobile CI
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'apps/mobile/**'
+      - 'packages/shared/**'
+      - '.github/workflows/mobile-ci.yml'
+      - 'pnpm-lock.yaml'
+  # EAS cloud builds are quota-bearing (15 iOS builds/mo on the free plan),
+  # so they are dispatch-only rather than per-merge. Bump to tag-triggered
+  # once TestFlight submission exists (needs the Apple Developer org).
+  workflow_dispatch:
+    inputs:
+      eas_build_profile:
+        description: "EAS build profile (dev API: preview | prod API: production)"
+        type: choice
+        options: [preview, production]
+        default: preview
+
+env:
+  NODE_VERSION: "20"
+
+jobs:
+  eas-build:
+    name: EAS Build
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ${{ vars.CI_RUNNER }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Start EAS build
+        working-directory: apps/mobile
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: npx -y eas-cli@latest build --platform ios --profile ${{ inputs.eas_build_profile }} --non-interactive --no-wait
+
+  check-and-bundle:
+    name: Check & Bundle
+    if: github.event_name == 'pull_request'
+    runs-on: ${{ vars.CI_RUNNER }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Shared tests
+        run: pnpm --filter @isol8/shared run test
+
+      - name: Shared type check
+        run: pnpm --filter @isol8/shared run typecheck
+
+      - name: Shared lint
+        run: pnpm --filter @isol8/shared run lint
+
+      - name: Mobile type check
+        run: pnpm --filter @isol8/mobile run typecheck
+
+      - name: Mobile lint
+        run: pnpm --filter @isol8/mobile run lint
+
+      - name: Mobile iOS bundle (Metro export)
+        env:
+          CI: "1"
+        run: pnpm --filter @isol8/mobile run export:ios

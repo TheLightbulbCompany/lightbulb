@@ -1,5 +1,7 @@
 import { StyleSheet, Text, View } from "react-native";
 
+import { colors, spacing, type } from "../../config/theme";
+
 // Placeholder — replaced by the user-facing control panels in Phase 4.
 export default function Control() {
   return (
@@ -10,6 +12,12 @@ export default function Control() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, alignItems: "center", justifyContent: "center" },
-  heading: { fontSize: 24, fontWeight: "600" },
+  container: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.sm,
+    backgroundColor: colors.cream,
+  },
+  heading: { ...type.display },
 });

@@ -1,69 +1,96 @@
-import { useAuth } from "@clerk/clerk-expo";
-import { useCallback, useEffect, useState } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
-import { ApiError, fetchJsonWithStatus } from "@isol8/shared";
+import { router } from "expo-router";
+import { FlatList, Pressable, StyleSheet, Text, View } from "react-native";
+import {
+  agentDisplayName,
+  useGatewayRpc,
+  type AgentsListResponse,
+} from "@isol8/shared";
 
-import { API_URL } from "../../config/env";
-import { makeAdapter } from "../../lib/adapter";
+import { colors, fonts, spacing, type } from "../../config/theme";
+import { useGateway } from "../../providers/gateway";
 
-/**
- * Phase 1 proof-of-plumbing: the same GET /container/status poll the web
- * onboarding flow makes (200 = container info, 202 = workspace pending),
- * through the shared client with the mobile adapter. Replaced by the real
- * agent list + chat timeline in Phase 2.
- */
+// Agent roster — entry point to per-agent chat. Streams over the same
+// agents.list RPC the web sidebar uses.
 export default function Chat() {
-  const { getToken } = useAuth();
-  const [result, setResult] = useState<string>("Checking container…");
+  const gateway = useGateway();
+  const { data, error, isLoading } = useGatewayRpc<AgentsListResponse>(
+    gateway,
+    "agents.list",
+  );
+  const agents = data?.agents ?? [];
 
-  const check = useCallback(async () => {
-    setResult("Checking container…");
-    try {
-      const { status, body } = await fetchJsonWithStatus(
-        makeAdapter(getToken),
-        "/container/status",
-      );
-      const summary =
-        body && typeof body === "object" && "status" in body
-          ? String((body as { status: unknown }).status)
-          : "ok";
-      setResult(`HTTP ${status} — container: ${summary}`);
-    } catch (e) {
-      if (e instanceof ApiError) {
-        setResult(`HTTP ${e.status} — ${e.message}`);
-      } else {
-        setResult(e instanceof Error ? e.message : "Request failed");
-      }
-    }
-  }, [getToken]);
+  if (!gateway.isConnected && !data) {
+    return (
+      <View style={styles.center}>
+        <Text style={styles.dim}>
+          {gateway.error ?? "Connecting to your workspace…"}
+        </Text>
+      </View>
+    );
+  }
 
-  useEffect(() => {
-    check();
-  }, [check]);
+  if (error) {
+    return (
+      <View style={styles.center}>
+        <Text style={styles.dim}>Couldn’t load agents: {error.message}</Text>
+      </View>
+    );
+  }
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.heading}>Chat</Text>
-      <Text style={styles.status}>{result}</Text>
-      <Pressable style={styles.button} onPress={check}>
-        <Text style={styles.buttonText}>Re-check</Text>
-      </Pressable>
-      <Text style={styles.meta}>{API_URL}</Text>
-    </View>
+    <FlatList
+      data={agents}
+      keyExtractor={(a) => a.id}
+      contentContainerStyle={agents.length === 0 ? styles.centerGrow : undefined}
+      ListEmptyComponent={
+        <Text style={styles.dim}>
+          {isLoading ? "Loading agents…" : "No agents yet."}
+        </Text>
+      }
+      renderItem={({ item }) => (
+        <Pressable
+          style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+          onPress={() =>
+            router.push({
+              pathname: "/(app)/agent/[agentId]",
+              params: { agentId: item.id, name: agentDisplayName(item) },
+            })
+          }
+        >
+          <Text style={styles.emoji}>{item.identity?.emoji ?? "🤖"}</Text>
+          <View style={styles.rowText}>
+            <Text style={styles.name}>{agentDisplayName(item)}</Text>
+            <Text style={styles.id}>{item.id}</Text>
+          </View>
+        </Pressable>
+      )}
+    />
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, alignItems: "center", justifyContent: "center", gap: 10, padding: 24 },
-  heading: { fontSize: 24, fontWeight: "600" },
-  status: { fontSize: 15, textAlign: "center" },
-  button: {
-    backgroundColor: "#1a1a1a",
-    borderRadius: 8,
-    paddingHorizontal: 18,
-    paddingVertical: 10,
-    marginTop: 6,
+  center: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: spacing.xl,
   },
-  buttonText: { color: "#fff", fontSize: 14, fontWeight: "600" },
-  meta: { fontSize: 11, opacity: 0.4, marginTop: 16 },
+  centerGrow: { flexGrow: 1, alignItems: "center", justifyContent: "center" },
+  dim: { ...type.body, color: colors.muted, textAlign: "center" },
+  // White hairline rows on the cream page, matching the web sidebar list.
+  row: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    backgroundColor: colors.white,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+  },
+  rowPressed: { backgroundColor: colors.creamHover },
+  emoji: { fontFamily: fonts.dmSans, fontSize: 24 },
+  rowText: { flex: 1 },
+  name: { ...type.body, fontFamily: fonts.dmSansMedium },
+  id: { ...type.caption },
 });

@@ -2,6 +2,7 @@
   "expo": {
     "name": "Isol8",
     "slug": "isol8-mobile",
+    "owner": "isol8",
     "version": "0.1.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
@@ -17,7 +18,7 @@
       [
         "expo-splash-screen",
         {
-          "backgroundColor": "#1a1a1a",
+          "backgroundColor": "#faf7f2",
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 76
         }
@@ -26,6 +27,12 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "2def259d-5e79-462b-9b0f-3d01d666ba66"
+      }
     }
   }
 }

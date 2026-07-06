@@ -23,5 +23,8 @@
     "typescript": "^5",
     "typescript-eslint": "^8.62.1",
     "vitest": "^3.2.4"
+  },
+  "dependencies": {
+    "swr": "^2.3.8"
   }
 }

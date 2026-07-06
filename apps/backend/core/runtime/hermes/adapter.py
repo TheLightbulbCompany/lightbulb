@@ -321,10 +321,18 @@ def _write_efs_file(path: Path, content: str, *, mode: int) -> None:
     ``workspace.pre_stage_auth_profile_store``. The chown is best-effort because
     the backend test/dev host can't chown to an arbitrary uid — on the real EFS
     mount (running as root) it succeeds.
+
+    The tmp is created 0o600 up front (via ``os.open`` with an explicit mode,
+    not the umask-default 0o644) so a secret file like auth.json — which holds
+    live OAuth tokens — is never briefly group/world-readable in the window
+    between create and ``chmod``. The ``chmod`` below then sets the final
+    per-file mode (config.yaml widens back to 0o644, auth.json stays 0o600).
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.parent / (path.name + ".tmp")
-    tmp.write_text(content)
+    fd = os.open(str(tmp), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(content)
     try:
         os.chmod(str(tmp), mode)
     except OSError:
@@ -525,7 +533,7 @@ class HermesRuntime:
 
     @property
     def sessions(self) -> SessionSurface:
-        raise NotImplementedError("HermesRuntime.sessions lands in H2.x")
+        raise NotImplementedError("HermesRuntime.sessions is Phase C")
 
     async def _resolve(self, owner_id: str) -> tuple[str, str]:
         """Resolve the owner's running container to ``(ip, api_server_key)``.
@@ -627,7 +635,10 @@ class HermesRuntime:
                         if chat_event is not None:
                             await on_event(chat_event)
                         if event in _TERMINAL_EVENT_STATUS:
-                            saw_terminal = True
+                            # Terminal branch returns inline below, so the
+                            # post-loop ``if not saw_terminal`` only runs when the
+                            # stream ends WITHOUT a terminal event — no flag flip
+                            # is needed here.
                             if event == "run.completed":
                                 # Meter usage AFTER the {type:"done"} event above
                                 # so the user is never blocked on the counter
@@ -777,15 +788,15 @@ class HermesRuntime:
         recv_timeout: float | None = None,
         rpc_timeout: float | None = None,
     ) -> Any:
-        raise NotImplementedError("HermesRuntime.call_rpc lands in H2.x")
+        raise NotImplementedError("HermesRuntime.call_rpc is Phase C")
 
     async def revoke_provider(self, owner_id: str, *, provider: str) -> bool:
-        raise NotImplementedError("HermesRuntime.revoke_provider lands in H2.x")
+        raise NotImplementedError("HermesRuntime.revoke_provider is Phase C")
 
     async def forward_hook(
         self, owner_id: str, path: str, headers: dict[str, str], body: bytes
     ) -> tuple[int, dict[str, str], bytes]:
-        raise NotImplementedError("HermesRuntime.forward_hook lands in H2.x")
+        raise NotImplementedError("HermesRuntime.forward_hook is Phase C")
 
     # --- Provisioner facet: launching / configuring a container -----------
 

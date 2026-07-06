@@ -16,6 +16,7 @@ pure-then-integration split:
 
 import dataclasses
 import json
+import os
 
 import pytest
 import yaml
@@ -193,6 +194,8 @@ async def test_write_auth_oauth_stages_auth_json(tmp_path, monkeypatch):
 
     auth_path = tmp_path / "org_1" / "auth.json"
     assert auth_path.exists()
+    # auth.json holds live OAuth tokens — it must land 0o600 (owner-only).
+    assert oct(os.stat(auth_path).st_mode & 0o777) == "0o600"
     loaded = json.loads(auth_path.read_text())
     assert loaded["tokens"]["access_token"] == "a"
     assert loaded["tokens"]["refresh_token"] == "r"

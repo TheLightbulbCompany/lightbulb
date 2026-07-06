@@ -24,7 +24,7 @@ const SETUP = {
   our_account_id: "877352799272",
   default_region: "us-east-1",
   // null → CFN template not hosted yet; the manual paste path must still work.
-  view_only: { policy_arn: "arn:aws:iam::aws:policy/ViewOnlyAccess", quick_create_url: null },
+  view_only: { policy_arn: "arn:aws:iam::aws:policy/job-function/ViewOnlyAccess", quick_create_url: null },
   read_only: { policy_arn: "arn:aws:iam::aws:policy/ReadOnlyAccess", quick_create_url: null },
 };
 

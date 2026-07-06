@@ -377,7 +377,7 @@ def test_aws_provider_shape():
     assert p.wiring.materializer == "aws_cli"
     assert p.wiring.mcp_server is None and p.wiring.openclaw_paths is None
     assert p.aws_sts is not None
-    assert p.aws_sts.view_only_policy_arn == "arn:aws:iam::aws:policy/ViewOnlyAccess"
+    assert p.aws_sts.view_only_policy_arn == "arn:aws:iam::aws:policy/job-function/ViewOnlyAccess"
     assert p.aws_sts.read_only_policy_arn == "arn:aws:iam::aws:policy/ReadOnlyAccess"
     assert p.aws_sts.default_region == "us-east-1"
     assert p.aws_sts.cfn_template_url is None

@@ -111,20 +111,33 @@ async def _self_account_role_is_pinned(role_arn: str, owner_id: str, external_id
     try:
         resp = await run_in_thread(bedrock_aip._iam_client().get_role, RoleName=role_name)
         trust = resp["Role"]["AssumeRolePolicyDocument"]  # boto3 returns a decoded dict
-    except Exception:
+        expected_principal = aws_cfn.owner_task_role_arn(owner_id)
+        # ``Statement`` is a list per the IAM policy grammar, but a single-object
+        # form is also valid — normalize so iteration can't blow up on a dict.
+        statements = trust.get("Statement", [])
+        if isinstance(statements, dict):
+            statements = [statements]
+        for stmt in statements:
+            if not isinstance(stmt, dict) or stmt.get("Effect") != "Allow":
+                continue
+            # ``Principal`` may be a dict ({"AWS": ...}), a bare string ("*"), or
+            # absent. Only the dict form can name our owner principal; anything
+            # else just can't match, so treat it as a non-match rather than raise.
+            principal_block = stmt.get("Principal")
+            if not isinstance(principal_block, dict):
+                continue
+            principal = principal_block.get("AWS")
+            principals = principal if isinstance(principal, list) else [principal]
+            if expected_principal not in principals:
+                continue
+            cond = stmt.get("Condition", {}).get("StringEquals", {})
+            if cond.get("sts:ExternalId") == external_id:
+                return True
         return False
-    expected_principal = aws_cfn.owner_task_role_arn(owner_id)
-    for stmt in trust.get("Statement", []):
-        if stmt.get("Effect") != "Allow":
-            continue
-        principal = stmt.get("Principal", {}).get("AWS")
-        principals = principal if isinstance(principal, list) else [principal]
-        if expected_principal not in principals:
-            continue
-        cond = stmt.get("Condition", {}).get("StringEquals", {})
-        if cond.get("sts:ExternalId") == external_id:
-            return True
-    return False
+    except Exception:
+        # Any GetRole error OR unexpected trust-doc shape -> fail closed. The
+        # caller turns a False here into a clean 400, never a 500.
+        return False
 
 
 def _get_provider_or_404(provider: str) -> registry.Provider:

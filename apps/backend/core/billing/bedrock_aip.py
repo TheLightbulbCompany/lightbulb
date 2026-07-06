@@ -48,7 +48,7 @@ OUR_ACCOUNT_ID: str = "877352799272"
 # for the AWS scope-tiers rail. Lives here (the base module both aws_cfn and
 # connections import) so the literal has a single home — aws_cfn already imports
 # bedrock_aip, so the constant can't live there without a cycle.
-CONNECTOR_ROLE_NAME = "isol8-readonly-connector"
+CONNECTOR_ROLE_NAME = "isol8-connector"
 
 # The three AIP tiers. Order matters only for deterministic iteration.
 TIERS: tuple[str, str, str] = ("opus", "sonnet", "haiku")

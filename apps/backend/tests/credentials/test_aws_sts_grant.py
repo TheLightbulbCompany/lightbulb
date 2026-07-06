@@ -33,12 +33,12 @@ def test_aws_sts_policy_doc_allows_multiple_exact_arns_never_wildcard():
 
 def test_self_account_deny_omitted_when_flag_false():
     doc = bedrock_aip._build_owner_aws_sts_doc(
-        ["arn:aws:iam::877352799272:role/isol8-readonly-connector"],
+        ["arn:aws:iam::877352799272:role/isol8-connector"],
         include_self_account_deny=False,
     )
     assert all(s["Effect"] != "Deny" for s in doc["Statement"])
     allow = next(s for s in doc["Statement"] if s["Effect"] == "Allow")
-    assert allow["Resource"] == ["arn:aws:iam::877352799272:role/isol8-readonly-connector"]
+    assert allow["Resource"] == ["arn:aws:iam::877352799272:role/isol8-connector"]
 
 
 def test_self_account_deny_present_by_default():
@@ -84,7 +84,7 @@ async def test_put_omits_self_account_deny_for_connector_arn(monkeypatch):
     monkeypatch.setattr(bedrock_aip, "_iam_client", lambda: fake)
     monkeypatch.setattr(bedrock_aip.settings, "ENVIRONMENT", "dev", raising=False)
 
-    await bedrock_aip.put_owner_aws_sts_policy("org_self", ["arn:aws:iam::877352799272:role/isol8-readonly-connector"])
+    await bedrock_aip.put_owner_aws_sts_policy("org_self", ["arn:aws:iam::877352799272:role/isol8-connector"])
     doc = json.loads(fake.put_role_policy.call_args.kwargs["PolicyDocument"])
     assert all(s["Effect"] != "Deny" for s in doc["Statement"])
 
@@ -116,7 +116,7 @@ async def test_put_keeps_deny_for_mixed_connector_and_other_our_account(monkeypa
     await bedrock_aip.put_owner_aws_sts_policy(
         "org_x",
         [
-            "arn:aws:iam::877352799272:role/isol8-readonly-connector",
+            "arn:aws:iam::877352799272:role/isol8-connector",
             "arn:aws:iam::877352799272:role/isol8-prod-service-x",
         ],
     )

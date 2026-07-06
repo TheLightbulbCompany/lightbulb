@@ -23,6 +23,9 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, 
 
 from core.config import settings
 from core.containers import get_ecs_manager, get_gateway_pool
+from core.runtime import get_runtime_for_owner
+from core.runtime.base import ContainerNotRunningError
+from core.runtime.hermes import chat_bridge
 from core.observability.logging import bind_log_context
 from core.observability.metrics import put_metric
 from core.services.connection_service import ConnectionService, ConnectionServiceError
@@ -1467,6 +1470,38 @@ async def _intercept_agents_update(
     return False
 
 
+async def _process_rpc_background_hermes(
+    *,
+    connection_id: str,
+    req_id: str,
+    owner_id: str,
+    method: str,
+    params: dict,
+    management_api: ManagementApiClient,
+) -> None:
+    """Answer ONE control-plane RPC for a Hermes owner — the minimal surface the
+    ``/chat`` page needs to MOUNT and the turn to route.
+
+    Hermes speaks HTTP+SSE, not the OpenClaw WS-RPC protocol, so there is no pool
+    to forward to; ``agents.list`` is served from the owner's Paperclip roster
+    and everything else from ``chat_bridge.answer_hermes_rpc`` (``sessions.list``
+    → empty, all others → empty-OK). Never 500s the page: any failure degrades to
+    an empty-OK payload so a Hermes owner's page always mounts.
+    """
+    try:
+        roster: list[dict] = []
+        if method == "agents.list":
+            roster = await chat_bridge.fetch_hermes_roster(owner_id)
+        payload = chat_bridge.answer_hermes_rpc(method, params, roster=roster)
+    except Exception:
+        logger.warning("[hermes] rpc %s failed for owner=%s — returning empty-OK", method, owner_id, exc_info=True)
+        payload = {}
+    management_api.send_message(
+        connection_id,
+        {"type": "res", "id": req_id, "ok": True, "payload": payload},
+    )
+
+
 async def _process_rpc_background(
     connection_id: str,
     user_id: str,
@@ -1489,6 +1524,24 @@ async def _process_rpc_background(
     try:
         ecs_manager = get_ecs_manager()
         container, ip = await ecs_manager.resolve_running_container(owner_id)
+
+        # Hermes owners: answer the control plane from the backend (Paperclip
+        # roster / empty), never the OpenClaw pool. resolve_running_container
+        # above already primed the runtime-kind cache off the row it fetched, so
+        # this branch is reliable on the very first RPC. Placed BEFORE the
+        # container/ip checks so agents.list mounts even while the Hermes box is
+        # still starting. OpenClaw owners resolve "openclaw" (cache default) and
+        # fall through to the untouched path below.
+        if get_runtime_for_owner(owner_id).kind == "hermes":
+            await _process_rpc_background_hermes(
+                connection_id=connection_id,
+                req_id=req_id,
+                owner_id=owner_id,
+                method=method,
+                params=params,
+                management_api=management_api,
+            )
+            return
 
         if not container:
             management_api.send_message(
@@ -1733,6 +1786,124 @@ async def _process_rpc_background(
 # =============================================================================
 
 
+async def _process_agent_chat_hermes(
+    *,
+    connection_id: str,
+    user_id: str,
+    owner_id: str,
+    agent_id: str,
+    message: str,
+    client_run_id: str | None,
+    session_id: str | None,
+    management_api: ManagementApiClient,
+) -> None:
+    """Drive ONE user turn for a Hermes owner over the runtime's HTTP+SSE
+    ``send_chat``, streaming each translated ChatEvent back to the frontend.
+
+    Mirrors the OpenClaw turn path's pre-flight + streaming contract without the
+    pool:
+
+      - **Budget gate.** Reuses the SAME runtime-agnostic ``gate_chat`` the
+        OpenClaw path uses (subscription + card-3 credit hard-stops) — it reads
+        only billing state, no OpenClaw wire, so it gates a Hermes turn too.
+      - **Routing envelope.** ``run_id_for_send`` is the frontend-minted
+        ``clientRunId`` (or a backend UUID for an old client) — the exact value
+        the frontend correlates its busy-gate on, identical to how OpenClaw
+        stamps ``idempotencyKey`` → ``runId``. The event sink stamps it, plus
+        ``agent_id`` + ``session_id``, onto every frame.
+      - **Per-run context.** A plain webchat turn carries no Paperclip/issue
+        context, so ``context=None`` — the run boots on the agent's seeded
+        persona alone. The seam is wired: when a caller does supply context, the
+        adapter merges it persona-first.
+
+    Usage metering for the turn is recorded inside the adapter on ``run.completed``
+    (the H2.5 usage facet), so it is NOT duplicated here.
+    """
+    # Budget / subscription hard-stop — the same gate the OpenClaw path applies.
+    gate = await get_gateway_pool().gate_chat(user_id=user_id, owner_id=owner_id)
+    if gate.get("blocked"):
+        put_metric("chat.error", dimensions={"reason": gate.get("code", "blocked")})
+        logger.info("[%s] hermes chat BLOCKED agent=%s code=%s", user_id, agent_id, gate.get("code"))
+        try:
+            management_api.send_message(
+                connection_id,
+                {
+                    "type": "error",
+                    "code": gate.get("code", "blocked"),
+                    "message": gate.get("message", "Chat blocked"),
+                    "agent_id": agent_id,
+                },
+            )
+        except Exception:
+            logger.warning("[%s] failed to deliver blocked-chat error event", user_id)
+        return
+
+    # The session key doubles as Hermes' conversation scope AND the member-
+    # attribution key inside the adapter. Same builder as the OpenClaw path so
+    # the two runtimes key sessions identically.
+    session_key = build_chat_session_key(agent_id, user_id, session_id)
+    # == the frontend's clientRunId (its busy-gate correlation key), mirroring
+    # the OpenClaw idempotencyKey→runId contract.
+    run_id_for_send = client_run_id or str(uuid4())
+
+    on_event = chat_bridge.make_frontend_event_sink(
+        management_api,
+        connection_id,
+        agent_id=agent_id,
+        run_id=run_id_for_send,
+        session_id=session_id,
+    )
+
+    logger.info(
+        "[%s] hermes chat START agent=%s sessionKey=%s runId=%s",
+        user_id,
+        agent_id,
+        session_key,
+        run_id_for_send,
+    )
+    try:
+        # context=None: a plain webchat turn has no per-run Paperclip/issue
+        # context. The adapter merges persona-first-then-context when present.
+        await get_runtime_for_owner(owner_id).send_chat(
+            owner_id,
+            agent_id,
+            message,
+            session_key,
+            on_event,
+            context=None,
+        )
+    except ContainerNotRunningError:
+        put_metric("chat.error", dimensions={"reason": "container_unreachable"})
+        logger.warning("[%s] hermes chat FAIL: no running container for owner=%s", user_id, owner_id)
+        try:
+            management_api.send_message(
+                connection_id,
+                {
+                    "type": "error",
+                    "agent_id": agent_id,
+                    "message": "Your agent is starting up. Please try again in a moment.",
+                    "runId": run_id_for_send,
+                },
+            )
+        except Exception:
+            pass
+    except Exception as exc:
+        put_metric("chat.error", dimensions={"reason": "unknown"})
+        logger.error("[%s] hermes chat FAIL agent=%s: %s", user_id, agent_id, exc)
+        try:
+            management_api.send_message(
+                connection_id,
+                {
+                    "type": "error",
+                    "agent_id": agent_id,
+                    "message": f"Failed to send message: {exc}",
+                    "runId": run_id_for_send,
+                },
+            )
+        except Exception:
+            pass
+
+
 async def _process_agent_chat_background(
     connection_id: str,
     user_id: str,
@@ -1791,6 +1962,25 @@ async def _process_agent_chat_background(
         # Look up user's container and discover task IP
         ecs_manager = get_ecs_manager()
         container, ip = await ecs_manager.resolve_running_container(owner_id)
+
+        # Hermes owners: drive the turn over HTTP+SSE via the runtime, not the
+        # pool's chat.send. resolve_running_container above primed the runtime-
+        # kind cache off the row, so this is reliable on the first turn. OpenClaw
+        # owners resolve "openclaw" (cache default) and fall through to the
+        # untouched pool path below — the Hermes logic is strictly behind this
+        # gate, so the OpenClaw hot path is byte-identical.
+        if get_runtime_for_owner(owner_id).kind == "hermes":
+            await _process_agent_chat_hermes(
+                connection_id=connection_id,
+                user_id=user_id,
+                owner_id=owner_id,
+                agent_id=agent_id,
+                message=message,
+                client_run_id=client_run_id,
+                session_id=session_id,
+                management_api=management_api,
+            )
+            return
 
         if not container:
             put_metric("chat.error", dimensions={"reason": "container_unreachable"})

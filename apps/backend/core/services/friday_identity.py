@@ -32,6 +32,7 @@ from datetime import datetime, timezone
 
 from core.containers.workspace import Workspace
 from core.observability.metrics import put_metric
+from core.runtime.base import OwnerFacts
 
 logger = logging.getLogger(__name__)
 
@@ -558,84 +559,52 @@ def _render_templates(profile: dict) -> dict[str, str]:
     }
 
 
+def _render_profile_dict_from_facts(facts: OwnerFacts) -> dict:
+    """Render the OpenClaw seed-template profile dict from brand-blind facts.
+
+    The ONLY OpenClaw-specific rendering left: format ``provider_label`` from the
+    raw provider choice, and map the neutral ``OwnerFacts`` fields onto the exact
+    profile-dict keys ``_render_templates`` consumes. Kept byte-identical to what
+    ``_resolve_owner_profile`` produced before the facts extraction — the
+    ``_resolve_owner_profile`` unit tests validate that mapping end to end.
+    """
+    provider_label = _format_provider_label(facts.provider_choice, facts.byo_provider)
+    if facts.owner_type == "org":
+        return {
+            "kind": "org",
+            "owner_display": facts.display_name,
+            "first_name_or_fallback": facts.first_name,
+            "org_name": facts.org_name,
+            "owner_email": facts.email,
+            "provider_label": provider_label,
+        }
+    return {
+        "kind": "personal",
+        "owner_display": facts.display_name,
+        "first_name_or_fallback": facts.first_name,
+        "full_name": facts.full_name,
+        "email": facts.email,
+        "provider_label": provider_label,
+    }
+
+
 async def _resolve_owner_profile(owner_id: str) -> dict:
     """Resolve a profile dict for the seed templates.
 
-    Branches on _is_org_owner_id:
-      - Personal: clerk_admin.get_user → email + first_name + last_name.
-      - Org: clerk_admin.get_organization → name; paperclip_owner_email
-        → owner email.
+    Gathering is now the shared, brand-blind ``resolve_owner_facts`` (Clerk +
+    billing lookups); the OpenClaw-specific rendering (provider label + template
+    key mapping) stays here in ``_render_profile_dict_from_facts``. The split is
+    a pure refactor — same facts, same rendering — so the rendered output is
+    byte-identical to the pre-extraction resolver.
 
-    Provider label: container_provision.resolve_provider_choice (reads
-    from billing_repo). Defaults to bedrock_claude if the row is missing
-    or the field is unset (matches resolve_provider_choice's own default).
-
-    Failures degrade to placeholder strings ("(unknown)" for missing
-    Clerk fields, "your team" for missing org name). Friday will learn
-    actual values through conversation.
+    Failures degrade to placeholder strings ("(unknown)" for missing Clerk
+    fields, "your team" for missing org name). Friday will learn actual values
+    through conversation.
     """
-    # Lazy imports keep module-load light and avoid import cycles between
-    # friday_identity and container_provision (which uses clerk_admin).
-    from core.services import clerk_admin
-    from core.services.container_provision import resolve_provider_choice
+    from core.services.owner_facts import resolve_owner_facts
 
-    provider_choice, byo_provider = await resolve_provider_choice(owner_id)
-    provider_label = _format_provider_label(provider_choice, byo_provider)
-
-    if _is_org_owner_id(owner_id):
-        from core.services.paperclip_owner_email import lookup_owner_email
-
-        org = await clerk_admin.get_organization(owner_id)
-        org_obj = org or {}
-        org_name = org_obj.get("name") or "your team"
-        # `lookup_owner_email` short-circuits to None when fallback_user_id is
-        # falsy, so threading the org's `created_by` (the founding user_id from
-        # Clerk's `GET /organizations/{org_id}`) is what makes this branch
-        # actually return a real email instead of always landing on "(unknown)".
-        created_by = org_obj.get("created_by") or None
-        owner_email = await lookup_owner_email(org_id=owner_id, fallback_user_id=created_by) or "(unknown)"
-        return {
-            "kind": "org",
-            "owner_display": org_name,
-            "first_name_or_fallback": "team",
-            "org_name": org_name,
-            "owner_email": owner_email,
-            "provider_label": provider_label,
-        }
-
-    user = await clerk_admin.get_user(owner_id)
-    user = user or {}
-    first_name = user.get("first_name") or ""
-    last_name = user.get("last_name") or ""
-    full_name = f"{first_name} {last_name}".strip() or "(unknown)"
-
-    # Pick the primary email when present; fall back to the first one in
-    # the list, then to a placeholder.
-    emails = user.get("email_addresses") or []
-    primary_id = user.get("primary_email_address_id")
-    primary = next((e for e in emails if e.get("id") == primary_id), None)
-    if primary is None and emails:
-        primary = emails[0]
-    email = (primary or {}).get("email_address") or "(unknown)"
-
-    # Friendly fallback for the "what to call them" / greeting slot.
-    if first_name:
-        first_name_or_fallback = first_name
-    elif email != "(unknown)" and "@" in email:
-        first_name_or_fallback = email.split("@", 1)[0]
-    else:
-        first_name_or_fallback = "there"
-
-    owner_display = first_name or first_name_or_fallback
-
-    return {
-        "kind": "personal",
-        "owner_display": owner_display,
-        "first_name_or_fallback": first_name_or_fallback,
-        "full_name": full_name,
-        "email": email,
-        "provider_label": provider_label,
-    }
+    facts = await resolve_owner_facts(owner_id)
+    return _render_profile_dict_from_facts(facts)
 
 
 # ---------------------------------------------------------------------------
@@ -648,12 +617,20 @@ async def pre_stage_friday_identity(
     owner_id: str,
     paperclip_agents: list[dict],
     workspace: Workspace,
+    facts: OwnerFacts | None = None,
 ) -> None:
     """Seed Friday's IDENTITY/SOUL/USER/BOOTSTRAP files on EFS.
 
     Resolves Friday's UUID from `paperclip_agents` (the entry with
     role == "ceo"). Writes four files using write-if-missing semantics
     so subsequent (re)provisions don't clobber Friday's evolved persona.
+
+    ``facts``: the shared ``OwnerFacts`` resolved once at the seed call site
+    (``ecs_manager.write_user_configs``). When provided the profile is rendered
+    from it directly — the single-lookup path, so OpenClaw and any second runtime
+    share ONE Clerk/billing resolution. When ``None`` (a resolve failure, or a
+    caller that doesn't pass it) it falls back to ``_resolve_owner_profile``,
+    which re-resolves the same facts — byte-identical either way.
 
     Best-effort: emits metrics + logs on failure but never raises.
     """
@@ -674,7 +651,13 @@ async def pre_stage_friday_identity(
         return
 
     friday_uuid = friday["id"]
-    profile = await _resolve_owner_profile(owner_id)
+    # Prefer the facts resolved once at the seed call site (single shared
+    # lookup); fall back to re-resolving when the caller passed none. Both paths
+    # render through the same helper, so the output is byte-identical.
+    if facts is not None:
+        profile = _render_profile_dict_from_facts(facts)
+    else:
+        profile = await _resolve_owner_profile(owner_id)
     files = _render_templates(profile)
 
     # Pre-mark OpenClaw setup complete so its boot-time reconcile doesn't

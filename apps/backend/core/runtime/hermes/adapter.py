@@ -340,6 +340,131 @@ def _write_efs_file(path: Path, content: str, *, mode: int) -> None:
         pass
 
 
+# ---------------------------------------------------------------------------
+# IdentitySeeder facet: per-agent persona files for the per-run `instructions`
+# model.
+#
+# Hermes has no on-disk IDENTITY/SOUL/USER bootstrap wizard like OpenClaw.
+# Instead each agent's persona is a single plain-text blob passed as
+# ``instructions`` on ``POST /v1/runs``. We persist that blob per agent to the
+# owner's Hermes home on EFS (``~/.hermes/personas/{agent_id}.txt`` in-container)
+# so ``send_chat`` reads it at run time. The persona INTENT — Friday = CEO /
+# orchestrator, Atlas = in-house recruiter — is REUSED from
+# ``friday_identity`` / ``atlas_seed``, but the TEXT is RE-AUTHORED for Hermes:
+# OpenClaw's SOUL/IDENTITY/AGENTS markdown is steeped in OpenClaw mechanics (EFS
+# files, BOOTSTRAP.md, the curl-based ``paperclip`` skill, heartbeat wakes) that
+# do not apply to a Hermes ``/v1/runs`` agent, so copying it verbatim would ship
+# false capability claims. Only the role/vibe/boundary intent carries over.
+# ---------------------------------------------------------------------------
+
+# Subdir under the owner's Hermes home holding one persona file per agent.
+_PERSONA_DIRNAME = "personas"
+
+# One compact provider note per raw provider_choice. This is Hermes' own
+# rendering of the raw fact (OpenClaw formats its own ``provider_label``); an
+# unknown choice or missing facts contributes nothing.
+_PROVIDER_NOTE = {
+    "chatgpt_oauth": " You run on the owner's own ChatGPT (OpenAI) account.",
+    "bedrock_claude": " You run on Claude via Isol8-managed Bedrock credits.",
+    "byo_key": " You run on the owner's own provider API key.",
+}
+
+_FRIDAY_PERSONA = """\
+You are Friday, the CEO of {owner}'s AI company on Isol8.
+
+You are not a chatbot — you are the entry point and the orchestrator. You break
+work into pieces, delegate to the right specialists, coordinate them, and triage
+what comes back; as the team grows you stay the CEO rather than doing every task
+yourself. You report to {owner}, the human this company exists for.
+
+Your team right now: {roster}. Never assume an agent exists — delegate from the
+live roster, and when no one fits, get the right specialist hired.
+
+Tone: sharp, warm, and opinionated — concise when it matters, never a corporate
+drone. Be genuinely helpful, not performatively helpful: skip "Great question!"
+and just help. Have real opinions. Be resourceful before asking — try to figure
+it out, then ask if you are stuck. You have access to {owner}'s work; earn that
+trust through competence and treat it with a guest's respect.
+
+Boundaries: private things stay private; ask before acting externally (emails,
+anything public); never send half-baked replies; you are not {owner}'s voice in
+group settings.{provider}"""
+
+_ATLAS_PERSONA = """\
+You are Atlas, the in-house agent-recruiter for {owner}'s AI company on Isol8.
+
+When the team lacks a specialist for a piece of work, you design and scaffold a
+new one — you architect the role, its responsibilities, and the tools it needs,
+then hand it back to the team. Friday, the CEO, delegates hiring to you and you
+report back to her.
+
+Your teammates right now: {roster}.
+
+Tone: sharp, practical, and honest about tradeoffs. Design specialists that
+actually do the job asked of them — no aspirational capability claims. Be
+resourceful, ask when a requirement is genuinely ambiguous, and keep {owner}
+in the loop on what you are building.{provider}"""
+
+
+def _persona_owner_name(facts: "Any | None", owner_type: str) -> str:
+    """The owner display used in a persona. Prefers the shared facts; degrades to
+    a brand-blind fallback keyed on owner kind when facts could not be resolved."""
+    if facts is not None:
+        return facts.display_name
+    return "your team" if owner_type == "org" else "the owner"
+
+
+def _persona_roster_line(agents: "list[Mapping[str, Any]]") -> str:
+    """Render the roster as "Name (role), Name (role)" for a persona blurb.
+
+    ``general`` is the shared marketplace/hire role, so it is not a useful
+    qualifier; a name that equals its role is not doubled. Empty roster reads
+    "just you for now"."""
+    parts: list[str] = []
+    for agent in agents:
+        name = agent.get("name") or agent.get("role") or "an agent"
+        role = agent.get("role")
+        if role and role != "general" and str(role).lower() != str(name).lower():
+            parts.append(f"{name} ({role})")
+        else:
+            parts.append(str(name))
+    return ", ".join(parts) if parts else "just you for now"
+
+
+def _build_persona(kind: str, *, facts: "Any | None", owner_type: str, agents: "list[Mapping[str, Any]]") -> str:
+    """Build ONE agent's persona text (``friday`` or ``atlas``) from the shared
+    facts + roster. Pure — no I/O — so it is unit-testable in isolation."""
+    template = _FRIDAY_PERSONA if kind == "friday" else _ATLAS_PERSONA
+    return template.format(
+        owner=_persona_owner_name(facts, owner_type),
+        roster=_persona_roster_line(agents),
+        provider="" if facts is None else _PROVIDER_NOTE.get(facts.provider_choice, ""),
+    )
+
+
+def _persona_path(owner_id: str, agent_id: str) -> Path:
+    """EFS path to ONE agent's persona file (``~/.hermes/personas/{id}.txt``).
+
+    Lazy settings import keeps the module import-light (the tripwire constraint)."""
+    from core.config import settings
+
+    return Path(settings.EFS_MOUNT_PATH) / owner_id / _PERSONA_DIRNAME / f"{agent_id}.txt"
+
+
+def _read_persona(owner_id: str, agent_id: str) -> str | None:
+    """Read an agent's persona blob, or ``None`` when unseeded/unreadable.
+
+    Best-effort: a missing file (agent seeded on an older container, or a
+    non-seed agent) or any read error yields ``None`` so ``send_chat`` simply
+    sends no ``instructions`` rather than failing the turn."""
+    try:
+        text = _persona_path(owner_id, agent_id).read_text()
+    except OSError:
+        return None
+    text = text.strip()
+    return text or None
+
+
 class HermesRuntime:
     kind = "hermes"
     capabilities = HERMES_CAPABILITIES
@@ -398,7 +523,14 @@ class HermesRuntime:
         encodes the agent, so it is passed straight through as Hermes'
         ``session_id`` to scope the run's conversation. Hermes DROPS ``metadata``
         on the run body — any Paperclip/context must ride ``input``/``instructions``
-        text, which H3 threads; H2.2 sends the bare user turn.
+        text.
+
+        Persona: the agent's seeded persona (``seed_owner_agents`` wrote it to
+        ``personas/{agent_id}.txt``) is read here and passed as ``instructions``
+        so the agent boots in-character. This closes the IdentitySeeder loop for
+        the spike. NOTE (H3): the routing bridge threads per-run Paperclip/issue
+        CONTEXT — it must MERGE that context WITH this persona in ``instructions``
+        (persona first, then context), not replace it.
         """
         import httpx
 
@@ -407,7 +539,13 @@ class HermesRuntime:
         headers = {"Authorization": f"Bearer {key}"}
         # Hermes reads ``input`` (the user turn) + ``session_id`` (conversation
         # scope). ``metadata`` is dropped server-side, so nothing rides it.
-        run_body = {"input": message, "session_id": session_key}
+        run_body: dict[str, Any] = {"input": message, "session_id": session_key}
+        # Boot the agent in-character with its seeded persona. Best-effort: an
+        # unseeded agent simply runs without instructions (H3 merges per-run
+        # context onto this).
+        persona = _read_persona(owner_id, agent_id)
+        if persona:
+            run_body["instructions"] = persona
 
         async with _client_factory() as client:
             resp = await client.post(f"{base}/v1/runs", json=run_body, headers=headers)
@@ -649,4 +787,66 @@ class HermesRuntime:
     # --- IdentitySeeder facet: seeding an owner's agents ------------------
 
     async def seed_owner_agents(self, owner_id: str, profile: OwnerProfile) -> None:
-        raise NotImplementedError("HermesRuntime.seed_owner_agents lands in H2.x")
+        """Seed Friday's + Atlas's persona onto the owner's Hermes home on EFS.
+
+        Hermes carries an agent's persona as the per-run ``instructions`` blob
+        (there is no on-disk IDENTITY/SOUL/USER wizard), so this writes one
+        ``personas/{agent_id}.txt`` per seed agent from the SHARED
+        ``profile.facts`` (resolved once at the call site — no Clerk/billing
+        re-lookup here) + the Paperclip roster. ``send_chat`` reads that file and
+        passes it as ``instructions`` on ``POST /v1/runs``.
+
+        Scope mirrors the OpenClaw seeder: only the Friday (``role == "ceo"``) and
+        Atlas (``name == "Atlas"``) seed pair get personas; other roster agents
+        (marketplace hires) are left for a later task. Files are written
+        atomically (tmp + replace) and overwrite on reprovision — the persona is
+        deterministic from the current facts, and Hermes has no in-container
+        persona-evolution path to preserve (unlike OpenClaw's write-if-missing).
+
+        Best-effort throughout: an empty roster defers to the next provision, and
+        a per-agent write failure is logged + metered but never raises — a seeder
+        failure MUST NOT block provisioning (the agent boots with no instructions).
+        """
+        from core.observability.metrics import put_metric
+
+        agents = list(profile.agents)
+        if not agents:
+            put_metric("hermes.persona.seed.skipped")
+            logger.info(
+                "hermes seed_owner_agents: empty roster for owner=%s — deferring to next provision",
+                owner_id,
+            )
+            return
+
+        written = 0
+        for agent in agents:
+            agent_id = agent.get("id")
+            if not agent_id:
+                continue
+            if agent.get("role") == "ceo":
+                kind = "friday"
+            elif agent.get("name") == "Atlas":
+                kind = "atlas"
+            else:
+                continue  # spike seeds only the Friday/Atlas seed pair
+            try:
+                text = _build_persona(
+                    kind,
+                    facts=profile.facts,
+                    owner_type=profile.owner_type,
+                    agents=agents,
+                )
+                _write_efs_file(_persona_path(owner_id, agent_id), text, mode=0o644)
+                written += 1
+            except Exception as exc:  # noqa: BLE001 — best-effort, must not block provision.
+                put_metric("hermes.persona.seed.error")
+                logger.warning(
+                    "hermes seed_owner_agents: persona write failed owner=%s agent=%s: %s",
+                    owner_id,
+                    agent_id,
+                    exc,
+                )
+
+        if written:
+            put_metric("hermes.persona.seed.success", value=written)
+        logger.info("hermes seed_owner_agents: owner=%s wrote=%d personas", owner_id, written)

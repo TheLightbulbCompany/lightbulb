@@ -382,10 +382,14 @@ class OpenClawRuntime:
         from core.services.friday_identity import pre_stage_friday_identity
 
         try:
+            # Thread the shared facts resolved once at the seed call site so
+            # Friday's markdown renders from that single Clerk/billing lookup;
+            # a None (resolve failure) falls back to re-resolving internally.
             await pre_stage_friday_identity(
                 owner_id=owner_id,
                 paperclip_agents=agents,
                 workspace=workspace,
+                facts=profile.facts,
             )
         except Exception as exc:  # noqa: BLE001 — best-effort, must not block provision.
             put_metric("friday_identity.seed.error")

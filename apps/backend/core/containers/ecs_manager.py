@@ -2306,9 +2306,26 @@ class EcsManager:
         from core.runtime.base import OwnerProfile
         from core.services.friday_identity import pre_stage_paperclip_identities
 
+        # Resolve the owner's brand-blind facts ONCE here (Clerk + billing) and
+        # hand them to the seeder on OwnerProfile.facts, so every runtime seeds an
+        # owner's persona from a single lookup rather than each re-doing it.
+        # Best-effort: a resolve failure degrades to facts=None — OpenClaw then
+        # re-resolves internally, a second runtime falls back to placeholders.
+        owner_facts = None
+        try:
+            from core.services.owner_facts import resolve_owner_facts
+
+            owner_facts = await resolve_owner_facts(owner_id)
+        except Exception as exc:  # noqa: BLE001 — best-effort; seeders degrade on None.
+            logger.warning(
+                "write_user_configs: resolve_owner_facts failed for owner=%s: %s",
+                owner_id,
+                exc,
+            )
+
         await get_runtime_for_owner(owner_id).seed_owner_agents(
             owner_id,
-            OwnerProfile(agents=paperclip_agents, owner_type=owner_type),
+            OwnerProfile(agents=paperclip_agents, owner_type=owner_type, facts=owner_facts),
         )
 
         # Stage each agent's per-agent Paperclip identity file

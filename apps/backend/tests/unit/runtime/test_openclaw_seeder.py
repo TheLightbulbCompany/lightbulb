@@ -43,11 +43,15 @@ def test_owner_profile_defaults():
 
 
 def test_owner_profile_has_no_openclaw_rendering_fields():
-    # The DTO must not leak OpenClaw markdown internals (owner_display /
-    # provider_label / first_name_or_fallback live inside _resolve_owner_profile,
-    # not on the brand-blind port).
+    # The DTO must not leak OpenClaw markdown internals (a formatted
+    # provider_label / rendered markdown live inside the seeder, not on the port).
+    # ``facts`` carries the brand-blind OwnerFacts (raw provider_choice, resolved
+    # display/greeting strings) — NOT a rendered label — so it belongs here.
     field_names = {f.name for f in dataclasses.fields(OwnerProfile)}
-    assert field_names == {"agents", "owner_type"}
+    assert field_names == {"agents", "owner_type", "facts"}
+    # The rendered/label fields must NOT be top-level port fields.
+    assert "provider_label" not in field_names
+    assert "owner_display" not in field_names
 
 
 # --- seed_owner_agents: drives the same Friday + Atlas seeding ------------------

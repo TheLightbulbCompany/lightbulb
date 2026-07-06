@@ -160,6 +160,44 @@ class ConfigProfile:
 
 
 @dataclass(frozen=True)
+class OwnerFacts:
+    """Brand-blind facts about ONE owner, gathered once and shared by every
+    runtime's IdentitySeeder so no runtime re-does the Clerk / billing lookups.
+
+    These are the FACTS the seeders render from — never the rendered output. The
+    fact-gathering (Clerk ``get_user`` / ``get_organization``, owner-email
+    lookup, billing ``resolve_provider_choice``) is runtime-neutral; only the
+    per-runtime RENDERING of these facts into on-disk persona files is
+    brand-specific (OpenClaw formats a ``provider_label`` string + IDENTITY/SOUL/
+    USER markdown from them; Hermes writes a per-run instructions blob). So this
+    DTO deliberately carries the RAW ``provider_choice`` / ``byo_provider`` (not a
+    formatted label) and the resolved display/greeting strings, but no markdown.
+
+    Fields:
+      - ``owner_type`` — "personal" | "org".
+      - ``provider_choice`` / ``byo_provider`` — the raw LLM-provider selection;
+        each runtime formats its own human label from these.
+      - ``display_name`` — how to refer to the owner in prose (personal: the
+        owner's first name or a fallback; org: the org name).
+      - ``first_name`` — the greeting handle (personal: first name, else the
+        email local-part, else "there"; org: "team").
+      - ``full_name`` — personal: "First Last" or "(unknown)"; org: the org name.
+      - ``email`` — personal: the owner's primary email; org: the founding
+        owner's email (both "(unknown)" when unresolved).
+      - ``org_name`` — the org name for org owners, else ``None``.
+    """
+
+    owner_type: str
+    provider_choice: str
+    byo_provider: str | None
+    display_name: str
+    first_name: str
+    full_name: str
+    email: str
+    org_name: str | None = None
+
+
+@dataclass(frozen=True)
 class OwnerProfile:
     """Runtime-neutral description of ONE owner and their seeded agent roster,
     handed to the runtime to seed each agent's persona/identity in whatever
@@ -173,17 +211,21 @@ class OwnerProfile:
         seeded and under which workspace ids.
       - ``owner_type`` ("personal"/"org") is the brand-blind owner kind, mirrored
         from ``ProvisionCtx`` / ``ConfigProfile``.
+      - ``facts`` is the shared, brand-blind ``OwnerFacts`` resolved once at the
+        seed call site (``resolve_owner_facts``) so every runtime seeds an
+        owner's persona from the SAME Clerk/billing lookup without re-doing it.
+        Optional: it is ``None`` when the caller could not resolve facts (a Clerk
+        outage) — a runtime seeder falls back to re-resolving or to placeholders,
+        exactly as the OpenClaw path already degrades.
 
-    It carries NO OpenClaw rendering internals: the display name, provider label,
-    and greeting-fallback strings are resolved from ``owner_id`` *inside* the
-    OpenClaw seeder (``friday_identity._resolve_owner_profile``) — that Clerk +
-    billing lookup is interleaved with OpenClaw-specific markdown rendering and
-    is not cleanly separable, so it stays a runtime-internal detail rather than
-    a field on this port.
+    It carries NO rendered persona strings (formatted provider label, markdown):
+    those are produced per-runtime from ``facts``. The provider *label* formatting
+    and greeting/display markdown stay inside each runtime's seeder.
     """
 
     agents: Sequence[Mapping[str, Any]] = ()
     owner_type: str = "personal"
+    facts: OwnerFacts | None = None
 
 
 @dataclass(frozen=True)

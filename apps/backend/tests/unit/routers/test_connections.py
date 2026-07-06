@@ -1724,7 +1724,7 @@ class TestAwsComplete:
     # verified via iam:GetRole. This is the guarantee that no tenant can ever
     # connect one of Isol8's own AWS roles.
     _OWNER_PRINCIPAL = "arn:aws:iam::877352799272:role/isol8-owner-user_test_123"
-    _OUR_ACCOUNT_ARN = "arn:aws:iam::877352799272:role/isol8-readonly-connector"
+    _OUR_ACCOUNT_ARN = "arn:aws:iam::877352799272:role/isol8-connector"
 
     @staticmethod
     def _set_trust(mock_aip, statements):

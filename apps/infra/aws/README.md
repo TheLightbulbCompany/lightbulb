@@ -19,7 +19,7 @@ per-owner agent container can assume.
 - The role is **trust-pinned**: it can be assumed only by the owner's Isol8
   container task role (`TrustedPrincipalArn`) **and** only when the call carries
   the matching `sts:ExternalId`.
-- Because the role uses a fixed name (`isol8-readonly-connector`), launching the
+- Because the role uses a fixed name (`isol8-connector`), launching the
   stack requires acknowledging **CAPABILITY_NAMED_IAM**.
 
 After the stack is created, the owner copies the `RoleArn` stack output back into

@@ -295,7 +295,7 @@ export class ServiceStack extends cdk.Stack {
         // any one silently breaks the self-account trust-pin check (GetRole
         // scoped to the old name → AccessDenied → fail-closed 400).
         resources: [
-          `arn:aws:iam::${this.account}:role/isol8-readonly-connector`,
+          `arn:aws:iam::${this.account}:role/isol8-connector`,
         ],
       }),
     );

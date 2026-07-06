@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 from core.billing import bedrock_aip
 
-_STACK_NAME = "isol8-readonly-connector"
+_STACK_NAME = bedrock_aip.CONNECTOR_ROLE_NAME
 
 
 def gen_external_id() -> str:

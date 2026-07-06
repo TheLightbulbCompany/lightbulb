@@ -44,6 +44,12 @@ logger = logging.getLogger(__name__)
 # is named once here and reused, never inlined twice.
 OUR_ACCOUNT_ID: str = "877352799272"
 
+# The IAM role name of the read-only connector Isol8 stands up in its OWN account
+# for the AWS scope-tiers rail. Lives here (the base module both aws_cfn and
+# connections import) so the literal has a single home — aws_cfn already imports
+# bedrock_aip, so the constant can't live there without a cycle.
+CONNECTOR_ROLE_NAME = "isol8-readonly-connector"
+
 # The three AIP tiers. Order matters only for deterministic iteration.
 TIERS: tuple[str, str, str] = ("opus", "sonnet", "haiku")
 

@@ -100,6 +100,33 @@ _ROLE_ARN_RE = re.compile(r"^arn:aws:iam::(\d{12}):role/[\w+=,.@/-]+$")
 _REGION_RE = re.compile(r"^[a-z0-9-]+$")
 
 
+async def _self_account_role_is_pinned(role_arn: str, owner_id: str, external_id: str) -> bool:
+    """True iff a role IN OUR account is a legitimate connector for THIS owner:
+    its trust policy allows the owner's per-owner principal AND requires the
+    owner's ExternalId. Only we can create such a role, and our infra roles
+    (which trust account-root, not a specific owner) never satisfy it — so this
+    blocks connecting an arbitrary our-account role (account-takeover) without an
+    owner-id allowlist. Any failure (GetRole error, shape mismatch) -> False."""
+    role_name = role_arn.split(":role/", 1)[1]
+    try:
+        resp = await run_in_thread(bedrock_aip._iam_client().get_role, RoleName=role_name)
+        trust = resp["Role"]["AssumeRolePolicyDocument"]  # boto3 returns a decoded dict
+    except Exception:
+        return False
+    expected_principal = aws_cfn.owner_task_role_arn(owner_id)
+    for stmt in trust.get("Statement", []):
+        if stmt.get("Effect") != "Allow":
+            continue
+        principal = stmt.get("Principal", {}).get("AWS")
+        principals = principal if isinstance(principal, list) else [principal]
+        if expected_principal not in principals:
+            continue
+        cond = stmt.get("Condition", {}).get("StringEquals", {})
+        if cond.get("sts:ExternalId") == external_id:
+            return True
+    return False
+
+
 def _get_provider_or_404(provider: str) -> registry.Provider:
     try:
         return registry.get_provider(provider)
@@ -306,8 +333,6 @@ async def aws_complete(provider: str, body: AwsCompleteBody, auth: AuthContext =
     match = _ROLE_ARN_RE.fullmatch(role_arn)
     if not match:
         raise HTTPException(status_code=400, detail="invalid role ARN")
-    if match.group(1) == bedrock_aip.OUR_ACCOUNT_ID:
-        raise HTTPException(status_code=400, detail="role must be in your own AWS account, not Isol8's")
 
     # ``region`` is owner-supplied and gets written into ~/.aws/config. Validate
     # it (when given) before storing or using it so a newline can't inject a
@@ -315,11 +340,24 @@ async def aws_complete(provider: str, body: AwsCompleteBody, auth: AuthContext =
     if body.region and not _REGION_RE.fullmatch(body.region):
         raise HTTPException(status_code=400, detail="invalid region")
 
+    # Fetch the pending record ONCE. A missing/setup-less record yields the 409
+    # "run aws-setup first" BEFORE the trust-pin check, so an our-account ARN
+    # pasted without a prior setup gets the accurate 409 (not the misleading
+    # "not Isol8's" 400). The same external_id feeds the trust-pin verification.
     rec = await integration_secret_store.get(owner_id, provider)
-    if not rec or not rec.get("external_id"):
+    external_id = (rec or {}).get("external_id")
+    if not external_id:
         raise HTTPException(status_code=409, detail="run aws-setup first")
 
-    external_id = rec["external_id"]
+    if match.group(1) == bedrock_aip.OUR_ACCOUNT_ID:
+        # Our own account: allowed ONLY if the pasted role is trust-pinned to this
+        # owner (trusts their principal + requires their ExternalId) — verified
+        # against the live role via iam:GetRole. Blocks connecting an arbitrary
+        # our-account role (e.g. account-root-trusting CDK roles = account
+        # takeover). No owner-id allowlist. Any failure -> reject.
+        if not await _self_account_role_is_pinned(role_arn, owner_id, external_id):
+            raise HTTPException(status_code=400, detail="role must be in your own AWS account, not Isol8's")
+
     credential = {
         "role_arn": role_arn,
         "external_id": external_id,

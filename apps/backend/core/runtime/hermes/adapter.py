@@ -33,7 +33,9 @@ adapter does for ``core.containers``.
 import asyncio
 import json
 import logging
+import os
 from collections.abc import AsyncIterator, Mapping
+from pathlib import Path
 from typing import Any
 
 from core.runtime.base import (
@@ -43,6 +45,8 @@ from core.runtime.base import (
     ConfigProfile,
     ContainerNotRunningError,
     ContainerSpec,
+    EfsMountLayout,
+    Healthcheck,
     OwnerProfile,
     ProviderCreds,
     ProvisionCtx,
@@ -69,6 +73,25 @@ HERMES_CAPABILITIES = Capabilities(
 # Hermes' API server listens on this fixed port inside the container (plain
 # HTTP, intra-VPC). Mirrors OpenClaw's GATEWAY_PORT constant.
 HERMES_API_PORT = 8642
+
+# Hermes' CDK base task-def family (H1.3). ecs_manager clones this family for the
+# per-user service, so the family — NOT this adapter — carries the Hermes image,
+# container port 8642, and the static base env (API_SERVER_HOST=0.0.0.0,
+# HERMES_SQLITE_JOURNAL_MODE=delete, HERMES_UID=1000). container_spec returns the
+# family NAME, mirroring how OpenClaw returns isol8-{env}-openclaw.
+_HERMES_BASE_TASK_DEF_FAMILY = "isol8-{env}-hermes"
+
+# Per-user task size. Mirrors OpenClaw's PER_USER_CPU / PER_USER_MEMORY_MIB.
+# NOT consumed by the launch path (the CDK base task-def owns cpu/memory) —
+# returned only for parity/completeness with OpenClaw's ContainerSpec.
+_HERMES_CPU = "512"
+_HERMES_MEMORY_MIB = "2048"
+
+# EFS POSIX ownership for the per-owner Hermes home. Hermes runs as UID 1000
+# (HERMES_UID=1000 in the CDK base env), same as OpenClaw's node user, so its
+# in-container process can read the config/auth files staged below.
+_HERMES_EFS_UID = 1000
+_HERMES_EFS_GID = 1000
 
 # Timeouts. The SSE read timeout is deliberately generous but finite: a stream
 # that idles past it raises ``httpx.ReadTimeout`` (an ``httpx.HTTPError``),
@@ -243,6 +266,78 @@ async def _iter_sse(response: Any) -> AsyncIterator[tuple[str, dict]]:
     frame = _flush()
     if frame is not None:
         yield frame
+
+
+def _build_hermes_config(provider_choice: str, byo_provider: str | None) -> dict:
+    """Build the MINIMAL Hermes ``config.yaml`` body for one owner's provider.
+
+    Returns a plain dict (serialized to YAML by ``write_config``) carrying the one
+    block a Hermes daemon needs to boot against the right model provider: a
+    ``model`` mapping with the default model ref + provider name, plus a
+    ``base_url`` when the provider needs an explicit endpoint. NO secrets are
+    emitted — the per-container ``API_SERVER_KEY`` is an env/secret (H3) and
+    provider creds are staged separately (``write_auth`` for OAuth, task-def
+    secrets for BYO keys, IAM for Bedrock).
+
+    Config-brick caution (an invalid ``config.yaml`` crash-loops the daemon at
+    boot): this stays intentionally small and every branch emits a complete
+    block. The model refs + the ``model.{default,provider,base_url}`` field names
+    are the MINIMAL known-required shape — H4 must validate the exact Hermes
+    ``config.yaml`` schema against a real boot and adjust field names / add any
+    other required keys before this drives a live container.
+    """
+    if provider_choice == "chatgpt_oauth":
+        # OAuth/Codex path: creds are staged to ~/.hermes/auth.json (write_auth),
+        # never into config. Endpoint is the provider default.
+        return {"model": {"default": "openai/gpt-5.5", "provider": "openai"}}
+    if provider_choice == "byo_key":
+        if byo_provider == "openai":
+            return {"model": {"default": "openai/gpt-5.5", "provider": "openai"}}
+        if byo_provider == "anthropic":
+            return {"model": {"default": "anthropic/claude-sonnet-4-6", "provider": "anthropic"}}
+        raise ValueError(f"byo_provider must be 'openai' or 'anthropic' for byo_key, got {byo_provider!r}")
+    if provider_choice == "bedrock_claude":
+        # Bedrock auth is IAM (the per-owner task role) — no creds file — but the
+        # runtime endpoint is region-scoped, so it IS pinned in config.
+        from core.config import settings
+
+        return {
+            "model": {
+                "default": "anthropic.claude-sonnet-4-6",
+                "provider": "bedrock",
+                "base_url": f"https://bedrock-runtime.{settings.AWS_REGION}.amazonaws.com",
+            }
+        }
+    raise ValueError(f"Unknown provider_choice: {provider_choice!r}")
+
+
+def _write_efs_file(path: Path, content: str, *, mode: int) -> None:
+    """Atomically write ``content`` to ``path`` on EFS, chowned to Hermes' UID.
+
+    tmp + ``os.replace`` (crash-safe on POSIX, same filesystem) so a mid-write
+    crash never leaves the Hermes daemon a half-written config/auth file; ``chmod``
+    to ``mode`` then best-effort ``chown`` to 1000:1000 so the in-container Hermes
+    process (UID 1000) can read it. Mirrors the write in
+    ``workspace.pre_stage_auth_profile_store``. The chown is best-effort because
+    the backend test/dev host can't chown to an arbitrary uid — on the real EFS
+    mount (running as root) it succeeds.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.parent / (path.name + ".tmp")
+    tmp.write_text(content)
+    try:
+        os.chmod(str(tmp), mode)
+    except OSError:
+        pass
+    try:
+        os.chown(str(tmp), _HERMES_EFS_UID, _HERMES_EFS_GID)
+    except (PermissionError, OSError):
+        pass
+    os.replace(str(tmp), str(path))
+    try:
+        os.chown(str(path.parent), _HERMES_EFS_UID, _HERMES_EFS_GID)
+    except (PermissionError, OSError):
+        pass
 
 
 class HermesRuntime:
@@ -441,13 +536,115 @@ class HermesRuntime:
     # --- Provisioner facet: launching / configuring a container -----------
 
     def container_spec(self, owner_id: str, ctx: ProvisionCtx) -> ContainerSpec:
-        raise NotImplementedError("HermesRuntime.container_spec lands in H2.x")
+        """Describe the container to launch for ``owner_id``, brand-blind.
+
+        Facet-consumed vs CDK-owned:
+          - ``image`` is the CDK base task-def FAMILY name (``isol8-{env}-hermes``,
+            H1.3) the per-user clone inherits its Hermes image + port 8642 + static
+            base env from — NOT an image ref this facet injects. Mirrors OpenClaw
+            returning ``isol8-{env}-openclaw`` (same ``settings.ENVIRONMENT``
+            resolution).
+          - ``healthcheck`` (TCP on 8642) IS facet-consumed: ``is_healthy``
+            TCP-probes it once H3 threads the owner through the provisioning path.
+          - ``efs_mount`` describes the per-owner Hermes home on EFS (the access
+            point chroots ``/users/{owner_id}`` to ``~/.hermes`` in-container),
+            used to create the mount.
+          - ``container_port`` / ``cpu`` / ``memory_mib`` are returned for parity
+            with OpenClaw's spec but are NOT consumed by the launch path — the CDK
+            base task-def owns them.
+          - ``env`` is intentionally EMPTY: Hermes' per-container
+            ``API_SERVER_KEY`` is a SECRET injected by H3's provisioning (not
+            here), and the static base env (``API_SERVER_HOST`` /
+            ``HERMES_SQLITE_JOURNAL_MODE`` / ``HERMES_UID``) lives on the CDK base
+            task-def. ``ctx.hook_token`` is therefore not surfaced here.
+        """
+        # Lazy: core.config is not stdlib and the module keeps its top-level
+        # imports to stdlib/typing + core.runtime.base (the tripwire constraint).
+        from core.config import settings
+
+        base_family = _HERMES_BASE_TASK_DEF_FAMILY.format(env=settings.ENVIRONMENT or "dev")
+        return ContainerSpec(
+            image=base_family,
+            container_port=HERMES_API_PORT,
+            cpu=_HERMES_CPU,
+            memory_mib=_HERMES_MEMORY_MIB,
+            env={},
+            healthcheck=Healthcheck(kind="tcp", port=HERMES_API_PORT, timeout_s=5.0),
+            efs_mount=EfsMountLayout(
+                mount_root=settings.EFS_MOUNT_PATH,
+                owner_subpath=f"/users/{owner_id}",
+                posix_uid=_HERMES_EFS_UID,
+                posix_gid=_HERMES_EFS_GID,
+                root_permissions="0755",
+            ),
+        )
 
     async def write_config(self, owner_id: str, profile: ConfigProfile) -> None:
-        raise NotImplementedError("HermesRuntime.write_config lands in H2.x")
+        """Serialize ``profile`` into the owner's Hermes ``config.yaml`` on EFS.
+
+        Writes the minimal model/provider block (keyed to ``profile.provider_choice``)
+        to ``Path(EFS_MOUNT_PATH)/{owner_id}/config.yaml`` — chrooted to
+        ``~/.hermes/config.yaml`` in-container. NO secrets: ``API_SERVER_KEY`` is
+        env/secret (H3), provider creds ride ``write_auth`` / task-def secrets /
+        IAM. ``container_auth_token`` is NOT consumed here — Hermes has no shared
+        gateway token; it authenticates per-container with ``API_SERVER_KEY``.
+
+        Config-brick caution: emits well-formed YAML with a complete provider
+        block; the exact schema + model-ref field names are H4-verified against a
+        real boot (see ``_build_hermes_config``).
+        """
+        # Lazy: yaml is third-party (mirror the httpx deferral); core.config is
+        # not stdlib. Keeps the module import-light for the tripwire.
+        import yaml
+
+        from core.config import settings
+
+        config = _build_hermes_config(profile.provider_choice, profile.byo_provider)
+        body = yaml.safe_dump(config, default_flow_style=False, sort_keys=True)
+        config_path = Path(settings.EFS_MOUNT_PATH) / owner_id / "config.yaml"
+        _write_efs_file(config_path, body, mode=0o644)
 
     async def write_auth(self, owner_id: str, creds: ProviderCreds) -> None:
-        raise NotImplementedError("HermesRuntime.write_auth lands in H2.x")
+        """Stage ``creds`` onto the owner's Hermes home before launch.
+
+        Like OpenClaw, only OAuth material is staged to the container filesystem —
+        Hermes' OAuth (Codex-lineage) path reads ``~/.hermes/auth.json``. BYO keys
+        ride task-def secrets and Bedrock uses IAM, so neither is a ``write_auth``.
+        Writes to ``Path(EFS_MOUNT_PATH)/{owner_id}/auth.json`` (chrooted to
+        ``~/.hermes/auth.json``), owner-only (0600) since it holds live tokens.
+
+        The auth.json SHAPE (Codex-lineage ``{OPENAI_API_KEY, tokens{access_token,
+        refresh_token, …}}``) is the MINIMAL documented shape; H4 must confirm the
+        exact field names Hermes expects against a real OAuth boot.
+        """
+        if creds.kind != "oauth":
+            raise ValueError(
+                "Hermes write_auth stages only 'oauth' credentials to the container "
+                f"filesystem; got kind={creds.kind!r} (BYO keys ride task-def secrets, "
+                "Bedrock uses IAM)"
+            )
+        # Lazy: core.config is not stdlib — keep the module import-light.
+        from core.config import settings
+
+        secrets = dict(creds.secrets)
+        required = {"access_token", "refresh_token"}
+        missing = required - secrets.keys()
+        if missing:
+            raise ValueError(f"oauth creds missing required keys: {sorted(missing)}")
+
+        tokens: dict[str, Any] = {
+            "access_token": secrets["access_token"],
+            "refresh_token": secrets["refresh_token"],
+        }
+        for opt in ("id_token", "account_id"):
+            if secrets.get(opt):
+                tokens[opt] = secrets[opt]
+        if secrets.get("expires_at") is not None:
+            tokens["expires_at"] = int(secrets["expires_at"])
+
+        auth = {"OPENAI_API_KEY": None, "tokens": tokens}
+        auth_path = Path(settings.EFS_MOUNT_PATH) / owner_id / "auth.json"
+        _write_efs_file(auth_path, json.dumps(auth, indent=2), mode=0o600)
 
     # --- IdentitySeeder facet: seeding an owner's agents ------------------
 

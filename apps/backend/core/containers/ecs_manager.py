@@ -2284,7 +2284,7 @@ class EcsManager:
             owner_id,
             ConfigProfile(
                 provider_choice=provider_choice,
-                gateway_token=gateway_token,
+                container_auth_token=gateway_token,
                 byo_provider=byo_provider,
                 hook_token=hook_token,
                 owner_type=owner_type,

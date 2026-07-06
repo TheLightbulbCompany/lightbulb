@@ -315,7 +315,9 @@ class OpenClawRuntime:
         config_path = Path(settings.EFS_MOUNT_PATH) / owner_id / "openclaw.json"
         await write_openclaw_config(
             config_path=config_path,
-            gateway_token=profile.gateway_token,
+            # OpenClaw's gateway auth secret IS the transport-neutral container
+            # auth token; the write_openclaw_config param keeps its brand name.
+            gateway_token=profile.container_auth_token,
             provider_choice=profile.provider_choice,
             user_id=owner_id,
             byo_provider=profile.byo_provider,

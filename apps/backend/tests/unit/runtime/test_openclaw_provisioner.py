@@ -95,7 +95,7 @@ async def test_write_config_delegates_to_write_openclaw_config():
     rt = get_runtime("openclaw")
     profile = ConfigProfile(
         provider_choice="byo_key",
-        gateway_token="gw-tok",
+        container_auth_token="gw-tok",
         byo_provider="openai",
         hook_token="hk-tok",
         owner_type="org",
@@ -124,7 +124,7 @@ async def test_write_config_delegates_to_write_openclaw_config():
 @pytest.mark.asyncio
 async def test_write_config_minimal_profile_forwards_defaults():
     rt = get_runtime("openclaw")
-    profile = ConfigProfile(provider_choice="bedrock_claude", gateway_token="gw")
+    profile = ConfigProfile(provider_choice="bedrock_claude", container_auth_token="gw")
     with patch(
         "core.containers.config.write_openclaw_config",
         new=AsyncMock(),

@@ -143,10 +143,16 @@ class ConfigProfile:
     of already-gathered, runtime-specific config inputs the adapter forwards
     verbatim — generic code never inspects it, so no runtime-brand shape leaks
     onto this DTO.
+
+    ``container_auth_token`` is the transport-neutral shared secret the backend
+    uses to authenticate to the owner's container. OpenClaw maps it onto its
+    gateway ``auth.mode = "token"`` secret; a runtime with no such shared token
+    (Hermes authenticates per-container with an ``API_SERVER_KEY`` secret staged
+    by provisioning, not written into config) simply leaves it unset.
     """
 
     provider_choice: str
-    gateway_token: str
+    container_auth_token: str | None = None
     byo_provider: str | None = None
     hook_token: str | None = None
     owner_type: str = "personal"

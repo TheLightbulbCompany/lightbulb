@@ -256,9 +256,24 @@ export function AwsConnectCard({ connection, canManage, refreshConnections }: Aw
 
       {setup && (
         <>
-          {/* Step 2 — the trust-policy inputs the owner bakes into their role. */}
-          {renderCopyableField("principal_arn", "Isol8 principal ARN", setup.principal_arn)}
-          {renderCopyableField("external_id", "ExternalId", setup.external_id)}
+          {/* Step 2 — the trust-policy inputs the owner bakes into their role.
+              Tucked behind a disclosure: the quick-create link below embeds
+              both values automatically, so the normal flow never needs them
+              surfaced. They're only relevant for manual (e.g. Terraform) role
+              creation. */}
+          <details className="group">
+            <summary className="cursor-pointer text-xs text-[#8a8578] hover:text-[#1c1917]">
+              Advanced / manual setup
+            </summary>
+            <div className="mt-2 flex flex-col gap-2">
+              <span className="text-[11px] text-[#8a8578]">
+                Only needed if you deploy the role manually (e.g. via Terraform) instead of the
+                one-click button below.
+              </span>
+              {renderCopyableField("principal_arn", "Isol8 principal ARN", setup.principal_arn)}
+              {renderCopyableField("external_id", "ExternalId", setup.external_id)}
+            </div>
+          </details>
 
           {/* Create-role link for the chosen scope. Disabled when the CFN
               template isn't hosted yet — the role can still be created by hand

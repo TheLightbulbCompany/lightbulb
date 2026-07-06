@@ -116,7 +116,13 @@ connect) performs, per connected owner:
    materializer (§2).
 
 Owners are enumerated from the secret-free `integrations` DDB status table
-(`provider=aws`, `status=connected`) — that index exists for exactly this.
+(`provider=aws`, `status=connected`). **Gap found during due diligence:**
+`integrations_repo` today has only per-owner accessors (`get`,
+`list_for_owner`); the table is `owner_id` PK / `provider` SK with no
+provider GSI, so cross-owner enumeration needs a new
+`list_by_provider(provider)` — a paginated `Scan` with a filter. Fine at
+current scale (7 rows fleet-wide); a provider GSI is the upgrade path if the
+table ever grows enough for Scan to matter.
 
 ### 2. Delivery — same file, new body
 
@@ -197,6 +203,38 @@ backend keeps the file perpetually fresh:
   both writing is benign — `os.replace`, same content class).
 - A refresh failure for one owner logs + emits a metric and does not kill the
   pass; the previous creds remain valid until expiry.
+
+**Operational model (verified against `main.py`, `update_service.py`,
+`service-stack.ts`, backend `Dockerfile`):**
+
+- **Exactly one refresh loop per backend task.** uvicorn runs single-process
+  (no `--workers` flag in the Dockerfile CMD), and the worker is one asyncio
+  task created once in the FastAPI lifespan (`main.py:367`). No intra-task
+  duplication.
+- **Exactly one backend task steady-state.** The backend service is
+  `desiredCount: 1` with no autoscaling (`service-stack.ts:1375` — required
+  independently by the in-process WS fanout design). During a rolling deploy
+  (`minHealthyPercent: 100, maxHealthyPercent: 200`) two tasks briefly overlap
+  and both may run a pass: benign — same SM secret in, same-class creds out,
+  `os.replace` atomic writes, STS calls idempotent. No leader election needed
+  at N=2-for-minutes; if the service ever scales out for real, passes overlap
+  harmlessly (last writer wins with equally-valid creds) — correctness never
+  depends on single-writer.
+- **Task death self-heals inside the runway.** ECS replaces the task
+  (desiredCount=1); the lifespan restarts the worker; the refresh pass uses
+  the purge-pass `time.monotonic()` sentinel pattern, which **always runs on
+  the first iteration after process start** — so creds are re-freshened
+  within ~60s of the replacement task booting. Replacement takes minutes;
+  the runway is ≥45. Same math covers deploys and crash-loops shorter than
+  ~45 min.
+- **The worker cannot die silently.** Each pass is individually
+  try/except-wrapped AND the whole iteration is wrapped
+  (`update_service.py:run_scheduled_worker`), with an
+  `update.scheduled_worker.heartbeat` metric every iteration; the task handle
+  is registered in `system_health.BACKGROUND_TASKS`, whose `.done()` /
+  `.exception()` state the health surface reports. The refresh pass adds its
+  own success/failure metrics (per-owner refresh failure alarm-able in the
+  observability stack).
 
 **Failure modes, quantified:**
 - Backend down > ~45 min → agent's next `aws` call fails with the clean

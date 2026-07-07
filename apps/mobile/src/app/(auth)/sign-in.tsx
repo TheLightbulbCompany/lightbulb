@@ -52,7 +52,11 @@ export default function SignIn() {
     try {
       const { createdSessionId, authSessionResult } = await startSSOFlow({
         strategy: "oauth_google",
-        redirectUrl: AuthSession.makeRedirectUri(),
+        // The explicit path matches Clerk's documented native pattern AND the
+        // prod instance's existing allowlist entry (isol8://oauth-native-callback).
+        // Expo Go yields exp://<host>:8081/--/oauth-native-callback; dev/release
+        // builds yield isol8://oauth-native-callback.
+        redirectUrl: AuthSession.makeRedirectUri({ path: "oauth-native-callback" }),
       });
       if (createdSessionId) {
         await setActive({ session: createdSessionId });
@@ -200,7 +204,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.white,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: radii.md,
+    borderRadius: radii.lg,
     paddingVertical: spacing.md,
   },
   // Inline "G" mark: a serif glyph in the accent color — no image asset.
@@ -231,7 +235,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.white,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: radii.md,
+    borderRadius: radii.lg,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.md,
     fontFamily: fonts.dmSans,
@@ -241,7 +245,7 @@ const styles = StyleSheet.create({
   inputFocused: { borderColor: colors.forest },
   button: {
     backgroundColor: colors.forest,
-    borderRadius: radii.md,
+    borderRadius: radii.lg,
     paddingVertical: spacing.md,
     alignItems: "center",
     marginTop: spacing.xs,

@@ -4,7 +4,12 @@ import {
   DMSans_500Medium,
   DMSans_700Bold,
 } from "@expo-google-fonts/dm-sans";
-import { Lora_400Regular, Lora_700Bold } from "@expo-google-fonts/lora";
+import {
+  Lora_400Regular,
+  Lora_400Regular_Italic,
+  Lora_700Bold,
+  Lora_700Bold_Italic,
+} from "@expo-google-fonts/lora";
 import { useFonts } from "expo-font";
 import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
@@ -29,7 +34,9 @@ export default function RootLayout() {
     DMSans_500Medium,
     DMSans_700Bold,
     Lora_400Regular,
+    Lora_400Regular_Italic,
     Lora_700Bold,
+    Lora_700Bold_Italic,
   });
   // On font-load failure we still proceed — unknown fontFamily names fall
   // back to system fonts. Never leave the user on a blank screen.

@@ -380,7 +380,9 @@ export default function Overview() {
           <Tile
             label="AGENTS"
             value={agentCount != null ? String(agentCount) : "—"}
-            loading={agentCount == null && agentsData == null}
+            loading={
+              agentCount == null && agentsData == null && gateway.isConnected
+            }
           />
           <Tile
             label="SESSIONS"
@@ -393,7 +395,7 @@ export default function Overview() {
           <Tile
             label="SPEND"
             value={
-              billing != null ? `$${billing.current_spend.toFixed(2)}` : "—"
+              billing != null ? `$${(billing.current_spend ?? 0).toFixed(2)}` : "—"
             }
           />
         </View>

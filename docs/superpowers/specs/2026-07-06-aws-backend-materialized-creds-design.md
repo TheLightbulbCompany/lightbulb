@@ -116,9 +116,9 @@ its credentials were scraped.
 
 ```
 agent runs `aws …`
-  → plugin injects AWS_PROFILE=isol8-readonly            (unchanged, image)
+  → plugin injects AWS_PROFILE=isol8-connector           (naming-only plugin change, image rebuild)
   → CLI reads AWS_CONFIG_FILE profile                     (unchanged env wiring)
-      [profile isol8-readonly]
+      [profile isol8-connector]
       region = {region}
       credential_process = /usr/local/bin/node /home/node/.openclaw/.aws/isol8-creds.mjs
   → helper: cache valid (> 10 min left)? print it
@@ -141,7 +141,7 @@ helper's cache, only after actual use, and expire ≤1h later.
 
 | File | Mode | Content |
 |---|---|---|
-| `config` | 0600 | `[profile isol8-readonly]` + `region` + `credential_process` line (absolute node + helper paths) |
+| `config` | 0600 | `[profile isol8-connector]` + `region` + `credential_process` line (absolute node + helper paths) |
 | `isol8-creds.mjs` | 0700 | ~40-line node helper: read token, check cache, fetch, cache, print. No dependencies beyond node stdlib. API base URL baked in at materialization (env-specific). 10s fetch timeout; on failure, fall back to cache if still valid, else exit non-zero with a clear one-line error naming the Isol8 credential service. |
 | `token` | 0600 | per-owner bearer token (below) |
 | `cache.json` | 0600 | written by the helper at runtime, not the materializer |
@@ -158,9 +158,12 @@ revocation below, which is what actually cuts access.
   arbitrary code as itself; the security boundary is the token + backend
   validation, not helper integrity.
 - The profile stays **named** (never `[default]`) so the node process's
-  Bedrock SDK default chain is untouched, and stays `isol8-readonly` even at
-  PowerUser tier — the plugin pins that name in the image; renaming is
-  deferred to the next scheduled image bump (cosmetic).
+  Bedrock SDK default chain is untouched — and is **renamed to
+  `isol8-connector`** (with the template file renamed `aws-connector.yaml`,
+  prose de-"readonly"-ed everywhere): the naming cleanup rides this change
+  since the plugin gets a routine image rebuild anyway. The CFN logical ID
+  `Isol8ReadOnlyRole` alone stays (renaming a logical ID replaces the role in
+  deployed stacks).
 - **Tamper analysis (the files are agent-writable — acceptable):** editing
   `credential_process` gains nothing (the agent already has arbitrary exec as
   itself); reading the token grants exactly the access the agent is entitled
@@ -296,10 +299,12 @@ alternatives, deferred deliberately.
 
 - The connect-flow CFN stack in the target account — still required; it *is*
   the connector role. One-time per account, quick-create link, same UX.
-- The extended image, the `aws-exec-profile` plugin, the fork — zero changes.
-  (The plugin's header-only profile check was verified compatible; plugin env
-  injection of credentials is sanitizer-blocked, so the helper could never
-  live there anyway.)
+- The `aws-exec-profile` plugin's hook wiring and resolver LOGIC, and the
+  OpenClaw fork — zero changes. (The plugin's header-only profile check was
+  verified compatible; plugin env injection of credentials is
+  sanitizer-blocked, so the helper could never live there anyway.) The plugin
+  does get a naming-only rename (profile constant + descriptions) and the
+  extended image rebuilds to carry it — a routine, mechanical rebuild.
 - `container-stack.ts` env (`AWS_CONFIG_FILE` already deployed) — no delivery
   change (only the §5 boundary revert touches this stack).
 - Scope tiers, picker, ViewOnly ARN fix, ExternalId minting — all stay.

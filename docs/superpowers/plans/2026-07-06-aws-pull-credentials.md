@@ -12,12 +12,12 @@
 
 ## Global Constraints
 
-- Profile name is exactly `isol8-readonly` (`[profile isol8-readonly]`) — pinned by the image-baked plugin. Never `[default]`.
-- Connector role name is exactly `isol8-connector` (`bedrock_aip.CONNECTOR_ROLE_NAME`); the CFN logical resource ID `Isol8ReadOnlyRole` must NOT be renamed (would replace the role in deployed stacks).
+- Profile name becomes exactly `isol8-connector` (`[profile isol8-connector]`) — Task 7 renames it in the materializer AND the image-baked plugin in lockstep (user pulled the image bump into scope). Tasks 1–6 keep the working name `isol8-readonly` that Task 2 shipped; Task 7 flips every site at once. Never `[default]`.
+- Connector role name is exactly `isol8-connector` (`bedrock_aip.CONNECTOR_ROLE_NAME`); the CFN logical resource ID `Isol8ReadOnlyRole` must NOT be renamed (renaming a logical ID REPLACES the role in any stack updated with the new template; keep it with an explanatory comment). The template FILE renames to `aws-connector.yaml`.
 - No new account-id literals: use `bedrock_aip.OUR_ACCOUNT_ID` (backend) / `this.account` (CDK).
 - The bearer token is stored ONLY as a SHA-256 hex hash server-side (`cli_token_hash` in the SM credential); plaintext exists only in the owner's EFS `token` file.
 - `DurationSeconds=3600` on AssumeRole (role-chaining cap; connector `MaxSessionDuration` is 3600).
-- Plugin (`apps/infra/openclaw/plugins/aws-exec-profile/`), extended image, and the OpenClaw fork are UNCHANGED.
+- Plugin (`apps/infra/openclaw/plugins/aws-exec-profile/`) gets a NAMING-ONLY change (constants, descriptions, tests — Task 7); its hook wiring and resolver logic are untouched. The extended image rebuilds automatically on merge (`build-openclaw-image.yml` triggers on `plugins/**`). The OpenClaw FORK is UNCHANGED.
 - `apps/infra/lib/app.ts` is UNCHANGED (its `PLATFORM_OPS_OWNER_ID_*` env plumbing feeds service-stack; leaving it untouched also avoids `deploy.yml` regeneration).
 - Helper script: node ESM, zero dependencies, `credential_process = /usr/bin/env node …` (PATH-robust, no bare `node`, no guessed absolute node path).
 - No PR/issue numbers in code comments (repo convention).
@@ -32,8 +32,10 @@
 | `apps/backend/routers/connections.py` | + `POST /aws/credentials` endpoint + token rail; aws_complete/aws_setup/gate/disconnect rewiring |
 | `apps/backend/core/billing/bedrock_aip.py` | − `_build_owner_aws_sts_doc`, `put_owner_aws_sts_policy`, `delete_owner_aws_sts_policy` |
 | `apps/infra/lib/stacks/container-stack.ts` | Boundary: unconditional Deny, remove carve-out + `BoundaryStsAssumeRole` |
-| `apps/infra/aws/aws-readonly-connector.yaml` + `README.md` | Prose drift fixes (trust principal, three tiers) |
-| `apps/backend/core/services/credentials/providers.yaml` + `registry.py` | Comment/docstring drift only |
+| `apps/infra/aws/aws-readonly-connector.yaml` → `aws-connector.yaml` + `README.md` | File rename + prose drift fixes (trust principal, three tiers) |
+| `apps/infra/lib/stacks/service-stack.ts:879` | `CFN_TEMPLATE_KEY` → `aws-connector.yaml` + comment |
+| `apps/infra/openclaw/plugins/aws-exec-profile/*` (6 files) | Naming-only: profile constant → `isol8-connector`, descriptions, tests |
+| `apps/backend/core/services/credentials/providers.yaml` + `registry.py` + `core/containers/config.py:666` | Comment/docstring drift only |
 | Tests | `test_aws_cfn.py` (update), `test_materializer_aws_cli.py` (rewrite), `test_aws_sts_grant.py` (DELETE), `test_connections.py` (update + new class), `apps/infra/test/container-stack.test.ts` (new assertion) |
 
 Tasks 1–3 are independent of each other; Task 4 consumes 1+2+3; Task 5 requires 4; Tasks 6–7 anytime after 5; Task 8 last.
@@ -1058,16 +1060,68 @@ git commit -m "feat(infra): unconditional boundary deny — per-owner roles lose
 
 ---
 
-### Task 7: Template + docs drift fixes
+### Task 7: Connector naming ("readonly" purge) + docs drift fixes
 
 **Files:**
-- Modify: `apps/infra/aws/aws-readonly-connector.yaml` (prose only — logical ID and RoleName untouched)
+- Rename: `apps/infra/aws/aws-readonly-connector.yaml` → `apps/infra/aws/aws-connector.yaml` (`git mv`; prose updates inside — logical ID and RoleName untouched)
+- Modify: `apps/infra/lib/stacks/service-stack.ts:864-879` (`CFN_TEMPLATE_KEY` + comment)
 - Modify: `apps/infra/aws/README.md`
+- Modify: `apps/backend/core/services/credentials/materializers/aws_cli.py` + `apps/backend/tests/credentials/test_materializer_aws_cli.py` (profile → `isol8-connector`)
+- Modify: `apps/backend/core/containers/config.py:666` (comment)
+- Modify: all 6 plugin files under `apps/infra/openclaw/plugins/aws-exec-profile/`
 - Modify: `apps/backend/core/services/credentials/providers.yaml` (aws block comment), `apps/backend/core/services/credentials/registry.py` (AwsStsSpec docstring)
 
-**Interfaces:** none — prose only. No test cycle; verify with the registry test suite (guards YAML validity).
+**Interfaces:**
+- Produces: profile name `isol8-connector` everywhere; materializer constant renamed `AWS_READONLY_PROFILE` → `AWS_CONNECTOR_PROFILE`; plugin exports renamed `AWS_READONLY_PROFILE`/`AWS_READONLY_PROFILE_HEADER` → `AWS_CONNECTOR_PROFILE`/`AWS_CONNECTOR_PROFILE_HEADER`. The materializer and plugin MUST agree on `[profile isol8-connector]` — they ship in the same PR; the image rebuild + container update ordering is handled in Task 8.
 
-- [ ] **Step 1: aws-readonly-connector.yaml prose**
+- [ ] **Step 1: Profile rename — failing tests first (backend)**
+
+In `apps/backend/tests/credentials/test_materializer_aws_cli.py`:
+- In `test_config_uses_credential_process_and_no_secrets`, change the expected body's first line to `"[profile isol8-connector]\n"`.
+- Everywhere else the file references `aws_cli.AWS_READONLY_PROFILE`, rename to `aws_cli.AWS_CONNECTOR_PROFILE`.
+- In `test_named_profile_not_default_so_bedrock_chain_is_unaffected`, the startswith assertion stays constant-derived (now via `AWS_CONNECTOR_PROFILE`).
+
+Run: `cd apps/backend && uv run pytest tests/credentials/test_materializer_aws_cli.py -v`
+Expected: FAIL (config body still `isol8-readonly`, constant missing)
+
+- [ ] **Step 2: Profile rename — implementation (backend + plugin, lockstep)**
+
+Backend `apps/backend/core/services/credentials/materializers/aws_cli.py`:
+- `AWS_READONLY_PROFILE = "isol8-readonly"` → `AWS_CONNECTOR_PROFILE = "isol8-connector"` (update the f-string in `write()` and both docstring mentions of `[profile isol8-readonly]` → `[profile isol8-connector]`).
+
+Backend `apps/backend/core/containers/config.py:666`: comment text `AWS_PROFILE=isol8-readonly` → `AWS_PROFILE=isol8-connector`.
+
+Plugin (naming only — hook wiring and resolver LOGIC untouched; keep the dist/index.ts SYNC NOTE discipline):
+- `dist/resolve.js`: `export const AWS_READONLY_PROFILE = "isol8-readonly";` → `export const AWS_CONNECTOR_PROFILE = "isol8-connector";`; `AWS_READONLY_PROFILE_HEADER` → `AWS_CONNECTOR_PROFILE_HEADER` (and its template-literal reference); the regex builder and `return { AWS_PROFILE: ... }` reference the renamed constant; update the comments mentioning `isol8-readonly` / "the materializer's AWS_READONLY_PROFILE constant" to the new names.
+- `dist/index.js:30` and `index.ts:39` descriptions: `"Injects AWS_PROFILE=isol8-readonly into the agent's exec environment only."` → `isol8-connector`; `index.ts:29-33` comment "owner's read-only profile" → "owner's connector profile".
+- `openclaw.plugin.json:4` and `package.json:5` descriptions: same `isol8-readonly` → `isol8-connector` substitution (and "read-only AWS profile" → "connector AWS profile").
+- `index.test.mjs`: import `AWS_CONNECTOR_PROFILE_HEADER`; expected `{ AWS_PROFILE: "isol8-connector" }`; test names "readonly profile" → "connector profile".
+
+Run plugin tests: `cd apps/infra/openclaw/plugins/aws-exec-profile && node --test index.test.mjs`
+Expected: PASS
+Run backend tests: `cd apps/backend && uv run pytest tests/credentials/test_materializer_aws_cli.py -v`
+Expected: ALL PASS (node e2e tests included — they are profile-name-agnostic)
+
+- [ ] **Step 3: Template file rename + CDK key**
+
+```bash
+git mv apps/infra/aws/aws-readonly-connector.yaml apps/infra/aws/aws-connector.yaml
+```
+
+In `apps/infra/lib/stacks/service-stack.ts`: `const CFN_TEMPLATE_KEY = "aws-readonly-connector.yaml";` → `const CFN_TEMPLATE_KEY = "aws-connector.yaml";` and in the comment block above it, `The template (apps/infra/aws/ aws-readonly-connector.yaml)` → `The template (apps/infra/aws/aws-connector.yaml)` and "Hosts the AWS read-only connector CloudFormation template" → "Hosts the AWS connector CloudFormation template". Check the BucketDeployment construct below it for any literal filename reference and update it the same way.
+
+Add above the `Isol8ReadOnlyRole:` logical ID in `apps/infra/aws/aws-connector.yaml`:
+```yaml
+  # Logical ID predates the connector rename. Changing a logical ID REPLACES
+  # the resource in any already-deployed stack updated with this template —
+  # which would delete + recreate the role and break its trust mid-flight.
+  # It stays. (RoleName below is what anyone actually sees.)
+```
+
+Run: `cd apps/infra && npx jest` — if any test asserts the old filename/URL, update it to `aws-connector.yaml`.
+Then: `grep -rn "aws-readonly-connector" apps/ .github/ --include="*.*" | grep -v node_modules` — expected: no output.
+
+- [ ] **Step 4: Template prose (in the renamed file)**
 
 Apply exactly these text changes (nothing else — `RoleName: isol8-connector`, the `Isol8ReadOnlyRole` logical ID, `MaxSessionDuration`, AllowedValues, and the trust JSON structure all stay):
 
@@ -1098,17 +1152,16 @@ Apply exactly these text changes (nothing else — `RoleName: isol8-connector`, 
       complete the AWS connection (aws-complete).
   ```
 
-- [ ] **Step 2: README.md rewrite**
+- [ ] **Step 5: README.md rewrite**
 
 Replace the body of `apps/infra/aws/README.md` with:
 
 ```markdown
 # Isol8 AWS connector
 
-`aws-readonly-connector.yaml` is the CloudFormation template an owner launches
+`aws-connector.yaml` is the CloudFormation template an owner launches
 in **their own** AWS account to create a scoped role that Isol8's backend can
-assume on their behalf. (The filename keeps its historical `readonly` name —
-renaming it would move the hosted template URL.)
+assume on their behalf.
 
 - It is launched via the CloudFormation console **quick-create link** that the
   `connections/{provider}/aws-setup` endpoint builds (see
@@ -1134,7 +1187,7 @@ After the stack is created, the owner copies the `RoleArn` stack output back
 into Isol8 (`aws-complete`) to finish the connection.
 ```
 
-- [ ] **Step 3: providers.yaml + registry docstring drift**
+- [ ] **Step 6: providers.yaml + registry docstring drift**
 
 In `providers.yaml`, replace the aws block's leading comment with:
 
@@ -1160,16 +1213,16 @@ class AwsStsSpec(BaseModel):
     pulls short-lived credentials from the backend on demand."""
 ```
 
-- [ ] **Step 4: Verify registry still loads + run the credentials tests**
+- [ ] **Step 7: Verify + full check**
 
-Run: `cd apps/backend && uv run pytest tests/credentials/ -v`
-Expected: ALL PASS
+Run: `cd apps/backend && uv run pytest tests/credentials/ -v` — ALL PASS.
+Run: `grep -rn "isol8-readonly\|AWS_READONLY_PROFILE" apps/ --include="*.py" --include="*.js" --include="*.ts" --include="*.mjs" --include="*.json" --include="*.yaml" | grep -v node_modules` — expected: no output.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add apps/infra/aws/aws-readonly-connector.yaml apps/infra/aws/README.md apps/backend/core/services/credentials/providers.yaml apps/backend/core/services/credentials/registry.py
-git commit -m "docs(aws): trust/tier prose matches root-principal pull design"
+git add -A
+git commit -m "feat(aws): rename connector surface — isol8-connector profile, aws-connector.yaml template"
 ```
 
 ---
@@ -1194,11 +1247,18 @@ gh pr create --repo Isol8AI/isol8 --title "feat(aws): pull-based connector crede
 ```
 Watch CI (`gh run watch <id> --exit-status`); address Codex-review findings; merge when approved.
 
-- [ ] **Step 3: Watch the deploy**
+- [ ] **Step 3: Watch the deploys (two workflows fire on the merge)**
 
-`deploy.yml` runs on the merge commit (dev then prod, same run). `gh run watch <run-id> --repo Isol8AI/isol8 --exit-status`. Confirm `Deploy prodisol8prodservice…: success` (backend image) and the container stack deploy succeeded (boundary revert).
+`deploy.yml` runs on the merge commit (dev then prod, same run): `gh run watch <run-id> --repo Isol8AI/isol8 --exit-status`. Confirm `Deploy prodisol8prodservice…: success` (backend image + CFN_TEMPLATE_KEY upload) and the container stack deploy succeeded (boundary revert).
+`build-openclaw-image.yml` ALSO fires (the plugin rename touches `apps/infra/openclaw/plugins/**`): watch it, then read the new extended tag from its run summary (format `2026.6.10-isol8.2-<shortsha>`).
 
-- [ ] **Step 4: Preflight the helper runtime on the founder container** (read-only)
+- [ ] **Step 4: Promote the new image + update the founder container**
+
+1. Second commit/PR: set BOTH `dev.tag` and `prod.tag` in `openclaw-version.json` to the new extended tag from Step 3 (do not touch `upstream`/`image` fields). Merge; watch its `deploy.yml` run (rolls the per-user openclaw task definition to the new image).
+2. Update the founder's container to the new task definition via the **admin dashboard** (`admin.isol8.co` → founder user → container → reprovision/apply update; the admin `container.reprovision` action preserves EFS — only the ECS service/task rolls). Wait until the container is healthy again.
+3. Order matters: this must complete BEFORE Step 6's `aws-complete` — the new image's plugin matches `[profile isol8-connector]`, which is what the new backend will write.
+
+- [ ] **Step 5: Preflight the helper runtime on the founder container** (read-only)
 
 ```bash
 CLUSTER=$(aws ecs list-clusters --profile isol8-admin --query "clusterArns[?contains(@,'prod-container')]|[0]" --output text)
@@ -1209,27 +1269,33 @@ aws ecs execute-command --cluster "$CLUSTER" --task "$TASK" --container openclaw
 ```
 Expected: a node version prints (≥18). If `/usr/bin/env node` fails, STOP — the `credential_process` line in the materializer must be adjusted to the actual node path before migrating.
 
-- [ ] **Step 5: Migrate the founder connection** (exercises the real customer flow)
+- [ ] **Step 6: Migrate the founder connection** (NO stack deletion, NO disconnect — the deployed CFN stack, its role, tier, and ExternalId all survive)
 
-1. Founder disconnects AWS in the Isol8 settings UI (removes old files + SM secret + status; the stale `owner-aws-sts` inline grant is cleaned in step 3 below).
-2. Founder opens the AWS connect card → aws-setup runs → note the NEW `external_id` from the card / the `aws-setup` response (browser dev tools → network tab).
-3. Clean up the stale per-owner grant (new code no longer deletes it):
-   ```bash
-   aws iam delete-role-policy --role-name isol8-prod-owner-bedrock-org_3DBS8G83oPrMm49yN2b70EjoFpN \
-     --policy-name owner-aws-sts --profile isol8-admin
-   ```
-4. Update the live connector stack's trust (parameter-only):
+1. Update the live connector stack's trust — parameter-only, in place (`--use-previous-template`; the ExternalId stays the one already baked into both the stack and the SM secret):
    ```bash
    aws cloudformation update-stack --stack-name isol8-connector --use-previous-template \
      --parameters ParameterKey=TrustedPrincipalArn,ParameterValue=arn:aws:iam::877352799272:root \
-                  ParameterKey=ExternalId,ParameterValue=<NEW external_id from step 2> \
+                  ParameterKey=ExternalId,UsePreviousValue=true \
                   ParameterKey=ManagedPolicyArn,UsePreviousValue=true \
      --capabilities CAPABILITY_NAMED_IAM --profile isol8-admin
    aws cloudformation wait stack-update-complete --stack-name isol8-connector --profile isol8-admin
    ```
-5. Founder pastes the role ARN (`arn:aws:iam::877352799272:role/isol8-connector`) into the card → aws-complete → expect "connected". The trust-pin gate now validates root + the new ExternalId against the live role.
+2. Clean up the stale per-owner grant (the new code no longer manages it):
+   ```bash
+   aws iam delete-role-policy --role-name isol8-prod-owner-bedrock-org_3DBS8G83oPrMm49yN2b70EjoFpN \
+     --policy-name owner-aws-sts --profile isol8-admin
+   ```
+3. Re-run `aws-complete` as the founder (mints the bearer token + writes the new `credential_process` bundle; the existing SM record already holds the `external_id`, so no `aws-setup` is needed). Browser console on any signed-in isol8.co page:
+   ```javascript
+   await fetch('https://api.isol8.co/api/v1/connections/aws/aws-complete', {
+     method: 'POST',
+     headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + await Clerk.session.getToken()},
+     body: JSON.stringify({role_arn: 'arn:aws:iam::877352799272:role/isol8-connector'})
+   }).then(r => r.json())
+   ```
+   Expect `{"status": "connected", "provider": "aws"}` — the trust-pin gate validates root + the existing ExternalId against the live role.
 
-- [ ] **Step 6: Acceptance criteria (from the spec — run from a gateway agent exec, i.e. ask Jarvis)**
+- [ ] **Step 7: Acceptance criteria (from the spec — run from a gateway agent exec, i.e. ask Jarvis)**
 
 1. `aws sts get-caller-identity` → `"Arn": ".../assumed-role/isol8-connector/isol8-org_..."` (NOT the task role).
 2. Cache: run `aws sts get-caller-identity` twice; backend logs/metrics show ONE `connections.aws_credentials.fetch result=ok` for the pair.
@@ -1237,7 +1303,7 @@ Expected: a node version prints (≥18). If `/usr/bin/env node` fails, STOP — 
 4. Revocation: disconnect in UI → ask Jarvis to delete the cache file (`rm /home/node/.openclaw/.aws/cache.json` — disconnect already removed it, so this is a no-op check) → `aws sts get-caller-identity` fails with the helper's `isol8:` error naming the credential service. Reconnect (aws-setup reuses nothing — full flow again incl. stack ExternalId update) or leave disconnected per the founder's preference. **Alternative non-destructive check:** temporarily rename the token file instead of disconnecting.
 5. Bedrock unaffected: send Jarvis any normal chat message (inference works); `AWS_PROFILE` absent from the node process env.
 
-- [ ] **Step 7: Close out**
+- [ ] **Step 8: Close out**
 
 Update memory (`project_aws_readonly_integration_plan`) with the shipped pull design; note in the PR/session that Open Question 3 of the 2026-07-05 spec is resolved by design.
 

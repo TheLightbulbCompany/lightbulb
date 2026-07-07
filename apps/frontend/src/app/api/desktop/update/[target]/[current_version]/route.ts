@@ -109,8 +109,20 @@ export async function GET(
   // The bundle URL must stay valid until the user accepts the update
   // prompt, which can be hours — but a private repo's signed asset URL
   // expires in minutes. Point Tauri at our own download route, which
-  // mints a fresh signed URL per request.
-  const host = req.headers.get("host") ?? "isol8.co";
+  // mints a fresh signed URL per request. Echo the request host only
+  // when it's one of ours — never a client-controlled value.
+  const rawHost = (req.headers.get("host") ?? "").toLowerCase();
+  const isKnownHost =
+    rawHost === "isol8.co" ||
+    rawHost === "www.isol8.co" ||
+    rawHost === "dev.isol8.co" ||
+    rawHost.startsWith("localhost") ||
+    rawHost.endsWith(".vercel.app");
+  const host = isKnownHost
+    ? rawHost
+    : prefix === "desktop-dev-v"
+      ? "dev.isol8.co"
+      : "isol8.co";
   const scheme = host.startsWith("localhost") ? "http" : "https";
 
   return NextResponse.json({

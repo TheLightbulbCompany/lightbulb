@@ -106,6 +106,28 @@ describe("GET /api/desktop/update/[target]/[current_version]", () => {
     });
   });
 
+  it("falls back to the canonical host when the Host header isn't ours", async () => {
+    // A spoofed Host header must not be echoed into the manifest URL the
+    // updater will fetch. Unknown host → prod tag prefix → isol8.co.
+    stubGitHub([
+      {
+        ...fullDevRelease,
+        tag_name: "desktop-v0.2.11",
+      },
+    ]);
+    const res = await GET(reqFor("evil.example.com"), {
+      params: Promise.resolve({
+        target: "darwin-aarch64",
+        current_version: "0.1.0",
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.url).toBe(
+      "https://isol8.co/api/download/desktop?arch=aarch64&kind=bundle",
+    );
+  });
+
   it("fetches the signature from the asset API URL with auth", async () => {
     vi.stubEnv("GITHUB_RELEASES_TOKEN", "ghp_test123");
     const { fetchMock } = stubGitHub([fullDevRelease]);

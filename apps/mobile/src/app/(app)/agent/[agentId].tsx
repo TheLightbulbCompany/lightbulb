@@ -111,7 +111,15 @@ export default function AgentChat() {
         "session_id" in msg && typeof msg.session_id === "string"
           ? msg.session_id
           : null;
-      if (frameSessionId !== activeSessionIdRef.current) return;
+      // UNTAGGED error frames are EXEMPT from the session demux (mirrors
+      // the web's layer-1 exception): backend gate-level errors (no
+      // container / starting / provision blocked) carry agent_id but NO
+      // session_id and no run_ended follows — dropping them on a named
+      // session would leave the user staring at nothing with `busy` wedged
+      // true forever. A session-tagged error still demuxes normally.
+      const isUntaggedError = msg.type === "error" && frameSessionId === null;
+      if (frameSessionId !== activeSessionIdRef.current && !isUntaggedError)
+        return;
       const runId = "runId" in msg ? msg.runId : undefined;
       // Only render frames for the run this screen started — background runs
       // (cron, channels) for the same agent stay out of this transcript.
@@ -176,6 +184,12 @@ export default function AgentChat() {
           ...prev,
           { id: randomUUID(), role: "error", text: msg.message },
         ]);
+        // Additive gate release: gate-level errors are terminal but never
+        // followed by a run_ended, so the error frame itself must release
+        // the run gate — otherwise `busy` wedges true forever. Redundant
+        // (but harmless) when a run_ended does follow.
+        activeRunIdRef.current = null;
+        setBusy(false);
       } else if (msg.type === "run_ended") {
         setItems((prev) =>
           prev.map((it) => (it.streaming ? { ...it, streaming: false } : it)),
@@ -219,15 +233,24 @@ export default function AgentChat() {
         setItems((prev) =>
           prev.filter((it) => {
             if (!it.runId) return true;
-            if (projected.runIds.has(it.runId)) return false;
-            if (it.runId !== activeRunIdRef.current) return false;
-            if (
-              it.role === "user" &&
-              projected.lastUserText !== null &&
-              it.text === projected.lastUserText
-            )
-              return false;
-            return true;
+            // Active-run keep comes FIRST: a mid-run refetch (reconnect
+            // while streaming) can return a snapshot that already contains
+            // this run's persisted user message, so testing snapshot
+            // coverage before this keep would drop the run's live frozen
+            // segments and tool pills — unrecoverable content loss. Only
+            // the user bubble the server already persisted dedupes away.
+            if (it.runId === activeRunIdRef.current) {
+              return !(
+                it.role === "user" &&
+                projected.lastUserText !== null &&
+                it.text === projected.lastUserText
+              );
+            }
+            // THEN prune by snapshot coverage: ended runs are authoritative
+            // in history, so live items the fetched snapshot covers are
+            // duplicates — and an ended run the snapshot somehow misses is
+            // stale anyway. Either way the live copy goes.
+            return false;
           }),
         );
         setHistoryLoading(false);

@@ -57,6 +57,14 @@ export function SessionsSheet({
   const [error, setError] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
 
+  // A different agent means a different session namespace — the sheet is
+  // reused across route params, so drop the previous agent's rows (back to
+  // the loading state) and let the next open refetch.
+  useEffect(() => {
+    setSessions(null);
+    setError(null);
+  }, [agentId]);
+
   useEffect(() => {
     if (!visible || !agentId || !userId) return;
     let cancelled = false;
@@ -145,7 +153,8 @@ export function SessionsSheet({
           <View style={styles.stateWell}>
             <ActivityIndicator color={colors.forest} />
           </View>
-        ) : error ? (
+        ) : sessions === null ? (
+          // Initial load failed — nothing to show but the error + retry.
           <View style={styles.stateWell}>
             <Text style={styles.errorText}>{error}</Text>
             <Pressable
@@ -157,44 +166,53 @@ export function SessionsSheet({
             </Pressable>
           </View>
         ) : (
-          <FlatList
-            data={sessions ?? []}
-            keyExtractor={(s) => s.sessionId ?? "general"}
-            contentContainerStyle={styles.list}
-            renderItem={({ item }) => {
-              const active = item.sessionId === activeSessionId;
-              return (
-                <Pressable
-                  style={({ pressed }) => [
-                    styles.row,
-                    active && styles.rowActive,
-                    pressed && !active && styles.pressedRow,
-                  ]}
-                  onPress={() => {
-                    onSelect(item.sessionId, item.sessionId === null ? null : item.label);
-                    onClose();
-                  }}
-                  onLongPress={() => confirmDelete(item)}
-                  accessibilityRole="button"
-                  accessibilityLabel={item.label}
-                >
-                  <View style={styles.rowTop}>
-                    <Text style={styles.rowLabel} numberOfLines={1}>
-                      {item.label}
-                    </Text>
-                    {item.updatedAt ? (
-                      <Text style={styles.rowTime}>{relativeTime(item.updatedAt)}</Text>
+          <>
+            {error ? (
+              // A delete/refetch failure with rows already loaded must not
+              // blank the list — slim inline message above it instead.
+              <View style={styles.inlineError}>
+                <Text style={styles.errorText}>{error}</Text>
+              </View>
+            ) : null}
+            <FlatList
+              data={sessions ?? []}
+              keyExtractor={(s) => s.sessionId ?? "general"}
+              contentContainerStyle={styles.list}
+              renderItem={({ item }) => {
+                const active = item.sessionId === activeSessionId;
+                return (
+                  <Pressable
+                    style={({ pressed }) => [
+                      styles.row,
+                      active && styles.rowActive,
+                      pressed && !active && styles.pressedRow,
+                    ]}
+                    onPress={() => {
+                      onSelect(item.sessionId, item.sessionId === null ? null : item.label);
+                      onClose();
+                    }}
+                    onLongPress={() => confirmDelete(item)}
+                    accessibilityRole="button"
+                    accessibilityLabel={item.label}
+                  >
+                    <View style={styles.rowTop}>
+                      <Text style={styles.rowLabel} numberOfLines={1}>
+                        {item.label}
+                      </Text>
+                      {item.updatedAt ? (
+                        <Text style={styles.rowTime}>{relativeTime(item.updatedAt)}</Text>
+                      ) : null}
+                    </View>
+                    {item.preview ? (
+                      <Text style={styles.rowPreview} numberOfLines={1}>
+                        {item.preview}
+                      </Text>
                     ) : null}
-                  </View>
-                  {item.preview ? (
-                    <Text style={styles.rowPreview} numberOfLines={1}>
-                      {item.preview}
-                    </Text>
-                  ) : null}
-                </Pressable>
-              );
-            }}
-          />
+                  </Pressable>
+                );
+              }}
+            />
+          </>
         )}
       </View>
     </Modal>
@@ -287,6 +305,18 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
     paddingVertical: spacing.xl,
     paddingHorizontal: spacing.lg,
+  },
+  // Slim inline failure strip above a still-rendered list (delete/refetch
+  // errors) — same error palette as the chat error card.
+  inlineError: {
+    marginHorizontal: spacing.lg,
+    marginBottom: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    backgroundColor: colors.errorBg,
+    borderWidth: 1,
+    borderColor: colors.errorBorder,
+    borderRadius: radii.sm,
   },
   errorText: {
     fontFamily: fonts.dmSans,

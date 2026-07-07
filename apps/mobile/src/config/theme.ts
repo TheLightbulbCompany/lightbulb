@@ -45,6 +45,8 @@ const palette = {
   forestSoft: "#4a9e74",
   /** Brand tint surface — monogram bg (`--forest-tint`). */
   forestTint: "#e6efe9",
+  /** Composer focus ring — forest at 25%, per web's focus-within border. */
+  forestFocusBorder: "rgba(6,64,43,0.25)",
   /** Halo ring around active status dots (§5). */
   forestHalo: "rgba(74,158,116,.18)",
   /** Accent gold — published badges (`--gold`). */

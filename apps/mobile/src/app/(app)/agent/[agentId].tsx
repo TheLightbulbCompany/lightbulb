@@ -450,7 +450,7 @@ const styles = StyleSheet.create({
   },
   // Focused: forest border + slightly stronger shadow (web: 0 6px 24px .08).
   cardFocused: {
-    borderColor: colors.forest,
+    borderColor: colors.forestFocusBorder,
     shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.08,
     shadowRadius: 24,

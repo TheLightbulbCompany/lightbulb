@@ -1273,15 +1273,13 @@ class TestAwsSetup:
         mock_store.get = AsyncMock(side_effect=fake_get)
         mock_store.put = AsyncMock(side_effect=fake_put)
         mock_cfn.gen_external_id.return_value = "ext_fixed_123"
-        mock_cfn.owner_task_role_arn.return_value = (
-            "arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-user_test_123"
-        )
+        mock_cfn.platform_trust_principal_arn.return_value = "arn:aws:iam::877352799272:root"
 
         r1 = await async_client.get("/api/v1/connections/aws/aws-setup")
         assert r1.status_code == 200
         body1 = r1.json()
         assert body1["external_id"] == "ext_fixed_123"
-        assert body1["principal_arn"] == "arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-user_test_123"
+        assert body1["principal_arn"] == "arn:aws:iam::877352799272:root"
         assert body1["our_account_id"] == "877352799272"
         assert body1["default_region"] == "us-east-1"
         # The CFN template is unhosted until Plan 3 -> both quick-create URLs are
@@ -1361,9 +1359,10 @@ class TestAwsSetup:
 
 
 class TestAwsComplete:
-    """POST /api/v1/connections/{provider}/aws-complete — grant + materialize +
-    mark connected. The owner-supplied role ARN is the confused-deputy surface,
-    so it is validated BEFORE any IAM grant."""
+    """POST /api/v1/connections/{provider}/aws-complete — mint the container's
+    credential-fetch bearer token, materialize + mark connected. The
+    owner-supplied role ARN is the confused-deputy surface, so it is validated
+    BEFORE the credential is ever stored or assumed."""
 
     _GOOD_ARN = "arn:aws:iam::123456789012:role/IsolReadOnly"
 
@@ -1376,9 +1375,8 @@ class TestAwsComplete:
         self, mock_repo, mock_store, mock_apply, mock_aip, async_client
     ):
         # SECURITY: a role ARN inside OUR account is the confused-deputy attack —
-        # rejected with 400 BEFORE any IAM grant is put.
+        # rejected with 400 BEFORE the credential is ever stored.
         mock_aip.OUR_ACCOUNT_ID = "877352799272"
-        mock_aip.put_owner_aws_sts_policy = AsyncMock()
         mock_store.get = AsyncMock(return_value={"external_id": "ext_abc"})
         mock_store.put = AsyncMock()
         mock_apply.apply_connection = AsyncMock()
@@ -1389,8 +1387,8 @@ class TestAwsComplete:
             json={"role_arn": "arn:aws:iam::877352799272:role/evil"},
         )
         assert resp.status_code == 400
-        # No grant, no wiring, no status when the guard fires.
-        mock_aip.put_owner_aws_sts_policy.assert_not_called()
+        # No secret write, no wiring, no status when the guard fires.
+        mock_store.put.assert_not_called()
         mock_apply.apply_connection.assert_not_called()
         mock_repo.put_status.assert_not_called()
 
@@ -1401,8 +1399,8 @@ class TestAwsComplete:
     @patch("routers.connections.integrations_repo")
     async def test_aws_complete_rejects_malformed_arn(self, mock_repo, mock_store, mock_apply, mock_aip, async_client):
         mock_aip.OUR_ACCOUNT_ID = "877352799272"
-        mock_aip.put_owner_aws_sts_policy = AsyncMock()
         mock_store.get = AsyncMock(return_value={"external_id": "ext_abc"})
+        mock_store.put = AsyncMock()
         mock_apply.apply_connection = AsyncMock()
         mock_repo.put_status = AsyncMock()
 
@@ -1411,7 +1409,7 @@ class TestAwsComplete:
             json={"role_arn": "not-an-arn"},
         )
         assert resp.status_code == 400
-        mock_aip.put_owner_aws_sts_policy.assert_not_called()
+        mock_store.put.assert_not_called()
         mock_apply.apply_connection.assert_not_called()
         mock_repo.put_status.assert_not_called()
 
@@ -1422,10 +1420,10 @@ class TestAwsComplete:
     @patch("routers.connections.integrations_repo")
     async def test_aws_complete_rejects_wildcard_arn(self, mock_repo, mock_store, mock_apply, mock_aip, async_client):
         # SECURITY: a ``role/*`` wildcard ARN is syntactically an IAM ARN but
-        # would let the inline grant assume ANY role in the (external) account.
-        # The role-path charset rejects ``*`` -> 400 BEFORE any IAM grant is put.
+        # would let the vend endpoint's AssumeRole reach ANY role in the
+        # (external) account. The role-path charset rejects ``*`` -> 400 BEFORE
+        # the credential is ever stored.
         mock_aip.OUR_ACCOUNT_ID = "877352799272"
-        mock_aip.put_owner_aws_sts_policy = AsyncMock()
         mock_store.get = AsyncMock(return_value={"external_id": "ext_abc"})
         mock_store.put = AsyncMock()
         mock_apply.apply_connection = AsyncMock()
@@ -1436,8 +1434,7 @@ class TestAwsComplete:
             json={"role_arn": "arn:aws:iam::111122223333:role/*"},
         )
         assert resp.status_code == 400
-        # No grant, no wiring, no status, no secret write when the guard fires.
-        mock_aip.put_owner_aws_sts_policy.assert_not_called()
+        # No wiring, no status, no secret write when the guard fires.
         mock_apply.apply_connection.assert_not_called()
         mock_repo.put_status.assert_not_called()
         mock_store.put.assert_not_called()
@@ -1455,7 +1452,6 @@ class TestAwsComplete:
         # profile/section, so any region outside the [a-z0-9-] charset is
         # rejected with 400 BEFORE the credential is stored or used.
         mock_aip.OUR_ACCOUNT_ID = "877352799272"
-        mock_aip.put_owner_aws_sts_policy = AsyncMock()
         mock_store.get = AsyncMock(return_value={"external_id": "ext_abc"})
         mock_store.put = AsyncMock()
         mock_apply.apply_connection = AsyncMock()
@@ -1466,8 +1462,7 @@ class TestAwsComplete:
             json={"role_arn": self._GOOD_ARN, "region": "us-east-1\n[evil]"},
         )
         assert resp.status_code == 400
-        # No grant, no wiring, no status, no secret write when the guard fires.
-        mock_aip.put_owner_aws_sts_policy.assert_not_called()
+        # No wiring, no status, no secret write when the guard fires.
         mock_apply.apply_connection.assert_not_called()
         mock_repo.put_status.assert_not_called()
         mock_store.put.assert_not_called()
@@ -1481,9 +1476,8 @@ class TestAwsComplete:
         self, mock_repo, mock_store, mock_apply, mock_aip, async_client
     ):
         # A valid external-account ARN, but no stored ExternalId (aws-setup never
-        # ran) -> 409, and still no grant.
+        # ran) -> 409, and still no wiring.
         mock_aip.OUR_ACCOUNT_ID = "877352799272"
-        mock_aip.put_owner_aws_sts_policy = AsyncMock()
         mock_store.get = AsyncMock(return_value=None)
         mock_apply.apply_connection = AsyncMock()
         mock_repo.put_status = AsyncMock()
@@ -1493,7 +1487,6 @@ class TestAwsComplete:
             json={"role_arn": self._GOOD_ARN},
         )
         assert resp.status_code == 409
-        mock_aip.put_owner_aws_sts_policy.assert_not_called()
         mock_apply.apply_connection.assert_not_called()
         mock_repo.put_status.assert_not_called()
 
@@ -1502,12 +1495,10 @@ class TestAwsComplete:
     @patch("routers.connections.apply_connection")
     @patch("routers.connections.integration_secret_store")
     @patch("routers.connections.integrations_repo")
-    async def test_aws_complete_happy_path_grants_materializes_marks_connected(
+    async def test_aws_complete_happy_path_mints_token_materializes_marks_connected(
         self, mock_repo, mock_store, mock_apply, mock_aip, async_client
     ):
         mock_aip.OUR_ACCOUNT_ID = "877352799272"
-        mock_aip.put_owner_aws_sts_policy = AsyncMock()
-        mock_aip.delete_owner_aws_sts_policy = AsyncMock()
         mock_store.get = AsyncMock(return_value={"external_id": "ext_abc"})
         mock_store.put = AsyncMock()
         mock_store.delete = AsyncMock()
@@ -1521,18 +1512,25 @@ class TestAwsComplete:
         assert resp.status_code == 200
         assert resp.json() == {"status": "connected", "provider": "aws"}
 
-        full_cred = {"role_arn": self._GOOD_ARN, "external_id": "ext_abc", "region": "us-west-2"}
-        # Grant is scoped to EXACTLY the owner-supplied ARN.
-        mock_aip.put_owner_aws_sts_policy.assert_awaited_once_with("user_test_123", [self._GOOD_ARN])
-        # Pending {external_id} record overwritten with the full credential.
-        mock_store.put.assert_awaited_once_with("user_test_123", "aws", full_cred)
-        # Materialized into the container with the same credential.
-        mock_apply.apply_connection.assert_awaited_once_with("user_test_123", "aws", full_cred)
-        # Status row written after a clean grant + apply.
+        stored = mock_store.put.call_args.args[2]
+        assert stored["role_arn"] == self._GOOD_ARN
+        assert stored["external_id"] == "ext_abc"
+        assert stored["region"] == "us-west-2"
+        # Only the HASH is retained server-side; plaintext never reaches SM.
+        assert "cli_token_hash" in stored and len(stored["cli_token_hash"]) == 64
+        assert "cli_token" not in stored
+
+        applied = mock_apply.apply_connection.call_args.args[2]
+        # The materializer gets the stored dict PLUS the plaintext token.
+        assert applied["cli_token_hash"] == stored["cli_token_hash"]
+        import hashlib as _h
+
+        assert _h.sha256(applied["cli_token"].encode()).hexdigest() == stored["cli_token_hash"]
+
         mock_repo.put_status.assert_awaited_once_with("user_test_123", "aws", "connected")
-        # Happy path never rolls back.
+        # The per-owner IAM grant machinery is retired: no put/delete calls ever.
+        mock_aip.put_owner_aws_sts_policy.assert_not_called()
         mock_aip.delete_owner_aws_sts_policy.assert_not_called()
-        mock_store.delete.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("routers.connections.bedrock_aip")
@@ -1544,7 +1542,6 @@ class TestAwsComplete:
     ):
         # No region in the body -> the credential picks up the provider default.
         mock_aip.OUR_ACCOUNT_ID = "877352799272"
-        mock_aip.put_owner_aws_sts_policy = AsyncMock()
         mock_store.get = AsyncMock(return_value={"external_id": "ext_abc"})
         mock_store.put = AsyncMock()
         mock_apply.apply_connection = AsyncMock()
@@ -1567,14 +1564,12 @@ class TestAwsComplete:
     async def test_aws_complete_rolls_back_when_apply_fails(
         self, mock_repo, mock_store, mock_apply, mock_aip, mock_remove, async_client
     ):
-        # apply_connection raising AFTER the grant must roll back the IAM grant +
-        # the on-disk artifact, and never mark connected. Instead of deleting the
-        # whole secret, the rollback RE-PUTS the pending {external_id} record so
-        # the owner's already-created CFN trust + documented ExternalId reuse
-        # survive a transient apply failure.
+        # apply_connection raising must roll back the on-disk artifact and never
+        # mark connected. Instead of deleting the whole secret, the rollback
+        # RE-PUTS the pending {external_id} record so the owner's
+        # already-created CFN trust + documented ExternalId reuse survive a
+        # transient apply failure.
         mock_aip.OUR_ACCOUNT_ID = "877352799272"
-        mock_aip.put_owner_aws_sts_policy = AsyncMock()
-        mock_aip.delete_owner_aws_sts_policy = AsyncMock()
         mock_store.get = AsyncMock(return_value={"external_id": "ext_abc"})
         mock_store.put = AsyncMock()
         mock_store.delete = AsyncMock()
@@ -1586,9 +1581,7 @@ class TestAwsComplete:
             json={"role_arn": self._GOOD_ARN},
         )
         assert resp.status_code == 502
-        # Grant was attempted, then torn back down.
-        mock_aip.put_owner_aws_sts_policy.assert_awaited_once()
-        mock_aip.delete_owner_aws_sts_policy.assert_awaited_once_with("user_test_123")
+        # The partially-materialized artifact is torn back down.
         mock_remove.assert_awaited_once()
         # The secret is reset to the pending {external_id}-only record, NOT fully
         # deleted -> ExternalId survives for a retry.
@@ -1608,12 +1601,10 @@ class TestAwsComplete:
     ):
         # Each rollback teardown step is wrapped independently, so one failing
         # step does not skip the others. Here the artifact-removal step ITSELF
-        # raises, yet the IAM grant is still torn down AND the secret is still
-        # reset to the pending {external_id} record. The endpoint still surfaces
-        # the original 5xx and never marks connected.
+        # raises, yet the secret is still reset to the pending {external_id}
+        # record. The endpoint still surfaces the original 5xx and never marks
+        # connected.
         mock_aip.OUR_ACCOUNT_ID = "877352799272"
-        mock_aip.put_owner_aws_sts_policy = AsyncMock()
-        mock_aip.delete_owner_aws_sts_policy = AsyncMock()
         mock_store.get = AsyncMock(return_value={"external_id": "ext_abc"})
         mock_store.put = AsyncMock()
         mock_store.delete = AsyncMock()
@@ -1628,55 +1619,9 @@ class TestAwsComplete:
         )
         assert resp.status_code == 502
         # Despite the artifact-removal step raising, the remaining teardown ran:
-        mock_aip.delete_owner_aws_sts_policy.assert_awaited_once_with("user_test_123")
         assert mock_store.put.await_args_list[-1].args == ("user_test_123", "aws", {"external_id": "ext_abc"})
         # Secret never fully deleted; status never flips to connected.
         mock_store.delete.assert_not_called()
-        mock_repo.put_status.assert_not_called()
-
-    @pytest.mark.asyncio
-    @patch("routers.connections._remove_materialized_artifacts", new_callable=AsyncMock)
-    @patch("routers.connections.bedrock_aip")
-    @patch("routers.connections.apply_connection")
-    @patch("routers.connections.integration_secret_store")
-    @patch("routers.connections.integrations_repo")
-    async def test_aws_complete_rolls_back_when_grant_fails(
-        self, mock_repo, mock_store, mock_apply, mock_aip, mock_remove, async_client
-    ):
-        # The grant step (put_owner_aws_sts_policy) is the first thing in the try
-        # block — if IT raises (e.g. an IAM PutRolePolicy error), the same rollback
-        # must run: no apply, no connected status, the secret reset to the pending
-        # {external_id} record (NOT deleted), and the grant teardown still issued
-        # (delete_owner_aws_sts_policy is idempotent, so a failed put is safe to
-        # delete). This exercises the one rollback entry-point the apply-failure
-        # tests don't: a grant that raises before apply ever runs.
-        mock_aip.OUR_ACCOUNT_ID = "877352799272"
-        mock_aip.put_owner_aws_sts_policy = AsyncMock(side_effect=RuntimeError("grant failed"))
-        mock_aip.delete_owner_aws_sts_policy = AsyncMock()
-        mock_store.get = AsyncMock(return_value={"external_id": "ext_abc"})
-        mock_store.put = AsyncMock()
-        mock_store.delete = AsyncMock()
-        mock_apply.apply_connection = AsyncMock()
-        mock_repo.put_status = AsyncMock()
-
-        resp = await async_client.post(
-            "/api/v1/connections/aws/aws-complete",
-            json={"role_arn": self._GOOD_ARN},
-        )
-        assert resp.status_code == 502
-        # The grant was attempted (and raised).
-        mock_aip.put_owner_aws_sts_policy.assert_awaited_once()
-        # apply never runs — the grant raised before it.
-        mock_apply.apply_connection.assert_not_called()
-        # Grant teardown still issued during rollback (idempotent delete).
-        mock_aip.delete_owner_aws_sts_policy.assert_awaited_once_with("user_test_123")
-        # Artifact-removal step still attempted on the rollback path.
-        mock_remove.assert_awaited_once()
-        # Secret reset to the pending {external_id}-only record, NOT deleted ->
-        # the owner's already-baked ExternalId survives for a retry.
-        mock_store.delete.assert_not_called()
-        assert mock_store.put.await_args_list[-1].args == ("user_test_123", "aws", {"external_id": "ext_abc"})
-        # Never reports a false "connected".
         mock_repo.put_status.assert_not_called()
 
     @pytest.mark.asyncio
@@ -1688,13 +1633,13 @@ class TestAwsComplete:
         self, mock_repo, mock_store, mock_apply, mock_aip, async_client
     ):
         mock_aip.OUR_ACCOUNT_ID = "877352799272"
-        mock_aip.put_owner_aws_sts_policy = AsyncMock()
+        mock_apply.apply_connection = AsyncMock()
         resp = await async_client.post(
             "/api/v1/connections/stripe/aws-complete",
             json={"role_arn": self._GOOD_ARN},
         )
         assert resp.status_code == 400
-        mock_aip.put_owner_aws_sts_policy.assert_not_called()
+        mock_apply.apply_connection.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("routers.connections.bedrock_aip")
@@ -1705,7 +1650,6 @@ class TestAwsComplete:
         self, mock_repo, mock_store, mock_apply, mock_aip, async_client_org_member
     ):
         mock_aip.OUR_ACCOUNT_ID = "877352799272"
-        mock_aip.put_owner_aws_sts_policy = AsyncMock()
         mock_store.get = AsyncMock(return_value={"external_id": "ext_abc"})
         mock_apply.apply_connection = AsyncMock()
         mock_repo.put_status = AsyncMock()
@@ -1715,15 +1659,14 @@ class TestAwsComplete:
             json={"role_arn": self._GOOD_ARN},
         )
         assert resp.status_code == 403
-        mock_aip.put_owner_aws_sts_policy.assert_not_called()
         mock_apply.apply_connection.assert_not_called()
         mock_repo.put_status.assert_not_called()
 
     # --- Trust-pin gate: a role IN OUR account is allowed ONLY if its trust
-    # policy pins THIS owner (their per-owner principal + their ExternalId),
-    # verified via iam:GetRole. This is the guarantee that no tenant can ever
-    # connect one of Isol8's own AWS roles.
-    _OWNER_PRINCIPAL = "arn:aws:iam::877352799272:role/isol8-owner-user_test_123"
+    # policy pins the platform trust principal (our account root) + THIS
+    # owner's ExternalId, verified via iam:GetRole. This is the guarantee that
+    # no tenant can ever connect one of Isol8's own AWS roles.
+    _PLATFORM_PRINCIPAL = "arn:aws:iam::877352799272:root"
     _OUR_ACCOUNT_ARN = "arn:aws:iam::877352799272:role/isol8-connector"
 
     @staticmethod
@@ -1733,7 +1676,7 @@ class TestAwsComplete:
         }
 
     @pytest.mark.asyncio
-    @patch("routers.connections.aws_cfn.owner_task_role_arn", return_value=_OWNER_PRINCIPAL)
+    @patch("routers.connections.aws_cfn.platform_trust_principal_arn", return_value=_PLATFORM_PRINCIPAL)
     @patch("routers.connections.bedrock_aip")
     @patch("routers.connections.apply_connection")
     @patch("routers.connections.integration_secret_store")
@@ -1741,10 +1684,9 @@ class TestAwsComplete:
     async def test_aws_complete_our_account_arn_pinned_passes_gate(
         self, mock_repo, mock_store, mock_apply, mock_aip, _mock_cfn, async_client
     ):
-        # (a) our-account role whose trust pins THIS owner's principal + their
-        # ExternalId -> passes the gate and reaches the grant.
+        # (a) our-account role whose trust pins the platform principal (account
+        # root) + THIS owner's ExternalId -> passes the gate and connects.
         mock_aip.OUR_ACCOUNT_ID = "877352799272"
-        mock_aip.put_owner_aws_sts_policy = AsyncMock()
         mock_store.get = AsyncMock(return_value={"external_id": "ext_abc"})
         mock_store.put = AsyncMock()
         mock_apply.apply_connection = AsyncMock()
@@ -1754,7 +1696,7 @@ class TestAwsComplete:
             [
                 {
                     "Effect": "Allow",
-                    "Principal": {"AWS": self._OWNER_PRINCIPAL},
+                    "Principal": {"AWS": self._PLATFORM_PRINCIPAL},
                     "Action": "sts:AssumeRole",
                     "Condition": {"StringEquals": {"sts:ExternalId": "ext_abc"}},
                 }
@@ -1766,11 +1708,11 @@ class TestAwsComplete:
             json={"role_arn": self._OUR_ACCOUNT_ARN},
         )
         assert resp.status_code == 200
-        mock_aip.put_owner_aws_sts_policy.assert_awaited_once_with("user_test_123", [self._OUR_ACCOUNT_ARN])
+        mock_apply.apply_connection.assert_awaited_once()
         mock_repo.put_status.assert_awaited_once_with("user_test_123", "aws", "connected")
 
     @pytest.mark.asyncio
-    @patch("routers.connections.aws_cfn.owner_task_role_arn", return_value=_OWNER_PRINCIPAL)
+    @patch("routers.connections.aws_cfn.platform_trust_principal_arn", return_value=_PLATFORM_PRINCIPAL)
     @patch("routers.connections.bedrock_aip")
     @patch("routers.connections.apply_connection")
     @patch("routers.connections.integration_secret_store")
@@ -1778,11 +1720,11 @@ class TestAwsComplete:
     async def test_aws_complete_our_account_arn_not_pinned_rejected(
         self, mock_repo, mock_store, mock_apply, mock_aip, _mock_cfn, async_client
     ):
-        # (b) TENANT-CONTAINMENT: an our-account role whose trust does NOT pin the
-        # owner (trusts account-root, like a CDK role) -> 400, no grant. A tenant
-        # can't create a role in our account, and our infra roles never name them.
+        # (b) TENANT-CONTAINMENT: an our-account role whose trust does NOT name
+        # the platform principal (trusts a service principal, like every CDK
+        # infra role) -> 400, no connect. A tenant can't create a role in our
+        # account, and our infra roles never carry root+ExternalId trust.
         mock_aip.OUR_ACCOUNT_ID = "877352799272"
-        mock_aip.put_owner_aws_sts_policy = AsyncMock()
         mock_store.get = AsyncMock(return_value={"external_id": "ext_abc"})
         mock_store.put = AsyncMock()
         mock_apply.apply_connection = AsyncMock()
@@ -1792,7 +1734,7 @@ class TestAwsComplete:
             [
                 {
                     "Effect": "Allow",
-                    "Principal": {"AWS": "arn:aws:iam::877352799272:root"},
+                    "Principal": {"Service": "ecs-tasks.amazonaws.com"},
                     "Action": "sts:AssumeRole",
                 }
             ],
@@ -1803,12 +1745,12 @@ class TestAwsComplete:
             json={"role_arn": self._OUR_ACCOUNT_ARN},
         )
         assert resp.status_code == 400
-        mock_aip.put_owner_aws_sts_policy.assert_not_called()
+        mock_store.put.assert_not_called()
         mock_apply.apply_connection.assert_not_called()
         mock_repo.put_status.assert_not_called()
 
     @pytest.mark.asyncio
-    @patch("routers.connections.aws_cfn.owner_task_role_arn", return_value=_OWNER_PRINCIPAL)
+    @patch("routers.connections.aws_cfn.platform_trust_principal_arn", return_value=_PLATFORM_PRINCIPAL)
     @patch("routers.connections.bedrock_aip")
     @patch("routers.connections.apply_connection")
     @patch("routers.connections.integration_secret_store")
@@ -1816,10 +1758,9 @@ class TestAwsComplete:
     async def test_aws_complete_our_account_arn_external_id_mismatch_rejected(
         self, mock_repo, mock_store, mock_apply, mock_aip, _mock_cfn, async_client
     ):
-        # (c) our-account role that trusts the owner's principal but whose trust
+        # (c) our-account role that trusts the platform principal but whose trust
         # requires a DIFFERENT ExternalId than the owner's pending one -> 400.
         mock_aip.OUR_ACCOUNT_ID = "877352799272"
-        mock_aip.put_owner_aws_sts_policy = AsyncMock()
         mock_store.get = AsyncMock(return_value={"external_id": "ext_abc"})
         mock_store.put = AsyncMock()
         mock_apply.apply_connection = AsyncMock()
@@ -1829,7 +1770,7 @@ class TestAwsComplete:
             [
                 {
                     "Effect": "Allow",
-                    "Principal": {"AWS": self._OWNER_PRINCIPAL},
+                    "Principal": {"AWS": self._PLATFORM_PRINCIPAL},
                     "Action": "sts:AssumeRole",
                     "Condition": {"StringEquals": {"sts:ExternalId": "ext_someone_else"}},
                 }
@@ -1841,7 +1782,7 @@ class TestAwsComplete:
             json={"role_arn": self._OUR_ACCOUNT_ARN},
         )
         assert resp.status_code == 400
-        mock_aip.put_owner_aws_sts_policy.assert_not_called()
+        mock_store.put.assert_not_called()
         mock_apply.apply_connection.assert_not_called()
         mock_repo.put_status.assert_not_called()
 
@@ -1853,10 +1794,10 @@ class TestAwsComplete:
     async def test_aws_complete_external_account_arn_skips_trust_pin(
         self, mock_repo, mock_store, mock_apply, mock_aip, async_client
     ):
-        # (d) an EXTERNAL-account ARN is unchanged: no iam:GetRole, proceeds to
-        # the grant. The trust-pin check only fires for our-account ARNs.
+        # (d) an EXTERNAL-account ARN is unchanged: no iam:GetRole, proceeds
+        # straight to materialize. The trust-pin check only fires for
+        # our-account ARNs.
         mock_aip.OUR_ACCOUNT_ID = "877352799272"
-        mock_aip.put_owner_aws_sts_policy = AsyncMock()
         mock_store.get = AsyncMock(return_value={"external_id": "ext_abc"})
         mock_store.put = AsyncMock()
         mock_apply.apply_connection = AsyncMock()
@@ -1868,7 +1809,8 @@ class TestAwsComplete:
         )
         assert resp.status_code == 200
         mock_aip._iam_client.return_value.get_role.assert_not_called()
-        mock_aip.put_owner_aws_sts_policy.assert_awaited_once_with("user_test_123", [self._GOOD_ARN])
+        mock_apply.apply_connection.assert_awaited_once()
+        assert mock_apply.apply_connection.call_args.args[2]["role_arn"] == self._GOOD_ARN
 
     @pytest.mark.asyncio
     @patch("routers.connections.bedrock_aip")
@@ -1882,7 +1824,6 @@ class TestAwsComplete:
         # yield the accurate 409 "run aws-setup first" BEFORE the trust-pin check
         # — not the misleading "not Isol8's" 400.
         mock_aip.OUR_ACCOUNT_ID = "877352799272"
-        mock_aip.put_owner_aws_sts_policy = AsyncMock()
         mock_store.get = AsyncMock(return_value=None)
         mock_apply.apply_connection = AsyncMock()
         mock_repo.put_status = AsyncMock()
@@ -1893,11 +1834,10 @@ class TestAwsComplete:
         )
         assert resp.status_code == 409
         mock_aip._iam_client.return_value.get_role.assert_not_called()
-        mock_aip.put_owner_aws_sts_policy.assert_not_called()
         mock_apply.apply_connection.assert_not_called()
 
     @pytest.mark.asyncio
-    @patch("routers.connections.aws_cfn.owner_task_role_arn", return_value=_OWNER_PRINCIPAL)
+    @patch("routers.connections.aws_cfn.platform_trust_principal_arn", return_value=_PLATFORM_PRINCIPAL)
     @patch("routers.connections.bedrock_aip")
     @patch("routers.connections.apply_connection")
     @patch("routers.connections.integration_secret_store")
@@ -1906,11 +1846,10 @@ class TestAwsComplete:
         self, mock_repo, mock_store, mock_apply, mock_aip, _mock_cfn, async_client
     ):
         # (e) our-account role whose trust ``Principal.AWS`` is a LIST that
-        # includes this owner's principal (plus other unrelated ones) + the
-        # owner's ExternalId -> passes the gate and reaches the grant. Covers the
+        # includes the platform principal (plus other unrelated ones) + the
+        # owner's ExternalId -> passes the gate and connects. Covers the
         # ``isinstance(principal, list)`` normalization branch.
         mock_aip.OUR_ACCOUNT_ID = "877352799272"
-        mock_aip.put_owner_aws_sts_policy = AsyncMock()
         mock_store.get = AsyncMock(return_value={"external_id": "ext_abc"})
         mock_store.put = AsyncMock()
         mock_apply.apply_connection = AsyncMock()
@@ -1920,7 +1859,7 @@ class TestAwsComplete:
             [
                 {
                     "Effect": "Allow",
-                    "Principal": {"AWS": ["arn:aws:iam::999999999999:role/other", self._OWNER_PRINCIPAL]},
+                    "Principal": {"AWS": ["arn:aws:iam::999999999999:role/other", self._PLATFORM_PRINCIPAL]},
                     "Action": "sts:AssumeRole",
                     "Condition": {"StringEquals": {"sts:ExternalId": "ext_abc"}},
                 }
@@ -1932,11 +1871,11 @@ class TestAwsComplete:
             json={"role_arn": self._OUR_ACCOUNT_ARN},
         )
         assert resp.status_code == 200
-        mock_aip.put_owner_aws_sts_policy.assert_awaited_once_with("user_test_123", [self._OUR_ACCOUNT_ARN])
+        mock_apply.apply_connection.assert_awaited_once()
         mock_repo.put_status.assert_awaited_once_with("user_test_123", "aws", "connected")
 
     @pytest.mark.asyncio
-    @patch("routers.connections.aws_cfn.owner_task_role_arn", return_value=_OWNER_PRINCIPAL)
+    @patch("routers.connections.aws_cfn.platform_trust_principal_arn", return_value=_PLATFORM_PRINCIPAL)
     @patch("routers.connections.bedrock_aip")
     @patch("routers.connections.apply_connection")
     @patch("routers.connections.integration_secret_store")
@@ -1945,11 +1884,10 @@ class TestAwsComplete:
         self, mock_repo, mock_store, mock_apply, mock_aip, _mock_cfn, async_client
     ):
         # (f) FAIL-CLOSED: iam:GetRole raising (e.g. AccessDenied / throttle) must
-        # yield a clean 400, never a 500 or an accidental grant.
+        # yield a clean 400, never a 500 or an accidental connect.
         import botocore.exceptions
 
         mock_aip.OUR_ACCOUNT_ID = "877352799272"
-        mock_aip.put_owner_aws_sts_policy = AsyncMock()
         mock_store.get = AsyncMock(return_value={"external_id": "ext_abc"})
         mock_store.put = AsyncMock()
         mock_apply.apply_connection = AsyncMock()
@@ -1963,12 +1901,12 @@ class TestAwsComplete:
             json={"role_arn": self._OUR_ACCOUNT_ARN},
         )
         assert resp.status_code == 400
-        mock_aip.put_owner_aws_sts_policy.assert_not_called()
+        mock_store.put.assert_not_called()
         mock_apply.apply_connection.assert_not_called()
         mock_repo.put_status.assert_not_called()
 
     @pytest.mark.asyncio
-    @patch("routers.connections.aws_cfn.owner_task_role_arn", return_value=_OWNER_PRINCIPAL)
+    @patch("routers.connections.aws_cfn.platform_trust_principal_arn", return_value=_PLATFORM_PRINCIPAL)
     @patch("routers.connections.bedrock_aip")
     @patch("routers.connections.apply_connection")
     @patch("routers.connections.integration_secret_store")
@@ -1981,7 +1919,6 @@ class TestAwsComplete:
         # and surface as a 500. It must now be a clean 400 (non-match -> not
         # pinned), proving the parse loop is inside the fail-closed try.
         mock_aip.OUR_ACCOUNT_ID = "877352799272"
-        mock_aip.put_owner_aws_sts_policy = AsyncMock()
         mock_store.get = AsyncMock(return_value={"external_id": "ext_abc"})
         mock_store.put = AsyncMock()
         mock_apply.apply_connection = AsyncMock()
@@ -2003,12 +1940,12 @@ class TestAwsComplete:
             json={"role_arn": self._OUR_ACCOUNT_ARN},
         )
         assert resp.status_code == 400
-        mock_aip.put_owner_aws_sts_policy.assert_not_called()
+        mock_store.put.assert_not_called()
         mock_apply.apply_connection.assert_not_called()
         mock_repo.put_status.assert_not_called()
 
     @pytest.mark.asyncio
-    @patch("routers.connections.aws_cfn.owner_task_role_arn", return_value=_OWNER_PRINCIPAL)
+    @patch("routers.connections.aws_cfn.platform_trust_principal_arn", return_value=_PLATFORM_PRINCIPAL)
     @patch("routers.connections.bedrock_aip")
     @patch("routers.connections.apply_connection")
     @patch("routers.connections.integration_secret_store")
@@ -2016,11 +1953,12 @@ class TestAwsComplete:
     async def test_aws_complete_our_account_arn_missing_condition_rejected(
         self, mock_repo, mock_store, mock_apply, mock_aip, _mock_cfn, async_client
     ):
-        # (h) our-account role that trusts the owner's principal but has NO
+        # (h) our-account role that trusts the platform principal but has NO
         # Condition block (so no ExternalId pin) -> 400. Missing Condition must
-        # not raise; it just fails the ExternalId match.
+        # not raise; it just fails the ExternalId match. This is exactly the
+        # shape of an account-root-trusting infra/admin role, so it doubles as
+        # the proof that root trust ALONE never passes the gate.
         mock_aip.OUR_ACCOUNT_ID = "877352799272"
-        mock_aip.put_owner_aws_sts_policy = AsyncMock()
         mock_store.get = AsyncMock(return_value={"external_id": "ext_abc"})
         mock_store.put = AsyncMock()
         mock_apply.apply_connection = AsyncMock()
@@ -2030,7 +1968,7 @@ class TestAwsComplete:
             [
                 {
                     "Effect": "Allow",
-                    "Principal": {"AWS": self._OWNER_PRINCIPAL},
+                    "Principal": {"AWS": self._PLATFORM_PRINCIPAL},
                     "Action": "sts:AssumeRole",
                 }
             ],
@@ -2041,15 +1979,47 @@ class TestAwsComplete:
             json={"role_arn": self._OUR_ACCOUNT_ARN},
         )
         assert resp.status_code == 400
-        mock_aip.put_owner_aws_sts_policy.assert_not_called()
+        mock_store.put.assert_not_called()
         mock_apply.apply_connection.assert_not_called()
         mock_repo.put_status.assert_not_called()
 
+    @pytest.mark.asyncio
+    @patch("routers.connections.bedrock_aip")
+    @patch("routers.connections.integration_secret_store")
+    async def test_our_account_arn_with_per_owner_principal_trust_now_rejected(
+        self, mock_store, mock_aip, async_client
+    ):
+        # Pre-migration trust docs (pinning the per-owner container role) must
+        # no longer pass: the platform principal is account root.
+        mock_aip.OUR_ACCOUNT_ID = "877352799272"
+        mock_store.get = AsyncMock(return_value={"external_id": "ext_abc"})
+        mock_aip._iam_client.return_value.get_role.return_value = {
+            "Role": {
+                "AssumeRolePolicyDocument": {
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {
+                                "AWS": "arn:aws:iam::877352799272:role/isol8-prod-owner-bedrock-user_test_123"
+                            },
+                            "Condition": {"StringEquals": {"sts:ExternalId": "ext_abc"}},
+                        }
+                    ]
+                }
+            }
+        }
+        resp = await async_client.post(
+            "/api/v1/connections/aws/aws-complete",
+            json={"role_arn": "arn:aws:iam::877352799272:role/isol8-connector"},
+        )
+        assert resp.status_code == 400
+
 
 class TestDisconnectAws:
-    """DELETE /api/v1/connections/aws — the kill-switch must additionally tear
-    down the per-owner sts:AssumeRole IAM grant on top of the generic
-    secret/status delete + the aws_cli materializer's ~/.aws/config removal."""
+    """DELETE /api/v1/connections/aws — revocation is server-side: deleting the
+    SM secret drops the cli_token_hash, so the container's next credential
+    fetch 401s. On top of that, the aws_cli materializer removes the on-EFS
+    credential_process bundle. There is no per-owner IAM grant to tear down."""
 
     @pytest.mark.asyncio
     @patch("routers.connections.bedrock_aip")
@@ -2057,7 +2027,7 @@ class TestDisconnectAws:
     @patch("routers.connections.config_patcher")
     @patch("routers.connections.integration_secret_store")
     @patch("routers.connections.integrations_repo")
-    async def test_disconnect_aws_revokes_sts_grant(
+    async def test_disconnect_aws_drops_secret_and_status(
         self, mock_repo, mock_store, mock_patcher, mock_removers, mock_aip, async_client
     ):
         mock_repo.delete = AsyncMock()
@@ -2066,19 +2036,19 @@ class TestDisconnectAws:
             return_value={"role_arn": "arn:aws:iam::123456789012:role/ro", "external_id": "e", "region": "us-east-1"}
         )
         mock_patcher.set_openclaw_config_path = AsyncMock()
-        mock_aip.delete_owner_aws_sts_policy = AsyncMock()
 
         resp = await async_client.delete("/api/v1/connections/aws")
         assert resp.status_code == 200
         assert resp.json() == {"status": "disconnected", "provider": "aws"}
 
-        # aws_cli materializer remover ran (drops ~/.aws/config).
+        # aws_cli materializer remover ran (drops the ~/.aws bundle).
         mock_removers.get.assert_called_once_with("aws_cli")
-        # The IAM sts:AssumeRole grant is torn down — the kill-switch's whole point.
-        mock_aip.delete_owner_aws_sts_policy.assert_awaited_once_with("user_test_123")
-        # Generic secret + status row removal still happens.
+        # Secret delete IS the revocation: the cli_token_hash goes with it, so
+        # the vend endpoint 401s the container's next fetch. Status row too.
         mock_store.delete.assert_awaited_once_with("user_test_123", "aws")
         mock_repo.delete.assert_awaited_once_with("user_test_123", "aws")
+        # The per-owner IAM grant machinery is retired: no delete call ever.
+        mock_aip.delete_owner_aws_sts_policy.assert_not_called()
 
 
 class TestAwsCredentialsEndpoint:

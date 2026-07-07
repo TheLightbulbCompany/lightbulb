@@ -1,16 +1,31 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { pickLatestRelease, tagPrefixFromHost } from "@/lib/githubReleases";
+import {
+  pickLatestRelease,
+  resolveAssetLocation,
+  tagPrefixFromHost,
+} from "@/lib/githubReleases";
 
 type Arch = "aarch64" | "x64";
+
+// `dmg` serves the installer to browsers; `bundle` serves the updater's
+// `.app.tar.gz` — the update manifest points Tauri here so the signed URL
+// is minted fresh at download time (it expires within minutes, and the
+// user may sit on the update prompt far longer than that).
+type Kind = "dmg" | "bundle";
 
 function archFromQuery(raw: string | null): Arch {
   if (raw === "x64" || raw === "x86_64" || raw === "intel") return "x64";
   return "aarch64";
 }
 
+function kindFromQuery(raw: string | null): Kind {
+  return raw === "bundle" ? "bundle" : "dmg";
+}
+
 export async function GET(req: NextRequest) {
   const arch = archFromQuery(req.nextUrl.searchParams.get("arch"));
+  const kind = kindFromQuery(req.nextUrl.searchParams.get("kind"));
   const prefix = tagPrefixFromHost(req.headers.get("host"));
 
   const { release, githubStatus } = await pickLatestRelease(prefix);
@@ -26,13 +41,20 @@ export async function GET(req: NextRequest) {
       { status: 404 },
     );
   }
-  const suffix = `_${arch}.dmg`;
+  const suffix = kind === "bundle" ? `_${arch}.app.tar.gz` : `_${arch}.dmg`;
   const asset = release.assets.find((a) => a.name.endsWith(suffix));
   if (!asset) {
     return NextResponse.json(
-      { error: "no_asset", tag: release.tag_name, arch },
+      { error: "no_asset", tag: release.tag_name, arch, kind },
       { status: 404 },
     );
   }
-  return NextResponse.redirect(asset.browser_download_url, 302);
+  const { location, status } = await resolveAssetLocation(asset);
+  if (!location) {
+    return NextResponse.json(
+      { error: "asset_unresolvable", tag: release.tag_name, status },
+      { status: 502 },
+    );
+  }
+  return NextResponse.redirect(location, 302);
 }

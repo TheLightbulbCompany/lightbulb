@@ -687,6 +687,7 @@ POST /marketplace/listings/{slug}/deploy
 | `NEXT_PUBLIC_API_URL` | Backend REST API URL **including `/api/v1`** |
 | `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | Clerk publishable key |
 | `CLERK_SECRET_KEY` | Clerk secret key (server-side) |
+| `GITHUB_RELEASES_TOKEN` | Fine-grained PAT (contents: read on Isol8AI/isol8) for the desktop download + auto-updater routes — the repo is private |
 
 **API URL by environment:**
 - Local: `http://localhost:8000/api/v1`

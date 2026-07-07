@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import {
+  githubHeaders,
   isNewer,
   pickLatestRelease,
   tagPrefixFromHost,
@@ -90,8 +91,11 @@ export async function GET(
 
   // Tauri's updater wants the signature value INLINE in the manifest, not
   // a URL to fetch separately. The .sig asset is small (a few hundred
-  // bytes of base64) so we fetch and embed it.
-  const sigRes = await fetch(sigAsset.browser_download_url, {
+  // bytes of base64) so we fetch and embed it. Private repo: fetch the
+  // asset API URL with octet-stream Accept (follows GitHub's redirect to
+  // the signed URL; undici drops the auth header cross-origin).
+  const sigRes = await fetch(sigAsset.url, {
+    headers: { ...githubHeaders(), Accept: "application/octet-stream" },
     next: { revalidate: 300 },
   });
   if (!sigRes.ok) {
@@ -102,11 +106,30 @@ export async function GET(
   }
   const signature = (await sigRes.text()).trim();
 
+  // The bundle URL must stay valid until the user accepts the update
+  // prompt, which can be hours — but a private repo's signed asset URL
+  // expires in minutes. Point Tauri at our own download route, which
+  // mints a fresh signed URL per request. Echo the request host only
+  // when it's one of ours — never a client-controlled value.
+  const rawHost = (req.headers.get("host") ?? "").toLowerCase();
+  const isKnownHost =
+    rawHost === "isol8.co" ||
+    rawHost === "www.isol8.co" ||
+    rawHost === "dev.isol8.co" ||
+    rawHost.startsWith("localhost") ||
+    rawHost.endsWith(".vercel.app");
+  const host = isKnownHost
+    ? rawHost
+    : prefix === "desktop-dev-v"
+      ? "dev.isol8.co"
+      : "isol8.co";
+  const scheme = host.startsWith("localhost") ? "http" : "https";
+
   return NextResponse.json({
     version: latestVersion,
     notes: candidate.body ?? candidate.name ?? "",
     pub_date: candidate.published_at,
-    url: bundle.browser_download_url,
+    url: `${scheme}://${host}/api/download/desktop?arch=${arch}&kind=bundle`,
     signature,
   });
 }

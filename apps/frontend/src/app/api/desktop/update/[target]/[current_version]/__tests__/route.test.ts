@@ -3,25 +3,33 @@ import { NextRequest } from "next/server";
 
 import { GET } from "../route";
 
+type GhAssetFixture = {
+  url: string;
+  name: string;
+  browser_download_url: string;
+};
+
 type GhReleaseFixture = {
   tag_name: string;
   name: string | null;
   body: string | null;
   draft: boolean;
   published_at: string | null;
-  assets: { name: string; browser_download_url: string }[];
+  assets: GhAssetFixture[];
 };
 
 function stubGitHub(releases: GhReleaseFixture[], signatureBody = "SIG-XYZ") {
-  const fetchMock = vi.fn(async (url: string) => {
-    if (url.includes("/releases?")) {
+  const fetchMock = vi.fn(async (url: string | URL) => {
+    const u = String(url);
+    if (u.includes("/releases?")) {
       return {
         ok: true,
         status: 200,
         json: async () => releases,
       } as unknown as Response;
     }
-    // Otherwise it's a .sig file fetch — return the canned signature body.
+    // Otherwise it's the .sig asset fetch (asset API URL, redirect
+    // followed) — return the canned signature body.
     return {
       ok: true,
       status: 200,
@@ -41,15 +49,18 @@ function reqFor(host: string) {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 describe("GET /api/desktop/update/[target]/[current_version]", () => {
-  const armBundle = {
+  const armBundle: GhAssetFixture = {
+    url: "https://api.github.com/repos/Isol8AI/isol8/releases/assets/11",
     name: "Isol8_0.2.11_aarch64.app.tar.gz",
     browser_download_url:
       "https://github.com/Isol8AI/isol8/releases/download/desktop-dev-v0.2.11/Isol8_0.2.11_aarch64.app.tar.gz",
   };
-  const armSig = {
+  const armSig: GhAssetFixture = {
+    url: "https://api.github.com/repos/Isol8AI/isol8/releases/assets/12",
     name: "Isol8_0.2.11_aarch64.app.tar.gz.sig",
     browser_download_url:
       "https://github.com/Isol8AI/isol8/releases/download/desktop-dev-v0.2.11/Isol8_0.2.11_aarch64.app.tar.gz.sig",
@@ -63,6 +74,7 @@ describe("GET /api/desktop/update/[target]/[current_version]", () => {
     published_at: "2026-05-12T22:00:00Z",
     assets: [
       {
+        url: "https://api.github.com/repos/Isol8AI/isol8/releases/assets/10",
         name: "Isol8_0.2.11_aarch64.dmg",
         browser_download_url: "https://example/dmg",
       },
@@ -85,10 +97,55 @@ describe("GET /api/desktop/update/[target]/[current_version]", () => {
     const body = await res.json();
     expect(body).toMatchObject({
       version: "0.2.11",
-      url: armBundle.browser_download_url,
+      // Bundle URL points back at our download route (which mints a
+      // fresh signed URL per request), NOT at GitHub directly — a
+      // private repo's URLs either 404 anonymously or expire.
+      url: "https://dev.isol8.co/api/download/desktop?arch=aarch64&kind=bundle",
       signature: "SIG-XYZ",
       notes: "release notes",
     });
+  });
+
+  it("falls back to the canonical host when the Host header isn't ours", async () => {
+    // A spoofed Host header must not be echoed into the manifest URL the
+    // updater will fetch. Unknown host → prod tag prefix → isol8.co.
+    stubGitHub([
+      {
+        ...fullDevRelease,
+        tag_name: "desktop-v0.2.11",
+      },
+    ]);
+    const res = await GET(reqFor("evil.example.com"), {
+      params: Promise.resolve({
+        target: "darwin-aarch64",
+        current_version: "0.1.0",
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.url).toBe(
+      "https://isol8.co/api/download/desktop?arch=aarch64&kind=bundle",
+    );
+  });
+
+  it("fetches the signature from the asset API URL with auth", async () => {
+    vi.stubEnv("GITHUB_RELEASES_TOKEN", "ghp_test123");
+    const { fetchMock } = stubGitHub([fullDevRelease]);
+    await GET(reqFor("dev.isol8.co"), {
+      params: Promise.resolve({
+        target: "darwin-aarch64",
+        current_version: "0.1.0",
+      }),
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      armSig.url,
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Accept: "application/octet-stream",
+          Authorization: "Bearer ghp_test123",
+        }),
+      }),
+    );
   });
 
   it("returns 204 when current_version matches the latest", async () => {
@@ -148,11 +205,13 @@ describe("GET /api/desktop/update/[target]/[current_version]", () => {
       published_at: "2026-05-13T00:00:00Z",
       assets: [
         {
+          url: "https://api.github.com/repos/Isol8AI/isol8/releases/assets/21",
           name: "Isol8_0.3.0_aarch64.app.tar.gz",
           browser_download_url:
             "https://example/v0.3.0/Isol8_0.3.0_aarch64.app.tar.gz",
         },
         {
+          url: "https://api.github.com/repos/Isol8AI/isol8/releases/assets/22",
           name: "Isol8_0.3.0_aarch64.app.tar.gz.sig",
           browser_download_url: "https://example/v0.3.0/sig",
         },
@@ -183,11 +242,13 @@ describe("GET /api/desktop/update/[target]/[current_version]", () => {
       published_at: "2026-05-15T00:00:00Z",
       assets: [
         {
+          url: "https://api.github.com/repos/Isol8AI/isol8/releases/assets/31",
           name: "Isol8_0.3.1_aarch64.app.tar.gz",
           browser_download_url:
             "https://example/v0.3.1/Isol8_0.3.1_aarch64.app.tar.gz",
         },
         {
+          url: "https://api.github.com/repos/Isol8AI/isol8/releases/assets/32",
           name: "Isol8_0.3.1_aarch64.app.tar.gz.sig",
           browser_download_url: "https://example/v0.3.1/sig",
         },

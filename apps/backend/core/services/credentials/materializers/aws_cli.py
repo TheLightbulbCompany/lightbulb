@@ -6,7 +6,7 @@ Three files under ``{EFS_MOUNT_PATH}/{owner}/.aws/`` (in-container:
 ``/users/{owner}`` at ``/home/node/.openclaw``, and the task env
 ``AWS_CONFIG_FILE`` already points at ``config`` there):
 
-* ``config`` — ``[profile isol8-readonly]`` whose ``credential_process`` runs
+* ``config`` — ``[profile isol8-connector]`` whose ``credential_process`` runs
   the helper below. The profile is **named**, never ``[default]``: a default
   profile would be picked up by the in-process Bedrock SDK's default chain.
   It carries NO ``role_arn``/``credential_source``/``external_id`` — a profile
@@ -32,7 +32,7 @@ import json
 from core.config import settings
 from core.services.credentials.materializers.base import atomic_write, owner_efs_root
 
-AWS_READONLY_PROFILE = "isol8-readonly"
+AWS_CONNECTOR_PROFILE = "isol8-connector"
 HELPER_FILENAME = "isol8-creds.mjs"
 TOKEN_FILENAME = "token"
 CACHE_FILENAME = "cache.json"
@@ -117,7 +117,7 @@ emit(creds);
 def write(owner_id: str, provider_key: str, credential: dict) -> None:
     aws_dir = owner_efs_root(owner_id) / ".aws"
     config = (
-        f"[profile {AWS_READONLY_PROFILE}]\n"
+        f"[profile {AWS_CONNECTOR_PROFILE}]\n"
         f"region = {credential['region']}\n"
         f"credential_process = /usr/bin/env node {_CONTAINER_AWS_DIR}/{HELPER_FILENAME}\n"
     )

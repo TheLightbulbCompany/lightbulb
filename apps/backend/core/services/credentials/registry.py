@@ -166,10 +166,12 @@ class ValidateSpec(BaseModel):
 
 
 class AwsStsSpec(BaseModel):
-    """AWS read-only access via STS AssumeRole. The owner runs a CloudFormation
-    stack that creates a cross-account role Isol8 can assume; the assumed role is
-    capped at read access by the two AWS-managed policy ARNs below. The aws_cli
-    materializer delivers the short-lived STS credentials into the container."""
+    """AWS access via STS AssumeRole. The owner runs a CloudFormation stack
+    that creates a connector role Isol8's backend can assume (trust = our
+    account root + per-connection ExternalId), capped at the tier the owner
+    picked from the three AWS-managed policy ARNs below. The aws_cli
+    materializer delivers a credential_process bundle; the container's CLI
+    pulls short-lived credentials from the backend on demand."""
 
     view_only_policy_arn: str = "arn:aws:iam::aws:policy/job-function/ViewOnlyAccess"
     read_only_policy_arn: str = "arn:aws:iam::aws:policy/ReadOnlyAccess"
@@ -207,7 +209,7 @@ class Provider(BaseModel):
     mcp_remote: McpRemote | None = None
     # Bundled skill delivered by a paste-token CLI integration (see SkillSpec).
     skill: SkillSpec | None = None
-    # AWS read-only STS rail config. Only set for the `aws` provider (acquisition
+    # AWS STS rail config. Only set for the `aws` provider (acquisition
     # aws_sts); carries the managed-policy ARNs that cap the assumed role + the
     # default region.
     aws_sts: AwsStsSpec | None = None

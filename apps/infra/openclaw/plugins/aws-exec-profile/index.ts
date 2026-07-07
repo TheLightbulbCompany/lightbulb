@@ -26,7 +26,7 @@
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { resolve } from "./dist/resolve.js";
 
-// resolve_exec_env handler: contribute the owner's read-only profile when it
+// resolve_exec_env handler: contribute the owner's connector profile when it
 // is materialized. Reads process.env.AWS_CONFIG_FILE fresh each call.
 function resolveExecEnv() {
   return resolve(process.env.AWS_CONFIG_FILE);
@@ -36,7 +36,7 @@ export default definePluginEntry({
   id: "aws-exec-profile",
   name: "AWS exec profile",
   description:
-    "Injects AWS_PROFILE=isol8-readonly into the agent's exec environment only.",
+    "Injects AWS_PROFILE=isol8-connector into the agent's exec environment only.",
   register(api) {
     api.on("resolve_exec_env", resolveExecEnv, { priority: 50 });
   },

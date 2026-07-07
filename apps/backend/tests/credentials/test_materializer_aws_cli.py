@@ -31,7 +31,7 @@ def test_config_uses_credential_process_and_no_secrets(tmp_path, monkeypatch):
     aws_dir = _write(tmp_path, monkeypatch)
     body = (aws_dir / "config").read_text()
     assert body == (
-        "[profile isol8-readonly]\n"
+        "[profile isol8-connector]\n"
         "region = us-east-1\n"
         "credential_process = /usr/bin/env node /home/node/.openclaw/.aws/isol8-creds.mjs\n"
     )
@@ -45,7 +45,7 @@ def test_config_uses_credential_process_and_no_secrets(tmp_path, monkeypatch):
 def test_named_profile_not_default_so_bedrock_chain_is_unaffected(tmp_path, monkeypatch):
     aws_dir = _write(tmp_path, monkeypatch)
     body = (aws_dir / "config").read_text()
-    assert body.startswith(f"[profile {aws_cli.AWS_READONLY_PROFILE}]\n")
+    assert body.startswith(f"[profile {aws_cli.AWS_CONNECTOR_PROFILE}]\n")
     assert "[default]" not in body
 
 

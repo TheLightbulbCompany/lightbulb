@@ -2168,6 +2168,18 @@ class TestAwsCredentialsEndpoint:
         assert resp.status_code == 422
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad", ["org bad", "org/../x", "org_x\n", "org.x", "org%00"])
+    async def test_owner_id_bad_charset_is_422(self, async_client, bad):
+        # Chars outside the Clerk id shape (whitespace, path separators, control
+        # bytes) must never reach the DDB key / SM name / RoleSessionName sinks.
+        resp = await async_client.post(
+            "/api/v1/connections/aws/credentials",
+            json={"owner_id": bad},
+            headers={"Authorization": f"Bearer {self._TOKEN}"},
+        )
+        assert resp.status_code == 422
+
+    @pytest.mark.asyncio
     @patch("routers.connections.integrations_repo")
     @patch("routers.connections.integration_secret_store")
     async def test_secret_store_client_error_is_503(self, mock_store, mock_repo, async_client):
@@ -2226,5 +2238,37 @@ class TestAwsCredentialsEndpoint:
             )
             assert over.status_code == 429
             assert over.headers["Retry-After"] == "60"
+        finally:
+            conn_mod._aws_cli_rate_buckets.clear()
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.integrations_repo")
+    @patch("routers.connections.integration_secret_store")
+    async def test_wrong_token_spray_is_rate_limited_before_secrets_manager(self, mock_store, mock_repo, async_client):
+        # A caller who knows a valid connected owner_id but sprays WRONG tokens
+        # must be throttled before it can drive unbounded Secrets Manager fetches:
+        # the rate limiter runs after the cheap DDB gate and before the SM get.
+        from routers import connections as conn_mod
+
+        mock_repo.get = AsyncMock(return_value={"status": "connected"})
+        mock_store.get = AsyncMock(return_value=self._stored())
+        conn_mod._aws_cli_rate_buckets.clear()
+        try:
+            for _ in range(conn_mod._AWS_CLI_RATE_LIMIT_PER_MINUTE):
+                r = await async_client.post(
+                    "/api/v1/connections/aws/credentials",
+                    json={"owner_id": "org_spray"},
+                    headers={"Authorization": "Bearer wrong"},
+                )
+                assert r.status_code == 401  # bad token, but each consumed a slot
+            over = await async_client.post(
+                "/api/v1/connections/aws/credentials",
+                json={"owner_id": "org_spray"},
+                headers={"Authorization": "Bearer wrong"},
+            )
+            assert over.status_code == 429
+            # SM was hit at most once per allowed slot (10), never on the 11th —
+            # the throttle caps GetSecretValue spend under a wrong-token spray.
+            assert mock_store.get.await_count <= conn_mod._AWS_CLI_RATE_LIMIT_PER_MINUTE
         finally:
             conn_mod._aws_cli_rate_buckets.clear()

@@ -93,10 +93,14 @@ class AwsCompleteBody(BaseModel):
 
 
 class AwsCredentialsBody(BaseModel):
-    # Bounded because this endpoint is unauthenticated: the owner_id flows into
-    # a DynamoDB key and a Secrets Manager name lookup, and an unbounded string
-    # is free amplification for a spray.
-    owner_id: str = Field(min_length=1, max_length=128)
+    # Bounded AND charset-restricted because this endpoint is unauthenticated:
+    # the owner_id flows into a DynamoDB key, a Secrets Manager name lookup, and
+    # an STS RoleSessionName. The pattern matches the Clerk id shape
+    # resolve_owner_id produces (org_/user_ + alphanumerics), so nothing outside
+    # that set — whitespace, newlines, path separators — ever reaches those
+    # sinks; it makes the confused-deputy reasoning explicit rather than relying
+    # on Clerk id shape as an implicit assumption.
+    owner_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
 
 
 # A concrete IAM role ARN, capturing the 12-digit owning account. Deliberately
@@ -295,6 +299,19 @@ async def aws_credentials(body: AwsCredentialsBody, request: Request):
         put_metric("connections.aws_credentials.fetch", dimensions={"result": "unauthorized"})
         raise HTTPException(status_code=401, detail="invalid_token")
 
+    # Rate limit AFTER the cheap DDB gate but BEFORE the Secrets Manager fetch.
+    # The gate has already rejected unconnected / garbage owner_ids with a 401,
+    # so spray can't fill buckets; capping here means a valid-owner + wrong-token
+    # spray is throttled before it can drive unbounded GetSecretValue calls.
+    if not _check_aws_cli_rate_limit(body.owner_id):
+        put_metric("connections.aws_credentials.fetch", dimensions={"result": "rate_limited"})
+        return Response(
+            status_code=429,
+            headers={"Retry-After": "60"},
+            content=b'{"detail":"rate_limited"}',
+            media_type="application/json",
+        )
+
     try:
         rec = await integration_secret_store.get(body.owner_id, "aws")
     except ClientError:
@@ -308,16 +325,6 @@ async def aws_credentials(body: AwsCredentialsBody, request: Request):
     if not expected_hash or not hmac.compare_digest(_hash_cli_token(presented), expected_hash):
         put_metric("connections.aws_credentials.fetch", dimensions={"result": "unauthorized"})
         raise HTTPException(status_code=401, detail="invalid_token")
-
-    # Rate limit AFTER auth so unauthenticated spray can't fill the bucket.
-    if not _check_aws_cli_rate_limit(body.owner_id):
-        put_metric("connections.aws_credentials.fetch", dimensions={"result": "rate_limited"})
-        return Response(
-            status_code=429,
-            headers={"Retry-After": "60"},
-            content=b'{"detail":"rate_limited"}',
-            media_type="application/json",
-        )
 
     try:
         # RoleSessionName charset is [\w+=,.@-]; owner ids (org_/user_ + base62)

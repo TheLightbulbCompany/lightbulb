@@ -1,7 +1,8 @@
+import { useUser } from "@clerk/clerk-expo";
 import Feather from "@expo/vector-icons/Feather";
 import { randomUUID } from "expo-crypto";
 import { Stack, useLocalSearchParams } from "expo-router";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Animated,
   FlatList,
@@ -15,25 +16,17 @@ import {
 } from "react-native";
 
 import { AgentHead } from "../../../components/chat/AgentHead";
+import type { ChatItem } from "../../../components/chat/chatItems";
 import { EmptyState } from "../../../components/chat/EmptyState";
 import { MessageMarkdown } from "../../../components/chat/MessageMarkdown";
+import { SessionsSheet } from "../../../components/chat/SessionsSheet";
+import { TimelineSkeleton } from "../../../components/chat/TimelineSkeleton";
 import { ToolPill, type ToolPillStatus } from "../../../components/chat/ToolPill";
 import { usePulse } from "../../../components/chat/usePulse";
 import { colors, fonts, radii, spacing } from "../../../config/theme";
+import { projectHistoryToChatItems } from "../../../lib/chatHistory";
+import { buildChatSessionKey } from "../../../lib/sessionKey";
 import { useGateway } from "../../../providers/gateway";
-
-interface ChatItem {
-  id: string;
-  role: "user" | "assistant" | "tool" | "error";
-  text: string;
-  streaming?: boolean;
-  /** Tool items only: tool name + input args from the tool_start frame. */
-  tool?: string;
-  args?: Record<string, unknown>;
-  /** Tool items only: result text attached when tool_end/tool_error lands. */
-  result?: string;
-  toolStatus?: ToolPillStatus;
-}
 
 /**
  * Slim reconnecting banner shown above the composer while the gateway
@@ -50,9 +43,10 @@ function ReconnectingBanner() {
 }
 
 /**
- * Phase 2 MVP chat: streams one conversation with one agent over the shared
- * gateway. Transcript is in-memory only (history/sessions land later, per
- * plan Phase 2 Task 5); protocol handling follows the web contract:
+ * Phase 2 chat: streams one conversation with one agent over the shared
+ * gateway, hydrated from `chat.history` and scoped to an active session
+ * (General or a named UUID session — see .superpowers/sdd/
+ * w1-sessions-contract.md). Protocol handling follows the web contract:
  *
  * - `chunk.content` is CUMULATIVE — the full assistant text from the start
  *   of the run on every frame, not a delta (see backend connection_pool
@@ -69,12 +63,32 @@ function ReconnectingBanner() {
 export default function AgentChat() {
   const { agentId, name } = useLocalSearchParams<{ agentId: string; name?: string }>();
   const gateway = useGateway();
+  // Session keys embed the Clerk user id (contract §1); history/session
+  // fetches wait for Clerk to load it.
+  const { user } = useUser();
+  const userId = user?.id ?? null;
   const [items, setItems] = useState<ChatItem[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   // Presentational-only composer state (spec §4): focus ring + auto-grow.
   const [inputFocused, setInputFocused] = useState(false);
   const [inputHeight, setInputHeight] = useState(24);
+  // ---- Sessions (contract §1): null == the legacy "General" session. ----
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [activeSessionLabel, setActiveSessionLabel] = useState<string | null>(null);
+  const [sheetOpen, setSheetOpen] = useState(false);
+  // Ref twin of activeSessionId for the frame handler's session demux —
+  // keeps the subscription effect's dep list untouched.
+  const activeSessionIdRef = useRef<string | null>(null);
+  // Locally-minted session ids with no server-side transcript yet (session
+  // creation is implicit — the session materializes on the first agent_chat
+  // carrying its id, contract §1). History fetch skips these.
+  const freshSessionIdsRef = useRef<Set<string>>(new Set());
+  // ---- History hydration state (contract §2). ----
+  const [historyItems, setHistoryItems] = useState<ChatItem[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [historyNonce, setHistoryNonce] = useState(0);
   const activeRunIdRef = useRef<string | null>(null);
   // Cumulative-stream bookkeeping for the active run: how many chars of the
   // cumulative text earlier segments already display, the current segment
@@ -88,6 +102,16 @@ export default function AgentChat() {
   useEffect(() => {
     return gateway.onChatMessage((msg) => {
       if (!("agent_id" in msg) || msg.agent_id !== agentId) return;
+      // Session demux (contract §5 layer 2), additive above the run gating:
+      // the backend stamps session_id on EVERY named-session frame and NEVER
+      // on General frames. So with a named session active, only frames
+      // carrying ITS id belong here (an untagged frame is a General run
+      // leaking); with General active, only untagged frames do.
+      const frameSessionId =
+        "session_id" in msg && typeof msg.session_id === "string"
+          ? msg.session_id
+          : null;
+      if (frameSessionId !== activeSessionIdRef.current) return;
       const runId = "runId" in msg ? msg.runId : undefined;
       // Only render frames for the run this screen started — background runs
       // (cron, channels) for the same agent stay out of this transcript.
@@ -104,7 +128,12 @@ export default function AgentChat() {
             next[idx] = { ...next[idx], text: segmentText };
             return next;
           }
-          return [...prev, { id: segmentId, role: "assistant", text: segmentText, streaming: true }];
+          return [
+            ...prev,
+            // runId stamp: lets a later history refetch prune this run once
+            // the seeded transcript covers it (dedupe, contract §5).
+            { id: segmentId, role: "assistant", text: segmentText, streaming: true, runId },
+          ];
         });
       } else if (msg.type === "tool_start") {
         // A tool call splits the stream: freeze the current segment, and
@@ -120,6 +149,8 @@ export default function AgentChat() {
             tool: msg.tool,
             args: msg.args,
             toolStatus: "running",
+            // runId stamp for history-refetch dedupe (contract §5).
+            runId,
           },
         ]);
       } else if (msg.type === "tool_end" || msg.type === "tool_error") {
@@ -155,12 +186,115 @@ export default function AgentChat() {
     });
   }, [gateway, agentId]);
 
+  // ---- History hydration (contract §2) ----
+  // Runs on mount, on session switch (activeSessionId), and on reconnect
+  // (isConnected false→true re-fires the effect; the guard skips the false
+  // edge). `sendReq` is referentially stable, so gateway state churn
+  // (reconnectAttempt etc.) doesn't spam refetches.
+  const { sendReq, isConnected } = gateway;
+  useEffect(() => {
+    if (!agentId || !userId || !isConnected) return;
+    if (activeSessionId && freshSessionIdsRef.current.has(activeSessionId)) {
+      // Brand-new locally-minted session: no server transcript exists until
+      // the first send, so there is nothing to fetch (contract §1).
+      setHistoryItems([]);
+      setHistoryLoading(false);
+      setHistoryError(null);
+      return;
+    }
+    let cancelled = false;
+    setHistoryLoading(true);
+    setHistoryError(null);
+    const sessionKey = buildChatSessionKey(agentId, userId, activeSessionId);
+    sendReq("chat.history", { sessionKey, limit: 200 })
+      .then((payload) => {
+        if (cancelled) return;
+        const projected = projectHistoryToChatItems(payload);
+        setHistoryItems(projected.items);
+        // Dedupe (contract §5): a run the seeded transcript now covers must
+        // not double-render from the live list. Ended runs are authoritative
+        // in history, so only the in-flight run keeps its live items — minus
+        // a user bubble the server already persisted mid-run. Client-local
+        // errors (no runId) always survive.
+        setItems((prev) =>
+          prev.filter((it) => {
+            if (!it.runId) return true;
+            if (projected.runIds.has(it.runId)) return false;
+            if (it.runId !== activeRunIdRef.current) return false;
+            if (
+              it.role === "user" &&
+              projected.lastUserText !== null &&
+              it.text === projected.lastUserText
+            )
+              return false;
+            return true;
+          }),
+        );
+        setHistoryLoading(false);
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        // Not latched: the effect re-fires on the next reconnect / session
+        // visit, and the error card's Retry bumps historyNonce.
+        setHistoryLoading(false);
+        setHistoryError(
+          err instanceof Error ? err.message : "Failed to load history",
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentId, userId, activeSessionId, isConnected, sendReq, historyNonce]);
+
+  // ---- Session switching ----
+  const switchSession = useCallback(
+    (sessionId: string | null, label: string | null) => {
+      if (sessionId === activeSessionIdRef.current) return;
+      activeSessionIdRef.current = sessionId;
+      setActiveSessionId(sessionId);
+      setActiveSessionLabel(label);
+      // Any in-flight run belongs to the previous session — its frames are
+      // now dropped by the session demux, so release the busy gate and start
+      // this session's timeline clean (history refetches via the effect).
+      activeRunIdRef.current = null;
+      committedOffsetRef.current = 0;
+      segmentRef.current = 0;
+      lastCumulativeLenRef.current = 0;
+      setBusy(false);
+      setItems([]);
+      setHistoryItems([]);
+      setHistoryError(null);
+    },
+    [],
+  );
+
+  // A different agent means a different session namespace — never carry a
+  // session id across agents (the route component is reused across params).
+  const prevAgentIdRef = useRef(agentId);
+  useEffect(() => {
+    if (prevAgentIdRef.current === agentId) return;
+    prevAgentIdRef.current = agentId;
+    switchSession(null, null);
+  }, [agentId, switchSession]);
+
+  const newSession = useCallback(() => {
+    // Lowercase RFC-4122 v4 only (contract §1): the server validates, and a
+    // mixed-case id would alias-merge two sessions. expo-crypto's randomUUID
+    // is already lowercase; toLowerCase is belt-and-braces.
+    const id = randomUUID().toLowerCase();
+    freshSessionIdsRef.current.add(id);
+    switchSession(id, null);
+    setSheetOpen(false);
+  }, [switchSession]);
+
   const send = useCallback(() => {
     const text = input.trim();
     if (!text || busy || !agentId) return;
     const runId = randomUUID();
     try {
-      gateway.sendChat(agentId, text, runId);
+      // session_id rides only for a named session — omitted for General so
+      // the backend builds the legacy 3-part key (contract §4).
+      gateway.sendChat(agentId, text, runId, activeSessionId ?? undefined);
     } catch (e) {
       setItems((prev) => [
         ...prev,
@@ -176,33 +310,42 @@ export default function AgentChat() {
     committedOffsetRef.current = 0;
     segmentRef.current = 0;
     lastCumulativeLenRef.current = 0;
+    // First send on a minted session materializes it server-side — it now
+    // has a transcript, so later reconnect refetches must hit the server.
+    if (activeSessionId) freshSessionIdsRef.current.delete(activeSessionId);
     setBusy(true);
     setInput("");
-    setItems((prev) => [...prev, { id: `u-${runId}`, role: "user", text }]);
-  }, [input, busy, agentId, gateway]);
+    setItems((prev) => [...prev, { id: `u-${runId}`, role: "user", text, runId }]);
+  }, [input, busy, agentId, gateway, activeSessionId]);
 
   const agentName = name || agentId || "Agent";
+
+  // Seeded history renders first; live frames append after it (contract §2).
+  const allItems = useMemo(
+    () => (historyItems.length > 0 ? [...historyItems, ...items] : items),
+    [historyItems, items],
+  );
 
   // Render-time derivations only — nothing here feeds back into the
   // protocol state above. "Typing" = the run is live but no assistant
   // segment has arrived after the latest user message (spec §7).
   let lastUserIdx = -1;
-  for (let i = items.length - 1; i >= 0; i--) {
-    if (items[i].role === "user") {
+  for (let i = allItems.length - 1; i >= 0; i--) {
+    if (allItems[i].role === "user") {
       lastUserIdx = i;
       break;
     }
   }
-  const runHasAssistant = items
+  const runHasAssistant = allItems
     .slice(lastUserIdx + 1)
     .some((it) => it.role === "assistant");
   const showTyping = busy && !runHasAssistant;
-  const lastItem = items.length > 0 ? items[items.length - 1] : undefined;
+  const lastItem = allItems.length > 0 ? allItems[allItems.length - 1] : undefined;
   // Response groups are anchored at the last user-or-error item; a head
   // rendered past this index belongs to the final group and may pulse.
   let lastAnchorIdx = -1;
-  for (let i = items.length - 1; i >= 0; i--) {
-    if (items[i].role === "user" || items[i].role === "error") {
+  for (let i = allItems.length - 1; i >= 0; i--) {
+    if (allItems[i].role === "user" || allItems[i].role === "error") {
       lastAnchorIdx = i;
       break;
     }
@@ -214,18 +357,59 @@ export default function AgentChat() {
       behavior={Platform.OS === "ios" ? "padding" : undefined}
       keyboardVerticalOffset={90}
     >
-      <Stack.Screen options={{ title: agentName }} />
+      <Stack.Screen
+        options={{
+          // A labeled named session joins the header title (small, ellipsized
+          // by the single-line header); General keeps the bare agent name.
+          title: activeSessionLabel
+            ? `${agentName} — ${activeSessionLabel}`
+            : agentName,
+          headerRight: () => (
+            <Pressable
+              style={styles.headerAction}
+              onPress={() => setSheetOpen(true)}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="Sessions"
+            >
+              <Feather name="layers" size={18} color={colors.mute} />
+            </Pressable>
+          ),
+        }}
+      />
       <FlatList
         ref={listRef}
-        data={items}
+        data={allItems}
         keyExtractor={(m) => m.id}
         contentContainerStyle={[
           styles.list,
-          items.length === 0 && !showTyping && styles.listEmpty,
+          allItems.length === 0 && !showTyping && !historyLoading && styles.listEmpty,
         ]}
         onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: true })}
+        ListHeaderComponent={
+          historyError ? (
+            // History failure (spec §4 error card): empty timeline + retry;
+            // composing stays available.
+            <View style={[styles.errorCard, styles.historyErrorCard]}>
+              <Text style={styles.errorText}>
+                Couldn’t load history — {historyError}
+              </Text>
+              <Pressable
+                onPress={() => setHistoryNonce((n) => n + 1)}
+                accessibilityRole="button"
+                accessibilityLabel="Retry loading history"
+              >
+                <Text style={styles.retryText}>Retry</Text>
+              </Pressable>
+            </View>
+          ) : null
+        }
         ListEmptyComponent={
-          showTyping ? null : <EmptyState agentName={agentName} />
+          historyLoading ? (
+            <TimelineSkeleton />
+          ) : showTyping ? null : (
+            <EmptyState agentName={agentName} />
+          )
         }
         ListFooterComponent={
           showTyping ? (
@@ -240,7 +424,7 @@ export default function AgentChat() {
           ) : null
         }
         renderItem={({ item, index }) => {
-          const prev = index > 0 ? items[index - 1] : undefined;
+          const prev = index > 0 ? allItems[index - 1] : undefined;
           // Assistant segments and tool lines after another assistant/tool
           // item continue the same response group (tight 12px rhythm);
           // everything else starts a new group (40px, spec §1).
@@ -261,7 +445,7 @@ export default function AgentChat() {
             // hitting another assistant segment means it continues one.
             let showHead = true;
             for (let i = index - 1; i >= 0; i--) {
-              const role = items[i].role;
+              const role = allItems[i].role;
               if (role === "assistant") {
                 showHead = false;
                 break;
@@ -374,6 +558,17 @@ export default function AgentChat() {
           </View>
         </View>
       </View>
+      {agentId ? (
+        <SessionsSheet
+          visible={sheetOpen}
+          onClose={() => setSheetOpen(false)}
+          agentId={agentId}
+          userId={userId}
+          activeSessionId={activeSessionId}
+          onSelect={switchSession}
+          onNewSession={newSession}
+        />
+      ) : null}
     </KeyboardAvoidingView>
   );
 }
@@ -427,6 +622,21 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 20,
     color: colors.errorText,
+  },
+  // History-load failure variant: same §4 card, plus the retry affordance
+  // and a bottom gap before the (empty) timeline.
+  historyErrorCard: { marginBottom: spacing.lg, gap: spacing.sm },
+  retryText: {
+    fontFamily: fonts.dmSansMedium,
+    fontSize: 13,
+    lineHeight: 18,
+    color: colors.forest,
+  },
+
+  // Header-right sessions affordance.
+  headerAction: {
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
   },
 
   // Composer (spec §4): floating white card on the cream page.

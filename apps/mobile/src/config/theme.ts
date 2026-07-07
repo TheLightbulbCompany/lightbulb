@@ -91,6 +91,10 @@ const palette = {
   // Roster row overlays (§5)
   rowPressed: "rgba(255,255,255,.85)",
   rowActive: "rgba(255,255,255,.9)",
+  /** Active session row background in the sessions sheet (§5 adaptation). */
+  sessionActive: "rgba(45,138,78,.1)",
+  /** Modal backdrop scrim behind bottom sheets. */
+  scrim: "rgba(26,26,26,.35)",
 
   // Tool-pill status trios (§3)
   tool: {

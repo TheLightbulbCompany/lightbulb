@@ -1,9 +1,18 @@
 import { useAuth } from "@clerk/clerk-expo";
+import Feather from "@expo/vector-icons/Feather";
 import { Redirect, Tabs } from "expo-router";
-import { StyleSheet } from "react-native";
+import { StyleSheet, type ColorValue } from "react-native";
+import type { ComponentProps } from "react";
 
 import { colors, fonts } from "../../config/theme";
 import { GatewayProvider } from "../../providers/gateway";
+
+// Feather glyphs for each top-level tab, mirroring the web sidebar sections.
+function tabIcon(name: ComponentProps<typeof Feather>["name"]) {
+  return function TabIcon({ color, size }: { color: ColorValue; size: number }) {
+    return <Feather name={name} size={size} color={color} />;
+  };
+}
 
 // Tab shell mirroring the web sidebar's top-level sections, gated on Clerk
 // auth (the mobile equivalent of the web's middleware route protection).
@@ -42,10 +51,22 @@ export default function AppLayout() {
           tabBarLabelStyle: { fontFamily: fonts.dmSansMedium, fontSize: 11 },
         }}
       >
-        <Tabs.Screen name="chat" options={{ title: "Chat" }} />
-        <Tabs.Screen name="teams" options={{ title: "Teams" }} />
-        <Tabs.Screen name="control" options={{ title: "Control" }} />
-        <Tabs.Screen name="settings" options={{ title: "Settings" }} />
+        <Tabs.Screen
+          name="chat"
+          options={{ title: "Chat", tabBarIcon: tabIcon("message-circle") }}
+        />
+        <Tabs.Screen
+          name="teams"
+          options={{ title: "Teams", tabBarIcon: tabIcon("inbox") }}
+        />
+        <Tabs.Screen
+          name="control"
+          options={{ title: "Control", tabBarIcon: tabIcon("sliders") }}
+        />
+        <Tabs.Screen
+          name="settings"
+          options={{ title: "Settings", tabBarIcon: tabIcon("settings") }}
+        />
         {/* Chat detail — reachable by navigation only, not a tab. */}
         <Tabs.Screen name="agent/[agentId]" options={{ href: null, title: "Chat" }} />
       </Tabs>

@@ -1,7 +1,9 @@
+import Feather from "@expo/vector-icons/Feather";
 import { randomUUID } from "expo-crypto";
 import { Stack, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  Animated,
   FlatList,
   KeyboardAvoidingView,
   Platform,
@@ -15,7 +17,9 @@ import {
 import { AgentHead } from "../../../components/chat/AgentHead";
 import { EmptyState } from "../../../components/chat/EmptyState";
 import { MessageMarkdown } from "../../../components/chat/MessageMarkdown";
-import { colors, fonts, radii, spacing, type } from "../../../config/theme";
+import { ToolPill, type ToolPillStatus } from "../../../components/chat/ToolPill";
+import { usePulse } from "../../../components/chat/usePulse";
+import { colors, fonts, radii, spacing } from "../../../config/theme";
 import { useGateway } from "../../../providers/gateway";
 
 interface ChatItem {
@@ -23,6 +27,26 @@ interface ChatItem {
   role: "user" | "assistant" | "tool" | "error";
   text: string;
   streaming?: boolean;
+  /** Tool items only: tool name + input args from the tool_start frame. */
+  tool?: string;
+  args?: Record<string, unknown>;
+  /** Tool items only: result text attached when tool_end/tool_error lands. */
+  result?: string;
+  toolStatus?: ToolPillStatus;
+}
+
+/**
+ * Slim reconnecting banner shown above the composer while the gateway
+ * socket is down (spec §4): amber well with a pulsing dot.
+ */
+function ReconnectingBanner() {
+  const pulse = usePulse(true, 0.3, 700);
+  return (
+    <View style={styles.banner}>
+      <Animated.View style={[styles.bannerDot, { opacity: pulse }]} />
+      <Text style={styles.bannerText}>Reconnecting…</Text>
+    </View>
+  );
 }
 
 /**
@@ -48,6 +72,9 @@ export default function AgentChat() {
   const [items, setItems] = useState<ChatItem[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  // Presentational-only composer state (spec §4): focus ring + auto-grow.
+  const [inputFocused, setInputFocused] = useState(false);
+  const [inputHeight, setInputHeight] = useState(24);
   const activeRunIdRef = useRef<string | null>(null);
   // Cumulative-stream bookkeeping for the active run: how many chars of the
   // cumulative text earlier segments already display, the current segment
@@ -86,8 +113,33 @@ export default function AgentChat() {
         segmentRef.current += 1;
         setItems((prev) => [
           ...prev.map((it) => (it.streaming ? { ...it, streaming: false } : it)),
-          { id: `${msg.toolCallId ?? randomUUID()}`, role: "tool", text: `⚙ ${msg.tool}` },
+          {
+            id: `${msg.toolCallId ?? randomUUID()}`,
+            role: "tool",
+            text: `⚙ ${msg.tool}`,
+            tool: msg.tool,
+            args: msg.args,
+            toolStatus: "running",
+          },
         ]);
+      } else if (msg.type === "tool_end" || msg.type === "tool_error") {
+        // Additive presentation wiring only — settles the matching pill's
+        // status and attaches result text for the expansion panel. No
+        // protocol bookkeeping: segment offsets/refs stay untouched
+        // (tool_start owns the stream split).
+        const status: ToolPillStatus =
+          msg.type === "tool_error" ? "error" : "done";
+        const resultText = (msg.result ?? [])
+          .map((block) => block.text)
+          .filter((t): t is string => typeof t === "string" && t.length > 0)
+          .join("\n");
+        setItems((prev) =>
+          prev.map((it) =>
+            it.role === "tool" && it.id === msg.toolCallId
+              ? { ...it, toolStatus: status, result: resultText || it.result }
+              : it,
+          ),
+        );
       } else if (msg.type === "error") {
         setItems((prev) => [
           ...prev,
@@ -234,17 +286,34 @@ export default function AgentChat() {
             );
           }
           if (item.role === "tool") {
-            // A tool line directly after a user bubble opens the response
-            // group, so it takes the group gap rather than the run gap.
+            // Render-time settle: a pill whose tool_end never matched (e.g.
+            // missing toolCallId) must not pulse forever — once the run is
+            // over it reads as done.
+            const rawStatus = item.toolStatus ?? "running";
+            const pillStatus: ToolPillStatus =
+              rawStatus === "running" && !busy ? "done" : rawStatus;
+            // Gap rhythm (spec §3): consecutive pills cluster at 8px; a pill
+            // opening a response group — directly after a user bubble OR an
+            // error card — takes the 40px group gap; a pill continuing an
+            // assistant run takes the 12px run gap.
             return (
               <View
-                style={[
-                  styles.toolLine,
-                  index > 0 &&
-                    (prev?.role === "user" ? styles.groupGap : styles.runGap),
-                ]}
+                style={
+                  index > 0
+                    ? prev?.role === "tool"
+                      ? styles.pillGap
+                      : prev?.role === "assistant"
+                        ? styles.runGap
+                        : styles.groupGap
+                    : undefined
+                }
               >
-                <Text style={styles.toolText}>{item.text}</Text>
+                <ToolPill
+                  tool={item.tool ?? item.text}
+                  status={pillStatus}
+                  args={item.args}
+                  result={item.result}
+                />
               </View>
             );
           }
@@ -256,23 +325,54 @@ export default function AgentChat() {
           );
         }}
       />
-      <View style={styles.composer}>
-        <TextInput
-          style={styles.input}
-          placeholder={gateway.isConnected ? "Message" : "Reconnecting…"}
-          placeholderTextColor={colors.muted}
-          value={input}
-          onChangeText={setInput}
-          multiline
-          editable={gateway.isConnected}
-        />
-        <Pressable
-          style={[styles.sendButton, (busy || !input.trim()) && styles.sendDisabled]}
-          onPress={send}
-          disabled={busy || !input.trim()}
-        >
-          <Text style={styles.sendText}>{busy ? "…" : "Send"}</Text>
-        </Pressable>
+      {/* Composer (spec §4). Same logic as before — identical disabled
+          conditions and send semantics; only the presentation changed. No
+          stop button v1: the screen has no abort path (the mobile gateway
+          exposes no chat.abort helper yet). Attach is non-functional v1 —
+          no upload flow on mobile. */}
+      <View style={styles.composerOuter}>
+        {!gateway.isConnected && <ReconnectingBanner />}
+        <View style={[styles.card, inputFocused && styles.cardFocused]}>
+          <View style={styles.inputZone}>
+            <TextInput
+              style={[styles.input, { height: inputHeight }]}
+              placeholder="Ask anything"
+              placeholderTextColor={colors.placeholder}
+              value={input}
+              onChangeText={setInput}
+              multiline
+              editable={gateway.isConnected}
+              onFocus={() => setInputFocused(true)}
+              onBlur={() => setInputFocused(false)}
+              onContentSizeChange={(e) =>
+                setInputHeight(
+                  Math.min(200, Math.max(24, e.nativeEvent.contentSize.height)),
+                )
+              }
+            />
+          </View>
+          <View style={styles.rail}>
+            <View style={styles.attachButton}>
+              <Feather name="plus" size={16} color={colors.mute} />
+            </View>
+            <Pressable
+              style={[
+                styles.sendButton,
+                (busy || !input.trim()) && styles.sendDisabled,
+              ]}
+              onPress={send}
+              disabled={busy || !input.trim()}
+              accessibilityRole="button"
+              accessibilityLabel="Send"
+            >
+              <Feather
+                name="arrow-up"
+                size={16}
+                color={busy || !input.trim() ? colors.placeholder : colors.white}
+              />
+            </Pressable>
+          </View>
+        </View>
       </View>
     </KeyboardAvoidingView>
   );
@@ -287,9 +387,11 @@ const styles = StyleSheet.create({
     paddingBottom: 32,
   },
   listEmpty: { flexGrow: 1 },
-  // 40px between message groups (space-y-10), 12px within a response run.
+  // 40px between message groups (space-y-10), 12px within a response run,
+  // 8px between consecutive tool pills in a cluster (spec §3 gap-8).
   groupGap: { marginTop: 40 },
   runGap: { marginTop: spacing.md },
+  pillGap: { marginTop: spacing.sm },
 
   // USER (spec §1): right-aligned cream bubble, ink text, squared-off
   // bottom-right corner.
@@ -312,10 +414,6 @@ const styles = StyleSheet.create({
   // ASSISTANT (spec §1): flat on the page — no bubble.
   assistantGroup: { alignSelf: "flex-start", maxWidth: "85%" },
 
-  // Tool line — placeholder visuals until the P3 tool-pill pass.
-  toolLine: { alignSelf: "flex-start", paddingVertical: spacing.xs },
-  toolText: { ...type.caption },
-
   // Error card (spec §4): full-width tinted frame.
   errorCard: {
     backgroundColor: colors.errorBg,
@@ -331,40 +429,96 @@ const styles = StyleSheet.create({
     color: colors.errorText,
   },
 
-  // Composer — logic and visuals unchanged (P3 restyles this).
-  composer: {
-    flexDirection: "row",
-    alignItems: "flex-end",
-    gap: spacing.sm,
-    padding: spacing.md,
+  // Composer (spec §4): floating white card on the cream page.
+  composerOuter: {
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.lg,
     backgroundColor: colors.cream,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.border,
   },
-  input: {
-    flex: 1,
-    maxHeight: 120,
+  // Web shadow `0 1px 2px rgba(26,26,26,.03), 0 4px 16px rgba(26,26,26,.05)`
+  // — RN takes one shadow, so the softer/larger layer wins (+ elevation).
+  card: {
     backgroundColor: colors.white,
+    borderRadius: radii.xl,
     borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: radii.lg,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
+    borderColor: colors.edge,
+    shadowColor: colors.ink,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.05,
+    shadowRadius: 16,
+    elevation: 3,
+  },
+  // Focused: forest border + slightly stronger shadow (web: 0 6px 24px .08).
+  cardFocused: {
+    borderColor: colors.forest,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.08,
+    shadowRadius: 24,
+    elevation: 4,
+  },
+  inputZone: { paddingHorizontal: spacing.lg, paddingTop: spacing.md },
+  // Height is driven by onContentSizeChange (auto-grow 24–200); zero the
+  // platform-default vertical padding so the measured height is the text's.
+  input: {
     fontFamily: fonts.dmSans,
     fontSize: 15,
+    lineHeight: 24,
     color: colors.ink,
+    paddingTop: 0,
+    paddingBottom: 0,
+    textAlignVertical: "top",
+  },
+  rail: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+    paddingHorizontal: spacing.sm,
+    paddingBottom: spacing.sm,
+    paddingTop: 6,
+  },
+  // Attach affordance — disabled/non-functional v1, rendered at 40%.
+  attachButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    opacity: 0.4,
   },
   sendButton: {
+    marginLeft: "auto",
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     backgroundColor: colors.forest,
-    borderRadius: radii.lg,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.sm,
+    alignItems: "center",
+    justifyContent: "center",
   },
-  sendDisabled: { opacity: 0.4 },
-  sendText: {
-    color: colors.white,
+  sendDisabled: { backgroundColor: colors.creamPressed },
+
+  // Disconnected banner (spec §4).
+  banner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    backgroundColor: colors.bannerBg,
+    borderWidth: 1,
+    borderColor: colors.bannerBorder,
+    borderRadius: radii.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 6,
+    marginBottom: spacing.sm,
+  },
+  bannerDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: colors.connectingYellow,
+  },
+  bannerText: {
     fontFamily: fonts.dmSansMedium,
-    fontSize: 15,
-    lineHeight: 22,
+    fontSize: 12,
+    lineHeight: 16,
+    color: colors.bannerText,
   },
 });

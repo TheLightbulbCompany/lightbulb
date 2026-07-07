@@ -22,6 +22,8 @@ const palette = {
   userBubble: "#f0ebe2",
   /** Inline code / chip background. */
   chip: "#e8e3d9",
+  /** Pressed sunken header (§3) / disabled send-button fill (§4). */
+  creamPressed: "#ece7dc",
   /** Fenced code block body background. */
   codeBg: "#f8f5f0",
   /** Loading skeleton fill (§7). */

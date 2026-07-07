@@ -172,6 +172,11 @@ jobs:
         TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         ISOL8_CALLBACK_URL: https://dev.isol8.co/auth/desktop-callback
+        # Compile-time targets for the native node-host + pairing client.
+        # These default to dev in lib.rs, but set them explicitly so the
+        # dev/prod split is visible here and can't silently regress.
+        ISOL8_API_BASE: https://api-dev.isol8.co
+        ISOL8_WS_URL: wss://ws-dev.isol8.co
     - name: Build, sign + notarize DMG (headless)
       run: |-
         set -euo pipefail
@@ -355,6 +360,12 @@ jobs:
         TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         ISOL8_CALLBACK_URL: https://isol8.co/auth/desktop-callback
+        # Point the native node-host + pairing client at PROD. Without these
+        # the compile-time defaults in lib.rs fall back to dev, so the prod
+        # app's "computer access" half pairs against dev while the chat UI +
+        # Friday run on prod — they never connect.
+        ISOL8_API_BASE: https://api.isol8.co
+        ISOL8_WS_URL: wss://ws.isol8.co
     - name: Build, sign + notarize DMG (headless)
       run: |-
         set -euo pipefail

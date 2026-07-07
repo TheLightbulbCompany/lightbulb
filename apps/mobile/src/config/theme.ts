@@ -88,6 +88,12 @@ const palette = {
   bannerBorder: "#ede3c4",
   bannerText: "#8a7340",
 
+  // Footer user card (§5 footer) — initials avatar
+  /** Initials-avatar fill (§5 footer / settings profile). */
+  avatarBg: "#d4cfc4",
+  /** Initials-avatar text (§5 footer / settings profile). */
+  avatarText: "#5a5549",
+
   // Roster row overlays (§5)
   rowPressed: "rgba(255,255,255,.85)",
   rowActive: "rgba(255,255,255,.9)",

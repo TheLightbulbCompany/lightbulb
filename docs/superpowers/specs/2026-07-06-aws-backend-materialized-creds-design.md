@@ -161,6 +161,18 @@ revocation below, which is what actually cuts access.
   Bedrock SDK default chain is untouched, and stays `isol8-readonly` even at
   PowerUser tier — the plugin pins that name in the image; renaming is
   deferred to the next scheduled image bump (cosmetic).
+- **Tamper analysis (the files are agent-writable — acceptable):** editing
+  `credential_process` gains nothing (the agent already has arbitrary exec as
+  itself); reading the token grants exactly the access the agent is entitled
+  to (cross-tenant impossible — each container's EFS access point roots at
+  `/users/{owner}`, other owners' files are not mounted); corrupting a file is
+  self-harm, repaired by deterministic re-materialization. The materializer is
+  the **single writer** (verified: config patcher touches only `openclaw.json`,
+  the reconciler skips materializer files, reprovision preserves EFS). The
+  config file also doubles as the opt-in signal: profile present ⇔ connected
+  (the plugin injects `AWS_PROFILE` only when the header exists). A read-only
+  mount split (RO config/helper + RW cache) was considered and rejected: extra
+  access-point plumbing to prevent tampering that escalates nothing.
 
 ### 3. Trust — a stable source principal, not the raw backend role
 
@@ -191,6 +203,14 @@ Sites that change in lockstep (all reference the same helper):
   principal is a pure `!Ref`); README drift fix (it still claims two tiers).
 
 ### 4. The token rail (the one genuinely new security surface)
+
+**Why an endpoint exists at all:** `sts:AssumeRole` must be SigV4-signed with
+existing AWS credentials, and the agent's exec env has none — by design (the
+sanitizer; v1's root cause). The backend is the only component holding both an
+AWS identity (task role → connector-source) and the ExternalId, so it is the
+identity bridge. The only unsigned STS call is `AssumeRoleWithWebIdentity` —
+i.e. removing the endpoint is exactly the OIDC endgame in Rejected
+alternatives, deferred deliberately.
 
 - **Mint at connect** (`aws-complete`): 32 random bytes, urlsafe. Store only a
   SHA-256 hash, added to the existing Secrets Manager credential JSON

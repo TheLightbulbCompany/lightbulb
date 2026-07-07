@@ -146,6 +146,15 @@ export default function AgentChat() {
     .some((it) => it.role === "assistant");
   const showTyping = busy && !runHasAssistant;
   const lastItem = items.length > 0 ? items[items.length - 1] : undefined;
+  // Response groups are anchored at the last user-or-error item; a head
+  // rendered past this index belongs to the final group and may pulse.
+  let lastAnchorIdx = -1;
+  for (let i = items.length - 1; i >= 0; i--) {
+    if (items[i].role === "user" || items[i].role === "error") {
+      lastAnchorIdx = i;
+      break;
+    }
+  }
 
   return (
     <KeyboardAvoidingView
@@ -194,6 +203,19 @@ export default function AgentChat() {
             );
           }
           if (item.role === "assistant") {
+            // The head belongs to the FIRST assistant segment of the group:
+            // walk back past interleaved tool lines — hitting a user/error
+            // anchor (or the list start) means this segment opens the group;
+            // hitting another assistant segment means it continues one.
+            let showHead = true;
+            for (let i = index - 1; i >= 0; i--) {
+              const role = items[i].role;
+              if (role === "assistant") {
+                showHead = false;
+                break;
+              }
+              if (role === "user" || role === "error") break;
+            }
             return (
               <View
                 style={[
@@ -201,10 +223,10 @@ export default function AgentChat() {
                   index > 0 && (continuesGroup ? styles.runGap : styles.groupGap),
                 ]}
               >
-                {!continuesGroup && (
+                {showHead && (
                   <AgentHead
                     name={agentName}
-                    active={busy && index > lastUserIdx}
+                    active={busy && index > lastAnchorIdx}
                   />
                 )}
                 <MessageMarkdown text={item.text} />
@@ -212,8 +234,16 @@ export default function AgentChat() {
             );
           }
           if (item.role === "tool") {
+            // A tool line directly after a user bubble opens the response
+            // group, so it takes the group gap rather than the run gap.
             return (
-              <View style={[styles.toolLine, index > 0 && styles.runGap]}>
+              <View
+                style={[
+                  styles.toolLine,
+                  index > 0 &&
+                    (prev?.role === "user" ? styles.groupGap : styles.runGap),
+                ]}
+              >
                 <Text style={styles.toolText}>{item.text}</Text>
               </View>
             );

@@ -3,9 +3,15 @@ import { AccessibilityInfo, Animated } from "react-native";
 
 /**
  * Gentle opacity loop for "activity" affordances (thinking glyph, skeleton
- * shimmer). Sits at 1 (static) when disabled or when the user prefers
- * reduced motion. `delayMs` staggers the loop start (§7 skeleton rows).
+ * shimmer). Sits at 1 (static) when disabled. When the user prefers reduced
+ * motion, an active pulse holds a static dimmed opacity instead of animating
+ * so "thinking" stays visually distinct from idle. `delayMs` staggers the
+ * loop start (§7 skeleton rows).
  */
+
+// Static opacity for active-but-not-animating (reduce motion): dimmed enough
+// to read as "busy", bright enough to stay legible.
+const REDUCE_MOTION_ACTIVE_OPACITY = 0.55;
 export function usePulse(
   enabled: boolean,
   dim: number,
@@ -22,7 +28,11 @@ export function usePulse(
     let anim: Animated.CompositeAnimation | undefined;
     AccessibilityInfo.isReduceMotionEnabled()
       .then((reduceMotion) => {
-        if (cancelled || reduceMotion) return;
+        if (cancelled) return;
+        if (reduceMotion) {
+          value.setValue(REDUCE_MOTION_ACTIVE_OPACITY);
+          return;
+        }
         anim = Animated.sequence([
           Animated.delay(delayMs),
           Animated.loop(

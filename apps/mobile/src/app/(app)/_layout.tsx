@@ -61,7 +61,14 @@ export default function AppLayout() {
         />
         <Tabs.Screen
           name="control"
-          options={{ title: "Control", tabBarIcon: tabIcon("sliders") }}
+          // The control tab is a nested Stack (control/_layout.tsx); it owns
+          // its own per-panel headers, so suppress the Tabs header to avoid
+          // stacking two.
+          options={{
+            title: "Control",
+            tabBarIcon: tabIcon("sliders"),
+            headerShown: false,
+          }}
         />
         <Tabs.Screen
           name="settings"

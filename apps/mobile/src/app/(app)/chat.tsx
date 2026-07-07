@@ -1,7 +1,6 @@
 import { router } from "expo-router";
-import { useEffect, useRef, type ReactElement } from "react";
+import { type ReactElement } from "react";
 import {
-  AccessibilityInfo,
   Animated,
   FlatList,
   Pressable,
@@ -16,49 +15,8 @@ import {
 } from "@isol8/shared";
 
 import { colors, fonts, radii, spacing, type } from "../../config/theme";
+import { usePulse } from "../../components/chat/usePulse";
 import { useGateway } from "../../providers/gateway";
-
-// Opacity loop shared by the connecting-dot and skeleton pulses. Sits at 1
-// (static) when disabled or when the user prefers reduced motion.
-function usePulse(enabled: boolean, dim: number) {
-  const value = useRef(new Animated.Value(1)).current;
-  useEffect(() => {
-    if (!enabled) {
-      value.setValue(1);
-      return;
-    }
-    let cancelled = false;
-    let loop: Animated.CompositeAnimation | undefined;
-    AccessibilityInfo.isReduceMotionEnabled()
-      .then((reduceMotion) => {
-        if (cancelled || reduceMotion) return;
-        loop = Animated.loop(
-          Animated.sequence([
-            Animated.timing(value, {
-              toValue: dim,
-              duration: 700,
-              useNativeDriver: true,
-            }),
-            Animated.timing(value, {
-              toValue: 1,
-              duration: 700,
-              useNativeDriver: true,
-            }),
-          ]),
-        );
-        loop.start();
-      })
-      .catch(() => {
-        // Best-effort: no reduced-motion signal means we simply don't pulse.
-      });
-    return () => {
-      cancelled = true;
-      loop?.stop();
-      value.setValue(1);
-    };
-  }, [enabled, dim, value]);
-  return value;
-}
 
 // Slim connection-state row above the roster (web HealthIndicator, spec §5).
 function HealthRow({

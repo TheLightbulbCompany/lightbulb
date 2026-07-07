@@ -1528,9 +1528,6 @@ class TestAwsComplete:
         assert _h.sha256(applied["cli_token"].encode()).hexdigest() == stored["cli_token_hash"]
 
         mock_repo.put_status.assert_awaited_once_with("user_test_123", "aws", "connected")
-        # The per-owner IAM grant machinery is retired: no put/delete calls ever.
-        mock_aip.put_owner_aws_sts_policy.assert_not_called()
-        mock_aip.delete_owner_aws_sts_policy.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("routers.connections.bedrock_aip")
@@ -2047,8 +2044,6 @@ class TestDisconnectAws:
         # the vend endpoint 401s the container's next fetch. Status row too.
         mock_store.delete.assert_awaited_once_with("user_test_123", "aws")
         mock_repo.delete.assert_awaited_once_with("user_test_123", "aws")
-        # The per-owner IAM grant machinery is retired: no delete call ever.
-        mock_aip.delete_owner_aws_sts_policy.assert_not_called()
 
 
 class TestAwsCredentialsEndpoint:

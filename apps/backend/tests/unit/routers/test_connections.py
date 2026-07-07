@@ -2079,3 +2079,150 @@ class TestDisconnectAws:
         # Generic secret + status row removal still happens.
         mock_store.delete.assert_awaited_once_with("user_test_123", "aws")
         mock_repo.delete.assert_awaited_once_with("user_test_123", "aws")
+
+
+class TestAwsCredentialsEndpoint:
+    """POST /api/v1/connections/aws/credentials — the container helper's
+    credential_process endpoint. NO Clerk auth: bearer token minted at
+    aws-complete, validated against the SHA-256 hash in the SM credential."""
+
+    _TOKEN = "tok_plain_abc"
+    # sha256("tok_plain_abc") — precomputed so tests don't re-derive via the
+    # same helper they're testing.
+    _TOKEN_HASH = "18197ef8f0b27b7cbf4f3acfa60448a622594f7a20279c4fa6a0cfded6a605cc"
+
+    def _stored(self):
+        return {
+            "role_arn": "arn:aws:iam::123456789012:role/IsolReadOnly",
+            "external_id": "ext_abc",
+            "region": "us-east-1",
+            "cli_token_hash": self._TOKEN_HASH,
+        }
+
+    def _sts_response(self):
+        from datetime import datetime, timezone
+
+        return {
+            "Credentials": {
+                "AccessKeyId": "ASIATEST",
+                "SecretAccessKey": "secret",
+                "SessionToken": "session",
+                "Expiration": datetime(2099, 1, 1, tzinfo=timezone.utc),
+            }
+        }
+
+    @pytest.mark.asyncio
+    @patch("routers.connections._sts_client")
+    @patch("routers.connections.integrations_repo")
+    @patch("routers.connections.integration_secret_store")
+    async def test_happy_path_returns_credential_process_json(self, mock_store, mock_repo, mock_sts, async_client):
+        mock_store.get = AsyncMock(return_value=self._stored())
+        mock_repo.get = AsyncMock(return_value={"status": "connected"})
+        mock_sts.return_value.assume_role.return_value = self._sts_response()
+
+        resp = await async_client.post(
+            "/api/v1/connections/aws/credentials",
+            json={"owner_id": "org_x"},
+            headers={"Authorization": f"Bearer {self._TOKEN}"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["Version"] == 1
+        assert body["AccessKeyId"] == "ASIATEST"
+        assert body["SecretAccessKey"] == "secret"
+        assert body["SessionToken"] == "session"
+        assert body["Expiration"].startswith("2099-01-01T00:00:00")
+
+        kwargs = mock_sts.return_value.assume_role.call_args.kwargs
+        assert kwargs["RoleArn"] == "arn:aws:iam::123456789012:role/IsolReadOnly"
+        assert kwargs["ExternalId"] == "ext_abc"
+        assert kwargs["DurationSeconds"] == 3600
+        assert kwargs["RoleSessionName"].startswith("isol8-")
+
+    @pytest.mark.asyncio
+    async def test_missing_bearer_is_401(self, async_client):
+        resp = await async_client.post("/api/v1/connections/aws/credentials", json={"owner_id": "org_x"})
+        assert resp.status_code == 401
+        assert resp.json()["detail"] == "missing_or_malformed_authorization"
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.integration_secret_store")
+    async def test_wrong_token_is_401(self, mock_store, async_client):
+        mock_store.get = AsyncMock(return_value=self._stored())
+        resp = await async_client.post(
+            "/api/v1/connections/aws/credentials",
+            json={"owner_id": "org_x"},
+            headers={"Authorization": "Bearer wrong"},
+        )
+        assert resp.status_code == 401
+        assert resp.json()["detail"] == "invalid_token"
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.integration_secret_store")
+    async def test_no_connection_record_is_401(self, mock_store, async_client):
+        mock_store.get = AsyncMock(return_value=None)
+        resp = await async_client.post(
+            "/api/v1/connections/aws/credentials",
+            json={"owner_id": "org_x"},
+            headers={"Authorization": f"Bearer {self._TOKEN}"},
+        )
+        assert resp.status_code == 401
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.integrations_repo")
+    @patch("routers.connections.integration_secret_store")
+    async def test_disconnected_status_is_401(self, mock_store, mock_repo, async_client):
+        # Revocation: SM secret may briefly outlive the status row (or vice
+        # versa); either missing/non-connected side must 401.
+        mock_store.get = AsyncMock(return_value=self._stored())
+        mock_repo.get = AsyncMock(return_value=None)
+        resp = await async_client.post(
+            "/api/v1/connections/aws/credentials",
+            json={"owner_id": "org_x"},
+            headers={"Authorization": f"Bearer {self._TOKEN}"},
+        )
+        assert resp.status_code == 401
+
+    @pytest.mark.asyncio
+    @patch("routers.connections._sts_client")
+    @patch("routers.connections.integrations_repo")
+    @patch("routers.connections.integration_secret_store")
+    async def test_sts_failure_is_502(self, mock_store, mock_repo, mock_sts, async_client):
+        mock_store.get = AsyncMock(return_value=self._stored())
+        mock_repo.get = AsyncMock(return_value={"status": "connected"})
+        mock_sts.return_value.assume_role.side_effect = RuntimeError("boom")
+        resp = await async_client.post(
+            "/api/v1/connections/aws/credentials",
+            json={"owner_id": "org_x"},
+            headers={"Authorization": f"Bearer {self._TOKEN}"},
+        )
+        assert resp.status_code == 502
+
+    @pytest.mark.asyncio
+    @patch("routers.connections._sts_client")
+    @patch("routers.connections.integrations_repo")
+    @patch("routers.connections.integration_secret_store")
+    async def test_rate_limited_after_burst(self, mock_store, mock_repo, mock_sts, async_client):
+        from routers import connections as conn_mod
+
+        mock_store.get = AsyncMock(return_value=self._stored())
+        mock_repo.get = AsyncMock(return_value={"status": "connected"})
+        mock_sts.return_value.assume_role.return_value = self._sts_response()
+        conn_mod._aws_cli_rate_buckets.clear()
+        try:
+            for _ in range(conn_mod._AWS_CLI_RATE_LIMIT_PER_MINUTE):
+                ok = await async_client.post(
+                    "/api/v1/connections/aws/credentials",
+                    json={"owner_id": "org_rate"},
+                    headers={"Authorization": f"Bearer {self._TOKEN}"},
+                )
+                assert ok.status_code == 200
+            over = await async_client.post(
+                "/api/v1/connections/aws/credentials",
+                json={"owner_id": "org_rate"},
+                headers={"Authorization": f"Bearer {self._TOKEN}"},
+            )
+            assert over.status_code == 429
+            assert over.headers["Retry-After"] == "60"
+        finally:
+            conn_mod._aws_cli_rate_buckets.clear()

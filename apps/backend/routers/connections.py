@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
 import re
 import subprocess
+import time
+from collections import defaultdict, deque
 
+import boto3
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
@@ -13,6 +18,7 @@ from core.auth import AuthContext, get_current_user, require_org_admin, resolve_
 from core.billing import bedrock_aip
 from core.config import settings
 from core.dynamodb import run_in_thread
+from core.observability.metrics import put_metric
 from core.repositories import google_accounts_repo, integrations_repo
 from core.services import config_patcher
 from core.services.credentials import (
@@ -84,6 +90,10 @@ class AwsCompleteBody(BaseModel):
     region: str | None = None
 
 
+class AwsCredentialsBody(BaseModel):
+    owner_id: str
+
+
 # A concrete IAM role ARN, capturing the 12-digit owning account. Deliberately
 # strict: the role-path portion is the IAM name charset (letters, digits and
 # +=,.@-_ plus / for paths), which excludes wildcards — so ``role/*`` is
@@ -98,6 +108,36 @@ _ROLE_ARN_RE = re.compile(r"^arn:aws:iam::(\d{12}):role/[\w+=,.@/-]+$")
 # profile/section. Matched with fullmatch so a trailing newline can't slip past
 # the ``$`` anchor.
 _REGION_RE = re.compile(r"^[a-z0-9-]+$")
+
+# --- container credential_process endpoint machinery -------------------------
+# The helper on the owner's EFS calls POST /aws/credentials with a per-owner
+# bearer token (minted at aws-complete; only its SHA-256 hash is retained in
+# the SM credential). Legitimate use is ~1 fetch per 50 minutes of active use,
+# so the per-owner limit is generous. In-process sliding window, same pattern
+# and caveats as routers/hooks_proxy.py (per-task buckets; fine at
+# desiredCount=1).
+_AWS_CLI_RATE_LIMIT_PER_MINUTE = 10
+_aws_cli_rate_buckets: dict[str, deque[float]] = defaultdict(deque)
+
+
+def _check_aws_cli_rate_limit(owner_id: str) -> bool:
+    now = time.monotonic()
+    cutoff = now - 60.0
+    q = _aws_cli_rate_buckets[owner_id]
+    while q and q[0] < cutoff:
+        q.popleft()
+    if len(q) >= _AWS_CLI_RATE_LIMIT_PER_MINUTE:
+        return False
+    q.append(now)
+    return True
+
+
+def _hash_cli_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _sts_client():
+    return boto3.client("sts", region_name=settings.AWS_REGION)
 
 
 async def _self_account_role_is_pinned(role_arn: str, owner_id: str, external_id: str) -> bool:
@@ -225,6 +265,68 @@ async def list_connections(auth: AuthContext = Depends(get_current_user)):
             }
         )
     return {"connections": connections}
+
+
+@router.post("/aws/credentials")
+async def aws_credentials(body: AwsCredentialsBody, request: Request):
+    """credential_process endpoint for the container helper. NO Clerk auth —
+    the caller is the owner's container; identity is the per-owner bearer
+    token minted at aws-complete, compared in constant time against the
+    SHA-256 hash retained in the SM credential. The ExternalId never leaves
+    this process. Every fetch is metered + logged (the audit trail the old
+    EcsContainer design could not offer)."""
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="missing_or_malformed_authorization")
+    presented = auth_header[len("Bearer ") :]
+
+    rec = await integration_secret_store.get(body.owner_id, "aws")
+    expected_hash = (rec or {}).get("cli_token_hash") or ""
+    if not expected_hash or not hmac.compare_digest(_hash_cli_token(presented), expected_hash):
+        put_metric("connections.aws_credentials.fetch", dimensions={"result": "unauthorized"})
+        raise HTTPException(status_code=401, detail="invalid_token")
+
+    status_row = await integrations_repo.get(body.owner_id, "aws")
+    if not status_row or status_row.get("status") != "connected":
+        put_metric("connections.aws_credentials.fetch", dimensions={"result": "unauthorized"})
+        raise HTTPException(status_code=401, detail="invalid_token")
+
+    # Rate limit AFTER auth so unauthenticated spray can't fill the bucket.
+    if not _check_aws_cli_rate_limit(body.owner_id):
+        put_metric("connections.aws_credentials.fetch", dimensions={"result": "rate_limited"})
+        return Response(
+            status_code=429,
+            headers={"Retry-After": "60"},
+            content=b'{"detail":"rate_limited"}',
+            media_type="application/json",
+        )
+
+    try:
+        # RoleSessionName charset is [\w+=,.@-]; owner ids (org_/user_ + base62)
+        # fit. Truncate to the 64-char API limit.
+        session_name = f"isol8-{body.owner_id}"[:64]
+        resp = await run_in_thread(
+            _sts_client().assume_role,
+            RoleArn=rec["role_arn"],
+            RoleSessionName=session_name,
+            ExternalId=rec["external_id"],
+            DurationSeconds=3600,
+        )
+    except Exception:
+        logger.exception("aws credential vend failed for owner=%s", body.owner_id)
+        put_metric("connections.aws_credentials.fetch", dimensions={"result": "sts_error"})
+        raise HTTPException(status_code=502, detail="credential_vend_failed")
+
+    creds = resp["Credentials"]
+    put_metric("connections.aws_credentials.fetch", dimensions={"result": "ok"})
+    logger.info("aws credentials vended", extra={"owner_id": body.owner_id})
+    return {
+        "Version": 1,
+        "AccessKeyId": creds["AccessKeyId"],
+        "SecretAccessKey": creds["SecretAccessKey"],
+        "SessionToken": creds["SessionToken"],
+        "Expiration": creds["Expiration"].isoformat(),
+    }
 
 
 @router.post("/{provider}")

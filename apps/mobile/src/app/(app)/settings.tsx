@@ -67,9 +67,20 @@ type BillingState =
 // change made on the web is reflected next time the tab is opened.
 // ---------------------------------------------------------------------------
 
-function useBillingData() {
+function useBillingData(orgRestricted: boolean) {
   const { getToken } = useAuth();
-  const api = useMemo(() => createApiClient(makeAdapter(getToken)), [getToken]);
+  // clerk-expo hands out a NEW getToken reference on every render. Routing it
+  // through a ref (gateway.tsx getTokenRef pattern) keeps the api client and
+  // `load` referentially stable, so useFocusEffect fires exactly once per
+  // focus instead of looping load → setState → new getToken → reload forever.
+  const getTokenRef = useRef(getToken);
+  getTokenRef.current = getToken;
+  const api = useMemo(
+    () => createApiClient(makeAdapter(() => getTokenRef.current())),
+    [],
+  );
+  const orgRestrictedRef = useRef(orgRestricted);
+  orgRestrictedRef.current = orgRestricted;
   const [state, setState] = useState<BillingState>({ kind: "loading" });
   // Monotonic load counter: a stale in-flight response from a previous focus
   // never clobbers a newer one.
@@ -78,6 +89,12 @@ function useBillingData() {
   const load = useCallback(async () => {
     const seq = loadSeq.current + 1;
     loadSeq.current = seq;
+    // Client-side org gate: a non-admin org member would only get a 403 back,
+    // so skip the network round-trips entirely (contract §3).
+    if (orgRestrictedRef.current) {
+      setState({ kind: "restricted" });
+      return;
+    }
     setState((prev) => (prev.kind === "ready" ? prev : { kind: "loading" }));
     try {
       const account = (await api.get("/billing/account")) as BillingAccount;
@@ -139,7 +156,8 @@ function trialEndLabel(trialEndSec: number): string {
 
 function statusChipLabel(account: BillingAccount): string | null {
   const status = account.subscription_status;
-  if (!status) return null;
+  // 200 with no Stripe status yet = pre-subscribe account (contract §3).
+  if (!status) return "No active subscription";
   if (status === "trialing") {
     if (account.trial_end == null) return "Trial";
     const days = trialDaysLeft(account.trial_end);
@@ -184,13 +202,16 @@ function providerLabel(
 }
 
 function initialsOf(name: string | null | undefined, email: string): string {
-  const src = (name ?? "").trim() || email.trim();
-  if (!src) return "?";
-  const parts = src.split(/\s+/).filter(Boolean);
+  const trimmedName = (name ?? "").trim();
+  if (!trimmedName) {
+    // Name-less user: fall back to the email's first two characters.
+    const trimmedEmail = email.trim();
+    return trimmedEmail ? trimmedEmail.slice(0, 2).toUpperCase() : "?";
+  }
+  const parts = trimmedName.split(/\s+/).filter(Boolean);
   const first = parts[0]?.[0] ?? "";
   const second = parts.length > 1 ? (parts[parts.length - 1]?.[0] ?? "") : "";
-  const initials = `${first}${second}` || src.slice(0, 2);
-  return initials.toUpperCase();
+  return `${first}${second}`.toUpperCase();
 }
 
 // ---------------------------------------------------------------------------
@@ -233,15 +254,16 @@ export default function Settings() {
   // Org context is optional: personal accounts render no org line, and if the
   // hook has nothing loaded we simply skip it (contract §3 mirrors web).
   const { organization, membership } = useOrganization();
-  const { state, retry } = useBillingData();
-
-  const email = user?.primaryEmailAddress?.emailAddress ?? "";
-  const fullName = user?.fullName ?? null;
 
   // Web gating: org member without org:admin sees the restricted state
   // instead of billing details, matching the 403 the backend would return.
   const orgRestricted =
     organization != null && membership != null && membership.role !== "org:admin";
+  const { state, retry } = useBillingData(orgRestricted);
+
+  const email = user?.primaryEmailAddress?.emailAddress ?? "";
+  const fullName = user?.fullName ?? null;
+
   const restricted = orgRestricted || state.kind === "restricted";
 
   const confirmSignOut = useCallback(() => {
@@ -339,7 +361,11 @@ export default function Settings() {
             </Text>
             <Text style={styles.captionText}>
               {credits?.balance_dollars != null
-                ? "Prepaid balance for Bedrock inference. Top up on isol8.co."
+                ? // lifecycle_enabled === false ⇒ top-ups unavailable in this
+                  // env; absent/undefined = enabled (contract §2).
+                  credits.lifecycle_enabled === false
+                  ? "Prepaid balance for Bedrock inference."
+                  : "Prepaid balance for Bedrock inference. Top up on isol8.co."
                 : "Balance unavailable right now."}
             </Text>
           </Card>

@@ -25,6 +25,7 @@ export default function ControlLayout() {
       <Stack.Screen name="index" options={{ title: "Control" }} />
       <Stack.Screen name="overview" options={{ title: "Overview" }} />
       <Stack.Screen name="agents" options={{ title: "Agents" }} />
+      <Stack.Screen name="agent-detail" options={{ title: "Agent" }} />
       <Stack.Screen name="skills" options={{ title: "Skills" }} />
       <Stack.Screen name="sessions" options={{ title: "Sessions" }} />
       <Stack.Screen name="channels" options={{ title: "Channels" }} />

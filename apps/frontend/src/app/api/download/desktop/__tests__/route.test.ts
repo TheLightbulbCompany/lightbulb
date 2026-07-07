@@ -3,16 +3,42 @@ import { NextRequest } from "next/server";
 
 import { GET } from "../route";
 
+type GhAssetFixture = {
+  url: string;
+  name: string;
+  browser_download_url: string;
+};
+
 type GhReleaseFixture = {
   tag_name: string;
   draft: boolean;
   published_at: string | null;
-  assets: { name: string; browser_download_url: string }[];
+  assets: GhAssetFixture[];
 };
 
+/** The signed URL GitHub's asset API would redirect to for a given asset. */
+function signedUrlFor(assetUrl: string) {
+  return `https://objects.githubusercontent.com/signed/${encodeURIComponent(assetUrl)}`;
+}
+
 function stubGitHub(releases: GhReleaseFixture[], ok = true, status = 200) {
-  const json = vi.fn().mockResolvedValue(releases);
-  const fetchMock = vi.fn().mockResolvedValue({ ok, status, json });
+  const fetchMock = vi.fn(async (url: string | URL) => {
+    const u = String(url);
+    if (u.includes("/releases?")) {
+      return {
+        ok,
+        status,
+        json: async () => releases,
+      } as unknown as Response;
+    }
+    // Asset API URL fetch with redirect:"manual" — GitHub answers 302
+    // with the short-lived signed URL in Location.
+    return {
+      ok: false,
+      status: 302,
+      headers: new Headers({ location: signedUrlFor(u) }),
+    } as unknown as Response;
+  });
   vi.stubGlobal("fetch", fetchMock);
   return { fetchMock };
 }
@@ -26,43 +52,52 @@ function reqFor(url: string, host: string) {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 describe("GET /api/download/desktop", () => {
-  const arm = {
+  const arm: GhAssetFixture = {
+    url: "https://api.github.com/repos/Isol8AI/isol8/releases/assets/101",
     name: "Isol8_0.2.6_aarch64.dmg",
     browser_download_url:
       "https://github.com/Isol8AI/isol8/releases/download/desktop-v0.2.6/Isol8_0.2.6_aarch64.dmg",
   };
-  const intel = {
+  const intel: GhAssetFixture = {
+    url: "https://api.github.com/repos/Isol8AI/isol8/releases/assets/102",
     name: "Isol8_0.2.6_x64.dmg",
     browser_download_url:
       "https://github.com/Isol8AI/isol8/releases/download/desktop-v0.2.6/Isol8_0.2.6_x64.dmg",
+  };
+  const armBundle: GhAssetFixture = {
+    url: "https://api.github.com/repos/Isol8AI/isol8/releases/assets/103",
+    name: "Isol8_aarch64.app.tar.gz",
+    browser_download_url:
+      "https://github.com/Isol8AI/isol8/releases/download/desktop-v0.2.6/Isol8_aarch64.app.tar.gz",
   };
   const prodRelease: GhReleaseFixture = {
     tag_name: "desktop-v0.2.6",
     draft: false,
     published_at: "2026-05-01T00:00:00Z",
-    assets: [arm, intel],
+    assets: [arm, intel, armBundle],
+  };
+  const devAsset: GhAssetFixture = {
+    url: "https://api.github.com/repos/Isol8AI/isol8/releases/assets/201",
+    name: "Isol8_0.3.1_aarch64.dmg",
+    browser_download_url:
+      "https://github.com/Isol8AI/isol8/releases/download/desktop-dev-v0.3.1/Isol8_0.3.1_aarch64.dmg",
   };
   const devRelease: GhReleaseFixture = {
     tag_name: "desktop-dev-v0.3.1",
     draft: false,
     published_at: "2026-05-09T00:00:00Z",
-    assets: [
-      {
-        name: "Isol8_0.3.1_aarch64.dmg",
-        browser_download_url:
-          "https://github.com/Isol8AI/isol8/releases/download/desktop-dev-v0.3.1/Isol8_0.3.1_aarch64.dmg",
-      },
-    ],
+    assets: [devAsset],
   };
 
-  it("redirects prod host to the matching arm64 asset by default", async () => {
+  it("redirects prod host to the signed URL for the arm64 DMG by default", async () => {
     stubGitHub([prodRelease, devRelease]);
     const res = await GET(reqFor("/api/download/desktop", "isol8.co"));
     expect(res.status).toBe(302);
-    expect(res.headers.get("location")).toBe(arm.browser_download_url);
+    expect(res.headers.get("location")).toBe(signedUrlFor(arm.url));
   });
 
   it("honors ?arch=x64 to select the Intel build", async () => {
@@ -71,16 +106,47 @@ describe("GET /api/download/desktop", () => {
       reqFor("/api/download/desktop?arch=x64", "isol8.co"),
     );
     expect(res.status).toBe(302);
-    expect(res.headers.get("location")).toBe(intel.browser_download_url);
+    expect(res.headers.get("location")).toBe(signedUrlFor(intel.url));
+  });
+
+  it("serves the updater bundle via ?kind=bundle", async () => {
+    stubGitHub([prodRelease]);
+    const res = await GET(
+      reqFor("/api/download/desktop?kind=bundle", "isol8.co"),
+    );
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe(signedUrlFor(armBundle.url));
+  });
+
+  it("sends the token on GitHub calls when configured", async () => {
+    vi.stubEnv("GITHUB_RELEASES_TOKEN", "ghp_test123");
+    const { fetchMock } = stubGitHub([prodRelease]);
+    await GET(reqFor("/api/download/desktop", "isol8.co"));
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/releases?"),
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: "Bearer ghp_test123",
+        }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      arm.url,
+      expect.objectContaining({
+        redirect: "manual",
+        headers: expect.objectContaining({
+          Authorization: "Bearer ghp_test123",
+          Accept: "application/octet-stream",
+        }),
+      }),
+    );
   });
 
   it("uses the desktop-dev-v prefix on dev.isol8.co", async () => {
     stubGitHub([prodRelease, devRelease]);
     const res = await GET(reqFor("/api/download/desktop", "dev.isol8.co"));
     expect(res.status).toBe(302);
-    expect(res.headers.get("location")).toBe(
-      devRelease.assets[0].browser_download_url,
-    );
+    expect(res.headers.get("location")).toBe(signedUrlFor(devAsset.url));
   });
 
   it("uses the desktop-dev-v prefix on localhost", async () => {
@@ -89,9 +155,7 @@ describe("GET /api/download/desktop", () => {
       reqFor("/api/download/desktop", "localhost:3000"),
     );
     expect(res.status).toBe(302);
-    expect(res.headers.get("location")).toBe(
-      devRelease.assets[0].browser_download_url,
-    );
+    expect(res.headers.get("location")).toBe(signedUrlFor(devAsset.url));
   });
 
   it("ignores draft releases", async () => {
@@ -114,34 +178,57 @@ describe("GET /api/download/desktop", () => {
     expect(body).toMatchObject({ error: "no_asset", arch: "x64" });
   });
 
-  it("picks the most recently published release for the env's prefix", async () => {
+  it("picks the highest-version release for the env's prefix", async () => {
     const older: GhReleaseFixture = {
       ...prodRelease,
       tag_name: "desktop-v0.2.0",
       published_at: "2026-01-01T00:00:00Z",
     };
+    const newerAsset: GhAssetFixture = {
+      url: "https://api.github.com/repos/Isol8AI/isol8/releases/assets/301",
+      name: "Isol8_0.3.0_aarch64.dmg",
+      browser_download_url:
+        "https://github.com/Isol8AI/isol8/releases/download/desktop-v0.3.0/Isol8_0.3.0_aarch64.dmg",
+    };
     const newer: GhReleaseFixture = {
       ...prodRelease,
       tag_name: "desktop-v0.3.0",
       published_at: "2026-05-10T00:00:00Z",
-      assets: [
-        {
-          name: "Isol8_0.3.0_aarch64.dmg",
-          browser_download_url:
-            "https://github.com/Isol8AI/isol8/releases/download/desktop-v0.3.0/Isol8_0.3.0_aarch64.dmg",
-        },
-      ],
+      assets: [newerAsset],
     };
     stubGitHub([older, newer]);
     const res = await GET(reqFor("/api/download/desktop", "isol8.co"));
-    expect(res.headers.get("location")).toBe(
-      newer.assets[0].browser_download_url,
-    );
+    expect(res.headers.get("location")).toBe(signedUrlFor(newerAsset.url));
   });
 
   it("returns 502 when GitHub is unreachable", async () => {
     stubGitHub([], false, 503);
     const res = await GET(reqFor("/api/download/desktop", "isol8.co"));
     expect(res.status).toBe(502);
+  });
+
+  it("returns 502 when the asset redirect can't be resolved", async () => {
+    const fetchMock = vi.fn(async (url: string | URL) => {
+      const u = String(url);
+      if (u.includes("/releases?")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => [prodRelease],
+        } as unknown as Response;
+      }
+      // Private repo without a valid token: asset API answers 404
+      // instead of the signed-URL redirect.
+      return {
+        ok: false,
+        status: 404,
+        headers: new Headers(),
+      } as unknown as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const res = await GET(reqFor("/api/download/desktop", "isol8.co"));
+    expect(res.status).toBe(502);
+    const body = await res.json();
+    expect(body).toMatchObject({ error: "asset_unresolvable", status: 404 });
   });
 });

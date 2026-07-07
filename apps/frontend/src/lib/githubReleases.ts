@@ -11,8 +11,13 @@
  *      one — auto-publish on every main push races, and `published_at`
  *      can hand out an older bundle if two CI runs overlap.
  *
- * Public repo, so unauthenticated requests already filter out drafts; we
- * still guard with `!draft` defensively in case a token gets attached.
+ * The repo is PRIVATE: listing releases and fetching assets both require
+ * `GITHUB_RELEASES_TOKEN` (fine-grained PAT with contents: read on
+ * Isol8AI/isol8). `browser_download_url` 404s without a logged-in browser
+ * session, so clients are never sent there — instead we resolve the
+ * asset's API URL to the short-lived signed URL GitHub issues behind it
+ * (`resolveAssetLocation`) and redirect at download time. Draft releases
+ * are filtered explicitly since the token sees them.
  */
 
 export const ISOL8_REPO = "Isol8AI/isol8";
@@ -23,6 +28,8 @@ const DEV_TAG_PREFIX = "desktop-dev-v";
 const TAG_VERSION_RE = /^desktop-(?:dev-)?v(.+)$/;
 
 export interface GhAsset {
+  /** API asset URL (api.github.com/.../releases/assets/{id}) — auth-fetchable. */
+  url: string;
   name: string;
   browser_download_url: string;
 }
@@ -34,6 +41,19 @@ export interface GhRelease {
   draft: boolean;
   published_at: string | null;
   assets: GhAsset[];
+}
+
+/** Standard GitHub API headers, with auth when the token is configured. */
+export function githubHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {
+    Accept: "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+  };
+  const token = process.env.GITHUB_RELEASES_TOKEN;
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  return headers;
 }
 
 /**
@@ -90,10 +110,7 @@ export async function pickLatestRelease(
   const res = await fetch(
     `https://api.github.com/repos/${ISOL8_REPO}/releases?per_page=30`,
     {
-      headers: {
-        Accept: "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-      },
+      headers: githubHeaders(),
       next: { revalidate: 300 },
     },
   );
@@ -115,4 +132,29 @@ export async function pickLatestRelease(
       return 0;
     })[0];
   return { release: candidate ?? null, githubStatus: res.status };
+}
+
+/**
+ * Resolve a release asset to the short-lived signed URL GitHub issues
+ * behind its asset API endpoint. This is the only way to hand a private
+ * repo's asset to an unauthenticated client (browser or Tauri updater):
+ * fetch the API URL with `Accept: application/octet-stream` but don't
+ * follow the redirect — forward its Location instead.
+ *
+ * The signed URL expires within minutes, so resolve it per-request at
+ * download time — never bake it into anything cached or long-lived.
+ */
+export async function resolveAssetLocation(
+  asset: GhAsset,
+): Promise<{ location: string | null; status: number }> {
+  const res = await fetch(asset.url, {
+    headers: { ...githubHeaders(), Accept: "application/octet-stream" },
+    redirect: "manual",
+    cache: "no-store",
+  });
+  const location = res.headers.get("location");
+  if (res.status >= 300 && res.status < 400 && location) {
+    return { location, status: res.status };
+  }
+  return { location: null, status: res.status };
 }

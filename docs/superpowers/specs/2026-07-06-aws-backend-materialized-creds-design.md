@@ -126,7 +126,7 @@ agent runs `aws …`
                  Authorization: Bearer <per-owner token>
   → backend: validate token (hash compare, constant-time)
              → read {role_arn, external_id, region} from Secrets Manager
-             → AssumeRole via connector-source (§3), DurationSeconds=3600
+             → AssumeRole with the backend task role (§3), DurationSeconds=3600
              → return credential_process JSON {Version:1, AccessKeyId,
                SecretAccessKey, SessionToken, Expiration}
   → helper: write cache (0600) + print → CLI proceeds
@@ -174,31 +174,47 @@ revocation below, which is what actually cuts access.
   mount split (RO config/helper + RW cache) was considered and rejected: extra
   access-point plumbing to prevent tampering that escalates nothing.
 
-### 3. Trust — a stable source principal, not the raw backend role
+### 3. Trust — account-root principal + ExternalId (the standard pattern)
 
-The backend task role's ARN carries a CDK-generated suffix
-(`…-TaskRole30FC0FBB-Bke6duRtFNPZ`) — pinning it in connector trust policies
-couples every connected account to a CDK logical ID. Instead, CDK
-(service-stack) mints one tiny stable-named role per env:
+The connector role's trust policy names our **account root**:
 
-- **`isol8-{env}-connector-source`** — trust: the backend task role;
-  permissions: `sts:AssumeRole` on `arn:aws:iam::*:role/isol8-connector` only.
-  No other grants.
+```json
+{"Effect": "Allow",
+ "Principal": {"AWS": "arn:aws:iam::877352799272:root"},
+ "Action": "sts:AssumeRole",
+ "Condition": {"StringEquals": {"sts:ExternalId": "<owner's ExternalId>"}}}
+```
 
-The backend assumes `connector-source`, then uses those creds for the connector
-`AssumeRole` (both hops are role chaining; each session capped 1h — we request
-3600). Connector trust policies — ours and every future customer's — pin
-`isol8-{env}-connector-source`: deterministic, human-auditable, survives
-backend-role churn.
+This is AWS's own documented cross-account SaaS pattern (the confused-deputy
+docs; how Datadog-class integrations work): root delegates to our account's
+IAM, and the per-owner ExternalId — held server-side in Secrets Manager, never
+on customer or container disk — is the per-owner lock. The root ARN can never
+drift, so nothing in any connected account ever needs updating again.
+
+**Why the account-level pin is safe here:** the principals in our account that
+could exercise it reduce to the backend and human admins. Per-owner container
+roles lose their `sts:AssumeRole` grant entirely (`owner-aws-sts` retired, §5)
+AND the restored unconditional boundary deny blocks assume-into-our-account;
+other service roles lack the ExternalId (SM access is scoped); admins can read
+SM anyway. The backend calls `AssumeRole` directly with its task role
+(single hop, `DurationSeconds=3600` — still role chaining, still the 1h cap).
+
+**Rejected variants:** (a) pin the backend task role ARN — CDK-generated
+suffix (`…TaskRole30FC0FBB-…`); role replacement would silently break every
+connected account's trust, fixable only by each customer; (b) a dedicated
+stable-named `connector-source` middle role — solves (a) but is invented
+infrastructure and an extra STS hop for a problem root-trust solves more
+simply.
 
 Sites that change in lockstep (all reference the same helper):
-- `aws_cfn.py`: `owner_task_role_arn(owner_id)` → `connector_source_role_arn()`
-  (env-derived, no owner parameter — one principal for all owners; per-owner
-  isolation lives in the ExternalId condition, which stays).
+- `aws_cfn.py`: `owner_task_role_arn(owner_id)` → `platform_trust_principal_arn()`
+  returning the root ARN (account id from `bedrock_aip.OUR_ACCOUNT_ID`, no
+  literals; no owner parameter — per-owner isolation lives in the ExternalId
+  condition, which stays).
 - `connections.py:282` — quick-create link + `aws-setup` response inject the new
   principal.
-- `connections.py:114` — the self-account trust-pin gate expects the new
-  principal.
+- `connections.py:114` — the self-account trust-pin gate expects the root
+  principal + the owner's ExternalId (same fail-closed logic).
 - `aws-readonly-connector.yaml` — parameter *description* text only (the
   principal is a pure `!Ref`); README drift fix (it still claims two tiers).
 
@@ -207,7 +223,7 @@ Sites that change in lockstep (all reference the same helper):
 **Why an endpoint exists at all:** `sts:AssumeRole` must be SigV4-signed with
 existing AWS credentials, and the agent's exec env has none — by design (the
 sanitizer; v1's root cause). The backend is the only component holding both an
-AWS identity (task role → connector-source) and the ExternalId, so it is the
+AWS identity (its task role) and the ExternalId, so it is the
 identity bridge. The only unsigned STS call is `AssumeRoleWithWebIdentity` —
 i.e. removing the endpoint is exactly the OIDC endgame in Rejected
 alternatives, deferred deliberately.
@@ -241,9 +257,10 @@ alternatives, deferred deliberately.
   returns to **unconditional** (drop the `aws:PrincipalArn` exemption in
   `container-stack.ts`), and the inline-deny drop logic goes. No per-owner
   container role can assume into our account, ever, founder included.
-- The trust-pin gate **stays** (repointed at `connector-source`): still what
-  makes self-account connection safe — only a role whose trust pins our assume
-  principal + the owner's ExternalId can be connected.
+- The trust-pin gate **stays** (repointed at the account-root principal):
+  still what makes self-account connection safe — only a role whose trust pins
+  our assume principal + the owner's ExternalId can be connected; infra roles
+  (which trust service principals, not root+ExternalId) remain unconnectable.
 - **No scheduled worker pass.** Nothing to enumerate, no refresh cadence, no
   runway math, no multi-task overlap analysis, no `list_by_provider` repo
   addition. The update-service worker is untouched.
@@ -256,8 +273,8 @@ alternatives, deferred deliberately.
   backend returns. Same availability class as chat itself.
 - **A long-running CLI command near session end** dies with `ExpiredToken` —
   creds are resolved once per process. Documented, accepted.
-- **Helper latency**: ~0 on cache hit; one HTTPS round-trip + 2 STS calls
-  (~0.5s) on miss, roughly once per 50 min of active use.
+- **Helper latency**: ~0 on cache hit; one HTTPS round-trip + 1 STS call
+  (~0.4s) on miss, roughly once per 50 min of active use.
 - **Reprovision** preserves EFS → files survive; nothing to rehydrate.
 - **Rolling deploys / task death / multi-backend**: stateless per-request —
   no coordination of any kind.
@@ -266,14 +283,14 @@ alternatives, deferred deliberately.
 
 - **Our account (the only live connection):** one CloudFormation parameter
   update on the existing `isol8-connector` stack — `TrustedPrincipalArn` →
-  `isol8-prod-connector-source` ARN, `UsePreviousValue` for ExternalId,
+  `arn:aws:iam::877352799272:root`, `UsePreviousValue` for ExternalId,
   re-acknowledge `CAPABILITY_NAMED_IAM`. No reconnect, no container change.
 - **Existing materialized file**: the founder re-runs nothing — `aws-complete`
   is not re-invoked; instead the backend rewrites the owner's `.aws/` files
   (config/helper/token) via a one-shot repair path on deploy (or the founder
   disconnects/reconnects — 2 minutes; decide in the plan).
-- **Ordering:** CDK (`connector-source` + boundary revert) and backend ship
-  together → CFN parameter update → materialize/repair → validate.
+- **Ordering:** CDK (boundary revert) and backend ship together → CFN
+  parameter update → materialize/repair → validate.
 
 ## What does NOT change
 
@@ -335,8 +352,9 @@ From a gateway agent exec (chat path, where the plugin fires):
 
 ## Rollout
 
-1. **CDK:** `connector-source` role (service-stack) + boundary-deny revert
-   (container-stack). One deploy.yml ride.
+1. **CDK:** boundary-deny revert only (container-stack — restore the
+   unconditional `BoundaryDenyAssumeIntoOurAccount`). No new IAM resources.
+   One deploy.yml ride.
 2. **Backend:** credentials endpoint + token rail + materializer rewrite
    (config/helper/token) + `aws_cfn.py` helper + `connections.py`
    principal/gate updates + retire `owner-aws-sts` machinery. Same deploy

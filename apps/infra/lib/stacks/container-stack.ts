@@ -282,18 +282,6 @@ export class ContainerStack extends cdk.Stack {
     // UNION of what it may ever hold: scoped Bedrock invoke (on inference
     // profiles + the 9 FM ARNs) + EFS + logs + ssm. A backend that can
     // CreateRole+PutRolePolicy cannot escalate a per-owner role past this.
-    // Self-account carve-out (config-driven, nothing hardcoded): the founder
-    // org, reusing PLATFORM_OPS_OWNER_ID (same owner). Empty ⇒ no carve (Deny
-    // stays fully broad; fail-closed). Per-owner role name mirrors the Bedrock
-    // rail: isol8-<env>-owner-bedrock-<owner>.
-    const selfAccountOwnerId =
-      props.environment === "prod"
-        ? (process.env.PLATFORM_OPS_OWNER_ID_PROD ?? "")
-        : (process.env.PLATFORM_OPS_OWNER_ID_DEV ?? "");
-    const selfAccountRoleArn = selfAccountOwnerId
-      ? `arn:aws:iam::${this.account}:role/isol8-${props.environment}-owner-bedrock-${selfAccountOwnerId}`
-      : undefined;
-
     this.ownerBedrockBoundary = new iam.ManagedPolicy(this, "OwnerBedrockBoundary", {
       managedPolicyName: `isol8-${props.environment}-owner-bedrock-boundary`,
       statements: [
@@ -336,29 +324,15 @@ export class ContainerStack extends cdk.Stack {
           ],
           resources: ["*"],
         }),
-        // Scoped STS for the AWS read-only integration. The boundary is the
-        // ceiling; the actual scoping to the exact owner-connected role ARN is
-        // done by the per-owner inline `owner-aws-sts` policy. The broad Allow
-        // here just keeps the boundary from being the bottleneck — without it
-        // the inline grant would be silently denied (boundary AND identity).
-        new iam.PolicyStatement({
-          sid: "BoundaryStsAssumeRole",
-          actions: ["sts:AssumeRole"],
-          resources: ["arn:aws:iam::*:role/*"],
-        }),
         // Defense in depth: never let a per-owner role assume into OUR account,
-        // even if a misconfigured inline policy tried to. An explicit Deny always
-        // wins. The founder's per-owner role is exempted by aws:PrincipalArn so it
-        // (and only it) can assume its own trust-pinned connector role; every other
-        // owner stays fully denied.
+        // even if a misconfigured inline policy tried to. An explicit Deny
+        // always wins. Unconditional: the AWS integration's credentials are
+        // vended by the backend, so no per-owner role ever needs an assume.
         new iam.PolicyStatement({
           sid: "BoundaryDenyAssumeIntoOurAccount",
           effect: iam.Effect.DENY,
           actions: ["sts:AssumeRole"],
           resources: [`arn:aws:iam::${this.account}:role/*`],
-          conditions: selfAccountRoleArn
-            ? { StringNotEquals: { "aws:PrincipalArn": selfAccountRoleArn } }
-            : undefined,
         }),
       ],
     });

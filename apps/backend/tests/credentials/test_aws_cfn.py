@@ -13,11 +13,6 @@ def test_gen_external_id_is_url_safe_and_long_enough():
     assert aws_cfn.gen_external_id() != ext
 
 
-def test_owner_task_role_arn_reuses_bedrock_aip_name():
-    arn = aws_cfn.owner_task_role_arn("org_x")
-    assert re.fullmatch(r"arn:aws:iam::877352799272:role/isol8-.*-owner-bedrock-org_x", arn)
-
-
 def test_quick_create_url_carries_all_params_url_encoded():
     template_url = "https://s3.amazonaws.com/isol8-cfn/readonly.yaml"
     principal_arn = "arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-org_x"
@@ -40,3 +35,10 @@ def test_quick_create_url_carries_all_params_url_encoded():
     assert f"param_ManagedPolicyArn={quote(policy_arn, safe='')}" in url
     # The raw ARN colons/slashes must not leak unencoded into the query.
     assert "param_ManagedPolicyArn=arn:aws:iam" not in url
+
+
+def test_platform_trust_principal_arn_is_account_root():
+    # Account-root + ExternalId is the trust pattern every connector role pins.
+    # Root never drifts, so connected accounts never need a trust update.
+    arn = aws_cfn.platform_trust_principal_arn()
+    assert arn == "arn:aws:iam::877352799272:root"

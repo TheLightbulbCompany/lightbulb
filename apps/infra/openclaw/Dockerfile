@@ -358,8 +358,8 @@ RUN set -eux; \
 # ---- Layer 14: baked aws-exec-profile plugin ----
 # Hand-written, dependency-free OpenClaw plugin (lives in-repo, NOT an npm
 # package). Registers a `resolve_exec_env` hook that injects
-# AWS_PROFILE=isol8-readonly into the agent's exec'd commands ONLY when the
-# owner's read-only AWS profile has been materialized at AWS_CONFIG_FILE — the
+# AWS_PROFILE=isol8-connector into the agent's exec'd commands ONLY when the
+# owner's connector AWS profile has been materialized at AWS_CONFIG_FILE — the
 # node/harness process (and Bedrock's in-process AWS SDK) keeps the host ECS
 # task-role identity. COPY lands it root-owned in the stock plugin root (the
 # loader rejects any plugin dir not owned by uid 0); it auto-activates from

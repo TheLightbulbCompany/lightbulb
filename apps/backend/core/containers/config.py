@@ -663,8 +663,8 @@ def workflow_plugin_entries() -> dict:
     - ``llm-task`` — left unconfigured so it inherits the agent's default
       provider/model at call time across every provider path.
     - ``aws-exec-profile`` — baked in-repo plugin whose ``resolve_exec_env``
-      hook injects ``AWS_PROFILE=isol8-readonly`` into the agent's exec'd
-      commands only when the owner's read-only AWS profile is materialized.
+      hook injects ``AWS_PROFILE=isol8-connector`` into the agent's exec'd
+      commands only when the owner's connector AWS profile is materialized.
       Inert (returns ``{}``) until that profile exists, so it is safe to enable
       fleet-wide regardless of provider.
 

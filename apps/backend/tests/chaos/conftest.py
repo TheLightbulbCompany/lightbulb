@@ -117,6 +117,22 @@ def _create_tables(resource):
         [{"AttributeName": "event_id", "KeyType": "HASH"}],
         [{"AttributeName": "event_id", "AttributeType": "S"}],
     )
+    # integrations: PK owner_id, SK provider (secret-free connection-status
+    # index). Touched by the unauthenticated aws credential_process endpoint
+    # (POST /connections/aws/credentials), which reads the status row before
+    # the Secrets Manager token check — so the negative pass needs it present
+    # to reach the 401 instead of a missing-table 5xx.
+    _make(
+        f"{_PREFIX}integrations",
+        [
+            {"AttributeName": "owner_id", "KeyType": "HASH"},
+            {"AttributeName": "provider", "KeyType": "RANGE"},
+        ],
+        [
+            {"AttributeName": "owner_id", "AttributeType": "S"},
+            {"AttributeName": "provider", "AttributeType": "S"},
+        ],
+    )
 
     for name in waiters:
         resource.meta.client.get_waiter("table_exists").wait(TableName=name)

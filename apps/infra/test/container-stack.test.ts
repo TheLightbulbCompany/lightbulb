@@ -376,6 +376,28 @@ describe("ContainerStack — dev", () => {
       resources.some((r) => r.includes("application-inference-profile/*")),
     ).toBe(true);
   });
+
+  test("boundary denies assume-into-our-account unconditionally and grants no sts:AssumeRole", () => {
+    // The per-owner container role has no AWS-rail job anymore: the backend
+    // vends connector credentials itself. The Deny must be unconditional
+    // (no founder carve-out) and the broad AssumeRole ceiling must be gone.
+    const policies = template.findResources("AWS::IAM::ManagedPolicy");
+    const boundary = Object.values(policies).find(
+      (p: any) => p.Properties.ManagedPolicyName === "isol8-dev-owner-bedrock-boundary",
+    ) as any;
+    expect(boundary).toBeDefined();
+
+    const stmts = boundary.Properties.PolicyDocument.Statement as any[];
+    const deny = stmts.find((s) => s.Effect === "Deny");
+    expect(deny).toBeDefined();
+    expect(JSON.stringify(deny.Action)).toContain("sts:AssumeRole");
+    expect(deny.Condition).toBeUndefined();
+
+    const allowAssume = stmts.find(
+      (s) => s.Effect === "Allow" && JSON.stringify(s.Action).includes("sts:AssumeRole"),
+    );
+    expect(allowAssume).toBeUndefined();
+  });
 });
 
 describe("ContainerStack — prod", () => {

@@ -863,12 +863,12 @@ export class ServiceStack extends cdk.Stack {
     // -------------------------------------------------------------------------
     // CFN Templates S3 Bucket (public-read of the connector template only)
     //
-    // Hosts the AWS read-only connector CloudFormation template so the
+    // Hosts the AWS connector CloudFormation template so the
     // "Create role in AWS" quick-create button works: CloudFormation requires
     // the TemplateURL to be an S3 URL it can fetch ANONYMOUSLY (not a
-    // CloudFront/Vercel URL). The template (apps/infra/aws/
-    // aws-readonly-connector.yaml) is generic + fully parameterized — no
-    // secrets — so public READ of that single object is safe.
+    // CloudFront/Vercel URL). The template (apps/infra/aws/aws-connector.yaml)
+    // is generic + fully parameterized — no secrets — so public READ of that
+    // single object is safe.
     //
     // Public-access posture: block public ACLs (we never use ACLs) but ALLOW a
     // public bucket POLICY, and the policy below grants ONLY s3:GetObject on the
@@ -876,7 +876,7 @@ export class ServiceStack extends cdk.Stack {
     // objects (the deployment prunes the bucket to exactly this template). SSE-S3
     // (not KMS) so anonymous CloudFormation GETs aren't blocked on decrypt.
     // -------------------------------------------------------------------------
-    const CFN_TEMPLATE_KEY = "aws-readonly-connector.yaml";
+    const CFN_TEMPLATE_KEY = "aws-connector.yaml";
     const cfnTemplatesBucket = new s3.Bucket(this, "CfnTemplatesBucket", {
       bucketName: `isol8-${env}-cfn-templates`,
       encryption: s3.BucketEncryption.S3_MANAGED,
@@ -1200,7 +1200,7 @@ export class ServiceStack extends cdk.Stack {
             ? (process.env.PLATFORM_OPS_OWNER_ID_PROD ?? "")
             : (process.env.PLATFORM_OPS_OWNER_ID_DEV ?? ""),
         MARKETPLACE_ARTIFACTS_BUCKET: marketplaceArtifactsBucket.bucketName,
-        // Deterministic public S3 URL of the hosted AWS read-only connector
+        // Deterministic public S3 URL of the hosted AWS connector
         // CloudFormation template. The connections aws-setup endpoint feeds this
         // as the quick-create TemplateURL (CloudFormation must fetch it
         // anonymously). Bucket name + key are fixed, so this is a literal string

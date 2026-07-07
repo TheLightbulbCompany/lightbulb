@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
 import re
+import secrets
 import subprocess
+import time
+from collections import defaultdict, deque
 
+import boto3
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from botocore.exceptions import ClientError
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
@@ -13,6 +20,7 @@ from core.auth import AuthContext, get_current_user, require_org_admin, resolve_
 from core.billing import bedrock_aip
 from core.config import settings
 from core.dynamodb import run_in_thread
+from core.observability.metrics import put_metric
 from core.repositories import google_accounts_repo, integrations_repo
 from core.services import config_patcher
 from core.services.credentials import (
@@ -84,6 +92,17 @@ class AwsCompleteBody(BaseModel):
     region: str | None = None
 
 
+class AwsCredentialsBody(BaseModel):
+    # Bounded AND charset-restricted because this endpoint is unauthenticated:
+    # the owner_id flows into a DynamoDB key, a Secrets Manager name lookup, and
+    # an STS RoleSessionName. The pattern matches the Clerk id shape
+    # resolve_owner_id produces (org_/user_ + alphanumerics), so nothing outside
+    # that set — whitespace, newlines, path separators — ever reaches those
+    # sinks; it makes the confused-deputy reasoning explicit rather than relying
+    # on Clerk id shape as an implicit assumption.
+    owner_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+
+
 # A concrete IAM role ARN, capturing the 12-digit owning account. Deliberately
 # strict: the role-path portion is the IAM name charset (letters, digits and
 # +=,.@-_ plus / for paths), which excludes wildcards — so ``role/*`` is
@@ -99,19 +118,50 @@ _ROLE_ARN_RE = re.compile(r"^arn:aws:iam::(\d{12}):role/[\w+=,.@/-]+$")
 # the ``$`` anchor.
 _REGION_RE = re.compile(r"^[a-z0-9-]+$")
 
+# --- container credential_process endpoint machinery -------------------------
+# The helper on the owner's EFS calls POST /aws/credentials with a per-owner
+# bearer token (minted at aws-complete; only its SHA-256 hash is retained in
+# the SM credential). Legitimate use is ~1 fetch per 50 minutes of active use,
+# so the per-owner limit is generous. In-process sliding window, same pattern
+# and caveats as routers/hooks_proxy.py (per-task buckets; fine at
+# desiredCount=1).
+_AWS_CLI_RATE_LIMIT_PER_MINUTE = 10
+_aws_cli_rate_buckets: dict[str, deque[float]] = defaultdict(deque)
+
+
+def _check_aws_cli_rate_limit(owner_id: str) -> bool:
+    now = time.monotonic()
+    cutoff = now - 60.0
+    q = _aws_cli_rate_buckets[owner_id]
+    while q and q[0] < cutoff:
+        q.popleft()
+    if len(q) >= _AWS_CLI_RATE_LIMIT_PER_MINUTE:
+        return False
+    q.append(now)
+    return True
+
+
+def _hash_cli_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _sts_client():
+    return boto3.client("sts", region_name=settings.AWS_REGION)
+
 
 async def _self_account_role_is_pinned(role_arn: str, owner_id: str, external_id: str) -> bool:
     """True iff a role IN OUR account is a legitimate connector for THIS owner:
-    its trust policy allows the owner's per-owner principal AND requires the
-    owner's ExternalId. Only we can create such a role, and our infra roles
-    (which trust account-root, not a specific owner) never satisfy it — so this
-    blocks connecting an arbitrary our-account role (account-takeover) without an
-    owner-id allowlist. Any failure (GetRole error, shape mismatch) -> False."""
+    its trust policy allows the platform trust principal (our account root) AND
+    requires the owner's ExternalId. Only we can create such a role, and our
+    infra roles (which trust service principals, never root+ExternalId) never
+    satisfy it — so this blocks connecting an arbitrary our-account role
+    (account-takeover) without an owner-id allowlist. Any failure (GetRole
+    error, shape mismatch) -> False."""
     role_name = role_arn.split(":role/", 1)[1]
     try:
         resp = await run_in_thread(bedrock_aip._iam_client().get_role, RoleName=role_name)
         trust = resp["Role"]["AssumeRolePolicyDocument"]  # boto3 returns a decoded dict
-        expected_principal = aws_cfn.owner_task_role_arn(owner_id)
+        expected_principal = aws_cfn.platform_trust_principal_arn()
         # ``Statement`` is a list per the IAM policy grammar, but a single-object
         # form is also valid — normalize so iteration can't blow up on a dict.
         statements = trust.get("Statement", [])
@@ -227,6 +277,83 @@ async def list_connections(auth: AuthContext = Depends(get_current_user)):
     return {"connections": connections}
 
 
+@router.post("/aws/credentials")
+async def aws_credentials(body: AwsCredentialsBody, request: Request):
+    """credential_process endpoint for the container helper. NO Clerk auth —
+    the caller is the owner's container; identity is the per-owner bearer
+    token minted at aws-complete, compared in constant time against the
+    SHA-256 hash retained in the SM credential. The ExternalId never leaves
+    this process. Every fetch is metered + logged (the audit trail the old
+    EcsContainer design could not offer)."""
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="missing_or_malformed_authorization")
+    presented = auth_header[len("Bearer ") :]
+
+    # Cheap DynamoDB status gate FIRST, so an unauthenticated spray burns a DDB
+    # read rather than a Secrets Manager fetch. Both this gate and the token
+    # check below fail with the SAME 401 invalid_token — a caller must not be
+    # able to distinguish "owner not connected" from "wrong token".
+    status_row = await integrations_repo.get(body.owner_id, "aws")
+    if not status_row or status_row.get("status") != "connected":
+        put_metric("connections.aws_credentials.fetch", dimensions={"result": "unauthorized"})
+        raise HTTPException(status_code=401, detail="invalid_token")
+
+    # Rate limit AFTER the cheap DDB gate but BEFORE the Secrets Manager fetch.
+    # The gate has already rejected unconnected / garbage owner_ids with a 401,
+    # so spray can't fill buckets; capping here means a valid-owner + wrong-token
+    # spray is throttled before it can drive unbounded GetSecretValue calls.
+    if not _check_aws_cli_rate_limit(body.owner_id):
+        put_metric("connections.aws_credentials.fetch", dimensions={"result": "rate_limited"})
+        return Response(
+            status_code=429,
+            headers={"Retry-After": "60"},
+            content=b'{"detail":"rate_limited"}',
+            media_type="application/json",
+        )
+
+    try:
+        rec = await integration_secret_store.get(body.owner_id, "aws")
+    except ClientError:
+        # Secrets Manager throttling / validation errors must surface as a
+        # clean 503 (the helper falls back to its stale cache), never an
+        # unhandled 500.
+        logger.exception("aws credential secret fetch failed for owner=%s", body.owner_id)
+        put_metric("connections.aws_credentials.fetch", dimensions={"result": "store_error"})
+        raise HTTPException(status_code=503, detail="credential_service_unavailable")
+    expected_hash = (rec or {}).get("cli_token_hash") or ""
+    if not expected_hash or not hmac.compare_digest(_hash_cli_token(presented), expected_hash):
+        put_metric("connections.aws_credentials.fetch", dimensions={"result": "unauthorized"})
+        raise HTTPException(status_code=401, detail="invalid_token")
+
+    try:
+        # RoleSessionName charset is [\w+=,.@-]; owner ids (org_/user_ + base62)
+        # fit. Truncate to the 64-char API limit.
+        session_name = f"isol8-{body.owner_id}"[:64]
+        resp = await run_in_thread(
+            _sts_client().assume_role,
+            RoleArn=rec["role_arn"],
+            RoleSessionName=session_name,
+            ExternalId=rec["external_id"],
+            DurationSeconds=3600,
+        )
+    except Exception:
+        logger.exception("aws credential vend failed for owner=%s", body.owner_id)
+        put_metric("connections.aws_credentials.fetch", dimensions={"result": "sts_error"})
+        raise HTTPException(status_code=502, detail="credential_vend_failed")
+
+    creds = resp["Credentials"]
+    put_metric("connections.aws_credentials.fetch", dimensions={"result": "ok"})
+    logger.info("aws credentials vended", extra={"owner_id": body.owner_id})
+    return {
+        "Version": 1,
+        "AccessKeyId": creds["AccessKeyId"],
+        "SecretAccessKey": creds["SecretAccessKey"],
+        "SessionToken": creds["SessionToken"],
+        "Expiration": creds["Expiration"].isoformat(),
+    }
+
+
 @router.post("/{provider}")
 async def connect_paste(provider: str, body: PasteBody, auth: AuthContext = Depends(get_current_user)):
     require_org_admin(auth)
@@ -279,7 +406,7 @@ async def aws_setup(provider: str, auth: AuthContext = Depends(get_current_user)
         external_id = aws_cfn.gen_external_id()
         await integration_secret_store.put(owner_id, provider, {"external_id": external_id})
 
-    principal_arn = aws_cfn.owner_task_role_arn(owner_id)
+    principal_arn = aws_cfn.platform_trust_principal_arn()
     region = p.aws_sts.default_region
 
     def _quick_create(policy_arn: str) -> str | None:
@@ -322,20 +449,20 @@ async def aws_setup(provider: str, auth: AuthContext = Depends(get_current_user)
 @router.post("/{provider}/aws-complete")
 async def aws_complete(provider: str, body: AwsCompleteBody, auth: AuthContext = Depends(get_current_user)):
     """Finish the AWS read-only connect: the owner pastes back the ARN of the
-    cross-account role their CloudFormation stack created. We grant the per-owner
-    task role sts:AssumeRole on EXACTLY that ARN, materialize ~/.aws/config, and
-    mark the integration connected.
+    cross-account role their CloudFormation stack created. We mint the
+    container's credential-fetch bearer token, materialize the ~/.aws
+    credential_process bundle, and mark the integration connected.
 
     SECURITY: ``role_arn`` is owner-supplied, so it is validated HERE — before
-    any IAM grant — against two failure modes that would otherwise turn this into
-    a confused deputy:
-      * a malformed / wildcard ARN (the CDK boundary's broad sts:AssumeRole Allow
-        only denies our own account, so a wildcard that slips through could reach
-        arbitrary external accounts), and
-      * an ARN inside OUR OWN account (877352799272), which would point the grant
-        back at Isol8's own infrastructure.
-    The inline grant is scoped to the exact ARN; this validation is the gate that
-    keeps a bad ARN from ever being granted."""
+    it is stored or ever assumed — against two failure modes that would
+    otherwise turn the vend endpoint into a confused deputy:
+      * a malformed / wildcard ARN (the backend role's broad sts:AssumeRole
+        Allow only denies our own account, so a wildcard that slips through
+        could reach arbitrary external accounts), and
+      * an ARN inside OUR OWN account (877352799272), which would point the
+        vend-time AssumeRole back at Isol8's own infrastructure.
+    The vend endpoint (POST /aws/credentials) assumes EXACTLY the stored ARN;
+    this validation is the gate that keeps a bad ARN from ever being stored."""
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
     p = _get_provider_or_404(provider)
@@ -364,48 +491,46 @@ async def aws_complete(provider: str, body: AwsCompleteBody, auth: AuthContext =
 
     if match.group(1) == bedrock_aip.OUR_ACCOUNT_ID:
         # Our own account: allowed ONLY if the pasted role is trust-pinned to this
-        # owner (trusts their principal + requires their ExternalId) — verified
-        # against the live role via iam:GetRole. Blocks connecting an arbitrary
-        # our-account role (e.g. account-root-trusting CDK roles = account
-        # takeover). No owner-id allowlist. Any failure -> reject.
+        # owner (trusts the platform principal + requires their ExternalId) —
+        # verified against the live role via iam:GetRole. Blocks connecting an
+        # arbitrary our-account role (account takeover). No owner-id allowlist.
+        # Any failure -> reject.
         if not await _self_account_role_is_pinned(role_arn, owner_id, external_id):
             raise HTTPException(status_code=400, detail="role must be in your own AWS account, not Isol8's")
 
+    # Mint the container's bearer token for the credential_process endpoint.
+    # Only its hash is retained (SM readers must never gain a usable bearer);
+    # the plaintext rides the materialize call onto the owner's EFS and
+    # nowhere else.
+    cli_token = secrets.token_urlsafe(32)
     credential = {
         "role_arn": role_arn,
         "external_id": external_id,
         "region": body.region or p.aws_sts.default_region,
+        "cli_token_hash": _hash_cli_token(cli_token),
     }
     # Overwrite the pending {external_id} record with the full credential
-    # (retained for reconcile, same as the paste flow). Then grant -> materialize
-    # -> mark connected, with the status row written ONLY after a clean grant +
-    # apply so the integration never reports a false "connected".
+    # (retained for the vend endpoint + reconcile). Then materialize -> mark
+    # connected, with the status row written ONLY after a clean apply so the
+    # integration never reports a false "connected". No IAM grant step: the
+    # backend's own role performs the AssumeRole at vend time.
     await integration_secret_store.put(owner_id, provider, credential)
     try:
-        await bedrock_aip.put_owner_aws_sts_policy(owner_id, [role_arn])
-        await apply_connection.apply_connection(owner_id, provider, credential)
+        await apply_connection.apply_connection(owner_id, provider, {**credential, "cli_token": cli_token})
         await integrations_repo.put_status(owner_id, provider, "connected")
     except Exception:
-        # Best-effort rollback: a failed connect must leave no IAM grant and no
-        # on-disk ~/.aws/config. Each teardown step is wrapped independently so
-        # one failure doesn't skip the others. Rather than deleting the whole
-        # secret, RE-PUT the pending {external_id} record: the owner has already
-        # baked this ExternalId into their CloudFormation trust policy, and
-        # aws-setup is documented to reuse it — dropping it would silently break
-        # the already-created role on a retry. Then always re-raise as a 5xx.
+        # Best-effort rollback: a failed connect must leave no on-disk ~/.aws
+        # bundle. Each teardown step is wrapped independently so one failure
+        # doesn't skip the others. Rather than deleting the whole secret,
+        # RE-PUT the pending {external_id} record: the owner has already baked
+        # this ExternalId into their CloudFormation trust policy, and aws-setup
+        # is documented to reuse it — dropping it would silently break the
+        # already-created role on a retry. Then always re-raise as a 5xx.
         try:
             await _remove_materialized_artifacts(owner_id, p, credential)
         except Exception:
             logger.warning(
                 "aws-complete rollback: failed to remove materialized artifacts for owner=%s",
-                owner_id,
-                exc_info=True,
-            )
-        try:
-            await bedrock_aip.delete_owner_aws_sts_policy(owner_id)
-        except Exception:
-            logger.warning(
-                "aws-complete rollback: failed to delete sts:AssumeRole grant for owner=%s",
                 owner_id,
                 exc_info=True,
             )
@@ -517,14 +642,9 @@ async def disconnect(provider: str, account: str | None = None, auth: AuthContex
             # config_patcher via asyncio.run (mcp_oauth), which can't run on the
             # request loop. Matches the write path's run_in_thread offload.
             await run_in_thread(remover, owner_id, provider, cred)
-    # AWS read-only rail kill-switch: the aws_cli materializer already dropped
-    # ~/.aws/config above, but that only removes the on-disk profile — the
-    # per-owner task role still carries the "owner-aws-sts" inline grant. Tear it
-    # down so disconnect is a true kill-switch: the role can no longer assume the
-    # owner's cross-account role even if a stale config file lingered. Separate
-    # from the generic secret/status delete below.
-    if p.acquisition == "aws_sts":
-        await bedrock_aip.delete_owner_aws_sts_policy(owner_id)
+    # aws_sts revocation is server-side: deleting the secret below drops the
+    # cli_token_hash, so the container's next credential fetch 401s. Already-
+    # vended sessions expire within 1h (DurationSeconds cap).
     # Drop the retained secret (no-op for actor providers, which never stored
     # one) and the status row, then blank any per-agent openclaw.json slots.
     await integration_secret_store.delete(owner_id, provider)

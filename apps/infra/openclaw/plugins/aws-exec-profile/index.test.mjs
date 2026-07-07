@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { resolve, AWS_READONLY_PROFILE_HEADER } from "./dist/resolve.js";
+import { resolve, AWS_CONNECTOR_PROFILE_HEADER } from "./dist/resolve.js";
 
 function withTempDir(fn) {
   const dir = mkdtempSync(join(tmpdir(), "aws-exec-profile-"));
@@ -19,14 +19,14 @@ function withTempDir(fn) {
   }
 }
 
-test("returns AWS_PROFILE when the config file declares the readonly profile", () => {
+test("returns AWS_PROFILE when the config file declares the connector profile", () => {
   withTempDir((dir) => {
     const cfg = join(dir, "config");
     writeFileSync(
       cfg,
-      `${AWS_READONLY_PROFILE_HEADER}\nregion = us-east-1\nrole_arn = arn:aws:iam::123:role/x\n`,
+      `${AWS_CONNECTOR_PROFILE_HEADER}\nregion = us-east-1\nrole_arn = arn:aws:iam::123:role/x\n`,
     );
-    assert.deepEqual(resolve(cfg), { AWS_PROFILE: "isol8-readonly" });
+    assert.deepEqual(resolve(cfg), { AWS_PROFILE: "isol8-connector" });
   });
 });
 
@@ -37,7 +37,7 @@ test("returns {} when the config path does not exist", () => {
   });
 });
 
-test("returns {} when the file exists but lacks the readonly profile", () => {
+test("returns {} when the file exists but lacks the connector profile", () => {
   withTempDir((dir) => {
     const cfg = join(dir, "config");
     writeFileSync(cfg, "[profile some-other]\nregion = us-east-1\n");
@@ -48,7 +48,7 @@ test("returns {} when the file exists but lacks the readonly profile", () => {
 test("returns {} when the header appears only as a comment", () => {
   withTempDir((dir) => {
     const cfg = join(dir, "config");
-    writeFileSync(cfg, `# ${AWS_READONLY_PROFILE_HEADER}\nregion = us-east-1\n`);
+    writeFileSync(cfg, `# ${AWS_CONNECTOR_PROFILE_HEADER}\nregion = us-east-1\n`);
     assert.deepEqual(resolve(cfg), {});
   });
 });

@@ -925,7 +925,7 @@ class EcsManager:
             # Per-owner Bedrock role: a resize that re-registers from the CDK
             # base would otherwise revert the container to the shared
             # all-models task role (same self-heal class as hook_token above).
-            owner_task_role_arn = container.get("bedrock_role_arn")
+            bedrock_task_role_arn = container.get("bedrock_role_arn")
             reg_kwargs = await asyncio.to_thread(
                 self._build_register_kwargs_from_base,
                 access_point_id,
@@ -933,7 +933,7 @@ class EcsManager:
                 new_cpu=new_cpu,
                 new_memory=new_memory,
                 hook_token=hook_token,
-                task_role_arn=owner_task_role_arn,
+                task_role_arn=bedrock_task_role_arn,
             )
 
             reg_resp = await asyncio.to_thread(self._ecs.register_task_definition, **reg_kwargs)

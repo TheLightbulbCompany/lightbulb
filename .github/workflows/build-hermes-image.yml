@@ -1,15 +1,14 @@
 name: build-hermes-image
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - "apps/infra/hermes/Dockerfile"
-      # Anything under apps/infra/hermes/ that the Dockerfile bakes (future
-      # skills/config/plugins) must rebuild + republish so promoted tags never
-      # ship stale content.
-      - "apps/infra/hermes/**"
-      - "hermes-version.json"
+  # Manual-only while Hermes is a dark-launched, dev-gated runtime. Dispatch
+  # this by hand (Actions UI / `gh workflow run build-hermes-image.yml`) once
+  # the prerequisites exist: the ECR repo isol8/hermes-extended, and the isol8
+  # repo's read access to the private base package ghcr.io/isol8ai/hermes-agent.
+  # Kept OFF push so merging the Hermes stack never auto-fires a build — a push
+  # trigger would red-build on the merge until those prereqs are in place, and
+  # would couple the extended-image build to the deploy pipeline. Flip back to a
+  # `push` path-filter (mirroring build-openclaw-image.yml) when Hermes leaves
+  # dark-launch.
   workflow_dispatch: {}
 
 permissions:

@@ -2111,9 +2111,11 @@ class TestAwsCredentialsEndpoint:
         assert resp.json()["detail"] == "missing_or_malformed_authorization"
 
     @pytest.mark.asyncio
+    @patch("routers.connections.integrations_repo")
     @patch("routers.connections.integration_secret_store")
-    async def test_wrong_token_is_401(self, mock_store, async_client):
+    async def test_wrong_token_is_401(self, mock_store, mock_repo, async_client):
         mock_store.get = AsyncMock(return_value=self._stored())
+        mock_repo.get = AsyncMock(return_value={"status": "connected"})
         resp = await async_client.post(
             "/api/v1/connections/aws/credentials",
             json={"owner_id": "org_x"},
@@ -2123,22 +2125,27 @@ class TestAwsCredentialsEndpoint:
         assert resp.json()["detail"] == "invalid_token"
 
     @pytest.mark.asyncio
+    @patch("routers.connections.integrations_repo")
     @patch("routers.connections.integration_secret_store")
-    async def test_no_connection_record_is_401(self, mock_store, async_client):
+    async def test_no_connection_record_is_401(self, mock_store, mock_repo, async_client):
         mock_store.get = AsyncMock(return_value=None)
+        mock_repo.get = AsyncMock(return_value={"status": "connected"})
         resp = await async_client.post(
             "/api/v1/connections/aws/credentials",
             json={"owner_id": "org_x"},
             headers={"Authorization": f"Bearer {self._TOKEN}"},
         )
         assert resp.status_code == 401
+        assert resp.json()["detail"] == "invalid_token"
 
     @pytest.mark.asyncio
     @patch("routers.connections.integrations_repo")
     @patch("routers.connections.integration_secret_store")
     async def test_disconnected_status_is_401(self, mock_store, mock_repo, async_client):
         # Revocation: SM secret may briefly outlive the status row (or vice
-        # versa); either missing/non-connected side must 401.
+        # versa); either missing/non-connected side must 401 — and with the
+        # SAME detail as the bad-token path, so an unauthenticated caller
+        # can't oracle whether an owner_id has a connection.
         mock_store.get = AsyncMock(return_value=self._stored())
         mock_repo.get = AsyncMock(return_value=None)
         resp = await async_client.post(
@@ -2147,6 +2154,36 @@ class TestAwsCredentialsEndpoint:
             headers={"Authorization": f"Bearer {self._TOKEN}"},
         )
         assert resp.status_code == 401
+        assert resp.json()["detail"] == "invalid_token"
+
+    @pytest.mark.asyncio
+    async def test_owner_id_too_long_is_422(self, async_client):
+        # Unauthenticated endpoint: an unbounded owner_id must be rejected at
+        # validation, before any store lookup.
+        resp = await async_client.post(
+            "/api/v1/connections/aws/credentials",
+            json={"owner_id": "x" * 129},
+            headers={"Authorization": f"Bearer {self._TOKEN}"},
+        )
+        assert resp.status_code == 422
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.integrations_repo")
+    @patch("routers.connections.integration_secret_store")
+    async def test_secret_store_client_error_is_503(self, mock_store, mock_repo, async_client):
+        from botocore.exceptions import ClientError
+
+        mock_repo.get = AsyncMock(return_value={"status": "connected"})
+        mock_store.get = AsyncMock(
+            side_effect=ClientError({"Error": {"Code": "ValidationException", "Message": "x"}}, "GetSecretValue")
+        )
+        resp = await async_client.post(
+            "/api/v1/connections/aws/credentials",
+            json={"owner_id": "org_x"},
+            headers={"Authorization": f"Bearer {self._TOKEN}"},
+        )
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == "credential_service_unavailable"
 
     @pytest.mark.asyncio
     @patch("routers.connections._sts_client")

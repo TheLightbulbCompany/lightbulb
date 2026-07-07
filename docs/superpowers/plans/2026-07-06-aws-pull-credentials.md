@@ -1258,6 +1258,8 @@ Watch CI (`gh run watch <id> --exit-status`); address Codex-review findings; mer
 2. Update the founder's container to the new task definition via the **admin dashboard** (`admin.isol8.co` → founder user → container → reprovision/apply update; the admin `container.reprovision` action preserves EFS — only the ECS service/task rolls). Wait until the container is healthy again.
 3. Order matters: this must complete BEFORE Step 6's `aws-complete` — the new image's plugin matches `[profile isol8-connector]`, which is what the new backend will write.
 
+> **Skew window:** between the backend deploy (Step 3) and full-fleet image promotion, any NON-founder owner who connects AWS while their container is still on the pre-rename image gets a silently-inert integration — the UI says connected, but the old plugin doesn't match `[profile isol8-connector]`, so `aws` fails to locate credentials. Mitigation: hold any customer-facing marketing of the AWS integration until the `openclaw-version.json` promotion covers the fleet. The founder (the only live connection) is sequenced correctly by this step already.
+
 - [ ] **Step 5: Preflight the helper runtime on the founder container** (read-only)
 
 ```bash

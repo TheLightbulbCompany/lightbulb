@@ -134,6 +134,32 @@ def test_helper_end_to_end_fetch_then_cache(tmp_path, monkeypatch):
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not on PATH")
+def test_helper_rejects_malformed_200_body(tmp_path, monkeypatch):
+    """A 200 with a truthy-but-malformed body ({}) must not be emitted or
+    cached as credentials — with no cache the helper exits 1 with an isol8:
+    error instead of handing the CLI an empty credential object."""
+    _StubHandler.calls = []
+    orig_creds = _StubHandler.creds
+    _StubHandler.creds = {}
+    server = http.server.HTTPServer(("127.0.0.1", 0), _StubHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        monkeypatch.setattr("core.config.settings.EFS_MOUNT_PATH", str(tmp_path))
+        monkeypatch.setattr("core.config.settings.PUBLIC_API_BASE", f"http://127.0.0.1:{server.server_port}")
+        aws_cli.write("org_x", "aws", _cred())
+        aws_dir = Path(tmp_path) / "org_x" / ".aws"
+        r = subprocess.run(["node", str(aws_dir / aws_cli.HELPER_FILENAME)], capture_output=True, text=True, timeout=30)
+        assert r.returncode == 1
+        assert r.stdout == ""  # nothing emitted — the CLI must not see {} as creds
+        assert "isol8" in r.stderr
+        # And the malformed payload must not poison the cache.
+        assert not (aws_dir / aws_cli.CACHE_FILENAME).exists()
+    finally:
+        _StubHandler.creds = orig_creds
+        server.shutdown()
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not on PATH")
 def test_helper_clear_error_when_backend_unreachable_and_no_cache(tmp_path, monkeypatch):
     monkeypatch.setattr("core.config.settings.EFS_MOUNT_PATH", str(tmp_path))
     # Unroutable port — connection refused immediately.

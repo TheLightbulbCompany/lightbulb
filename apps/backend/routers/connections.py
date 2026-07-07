@@ -11,6 +11,7 @@ from collections import defaultdict, deque
 
 import boto3
 import httpx
+from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
@@ -92,7 +93,10 @@ class AwsCompleteBody(BaseModel):
 
 
 class AwsCredentialsBody(BaseModel):
-    owner_id: str
+    # Bounded because this endpoint is unauthenticated: the owner_id flows into
+    # a DynamoDB key and a Secrets Manager name lookup, and an unbounded string
+    # is free amplification for a spray.
+    owner_id: str = Field(min_length=1, max_length=128)
 
 
 # A concrete IAM role ARN, capturing the 12-digit owning account. Deliberately
@@ -282,14 +286,26 @@ async def aws_credentials(body: AwsCredentialsBody, request: Request):
         raise HTTPException(status_code=401, detail="missing_or_malformed_authorization")
     presented = auth_header[len("Bearer ") :]
 
-    rec = await integration_secret_store.get(body.owner_id, "aws")
-    expected_hash = (rec or {}).get("cli_token_hash") or ""
-    if not expected_hash or not hmac.compare_digest(_hash_cli_token(presented), expected_hash):
+    # Cheap DynamoDB status gate FIRST, so an unauthenticated spray burns a DDB
+    # read rather than a Secrets Manager fetch. Both this gate and the token
+    # check below fail with the SAME 401 invalid_token — a caller must not be
+    # able to distinguish "owner not connected" from "wrong token".
+    status_row = await integrations_repo.get(body.owner_id, "aws")
+    if not status_row or status_row.get("status") != "connected":
         put_metric("connections.aws_credentials.fetch", dimensions={"result": "unauthorized"})
         raise HTTPException(status_code=401, detail="invalid_token")
 
-    status_row = await integrations_repo.get(body.owner_id, "aws")
-    if not status_row or status_row.get("status") != "connected":
+    try:
+        rec = await integration_secret_store.get(body.owner_id, "aws")
+    except ClientError:
+        # Secrets Manager throttling / validation errors must surface as a
+        # clean 503 (the helper falls back to its stale cache), never an
+        # unhandled 500.
+        logger.exception("aws credential secret fetch failed for owner=%s", body.owner_id)
+        put_metric("connections.aws_credentials.fetch", dimensions={"result": "store_error"})
+        raise HTTPException(status_code=503, detail="credential_service_unavailable")
+    expected_hash = (rec or {}).get("cli_token_hash") or ""
+    if not expected_hash or not hmac.compare_digest(_hash_cli_token(presented), expected_hash):
         put_metric("connections.aws_credentials.fetch", dimensions={"result": "unauthorized"})
         raise HTTPException(status_code=401, detail="invalid_token")
 

@@ -88,7 +88,15 @@ try {
     signal: AbortSignal.timeout(10_000),
   });
   if (resp.ok) {
-    creds = await resp.json();
+    // Shape-check before accepting: a truthy-but-malformed 200 body (e.g. {})
+    // must fall through to the stale-cache/error path, never be emitted or
+    // cached as credentials.
+    const parsed = await resp.json();
+    if (parsed && parsed.Version === 1 && parsed.AccessKeyId) {
+      creds = parsed;
+    } else {
+      console.error("isol8: credential service returned a malformed credential payload");
+    }
   } else {
     console.error(`isol8: credential service returned ${resp.status}`);
   }

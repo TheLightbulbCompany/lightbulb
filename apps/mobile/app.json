@@ -11,7 +11,8 @@
     "ios": {
       "bundleIdentifier": "co.isol8.mobile",
       "supportsTablet": false,
-      "icon": "./assets/expo.icon"
+      "icon": "./assets/expo.icon",
+      "appleTeamId": "WZX4U3C22Y"
     },
     "plugins": [
       "expo-router",

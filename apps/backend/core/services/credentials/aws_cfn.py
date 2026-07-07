@@ -18,6 +18,15 @@ def gen_external_id() -> str:
     return secrets.token_urlsafe(32)
 
 
+def platform_trust_principal_arn() -> str:
+    """Account-root principal every connector role trusts — the standard
+    cross-account SaaS pattern. Root delegates to our account's IAM; the
+    per-owner ExternalId condition (server-side only) is the per-owner lock.
+    The root ARN can never drift, so a connected account never needs a trust
+    update again."""
+    return f"arn:aws:iam::{bedrock_aip.OUR_ACCOUNT_ID}:root"
+
+
 def owner_task_role_arn(owner_id: str) -> str:
     """ARN of the owner's per-owner ECS task role — the principal Isol8 assumes
     from, named identically to the Bedrock rail's per-owner role."""

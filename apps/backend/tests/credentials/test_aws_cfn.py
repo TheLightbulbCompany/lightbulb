@@ -40,3 +40,10 @@ def test_quick_create_url_carries_all_params_url_encoded():
     assert f"param_ManagedPolicyArn={quote(policy_arn, safe='')}" in url
     # The raw ARN colons/slashes must not leak unencoded into the query.
     assert "param_ManagedPolicyArn=arn:aws:iam" not in url
+
+
+def test_platform_trust_principal_arn_is_account_root():
+    # Account-root + ExternalId is the trust pattern every connector role pins.
+    # Root never drifts, so connected accounts never need a trust update.
+    arn = aws_cfn.platform_trust_principal_arn()
+    assert arn == "arn:aws:iam::877352799272:root"

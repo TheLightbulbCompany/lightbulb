@@ -120,7 +120,7 @@ agent runs `aws …`
   → CLI reads AWS_CONFIG_FILE profile                     (unchanged env wiring)
       [profile isol8-connector]
       region = {region}
-      credential_process = /usr/local/bin/node /home/node/.openclaw/.aws/isol8-creds.mjs
+      credential_process = /usr/bin/env node /home/node/.openclaw/.aws/isol8-creds.mjs
   → helper: cache valid (> 10 min left)? print it
             else POST {api}/api/v1/connections/aws/credentials
                  Authorization: Bearer <per-owner token>

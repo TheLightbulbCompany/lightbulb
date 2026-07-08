@@ -46,6 +46,26 @@ jobs:
           docker-images: true
           swap-storage: false
 
+      # Even after the reclaim above, the root partition (~40GB) can't hold
+      # BOTH the built image in /var/lib/docker AND its second full copy that
+      # the SOCI step ingests into /var/lib/containerd — the SOCI push failed
+      # with "no space left on device" writing to /var/lib/containerd. Hosted
+      # runners have a large ~65GB /mnt scratch disk, so relocate both docker
+      # and containerd storage there before either is populated. (Prior builds
+      # ran on the self-hosted isol8-wsl runner, which had the headroom; the
+      # shared CI_RUNNER var moved this job to a hosted runner.)
+      - name: Relocate container storage to /mnt
+        run: |
+          set -euxo pipefail
+          sudo systemctl stop docker.service docker.socket
+          sudo mkdir -p /mnt/docker-data /mnt/containerd-data
+          sudo rm -rf /var/lib/docker /var/lib/containerd
+          sudo ln -s /mnt/docker-data /var/lib/docker
+          sudo ln -s /mnt/containerd-data /var/lib/containerd
+          sudo systemctl start docker.service
+          docker info --format 'docker data-root: {{.DockerRootDir}}'
+          df -h / /mnt
+
       - name: Checkout
         uses: actions/checkout@v4
         with:

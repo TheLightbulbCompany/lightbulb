@@ -115,7 +115,11 @@ export function CreateIssueSheet({
     if (mode === "issue") input.status = status;
     const ok = await onSubmit(input);
     if (ok) {
+      // Close on success from BOTH paths. The board path's onSubmit closure
+      // also calls onClose (idempotent double-close is harmless); the
+      // sub-issue path does not, so this is the only close there.
       reset();
+      onClose();
     } else {
       setBusy(false);
     }

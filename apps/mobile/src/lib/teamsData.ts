@@ -260,8 +260,14 @@ export function useTeamsIssue(issueId: string | undefined) {
       // Secondary reads are best-effort: a comments/children/agents failure
       // must not blank out an issue that loaded fine.
       const [comments, children, agents] = await Promise.all([
-        fetchJsonWithStatus(config, `/teams/issues/${encodeURIComponent(issueId)}/comments`)
-          .then((r) => (Array.isArray(r.body) ? (r.body as IssueComment[]) : []))
+        // Upstream defaults to newest-first; the web thread view renders
+        // ascending chronological, so request asc and defensively re-sort by
+        // createdAt in case the query param isn't honored.
+        fetchJsonWithStatus(config, `/teams/issues/${encodeURIComponent(issueId)}/comments?order=asc`)
+          .then((r) => {
+            const list = Array.isArray(r.body) ? (r.body as IssueComment[]) : [];
+            return [...list].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+          })
           .catch(() => [] as IssueComment[]),
         fetchJsonWithStatus(config, `/teams/issues/${encodeURIComponent(issueId)}/children`)
           .then((r) => {

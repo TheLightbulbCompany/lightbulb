@@ -315,6 +315,7 @@ export type IssueDetailState =
       children: ChildIssue[];
       agents: TeamsAgent[];
       members: CompanyMember[];
+      approvals: TeamsApproval[];
     };
 
 export function useTeamsIssue(issueId: string | undefined) {
@@ -332,6 +333,8 @@ export function useTeamsIssue(issueId: string | undefined) {
   const writingRef = useRef<Set<string>>(new Set());
   const postingRef = useRef(false);
   const creatingRef = useRef(false);
+  // Per-approval in-flight latch for the issue-detail approve/reject actions.
+  const decidingRef = useRef<Set<string>>(new Set());
 
   const load = useCallback(async () => {
     if (!issueId) {
@@ -358,7 +361,7 @@ export function useTeamsIssue(issueId: string | undefined) {
 
       // Secondary reads are best-effort: a comments/children/agents/members
       // failure must not blank out an issue that loaded fine.
-      const [comments, children, agents, members] = await Promise.all([
+      const [comments, children, agents, members, approvals] = await Promise.all([
         // Upstream defaults to newest-first; the web thread view renders
         // ascending chronological, so request asc and defensively re-sort by
         // createdAt in case the query param isn't honored.
@@ -376,9 +379,13 @@ export function useTeamsIssue(issueId: string | undefined) {
           .catch(() => [] as ChildIssue[]),
         fetchAgents(config),
         fetchMembers(config),
+        // Per-issue approvals (contract §2) — best-effort like the other
+        // secondary reads: a failure just hides the Approvals section, it never
+        // blanks an issue that otherwise loaded.
+        fetchIssueApprovals(config, issueId),
       ]);
       if (loadSeq.current !== seq) return;
-      setState({ kind: "ready", issue, comments, children, agents, members });
+      setState({ kind: "ready", issue, comments, children, agents, members, approvals });
     } catch (err) {
       if (loadSeq.current !== seq) return;
       const gate = gateFromError(err);
@@ -553,6 +560,66 @@ export function useTeamsIssue(issueId: string | undefined) {
     [config, issueId, load],
   );
 
+  // Approve / reject an approval linked to THIS issue. Optimistically flip the
+  // row's status to its resolved value (which hides its Approve/Reject buttons —
+  // `isApprovalActionable` goes false), write, then reconcile via refetch. On
+  // failure revert the whole approvals list and Alert. Per-approval ref-latch
+  // blocks a double approve/reject.
+  const decideApproval = useCallback(
+    async (
+      approvalId: string,
+      resolvedStatus: ApprovalStatus,
+      write: () => Promise<void>,
+    ) => {
+      const current = stateRef.current;
+      if (current.kind !== "ready") return;
+      if (decidingRef.current.has(approvalId)) return; // no double-submit
+      const prevApprovals = current.approvals;
+      decidingRef.current.add(approvalId);
+      setState((prev) =>
+        prev.kind === "ready"
+          ? {
+              ...prev,
+              approvals: prev.approvals.map((a) =>
+                a.id === approvalId ? { ...a, status: resolvedStatus } : a,
+              ),
+            }
+          : prev,
+      );
+      try {
+        await write();
+        await load(); // silent reconcile
+      } catch (err) {
+        setState((prev) =>
+          prev.kind === "ready" ? { ...prev, approvals: prevApprovals } : prev,
+        );
+        Alert.alert(
+          "Couldn’t update approval",
+          err instanceof Error ? err.message : "The decision failed. Please try again.",
+        );
+      } finally {
+        decidingRef.current.delete(approvalId);
+      }
+    },
+    [load],
+  );
+
+  const approveIssueApproval = useCallback(
+    (approvalId: string) =>
+      decideApproval(approvalId, "approved", () =>
+        approveApproval(config, approvalId),
+      ),
+    [decideApproval, config],
+  );
+
+  const rejectIssueApproval = useCallback(
+    (approvalId: string, reason: string) =>
+      decideApproval(approvalId, "rejected", () =>
+        rejectApproval(config, approvalId, reason),
+      ),
+    [decideApproval, config],
+  );
+
   return {
     state,
     retry: load,
@@ -563,6 +630,8 @@ export function useTeamsIssue(issueId: string | undefined) {
     setUserAssignee,
     addComment,
     createChild,
+    approveApproval: approveIssueApproval,
+    rejectApproval: rejectIssueApproval,
   };
 }
 
@@ -944,6 +1013,308 @@ export function subtaskCounts(issues: BoardIssue[]): Record<string, number> {
     }
   }
   return counts;
+}
+
+// ---------------------------------------------------------------------------
+// Approvals (contract §2) — agent→human approval workflow. A global inbox
+// (`GET /teams/approvals`) plus a per-issue list (`GET /teams/issues/{id}/
+// approvals`), both `{approvals:[…]}`. Rows carry NO top-level title — the
+// label is synthesized from `type` + `payload` (ported `approvalLabel`).
+// Writes: POST .../approve `{note?}`, POST .../reject `{reason}` (required).
+// ---------------------------------------------------------------------------
+
+/** Upstream APPROVAL_STATUSES. `pending` + `revision_requested` are actionable. */
+export type ApprovalStatus =
+  | "pending"
+  | "revision_requested"
+  | "approved"
+  | "rejected"
+  | "cancelled";
+
+/**
+ * A row from `GET /teams/approvals` or `GET /teams/issues/{id}/approvals`
+ * (`{approvals:[…]}`). The BFF forwards upstream's full (payload-redacted)
+ * Approval verbatim, so `requestedByAgentId`/`requestedByUserId` are present on
+ * list rows and let us name the requester via the shared agent/member resolvers.
+ */
+export interface TeamsApproval {
+  id: string;
+  issueId?: string | null;
+  /** Upstream approval `type` (e.g. "hire_agent"); drives the row label. */
+  type?: string | null;
+  /** Redacted payload subset; the label reads title/name/summary/action from it. */
+  payload?: Record<string, unknown> | null;
+  status: ApprovalStatus;
+  requestedByAgentId?: string | null;
+  requestedByUserId?: string | null;
+  createdAt?: string | null;
+  decidedAt?: string | null;
+}
+
+/** Friendly names for the known upstream approval types (ported verbatim from web). */
+const APPROVAL_TYPE_LABEL: Record<string, string> = {
+  hire_agent: "Hire Agent",
+  approve_ceo_strategy: "CEO Strategy",
+  budget_override_required: "Budget Override",
+  request_board_approval: "Board Approval",
+};
+
+function firstNonEmptyString(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
+/** The subject line drawn from a payload (title / name / summary / action). */
+export function approvalSubject(
+  payload?: Record<string, unknown> | null,
+): string | null {
+  return firstNonEmptyString(
+    payload?.title,
+    payload?.name,
+    payload?.summary,
+    payload?.recommendedAction,
+  );
+}
+
+/**
+ * Build a contextual label for an approval, e.g. "Hire Agent: Designer". Ported
+ * from web's `approvalLabel` (type+payload → label). Falls back to the friendly
+ * type name, then the raw type, then a generic "Approval requested".
+ */
+export function approvalLabel(
+  approval: Pick<TeamsApproval, "type" | "payload">,
+): string {
+  const type = approval.type;
+  if (!type) return "Approval requested";
+  const base = APPROVAL_TYPE_LABEL[type] ?? type;
+  const subject = approvalSubject(approval.payload);
+  return subject ? `${base}: ${subject}` : base;
+}
+
+/**
+ * Actionability triage (contract §2): `pending` AND `revision_requested` are
+ * still actionable (the reviewer can approve/reject); the three terminal states
+ * (approved/rejected/cancelled) are resolved.
+ */
+export function isApprovalActionable(
+  approval: Pick<TeamsApproval, "status">,
+): boolean {
+  return (
+    approval.status === "pending" || approval.status === "revision_requested"
+  );
+}
+
+/** Resolve an approval's requesting agent/human to a display name, or null. */
+export function approvalRequesterLabel(
+  approval: Pick<TeamsApproval, "requestedByAgentId" | "requestedByUserId">,
+  agents: TeamsAgent[],
+  members: CompanyMember[] = [],
+): string | null {
+  if (approval.requestedByAgentId) {
+    return (
+      agents.find((a) => a.id === approval.requestedByAgentId)?.name ?? "Agent"
+    );
+  }
+  if (approval.requestedByUserId) {
+    return memberName(approval.requestedByUserId, members) ?? "Member";
+  }
+  return null;
+}
+
+/** Status → chip `{label, color, tint}` (theme tokens only). */
+export function approvalStatusMeta(status: ApprovalStatus): {
+  label: string;
+  color: string;
+  tint: string;
+} {
+  switch (status) {
+    case "pending":
+      return { label: "Pending", color: colors.warn, tint: colors.statusTintTodo };
+    case "revision_requested":
+      return {
+        label: "Revision requested",
+        color: colors.warn,
+        tint: colors.statusTintTodo,
+      };
+    case "approved":
+      return { label: "Approved", color: colors.forest, tint: colors.forestTint };
+    case "rejected":
+      return { label: "Rejected", color: colors.danger, tint: colors.statusTintBlocked };
+    case "cancelled":
+      return { label: "Cancelled", color: colors.mute, tint: colors.statusTintCancelled };
+  }
+}
+
+function extractApprovals(body: unknown): TeamsApproval[] {
+  const list = (body as { approvals?: unknown } | null)?.approvals;
+  return Array.isArray(list) ? (list as TeamsApproval[]) : [];
+}
+
+/**
+ * Best-effort `GET /teams/issues/{id}/approvals` → rows. A failure resolves to
+ * `[]` so a per-issue approvals hiccup never fails the issue view.
+ */
+function fetchIssueApprovals(
+  config: PlatformAdapter,
+  issueId: string,
+): Promise<TeamsApproval[]> {
+  return fetchJsonWithStatus(
+    config,
+    `/teams/issues/${encodeURIComponent(issueId)}/approvals`,
+  )
+    .then((r) => extractApprovals(r.body))
+    .catch(() => [] as TeamsApproval[]);
+}
+
+/** POST /teams/approvals/{id}/approve `{note?}` — one-click approve (note optional). */
+export async function approveApproval(
+  config: PlatformAdapter,
+  id: string,
+  note?: string,
+): Promise<void> {
+  const trimmed = note?.trim();
+  await createApiClient(config).post(
+    `/teams/approvals/${encodeURIComponent(id)}/approve`,
+    trimmed ? { note: trimmed } : {},
+  );
+}
+
+/** POST /teams/approvals/{id}/reject `{reason}` — reason is REQUIRED (1–2000). */
+export async function rejectApproval(
+  config: PlatformAdapter,
+  id: string,
+  reason: string,
+): Promise<void> {
+  await createApiClient(config).post(
+    `/teams/approvals/${encodeURIComponent(id)}/reject`,
+    { reason },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Global approvals hook — the Teams "Approvals" surface. One gate-bearing call
+// (`/teams/approvals`) is both readiness probe AND data source; agents+members
+// ride alongside (best-effort) for requester names. approve/reject optimistically
+// REMOVE the row from the pending list (the global inbox only shows actionable
+// rows), reconcile by refetch, and revert + Alert on failure. Per-approval
+// ref-latch prevents double approve/reject.
+// ---------------------------------------------------------------------------
+
+export type ApprovalsState =
+  | { kind: "loading" }
+  | { kind: "gate"; gate: TeamsGate; message: string | null }
+  | {
+      kind: "ready";
+      approvals: TeamsApproval[];
+      agents: TeamsAgent[];
+      members: CompanyMember[];
+    };
+
+export function useTeamsApprovals() {
+  const config = useTeamsConfig();
+  const [state, setState] = useState<ApprovalsState>({ kind: "loading" });
+  const [refreshing, setRefreshing] = useState(false);
+  const loadSeq = useRef(0);
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const decidingRef = useRef<Set<string>>(new Set());
+
+  const load = useCallback(
+    async (isRefresh = false) => {
+      const seq = loadSeq.current + 1;
+      loadSeq.current = seq;
+      if (isRefresh) setRefreshing(true);
+      else setState((prev) => (prev.kind === "ready" ? prev : { kind: "loading" }));
+      try {
+        const { status, body } = await fetchJsonWithStatus(config, "/teams/approvals");
+        if (loadSeq.current !== seq) return;
+        const gate = gateFromSuccess(status, body);
+        if (gate) {
+          setState({ kind: "gate", gate, message: null });
+          return;
+        }
+        const approvals = extractApprovals(body);
+        const [agents, members] = await Promise.all([
+          fetchAgents(config),
+          fetchMembers(config),
+        ]);
+        if (loadSeq.current !== seq) return;
+        setState({ kind: "ready", approvals, agents, members });
+      } catch (err) {
+        if (loadSeq.current !== seq) return;
+        const gate = gateFromError(err);
+        setState({
+          kind: "gate",
+          gate: gate ?? "unavailable",
+          message: err instanceof Error ? err.message : "Request failed",
+        });
+      } finally {
+        if (loadSeq.current === seq && isRefresh) setRefreshing(false);
+      }
+    },
+    [config],
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      void load();
+    }, [load]),
+  );
+
+  const decide = useCallback(
+    async (id: string, write: () => Promise<void>) => {
+      const current = stateRef.current;
+      if (current.kind !== "ready") return;
+      if (decidingRef.current.has(id)) return; // ref-latch: no double-submit
+      const target = current.approvals.find((a) => a.id === id);
+      if (!target) return;
+      const prevApprovals = current.approvals;
+      decidingRef.current.add(id);
+      // Optimistic: drop the row from the pending inbox right away.
+      setState((prev) =>
+        prev.kind === "ready"
+          ? { ...prev, approvals: prev.approvals.filter((a) => a.id !== id) }
+          : prev,
+      );
+      try {
+        await write();
+        await load(false); // silent reconcile
+      } catch (err) {
+        setState((prev) =>
+          prev.kind === "ready" ? { ...prev, approvals: prevApprovals } : prev,
+        );
+        Alert.alert(
+          "Couldn’t update approval",
+          err instanceof Error ? err.message : "The decision failed. Please try again.",
+        );
+      } finally {
+        decidingRef.current.delete(id);
+      }
+    },
+    [load],
+  );
+
+  const approve = useCallback(
+    (id: string) => decide(id, () => approveApproval(config, id)),
+    [decide, config],
+  );
+  const reject = useCallback(
+    (id: string, reason: string) => decide(id, () => rejectApproval(config, id, reason)),
+    [decide, config],
+  );
+
+  return {
+    state,
+    refreshing,
+    retry: () => load(false),
+    refresh: () => load(true),
+    approve,
+    reject,
+  };
 }
 
 // ---------------------------------------------------------------------------

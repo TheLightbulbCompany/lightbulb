@@ -13,11 +13,14 @@ import {
 } from "react-native";
 
 import { usePulse } from "../../../components/chat/usePulse";
+import { ApprovalCard } from "../../../components/teams/ApprovalCard";
 import { BoardView } from "../../../components/teams/BoardView";
 import { colors, fonts, radii, spacing, type } from "../../../config/theme";
 import {
   humanizeStatus,
+  isApprovalActionable,
   timeAgo,
+  useTeamsApprovals,
   useTeamsInbox,
   type InboxItem,
 } from "../../../lib/teamsData";
@@ -151,7 +154,7 @@ function OutlineButton({
 // Mode toggle — Inbox (flat assigned list) vs Board (status-grouped, movable).
 // ---------------------------------------------------------------------------
 
-type TeamsMode = "inbox" | "board";
+type TeamsMode = "inbox" | "board" | "approvals";
 
 function SegmentedToggle({
   mode,
@@ -163,6 +166,7 @@ function SegmentedToggle({
   const segments: { key: TeamsMode; label: string }[] = [
     { key: "inbox", label: "Inbox" },
     { key: "board", label: "Board" },
+    { key: "approvals", label: "Approvals" },
   ];
   return (
     <View style={styles.toggle}>
@@ -226,10 +230,122 @@ export default function TeamsScreen() {
       </View>
       {mode === "inbox" ? (
         <InboxView />
+      ) : mode === "approvals" ? (
+        <ApprovalsView />
       ) : (
         <BoardView createOpen={createOpen} onCloseCreate={() => setCreateOpen(false)} />
       )}
     </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Approvals view (contract §2) — global inbox of pending, actionable approvals
+// with inline Approve / Reject. Same 202/402/503 readiness gate as the inbox.
+// ---------------------------------------------------------------------------
+
+function ApprovalsView() {
+  const { state, refreshing, retry, refresh, approve, reject } = useTeamsApprovals();
+
+  if (state.kind === "loading") {
+    return (
+      <View style={styles.page}>
+        <SkeletonRows />
+      </View>
+    );
+  }
+
+  if (state.kind === "gate") {
+    if (state.gate === "provisioning") {
+      return (
+        <View style={styles.page}>
+          <CenteredState
+            pulsing
+            title="Setting up your workspace…"
+            detail="Your team’s agents are being provisioned. This usually takes under a minute."
+            action={<OutlineButton label="Refresh" onPress={retry} />}
+          />
+        </View>
+      );
+    }
+    if (state.gate === "needs_subscription") {
+      return (
+        <View style={styles.page}>
+          <CenteredState
+            glyph={<Feather name="lock" size={28} color={colors.mute} />}
+            title="Teams requires an active subscription"
+            detail="Manage your subscription on isol8.co to unlock your team workspace."
+            action={
+              <OutlineButton
+                label="Manage on isol8.co"
+                onPress={() => void Linking.openURL(MANAGE_URL)}
+              />
+            }
+          />
+        </View>
+      );
+    }
+    return (
+      <View style={styles.page}>
+        <CenteredState
+          glyph={<Feather name="cloud-off" size={28} color={colors.mute} />}
+          title="Couldn’t reach your workspace"
+          detail={state.message}
+          action={<OutlineButton label="Retry" onPress={retry} />}
+        />
+      </View>
+    );
+  }
+
+  // ready — the global inbox shows only actionable (pending / revision) rows.
+  const pending = state.approvals.filter(isApprovalActionable);
+  const empty = pending.length === 0;
+  return (
+    <FlatList
+      style={styles.page}
+      data={pending}
+      keyExtractor={(item) => item.id}
+      contentContainerStyle={[styles.listContent, empty && styles.grow]}
+      refreshControl={
+        <RefreshControl
+          refreshing={refreshing}
+          onRefresh={refresh}
+          tintColor={colors.mute}
+        />
+      }
+      ListHeaderComponent={
+        !empty ? (
+          <Text style={styles.sectionLabel}>
+            PENDING APPROVALS
+            <Text style={styles.sectionCount}> · {pending.length}</Text>
+          </Text>
+        ) : null
+      }
+      ListEmptyComponent={
+        <CenteredState
+          glyph={<Feather name="shield" size={28} color={colors.mute} />}
+          title="No pending approvals."
+          detail="Approval requests from your agents will show up here."
+        />
+      }
+      renderItem={({ item }) => (
+        <View style={styles.approvalItem}>
+          <ApprovalCard
+            approval={item}
+            agents={state.agents}
+            members={state.members}
+            onApprove={approve}
+            onReject={reject}
+            onOpenIssue={(issueId) =>
+              router.push({
+                pathname: "/(app)/teams/issue/[id]",
+                params: { id: issueId },
+              })
+            }
+          />
+        </View>
+      )}
+    />
   );
 }
 
@@ -381,6 +497,9 @@ const styles = StyleSheet.create({
     marginBottom: spacing.sm,
   },
   sectionCount: { color: colors.sectionCount },
+
+  // Approvals list — spacing between approval cards.
+  approvalItem: { marginBottom: spacing.md },
 
   // Inbox rows (spec §5).
   row: {

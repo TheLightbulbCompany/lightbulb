@@ -16,6 +16,7 @@ import {
 
 import { MessageMarkdown } from "../../../../components/chat/MessageMarkdown";
 import { usePulse } from "../../../../components/chat/usePulse";
+import { ApprovalCard } from "../../../../components/teams/ApprovalCard";
 import { AssigneeAvatar } from "../../../../components/teams/AssigneeAvatar";
 import { CommentComposer } from "../../../../components/teams/CommentComposer";
 import { CreateIssueSheet } from "../../../../components/teams/CreateIssueSheet";
@@ -44,6 +45,7 @@ import {
   type IssueDetail,
   type Priority,
   type TeamsAgent,
+  type TeamsApproval,
 } from "../../../../lib/teamsData";
 
 const MANAGE_URL = "https://isol8.co/teams";
@@ -256,6 +258,8 @@ export default function IssueDetailScreen() {
     setUserAssignee,
     addComment,
     createChild,
+    approveApproval,
+    rejectApproval,
   } = useTeamsIssue(id);
   const { user } = useUser();
   const currentUserId = user?.id ?? null;
@@ -315,6 +319,8 @@ export default function IssueDetailScreen() {
         onSetAssignee={setAssignee}
         onSetUserAssignee={setUserAssignee}
         onCreateChild={createChild}
+        onApproveApproval={approveApproval}
+        onRejectApproval={rejectApproval}
       />
     );
   }
@@ -348,6 +354,8 @@ function ReadyBody({
   onSetAssignee,
   onSetUserAssignee,
   onCreateChild,
+  onApproveApproval,
+  onRejectApproval,
 }: {
   state: {
     issue: IssueDetail;
@@ -355,6 +363,7 @@ function ReadyBody({
     children: ChildIssue[];
     agents: TeamsAgent[];
     members: CompanyMember[];
+    approvals: TeamsApproval[];
   };
   currentUserId: string | null;
   onSetStatus: (status: BoardStatus) => void;
@@ -362,8 +371,10 @@ function ReadyBody({
   onSetAssignee: (agentId: string | null) => void;
   onSetUserAssignee: (userId: string | null) => void;
   onCreateChild: (input: CreateIssueInput) => Promise<boolean>;
+  onApproveApproval: (approvalId: string) => void;
+  onRejectApproval: (approvalId: string, reason: string) => void;
 }) {
-  const { issue, comments, children, agents, members } = state;
+  const { issue, comments, children, agents, members, approvals } = state;
   const identifier = issue.identifier ?? issue.id.slice(0, 8);
   const assignee = resolveAssignee(issue, agents, members);
   const created = issue.createdAt ? timeAgo(issue.createdAt) : null;
@@ -449,6 +460,28 @@ function ReadyBody({
         <View style={styles.section}>
           <Text style={styles.sectionLabel}>DESCRIPTION</Text>
           <BodyText text={issue.description} />
+        </View>
+      )}
+
+      {/* Approvals — the issue's approval requests with inline Approve/Reject. */}
+      {approvals.length > 0 && (
+        <View style={styles.section}>
+          <Text style={styles.sectionLabel}>
+            APPROVALS
+            <Text style={styles.sectionCount}> · {approvals.length}</Text>
+          </Text>
+          <View style={styles.approvalList}>
+            {approvals.map((approval) => (
+              <ApprovalCard
+                key={approval.id}
+                approval={approval}
+                agents={agents}
+                members={members}
+                onApprove={onApproveApproval}
+                onReject={onRejectApproval}
+              />
+            ))}
+          </View>
         </View>
       )}
 
@@ -639,6 +672,9 @@ const styles = StyleSheet.create({
     lineHeight: 22,
     color: colors.assistantInk,
   },
+
+  // Approval cards.
+  approvalList: { gap: spacing.sm },
 
   // Sub-issue cards.
   childList: { gap: spacing.sm },

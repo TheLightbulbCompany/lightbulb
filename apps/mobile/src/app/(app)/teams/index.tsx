@@ -7,6 +7,7 @@ import {
   Linking,
   Pressable,
   RefreshControl,
+  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -17,12 +18,17 @@ import { ApprovalCard } from "../../../components/teams/ApprovalCard";
 import { BoardView } from "../../../components/teams/BoardView";
 import { colors, fonts, radii, spacing, type } from "../../../config/theme";
 import {
+  formatCents,
   humanizeStatus,
   isApprovalActionable,
+  runDayTotal,
   timeAgo,
+  totalPendingApprovals,
   useTeamsApprovals,
+  useTeamsDashboard,
   useTeamsInbox,
   type InboxItem,
+  type RunActivityDay,
 } from "../../../lib/teamsData";
 
 // Teams is a subscription-gated, web-managed surface: when the workspace needs
@@ -154,7 +160,7 @@ function OutlineButton({
 // Mode toggle — Inbox (flat assigned list) vs Board (status-grouped, movable).
 // ---------------------------------------------------------------------------
 
-type TeamsMode = "inbox" | "board" | "approvals";
+type TeamsMode = "overview" | "inbox" | "board" | "approvals";
 
 function SegmentedToggle({
   mode,
@@ -164,6 +170,7 @@ function SegmentedToggle({
   onChange: (mode: TeamsMode) => void;
 }) {
   const segments: { key: TeamsMode; label: string }[] = [
+    { key: "overview", label: "Overview" },
     { key: "inbox", label: "Inbox" },
     { key: "board", label: "Board" },
     { key: "approvals", label: "Approvals" },
@@ -196,7 +203,7 @@ function SegmentedToggle({
 // ---------------------------------------------------------------------------
 
 export default function TeamsScreen() {
-  const [mode, setMode] = useState<TeamsMode>("board");
+  const [mode, setMode] = useState<TeamsMode>("overview");
   // Create-issue sheet visibility lives here (not in BoardView) so the header
   // "+" is driven by `mode` — it appears in board mode and is explicitly
   // cleared (headerRight: undefined) in inbox mode, so switching tabs never
@@ -228,7 +235,9 @@ export default function TeamsScreen() {
       <View style={styles.toggleBar}>
         <SegmentedToggle mode={mode} onChange={setMode} />
       </View>
-      {mode === "inbox" ? (
+      {mode === "overview" ? (
+        <DashboardView onOpenApprovals={() => setMode("approvals")} />
+      ) : mode === "inbox" ? (
         <InboxView />
       ) : mode === "approvals" ? (
         <ApprovalsView />
@@ -236,6 +245,201 @@ export default function TeamsScreen() {
         <BoardView createOpen={createOpen} onCloseCreate={() => setCreateOpen(false)} />
       )}
     </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard / Overview view (contract §3) — a glanceable set of ~4 stat tiles
+// (agents active, open tasks, pending approvals, month spend) from
+// `GET /teams/dashboard`, plus a lean run-activity summary. Same 202/402/503
+// readiness gate as the inbox. Pending-approvals tile deep-links to Approvals.
+// ---------------------------------------------------------------------------
+
+/** 2-col stat tile mirroring control/overview.tsx: overline label + big number. */
+function DashTile({
+  label,
+  value,
+  onPress,
+}: {
+  label: string;
+  value: string;
+  onPress?: () => void;
+}) {
+  const content = (
+    <>
+      <Text style={styles.dashTileLabel}>{label}</Text>
+      <Text style={styles.dashTileValue} numberOfLines={1}>
+        {value}
+      </Text>
+    </>
+  );
+  if (onPress) {
+    return (
+      <Pressable
+        style={({ pressed }) => [styles.dashTile, pressed && styles.dashTilePressed]}
+        onPress={onPress}
+        accessibilityRole="button"
+        accessibilityLabel={`${label}: ${value}`}
+      >
+        {content}
+      </Pressable>
+    );
+  }
+  return (
+    <View style={styles.dashTile} accessibilityLabel={`${label}: ${value}`}>
+      {content}
+    </View>
+  );
+}
+
+function DashboardSkeleton() {
+  const pulse = usePulse(true, 0.55);
+  return (
+    <View style={styles.dashGrid}>
+      {[0, 1, 2, 3].map((i) => (
+        <View key={i} style={styles.dashTile}>
+          <Animated.View style={[styles.dashSkeletonLabel, { opacity: pulse }]} />
+          <Animated.View style={[styles.dashSkeletonValue, { opacity: pulse }]} />
+        </View>
+      ))}
+    </View>
+  );
+}
+
+/**
+ * Lean run-activity summary — a "runs this week" total plus a minimal inline bar
+ * row over the last 14 days (plain RN Views, NO chart library). Each bar's height
+ * scales to the busiest day; empty days render a short muted stub.
+ */
+function RunActivityCard({ days }: { days: RunActivityDay[] }) {
+  const recent = days.slice(-14);
+  const totals = recent.map(runDayTotal);
+  const max = Math.max(1, ...totals);
+  const weekTotal = totals.slice(-7).reduce((sum, t) => sum + t, 0);
+  return (
+    <View style={styles.activityCard}>
+      <View style={styles.activityHeader}>
+        <Text style={styles.dashTileLabel}>RUN ACTIVITY</Text>
+        <Text style={styles.activityTotal}>{weekTotal} this week</Text>
+      </View>
+      <View
+        style={styles.barRow}
+        accessibilityLabel={`${weekTotal} agent runs in the last week`}
+      >
+        {recent.map((day, i) => {
+          const total = totals[i];
+          const height = 4 + Math.round((total / max) * 36);
+          return (
+            <View
+              key={day.date ?? i}
+              style={[
+                styles.bar,
+                {
+                  height,
+                  backgroundColor:
+                    total > 0 ? colors.forestSoft : colors.creamDeepest,
+                },
+              ]}
+            />
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
+function DashboardView({ onOpenApprovals }: { onOpenApprovals: () => void }) {
+  const { state, refreshing, retry, refresh } = useTeamsDashboard();
+
+  if (state.kind === "loading") {
+    return (
+      <View style={styles.page}>
+        <View style={styles.dashContent}>
+          <DashboardSkeleton />
+        </View>
+      </View>
+    );
+  }
+
+  if (state.kind === "gate") {
+    if (state.gate === "provisioning") {
+      return (
+        <View style={styles.page}>
+          <CenteredState
+            pulsing
+            title="Setting up your workspace…"
+            detail="Your team’s agents are being provisioned. This usually takes under a minute."
+            action={<OutlineButton label="Refresh" onPress={retry} />}
+          />
+        </View>
+      );
+    }
+    if (state.gate === "needs_subscription") {
+      return (
+        <View style={styles.page}>
+          <CenteredState
+            glyph={<Feather name="lock" size={28} color={colors.mute} />}
+            title="Teams requires an active subscription"
+            detail="Manage your subscription on isol8.co to unlock your team workspace."
+            action={
+              <OutlineButton
+                label="Manage on isol8.co"
+                onPress={() => void Linking.openURL(MANAGE_URL)}
+              />
+            }
+          />
+        </View>
+      );
+    }
+    return (
+      <View style={styles.page}>
+        <CenteredState
+          glyph={<Feather name="cloud-off" size={28} color={colors.mute} />}
+          title="Couldn’t reach your workspace"
+          detail={state.message}
+          action={<OutlineButton label="Retry" onPress={retry} />}
+        />
+      </View>
+    );
+  }
+
+  // ready
+  const dashboard = state.dashboard;
+  const agentsActive = dashboard.agents?.active ?? 0;
+  const openTasks = dashboard.tasks?.open ?? 0;
+  const pending = totalPendingApprovals(dashboard);
+  const spendCents = dashboard.costs?.monthSpendCents;
+  const activity = Array.isArray(dashboard.runActivity)
+    ? dashboard.runActivity
+    : [];
+
+  return (
+    <ScrollView
+      style={styles.page}
+      contentContainerStyle={styles.dashContent}
+      refreshControl={
+        <RefreshControl
+          refreshing={refreshing}
+          onRefresh={refresh}
+          tintColor={colors.mute}
+        />
+      }
+    >
+      <Text style={styles.sectionLabel}>OVERVIEW</Text>
+      <View style={styles.dashGrid}>
+        <DashTile label="AGENTS" value={String(agentsActive)} />
+        <DashTile label="OPEN TASKS" value={String(openTasks)} />
+        <DashTile
+          label="PENDING APPROVALS"
+          value={String(pending)}
+          onPress={pending > 0 ? onOpenApprovals : undefined}
+        />
+        {spendCents != null ? (
+          <DashTile label="MONTH SPEND" value={formatCents(spendCents)} />
+        ) : null}
+      </View>
+      {activity.length > 0 ? <RunActivityCard days={activity} /> : null}
+    </ScrollView>
   );
 }
 
@@ -458,14 +662,16 @@ const styles = StyleSheet.create({
   },
   toggle: {
     flexDirection: "row",
-    alignSelf: "center",
+    alignSelf: "stretch",
     backgroundColor: colors.creamDeeper,
     borderRadius: radii.md,
     padding: spacing.xs,
     gap: spacing.xs,
   },
   segment: {
-    paddingHorizontal: spacing.lg,
+    flex: 1,
+    alignItems: "center",
+    paddingHorizontal: spacing.sm,
     paddingVertical: spacing.sm,
     borderRadius: radii.sm,
   },
@@ -603,5 +809,81 @@ const styles = StyleSheet.create({
     height: 56,
     borderRadius: radii.md,
     backgroundColor: colors.skeleton,
+  },
+
+  // Dashboard / Overview (contract §3).
+  dashContent: {
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.md,
+    paddingBottom: spacing.xl,
+    gap: spacing.md,
+  },
+  dashGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.md,
+  },
+  dashTile: {
+    flexGrow: 1,
+    flexBasis: "47%",
+    backgroundColor: colors.white,
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    borderColor: colors.edge,
+    padding: spacing.lg,
+    gap: spacing.sm,
+  },
+  dashTilePressed: { opacity: 0.6 },
+  dashTileLabel: {
+    fontFamily: fonts.mono,
+    fontSize: 10,
+    lineHeight: 14,
+    letterSpacing: 1.4,
+    color: colors.mute,
+  },
+  dashTileValue: { ...type.title },
+  dashSkeletonLabel: {
+    height: 10,
+    width: "60%",
+    borderRadius: radii.xs,
+    backgroundColor: colors.skeleton,
+  },
+  dashSkeletonValue: {
+    height: 22,
+    width: "45%",
+    borderRadius: radii.xs,
+    backgroundColor: colors.skeleton,
+  },
+
+  // Run-activity summary card (lean bar row; NO chart library).
+  activityCard: {
+    backgroundColor: colors.white,
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    borderColor: colors.edge,
+    padding: spacing.lg,
+    gap: spacing.md,
+  },
+  activityHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  activityTotal: {
+    fontFamily: fonts.dmSansMedium,
+    fontSize: 13,
+    lineHeight: 18,
+    color: colors.ink,
+  },
+  barRow: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    justifyContent: "space-between",
+    height: 40,
+    gap: spacing.xs,
+  },
+  bar: {
+    flex: 1,
+    borderRadius: radii.xs,
   },
 });

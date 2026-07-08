@@ -1318,6 +1318,144 @@ export function useTeamsApprovals() {
 }
 
 // ---------------------------------------------------------------------------
+// Dashboard (contract §3) — a lean, glanceable overview. One round-trip
+// (`GET /teams/dashboard` → `{dashboard, sidebar_badges}`) that fans out to the
+// upstream summary + badges. Same `_ctx` readiness gate (202/402/503) as the
+// inbox/board/approvals surfaces. The mobile surface renders ~4 stat tiles from
+// the counts + a minimal run-activity summary; the heavier 14-day charts the
+// web `DashboardPanel` draws are intentionally skipped on a phone.
+// ---------------------------------------------------------------------------
+
+/** One day of the ~14-day run-activity series (contract §3). */
+export interface RunActivityDay {
+  date: string;
+  succeeded?: number | null;
+  failed?: number | null;
+  other?: number | null;
+  total?: number | null;
+}
+
+/**
+ * `dashboard` from `GET /teams/dashboard` (contract §3). All fields are
+ * defensively optional — the BFF forwards upstream's summary verbatim and any
+ * sub-object can be absent. The mobile tiles read `agents.active`, `tasks.open`,
+ * `costs.monthSpendCents`, and `pendingApprovals (+ budgets.pendingApprovals)`.
+ */
+export interface DashboardSummary {
+  agents?: {
+    active?: number | null;
+    running?: number | null;
+    paused?: number | null;
+    error?: number | null;
+  } | null;
+  tasks?: {
+    open?: number | null;
+    inProgress?: number | null;
+    blocked?: number | null;
+    done?: number | null;
+  } | null;
+  runActivity?: RunActivityDay[] | null;
+  costs?: {
+    monthSpendCents?: number | null;
+    monthBudgetCents?: number | null;
+    monthUtilizationPercent?: number | null;
+  } | null;
+  pendingApprovals?: number | null;
+  budgets?: { pendingApprovals?: number | null } | null;
+}
+
+/**
+ * Total actionable approvals for the "Pending approvals" tile: the plain
+ * pending count PLUS budget-override approvals (contract §3 — web sums
+ * `pendingApprovals + budgets.pendingApprovals`).
+ */
+export function totalPendingApprovals(dashboard: DashboardSummary): number {
+  return (
+    (dashboard.pendingApprovals ?? 0) + (dashboard.budgets?.pendingApprovals ?? 0)
+  );
+}
+
+/** Sum a run-activity day's total (prefer `total`, else succeeded+failed+other). */
+export function runDayTotal(day: RunActivityDay): number {
+  if (day.total != null) return day.total;
+  return (day.succeeded ?? 0) + (day.failed ?? 0) + (day.other ?? 0);
+}
+
+/** Cents → "$X.XX" (month-spend tile). Non-finite/absent → "$0.00". */
+export function formatCents(cents: number | null | undefined): string {
+  const value = typeof cents === "number" && Number.isFinite(cents) ? cents : 0;
+  return `$${(value / 100).toFixed(2)}`;
+}
+
+export type DashboardState =
+  | { kind: "loading" }
+  | { kind: "gate"; gate: TeamsGate; message: string | null }
+  | { kind: "ready"; dashboard: DashboardSummary };
+
+function extractDashboard(body: unknown): DashboardSummary {
+  const dashboard = (body as { dashboard?: unknown } | null)?.dashboard;
+  return dashboard && typeof dashboard === "object"
+    ? (dashboard as DashboardSummary)
+    : {};
+}
+
+/**
+ * Dashboard hook — the Teams "Overview" surface. One gate-bearing call
+ * (`/teams/dashboard`) is both the readiness probe AND the data source, mirroring
+ * the inbox/board/approvals hooks. Focus-refetch + pull-to-refresh; getTokenRef
+ * keeps `load` stable (never `[getToken]`).
+ */
+export function useTeamsDashboard() {
+  const config = useTeamsConfig();
+  const [state, setState] = useState<DashboardState>({ kind: "loading" });
+  const [refreshing, setRefreshing] = useState(false);
+  const loadSeq = useRef(0);
+
+  const load = useCallback(
+    async (isRefresh = false) => {
+      const seq = loadSeq.current + 1;
+      loadSeq.current = seq;
+      if (isRefresh) setRefreshing(true);
+      else setState((prev) => (prev.kind === "ready" ? prev : { kind: "loading" }));
+      try {
+        const { status, body } = await fetchJsonWithStatus(config, "/teams/dashboard");
+        if (loadSeq.current !== seq) return;
+        const gate = gateFromSuccess(status, body);
+        if (gate) {
+          setState({ kind: "gate", gate, message: null });
+        } else {
+          setState({ kind: "ready", dashboard: extractDashboard(body) });
+        }
+      } catch (err) {
+        if (loadSeq.current !== seq) return;
+        const gate = gateFromError(err);
+        setState({
+          kind: "gate",
+          gate: gate ?? "unavailable",
+          message: err instanceof Error ? err.message : "Request failed",
+        });
+      } finally {
+        if (loadSeq.current === seq && isRefresh) setRefreshing(false);
+      }
+    },
+    [config],
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      void load();
+    }, [load]),
+  );
+
+  return {
+    state,
+    refreshing,
+    retry: () => load(false),
+    refresh: () => load(true),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Display helpers
 // ---------------------------------------------------------------------------
 

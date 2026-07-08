@@ -146,7 +146,7 @@ export default function MarketplacePanel() {
             <Text style={styles.dim}>No listings</Text>
           </View>
         }
-        renderItem={ListingRow}
+        renderItem={({ item }) => <ListingRow item={item} />}
         keyboardShouldPersistTaps="handled"
       />
     );

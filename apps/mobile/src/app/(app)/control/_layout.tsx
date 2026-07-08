@@ -32,6 +32,8 @@ export default function ControlLayout() {
       <Stack.Screen name="usage" options={{ title: "Usage" }} />
       <Stack.Screen name="llm" options={{ title: "Model & Credits" }} />
       <Stack.Screen name="integrations" options={{ title: "Integrations" }} />
+      <Stack.Screen name="marketplace" options={{ title: "Marketplace" }} />
+      <Stack.Screen name="listing/[id]" options={{ title: "Listing" }} />
     </Stack>
   );
 }

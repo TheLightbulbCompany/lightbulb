@@ -4,6 +4,7 @@ import { Redirect, Tabs } from "expo-router";
 import { StyleSheet, type ColorValue } from "react-native";
 import type { ComponentProps } from "react";
 
+import { ProvisionGate } from "../../components/provision/ProvisionGate";
 import { colors, fonts } from "../../config/theme";
 import { GatewayProvider } from "../../providers/gateway";
 
@@ -25,7 +26,8 @@ export default function AppLayout() {
 
   return (
     <GatewayProvider>
-      <Tabs
+      <ProvisionGate>
+        <Tabs
         screenOptions={{
           headerShown: true,
           sceneStyle: { backgroundColor: colors.cream },
@@ -83,7 +85,8 @@ export default function AppLayout() {
         />
         {/* Chat detail — reachable by navigation only, not a tab. */}
         <Tabs.Screen name="agent/[agentId]" options={{ href: null, title: "Chat" }} />
-      </Tabs>
+        </Tabs>
+      </ProvisionGate>
     </GatewayProvider>
   );
 }

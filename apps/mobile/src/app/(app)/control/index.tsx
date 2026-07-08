@@ -78,6 +78,13 @@ const PANELS: PanelRow[] = [
     icon: "grid",
     route: "/(app)/control/integrations",
   },
+  {
+    key: "marketplace",
+    label: "Marketplace",
+    description: "Discover and deploy community agents",
+    icon: "shopping-bag",
+    route: "/(app)/control/marketplace",
+  },
 ];
 
 export default function ControlIndex() {

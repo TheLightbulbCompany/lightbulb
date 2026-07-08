@@ -595,6 +595,19 @@ struct UpdateManifest {
 /// design — Tauri's `verify_signature` still runs. We've only moved
 /// the metadata-fetch step out of reqwest and into the webview, which
 /// IS Vercel-authenticated.
+///
+/// NOTE: the loopback endpoint is `http://127.0.0.1:<port>`, which
+/// `UpdaterBuilder::endpoints` rejects in release builds unless
+/// `dangerousInsecureTransportProtocol: true` is set in
+/// `tauri.conf.json` (`plugins.updater`). That flag is safe HERE and
+/// only here: it relaxes the transport check for the *manifest* fetch,
+/// which is a same-machine loopback serving JSON the webview already
+/// pulled over HTTPS. The bundle download URL inside that manifest is
+/// still an HTTPS release-asset URL, and its minisign signature is
+/// still verified against the baked-in pubkey before install — the
+/// real security boundary is untouched. Without the flag, every
+/// in-app update fails at `set endpoints` with "must use a secure
+/// protocol like `https`".
 #[tauri::command]
 async fn apply_update_manifest(
     app: tauri::AppHandle,

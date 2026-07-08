@@ -188,7 +188,10 @@ function SegmentedToggle({
             accessibilityState={{ selected: active }}
             accessibilityLabel={`${segment.label} view`}
           >
-            <Text style={[styles.segmentText, active && styles.segmentTextActive]}>
+            <Text
+              style={[styles.segmentText, active && styles.segmentTextActive]}
+              numberOfLines={1}
+            >
               {segment.label}
             </Text>
           </Pressable>

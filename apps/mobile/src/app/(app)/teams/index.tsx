@@ -207,32 +207,33 @@ function SegmentedToggle({
 
 export default function TeamsScreen() {
   const [mode, setMode] = useState<TeamsMode>("overview");
-  // Create-issue sheet visibility lives here (not in BoardView) so the header
-  // "+" is driven by `mode` — it appears in board mode and is explicitly
-  // cleared (headerRight: undefined) in inbox mode, so switching tabs never
-  // leaves a stale button.
+  // The "+" (new task) is available from EVERY mode for discoverability.
+  // Create always runs through BoardView's create path (which auto-refreshes
+  // the board), so tapping "+" from a non-board mode switches to Board first
+  // and lands the user on the board with their new task visible.
   const [createOpen, setCreateOpen] = useState(false);
+  const openCreate = () => {
+    setMode("board");
+    setCreateOpen(true);
+  };
   return (
     <View style={styles.host}>
       <Stack.Screen
         options={{
-          headerRight:
-            mode === "board"
-              ? () => (
-                  <Pressable
-                    onPress={() => setCreateOpen(true)}
-                    hitSlop={10}
-                    style={({ pressed }) => [
-                      styles.headerBtn,
-                      pressed && styles.headerBtnPressed,
-                    ]}
-                    accessibilityRole="button"
-                    accessibilityLabel="New issue"
-                  >
-                    <Feather name="plus" size={22} color={colors.forest} />
-                  </Pressable>
-                )
-              : undefined,
+          headerRight: () => (
+            <Pressable
+              onPress={openCreate}
+              hitSlop={10}
+              style={({ pressed }) => [
+                styles.headerBtn,
+                pressed && styles.headerBtnPressed,
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="New task"
+            >
+              <Feather name="plus" size={22} color={colors.forest} />
+            </Pressable>
+          ),
         }}
       />
       <View style={styles.toggleBar}>

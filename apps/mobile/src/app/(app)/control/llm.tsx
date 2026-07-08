@@ -415,7 +415,10 @@ export default function LlmPanel() {
     const credits = state.credits;
     // lifecycle_enabled === false ⇒ top-ups unavailable in this env; absent =
     // treat as enabled (contract §2). Top-up itself is web-only (D1).
-    const topUpAvailable = credits?.lifecycle_enabled !== false;
+    // Only offer top-up when the balance actually loaded and lifecycle
+    // credits are enabled — a failed fetch (credits == null) must not show a
+    // top-up link next to an unavailable balance.
+    const topUpAvailable = credits != null && credits.lifecycle_enabled !== false;
     creditsCard = (
       <Card>
         <Text style={styles.overline}>BEDROCK CREDITS</Text>

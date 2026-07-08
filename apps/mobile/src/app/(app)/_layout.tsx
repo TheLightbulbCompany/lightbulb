@@ -57,7 +57,14 @@ export default function AppLayout() {
         />
         <Tabs.Screen
           name="teams"
-          options={{ title: "Teams", tabBarIcon: tabIcon("inbox") }}
+          // The teams tab is a nested Stack (teams/_layout.tsx); it owns its
+          // own inbox + pushed issue-detail headers, so suppress the Tabs
+          // header to avoid stacking two.
+          options={{
+            title: "Teams",
+            tabBarIcon: tabIcon("inbox"),
+            headerShown: false,
+          }}
         />
         <Tabs.Screen
           name="control"

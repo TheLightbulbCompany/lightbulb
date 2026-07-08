@@ -306,8 +306,8 @@ export default function AgentsPanel() {
       return (
         <Pressable
           style={({ pressed }) => [
-            styles.row,
-            pressed && styles.rowPressed,
+            styles.card,
+            pressed && styles.cardPressed,
             isDeleting && styles.rowDeleting,
           ]}
           onPress={() =>
@@ -321,23 +321,21 @@ export default function AgentsPanel() {
           accessibilityRole="button"
           accessibilityLabel={`${name}. Tap to inspect, long-press to delete.`}
         >
-          <AgentMonogram name={name} emoji={item.identity?.emoji ?? undefined} />
-          <View style={styles.rowText}>
-            <View style={styles.nameRow}>
-              <Text style={styles.name} numberOfLines={1}>
-                {name}
-              </Text>
-              {isDefault && <Text style={styles.defaultTag}>DEFAULT</Text>}
-            </View>
-            <Text style={styles.model} numberOfLines={1}>
-              {model ?? "Uses default model"}
-            </Text>
+          <View style={styles.cardTop}>
+            <AgentMonogram name={name} emoji={item.identity?.emoji ?? undefined} />
+            {isDeleting ? (
+              <ActivityIndicator size="small" color={colors.mute} />
+            ) : (
+              <AgentStatusDot />
+            )}
           </View>
-          {isDeleting ? (
-            <ActivityIndicator size="small" color={colors.mute} />
-          ) : (
-            <AgentStatusDot />
-          )}
+          <Text style={styles.cardName} numberOfLines={2}>
+            {name}
+          </Text>
+          <Text style={styles.cardModel} numberOfLines={1}>
+            {model ?? "Uses default model"}
+          </Text>
+          {isDefault && <Text style={styles.defaultTag}>DEFAULT</Text>}
         </Pressable>
       );
     },
@@ -376,6 +374,8 @@ export default function AgentsPanel() {
         data={agents}
         keyExtractor={(a) => a.id}
         style={styles.list}
+        numColumns={2}
+        columnWrapperStyle={styles.columnWrap}
         contentContainerStyle={[
           styles.listContent,
           showEmpty && styles.centerGrow,
@@ -441,7 +441,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     paddingTop: spacing.md,
     paddingBottom: spacing.xl,
+    gap: spacing.sm,
   },
+  // 2-up grid: each row's cards sit at the edges, odd trailing card stays
+  // left-aligned at its own width (never stretched full-width).
+  columnWrap: { justifyContent: "space-between" },
   centerGrow: {
     flexGrow: 1,
     alignItems: "center",
@@ -463,24 +467,36 @@ const styles = StyleSheet.create({
   },
   sectionCount: { color: colors.sectionCount },
 
-  // Roster rows (spec §5) — mirrors chat.tsx.
-  row: {
+  // Agent grid cards — a 2-up roster (each card ~half width, edge-aligned).
+  card: {
+    width: "48%",
+    backgroundColor: colors.white,
+    borderWidth: 1,
+    borderColor: colors.edge,
+    borderRadius: radii.md,
+    padding: spacing.md,
+    gap: spacing.xs,
+    minHeight: 104,
+  },
+  cardPressed: { backgroundColor: colors.rowPressed },
+  rowDeleting: { opacity: 0.5 },
+  cardTop: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
-    padding: spacing.sm,
-    borderRadius: 10,
+    justifyContent: "space-between",
+    marginBottom: spacing.xs,
   },
-  rowPressed: { backgroundColor: colors.rowPressed },
-  rowDeleting: { opacity: 0.5 },
-  rowText: { flex: 1 },
-  nameRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
-  name: {
+  cardName: {
     fontFamily: fonts.dmSansMedium,
-    fontSize: 13,
-    lineHeight: 18,
+    fontSize: 14,
+    lineHeight: 19,
     color: colors.ink,
-    flexShrink: 1,
+  },
+  cardModel: {
+    fontFamily: fonts.dmSans,
+    fontSize: 11,
+    lineHeight: 15,
+    color: colors.mute,
   },
   defaultTag: {
     fontFamily: fonts.mono,
@@ -488,12 +504,6 @@ const styles = StyleSheet.create({
     lineHeight: 12,
     letterSpacing: 1,
     color: colors.forest,
-  },
-  model: {
-    fontFamily: fonts.dmSans,
-    fontSize: 11,
-    lineHeight: 15,
-    color: colors.mute,
   },
 
   // Empty state (spec §7).

@@ -28,8 +28,15 @@
 import { useAuth } from "@clerk/clerk-expo";
 import { useFocusEffect } from "expo-router";
 import { useCallback, useMemo, useRef, useState } from "react";
-import { ApiError, fetchJsonWithStatus, type PlatformAdapter } from "@isol8/shared";
+import { Alert } from "react-native";
+import {
+  ApiError,
+  createApiClient,
+  fetchJsonWithStatus,
+  type PlatformAdapter,
+} from "@isol8/shared";
 
+import { colors } from "../config/theme";
 import { makeAdapter } from "./adapter";
 
 // ---------------------------------------------------------------------------
@@ -91,6 +98,34 @@ export interface TeamsAgent {
   id: string;
   name?: string | null;
   seeded?: boolean;
+}
+
+/** A per-label color chip descriptor (`types.ts:41-45` `IssueLabel`). */
+export interface IssueLabel {
+  id: string;
+  name: string;
+  /** Server-supplied per-label hex (`#rrggbb`); null → neutral fallback. */
+  color?: string | null;
+}
+
+/**
+ * A board row from `GET /teams/issues` (`{issues:[…]}`). Superset of the fields
+ * the differentiated board card renders — status/priority/labels/assignee are
+ * the differentiation axes (contract §3). `parentId` powers the client-side
+ * subtask count (cheap: derived from the same list, no per-issue fetch).
+ */
+export interface BoardIssue {
+  id: string;
+  identifier?: string | null;
+  title: string;
+  status?: string | null;
+  priority?: string | null;
+  labels?: IssueLabel[] | null;
+  assigneeAgentId?: string | null;
+  assigneeUserId?: string | null;
+  parentId?: string | null;
+  updatedAt?: string | null;
+  lastActivityAt?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -233,6 +268,17 @@ export function useTeamsIssue(issueId: string | undefined) {
   const config = useTeamsConfig();
   const [state, setState] = useState<IssueDetailState>({ kind: "loading" });
   const loadSeq = useRef(0);
+  // Latest-state mirror so the optimistic writers read the pre-write issue
+  // without capturing it inside a setState updater (StrictMode-safe, mirrors
+  // useTeamsBoard).
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  // Per-field in-flight latch for property PATCHes (status/priority/assignee),
+  // plus separate latches for comment posting and child creation. All prevent
+  // double-submit while a write is settling.
+  const writingRef = useRef<Set<string>>(new Set());
+  const postingRef = useRef(false);
+  const creatingRef = useRef(false);
 
   const load = useCallback(async () => {
     if (!issueId) {
@@ -304,7 +350,510 @@ export function useTeamsIssue(issueId: string | undefined) {
     }, [load]),
   );
 
-  return { state, retry: load };
+  // Generic optimistic single-field PATCH: apply the field locally, write, then
+  // silently reconcile via a refetch; on failure revert to the pre-write issue
+  // and Alert. A per-field latch blocks a second write on the same field.
+  const patchField = useCallback(
+    async (
+      fieldKey: string,
+      optimistic: (issue: IssueDetail) => IssueDetail,
+      write: () => Promise<void>,
+    ) => {
+      const current = stateRef.current;
+      if (current.kind !== "ready" || !issueId) return;
+      if (writingRef.current.has(fieldKey)) return; // no double-submit
+      const prevIssue = current.issue;
+      writingRef.current.add(fieldKey);
+      setState((prev) =>
+        prev.kind === "ready" ? { ...prev, issue: optimistic(prev.issue) } : prev,
+      );
+      try {
+        await write();
+        await load(); // silent reconcile (keeps ready state in place)
+      } catch (err) {
+        setState((prev) =>
+          prev.kind === "ready" ? { ...prev, issue: prevIssue } : prev,
+        );
+        Alert.alert(
+          "Couldn’t update issue",
+          err instanceof Error ? err.message : "The change failed. Please try again.",
+        );
+      } finally {
+        writingRef.current.delete(fieldKey);
+      }
+    },
+    [issueId, load],
+  );
+
+  const setStatus = useCallback(
+    (status: BoardStatus) =>
+      patchField(
+        "status",
+        (issue) => ({ ...issue, status }),
+        () => updateIssueStatus(config, issueId as string, status),
+      ),
+    [patchField, config, issueId],
+  );
+
+  const setPriority = useCallback(
+    (priority: Priority) =>
+      patchField(
+        "priority",
+        (issue) => ({ ...issue, priority }),
+        () => updateIssuePriority(config, issueId as string, priority),
+      ),
+    [patchField, config, issueId],
+  );
+
+  const setAssignee = useCallback(
+    (agentId: string | null) =>
+      patchField(
+        "assignee",
+        (issue) => ({
+          ...issue,
+          assigneeAgentId: agentId,
+          // agent + human assignees are mutually exclusive (contract §4).
+          assigneeUserId: agentId ? null : issue.assigneeUserId,
+        }),
+        () => updateIssueAssignee(config, issueId as string, agentId),
+      ),
+    [patchField, config, issueId],
+  );
+
+  // Post a comment: append an optimistic temp row, POST, then reconcile via
+  // refetch (which replaces the temp with the server row). On failure drop the
+  // temp + Alert. Returns whether the post succeeded so the composer can clear.
+  const addComment = useCallback(
+    async (body: string): Promise<boolean> => {
+      const trimmed = body.trim();
+      if (!trimmed) return false;
+      const current = stateRef.current;
+      if (current.kind !== "ready" || !issueId) return false;
+      if (postingRef.current) return false; // no double-submit
+      postingRef.current = true;
+      const temp: IssueComment = {
+        id: `temp-${config.uuid()}`,
+        body: trimmed,
+        createdAt: new Date().toISOString(),
+        authorKind: "user",
+      };
+      setState((prev) =>
+        prev.kind === "ready"
+          ? { ...prev, comments: [...prev.comments, temp] }
+          : prev,
+      );
+      try {
+        await postComment(config, issueId, trimmed);
+        await load();
+        return true;
+      } catch (err) {
+        setState((prev) =>
+          prev.kind === "ready"
+            ? { ...prev, comments: prev.comments.filter((c) => c.id !== temp.id) }
+            : prev,
+        );
+        Alert.alert(
+          "Couldn’t post comment",
+          err instanceof Error ? err.message : "The comment failed to send.",
+        );
+        return false;
+      } finally {
+        postingRef.current = false;
+      }
+    },
+    [config, issueId, load],
+  );
+
+  // Create a sub-issue under this issue, then refetch children. Ref-latched.
+  const createChild = useCallback(
+    async (input: CreateIssueInput): Promise<boolean> => {
+      if (!issueId || creatingRef.current) return false;
+      creatingRef.current = true;
+      try {
+        await createSubIssue(config, issueId, input);
+        await load();
+        return true;
+      } catch (err) {
+        Alert.alert(
+          "Couldn’t create sub-issue",
+          err instanceof Error ? err.message : "The sub-issue could not be created.",
+        );
+        return false;
+      } finally {
+        creatingRef.current = false;
+      }
+    },
+    [config, issueId, load],
+  );
+
+  return {
+    state,
+    retry: load,
+    reload: load,
+    setStatus,
+    setPriority,
+    setAssignee,
+    addComment,
+    createChild,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Board model (contract §1/§3) — status column order, display labels, and the
+// status/priority → theme-token color mappings the card + status sheet consume.
+// ---------------------------------------------------------------------------
+
+/** The 7 board columns, left→right, exactly as the web board lays them out. */
+export const BOARD_STATUSES = [
+  "backlog",
+  "todo",
+  "in_progress",
+  "in_review",
+  "blocked",
+  "done",
+  "cancelled",
+] as const;
+
+export type BoardStatus = (typeof BOARD_STATUSES)[number];
+
+/** snake_case wire value → Title Case display label. */
+export const STATUS_LABELS: Record<BoardStatus, string> = {
+  backlog: "Backlog",
+  todo: "Todo",
+  in_progress: "In Progress",
+  in_review: "In Review",
+  blocked: "Blocked",
+  done: "Done",
+  cancelled: "Cancelled",
+};
+
+/** Priority enum (contract §3) high→low, for the status/priority indicators. */
+export const PRIORITIES = ["critical", "high", "medium", "low"] as const;
+export type Priority = (typeof PRIORITIES)[number];
+
+export const PRIORITY_LABELS: Record<Priority, string> = {
+  critical: "Critical",
+  high: "High",
+  medium: "Medium",
+  low: "Low",
+};
+
+/** Narrow an arbitrary wire status onto a board column, or null if off-board. */
+export function toBoardStatus(status: string | null | undefined): BoardStatus | null {
+  if (!status) return null;
+  return (BOARD_STATUSES as readonly string[]).includes(status)
+    ? (status as BoardStatus)
+    : null;
+}
+
+/** Status → chip `{color, tint}` (theme tokens). Unknown statuses fall back to mute/cream. */
+export function statusColors(status: string | null | undefined): {
+  color: string;
+  tint: string;
+} {
+  const key = toBoardStatus(status);
+  if (key) return colors.status[key];
+  return { color: colors.mute, tint: colors.creamDeeper };
+}
+
+/** Priority → accent color (theme token), or null when unset/unknown. */
+export function priorityColor(priority: string | null | undefined): string | null {
+  if (!priority) return null;
+  if ((PRIORITIES as readonly string[]).includes(priority)) {
+    return colors.priority[priority as Priority];
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Write wrapper — status move (the first mobile write, contract §4).
+// PATCH /teams/issues/{id} {status}. Bearer-only, identical auth to reads; the
+// shared client's `.patch` (createApiClient) already exists.
+// ---------------------------------------------------------------------------
+
+export async function updateIssueStatus(
+  config: PlatformAdapter,
+  id: string,
+  status: BoardStatus,
+): Promise<void> {
+  const client = createApiClient(config);
+  await client.patch(`/teams/issues/${encodeURIComponent(id)}`, { status });
+}
+
+/** PATCH /teams/issues/{id} {priority}. */
+export async function updateIssuePriority(
+  config: PlatformAdapter,
+  id: string,
+  priority: Priority,
+): Promise<void> {
+  await createApiClient(config).patch(
+    `/teams/issues/${encodeURIComponent(id)}`,
+    { priority },
+  );
+}
+
+/**
+ * PATCH /teams/issues/{id} {assigneeAgentId}. Pass an agent id to assign, or
+ * `null` to unassign (contract §4 — `assigneeAgentId: null` clears it).
+ */
+export async function updateIssueAssignee(
+  config: PlatformAdapter,
+  id: string,
+  agentId: string | null,
+): Promise<void> {
+  await createApiClient(config).patch(
+    `/teams/issues/${encodeURIComponent(id)}`,
+    { assigneeAgentId: agentId },
+  );
+}
+
+/** PATCH /teams/issues/{id} with title and/or description (wire camelCase). */
+export async function updateIssueField(
+  config: PlatformAdapter,
+  id: string,
+  fields: { title?: string; description?: string },
+): Promise<void> {
+  await createApiClient(config).patch(
+    `/teams/issues/${encodeURIComponent(id)}`,
+    fields,
+  );
+}
+
+/**
+ * POST /teams/issues/{id}/comments {body}. Returns the created comment
+ * (contract §4 — the BFF whitelists `body` ONLY).
+ */
+export async function postComment(
+  config: PlatformAdapter,
+  id: string,
+  body: string,
+): Promise<IssueComment> {
+  const res = await createApiClient(config).post(
+    `/teams/issues/${encodeURIComponent(id)}/comments`,
+    { body },
+  );
+  return res as IssueComment;
+}
+
+/**
+ * Shared create body for top-level issues AND sub-issues (contract §4 —
+ * `CreateIssueBody`). `undefined` fields are dropped by JSON.stringify, so the
+ * `extra=forbid` upstream never sees an unexpected key. `status` is the create-
+ * locked 7 (== BOARD_STATUSES); `priority` the 4-value enum.
+ */
+export interface CreateIssueInput {
+  title: string;
+  description?: string;
+  status?: BoardStatus;
+  priority?: Priority;
+  assigneeAgentId?: string;
+  workMode?: "standard" | "ask" | "planning";
+}
+
+/** A freshly-created issue — only the id is load-bearing for the client (nav). */
+export interface CreatedIssue {
+  id?: string;
+  identifier?: string | null;
+  title?: string;
+}
+
+/** POST /teams/issues — create a top-level issue/task. */
+export async function createIssue(
+  config: PlatformAdapter,
+  input: CreateIssueInput,
+): Promise<CreatedIssue> {
+  const res = await createApiClient(config).post("/teams/issues", input);
+  return (res ?? {}) as CreatedIssue;
+}
+
+/** POST /teams/issues/{parentId}/children — create a sub-issue under a parent. */
+export async function createSubIssue(
+  config: PlatformAdapter,
+  parentId: string,
+  input: CreateIssueInput,
+): Promise<CreatedIssue> {
+  const res = await createApiClient(config).post(
+    `/teams/issues/${encodeURIComponent(parentId)}/children`,
+    input,
+  );
+  return (res ?? {}) as CreatedIssue;
+}
+
+// ---------------------------------------------------------------------------
+// Board hook — one gate-bearing call (`/teams/issues`) is both the readiness
+// probe AND the data source; agents ride alongside (best-effort) for assignee
+// names. `moveIssue` does an optimistic local move, reconciles by refetch, and
+// reverts + Alerts on failure. A per-issue ref-latch prevents double-submit.
+// ---------------------------------------------------------------------------
+
+export type BoardState =
+  | { kind: "loading" }
+  | { kind: "gate"; gate: TeamsGate; message: string | null }
+  | { kind: "ready"; issues: BoardIssue[]; agents: TeamsAgent[] };
+
+function extractIssues(body: unknown): BoardIssue[] {
+  const issues = (body as { issues?: unknown } | null)?.issues;
+  return Array.isArray(issues) ? (issues as BoardIssue[]) : [];
+}
+
+export function useTeamsBoard() {
+  const config = useTeamsConfig();
+  const [state, setState] = useState<BoardState>({ kind: "loading" });
+  const [refreshing, setRefreshing] = useState(false);
+  const loadSeq = useRef(0);
+  // Latest state mirror — lets `moveIssue` read the pre-move status without
+  // capturing side effects inside a setState updater (StrictMode-safe).
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  // Per-issue in-flight latch: a second move on the same card is ignored until
+  // the first settles.
+  const movingRef = useRef<Set<string>>(new Set());
+  // Single latch for the create-issue action (header "+").
+  const creatingRef = useRef(false);
+
+  const load = useCallback(
+    async (isRefresh = false) => {
+      const seq = loadSeq.current + 1;
+      loadSeq.current = seq;
+      if (isRefresh) setRefreshing(true);
+      else setState((prev) => (prev.kind === "ready" ? prev : { kind: "loading" }));
+      try {
+        // Primary call carries the readiness gate. Sort newest-first so columns
+        // read chronologically; limit high so the whole board loads in one shot.
+        const { status, body } = await fetchJsonWithStatus(
+          config,
+          "/teams/issues?sortField=updated&sortDir=desc&limit=500",
+        );
+        if (loadSeq.current !== seq) return;
+        const gate = gateFromSuccess(status, body);
+        if (gate) {
+          setState({ kind: "gate", gate, message: null });
+          return;
+        }
+        const issues = extractIssues(body);
+        // Agent names are best-effort — their failure must not blank the board.
+        const agents = await fetchJsonWithStatus(config, "/teams/agents")
+          .then((r) => {
+            const list = (r.body as { agents?: unknown } | null)?.agents;
+            return Array.isArray(list) ? (list as TeamsAgent[]) : [];
+          })
+          .catch(() => [] as TeamsAgent[]);
+        if (loadSeq.current !== seq) return;
+        setState({ kind: "ready", issues, agents });
+      } catch (err) {
+        if (loadSeq.current !== seq) return;
+        const gate = gateFromError(err);
+        setState({
+          kind: "gate",
+          gate: gate ?? "unavailable",
+          message: err instanceof Error ? err.message : "Request failed",
+        });
+      } finally {
+        if (loadSeq.current === seq && isRefresh) setRefreshing(false);
+      }
+    },
+    [config],
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      void load();
+    }, [load]),
+  );
+
+  const moveIssue = useCallback(
+    async (id: string, next: BoardStatus) => {
+      const current = stateRef.current;
+      if (current.kind !== "ready") return;
+      if (movingRef.current.has(id)) return; // ref-latch: no double-submit
+      const target = current.issues.find((i) => i.id === id);
+      if (!target) return;
+      const prevStatus = target.status ?? null;
+      if (prevStatus === next) return; // no-op move
+
+      movingRef.current.add(id);
+      // Optimistic: move the card locally right away.
+      setState((prev) =>
+        prev.kind === "ready"
+          ? {
+              ...prev,
+              issues: prev.issues.map((i) =>
+                i.id === id ? { ...i, status: next } : i,
+              ),
+            }
+          : prev,
+      );
+      try {
+        await updateIssueStatus(config, id, next);
+        // Silent reconcile (load(false) keeps the ready state in place — no
+        // pull-to-refresh spinner flash on every tap-move).
+        await load(false);
+      } catch (err) {
+        // Revert the optimistic move and surface the failure.
+        setState((prev) =>
+          prev.kind === "ready"
+            ? {
+                ...prev,
+                issues: prev.issues.map((i) =>
+                  i.id === id ? { ...i, status: prevStatus } : i,
+                ),
+              }
+            : prev,
+        );
+        Alert.alert(
+          "Couldn’t move issue",
+          err instanceof Error ? err.message : "The status change failed. Please try again.",
+        );
+      } finally {
+        movingRef.current.delete(id);
+      }
+    },
+    [config, load],
+  );
+
+  // Create a top-level issue, then reconcile the board via refetch. Ref-latched
+  // so a double-tap can't create two. Returns the created issue (with id) on
+  // success or null on failure (already Alerted).
+  const createBoardIssue = useCallback(
+    async (input: CreateIssueInput): Promise<CreatedIssue | null> => {
+      if (creatingRef.current) return null;
+      creatingRef.current = true;
+      try {
+        const created = await createIssue(config, input);
+        await load(false);
+        return created;
+      } catch (err) {
+        Alert.alert(
+          "Couldn’t create issue",
+          err instanceof Error ? err.message : "The issue could not be created.",
+        );
+        return null;
+      } finally {
+        creatingRef.current = false;
+      }
+    },
+    [config, load],
+  );
+
+  return {
+    state,
+    refreshing,
+    retry: () => load(false),
+    refresh: () => load(true),
+    moveIssue,
+    createBoardIssue,
+  };
+}
+
+/** Count direct sub-issues per parent, derived from the already-loaded board. */
+export function subtaskCounts(issues: BoardIssue[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const issue of issues) {
+    if (issue.parentId) {
+      counts[issue.parentId] = (counts[issue.parentId] ?? 0) + 1;
+    }
+  }
+  return counts;
 }
 
 // ---------------------------------------------------------------------------

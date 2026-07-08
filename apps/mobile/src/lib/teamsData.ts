@@ -528,7 +528,9 @@ export function useTeamsBoard() {
       );
       try {
         await updateIssueStatus(config, id, next);
-        await load(true); // reconcile against the server
+        // Silent reconcile (load(false) keeps the ready state in place — no
+        // pull-to-refresh spinner flash on every tap-move).
+        await load(false);
       } catch (err) {
         // Revert the optimistic move and surface the failure.
         setState((prev) =>

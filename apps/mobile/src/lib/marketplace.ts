@@ -205,6 +205,23 @@ export class MissingCredentialsError extends Error {
   }
 }
 
+/**
+ * Raised when the deploy 403s specifically because the caller is not entitled
+ * to a PAID listing (no purchase row, and not the seller) — backend detail
+ * "purchase required to deploy this listing" (marketplace_listings.py:393).
+ *
+ * This is the ONLY 403 that should route the buyer to Stripe checkout. The
+ * other deploy 403 — "Organization admin access required" (require_org_admin)
+ * — must NOT trigger checkout, because checkout runs the same admin guard and
+ * would 403 identically; it surfaces as a plain error instead.
+ */
+export class PurchaseRequiredError extends Error {
+  constructor() {
+    super("purchase_required");
+    this.name = "PurchaseRequiredError";
+  }
+}
+
 export function useDeployListing() {
   const api = useMarketplaceClient();
   return useCallback(
@@ -223,6 +240,17 @@ export function useDeployListing() {
             | null;
           if (b?.error === "missing_credentials") {
             throw new MissingCredentialsError(b.missing ?? []);
+          }
+        }
+        // 403 with the purchase-required detail → not entitled to a paid
+        // listing; distinguish from the org-admin 403 by the detail string.
+        if (err instanceof ApiError && err.status === 403) {
+          const detail = (err.body as { detail?: unknown } | null)?.detail;
+          if (
+            typeof detail === "string" &&
+            detail.toLowerCase().includes("purchase required")
+          ) {
+            throw new PurchaseRequiredError();
           }
         }
         throw err;

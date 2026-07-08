@@ -4,15 +4,22 @@
  * Mounts the `useContainerStatus` probe ABOVE the Tabs (in (app)/_layout.tsx —
  * chat.tsx is off-limits, so the banner can't live inside it). Two surfaces:
  *
- *   • Non-blocking banner — a slim amber bar for `starting` / `teamPending`.
- *     Chat still works underneath; the bar auto-clears once ready.
- *   • Blocking interstitial — a full-screen card for `blocked` / `needsSignup`,
- *     which prevent chat from working at all. Every CTA is an OUTBOUND
- *     "Manage on isol8.co" link (Linking.openURL) — the mobile app never
- *     reimplements billing / checkout / OAuth (D1). admin-only gates tell org
- *     members to ask their workspace admin instead of showing a CTA.
+ *   • Non-blocking banner — a slim amber bar for `starting` (a normal
+ *     container cold-start; chat still works underneath and the bar
+ *     auto-clears once ready).
+ *   • Blocking interstitial — a full-screen card for `teamPending` / `blocked`
+ *     / `needsSignup`, which each mean there is no working chat behind the
+ *     surface (contract §B3). `teamPending` (an org member whose admin hasn't
+ *     provisioned the workspace yet) shows a pulsing "Setting up your team
+ *     workspace…" affordance + Retry — NOT a thin bar over a broken chat.
+ *     `blocked` / `needsSignup` show an OUTBOUND "Manage on isol8.co" link
+ *     (Linking.openURL) — the mobile app never reimplements billing / checkout
+ *     / OAuth (D1). admin-only gates tell org members to ask their workspace
+ *     admin instead of showing a CTA.
  *
  * `loading` / `ready` / `unreachable` never block — the app renders normally.
+ * Polling continues while `teamPending` (see useContainerStatus) so the gate
+ * clears itself once the admin's workspace comes up.
  */
 import { useCallback } from "react";
 import {
@@ -70,48 +77,44 @@ function StartingBanner({ label }: { label: string }) {
 // Blocking interstitial
 // ---------------------------------------------------------------------------
 
+/** The pulsing "8" glyph — animated for the team-pending "still working" cue. */
+function InterstitialGlyph({ pulse }: { pulse: boolean }) {
+  const opacity = usePulse(pulse, 0.35);
+  if (!pulse) {
+    return <Text style={styles.interstitialGlyph}>8</Text>;
+  }
+  return (
+    <Animated.Text style={[styles.interstitialGlyph, { opacity }]}>
+      8
+    </Animated.Text>
+  );
+}
+
 function Interstitial({
   headline,
   body,
-  adminOnly,
-  manageUrl,
   onRetry,
   retrying,
+  action,
+  pulseGlyph = false,
 }: {
   headline: string;
   body: string;
-  adminOnly: boolean;
-  manageUrl: string;
   onRetry: () => void;
   retrying: boolean;
+  /** Action slot: outbound Manage button, admin note, or nothing (pending). */
+  action?: React.ReactNode;
+  pulseGlyph?: boolean;
 }) {
   const insets = useSafeAreaInsets();
   return (
     <View style={[styles.interstitialPage, { paddingTop: insets.top }]}>
       <View style={styles.interstitialCard}>
-        <Text style={styles.interstitialGlyph}>8</Text>
+        <InterstitialGlyph pulse={pulseGlyph} />
         <Text style={styles.interstitialHeadline}>{headline}</Text>
         <Text style={styles.interstitialBody}>{body}</Text>
 
-        {adminOnly ? (
-          <View style={styles.adminNote}>
-            <Text style={styles.adminNoteText}>
-              Ask your workspace admin to finish this on isol8.co.
-            </Text>
-          </View>
-        ) : (
-          <Pressable
-            style={({ pressed }) => [
-              styles.primaryButton,
-              pressed && styles.pressed,
-            ]}
-            onPress={() => void Linking.openURL(manageUrl)}
-            accessibilityRole="button"
-            accessibilityLabel="Manage on isol8.co"
-          >
-            <Text style={styles.primaryButtonText}>Manage on isol8.co</Text>
-          </Pressable>
-        )}
+        {action}
 
         <Pressable
           style={({ pressed }) => [styles.retryButton, pressed && styles.pressed]}
@@ -128,6 +131,35 @@ function Interstitial({
         </Pressable>
       </View>
     </View>
+  );
+}
+
+/** Outbound "Manage on isol8.co" CTA / admin-only note for the gate states. */
+function ManageAction({
+  adminOnly,
+  manageUrl,
+}: {
+  adminOnly: boolean;
+  manageUrl: string;
+}) {
+  if (adminOnly) {
+    return (
+      <View style={styles.adminNote}>
+        <Text style={styles.adminNoteText}>
+          Ask your workspace admin to finish this on isol8.co.
+        </Text>
+      </View>
+    );
+  }
+  return (
+    <Pressable
+      style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}
+      onPress={() => void Linking.openURL(manageUrl)}
+      accessibilityRole="button"
+      accessibilityLabel="Manage on isol8.co"
+    >
+      <Text style={styles.primaryButtonText}>Manage on isol8.co</Text>
+    </Pressable>
   );
 }
 
@@ -158,16 +190,36 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
     void refetch();
   }, [refetch]);
 
+  // Team-pending (202): an org member whose admin hasn't provisioned the shared
+  // workspace yet — there is NO working chat behind this, so it BLOCKS the Tabs
+  // (contract §B3) rather than sitting as a thin bar over a broken chat. Pulsing
+  // affordance + Retry; polling continues so it clears itself once ready.
+  if (status.kind === "teamPending") {
+    return (
+      <Interstitial
+        headline="Setting up your team workspace…"
+        body="Your workspace admin is still getting things ready. This clears automatically once your team's agents are up — no action needed."
+        onRetry={onRetry}
+        retrying={false}
+        pulseGlyph
+      />
+    );
+  }
+
   if (status.kind === "blocked") {
     const copy = blockedCopy(status);
     return (
       <Interstitial
         headline={copy.headline}
         body={copy.body}
-        adminOnly={status.adminOnly}
-        manageUrl={resolveManageUrl(status.href)}
         onRetry={onRetry}
         retrying={false}
+        action={
+          <ManageAction
+            adminOnly={status.adminOnly}
+            manageUrl={resolveManageUrl(status.href)}
+          />
+        }
       />
     );
   }
@@ -177,24 +229,20 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
       <Interstitial
         headline="Finish setting up on isol8.co"
         body="Your workspace hasn't been set up yet. Complete onboarding on the web to start chatting with your agents."
-        adminOnly={false}
-        manageUrl={DEFAULT_MANAGE_URL}
         onRetry={onRetry}
         retrying={false}
+        action={<ManageAction adminOnly={false} manageUrl={DEFAULT_MANAGE_URL} />}
       />
     );
   }
 
-  const bannerLabel =
-    status.kind === "teamPending"
-      ? "Setting up your team workspace…"
-      : status.kind === "starting"
-        ? "Your workspace is starting…"
-        : null;
-
+  // Only `starting` remains as the non-blocking banner: a normal container
+  // cold-start where chat still works underneath and the bar auto-clears.
   return (
     <View style={styles.root}>
-      {bannerLabel != null && <StartingBanner label={bannerLabel} />}
+      {status.kind === "starting" && (
+        <StartingBanner label="Your workspace is starting…" />
+      )}
       {children}
     </View>
   );

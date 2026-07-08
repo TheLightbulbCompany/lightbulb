@@ -1,3 +1,4 @@
+import { useAuth } from "@clerk/clerk-expo";
 import { router, Stack, useLocalSearchParams } from "expo-router";
 import {
   useCallback,
@@ -24,6 +25,7 @@ import {
   formatPrice,
   listingByline,
   MissingCredentialsError,
+  PurchaseRequiredError,
   useCheckoutListing,
   useDeployListing,
   useListingDetail,
@@ -89,6 +91,7 @@ function RequirementItem({ req }: { req: RequirementRow }) {
 
 export default function ListingDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
+  const { userId } = useAuth();
   const { state, load } = useListingDetail(id);
   const deploy = useDeployListing();
   const checkout = useCheckoutListing();
@@ -103,66 +106,93 @@ export default function ListingDetailScreen() {
   const busyRef = useRef(false);
   const [busy, setBusy] = useState(false);
 
-  const runDeploy = useCallback(
+  const notifyDeployed = useCallback((detail: ListingDetail) => {
+    Alert.alert(
+      "Deployed",
+      `${detail.listing.name} was added to your workspace.`,
+      [
+        { text: "Open chat", onPress: () => router.navigate("/(app)/chat") },
+        { text: "Done", style: "cancel" },
+      ],
+    );
+  }, []);
+
+  const notifyDeployError = useCallback((err: unknown) => {
+    if (err instanceof MissingCredentialsError) {
+      Alert.alert(
+        "Connect a provider first",
+        "This agent needs an AI provider before it can run. Open Model & Credits in Control to connect one, then try again.",
+      );
+    } else {
+      Alert.alert(
+        "Couldn’t deploy",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }, []);
+
+  // Primary action. Branches on ENTITLEMENT, not just price, so a buyer who
+  // already owns a paid listing (or the seller of their own paid listing) is
+  // NOT routed back through Stripe checkout and charged a second time:
+  //
+  //   • free OR seller-self → deploy directly, in-app, never any checkout.
+  //   • paid + not-seller → attempt the in-app deploy FIRST. The backend runs
+  //     its own entitlement check, so an owner (holding a purchase row)
+  //     deploys for free. A deploy NEVER charges. Only a genuine
+  //     PurchaseRequiredError (403 "purchase required") falls through to
+  //     Stripe checkout in the system browser. Any other error (incl. the
+  //     org-admin 403, which checkout would also reject) surfaces as an error.
+  const onPrimary = useCallback(
     async (detail: ListingDetail) => {
       if (busyRef.current) return;
       busyRef.current = true;
       setBusy(true);
       try {
-        const result = await deploy(detail.listing.listing_id);
-        Alert.alert(
-          "Deployed",
-          `${detail.listing.name} was added to your workspace.`,
-          [
-            {
-              text: "Open chat",
-              onPress: () => router.navigate("/(app)/chat"),
-            },
-            { text: "Done", style: "cancel" },
-          ],
-        );
-        void result;
-      } catch (err) {
-        if (err instanceof MissingCredentialsError) {
-          Alert.alert(
-            "Connect a provider first",
-            "This agent needs an AI provider before it can run. Open Model & Credits in Control to connect one, then try again.",
-          );
-        } else {
-          Alert.alert(
-            "Couldn’t deploy",
-            err instanceof Error ? err.message : String(err),
-          );
+        const { listing } = detail;
+        const free = !listing.price_cents || listing.price_cents <= 0;
+        const isSeller = userId != null && listing.seller_id === userId;
+
+        if (!free && !isSeller) {
+          // Deploy-first: entitled owners deploy without a charge; only the
+          // not-entitled path hands off to checkout.
+          try {
+            await deploy(listing.listing_id);
+            notifyDeployed(detail);
+            return;
+          } catch (err) {
+            if (!(err instanceof PurchaseRequiredError)) {
+              notifyDeployError(err);
+              return;
+            }
+            // Not entitled → fall through to Stripe checkout below.
+          }
+          try {
+            const url = await checkout(listing.listing_id);
+            // D1: NO in-app Stripe. Hand the Stripe-hosted URL to the system
+            // browser; the web /deploy-success page completes the purchase.
+            await Linking.openURL(url);
+          } catch (err) {
+            Alert.alert(
+              "Couldn’t start checkout",
+              err instanceof Error ? err.message : String(err),
+            );
+          }
+          return;
+        }
+
+        // Free listing or seller-self deploy: fully in-app, never any charge.
+        try {
+          await deploy(listing.listing_id);
+          notifyDeployed(detail);
+        } catch (err) {
+          notifyDeployError(err);
         }
       } finally {
         busyRef.current = false;
         setBusy(false);
       }
     },
-    [deploy],
-  );
-
-  const runCheckout = useCallback(
-    async (detail: ListingDetail) => {
-      if (busyRef.current) return;
-      busyRef.current = true;
-      setBusy(true);
-      try {
-        const url = await checkout(detail.listing.listing_id);
-        // D1: NO in-app Stripe. Hand the Stripe-hosted URL to the system
-        // browser; the web /deploy-success page completes the purchase.
-        await Linking.openURL(url);
-      } catch (err) {
-        Alert.alert(
-          "Couldn’t start checkout",
-          err instanceof Error ? err.message : String(err),
-        );
-      } finally {
-        busyRef.current = false;
-        setBusy(false);
-      }
-    },
-    [checkout],
+    [deploy, checkout, userId, notifyDeployed, notifyDeployError],
   );
 
   let body: ReactElement;
@@ -190,6 +220,11 @@ export default function ListingDetailScreen() {
     const { listing, manifest } = state.detail;
     headerTitle = listing.name;
     const free = !listing.price_cents || listing.price_cents <= 0;
+    const isSeller = userId != null && listing.seller_id === userId;
+    // In-app deploy with no possible charge: free listings, or the seller
+    // deploying their own listing (backend seller-self bypass). Paid listings
+    // for non-sellers show "Get" — deploy-first, checkout only if unentitled.
+    const deployOnly = free || isSeller;
     const requirements = manifest?.requirements ?? [];
     const description =
       manifest?.description?.trim() || listing.description_md.trim();
@@ -251,29 +286,26 @@ export default function ListingDetailScreen() {
             busy && styles.primaryButtonDisabled,
             pressed && !busy && styles.pressed,
           ]}
-          onPress={() =>
-            free ? void runDeploy(state.detail) : void runCheckout(state.detail)
-          }
+          onPress={() => void onPrimary(state.detail)}
           disabled={busy}
           accessibilityRole="button"
           accessibilityLabel={
-            free ? "Deploy to my workspace" : "Buy this agent"
+            deployOnly ? "Deploy to my workspace" : "Get this agent"
           }
         >
           {busy ? (
             <ActivityIndicator size="small" color={colors.white} />
           ) : (
             <Text style={styles.primaryButtonText}>
-              {free
-                ? "Deploy to my workspace"
-                : `Buy — ${formatPrice(listing.price_cents)}`}
+              {deployOnly ? "Deploy to my workspace" : "Get"}
             </Text>
           )}
         </Pressable>
 
-        {!free && (
+        {!deployOnly && (
           <Text style={styles.checkoutNote}>
-            Checkout opens securely in your browser.
+            Free if you already own this. Otherwise checkout opens securely in
+            your browser.
           </Text>
         )}
       </ScrollView>

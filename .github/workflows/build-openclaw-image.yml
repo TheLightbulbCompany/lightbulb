@@ -25,27 +25,13 @@ permissions:
 jobs:
   build-and-push:
     name: Build and push extended OpenClaw image
-    runs-on: ${{ vars.CI_RUNNER }}
+    # Pinned to the self-hosted isol8-wsl runner (NOT the shared vars.CI_RUNNER,
+    # which now points at hosted ubuntu-latest). This extended image + its SOCI
+    # containerd copy need more disk than a hosted runner's root partition has;
+    # isol8-wsl has the headroom, which is where every prior build succeeded.
+    runs-on: [self-hosted, isol8-wsl]
     timeout-minutes: 30
     steps:
-      # Hosted ubuntu-latest ships ~25GB of preinstalled toolchains (Android
-      # SDK, .NET, GHC, CodeQL) that leave only ~14GB usable for the Docker
-      # build. The extended image (whisper/triton wheels, chromium, go builds,
-      # node_modules) exceeds that and fails at the npm-install layer with
-      # ENOSPC, so reclaim the space first — frees ~23GB, well past the build's
-      # peak. Runs before checkout since it needs nothing from the repo. swap
-      # is left in place to avoid OOM during the memory-heavy pip installs.
-      - name: Free disk space
-        uses: jlumbroso/free-disk-space@v1.3.1
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: false
-
       - name: Checkout
         uses: actions/checkout@v4
         with:

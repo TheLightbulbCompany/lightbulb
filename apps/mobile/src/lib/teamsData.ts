@@ -28,8 +28,15 @@
 import { useAuth } from "@clerk/clerk-expo";
 import { useFocusEffect } from "expo-router";
 import { useCallback, useMemo, useRef, useState } from "react";
-import { ApiError, fetchJsonWithStatus, type PlatformAdapter } from "@isol8/shared";
+import { Alert } from "react-native";
+import {
+  ApiError,
+  createApiClient,
+  fetchJsonWithStatus,
+  type PlatformAdapter,
+} from "@isol8/shared";
 
+import { colors } from "../config/theme";
 import { makeAdapter } from "./adapter";
 
 // ---------------------------------------------------------------------------
@@ -91,6 +98,34 @@ export interface TeamsAgent {
   id: string;
   name?: string | null;
   seeded?: boolean;
+}
+
+/** A per-label color chip descriptor (`types.ts:41-45` `IssueLabel`). */
+export interface IssueLabel {
+  id: string;
+  name: string;
+  /** Server-supplied per-label hex (`#rrggbb`); null → neutral fallback. */
+  color?: string | null;
+}
+
+/**
+ * A board row from `GET /teams/issues` (`{issues:[…]}`). Superset of the fields
+ * the differentiated board card renders — status/priority/labels/assignee are
+ * the differentiation axes (contract §3). `parentId` powers the client-side
+ * subtask count (cheap: derived from the same list, no per-issue fetch).
+ */
+export interface BoardIssue {
+  id: string;
+  identifier?: string | null;
+  title: string;
+  status?: string | null;
+  priority?: string | null;
+  labels?: IssueLabel[] | null;
+  assigneeAgentId?: string | null;
+  assigneeUserId?: string | null;
+  parentId?: string | null;
+  updatedAt?: string | null;
+  lastActivityAt?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -305,6 +340,236 @@ export function useTeamsIssue(issueId: string | undefined) {
   );
 
   return { state, retry: load };
+}
+
+// ---------------------------------------------------------------------------
+// Board model (contract §1/§3) — status column order, display labels, and the
+// status/priority → theme-token color mappings the card + status sheet consume.
+// ---------------------------------------------------------------------------
+
+/** The 7 board columns, left→right, exactly as the web board lays them out. */
+export const BOARD_STATUSES = [
+  "backlog",
+  "todo",
+  "in_progress",
+  "in_review",
+  "blocked",
+  "done",
+  "cancelled",
+] as const;
+
+export type BoardStatus = (typeof BOARD_STATUSES)[number];
+
+/** snake_case wire value → Title Case display label. */
+export const STATUS_LABELS: Record<BoardStatus, string> = {
+  backlog: "Backlog",
+  todo: "Todo",
+  in_progress: "In Progress",
+  in_review: "In Review",
+  blocked: "Blocked",
+  done: "Done",
+  cancelled: "Cancelled",
+};
+
+/** Priority enum (contract §3) high→low, for the status/priority indicators. */
+export const PRIORITIES = ["critical", "high", "medium", "low"] as const;
+export type Priority = (typeof PRIORITIES)[number];
+
+export const PRIORITY_LABELS: Record<Priority, string> = {
+  critical: "Critical",
+  high: "High",
+  medium: "Medium",
+  low: "Low",
+};
+
+/** Narrow an arbitrary wire status onto a board column, or null if off-board. */
+export function toBoardStatus(status: string | null | undefined): BoardStatus | null {
+  if (!status) return null;
+  return (BOARD_STATUSES as readonly string[]).includes(status)
+    ? (status as BoardStatus)
+    : null;
+}
+
+/** Status → chip `{color, tint}` (theme tokens). Unknown statuses fall back to mute/cream. */
+export function statusColors(status: string | null | undefined): {
+  color: string;
+  tint: string;
+} {
+  const key = toBoardStatus(status);
+  if (key) return colors.status[key];
+  return { color: colors.mute, tint: colors.creamDeeper };
+}
+
+/** Priority → accent color (theme token), or null when unset/unknown. */
+export function priorityColor(priority: string | null | undefined): string | null {
+  if (!priority) return null;
+  if ((PRIORITIES as readonly string[]).includes(priority)) {
+    return colors.priority[priority as Priority];
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Write wrapper — status move (the first mobile write, contract §4).
+// PATCH /teams/issues/{id} {status}. Bearer-only, identical auth to reads; the
+// shared client's `.patch` (createApiClient) already exists.
+// ---------------------------------------------------------------------------
+
+export async function updateIssueStatus(
+  config: PlatformAdapter,
+  id: string,
+  status: BoardStatus,
+): Promise<void> {
+  const client = createApiClient(config);
+  await client.patch(`/teams/issues/${encodeURIComponent(id)}`, { status });
+}
+
+// ---------------------------------------------------------------------------
+// Board hook — one gate-bearing call (`/teams/issues`) is both the readiness
+// probe AND the data source; agents ride alongside (best-effort) for assignee
+// names. `moveIssue` does an optimistic local move, reconciles by refetch, and
+// reverts + Alerts on failure. A per-issue ref-latch prevents double-submit.
+// ---------------------------------------------------------------------------
+
+export type BoardState =
+  | { kind: "loading" }
+  | { kind: "gate"; gate: TeamsGate; message: string | null }
+  | { kind: "ready"; issues: BoardIssue[]; agents: TeamsAgent[] };
+
+function extractIssues(body: unknown): BoardIssue[] {
+  const issues = (body as { issues?: unknown } | null)?.issues;
+  return Array.isArray(issues) ? (issues as BoardIssue[]) : [];
+}
+
+export function useTeamsBoard() {
+  const config = useTeamsConfig();
+  const [state, setState] = useState<BoardState>({ kind: "loading" });
+  const [refreshing, setRefreshing] = useState(false);
+  const loadSeq = useRef(0);
+  // Latest state mirror — lets `moveIssue` read the pre-move status without
+  // capturing side effects inside a setState updater (StrictMode-safe).
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  // Per-issue in-flight latch: a second move on the same card is ignored until
+  // the first settles.
+  const movingRef = useRef<Set<string>>(new Set());
+
+  const load = useCallback(
+    async (isRefresh = false) => {
+      const seq = loadSeq.current + 1;
+      loadSeq.current = seq;
+      if (isRefresh) setRefreshing(true);
+      else setState((prev) => (prev.kind === "ready" ? prev : { kind: "loading" }));
+      try {
+        // Primary call carries the readiness gate. Sort newest-first so columns
+        // read chronologically; limit high so the whole board loads in one shot.
+        const { status, body } = await fetchJsonWithStatus(
+          config,
+          "/teams/issues?sortField=updated&sortDir=desc&limit=500",
+        );
+        if (loadSeq.current !== seq) return;
+        const gate = gateFromSuccess(status, body);
+        if (gate) {
+          setState({ kind: "gate", gate, message: null });
+          return;
+        }
+        const issues = extractIssues(body);
+        // Agent names are best-effort — their failure must not blank the board.
+        const agents = await fetchJsonWithStatus(config, "/teams/agents")
+          .then((r) => {
+            const list = (r.body as { agents?: unknown } | null)?.agents;
+            return Array.isArray(list) ? (list as TeamsAgent[]) : [];
+          })
+          .catch(() => [] as TeamsAgent[]);
+        if (loadSeq.current !== seq) return;
+        setState({ kind: "ready", issues, agents });
+      } catch (err) {
+        if (loadSeq.current !== seq) return;
+        const gate = gateFromError(err);
+        setState({
+          kind: "gate",
+          gate: gate ?? "unavailable",
+          message: err instanceof Error ? err.message : "Request failed",
+        });
+      } finally {
+        if (loadSeq.current === seq && isRefresh) setRefreshing(false);
+      }
+    },
+    [config],
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      void load();
+    }, [load]),
+  );
+
+  const moveIssue = useCallback(
+    async (id: string, next: BoardStatus) => {
+      const current = stateRef.current;
+      if (current.kind !== "ready") return;
+      if (movingRef.current.has(id)) return; // ref-latch: no double-submit
+      const target = current.issues.find((i) => i.id === id);
+      if (!target) return;
+      const prevStatus = target.status ?? null;
+      if (prevStatus === next) return; // no-op move
+
+      movingRef.current.add(id);
+      // Optimistic: move the card locally right away.
+      setState((prev) =>
+        prev.kind === "ready"
+          ? {
+              ...prev,
+              issues: prev.issues.map((i) =>
+                i.id === id ? { ...i, status: next } : i,
+              ),
+            }
+          : prev,
+      );
+      try {
+        await updateIssueStatus(config, id, next);
+        await load(true); // reconcile against the server
+      } catch (err) {
+        // Revert the optimistic move and surface the failure.
+        setState((prev) =>
+          prev.kind === "ready"
+            ? {
+                ...prev,
+                issues: prev.issues.map((i) =>
+                  i.id === id ? { ...i, status: prevStatus } : i,
+                ),
+              }
+            : prev,
+        );
+        Alert.alert(
+          "Couldn’t move issue",
+          err instanceof Error ? err.message : "The status change failed. Please try again.",
+        );
+      } finally {
+        movingRef.current.delete(id);
+      }
+    },
+    [config, load],
+  );
+
+  return {
+    state,
+    refreshing,
+    retry: () => load(false),
+    refresh: () => load(true),
+    moveIssue,
+  };
+}
+
+/** Count direct sub-issues per parent, derived from the already-loaded board. */
+export function subtaskCounts(issues: BoardIssue[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const issue of issues) {
+    if (issue.parentId) {
+      counts[issue.parentId] = (counts[issue.parentId] ?? 0) + 1;
+    }
+  }
+  return counts;
 }
 
 // ---------------------------------------------------------------------------

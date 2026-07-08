@@ -102,6 +102,16 @@ const palette = {
   /** Modal backdrop scrim behind bottom sheets. */
   scrim: "rgba(26,26,26,.35)",
 
+  // Board status-chip tints (Teams board cards) — a light wash behind each
+  // status accent color so the chip reads as tinted, not flat. `done` reuses
+  // `forestTint`; the rest are new light washes of the accent hue.
+  statusTintBacklog: "#efece5",
+  statusTintTodo: "#f7ecd9",
+  statusTintProgress: "#f7ecd9",
+  statusTintReview: "#eae8e3",
+  statusTintBlocked: "#f7e2e2",
+  statusTintCancelled: "#efece5",
+
   // Tool-pill status trios (§3)
   tool: {
     running: {
@@ -139,6 +149,33 @@ export const colors = {
   greenLight: palette.forestSoft,
   /** @deprecated use `danger` */
   error: palette.danger,
+
+  // ---------------------------------------------------------------------------
+  // Teams board — status + priority semantic tokens (Teams v2, contract §3).
+  // The board card must make status/priority instantly scannable, so every
+  // status maps to a chip `color` (accent + chip text) and a `tint` (chip bg).
+  // Colors come VERBATIM from the contract hexes, reusing the existing palette:
+  // backlog/cancelled=mute · todo/in_progress=warn · in_review=inkSoft ·
+  // blocked=danger · done=forest.
+  // ---------------------------------------------------------------------------
+  status: {
+    backlog: { color: palette.mute, tint: palette.statusTintBacklog },
+    todo: { color: palette.warn, tint: palette.statusTintTodo },
+    in_progress: { color: palette.warn, tint: palette.statusTintProgress },
+    in_review: { color: palette.inkSoft, tint: palette.statusTintReview },
+    blocked: { color: palette.danger, tint: palette.statusTintBlocked },
+    done: { color: palette.forest, tint: palette.forestTint },
+    cancelled: { color: palette.mute, tint: palette.statusTintCancelled },
+  },
+  /** Priority accent colors (contract §3): critical/high=danger, medium=warn, low=mute. */
+  priority: {
+    critical: palette.danger,
+    high: palette.danger,
+    medium: palette.warn,
+    low: palette.mute,
+  },
+  /** Fallback pill border/text for a label with no server-supplied color. */
+  labelPillFallback: palette.muteSoft,
 } as const;
 
 /**

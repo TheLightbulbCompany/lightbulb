@@ -1,6 +1,6 @@
 import Feather from "@expo/vector-icons/Feather";
 import { router } from "expo-router";
-import { type ReactElement } from "react";
+import { useState, type ReactElement } from "react";
 import {
   Animated,
   FlatList,
@@ -13,6 +13,7 @@ import {
 } from "react-native";
 
 import { usePulse } from "../../../components/chat/usePulse";
+import { BoardView } from "../../../components/teams/BoardView";
 import { colors, fonts, radii, spacing, type } from "../../../config/theme";
 import {
   humanizeStatus,
@@ -147,10 +148,62 @@ function OutlineButton({
 }
 
 // ---------------------------------------------------------------------------
-// Screen
+// Mode toggle — Inbox (flat assigned list) vs Board (status-grouped, movable).
 // ---------------------------------------------------------------------------
 
-export default function TeamsInbox() {
+type TeamsMode = "inbox" | "board";
+
+function SegmentedToggle({
+  mode,
+  onChange,
+}: {
+  mode: TeamsMode;
+  onChange: (mode: TeamsMode) => void;
+}) {
+  const segments: { key: TeamsMode; label: string }[] = [
+    { key: "inbox", label: "Inbox" },
+    { key: "board", label: "Board" },
+  ];
+  return (
+    <View style={styles.toggle}>
+      {segments.map((segment) => {
+        const active = mode === segment.key;
+        return (
+          <Pressable
+            key={segment.key}
+            style={[styles.segment, active && styles.segmentActive]}
+            onPress={() => onChange(segment.key)}
+            accessibilityRole="button"
+            accessibilityState={{ selected: active }}
+            accessibilityLabel={`${segment.label} view`}
+          >
+            <Text style={[styles.segmentText, active && styles.segmentTextActive]}>
+              {segment.label}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Screen — hosts the Inbox / Board toggle and the two modes.
+// ---------------------------------------------------------------------------
+
+export default function TeamsScreen() {
+  const [mode, setMode] = useState<TeamsMode>("board");
+  return (
+    <View style={styles.host}>
+      <View style={styles.toggleBar}>
+        <SegmentedToggle mode={mode} onChange={setMode} />
+      </View>
+      {mode === "inbox" ? <InboxView /> : <BoardView />}
+    </View>
+  );
+}
+
+function InboxView() {
   const { state, refreshing, retry, refresh } = useTeamsInbox();
 
   if (state.kind === "loading") {
@@ -240,6 +293,41 @@ export default function TeamsInbox() {
 }
 
 const styles = StyleSheet.create({
+  host: { flex: 1, backgroundColor: colors.cream },
+
+  // Inbox / Board segmented toggle.
+  toggleBar: {
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.sm,
+    backgroundColor: colors.cream,
+  },
+  toggle: {
+    flexDirection: "row",
+    alignSelf: "center",
+    backgroundColor: colors.creamDeeper,
+    borderRadius: radii.md,
+    padding: spacing.xs,
+    gap: spacing.xs,
+  },
+  segment: {
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    borderRadius: radii.sm,
+  },
+  segmentActive: {
+    backgroundColor: colors.white,
+    borderWidth: 1,
+    borderColor: colors.edge,
+  },
+  segmentText: {
+    fontFamily: fonts.dmSansMedium,
+    fontSize: 13,
+    lineHeight: 17,
+    color: colors.mute,
+  },
+  segmentTextActive: { color: colors.ink },
+
   page: { flex: 1, backgroundColor: colors.cream },
   listContent: {
     paddingHorizontal: spacing.md,

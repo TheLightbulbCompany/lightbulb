@@ -999,7 +999,10 @@ export function memberName(
   if (!userId) return null;
   const name = memberById(userId, members)?.name?.trim();
   if (name) return name;
-  return userId.slice(0, 5);
+  // Unresolved (member dropped by the BFF, or members fetch failed). Clerk ids
+  // are all `user_…`, so slicing them yields an identical "user_" for everyone
+  // — a generic "Member" reads better than a false identifier.
+  return "Member";
 }
 
 /**

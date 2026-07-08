@@ -324,8 +324,14 @@ export default function SessionsPanel() {
           ) : null
         }
         ListEmptyComponent={
-          isLoading || !data ? (
+          isLoading ? (
             <SkeletonRows />
+          ) : !data ? (
+            // Connected but the RPC resolved to undefined ("No container" →
+            // undefined in the shared fetcher) — unreachable, not loading.
+            <View style={styles.emptyWrap}>
+              <Text style={styles.dim}>Couldn’t reach your container.</Text>
+            </View>
           ) : (
             <View style={styles.emptyWrap}>
               <Text style={styles.emptyGlyph}>8</Text>

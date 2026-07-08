@@ -286,8 +286,15 @@ export default function SkillsPanel() {
           />
         }
         ListEmptyComponent={
-          isLoading || !data ? (
+          isLoading ? (
             <SkeletonRows />
+          ) : !data ? (
+            // Connected but the RPC resolved to undefined (the shared fetcher
+            // maps "No container" → undefined) — a genuine unreachable state,
+            // not an infinite load.
+            <View style={styles.emptyWrap}>
+              <Text style={styles.dim}>Couldn’t reach your container.</Text>
+            </View>
           ) : (
             <View style={styles.emptyWrap}>
               <Text style={styles.emptyGlyph}>8</Text>

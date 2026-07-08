@@ -100,6 +100,30 @@ export interface TeamsAgent {
   seeded?: boolean;
 }
 
+/**
+ * A company member from `GET /teams/members` (`{members:[…]}`, contract §1).
+ * `userId` is the **Clerk** user id; the BFF joins principal→Clerk and resolves
+ * name/email/imageUrl. `name` already falls back full-name → email → id upstream,
+ * so it is always a usable label. Powers human-assignee + comment-author names.
+ */
+export interface CompanyMember {
+  userId: string;
+  name?: string | null;
+  email?: string | null;
+  imageUrl?: string | null;
+}
+
+/**
+ * A resolved assignee display descriptor — the differentiated card + detail row
+ * render an agent monogram vs a human initials/photo avatar off `kind`.
+ */
+export interface AssigneeDisplay {
+  name: string;
+  kind: "agent" | "user";
+  /** Clerk avatar URL for human assignees (null for agents / no photo). */
+  imageUrl?: string | null;
+}
+
 /** A per-label color chip descriptor (`types.ts:41-45` `IssueLabel`). */
 export interface IssueLabel {
   id: string;
@@ -176,6 +200,34 @@ function useTeamsConfig(): PlatformAdapter {
   const getTokenRef = useRef(getToken);
   getTokenRef.current = getToken;
   return useMemo(() => makeAdapter(() => getTokenRef.current()), []);
+}
+
+/**
+ * Best-effort `GET /teams/agents` → `TeamsAgent[]`. A failure resolves to `[]`
+ * so the caller's primary (gate-bearing) data is never blanked by a name-source
+ * hiccup. Shared by the board + issue-detail loads.
+ */
+function fetchAgents(config: PlatformAdapter): Promise<TeamsAgent[]> {
+  return fetchJsonWithStatus(config, "/teams/agents")
+    .then((r) => {
+      const list = (r.body as { agents?: unknown } | null)?.agents;
+      return Array.isArray(list) ? (list as TeamsAgent[]) : [];
+    })
+    .catch(() => [] as TeamsAgent[]);
+}
+
+/**
+ * Best-effort `GET /teams/members` → `CompanyMember[]` (contract §1). Same
+ * best-effort posture as {@link fetchAgents}: a members-fetch failure must NOT
+ * blank the board/detail — it just degrades human names to their id fallback.
+ */
+function fetchMembers(config: PlatformAdapter): Promise<CompanyMember[]> {
+  return fetchJsonWithStatus(config, "/teams/members")
+    .then((r) => {
+      const list = (r.body as { members?: unknown } | null)?.members;
+      return Array.isArray(list) ? (list as CompanyMember[]) : [];
+    })
+    .catch(() => [] as CompanyMember[]);
 }
 
 // ---------------------------------------------------------------------------
@@ -262,6 +314,8 @@ export type IssueDetailState =
       comments: IssueComment[];
       children: ChildIssue[];
       agents: TeamsAgent[];
+      members: CompanyMember[];
+      approvals: TeamsApproval[];
     };
 
 export function useTeamsIssue(issueId: string | undefined) {
@@ -279,6 +333,8 @@ export function useTeamsIssue(issueId: string | undefined) {
   const writingRef = useRef<Set<string>>(new Set());
   const postingRef = useRef(false);
   const creatingRef = useRef(false);
+  // Per-approval in-flight latch for the issue-detail approve/reject actions.
+  const decidingRef = useRef<Set<string>>(new Set());
 
   const load = useCallback(async () => {
     if (!issueId) {
@@ -303,9 +359,9 @@ export function useTeamsIssue(issueId: string | undefined) {
       }
       const issue = body as IssueDetail;
 
-      // Secondary reads are best-effort: a comments/children/agents failure
-      // must not blank out an issue that loaded fine.
-      const [comments, children, agents] = await Promise.all([
+      // Secondary reads are best-effort: a comments/children/agents/members
+      // failure must not blank out an issue that loaded fine.
+      const [comments, children, agents, members, approvals] = await Promise.all([
         // Upstream defaults to newest-first; the web thread view renders
         // ascending chronological, so request asc and defensively re-sort by
         // createdAt in case the query param isn't honored.
@@ -321,15 +377,15 @@ export function useTeamsIssue(issueId: string | undefined) {
             return Array.isArray(issues) ? (issues as ChildIssue[]) : [];
           })
           .catch(() => [] as ChildIssue[]),
-        fetchJsonWithStatus(config, "/teams/agents")
-          .then((r) => {
-            const list = (r.body as { agents?: unknown } | null)?.agents;
-            return Array.isArray(list) ? (list as TeamsAgent[]) : [];
-          })
-          .catch(() => [] as TeamsAgent[]),
+        fetchAgents(config),
+        fetchMembers(config),
+        // Per-issue approvals (contract §2) — best-effort like the other
+        // secondary reads: a failure just hides the Approvals section, it never
+        // blanks an issue that otherwise loaded.
+        fetchIssueApprovals(config, issueId),
       ]);
       if (loadSeq.current !== seq) return;
-      setState({ kind: "ready", issue, comments, children, agents });
+      setState({ kind: "ready", issue, comments, children, agents, members, approvals });
     } catch (err) {
       if (loadSeq.current !== seq) return;
       const gate = gateFromError(err);
@@ -412,10 +468,28 @@ export function useTeamsIssue(issueId: string | undefined) {
         (issue) => ({
           ...issue,
           assigneeAgentId: agentId,
-          // agent + human assignees are mutually exclusive (contract §4).
-          assigneeUserId: agentId ? null : issue.assigneeUserId,
+          // agent + human assignees are mutually exclusive (contract §1) —
+          // assigning an agent clears any human assignee locally too.
+          assigneeUserId: null,
         }),
         () => updateIssueAssignee(config, issueId as string, agentId),
+      ),
+    [patchField, config, issueId],
+  );
+
+  // Assign a human member (or unassign). Shares the "assignee" field latch with
+  // setAssignee so an agent-write and a human-write can't race — only ONE of the
+  // two mutually-exclusive fields is ever set (contract §1).
+  const setUserAssignee = useCallback(
+    (userId: string | null) =>
+      patchField(
+        "assignee",
+        (issue) => ({
+          ...issue,
+          assigneeUserId: userId,
+          assigneeAgentId: null,
+        }),
+        () => updateIssueUserAssignee(config, issueId as string, userId),
       ),
     [patchField, config, issueId],
   );
@@ -486,6 +560,66 @@ export function useTeamsIssue(issueId: string | undefined) {
     [config, issueId, load],
   );
 
+  // Approve / reject an approval linked to THIS issue. Optimistically flip the
+  // row's status to its resolved value (which hides its Approve/Reject buttons —
+  // `isApprovalActionable` goes false), write, then reconcile via refetch. On
+  // failure revert the whole approvals list and Alert. Per-approval ref-latch
+  // blocks a double approve/reject.
+  const decideApproval = useCallback(
+    async (
+      approvalId: string,
+      resolvedStatus: ApprovalStatus,
+      write: () => Promise<void>,
+    ) => {
+      const current = stateRef.current;
+      if (current.kind !== "ready") return;
+      if (decidingRef.current.has(approvalId)) return; // no double-submit
+      const prevApprovals = current.approvals;
+      decidingRef.current.add(approvalId);
+      setState((prev) =>
+        prev.kind === "ready"
+          ? {
+              ...prev,
+              approvals: prev.approvals.map((a) =>
+                a.id === approvalId ? { ...a, status: resolvedStatus } : a,
+              ),
+            }
+          : prev,
+      );
+      try {
+        await write();
+        await load(); // silent reconcile
+      } catch (err) {
+        setState((prev) =>
+          prev.kind === "ready" ? { ...prev, approvals: prevApprovals } : prev,
+        );
+        Alert.alert(
+          "Couldn’t update approval",
+          err instanceof Error ? err.message : "The decision failed. Please try again.",
+        );
+      } finally {
+        decidingRef.current.delete(approvalId);
+      }
+    },
+    [load],
+  );
+
+  const approveIssueApproval = useCallback(
+    (approvalId: string) =>
+      decideApproval(approvalId, "approved", () =>
+        approveApproval(config, approvalId),
+      ),
+    [decideApproval, config],
+  );
+
+  const rejectIssueApproval = useCallback(
+    (approvalId: string, reason: string) =>
+      decideApproval(approvalId, "rejected", () =>
+        rejectApproval(config, approvalId, reason),
+      ),
+    [decideApproval, config],
+  );
+
   return {
     state,
     retry: load,
@@ -493,8 +627,11 @@ export function useTeamsIssue(issueId: string | undefined) {
     setStatus,
     setPriority,
     setAssignee,
+    setUserAssignee,
     addComment,
     createChild,
+    approveApproval: approveIssueApproval,
+    rejectApproval: rejectIssueApproval,
   };
 }
 
@@ -593,8 +730,10 @@ export async function updateIssuePriority(
 }
 
 /**
- * PATCH /teams/issues/{id} {assigneeAgentId}. Pass an agent id to assign, or
- * `null` to unassign (contract §4 — `assigneeAgentId: null` clears it).
+ * PATCH /teams/issues/{id} — assign an AGENT (or unassign with `null`). Sends
+ * `assigneeUserId: null` alongside so the two mutually-exclusive assignee fields
+ * (agent XOR human, contract §1) never both end up set: picking an agent clears
+ * any human assignee server-side.
  */
 export async function updateIssueAssignee(
   config: PlatformAdapter,
@@ -603,7 +742,23 @@ export async function updateIssueAssignee(
 ): Promise<void> {
   await createApiClient(config).patch(
     `/teams/issues/${encodeURIComponent(id)}`,
-    { assigneeAgentId: agentId },
+    { assigneeAgentId: agentId, assigneeUserId: null },
+  );
+}
+
+/**
+ * PATCH /teams/issues/{id} — assign a HUMAN member (or unassign with `null`).
+ * Mirror of {@link updateIssueAssignee}: sends `assigneeAgentId: null` so picking
+ * a person clears any agent assignee (mutual exclusivity, contract §1).
+ */
+export async function updateIssueUserAssignee(
+  config: PlatformAdapter,
+  id: string,
+  userId: string | null,
+): Promise<void> {
+  await createApiClient(config).patch(
+    `/teams/issues/${encodeURIComponent(id)}`,
+    { assigneeUserId: userId, assigneeAgentId: null },
   );
 }
 
@@ -689,7 +844,12 @@ export async function createSubIssue(
 export type BoardState =
   | { kind: "loading" }
   | { kind: "gate"; gate: TeamsGate; message: string | null }
-  | { kind: "ready"; issues: BoardIssue[]; agents: TeamsAgent[] };
+  | {
+      kind: "ready";
+      issues: BoardIssue[];
+      agents: TeamsAgent[];
+      members: CompanyMember[];
+    };
 
 function extractIssues(body: unknown): BoardIssue[] {
   const issues = (body as { issues?: unknown } | null)?.issues;
@@ -731,15 +891,14 @@ export function useTeamsBoard() {
           return;
         }
         const issues = extractIssues(body);
-        // Agent names are best-effort — their failure must not blank the board.
-        const agents = await fetchJsonWithStatus(config, "/teams/agents")
-          .then((r) => {
-            const list = (r.body as { agents?: unknown } | null)?.agents;
-            return Array.isArray(list) ? (list as TeamsAgent[]) : [];
-          })
-          .catch(() => [] as TeamsAgent[]);
+        // Agent + member names are best-effort — either failure resolves to []
+        // and must not blank the board (it only degrades assignee names).
+        const [agents, members] = await Promise.all([
+          fetchAgents(config),
+          fetchMembers(config),
+        ]);
         if (loadSeq.current !== seq) return;
-        setState({ kind: "ready", issues, agents });
+        setState({ kind: "ready", issues, agents, members });
       } catch (err) {
         if (loadSeq.current !== seq) return;
         const gate = gateFromError(err);
@@ -857,6 +1016,446 @@ export function subtaskCounts(issues: BoardIssue[]): Record<string, number> {
 }
 
 // ---------------------------------------------------------------------------
+// Approvals (contract §2) — agent→human approval workflow. A global inbox
+// (`GET /teams/approvals`) plus a per-issue list (`GET /teams/issues/{id}/
+// approvals`), both `{approvals:[…]}`. Rows carry NO top-level title — the
+// label is synthesized from `type` + `payload` (ported `approvalLabel`).
+// Writes: POST .../approve `{note?}`, POST .../reject `{reason}` (required).
+// ---------------------------------------------------------------------------
+
+/** Upstream APPROVAL_STATUSES. `pending` + `revision_requested` are actionable. */
+export type ApprovalStatus =
+  | "pending"
+  | "revision_requested"
+  | "approved"
+  | "rejected"
+  | "cancelled";
+
+/**
+ * A row from `GET /teams/approvals` or `GET /teams/issues/{id}/approvals`
+ * (`{approvals:[…]}`). The BFF forwards upstream's full (payload-redacted)
+ * Approval verbatim, so `requestedByAgentId`/`requestedByUserId` are present on
+ * list rows and let us name the requester via the shared agent/member resolvers.
+ */
+export interface TeamsApproval {
+  id: string;
+  issueId?: string | null;
+  /** Upstream approval `type` (e.g. "hire_agent"); drives the row label. */
+  type?: string | null;
+  /** Redacted payload subset; the label reads title/name/summary/action from it. */
+  payload?: Record<string, unknown> | null;
+  status: ApprovalStatus;
+  requestedByAgentId?: string | null;
+  requestedByUserId?: string | null;
+  createdAt?: string | null;
+  decidedAt?: string | null;
+}
+
+/** Friendly names for the known upstream approval types (ported verbatim from web). */
+const APPROVAL_TYPE_LABEL: Record<string, string> = {
+  hire_agent: "Hire Agent",
+  approve_ceo_strategy: "CEO Strategy",
+  budget_override_required: "Budget Override",
+  request_board_approval: "Board Approval",
+};
+
+function firstNonEmptyString(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
+/** The subject line drawn from a payload (title / name / summary / action). */
+export function approvalSubject(
+  payload?: Record<string, unknown> | null,
+): string | null {
+  return firstNonEmptyString(
+    payload?.title,
+    payload?.name,
+    payload?.summary,
+    payload?.recommendedAction,
+  );
+}
+
+/**
+ * Build a contextual label for an approval, e.g. "Hire Agent: Designer". Ported
+ * from web's `approvalLabel` (type+payload → label). Falls back to the friendly
+ * type name, then the raw type, then a generic "Approval requested".
+ */
+export function approvalLabel(
+  approval: Pick<TeamsApproval, "type" | "payload">,
+): string {
+  const type = approval.type;
+  if (!type) return "Approval requested";
+  const base = APPROVAL_TYPE_LABEL[type] ?? type;
+  const subject = approvalSubject(approval.payload);
+  return subject ? `${base}: ${subject}` : base;
+}
+
+/**
+ * Actionability triage (contract §2): `pending` AND `revision_requested` are
+ * still actionable (the reviewer can approve/reject); the three terminal states
+ * (approved/rejected/cancelled) are resolved.
+ */
+export function isApprovalActionable(
+  approval: Pick<TeamsApproval, "status">,
+): boolean {
+  return (
+    approval.status === "pending" || approval.status === "revision_requested"
+  );
+}
+
+/** Resolve an approval's requesting agent/human to a display name, or null. */
+export function approvalRequesterLabel(
+  approval: Pick<TeamsApproval, "requestedByAgentId" | "requestedByUserId">,
+  agents: TeamsAgent[],
+  members: CompanyMember[] = [],
+): string | null {
+  if (approval.requestedByAgentId) {
+    return (
+      agents.find((a) => a.id === approval.requestedByAgentId)?.name ?? "Agent"
+    );
+  }
+  if (approval.requestedByUserId) {
+    return memberName(approval.requestedByUserId, members) ?? "Member";
+  }
+  return null;
+}
+
+/** Status → chip `{label, color, tint}` (theme tokens only). */
+export function approvalStatusMeta(status: ApprovalStatus): {
+  label: string;
+  color: string;
+  tint: string;
+} {
+  switch (status) {
+    case "pending":
+      return { label: "Pending", color: colors.warn, tint: colors.statusTintTodo };
+    case "revision_requested":
+      return {
+        label: "Revision requested",
+        color: colors.warn,
+        tint: colors.statusTintTodo,
+      };
+    case "approved":
+      return { label: "Approved", color: colors.forest, tint: colors.forestTint };
+    case "rejected":
+      return { label: "Rejected", color: colors.danger, tint: colors.statusTintBlocked };
+    case "cancelled":
+      return { label: "Cancelled", color: colors.mute, tint: colors.statusTintCancelled };
+  }
+}
+
+function extractApprovals(body: unknown): TeamsApproval[] {
+  const list = (body as { approvals?: unknown } | null)?.approvals;
+  return Array.isArray(list) ? (list as TeamsApproval[]) : [];
+}
+
+/**
+ * Best-effort `GET /teams/issues/{id}/approvals` → rows. A failure resolves to
+ * `[]` so a per-issue approvals hiccup never fails the issue view.
+ */
+function fetchIssueApprovals(
+  config: PlatformAdapter,
+  issueId: string,
+): Promise<TeamsApproval[]> {
+  return fetchJsonWithStatus(
+    config,
+    `/teams/issues/${encodeURIComponent(issueId)}/approvals`,
+  )
+    .then((r) => extractApprovals(r.body))
+    .catch(() => [] as TeamsApproval[]);
+}
+
+/** POST /teams/approvals/{id}/approve `{note?}` — one-click approve (note optional). */
+export async function approveApproval(
+  config: PlatformAdapter,
+  id: string,
+  note?: string,
+): Promise<void> {
+  const trimmed = note?.trim();
+  await createApiClient(config).post(
+    `/teams/approvals/${encodeURIComponent(id)}/approve`,
+    trimmed ? { note: trimmed } : {},
+  );
+}
+
+/** POST /teams/approvals/{id}/reject `{reason}` — reason is REQUIRED (1–2000). */
+export async function rejectApproval(
+  config: PlatformAdapter,
+  id: string,
+  reason: string,
+): Promise<void> {
+  await createApiClient(config).post(
+    `/teams/approvals/${encodeURIComponent(id)}/reject`,
+    { reason },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Global approvals hook — the Teams "Approvals" surface. One gate-bearing call
+// (`/teams/approvals`) is both readiness probe AND data source; agents+members
+// ride alongside (best-effort) for requester names. approve/reject optimistically
+// REMOVE the row from the pending list (the global inbox only shows actionable
+// rows), reconcile by refetch, and revert + Alert on failure. Per-approval
+// ref-latch prevents double approve/reject.
+// ---------------------------------------------------------------------------
+
+export type ApprovalsState =
+  | { kind: "loading" }
+  | { kind: "gate"; gate: TeamsGate; message: string | null }
+  | {
+      kind: "ready";
+      approvals: TeamsApproval[];
+      agents: TeamsAgent[];
+      members: CompanyMember[];
+    };
+
+export function useTeamsApprovals() {
+  const config = useTeamsConfig();
+  const [state, setState] = useState<ApprovalsState>({ kind: "loading" });
+  const [refreshing, setRefreshing] = useState(false);
+  const loadSeq = useRef(0);
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const decidingRef = useRef<Set<string>>(new Set());
+
+  const load = useCallback(
+    async (isRefresh = false) => {
+      const seq = loadSeq.current + 1;
+      loadSeq.current = seq;
+      if (isRefresh) setRefreshing(true);
+      else setState((prev) => (prev.kind === "ready" ? prev : { kind: "loading" }));
+      try {
+        const { status, body } = await fetchJsonWithStatus(config, "/teams/approvals");
+        if (loadSeq.current !== seq) return;
+        const gate = gateFromSuccess(status, body);
+        if (gate) {
+          setState({ kind: "gate", gate, message: null });
+          return;
+        }
+        const approvals = extractApprovals(body);
+        const [agents, members] = await Promise.all([
+          fetchAgents(config),
+          fetchMembers(config),
+        ]);
+        if (loadSeq.current !== seq) return;
+        setState({ kind: "ready", approvals, agents, members });
+      } catch (err) {
+        if (loadSeq.current !== seq) return;
+        const gate = gateFromError(err);
+        setState({
+          kind: "gate",
+          gate: gate ?? "unavailable",
+          message: err instanceof Error ? err.message : "Request failed",
+        });
+      } finally {
+        if (loadSeq.current === seq && isRefresh) setRefreshing(false);
+      }
+    },
+    [config],
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      void load();
+    }, [load]),
+  );
+
+  const decide = useCallback(
+    async (id: string, write: () => Promise<void>) => {
+      const current = stateRef.current;
+      if (current.kind !== "ready") return;
+      if (decidingRef.current.has(id)) return; // ref-latch: no double-submit
+      const target = current.approvals.find((a) => a.id === id);
+      if (!target) return;
+      const prevApprovals = current.approvals;
+      decidingRef.current.add(id);
+      // Optimistic: drop the row from the pending inbox right away.
+      setState((prev) =>
+        prev.kind === "ready"
+          ? { ...prev, approvals: prev.approvals.filter((a) => a.id !== id) }
+          : prev,
+      );
+      try {
+        await write();
+        await load(false); // silent reconcile
+      } catch (err) {
+        setState((prev) =>
+          prev.kind === "ready" ? { ...prev, approvals: prevApprovals } : prev,
+        );
+        Alert.alert(
+          "Couldn’t update approval",
+          err instanceof Error ? err.message : "The decision failed. Please try again.",
+        );
+      } finally {
+        decidingRef.current.delete(id);
+      }
+    },
+    [load],
+  );
+
+  const approve = useCallback(
+    (id: string) => decide(id, () => approveApproval(config, id)),
+    [decide, config],
+  );
+  const reject = useCallback(
+    (id: string, reason: string) => decide(id, () => rejectApproval(config, id, reason)),
+    [decide, config],
+  );
+
+  return {
+    state,
+    refreshing,
+    retry: () => load(false),
+    refresh: () => load(true),
+    approve,
+    reject,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard (contract §3) — a lean, glanceable overview. One round-trip
+// (`GET /teams/dashboard` → `{dashboard, sidebar_badges}`) that fans out to the
+// upstream summary + badges. Same `_ctx` readiness gate (202/402/503) as the
+// inbox/board/approvals surfaces. The mobile surface renders ~4 stat tiles from
+// the counts + a minimal run-activity summary; the heavier 14-day charts the
+// web `DashboardPanel` draws are intentionally skipped on a phone.
+// ---------------------------------------------------------------------------
+
+/** One day of the ~14-day run-activity series (contract §3). */
+export interface RunActivityDay {
+  date: string;
+  succeeded?: number | null;
+  failed?: number | null;
+  other?: number | null;
+  total?: number | null;
+}
+
+/**
+ * `dashboard` from `GET /teams/dashboard` (contract §3). All fields are
+ * defensively optional — the BFF forwards upstream's summary verbatim and any
+ * sub-object can be absent. The mobile tiles read `agents.active`, `tasks.open`,
+ * `costs.monthSpendCents`, and `pendingApprovals (+ budgets.pendingApprovals)`.
+ */
+export interface DashboardSummary {
+  agents?: {
+    active?: number | null;
+    running?: number | null;
+    paused?: number | null;
+    error?: number | null;
+  } | null;
+  tasks?: {
+    open?: number | null;
+    inProgress?: number | null;
+    blocked?: number | null;
+    done?: number | null;
+  } | null;
+  runActivity?: RunActivityDay[] | null;
+  costs?: {
+    monthSpendCents?: number | null;
+    monthBudgetCents?: number | null;
+    monthUtilizationPercent?: number | null;
+  } | null;
+  pendingApprovals?: number | null;
+  budgets?: { pendingApprovals?: number | null } | null;
+}
+
+/**
+ * Total actionable approvals for the "Pending approvals" tile: the plain
+ * pending count PLUS budget-override approvals (contract §3 — web sums
+ * `pendingApprovals + budgets.pendingApprovals`).
+ */
+export function totalPendingApprovals(dashboard: DashboardSummary): number {
+  return (
+    (dashboard.pendingApprovals ?? 0) + (dashboard.budgets?.pendingApprovals ?? 0)
+  );
+}
+
+/** Sum a run-activity day's total (prefer `total`, else succeeded+failed+other). */
+export function runDayTotal(day: RunActivityDay): number {
+  if (day.total != null) return day.total;
+  return (day.succeeded ?? 0) + (day.failed ?? 0) + (day.other ?? 0);
+}
+
+/** Cents → "$X.XX" (month-spend tile). Non-finite/absent → "$0.00". */
+export function formatCents(cents: number | null | undefined): string {
+  const value = typeof cents === "number" && Number.isFinite(cents) ? cents : 0;
+  return `$${(value / 100).toFixed(2)}`;
+}
+
+export type DashboardState =
+  | { kind: "loading" }
+  | { kind: "gate"; gate: TeamsGate; message: string | null }
+  | { kind: "ready"; dashboard: DashboardSummary };
+
+function extractDashboard(body: unknown): DashboardSummary {
+  const dashboard = (body as { dashboard?: unknown } | null)?.dashboard;
+  return dashboard && typeof dashboard === "object"
+    ? (dashboard as DashboardSummary)
+    : {};
+}
+
+/**
+ * Dashboard hook — the Teams "Overview" surface. One gate-bearing call
+ * (`/teams/dashboard`) is both the readiness probe AND the data source, mirroring
+ * the inbox/board/approvals hooks. Focus-refetch + pull-to-refresh; getTokenRef
+ * keeps `load` stable (never `[getToken]`).
+ */
+export function useTeamsDashboard() {
+  const config = useTeamsConfig();
+  const [state, setState] = useState<DashboardState>({ kind: "loading" });
+  const [refreshing, setRefreshing] = useState(false);
+  const loadSeq = useRef(0);
+
+  const load = useCallback(
+    async (isRefresh = false) => {
+      const seq = loadSeq.current + 1;
+      loadSeq.current = seq;
+      if (isRefresh) setRefreshing(true);
+      else setState((prev) => (prev.kind === "ready" ? prev : { kind: "loading" }));
+      try {
+        const { status, body } = await fetchJsonWithStatus(config, "/teams/dashboard");
+        if (loadSeq.current !== seq) return;
+        const gate = gateFromSuccess(status, body);
+        if (gate) {
+          setState({ kind: "gate", gate, message: null });
+        } else {
+          setState({ kind: "ready", dashboard: extractDashboard(body) });
+        }
+      } catch (err) {
+        if (loadSeq.current !== seq) return;
+        const gate = gateFromError(err);
+        setState({
+          kind: "gate",
+          gate: gate ?? "unavailable",
+          message: err instanceof Error ? err.message : "Request failed",
+        });
+      } finally {
+        if (loadSeq.current === seq && isRefresh) setRefreshing(false);
+      }
+    },
+    [config],
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      void load();
+    }, [load]),
+  );
+
+  return {
+    state,
+    refreshing,
+    retry: () => load(false),
+    refresh: () => load(true),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Display helpers
 // ---------------------------------------------------------------------------
 
@@ -887,29 +1486,82 @@ export function timeAgo(value: string | null | undefined): string {
   return `${Math.floor(seconds / MONTH)}mo ago`;
 }
 
-/** Resolve an issue-comment author into a display label (agent name or role). */
+/** Look up a company member by Clerk user id, or null. */
+export function memberById(
+  userId: string | null | undefined,
+  members: CompanyMember[],
+): CompanyMember | null {
+  if (!userId) return null;
+  return members.find((m) => m.userId === userId) ?? null;
+}
+
+/**
+ * Resolve a Clerk user id to a human display name. Uses the members map's
+ * upstream-resolved `name` (already full-name → email → id), falling back to a
+ * short id prefix when the member isn't in the map (mirrors web's
+ * `formatAssigneeUserLabel` id fallback). Returns null for an empty id.
+ */
+export function memberName(
+  userId: string | null | undefined,
+  members: CompanyMember[],
+): string | null {
+  if (!userId) return null;
+  const name = memberById(userId, members)?.name?.trim();
+  if (name) return name;
+  // Unresolved (member dropped by the BFF, or members fetch failed). Clerk ids
+  // are all `user_…`, so slicing them yields an identical "user_" for everyone
+  // — a generic "Member" reads better than a false identifier.
+  return "Member";
+}
+
+/**
+ * Resolve an issue's assignee into a display descriptor (agent monogram vs
+ * human initials/photo), or null when unassigned. Agent and human are mutually
+ * exclusive; the agent field wins if (defensively) both are set.
+ */
+export function resolveAssignee(
+  issue: Pick<BoardIssue, "assigneeAgentId" | "assigneeUserId">,
+  agents: TeamsAgent[],
+  members: CompanyMember[],
+): AssigneeDisplay | null {
+  if (issue.assigneeAgentId) {
+    return {
+      name: agents.find((a) => a.id === issue.assigneeAgentId)?.name ?? "Agent",
+      kind: "agent",
+    };
+  }
+  if (issue.assigneeUserId) {
+    const member = memberById(issue.assigneeUserId, members);
+    return {
+      name: memberName(issue.assigneeUserId, members) ?? "Member",
+      kind: "user",
+      imageUrl: member?.imageUrl ?? null,
+    };
+  }
+  return null;
+}
+
+/**
+ * Resolve an issue-comment author into a display label. Agent authors resolve to
+ * the agent name; human authors resolve to their member name (contract §1) — or
+ * "You" when the author is the current Clerk user.
+ */
 export function commentAuthorLabel(
   comment: IssueComment,
   agents: TeamsAgent[],
+  members: CompanyMember[] = [],
+  currentUserId: string | null = null,
 ): string {
   if (comment.authorAgentId) {
     return agents.find((a) => a.id === comment.authorAgentId)?.name ?? "Agent";
   }
   if (comment.authorKind === "agent") return "Agent";
-  if (comment.authorUserId || comment.authorKind === "user") return "You";
-  return "Comment";
-}
-
-/** Resolve an issue's assignee into a display label, or null if unassigned. */
-export function assigneeLabel(
-  issue: Pick<IssueDetail, "assigneeAgentId" | "assigneeUserId">,
-  agents: TeamsAgent[],
-): string | null {
-  if (issue.assigneeAgentId) {
-    return agents.find((a) => a.id === issue.assigneeAgentId)?.name ?? "Agent";
+  if (comment.authorUserId) {
+    if (currentUserId && comment.authorUserId === currentUserId) return "You";
+    return memberName(comment.authorUserId, members) ?? "Member";
   }
-  if (issue.assigneeUserId) return "Assigned to member";
-  return null;
+  if (comment.authorKind === "user") return "You";
+  return "Comment";
 }
 
 /** Heuristic: treat text with markdown markers as markdown, else plain. */

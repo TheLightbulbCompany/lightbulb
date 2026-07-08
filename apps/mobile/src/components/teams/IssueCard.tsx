@@ -8,9 +8,11 @@ import {
   priorityColor,
   statusColors,
   toBoardStatus,
+  type AssigneeDisplay,
   type BoardIssue,
   type IssueLabel,
 } from "../../lib/teamsData";
+import { AssigneeAvatar } from "./AssigneeAvatar";
 
 // ---------------------------------------------------------------------------
 // Differentiated Teams board card (contract §3). Fixes the "it's just a list"
@@ -124,8 +126,8 @@ function LabelChips({ labels }: { labels: IssueLabel[] }) {
 
 export interface IssueCardProps {
   issue: BoardIssue;
-  /** Resolved assignee display name, or null when unassigned. */
-  assigneeName: string | null;
+  /** Resolved assignee (agent monogram or human initials/photo), or null. */
+  assignee: AssigneeDisplay | null;
   /** Direct sub-issue count (derived from the board), 0 to hide. */
   subtaskCount: number;
   onPress: () => void;
@@ -134,7 +136,7 @@ export interface IssueCardProps {
 
 function IssueCardBase({
   issue,
-  assigneeName,
+  assignee,
   subtaskCount,
   onPress,
   onMove,
@@ -142,7 +144,6 @@ function IssueCardBase({
   const { color } = statusColors(issue.status);
   const identifier = issue.identifier ?? issue.id.slice(0, 8);
   const labels = issue.labels ?? [];
-  const monogram = assigneeName ? assigneeName.trim().charAt(0).toUpperCase() : null;
 
   return (
     <Pressable
@@ -183,16 +184,14 @@ function IssueCardBase({
         {/* Labels. */}
         {labels.length > 0 ? <LabelChips labels={labels} /> : null}
 
-        {/* Footer: assignee monogram/name + subtask count. */}
-        {(monogram != null || subtaskCount > 0) && (
+        {/* Footer: assignee avatar/name + subtask count. */}
+        {(assignee != null || subtaskCount > 0) && (
           <View style={styles.footer}>
-            {monogram != null && assigneeName != null ? (
+            {assignee != null ? (
               <View style={styles.assignee}>
-                <View style={styles.monogram}>
-                  <Text style={styles.monogramText}>{monogram}</Text>
-                </View>
+                <AssigneeAvatar assignee={assignee} />
                 <Text style={styles.assigneeName} numberOfLines={1}>
-                  {assigneeName}
+                  {assignee.name}
                 </Text>
               </View>
             ) : (
@@ -299,20 +298,6 @@ const styles = StyleSheet.create({
     marginTop: spacing.xs,
   },
   assignee: { flexDirection: "row", alignItems: "center", gap: spacing.xs, flexShrink: 1 },
-  monogram: {
-    width: 18,
-    height: 18,
-    borderRadius: 9,
-    backgroundColor: colors.forestTint,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  monogramText: {
-    fontFamily: fonts.dmSansBold,
-    fontSize: 10,
-    lineHeight: 12,
-    color: colors.forest,
-  },
   assigneeName: {
     fontFamily: fonts.dmSans,
     fontSize: 11,

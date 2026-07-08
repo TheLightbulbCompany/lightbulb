@@ -1,3 +1,4 @@
+import { useUser } from "@clerk/clerk-expo";
 import Feather from "@expo/vector-icons/Feather";
 import { Stack, router, useLocalSearchParams } from "expo-router";
 import { useMemo, useState, type ReactElement, type ReactNode } from "react";
@@ -15,6 +16,8 @@ import {
 
 import { MessageMarkdown } from "../../../../components/chat/MessageMarkdown";
 import { usePulse } from "../../../../components/chat/usePulse";
+import { ApprovalCard } from "../../../../components/teams/ApprovalCard";
+import { AssigneeAvatar } from "../../../../components/teams/AssigneeAvatar";
 import { CommentComposer } from "../../../../components/teams/CommentComposer";
 import { CreateIssueSheet } from "../../../../components/teams/CreateIssueSheet";
 import { PickerSheet, type PickerOption } from "../../../../components/teams/PickerSheet";
@@ -24,26 +27,31 @@ import {
   PRIORITIES,
   PRIORITY_LABELS,
   STATUS_LABELS,
-  assigneeLabel,
   commentAuthorLabel,
   humanizeStatus,
   looksLikeMarkdown,
+  memberName,
   priorityColor,
+  resolveAssignee,
   statusColors,
   timeAgo,
   toBoardStatus,
   useTeamsIssue,
   type BoardStatus,
   type ChildIssue,
+  type CompanyMember,
   type CreateIssueInput,
   type IssueComment,
   type IssueDetail,
   type Priority,
   type TeamsAgent,
+  type TeamsApproval,
 } from "../../../../lib/teamsData";
 
 const MANAGE_URL = "https://isol8.co/teams";
 const UNASSIGNED_KEY = "__unassigned__";
+const AGENT_PREFIX = "agent:";
+const USER_PREFIX = "user:";
 
 // ---------------------------------------------------------------------------
 // Loading / readiness affordances
@@ -169,16 +177,20 @@ function EditableRow({
 function CommentRow({
   comment,
   agents,
+  members,
+  currentUserId,
 }: {
   comment: IssueComment;
   agents: TeamsAgent[];
+  members: CompanyMember[];
+  currentUserId: string | null;
 }) {
   const pending = comment.id.startsWith("temp-");
   return (
     <View style={[styles.comment, pending && styles.commentPending]}>
       <View style={styles.commentMeta}>
         <Text style={styles.commentAuthor}>
-          {commentAuthorLabel(comment, agents)}
+          {commentAuthorLabel(comment, agents, members, currentUserId)}
         </Text>
         <Text style={styles.commentDot}>·</Text>
         <Text style={styles.commentTime}>
@@ -237,8 +249,20 @@ export default function IssueDetailScreen() {
   const params = useLocalSearchParams<{ id: string; title?: string }>();
   const id = typeof params.id === "string" ? params.id : undefined;
   const seedTitle = typeof params.title === "string" ? params.title : undefined;
-  const { state, retry, setStatus, setPriority, setAssignee, addComment, createChild } =
-    useTeamsIssue(id);
+  const {
+    state,
+    retry,
+    setStatus,
+    setPriority,
+    setAssignee,
+    setUserAssignee,
+    addComment,
+    createChild,
+    approveApproval,
+    rejectApproval,
+  } = useTeamsIssue(id);
+  const { user } = useUser();
+  const currentUserId = user?.id ?? null;
 
   const headerTitle =
     state.kind === "ready" ? state.issue.title : seedTitle ?? "Issue";
@@ -289,10 +313,14 @@ export default function IssueDetailScreen() {
     body = (
       <ReadyBody
         state={state}
+        currentUserId={currentUserId}
         onSetStatus={setStatus}
         onSetPriority={setPriority}
         onSetAssignee={setAssignee}
+        onSetUserAssignee={setUserAssignee}
         onCreateChild={createChild}
+        onApproveApproval={approveApproval}
+        onRejectApproval={rejectApproval}
       />
     );
   }
@@ -320,38 +348,78 @@ type OpenPicker = "status" | "priority" | "assignee" | null;
 
 function ReadyBody({
   state,
+  currentUserId,
   onSetStatus,
   onSetPriority,
   onSetAssignee,
+  onSetUserAssignee,
   onCreateChild,
+  onApproveApproval,
+  onRejectApproval,
 }: {
   state: {
     issue: IssueDetail;
     comments: IssueComment[];
     children: ChildIssue[];
     agents: TeamsAgent[];
+    members: CompanyMember[];
+    approvals: TeamsApproval[];
   };
+  currentUserId: string | null;
   onSetStatus: (status: BoardStatus) => void;
   onSetPriority: (priority: Priority) => void;
   onSetAssignee: (agentId: string | null) => void;
+  onSetUserAssignee: (userId: string | null) => void;
   onCreateChild: (input: CreateIssueInput) => Promise<boolean>;
+  onApproveApproval: (approvalId: string) => void;
+  onRejectApproval: (approvalId: string, reason: string) => void;
 }) {
-  const { issue, comments, children, agents } = state;
+  const { issue, comments, children, agents, members, approvals } = state;
   const identifier = issue.identifier ?? issue.id.slice(0, 8);
-  const assignee = assigneeLabel(issue, agents);
+  const assignee = resolveAssignee(issue, agents, members);
   const created = issue.createdAt ? timeAgo(issue.createdAt) : null;
   const prColor = priorityColor(issue.priority);
 
   const [picker, setPicker] = useState<OpenPicker>(null);
   const [addingChild, setAddingChild] = useState(false);
 
+  // Sectioned assignee options: Unassigned, then agent monograms, then people.
+  // Keys are prefixed (`agent:`/`user:`) so onSelect routes to the right write
+  // and only ONE of the mutually-exclusive fields is ever set (contract §1).
   const assigneeOptions = useMemo<PickerOption[]>(
     () => [
       { key: UNASSIGNED_KEY, label: "Unassigned" },
-      ...agents.map((a) => ({ key: a.id, label: a.name ?? "Agent" })),
+      ...agents.map((a) => ({
+        key: `${AGENT_PREFIX}${a.id}`,
+        label: a.name ?? "Agent",
+        section: "Agents",
+        leading: (
+          <AssigneeAvatar assignee={{ name: a.name ?? "Agent", kind: "agent" }} size={20} />
+        ),
+      })),
+      ...members.map((m) => {
+        const name = memberName(m.userId, members) ?? "Member";
+        return {
+          key: `${USER_PREFIX}${m.userId}`,
+          label: name,
+          section: "People",
+          leading: (
+            <AssigneeAvatar
+              assignee={{ name, kind: "user", imageUrl: m.imageUrl ?? null }}
+              size={20}
+            />
+          ),
+        };
+      }),
     ],
-    [agents],
+    [agents, members],
   );
+
+  const assigneeSelectedKey = issue.assigneeAgentId
+    ? `${AGENT_PREFIX}${issue.assigneeAgentId}`
+    : issue.assigneeUserId
+      ? `${USER_PREFIX}${issue.assigneeUserId}`
+      : UNASSIGNED_KEY;
 
   return (
     <>
@@ -377,9 +445,10 @@ function ReadyBody({
           </Text>
         </EditableRow>
 
-        <EditableRow label="AGENT" onPress={() => setPicker("assignee")}>
+        <EditableRow label="ASSIGNEE" onPress={() => setPicker("assignee")}>
+          {assignee != null ? <AssigneeAvatar assignee={assignee} size={20} /> : null}
           <Text style={styles.editValueText} numberOfLines={1}>
-            {assignee ?? "Unassigned"}
+            {assignee?.name ?? "Unassigned"}
           </Text>
         </EditableRow>
 
@@ -391,6 +460,28 @@ function ReadyBody({
         <View style={styles.section}>
           <Text style={styles.sectionLabel}>DESCRIPTION</Text>
           <BodyText text={issue.description} />
+        </View>
+      )}
+
+      {/* Approvals — the issue's approval requests with inline Approve/Reject. */}
+      {approvals.length > 0 && (
+        <View style={styles.section}>
+          <Text style={styles.sectionLabel}>
+            APPROVALS
+            <Text style={styles.sectionCount}> · {approvals.length}</Text>
+          </Text>
+          <View style={styles.approvalList}>
+            {approvals.map((approval) => (
+              <ApprovalCard
+                key={approval.id}
+                approval={approval}
+                agents={agents}
+                members={members}
+                onApprove={onApproveApproval}
+                onReject={onRejectApproval}
+              />
+            ))}
+          </View>
         </View>
       )}
 
@@ -433,7 +524,13 @@ function ReadyBody({
         ) : (
           <View style={styles.commentList}>
             {comments.map((comment) => (
-              <CommentRow key={comment.id} comment={comment} agents={agents} />
+              <CommentRow
+                key={comment.id}
+                comment={comment}
+                agents={agents}
+                members={members}
+                currentUserId={currentUserId}
+              />
             ))}
           </View>
         )}
@@ -470,14 +567,22 @@ function ReadyBody({
         onClose={() => setPicker(null)}
       />
 
-      {/* Assignee picker */}
+      {/* Assignee picker — agents + people, mutually exclusive (contract §1). */}
       <PickerSheet
         visible={picker === "assignee"}
-        heading="Assign agent"
+        heading="Assign"
         subheading={issue.title}
         options={assigneeOptions}
-        selectedKey={issue.assigneeAgentId ?? UNASSIGNED_KEY}
-        onSelect={(key) => onSetAssignee(key === UNASSIGNED_KEY ? null : key)}
+        selectedKey={assigneeSelectedKey}
+        onSelect={(key) => {
+          if (key === UNASSIGNED_KEY) {
+            onSetAssignee(null);
+          } else if (key.startsWith(AGENT_PREFIX)) {
+            onSetAssignee(key.slice(AGENT_PREFIX.length));
+          } else if (key.startsWith(USER_PREFIX)) {
+            onSetUserAssignee(key.slice(USER_PREFIX.length));
+          }
+        }}
         onClose={() => setPicker(null)}
       />
 
@@ -567,6 +672,9 @@ const styles = StyleSheet.create({
     lineHeight: 22,
     color: colors.assistantInk,
   },
+
+  // Approval cards.
+  approvalList: { gap: spacing.sm },
 
   // Sub-issue cards.
   childList: { gap: spacing.sm },

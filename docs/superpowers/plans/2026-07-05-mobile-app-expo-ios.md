@@ -1,6 +1,12 @@
 # Isol8 iOS Mobile App (Expo / React Native) — Implementation Plan
 
-**Status:** Draft — awaiting review
+**Status:** Phases 0–6 shipped — full end-user parity (auth, chat with
+history/sessions, settings/billing, all control panels, teams inbox,
+marketplace buyer, provision-gate states). Phases 7–8 (push notifications,
+TestFlight/App Store) blocked externally on the Apple Developer **org**
+enrollment (D-U-N-S submitted 2026-07-06, individual→org conversion pending).
+Local device testing works today via `expo run:ios --device` (Expo Go is
+pinned to SDK 54 and unusable — see the dev-build note).
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

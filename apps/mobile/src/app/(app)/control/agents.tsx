@@ -1,6 +1,6 @@
 import Feather from "@expo/vector-icons/Feather";
 import { router, Stack } from "expo-router";
-import { useCallback, useMemo, useState, type ReactElement } from "react";
+import { useCallback, useMemo, useRef, useState, type ReactElement } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -71,6 +71,11 @@ function CreateAgentModal({
   const [emoji, setEmoji] = useState("");
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Synchronous latch: `creating` state doesn't flush before a second tap's
+  // onPress fires, so two sub-frame taps could both pass the state guard and
+  // mint TWO agents (agents.create is non-idempotent). The ref closes that
+  // window; it's set/cleared in lockstep with `creating`.
+  const creatingRef = useRef(false);
 
   const clientError = validateAgentName(name, existingNames);
   const canCreate = name.trim() !== "" && clientError === null && !creating;
@@ -79,6 +84,7 @@ function CreateAgentModal({
     setName("");
     setEmoji("");
     setError(null);
+    creatingRef.current = false;
     setCreating(false);
   }, []);
 
@@ -89,12 +95,17 @@ function CreateAgentModal({
   }, [creating, reset, onClose]);
 
   const handleCreate = useCallback(async () => {
-    if (!canCreate) return;
+    // Ref latch checked+set synchronously so a second sub-frame tap bails
+    // before the `creating` re-render disables the button.
+    if (!canCreate || creatingRef.current) return;
+    creatingRef.current = true;
     setCreating(true);
     setError(null);
     const trimmedEmoji = emoji.trim();
     const paperclip: Record<string, string> = { role: "general" };
     if (trimmedEmoji) paperclip.icon = trimmedEmoji;
+    let created = false;
+    let createError: unknown = null;
     try {
       await callRpc(
         "agents.create",
@@ -109,16 +120,27 @@ function CreateAgentModal({
         },
         90_000,
       );
-      // Success: always refetch the list before closing.
+      created = true;
+    } catch (err) {
+      createError = err;
+    }
+    // Even a create that blows past 90s may still succeed server-side —
+    // always revalidate so the agent surfaces (and the user does not
+    // re-click). A failing refetch must never leave the modal wedged, so
+    // the latch is released regardless of its outcome.
+    try {
       await onCreated();
+    } catch {
+      // best-effort refetch; the list revalidates again on next focus
+    }
+    if (created) {
       reset();
       onClose();
-    } catch (err) {
-      // Even a create that blows past 90s may still succeed server-side —
-      // revalidate so the agent surfaces rather than vanishing (and the user
-      // does not re-click). Keep the modal open showing the error.
-      await onCreated();
-      setError(err instanceof Error ? err.message : String(err));
+    } else {
+      setError(
+        createError instanceof Error ? createError.message : String(createError),
+      );
+      creatingRef.current = false;
       setCreating(false);
     }
   }, [canCreate, callRpc, name, emoji, onCreated, onClose, reset]);

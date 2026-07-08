@@ -100,6 +100,30 @@ export interface TeamsAgent {
   seeded?: boolean;
 }
 
+/**
+ * A company member from `GET /teams/members` (`{members:[…]}`, contract §1).
+ * `userId` is the **Clerk** user id; the BFF joins principal→Clerk and resolves
+ * name/email/imageUrl. `name` already falls back full-name → email → id upstream,
+ * so it is always a usable label. Powers human-assignee + comment-author names.
+ */
+export interface CompanyMember {
+  userId: string;
+  name?: string | null;
+  email?: string | null;
+  imageUrl?: string | null;
+}
+
+/**
+ * A resolved assignee display descriptor — the differentiated card + detail row
+ * render an agent monogram vs a human initials/photo avatar off `kind`.
+ */
+export interface AssigneeDisplay {
+  name: string;
+  kind: "agent" | "user";
+  /** Clerk avatar URL for human assignees (null for agents / no photo). */
+  imageUrl?: string | null;
+}
+
 /** A per-label color chip descriptor (`types.ts:41-45` `IssueLabel`). */
 export interface IssueLabel {
   id: string;
@@ -176,6 +200,34 @@ function useTeamsConfig(): PlatformAdapter {
   const getTokenRef = useRef(getToken);
   getTokenRef.current = getToken;
   return useMemo(() => makeAdapter(() => getTokenRef.current()), []);
+}
+
+/**
+ * Best-effort `GET /teams/agents` → `TeamsAgent[]`. A failure resolves to `[]`
+ * so the caller's primary (gate-bearing) data is never blanked by a name-source
+ * hiccup. Shared by the board + issue-detail loads.
+ */
+function fetchAgents(config: PlatformAdapter): Promise<TeamsAgent[]> {
+  return fetchJsonWithStatus(config, "/teams/agents")
+    .then((r) => {
+      const list = (r.body as { agents?: unknown } | null)?.agents;
+      return Array.isArray(list) ? (list as TeamsAgent[]) : [];
+    })
+    .catch(() => [] as TeamsAgent[]);
+}
+
+/**
+ * Best-effort `GET /teams/members` → `CompanyMember[]` (contract §1). Same
+ * best-effort posture as {@link fetchAgents}: a members-fetch failure must NOT
+ * blank the board/detail — it just degrades human names to their id fallback.
+ */
+function fetchMembers(config: PlatformAdapter): Promise<CompanyMember[]> {
+  return fetchJsonWithStatus(config, "/teams/members")
+    .then((r) => {
+      const list = (r.body as { members?: unknown } | null)?.members;
+      return Array.isArray(list) ? (list as CompanyMember[]) : [];
+    })
+    .catch(() => [] as CompanyMember[]);
 }
 
 // ---------------------------------------------------------------------------
@@ -262,6 +314,7 @@ export type IssueDetailState =
       comments: IssueComment[];
       children: ChildIssue[];
       agents: TeamsAgent[];
+      members: CompanyMember[];
     };
 
 export function useTeamsIssue(issueId: string | undefined) {
@@ -303,9 +356,9 @@ export function useTeamsIssue(issueId: string | undefined) {
       }
       const issue = body as IssueDetail;
 
-      // Secondary reads are best-effort: a comments/children/agents failure
-      // must not blank out an issue that loaded fine.
-      const [comments, children, agents] = await Promise.all([
+      // Secondary reads are best-effort: a comments/children/agents/members
+      // failure must not blank out an issue that loaded fine.
+      const [comments, children, agents, members] = await Promise.all([
         // Upstream defaults to newest-first; the web thread view renders
         // ascending chronological, so request asc and defensively re-sort by
         // createdAt in case the query param isn't honored.
@@ -321,15 +374,11 @@ export function useTeamsIssue(issueId: string | undefined) {
             return Array.isArray(issues) ? (issues as ChildIssue[]) : [];
           })
           .catch(() => [] as ChildIssue[]),
-        fetchJsonWithStatus(config, "/teams/agents")
-          .then((r) => {
-            const list = (r.body as { agents?: unknown } | null)?.agents;
-            return Array.isArray(list) ? (list as TeamsAgent[]) : [];
-          })
-          .catch(() => [] as TeamsAgent[]),
+        fetchAgents(config),
+        fetchMembers(config),
       ]);
       if (loadSeq.current !== seq) return;
-      setState({ kind: "ready", issue, comments, children, agents });
+      setState({ kind: "ready", issue, comments, children, agents, members });
     } catch (err) {
       if (loadSeq.current !== seq) return;
       const gate = gateFromError(err);
@@ -412,10 +461,28 @@ export function useTeamsIssue(issueId: string | undefined) {
         (issue) => ({
           ...issue,
           assigneeAgentId: agentId,
-          // agent + human assignees are mutually exclusive (contract §4).
-          assigneeUserId: agentId ? null : issue.assigneeUserId,
+          // agent + human assignees are mutually exclusive (contract §1) —
+          // assigning an agent clears any human assignee locally too.
+          assigneeUserId: null,
         }),
         () => updateIssueAssignee(config, issueId as string, agentId),
+      ),
+    [patchField, config, issueId],
+  );
+
+  // Assign a human member (or unassign). Shares the "assignee" field latch with
+  // setAssignee so an agent-write and a human-write can't race — only ONE of the
+  // two mutually-exclusive fields is ever set (contract §1).
+  const setUserAssignee = useCallback(
+    (userId: string | null) =>
+      patchField(
+        "assignee",
+        (issue) => ({
+          ...issue,
+          assigneeUserId: userId,
+          assigneeAgentId: null,
+        }),
+        () => updateIssueUserAssignee(config, issueId as string, userId),
       ),
     [patchField, config, issueId],
   );
@@ -493,6 +560,7 @@ export function useTeamsIssue(issueId: string | undefined) {
     setStatus,
     setPriority,
     setAssignee,
+    setUserAssignee,
     addComment,
     createChild,
   };
@@ -593,8 +661,10 @@ export async function updateIssuePriority(
 }
 
 /**
- * PATCH /teams/issues/{id} {assigneeAgentId}. Pass an agent id to assign, or
- * `null` to unassign (contract §4 — `assigneeAgentId: null` clears it).
+ * PATCH /teams/issues/{id} — assign an AGENT (or unassign with `null`). Sends
+ * `assigneeUserId: null` alongside so the two mutually-exclusive assignee fields
+ * (agent XOR human, contract §1) never both end up set: picking an agent clears
+ * any human assignee server-side.
  */
 export async function updateIssueAssignee(
   config: PlatformAdapter,
@@ -603,7 +673,23 @@ export async function updateIssueAssignee(
 ): Promise<void> {
   await createApiClient(config).patch(
     `/teams/issues/${encodeURIComponent(id)}`,
-    { assigneeAgentId: agentId },
+    { assigneeAgentId: agentId, assigneeUserId: null },
+  );
+}
+
+/**
+ * PATCH /teams/issues/{id} — assign a HUMAN member (or unassign with `null`).
+ * Mirror of {@link updateIssueAssignee}: sends `assigneeAgentId: null` so picking
+ * a person clears any agent assignee (mutual exclusivity, contract §1).
+ */
+export async function updateIssueUserAssignee(
+  config: PlatformAdapter,
+  id: string,
+  userId: string | null,
+): Promise<void> {
+  await createApiClient(config).patch(
+    `/teams/issues/${encodeURIComponent(id)}`,
+    { assigneeUserId: userId, assigneeAgentId: null },
   );
 }
 
@@ -689,7 +775,12 @@ export async function createSubIssue(
 export type BoardState =
   | { kind: "loading" }
   | { kind: "gate"; gate: TeamsGate; message: string | null }
-  | { kind: "ready"; issues: BoardIssue[]; agents: TeamsAgent[] };
+  | {
+      kind: "ready";
+      issues: BoardIssue[];
+      agents: TeamsAgent[];
+      members: CompanyMember[];
+    };
 
 function extractIssues(body: unknown): BoardIssue[] {
   const issues = (body as { issues?: unknown } | null)?.issues;
@@ -731,15 +822,14 @@ export function useTeamsBoard() {
           return;
         }
         const issues = extractIssues(body);
-        // Agent names are best-effort — their failure must not blank the board.
-        const agents = await fetchJsonWithStatus(config, "/teams/agents")
-          .then((r) => {
-            const list = (r.body as { agents?: unknown } | null)?.agents;
-            return Array.isArray(list) ? (list as TeamsAgent[]) : [];
-          })
-          .catch(() => [] as TeamsAgent[]);
+        // Agent + member names are best-effort — either failure resolves to []
+        // and must not blank the board (it only degrades assignee names).
+        const [agents, members] = await Promise.all([
+          fetchAgents(config),
+          fetchMembers(config),
+        ]);
         if (loadSeq.current !== seq) return;
-        setState({ kind: "ready", issues, agents });
+        setState({ kind: "ready", issues, agents, members });
       } catch (err) {
         if (loadSeq.current !== seq) return;
         const gate = gateFromError(err);
@@ -887,16 +977,78 @@ export function timeAgo(value: string | null | undefined): string {
   return `${Math.floor(seconds / MONTH)}mo ago`;
 }
 
-/** Resolve an issue-comment author into a display label (agent name or role). */
+/** Look up a company member by Clerk user id, or null. */
+export function memberById(
+  userId: string | null | undefined,
+  members: CompanyMember[],
+): CompanyMember | null {
+  if (!userId) return null;
+  return members.find((m) => m.userId === userId) ?? null;
+}
+
+/**
+ * Resolve a Clerk user id to a human display name. Uses the members map's
+ * upstream-resolved `name` (already full-name → email → id), falling back to a
+ * short id prefix when the member isn't in the map (mirrors web's
+ * `formatAssigneeUserLabel` id fallback). Returns null for an empty id.
+ */
+export function memberName(
+  userId: string | null | undefined,
+  members: CompanyMember[],
+): string | null {
+  if (!userId) return null;
+  const name = memberById(userId, members)?.name?.trim();
+  if (name) return name;
+  return userId.slice(0, 5);
+}
+
+/**
+ * Resolve an issue's assignee into a display descriptor (agent monogram vs
+ * human initials/photo), or null when unassigned. Agent and human are mutually
+ * exclusive; the agent field wins if (defensively) both are set.
+ */
+export function resolveAssignee(
+  issue: Pick<BoardIssue, "assigneeAgentId" | "assigneeUserId">,
+  agents: TeamsAgent[],
+  members: CompanyMember[],
+): AssigneeDisplay | null {
+  if (issue.assigneeAgentId) {
+    return {
+      name: agents.find((a) => a.id === issue.assigneeAgentId)?.name ?? "Agent",
+      kind: "agent",
+    };
+  }
+  if (issue.assigneeUserId) {
+    const member = memberById(issue.assigneeUserId, members);
+    return {
+      name: memberName(issue.assigneeUserId, members) ?? "Member",
+      kind: "user",
+      imageUrl: member?.imageUrl ?? null,
+    };
+  }
+  return null;
+}
+
+/**
+ * Resolve an issue-comment author into a display label. Agent authors resolve to
+ * the agent name; human authors resolve to their member name (contract §1) — or
+ * "You" when the author is the current Clerk user.
+ */
 export function commentAuthorLabel(
   comment: IssueComment,
   agents: TeamsAgent[],
+  members: CompanyMember[] = [],
+  currentUserId: string | null = null,
 ): string {
   if (comment.authorAgentId) {
     return agents.find((a) => a.id === comment.authorAgentId)?.name ?? "Agent";
   }
   if (comment.authorKind === "agent") return "Agent";
-  if (comment.authorUserId || comment.authorKind === "user") return "You";
+  if (comment.authorUserId) {
+    if (currentUserId && comment.authorUserId === currentUserId) return "You";
+    return memberName(comment.authorUserId, members) ?? "Member";
+  }
+  if (comment.authorKind === "user") return "You";
   return "Comment";
 }
 
@@ -904,12 +1056,9 @@ export function commentAuthorLabel(
 export function assigneeLabel(
   issue: Pick<IssueDetail, "assigneeAgentId" | "assigneeUserId">,
   agents: TeamsAgent[],
+  members: CompanyMember[] = [],
 ): string | null {
-  if (issue.assigneeAgentId) {
-    return agents.find((a) => a.id === issue.assigneeAgentId)?.name ?? "Agent";
-  }
-  if (issue.assigneeUserId) return "Assigned to member";
-  return null;
+  return resolveAssignee(issue, agents, members)?.name ?? null;
 }
 
 /** Heuristic: treat text with markdown markers as markdown, else plain. */

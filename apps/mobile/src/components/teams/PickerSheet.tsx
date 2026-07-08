@@ -1,4 +1,5 @@
 import Feather from "@expo/vector-icons/Feather";
+import { Fragment, type ReactNode } from "react";
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { colors, fonts, radii, spacing } from "../../config/theme";
@@ -17,6 +18,15 @@ export interface PickerOption {
   dotColor?: string | null;
   /** Render the label struck-through + dimmed (e.g. `cancelled`). */
   strikethrough?: boolean;
+  /**
+   * Optional group label. When an option's section differs from the previously
+   * rendered one, a small header row is drawn above it (e.g. "Agents"/"People"
+   * in the assignee picker). Omit for flat pickers (status/priority) — no
+   * headers render then, preserving the pre-v3 layout.
+   */
+  section?: string | null;
+  /** Optional leading element (e.g. an assignee avatar) rendered before the label. */
+  leading?: ReactNode;
 }
 
 export interface PickerSheetProps {
@@ -63,42 +73,55 @@ export function PickerSheet({
             showsVerticalScrollIndicator={false}
             bounces={false}
           >
-            {options.map((option) => {
+            {options.map((option, index) => {
               const active = selectedKey === option.key;
+              // Draw a group header whenever this option starts a new section.
+              const prevSection = index > 0 ? options[index - 1].section : null;
+              const showHeader =
+                option.section != null &&
+                option.section !== "" &&
+                option.section !== prevSection;
               return (
-                <Pressable
-                  key={option.key}
-                  style={({ pressed }) => [
-                    styles.row,
-                    active && styles.rowActive,
-                    pressed && styles.rowPressed,
-                  ]}
-                  onPress={() => {
-                    if (!active) onSelect(option.key);
-                    onClose();
-                  }}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected: active }}
-                  accessibilityLabel={option.label}
-                >
-                  {option.dotColor ? (
-                    <View style={[styles.dot, { backgroundColor: option.dotColor }]} />
+                <Fragment key={option.key}>
+                  {showHeader ? (
+                    <Text style={styles.sectionHeader}>
+                      {option.section?.toUpperCase()}
+                    </Text>
                   ) : null}
-                  <Text
-                    style={[
-                      styles.rowLabel,
-                      option.strikethrough && styles.rowLabelStruck,
+                  <Pressable
+                    style={({ pressed }) => [
+                      styles.row,
+                      active && styles.rowActive,
+                      pressed && styles.rowPressed,
                     ]}
-                    numberOfLines={1}
+                    onPress={() => {
+                      if (!active) onSelect(option.key);
+                      onClose();
+                    }}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: active }}
+                    accessibilityLabel={option.label}
                   >
-                    {option.label}
-                  </Text>
-                  {active ? (
-                    <Feather name="check" size={16} color={colors.forest} />
-                  ) : (
-                    <View style={styles.checkSpacer} />
-                  )}
-                </Pressable>
+                    {option.dotColor ? (
+                      <View style={[styles.dot, { backgroundColor: option.dotColor }]} />
+                    ) : null}
+                    {option.leading ?? null}
+                    <Text
+                      style={[
+                        styles.rowLabel,
+                        option.strikethrough && styles.rowLabelStruck,
+                      ]}
+                      numberOfLines={1}
+                    >
+                      {option.label}
+                    </Text>
+                    {active ? (
+                      <Feather name="check" size={16} color={colors.forest} />
+                    ) : (
+                      <View style={styles.checkSpacer} />
+                    )}
+                  </Pressable>
+                </Fragment>
               );
             })}
           </ScrollView>
@@ -147,6 +170,16 @@ const styles = StyleSheet.create({
   },
   list: { marginTop: spacing.xs },
   listContent: { gap: spacing.xs },
+  sectionHeader: {
+    fontFamily: fonts.mono,
+    fontSize: 10,
+    lineHeight: 14,
+    letterSpacing: 1.4,
+    color: colors.mute,
+    paddingHorizontal: spacing.sm,
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.xs,
+  },
   row: {
     flexDirection: "row",
     alignItems: "center",

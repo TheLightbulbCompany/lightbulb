@@ -16,13 +16,14 @@ import { colors, fonts, radii, spacing } from "../../config/theme";
 import {
   BOARD_STATUSES,
   STATUS_LABELS,
-  assigneeLabel,
+  resolveAssignee,
   statusColors,
   subtaskCounts,
   toBoardStatus,
   useTeamsBoard,
   type BoardIssue,
   type BoardStatus,
+  type CompanyMember,
   type TeamsAgent,
 } from "../../lib/teamsData";
 import { usePulse } from "../chat/usePulse";
@@ -47,6 +48,7 @@ interface BoardSection {
 // reference between renders (avoids re-running the grouping memos needlessly).
 const EMPTY_ISSUES: BoardIssue[] = [];
 const EMPTY_AGENTS: TeamsAgent[] = [];
+const EMPTY_MEMBERS: CompanyMember[] = [];
 
 function PulsingDot() {
   const opacity = usePulse(true, 0.3);
@@ -151,6 +153,8 @@ export function BoardView({ createOpen, onCloseCreate }: BoardViewProps) {
     [state],
   );
   const agents: TeamsAgent[] = state.kind === "ready" ? state.agents : EMPTY_AGENTS;
+  const members: CompanyMember[] =
+    state.kind === "ready" ? state.members : EMPTY_MEMBERS;
 
   const counts = useMemo(() => subtaskCounts(issues), [issues]);
   const sections = useMemo<BoardSection[]>(() => {
@@ -246,7 +250,7 @@ export function BoardView({ createOpen, onCloseCreate }: BoardViewProps) {
         renderItem={({ item }) => (
           <IssueCard
             issue={item}
-            assigneeName={assigneeLabel(item, agents)}
+            assignee={resolveAssignee(item, agents, members)}
             subtaskCount={counts[item.id] ?? 0}
             onPress={() =>
               router.push({

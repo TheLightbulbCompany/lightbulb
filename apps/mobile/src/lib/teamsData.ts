@@ -1564,15 +1564,6 @@ export function commentAuthorLabel(
   return "Comment";
 }
 
-/** Resolve an issue's assignee into a display label, or null if unassigned. */
-export function assigneeLabel(
-  issue: Pick<IssueDetail, "assigneeAgentId" | "assigneeUserId">,
-  agents: TeamsAgent[],
-  members: CompanyMember[] = [],
-): string | null {
-  return resolveAssignee(issue, agents, members)?.name ?? null;
-}
-
 /** Heuristic: treat text with markdown markers as markdown, else plain. */
 export function looksLikeMarkdown(text: string): boolean {
   return /(^|\n)\s{0,3}(#{1,6}\s|[-*+]\s|\d+\.\s|>\s|```)|\*\*|`[^`]+`|\[[^\]]+\]\([^)]+\)/.test(

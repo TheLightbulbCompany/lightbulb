@@ -268,6 +268,17 @@ export function useTeamsIssue(issueId: string | undefined) {
   const config = useTeamsConfig();
   const [state, setState] = useState<IssueDetailState>({ kind: "loading" });
   const loadSeq = useRef(0);
+  // Latest-state mirror so the optimistic writers read the pre-write issue
+  // without capturing it inside a setState updater (StrictMode-safe, mirrors
+  // useTeamsBoard).
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  // Per-field in-flight latch for property PATCHes (status/priority/assignee),
+  // plus separate latches for comment posting and child creation. All prevent
+  // double-submit while a write is settling.
+  const writingRef = useRef<Set<string>>(new Set());
+  const postingRef = useRef(false);
+  const creatingRef = useRef(false);
 
   const load = useCallback(async () => {
     if (!issueId) {
@@ -339,7 +350,152 @@ export function useTeamsIssue(issueId: string | undefined) {
     }, [load]),
   );
 
-  return { state, retry: load };
+  // Generic optimistic single-field PATCH: apply the field locally, write, then
+  // silently reconcile via a refetch; on failure revert to the pre-write issue
+  // and Alert. A per-field latch blocks a second write on the same field.
+  const patchField = useCallback(
+    async (
+      fieldKey: string,
+      optimistic: (issue: IssueDetail) => IssueDetail,
+      write: () => Promise<void>,
+    ) => {
+      const current = stateRef.current;
+      if (current.kind !== "ready" || !issueId) return;
+      if (writingRef.current.has(fieldKey)) return; // no double-submit
+      const prevIssue = current.issue;
+      writingRef.current.add(fieldKey);
+      setState((prev) =>
+        prev.kind === "ready" ? { ...prev, issue: optimistic(prev.issue) } : prev,
+      );
+      try {
+        await write();
+        await load(); // silent reconcile (keeps ready state in place)
+      } catch (err) {
+        setState((prev) =>
+          prev.kind === "ready" ? { ...prev, issue: prevIssue } : prev,
+        );
+        Alert.alert(
+          "Couldn’t update issue",
+          err instanceof Error ? err.message : "The change failed. Please try again.",
+        );
+      } finally {
+        writingRef.current.delete(fieldKey);
+      }
+    },
+    [issueId, load],
+  );
+
+  const setStatus = useCallback(
+    (status: BoardStatus) =>
+      patchField(
+        "status",
+        (issue) => ({ ...issue, status }),
+        () => updateIssueStatus(config, issueId as string, status),
+      ),
+    [patchField, config, issueId],
+  );
+
+  const setPriority = useCallback(
+    (priority: Priority) =>
+      patchField(
+        "priority",
+        (issue) => ({ ...issue, priority }),
+        () => updateIssuePriority(config, issueId as string, priority),
+      ),
+    [patchField, config, issueId],
+  );
+
+  const setAssignee = useCallback(
+    (agentId: string | null) =>
+      patchField(
+        "assignee",
+        (issue) => ({
+          ...issue,
+          assigneeAgentId: agentId,
+          // agent + human assignees are mutually exclusive (contract §4).
+          assigneeUserId: agentId ? null : issue.assigneeUserId,
+        }),
+        () => updateIssueAssignee(config, issueId as string, agentId),
+      ),
+    [patchField, config, issueId],
+  );
+
+  // Post a comment: append an optimistic temp row, POST, then reconcile via
+  // refetch (which replaces the temp with the server row). On failure drop the
+  // temp + Alert. Returns whether the post succeeded so the composer can clear.
+  const addComment = useCallback(
+    async (body: string): Promise<boolean> => {
+      const trimmed = body.trim();
+      if (!trimmed) return false;
+      const current = stateRef.current;
+      if (current.kind !== "ready" || !issueId) return false;
+      if (postingRef.current) return false; // no double-submit
+      postingRef.current = true;
+      const temp: IssueComment = {
+        id: `temp-${config.uuid()}`,
+        body: trimmed,
+        createdAt: new Date().toISOString(),
+        authorKind: "user",
+      };
+      setState((prev) =>
+        prev.kind === "ready"
+          ? { ...prev, comments: [...prev.comments, temp] }
+          : prev,
+      );
+      try {
+        await postComment(config, issueId, trimmed);
+        await load();
+        return true;
+      } catch (err) {
+        setState((prev) =>
+          prev.kind === "ready"
+            ? { ...prev, comments: prev.comments.filter((c) => c.id !== temp.id) }
+            : prev,
+        );
+        Alert.alert(
+          "Couldn’t post comment",
+          err instanceof Error ? err.message : "The comment failed to send.",
+        );
+        return false;
+      } finally {
+        postingRef.current = false;
+      }
+    },
+    [config, issueId, load],
+  );
+
+  // Create a sub-issue under this issue, then refetch children. Ref-latched.
+  const createChild = useCallback(
+    async (input: CreateIssueInput): Promise<boolean> => {
+      if (!issueId || creatingRef.current) return false;
+      creatingRef.current = true;
+      try {
+        await createSubIssue(config, issueId, input);
+        await load();
+        return true;
+      } catch (err) {
+        Alert.alert(
+          "Couldn’t create sub-issue",
+          err instanceof Error ? err.message : "The sub-issue could not be created.",
+        );
+        return false;
+      } finally {
+        creatingRef.current = false;
+      }
+    },
+    [config, issueId, load],
+  );
+
+  return {
+    state,
+    retry: load,
+    reload: load,
+    setStatus,
+    setPriority,
+    setAssignee,
+    addComment,
+    createChild,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -424,6 +580,105 @@ export async function updateIssueStatus(
   await client.patch(`/teams/issues/${encodeURIComponent(id)}`, { status });
 }
 
+/** PATCH /teams/issues/{id} {priority}. */
+export async function updateIssuePriority(
+  config: PlatformAdapter,
+  id: string,
+  priority: Priority,
+): Promise<void> {
+  await createApiClient(config).patch(
+    `/teams/issues/${encodeURIComponent(id)}`,
+    { priority },
+  );
+}
+
+/**
+ * PATCH /teams/issues/{id} {assigneeAgentId}. Pass an agent id to assign, or
+ * `null` to unassign (contract §4 — `assigneeAgentId: null` clears it).
+ */
+export async function updateIssueAssignee(
+  config: PlatformAdapter,
+  id: string,
+  agentId: string | null,
+): Promise<void> {
+  await createApiClient(config).patch(
+    `/teams/issues/${encodeURIComponent(id)}`,
+    { assigneeAgentId: agentId },
+  );
+}
+
+/** PATCH /teams/issues/{id} with title and/or description (wire camelCase). */
+export async function updateIssueField(
+  config: PlatformAdapter,
+  id: string,
+  fields: { title?: string; description?: string },
+): Promise<void> {
+  await createApiClient(config).patch(
+    `/teams/issues/${encodeURIComponent(id)}`,
+    fields,
+  );
+}
+
+/**
+ * POST /teams/issues/{id}/comments {body}. Returns the created comment
+ * (contract §4 — the BFF whitelists `body` ONLY).
+ */
+export async function postComment(
+  config: PlatformAdapter,
+  id: string,
+  body: string,
+): Promise<IssueComment> {
+  const res = await createApiClient(config).post(
+    `/teams/issues/${encodeURIComponent(id)}/comments`,
+    { body },
+  );
+  return res as IssueComment;
+}
+
+/**
+ * Shared create body for top-level issues AND sub-issues (contract §4 —
+ * `CreateIssueBody`). `undefined` fields are dropped by JSON.stringify, so the
+ * `extra=forbid` upstream never sees an unexpected key. `status` is the create-
+ * locked 7 (== BOARD_STATUSES); `priority` the 4-value enum.
+ */
+export interface CreateIssueInput {
+  title: string;
+  description?: string;
+  status?: BoardStatus;
+  priority?: Priority;
+  assigneeAgentId?: string;
+  workMode?: "standard" | "ask" | "planning";
+}
+
+/** A freshly-created issue — only the id is load-bearing for the client (nav). */
+export interface CreatedIssue {
+  id?: string;
+  identifier?: string | null;
+  title?: string;
+}
+
+/** POST /teams/issues — create a top-level issue/task. */
+export async function createIssue(
+  config: PlatformAdapter,
+  input: CreateIssueInput,
+): Promise<CreatedIssue> {
+  const res = await createApiClient(config).post("/teams/issues", input);
+  return (res ?? {}) as CreatedIssue;
+}
+
+/** POST /teams/issues/{parentId}/children — create a sub-issue under a parent. */
+export async function createSubIssue(
+  config: PlatformAdapter,
+  parentId: string,
+  input: CreateIssueInput,
+): Promise<CreatedIssue> {
+  const res = await createApiClient(config).post(
+    `/teams/issues/${encodeURIComponent(parentId)}/children`,
+    input,
+  );
+  return (res ?? {}) as CreatedIssue;
+}
+
 // ---------------------------------------------------------------------------
 // Board hook — one gate-bearing call (`/teams/issues`) is both the readiness
 // probe AND the data source; agents ride alongside (best-effort) for assignee
@@ -453,6 +708,8 @@ export function useTeamsBoard() {
   // Per-issue in-flight latch: a second move on the same card is ignored until
   // the first settles.
   const movingRef = useRef<Set<string>>(new Set());
+  // Single latch for the create-issue action (header "+").
+  const creatingRef = useRef(false);
 
   const load = useCallback(
     async (isRefresh = false) => {
@@ -554,12 +811,37 @@ export function useTeamsBoard() {
     [config, load],
   );
 
+  // Create a top-level issue, then reconcile the board via refetch. Ref-latched
+  // so a double-tap can't create two. Returns the created issue (with id) on
+  // success or null on failure (already Alerted).
+  const createBoardIssue = useCallback(
+    async (input: CreateIssueInput): Promise<CreatedIssue | null> => {
+      if (creatingRef.current) return null;
+      creatingRef.current = true;
+      try {
+        const created = await createIssue(config, input);
+        await load(false);
+        return created;
+      } catch (err) {
+        Alert.alert(
+          "Couldn’t create issue",
+          err instanceof Error ? err.message : "The issue could not be created.",
+        );
+        return null;
+      } finally {
+        creatingRef.current = false;
+      }
+    },
+    [config, load],
+  );
+
   return {
     state,
     refreshing,
     retry: () => load(false),
     refresh: () => load(true),
     moveIssue,
+    createBoardIssue,
   };
 }
 

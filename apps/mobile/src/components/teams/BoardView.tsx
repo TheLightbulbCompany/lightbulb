@@ -26,6 +26,7 @@ import {
   type TeamsAgent,
 } from "../../lib/teamsData";
 import { usePulse } from "../chat/usePulse";
+import { CreateIssueSheet } from "./CreateIssueSheet";
 import { IssueCard } from "./IssueCard";
 import { StatusSheet } from "./StatusSheet";
 
@@ -112,9 +113,38 @@ function SectionHeader({ status, count }: { status: BoardStatus; count: number }
   );
 }
 
-export function BoardView() {
-  const { state, refreshing, retry, refresh, moveIssue } = useTeamsBoard();
+export interface BoardViewProps {
+  /** Create-issue sheet visibility, owned by the Teams screen (header "+"). */
+  createOpen: boolean;
+  onCloseCreate: () => void;
+}
+
+export function BoardView({ createOpen, onCloseCreate }: BoardViewProps) {
+  const { state, refreshing, retry, refresh, moveIssue, createBoardIssue } =
+    useTeamsBoard();
   const [moving, setMoving] = useState<BoardIssue | null>(null);
+
+  // The create sheet renders on every branch so the header "+" works while the
+  // board is still loading/gated too; it's a no-op until `createOpen` flips.
+  const createSheet = (
+    <CreateIssueSheet
+      visible={createOpen}
+      mode="issue"
+      onSubmit={async (input) => {
+        const created = await createBoardIssue(input);
+        if (!created) return false;
+        onCloseCreate();
+        if (created.id) {
+          router.push({
+            pathname: "/(app)/teams/issue/[id]",
+            params: { id: created.id, title: created.title ?? input.title },
+          });
+        }
+        return true;
+      }}
+      onClose={onCloseCreate}
+    />
+  );
 
   const issues = useMemo(
     () => (state.kind === "ready" ? state.issues : EMPTY_ISSUES),
@@ -141,6 +171,7 @@ export function BoardView() {
   if (state.kind === "loading") {
     return (
       <View style={styles.page}>
+        {createSheet}
         <SkeletonCards />
       </View>
     );
@@ -150,6 +181,7 @@ export function BoardView() {
     if (state.gate === "provisioning") {
       return (
         <View style={styles.page}>
+          {createSheet}
           <CenteredState
             pulsing
             title="Setting up your workspace…"
@@ -162,6 +194,7 @@ export function BoardView() {
     if (state.gate === "needs_subscription") {
       return (
         <View style={styles.page}>
+          {createSheet}
           <CenteredState
             glyph={<Feather name="lock" size={28} color={colors.mute} />}
             title="Teams requires an active subscription"
@@ -178,6 +211,7 @@ export function BoardView() {
     }
     return (
       <View style={styles.page}>
+        {createSheet}
         <CenteredState
           glyph={<Feather name="cloud-off" size={28} color={colors.mute} />}
           title="Couldn’t reach your workspace"
@@ -192,6 +226,7 @@ export function BoardView() {
 
   return (
     <>
+      {createSheet}
       <SectionList<BoardIssue, BoardSection>
         style={styles.page}
         sections={sections}

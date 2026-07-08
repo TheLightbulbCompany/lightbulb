@@ -1,5 +1,5 @@
 import Feather from "@expo/vector-icons/Feather";
-import { router } from "expo-router";
+import { Stack, router } from "expo-router";
 import { useState, type ReactElement } from "react";
 import {
   Animated,
@@ -193,12 +193,42 @@ function SegmentedToggle({
 
 export default function TeamsScreen() {
   const [mode, setMode] = useState<TeamsMode>("board");
+  // Create-issue sheet visibility lives here (not in BoardView) so the header
+  // "+" is driven by `mode` — it appears in board mode and is explicitly
+  // cleared (headerRight: undefined) in inbox mode, so switching tabs never
+  // leaves a stale button.
+  const [createOpen, setCreateOpen] = useState(false);
   return (
     <View style={styles.host}>
+      <Stack.Screen
+        options={{
+          headerRight:
+            mode === "board"
+              ? () => (
+                  <Pressable
+                    onPress={() => setCreateOpen(true)}
+                    hitSlop={10}
+                    style={({ pressed }) => [
+                      styles.headerBtn,
+                      pressed && styles.headerBtnPressed,
+                    ]}
+                    accessibilityRole="button"
+                    accessibilityLabel="New issue"
+                  >
+                    <Feather name="plus" size={22} color={colors.forest} />
+                  </Pressable>
+                )
+              : undefined,
+        }}
+      />
       <View style={styles.toggleBar}>
         <SegmentedToggle mode={mode} onChange={setMode} />
       </View>
-      {mode === "inbox" ? <InboxView /> : <BoardView />}
+      {mode === "inbox" ? (
+        <InboxView />
+      ) : (
+        <BoardView createOpen={createOpen} onCloseCreate={() => setCreateOpen(false)} />
+      )}
     </View>
   );
 }
@@ -294,6 +324,14 @@ function InboxView() {
 
 const styles = StyleSheet.create({
   host: { flex: 1, backgroundColor: colors.cream },
+
+  // Header "+" (board mode only).
+  headerBtn: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+    borderRadius: radii.sm,
+  },
+  headerBtnPressed: { opacity: 0.55 },
 
   // Inbox / Board segmented toggle.
   toggleBar: {

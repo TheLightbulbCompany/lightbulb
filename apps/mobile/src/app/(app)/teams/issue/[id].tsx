@@ -1,8 +1,11 @@
-import { Stack, useLocalSearchParams } from "expo-router";
-import { type ReactElement } from "react";
+import Feather from "@expo/vector-icons/Feather";
+import { Stack, router, useLocalSearchParams } from "expo-router";
+import { useMemo, useState, type ReactElement, type ReactNode } from "react";
 import {
   Animated,
+  KeyboardAvoidingView,
   Linking,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -12,21 +15,35 @@ import {
 
 import { MessageMarkdown } from "../../../../components/chat/MessageMarkdown";
 import { usePulse } from "../../../../components/chat/usePulse";
+import { CommentComposer } from "../../../../components/teams/CommentComposer";
+import { CreateIssueSheet } from "../../../../components/teams/CreateIssueSheet";
+import { PickerSheet, type PickerOption } from "../../../../components/teams/PickerSheet";
 import { colors, fonts, radii, spacing, type } from "../../../../config/theme";
 import {
+  BOARD_STATUSES,
+  PRIORITIES,
+  PRIORITY_LABELS,
+  STATUS_LABELS,
   assigneeLabel,
   commentAuthorLabel,
   humanizeStatus,
   looksLikeMarkdown,
+  priorityColor,
+  statusColors,
   timeAgo,
+  toBoardStatus,
   useTeamsIssue,
+  type BoardStatus,
   type ChildIssue,
+  type CreateIssueInput,
   type IssueComment,
   type IssueDetail,
+  type Priority,
   type TeamsAgent,
 } from "../../../../lib/teamsData";
 
 const MANAGE_URL = "https://isol8.co/teams";
+const UNASSIGNED_KEY = "__unassigned__";
 
 // ---------------------------------------------------------------------------
 // Loading / readiness affordances
@@ -97,7 +114,24 @@ function BodyText({ text }: { text: string }) {
   return <Text style={styles.plainBody}>{text}</Text>;
 }
 
-function PropertyRow({ label, value }: { label: string; value: string }) {
+/** A colored status dot — filled for decisive statuses, hollow ring otherwise. */
+function StatusSwatch({ status }: { status: string | null | undefined }) {
+  const { color } = statusColors(status);
+  const key = toBoardStatus(status);
+  const filled = key === "in_progress" || key === "done" || key === "blocked";
+  return (
+    <View
+      style={[
+        styles.swatch,
+        { borderColor: color },
+        filled ? { backgroundColor: color } : { backgroundColor: "transparent" },
+      ]}
+    />
+  );
+}
+
+/** A static, non-editable property row (e.g. CREATED). */
+function StaticRow({ label, value }: { label: string; value: string }) {
   return (
     <View style={styles.propRow}>
       <Text style={styles.propLabel}>{label}</Text>
@@ -108,6 +142,30 @@ function PropertyRow({ label, value }: { label: string; value: string }) {
   );
 }
 
+/** A tappable property row that opens a picker; a chevron signals editability. */
+function EditableRow({
+  label,
+  onPress,
+  children,
+}: {
+  label: string;
+  onPress: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <Pressable
+      style={({ pressed }) => [styles.propRow, styles.editRow, pressed && styles.editRowPressed]}
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={`Edit ${label.toLowerCase()}`}
+    >
+      <Text style={styles.propLabel}>{label}</Text>
+      <View style={styles.editValue}>{children}</View>
+      <Feather name="chevron-down" size={15} color={colors.muteSoft} />
+    </Pressable>
+  );
+}
+
 function CommentRow({
   comment,
   agents,
@@ -115,31 +173,59 @@ function CommentRow({
   comment: IssueComment;
   agents: TeamsAgent[];
 }) {
+  const pending = comment.id.startsWith("temp-");
   return (
-    <View style={styles.comment}>
+    <View style={[styles.comment, pending && styles.commentPending]}>
       <View style={styles.commentMeta}>
         <Text style={styles.commentAuthor}>
           {commentAuthorLabel(comment, agents)}
         </Text>
         <Text style={styles.commentDot}>·</Text>
-        <Text style={styles.commentTime}>{timeAgo(comment.createdAt)}</Text>
+        <Text style={styles.commentTime}>
+          {pending ? "Sending…" : timeAgo(comment.createdAt)}
+        </Text>
       </View>
       <BodyText text={comment.body} />
     </View>
   );
 }
 
-function ChildRow({ child }: { child: ChildIssue }) {
+/** A tappable sub-issue mini-card that recurses into its own detail. */
+function ChildCard({ child }: { child: ChildIssue }) {
+  const { color, tint } = statusColors(child.status);
+  const key = toBoardStatus(child.status);
+  const label = key
+    ? STATUS_LABELS[key]
+    : child.status
+      ? humanizeStatus(child.status)
+      : "No status";
   return (
-    <View style={styles.childRow}>
-      <Text style={styles.childIdent}>
-        {child.identifier ?? child.id.slice(0, 8)}
-      </Text>
-      <Text style={styles.childTitle} numberOfLines={1}>
-        {child.title}
-      </Text>
-      <Text style={styles.childStatus}>{humanizeStatus(child.status)}</Text>
-    </View>
+    <Pressable
+      style={({ pressed }) => [styles.childCard, pressed && styles.childCardPressed]}
+      onPress={() =>
+        router.push({
+          pathname: "/(app)/teams/issue/[id]",
+          params: { id: child.id, title: child.title },
+        })
+      }
+      accessibilityRole="button"
+      accessibilityLabel={`${child.title}. ${label}.`}
+    >
+      <StatusSwatch status={child.status} />
+      <View style={styles.childText}>
+        <Text style={styles.childIdent}>
+          {child.identifier ?? child.id.slice(0, 8)}
+        </Text>
+        <Text style={styles.childTitle} numberOfLines={1}>
+          {child.title}
+        </Text>
+      </View>
+      <View style={[styles.childStatusChip, { backgroundColor: tint }]}>
+        <Text style={[styles.childStatusText, { color }]} numberOfLines={1}>
+          {label}
+        </Text>
+      </View>
+    </Pressable>
   );
 }
 
@@ -151,7 +237,8 @@ export default function IssueDetailScreen() {
   const params = useLocalSearchParams<{ id: string; title?: string }>();
   const id = typeof params.id === "string" ? params.id : undefined;
   const seedTitle = typeof params.title === "string" ? params.title : undefined;
-  const { state, retry } = useTeamsIssue(id);
+  const { state, retry, setStatus, setPriority, setAssignee, addComment, createChild } =
+    useTeamsIssue(id);
 
   const headerTitle =
     state.kind === "ready" ? state.issue.title : seedTitle ?? "Issue";
@@ -199,21 +286,44 @@ export default function IssueDetailScreen() {
       </View>
     );
   } else {
-    body = <ReadyBody state={state} />;
+    body = (
+      <ReadyBody
+        state={state}
+        onSetStatus={setStatus}
+        onSetPriority={setPriority}
+        onSetAssignee={setAssignee}
+        onCreateChild={createChild}
+      />
+    );
   }
 
   return (
-    <>
+    <KeyboardAvoidingView
+      style={styles.page}
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      keyboardVerticalOffset={90}
+    >
       <Stack.Screen options={{ title: headerTitle }} />
-      <ScrollView style={styles.page} contentContainerStyle={styles.content}>
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.content}
+        keyboardShouldPersistTaps="handled"
+      >
         {body}
       </ScrollView>
-    </>
+      {state.kind === "ready" && <CommentComposer onSubmit={addComment} />}
+    </KeyboardAvoidingView>
   );
 }
 
+type OpenPicker = "status" | "priority" | "assignee" | null;
+
 function ReadyBody({
   state,
+  onSetStatus,
+  onSetPriority,
+  onSetAssignee,
+  onCreateChild,
 }: {
   state: {
     issue: IssueDetail;
@@ -221,11 +331,27 @@ function ReadyBody({
     children: ChildIssue[];
     agents: TeamsAgent[];
   };
+  onSetStatus: (status: BoardStatus) => void;
+  onSetPriority: (priority: Priority) => void;
+  onSetAssignee: (agentId: string | null) => void;
+  onCreateChild: (input: CreateIssueInput) => Promise<boolean>;
 }) {
   const { issue, comments, children, agents } = state;
   const identifier = issue.identifier ?? issue.id.slice(0, 8);
   const assignee = assigneeLabel(issue, agents);
   const created = issue.createdAt ? timeAgo(issue.createdAt) : null;
+  const prColor = priorityColor(issue.priority);
+
+  const [picker, setPicker] = useState<OpenPicker>(null);
+  const [addingChild, setAddingChild] = useState(false);
+
+  const assigneeOptions = useMemo<PickerOption[]>(
+    () => [
+      { key: UNASSIGNED_KEY, label: "Unassigned" },
+      ...agents.map((a) => ({ key: a.id, label: a.name ?? "Agent" })),
+    ],
+    [agents],
+  );
 
   return (
     <>
@@ -235,14 +361,29 @@ function ReadyBody({
         <Text style={styles.issueTitle}>{issue.title}</Text>
       </View>
 
-      {/* Properties */}
+      {/* Properties — status/priority/agent are tappable → picker sheets. */}
       <View style={styles.card}>
-        <PropertyRow label="STATUS" value={humanizeStatus(issue.status)} />
-        {assignee != null && <PropertyRow label="AGENT" value={assignee} />}
-        {issue.priority != null && (
-          <PropertyRow label="PRIORITY" value={humanizeStatus(issue.priority)} />
-        )}
-        {created != null && <PropertyRow label="CREATED" value={created} />}
+        <EditableRow label="STATUS" onPress={() => setPicker("status")}>
+          <StatusSwatch status={issue.status} />
+          <Text style={styles.editValueText} numberOfLines={1}>
+            {humanizeStatus(issue.status)}
+          </Text>
+        </EditableRow>
+
+        <EditableRow label="PRIORITY" onPress={() => setPicker("priority")}>
+          {prColor ? <View style={[styles.priorityDot, { backgroundColor: prColor }]} /> : null}
+          <Text style={styles.editValueText} numberOfLines={1}>
+            {issue.priority ? humanizeStatus(issue.priority) : "None"}
+          </Text>
+        </EditableRow>
+
+        <EditableRow label="AGENT" onPress={() => setPicker("assignee")}>
+          <Text style={styles.editValueText} numberOfLines={1}>
+            {assignee ?? "Unassigned"}
+          </Text>
+        </EditableRow>
+
+        {created != null && <StaticRow label="CREATED" value={created} />}
       </View>
 
       {/* Description */}
@@ -253,20 +394,31 @@ function ReadyBody({
         </View>
       )}
 
-      {/* Sub-issues summary (cheap children read) */}
-      {children.length > 0 && (
-        <View style={styles.section}>
-          <Text style={styles.sectionLabel}>
-            SUB-ISSUES
+      {/* Sub-issues — interactive mini-cards + add affordance. */}
+      <View style={styles.section}>
+        <Text style={styles.sectionLabel}>
+          SUB-ISSUES
+          {children.length > 0 && (
             <Text style={styles.sectionCount}> · {children.length}</Text>
-          </Text>
-          <View style={styles.card}>
+          )}
+        </Text>
+        {children.length > 0 && (
+          <View style={styles.childList}>
             {children.map((child) => (
-              <ChildRow key={child.id} child={child} />
+              <ChildCard key={child.id} child={child} />
             ))}
           </View>
-        </View>
-      )}
+        )}
+        <Pressable
+          style={({ pressed }) => [styles.addChild, pressed && styles.addChildPressed]}
+          onPress={() => setAddingChild(true)}
+          accessibilityRole="button"
+          accessibilityLabel="Add sub-issue"
+        >
+          <Feather name="plus" size={15} color={colors.forest} />
+          <Text style={styles.addChildText}>Add sub-issue</Text>
+        </Pressable>
+      </View>
 
       {/* Comments thread */}
       <View style={styles.section}>
@@ -287,16 +439,62 @@ function ReadyBody({
         )}
       </View>
 
-      {/* Read-only note (v1: no posting comments). */}
-      <Text style={styles.readOnlyNote}>
-        Viewing is read-only in the mobile app. Reply from isol8.co.
-      </Text>
+      {/* Status picker */}
+      <PickerSheet
+        visible={picker === "status"}
+        heading="Set status"
+        subheading={issue.title}
+        options={BOARD_STATUSES.map((s) => ({
+          key: s,
+          label: STATUS_LABELS[s],
+          dotColor: statusColors(s).color,
+          strikethrough: s === "cancelled",
+        }))}
+        selectedKey={issue.status ?? null}
+        onSelect={(key) => onSetStatus(key as BoardStatus)}
+        onClose={() => setPicker(null)}
+      />
+
+      {/* Priority picker */}
+      <PickerSheet
+        visible={picker === "priority"}
+        heading="Set priority"
+        subheading={issue.title}
+        options={PRIORITIES.map((p) => ({
+          key: p,
+          label: PRIORITY_LABELS[p],
+          dotColor: priorityColor(p),
+        }))}
+        selectedKey={issue.priority ?? null}
+        onSelect={(key) => onSetPriority(key as Priority)}
+        onClose={() => setPicker(null)}
+      />
+
+      {/* Assignee picker */}
+      <PickerSheet
+        visible={picker === "assignee"}
+        heading="Assign agent"
+        subheading={issue.title}
+        options={assigneeOptions}
+        selectedKey={issue.assigneeAgentId ?? UNASSIGNED_KEY}
+        onSelect={(key) => onSetAssignee(key === UNASSIGNED_KEY ? null : key)}
+        onClose={() => setPicker(null)}
+      />
+
+      {/* Create sub-issue */}
+      <CreateIssueSheet
+        visible={addingChild}
+        mode="subissue"
+        onSubmit={onCreateChild}
+        onClose={() => setAddingChild(false)}
+      />
     </>
   );
 }
 
 const styles = StyleSheet.create({
   page: { flex: 1, backgroundColor: colors.cream },
+  scroll: { flex: 1 },
   content: { padding: spacing.lg, gap: spacing.lg, paddingBottom: spacing.xl },
 
   // Header block.
@@ -315,21 +513,25 @@ const styles = StyleSheet.create({
     borderRadius: radii.lg,
     borderWidth: 1,
     borderColor: colors.edge,
-    padding: spacing.lg,
-    gap: spacing.md,
+    padding: spacing.sm,
+    gap: spacing.xs,
   },
   propRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.md,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.sm,
   },
+  editRow: { borderRadius: radii.md },
+  editRowPressed: { backgroundColor: colors.creamDeeper },
   propLabel: {
     fontFamily: fonts.mono,
     fontSize: 10,
     lineHeight: 14,
     letterSpacing: 1.4,
     color: colors.mute,
-    width: 76,
+    width: 72,
   },
   propValue: {
     flex: 1,
@@ -338,6 +540,21 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     color: colors.ink,
   },
+  editValue: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+  },
+  editValueText: {
+    fontFamily: fonts.dmSansMedium,
+    fontSize: 13,
+    lineHeight: 18,
+    color: colors.ink,
+    flexShrink: 1,
+  },
+  swatch: { width: 12, height: 12, borderRadius: 6, borderWidth: 1.5 },
+  priorityDot: { width: 10, height: 10, borderRadius: 5 },
 
   // Sections.
   section: { gap: spacing.sm },
@@ -351,12 +568,21 @@ const styles = StyleSheet.create({
     color: colors.assistantInk,
   },
 
-  // Sub-issue rows.
-  childRow: {
+  // Sub-issue cards.
+  childList: { gap: spacing.sm },
+  childCard: {
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.sm,
+    backgroundColor: colors.white,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: colors.edge,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
   },
+  childCardPressed: { backgroundColor: colors.cream },
+  childText: { flex: 1, gap: 2 },
   childIdent: {
     fontFamily: fonts.mono,
     fontSize: 10,
@@ -364,17 +590,41 @@ const styles = StyleSheet.create({
     color: colors.mute,
   },
   childTitle: {
-    flex: 1,
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.dmSansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.ink,
   },
-  childStatus: {
-    fontFamily: fonts.dmSans,
-    fontSize: 11,
-    lineHeight: 15,
-    color: colors.mute,
+  childStatusChip: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 3,
+    borderRadius: radii.sm,
+    maxWidth: 96,
+  },
+  childStatusText: {
+    fontFamily: fonts.dmSansMedium,
+    fontSize: 10,
+    lineHeight: 14,
+  },
+  addChild: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+    alignSelf: "flex-start",
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: radii.sm,
+    borderWidth: 1,
+    borderColor: colors.edge,
+    borderStyle: "dashed",
+    backgroundColor: colors.white,
+  },
+  addChildPressed: { backgroundColor: colors.creamDeeper },
+  addChildText: {
+    fontFamily: fonts.dmSansMedium,
+    fontSize: 12,
+    lineHeight: 16,
+    color: colors.forest,
   },
 
   // Comments.
@@ -385,6 +635,7 @@ const styles = StyleSheet.create({
     borderLeftWidth: 2,
     borderLeftColor: colors.edge,
   },
+  commentPending: { opacity: 0.55 },
   commentMeta: {
     flexDirection: "row",
     alignItems: "center",
@@ -409,15 +660,6 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     color: colors.mute,
     fontStyle: "italic",
-  },
-
-  readOnlyNote: {
-    fontFamily: fonts.dmSans,
-    fontSize: 12,
-    lineHeight: 16,
-    color: colors.muteSoft,
-    textAlign: "center",
-    marginTop: spacing.sm,
   },
 
   // States.

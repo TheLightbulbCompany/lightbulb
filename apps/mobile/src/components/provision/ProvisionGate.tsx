@@ -21,9 +21,11 @@
  * Polling continues while `teamPending` (see useContainerStatus) so the gate
  * clears itself once the admin's workspace comes up.
  */
+import { useAuth } from "@clerk/clerk-expo";
 import { useCallback } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Animated,
   Linking,
   Pressable,
@@ -107,6 +109,16 @@ function Interstitial({
   pulseGlyph?: boolean;
 }) {
   const insets = useSafeAreaInsets();
+  const { signOut } = useAuth();
+  // The interstitial replaces the whole tab shell, so it's the only exit for
+  // a wrong-account or hard-blocked user — offer sign-out here or they're
+  // trapped with just Retry + the outbound link.
+  const onSignOut = useCallback(() => {
+    Alert.alert("Sign out", "Sign out of this account?", [
+      { text: "Cancel", style: "cancel" },
+      { text: "Sign out", style: "destructive", onPress: () => void signOut() },
+    ]);
+  }, [signOut]);
   return (
     <View style={[styles.interstitialPage, { paddingTop: insets.top }]}>
       <View style={styles.interstitialCard}>
@@ -128,6 +140,15 @@ function Interstitial({
           ) : (
             <Text style={styles.retryButtonText}>Retry</Text>
           )}
+        </Pressable>
+
+        <Pressable
+          style={({ pressed }) => [styles.signOutButton, pressed && styles.pressed]}
+          onPress={onSignOut}
+          accessibilityRole="button"
+          accessibilityLabel="Sign out"
+        >
+          <Text style={styles.signOutText}>Sign out</Text>
         </Pressable>
       </View>
     </View>
@@ -353,6 +374,17 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 18,
     color: colors.forest,
+  },
+  signOutButton: {
+    alignSelf: "center",
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.xs,
+  },
+  signOutText: {
+    fontFamily: fonts.dmSans,
+    fontSize: 13,
+    lineHeight: 17,
+    color: colors.mute,
   },
   pressed: { opacity: 0.6 },
 });

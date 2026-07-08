@@ -17,10 +17,9 @@ interface PanelRow {
 }
 
 // Mirrors the web ControlSidebar NAV_ITEMS (w3-control-contract §"Actual
-// NAV_ITEMS"). Overview is the only real panel in this build; the rest push
-// to on-system stubs (C2..C4 replace them). Dreams + Skill Proposals are
-// omitted here — they are low-frequency, need their own memory/proposal
-// data plumbing, and are out of scope for the C1 shell.
+// NAV_ITEMS") plus a Marketplace entry. All panels are implemented. Dreams +
+// Skill Proposals are omitted — low-frequency, need their own memory/proposal
+// data plumbing, out of scope for this build.
 const PANELS: PanelRow[] = [
   {
     key: "overview",

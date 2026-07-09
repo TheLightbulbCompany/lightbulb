@@ -114,6 +114,7 @@ export type AnalyticsEvent =
   // Onboarding
   | "onboarding_provider_completed"
   | "onboarding_step_completed"
+  | "onboarding_step_entered"
   | "org_invitation_accepted"
   | "workspace_type_selected"
   // Skills

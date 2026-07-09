@@ -69,9 +69,10 @@ def test_synthesize_returns_canonical_shape(monkeypatch):
     assert cfg["sessionKey"] == "user_123"
     assert cfg["devicePrivateKeyPem"].startswith("-----BEGIN PRIVATE KEY-----")
     # The adapter's 120s default is too short for our agents' substantive runs;
-    # we pin 5 min so a still-working run isn't mislabeled `timed_out` + retried.
-    assert cfg["timeoutSec"] == 300
-    assert cfg["waitTimeoutMs"] == 300_000
+    # we pin 10 min (the API Gateway WS idle ceiling) so a still-working run isn't
+    # mislabeled `timed_out` + retried.
+    assert cfg["timeoutSec"] == 600
+    assert cfg["waitTimeoutMs"] == 600_000
     assert set(cfg.keys()) == {
         "url",
         "authToken",

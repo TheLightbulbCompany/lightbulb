@@ -30,7 +30,6 @@ const PANEL_LOADERS: Record<string, () => Promise<React.ComponentType>> = {
   projects: () => import("./panels/ProjectsListPanel").then((m) => m.ProjectsListPanel),
   activity: () => import("./panels/ActivityPanel").then((m) => m.ActivityPanel),
   costs: () => import("./panels/CostsPanel").then((m) => m.CostsPanel),
-  skills: () => import("./panels/SkillsPanel").then((m) => m.SkillsPanel),
   settings: () => import("./panels/SettingsPanel").then((m) => m.SettingsPanel),
 };
 
@@ -74,6 +73,7 @@ export function preloadTeamsPanels(): void {
 const RETIRED_PANEL_ALIASES: Record<string, string> = {
   approvals: "inbox", // folded into the inbox "Needs attention" band
   members: "settings", // members management lives in Settings now
+  skills: "dashboard", // Paperclip company-skills panel retired — inert for gateway agents; skills live in the per-agent Skill Store
 };
 
 export function TeamsPanelRouter({

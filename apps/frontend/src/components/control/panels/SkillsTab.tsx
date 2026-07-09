@@ -9,7 +9,6 @@ import {
   Search,
   AlertTriangle,
   Download,
-  ExternalLink,
   ChevronDown,
   Monitor,
 } from "lucide-react";
@@ -18,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { SKILL_INTEGRATIONS } from "./skill-integrations";
+import { ClawHubSearch } from "./ClawHubSearch";
 
 // --- Types matching OpenClaw skills.status response ---
 
@@ -284,6 +284,9 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
           />
         </div>
 
+        {/* ClawHub registry search — in-app browse + one-click install */}
+        <ClawHubSearch query={filter} callRpc={callRpc} onInstalled={mutate} />
+
         {/* Category pills */}
         <div className="flex items-center gap-2 overflow-x-auto pb-1">
           {CATEGORIES.map((cat) => (
@@ -436,19 +439,6 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
           </div>
         )}
 
-        {/* Bottom link */}
-        <div className="pt-2 pb-4 text-center">
-          <a
-            href="https://clawhub.ai/skills?sort=downloads&nonSuspicious=true"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1.5 text-sm text-[#2d8a4e] hover:text-[#06402B] transition-colors"
-            style={{ fontFamily: "'DM Sans', sans-serif" }}
-          >
-            Need more? Browse all skills on ClawHub
-            <ExternalLink className="h-3.5 w-3.5" />
-          </a>
-        </div>
       </div>
     </div>
   );

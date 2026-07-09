@@ -48,6 +48,8 @@ describe("useAgentModels", () => {
     expect(result.current.usingFallback).toBe(false);
     expect(result.current.models).toHaveLength(1);
     expect(result.current.models[0].id).toBe("gpt-5");
+    expect(mockRpc).toHaveBeenCalledWith("models.list", undefined);
+    expect(mockRpc).toHaveBeenCalledWith("config.get", undefined);
   });
 
   it("falls back to the agent default model on catalog error", () => {

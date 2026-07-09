@@ -32,15 +32,15 @@ export interface UseAgentModelsResult {
 }
 
 /**
- * The owner's models for the active agent via OpenClaw `models.list` (per-agent
- * discovery). On timeout/empty we fall back to the agent's configured default
+ * The owner's models via OpenClaw `models.list`. On timeout/empty we fall back
+ * to the active agent's configured default
  * model from config.get so the picker never shows "no models" — see the design
  * doc's error-handling section.
  */
 export function useAgentModels(agentId: string | null): UseAgentModelsResult {
   const { data, error, isLoading } = useGatewayRpc<ModelsListResponse | ModelEntry[]>(
     agentId ? "models.list" : null,
-    agentId ? { agentId } : undefined,
+    undefined,
   );
   const { data: cfg } = useGatewayRpc<ConfigGet>("config.get");
 

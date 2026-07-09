@@ -18,6 +18,7 @@ Returns IAM policy (WebSocket APIs require this format, not isAuthorized) plus
 authorization context (userId, orgId, authKind) for the backend.
 """
 
+import base64
 import json
 import logging
 import os
@@ -26,6 +27,7 @@ from typing import Any, Optional
 
 import boto3
 import jwt
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from jwt import PyJWKClient
 
 logger = logging.getLogger()
@@ -41,11 +43,18 @@ PAPERCLIP_SERVICE_TOKEN_KEY_SECRET_ARN = os.environ.get(
     "PAPERCLIP_SERVICE_TOKEN_KEY_SECRET_ARN", ""
 )
 
+# Desktop device-token configuration
+DEVICE_TOKEN_KIND = "device"
+CONTAINERS_TABLE = os.environ.get("CONTAINERS_TABLE", "")
+
 # Cache JWKS client (reused across invocations)
 _jwks_client = None
 
 # Boto client for Secrets Manager (initialized lazily)
 _secrets_client = None
+
+# Boto DynamoDB Table for the containers row (device pubkey registry), lazy
+_containers_table = None
 
 
 def _get_secrets_client():
@@ -53,6 +62,13 @@ def _get_secrets_client():
     if _secrets_client is None:
         _secrets_client = boto3.client("secretsmanager")
     return _secrets_client
+
+
+def _get_containers_table():
+    global _containers_table
+    if _containers_table is None and CONTAINERS_TABLE:
+        _containers_table = boto3.resource("dynamodb").Table(CONTAINERS_TABLE)
+    return _containers_table
 
 
 def _emit_metric(metric_name: str, value: int) -> None:
@@ -174,6 +190,80 @@ def _try_service_token(token: str) -> Optional[dict]:
     return claims
 
 
+def _try_device_token(token: str) -> Optional[dict]:
+    """Validate a desktop device-key WS-upgrade token (EdDSA, kind=device).
+
+    The desktop node-host self-mints a short-lived JWT signed by its Ed25519
+    Keychain key on every (re)connect. We verify PROOF-OF-POSSESSION against the
+    device's registered public key, projected onto the owner's ``containers`` row
+    at ``/desktop/pair`` as ``paired_devices[deviceId]`` — no long-lived bearer
+    secret at rest, and revocation is un-pairing (the row entry disappears → Deny
+    on the next connect). Returns {userId, orgId, authKind} on success, else None
+    so the caller falls through to the service-token / Clerk paths. Fails CLOSED.
+
+    Security note: the deviceId/owner claims are read UNVERIFIED only to locate
+    the registered pubkey; the signature is then verified against THAT pubkey, so
+    a forged deviceId/owner points at a key the attacker cannot sign for and the
+    verification fails. The member identity is taken from the server-authored row
+    (paired_devices[deviceId].userId), never self-asserted by the device.
+    """
+    try:
+        header = jwt.get_unverified_header(token)
+    except jwt.PyJWTError:
+        return None
+    if header.get("alg") != "EdDSA":
+        return None  # not a device token — let the other branches try
+    if not CONTAINERS_TABLE:
+        logger.warning("Device (EdDSA) token seen but CONTAINERS_TABLE not set")
+        return None
+    try:
+        unverified = jwt.decode(token, options={"verify_signature": False})
+        if unverified.get("kind") != DEVICE_TOKEN_KIND:
+            return None
+        device_id = unverified.get("deviceId")
+        owner_id = unverified.get("owner")
+        if not device_id or not owner_id:
+            return None
+
+        resp = _get_containers_table().get_item(Key={"owner_id": owner_id})
+        item = resp.get("Item")
+        if not item:
+            return None
+        entry = (item.get("paired_devices") or {}).get(device_id)
+        if not entry or not entry.get("publicKey"):
+            return None  # not paired / revoked
+
+        pub = Ed25519PublicKey.from_public_bytes(
+            base64.urlsafe_b64decode(entry["publicKey"] + "==")
+        )
+        # Verify the EdDSA signature over the exact claims + enforce exp.
+        jwt.decode(
+            token,
+            key=pub,
+            algorithms=["EdDSA"],
+            options={
+                "require": ["exp", "deviceId", "owner"],
+                "verify_exp": True,
+            },
+            leeway=30,
+        )
+
+        member_user_id = entry.get("userId") or owner_id
+        # Personal owner: owner_id == member → orgId "" (mirrors Clerk personal).
+        org_id = "" if owner_id == member_user_id else owner_id
+        return {
+            "userId": member_user_id,
+            "orgId": org_id,
+            "authKind": DEVICE_TOKEN_KIND,
+        }
+    except jwt.PyJWTError as e:
+        logger.warning(f"Device token rejected: {e}")
+        return None
+    except Exception as e:
+        logger.exception(f"Device token validation error: {e}")
+        return None
+
+
 def handler(event: dict, context: Any) -> dict:
     """
     Lambda authorizer handler for WebSocket API.
@@ -202,6 +292,18 @@ def handler(event: dict, context: Any) -> dict:
     if not token:
         logger.warning("No token provided in query parameters")
         return generate_policy("unauthorized", "Deny", method_arn)
+
+    # --- Try desktop device token (EdDSA, proof-of-possession) ---
+    # Routed by alg=EdDSA; a no-op (returns None) for HS256/RS256 tokens.
+    device_claims = _try_device_token(token)
+    if device_claims:
+        logger.info(f"Authorized via device token user_id={device_claims['userId']}")
+        return generate_policy(
+            principal_id=device_claims["userId"],
+            effect="Allow",
+            resource=method_arn,
+            context=device_claims,
+        )
 
     # --- Try Paperclip service token first (cheap symmetric verify) ---
     service_claims = _try_service_token(token)

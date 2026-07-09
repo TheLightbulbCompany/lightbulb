@@ -330,6 +330,8 @@ async def test_remove_paired_device_deletes_only_target(dynamodb_table):
     row = await container_repo.get_by_owner_id("owner_1")
     assert set(row["paired_devices"]) == {"dev_b"}
 
-    # Removing a non-present device is a no-op that still returns the row.
-    result = await container_repo.remove_paired_device("owner_1", "dev_a")
-    assert set(result["paired_devices"]) == {"dev_b"}
+    # Removing a non-present device (and removing on a missing row) is a no-op.
+    await container_repo.remove_paired_device("owner_1", "dev_a")
+    await container_repo.remove_paired_device("ghost", "dev_a")
+    row = await container_repo.get_by_owner_id("owner_1")
+    assert set(row["paired_devices"]) == {"dev_b"}

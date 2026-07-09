@@ -68,6 +68,9 @@ export type AnalyticsEvent =
   | "agent_selected"
   // Billing
   | "billing_portal_opened"
+  | "subscription_checkout_canceled"
+  | "subscription_checkout_failed"
+  | "subscription_checkout_returned_success"
   | "subscription_checkout_started"
   // Catalog
   | "catalog_agent_deployed"
@@ -106,6 +109,8 @@ export type AnalyticsEvent =
   // Landing
   | "landing_cta_clicked"
   | "landing_download_clicked"
+  | "landing_pricing_card_clicked"
+  | "landing_viewed"
   // MCP
   | "mcp_server_added"
   | "mcp_server_removed"
@@ -117,6 +122,8 @@ export type AnalyticsEvent =
   | "onboarding_step_entered"
   | "org_invitation_accepted"
   | "workspace_type_selected"
+  // Signup
+  | "signup_started"
   // Skills
   | "skill_api_key_saved"
   | "skill_installed"
@@ -138,6 +145,149 @@ interface PostHogLoadState {
 
 function isLoaded(): boolean {
   return (posthog as unknown as PostHogLoadState).__loaded === true;
+}
+
+const ATTRIBUTION_STORAGE_KEY = "isol8_attribution_v1";
+const UTM_KEYS = [
+  "utm_source",
+  "utm_medium",
+  "utm_campaign",
+  "utm_term",
+  "utm_content",
+  "gclid",
+  "fbclid",
+  "msclkid",
+  "ttclid",
+  "li_fat_id",
+] as const;
+
+type AttributionValue = string | null;
+type AttributionPayload = Record<string, AttributionValue>;
+
+interface StoredAttribution {
+  first_touch: AttributionPayload;
+  last_touch: AttributionPayload;
+}
+
+function safeNow(): string {
+  return new Date().toISOString();
+}
+
+function emptyTouch(timestamp: string): AttributionPayload {
+  return {
+    timestamp,
+    landing_path: null,
+    referrer: null,
+    referring_domain: null,
+    utm_source: null,
+    utm_medium: null,
+    utm_campaign: null,
+    utm_term: null,
+    utm_content: null,
+    gclid: null,
+    fbclid: null,
+    msclkid: null,
+    ttclid: null,
+    li_fat_id: null,
+  };
+}
+
+function readStoredAttribution(): StoredAttribution | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(ATTRIBUTION_STORAGE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as StoredAttribution;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredAttribution(value: StoredAttribution): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(ATTRIBUTION_STORAGE_KEY, JSON.stringify(value));
+  } catch {
+    // Attribution is helpful, not product-critical. Storage-disabled browsers
+    // should still get a working app and best-effort current-session events.
+  }
+}
+
+function externalReferrer(): { referrer: string | null; domain: string | null } {
+  if (typeof document === "undefined" || !document.referrer) {
+    return { referrer: null, domain: null };
+  }
+  try {
+    const referrer = new URL(document.referrer);
+    if (typeof window !== "undefined" && referrer.host === window.location.host) {
+      return { referrer: null, domain: null };
+    }
+    return { referrer: document.referrer, domain: referrer.hostname };
+  } catch {
+    return { referrer: document.referrer, domain: null };
+  }
+}
+
+function currentTouch(): AttributionPayload {
+  const timestamp = safeNow();
+  const touch = emptyTouch(timestamp);
+  if (typeof window === "undefined") return touch;
+
+  const params = new URLSearchParams(window.location.search);
+  for (const key of UTM_KEYS) {
+    touch[key] = params.get(key);
+  }
+  const ref = externalReferrer();
+  touch.referrer = ref.referrer;
+  touch.referring_domain = ref.domain;
+  touch.landing_path = `${window.location.pathname}${window.location.search}`;
+  return touch;
+}
+
+function hasAttributionSignal(touch: AttributionPayload): boolean {
+  return Boolean(
+    touch.referrer ||
+      UTM_KEYS.some((key) => {
+        const value = touch[key];
+        return typeof value === "string" && value.length > 0;
+      }),
+  );
+}
+
+export function refreshAttribution(): StoredAttribution | null {
+  if (typeof window === "undefined") return null;
+  const previous = readStoredAttribution();
+  const touch = currentTouch();
+
+  if (!previous) {
+    const initial = { first_touch: touch, last_touch: touch };
+    writeStoredAttribution(initial);
+    return initial;
+  }
+
+  if (!hasAttributionSignal(touch)) return previous;
+
+  const next = { ...previous, last_touch: touch };
+  writeStoredAttribution(next);
+  return next;
+}
+
+export function attributionProperties(): Record<string, unknown> {
+  const stored = readStoredAttribution();
+  if (!stored) return {};
+
+  const props: Record<string, unknown> = {};
+  for (const [prefix, touch] of [
+    ["first_touch", stored.first_touch],
+    ["last_touch", stored.last_touch],
+  ] as const) {
+    for (const [key, value] of Object.entries(touch)) {
+      if (value != null && value !== "") {
+        props[`${prefix}_${key}`] = value;
+      }
+    }
+  }
+  return props;
 }
 
 /**
@@ -171,7 +321,7 @@ export function capture(
 ): void {
   if (typeof window === "undefined") return;
   if (!isLoaded()) return;
-  posthog.capture(event, properties);
+  posthog.capture(event, { ...attributionProperties(), ...properties });
 }
 
 /**
@@ -199,7 +349,7 @@ export function identify(
 ): void {
   if (typeof window === "undefined") return;
   if (!isLoaded()) return;
-  posthog.identify(distinctId, properties);
+  posthog.identify(distinctId, { ...attributionProperties(), ...properties });
 }
 
 /**
@@ -221,6 +371,7 @@ export function reset(): void {
  */
 export function pageview(url: string): void {
   if (typeof window === "undefined") return;
+  refreshAttribution();
   if (!isLoaded()) return;
-  posthog.capture("$pageview", { $current_url: url });
+  posthog.capture("$pageview", { ...attributionProperties(), $current_url: url });
 }

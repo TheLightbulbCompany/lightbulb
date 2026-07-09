@@ -1322,6 +1322,11 @@ export function ProviderPicker({ isOrg, orgName }: { isOrg: boolean; orgName?: s
   const handlePick = useCallback(async (id: ProviderChoiceId) => {
     setLoading(id);
     setError(null);
+    capture("subscription_checkout_started", {
+      provider_choice: id,
+      owner_type: isOrg ? "org" : "personal",
+      source: "provider_picker",
+    });
     try {
       const resp = (await api.post("/billing/trial-checkout", {
         provider_choice: id,
@@ -1338,10 +1343,16 @@ export function ProviderPicker({ isOrg, orgName }: { isOrg: boolean; orgName?: s
         throw new Error("No checkout_url returned");
       }
     } catch (err) {
+      capture("subscription_checkout_failed", {
+        provider_choice: id,
+        owner_type: isOrg ? "org" : "personal",
+        source: "provider_picker",
+        error: err instanceof Error ? err.message : "unknown",
+      });
       setLoading(null);
       setError(err instanceof Error ? err.message : "Couldn't start checkout. Please try again.");
     }
-  }, [api]);
+  }, [api, isOrg]);
 
   return (
     <div className="flex-1 flex items-center justify-center p-8 bg-[#faf7f2]">

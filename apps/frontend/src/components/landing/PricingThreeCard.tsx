@@ -1,6 +1,7 @@
 "use client";
 import Link from "next/link";
 
+import { capture } from "@/lib/analytics";
 import { PROVIDER_CARDS } from "@/lib/providerCards";
 
 export function PricingThreeCard() {
@@ -43,7 +44,21 @@ export function PricingThreeCard() {
                   <li key={b}>{b}</li>
                 ))}
               </ul>
-              <Link href={card.href} className="ld-btn">
+              <Link
+                href={card.href}
+                className="ld-btn"
+                onClick={() => {
+                  capture("landing_pricing_card_clicked", {
+                    provider_choice: card.id,
+                    destination: card.href,
+                  });
+                  capture("signup_started", {
+                    source: "landing_pricing_card",
+                    provider_choice: card.id,
+                    destination: card.href,
+                  });
+                }}
+              >
                 {card.cta}
                 <span className="ld-btn-arrow" aria-hidden="true">
                   →

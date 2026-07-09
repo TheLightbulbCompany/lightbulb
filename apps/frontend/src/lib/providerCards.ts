@@ -35,7 +35,7 @@ export const PROVIDER_CARDS: ProviderCard[] = [
     id: "chatgpt_oauth",
     title: "Sign in with ChatGPT",
     subtitle: "$50 / month + your ChatGPT subscription",
-    trialNote: "14-day trial",
+    trialNote: "14-day trial, card required",
     bullets: [
       "GPT-5.5 included via your ChatGPT account",
       "All channels (Telegram, Discord, WhatsApp)",
@@ -48,7 +48,7 @@ export const PROVIDER_CARDS: ProviderCard[] = [
     id: "byo_key",
     title: "Bring your own API key",
     subtitle: "$50 / month + your provider bill",
-    trialNote: "14-day trial",
+    trialNote: "14-day trial, card required",
     bullets: [
       "OpenAI or Anthropic — your key, your billing",
       "All channels",

@@ -148,7 +148,13 @@ export function Hero() {
               <Link
                 href="/chat"
                 className="ld-btn"
-                onClick={() => capture("landing_cta_clicked")}
+                onClick={() =>
+                  capture("landing_cta_clicked", {
+                    cta_id: "hero_start_pod",
+                    section: "hero",
+                    destination: "/chat",
+                  })
+                }
               >
                 Start your pod
                 <span className="ld-btn-arrow" aria-hidden="true">
@@ -160,7 +166,7 @@ export function Hero() {
               </Link>
             </div>
             <p className="ld-hero-fine">
-              No credit card required ·{" "}
+              14-day trial, card required ·{" "}
               <a
                 href={`/api/download/desktop?arch=${arch}`}
                 onClick={() => capture("landing_download_clicked", { arch })}

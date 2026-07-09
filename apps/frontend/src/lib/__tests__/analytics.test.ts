@@ -4,6 +4,8 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 // installed before the module-under-test is imported.
 const mockCapture = vi.fn();
 const mockCaptureException = vi.fn();
+const mockIdentify = vi.fn();
+const mockReset = vi.fn();
 const mockState: { __loaded: boolean } = { __loaded: true };
 
 vi.mock("posthog-js", () => {
@@ -13,6 +15,8 @@ vi.mock("posthog-js", () => {
     },
     capture: (...args: unknown[]) => mockCapture(...args),
     captureException: (...args: unknown[]) => mockCaptureException(...args),
+    identify: (...args: unknown[]) => mockIdentify(...args),
+    reset: (...args: unknown[]) => mockReset(...args),
   };
   return { default: posthog };
 });
@@ -25,12 +29,29 @@ async function importAnalytics() {
   return mod;
 }
 
+function installLocalStorageStub() {
+  const values = new Map<string, string>();
+  Object.defineProperty(window, "localStorage", {
+    configurable: true,
+    value: {
+      clear: () => values.clear(),
+      getItem: (key: string) => values.get(key) ?? null,
+      removeItem: (key: string) => values.delete(key),
+      setItem: (key: string, value: string) => values.set(key, value),
+    },
+  });
+}
+
 describe("analytics.capture", () => {
   beforeEach(() => {
     vi.resetModules();
     mockCapture.mockReset();
     mockCaptureException.mockReset();
+    mockIdentify.mockReset();
+    mockReset.mockReset();
     mockState.__loaded = true;
+    installLocalStorageStub();
+    window.localStorage.clear();
   });
 
   it("no-ops when window is undefined (SSR)", async () => {
@@ -79,5 +100,45 @@ describe("analytics.capture", () => {
     const { captureException } = await importAnalytics();
     captureException(new Error("silenced"));
     expect(mockCaptureException).not.toHaveBeenCalled();
+  });
+
+  it("persists attribution from the current URL and attaches it to events", async () => {
+    window.history.replaceState({}, "", "/?utm_source=hn&utm_campaign=launch");
+    const { capture, refreshAttribution } = await importAnalytics();
+
+    refreshAttribution();
+    capture("landing_cta_clicked", { cta_id: "hero_start_pod" });
+
+    expect(mockCapture).toHaveBeenCalledWith("landing_cta_clicked", {
+      first_touch_timestamp: expect.any(String),
+      first_touch_landing_path: "/?utm_source=hn&utm_campaign=launch",
+      first_touch_utm_source: "hn",
+      first_touch_utm_campaign: "launch",
+      last_touch_timestamp: expect.any(String),
+      last_touch_landing_path: "/?utm_source=hn&utm_campaign=launch",
+      last_touch_utm_source: "hn",
+      last_touch_utm_campaign: "launch",
+      cta_id: "hero_start_pod",
+    });
+  });
+
+  it("attaches stored attribution on identify", async () => {
+    window.history.replaceState({}, "", "/?utm_source=directory&utm_medium=referral");
+    const { identify, refreshAttribution } = await importAnalytics();
+
+    refreshAttribution();
+    identify("user_123", { email: "user@example.com" });
+
+    expect(mockIdentify).toHaveBeenCalledWith("user_123", {
+      first_touch_timestamp: expect.any(String),
+      first_touch_landing_path: "/?utm_source=directory&utm_medium=referral",
+      first_touch_utm_source: "directory",
+      first_touch_utm_medium: "referral",
+      last_touch_timestamp: expect.any(String),
+      last_touch_landing_path: "/?utm_source=directory&utm_medium=referral",
+      last_touch_utm_source: "directory",
+      last_touch_utm_medium: "referral",
+      email: "user@example.com",
+    });
   });
 });

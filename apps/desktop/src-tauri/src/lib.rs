@@ -1,4 +1,5 @@
 pub mod bootstrap;
+pub mod device_token;
 pub mod file_access;
 pub mod keychain;
 mod node_client;
@@ -14,7 +15,7 @@ use tauri::{Emitter, Manager, State, Url};
 use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_updater::UpdaterExt;
 
-use crate::bootstrap::{bootstrap_desktop_node_host, jwt_provider_from_arc, DesktopNodeHostHandles};
+use crate::bootstrap::{bootstrap_desktop_node_host, DesktopNodeHostHandles};
 
 /// Keychain service name for the desktop process. Matches the bundle ID so
 /// macOS surfaces Keychain entries as belonging to this app.
@@ -353,7 +354,6 @@ async fn run_bootstrap(
         ISOL8_API_BASE, state_dir, binary
     ));
 
-    let provider = jwt_provider_from_arc(jwt_arc);
     let handles: DesktopNodeHostHandles = bootstrap_desktop_node_host(
         ISOL8_API_BASE,
         &jwt_snapshot,
@@ -361,7 +361,6 @@ async fn run_bootstrap(
         "node-host".to_string(),
         state_dir,
         binary,
-        provider,
     )
     .await?;
 

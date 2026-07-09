@@ -8,18 +8,21 @@
 //!
 //! Kept in its own module so `lib.rs::send_auth_token` stays thin and so the
 //! pure logic (URL construction, identity-file shape, etc.) is greppable.
-//! The function takes already-resolved paths + a JwtProvider so it can be
-//! exercised from tests without a Tauri AppHandle.
+//! The function takes already-resolved paths so it can be exercised from tests
+//! without a Tauri AppHandle.
 //!
-//! Once `proxy_handle` / `subprocess_handle` are stored on `AuthState`, JWT
-//! rotation is a single shared-Arc write — the proxy's JwtProvider closure
-//! reads the new value on the next upstream connect and no subprocess
-//! restart is needed.
+//! The proxy's token provider is a device-key minter (see [`crate::device_token`]):
+//! on every upstream (re)connect it signs a fresh short-lived EdDSA token with
+//! the CLI device key, so reconnects never depend on the webview's staleable
+//! Clerk JWT. The one place the Clerk JWT is still needed is the initial,
+//! interactive `/pair` call below (authenticated as the user).
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::device_token::{mint_device_token, DEVICE_TOKEN_LIFETIME_SECS};
 use crate::keychain::{load_or_generate, KeychainSlot};
+use crate::log;
 use crate::pair_client::{pair as call_pair, PairRequest, PairResponse};
 use crate::proxy::{start_proxy, JwtProvider, ProxyHandle};
 use crate::subprocess::{spawn as spawn_subprocess, SubprocessHandle};
@@ -52,7 +55,6 @@ pub async fn bootstrap_desktop_node_host(
     cli_client_id: String,
     state_dir: PathBuf,
     binary: PathBuf,
-    jwt_provider: JwtProvider,
 ) -> Result<DesktopNodeHostHandles, String> {
     // 1. Load or generate Keychain identities. The Mac identity is the
     //    Tauri-process clientId (openclaw-macos); the CLI identity is
@@ -72,15 +74,31 @@ pub async fn bootstrap_desktop_node_host(
     )
     .await?;
 
-    // 3. Start the loopback WSS proxy. The JwtProvider is invoked on every
-    //    upstream-open (not per-message), so JWT rotation lands at the
-    //    next reconnect.
-    let proxy = start_proxy(
-        pair_resp.gateway_url.clone(),
-        cli_client_id,
-        jwt_provider,
-    )
-    .await?;
+    // 3. Build the device-token provider and start the loopback WSS proxy. The
+    //    provider is invoked on every upstream-open (per reconnect), so each
+    //    reconnect signs a FRESH short-lived device token with the CLI device
+    //    key — no dependence on the webview's (staleable) Clerk JWT. Identity
+    //    (device id + owner) comes from the pair response we just received.
+    let token_key_pem = cli_id.private_key_pem.clone();
+    let token_device_id = pair_resp.device_id_cli.clone();
+    let token_owner_id = pair_resp.owner_id.clone();
+    let token_provider: JwtProvider = Arc::new(move || {
+        match mint_device_token(
+            &token_key_pem,
+            &token_device_id,
+            &token_owner_id,
+            DEVICE_TOKEN_LIFETIME_SECS,
+        ) {
+            Ok(token) => token,
+            Err(e) => {
+                // Empty token -> upstream 403 -> the subprocess reconnect loop
+                // retries (same failure mode the poisoned-JWT-lock path had).
+                log(&format!("[bootstrap] device token mint failed: {e}"));
+                String::new()
+            }
+        }
+    });
+    let proxy = start_proxy(pair_resp.gateway_url.clone(), cli_client_id, token_provider).await?;
     let proxy_port = proxy.local_port();
 
     // 4. Spawn the openclaw subprocess pointed at the loopback proxy.
@@ -99,50 +117,4 @@ pub async fn bootstrap_desktop_node_host(
         subprocess_handle: sub,
         pair_response: pair_resp,
     })
-}
-
-/// Build a JwtProvider closure backed by a shared `Arc<RwLock<String>>`.
-///
-/// Extracted so `send_auth_token` reads cleanly and so we can unit-test
-/// that the closure reflects writes to the underlying Arc.
-pub fn jwt_provider_from_arc(jwt: Arc<std::sync::RwLock<String>>) -> JwtProvider {
-    Arc::new(move || {
-        jwt.read()
-            .map(|guard| guard.clone())
-            .unwrap_or_default()
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::RwLock;
-
-    #[test]
-    fn jwt_provider_reads_current_value() {
-        let jwt = Arc::new(RwLock::new("initial".to_string()));
-        let provider = jwt_provider_from_arc(jwt.clone());
-        assert_eq!(provider(), "initial");
-
-        *jwt.write().unwrap() = "rotated".to_string();
-        assert_eq!(provider(), "rotated");
-    }
-
-    #[test]
-    fn jwt_provider_survives_poisoned_lock() {
-        // A poisoned RwLock should not panic the provider — we return
-        // empty string and let the upstream-connect attempt fail with
-        // a 401, which the reconnect loop already handles.
-        let jwt = Arc::new(RwLock::new("token".to_string()));
-        let jwt_clone = jwt.clone();
-        let _ = std::thread::spawn(move || {
-            let _guard = jwt_clone.write().unwrap();
-            panic!("poison the lock");
-        })
-        .join();
-
-        let provider = jwt_provider_from_arc(jwt);
-        // Read on poisoned lock returns Err; we map to empty.
-        assert_eq!(provider(), "");
-    }
 }

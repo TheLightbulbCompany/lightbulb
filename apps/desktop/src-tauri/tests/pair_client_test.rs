@@ -11,6 +11,7 @@ async fn pair_sends_clerk_jwt_and_parses_response() {
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "gatewayUrl": "wss://ws-dev.isol8.co",
             "gatewayToken": "tok_xyz",
+            "ownerId": "org_test",
             "deviceIdMac": "dev_mac_hash",
             "deviceIdCli": "dev_cli_hash",
             "commandsMac": ["system.notify", "device.info"],
@@ -26,6 +27,7 @@ async fn pair_sends_clerk_jwt_and_parses_response() {
     let resp: PairResponse = pair(&server.uri(), "test_jwt", &req).await.unwrap();
     assert_eq!(resp.gateway_url, "wss://ws-dev.isol8.co");
     assert_eq!(resp.gateway_token, "tok_xyz");
+    assert_eq!(resp.owner_id, "org_test");
     assert_eq!(resp.device_id_mac, "dev_mac_hash");
     assert_eq!(resp.device_id_cli, "dev_cli_hash");
     assert_eq!(resp.commands_mac, vec!["system.notify", "device.info"]);

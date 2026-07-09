@@ -2,18 +2,18 @@
 //!
 //! The bundled openclaw subprocess (see node_invoke) connects to
 //! `ws://127.0.0.1:<random>/` instead of dialing the gateway directly.
-//! This proxy then opens the real upstream WSS, injecting the Clerk JWT
-//! and clientId into the query string, and bridges frames in both
+//! This proxy then opens the real upstream WSS, injecting the `$connect`
+//! token and clientId into the query string, and bridges frames in both
 //! directions.
 //!
 //! Why a proxy:
 //!
-//! 1. The subprocess shouldn't know about Clerk auth — JWT rotation
-//!    stays in the Tauri host, plumbed via a shared `RwLock<String>`
-//!    into the [`JwtProvider`] callback.
-//! 2. JWT rotation: the proxy reads the current token via [`JwtProvider`]
-//!    on every upstream-open so reconnects pick up fresh credentials
-//!    without bouncing the subprocess.
+//! 1. The subprocess shouldn't own the gateway auth — token minting stays
+//!    in the Tauri host, behind the [`JwtProvider`] callback.
+//! 2. Fresh credentials per reconnect: the proxy calls [`JwtProvider`] on
+//!    every upstream-open, so each reconnect gets a freshly-minted
+//!    short-lived device token (see `crate::device_token`) without bouncing
+//!    the subprocess.
 //!
 //! Frame handling is a transparent bidirectional relay — the proxy does
 //! NOT inject any synthetic frames. The OpenClaw v3 protocol is
@@ -37,9 +37,11 @@ use tokio_tungstenite::tungstenite::Message;
 
 use crate::log;
 
-/// Callback the proxy invokes whenever it opens a new upstream connection
-/// so it can fetch the current Clerk JWT. Wired to the shared
-/// `Arc<RwLock<String>>` that already backs the chat WS in `lib.rs`.
+/// Callback the proxy invokes whenever it opens a new upstream connection to
+/// obtain the `$connect` token. In production this mints a fresh short-lived
+/// EdDSA device token (see `crate::device_token`); the returned string is
+/// appended to the upstream URL as `?token=…`. An empty string yields a 403,
+/// which the subprocess reconnect loop retries.
 pub type JwtProvider = Arc<dyn Fn() -> String + Send + Sync>;
 
 /// Handle returned by [`start_proxy`]. Owns the bound port and the

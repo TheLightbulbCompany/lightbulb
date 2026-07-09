@@ -21,6 +21,11 @@ pub struct PairResponse {
     pub gateway_url: String,
     #[serde(rename = "gatewayToken")]
     pub gateway_token: String,
+    /// Container-row owner id (personal user or org). The node-host mints its
+    /// device token with this as the `owner` claim; the authorizer does
+    /// `GetItem(containers, owner_id)` to find the registered device pubkey.
+    #[serde(rename = "ownerId")]
+    pub owner_id: String,
     #[serde(rename = "deviceIdMac")]
     pub device_id_mac: String,
     #[serde(rename = "deviceIdCli")]

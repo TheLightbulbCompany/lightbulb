@@ -51,14 +51,17 @@ The Expo org exists: **`isol8`** (project `@isol8/isol8-mobile`, id
 `github-ci` robot (Developer role); its token lives in the repo secret
 `EXPO_TOKEN` (rotate from expo.dev → isol8 org → Access tokens). Kick a cloud
 build from the Actions tab → Mobile CI → Run workflow (profile: preview |
-production), or locally with `EXPO_TOKEN=… npx eas-cli build …`. Device
-builds + TestFlight still pend the Apple Developer org enrollment for
-signing.
+production), or locally with `EXPO_TOKEN=… npx eas-cli build …`. TestFlight is
+currently shipping from the personal Apple Developer account; move to the
+company org account before public App Store launch.
 
 **Staying updated after release:** two lanes.
-- **JS-only changes** ship over-the-air with `eas update --channel production`
-  — installed apps pick them up on next launch, no App Store round-trip.
-  Each `eas.json` profile is pinned to the matching update channel.
+- **JS-only changes** ship over-the-air with `pnpm update:production --message
+  "Fix description"` (wrapper around `eas update --channel production`) —
+  installed apps pick them up on next launch, no App Store round-trip. Build 5
+  is the first OTA-capable binary because it includes `expo-updates`; earlier
+  TestFlight builds cannot receive OTA updates. Each `eas.json` profile is
+  pinned to the matching update channel.
 - **Native changes** (new native module, SDK upgrade, app.json/plugins change)
   require a new store build + TestFlight/App Store review. Rule of thumb: if
   `pnpm export:ios` alone can't represent the change, it's a store build.

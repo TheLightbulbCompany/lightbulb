@@ -1989,25 +1989,6 @@ class PaperclipAdminClient:
         )
 
     # ------------------------------------------------------------------
-    # Skills (read-only)
-    # ------------------------------------------------------------------
-
-    async def list_skills(
-        self,
-        *,
-        session_cookie: str,
-        company_id: str,
-    ) -> dict:
-        """List skills available to the company.
-
-        Maps to ``GET /api/companies/{companyId}/skills``.
-        """
-        return await self._get(
-            f"/api/companies/{company_id}/skills",
-            session_cookie=session_cookie,
-        )
-
-    # ------------------------------------------------------------------
     # Members (joined with Clerk in the BFF)
     # ------------------------------------------------------------------
 

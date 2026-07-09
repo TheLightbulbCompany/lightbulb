@@ -8,6 +8,12 @@
     "icon": "./assets/images/icon.png",
     "scheme": "isol8",
     "userInterfaceStyle": "automatic",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/2def259d-5e79-462b-9b0f-3d01d666ba66"
+    },
     "ios": {
       "bundleIdentifier": "co.isol8.mobile",
       "supportsTablet": false,

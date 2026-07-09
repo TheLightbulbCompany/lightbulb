@@ -16,6 +16,7 @@ import {
 import { usePulse } from "../../../components/chat/usePulse";
 import { ApprovalCard } from "../../../components/teams/ApprovalCard";
 import { BoardView } from "../../../components/teams/BoardView";
+import { CreateIssueSheet } from "../../../components/teams/CreateIssueSheet";
 import { colors, fonts, radii, spacing, type } from "../../../config/theme";
 import {
   formatCents,
@@ -24,9 +25,11 @@ import {
   runDayTotal,
   timeAgo,
   totalPendingApprovals,
+  useCreateTeamIssue,
   useTeamsApprovals,
   useTeamsDashboard,
   useTeamsInbox,
+  type CreateIssueInput,
   type InboxItem,
   type RunActivityDay,
 } from "../../../lib/teamsData";
@@ -207,15 +210,30 @@ function SegmentedToggle({
 
 export default function TeamsScreen() {
   const [mode, setMode] = useState<TeamsMode>("overview");
-  // The "+" (new task) is available from EVERY mode for discoverability.
-  // Create always runs through BoardView's create path (which auto-refreshes
-  // the board), so tapping "+" from a non-board mode switches to Board first
-  // and lands the user on the board with their new task visible.
   const [createOpen, setCreateOpen] = useState(false);
+  const createIssue = useCreateTeamIssue();
+
+  // The "+" (new task) is available from EVERY mode for discoverability.
+  // It opens in-place; only after a successful write do we move the user to the
+  // new issue (or the board if the backend did not return an id).
   const openCreate = () => {
-    setMode("board");
     setCreateOpen(true);
   };
+  const submitCreate = async (input: CreateIssueInput): Promise<boolean> => {
+    const created = await createIssue(input);
+    if (!created) return false;
+    setCreateOpen(false);
+    if (created.id) {
+      router.push({
+        pathname: "/(app)/teams/issue/[id]",
+        params: { id: created.id, title: created.title ?? input.title },
+      });
+    } else {
+      setMode("board");
+    }
+    return true;
+  };
+
   return (
     <View style={styles.host}>
       <Stack.Screen
@@ -246,8 +264,14 @@ export default function TeamsScreen() {
       ) : mode === "approvals" ? (
         <ApprovalsView />
       ) : (
-        <BoardView createOpen={createOpen} onCloseCreate={() => setCreateOpen(false)} />
+        <BoardView />
       )}
+      <CreateIssueSheet
+        visible={createOpen}
+        mode="issue"
+        onSubmit={submitCreate}
+        onClose={() => setCreateOpen(false)}
+      />
     </View>
   );
 }

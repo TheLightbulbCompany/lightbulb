@@ -14,6 +14,7 @@ from core.services.desktop_pair import (
     EfsWorkspaceAdapter,
     PairResult,
     assert_command_sets_disjoint,
+    build_node_paired_entry,
     build_paired_entry,
     derive_device_id,
     pair_desktop_devices,
@@ -159,6 +160,45 @@ def test_build_paired_entry_canonical_fields():
     assert token_entry["createdAtMs"] > 0
 
 
+def test_build_node_paired_entry_approves_openclaw_command_surface():
+    """OpenClaw 2026.3.31+ needs ``nodes/paired.json`` in addition to
+    ``devices/paired.json``. This pins the approved-node shape we write so a
+    device-authenticated desktop node exposes its live commands after connect.
+    """
+    priv = Ed25519PrivateKey.from_private_bytes(b"\x11" * 32)
+    pubkey_pem = (
+        priv.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
+    device_entry = build_paired_entry(
+        pubkey_pem=pubkey_pem,
+        client_id="node-host",
+        display_name="Alice | Isol8 Desktop (CLI)",
+        commands=list(DESKTOP_CLI_COMMANDS),
+    )
+
+    node_entry = build_node_paired_entry(
+        device_entry=device_entry,
+        caps=["system", "browser", "file"],
+        device_family="Mac",
+    )
+
+    assert node_entry["nodeId"] == device_entry["deviceId"]
+    assert node_entry["clientId"] == "node-host"
+    assert node_entry["clientMode"] == "node"
+    assert node_entry["platform"] == "macos"
+    assert node_entry["deviceFamily"] == "Mac"
+    assert node_entry["caps"] == ["system", "browser", "file"]
+    assert node_entry["commands"] == list(DESKTOP_CLI_COMMANDS)
+    assert node_entry["token"]
+    assert node_entry["createdAtMs"] > 0
+    assert node_entry["approvedAtMs"] > 0
+
+
 # Fixture: deterministic Ed25519 public key (from all-zero private bytes).
 # Expected deviceId computed once and pinned — guards against silent drift
 # in derive_device_id from upstream's deriveDeviceIdFromPublicKey.
@@ -182,11 +222,18 @@ def test_derive_device_id_matches_upstream_spki_strip():
 
 
 class _FakeWorkspace:
-    def __init__(self, initial: dict | None = None):
+    def __init__(
+        self,
+        initial: dict | None = None,
+        initial_node_paired: dict | None = None,
+    ):
         # ``None`` mirrors "no paired.json yet" from a fresh container.
         self.state: dict | None = None if initial is None else dict(initial)
+        self.node_paired_state: dict | None = None if initial_node_paired is None else dict(initial_node_paired)
         self.mutate_calls = 0
+        self.node_mutate_calls = 0
         self.write_count = 0
+        self.node_write_count = 0
         self.gateway_url = "wss://ws-dev.isol8.co"
         # Authorizer-reachable device-pubkey registry projected onto the owner
         # containers row (the real EfsWorkspaceAdapter delegates to
@@ -200,6 +247,14 @@ class _FakeWorkspace:
         if changed:
             self.state = current
             self.write_count += 1
+
+    async def mutate_node_paired_json(self, mutator):
+        self.node_mutate_calls += 1
+        current = dict(self.node_paired_state) if isinstance(self.node_paired_state, dict) else {}
+        changed = mutator(current)
+        if changed:
+            self.node_paired_state = current
+            self.node_write_count += 1
 
     async def get_gateway_token(self) -> str:
         return "container-gw-token"
@@ -246,6 +301,7 @@ async def test_pair_desktop_devices_writes_two_paired_entries_flat():
     assert result.commands_cli == DESKTOP_CLI_COMMANDS
 
     assert workspace.write_count == 1
+    assert workspace.node_write_count == 1
     written = workspace.state
     # REGRESSION GUARD: no wrapper, deviceIds are top-level keys.
     assert "pairedByDeviceId" not in written, (
@@ -276,6 +332,14 @@ async def test_pair_desktop_devices_writes_two_paired_entries_flat():
     assert cli_entry["clientId"] == "node-host"
     assert cli_entry["displayName"] == "Alice Smith | Isol8 Desktop (CLI)"
     assert cli_entry["commands"] == list(DESKTOP_CLI_COMMANDS)
+
+    node_paired = workspace.node_paired_state
+    assert set(node_paired) == {result.device_id_mac, result.device_id_cli}
+    assert node_paired[result.device_id_mac]["commands"] == list(DESKTOP_MAC_COMMANDS)
+    assert node_paired[result.device_id_mac]["caps"] == ["system"]
+    assert node_paired[result.device_id_cli]["commands"] == list(DESKTOP_CLI_COMMANDS)
+    assert node_paired[result.device_id_cli]["caps"] == ["system", "browser", "file"]
+    assert node_paired[result.device_id_cli]["platform"] == "macos"
 
 
 async def test_pair_desktop_devices_preserves_existing_operator_entry():
@@ -371,6 +435,8 @@ async def test_pair_desktop_devices_idempotent_on_existing_entries():
     # returns False so write_count stays at 1.
     assert workspace.mutate_calls == 2
     assert workspace.write_count == 1
+    assert workspace.node_mutate_calls == 2
+    assert workspace.node_write_count == 1
 
 
 async def test_pair_desktop_devices_prunes_stale_desktop_entries_for_same_user():
@@ -677,6 +743,10 @@ async def test_pair_desktop_devices_does_not_overwrite_other_users_stamp_on_pubk
     assert written[cli_device_id]["userId"] == "user_bob"
     # No new entries written (the deviceIds collide with Bob's existing entries).
     assert len(written) == 2
+    # And Alice must not get to approve Bob's node command surface by
+    # re-submitting Bob's public key.
+    assert workspace.node_write_count == 0
+    assert workspace.node_paired_state is None
 
 
 async def test_pair_desktop_devices_preserves_legacy_unstamped_entries_in_org_workspace():
@@ -832,7 +902,11 @@ async def test_revoke_desktop_device_removes_paired_entry():
         initial={
             "dev_abc": {"role": "node"},
             "dev_xyz": {"role": "node"},
-        }
+        },
+        initial_node_paired={
+            "dev_abc": {"commands": ["system.run"], "token": "t1"},
+            "dev_xyz": {"commands": ["system.notify"], "token": "t2"},
+        },
     )
     # Seed the authorizer-reachable registry as if these devices were paired.
     workspace.paired_devices = {
@@ -849,6 +923,7 @@ async def test_revoke_desktop_device_removes_paired_entry():
     )
     assert removed is True
     assert workspace.write_count == 1
+    assert workspace.node_write_count == 1
     written = workspace.state
     assert "dev_abc" not in written
     assert "dev_xyz" in written
@@ -859,6 +934,8 @@ async def test_revoke_desktop_device_removes_paired_entry():
     # the device could keep self-minting valid WS-upgrade tokens.
     assert "dev_abc" not in workspace.paired_devices
     assert "dev_xyz" in workspace.paired_devices
+    assert "dev_abc" not in workspace.node_paired_state
+    assert "dev_xyz" in workspace.node_paired_state
 
 
 async def test_revoke_desktop_device_no_op_on_missing():
@@ -918,6 +995,32 @@ async def test_efs_workspace_adapter_writes_to_devices_paired_json(tmp_path):
     # Shape is flat (single key, deviceId at top level).
     data = json.loads(devices_path.read_text())
     assert data == {"new_device_id": {"role": "node", "publicKey": "pk"}}
+
+
+async def test_efs_workspace_adapter_writes_to_nodes_paired_json(tmp_path):
+    """Path regression for OpenClaw command-surface approval: approved nodes
+    live at <owner>/nodes/paired.json, not under devices/.
+    """
+    workspace = Workspace(mount_path=str(tmp_path))
+    mock_container_repo = MagicMock()
+    adapter = EfsWorkspaceAdapter(
+        owner_id="owner_42",
+        workspace=workspace,
+        container_repo=mock_container_repo,
+        gateway_ws_url="wss://ws-dev.isol8.co",
+    )
+
+    def _add(paired: dict) -> bool:
+        paired["node_1"] = {"commands": ["system.run"], "token": "t"}
+        return True
+
+    await adapter.mutate_node_paired_json(_add)
+
+    nodes_path = tmp_path / "owner_42" / "nodes" / "paired.json"
+    devices_path = tmp_path / "owner_42" / "devices" / "paired.json"
+    assert nodes_path.exists(), f"nodes paired.json should exist at {nodes_path}"
+    assert not devices_path.exists()
+    assert json.loads(nodes_path.read_text()) == {"node_1": {"commands": ["system.run"], "token": "t"}}
 
 
 async def test_efs_workspace_adapter_mutator_sees_existing_dict(tmp_path):
@@ -1203,11 +1306,16 @@ async def test_efs_workspace_adapter_pair_then_revoke_round_trip(tmp_path):
     )
 
     paired_file = tmp_path / "owner" / "devices" / "paired.json"
+    node_paired_file = tmp_path / "owner" / "nodes" / "paired.json"
     data = json.loads(paired_file.read_text())
     assert "pairedByDeviceId" not in data
     assert result.device_id_mac in data
     assert result.device_id_cli in data
     assert len(data) == 2
+    node_data = json.loads(node_paired_file.read_text())
+    assert result.device_id_mac in node_data
+    assert result.device_id_cli in node_data
+    assert node_data[result.device_id_cli]["commands"] == list(DESKTOP_CLI_COMMANDS)
 
     removed = await revoke_desktop_device(
         device_id=result.device_id_mac,
@@ -1220,6 +1328,9 @@ async def test_efs_workspace_adapter_pair_then_revoke_round_trip(tmp_path):
     assert result.device_id_mac not in data2
     assert result.device_id_cli in data2
     assert len(data2) == 1
+    node_data2 = json.loads(node_paired_file.read_text())
+    assert result.device_id_mac not in node_data2
+    assert result.device_id_cli in node_data2
 
     # Adapter delegates the owner-row device registry to container_repo.
     mock_container_repo.upsert_paired_devices.assert_awaited_once()

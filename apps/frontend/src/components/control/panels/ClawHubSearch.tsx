@@ -29,6 +29,11 @@ type CallRpc = <T = unknown>(
 // error, so match the surfaced message and offer an explicit "install anyway".
 const TRUST_ERROR = /risk|trust|moderat|scan|blocked|acknowledge|verdict/i;
 
+// A ClawHub install fetches + scans + unpacks the skill, which can outlast the
+// gateway's 30s default RPC timeout; without a longer client timeout a still-
+// running install surfaces as a false failure.
+const INSTALL_TIMEOUT_MS = 120_000;
+
 export function ClawHubSearch({
   query,
   callRpc,
@@ -75,11 +80,15 @@ export function ClawHubSearch({
     setInstalling(slug);
     setMsg(null);
     try {
-      await callRpc("skills.install", {
-        source: "clawhub",
-        slug,
-        ...(acknowledgeRisk ? { acknowledgeClawHubRisk: true } : {}),
-      });
+      await callRpc(
+        "skills.install",
+        {
+          source: "clawhub",
+          slug,
+          ...(acknowledgeRisk ? { acknowledgeClawHubRisk: true } : {}),
+        },
+        INSTALL_TIMEOUT_MS,
+      );
       capture("skill_installed", { skill: slug, source: "clawhub" });
       setInstalled((prev) => new Set(prev).add(slug));
       setRiskySlug(null);

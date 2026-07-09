@@ -45,10 +45,11 @@ describe("ClawHubSearch", () => {
     fireEvent.click(await screen.findByRole("button", { name: /^Install$/i }));
 
     await waitFor(() =>
-      expect(callRpc).toHaveBeenCalledWith("skills.install", {
-        source: "clawhub",
-        slug: "@acme/pdf-tools",
-      }),
+      expect(callRpc).toHaveBeenCalledWith(
+        "skills.install",
+        { source: "clawhub", slug: "@acme/pdf-tools" },
+        120_000,
+      ),
     );
     expect(onInstalled).toHaveBeenCalled();
     expect(await screen.findByText(/appear in your skills shortly/i)).toBeInTheDocument();
@@ -69,11 +70,11 @@ describe("ClawHubSearch", () => {
     fireEvent.click(overrideBtn);
 
     await waitFor(() =>
-      expect(callRpc).toHaveBeenLastCalledWith("skills.install", {
-        source: "clawhub",
-        slug: "@acme/pdf-tools",
-        acknowledgeClawHubRisk: true,
-      }),
+      expect(callRpc).toHaveBeenLastCalledWith(
+        "skills.install",
+        { source: "clawhub", slug: "@acme/pdf-tools", acknowledgeClawHubRisk: true },
+        120_000,
+      ),
     );
   });
 });

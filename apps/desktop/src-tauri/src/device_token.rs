@@ -18,9 +18,17 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use serde::{Deserialize, Serialize};
 
-/// Default device-token lifetime. Kept well under the authorizer's 300s ceiling
-/// (`DEVICE_TOKEN_MAX_LIFETIME_S`) while giving reconnects headroom.
+/// Default device-token lifetime (exp = now + this). Kept well under the
+/// authorizer's 300s ceiling (`DEVICE_TOKEN_MAX_LIFETIME_S`) even after the
+/// `iat` backdate below, while giving reconnects headroom.
 pub const DEVICE_TOKEN_LIFETIME_SECS: u64 = 90;
+
+/// Backdate `iat` by this much. The authorizer verifies `iat` with only ~30s of
+/// forward leeway (PyJWT rejects a future `iat` with ImmatureSignatureError), so
+/// a Mac clock that runs fast would mint tokens rejected on every reconnect — a
+/// silent 403 loop. Backdating widens the fast-clock tolerance to ~90s. It keeps
+/// `exp - iat` (= lifetime + backdate = 150s) under the authorizer's 300s cap.
+pub const IAT_BACKDATE_SECS: u64 = 60;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct DeviceClaims {
@@ -52,7 +60,9 @@ pub fn mint_device_token(
         kind: "device".to_string(),
         device_id: device_id.to_string(),
         owner: owner_id.to_string(),
-        iat: now,
+        // Backdate iat so a fast client clock doesn't trip the authorizer's
+        // future-iat rejection; exp is still now + lifetime.
+        iat: now.saturating_sub(IAT_BACKDATE_SECS),
         exp: now + lifetime_secs,
     };
     let key = EncodingKey::from_ed_pem(private_key_pem.as_bytes())
@@ -97,11 +107,12 @@ mod tests {
         assert_eq!(data.claims.kind, "device");
         assert_eq!(data.claims.device_id, "dev_abc");
         assert_eq!(data.claims.owner, "org_x");
+        // iat is backdated, so exp - iat = lifetime + backdate...
         assert_eq!(
             data.claims.exp - data.claims.iat,
-            DEVICE_TOKEN_LIFETIME_SECS
+            DEVICE_TOKEN_LIFETIME_SECS + IAT_BACKDATE_SECS
         );
-        // Lifetime must stay under the authorizer's 300s ceiling.
+        // ...and must still stay under the authorizer's 300s ceiling.
         assert!(data.claims.exp - data.claims.iat <= 300);
     }
 

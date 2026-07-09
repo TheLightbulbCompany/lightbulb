@@ -121,7 +121,10 @@ export type AnalyticsEvent =
   | "skill_api_key_saved"
   | "skill_installed"
   | "skill_toggled"
-  | "clawhub_searched";
+  | "clawhub_searched"
+  // Support
+  | "support_ticket_submitted"
+  | "support_contact_clicked";
 
 /**
  * Type exposing the ``__loaded`` flag PostHog sets after ``init()``

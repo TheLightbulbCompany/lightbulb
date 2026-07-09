@@ -94,6 +94,23 @@ const STEPS_PAID: { phase: Phase; label: string; activeLabel: string }[] = [
   { phase: "ready", label: "Ready", activeLabel: "Ready!" },
 ];
 
+// Full ordered phase list for ANALYTICS ONLY. Unlike STEPS_PAID (which drives
+// the visible stepper rows and deliberately omits the interstitial "provider"
+// phase), this includes every phase the machine can enter — so the
+// `onboarding_step_entered` funnel can see the provider step. Without
+// "provider" here it stays a measurement blind spot: users who abandon at the
+// ChatGPT-OAuth / BYO-key / credits screen emit no forward `step_completed`
+// event, so the drop-off was invisible.
+const ONBOARDING_PHASE_ORDER: Phase[] = [
+  "payment",
+  "provider",
+  "container",
+  "gateway",
+  "channels-sidecars",
+  "agent",
+  "ready",
+];
+
 // Fargate cold starts (image pull from ECR + ENI attach + container init) can
 // legitimately run 3-4 minutes for the first task on a service. Anything
 // shorter cries wolf during the normal happy path. The timer also doesn't
@@ -353,15 +370,33 @@ export function ProvisioningStepper({
     return resolvePostAgentPhase();
   }, [trigger, isSubscribed, container, containerReady, gatewayHealth, needsProviderStep, isRegressingFromReady]);
 
-  // Analytics: fire `onboarding_step_completed` once per step transition.
+  // Analytics: fire `onboarding_step_completed` (step LEFT) + `onboarding_step_entered`
+  // (step ARRIVED) per phase transition.
+  //
+  // `step_completed` only fires on forward moves through STEPS_PAID, so a user
+  // who STALLS on a step emits nothing, and the "provider" phase (absent from
+  // STEPS_PAID) never appears at all — the two blind spots that made onboarding
+  // drop-off unmeasurable. `step_entered` fixes both: it fires on entry to every
+  // phase (including "provider", indexed via ONBOARDING_PHASE_ORDER), so a stall
+  // is now visible as "entered X, never entered X+1", and provider abandonment
+  // becomes a real funnel step. Entry to the provider phase also carries the
+  // chosen provider so we can segment OAuth vs BYO vs credits drop-off.
   const prevPhaseRef = useRef<Phase | null>(null);
   useEffect(() => {
     const prev = prevPhaseRef.current;
     prevPhaseRef.current = phase;
-    if (prev === null || prev === phase) return;
+    if (prev === phase) return;
+    capture("onboarding_step_entered", {
+      step_name: phase,
+      step_index: ONBOARDING_PHASE_ORDER.indexOf(phase),
+      ...(phase === "provider" && providerChoice !== null
+        ? { provider_choice: providerChoice }
+        : {}),
+    });
+    if (prev === null) return;
     const completion = nextOnboardingCompletion(prev, phase, STEPS_PAID);
     if (completion) capture("onboarding_step_completed", { ...completion });
-  }, [phase]);
+  }, [phase, providerChoice]);
 
   // Tick elapsed once per second so the user sees real progress against the
   // expected budget — gives "still working" instead of an indefinite spinner.

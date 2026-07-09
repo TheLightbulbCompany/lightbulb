@@ -4,6 +4,7 @@ import { useUser } from "@clerk/nextjs";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
+import { capture } from "@/lib/analytics";
 import { Logo } from "@/components/Logo";
 import { useSupport } from "@/components/support/SupportProvider";
 
@@ -44,7 +45,13 @@ export default function SupportPage() {
           </div>
         ) : (
           // Signed-out: simple mailto form (no backend enrichment available).
-          <form className="support-form" action="mailto:support@isol8.co" method="POST" encType="text/plain">
+          <form
+            className="support-form"
+            action="mailto:support@isol8.co"
+            method="POST"
+            encType="text/plain"
+            onSubmit={() => capture("support_contact_clicked", { source: "support_page_form" })}
+          >
             <div className="support-field">
               <label htmlFor="name">Name</label>
               <input type="text" id="name" name="name" required autoComplete="name" placeholder="Your name" />
@@ -78,7 +85,10 @@ export default function SupportPage() {
         )}
 
         <div className="support-direct">
-          <p>You can also reach us directly at <a href="mailto:support@isol8.co">support@isol8.co</a></p>
+          <p>You can also reach us directly at <a
+            href="mailto:support@isol8.co"
+            onClick={() => capture("support_contact_clicked", { source: "support_page_direct" })}
+          >support@isol8.co</a></p>
         </div>
       </main>
 

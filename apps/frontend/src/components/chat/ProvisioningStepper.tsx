@@ -580,7 +580,10 @@ export function ProvisioningStepper({
                   Check again
                 </Button>
                 <Button variant="ghost" size="sm" asChild>
-                  <a href="mailto:support@isol8.co">Contact support</a>
+                  <a
+                    href="mailto:support@isol8.co"
+                    onClick={() => capture("support_contact_clicked", { source: "onboarding_stepper", phase })}
+                  >Contact support</a>
                 </Button>
               </div>
             </div>
@@ -833,7 +836,10 @@ export function ProvisioningStepper({
                   Check again
                 </Button>
                 <Button variant="ghost" size="sm" asChild>
-                  <a href="mailto:support@isol8.co">Contact support</a>
+                  <a
+                    href="mailto:support@isol8.co"
+                    onClick={() => capture("support_contact_clicked", { source: "onboarding_stepper", phase })}
+                  >Contact support</a>
                 </Button>
               </div>
             </div>
@@ -893,7 +899,10 @@ export function ProvisioningStepper({
               Retry
             </Button>
             <Button variant="ghost" className="rounded-full" asChild>
-              <a href="mailto:support@isol8.co">Contact Support</a>
+              <a
+                href="mailto:support@isol8.co"
+                onClick={() => capture("support_contact_clicked", { source: "onboarding_stepper", phase })}
+              >Contact Support</a>
             </Button>
           </div>
         </div>
@@ -1241,7 +1250,10 @@ export function ProvisioningStepper({
                   Check again
                 </Button>
                 <Button variant="ghost" size="sm" asChild>
-                  <a href="mailto:support@isol8.co">Contact support</a>
+                  <a
+                    href="mailto:support@isol8.co"
+                    onClick={() => capture("support_contact_clicked", { source: "onboarding_stepper", phase })}
+                  >Contact support</a>
                 </Button>
               </div>
             </div>

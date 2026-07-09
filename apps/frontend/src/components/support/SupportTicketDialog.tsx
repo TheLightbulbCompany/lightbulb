@@ -3,6 +3,7 @@
 import { usePathname } from "next/navigation";
 import { useState } from "react";
 
+import { capture } from "@/lib/analytics";
 import { useApi } from "@/lib/api";
 import { getRecentRequestIds } from "@/lib/requestIdLog";
 
@@ -63,6 +64,11 @@ export function SupportTicketDialog({ open, onClose, presetCategory, presetError
         recent_request_ids: Array.from(
           new Set([presetRequestId, ...getRecentRequestIds()].filter(Boolean) as string[]),
         ).slice(0, 20),
+      });
+      capture("support_ticket_submitted", {
+        category,
+        route: pathname,
+        from_error: !!presetError,
       });
       setState("sent");
     } catch {

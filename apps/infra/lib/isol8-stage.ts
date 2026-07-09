@@ -74,6 +74,8 @@ export class Isol8Stage extends cdk.Stage {
       // on the authorizer's role without triggering CDK's auto-grant cycle.
       paperclipKmsKeyArn: auth.kmsKey.keyArn,
       wsInternalSecretSecretName: auth.wsInternalSecret.secretName,
+      // Authorizer reads paired_devices[deviceId].publicKey for device-key auth.
+      containersTable: database.containersTable,
     });
 
     // ServiceStack replaces ComputeStack

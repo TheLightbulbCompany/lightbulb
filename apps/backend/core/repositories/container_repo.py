@@ -3,6 +3,7 @@
 import uuid
 
 from boto3.dynamodb.conditions import Key
+from botocore.exceptions import ClientError
 
 from core.dynamodb import get_table, run_in_thread, utc_now_iso
 
@@ -112,52 +113,95 @@ async def update_fields(owner_id: str, fields: dict) -> dict | None:
     return existing
 
 
-async def upsert_paired_devices(owner_id: str, entries: dict) -> dict | None:
-    """Merge desktop device-pubkey entries into the owner row's ``paired_devices`` map.
+async def upsert_paired_devices(owner_id: str, entries: dict) -> None:
+    """Project desktop device-pubkey entries onto the owner row's ``paired_devices`` map.
 
     ``entries`` is ``{deviceId: {"publicKey": <b64url-raw>, "userId": <member>,
     "clientId": <str>}}``. This is the authorizer-reachable projection of the
     device pubkeys that also live in the container's EFS ``paired.json`` — it
     gives the WebSocket Lambda authorizer a ``GetItem(containers, owner)`` point
-    lookup for device-key WS-upgrade auth, without a separate table. Idempotent
-    per deviceId; preserves other members' entries in a shared org row.
+    lookup for device-key WS-upgrade auth, without a separate table.
 
-    NON-RELABEL guard: ``deviceId = sha256(pubkey)`` and POST /desktop/pair does
-    NOT verify private-key possession, so a co-tenant could submit another
-    member's PUBLIC key (freely observable) and collide their deviceId. We
-    therefore NEVER overwrite an entry already owned by a DIFFERENT member —
-    mirrors the paired.json non-relabel guard (desktop_pair.py). Without this,
-    the authorizer (which trusts this row's ``userId`` verbatim) would attribute
-    the real owner's device to the attacker.
+    Each device is written with a SCOPED, server-atomic ``UpdateItem`` (touching
+    only its one map key) rather than a full-item read-modify-write — so a
+    concurrent status/hook-token/config writer, or a concurrent write of another
+    device, cannot clobber it or resurrect a revoked device. DynamoDB serializes
+    item-level UpdateItems.
 
-    TODO(step2): the full-item read-modify-write (update_fields) has a lost-update
-    race vs other containers-row writers — harmless while nothing reads
-    paired_devices, but switch to a scoped ``SET/REMOVE paired_devices.#did``
-    UpdateExpression before the authorizer branch reads it.
+    NON-RELABEL guard (atomic): ``deviceId = sha256(pubkey)`` and POST /desktop/pair
+    does NOT verify private-key possession, so a co-tenant could submit another
+    member's PUBLIC key (freely observable) and collide their deviceId. The
+    ``ConditionExpression`` only writes when the device is absent OR already owned
+    by the SAME member — so one org member can never relabel another's device on
+    the authorizer's trust anchor (mirrors the paired.json guard in desktop_pair.py).
+    No-op if the container row doesn't exist.
     """
-    existing = await get_by_owner_id(owner_id)
-    if existing is None:
-        return None
-    devices = dict(existing.get("paired_devices") or {})
+    table = _get_table()
     for device_id, entry in entries.items():
-        incumbent = devices.get(device_id)
-        if incumbent is not None and incumbent.get("userId") != entry.get("userId"):
-            # Already owned by a different member — refuse to relabel.
-            continue
-        devices[device_id] = entry
-    return await update_fields(owner_id, {"paired_devices": devices})
+        await _put_paired_device(table, owner_id, device_id, entry)
 
 
-async def remove_paired_device(owner_id: str, device_id: str) -> dict | None:
-    """Remove one device from the owner row's ``paired_devices`` map (revocation)."""
-    existing = await get_by_owner_id(owner_id)
-    if existing is None:
-        return None
-    devices = dict(existing.get("paired_devices") or {})
-    if device_id not in devices:
-        return existing
-    del devices[device_id]
-    return await update_fields(owner_id, {"paired_devices": devices})
+async def _put_paired_device(table, owner_id: str, device_id: str, entry: dict) -> None:
+    # 1. Ensure the paired_devices map exists — a nested-path SET below fails if
+    #    its parent map is absent. Idempotent; only touches an existing row.
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET #pd = if_not_exists(#pd, :empty)",
+            ConditionExpression="attribute_exists(owner_id)",
+            ExpressionAttributeNames={"#pd": "paired_devices"},
+            ExpressionAttributeValues={":empty": {}},
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return  # no container row for this owner — nothing to project onto
+        raise
+    # 2. Scoped conditional set of the single map key. Condition = row still
+    #    exists (guards against a concurrent deprovision-delete landing between
+    #    step 1 and here, which would otherwise upsert a partial zombie row)
+    #    AND (device absent OR already ours -> refuse to relabel another
+    #    member's device). Both clauses are evaluated atomically at write time.
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET #pd.#did = :entry",
+            ConditionExpression=(
+                "attribute_exists(owner_id) AND (attribute_not_exists(#pd.#did) OR #pd.#did.#uid = :uid)"
+            ),
+            ExpressionAttributeNames={
+                "#pd": "paired_devices",
+                "#did": device_id,
+                "#uid": "userId",
+            },
+            ExpressionAttributeValues={":entry": entry, ":uid": entry.get("userId")},
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return  # row deleted mid-write, or deviceId owned by another member — no-op
+        raise
+
+
+async def remove_paired_device(owner_id: str, device_id: str) -> None:
+    """Remove a device from the owner row's ``paired_devices`` map (revocation).
+
+    Scoped ``REMOVE`` of the single map key so a racing writer of other row
+    attributes cannot resurrect the revoked entry. No-op if the row is absent.
+    """
+    table = _get_table()
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="REMOVE #pd.#did",
+            ConditionExpression="attribute_exists(owner_id)",
+            ExpressionAttributeNames={"#pd": "paired_devices", "#did": device_id},
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return  # no container row — nothing to remove
+        raise
 
 
 async def set_hook_token(owner_id: str, token: str) -> dict | None:

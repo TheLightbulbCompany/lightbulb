@@ -59,6 +59,12 @@ export interface ApiStackProps extends cdk.StackProps {
    * encrypted under the same CMK (`paperclipKmsKeyArn`).
    */
   wsInternalSecretSecretName: string;
+  /**
+   * Containers DynamoDB table. The WebSocket Lambda Authorizer reads
+   * `paired_devices[deviceId].publicKey` off the owner row to verify desktop
+   * device-key WS-upgrade tokens (EdDSA proof-of-possession). Read-only grant.
+   */
+  containersTable: dynamodb.ITable;
 }
 
 const THROTTLE_CONFIG: Record<
@@ -340,9 +346,16 @@ export class ApiStack extends cdk.Stack {
         CLERK_JWKS_URL: isProd
           ? "https://clerk.isol8.co/.well-known/jwks.json"
           : "https://up-moth-55.clerk.accounts.dev/.well-known/jwks.json",
+        // Owner row holding paired_devices[deviceId].publicKey for device-key
+        // WS-upgrade auth. Read via a non-VPC boto3 GetItem (public DDB endpoint,
+        // same shape as the Secrets Manager call the authorizer already makes).
+        CONTAINERS_TABLE: props.containersTable.tableName,
       },
       logRetention: logs.RetentionDays.ONE_MONTH,
     });
+
+    // Read-only access to the containers row for device-token pubkey lookup.
+    props.containersTable.grantReadData(authorizerFn);
 
     // --- Paperclip service-token signing key for the WS authorizer ---
     // The Lambda fetches this secret value at cold-start (via boto3) and

@@ -1169,13 +1169,14 @@ export class ServiceStack extends cdk.Stack {
         // core.config.settings.ACP_ENABLED — when true, write_openclaw_config
         // emits the acp block + plugins.entries.acpx and provision wires the
         // per-owner Bedrock harness env, letting a native agent (Jarvis)
-        // sessions_spawn Claude Code / Codex / Gemini. Kept "false" everywhere
-        // until the acpx-baked extended image is promoted per-env in
-        // openclaw-version.json — enabling it against an image without
-        // dist/extensions/acpx makes every ACP spawn fail "ACP runtime backend
-        // is not configured". Flip the target env's value to "true" (one line)
-        // after promotion + a reprovision.
-        ACP_ENABLED: "false",
+        // sessions_spawn Claude Code / Codex. The harness set is DERIVED
+        // per-owner from provider_choice (bedrock/byo-anthropic -> claude;
+        // chatgpt-oauth/byo-openai -> codex), so no owner is handed a harness
+        // it cannot authenticate. Enabled fleet-wide now that the acpx-baked
+        // extended image (2026.6.10-isol8.2, Dockerfile Layer 13) is promoted
+        // in openclaw-version.json for both dev and prod; existing containers
+        // pick up the acp block on their next reprovision / config patch.
+        ACP_ENABLED: "true",
         // Marketplace DDB tables + S3 artifacts bucket. Backend reads these
         // env vars via core.config.settings; empty defaults keep the app
         // booting in non-marketplace contexts (unit tests, smoke tests).

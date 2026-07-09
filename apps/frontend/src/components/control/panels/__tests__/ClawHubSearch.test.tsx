@@ -55,6 +55,22 @@ describe("ClawHubSearch", () => {
     expect(await screen.findByText(/appear in your skills shortly/i)).toBeInTheDocument();
   });
 
+  it("drops stale results when the query changes", async () => {
+    const callRpc = vi.fn().mockResolvedValue({ results: [RESULT] });
+    const { rerender } = render(
+      <ClawHubSearch query="pdf" callRpc={callRpc} onInstalled={vi.fn()} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Search ClawHub for/i }));
+    expect(await screen.findByText("PDF Tools")).toBeInTheDocument();
+
+    rerender(<ClawHubSearch query="calendar" callRpc={callRpc} onInstalled={vi.fn()} />);
+
+    // Old results gone; the button reflects the new query, not the stale one.
+    expect(screen.queryByText("PDF Tools")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Search ClawHub for “calendar”/i })).toBeInTheDocument();
+  });
+
   it("offers an explicit override when the install is blocked on trust, and acknowledges the risk", async () => {
     const callRpc = vi
       .fn()

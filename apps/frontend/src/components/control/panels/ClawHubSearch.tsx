@@ -5,7 +5,7 @@
 // with `{source:"clawhub"}`), so no backend proxy is involved — the whole flow
 // goes over the operator WebSocket like the rest of the Skill Store.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Loader2, Download, Search, AlertTriangle, ExternalLink, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { capture } from "@/lib/analytics";
@@ -53,6 +53,18 @@ export function ClawHubSearch({
   const [msg, setMsg] = useState<{ slug: string; text: string; kind: "ok" | "err" } | null>(null);
 
   const trimmed = query.trim();
+
+  // Results belong to the query they were fetched for. When the Skill Store
+  // filter changes, drop the previous ClawHub results (and their transient
+  // install state) so stale rows can't be shown — or installed — under a
+  // prompt they no longer match.
+  useEffect(() => {
+    setResults(null);
+    setSearchedFor("");
+    setError(null);
+    setRiskySlug(null);
+    setMsg(null);
+  }, [query]);
 
   const runSearch = async () => {
     if (!trimmed) return;

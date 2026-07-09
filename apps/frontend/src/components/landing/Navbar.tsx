@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { useAuth, UserButton } from "@clerk/nextjs";
 
 import { Logo } from "@/components/Logo";
+import { capture } from "@/lib/analytics";
 
 export function Navbar() {
   const linksRef = useRef<HTMLDivElement>(null);
@@ -133,7 +134,16 @@ export function Navbar() {
             <Link href="/sign-in" className="nav-login">
               Log in
             </Link>
-            <Link href="/sign-up" className="btn-primary">
+            <Link
+              href="/sign-up"
+              className="btn-primary"
+              onClick={() =>
+                capture("signup_started", {
+                  source: "landing_nav",
+                  destination: "/sign-up",
+                })
+              }
+            >
               Sign up
             </Link>
           </>

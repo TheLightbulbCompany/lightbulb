@@ -6,6 +6,7 @@ import { useAuth, useUser } from "@clerk/nextjs";
 
 import {
   Provider as AnalyticsProvider,
+  capture,
   captureException,
   client as posthogClient,
   identify,
@@ -70,11 +71,30 @@ function PostHogInit() {
 function PostHogPageview() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const lastCheckoutEventRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!POSTHOG_KEY) return;
-    const url = pathname + (searchParams?.toString() ? `?${searchParams.toString()}` : "");
+    const queryString = searchParams?.toString() ?? "";
+    const url = pathname + (queryString ? `?${queryString}` : "");
     pageview(url);
+    if (pathname === "/") {
+      capture("landing_viewed", { path: url });
+    }
+
+    const checkoutStatus = searchParams.get("checkout") ?? searchParams.get("subscription");
+    if ((checkoutStatus === "success" || checkoutStatus === "cancel") && lastCheckoutEventRef.current !== url) {
+      lastCheckoutEventRef.current = url;
+      capture(
+        checkoutStatus === "success"
+          ? "subscription_checkout_returned_success"
+          : "subscription_checkout_canceled",
+        {
+          path: pathname,
+          provider_choice: searchParams.get("provider"),
+        },
+      );
+    }
   }, [pathname, searchParams]);
 
   return null;

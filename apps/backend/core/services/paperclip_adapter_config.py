@@ -49,15 +49,18 @@ _GATEWAY_URL_RE: Final[re.Pattern[str]] = re.compile(r"\A(?:wss://ws(?:-[a-z]+)?
 # Per-run agent timeout (seconds) + the gateway's wait for that run (ms). The
 # openclaw-gateway adapter defaults BOTH to 120s (build-config.ts:67-68 —
 # `timeoutSec=120`, `waitTimeoutMs=120000`), a value tuned for short, single-step
-# heartbeat runs. Our agents (Friday/Atlas) do substantive single-run work that
-# routinely exceeds 2 min, so the gateway stamps a still-working run `timed_out`
-# at 120s and dispatches a retry while the original is mid-run; that retry queues
-# on the per-issue session lane and times out too — a cascade of `timed_out` runs
-# even though the work commits. 5 min covers observed run times with headroom and
-# stays under the API Gateway WebSocket ~10-minute idle ceiling (a single wait
-# can't outlast that without the socket dropping).
-AGENT_RUN_TIMEOUT_SEC: Final[int] = 300
-AGENT_RUN_WAIT_TIMEOUT_MS: Final[int] = 300_000
+# heartbeat runs. Our agents do substantive single-run work that routinely exceeds
+# 2 min, so at 120s the gateway stamps a still-working run `timed_out` and
+# dispatches a retry while the original is mid-run; that retry queues on the
+# per-issue session lane and times out too — a cascade of `timed_out` runs even
+# though the work commits. We pin 10 min — the full API Gateway WebSocket idle
+# ceiling — to give each single wait the maximum runway. NOTE: 10 min sits AT the
+# idle ceiling, so a run still silent at ~10 min drops the socket (surfacing as a
+# reconnect/retry) rather than a clean `timeout`; that churn is the accepted
+# tradeoff for the extra runway. Work that legitimately needs longer than one wait
+# is a checkpointing problem, not a bigger-timeout one.
+AGENT_RUN_TIMEOUT_SEC: Final[int] = 600
+AGENT_RUN_WAIT_TIMEOUT_MS: Final[int] = 600_000
 
 
 def claimed_api_key_path(agent_id: str) -> str:

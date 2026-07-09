@@ -112,6 +112,54 @@ async def update_fields(owner_id: str, fields: dict) -> dict | None:
     return existing
 
 
+async def upsert_paired_devices(owner_id: str, entries: dict) -> dict | None:
+    """Merge desktop device-pubkey entries into the owner row's ``paired_devices`` map.
+
+    ``entries`` is ``{deviceId: {"publicKey": <b64url-raw>, "userId": <member>,
+    "clientId": <str>}}``. This is the authorizer-reachable projection of the
+    device pubkeys that also live in the container's EFS ``paired.json`` — it
+    gives the WebSocket Lambda authorizer a ``GetItem(containers, owner)`` point
+    lookup for device-key WS-upgrade auth, without a separate table. Idempotent
+    per deviceId; preserves other members' entries in a shared org row.
+
+    NON-RELABEL guard: ``deviceId = sha256(pubkey)`` and POST /desktop/pair does
+    NOT verify private-key possession, so a co-tenant could submit another
+    member's PUBLIC key (freely observable) and collide their deviceId. We
+    therefore NEVER overwrite an entry already owned by a DIFFERENT member —
+    mirrors the paired.json non-relabel guard (desktop_pair.py). Without this,
+    the authorizer (which trusts this row's ``userId`` verbatim) would attribute
+    the real owner's device to the attacker.
+
+    TODO(step2): the full-item read-modify-write (update_fields) has a lost-update
+    race vs other containers-row writers — harmless while nothing reads
+    paired_devices, but switch to a scoped ``SET/REMOVE paired_devices.#did``
+    UpdateExpression before the authorizer branch reads it.
+    """
+    existing = await get_by_owner_id(owner_id)
+    if existing is None:
+        return None
+    devices = dict(existing.get("paired_devices") or {})
+    for device_id, entry in entries.items():
+        incumbent = devices.get(device_id)
+        if incumbent is not None and incumbent.get("userId") != entry.get("userId"):
+            # Already owned by a different member — refuse to relabel.
+            continue
+        devices[device_id] = entry
+    return await update_fields(owner_id, {"paired_devices": devices})
+
+
+async def remove_paired_device(owner_id: str, device_id: str) -> dict | None:
+    """Remove one device from the owner row's ``paired_devices`` map (revocation)."""
+    existing = await get_by_owner_id(owner_id)
+    if existing is None:
+        return None
+    devices = dict(existing.get("paired_devices") or {})
+    if device_id not in devices:
+        return existing
+    del devices[device_id]
+    return await update_fields(owner_id, {"paired_devices": devices})
+
+
 async def set_hook_token(owner_id: str, token: str) -> dict | None:
     """Persist a freshly generated OpenClaw hook token onto the containers row.
 

@@ -205,6 +205,8 @@ class WorkspaceLike(Protocol):
 
     async def mutate_paired_json(self, mutator: PairedMutator) -> None: ...
     async def get_gateway_token(self) -> str: ...
+    async def upsert_paired_devices(self, entries: dict) -> None: ...
+    async def remove_paired_device(self, device_id: str) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -335,6 +337,22 @@ async def pair_desktop_devices(
 
     await workspace.mutate_paired_json(_mutate)
 
+    # Project both device pubkeys onto the owner's containers DDB row so the
+    # WebSocket Lambda authorizer can point-look-up deviceId -> pubkey for
+    # device-key WS-upgrade auth (the authorizer can't read the EFS paired.json).
+    # publicKey is the SAME base64url-raw key the gateway string-compares, and
+    # userId is the member — the authorizer derives (userId=member, orgId=owner).
+    await workspace.upsert_paired_devices(
+        {
+            entry["deviceId"]: {
+                "publicKey": entry["publicKey"],
+                "userId": user_id,
+                "clientId": entry["clientId"],
+            }
+            for entry in (mac_entry, cli_entry)
+        }
+    )
+
     return PairResult(
         gateway_url=workspace.gateway_url,
         gateway_token=await workspace.get_gateway_token(),
@@ -369,6 +387,9 @@ async def revoke_desktop_device(
         return True
 
     await workspace.mutate_paired_json(_mutate)
+    # Remove the authorizer-reachable projection too, or a revoked device could
+    # keep self-minting valid WS-upgrade tokens against a surviving pubkey row.
+    await workspace.remove_paired_device(device_id)
     # Always attempt force_close — defends against a connected device whose
     # paired entry has already been wiped out-of-band.
     await force_close_device(device_id)
@@ -564,3 +585,9 @@ class EfsWorkspaceAdapter:
         if not container or not container.get("gateway_token"):
             raise RuntimeError(f"No gateway_token for owner {self.owner_id}")
         return container["gateway_token"]
+
+    async def upsert_paired_devices(self, entries: dict) -> None:
+        await self.container_repo.upsert_paired_devices(self.owner_id, entries)
+
+    async def remove_paired_device(self, device_id: str) -> None:
+        await self.container_repo.remove_paired_device(self.owner_id, device_id)

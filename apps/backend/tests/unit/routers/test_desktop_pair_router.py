@@ -57,6 +57,8 @@ def test_post_desktop_pair_returns_pair_result(desktop_client):
     assert response.json() == {
         "gatewayUrl": "wss://ws-dev.isol8.co",
         "gatewayToken": "tok_xyz",
+        # Personal owner (org_id=None) → ownerId == user_id.
+        "ownerId": "user_alice",
         "deviceIdMac": "dev_mac_hash",
         "deviceIdCli": "dev_cli_hash",
         "commandsMac": ["system.notify", "device.info"],

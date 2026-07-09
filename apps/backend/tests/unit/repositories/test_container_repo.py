@@ -258,3 +258,78 @@ async def test_get_by_owner_id_alias(dynamodb_table):
     item = await container_repo.get_by_owner_id("org_456")
     assert item is not None
     assert item["owner_type"] == "org"
+
+
+@pytest.mark.asyncio
+async def test_upsert_paired_devices_merges_and_preserves_row(dynamodb_table):
+    """Device pubkeys land on the owner row without clobbering existing fields,
+    and multiple members' devices coexist in a shared org row."""
+    from core.repositories import container_repo
+
+    await container_repo.upsert("owner_1", {"gateway_token": "t", "status": "running"})
+
+    await container_repo.upsert_paired_devices(
+        "owner_1",
+        {"dev_a": {"publicKey": "ka", "userId": "u1", "clientId": "node-host"}},
+    )
+    row = await container_repo.get_by_owner_id("owner_1")
+    assert row["paired_devices"] == {"dev_a": {"publicKey": "ka", "userId": "u1", "clientId": "node-host"}}
+    assert row["gateway_token"] == "t"  # row-level merge, not overwrite
+
+    await container_repo.upsert_paired_devices(
+        "owner_1",
+        {"dev_b": {"publicKey": "kb", "userId": "u2", "clientId": "openclaw-macos"}},
+    )
+    row = await container_repo.get_by_owner_id("owner_1")
+    assert set(row["paired_devices"]) == {"dev_a", "dev_b"}
+
+
+@pytest.mark.asyncio
+async def test_upsert_paired_devices_missing_container_returns_none(dynamodb_table):
+    from core.repositories import container_repo
+
+    assert await container_repo.upsert_paired_devices("ghost", {"d": {"publicKey": "k"}}) is None
+
+
+@pytest.mark.asyncio
+async def test_upsert_paired_devices_refuses_cross_member_relabel(dynamodb_table):
+    """Security: deviceId=sha256(pubkey) and pairing doesn't prove key
+    possession, so a co-tenant could submit another member's PUBLIC key and
+    collide their deviceId. The row must NOT relabel a device already owned by
+    a different member (else the authorizer would attribute the real owner's
+    device to the attacker). Idempotent same-owner re-writes still apply."""
+    from core.repositories import container_repo
+
+    await container_repo.upsert("owner_org", {"gateway_token": "t"})
+    # Bob's device paired first.
+    await container_repo.upsert_paired_devices("owner_org", {"dev_b": {"publicKey": "pk_b", "userId": "bob"}})
+    # Alice submits Bob's PUBLIC key -> same deviceId, tries to relabel as alice.
+    await container_repo.upsert_paired_devices("owner_org", {"dev_b": {"publicKey": "pk_b", "userId": "alice"}})
+    row = await container_repo.get_by_owner_id("owner_org")
+    assert row["paired_devices"]["dev_b"]["userId"] == "bob"  # incumbent preserved
+
+    # But Bob re-pairing his own device (same userId) still updates fine.
+    await container_repo.upsert_paired_devices(
+        "owner_org", {"dev_b": {"publicKey": "pk_b", "userId": "bob", "clientId": "node-host"}}
+    )
+    row = await container_repo.get_by_owner_id("owner_org")
+    assert row["paired_devices"]["dev_b"]["clientId"] == "node-host"
+
+
+@pytest.mark.asyncio
+async def test_remove_paired_device_deletes_only_target(dynamodb_table):
+    from core.repositories import container_repo
+
+    await container_repo.upsert("owner_1", {"gateway_token": "t"})
+    await container_repo.upsert_paired_devices(
+        "owner_1",
+        {"dev_a": {"publicKey": "ka"}, "dev_b": {"publicKey": "kb"}},
+    )
+
+    await container_repo.remove_paired_device("owner_1", "dev_a")
+    row = await container_repo.get_by_owner_id("owner_1")
+    assert set(row["paired_devices"]) == {"dev_b"}
+
+    # Removing a non-present device is a no-op that still returns the row.
+    result = await container_repo.remove_paired_device("owner_1", "dev_a")
+    assert set(result["paired_devices"]) == {"dev_b"}

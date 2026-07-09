@@ -188,6 +188,10 @@ class _FakeWorkspace:
         self.mutate_calls = 0
         self.write_count = 0
         self.gateway_url = "wss://ws-dev.isol8.co"
+        # Authorizer-reachable device-pubkey registry projected onto the owner
+        # containers row (the real EfsWorkspaceAdapter delegates to
+        # container_repo.{upsert,remove}_paired_device[s]).
+        self.paired_devices: dict = {}
 
     async def mutate_paired_json(self, mutator):
         self.mutate_calls += 1
@@ -199,6 +203,12 @@ class _FakeWorkspace:
 
     async def get_gateway_token(self) -> str:
         return "container-gw-token"
+
+    async def upsert_paired_devices(self, entries: dict) -> None:
+        self.paired_devices.update(entries)
+
+    async def remove_paired_device(self, device_id: str) -> None:
+        self.paired_devices.pop(device_id, None)
 
 
 async def test_pair_desktop_devices_writes_two_paired_entries_flat():
@@ -245,6 +255,16 @@ async def test_pair_desktop_devices_writes_two_paired_entries_flat():
     assert result.device_id_mac in written
     assert result.device_id_cli in written
     assert len(written) == 2
+
+    # Device-key auth: both pubkeys projected onto the owner containers row so
+    # the WS authorizer can point-look-up deviceId -> pubkey. publicKey matches
+    # paired.json's; userId is the member; owner is implicit (the row key).
+    reg = workspace.paired_devices
+    assert set(reg) == {result.device_id_mac, result.device_id_cli}
+    assert reg[result.device_id_cli]["publicKey"] == written[result.device_id_cli]["publicKey"]
+    assert reg[result.device_id_cli]["userId"] == "user_alice"
+    assert reg[result.device_id_cli]["clientId"] == "node-host"
+    assert reg[result.device_id_mac]["clientId"] == "openclaw-macos"
 
     mac_entry = written[result.device_id_mac]
     assert mac_entry["clientId"] == "openclaw-macos"
@@ -814,6 +834,11 @@ async def test_revoke_desktop_device_removes_paired_entry():
             "dev_xyz": {"role": "node"},
         }
     )
+    # Seed the authorizer-reachable registry as if these devices were paired.
+    workspace.paired_devices = {
+        "dev_abc": {"publicKey": "k1", "userId": "u"},
+        "dev_xyz": {"publicKey": "k2", "userId": "u"},
+    }
 
     mock_force_close = AsyncMock(return_value=True)
 
@@ -830,6 +855,10 @@ async def test_revoke_desktop_device_removes_paired_entry():
     # REGRESSION: no wrapper.
     assert "pairedByDeviceId" not in written
     mock_force_close.assert_awaited_once_with("dev_abc")
+    # Revocation must also drop the authorizer-reachable pubkey projection, or
+    # the device could keep self-minting valid WS-upgrade tokens.
+    assert "dev_abc" not in workspace.paired_devices
+    assert "dev_xyz" in workspace.paired_devices
 
 
 async def test_revoke_desktop_device_no_op_on_missing():
@@ -1136,6 +1165,8 @@ async def test_efs_workspace_adapter_pair_then_revoke_round_trip(tmp_path):
     workspace = Workspace(mount_path=str(tmp_path))
     mock_container_repo = MagicMock()
     mock_container_repo.get_by_owner_id = AsyncMock(return_value={"gateway_token": "t"})
+    mock_container_repo.upsert_paired_devices = AsyncMock()
+    mock_container_repo.remove_paired_device = AsyncMock()
     adapter = EfsWorkspaceAdapter(
         owner_id="owner",
         workspace=workspace,
@@ -1189,3 +1220,7 @@ async def test_efs_workspace_adapter_pair_then_revoke_round_trip(tmp_path):
     assert result.device_id_mac not in data2
     assert result.device_id_cli in data2
     assert len(data2) == 1
+
+    # Adapter delegates the owner-row device registry to container_repo.
+    mock_container_repo.upsert_paired_devices.assert_awaited_once()
+    mock_container_repo.remove_paired_device.assert_awaited_once_with("owner", result.device_id_mac)

@@ -48,6 +48,10 @@ class PairRequest(BaseModel):
 class PairResponse(BaseModel):
     gatewayUrl: str
     gatewayToken: str
+    # Container owner (org_id for an org, else the personal user_id). The
+    # desktop embeds this in its self-minted device-key WS-upgrade token so the
+    # authorizer knows which owner's containers row to read for the pubkey.
+    ownerId: str
     deviceIdMac: str
     deviceIdCli: str
     commandsMac: list[str]
@@ -89,6 +93,7 @@ async def post_pair(
     return PairResponse(
         gatewayUrl=result.gateway_url,
         gatewayToken=result.gateway_token,
+        ownerId=owner_id,
         deviceIdMac=result.device_id_mac,
         deviceIdCli=result.device_id_cli,
         commandsMac=list(result.commands_mac),

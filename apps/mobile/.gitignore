@@ -41,3 +41,11 @@ example
 # generated native folders
 /ios
 /android
+
+# App Store Connect API keys / signing secrets — never commit
+/credentials
+*.p8
+
+# local build artifacts
+*.ipa
+build-*.ipa

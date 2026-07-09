@@ -12,7 +12,10 @@
       "bundleIdentifier": "co.isol8.mobile",
       "supportsTablet": false,
       "icon": "./assets/expo.icon",
-      "appleTeamId": "WZX4U3C22Y"
+      "appleTeamId": "WZX4U3C22Y",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "plugins": [
       "expo-router",

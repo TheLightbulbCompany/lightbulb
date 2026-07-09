@@ -1,5 +1,6 @@
 import * as cdk from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
+import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import { ApiStack } from "../lib/stacks/api-stack";
 import { NetworkStack } from "../lib/stacks/network-stack";
 
@@ -20,6 +21,13 @@ export function synthApiStack(
     environment,
   });
 
+  // Throwaway containers table (owner_id PK, matching DatabaseStack) so the
+  // authorizer's device-key registry read is granted + env-wired as-deployed.
+  const support = new cdk.Stack(app, `Support-${environment}`, { env });
+  const containersTable = new dynamodb.Table(support, "Containers", {
+    partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
+  });
+
   const api = new ApiStack(app, `Api-${environment}`, {
     env,
     environment,
@@ -32,6 +40,7 @@ export function synthApiStack(
     paperclipServiceTokenKeySecretName: `isol8/${environment}/paperclip_service_token_key`,
     paperclipKmsKeyArn: `arn:aws:kms:us-east-1:877352799272:key/test-key`,
     wsInternalSecretSecretName: `isol8/${environment}/ws_internal_secret`,
+    containersTable,
   });
 
   return Template.fromStack(api);

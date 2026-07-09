@@ -157,14 +157,19 @@ async def _put_paired_device(table, owner_id: str, device_id: str, entry: dict) 
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
             return  # no container row for this owner — nothing to project onto
         raise
-    # 2. Scoped conditional set of the single map key. Condition = device absent
-    #    OR already ours -> refuse to relabel another member's device.
+    # 2. Scoped conditional set of the single map key. Condition = row still
+    #    exists (guards against a concurrent deprovision-delete landing between
+    #    step 1 and here, which would otherwise upsert a partial zombie row)
+    #    AND (device absent OR already ours -> refuse to relabel another
+    #    member's device). Both clauses are evaluated atomically at write time.
     try:
         await run_in_thread(
             table.update_item,
             Key={"owner_id": owner_id},
             UpdateExpression="SET #pd.#did = :entry",
-            ConditionExpression="attribute_not_exists(#pd.#did) OR #pd.#did.#uid = :uid",
+            ConditionExpression=(
+                "attribute_exists(owner_id) AND (attribute_not_exists(#pd.#did) OR #pd.#did.#uid = :uid)"
+            ),
             ExpressionAttributeNames={
                 "#pd": "paired_devices",
                 "#did": device_id,
@@ -174,7 +179,7 @@ async def _put_paired_device(table, owner_id: str, device_id: str, entry: dict) 
         )
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return  # deviceId already owned by a different member — do not relabel
+            return  # row deleted mid-write, or deviceId owned by another member — no-op
         raise
 
 

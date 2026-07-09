@@ -121,6 +121,37 @@ def test_missing_container_row_denied(mock_row):
     assert authz._try_device_token(token) is None
 
 
+def test_entry_without_userid_denied(mock_row):
+    """Fail closed: a registered entry with no attributed member must not be
+    Allow'd as the owner (would masquerade an org id as a personal identity)."""
+    priv = Ed25519PrivateKey.generate()
+    mock_row({"paired_devices": {"dev1": {"publicKey": _raw_b64url(priv)}}})  # no userId
+    token = _mint(priv, device_id="dev1", owner="org_x")
+    assert authz._try_device_token(token) is None
+
+
+def test_overlong_lifetime_denied(mock_row):
+    """A token declaring a lifetime beyond the ceiling is refused even though
+    its signature + exp verify — bounds the replay window at the boundary."""
+    priv = Ed25519PrivateKey.generate()
+    mock_row({"paired_devices": {"dev1": {"publicKey": _raw_b64url(priv), "userId": "u"}}})
+    token = _mint(priv, device_id="dev1", owner="o", exp_delta=100_000)
+    assert authz._try_device_token(token) is None
+
+
+def test_missing_iat_denied(mock_row):
+    """iat is required (needed for the lifetime cap); a token without it fails."""
+    priv = Ed25519PrivateKey.generate()
+    mock_row({"paired_devices": {"dev1": {"publicKey": _raw_b64url(priv), "userId": "u"}}})
+    now = int(time.time())
+    token = jwt.encode(
+        {"kind": "device", "deviceId": "dev1", "owner": "o", "exp": now + 90},
+        priv,
+        algorithm="EdDSA",
+    )
+    assert authz._try_device_token(token) is None
+
+
 def test_non_eddsa_token_is_not_treated_as_device(mock_row):
     """HS256/RS256 tokens must fall through to the service-token / Clerk paths."""
     hs = jwt.encode({"sub": "u", "kind": "paperclip_service"}, "secret", algorithm="HS256")

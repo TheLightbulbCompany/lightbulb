@@ -317,6 +317,32 @@ async def test_upsert_paired_devices_refuses_cross_member_relabel(dynamodb_table
 
 
 @pytest.mark.asyncio
+async def test_upsert_paired_device_wont_resurrect_row_deleted_mid_write(dynamodb_table, monkeypatch):
+    """Race guard: the row exists when step 1 (ensure paired_devices map) runs,
+    then a concurrent deprovision deletes it before step 2 (set the device).
+    Step 2's attribute_exists(owner_id) condition must prevent recreating a
+    partial zombie row that later get_by_owner_id consumers would choke on."""
+    from core.repositories import container_repo
+
+    await container_repo.upsert("owner_1", {"gateway_token": "t", "status": "running"})
+
+    real_run = container_repo.run_in_thread
+    calls = {"n": 0}
+
+    async def racing_run(fn, *args, **kwargs):
+        result = await real_run(fn, *args, **kwargs)
+        calls["n"] += 1
+        if calls["n"] == 1:  # after step-1 ensure-map: simulate concurrent delete
+            dynamodb_table.delete_item(Key={"owner_id": "owner_1"})
+        return result
+
+    monkeypatch.setattr(container_repo, "run_in_thread", racing_run)
+    await container_repo.upsert_paired_devices("owner_1", {"dev_x": {"publicKey": "kx", "userId": "u1"}})
+    # Row was deleted mid-write; step 2 must NOT have recreated it.
+    assert dynamodb_table.get_item(Key={"owner_id": "owner_1"}).get("Item") is None
+
+
+@pytest.mark.asyncio
 async def test_remove_paired_device_deletes_only_target(dynamodb_table):
     from core.repositories import container_repo
 

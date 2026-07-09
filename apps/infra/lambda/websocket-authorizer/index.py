@@ -45,6 +45,10 @@ PAPERCLIP_SERVICE_TOKEN_KEY_SECRET_ARN = os.environ.get(
 
 # Desktop device-token configuration
 DEVICE_TOKEN_KIND = "device"
+# Authorizer-enforced ceiling on a device token's self-declared lifetime
+# (exp - iat). The node mints ~90s tokens; 300s leaves headroom while bounding
+# the replay window regardless of what a compromised/buggy client mints.
+DEVICE_TOKEN_MAX_LIFETIME_S = 300
 CONTAINERS_TABLE = os.environ.get("CONTAINERS_TABLE", "")
 
 # Cache JWKS client (reused across invocations)
@@ -237,18 +241,29 @@ def _try_device_token(token: str) -> Optional[dict]:
             base64.urlsafe_b64decode(entry["publicKey"] + "==")
         )
         # Verify the EdDSA signature over the exact claims + enforce exp.
-        jwt.decode(
+        claims = jwt.decode(
             token,
             key=pub,
             algorithms=["EdDSA"],
             options={
-                "require": ["exp", "deviceId", "owner"],
+                "require": ["exp", "iat", "deviceId", "owner"],
                 "verify_exp": True,
             },
             leeway=30,
         )
+        # Bound the replay window at the trust boundary: refuse a token that
+        # declares a lifetime beyond the ceiling, whatever the client minted.
+        if claims["exp"] - claims["iat"] > DEVICE_TOKEN_MAX_LIFETIME_S:
+            logger.warning("Device token lifetime exceeds cap; refusing")
+            return None
 
-        member_user_id = entry.get("userId") or owner_id
+        member_user_id = entry.get("userId")
+        if not member_user_id:
+            # Fail CLOSED. An entry with no attributed member must never be
+            # allowed as the owner — that would masquerade an org id as a
+            # personal user identity. The sole writer always sets userId.
+            logger.warning("Device entry missing userId; refusing")
+            return None
         # Personal owner: owner_id == member → orgId "" (mirrors Clerk personal).
         org_id = "" if owner_id == member_user_id else owner_id
         return {

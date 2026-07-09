@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import React from "react";
 import { ClawHubSearch } from "../ClawHubSearch";
 
@@ -67,6 +67,27 @@ describe("ClawHubSearch", () => {
     rerender(<ClawHubSearch query="calendar" callRpc={callRpc} onInstalled={vi.fn()} />);
 
     // Old results gone; the button reflects the new query, not the stale one.
+    expect(screen.queryByText("PDF Tools")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Search ClawHub for “calendar”/i })).toBeInTheDocument();
+  });
+
+  it("ignores an in-flight search that resolves after the query changed", async () => {
+    let resolveSearch: (v: unknown) => void = () => {};
+    const callRpc = vi.fn().mockImplementation(
+      () => new Promise((res) => { resolveSearch = res as (v: unknown) => void; }),
+    );
+    const { rerender } = render(
+      <ClawHubSearch query="pdf" callRpc={callRpc} onInstalled={vi.fn()} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Search ClawHub for/i }));
+    // Query changes while the "pdf" search is still in flight.
+    rerender(<ClawHubSearch query="calendar" callRpc={callRpc} onInstalled={vi.fn()} />);
+    // The stale search now resolves — its results must be dropped.
+    await act(async () => {
+      resolveSearch({ results: [RESULT] });
+    });
+
     expect(screen.queryByText("PDF Tools")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Search ClawHub for “calendar”/i })).toBeInTheDocument();
   });

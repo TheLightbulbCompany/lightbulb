@@ -5,7 +5,7 @@
 // with `{source:"clawhub"}`), so no backend proxy is involved — the whole flow
 // goes over the operator WebSocket like the rest of the Skill Store.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Loader2, Download, Search, AlertTriangle, ExternalLink, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { capture } from "@/lib/analytics";
@@ -54,20 +54,28 @@ export function ClawHubSearch({
 
   const trimmed = query.trim();
 
+  // Every search (and every query change) bumps this. A search response only
+  // applies if its id is still current, so an in-flight request that resolves
+  // after the query changed can't repopulate stale rows.
+  const requestIdRef = useRef(0);
+
   // Results belong to the query they were fetched for. When the Skill Store
-  // filter changes, drop the previous ClawHub results (and their transient
-  // install state) so stale rows can't be shown — or installed — under a
-  // prompt they no longer match.
+  // filter changes, invalidate any in-flight search and drop the previous
+  // results (and their transient install state) so stale rows can't be shown —
+  // or installed — under a prompt they no longer match.
   useEffect(() => {
+    requestIdRef.current += 1;
     setResults(null);
     setSearchedFor("");
     setError(null);
     setRiskySlug(null);
     setMsg(null);
+    setLoading(false);
   }, [query]);
 
   const runSearch = async () => {
     if (!trimmed) return;
+    const reqId = (requestIdRef.current += 1);
     setLoading(true);
     setError(null);
     setResults(null);
@@ -78,13 +86,15 @@ export function ClawHubSearch({
         query: trimmed,
         limit: 20,
       });
+      if (requestIdRef.current !== reqId) return; // superseded by a newer search / query change
       setResults(res?.results ?? []);
       setSearchedFor(trimmed);
       capture("clawhub_searched", { query: trimmed });
     } catch (e) {
+      if (requestIdRef.current !== reqId) return;
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setLoading(false);
+      if (requestIdRef.current === reqId) setLoading(false);
     }
   };
 

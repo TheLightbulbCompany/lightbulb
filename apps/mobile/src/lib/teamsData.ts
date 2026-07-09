@@ -1004,6 +1004,38 @@ export function useTeamsBoard() {
   };
 }
 
+/**
+ * Standalone top-level issue creator for surfaces outside BoardView.
+ *
+ * The Teams header "+" is visible from every mode (overview/inbox/board/
+ * approvals), so creation cannot depend on BoardView being mounted and ready.
+ * This hook owns the write directly, with a synchronous ref latch to prevent a
+ * double-tap from creating duplicate Paperclip tasks.
+ */
+export function useCreateTeamIssue() {
+  const config = useTeamsConfig();
+  const creatingRef = useRef(false);
+
+  return useCallback(
+    async (input: CreateIssueInput): Promise<CreatedIssue | null> => {
+      if (creatingRef.current) return null;
+      creatingRef.current = true;
+      try {
+        return await createIssue(config, input);
+      } catch (err) {
+        Alert.alert(
+          "Couldn’t create issue",
+          err instanceof Error ? err.message : "The issue could not be created.",
+        );
+        return null;
+      } finally {
+        creatingRef.current = false;
+      }
+    },
+    [config],
+  );
+}
+
 /** Count direct sub-issues per parent, derived from the already-loaded board. */
 export function subtaskCounts(issues: BoardIssue[]): Record<string, number> {
   const counts: Record<string, number> = {};

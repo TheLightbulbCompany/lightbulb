@@ -5,6 +5,14 @@ import type { ChatRenderItem, ContentBlock } from "@/hooks/internal/types";
 interface StreamingStatusBarProps {
   isStreaming: boolean;
   renderItems: ChatRenderItem[];
+  /**
+   * Server-truth "run is active" signal (see useAgentChat's `busy`), independent
+   * of whether tokens are actively streaming in this tab. Keeps the bar lit
+   * across silent windows of a live run — long tool execution, the beat before
+   * the next tokens, the tool-approval pause — where isStreaming alone would
+   * have gone dark.
+   */
+  active?: boolean;
 }
 
 export function deriveStreamingLabel(items: ChatRenderItem[]): string {
@@ -37,9 +45,17 @@ export function deriveStreamingLabel(items: ChatRenderItem[]): string {
   return "Thinking";
 }
 
-export function StreamingStatusBar({ isStreaming, renderItems }: StreamingStatusBarProps) {
-  if (!isStreaming) return null;
-  const label = deriveStreamingLabel(renderItems);
+export function StreamingStatusBar({
+  isStreaming,
+  renderItems,
+  active,
+}: StreamingStatusBarProps) {
+  if (!isStreaming && !active) return null;
+  // While tokens are actively streaming, keep the existing tool/thinking
+  // derivation. Otherwise we're in a silent-but-active window (server truth
+  // says the run is still going, this tab just isn't seeing stream events
+  // right now) — show a plain label rather than a stale/misleading derived one.
+  const label = isStreaming ? deriveStreamingLabel(renderItems) : "Working";
   return (
     <div
       data-testid="streaming-status-bar"

@@ -216,6 +216,7 @@ export function useGatewayConnection(options: GatewayConnectionOptions): Gateway
       msgType === "done" ||
       msgType === "error" ||
       msgType === "run_ended" ||
+      msgType === "run_active" ||
       msgType === "heartbeat" ||
       msgType === "tool_start" ||
       msgType === "tool_end" ||

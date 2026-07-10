@@ -168,6 +168,11 @@ class GatewayConnection:
         # Non-emptiness is the load-bearing signal for the parked-vs-dead
         # teardown decision in `_reader_loop` — see _on_reader_loop_exit.
         self._active_runs: Dict[str, Dict[str, Any]] = {}
+        # Last-forwarded run-active value per webchat session_key. Deduplicates
+        # `sessions.changed` bursts so only transitions produce a `run_active`
+        # frame. SEPARATE from `_active_runs` (which is the parked-vs-dead
+        # signal) — never conflate the two.
+        self._run_state: dict[str, bool] = {}
         # Side-channel (`/btw`) run ids. A `/btw` aside runs CONCURRENTLY with a
         # normal turn but, on the wire, shares the same ``session_key`` (only the
         # runId differs). ``_active_runs`` is keyed by session_key — which is
@@ -302,9 +307,27 @@ class GatewayConnection:
         if run is not None:
             run["last_event_at"] = time.monotonic()
 
+    def reset_run_state_dedup(self) -> None:
+        """Forget the last-forwarded ``run_active`` per session so the next
+        ``sessions.changed`` re-forwards it as a fresh transition.
+
+        Called when a frontend (re)connects: the dedup in the ``sessions.changed``
+        handler suppresses repeat ``hasActiveRun:true`` frames, but a tab that
+        opens/reconnects mid-run has no local busy state (the frontend clears it
+        on disconnect), so it needs the ongoing run re-announced. Clearing the
+        map makes the next event a transition again. Separate from
+        ``_active_runs`` (untouched — that is the parked-vs-dead signal).
+        """
+        self._run_state.clear()
+
     def _clear_active_run(self, session_key: str) -> None:
         """Pop the run keyed by *session_key* (chat.final / error / aborted)."""
         self._active_runs.pop(session_key, None)
+        # Reset run-active dedup so the next run's first `hasActiveRun:true`
+        # sessions.changed is forwarded as a fresh transition. (The frontend
+        # busy-gate is already closed by the run_ended/done/error frame; this
+        # only clears our transition bookkeeping.)
+        self._run_state.pop(session_key, None)
 
     def mark_side_run(self, run_id: str) -> None:
         """Record *run_id* as a side-channel (`/btw`) run.
@@ -481,6 +504,7 @@ class GatewayConnection:
         verify_ms = int((time.monotonic() - verify_started) * 1000)
 
         self._reader_task = asyncio.create_task(self._reader_loop())
+        await self._subscribe_session_events()
         put_metric("gateway.connection", dimensions={"event": "connect"})
         self._emit_status_change("HEALTHY", "Gateway connected")
         total_ms = int((time.monotonic() - connect_started) * 1000)
@@ -582,6 +606,25 @@ class GatewayConnection:
                     exc,
                 )
             return
+
+    async def _subscribe_session_events(self) -> None:
+        """Subscribe this connection to OpenClaw `sessions.changed` broadcasts.
+
+        OpenClaw only broadcasts session events to connections that have called
+        `sessions.subscribe` (fork src/gateway/server-methods/sessions.ts:906),
+        and drops the subscription on disconnect. Sent on every connect; because
+        `reopen()` calls `connect()`, this re-subscribes on reconnect too.
+        Fire-and-forget: the `{subscribed:true}` ack is not needed to proceed —
+        if it never lands we simply fall back to stream-derived busy state, so
+        we don't block connect on it. The ack `res` is harmlessly ignored by
+        `_handle_message` (no matching entry in `_pending_rpcs`).
+        """
+        req_id = str(uuid.uuid4())
+        frame = {"type": "req", "id": req_id, "method": "sessions.subscribe", "params": {}}
+        try:
+            await self._ws.send(json.dumps(frame))
+        except Exception:
+            logger.warning("sessions.subscribe send failed user=%s", self.user_id, exc_info=True)
 
     async def send_rpc(self, req_id: str, method: str, params: dict) -> None:
         """Send {type: req} on the gateway WebSocket."""
@@ -1449,6 +1492,36 @@ class GatewayConnection:
                     frame["agent_id"] = side_agent_id
                 await self._forward_to_frontends(frame, target_member)
 
+            elif event_name == "sessions.changed":
+                # OpenClaw's authoritative per-session run-state (from its live
+                # abort-controller registry), broadcast on every run
+                # start/end/transition. The payload embeds `hasActiveRun`, so we
+                # read it directly — NO follow-up RPC (that would deadlock inside
+                # the reader loop). Webchat-only + member-demuxed: a non-webchat
+                # or member-less key must never reach the web UI (would leak
+                # another surface or broadcast to the whole org). Deduped against
+                # the last-forwarded value so message/transcript-driven
+                # `sessions.changed` bursts don't spam identical frames.
+                # Allow-list on webchat (not a deny-list of known-bad sources):
+                # a malformed/unclassified key parses to source "" and must NOT
+                # fall through — that would forward with target_member=None and
+                # broadcast the frame to every one of the owner's chat
+                # connections. Webchat keys always carry a member_id, so gating
+                # here also guarantees per-member demux.
+                if session_source != "webchat":
+                    return
+                active = bool(payload.get("hasActiveRun"))
+                if self._run_state.get(session_key) == active:
+                    return
+                self._run_state[session_key] = active
+                fwd_ra: dict = {"type": "run_active", "active": active}
+                event_agent_id = parsed_key.get("agent_id")
+                if event_agent_id:
+                    fwd_ra["agent_id"] = event_agent_id
+                if session_id is not None:
+                    fwd_ra["session_id"] = session_id
+                await self._forward_to_frontends(fwd_ra, target_member)
+
             else:
                 # Forward other events as-is for SWR revalidation (broadcast to all)
                 await self._forward_to_frontends(data)
@@ -1977,6 +2050,14 @@ class GatewayConnectionPool:
         conn = self._connections.get(user_id)
         if conn is not None:
             conn.invalidate_recipients_cache()
+            # Forget the run-active dedup so a tab that (re)connects or opens
+            # mid-run gets a fresh `run_active` on the next `sessions.changed`
+            # instead of having the still-true state suppressed as a duplicate —
+            # otherwise its status bar sits dark through the active window. The
+            # frontend clears its own `containerRunActive` on disconnect, so
+            # without this the server would never re-light it. (OpenClaw's own
+            # client re-reads sessions.list on reconnect for the same reason.)
+            conn.reset_run_state_dedup()
 
         # Cancel grace period if one is running
         grace = self._grace_tasks.pop(user_id, None)

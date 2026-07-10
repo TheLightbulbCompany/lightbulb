@@ -152,6 +152,8 @@ export interface UseAgentChatReturn {
   renderItems: ChatRenderItem[];
   /** Whether a user-turn is in flight (chatStream non-null OR live tools running OR clientRunIdRef set). */
   isStreaming: boolean;
+  /** isStreaming (local anchor) OR containerRunActive (server truth via `run_active`). */
+  busy: boolean;
   error: string | null;
   sendMessage: (message: string) => Promise<void>;
   cancelMessage: () => Promise<void>;
@@ -460,6 +462,13 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     _setIsStreamingRaw(value);
   }, []);
 
+  // Server-truth busy signal, independent of this tab's local isStreaming
+  // anchor. Set/cleared by the `run_active` frame (backend forwards
+  // OpenClaw's sessions.changed for the initiating member) and belt-and-
+  // suspenders cleared on the authoritative terminal frames + on a
+  // connection drop, so a lost `run_active:false` can't strand it true.
+  const [containerRunActive, setContainerRunActive] = useState(false);
+
   const [error, setError] = useState<string | null>(null);
 
   // Ephemeral `/btw` side-result cards. Transient by design: never written to
@@ -760,6 +769,11 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     setBtwResults([]);
     setError(null);
     setIsStreaming(false);
+    // Scope the server-truth busy bit to the chat it came from: the old
+    // session's later run_active:false/terminal is tagged with the old
+    // session_id and gets dropped by the demux, so without this the spinner
+    // would strand "on" for the newly-selected session.
+    setContainerRunActive(false);
     clientRunIdRef.current = null;
     resumeExpectedRef.current = false;
   }, [
@@ -966,6 +980,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         clientRunIdRef.current !== null &&
         msg.type !== "heartbeat" &&
         msg.type !== "update_available" &&
+        msg.type !== "run_active" &&
         msg.runId &&
         msg.runId !== clientRunIdRef.current
       ) {
@@ -992,6 +1007,14 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         !drainedRunIdsRef.current.has(msg.runId)
       ) {
         clientRunIdRef.current = msg.runId;
+      }
+
+      // Server-truth busy signal — see containerRunActive state comment.
+      // Carries no runId (it isn't tied to a specific run), so none of the
+      // runId-keyed guards above apply; just mirror the server's flag.
+      if (msg.type === "run_active") {
+        setContainerRunActive(!!msg.active);
+        return;
       }
 
       if (msg.type === "chunk") {
@@ -1213,6 +1236,9 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         // trails the terminal done/error for the same run and is the
         // canonical drain trigger — the queue drains only when the run is
         // truly over per the SERVER, never on a local terminal/error edge.
+        // Belt-and-suspenders: also force-close containerRunActive here so a
+        // lost/out-of-order `run_active:false` can't strand the spinner.
+        setContainerRunActive(false);
         //
         // Dedupe by runId: the terminal done/error handler below already
         // drained this run (or, for the session-less edge, a `done` with no
@@ -1234,6 +1260,13 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
 
       if (msg.type === "done") {
         const runId = msg.runId;
+        // Belt-and-suspenders: `done` is a genuine terminal for the vast
+        // majority of turns (the approval-pause interim chat.final is the
+        // one exception, but closing containerRunActive here is still safe
+        // — isStreaming stays armed via the approval gate below, and a
+        // fresh `run_active:true` re-opens it if the container is still
+        // genuinely running).
+        setContainerRunActive(false);
         // Fold the entire live turn into a single synthesized assistant
         // message so chronological order is preserved across turns. Leaving
         // segments/tools in the live arrays would cause them to render
@@ -1352,6 +1385,11 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
           });
           return;
         }
+
+        // Genuine terminal error (past the agent_busy / steer_failed
+        // non-terminal no-ops above) — belt-and-suspenders close, same as
+        // the run_ended / done branches.
+        setContainerRunActive(false);
 
         const displayError = friendlyError(msg.message);
         const errorCode = msg.code;
@@ -1911,6 +1949,20 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     }
   }, [isConnected, send, dispatchNow]);
 
+  // ---- Drop stale server-truth busy on disconnect ----
+  //
+  // containerRunActive is server truth relayed over the WS — while
+  // disconnected we can't receive its `run_active:false` companion, so a
+  // `true` set before the drop must not persist as a phantom "busy"
+  // indefinitely. No existing effect resets general live state purely on
+  // the isConnected transition (the effect above is reconnect-specific
+  // replay logic), so this is a dedicated one. Fires on drop; the
+  // subsequent reconnect will pick up a fresh run_active from the server
+  // if the container is still genuinely running.
+  useEffect(() => {
+    if (!isConnected) setContainerRunActive(false);
+  }, [isConnected]);
+
   // ---- Clear messages ----
 
   const clearMessages = useCallback(() => {
@@ -1936,6 +1988,10 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     if (key) _messageCache.delete(key);
     setError(null);
     setIsStreaming(false);
+    // Drop the server-truth busy bit too (agent switch routes through here):
+    // the old scope's run_active:false is demux-dropped once the agent changes,
+    // so leaving it set would strand the spinner on the new agent's chat.
+    setContainerRunActive(false);
     clientRunIdRef.current = null;
     // Same reasoning as cancelMessage — a post-approval continuation
     // must not be adopted as the new active run after a clear.
@@ -2000,6 +2056,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     renderGroups,
     renderItems,
     isStreaming,
+    busy: isStreaming || containerRunActive,
     error,
     sendMessage,
     cancelMessage,

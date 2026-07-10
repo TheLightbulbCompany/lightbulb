@@ -40,11 +40,12 @@ Critical path: **WS1 → WS2 → WS3 → WS4 → WS5.** WS6/WS7 are provider-agn
 The parallel effort shipped (PRs #1193/#1194, merged here): **dev** extended image is now `2026.7.1-beta.3-isol8.1` with the **native `meta` provider bundled** (`enabledByDefault`, `muse-spark-1.1`), the 3 fork patches rebased, and a **7.1 config-schema validation test** (`tests/chaos/invariants/test_config_schema.py`). **Prod is still on 6.10.**
 
 - **WS1 collapses** — vendoring + Dockerfile are done; WS1 = one `config.py` change (folds into WS2). `config.py` has no meta wiring yet — that part is still ours.
-- **Critical path unblocked in dev.** New order:
-  1. **WS2 — Step-0 reconciliation FIRST** (the gate): config.py meta branch + `MODEL_API_KEY` inject → provision a dev meta container → run Muse Spark → confirm usage flows + validate config against the 7.1 schema test.
-  2. **WS3 ($3/day cap + entitlement) + WS6 (event-only scaling)** — parallel, after Step-0 green.
-  3. **WS4 + WS5** — re-check `ProvisioningStepper.tsx`/`useGateway.tsx` (changed on main).
-  4. **Prod 7.1 promotion** (+ paid-fleet image-swap) — go-live gate.
+- **Build order = customer-first (work backwards from the user):**
+  - **Phase A — signup → free chat (the visible flow).** New users **auto-default into the free tier** — no CTA, no card, no provider picker: **first login with no billing row → create `trial_local` + provision a `meta` container → chat on Muse Spark.** = the frontend free path (WS4) + the thin backend slice (config.py meta branch, auto-default provisioning, allow `trial_local` chat). **Uncapped → DEV-ONLY until Phase B.**
+  - **Phase B — guardrails behind the flow:** the **$3/day cap** + the **Step-0 reconciliation** (WS3 cap + WS2), the **always-on entitlement** (WS3), **spin-down** (WS6). Now safe for real users.
+  - **Phase C — conversion:** paywall + switch to a paid provider (WS5) — where the three providers finally appear.
+  - **Phase D — go-live:** prod 7.1 promotion + full E2E.
+  Landing-page "free to start" messaging is a **separate marketing change**, handled outside this plan.
 
 ---
 
@@ -117,24 +118,26 @@ The parallel effort shipped (PRs #1193/#1194, merged here): **dev** extended ima
 
 ---
 
-## WS4 — Onboarding flow (frontend web)
+## WS4 — Onboarding: first login → free tier automatically (Phase A)
 
-**Objective:** Signup → **instant chat on the free trial**, with the card and provider steps removed from the free path; a clear "start free" entry; funnel instrumented.
+**Objective:** A new signup is **auto-defaulted into the free tier** — no "start free" choice, no card screen, no provider picker. Signup → provisioning (free path) → chat on Muse Spark. (Landing-page messaging is a separate marketing change.)
 
 **Files:**
-- Modify: `apps/frontend/src/components/chat/ProvisioningStepper.tsx` — free-tier path skips payment + provider phases; drives `POST /billing/meta-free-start` then polls to ready
-- Modify: `apps/frontend/src/hooks/useProvisioningState.ts` — recognize `trial_local` as an active/allowed state (200), map its phases
-- Modify: `apps/frontend/src/components/chat/*` onboarding entry — a "Start free — no card" CTA calling `meta-free-start`
-- Modify: PostHog instrumentation (per memory `project_onboarding_funnel_posthog_blindspot`): `trial_started`, `trial_first_agent_response`, `trial_first_successful_task`, `trial_message_sent`
-- Test: `apps/frontend` vitest (single-file only per memory `feedback_frontend_vitest_ram_heavy`) + `tsc --noEmit`
+- Modify: `core/services/user_provision.py` (`ensure_user_ready`) + `provision_gate.py` — **on first `/container/status` with no billing row / no active subscription, auto-create a `trial_local` account + provision the `meta` container** (internal `meta-free-start`), instead of returning `signup_required`. First login = free tier. Subscribed users' path untouched.
+- Modify: `core/services/container_provision.py` (`resolve_provider_choice`) → `meta` for `trial_local`; `core/containers/config.py` — the `meta` provider branch (locked `meta/muse-spark-1.1`)
+- Modify: `apps/frontend/src/hooks/useProvisioningState.ts` — recognize `trial_local` as an allowed (200) state, map its phases (no card/provider gate for new users)
+- Modify: `apps/frontend/src/components/chat/ProvisioningStepper.tsx` — the `trial_local` path shows only provision → gateway → ready; **no new CTA**, no payment/provider phase. (Re-check vs. main — this file changed there.)
+- Modify: PostHog: `trial_started` (on auto-provision), `trial_first_agent_response`, `trial_first_successful_task`, `trial_message_sent`
+- Test: `apps/frontend` vitest (single-file only per `feedback_frontend_vitest_ram_heavy`) + `tsc --noEmit`; backend unit for the auto-default
 
 **Tasks:**
-1. **Free-start entry.** New-user landing offers "Start free (no card)" → `POST /billing/meta-free-start` → begins provisioning poll. (Existing "subscribe" path remains for users who want to pay immediately.)
-2. **Stepper free path.** For `trial_local`, `STEPS` = provision → gateway → ready (no payment, no provider). Reuse the existing cold-start pod/stepper UI.
-3. **Status state machine.** `useProvisioningState` treats `trial_local` as allowed (renders chat when ready), not "blocked".
-4. **Funnel events.** Emit the trial events above so we can tune the cap against first-successful-task.
+1. **Auto-default to free tier (backend).** On first login (no billing row, no active subscription): create `trial_local` + provision the `meta` container — automatically, no user action. Existing subscribed/paid users unaffected.
+2. **`config.py` meta branch + `MODEL_API_KEY`** (the WS1 remnant + WS2 secret slice) so the provisioned container actually runs Muse Spark.
+3. **Stepper free path (frontend).** `trial_local` → provision → gateway → ready (no payment/provider). Reuse the existing cold-start stepper.
+4. **Status state machine.** `useProvisioningState` treats `trial_local` as allowed (renders chat when ready), not "blocked".
+5. **Funnel events.** Emit the trial events (tune the cap against first-successful-task later).
 
-**Testable deliverable:** E2E (dev) — a fresh Clerk signup reaches a streaming Friday reply **without** ever seeing a card or provider screen. **Depends on:** WS3 (the `meta-free-start` endpoint + `trial_local` state). **Risk:** don't regress the existing paid onboarding path — gate the new flow on the free entry only.
+**Testable deliverable:** E2E (dev) — a fresh Clerk signup **lands in a streaming Friday chat automatically**, never seeing a card, provider, or "start free" screen. **Uncapped at this phase → dev-only until Phase B lands the $3/day cap.** **Depends on:** the 7.1+meta dev base (done). **Risk:** the auto-default fires only for genuinely-new (no-billing, no-subscription) users — a subscribed user's path is untouched. **Out of scope:** landing-page copy (marketing).
 
 ---
 

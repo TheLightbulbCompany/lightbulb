@@ -150,6 +150,26 @@ async def test_trialing_with_credits_returns_none():
 
 
 @pytest.mark.asyncio
+async def test_trial_local_no_provider_choice_returns_none():
+    """A trial_local row has NO provider_choice on it — its provider is
+    resolved to `meta` elsewhere, never stored on the billing row. The
+    Layer-2 provider_required check must NOT fire for trial_local; the
+    gate short-circuits to None (provisioning allowed) before Layer 2."""
+    with patch("core.services.provision_gate.billing_repo") as repo:
+        repo.get_by_owner_id = AsyncMock(
+            return_value={
+                "subscription_status": "trial_local",
+                # No provider_choice, no stripe_subscription_id — neither
+                # is written for the no-card local trial.
+            },
+        )
+        gate = await evaluate_provision_gate(
+            owner_id="user_x",
+        )
+    assert gate is None  # Layer-2 provider_required must not fire
+
+
+@pytest.mark.asyncio
 async def test_active_subscription_no_provider_choice_returns_provider_required():
     """Active subscription + provider_choice absent (e.g. ChatGPT disconnect cleared it,
     or the row pre-dates provider_choice writes) must surface provider_required
@@ -529,6 +549,10 @@ def test_gate_to_payload_shape():
         # Active states.
         ({"subscription_status": "active"}, True),
         ({"subscription_status": "trialing"}, True),
+        # No-card local trial — a Stripe-less trial state that must grant
+        # platform use the same as "trialing" (unblocks chat + Layer 1 of
+        # the provision gate).
+        ({"subscription_status": "trial_local"}, True),
         # Inactive states — none of these grant access regardless of
         # whether ``stripe_subscription_id`` is still set on the row.
         ({"subscription_status": "past_due"}, False),
@@ -584,6 +608,10 @@ def test_is_subscription_active_table(account, expected):
         ({"subscription_status": "incomplete_expired"}, True),
         ({"subscription_status": "unpaid"}, True),
         ({"subscription_status": "paused"}, True),
+        # trial_local must NOT block a fresh trial-creation attempt — a
+        # later paid upgrade (real Stripe trial/subscription) must stay
+        # possible for an account currently in the no-card local trial.
+        ({"subscription_status": "trial_local"}, False),
         # Unknown/future status doesn't block — fail-open is the right
         # choice for the trial-checkout gate (worst case is one extra
         # trial; cancel-loop is gated by Stripe support workflow).

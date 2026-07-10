@@ -29,7 +29,9 @@ logger = logging.getLogger(__name__)
 # Stripe statuses that grant platform use right now. Trialing is included
 # because the trial itself is a valid subscription state on Stripe — billing
 # kicks in at trial_end without any state transition the caller can see.
-_ACTIVE_STATUSES = frozenset({"active", "trialing"})
+# "trial_local" is the no-card local trial — a Stripe-less state, but it
+# grants platform use exactly like "trialing" does.
+_ACTIVE_STATUSES = frozenset({"active", "trialing", "trial_local"})
 
 # Stripe statuses that indicate this account has *ever* been on a paid
 # subscription (or is currently mid-attempt). Used to block fresh
@@ -270,6 +272,14 @@ async def _evaluate_provision_gate_inner(
             action_admin_only=True,
             owner_role=owner_role,
         )
+
+    # trial_local short-circuit — a no-card local trial has NO
+    # provider_choice on the row (its provider is resolved to `meta`
+    # elsewhere, not stored here), so it must not be sent through the
+    # Layer-2 provider_required check below. A trial_local owner is
+    # provision-eligible without a stored provider.
+    if account.get("subscription_status") == "trial_local":
+        return None
 
     # Layer 2 — provider must be picked.
     #

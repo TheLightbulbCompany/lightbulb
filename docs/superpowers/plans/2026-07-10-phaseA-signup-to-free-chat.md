@@ -23,14 +23,14 @@
 
 **Files:** Modify `core/services/provision_gate.py`; Test `tests/unit/services/test_provision_gate.py`
 
-- [ ] **Test:** `is_subscription_active({"subscription_status":"trial_local"})` is `True`; `is_trial_blocked(trial_local)` is `False`; `has_always_on_entitlement(trial_local)` is `False` but `True` for `active`/`trialing`; `evaluate_provision_gate` returns `None` (no gate) for a `trial_local` row with **no `provider_choice`** (i.e. Layer-2 `provider_required` does **not** fire).
+- [ ] **Test:** `is_subscription_active({"subscription_status":"trial_local"})` is `True`; `is_trial_blocked(trial_local)` is `False`; `evaluate_provision_gate` returns `None` (no gate) for a `trial_local` row with **no `provider_choice`** (i.e. Layer-2 `provider_required` does **not** fire).
 - [ ] **Run** → fails.
 - [ ] **Implement:**
   - `:32` `_ACTIVE_STATUSES = frozenset({"active","trialing","trial_local"})`.
-  - after `is_trial_blocked` (~`:100`): `_ALWAYS_ON_STATUSES = frozenset({"active","trialing"})` + `def has_always_on_entitlement(account) -> bool: return bool(account) and account.get("subscription_status") in _ALWAYS_ON_STATUSES`.
   - in `_evaluate_provision_gate_inner`, **before Layer 2 (`:281`)**: `if account.get("subscription_status") == "trial_local": return None` (provider is resolved to meta, not stored on the row).
   - Leave `TRIAL_BLOCKED_STATUSES` unchanged.
 - [ ] **Run** → pass. **Commit.**
+- [ ] *(Deferred to Phase B: the `has_always_on_entitlement` predicate — added when the reaper/entitlement enforcement actually calls it. Not defined here (YAGNI).)*
 
 ## Task 3 — `ensure_user_ready`: auto-default a new owner into `trial_local`
 

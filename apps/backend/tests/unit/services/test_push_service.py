@@ -69,3 +69,57 @@ async def test_no_tokens_is_noop():
         with patch("core.services.push_service.httpx.AsyncClient") as client_ctor:
             await push_service.send_push_to_user("user_1", "t", "b", {})
             client_ctor.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_repo_get_failure_does_not_raise():
+    # A DynamoDB fault in user_repo.get must NOT escape into the caller.
+    with patch(
+        "core.services.push_service.user_repo.get",
+        AsyncMock(side_effect=Exception("ddb down")),
+    ):
+        from core.services import push_service
+
+        await push_service.send_push_to_user("user_1", "t", "b", {})  # no raise == pass
+
+
+@pytest.mark.asyncio
+async def test_post_failure_does_not_raise():
+    # A transport/HTTP error on the Expo POST must NOT escape into the caller.
+    row = {"push_tokens": {"d1": {"token": "ExponentPushToken[a]", "platform": "ios"}}}
+    post = AsyncMock(side_effect=Exception("connection reset"))
+    client = MagicMock()
+    client.__aenter__ = AsyncMock(return_value=MagicMock(post=post))
+    client.__aexit__ = AsyncMock(return_value=False)
+
+    with (
+        patch("core.services.push_service.user_repo.get", AsyncMock(return_value=row)),
+        patch("core.services.push_service.httpx.AsyncClient", return_value=client),
+    ):
+        from core.services import push_service
+
+        await push_service.send_push_to_user("user_1", "t", "b", {})  # no raise == pass
+
+
+@pytest.mark.asyncio
+async def test_non_device_not_registered_error_is_logged_not_pruned():
+    # Systemic errors (e.g. MessageTooBig) are warned, never pruned.
+    row = {"push_tokens": {"d1": {"token": "ExponentPushToken[a]", "platform": "ios"}}}
+    post = AsyncMock(return_value=_resp({"data": [{"status": "error", "details": {"error": "MessageTooBig"}}]}))
+    client = MagicMock()
+    client.__aenter__ = AsyncMock(return_value=MagicMock(post=post))
+    client.__aexit__ = AsyncMock(return_value=False)
+    clear = AsyncMock()
+
+    with (
+        patch("core.services.push_service.user_repo.get", AsyncMock(return_value=row)),
+        patch("core.services.push_service.user_repo.clear_push_token", clear),
+        patch("core.services.push_service.httpx.AsyncClient", return_value=client),
+        patch("core.services.push_service.logger.warning") as warn,
+    ):
+        from core.services import push_service
+
+        await push_service.send_push_to_user("user_1", "t", "b", {})
+
+    clear.assert_not_awaited()
+    warn.assert_called_once()

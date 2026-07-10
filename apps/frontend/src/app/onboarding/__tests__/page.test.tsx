@@ -1,12 +1,24 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 
-// Minimal Clerk mocks — pending invitations + no memberships + no org.
+const pushMock = vi.fn();
+const replaceMock = vi.fn();
+let searchString = "";
+
+// Minimal Clerk mocks — configurable invitations / memberships / org.
 const buildClerkMocks = (
-  overrides: { invitations?: unknown[]; memberships?: unknown[] } = {},
+  overrides: {
+    invitations?: unknown[];
+    memberships?: unknown[];
+  } = {},
 ) => ({
   useAuth: () => ({ isLoaded: true, orgId: null }),
-  useUser: () => ({ user: { update: vi.fn() } }),
+  useUser: () => ({
+    user: {
+      unsafeMetadata: {},
+      update: vi.fn().mockResolvedValue(undefined),
+    },
+  }),
   useOrganization: () => ({ organization: null, isLoaded: true }),
   useOrganizationList: () => ({
     userMemberships: { data: overrides.memberships ?? [] },
@@ -20,24 +32,24 @@ const buildClerkMocks = (
   CreateOrganization: () => <div>CreateOrganization mock</div>,
 });
 
-vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
-vi.mock("@/lib/api", () => ({ useApi: () => ({ syncUser: vi.fn() }) }));
-// ``lib/analytics`` re-exports PostHogProvider as ``Provider`` at module
-// load time, so the mock has to expose it (vitest is strict about
-// import-time destructuring against module mocks). Returning a passthrough
-// component is enough — these tests don't render through the real provider.
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: pushMock, replace: replaceMock }),
+  useSearchParams: () => new URLSearchParams(searchString),
+}));
+// lib/analytics re-exports PostHogProvider at module load; the mock must
+// expose it (vitest is strict about import-time destructuring vs mocks).
 vi.mock("posthog-js/react", () => ({
   usePostHog: () => null,
   PostHogProvider: ({ children }: { children: React.ReactNode }) => children,
 }));
 
 describe("OnboardingPage", () => {
-  // vitest caches dynamically-imported modules, so a `vi.doMock` registered
-  // in test N has no effect on test N+1 unless we reset the module cache
-  // (and the previous mock) between tests.
   beforeEach(() => {
     vi.resetModules();
     vi.doUnmock("@clerk/nextjs");
+    searchString = "";
+    pushMock.mockClear();
+    replaceMock.mockClear();
   });
 
   it("forces invitation mode when pending invitations exist — no Skip button", async () => {
@@ -54,25 +66,33 @@ describe("OnboardingPage", () => {
     );
     const { default: Page } = await import("../page");
     render(<Page />);
-    // Invitation card is shown — the org name is the unique anchor
-    // (the "Pending invitation" helper text appears alongside it but
-    // is not a single-match anchor).
     expect(screen.getByText("Acme Org")).toBeInTheDocument();
-    // No "Skip invitations" escape hatch
     expect(
       screen.queryByRole("button", { name: /skip invitations/i }),
     ).toBeNull();
+    // Not redirected away — the invitee stays here to accept.
+    expect(replaceMock).not.toHaveBeenCalled();
   });
 
-  it("renders the personal/org chooser when no pending invitations", async () => {
+  it("renders CreateOrganization when intent=team", async () => {
+    searchString = "intent=team";
     vi.doMock("@clerk/nextjs", () => buildClerkMocks());
     const { default: Page } = await import("../page");
     render(<Page />);
-    expect(
-      screen.getByRole("button", { name: /personal/i }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: /organization/i }),
-    ).toBeInTheDocument();
+    expect(screen.getByText("CreateOrganization mock")).toBeInTheDocument();
+    // Team creation stays on this page; no bounce to /chat.
+    expect(replaceMock).not.toHaveBeenCalledWith("/chat");
+  });
+
+  it("redirects a stray visitor (no team intent, no invitation) to /chat", async () => {
+    // Personal signups are owned by useOnboardingGate and never routed here;
+    // anyone who lands with no team/invite context is sent on to /chat. There
+    // is no personal chooser or auto-complete on this page any more.
+    vi.doMock("@clerk/nextjs", () => buildClerkMocks());
+    const { default: Page } = await import("../page");
+    render(<Page />);
+    expect(screen.queryByRole("button", { name: /personal/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /organization/i })).toBeNull();
+    await waitFor(() => expect(replaceMock).toHaveBeenCalledWith("/chat"));
   });
 });

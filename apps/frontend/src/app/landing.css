@@ -1476,6 +1476,30 @@
   color: #a8e6c6;
 }
 
+.ld-teams-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  flex-wrap: wrap;
+  margin-top: 32px;
+  padding: 24px 28px;
+  border: 1px solid var(--edge);
+  border-radius: 16px;
+}
+
+.ld-teams-copy h3 {
+  font-family: var(--font-lora-serif), Georgia, serif;
+  font-weight: 500;
+  color: var(--ink);
+  margin: 0;
+}
+
+.ld-teams-copy p {
+  color: var(--mute);
+  margin: 4px 0 0;
+}
+
 /* ------------------------------------------------------------------ faq */
 
 .ld-faq-list {

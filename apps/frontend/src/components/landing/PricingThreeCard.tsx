@@ -3,6 +3,7 @@ import Link from "next/link";
 
 import { capture } from "@/lib/analytics";
 import { PROVIDER_CARDS } from "@/lib/providerCards";
+import { writeSignupIntentCookie } from "@/lib/signupIntent";
 
 export function PricingThreeCard() {
   return (
@@ -66,6 +67,37 @@ export function PricingThreeCard() {
               </Link>
             </div>
           ))}
+        </div>
+
+        <div className="ld-teams-strip" data-ld-reveal>
+          <div className="ld-teams-copy">
+            <h3>Isol8 for Teams</h3>
+            <p>Shared agents, one workspace, per-seat pricing.</p>
+          </div>
+          <Link
+            href="/sign-up?intent=team"
+            className="ld-btn"
+            onClick={() => {
+              // Robust team-intent transport: the cookie survives Clerk's
+              // multi-step signup (which drops the ?intent=team query); the
+              // gate reads it on /chat and routes to team creation.
+              writeSignupIntentCookie("team");
+              capture("landing_pricing_card_clicked", {
+                provider_choice: "team",
+                destination: "/sign-up?intent=team",
+              });
+              capture("signup_started", {
+                source: "landing_pricing_teams",
+                provider_choice: "team",
+                destination: "/sign-up?intent=team",
+              });
+            }}
+          >
+            Create a team
+            <span className="ld-btn-arrow" aria-hidden="true">
+              →
+            </span>
+          </Link>
         </div>
       </div>
     </section>

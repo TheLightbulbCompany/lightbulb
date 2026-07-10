@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   CreateOrganization,
   useAuth,
@@ -9,93 +9,109 @@ import {
   useOrganizationList,
   useUser,
 } from "@clerk/nextjs";
-import { useApi } from "@/lib/api";
 import { capture } from "@/lib/analytics";
 import { Button } from "@/components/ui/button";
-import { User, Users, Mail } from "lucide-react";
+import { Users, Mail } from "lucide-react";
 import { InviteTeammatesStep } from "@/components/onboarding/InviteTeammatesStep";
 
-export default function OnboardingPage() {
+function OnboardingFlow() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { isLoaded, orgId: authOrgId } = useAuth();
   const { user } = useUser();
   const { organization, isLoaded: orgLoaded } = useOrganization();
-  const { userMemberships, userInvitations, isLoaded: orgsLoaded, setActive } = useOrganizationList({
-    userMemberships: true,
-    userInvitations: true,
-  });
-  const api = useApi();
-  const [loading, setLoading] = useState(false);
+  const { userMemberships, userInvitations, isLoaded: orgsLoaded, setActive } =
+    useOrganizationList({
+      userMemberships: true,
+      userInvitations: true,
+    });
   const [acceptingId, setAcceptingId] = useState<string | null>(null);
 
   const pendingInvitations = userInvitations?.data ?? [];
 
-  // Tenancy invariant: when the user has pending invitations, force the
-  // invitations screen — no escape hatch into personal onboarding because
-  // a user can't have personal tenancy AND a pending org invite.
-  const [explicitMode, setExplicitMode] = useState<"choose" | "personal" | "org" | "invitations" | null>(null);
+  // This page handles only the two flows that need an authenticated setup
+  // screen: team creation and invitation acceptance. Personal signups are
+  // completed by useOnboardingGate and never reach here — so there is no
+  // personal path, no auto-complete, and no chooser.
+  //
+  // Team intent arrives as ?intent=team (useOnboardingGate forwards it from
+  // the landing CTA / signup cookie). It stays in the URL across Clerk's
+  // org-creation soft nav via afterCreateOrganizationUrl="/onboarding?intent=team",
+  // so `mode` is derived straight from the URL — no sticky state needed.
+  //
+  // Tenancy invariant: pending invitations force the invitations screen — a
+  // user can't hold personal tenancy AND a pending org invite at once.
+  const intentTeam = searchParams.get("intent") === "team";
   const forcedInvitations = isLoaded && orgsLoaded && pendingInvitations.length > 0;
-  const mode = forcedInvitations ? "invitations" : (explicitMode ?? "choose");
-  const setMode = setExplicitMode;
+  const mode: "org" | "invitations" | null = forcedInvitations
+    ? "invitations"
+    : intentTeam
+      ? "org"
+      : null;
 
-  // Two redirect triggers:
-  //
-  // 1. useOrganization().organization is non-null — Clerk has already set
-  //    this org as active (happens automatically after CreateOrganization
-  //    finishes or after accepting an invite via the Clerk flows). We can
-  //    go straight to /chat because the JWT already has the right org_id.
-  //
-  // 2. userMemberships has entries but no org is active — the user accepted
-  //    an invite but Clerk didn't auto-activate. Call setActive() first,
-  //    then redirect once the JWT is settled.
-  //
-  // In BOTH paths we also write `unsafeMetadata.onboarded = true`, matching
-  // the personal-flow behavior below. The flag is the durable, user-scoped
-  // source of truth for "has this user completed onboarding" — Clerk's
-  // active-org state is session-scoped and doesn't persist across fresh
-  // logins, so without the flag a user would bounce to /onboarding every
-  // time they log in on a new browser.
-  //
-  // IMPORTANT: skip when mode === "org" — the user is actively inside
-  // Clerk's CreateOrganization component (now mounted with
-  // skipInvitationScreen={true}), and our <InviteTeammatesStep> takes
-  // over once `organization` resolves. If we redirected on the
-  // organization signal, we'd never render the custom invite step.
+  // Analytics only (no state update — that would trip the cascading-render
+  // lint rule): record that the org-creation flow opened.
+  useEffect(() => {
+    if (mode === "org") capture("workspace_type_selected", { type: "org" });
+  }, [mode]);
+
+  // Merge-preserving completion: write onboarded=true WITHOUT clobbering
+  // other unsafeMetadata keys, then redirect to /chat. The flag is the
+  // durable, user-scoped source of truth for "completed onboarding" —
+  // Clerk's active-org state is session-scoped and doesn't survive fresh
+  // logins, so without the flag a user bounces back to /onboarding.
+  async function completeOnboardingAndRedirect() {
+    try {
+      await user?.update({
+        unsafeMetadata: {
+          ...(user.unsafeMetadata as Record<string, unknown> | undefined),
+          onboarded: true,
+        },
+      });
+    } catch {
+      // Best-effort — ChatLayout's auto-activate fallback still gets the
+      // user into /chat on subsequent loads.
+    }
+    router.push("/chat");
+  }
+
+  // Completion effect for the org paths. Skips the org-creation and
+  // invitations UIs (they own their own rendering).
   useEffect(() => {
     if (!isLoaded || !orgLoaded || !orgsLoaded) return;
-    if (mode === "org") return; // let CreateOrganization handle its flow
+    if (mode === "org" || mode === "invitations") return;
 
-    const markOnboardedAndRedirect = async () => {
-      try {
-        await user?.update({ unsafeMetadata: { onboarded: true } });
-      } catch {
-        // Best-effort — failure to write the flag shouldn't block the
-        // redirect; ChatLayout's auto-activate fallback will still get the
-        // user into /chat on subsequent loads.
-      }
-      router.push("/chat");
-    };
-
-    // Path 1: org already active
+    // Path 1: org already active (just created, or an accepted invite that
+    // Clerk auto-activated) → mark onboarded + redirect.
     if (organization) {
-      markOnboardedAndRedirect();
+      completeOnboardingAndRedirect();
       return;
     }
-    // Path 2: has memberships but no active org
+    // Path 2: has memberships but no active org (accepted invite propagated,
+    // or fresh login on a new device) → activate the first membership, then
+    // redirect.
     const memberships = userMemberships?.data;
     if (memberships && memberships.length > 0 && setActive) {
       setActive({ organization: memberships[0].organization.id }).then(
-        markOnboardedAndRedirect,
+        completeOnboardingAndRedirect,
       );
+      return;
     }
-  }, [isLoaded, orgLoaded, orgsLoaded, organization, userMemberships, setActive, router, mode, user]);
+    // Else: no org, no membership. Two cases:
+    //   • An invite accept is in flight (acceptingId set): Clerk has dropped
+    //     the invitation but the membership hasn't propagated yet. HOLD here
+    //     (spinner below) — Path 2 fires the moment it lands. Redirecting to
+    //     /chat now would bounce the invitee through the gate during that gap
+    //     and risk mis-classifying them as personal.
+    //   • Otherwise a stray user reached /onboarding without a team/invite
+    //     context (personal is owned by the gate) → send them to /chat.
+    if (acceptingId === null) {
+      router.replace("/chat");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLoaded, orgLoaded, orgsLoaded, organization, userMemberships, setActive, mode, acceptingId, router]);
 
   if (!isLoaded || !orgsLoaded || !orgLoaded) return null;
-
-  // If user has an active org or memberships, we're redirecting — show nothing
-  // (but only when not in the org-creation flow)
-  if (mode !== "org" && organization) return null;
-  if (mode !== "org" && userMemberships?.data && userMemberships.data.length > 0) return null;
 
   async function handleAcceptInvitation(invitationId: string) {
     setAcceptingId(invitationId);
@@ -105,28 +121,15 @@ export default function OnboardingPage() {
       if (inv && typeof (inv as unknown as { accept?: () => Promise<void> }).accept === "function") {
         await (inv as unknown as { accept: () => Promise<void> }).accept();
       }
-      // Don't redirect or mark onboarded here — the useEffect at the top
+      // Don't redirect or mark onboarded here — the redirect effect above
       // watches userMemberships and handles setActive + onboarded + redirect
-      // once Clerk propagates the membership. This avoids racing with Clerk's
-      // eventual consistency.
+      // once Clerk propagates the membership. Avoids racing Clerk's eventual
+      // consistency.
       await userInvitations?.revalidate?.();
       await userMemberships?.revalidate?.();
     } catch (err) {
       console.error("Failed to accept invitation:", err);
       setAcceptingId(null);
-    }
-  }
-
-  async function handlePersonal() {
-    setLoading(true);
-    capture("workspace_type_selected", { type: "personal" });
-    try {
-      // Mark onboarding complete and sync user
-      await user?.update({ unsafeMetadata: { onboarded: true } });
-      await api.syncUser();
-      router.push("/chat");
-    } catch {
-      setLoading(false);
     }
   }
 
@@ -173,30 +176,20 @@ export default function OnboardingPage() {
   if (mode === "org") {
     // Two-stage gate after Clerk's <CreateOrganization> finishes:
     //
-    //   Stage A: `organization` is non-null but the JWT hasn't picked up
-    //   the new org yet (Clerk's setActive → JWT refresh is async). Show
-    //   a transient "Activating…" message so the user knows we're working
-    //   on it. Without this gate, the first invite POST hits Gate A's
-    //   auth.org_id == org_id check on the backend with a pre-org JWT and
-    //   returns 403 "Cannot invite to a different org" — flaky right
-    //   after org creation.
+    //   Stage A: `organization` is non-null but the JWT hasn't picked up the
+    //   new org yet (Clerk's setActive → JWT refresh is async). Show a
+    //   transient "Activating…" message. Without this gate, the first invite
+    //   POST hits the backend's auth.org_id == org_id check with a pre-org
+    //   JWT and returns 403 — flaky right after org creation.
     //
-    //   Stage B: JWT now carries the new org. Mount InviteTeammatesStep
-    //   so all invites flow through our backend's Gate A (rejecting
-    //   personal-subscriber emails) instead of Clerk's built-in invite
-    //   UI which calls Clerk directly.
+    //   Stage B: JWT now carries the new org. Mount InviteTeammatesStep so
+    //   invites flow through the backend's Gate A (which rejects
+    //   personal-subscriber emails) instead of Clerk's built-in invite UI.
     if (organization && authOrgId === organization.id) {
       return (
         <InviteTeammatesStep
           orgId={organization.id}
-          onComplete={async () => {
-            try {
-              await user?.update({ unsafeMetadata: { onboarded: true } });
-            } catch {
-              // best-effort; ChatLayout's auto-activate fallback covers this
-            }
-            router.push("/chat");
-          }}
+          onComplete={completeOnboardingAndRedirect}
         />
       );
     }
@@ -211,7 +204,7 @@ export default function OnboardingPage() {
     return (
       <div className="flex flex-col items-center justify-center min-h-screen gap-6 bg-background">
         <div className="text-center mb-4">
-          <h1 className="text-2xl font-bold">Create your organization</h1>
+          <h1 className="text-2xl font-bold">Create your team</h1>
           <p className="text-muted-foreground mt-2">
             Your team will share agents, workspace, and billing.
           </p>
@@ -219,52 +212,41 @@ export default function OnboardingPage() {
         <CreateOrganization
           // skipInvitationScreen={true} → Clerk creates the org and stops.
           // <InviteTeammatesStep> takes over above (rendered when
-          // `organization` resolves) so all invites route through our
+          // `organization` resolves) so all invites route through the
           // backend's Gate A.
-          afterCreateOrganizationUrl="/onboarding"
+          afterCreateOrganizationUrl="/onboarding?intent=team"
           skipInvitationScreen={true}
         />
-        <Button variant="ghost" onClick={() => setMode("choose")}>
-          Back
-        </Button>
       </div>
     );
   }
 
+  // Transient spinner: resolving org/membership state, holding while an
+  // accepted invitation propagates, or redirecting a stray visitor to /chat.
   return (
-    <div className="flex flex-col items-center justify-center min-h-screen gap-8 bg-background">
-      <div className="text-center">
-        <h1 className="text-3xl font-bold">Welcome to Isol8</h1>
-        <p className="text-muted-foreground mt-2">
-          How would you like to use Isol8?
-        </p>
-      </div>
-
-      <div className="flex gap-4">
-        <button
-          onClick={handlePersonal}
-          disabled={loading}
-          className="flex flex-col items-center gap-3 p-6 rounded-lg border border-border hover:border-primary/50 hover:bg-accent transition-colors w-56"
-        >
-          <User className="h-8 w-8" />
-          <span className="font-semibold">Personal</span>
-          <span className="text-sm text-muted-foreground text-center">
-            Your own private AI agent workspace
-          </span>
-        </button>
-
-        <button
-          onClick={() => { capture("workspace_type_selected", { type: "org" }); setMode("org"); }}
-          disabled={loading}
-          className="flex flex-col items-center gap-3 p-6 rounded-lg border border-border hover:border-primary/50 hover:bg-accent transition-colors w-56"
-        >
-          <Users className="h-8 w-8" />
-          <span className="font-semibold">Organization</span>
-          <span className="text-sm text-muted-foreground text-center">
-            Share agents and billing with your team
-          </span>
-        </button>
-      </div>
+    <div className="flex flex-col items-center justify-center min-h-screen gap-4 bg-background">
+      <div className="h-8 w-8 animate-spin rounded-full border-2 border-muted-foreground/20 border-t-primary" />
+      <p className="text-sm text-muted-foreground">
+        {acceptingId !== null ? "Joining your team…" : "One moment…"}
+      </p>
     </div>
+  );
+}
+
+// OnboardingFlow reads useSearchParams() (for ?intent=team), which triggers a
+// CSR bailout at static-prerender time. A Suspense boundary is required so
+// `next build` can prerender /onboarding. The fallback mirrors the personal
+// spinner so there's no visual flash.
+export default function OnboardingPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex flex-col items-center justify-center min-h-screen gap-4 bg-background">
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-muted-foreground/20 border-t-primary" />
+        </div>
+      }
+    >
+      <OnboardingFlow />
+    </Suspense>
   );
 }

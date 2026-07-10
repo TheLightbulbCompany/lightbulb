@@ -35,6 +35,8 @@ _HANDSHAKE_TIMEOUT = 10  # seconds
 _RPC_TIMEOUT = 30  # seconds
 _RPC_DRAIN_TIMEOUT = 5.0  # graceful-shutdown: wait this long for in-flight RPCs to settle before closing the WS
 _GRACE_PERIOD = 30  # seconds before closing idle connection
+_PUSH_GRACE_CEILING_S = 300  # max extra hold while a run is active (bounded by parked watchdog)
+_ACTIVE_RUN_POLL_S = 5  # re-check cadence for the active-run hold
 
 # Application-level WebSocket keepalive tuned for long-running LLM turns.
 # The websockets library defaults ping_interval=20 / ping_timeout=20 — fine for
@@ -2214,11 +2216,27 @@ class GatewayConnectionPool:
             self._grace_tasks[user_id] = asyncio.create_task(self._grace_close(user_id))
 
     async def _grace_close(self, user_id: str) -> None:
-        """Wait grace period, then close gateway connection if still idle."""
+        """Wait the grace period, then close the gateway connection if still idle.
+
+        Guard: while a run is still in flight for this owner, HOLD the connection
+        open (bounded by _PUSH_GRACE_CEILING_S) so the reader loop still observes
+        run_ended and can fire the completion push — even with no client attached
+        (e.g. a phone that sent then closed). Clients re-appearing cancels this
+        task via remove/add_frontend_connection, so the loop also exits when a
+        client returns.
+
+        ``has_active_runs`` is a ``@property`` — read it as an attribute (no parens).
+        """
         try:
             await asyncio.sleep(_GRACE_PERIOD)
-            fcs = self._frontend_connections.get(user_id, set())
-            if not fcs:
+            waited = 0.0
+            while not self._frontend_connections.get(user_id) and waited < _PUSH_GRACE_CEILING_S:
+                conn = self._connections.get(user_id)
+                if conn is None or not conn.has_active_runs:
+                    break
+                await asyncio.sleep(_ACTIVE_RUN_POLL_S)
+                waited += _ACTIVE_RUN_POLL_S
+            if not self._frontend_connections.get(user_id):
                 await self.close_user(user_id)
         except asyncio.CancelledError:
             pass

@@ -5,6 +5,7 @@ import { StyleSheet, type ColorValue } from "react-native";
 import type { ComponentProps } from "react";
 
 import { ProvisionGate } from "../../components/provision/ProvisionGate";
+import { PushRegistration } from "../../components/push/PushRegistration";
 import { colors, fonts } from "../../config/theme";
 import { GatewayProvider } from "../../providers/gateway";
 
@@ -26,6 +27,10 @@ export default function AppLayout() {
 
   return (
     <GatewayProvider>
+      {/* v1: getCurrentAgentId returns null (show all banners). A follow-up can
+          thread the active-agent id from the chat screen for true active-session
+          suppression — the pure shouldSuppressBanner logic is already in place. */}
+      <PushRegistration getCurrentAgentId={() => null} />
       <ProvisionGate>
         <Tabs
         screenOptions={{

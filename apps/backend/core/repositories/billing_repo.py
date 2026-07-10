@@ -262,6 +262,36 @@ async def set_subscription(
     return existing
 
 
+async def set_team_subscription(
+    owner_id: str,
+    *,
+    subscription_id: str | None,
+    subscription_item_id: str,
+    status: str,
+    seat_count: int,
+) -> dict | None:
+    """Persist Teams per-seat subscription identity + seat count.
+
+    Mirrors ``set_subscription``'s read-then-put: reads the existing row and
+    re-puts it with the seat fields added. Returns None (no write) when no
+    billing row exists, so a stray team webhook can never upsert a phantom
+    ``{owner_id, ...}`` row with no stripe_customer_id.
+    """
+    existing = await get_by_owner_id(owner_id)
+    if existing is None:
+        return None
+
+    existing["stripe_subscription_id"] = subscription_id
+    existing["subscription_status"] = status
+    existing["subscription_item_id"] = subscription_item_id
+    existing["seat_count"] = seat_count
+    existing["updated_at"] = utc_now_iso()
+
+    table = _get_table()
+    await run_in_thread(table.put_item, Item=existing)
+    return existing
+
+
 _VALID_PROVIDER_CHOICES = frozenset({"bedrock_claude", "byo_key", "chatgpt_oauth"})
 
 

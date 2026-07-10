@@ -117,6 +117,45 @@ async def test_set_subscription_nonexistent(dynamodb_table):
 
 
 @pytest.mark.asyncio
+async def test_set_team_subscription_writes_item_id_and_seats(dynamodb_table):
+    from core.repositories import billing_repo
+
+    await billing_repo.create_if_not_exists("org_seat", "cus_seat", owner_type="org")
+    result = await billing_repo.set_team_subscription(
+        "org_seat",
+        subscription_id="sub_seat",
+        subscription_item_id="si_seat",
+        status="active",
+        seat_count=5,
+    )
+    assert result is not None
+    assert result["stripe_subscription_id"] == "sub_seat"
+    assert result["subscription_item_id"] == "si_seat"
+    assert result["subscription_status"] == "active"
+    assert result["seat_count"] == 5
+
+    stored = await billing_repo.get_by_owner_id("org_seat")
+    assert stored["subscription_item_id"] == "si_seat"
+    assert stored["seat_count"] == 5
+
+
+@pytest.mark.asyncio
+async def test_set_team_subscription_noops_without_row(dynamodb_table):
+    from core.repositories import billing_repo
+
+    # Never upsert a phantom row for an owner with no billing account.
+    result = await billing_repo.set_team_subscription(
+        "org_missing",
+        subscription_id="sub_x",
+        subscription_item_id="si_x",
+        status="active",
+        seat_count=2,
+    )
+    assert result is None
+    assert await billing_repo.get_by_owner_id("org_missing") is None
+
+
+@pytest.mark.asyncio
 async def test_delete(dynamodb_table):
     from core.repositories import billing_repo
 

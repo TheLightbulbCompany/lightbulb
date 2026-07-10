@@ -10,6 +10,8 @@ import { renderHook, waitFor } from "@testing-library/react";
 const replaceMock = vi.fn();
 const setActiveMock = vi.fn().mockResolvedValue(undefined);
 
+let searchString = "";
+
 interface ClerkState {
   isSignedIn: boolean | null;
   authLoaded: boolean;
@@ -36,7 +38,7 @@ const clerkState: ClerkState = {
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ replace: replaceMock, push: vi.fn() }),
-  useSearchParams: () => new URLSearchParams(),
+  useSearchParams: () => new URLSearchParams(searchString),
 }));
 
 vi.mock("@clerk/nextjs", () => ({
@@ -64,6 +66,7 @@ describe("useOnboardingGate", () => {
   beforeEach(() => {
     replaceMock.mockReset();
     setActiveMock.mockReset().mockResolvedValue(undefined);
+    searchString = "";
     // Reset to a known baseline: signed-in, fully loaded, personal user
     // who completed onboarding, no orgs, no invitations.
     setClerk({
@@ -158,5 +161,19 @@ describe("useOnboardingGate", () => {
       expect(setActiveMock).toHaveBeenCalledWith({ organization: "org_first" }),
     );
     expect(replaceMock).not.toHaveBeenCalled();
+  });
+
+  it("preserves ?intent=team on the /onboarding redirect for a never-onboarded team signup", async () => {
+    searchString = "intent=team";
+    setClerk({
+      user: { unsafeMetadata: {} },
+      memberships: [],
+      invitations: [],
+    });
+    const { result } = renderHook(() => useOnboardingGate());
+    expect(result.current).toBe("redirecting");
+    await waitFor(() =>
+      expect(replaceMock).toHaveBeenCalledWith("/onboarding?intent=team"),
+    );
   });
 });

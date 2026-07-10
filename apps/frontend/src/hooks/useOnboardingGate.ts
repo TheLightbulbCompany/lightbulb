@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth, useOrganization, useOrganizationList, useUser } from "@clerk/nextjs";
 
 /**
@@ -46,6 +46,7 @@ export type OnboardingGatePhase =
  */
 export function useOnboardingGate(): OnboardingGatePhase {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { isSignedIn } = useAuth();
   const { user, isLoaded: userLoaded } = useUser();
   const { organization, isLoaded: orgLoaded } = useOrganization();
@@ -90,12 +91,16 @@ export function useOnboardingGate(): OnboardingGatePhase {
   // Side effect 1: redirect (idempotent — router.replace dedupes if already
   // on /onboarding). Both the "no row at all" path and the "pending
   // invitations" path land on the same /onboarding screen; the page itself
-  // surfaces the right UI based on Clerk state.
+  // surfaces the right UI based on Clerk state. We forward ?intent=team so a
+  // team signup (landing "Create a team" CTA → /sign-up?intent=team) still
+  // reaches onboarding's org-creation branch — a bare redirect would drop it.
   useEffect(() => {
     if (needsOnboarding || needsInvitationFlow) {
-      router.replace("/onboarding");
+      const intent = searchParams.get("intent");
+      const target = intent ? `/onboarding?intent=${encodeURIComponent(intent)}` : "/onboarding";
+      router.replace(target);
     }
-  }, [needsOnboarding, needsInvitationFlow, router]);
+  }, [needsOnboarding, needsInvitationFlow, router, searchParams]);
 
   // Side effect 2: auto-activate the first membership. Clerk doesn't persist
   // active-org state across sessions, so without this a user who created an

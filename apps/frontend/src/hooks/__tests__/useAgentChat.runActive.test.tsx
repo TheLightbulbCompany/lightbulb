@@ -104,4 +104,37 @@ describe("useAgentChat — run_active server-truth busy signal", () => {
     });
     expect(result.current.busy).toBe(false);
   });
+
+  it("switching session clears a latched busy (old scope's terminal is demux-dropped)", async () => {
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    const { result } = renderHook(() => useAgentChat("agentA", "user-1"));
+
+    act(() => {
+      dispatch({ type: "run_active", active: true, agent_id: "agentA" } as ChatIncomingMessage);
+    });
+    expect(result.current.busy).toBe(true);
+
+    // Switch to a new session within the same agent — the old session's
+    // run_active:false would carry the old session_id and be dropped, so the
+    // switch itself must clear the server-truth bit.
+    act(() => {
+      result.current.newSession();
+    });
+    expect(result.current.busy).toBe(false);
+  });
+
+  it("clearMessages (agent switch path) clears a latched busy", async () => {
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    const { result } = renderHook(() => useAgentChat("agentA", "user-1"));
+
+    act(() => {
+      dispatch({ type: "run_active", active: true, agent_id: "agentA" } as ChatIncomingMessage);
+    });
+    expect(result.current.busy).toBe(true);
+
+    act(() => {
+      result.current.clearMessages();
+    });
+    expect(result.current.busy).toBe(false);
+  });
 });

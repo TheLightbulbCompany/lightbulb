@@ -81,3 +81,30 @@ async def test_sessions_changed_dedupes_and_scopes(monkeypatch):
         {"type": "run_active", "active": True, "agent_id": "agentA"},
         {"type": "run_active", "active": False, "agent_id": "agentA"},
     ]
+
+
+@pytest.mark.asyncio
+async def test_sessions_changed_ignores_unclassified_key(monkeypatch):
+    # A truthy but malformed/unclassified sessionKey parses to source "" — it is
+    # NOT one of the known non-webchat sources, so a deny-list would let it fall
+    # through and broadcast (target_member=None) to every one of the owner's chat
+    # connections. The allow-list gate (source == "webchat") must drop it.
+    conn = GatewayConnection.__new__(GatewayConnection)
+    conn.user_id = "user_1"
+    conn.owner_id = "user_1"
+    conn._active_runs = {}
+    conn._run_state = {}
+    conn._side_run_ids = {}
+    forwarded: list[tuple[dict, str | None]] = []
+
+    async def fake_forward(message, target_member_id=None):
+        forwarded.append((message, target_member_id))
+
+    monkeypatch.setattr(conn, "_forward_to_frontends", fake_forward)
+
+    for bad_key in ("garbage", "not-an-agent-key", "x:y"):
+        await conn._handle_message(
+            {"type": "event", "event": "sessions.changed", "payload": {"sessionKey": bad_key, "hasActiveRun": True}}
+        )
+
+    assert [m for (m, _t) in forwarded if m.get("type") == "run_active"] == []

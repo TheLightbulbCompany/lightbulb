@@ -769,6 +769,11 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     setBtwResults([]);
     setError(null);
     setIsStreaming(false);
+    // Scope the server-truth busy bit to the chat it came from: the old
+    // session's later run_active:false/terminal is tagged with the old
+    // session_id and gets dropped by the demux, so without this the spinner
+    // would strand "on" for the newly-selected session.
+    setContainerRunActive(false);
     clientRunIdRef.current = null;
     resumeExpectedRef.current = false;
   }, [
@@ -1983,6 +1988,10 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     if (key) _messageCache.delete(key);
     setError(null);
     setIsStreaming(false);
+    // Drop the server-truth busy bit too (agent switch routes through here):
+    // the old scope's run_active:false is demux-dropped once the agent changes,
+    // so leaving it set would strand the spinner on the new agent's chat.
+    setContainerRunActive(false);
     clientRunIdRef.current = null;
     // Same reasoning as cancelMessage — a post-approval continuation
     // must not be adopted as the new active run after a clear.

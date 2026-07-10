@@ -1489,7 +1489,13 @@ class GatewayConnection:
                 # another surface or broadcast to the whole org). Deduped against
                 # the last-forwarded value so message/transcript-driven
                 # `sessions.changed` bursts don't spam identical frames.
-                if not session_key or is_channel_session or is_cron_session or is_isolated_session:
+                # Allow-list on webchat (not a deny-list of known-bad sources):
+                # a malformed/unclassified key parses to source "" and must NOT
+                # fall through — that would forward with target_member=None and
+                # broadcast the frame to every one of the owner's chat
+                # connections. Webchat keys always carry a member_id, so gating
+                # here also guarantees per-member demux.
+                if session_source != "webchat":
                     return
                 active = bool(payload.get("hasActiveRun"))
                 if self._run_state.get(session_key) == active:

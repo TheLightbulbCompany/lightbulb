@@ -383,6 +383,21 @@ export function ProvisioningStepper({
   // chosen provider so we can segment OAuth vs BYO vs credits drop-off.
   const prevPhaseRef = useRef<Phase | null>(null);
   const readyFiredRef = useRef(false);
+  // Guard `onboarding_ready` against false activations. An already-provisioned
+  // user opening /chat has no container data on first render, so the UI briefly
+  // derives phase="container" and then jumps to "ready" once /container/status
+  // returns — with no real cold start. Since ProvisioningStepper mounts for
+  // every chat session, without this guard each such repeat visit would emit
+  // onboarding_ready and corrupt the activation denominator + TTFV. Only count
+  // a ready-transition we actually WITNESSED cold-starting (backend phase went
+  // through provisioning/starting) on a first-run onboarding mount (not a
+  // scale-to-zero "recovery" restart of an existing user).
+  const sawColdStartRef = useRef(false);
+  useEffect(() => {
+    if (container?.phase === "provisioning" || container?.phase === "starting") {
+      sawColdStartRef.current = true;
+    }
+  }, [container?.phase]);
   useEffect(() => {
     const prev = prevPhaseRef.current;
     prevPhaseRef.current = phase;
@@ -394,13 +409,18 @@ export function ProvisioningStepper({
         ? { provider_choice: providerChoice }
         : {}),
     });
-    // Activation milestone: the first time the container reaches "ready",
-    // record it with the real cold-start duration (from provisioningStartRef,
-    // stamped on container/gateway-phase entry). This is the activation
-    // DENOMINATOR + time-to-first-value that the step_completed funnel tail
-    // can't give — fast phase-skips drop intermediate step_completed events,
-    // so "reached ready" undercounts by ~3x without a dedicated event.
-    if (phase === "ready" && !readyFiredRef.current) {
+    // Activation milestone: the first time the container reaches "ready" after a
+    // witnessed cold start, record it with the real duration (from
+    // provisioningStartRef, stamped on container/gateway-phase entry). This is
+    // the activation DENOMINATOR + time-to-first-value that the step_completed
+    // funnel tail can't give — fast phase-skips drop intermediate
+    // step_completed events, so "reached ready" undercounts ~3x otherwise.
+    if (
+      phase === "ready" &&
+      !readyFiredRef.current &&
+      sawColdStartRef.current &&
+      trigger === "onboarding"
+    ) {
       readyFiredRef.current = true;
       const start = provisioningStartRef.current;
       capture("onboarding_ready", {

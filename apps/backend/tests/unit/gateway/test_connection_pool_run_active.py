@@ -22,3 +22,62 @@ async def test_subscribe_session_events_sends_sessions_subscribe():
     assert frame["type"] == "req"
     assert frame["params"] == {}
     assert frame.get("id")
+
+
+@pytest.mark.asyncio
+async def test_sessions_changed_forwards_run_active_for_webchat(monkeypatch):
+    conn = GatewayConnection.__new__(GatewayConnection)
+    conn.user_id = "user_1"
+    conn.owner_id = "user_1"
+    conn._active_runs = {}
+    conn._run_state = {}
+    conn._side_run_ids = {}
+    forwarded: list[tuple[dict, str | None]] = []
+
+    async def fake_forward(message, target_member_id=None):
+        forwarded.append((message, target_member_id))
+
+    monkeypatch.setattr(conn, "_forward_to_frontends", fake_forward)
+
+    evt = {
+        "type": "event",
+        "event": "sessions.changed",
+        "payload": {"sessionKey": "agent:agentA:user_1", "hasActiveRun": True, "status": "running"},
+    }
+    await conn._handle_message(evt)
+
+    run_active = [m for (m, _t) in forwarded if m.get("type") == "run_active"]
+    assert run_active == [{"type": "run_active", "active": True, "agent_id": "agentA"}]
+
+
+@pytest.mark.asyncio
+async def test_sessions_changed_dedupes_and_scopes(monkeypatch):
+    conn = GatewayConnection.__new__(GatewayConnection)
+    conn.user_id = "user_1"
+    conn.owner_id = "user_1"
+    conn._active_runs = {}
+    conn._run_state = {}
+    conn._side_run_ids = {}
+    forwarded: list[dict] = []
+
+    async def fake_forward(message, target_member_id=None):
+        forwarded.append(message)
+
+    monkeypatch.setattr(conn, "_forward_to_frontends", fake_forward)
+
+    def changed(key, active):
+        return {"type": "event", "event": "sessions.changed", "payload": {"sessionKey": key, "hasActiveRun": active}}
+
+    # webchat: active -> forwarded once; duplicate active -> not re-forwarded
+    await conn._handle_message(changed("agent:agentA:user_1", True))
+    await conn._handle_message(changed("agent:agentA:user_1", True))
+    # a cron session must NEVER forward run_active
+    await conn._handle_message(changed("agent:agentA:cron:job1", True))
+    # transition to inactive -> forwarded
+    await conn._handle_message(changed("agent:agentA:user_1", False))
+
+    run_active = [m for m in forwarded if m.get("type") == "run_active"]
+    assert run_active == [
+        {"type": "run_active", "active": True, "agent_id": "agentA"},
+        {"type": "run_active", "active": False, "agent_id": "agentA"},
+    ]

@@ -168,6 +168,11 @@ class GatewayConnection:
         # Non-emptiness is the load-bearing signal for the parked-vs-dead
         # teardown decision in `_reader_loop` — see _on_reader_loop_exit.
         self._active_runs: Dict[str, Dict[str, Any]] = {}
+        # Last-forwarded run-active value per webchat session_key. Deduplicates
+        # `sessions.changed` bursts so only transitions produce a `run_active`
+        # frame. SEPARATE from `_active_runs` (which is the parked-vs-dead
+        # signal) — never conflate the two.
+        self._run_state: dict[str, bool] = {}
         # Side-channel (`/btw`) run ids. A `/btw` aside runs CONCURRENTLY with a
         # normal turn but, on the wire, shares the same ``session_key`` (only the
         # runId differs). ``_active_runs`` is keyed by session_key — which is
@@ -305,6 +310,11 @@ class GatewayConnection:
     def _clear_active_run(self, session_key: str) -> None:
         """Pop the run keyed by *session_key* (chat.final / error / aborted)."""
         self._active_runs.pop(session_key, None)
+        # Reset run-active dedup so the next run's first `hasActiveRun:true`
+        # sessions.changed is forwarded as a fresh transition. (The frontend
+        # busy-gate is already closed by the run_ended/done/error frame; this
+        # only clears our transition bookkeeping.)
+        self._run_state.pop(session_key, None)
 
     def mark_side_run(self, run_id: str) -> None:
         """Record *run_id* as a side-channel (`/btw`) run.
@@ -1468,6 +1478,30 @@ class GatewayConnection:
                 if side_agent_id:
                     frame["agent_id"] = side_agent_id
                 await self._forward_to_frontends(frame, target_member)
+
+            elif event_name == "sessions.changed":
+                # OpenClaw's authoritative per-session run-state (from its live
+                # abort-controller registry), broadcast on every run
+                # start/end/transition. The payload embeds `hasActiveRun`, so we
+                # read it directly — NO follow-up RPC (that would deadlock inside
+                # the reader loop). Webchat-only + member-demuxed: a non-webchat
+                # or member-less key must never reach the web UI (would leak
+                # another surface or broadcast to the whole org). Deduped against
+                # the last-forwarded value so message/transcript-driven
+                # `sessions.changed` bursts don't spam identical frames.
+                if not session_key or is_channel_session or is_cron_session or is_isolated_session:
+                    return
+                active = bool(payload.get("hasActiveRun"))
+                if self._run_state.get(session_key) == active:
+                    return
+                self._run_state[session_key] = active
+                fwd_ra: dict = {"type": "run_active", "active": active}
+                event_agent_id = parsed_key.get("agent_id")
+                if event_agent_id:
+                    fwd_ra["agent_id"] = event_agent_id
+                if session_id is not None:
+                    fwd_ra["session_id"] = session_id
+                await self._forward_to_frontends(fwd_ra, target_member)
 
             else:
                 # Forward other events as-is for SWR revalidation (broadcast to all)

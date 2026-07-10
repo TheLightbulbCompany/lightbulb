@@ -1432,6 +1432,32 @@ class EcsManager:
         env_var_name = "OPENAI_API_KEY" if byo_provider == "openai" else "ANTHROPIC_API_KEY"
         return [{"name": env_var_name, "valueFrom": secret_arn}]
 
+    async def _build_meta_secrets_for_task(self, user_id: str) -> list[dict]:
+        """Build the ECS task ``secrets:`` block for a ``meta`` (free-tier)
+        provisioning.
+
+        Resolves the single shared free-tier model-API-key secret ARN from
+        Secrets Manager (via ``key_service.get_meta_secret_arn`` — the same
+        describe-secret idiom as BYOK's ``_build_byo_secrets_for_user``, but
+        keyed on one container-wide secret rather than per-user) and turns it
+        into a single ``secrets:`` entry injected as ``MODEL_API_KEY``. The
+        execution role already grants ``secretsmanager:GetSecretValue`` +
+        ``kms:Decrypt`` on the general CMK, so no CDK/IAM change is needed to
+        read it. Never written into ``openclaw.json``/EFS — see
+        ``config.py``'s ``meta`` provider_choice branch.
+        """
+        from core.services.key_service import get_meta_secret_arn
+
+        secret_arn = await get_meta_secret_arn()
+        if not secret_arn:
+            raise EcsManagerError(
+                "No meta-tier model API key configured in Secrets Manager "
+                "(isol8/<env>/meta-model-api-key) - caller should not "
+                "provision meta containers until it exists",
+                user_id,
+            )
+        return [{"name": "MODEL_API_KEY", "valueFrom": secret_arn}]
+
     async def _pre_stage_oauth_for_user(
         self,
         user_id: str,
@@ -1505,10 +1531,10 @@ class EcsManager:
         Args:
             user_id: Clerk user ID.
             provider_choice: One of ``"chatgpt_oauth"``, ``"byo_key"``,
-                ``"bedrock_claude"``. Selects the LLM provider block in
-                openclaw.json and drives any pre-task setup (codex auth
-                pre-stage for chatgpt_oauth, per-user Secrets Manager
-                wiring for byo_key).
+                ``"bedrock_claude"``, ``"meta"``. Selects the LLM provider
+                block in openclaw.json and drives any pre-task setup (codex
+                auth pre-stage for chatgpt_oauth, per-user Secrets Manager
+                wiring for byo_key, shared Secrets Manager wiring for meta).
             byo_provider: Required when ``provider_choice == "byo_key"``;
                 one of ``"openai"`` or ``"anthropic"``.
             owner_type: "personal" or "org" (for EFS access-point tagging).
@@ -1537,8 +1563,10 @@ class EcsManager:
                     user_id,
                 )
             secrets_for_task = await self._build_byo_secrets_for_user(user_id, byo_provider)
+        elif provider_choice == "meta":
+            secrets_for_task = await self._build_meta_secrets_for_task(user_id)
 
-        if provider_choice not in ("chatgpt_oauth", "byo_key", "bedrock_claude"):
+        if provider_choice not in ("chatgpt_oauth", "byo_key", "bedrock_claude", "meta"):
             raise EcsManagerError(
                 f"Unknown provider_choice: {provider_choice!r}",
                 user_id,
@@ -1595,7 +1623,7 @@ class EcsManager:
             if settings.ACP_ENABLED and not is_revoked and bedrock_aip_arns:
                 environment_for_task.extend(_build_bedrock_acp_harness_env(bedrock_aip_arns))
         else:
-            # Non-Bedrock owner (chatgpt_oauth / byo_key): mint/keep the
+            # Non-Bedrock owner (chatgpt_oauth / byo_key / meta): mint/keep the
             # per-owner role SHELL — base EFS/logs/ssm policy + permissions
             # boundary — but pass skip_bedrock_grant=True so it carries NO
             # Bedrock inline policy, and DO NOT mint Bedrock AIPs (the owner

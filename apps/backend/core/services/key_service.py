@@ -128,6 +128,44 @@ async def get_secret_arn(user_id: str, provider: str) -> Optional[str]:
     return info["ARN"] if info else None
 
 
+def _meta_secret_name() -> str:
+    """Secrets Manager name for the shared free-tier ("meta" provider) model
+    API key.
+
+    Unlike BYOK, this is a single container-wide secret (no per-user
+    component) — every meta-tier owner's container reads the same key via the
+    ``MODEL_API_KEY`` task-def secret. The execution role's existing
+    ``secretsmanager:GetSecretValue`` + ``kms:Decrypt`` grants already cover
+    ``isol8/{env}/*``, so no additional IAM grant is needed to read it.
+    """
+    env = settings.ENVIRONMENT or "dev"
+    return f"isol8/{env}/meta-model-api-key"
+
+
+def _describe_meta_secret() -> Optional[dict]:
+    """Sync describe-secret for the shared meta-tier model API key, or None if
+    it does not exist. Wrap with ``run_in_thread``."""
+    name = _meta_secret_name()
+    sm = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
+    try:
+        return sm.describe_secret(SecretId=name)
+    except sm.exceptions.ResourceNotFoundException:
+        return None
+
+
+async def get_meta_secret_arn() -> Optional[str]:
+    """The Secrets Manager ARN for the shared free-tier ("meta") model API
+    key, or None if it hasn't been provisioned yet.
+
+    Mirrors ``get_secret_arn``'s describe-secret idiom, but for the single
+    container-wide secret the ``meta`` provider_choice injects as
+    ``MODEL_API_KEY`` at ECS provision time — never written into
+    ``openclaw.json``/EFS.
+    """
+    info = await run_in_thread(_describe_meta_secret)
+    return info["ARN"] if info else None
+
+
 class KeyService:
     """Manages user-provided LLM API keys (Secrets Manager-backed)."""
 

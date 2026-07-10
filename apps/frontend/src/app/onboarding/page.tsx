@@ -35,33 +35,25 @@ function OnboardingFlow() {
   // personal path, no auto-complete, and no chooser.
   //
   // Team intent arrives as ?intent=team (useOnboardingGate forwards it from
-  // the landing CTA / signup cookie).
+  // the landing CTA / signup cookie). It stays in the URL across Clerk's
+  // org-creation soft nav via afterCreateOrganizationUrl="/onboarding?intent=team",
+  // so `mode` is derived straight from the URL — no sticky state needed.
+  //
+  // Tenancy invariant: pending invitations force the invitations screen — a
+  // user can't hold personal tenancy AND a pending org invite at once.
   const intentTeam = searchParams.get("intent") === "team";
-
-  // Tenancy invariant: pending invitations force the invitations screen —
-  // no escape into personal/org onboarding, because a user can't hold
-  // personal tenancy AND a pending org invite at the same time.
-  // Only ever set to "org" (via the team-intent effect). "invitations" mode
-  // is derived from forcedInvitations, never written into state.
-  const [explicitMode, setExplicitMode] = useState<"org" | null>(null);
   const forcedInvitations = isLoaded && orgsLoaded && pendingInvitations.length > 0;
-  const mode = forcedInvitations
+  const mode: "org" | "invitations" | null = forcedInvitations
     ? "invitations"
-    : explicitMode ?? (intentTeam ? "org" : null);
-  const setMode = setExplicitMode;
+    : intentTeam
+      ? "org"
+      : null;
 
-  // Lift team intent into explicit React state so it survives Clerk's
-  // same-route soft navigation after <CreateOrganization> finishes
-  // (afterCreateOrganizationUrl="/onboarding" drops the ?intent= query, but
-  // component state persists across the soft nav). Without this, the
-  // post-create render would recompute intentTeam=false, fall through to the
-  // "org already active → redirect" branch below, and skip InviteTeammatesStep.
+  // Analytics only (no state update — that would trip the cascading-render
+  // lint rule): record that the org-creation flow opened.
   useEffect(() => {
-    if (intentTeam && explicitMode === null && !forcedInvitations) {
-      capture("workspace_type_selected", { type: "org" });
-      setMode("org");
-    }
-  }, [intentTeam, explicitMode, forcedInvitations]);
+    if (mode === "org") capture("workspace_type_selected", { type: "org" });
+  }, [mode]);
 
   // Merge-preserving completion: write onboarded=true WITHOUT clobbering
   // other unsafeMetadata keys, then redirect to /chat. The flag is the
@@ -116,6 +108,7 @@ function OnboardingFlow() {
     if (acceptingId === null) {
       router.replace("/chat");
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isLoaded, orgLoaded, orgsLoaded, organization, userMemberships, setActive, mode, acceptingId, router]);
 
   if (!isLoaded || !orgsLoaded || !orgLoaded) return null;

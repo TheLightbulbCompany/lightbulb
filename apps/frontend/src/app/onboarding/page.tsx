@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   CreateOrganization,
@@ -15,7 +15,7 @@ import { Button } from "@/components/ui/button";
 import { Users, Mail } from "lucide-react";
 import { InviteTeammatesStep } from "@/components/onboarding/InviteTeammatesStep";
 
-export default function OnboardingPage() {
+function OnboardingFlow() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { isLoaded, orgId: authOrgId } = useAuth();
@@ -251,5 +251,23 @@ export default function OnboardingPage() {
       <div className="h-8 w-8 animate-spin rounded-full border-2 border-muted-foreground/20 border-t-primary" />
       <p className="text-sm text-muted-foreground">Setting up your workspace…</p>
     </div>
+  );
+}
+
+// OnboardingFlow reads useSearchParams() (for ?intent=team), which triggers a
+// CSR bailout at static-prerender time. A Suspense boundary is required so
+// `next build` can prerender /onboarding. The fallback mirrors the personal
+// spinner so there's no visual flash.
+export default function OnboardingPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex flex-col items-center justify-center min-h-screen gap-4 bg-background">
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-muted-foreground/20 border-t-primary" />
+        </div>
+      }
+    >
+      <OnboardingFlow />
+    </Suspense>
   );
 }

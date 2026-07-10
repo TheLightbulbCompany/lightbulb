@@ -33,6 +33,7 @@ import { fromInstalledAgent } from "@/lib/agentDesign";
 import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
 import { myListings } from "@/lib/marketplace/api";
 import { DesktopUpdater } from "@/components/desktop/DesktopUpdater";
+import { DesktopPermissionsGate } from "@/components/desktop/DesktopPermissionsGate";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { emitStep } from "@/components/getstarted/getStartedEvents";
 import { GetStarted } from "@/components/getstarted/GetStarted";
@@ -505,6 +506,7 @@ export function ChatLayout({
 
   return (
     <ExecApprovalsProvider>
+      <DesktopPermissionsGate />
       <div className={`app-shell${fileViewerOpen ? " with-file-viewer" : ""}`}>
         <div className={`sidebar-backdrop${sidebarOpen ? " visible" : ""}`} onClick={() => setSidebarOpen(false)} />
         <div className={`cream-sidebar${sidebarOpen ? " mobile-open" : ""}`}>

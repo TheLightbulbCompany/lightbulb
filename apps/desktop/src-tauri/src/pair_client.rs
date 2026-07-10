@@ -7,12 +7,21 @@
 
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct DesktopPermissions {
+    pub screen: bool,
+    pub shell: bool,
+    pub browser: bool,
+    pub files: bool,
+}
+
 #[derive(Debug, Serialize)]
 pub struct PairRequest {
     #[serde(rename = "tauriMacPubKey")]
     pub tauri_mac_pub_key: String,
     #[serde(rename = "cliPubKey")]
     pub cli_pub_key: String,
+    pub permissions: Option<DesktopPermissions>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

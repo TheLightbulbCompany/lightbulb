@@ -16,6 +16,7 @@ use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_updater::UpdaterExt;
 
 use crate::bootstrap::{bootstrap_desktop_node_host, DesktopNodeHostHandles};
+use crate::pair_client::DesktopPermissions;
 
 /// Keychain service name for the desktop process. Matches the bundle ID so
 /// macOS surfaces Keychain entries as belonging to this app.
@@ -176,6 +177,7 @@ fn send_auth_token(
     token: String,
     display_name: String,
     user_id: String,
+    permissions: Option<DesktopPermissions>,
     state: State<'_, AuthState>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
@@ -250,8 +252,15 @@ fn send_auth_token(
     let app_handle = app.clone();
     let jwt_arc = state.current_jwt.clone();
     let display_name_for_chain = display_name.clone();
+    let permissions_for_chain = permissions.clone();
     tauri::async_runtime::spawn(async move {
-        let result = run_bootstrap(&app_handle, jwt_arc, &display_name_for_chain).await;
+        let result = run_bootstrap(
+            &app_handle,
+            jwt_arc,
+            &display_name_for_chain,
+            permissions_for_chain,
+        )
+        .await;
 
         // Clear the in-flight flag regardless of outcome BEFORE deciding
         // whether to publish gateway_url. If we clear it after publishing
@@ -306,6 +315,7 @@ async fn run_bootstrap(
     app: &tauri::AppHandle,
     jwt_arc: Arc<RwLock<String>>,
     display_name: &str,
+    permissions: Option<DesktopPermissions>,
 ) -> Result<(), String> {
     let _ = display_name; // reserved for telemetry hooks
 
@@ -361,6 +371,7 @@ async fn run_bootstrap(
         "node-host".to_string(),
         state_dir,
         binary,
+        permissions,
     )
     .await?;
 

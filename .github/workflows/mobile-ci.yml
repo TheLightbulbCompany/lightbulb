@@ -90,6 +90,9 @@ jobs:
       - name: Mobile lint
         run: pnpm --filter @isol8/mobile run lint
 
+      - name: Mobile tests
+        run: pnpm --filter @isol8/mobile run test
+
       - name: Mobile iOS bundle (Metro export)
         env:
           CI: "1"

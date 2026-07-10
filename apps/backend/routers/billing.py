@@ -9,7 +9,14 @@ import stripe
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
-from core.auth import AuthContext, get_current_user, get_owner_type, resolve_owner_id, require_org_admin
+from core.auth import (
+    AuthContext,
+    get_current_user,
+    get_owner_type,
+    is_org_owner_id,
+    resolve_owner_id,
+    require_org_admin,
+)
 from core.config import settings
 from core.observability.metrics import put_metric, timing
 from core.repositories import billing_repo, usage_repo
@@ -430,6 +437,61 @@ async def create_trial_checkout(
             clerk_user_id=auth.user_id,
             trial_days=14,
         )
+    except BillingServiceError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"checkout_url": session.url}
+
+
+@router.post(
+    "/team-checkout",
+    summary="Start a per-seat Teams subscription via Stripe Checkout",
+    description=(
+        "Org admins only. Creates a subscription-mode Checkout on the per-seat "
+        "price with quantity = live org member count and NO trial. Returns the "
+        "Checkout URL — frontend redirects the browser to it. 409 if the org "
+        "already has any subscription; 403 for non-admin members."
+    ),
+    operation_id="create_team_checkout",
+)
+async def create_team_checkout(
+    auth: AuthContext = Depends(get_current_user),
+):
+    from core.services.billing_service import (
+        BillingService,
+        BillingServiceError,
+        create_team_seat_checkout,
+    )
+
+    owner_id = resolve_owner_id(auth)
+    # Team billing keys on the org owner_id. A personal caller has no org to
+    # bill per-seat — refuse rather than mint a personal seat subscription.
+    if not auth.is_org_context or not is_org_owner_id(owner_id):
+        raise HTTPException(status_code=400, detail="team-checkout requires an organization context")
+
+    # Only org admins can subscribe the org (mirrors /trial-checkout). 403.
+    require_org_admin(auth)
+
+    account = await _get_billing_account(auth)
+    if not account:
+        billing_service = BillingService()
+        account = await billing_service.create_customer_for_owner(
+            owner_id=owner_id,
+            owner_type="org",
+            email=auth.email,
+        )
+
+    # Refuse a second subscription for any state that has ever billed / might
+    # bill — Checkout in subscription mode creates a NEW subscription on every
+    # successful return. Same guard set as /trial-checkout.
+    if is_trial_blocked(account):
+        raise HTTPException(
+            status_code=409,
+            detail=f"already_subscribed:{account.get('subscription_status')}",
+        )
+
+    member_count = await clerk_admin.get_organization_member_count(owner_id)
+    try:
+        session = await create_team_seat_checkout(owner_id=owner_id, member_count=member_count)
     except BillingServiceError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"checkout_url": session.url}

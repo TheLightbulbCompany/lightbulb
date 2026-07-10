@@ -118,6 +118,12 @@ const ONBOARDING_PHASE_ORDER: Phase[] = [
 // below — so time spent on OAuth/billing/credits doesn't burn this budget.
 const TIMEOUT_MS = 300_000;
 
+// Persisted marker so the onboarding_ready activation milestone fires at most
+// once per browser, ever. Routine restarts of a stopped/errored container also
+// pass through provisioning on a normal /chat visit, so an in-memory guard
+// alone can't distinguish a first activation from a replay.
+const ONBOARDING_READY_STORAGE_KEY = "isol8_onboarding_ready_v1";
+
 /**
  * Rotating idea prompts shown while the container spins up. Kept short (≤ ~52 chars)
  * so they fit on one line and don't cause layout shift. Tone matches the rest of the
@@ -383,15 +389,16 @@ export function ProvisioningStepper({
   // chosen provider so we can segment OAuth vs BYO vs credits drop-off.
   const prevPhaseRef = useRef<Phase | null>(null);
   const readyFiredRef = useRef(false);
-  // Guard `onboarding_ready` against false activations. An already-provisioned
-  // user opening /chat has no container data on first render, so the UI briefly
-  // derives phase="container" and then jumps to "ready" once /container/status
-  // returns — with no real cold start. Since ProvisioningStepper mounts for
-  // every chat session, without this guard each such repeat visit would emit
-  // onboarding_ready and corrupt the activation denominator + TTFV. Only count
-  // a ready-transition we actually WITNESSED cold-starting (backend phase went
-  // through provisioning/starting) on a first-run onboarding mount (not a
-  // scale-to-zero "recovery" restart of an existing user).
+  // Guard `onboarding_ready` against false activations. Two failure modes:
+  // (1) an already-provisioned user opening /chat has no container data on first
+  // render, so the UI briefly derives phase="container" then jumps to "ready"
+  // with no real cold start; (2) an existing user whose container was
+  // stopped/errored gets auto-restarted on /chat and passes through provisioning
+  // AGAIN — a routine restart, still trigger="onboarding". Both would inflate the
+  // activation denominator + TTFV. So we require BOTH a witnessed cold start
+  // (backend phase went through provisioning/starting — rules out #1) AND a
+  // persisted once-ever marker (rules out #2 and every future replay): this is a
+  // first-activation milestone, so it must fire at most once per browser, ever.
   const sawColdStartRef = useRef(false);
   useEffect(() => {
     if (container?.phase === "provisioning" || container?.phase === "starting") {
@@ -415,17 +422,29 @@ export function ProvisioningStepper({
     // the activation DENOMINATOR + time-to-first-value that the step_completed
     // funnel tail can't give — fast phase-skips drop intermediate
     // step_completed events, so "reached ready" undercounts ~3x otherwise.
-    if (
-      phase === "ready" &&
-      !readyFiredRef.current &&
-      sawColdStartRef.current &&
-      trigger === "onboarding"
-    ) {
+    if (phase === "ready" && !readyFiredRef.current && sawColdStartRef.current) {
       readyFiredRef.current = true;
-      const start = provisioningStartRef.current;
-      capture("onboarding_ready", {
-        elapsed_ms: start !== null ? Date.now() - start : null,
-      });
+      // A routine restart of an existing user's stopped/errored container also
+      // passes through provisioning, so sawColdStart alone can't tell a first
+      // activation from a replay. Only emit if this browser has never recorded
+      // an activation before.
+      let alreadyActivated = false;
+      try {
+        alreadyActivated = window.localStorage.getItem(ONBOARDING_READY_STORAGE_KEY) === "1";
+      } catch {
+        // storage-disabled browser: fall back to the in-mount ref guard only
+      }
+      if (!alreadyActivated) {
+        try {
+          window.localStorage.setItem(ONBOARDING_READY_STORAGE_KEY, "1");
+        } catch {
+          /* best-effort */
+        }
+        const start = provisioningStartRef.current;
+        capture("onboarding_ready", {
+          elapsed_ms: start !== null ? Date.now() - start : null,
+        });
+      }
     }
     if (prev === null) return;
     const completion = nextOnboardingCompletion(prev, phase, STEPS_PAID);

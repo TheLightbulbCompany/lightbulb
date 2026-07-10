@@ -62,31 +62,26 @@ async def get_pending(owner_id: str) -> list[dict]:
     return response.get("Items", [])
 
 
-async def get_in_flight(owner_id: str, update_types: list[str] | None = None) -> list[dict]:
+async def get_in_flight(owner_id: str) -> list[dict]:
     """Return an owner's non-terminal updates: pending, scheduled, or the transient
-    'applying' state. Optionally restrict to specific ``update_types``.
+    'applying' state.
 
     Superset of get_pending() (which omits 'applying'). Callers use it to enforce
-    per-owner mutual exclusion on image rolls — apply_update's acquire is keyed
+    per-owner mutual exclusion on container rolls — apply_update's acquire is keyed
     per-update_id, so this is the only way to know an owner already has an update
     queued or mid-apply and must not have a second roll started concurrently.
-
-    ``update_types`` scopes the check to the rows that actually roll/mutate the
-    container (e.g. ["image_update"]) so unrelated rows in the same table — like
-    webhook-enqueued ``paperclip_provision`` retries left ``pending`` — don't count.
+    Callers decide which rows actually conflict (e.g. those whose ``changes`` rewrite
+    the task-def) rather than trusting the update_type label.
 
     Reads are strongly consistent: the guard must see a row written moments earlier
     (a just-queued update, or a concurrent apply that already flipped to
     'applying') rather than risk an eventually-consistent miss.
     """
     table = _get_table()
-    status_filter = Attr("status").is_in(["pending", "scheduled", "applying"])
-    if update_types:
-        status_filter = status_filter & Attr("update_type").is_in(list(update_types))
     response = await run_in_thread(
         table.query,
         KeyConditionExpression=Key("owner_id").eq(owner_id),
-        FilterExpression=status_filter,
+        FilterExpression=Attr("status").is_in(["pending", "scheduled", "applying"]),
         ConsistentRead=True,
     )
     return response.get("Items", [])

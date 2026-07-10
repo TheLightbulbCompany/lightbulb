@@ -284,7 +284,7 @@ class TestContainerForceApplyImageUpdate:
     @pytest.mark.asyncio
     async def test_happy_path(self, async_client, admin_env):
         with (
-            patch("routers.admin.update_repo.get_in_flight", new=AsyncMock(return_value=[])) as mock_in_flight,
+            patch("routers.admin.update_repo.get_in_flight", new=AsyncMock(return_value=[])),
             patch("routers.admin.update_repo.create", new=AsyncMock(return_value=self._CREATED)) as mock_create,
             patch("routers.admin.apply_update", new=AsyncMock(return_value=True)) as mock_apply,
         ):
@@ -296,9 +296,6 @@ class TestContainerForceApplyImageUpdate:
         body = res.json()
         assert body["status"] == "applied"
         assert body["update_id"] == "upd_123"
-        # The in-flight guard is scoped to image rolls (not paperclip_provision etc.).
-        in_flight_kwargs = mock_in_flight.await_args.kwargs
-        assert in_flight_kwargs.get("update_types") == ["image_update"]
         # A pending image_update row was created for the resolved owner...
         create_kwargs = mock_create.await_args.kwargs
         assert create_kwargs["owner_id"] == "u_target"
@@ -306,6 +303,27 @@ class TestContainerForceApplyImageUpdate:
         assert create_kwargs["changes"]["new_image"].endswith("e8e1cce")
         # ...then applied via the exact apply_update() path the owner banner uses.
         mock_apply.assert_awaited_once_with("u_target", "upd_123")
+
+    @pytest.mark.asyncio
+    async def test_non_container_inflight_does_not_block(self, async_client, admin_env):
+        """An in-flight row that does NOT rewrite the task-def (e.g. a
+        paperclip_provision retry left 'pending', or a pure config_patch) must not
+        block a force image apply — the guard keys on the changes payload, not the
+        update_type label."""
+        non_conflicting = [
+            {"update_id": "prov", "status": "pending", "update_type": "paperclip_provision", "changes": {"op": "seed"}},
+        ]
+        with (
+            patch("routers.admin.update_repo.get_in_flight", new=AsyncMock(return_value=non_conflicting)),
+            patch("routers.admin.update_repo.create", new=AsyncMock(return_value=self._CREATED)),
+            patch("routers.admin.apply_update", new=AsyncMock(return_value=True)) as mock_apply,
+        ):
+            res = await async_client.post(
+                "/api/v1/admin/users/u_target/container/apply-image-update",
+                json={"new_image": "img:tag"},
+            )
+        assert res.status_code == 200
+        mock_apply.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_403_for_non_admin(self, async_client, non_admin_env):
@@ -324,15 +342,17 @@ class TestContainerForceApplyImageUpdate:
         assert res.status_code == 422
 
     @pytest.mark.asyncio
-    async def test_409_when_owner_has_inflight_update(self, async_client, admin_env):
-        """Per-owner mutual exclusion: if any update is already pending/scheduled/
-        applying for the owner, reject with 409 BEFORE creating or applying a new
-        one — otherwise a second concurrent resize_user_container could fire for
-        the same owner (the two-task roll this lever must never cause)."""
+    async def test_409_when_owner_has_inflight_task_def_roll(self, async_client, admin_env):
+        """Per-owner mutual exclusion: if another update that rewrites the task-def
+        (carries new_image/new_cpu/new_memory) is already pending/scheduled/applying
+        for the owner, reject with 409 BEFORE creating or applying a new one — else a
+        second concurrent resize_user_container could race and clobber image/size."""
         with (
             patch(
                 "routers.admin.update_repo.get_in_flight",
-                new=AsyncMock(return_value=[{"update_id": "other", "status": "applying"}]),
+                new=AsyncMock(
+                    return_value=[{"update_id": "other", "status": "applying", "changes": {"new_image": "old:tag"}}]
+                ),
             ),
             patch("routers.admin.update_repo.create", new=AsyncMock()) as mock_create,
             patch("routers.admin.apply_update", new=AsyncMock()) as mock_apply,

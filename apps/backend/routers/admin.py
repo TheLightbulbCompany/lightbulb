@@ -74,6 +74,20 @@ class QueueImageUpdateRequest(BaseModel):
     # change that also wires the worker to honor it.
 
 
+# apply_update feeds these changes.* fields to resize_user_container, which
+# re-registers the per-user ECS task definition. Two in-flight updates that both
+# carry any of them race on the task-def (last writer wins the image/size), so
+# the force-apply guard treats a row carrying any of them as a conflict —
+# regardless of its update_type label (a paperclip_provision retry or a pure
+# config_patch hot-reload carries none of these and is not a conflict).
+_TASKDEF_ROLL_CHANGE_KEYS = ("new_image", "new_cpu", "new_memory")
+
+
+def _rolls_task_def(changes: object) -> bool:
+    """True if a pending update's ``changes`` would re-register the ECS task def."""
+    return isinstance(changes, dict) and any(k in changes for k in _TASKDEF_ROLL_CHANGE_KEYS)
+
+
 # ---------------------------------------------------------------------------
 # Auth + system
 # ---------------------------------------------------------------------------
@@ -366,28 +380,34 @@ async def admin_container_force_apply_image_update(
 
     # Per-owner mutual exclusion. apply_update's acquire is keyed per-update_id,
     # so a fresh row we create always acquires — that alone does NOT stop a second
-    # roll when the owner already has an image update queued (admin queue button /
-    # scheduled worker) or mid-apply (owner banner). Reject up front so only one
-    # image roll is normally in flight per owner. Scoped to "image_update" so an
-    # unrelated pending row (e.g. a paperclip_provision retry) doesn't spuriously
-    # block the force-apply.
+    # roll when the owner already has a container update queued (admin queue button
+    # / generic updates API / scheduled worker) or mid-apply (owner banner). Reject
+    # up front so only one task-def roll is normally in flight per owner.
+    #
+    # Conflict is decided by the changes payload, not the update_type label: any row
+    # apply_update would feed to resize_user_container (new_image / new_cpu /
+    # new_memory) re-registers the task-def and would race this force-apply,
+    # last-writer-wins on the resulting image/size. A paperclip_provision retry or a
+    # pure config_patch hot-reload does not touch the task-def, so it is not a
+    # conflict.
     #
     # This read-then-create is not fully atomic: two force-applies landing within
-    # the same instant could both observe no in-flight row. That residual race is
+    # the same instant could both observe no conflict. That residual race is
     # deliberately not locked out here — the per-user ECS service runs
     # SINGLE_WRITER_DEPLOYMENT_CONFIG (maximumPercent=100 → never two tasks), so
     # even two concurrent resize_user_container calls can't put two tasks on the
-    # EFS-SQLite state at once; the worst case is a redundant superseded
-    # deployment, not corruption or data loss. A distributed lock would add
-    # stuck-lock failure modes disproportionate to that bounded, admin-only race.
-    in_flight = await update_repo.get_in_flight(owner_id, update_types=["image_update"])
-    if in_flight:
-        statuses = ", ".join(sorted({u.get("status", "?") for u in in_flight}))
+    # EFS-SQLite state at once; the worst case is a redundant superseded deployment,
+    # not corruption or data loss. A distributed lock would add stuck-lock failure
+    # modes disproportionate to that bounded, admin-only race.
+    in_flight = await update_repo.get_in_flight(owner_id)
+    conflicting = [u for u in in_flight if _rolls_task_def(u.get("changes"))]
+    if conflicting:
+        statuses = ", ".join(sorted({u.get("status", "?") for u in conflicting}))
         raise HTTPException(
             status_code=409,
             detail=(
-                f"Another update is already in flight for this owner (status: "
-                f"{statuses}). Wait for it to finish, or clear it, before "
+                f"Another container update is already in flight for this owner "
+                f"(status: {statuses}). Wait for it to finish, or clear it, before "
                 "force-applying a new image."
             ),
         )

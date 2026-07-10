@@ -142,25 +142,6 @@ async def test_get_in_flight_empty(dynamodb_table):
 
 
 @pytest.mark.asyncio
-async def test_get_in_flight_filters_by_update_type(dynamodb_table):
-    """The optional update_types filter keeps the guard from treating unrelated
-    non-container rows (e.g. webhook-enqueued paperclip_provision retries, which
-    stay 'pending' and never roll the container) as an in-flight image roll."""
-    from core.repositories import update_repo
-
-    await update_repo.create("user_1", "image_update", "IMG", {"new_image": "x"})
-    await update_repo.create("user_1", "paperclip_provision", "PROV", {"op": "seed"})
-
-    # Unfiltered: both non-terminal rows.
-    all_rows = await update_repo.get_in_flight("user_1")
-    assert {r["description"] for r in all_rows} == {"IMG", "PROV"}
-
-    # Filtered to image rolls: the provisioning retry is excluded.
-    img_only = await update_repo.get_in_flight("user_1", update_types=["image_update"])
-    assert {r["description"] for r in img_only} == {"IMG"}
-
-
-@pytest.mark.asyncio
 async def test_set_status_conditional_success(dynamodb_table):
     from core.repositories import update_repo
 

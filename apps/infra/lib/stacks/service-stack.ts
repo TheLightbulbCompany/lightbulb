@@ -1225,6 +1225,14 @@ export class ServiceStack extends cdk.Stack {
         // secrets: block below.
         POSTHOG_HOST: "https://us.posthog.com",
         POSTHOG_PROJECT_ID: "380894",
+        // PostHog project (phc_) INGESTION key for the server-side billing
+        // bridge (core/observability/product_analytics.py -> trial_started /
+        // trial_converted / subscription_cancelled, keyed on the Clerk user).
+        // Write-only / public — the same key the frontend ships as
+        // NEXT_PUBLIC_POSTHOG_KEY (PostHog: "Safe to use in public apps"), so
+        // it lives in the plain env block, NOT secrets. Distinct from the
+        // POSTHOG_PROJECT_API_KEY personal read key in the secrets: block.
+        POSTHOG_PROJECT_WRITE_KEY: "phc_nzqnGGPwHfrKycptH3TViSAo3uaxT8CHAXovvHnBGEma",
         // Observability: page topic ARN for backend-initiated SNS alerts.
         // Populated after first deploy via Fn.importValue from ObservabilityStack.
         ...(props.alertPageTopicArn

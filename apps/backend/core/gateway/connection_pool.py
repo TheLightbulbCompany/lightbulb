@@ -281,7 +281,7 @@ class GatewayConnection:
     def has_active_runs(self) -> bool:
         return bool(self._active_runs)
 
-    def mark_run_active(self, session_key: str, agent_id: str | None = None) -> None:
+    def mark_run_active(self, session_key: str, agent_id: str | None = None, member_id: str | None = None) -> None:
         """Record an in-flight run for *session_key* (parked-vs-dead signal).
 
         Called from the chat dispatcher before the chat.send RPC is forwarded so
@@ -290,19 +290,34 @@ class GatewayConnection:
         decision (`_on_reader_loop_exit` / `is_alive`), which keys on
         ``_active_runs`` non-emptiness. Idempotent — re-marking refreshes
         started_at without losing the existing last_event_at.
+
+        *member_id* is the CANONICAL Clerk id of the dispatching member (the JWT
+        sub, mixed-case) — carried on the entry so the run-completion push can
+        target the users-table PK. It must NOT come from the echoed session key,
+        which OpenClaw lowercases (a case-sensitive PK lookup would miss).
+
+        The dict key is folded to lowercase because the dispatcher stores the
+        CANONICAL (mixed-case) key while OpenClaw echoes it LOWERCASED; only the
+        userId segment can carry case (agentId is a lowercase UUID, sessionId is
+        regex-forced lowercase), so ``key.lower()`` on both sides always agrees.
         """
+        key = session_key.lower()
         now = time.monotonic()
-        existing = self._active_runs.get(session_key)
+        existing = self._active_runs.get(key)
         if existing is not None:
             existing["started_at"] = now
             existing["last_event_at"] = now
             if agent_id:
                 existing["agent_id"] = agent_id
+            if member_id:
+                existing["member_id"] = member_id
             return
-        self._active_runs[session_key] = {
+        self._active_runs[key] = {
             "started_at": now,
             "last_event_at": now,
             "agent_id": agent_id or "",
+            # Canonical dispatch member id for the run-completion push audience.
+            "member_id": member_id,
             # Set when OpenClaw emits an approval-requested agent event for this
             # session; consumed by `_is_true_terminal` so the interim chat
             # `final` that closes the approval bracket does NOT end the run.
@@ -315,7 +330,9 @@ class GatewayConnection:
         No-op if no run is active for the key (e.g. cron / channel sessions).
         Cheap enough to call on every inbound agent/chat event.
         """
-        run = self._active_runs.get(session_key)
+        # Fold the key: the store side (mark_run_active) lowercases, so reads
+        # keyed on the echoed (already-lowercased) key must too.
+        run = self._active_runs.get(session_key.lower())
         if run is not None:
             run["last_event_at"] = time.monotonic()
 
@@ -334,7 +351,7 @@ class GatewayConnection:
 
     def _clear_active_run(self, session_key: str) -> None:
         """Pop the run keyed by *session_key* (chat.final / error / aborted)."""
-        self._active_runs.pop(session_key, None)
+        self._active_runs.pop(session_key.lower(), None)
         # Reset run-active dedup so the next run's first `hasActiveRun:true`
         # sessions.changed is forwarded as a fresh transition. (The frontend
         # busy-gate is already closed by the run_ended/done/error frame; this
@@ -387,7 +404,7 @@ class GatewayConnection:
 
         No-op when no run is tracked for the key (cron / channel sessions).
         """
-        run = self._active_runs.get(session_key)
+        run = self._active_runs.get(session_key.lower())
         if run is not None:
             run["awaiting_approval"] = True
 
@@ -419,7 +436,7 @@ class GatewayConnection:
         """
         if state in ("error", "aborted"):
             return True
-        run = self._active_runs.get(session_key)
+        run = self._active_runs.get(session_key.lower())
         if run is not None and run.get("awaiting_approval"):
             # Suppress Run A's genuine terminal final so the per-session window
             # survives the approval; the separate follow-up run's final clears it.
@@ -998,14 +1015,19 @@ class GatewayConnection:
             logger.warning("agents.list for push-name resolution failed", exc_info=True)
             return ""
 
-    def _dispatch_push_notification(self, payload: dict, target_member: str | None, agent_id: str | None) -> None:
+    def _dispatch_push_notification(self, payload: dict, carried_member: str | None, agent_id: str | None) -> None:
         """Fire-and-forget push on a completed run (mirrors _record_usage_from_session).
 
-        Audience = the member who owns the session (org), or the owner (personal,
-        whose key is agent:<id>:main with no member_id). Only pushes to a Clerk
-        user id; an unattributed org session (org_ owner) silently no-ops.
+        Audience = *carried_member* (the CANONICAL Clerk id of the dispatching
+        member, carried on the active-run entry by ``mark_run_active``), or the
+        owner (personal, whose key is agent:<id>:main with no member_id). It is
+        deliberately NOT the ``target_member`` parsed from the echoed session key
+        — OpenClaw lowercases that, and the users-table PK lookup in
+        ``send_push_to_user`` is case-sensitive, so a lowercased id would miss.
+        Only pushes to a Clerk user id; an unattributed org session (org_ owner,
+        no carried member) silently no-ops.
         """
-        push_user_id = target_member or self.owner_id
+        push_user_id = carried_member or self.owner_id
         if not push_user_id or not push_user_id.startswith("user_"):
             return
         preview = self._extract_assistant_text(payload)
@@ -1390,6 +1412,11 @@ class GatewayConnection:
                 # bracket that stays active, or a run we never marked), in which
                 # case no metric is emitted.
                 primary_started_at: float | None = None
+                # Canonical dispatch member id carried on the active-run entry
+                # (mark_run_active), read back here for the run-completion push
+                # audience. NOT the echoed/lowercased target_member — see
+                # _dispatch_push_notification.
+                carried_member: str | None = None
                 if run_is_side:
                     self._forget_side_run(run_id)
                     is_true_terminal = True
@@ -1406,9 +1433,10 @@ class GatewayConnection:
                     # authoritative `run_ended` forward below.
                     is_true_terminal = bool(session_key) and self._is_true_terminal(session_key, state)
                     if is_true_terminal:
-                        active = self._active_runs.get(session_key)
+                        active = self._active_runs.get(session_key.lower())
                         if active is not None:
                             primary_started_at = active.get("started_at")
+                            carried_member = active.get("member_id")
                         self._clear_active_run(session_key)
                 if state == "final":
                     put_metric("chat.message.count")
@@ -1519,9 +1547,11 @@ class GatewayConnection:
                     # Push a notification for a completed reply (fire-and-forget,
                     # off the reader-loop hot path — mirrors billing at the
                     # agent-event lifecycle site). Only on a successful final;
-                    # error/aborted never push.
+                    # error/aborted never push. Audience is the CANONICAL member
+                    # carried on the active-run entry, not the echoed/lowercased
+                    # target_member (which would PK-miss the users table).
                     if state == "final":
-                        self._dispatch_push_notification(payload, target_member, event_agent_id)
+                        self._dispatch_push_notification(payload, carried_member, event_agent_id)
 
                 # END of the chat.e2e.latency SLO span (alarm W9). Elapsed is
                 # computed from the active-run window's started_at — stamped by
@@ -1908,6 +1938,7 @@ class GatewayConnectionPool:
         user_id: str,
         session_key: str,
         agent_id: str | None = None,
+        member_id: str | None = None,
     ) -> None:
         """Public entry point for the chat dispatcher.
 
@@ -1918,11 +1949,14 @@ class GatewayConnectionPool:
         connection exists is simply lost. The chat dispatcher therefore calls
         ``ensure_connection`` before marking on every non-side send, which
         guarantees a connection here. Idempotent.
+
+        *member_id* is the CANONICAL Clerk id of the dispatching member (carried
+        onto the active-run entry for the run-completion push audience).
         """
         conn = self._connections.get(user_id)
         if conn is None:
             return
-        conn.mark_run_active(session_key, agent_id)
+        conn.mark_run_active(session_key, agent_id, member_id=member_id)
 
     def clear_active_run(self, user_id: str, session_key: str) -> None:
         """Tear down the active-run window opened by ``mark_run_active``.

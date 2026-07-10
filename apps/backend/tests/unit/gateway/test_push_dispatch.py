@@ -1,21 +1,29 @@
 """Unit tests for the run-completion push dispatch.
 
-NOTE ON DIVERGENCE FROM THE TASK BRIEF: the brief assumed a two-arg
-``send_rpc(method, params)`` that returns the RPC result directly. The real
-``GatewayConnection.send_rpc(req_id, method, params)`` only *sends* (returns
-``None``); the response is awaited separately via ``wait_for_response(req_id)``
-(see ``_fetch_and_record_usage``, the sibling pattern this dispatch mirrors).
-The agents.list result shape is ``{"agents": [{"id", "name", "identity": {...}}]}``
-(verified against ``agents-types.ts`` / ``admin_service.list_user_agents``), so
-the mocks below stub ``wait_for_response`` and the name key is ``name``.
-``has_active_runs`` already exists as a ``@property`` on the class, so its test
-uses property access to match the live contract.
+ROOT-CAUSE NOTE: the push AUDIENCE must be the CANONICAL Clerk id (the users
+table PK), not the id parsed from the echoed session key — OpenClaw lowercases
+the whole session key on the wire (session-key-utils.ts), so the parsed
+``member_id`` is lowercased and a case-sensitive ``user_repo.get`` PK lookup
+would miss. The canonical dispatch member id is therefore carried on the
+``_active_runs`` entry (set by ``mark_run_active(..., member_id=...)``) and read
+back at the terminal. These tests pin that behaviour with a MIXED-CASE member id
+so a regression that reintroduces the lowercased echoed id fails loudly.
+
+The ``_active_runs`` dict key is normalized to lowercase at every access site so
+the canonical (mixed-case) dispatch key stored by ``mark_run_active`` matches the
+lowercased echoed key read at the terminal (a latent bug fixed here: the entry
+used to leak and ``chat.e2e.latency`` never emitted for mixed-case users).
+
+Other divergences from the original brief (see task-4-report.md): the real
+``send_rpc(req_id, method, params)`` only sends (result via
+``wait_for_response``); the agents.list entry key is ``name``/``identity.name``;
+``has_active_runs`` is a pre-existing ``@property``.
 """
 
 import asyncio
 
 import pytest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from core.gateway.connection_pool import GatewayConnection
 
@@ -35,6 +43,31 @@ def _make_conn(owner_id="user_owner"):
     return conn
 
 
+def _make_terminal_conn(owner_id="org_1"):
+    """A fuller GatewayConnection able to drive the real chat-terminal path in
+    ``_handle_message`` (models the fixture in test_e2e_latency_emit.py plus the
+    push-dispatch attrs)."""
+    conn = GatewayConnection.__new__(GatewayConnection)
+    conn.user_id = owner_id
+    conn.owner_id = owner_id
+    conn._frontend_connections = set()
+    conn._pending_rpcs = {}
+    conn._management_api = MagicMock()
+    conn._billing_tasks = set()
+    conn._push_tasks = set()
+    conn._agent_names = None
+    conn._agent_names_at = 0.0
+    conn._conn_svc = MagicMock()
+    conn._conn_svc.query_by_owner = AsyncMock(return_value=[])
+    conn._recipients_cache = None
+    conn._recipients_cache_ts = 0.0
+    conn._active_runs = {}
+    conn._side_run_ids = {}
+    conn._parked = False
+    conn._parked_watchdog_task = None
+    return conn
+
+
 @pytest.mark.asyncio
 async def test_dispatch_pushes_to_member_with_preview():
     conn = _make_conn()
@@ -43,13 +76,14 @@ async def test_dispatch_pushes_to_member_with_preview():
         "message": {"content": [{"type": "text", "text": "here is the summary"}]},
     }
     sent = AsyncMock()
+    # Canonical (mixed-case) member id — must be pushed to VERBATIM, not lowercased.
     with patch("core.services.push_service.send_push_to_user", sent):
-        conn._dispatch_push_notification(payload, target_member="user_member", agent_id="a1")
+        conn._dispatch_push_notification(payload, carried_member="user_MemberXYZ", agent_id="a1")
         # drain the fire-and-forget task
         await asyncio.gather(*list(conn._push_tasks))
     sent.assert_awaited_once()
     args = sent.await_args.args
-    assert args[0] == "user_member"  # audience = the member
+    assert args[0] == "user_MemberXYZ"  # audience = the canonical carried member
     assert args[1] == "Friday"  # title = agent name
     assert args[2] == "here is the summary"  # body = preview
     assert args[3]["agentId"] == "a1"
@@ -59,10 +93,14 @@ async def test_dispatch_pushes_to_member_with_preview():
 @pytest.mark.asyncio
 async def test_personal_session_targets_owner():
     conn = _make_conn(owner_id="user_owner")
-    payload = {"sessionKey": "agent:a1:main", "message": {"content": [{"type": "text", "text": "done"}]}}
+    payload = {
+        "sessionKey": "agent:a1:main",
+        "message": {"content": [{"type": "text", "text": "done"}]},
+    }
     sent = AsyncMock()
     with patch("core.services.push_service.send_push_to_user", sent):
-        conn._dispatch_push_notification(payload, target_member=None, agent_id="a1")
+        # No carried member (personal session) → falls back to the canonical owner.
+        conn._dispatch_push_notification(payload, carried_member=None, agent_id="a1")
         await asyncio.gather(*list(conn._push_tasks))
     assert sent.await_args.args[0] == "user_owner"
 
@@ -73,7 +111,7 @@ async def test_org_owner_without_member_does_not_push():
     payload = {"sessionKey": "agent:a1:cron:c1", "message": {"content": []}}
     sent = AsyncMock()
     with patch("core.services.push_service.send_push_to_user", sent):
-        conn._dispatch_push_notification(payload, target_member=None, agent_id="a1")
+        conn._dispatch_push_notification(payload, carried_member=None, agent_id="a1")
         await asyncio.gather(*list(conn._push_tasks))
     sent.assert_not_called()
 
@@ -84,7 +122,7 @@ async def test_no_preview_does_not_push():
     payload = {"sessionKey": "agent:a1:main", "message": {"content": []}}
     sent = AsyncMock()
     with patch("core.services.push_service.send_push_to_user", sent):
-        conn._dispatch_push_notification(payload, target_member=None, agent_id="a1")
+        conn._dispatch_push_notification(payload, carried_member=None, agent_id="a1")
         await asyncio.gather(*list(conn._push_tasks))
     sent.assert_not_called()
 
@@ -93,10 +131,13 @@ async def test_no_preview_does_not_push():
 async def test_body_truncated_to_120_chars():
     conn = _make_conn(owner_id="user_owner")
     long_text = "x" * 200
-    payload = {"sessionKey": "agent:a1:main", "message": {"content": [{"type": "text", "text": long_text}]}}
+    payload = {
+        "sessionKey": "agent:a1:main",
+        "message": {"content": [{"type": "text", "text": long_text}]},
+    }
     sent = AsyncMock()
     with patch("core.services.push_service.send_push_to_user", sent):
-        conn._dispatch_push_notification(payload, target_member=None, agent_id="a1")
+        conn._dispatch_push_notification(payload, carried_member=None, agent_id="a1")
         await asyncio.gather(*list(conn._push_tasks))
     body = sent.await_args.args[2]
     assert len(body) == 120
@@ -107,12 +148,106 @@ async def test_body_truncated_to_120_chars():
 async def test_generic_title_when_agent_name_unresolved():
     conn = _make_conn(owner_id="user_owner")
     conn.wait_for_response = AsyncMock(return_value={"agents": []})
-    payload = {"sessionKey": "agent:a1:main", "message": {"content": [{"type": "text", "text": "hi"}]}}
+    payload = {
+        "sessionKey": "agent:a1:main",
+        "message": {"content": [{"type": "text", "text": "hi"}]},
+    }
     sent = AsyncMock()
     with patch("core.services.push_service.send_push_to_user", sent):
-        conn._dispatch_push_notification(payload, target_member=None, agent_id="a1")
+        conn._dispatch_push_notification(payload, carried_member=None, agent_id="a1")
         await asyncio.gather(*list(conn._push_tasks))
     assert sent.await_args.args[1] == "New reply"
+
+
+def test_active_runs_key_normalized():
+    """mark_run_active stores under a LOWERCASED key so the lowercased echoed
+    key from OpenClaw hits the same entry (store canonical, read echoed).
+
+    This is the latent-bug fix: previously the canonical (mixed-case) store key
+    and the lowercased echoed read key never matched for mixed-case users.
+    """
+    conn = GatewayConnection.__new__(GatewayConnection)
+    conn._active_runs = {}
+    canonical = "agent:a1:user_MixedCase"
+    echoed = "agent:a1:user_mixedcase"
+
+    conn.mark_run_active(canonical, agent_id="a1", member_id="user_MixedCase")
+
+    # Stored under the normalized (lowercased) key only.
+    assert canonical not in conn._active_runs
+    assert echoed in conn._active_runs
+    assert conn._active_runs[echoed]["member_id"] == "user_MixedCase"
+    assert conn._active_runs[echoed]["agent_id"] == "a1"
+
+    # Every read path resolves via the lowercased echoed key.
+    conn._touch_run(echoed)  # no miss
+    assert conn._is_true_terminal(echoed, "final") is True
+    conn._clear_active_run(echoed)
+    assert echoed not in conn._active_runs
+
+
+def test_mark_run_active_member_id_defaults_none():
+    """member_id is optional (default None) so existing call sites are unaffected."""
+    conn = GatewayConnection.__new__(GatewayConnection)
+    conn._active_runs = {}
+    conn.mark_run_active("agent:a1:main", agent_id="a1")
+    assert conn._active_runs["agent:a1:main"]["member_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_carry_canonical_member_through_terminal():
+    """End-to-end: mark_run_active with a CANONICAL dispatch key + canonical
+    member, drive the terminal with the LOWERCASED echoed key, and assert the
+    entry is found and the CANONICAL member is the push audience."""
+    conn = _make_terminal_conn(owner_id="org_1")
+    conn.mark_run_active("agent:a1:user_MixedCase", agent_id="a1", member_id="user_MixedCase")
+
+    # OpenClaw echoes the session key lowercased.
+    payload = {
+        "sessionKey": "agent:a1:user_mixedcase",
+        "state": "final",
+        "runId": "run-1",
+        "message": {"role": "assistant", "content": [{"type": "text", "text": "carry me"}]},
+    }
+    sent = AsyncMock()
+    with (
+        patch("core.services.push_service.send_push_to_user", sent),
+        patch("core.gateway.connection_pool.put_metric"),
+        patch.object(conn, "_forward_to_frontends", AsyncMock()),
+        patch.object(conn, "_resolve_agent_name", AsyncMock(return_value="Friday")),
+    ):
+        await conn._handle_message({"type": "event", "event": "chat", "payload": payload})
+        await asyncio.gather(*list(conn._push_tasks))
+
+    sent.assert_awaited_once()
+    assert sent.await_args.args[0] == "user_MixedCase"  # canonical, NOT lowercased
+    assert sent.await_args.args[1] == "Friday"
+    # The run window was cleared via the lowercased echoed key (no leak).
+    assert "agent:a1:user_mixedcase" not in conn._active_runs
+
+
+@pytest.mark.asyncio
+async def test_terminal_error_state_does_not_push():
+    """error/aborted terminals never push (only state == 'final')."""
+    conn = _make_terminal_conn(owner_id="org_1")
+    conn.mark_run_active("agent:a1:user_MixedCase", agent_id="a1", member_id="user_MixedCase")
+    payload = {
+        "sessionKey": "agent:a1:user_mixedcase",
+        "state": "error",
+        "runId": "run-1",
+        "errorMessage": "boom",
+        "message": {"role": "assistant", "content": [{"type": "text", "text": "carry me"}]},
+    }
+    sent = AsyncMock()
+    with (
+        patch("core.services.push_service.send_push_to_user", sent),
+        patch("core.gateway.connection_pool.put_metric"),
+        patch.object(conn, "_forward_to_frontends", AsyncMock()),
+        patch.object(conn, "_resolve_agent_name", AsyncMock(return_value="Friday")),
+    ):
+        await conn._handle_message({"type": "event", "event": "chat", "payload": payload})
+        await asyncio.gather(*list(conn._push_tasks))
+    sent.assert_not_called()
 
 
 def test_has_active_runs():

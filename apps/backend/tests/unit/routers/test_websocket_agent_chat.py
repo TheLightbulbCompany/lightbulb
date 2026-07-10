@@ -311,7 +311,7 @@ class TestProcessAgentChatBackground:
             message="Hello!",
         )
         mock_pool.ensure_connection.assert_awaited_once_with("user-1", "10.0.1.5", "test-gw-token")
-        mock_pool.mark_run_active.assert_called_once_with("user-1", "agent:luna:user-1", "luna")
+        mock_pool.mark_run_active.assert_called_once_with("user-1", "agent:luna:user-1", "luna", member_id="user-1")
 
     @pytest.mark.asyncio
     async def test_no_container_sends_error(self, mock_ecs_manager, mock_pool, mock_mgmt_api):
@@ -382,7 +382,7 @@ class TestProcessAgentChatBackground:
             message="Hello!",
         )
         # The window was opened then torn down for this exact session.
-        mock_pool.mark_run_active.assert_called_once_with("user-1", "agent:luna:user-1", "luna")
+        mock_pool.mark_run_active.assert_called_once_with("user-1", "agent:luna:user-1", "luna", member_id="user-1")
         mock_pool.clear_active_run.assert_called_once_with("user-1", "agent:luna:user-1")
         # The user still gets the failure notice.
         sent_msg = mock_mgmt_api.send_message.call_args[0][1]

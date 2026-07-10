@@ -306,6 +306,62 @@ async def create_team_seat_checkout(*, owner_id: str, member_count: int) -> stri
     )
 
 
+async def sync_team_seat_quantity(owner_id: str) -> int:
+    """Set the team subscription's seat quantity to the live org member count.
+
+    The SINGLE writer of seat quantity — called from the membership webhooks,
+    the reconcile safety-net, and post-checkout. Absolute set (no delta math),
+    idempotent. Returns the resulting seat count.
+
+    No-ops (returns the stored seat_count, or 0) when:
+      - there's no active subscription, or
+      - there's no ``subscription_item_id`` (grandfathered non-seat sub, or a
+        team sub whose creation webhook hasn't landed yet), or
+      - the live count already equals the stored count.
+
+    Stripe errors are logged and swallowed (returns the stored count) so a
+    caller in a webhook path still 200s; the reconcile net heals the drift.
+    """
+    from core.services import clerk_admin
+    from core.services.provision_gate import is_subscription_active
+
+    account = await billing_repo.get_by_owner_id(owner_id)
+    if not account or not is_subscription_active(account):
+        return 0
+
+    item_id = account.get("subscription_item_id")
+    if not item_id:
+        # Grandfathered / not-yet-webhooked — never touch a non-seat sub.
+        return int(account.get("seat_count") or 0)
+
+    current = int(account.get("seat_count") or 0)
+    member_count = await clerk_admin.get_organization_member_count(owner_id)
+    if member_count <= 0 or member_count == current:
+        # 0 = Clerk read failed/stubbed; don't zero a real subscription.
+        return current
+
+    try:
+        with timing("stripe.api.latency", {"op": "subscription_item.modify"}):
+            stripe.SubscriptionItem.modify(
+                item_id,
+                quantity=member_count,
+                proration_behavior="create_prorations",
+                idempotency_key=f"seat_sync:{item_id}:{member_count}",
+            )
+    except Exception:
+        logger.exception("sync_team_seat_quantity: Stripe modify failed for owner %s", owner_id)
+        return current
+
+    await billing_repo.set_team_subscription(
+        owner_id=owner_id,
+        subscription_id=account.get("stripe_subscription_id"),
+        subscription_item_id=item_id,
+        status=account.get("subscription_status"),
+        seat_count=member_count,
+    )
+    return member_count
+
+
 async def create_credit_top_up_checkout(
     *,
     owner_id: str,

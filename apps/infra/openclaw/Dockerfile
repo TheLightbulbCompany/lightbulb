@@ -83,6 +83,18 @@ FROM ghcr.io/isol8ai/agent:2026.7.1-beta.3-isol8.1
 # it is NOT in the fork's package.json `files` prune list, so it ships in the base
 # image and needs no bake layer here (unlike slack/discord/bedrock/lobster/parallel/acpx
 # below, which upstream prunes and we re-bake). meta/muse-spark-1.1, MODEL_API_KEY.
+#
+# PLUGIN-PIN POLICY (read before bumping the @openclaw/* pins below): the baked
+# plugins pin to the latest PUBLISHED 7.1-line plugin dist on npm, which is
+# 2026.7.1-beta.2 as of this bump — beta.3 plugin dists are NOT published yet
+# (`npm view @openclaw/slack@2026.7.1-beta.3` 404s). So the pins sit one beta
+# behind the beta.3 base host. That is safe: the plugins declare pluginApi
+# compat `>=2026.6.11`, which the beta.3 host satisfies, and the previous fleet
+# ran a much larger skew (acpx@2026.6.1 on a 2026.6.10 base). "Lockstep with the
+# FROM tag" in the per-plugin comments therefore means "latest published dist of
+# the FROM tag's release line", not an exact version match. Bump to
+# 2026.7.1-beta.3 in a follow-up once those dists publish. The dev canary boots
+# the built image to confirm every baked plugin converges on the beta.3 host.
 
 USER root
 

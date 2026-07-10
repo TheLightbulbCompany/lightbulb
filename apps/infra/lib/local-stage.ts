@@ -120,6 +120,7 @@ export class LocalStage extends cdk.Stage {
         metronomeApiKey: auth.metronomeApiKey.secretName,
         metronomeWebhookSecret: auth.metronomeWebhookSecret.secretName,
         resendApiKey: auth.resendApiKey.secretName,
+        expoAccessToken: auth.expoAccessToken.secretName,
         wsInternalSecret: auth.wsInternalSecret.secretName,
       },
       kmsKeyArn: auth.kmsKey.keyArn,

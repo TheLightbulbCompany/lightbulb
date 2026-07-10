@@ -14,7 +14,7 @@ import { useOrganization } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
 import { useBilling } from "@/hooks/useBilling";
-import { useProvisioningState, type ColdStartPhase } from "@/hooks/useProvisioningState";
+import { useProvisioningState, type ColdStartPhase, type BlockedPayload } from "@/hooks/useProvisioningState";
 import { useGateway } from "@/hooks/useGateway";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
 import { nextOnboardingCompletion } from "@/components/chat/onboardingAnalytics";
@@ -437,13 +437,28 @@ export function ProvisioningStepper({
   // per mount. The server only emits an EMF metric with no person_id, so
   // without this we can't tell WHICH users stalled at a gate, split by
   // reason, or whether the same users ever recovered/converted.
+  //
+  // The signup gate is a special case: /container/status returns it as a 404,
+  // which useProvisioningState surfaces as gatePhase="needs-signup" with
+  // blocked=null (NOT the 402 "blocked" payload). Handle it explicitly with a
+  // synthetic "signup_required" code — it is the LARGEST gate bucket
+  // (ProviderPicker/no-subscription abandonment), so missing it would blind the
+  // signal to the most common stall.
   const gateBlockFiredRef = useRef<string | null>(null);
   useEffect(() => {
-    if (gatePhase === "blocked" && blocked && gateBlockFiredRef.current !== blocked.code) {
-      gateBlockFiredRef.current = blocked.code;
+    let code: string | null = null;
+    let ownerRole: BlockedPayload["owner_role"] | undefined;
+    if (gatePhase === "blocked" && blocked) {
+      code = blocked.code;
+      ownerRole = blocked.owner_role;
+    } else if (gatePhase === "needs-signup") {
+      code = "signup_required";
+    }
+    if (code && gateBlockFiredRef.current !== code) {
+      gateBlockFiredRef.current = code;
       capture("onboarding_gate_blocked", {
-        code: blocked.code,
-        owner_role: blocked.owner_role,
+        code,
+        ...(ownerRole ? { owner_role: ownerRole } : {}),
       });
     }
   }, [gatePhase, blocked]);

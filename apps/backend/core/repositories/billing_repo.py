@@ -1,6 +1,7 @@
 """Billing account repository -- DynamoDB operations for the billing_accounts table."""
 
 import logging
+import time
 import uuid
 
 from boto3.dynamodb.conditions import Attr, Key
@@ -188,6 +189,42 @@ async def create_if_not_exists(
             raise AlreadyExistsError(owner_id) from e
         raise
     return item
+
+
+_TRIAL_LOCAL_DURATION_SECONDS = 3 * 24 * 60 * 60
+
+
+async def create_trial_local_if_absent(owner_id: str, owner_type: str) -> None:
+    """Atomically create a card-less local trial billing row if one doesn't
+    exist for this owner.
+
+    Uses the same conditional put (``attribute_not_exists(owner_id)``) as
+    ``create_if_not_exists`` so concurrent callers are serialized: exactly
+    one write lands, and any other caller (or a pre-existing row of any
+    status) silently no-ops rather than overwriting. No ``stripe_*`` fields
+    are written -- this row exists purely so a brand-new signup can chat
+    before any Stripe customer/subscription is created.
+    """
+    table = _get_table()
+    now = utc_now_iso()
+    item = {
+        "owner_id": owner_id,
+        "owner_type": owner_type,
+        "subscription_status": "trial_local",
+        "trial_end": int(time.time()) + _TRIAL_LOCAL_DURATION_SECONDS,
+        "created_at": now,
+        "updated_at": now,
+    }
+    try:
+        await run_in_thread(
+            table.put_item,
+            Item=item,
+            ConditionExpression="attribute_not_exists(owner_id)",
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return
+        raise
 
 
 async def set_subscription(

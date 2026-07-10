@@ -69,23 +69,35 @@ Delete the choose-screen. New precedence in `onboarding/page.tsx`:
 Net effect: personal users never see an interstitial; onboarding is a silent pass-through.
 The team path still exists, reached by intent rather than a question.
 
-### A2. Thread `intent=team` robustly via Clerk metadata
+### A2. Thread `intent=team` via a one-hop URL param (not metadata)
 
-- Landing "Create a team" CTA → `/sign-up?intent=team`.
-- On the first authenticated render (in the onboarding gate, alongside where `onboarded`
-  is read), if the URL carries `intent=team` and no `signupIntent` is set yet, persist
-  `unsafeMetadata.signupIntent = "team"`. Metadata survives the gate redirects that drop
-  the query string.
-- `onboarding/page.tsx` reads `unsafeMetadata.signupIntent` to select the `org` branch.
-- Clear `signupIntent` once the org is created (or once the personal path runs) so a later
-  session doesn't re-trigger the team branch.
+Mechanism decision: the codebase already uses `unsafeMetadata` for the durable `onboarded`
+flag, but for the team signal a one-hop URL param is the *simpler and safer* choice — it is
+read synchronously (no async write/read race against the personal auto-complete path) and
+needs no cleanup. Metadata is reserved for values that must survive *multiple* hops (see A3).
 
-### A3. Bundled fix — stop dropping `provider`
+- Landing "Create a team" CTA → `/sign-up?intent=team`. Clerk carries the query string onto
+  its post-signup redirect, landing the user on `/chat?intent=team`.
+- `useOnboardingGate` (which runs on `/chat` and today redirects fresh signups to
+  `/onboarding` with a **bare** path, dropping the query) is changed to **forward
+  `intent`**: `router.replace("/onboarding?intent=team")`.
+- `onboarding/page.tsx` reads `searchParams.get("intent")` synchronously on first render and
+  selects the `org` branch, then lifts it into React state (`explicitMode = "org"`). That
+  state survives Clerk's `CreateOrganization` same-route soft navigation
+  (`afterCreateOrganizationUrl="/onboarding?intent=team"` as belt-and-suspenders), so the
+  post-create render still mounts `InviteTeammatesStep` instead of falling through to the
+  redirect branch. Nothing to clear — the signal is consumed into component state.
 
-Same root cause, same code. Persist `provider` to `unsafeMetadata` (mirroring `intent`) at
-the gate so the provider-specific ProvisioningStepper step stops being silently skipped for
-fresh signups that route through onboarding. `ProvisioningStepper` keeps reading it, with a
-metadata fallback when the URL param is absent. Low cost, removes a real pre-existing bug.
+### A3. Deferred fast-follow — stop dropping `provider`
+
+The same gate redirect also drops the `?provider=` param, so fresh signups routed through
+onboarding lose their provider choice and the provider-specific ProvisioningStepper step is
+silently skipped (a real funnel bug — see memory `project_onboarding_funnel_posthog_blindspot`).
+The correct fix is **durable via `unsafeMetadata.providerChoice`** (this value must survive
+multiple hops all the way to `/chat`, unlike `intent`), read as a fallback in
+`ProvisioningStepper` and preserved through the merge-preserving onboarding-completion writes.
+This is **intentionally deferred** out of Project A to keep the plan and its tests tight; the
+Project A completion writes are already merge-preserving so the fix drops in cleanly.
 
 ### A4. Landing page Teams entry point
 

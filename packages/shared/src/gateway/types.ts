@@ -22,6 +22,11 @@ export type ChatIncomingMessage =
   // tool-approval bracket). The chat queue drains off this signal, not a
   // local terminal heuristic. See backend connection_pool.py run_ended forward.
   | { type: "run_ended"; runId: string; outcome: "done" | "error" | "aborted"; agent_id?: string; session_id?: string }
+  // Server-truth busy signal. The backend subscribes to OpenClaw's
+  // sessions.changed and forwards this whenever a run starts/stops on the
+  // container, independent of any particular tab's local isStreaming
+  // anchor — see useAgentChat's `busy = isStreaming || containerRunActive`.
+  | { type: "run_active"; active: boolean; agent_id?: string; session_id?: string }
   | { type: "heartbeat" }
   | {
       type: "tool_start";

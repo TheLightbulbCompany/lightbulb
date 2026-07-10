@@ -1,0 +1,107 @@
+/**
+ * F-RUN-ACTIVE: server-authoritative busy signal.
+ *
+ * The backend subscribes to OpenClaw's `sessions.changed` and forwards a
+ * `run_active` frame whenever a run starts/stops on the container, giving
+ * the client server truth independent of its own local `isStreaming`
+ * anchor (which only reflects THIS tab's understanding of the stream).
+ * `busy` ORs the two together — mirrors OpenClaw's own Control UI, which
+ * derives busy as `chatRunId != null || session.hasActiveRun`.
+ */
+
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { renderHook, act } from "@testing-library/react";
+import type { ChatIncomingMessage } from "@/hooks/useGateway";
+
+vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
+
+let chatHandlers: Array<(msg: ChatIncomingMessage) => void> = [];
+let eventHandlers: Array<(name: string, data: unknown) => void> = [];
+const sendReq = vi.fn().mockResolvedValue({});
+const sendChat = vi.fn();
+const send = vi.fn();
+
+vi.mock("@/hooks/useGateway", () => ({
+  useGateway: () => ({
+    isConnected: true,
+    nodeConnected: false,
+    error: null,
+    reconnectAttempt: 0,
+    send,
+    sendReq,
+    sendChat,
+    onEvent: (h: (name: string, data: unknown) => void) => {
+      eventHandlers.push(h);
+      return () => {
+        eventHandlers = eventHandlers.filter((x) => x !== h);
+      };
+    },
+    onChatMessage: (h: (msg: ChatIncomingMessage) => void) => {
+      chatHandlers.push(h);
+      return () => {
+        chatHandlers = chatHandlers.filter((x) => x !== h);
+      };
+    },
+    reconnect: vi.fn(),
+  }),
+}));
+
+function dispatch(msg: ChatIncomingMessage) {
+  chatHandlers.forEach((h) => h(msg));
+}
+
+describe("useAgentChat — run_active server-truth busy signal", () => {
+  beforeEach(() => {
+    chatHandlers = [];
+    eventHandlers = [];
+    sendReq.mockReset().mockResolvedValue({});
+    sendChat.mockReset();
+    send.mockReset().mockReturnValue(true);
+    vi.resetModules();
+  });
+
+  it("run_active:true makes busy true with no stream events, and run_ended clears it", async () => {
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    const { result } = renderHook(() => useAgentChat("agentA", "user-1"));
+
+    act(() => {
+      dispatch({ type: "run_active", active: true, agent_id: "agentA" } as ChatIncomingMessage);
+    });
+    expect(result.current.busy).toBe(true); // busy even though no chunk/tool arrived
+    expect(result.current.isStreaming).toBe(false);
+
+    act(() => {
+      dispatch({
+        type: "run_ended",
+        runId: "r1",
+        outcome: "done",
+        agent_id: "agentA",
+      } as ChatIncomingMessage);
+    });
+    expect(result.current.busy).toBe(false);
+  });
+
+  it("run_active for a DIFFERENT agent does not flip this hook's busy", async () => {
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    const { result } = renderHook(() => useAgentChat("agentA", "user-1"));
+    act(() => {
+      dispatch({ type: "run_active", active: true, agent_id: "agentB" } as ChatIncomingMessage);
+    });
+    expect(result.current.busy).toBe(false);
+  });
+
+  it("run_active:false clears busy directly (no terminal frame required)", async () => {
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    const { result } = renderHook(() => useAgentChat("agentA", "user-1"));
+
+    act(() => {
+      dispatch({ type: "run_active", active: true, agent_id: "agentA" } as ChatIncomingMessage);
+    });
+    expect(result.current.busy).toBe(true);
+
+    act(() => {
+      dispatch({ type: "run_active", active: false, agent_id: "agentA" } as ChatIncomingMessage);
+    });
+    expect(result.current.busy).toBe(false);
+  });
+});

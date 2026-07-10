@@ -14,6 +14,7 @@ import { DesktopFileAccess } from "@/components/desktop/DesktopFileAccess";
 import { HandlePicker } from "@/components/marketplace/HandlePicker";
 import { getMySellerProfile, type SellerProfile } from "@/lib/marketplace/api";
 import { Logo } from "@/components/Logo";
+import { TeamBillingCard } from "@/components/chat/TeamBillingCard";
 import { UsagePanel } from "@/components/control/panels/UsagePanel";
 import { LLMPanel } from "@/components/control/panels/LLMPanel";
 import { IntegrationsPanel } from "@/components/control/panels/IntegrationsPanel";
@@ -110,6 +111,7 @@ function BillingPanel() {
     error: accountError,
     isSubscribed,
     openPortal,
+    startTeamCheckout,
   } = useBilling();
   const { membership } = useOrganization();
 
@@ -137,18 +139,35 @@ function BillingPanel() {
     );
   }
 
-  if (membership && membership.role !== "org:admin") {
+  // Org context: Teams billing is per-seat, not the flat $50/mo personal
+  // plan, so org members (of either role) get TeamBillingCard instead of the
+  // personal card below. TeamBillingCard is admin-gated internally — a
+  // non-admin member sees its "ask your org admin" message with no CTA,
+  // which replaces the old standalone "Billing restricted" block.
+  const isOrgContext = Boolean(membership);
+  const orgRole: "admin" | "member" = membership?.role === "org:admin" ? "admin" : "member";
+
+  if (isOrgContext) {
     return (
       <div className="settings-panel" id="panel-billing" role="tabpanel">
         <h1 className="settings-page-title">Billing</h1>
-        <div className="settings-restricted">
-          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#59534d" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-            <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-          </svg>
-          <div className="settings-restricted-title">Billing restricted</div>
-          <div className="settings-restricted-desc">Contact your organization admin to manage billing and subscription settings.</div>
-        </div>
+        <p className="settings-page-desc">Manage your team&apos;s subscription.</p>
+
+        {accountError && (
+          <div className="settings-alert settings-alert-error">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            Failed to load billing data. Please refresh the page.
+          </div>
+        )}
+
+        <TeamBillingCard
+          seatCount={account?.seat_count ?? null}
+          seatPriceUsd={account?.team_seat_price_usd ?? null}
+          ownerRole={orgRole}
+          isSubscribed={isSubscribed}
+          onSubscribe={startTeamCheckout}
+          onManage={handlePortal}
+        />
       </div>
     );
   }

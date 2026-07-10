@@ -35,9 +35,24 @@ Critical path: **WS1 → WS2 → WS3 → WS4 → WS5.** WS6/WS7 are provider-agn
 
 ---
 
-## WS1 — Native `meta` plugin in the extended dev image (on the 7.1 base)
+## Status & revised order — 2026-07-10 (after the 7.1 + meta bump landed on main)
 
-**Objective:** A fresh dev container boots with the native `meta` provider active and `meta/muse-spark-1.1` **locked** as the model (not user-changeable), on the 7.1 base.
+The parallel effort shipped (PRs #1193/#1194, merged here): **dev** extended image is now `2026.7.1-beta.3-isol8.1` with the **native `meta` provider bundled** (`enabledByDefault`, `muse-spark-1.1`), the 3 fork patches rebased, and a **7.1 config-schema validation test** (`tests/chaos/invariants/test_config_schema.py`). **Prod is still on 6.10.**
+
+- **WS1 collapses** — vendoring + Dockerfile are done; WS1 = one `config.py` change (folds into WS2). `config.py` has no meta wiring yet — that part is still ours.
+- **Critical path unblocked in dev.** New order:
+  1. **WS2 — Step-0 reconciliation FIRST** (the gate): config.py meta branch + `MODEL_API_KEY` inject → provision a dev meta container → run Muse Spark → confirm usage flows + validate config against the 7.1 schema test.
+  2. **WS3 ($3/day cap + entitlement) + WS6 (event-only scaling)** — parallel, after Step-0 green.
+  3. **WS4 + WS5** — re-check `ProvisioningStepper.tsx`/`useGateway.tsx` (changed on main).
+  4. **Prod 7.1 promotion** (+ paid-fleet image-swap) — go-live gate.
+
+---
+
+## WS1 — Meta provider (bundled in dev base) → config.py wiring only
+
+**Update (2026-07-10):** meta is now **bundled in the dev base** — vendoring + Dockerfile (old tasks 1–2) are **done by the parallel bump.** WS1 reduces to the config.py branch below and validating it against the 7.1 schema test; it folds into WS2.
+
+**Objective:** A dev container's free-tier config sets `meta/muse-spark-1.1` **locked** as the default model (provider already registered by the bundled plugin), validated against the 7.1 config schema.
 
 **Files:**
 - Create: `apps/infra/openclaw/vendor/meta/**` (vendored `extensions/meta/` from `origin/release/2026.7.1`) — *skip if the 7.1 base already bundles meta*

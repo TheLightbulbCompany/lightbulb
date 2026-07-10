@@ -284,7 +284,7 @@ class TestContainerForceApplyImageUpdate:
     @pytest.mark.asyncio
     async def test_happy_path(self, async_client, admin_env):
         with (
-            patch("routers.admin.update_repo.get_in_flight", new=AsyncMock(return_value=[])),
+            patch("routers.admin.update_repo.get_in_flight", new=AsyncMock(return_value=[])) as mock_in_flight,
             patch("routers.admin.update_repo.create", new=AsyncMock(return_value=self._CREATED)) as mock_create,
             patch("routers.admin.apply_update", new=AsyncMock(return_value=True)) as mock_apply,
         ):
@@ -296,6 +296,9 @@ class TestContainerForceApplyImageUpdate:
         body = res.json()
         assert body["status"] == "applied"
         assert body["update_id"] == "upd_123"
+        # The in-flight guard is scoped to image rolls (not paperclip_provision etc.).
+        in_flight_kwargs = mock_in_flight.await_args.kwargs
+        assert in_flight_kwargs.get("update_types") == ["image_update"]
         # A pending image_update row was created for the resolved owner...
         create_kwargs = mock_create.await_args.kwargs
         assert create_kwargs["owner_id"] == "u_target"

@@ -366,11 +366,21 @@ async def admin_container_force_apply_image_update(
 
     # Per-owner mutual exclusion. apply_update's acquire is keyed per-update_id,
     # so a fresh row we create always acquires — that alone does NOT stop a second
-    # roll when the owner already has an update queued (admin queue button /
+    # roll when the owner already has an image update queued (admin queue button /
     # scheduled worker) or mid-apply (owner banner). Reject up front so only one
-    # image roll is ever in flight per owner and we never fire two concurrent
-    # resize_user_container calls for the same container.
-    in_flight = await update_repo.get_in_flight(owner_id)
+    # image roll is normally in flight per owner. Scoped to "image_update" so an
+    # unrelated pending row (e.g. a paperclip_provision retry) doesn't spuriously
+    # block the force-apply.
+    #
+    # This read-then-create is not fully atomic: two force-applies landing within
+    # the same instant could both observe no in-flight row. That residual race is
+    # deliberately not locked out here — the per-user ECS service runs
+    # SINGLE_WRITER_DEPLOYMENT_CONFIG (maximumPercent=100 → never two tasks), so
+    # even two concurrent resize_user_container calls can't put two tasks on the
+    # EFS-SQLite state at once; the worst case is a redundant superseded
+    # deployment, not corruption or data loss. A distributed lock would add
+    # stuck-lock failure modes disproportionate to that bounded, admin-only race.
+    in_flight = await update_repo.get_in_flight(owner_id, update_types=["image_update"])
     if in_flight:
         statuses = ", ".join(sorted({u.get("status", "?") for u in in_flight}))
         raise HTTPException(

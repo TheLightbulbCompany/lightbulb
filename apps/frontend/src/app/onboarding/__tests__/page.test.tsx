@@ -11,12 +11,13 @@ const buildClerkMocks = (
     invitations?: unknown[];
     memberships?: unknown[];
     userUpdate?: () => Promise<void>;
+    unsafeMetadata?: Record<string, unknown>;
   } = {},
 ) => ({
   useAuth: () => ({ isLoaded: true, orgId: null }),
   useUser: () => ({
     user: {
-      unsafeMetadata: {},
+      unsafeMetadata: overrides.unsafeMetadata ?? {},
       update: overrides.userUpdate ?? vi.fn().mockResolvedValue(undefined),
     },
   }),
@@ -76,16 +77,23 @@ describe("OnboardingPage", () => {
 
   it("auto-completes personal onboarding when no invitations and no team intent", async () => {
     const userUpdate = vi.fn().mockResolvedValue(undefined);
-    vi.doMock("@clerk/nextjs", () => buildClerkMocks({ userUpdate }));
+    // Seed a pre-existing unsafeMetadata key so the assertion below actually
+    // exercises the merge-preserving write (a replace-only regression would
+    // drop providerChoice and fail). This invariant is what keeps the
+    // deferred provider fix safe.
+    vi.doMock("@clerk/nextjs", () =>
+      buildClerkMocks({ userUpdate, unsafeMetadata: { providerChoice: "byo_key" } }),
+    );
     const { default: Page } = await import("../page");
     render(<Page />);
     // No chooser is shown any more.
     expect(screen.queryByRole("button", { name: /personal/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /organization/i })).toBeNull();
-    // Personal path runs automatically: onboarded flag + syncUser + redirect.
+    // Personal path runs automatically: onboarded flag is added WITHOUT
+    // clobbering the existing providerChoice key, then syncUser + redirect.
     await waitFor(() =>
       expect(userUpdate).toHaveBeenCalledWith({
-        unsafeMetadata: { onboarded: true },
+        unsafeMetadata: { providerChoice: "byo_key", onboarded: true },
       }),
     );
     await waitFor(() => expect(syncUserMock).toHaveBeenCalled());

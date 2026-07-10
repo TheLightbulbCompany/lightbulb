@@ -43,9 +43,9 @@ export default function OnboardingPage() {
   // Tenancy invariant: pending invitations force the invitations screen —
   // no escape into personal/org onboarding, because a user can't hold
   // personal tenancy AND a pending org invite at the same time.
-  const [explicitMode, setExplicitMode] = useState<
-    "org" | "invitations" | null
-  >(null);
+  // Only ever set to "org" (via the team-intent effect). "invitations" mode
+  // is derived from forcedInvitations, never written into state.
+  const [explicitMode, setExplicitMode] = useState<"org" | null>(null);
   const forcedInvitations = isLoaded && orgsLoaded && pendingInvitations.length > 0;
   const mode = forcedInvitations
     ? "invitations"

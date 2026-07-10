@@ -694,6 +694,13 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
 
   // ---- Fetch history on mount / agent change ----
   const historyLoadedRef = useRef<Set<string>>(new Set());
+  // Per-cacheKey generation counter. Every fetch issued for a key increments
+  // that key's generation and captures it; a response applies only if its
+  // generation is still current. This drops a stale in-flight fetch that a
+  // same-key refetch (switch away/back, or /reset·/compact·/new) superseded —
+  // otherwise the later-resolving stale response wins and can overwrite a
+  // fresh post-compact transcript.
+  const historyFetchGenRef = useRef<Map<string, number>>(new Map());
 
   useEffect(() => {
     if (!agentId || !cacheKey || !isConnected) return;
@@ -702,10 +709,16 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       historyLoadedRef.current.add(cacheKey);
       return;
     }
+    const fetchKey = cacheKey;
+    const fetchGen = (historyFetchGenRef.current.get(fetchKey) ?? 0) + 1;
+    historyFetchGenRef.current.set(fetchKey, fetchGen);
+    const isCurrent = () => historyFetchGenRef.current.get(fetchKey) === fetchGen;
     const sessionKey = buildChatSessionKey(agentId, sessionName, activeSessionId);
     Promise.resolve().then(() => setHistoryLoadState("loading"));
     sendReq("chat.history", { sessionKey, limit: 200 })
       .then((result: unknown) => {
+        // A newer same-key fetch superseded this one while it was in flight.
+        if (!isCurrent()) return;
         const historyResult = result as { messages?: HistoryMessage[]; truncated?: boolean };
         historyLoadedRef.current.add(cacheKey);
         if (historyResult?.truncated === true) {
@@ -730,6 +743,9 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         }
       })
       .catch((err: unknown) => {
+        // A newer same-key fetch superseded this one — its outcome is
+        // authoritative, so don't let this stale failure flip shared state.
+        if (!isCurrent()) return;
         console.warn("Failed to fetch chat history:", err);
         // Deliberately NOT latched into historyLoadedRef: a failed fetch
         // (gateway drop, container restart) must retry on the next visit or

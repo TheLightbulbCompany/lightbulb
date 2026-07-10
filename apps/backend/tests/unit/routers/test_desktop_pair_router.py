@@ -43,13 +43,19 @@ def test_post_desktop_pair_returns_pair_result(desktop_client):
     with patch(
         "routers.desktop_pair.pair_desktop_devices",
         AsyncMock(return_value=fake_result),
-    ):
+    ) as pair:
         response = desktop_client.post(
             "/api/v1/desktop/pair",
             headers={"Authorization": "Bearer test"},
             json={
                 "tauriMacPubKey": "-----BEGIN PUBLIC KEY-----\nABC\n-----END PUBLIC KEY-----\n",
                 "cliPubKey": "-----BEGIN PUBLIC KEY-----\nDEF\n-----END PUBLIC KEY-----\n",
+                "permissions": {
+                    "screen": False,
+                    "shell": True,
+                    "browser": True,
+                    "files": False,
+                },
             },
         )
 
@@ -64,6 +70,11 @@ def test_post_desktop_pair_returns_pair_result(desktop_client):
         "commandsMac": ["system.notify", "device.info"],
         "commandsCli": ["system.run", "browser.proxy"],
     }
+    permissions = pair.await_args.kwargs["permissions"]
+    assert permissions.screen is False
+    assert permissions.shell is True
+    assert permissions.browser is True
+    assert permissions.files is False
 
 
 def test_post_desktop_pair_rejects_missing_pubkey(desktop_client):

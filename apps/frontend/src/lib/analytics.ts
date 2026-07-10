@@ -95,6 +95,7 @@ export type AnalyticsEvent =
   | "desktop_update_install_clicked"
   | "desktop_file_access_added"
   | "desktop_file_access_removed"
+  | "desktop_permissions_saved"
   // Cron
   | "cron_job_created"
   | "cron_job_deleted"

@@ -77,6 +77,29 @@ DESKTOP_CLI_COMMANDS: tuple[str, ...] = (
     "dir.fetch",
 )
 
+DESKTOP_MAC_BASE_COMMANDS: tuple[str, ...] = (
+    "system.notify",
+    "device.info",
+    "device.status",
+    "device.health",
+    "device.permissions",
+)
+
+DESKTOP_CLI_SHELL_COMMANDS: tuple[str, ...] = (
+    "system.run",
+    "system.run.prepare",
+    "system.which",
+)
+
+DESKTOP_CLI_BROWSER_COMMANDS: tuple[str, ...] = ("browser.proxy",)
+
+DESKTOP_CLI_FILE_COMMANDS: tuple[str, ...] = (
+    "file.fetch",
+    "file.write",
+    "dir.list",
+    "dir.fetch",
+)
+
 ALLOWED_CLIENT_IDS = {"openclaw-macos", "node-host"}
 
 
@@ -90,6 +113,57 @@ def assert_command_sets_disjoint(
 
 # Module-load defensive assertion: protect against future drift in the constants above.
 assert_command_sets_disjoint(DESKTOP_MAC_COMMANDS, DESKTOP_CLI_COMMANDS)
+
+
+@dataclass(frozen=True)
+class DesktopPermissionGrant:
+    """User-granted desktop command groups.
+
+    `None` from the API layer is treated as legacy/full access so older
+    desktop clients keep working. New clients send this explicitly after the
+    user accepts the first-run permission screen.
+    """
+
+    screen: bool = False
+    shell: bool = False
+    browser: bool = False
+    files: bool = False
+
+    @classmethod
+    def full(cls) -> "DesktopPermissionGrant":
+        return cls(screen=True, shell=True, browser=True, files=True)
+
+    def mac_commands(self) -> tuple[str, ...]:
+        allowed = set(DESKTOP_MAC_BASE_COMMANDS)
+        if self.screen:
+            allowed.add("screen.snapshot")
+        return tuple(command for command in DESKTOP_MAC_COMMANDS if command in allowed)
+
+    def cli_commands(self) -> tuple[str, ...]:
+        commands: list[str] = []
+        if self.shell:
+            commands.extend(DESKTOP_CLI_SHELL_COMMANDS)
+        if self.browser:
+            commands.extend(DESKTOP_CLI_BROWSER_COMMANDS)
+        if self.files:
+            commands.extend(DESKTOP_CLI_FILE_COMMANDS)
+        return tuple(commands)
+
+    def mac_caps(self) -> list[str]:
+        caps = ["system"]
+        if self.screen:
+            caps.append("screen")
+        return caps
+
+    def cli_caps(self) -> list[str]:
+        caps: list[str] = []
+        if self.shell:
+            caps.append("system")
+        if self.browser:
+            caps.append("browser")
+        if self.files:
+            caps.append("file")
+        return caps
 
 
 def _public_key_raw_bytes(pubkey_pem: str) -> bytes:
@@ -267,6 +341,7 @@ async def pair_desktop_devices(
     display_name_base: str,
     tauri_mac_pubkey: str,
     cli_pubkey: str,
+    permissions: DesktopPermissionGrant | None = None,
     workspace: WorkspaceLike,
 ) -> PairResult:
     """Idempotently register the user's two devices in the owner's container paired.json.
@@ -274,27 +349,31 @@ async def pair_desktop_devices(
     Returns connection material the desktop needs to spawn the openclaw subprocess
     and connect both nodes to the gateway.
     """
+    grant = permissions or DesktopPermissionGrant.full()
+    mac_commands = grant.mac_commands()
+    cli_commands = grant.cli_commands()
+
     mac_entry = build_paired_entry(
         pubkey_pem=tauri_mac_pubkey,
         client_id="openclaw-macos",
         display_name=f"{display_name_base} | Isol8 Mac",
-        commands=list(DESKTOP_MAC_COMMANDS),
+        commands=list(mac_commands),
         user_id=user_id,
     )
     cli_entry = build_paired_entry(
         pubkey_pem=cli_pubkey,
         client_id="node-host",
         display_name=f"{display_name_base} | Isol8 Desktop (CLI)",
-        commands=list(DESKTOP_CLI_COMMANDS),
+        commands=list(cli_commands),
         user_id=user_id,
     )
     mac_node_entry = build_node_paired_entry(
         device_entry=mac_entry,
-        caps=["system"],
+        caps=grant.mac_caps(),
     )
     cli_node_entry = build_node_paired_entry(
         device_entry=cli_entry,
-        caps=["system", "browser", "file"],
+        caps=grant.cli_caps(),
         device_family="Mac",
     )
 
@@ -452,8 +531,8 @@ async def pair_desktop_devices(
         gateway_token=await workspace.get_gateway_token(),
         device_id_mac=mac_entry["deviceId"],
         device_id_cli=cli_entry["deviceId"],
-        commands_mac=DESKTOP_MAC_COMMANDS,
-        commands_cli=DESKTOP_CLI_COMMANDS,
+        commands_mac=mac_commands,
+        commands_cli=cli_commands,
     )
 
 

@@ -23,6 +23,7 @@ async fn pair_sends_clerk_jwt_and_parses_response() {
     let req = PairRequest {
         tauri_mac_pub_key: "PUB_MAC".to_string(),
         cli_pub_key: "PUB_CLI".to_string(),
+        permissions: None,
     };
     let resp: PairResponse = pair(&server.uri(), "test_jwt", &req).await.unwrap();
     assert_eq!(resp.gateway_url, "wss://ws-dev.isol8.co");
@@ -46,6 +47,7 @@ async fn pair_returns_error_on_4xx() {
     let req = PairRequest {
         tauri_mac_pub_key: "PUB_MAC".to_string(),
         cli_pub_key: "PUB_CLI".to_string(),
+        permissions: None,
     };
     let err = pair(&server.uri(), "test_jwt", &req).await.unwrap_err();
     assert!(err.contains("400"), "expected 400 in error: {err}");

@@ -23,7 +23,7 @@ use std::sync::Arc;
 use crate::device_token::{mint_device_token, DEVICE_TOKEN_LIFETIME_SECS};
 use crate::keychain::{load_or_generate, KeychainSlot};
 use crate::log;
-use crate::pair_client::{pair as call_pair, PairRequest, PairResponse};
+use crate::pair_client::{pair as call_pair, DesktopPermissions, PairRequest, PairResponse};
 use crate::proxy::{start_proxy, JwtProvider, ProxyHandle};
 use crate::subprocess::{spawn as spawn_subprocess, SubprocessHandle};
 
@@ -55,6 +55,7 @@ pub async fn bootstrap_desktop_node_host(
     cli_client_id: String,
     state_dir: PathBuf,
     binary: PathBuf,
+    permissions: Option<DesktopPermissions>,
 ) -> Result<DesktopNodeHostHandles, String> {
     // 1. Load or generate Keychain identities. The Mac identity is the
     //    Tauri-process clientId (openclaw-macos); the CLI identity is
@@ -70,6 +71,7 @@ pub async fn bootstrap_desktop_node_host(
         &PairRequest {
             tauri_mac_pub_key: mac_id.public_key_pem.clone(),
             cli_pub_key: cli_id.public_key_pem.clone(),
+            permissions,
         },
     )
     .await?;

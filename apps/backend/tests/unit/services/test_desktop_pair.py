@@ -11,6 +11,7 @@ from core.containers.workspace import Workspace
 from core.services.desktop_pair import (
     DESKTOP_CLI_COMMANDS,
     DESKTOP_MAC_COMMANDS,
+    DesktopPermissionGrant,
     EfsWorkspaceAdapter,
     PairResult,
     assert_command_sets_disjoint,
@@ -336,10 +337,87 @@ async def test_pair_desktop_devices_writes_two_paired_entries_flat():
     node_paired = workspace.node_paired_state
     assert set(node_paired) == {result.device_id_mac, result.device_id_cli}
     assert node_paired[result.device_id_mac]["commands"] == list(DESKTOP_MAC_COMMANDS)
-    assert node_paired[result.device_id_mac]["caps"] == ["system"]
+    assert node_paired[result.device_id_mac]["caps"] == ["system", "screen"]
     assert node_paired[result.device_id_cli]["commands"] == list(DESKTOP_CLI_COMMANDS)
     assert node_paired[result.device_id_cli]["caps"] == ["system", "browser", "file"]
     assert node_paired[result.device_id_cli]["platform"] == "macos"
+
+
+async def test_pair_desktop_devices_honors_explicit_permission_groups():
+    """New desktop clients send first-run consent. The backend still owns the
+    command mapping and narrows both pairing files to the selected groups.
+    """
+    workspace = _FakeWorkspace(initial={})
+    cli_priv = Ed25519PrivateKey.from_private_bytes(b"\x02" * 32)
+    cli_pubkey = (
+        cli_priv.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
+
+    result = await pair_desktop_devices(
+        user_id="user_alice",
+        owner_id="owner_org_42",
+        display_name_base="Alice Smith",
+        tauri_mac_pubkey=_FIXTURE_PEM,
+        cli_pubkey=cli_pubkey,
+        permissions=DesktopPermissionGrant(
+            screen=False,
+            shell=False,
+            browser=True,
+            files=False,
+        ),
+        workspace=workspace,
+    )
+
+    assert "screen.snapshot" not in result.commands_mac
+    assert result.commands_cli == ("browser.proxy",)
+
+    written = workspace.state
+    assert written[result.device_id_mac]["commands"] == [
+        "system.notify",
+        "device.info",
+        "device.status",
+        "device.health",
+        "device.permissions",
+    ]
+    assert written[result.device_id_cli]["commands"] == ["browser.proxy"]
+
+    node_paired = workspace.node_paired_state
+    assert node_paired[result.device_id_mac]["caps"] == ["system"]
+    assert node_paired[result.device_id_cli]["caps"] == ["browser"]
+    assert node_paired[result.device_id_cli]["commands"] == ["browser.proxy"]
+
+
+async def test_pair_desktop_devices_basic_permission_grants_no_remote_commands():
+    workspace = _FakeWorkspace(initial={})
+    cli_priv = Ed25519PrivateKey.from_private_bytes(b"\x03" * 32)
+    cli_pubkey = (
+        cli_priv.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
+
+    result = await pair_desktop_devices(
+        user_id="user_alice",
+        owner_id="owner_org_42",
+        display_name_base="Alice Smith",
+        tauri_mac_pubkey=_FIXTURE_PEM,
+        cli_pubkey=cli_pubkey,
+        permissions=DesktopPermissionGrant(),
+        workspace=workspace,
+    )
+
+    assert result.commands_cli == ()
+    assert "screen.snapshot" not in result.commands_mac
+    assert workspace.node_paired_state[result.device_id_cli]["caps"] == []
+    assert workspace.node_paired_state[result.device_id_cli]["commands"] == []
 
 
 async def test_pair_desktop_devices_preserves_existing_operator_entry():

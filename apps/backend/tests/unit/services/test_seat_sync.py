@@ -42,6 +42,17 @@ async def test_sets_absolute_member_count_on_mismatch(monkeypatch):
     set_team.assert_awaited_once()
     assert set_team.await_args.kwargs["seat_count"] == 5
 
+    # Idempotency key must be time-bucketed, not a bare content-addressed
+    # key — otherwise a later re-set to the same quantity within Stripe's
+    # ~24h idempotency cache window would return the cached (stale) response
+    # instead of actually re-applying the quantity, causing DDB/Stripe drift.
+    idempotency_key = kwargs["idempotency_key"]
+    prefix = "seat_sync:si_1:5:"
+    assert idempotency_key.startswith(prefix)
+    segments = idempotency_key.split(":")
+    assert len(segments) == 4
+    assert segments[3].isdigit()
+
 
 @pytest.mark.asyncio
 async def test_noop_when_count_unchanged(monkeypatch):

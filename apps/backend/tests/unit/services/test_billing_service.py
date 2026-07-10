@@ -252,6 +252,75 @@ class TestCreateFlatFeeCheckout:
                 await billing_service.create_flat_fee_checkout(owner_id="u_missing")
 
 
+class TestBuildSubscriptionCheckoutSharedSpine:
+    """The flat and team paths must both go through _build_subscription_checkout
+    so the session kwargs / tax block / idempotency shape exist in exactly one
+    place (DRY spine, design §DRY spine item 1)."""
+
+    @pytest.mark.asyncio
+    async def test_flat_checkout_delegates_to_shared_builder(self, monkeypatch):
+        monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat_test")
+        seen = {}
+
+        async def _fake_builder(**kwargs):
+            seen.update(kwargs)
+            return MagicMock(url="https://checkout/flat", id="cs_flat")
+
+        monkeypatch.setattr(billing_service, "_build_subscription_checkout", _fake_builder)
+        with patch.object(
+            billing_service.billing_repo,
+            "get_by_owner_id",
+            new=AsyncMock(return_value={"stripe_customer_id": "cus_test"}),
+        ):
+            result = await billing_service.create_flat_fee_checkout(owner_id="u_1", provider_choice="bedrock_claude")
+
+        assert result.url == "https://checkout/flat"
+        assert seen["price_id"] == "price_flat_test"
+        assert seen["quantity"] == 1
+        assert seen["trial_days"] == 14
+        assert seen["metadata"]["owner_id"] == "u_1"
+        assert seen["metadata"]["provider_choice"] == "bedrock_claude"
+        assert seen["idempotency_key"].startswith("flat_checkout:u_1:")
+
+    @pytest.mark.asyncio
+    async def test_team_checkout_uses_seat_price_quantity_and_no_trial(self, monkeypatch):
+        monkeypatch.setattr(billing_service.settings, "STRIPE_TEAM_SEAT_PRICE_ID", "price_seat_test")
+        seen = {}
+
+        async def _fake_builder(**kwargs):
+            seen.update(kwargs)
+            return MagicMock(url="https://checkout/team", id="cs_team")
+
+        monkeypatch.setattr(billing_service, "_build_subscription_checkout", _fake_builder)
+        result = await billing_service.create_team_seat_checkout(owner_id="org_1", member_count=4)
+
+        assert result.url == "https://checkout/team"
+        assert seen["price_id"] == "price_seat_test"
+        assert seen["quantity"] == 4
+        assert seen["trial_days"] is None
+        assert seen["metadata"] == {"owner_id": "org_1", "purpose": "team_seat"}
+        assert seen["idempotency_key"].startswith("team_checkout:org_1:")
+
+    @pytest.mark.asyncio
+    async def test_team_checkout_raises_without_seat_price_id(self, monkeypatch):
+        monkeypatch.setattr(billing_service.settings, "STRIPE_TEAM_SEAT_PRICE_ID", "")
+        with pytest.raises(BillingServiceError, match="STRIPE_TEAM_SEAT_PRICE_ID not configured"):
+            await billing_service.create_team_seat_checkout(owner_id="org_1", member_count=4)
+
+    @pytest.mark.asyncio
+    async def test_team_checkout_floors_quantity_at_one(self, monkeypatch):
+        monkeypatch.setattr(billing_service.settings, "STRIPE_TEAM_SEAT_PRICE_ID", "price_seat_test")
+        seen = {}
+
+        async def _fake_builder(**kwargs):
+            seen.update(kwargs)
+            return MagicMock(url="https://checkout/team")
+
+        monkeypatch.setattr(billing_service, "_build_subscription_checkout", _fake_builder)
+        await billing_service.create_team_seat_checkout(owner_id="org_1", member_count=0)
+        assert seen["quantity"] == 1
+
+
 @pytest.mark.asyncio
 async def test_change_provider_into_bedrock_takes_cold_path(monkeypatch):
     """A switch INTO bedrock_claude must NOT take the hot path (which would

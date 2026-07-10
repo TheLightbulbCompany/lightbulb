@@ -25,6 +25,10 @@ async def resolve_provider_choice(owner_id: str) -> tuple[str, str | None]:
     onboarded before per-owner provider_choice storage.
     """
     row = await billing_repo.get_by_owner_id(owner_id)
+    if (row or {}).get("subscription_status") == "trial_local":
+        # No-card local trial: `meta` is a config-path mode, never a stored
+        # provider_choice, so it must never be read off the row.
+        return "meta", None
     provider_choice = (row or {}).get("provider_choice") or "bedrock_claude"
     byo_provider = (row or {}).get("byo_provider") if provider_choice == "byo_key" else None
     return provider_choice, byo_provider

@@ -18,6 +18,12 @@ class BillingAccountResponse(BaseModel):
     # to render.
     provider_choice: str | None = None
     byo_provider: str | None = None
+    # Teams (org) per-seat billing. seat_count is the live org member count for
+    # org owners (drives the paywall's "N × $20" math); team_seat_price_usd is
+    # the single server-side source of the per-seat display price. Both None
+    # for personal owners.
+    seat_count: int | None = None
+    team_seat_price_usd: int | None = None
 
 
 class PortalResponse(BaseModel):

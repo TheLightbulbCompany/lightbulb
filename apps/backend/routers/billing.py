@@ -116,6 +116,20 @@ async def get_billing_account(
     # disagree about whether a billing row counts as subscribed.
     is_subscribed = is_subscription_active(account)
 
+    # Teams per-seat billing. seat_count echoes the LIVE Clerk member count
+    # for org owners — not the stored Stripe quantity — so the paywall can
+    # price "N × $20" correctly even before the first subscription exists.
+    # Falls back to the stored seat_count if Clerk is unavailable (returns
+    # 0). Post-subscribe, stored and live counts converge via
+    # sync_team_seat_quantity. Personal owners keep both fields None.
+    seat_count: int | None = None
+    team_seat_price_usd: int | None = None
+    if is_org_owner_id(owner_id):
+        live = await clerk_admin.get_organization_member_count(owner_id)
+        stored = int(account.get("seat_count") or 0) if account else 0
+        seat_count = live if live > 0 else (stored or None)
+        team_seat_price_usd = settings.TEAM_SEAT_PRICE_USD
+
     return BillingAccountResponse(
         is_subscribed=is_subscribed,
         current_spend=current_spend,
@@ -124,6 +138,8 @@ async def get_billing_account(
         trial_end=int(trial_end) if trial_end is not None else None,
         provider_choice=account.get("provider_choice") if account else None,
         byo_provider=account.get("byo_provider") if account else None,
+        seat_count=seat_count,
+        team_seat_price_usd=team_seat_price_usd,
     )
 
 

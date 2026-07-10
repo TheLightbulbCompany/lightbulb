@@ -74,4 +74,29 @@ describe("useBilling", () => {
     await waitFor(() => expect(result.current.error).toBeDefined());
     expect(result.current.account).toBeUndefined();
   });
+
+  it("startTeamCheckout POSTs /billing/team-checkout and redirects", async () => {
+    const orig = window.location;
+    // jsdom: make location.href assignable for the assertion.
+    Object.defineProperty(window, "location", { value: { href: "" }, writable: true });
+    // mockImplementation (not mockResolvedValue) so each call gets its own
+    // Response instance — the hook's own SWR mount fetch for /billing/account
+    // also hits this mock, and a Response body can only be read once.
+    global.fetch = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ checkout_url: "https://checkout/team" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+    const { result } = renderHook(() => useBilling(), { wrapper });
+    await result.current.startTeamCheckout();
+    const call = (global.fetch as ReturnType<typeof vi.fn>).mock.calls.find((c) =>
+      String(c[0]).includes("/billing/team-checkout"),
+    );
+    expect(call).toBeTruthy();
+    expect(window.location.href).toBe("https://checkout/team");
+    Object.defineProperty(window, "location", { value: orig, writable: true });
+  });
 });

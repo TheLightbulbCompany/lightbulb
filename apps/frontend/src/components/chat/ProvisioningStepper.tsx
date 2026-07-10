@@ -204,6 +204,12 @@ export function ProvisioningStepper({
   // (org id for org workspaces, else the Clerk user id).
   const readyStorageKey = `${ONBOARDING_READY_STORAGE_KEY}:${organization?.id ?? clerkUserId ?? "anon"}`;
   const { account, isLoading: billingLoading, isSubscribed } = useBilling();
+  // Free-tier discriminator: trial_local accounts are already is_subscribed
+  // (the backend added trial_local to _ACTIVE_STATUSES) but never set
+  // provider_choice — there is no provider to pick for the free tier. Used
+  // below to keep these users off the payment short-circuit, the poll gate,
+  // and — the actually-broken case — the ProviderPicker fallback.
+  const isTrialLocal = account?.subscription_status === "trial_local";
   // Set when we first enter the container/gateway phase — _not_ at component
   // mount. Time spent on the pre-provision steps (provider choice, billing
   // checkout, OAuth) shouldn't count against the timeout budget. A ref because
@@ -264,7 +270,7 @@ export function ProvisioningStepper({
   }, [providerStepDone]);
 
   const [reachedReady, setReachedReady] = useState(false);
-  const shouldPollContainer = isSubscribed && !reachedReady;
+  const shouldPollContainer = (isSubscribed || isTrialLocal) && !reachedReady;
 
   // Single canonical /container/status poller. Gate-driven cadence
   // wins when blocked (5s/30s); cold-start polling at 3s otherwise so
@@ -351,7 +357,9 @@ export function ProvisioningStepper({
     if (isRegressingFromReady) return "container";
     // Pre-signup user lands in payment phase to pick a provider path.
     // Recovery flow skips billing — the user already has a subscription.
-    if (trigger !== "recovery" && !isSubscribed) return "payment";
+    // trial_local (free-tier) accounts are already subscribed by backend
+    // definition, so this guard is defensive rather than load-bearing.
+    if (trigger !== "recovery" && !isSubscribed && !isTrialLocal) return "payment";
     // Provider-specific signup step runs before container provision.
     if (needsProviderStep) return "provider";
 
@@ -381,7 +389,7 @@ export function ProvisioningStepper({
     // ready. Channel setup is no longer forced here; it is nudged via the
     // Get Started guide and lives in Settings → Channels.
     return resolvePostAgentPhase();
-  }, [trigger, isSubscribed, container, containerReady, gatewayHealth, needsProviderStep, isRegressingFromReady]);
+  }, [trigger, isSubscribed, isTrialLocal, container, containerReady, gatewayHealth, needsProviderStep, isRegressingFromReady]);
 
   // Analytics: fire `onboarding_step_completed` (step LEFT) + `onboarding_step_entered`
   // (step ARRIVED) per phase transition.
@@ -975,8 +983,15 @@ export function ProvisioningStepper({
   //      is persisted before the Stripe redirect, so
   //      `account.provider_choice` is set but `isSubscribed` is false.
   //      They MUST see the picker again to restart checkout.
+  //
+  //   3. trial_local (free-tier) owner: is_subscribed is TRUE (backend
+  //      treats trial_local as an active subscription) but provider_choice
+  //      is never set — there's no provider to pick on the free tier. The
+  //      `isTrialLocal` guard keeps these users off the picker so they flow
+  //      straight into container/gateway/ready instead of being shown a
+  //      payment step they don't need.
   const ownerOnboarded = isSubscribed && Boolean(account?.provider_choice);
-  if (!ownerOnboarded) {
+  if (!ownerOnboarded && !isTrialLocal) {
     return <ProviderPicker isOrg={isOrg} orgName={organization?.name} />;
   }
 

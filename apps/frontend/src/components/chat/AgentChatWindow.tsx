@@ -240,6 +240,7 @@ export function AgentChatWindow({
     renderGroups,
     renderItems,
     isStreaming,
+    busy,
     error: chatError,
     sendMessage,
     cancelMessage,
@@ -377,7 +378,7 @@ export function AgentChatWindow({
             <p className="font-medium">Error</p>
             <p className="text-sm">{chatError}</p>
           </div>
-          <StreamingStatusBar isStreaming={isStreaming} renderItems={renderItems} />
+          <StreamingStatusBar isStreaming={isStreaming} renderItems={renderItems} active={busy} />
           <ExecApprovalCards />
           <ChatInput
             onSend={handleSend}
@@ -508,7 +509,7 @@ export function AgentChatWindow({
         isTyping={isStreaming}
       />
       <UpdateBanner />
-      <StreamingStatusBar isStreaming={isStreaming} renderItems={renderItems} />
+      <StreamingStatusBar isStreaming={isStreaming} renderItems={renderItems} active={busy} />
       <ExecApprovalCards />
       <ChatInput
         onSend={handleSend}

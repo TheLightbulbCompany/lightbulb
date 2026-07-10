@@ -382,6 +382,7 @@ export function ProvisioningStepper({
   // becomes a real funnel step. Entry to the provider phase also carries the
   // chosen provider so we can segment OAuth vs BYO vs credits drop-off.
   const prevPhaseRef = useRef<Phase | null>(null);
+  const readyFiredRef = useRef(false);
   useEffect(() => {
     const prev = prevPhaseRef.current;
     prevPhaseRef.current = phase;
@@ -393,10 +394,39 @@ export function ProvisioningStepper({
         ? { provider_choice: providerChoice }
         : {}),
     });
+    // Activation milestone: the first time the container reaches "ready",
+    // record it with the real cold-start duration (from provisioningStartRef,
+    // stamped on container/gateway-phase entry). This is the activation
+    // DENOMINATOR + time-to-first-value that the step_completed funnel tail
+    // can't give — fast phase-skips drop intermediate step_completed events,
+    // so "reached ready" undercounts by ~3x without a dedicated event.
+    if (phase === "ready" && !readyFiredRef.current) {
+      readyFiredRef.current = true;
+      const start = provisioningStartRef.current;
+      capture("onboarding_ready", {
+        elapsed_ms: start !== null ? Date.now() - start : null,
+      });
+    }
     if (prev === null) return;
     const completion = nextOnboardingCompletion(prev, phase, STEPS_PAID);
     if (completion) capture("onboarding_step_completed", { ...completion });
   }, [phase, providerChoice]);
+
+  // Record provision-gate blocks (subscription_required / oauth-missing /
+  // credits_required / signup_required) keyed to the PERSON, once per code
+  // per mount. The server only emits an EMF metric with no person_id, so
+  // without this we can't tell WHICH users stalled at a gate, split by
+  // reason, or whether the same users ever recovered/converted.
+  const gateBlockFiredRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (gatePhase === "blocked" && blocked && gateBlockFiredRef.current !== blocked.code) {
+      gateBlockFiredRef.current = blocked.code;
+      capture("onboarding_gate_blocked", {
+        code: blocked.code,
+        owner_role: blocked.owner_role,
+      });
+    }
+  }, [gatePhase, blocked]);
 
   // Tick elapsed once per second so the user sees real progress against the
   // expected budget — gives "still working" instead of an indefinite spinner.

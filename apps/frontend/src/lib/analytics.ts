@@ -118,7 +118,9 @@ export type AnalyticsEvent =
   // Plugins
   | "plugin_toggled"
   // Onboarding
+  | "onboarding_gate_blocked"
   | "onboarding_provider_completed"
+  | "onboarding_ready"
   | "onboarding_step_completed"
   | "onboarding_step_entered"
   | "org_invitation_accepted"

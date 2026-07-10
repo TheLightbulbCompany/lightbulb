@@ -117,6 +117,31 @@ async def test_get_pending_empty(dynamodb_table):
 
 
 @pytest.mark.asyncio
+async def test_get_in_flight_includes_applying_excludes_terminal(dynamodb_table):
+    """get_in_flight is a superset of get_pending: pending + scheduled + the
+    transient 'applying' state. Terminal rows (applied/failed) and other owners
+    are excluded. Used by the admin force-apply guard for per-owner exclusion."""
+    from core.repositories import update_repo
+
+    await update_repo.create("user_1", "image_update", "P", {"a": 1})  # pending
+    applying = await update_repo.create("user_1", "image_update", "AP", {"b": 2})
+    await update_repo.set_status_conditional("user_1", applying["update_id"], "applying", ["pending"])
+    applied = await update_repo.create("user_1", "image_update", "AD", {"c": 3})
+    await update_repo.set_status_conditional("user_1", applied["update_id"], "applied", ["pending"])
+    await update_repo.create("user_2", "image_update", "other-owner", {"d": 4})
+
+    results = await update_repo.get_in_flight("user_1")
+    assert {r["description"] for r in results} == {"P", "AP"}
+
+
+@pytest.mark.asyncio
+async def test_get_in_flight_empty(dynamodb_table):
+    from core.repositories import update_repo
+
+    assert await update_repo.get_in_flight("nonexistent_user") == []
+
+
+@pytest.mark.asyncio
 async def test_set_status_conditional_success(dynamodb_table):
     from core.repositories import update_repo
 

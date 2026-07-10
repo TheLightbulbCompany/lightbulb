@@ -363,6 +363,25 @@ async def admin_container_force_apply_image_update(
     auth: AuthContext = Depends(require_platform_admin),
 ):
     owner_id, _ = await resolve_admin_owner_id(user_id)
+
+    # Per-owner mutual exclusion. apply_update's acquire is keyed per-update_id,
+    # so a fresh row we create always acquires — that alone does NOT stop a second
+    # roll when the owner already has an update queued (admin queue button /
+    # scheduled worker) or mid-apply (owner banner). Reject up front so only one
+    # image roll is ever in flight per owner and we never fire two concurrent
+    # resize_user_container calls for the same container.
+    in_flight = await update_repo.get_in_flight(owner_id)
+    if in_flight:
+        statuses = ", ".join(sorted({u.get("status", "?") for u in in_flight}))
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Another update is already in flight for this owner (status: "
+                f"{statuses}). Wait for it to finish, or clear it, before "
+                "force-applying a new image."
+            ),
+        )
+
     description = body.description or f"Admin force-apply image update to {body.new_image}"
     item = await update_repo.create(
         owner_id=owner_id,
@@ -374,12 +393,17 @@ async def admin_container_force_apply_image_update(
     update_id = item["update_id"]
     applied = await apply_update(owner_id, update_id)
     if not applied:
+        # No update was in flight (guarded above) and the row we just created was
+        # 'pending', so apply_update's acquire always succeeds here. A False return
+        # therefore means the roll itself raised — apply_update caught it and marked
+        # the row 'failed', so it is NOT a live queued row the owner can retry from
+        # their banner. Surface it as a server-side failure with the EFS-safe note.
         raise HTTPException(
-            status_code=409,
+            status_code=502,
             detail=(
-                "Image update could not be applied now (a prior update may be in "
-                f"progress). The update was queued (update_id={update_id}) and can "
-                "be retried or applied by the owner from their update banner."
+                f"The image roll failed while applying (update_id={update_id}; row "
+                "marked failed). The container's EFS workspace/state is unchanged — "
+                "check the ECS service / container logs before retrying."
             ),
         )
     return {

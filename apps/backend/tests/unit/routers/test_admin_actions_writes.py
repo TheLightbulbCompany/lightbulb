@@ -284,6 +284,7 @@ class TestContainerForceApplyImageUpdate:
     @pytest.mark.asyncio
     async def test_happy_path(self, async_client, admin_env):
         with (
+            patch("routers.admin.update_repo.get_in_flight", new=AsyncMock(return_value=[])),
             patch("routers.admin.update_repo.create", new=AsyncMock(return_value=self._CREATED)) as mock_create,
             patch("routers.admin.apply_update", new=AsyncMock(return_value=True)) as mock_apply,
         ):
@@ -320,10 +321,35 @@ class TestContainerForceApplyImageUpdate:
         assert res.status_code == 422
 
     @pytest.mark.asyncio
-    async def test_409_when_apply_precondition_fails(self, async_client, admin_env):
-        """apply_update returns False (already applying / precondition failed) =>
-        409. The row stays queued so the owner banner / a retry can still apply."""
+    async def test_409_when_owner_has_inflight_update(self, async_client, admin_env):
+        """Per-owner mutual exclusion: if any update is already pending/scheduled/
+        applying for the owner, reject with 409 BEFORE creating or applying a new
+        one — otherwise a second concurrent resize_user_container could fire for
+        the same owner (the two-task roll this lever must never cause)."""
         with (
+            patch(
+                "routers.admin.update_repo.get_in_flight",
+                new=AsyncMock(return_value=[{"update_id": "other", "status": "applying"}]),
+            ),
+            patch("routers.admin.update_repo.create", new=AsyncMock()) as mock_create,
+            patch("routers.admin.apply_update", new=AsyncMock()) as mock_apply,
+        ):
+            res = await async_client.post(
+                "/api/v1/admin/users/u_target/container/apply-image-update",
+                json={"new_image": "img:tag"},
+            )
+        assert res.status_code == 409
+        # Guard runs first: neither a new row nor an apply is issued.
+        mock_create.assert_not_awaited()
+        mock_apply.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_502_when_apply_raises(self, async_client, admin_env):
+        """No in-flight row, so the freshly-created row always acquires; a False
+        return therefore means apply_update caught an exception mid-roll and marked
+        the row 'failed'. Surface that as 502 (not a queued-row 409)."""
+        with (
+            patch("routers.admin.update_repo.get_in_flight", new=AsyncMock(return_value=[])),
             patch("routers.admin.update_repo.create", new=AsyncMock(return_value=self._CREATED)),
             patch("routers.admin.apply_update", new=AsyncMock(return_value=False)),
         ):
@@ -331,11 +357,12 @@ class TestContainerForceApplyImageUpdate:
                 "/api/v1/admin/users/u_target/container/apply-image-update",
                 json={"new_image": "img:tag"},
             )
-        assert res.status_code == 409
+        assert res.status_code == 502
 
     @pytest.mark.asyncio
     async def test_audit_row_written(self, async_client, admin_env, mock_audit_repo):
         with (
+            patch("routers.admin.update_repo.get_in_flight", new=AsyncMock(return_value=[])),
             patch("routers.admin.update_repo.create", new=AsyncMock(return_value=self._CREATED)),
             patch("routers.admin.apply_update", new=AsyncMock(return_value=True)),
         ):
@@ -352,6 +379,7 @@ class TestContainerForceApplyImageUpdate:
     async def test_idempotent_within_window(self, async_client, admin_env):
         """Same Idempotency-Key within 60s => the queue+apply runs exactly once."""
         with (
+            patch("routers.admin.update_repo.get_in_flight", new=AsyncMock(return_value=[])),
             patch("routers.admin.update_repo.create", new=AsyncMock(return_value=self._CREATED)),
             patch("routers.admin.apply_update", new=AsyncMock(return_value=True)) as mock_apply,
         ):

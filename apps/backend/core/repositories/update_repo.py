@@ -62,6 +62,24 @@ async def get_pending(owner_id: str) -> list[dict]:
     return response.get("Items", [])
 
 
+async def get_in_flight(owner_id: str) -> list[dict]:
+    """Return all non-terminal updates for an owner: pending, scheduled, or the
+    transient 'applying' state.
+
+    Superset of get_pending() (which omits 'applying'). Callers use it to enforce
+    per-owner mutual exclusion on image rolls — apply_update's acquire is keyed
+    per-update_id, so this is the only way to know an owner already has an update
+    queued or mid-apply and must not have a second roll started concurrently.
+    """
+    table = _get_table()
+    response = await run_in_thread(
+        table.query,
+        KeyConditionExpression=Key("owner_id").eq(owner_id),
+        FilterExpression=Attr("status").is_in(["pending", "scheduled", "applying"]),
+    )
+    return response.get("Items", [])
+
+
 async def set_status_conditional(
     owner_id: str,
     update_id: str,

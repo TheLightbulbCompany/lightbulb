@@ -29,6 +29,22 @@ async def test_no_billing_account_returns_signup_required():
 
 
 @pytest.mark.asyncio
+async def test_no_billing_org_owner_returns_team_billing_required():
+    """An org owner (owner_id starts with 'org_') with no billing row gets a
+    DISTINCT team_billing_required code, not the personal signup_required. The
+    free tier is personal-only, so a team never falls into a card-less
+    trial_local — an org with no billing needs per-seat Teams billing, and the
+    frontend keys the Teams paywall off this code rather than the personal
+    provider picker."""
+    with patch("core.services.provision_gate.billing_repo") as repo:
+        repo.get_by_owner_id = AsyncMock(return_value=None)
+        gate = await evaluate_provision_gate(owner_id="org_xyz", is_admin=True)
+    assert gate is not None
+    assert gate.code == "team_billing_required"
+    assert gate.action_admin_only is True
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "status",
     ["canceled", "incomplete", "incomplete_expired", "unpaid", "paused"],

@@ -209,12 +209,29 @@ async def _evaluate_provision_gate_inner(
     if not account:
         # No billing row at all means the owner has never started signup.
         # This is *distinct* from an inactive subscription below, which
-        # has its own re-activation path. Surfaced separately so the
-        # /container/status endpoint can route admins to the
-        # ProviderPicker (which calls POST /billing/trial-checkout —
-        # the only way to create the first billing row) without
-        # accidentally short-circuiting the canceled/unpaid/paused
-        # cases that need /settings/billing instead.
+        # has its own re-activation path.
+        if owner_id.startswith("org_"):
+            # The free tier is personal-only, so a team never falls into a
+            # card-less trial_local. An org with no billing needs per-seat
+            # Teams billing; surface a DISTINCT code the frontend keys the
+            # Teams-billing paywall off (rather than the personal provider
+            # picker). Teams billing itself is a separate workstream — until
+            # it ships, the frontend renders an interim "coming soon" state
+            # for this code; afterwards the same code routes to checkout.
+            return Gate(
+                code="team_billing_required",
+                title="Set up Teams billing",
+                message="Your team needs an active per-seat subscription to start.",
+                action_label="Set up billing",
+                action_href="/settings/billing",
+                action_admin_only=True,
+                owner_role=owner_role,
+            )
+        # Personal owner, no row. Surfaced separately from the inactive
+        # cases so /container/status can route to the ProviderPicker (which
+        # calls POST /billing/trial-checkout — the only way to create the
+        # first billing row) without short-circuiting the
+        # canceled/unpaid/paused cases that need /settings/billing instead.
         return Gate(
             code="signup_required",
             title="Subscribe to start your container",

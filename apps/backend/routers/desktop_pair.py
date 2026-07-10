@@ -23,6 +23,7 @@ from core.config import settings
 from core.containers import get_workspace
 from core.repositories import container_repo
 from core.services.desktop_pair import (
+    DesktopPermissionGrant,
     EfsWorkspaceAdapter,
     pair_desktop_devices,
     revoke_desktop_device,
@@ -30,6 +31,13 @@ from core.services.desktop_pair import (
 from core.services.node_proxy import force_close_device
 
 router = APIRouter(prefix="/desktop", tags=["desktop"])
+
+
+class PairPermissions(BaseModel):
+    screen: bool = False
+    shell: bool = False
+    browser: bool = False
+    files: bool = False
 
 
 class PairRequest(BaseModel):
@@ -42,6 +50,13 @@ class PairRequest(BaseModel):
         ...,
         min_length=1,
         description="PEM-encoded Ed25519 public key for the openclaw CLI subprocess.",
+    )
+    permissions: PairPermissions | None = Field(
+        default=None,
+        description=(
+            "User-granted desktop command groups. Omitted means legacy full access "
+            "for backward-compatible desktop clients; new clients send this explicitly."
+        ),
     )
 
 
@@ -85,6 +100,16 @@ async def post_pair(
             display_name_base=display_name_base,
             tauri_mac_pubkey=body.tauriMacPubKey,
             cli_pubkey=body.cliPubKey,
+            permissions=(
+                DesktopPermissionGrant(
+                    screen=body.permissions.screen,
+                    shell=body.permissions.shell,
+                    browser=body.permissions.browser,
+                    files=body.permissions.files,
+                )
+                if body.permissions is not None
+                else None
+            ),
             workspace=_workspace_adapter(owner_id),
         )
     except ValueError as e:

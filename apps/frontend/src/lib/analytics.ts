@@ -95,6 +95,7 @@ export type AnalyticsEvent =
   | "desktop_update_install_clicked"
   | "desktop_file_access_added"
   | "desktop_file_access_removed"
+  | "desktop_permissions_saved"
   // Cron
   | "cron_job_created"
   | "cron_job_deleted"
@@ -117,7 +118,9 @@ export type AnalyticsEvent =
   // Plugins
   | "plugin_toggled"
   // Onboarding
+  | "onboarding_gate_blocked"
   | "onboarding_provider_completed"
+  | "onboarding_ready"
   | "onboarding_step_completed"
   | "onboarding_step_entered"
   | "org_invitation_accepted"

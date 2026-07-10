@@ -1,13 +1,23 @@
 // frontend/src/hooks/useGateway.tsx
 "use client";
 
-import { createContext, useContext, useEffect, type ReactNode } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useState,
+  type ReactNode,
+} from "react";
 import { useAuth, useUser } from "@clerk/nextjs";
 import {
   useGatewayConnection,
   type GatewayConnectionValue,
 } from "@isol8/shared";
 import { WS_URL } from "@/lib/api";
+import {
+  DESKTOP_PERMISSIONS_CHANGED_EVENT,
+  readDesktopPermissionGrant,
+} from "@/lib/desktopPermissions";
 
 // The connection machine (reconnect/backoff, keepalive, RPC correlation,
 // message routing) lives in @isol8/shared so web and mobile share one
@@ -32,6 +42,7 @@ const GatewayContext = createContext<GatewayContextValue | null>(null);
 export function GatewayProvider({ children }: { children: ReactNode }) {
   const { getToken } = useAuth();
   const { user } = useUser();
+  const [desktopPermissionRevision, setDesktopPermissionRevision] = useState(0);
 
   // getToken/uuid identities are unstable across renders; the shared hook
   // routes them through refs internally, preserving the single-flight
@@ -47,16 +58,33 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const tauri = // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (window as any).__TAURI__;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const tauri = (window as any).__TAURI__;
     if (!tauri?.event?.listen) return;
 
     let unlisten: (() => void) | null = null;
-    tauri.event.listen("node:status", (event: { payload: string }) => {
-      setNodeConnected(event.payload === "connected");
-    }).then((fn: () => void) => { unlisten = fn; });
-    return () => { unlisten?.(); };
+    tauri.event
+      .listen("node:status", (event: { payload: string }) => {
+        setNodeConnected(event.payload === "connected");
+      })
+      .then((fn: () => void) => {
+        unlisten = fn;
+      });
+    return () => {
+      unlisten?.();
+    };
   }, [setNodeConnected]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const bump = () => setDesktopPermissionRevision((value) => value + 1);
+    window.addEventListener(DESKTOP_PERMISSIONS_CHANGED_EVENT, bump);
+    window.addEventListener("storage", bump);
+    return () => {
+      window.removeEventListener(DESKTOP_PERMISSIONS_CHANGED_EVENT, bump);
+      window.removeEventListener("storage", bump);
+    };
+  }, []);
 
   // ---- Tauri desktop: push auth identity when Clerk user changes or WS reconnects ----
   //
@@ -73,23 +101,37 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
   // itself so the WS lifecycle isn't disturbed when Clerk resolves.
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const tauri = // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (window as any).__TAURI__;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const tauri = (window as any).__TAURI__;
     if (!tauri?.core?.invoke) return;
-    if (!user?.id) return;  // wait for Clerk to resolve before pushing
-    if (!isConnected) return;  // only push once WS is open (ensures token fresh)
+    if (!user?.id) return; // wait for Clerk to resolve before pushing
+    if (!isConnected) return; // only push once WS is open (ensures token fresh)
+    const desktopGrant = readDesktopPermissionGrant();
+    if (!desktopGrant) return;
 
     let cancelled = false;
     getToken().then((token) => {
       if (cancelled || !token) return;
-      tauri.core.invoke("send_auth_token", {
-        token,
-        displayName: user.fullName || user.firstName || "User",
-        userId: user.id,
-      }).catch(() => {});
+      tauri.core
+        .invoke("send_auth_token", {
+          token,
+          displayName: user.fullName || user.firstName || "User",
+          userId: user.id,
+          permissions: desktopGrant.permissions,
+        })
+        .catch(() => {});
     });
-    return () => { cancelled = true; };
-  }, [isConnected, user?.id, user?.fullName, user?.firstName, getToken]);
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    isConnected,
+    user?.id,
+    user?.fullName,
+    user?.firstName,
+    getToken,
+    desktopPermissionRevision,
+  ]);
 
   return (
     <GatewayContext.Provider value={connection}>

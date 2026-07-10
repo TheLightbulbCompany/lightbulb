@@ -77,6 +77,29 @@ DESKTOP_CLI_COMMANDS: tuple[str, ...] = (
     "dir.fetch",
 )
 
+DESKTOP_MAC_BASE_COMMANDS: tuple[str, ...] = (
+    "system.notify",
+    "device.info",
+    "device.status",
+    "device.health",
+    "device.permissions",
+)
+
+DESKTOP_CLI_SHELL_COMMANDS: tuple[str, ...] = (
+    "system.run",
+    "system.run.prepare",
+    "system.which",
+)
+
+DESKTOP_CLI_BROWSER_COMMANDS: tuple[str, ...] = ("browser.proxy",)
+
+DESKTOP_CLI_FILE_COMMANDS: tuple[str, ...] = (
+    "file.fetch",
+    "file.write",
+    "dir.list",
+    "dir.fetch",
+)
+
 ALLOWED_CLIENT_IDS = {"openclaw-macos", "node-host"}
 
 
@@ -90,6 +113,57 @@ def assert_command_sets_disjoint(
 
 # Module-load defensive assertion: protect against future drift in the constants above.
 assert_command_sets_disjoint(DESKTOP_MAC_COMMANDS, DESKTOP_CLI_COMMANDS)
+
+
+@dataclass(frozen=True)
+class DesktopPermissionGrant:
+    """User-granted desktop command groups.
+
+    `None` from the API layer is treated as legacy/full access so older
+    desktop clients keep working. New clients send this explicitly after the
+    user accepts the first-run permission screen.
+    """
+
+    screen: bool = False
+    shell: bool = False
+    browser: bool = False
+    files: bool = False
+
+    @classmethod
+    def full(cls) -> "DesktopPermissionGrant":
+        return cls(screen=True, shell=True, browser=True, files=True)
+
+    def mac_commands(self) -> tuple[str, ...]:
+        allowed = set(DESKTOP_MAC_BASE_COMMANDS)
+        if self.screen:
+            allowed.add("screen.snapshot")
+        return tuple(command for command in DESKTOP_MAC_COMMANDS if command in allowed)
+
+    def cli_commands(self) -> tuple[str, ...]:
+        commands: list[str] = []
+        if self.shell:
+            commands.extend(DESKTOP_CLI_SHELL_COMMANDS)
+        if self.browser:
+            commands.extend(DESKTOP_CLI_BROWSER_COMMANDS)
+        if self.files:
+            commands.extend(DESKTOP_CLI_FILE_COMMANDS)
+        return tuple(commands)
+
+    def mac_caps(self) -> list[str]:
+        caps = ["system"]
+        if self.screen:
+            caps.append("screen")
+        return caps
+
+    def cli_caps(self) -> list[str]:
+        caps: list[str] = []
+        if self.shell:
+            caps.append("system")
+        if self.browser:
+            caps.append("browser")
+        if self.files:
+            caps.append("file")
+        return caps
 
 
 def _public_key_raw_bytes(pubkey_pem: str) -> bytes:
@@ -185,9 +259,9 @@ def build_paired_entry(
     return entry
 
 
-# Mutator contract: receives the current paired.json state as a FLAT dict
-# (``Record<deviceId, PairedDevice>`` per upstream pairing-files.ts), mutates
-# it in place, and returns True iff a write is needed.
+# Mutator contract: receives the current pairing-state file as a FLAT dict
+# (``Record<id, Entry>`` per upstream pairing-files.ts), mutates it in place,
+# and returns True iff a write is needed.
 PairedMutator = Callable[[dict], bool]
 
 
@@ -204,6 +278,7 @@ class WorkspaceLike(Protocol):
     gateway_url: str
 
     async def mutate_paired_json(self, mutator: PairedMutator) -> None: ...
+    async def mutate_node_paired_json(self, mutator: PairedMutator) -> None: ...
     async def get_gateway_token(self) -> str: ...
     async def upsert_paired_devices(self, entries: dict) -> None: ...
     async def remove_paired_device(self, device_id: str) -> None: ...
@@ -219,6 +294,46 @@ class PairResult:
     commands_cli: tuple[str, ...]
 
 
+def build_node_paired_entry(
+    *,
+    device_entry: dict,
+    caps: list[str],
+    platform: str = "macos",
+    device_family: str | None = None,
+) -> dict:
+    """Construct OpenClaw's approved ``nodes/paired.json`` entry.
+
+    OpenClaw 2026.3.31+ has TWO gates:
+
+    1. ``devices/paired.json`` authenticates the connecting device identity.
+    2. ``nodes/paired.json`` approves the live command/capability surface.
+
+    Isol8 already performs an authenticated Clerk-backed desktop pair flow and
+    derives the command set server-side, so that pair call is our approval
+    moment for first-party desktop nodes. Without this entry the device can
+    connect, but OpenClaw strips live commands to ``[]`` and agents see errors
+    like "node requires system.run".
+    """
+    now_ms = int(time.time() * 1000)
+    entry = {
+        "nodeId": device_entry["deviceId"],
+        # Required by upstream NodePairingPairedNode. Device-auth reconnects do
+        # not use this legacy pairing token, but keep the canonical shape.
+        "token": secrets.token_urlsafe(32),
+        "clientId": device_entry.get("clientId"),
+        "clientMode": device_entry.get("clientMode", "node"),
+        "displayName": device_entry.get("displayName"),
+        "platform": platform,
+        "caps": caps,
+        "commands": list(device_entry.get("commands") or []),
+        "createdAtMs": now_ms,
+        "approvedAtMs": now_ms,
+    }
+    if device_family is not None:
+        entry["deviceFamily"] = device_family
+    return entry
+
+
 async def pair_desktop_devices(
     *,
     user_id: str,
@@ -226,6 +341,7 @@ async def pair_desktop_devices(
     display_name_base: str,
     tauri_mac_pubkey: str,
     cli_pubkey: str,
+    permissions: DesktopPermissionGrant | None = None,
     workspace: WorkspaceLike,
 ) -> PairResult:
     """Idempotently register the user's two devices in the owner's container paired.json.
@@ -233,22 +349,36 @@ async def pair_desktop_devices(
     Returns connection material the desktop needs to spawn the openclaw subprocess
     and connect both nodes to the gateway.
     """
+    grant = permissions or DesktopPermissionGrant.full()
+    mac_commands = grant.mac_commands()
+    cli_commands = grant.cli_commands()
+
     mac_entry = build_paired_entry(
         pubkey_pem=tauri_mac_pubkey,
         client_id="openclaw-macos",
         display_name=f"{display_name_base} | Isol8 Mac",
-        commands=list(DESKTOP_MAC_COMMANDS),
+        commands=list(mac_commands),
         user_id=user_id,
     )
     cli_entry = build_paired_entry(
         pubkey_pem=cli_pubkey,
         client_id="node-host",
         display_name=f"{display_name_base} | Isol8 Desktop (CLI)",
-        commands=list(DESKTOP_CLI_COMMANDS),
+        commands=list(cli_commands),
         user_id=user_id,
+    )
+    mac_node_entry = build_node_paired_entry(
+        device_entry=mac_entry,
+        caps=grant.mac_caps(),
+    )
+    cli_node_entry = build_node_paired_entry(
+        device_entry=cli_entry,
+        caps=grant.cli_caps(),
+        device_family="Mac",
     )
 
     new_device_ids = {mac_entry["deviceId"], cli_entry["deviceId"]}
+    node_approval_allowed_ids: set[str] = set()
     # Personal workspaces have owner_id == user_id (only one human owns
     # the container); org workspaces have a distinct owner_id. In the
     # personal case there's no other user who could own a legacy
@@ -313,6 +443,12 @@ async def pair_desktop_devices(
             device_id = entry["deviceId"]
             existing = paired.get(device_id)
             if existing and existing.get("publicKey") == entry["publicKey"]:
+                entry_user_id = existing.get("userId")
+                if entry_user_id == user_id or (entry_user_id is None and is_personal_workspace):
+                    # Same user's existing paired device (or personal legacy
+                    # entry) is safe to node-approve. Do not stamp userId here;
+                    # see the security note below.
+                    node_approval_allowed_ids.add(device_id)
                 # Idempotent: existing entry has the same key — keep its
                 # tokens.
                 #
@@ -332,10 +468,47 @@ async def pair_desktop_devices(
                 # workspaces. Worth the trade.
                 continue
             paired[device_id] = entry
+            node_approval_allowed_ids.add(device_id)
             changed = True
         return changed
 
     await workspace.mutate_paired_json(_mutate)
+
+    def _mutate_node_pairing(paired_nodes: dict) -> bool:
+        """Pre-approve OpenClaw's live node command surface for our devices.
+
+        OpenClaw 2026.3.31+ requires node pairing approval in addition to
+        device pairing. We only auto-approve nodes that the device-pair mutator
+        proved are new/current for this caller; a caller who merely submits
+        another org member's public key does not get to mutate that member's
+        node approval.
+        """
+        changed = False
+        for node_entry in (mac_node_entry, cli_node_entry):
+            node_id = node_entry["nodeId"]
+            if node_id not in node_approval_allowed_ids:
+                continue
+            existing = paired_nodes.get(node_id)
+            if existing:
+                # Preserve the legacy node-pair token and creation timestamp,
+                # but refresh server-owned metadata/commands. This repairs old
+                # entries when our derived command surface changes.
+                next_entry = {
+                    **node_entry,
+                    "token": existing.get("token") or node_entry["token"],
+                    "createdAtMs": existing.get("createdAtMs") or node_entry["createdAtMs"],
+                    "approvedAtMs": existing.get("approvedAtMs") or node_entry["approvedAtMs"],
+                }
+                if existing == next_entry:
+                    continue
+                paired_nodes[node_id] = next_entry
+                changed = True
+                continue
+            paired_nodes[node_id] = node_entry
+            changed = True
+        return changed
+
+    await workspace.mutate_node_paired_json(_mutate_node_pairing)
 
     # Project both device pubkeys onto the owner's containers DDB row so the
     # WebSocket Lambda authorizer can point-look-up deviceId -> pubkey for
@@ -358,8 +531,8 @@ async def pair_desktop_devices(
         gateway_token=await workspace.get_gateway_token(),
         device_id_mac=mac_entry["deviceId"],
         device_id_cli=cli_entry["deviceId"],
-        commands_mac=DESKTOP_MAC_COMMANDS,
-        commands_cli=DESKTOP_CLI_COMMANDS,
+        commands_mac=mac_commands,
+        commands_cli=cli_commands,
     )
 
 
@@ -387,6 +560,7 @@ async def revoke_desktop_device(
         return True
 
     await workspace.mutate_paired_json(_mutate)
+    await workspace.mutate_node_paired_json(_mutate)
     # Remove the authorizer-reachable projection too, or a revoked device could
     # keep self-minting valid WS-upgrade tokens against a surviving pubkey row.
     await workspace.remove_paired_device(device_id)
@@ -451,6 +625,13 @@ class EfsWorkspaceAdapter:
         lock_path = os.path.join(devices_dir, "paired.json.lock")
         return devices_dir, paired_path, lock_path, owner_dir
 
+    def _pairing_paths(self, subdir: str, filename: str) -> tuple[str, str, str]:
+        owner_dir = str(self.workspace.user_path(self.owner_id))
+        target_dir = os.path.join(owner_dir, subdir)
+        json_path = os.path.join(target_dir, filename)
+        lock_path = os.path.join(target_dir, f"{filename}.lock")
+        return target_dir, json_path, lock_path
+
     async def mutate_paired_json(self, mutator: PairedMutator) -> None:
         """Locked read-modify-write of ``devices/paired.json``.
 
@@ -462,6 +643,40 @@ class EfsWorkspaceAdapter:
         default ``/mnt/efs/users`` doesn't exist).
         """
         devices_dir, paired_path, lock_path, _ = self._paths()
+        await self._mutate_pairing_json(
+            target_dir=devices_dir,
+            json_path=paired_path,
+            lock_path=lock_path,
+            log_label="devices/paired.json",
+            mutator=mutator,
+        )
+
+    async def mutate_node_paired_json(self, mutator: PairedMutator) -> None:
+        """Locked read-modify-write of ``nodes/paired.json``.
+
+        OpenClaw stores device identity trust in ``devices/paired.json`` and
+        node command-surface approval in ``nodes/paired.json``. Desktop pair
+        must write both, using the same lock/write discipline.
+        """
+        target_dir, json_path, lock_path = self._pairing_paths("nodes", "paired.json")
+        await self._mutate_pairing_json(
+            target_dir=target_dir,
+            json_path=json_path,
+            lock_path=lock_path,
+            log_label="nodes/paired.json",
+            mutator=mutator,
+        )
+
+    async def _mutate_pairing_json(
+        self,
+        *,
+        target_dir: str,
+        json_path: str,
+        lock_path: str,
+        log_label: str,
+        mutator: PairedMutator,
+    ) -> None:
+        """Locked read-modify-write of one OpenClaw flat pairing file."""
         # Outermost: per-owner threading.Lock guards in-process callers.
         # Innermost (acquired inside _do_rmw): fcntl.lockf guards
         # cross-process callers (in-container node self-registration).
@@ -470,7 +685,7 @@ class EfsWorkspaceAdapter:
 
         def _do_rmw():
             current: dict = {}
-            paired_exists = os.path.exists(paired_path)
+            paired_exists = os.path.exists(json_path)
 
             lock_fd = None
             try:
@@ -479,22 +694,24 @@ class EfsWorkspaceAdapter:
                     # see a consistent view across concurrent writers
                     # (in-container node self-registration, admin
                     # workers, /desktop/pair).
-                    lock_fd = self._open_lock_fd(devices_dir, lock_path)
+                    lock_fd = self._open_lock_fd(target_dir, lock_path)
                     fcntl.lockf(lock_fd, fcntl.LOCK_EX)
                     try:
-                        with open(paired_path, "r") as f:
+                        with open(json_path, "r") as f:
                             loaded = json.load(f)
                         if isinstance(loaded, dict):
                             current = loaded
                         else:
                             logger.warning(
-                                "paired.json for owner %s was not a dict (got %s); resetting",
+                                "%s for owner %s was not a dict (got %s); resetting",
+                                log_label,
                                 self.owner_id,
                                 type(loaded).__name__,
                             )
                     except (OSError, ValueError) as exc:
                         logger.warning(
-                            "Failed to parse paired.json for owner %s (%s); resetting",
+                            "Failed to parse %s for owner %s (%s); resetting",
+                            log_label,
                             self.owner_id,
                             exc,
                         )
@@ -506,20 +723,20 @@ class EfsWorkspaceAdapter:
                 # Phase 2 — write. If paired.json didn't exist we haven't
                 # opened the lock yet; create devices/ first, then lock.
                 if lock_fd is None:
-                    os.makedirs(devices_dir, exist_ok=True)
-                    self._chown_uid_1000_best_effort(devices_dir)
-                    lock_fd = self._open_lock_fd(devices_dir, lock_path)
+                    os.makedirs(target_dir, exist_ok=True)
+                    self._chown_uid_1000_best_effort(target_dir)
+                    lock_fd = self._open_lock_fd(target_dir, lock_path)
                     fcntl.lockf(lock_fd, fcntl.LOCK_EX)
 
                 # Validate serializability before touching disk.
                 serialized = json.dumps(current, indent=2)
 
-                fd, tmp_path = tempfile.mkstemp(dir=devices_dir, suffix=".tmp")
+                fd, tmp_path = tempfile.mkstemp(dir=target_dir, suffix=".tmp")
                 try:
                     with os.fdopen(fd, "w") as f:
                         f.write(serialized)
                     self._chown_uid_1000_best_effort(tmp_path)
-                    os.rename(tmp_path, paired_path)
+                    os.rename(tmp_path, json_path)
                 except Exception:
                     if os.path.exists(tmp_path):
                         try:
@@ -529,7 +746,8 @@ class EfsWorkspaceAdapter:
                     raise
 
                 logger.info(
-                    "Wrote paired.json for owner %s (%d entries)",
+                    "Wrote %s for owner %s (%d entries)",
+                    log_label,
                     self.owner_id,
                     len(current),
                 )

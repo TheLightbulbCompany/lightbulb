@@ -48,14 +48,17 @@ function PostHogInit() {
       capture_pageleave: true,
       // CEO observability: enable session replay. Record typed text by
       // default so admins can actually see what users tried to do, but
-      // mask anything marked sensitive (password fields always; add
-      // `data-private` to any DOM node that must not be recorded).
+      // mask anything marked sensitive (password + email fields always; add
+      // `data-private` to any DOM node that must not be recorded). Email is
+      // masked because replay records typed input verbatim including on the
+      // Clerk sign-in/sign-up screens — a PII channel that bypasses the
+      // no-PII-in-props discipline everywhere else.
       // See https://posthog.com/docs/session-replay/configuration.
       session_recording: {
         maskAllInputs: false,
         maskInputOptions: {
           password: true,
-          email: false,
+          email: true,
         },
         blockSelector: "[data-private]",
       },

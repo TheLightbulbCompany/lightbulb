@@ -10,11 +10,11 @@ import {
   CheckCircle,
   Circle,
 } from "lucide-react";
-import { useOrganization } from "@clerk/nextjs";
+import { useOrganization, useAuth } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
 import { useBilling } from "@/hooks/useBilling";
-import { useProvisioningState, type ColdStartPhase } from "@/hooks/useProvisioningState";
+import { useProvisioningState, type ColdStartPhase, type BlockedPayload } from "@/hooks/useProvisioningState";
 import { useGateway } from "@/hooks/useGateway";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
 import { nextOnboardingCompletion } from "@/components/chat/onboardingAnalytics";
@@ -118,6 +118,12 @@ const ONBOARDING_PHASE_ORDER: Phase[] = [
 // below — so time spent on OAuth/billing/credits doesn't burn this budget.
 const TIMEOUT_MS = 300_000;
 
+// Persisted marker so the onboarding_ready activation milestone fires at most
+// once per browser, ever. Routine restarts of a stopped/errored container also
+// pass through provisioning on a normal /chat visit, so an in-memory guard
+// alone can't distinguish a first activation from a replay.
+const ONBOARDING_READY_STORAGE_KEY = "isol8_onboarding_ready_v1";
+
 /**
  * Rotating idea prompts shown while the container spins up. Kept short (≤ ~52 chars)
  * so they fit on one line and don't cause layout shift. Tone matches the rest of the
@@ -190,6 +196,13 @@ export function ProvisioningStepper({
 }) {
   const { organization } = useOrganization();
   const isOrg = !!organization;
+  const { userId: clerkUserId } = useAuth();
+  // Per-OWNER activation-marker key so a shared/QA browser doesn't let the first
+  // account's activation suppress onboarding_ready for a later account's real
+  // first cold start. The event is a person-level denominator (PostHog is
+  // identified by Clerk user), so scope the once-ever marker to the owner
+  // (org id for org workspaces, else the Clerk user id).
+  const readyStorageKey = `${ONBOARDING_READY_STORAGE_KEY}:${organization?.id ?? clerkUserId ?? "anon"}`;
   const { account, isLoading: billingLoading, isSubscribed } = useBilling();
   // Set when we first enter the container/gateway phase — _not_ at component
   // mount. Time spent on the pre-provision steps (provider choice, billing
@@ -382,6 +395,23 @@ export function ProvisioningStepper({
   // becomes a real funnel step. Entry to the provider phase also carries the
   // chosen provider so we can segment OAuth vs BYO vs credits drop-off.
   const prevPhaseRef = useRef<Phase | null>(null);
+  const readyFiredRef = useRef(false);
+  // Guard `onboarding_ready` against false activations. Two failure modes:
+  // (1) an already-provisioned user opening /chat has no container data on first
+  // render, so the UI briefly derives phase="container" then jumps to "ready"
+  // with no real cold start; (2) an existing user whose container was
+  // stopped/errored gets auto-restarted on /chat and passes through provisioning
+  // AGAIN — a routine restart, still trigger="onboarding". Both would inflate the
+  // activation denominator + TTFV. So we require BOTH a witnessed cold start
+  // (backend phase went through provisioning/starting — rules out #1) AND a
+  // persisted once-ever marker (rules out #2 and every future replay): this is a
+  // first-activation milestone, so it must fire at most once per browser, ever.
+  const sawColdStartRef = useRef(false);
+  useEffect(() => {
+    if (container?.phase === "provisioning" || container?.phase === "starting") {
+      sawColdStartRef.current = true;
+    }
+  }, [container?.phase]);
   useEffect(() => {
     const prev = prevPhaseRef.current;
     prevPhaseRef.current = phase;
@@ -393,10 +423,81 @@ export function ProvisioningStepper({
         ? { provider_choice: providerChoice }
         : {}),
     });
+    // Activation milestone: the first time a container reaches "ready" after a
+    // WITNESSED cold start, record it with the real duration (from
+    // provisioningStartRef). This is the activation DENOMINATOR + time-to-first-
+    // value the step_completed funnel tail can't give (fast phase-skips drop
+    // intermediate events, undercounting "reached ready" ~3x).
+    //
+    // The once-ever marker is written on ANY first observed "ready" — including
+    // a pre-existing user already ready with no cold start this visit — so a
+    // later routine restart (stopped/errored container auto-restarts and
+    // re-enters provisioning) can never be miscounted as a new activation. Only
+    // the witnessed-cold-start case CAPTURES; an already-ready load just
+    // backfills the marker.
+    if (phase === "ready" && !readyFiredRef.current) {
+      readyFiredRef.current = true;
+      let alreadyActivated = false;
+      try {
+        alreadyActivated = window.localStorage.getItem(readyStorageKey) === "1";
+      } catch {
+        // storage-disabled browser: fall back to the in-mount ref guard only
+      }
+      if (!alreadyActivated) {
+        try {
+          window.localStorage.setItem(readyStorageKey, "1");
+        } catch {
+          /* best-effort */
+        }
+        // Capture a REAL activation only on the onboarding trigger. A
+        // "recovery" restart (an existing user manually recovering a stopped
+        // container) also cold-starts, and on a fresh/cleared browser (or with
+        // storage disabled) the marker above wouldn't yet exist to suppress it —
+        // so the trigger check is the third guard alongside witnessed-cold-start
+        // and the once-ever marker.
+        if (sawColdStartRef.current && trigger === "onboarding") {
+          const start = provisioningStartRef.current;
+          capture("onboarding_ready", {
+            elapsed_ms: start !== null ? Date.now() - start : null,
+          });
+        }
+      }
+    }
     if (prev === null) return;
     const completion = nextOnboardingCompletion(prev, phase, STEPS_PAID);
     if (completion) capture("onboarding_step_completed", { ...completion });
-  }, [phase, providerChoice]);
+  }, [phase, providerChoice, readyStorageKey]);
+
+  // Record provision-gate blocks (subscription_required / oauth-missing /
+  // credits_required / signup_required) keyed to the PERSON, once per code
+  // per mount. The server only emits an EMF metric with no person_id, so
+  // without this we can't tell WHICH users stalled at a gate, split by
+  // reason, or whether the same users ever recovered/converted.
+  //
+  // The signup gate is a special case: /container/status returns it as a 404,
+  // which useProvisioningState surfaces as gatePhase="needs-signup" with
+  // blocked=null (NOT the 402 "blocked" payload). Handle it explicitly with a
+  // synthetic "signup_required" code — it is the LARGEST gate bucket
+  // (ProviderPicker/no-subscription abandonment), so missing it would blind the
+  // signal to the most common stall.
+  const gateBlockFiredRef = useRef<string | null>(null);
+  useEffect(() => {
+    let code: string | null = null;
+    let ownerRole: BlockedPayload["owner_role"] | undefined;
+    if (gatePhase === "blocked" && blocked) {
+      code = blocked.code;
+      ownerRole = blocked.owner_role;
+    } else if (gatePhase === "needs-signup") {
+      code = "signup_required";
+    }
+    if (code && gateBlockFiredRef.current !== code) {
+      gateBlockFiredRef.current = code;
+      capture("onboarding_gate_blocked", {
+        code,
+        ...(ownerRole ? { owner_role: ownerRole } : {}),
+      });
+    }
+  }, [gatePhase, blocked]);
 
   // Tick elapsed once per second so the user sees real progress against the
   // expected budget — gives "still working" instead of an indefinite spinner.

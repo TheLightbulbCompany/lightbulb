@@ -67,6 +67,33 @@ export function PricingThreeCard() {
             </div>
           ))}
         </div>
+
+        <div className="ld-teams-strip" data-ld-reveal>
+          <div className="ld-teams-copy">
+            <h3>Isol8 for Teams</h3>
+            <p>Shared agents, one workspace, per-seat pricing.</p>
+          </div>
+          <Link
+            href="/sign-up?intent=team"
+            className="ld-btn"
+            onClick={() => {
+              capture("landing_pricing_card_clicked", {
+                provider_choice: "team",
+                destination: "/sign-up?intent=team",
+              });
+              capture("signup_started", {
+                source: "landing_pricing_teams",
+                provider_choice: "team",
+                destination: "/sign-up?intent=team",
+              });
+            }}
+          >
+            Create a team
+            <span className="ld-btn-arrow" aria-hidden="true">
+              →
+            </span>
+          </Link>
+        </div>
       </div>
     </section>
   );

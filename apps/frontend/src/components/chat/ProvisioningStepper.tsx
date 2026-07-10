@@ -449,7 +449,13 @@ export function ProvisioningStepper({
         } catch {
           /* best-effort */
         }
-        if (sawColdStartRef.current) {
+        // Capture a REAL activation only on the onboarding trigger. A
+        // "recovery" restart (an existing user manually recovering a stopped
+        // container) also cold-starts, and on a fresh/cleared browser (or with
+        // storage disabled) the marker above wouldn't yet exist to suppress it —
+        // so the trigger check is the third guard alongside witnessed-cold-start
+        // and the once-ever marker.
+        if (sawColdStartRef.current && trigger === "onboarding") {
           const start = provisioningStartRef.current;
           capture("onboarding_ready", {
             elapsed_ms: start !== null ? Date.now() - start : null,

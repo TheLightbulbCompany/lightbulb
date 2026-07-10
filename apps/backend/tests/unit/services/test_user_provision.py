@@ -933,10 +933,12 @@ async def test_org_member_no_billing_does_not_create_trial(_mock_create_trial_lo
 
 
 @pytest.mark.asyncio
-async def test_org_admin_no_billing_creates_trial_with_org_owner_type(_mock_create_trial_local_if_absent):
-    """A no-billing NEW org admin (org has no company yet): create_trial_local_if_absent
-    is awaited with owner_id=org_id, owner_type='org' -- the org's shared billing
-    row is keyed on org_id, never the admin's personal user_id."""
+async def test_org_admin_no_billing_does_not_create_trial(_mock_create_trial_local_if_absent):
+    """A no-billing NEW org admin does NOT create a trial row. The free tier is
+    personal-only and Teams billing is per-seat/no-trial, so the predicate
+    `not auth.is_org_context` excludes every org context -- admin included. The
+    org-company provisioning flow still runs; only the card-less trial is
+    withheld."""
     fake_provisioning = MagicMock()
     fake_provisioning.find_org_owner = AsyncMock(return_value=None)
     fake_provisioning.try_acquire_org_create_claim = AsyncMock(return_value=True)
@@ -953,15 +955,14 @@ async def test_org_admin_no_billing_creates_trial_with_org_owner_type(_mock_crea
     ):
         await ensure_user_ready(_org_admin_auth("user_admin", "org_xyz", "a@example.com"))
 
-    _mock_create_trial_local_if_absent.assert_awaited_once_with(owner_id="org_xyz", owner_type="org")
+    _mock_create_trial_local_if_absent.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_existing_owner_trial_create_is_harmless_noop(_mock_create_trial_local_if_absent):
-    """An existing/paid owner path is unchanged: the create call still fires
-    (it's a harmless idempotent no-op per Task 1's conditional put -- it
-    never overwrites an existing row), and the normal join flow for an org
-    whose company already exists proceeds exactly as before."""
+async def test_org_admin_join_existing_company_creates_no_trial(_mock_create_trial_local_if_absent):
+    """An org admin joining an already-provisioned company: no trial row is
+    created (orgs never get the card-less trial), and the normal join flow for
+    an org whose company already exists proceeds exactly as before."""
     fake_owner_row = MagicMock(status="active", company_id="co_1", user_id="user_first")
     fake_provisioning = MagicMock()
     fake_provisioning.find_org_owner = AsyncMock(return_value=fake_owner_row)
@@ -979,7 +980,7 @@ async def test_existing_owner_trial_create_is_harmless_noop(_mock_create_trial_l
     ):
         await ensure_user_ready(_org_admin_auth("user_second_admin", "org_xyz", "b@example.com"))
 
-    _mock_create_trial_local_if_absent.assert_awaited_once_with(owner_id="org_xyz", owner_type="org")
+    _mock_create_trial_local_if_absent.assert_not_awaited()
     fake_provisioning.provision_member.assert_awaited_once_with(
         owner_id="org_xyz",
         user_id="user_second_admin",

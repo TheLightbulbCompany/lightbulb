@@ -68,20 +68,25 @@ async def ensure_user_ready(auth: AuthContext, *, provision_container: bool = Tr
     """
     owner_id = auth.org_id if auth.is_org_context else auth.user_id
 
-    # A genuinely-new owner (no billing row yet) auto-defaults into a
-    # card-less trial_local BEFORE the gate is evaluated, so the gate
+    # A genuinely-new PERSONAL owner (no billing row yet) auto-defaults into
+    # a card-less trial_local BEFORE the gate is evaluated, so the gate
     # (which treats trial_local as active + provision-eligible) returns
     # None below and the normal Paperclip-seed + background_provision flow
     # runs. create_trial_local_if_absent is an idempotent conditional put
     # (no-op if any row already exists), so this is safe on every ~3s poll
-    # and never overwrites a paid/canceled owner. Gated to container-owners
-    # (personal user OR org admin) — mirrors the container-dispatch
-    # predicate below: a non-admin org member rides the org owner's billing
-    # account and must never create one keyed on their own user_id.
-    if not auth.is_org_context or auth.is_org_admin:
+    # and never overwrites a paid/canceled owner.
+    #
+    # The free tier is PERSONAL-ONLY: the master plan refuses org owners,
+    # and Teams billing is per-seat / no-trial (a team enters through the
+    # dedicated org flow, not this trial). So `not auth.is_org_context`
+    # excludes every org context — admin included. A new org admin therefore
+    # gets no auto-trial; they reach chat via a paid Teams subscription. (A
+    # non-admin org member was already excluded here for a different reason:
+    # they ride the org owner's billing account.)
+    if not auth.is_org_context:
         await billing_repo.create_trial_local_if_absent(
             owner_id=owner_id,
-            owner_type=("org" if auth.is_org_context else "personal"),
+            owner_type="personal",
         )
 
     # The gate check uses the same predicate as /container/status so

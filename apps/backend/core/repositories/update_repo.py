@@ -76,15 +76,27 @@ async def get_in_flight(owner_id: str) -> list[dict]:
     Reads are strongly consistent: the guard must see a row written moments earlier
     (a just-queued update, or a concurrent apply that already flipped to
     'applying') rather than risk an eventually-consistent miss.
+
+    Paginated: the status FilterExpression is applied AFTER DynamoDB's 1 MB page
+    read, so an owner with enough historical terminal rows could otherwise push a
+    newer in-flight row onto a later page and hide it from the guard.
     """
     table = _get_table()
-    response = await run_in_thread(
-        table.query,
-        KeyConditionExpression=Key("owner_id").eq(owner_id),
-        FilterExpression=Attr("status").is_in(["pending", "scheduled", "applying"]),
-        ConsistentRead=True,
-    )
-    return response.get("Items", [])
+    items: list[dict] = []
+    last_key: dict | None = None
+    while True:
+        kwargs: dict = {
+            "KeyConditionExpression": Key("owner_id").eq(owner_id),
+            "FilterExpression": Attr("status").is_in(["pending", "scheduled", "applying"]),
+            "ConsistentRead": True,
+        }
+        if last_key is not None:
+            kwargs["ExclusiveStartKey"] = last_key
+        response = await run_in_thread(table.query, **kwargs)
+        items.extend(response.get("Items", []))
+        last_key = response.get("LastEvaluatedKey")
+        if not last_key:
+            return items
 
 
 async def set_status_conditional(

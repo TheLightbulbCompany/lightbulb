@@ -142,6 +142,42 @@ async def test_get_in_flight_empty(dynamodb_table):
 
 
 @pytest.mark.asyncio
+async def test_get_in_flight_paginates_across_pages(monkeypatch):
+    """Follows LastEvaluatedKey so a newer in-flight row on a later page (pushed
+    there by historical terminal rows the FilterExpression drops post-read) isn't
+    missed by the guard. First page is strongly consistent + carries no
+    ExclusiveStartKey; the second reuses page 1's key."""
+    from unittest.mock import MagicMock
+
+    from core.repositories import update_repo
+
+    pages = [
+        {
+            "Items": [{"update_id": "a", "status": "pending"}],
+            "LastEvaluatedKey": {"owner_id": "u", "update_id": "a"},
+        },
+        {"Items": [{"update_id": "b", "status": "applying"}]},
+    ]
+    seen: list[dict] = []
+
+    def fake_query(**kwargs):
+        seen.append(kwargs)
+        return pages[len(seen) - 1]
+
+    fake_table = MagicMock()
+    fake_table.query = fake_query
+    monkeypatch.setattr(update_repo, "_get_table", lambda: fake_table)
+
+    results = await update_repo.get_in_flight("u")
+
+    assert len(seen) == 2
+    assert seen[0].get("ConsistentRead") is True
+    assert "ExclusiveStartKey" not in seen[0]
+    assert seen[1].get("ExclusiveStartKey") == {"owner_id": "u", "update_id": "a"}
+    assert {r["update_id"] for r in results} == {"a", "b"}
+
+
+@pytest.mark.asyncio
 async def test_set_status_conditional_success(dynamodb_table):
     from core.repositories import update_repo
 

@@ -110,8 +110,9 @@ downstream depends on this being true.
 - In `record_usage` (`usage_service.py:45-155`), add a `meta/` cost path:
   `spend = input_tokens × $1.25/M + output_tokens × $4.25/M` from the reconciled
   actual usage (Step 0). Keep it **out of Metronome/Stripe** — write it to the
-  free-trial spend counter (W3's `free-trial-claims.spent_microcents`), not the
-  Bedrock/Metronome path.
+  free-trial spend counter in the **existing `usage-counters` table** (W3), not the
+  Bedrock/Metronome path. (No new table — verified 2026-07-10, workflow `wzog5zvh5`:
+  Metronome is Bedrock/Stripe-bound + fail-open + notify-not-gate.)
 - Pricing constants live next to the provider config (single source).
 
 ## Step 5 — Tests & validation

@@ -149,45 +149,60 @@ the no-train clause + retention govern the Model API before shipping.
 `record_usage` records **spend 0** and never reaches Metronome/Stripe
 (`usage_service.py:99-118`). The gap is there's no COUNT ceiling on that path.
 
-**Two inversions vs. existing paid patterns (must implement explicitly):**
-1. **Fail CLOSED.** `metronome_gate` treats a missing row as *allowed*
-   (`metronome_gate.py:58-60`) — safe for paid (IAM-revoke backstop), **wrong for
-   free**. The free counter must deny on a missing/unreadable row.
-2. **Key on identity, not `owner_id`.** Farming defeats `owner_id` (new account =
-   new owner). The one-trial claim keys on **canonicalized verified email**.
+**Verified 2026-07-10 (workflow `wzog5zvh5`): NOT Metronome, NOT Stripe-per-signup,
+NO new table.**
+- **Metronome is the wrong home.** Its own docs: *"your application is responsible
+  for enforcing access blocks"* — it notifies, it does not gate; its balance read
+  has no hot-path SLA. And Isol8's Metronome is hard-wired to the **Bedrock
+  CloudWatch meter Lambda** + a **Stripe-backed customer/contract**, fails **open**,
+  and fires only for `bedrock_claude`. Using it would mean building a Meta→Metronome
+  ingest + a full Stripe+Metronome customer per free user + inverting fail-open. No.
+- **Stripe is wrong for the free *lifecycle*.** A no-card Stripe trial mints a
+  zero-value Customer+Subscription per signup (pollution; dunning/collection is inert
+  with no card). Card *is* optional there (`payment_method_collection: 'if_required'`
+  + `end_behavior.missing_payment_method: 'cancel'`), but we only touch Stripe at
+  **paid conversion**, not at free signup.
 
-**New table `isol8-{env}-free-trial-claims`** (model on `MetronomeFastGateTable`;
-grant via conditional `PutItem attribute_not_exists`, **no TTL**):
-- PK `identity_key` (lowercased, `+tag`-stripped, gmail-dot-stripped verified
-  email), `claimed_by_owner_id`, `claimed_at`, `trial_expires_at` (+3d),
-  `spent_microcents` (atomic ADD — reconciled to actual Meta spend),
-  `reserved_microcents` (transient in-flight reservations), `input_tokens` /
-  `output_tokens` (observability), `status` ∈
-  {active, exhausted, expired, converted}. Cap = **$3 total** (300000 microcents).
-- Plus a global `free-tier:global:{YYYY-MM-DD}` spend row for the shared-key
-  kill-switch.
+**v1 homes — existing tables only:**
+- **$3 spend → existing `usage-counters` table** (`usage_repo.increment`, atomic
+  `ADD … RETURN ALL_NEW` — already the reserve primitive). Meta $ = tokens × pricing,
+  computed on the existing post-turn `_safe_record_usage` hook
+  (`websocket_chat.py:847`; non-Bedrock records spend 0 today,
+  `usage_service.py:99-118`). `gate_chat` does a worst-case reserve → block at $3,
+  **fail-closed** (deny on missing/unreadable — the one behavior we invert vs.
+  `metronome_gate`).
+- **3-day clock + status → existing `billing_accounts` row**:
+  `subscription_status = "trial_local"` + `trial_end` epoch, evaluated at poll time
+  in `provision_gate` (no scheduler). Create a lightweight row at trial start.
+- **Churn wall → reuse `is_trial_blocked` verbatim**: add `"trial_expired"` to
+  `TRIAL_BLOCKED_STATUSES` so a churned free-trialer is blocked like a churned paid
+  one.
+- **One trial per `owner_id` (Clerk account)** for v1.
 
-Do **not** put free state on `billing_accounts` (a pre-sub free user has no billing
-row; `is_trial_blocked` returns false for missing rows —
-`provision_gate.py:97-98`). A read-only `meta_trial_converted` mirror flag on the
-billing row is fine as a fast-read cache only.
+**Deferred (add only if abused):** canonical-email keying + disposable-domain
+denylist (anti-farming). Each farmed account is **$3-capped + Clerk-email-verified**
+→ blast radius ≈ $3/account, a scale problem not a launch problem. If it appears,
+the email-canonical layer is an additive claim-path check, not a rewrite. **This
+drops the earlier `free-trial-claims` table** per the "no new DynamoDB table"
+decision.
 
-**Abuse-defense checklist (enforcement point → vector):**
+**v1 controls (enforcement point → vector):**
 
 | # | Control | Point |
 |---|---------|-------|
-| 1 | Meta free-eligibility gate (verified email · not trial-blocked · not active-sub · personal-only · claim live) | new branch in `provision_gate` + pre-forward check in `gate_chat` (`connection_pool.py:1786`) |
-| 2 | One-trial-per-identity (conditional PutItem, no TTL) | new `free_trial_repo.claim_if_not_exists` (model on `webhook_dedup.py:84`); called from new `POST /billing/meta-free-start` |
-| 3 | Verified + canonicalized email (don't trust JWT `email`) | `clerk_admin` re-check + `identity.canonicalize_email` in claim path |
-| 4 | Disposable-domain denylist (config-driven; exempt `mailsac.com`) | claim path |
-| 5 | Post-turn **spend reconciliation** to actual Meta `usage` × pricing | hook `_safe_record_usage` (`websocket_chat.py:847`) → `free_trial_repo.reconcile_spend` |
-| 6 | **$3 spend / expiry hard-stop, fail-closed** | Meta branch in `gate_chat` |
-| 7 | **Atomic worst-case reserve** at gate (closes parallel-fan-out TOCTOU) | `gate_chat` Meta branch, `ADD reserved_microcents … return_new` like `usage_repo.py:49` |
-| 8 | Global daily **spend** kill-switch on shared key | `gate_chat` reads global spend row vs `META_FREE_DAILY_GLOBAL_SPEND_CAP` |
-| 9 | Churned-customer block | Meta gate consults `is_trial_blocked` (includes `canceled`) |
-| 10 | Paid can't downgrade to free | `change_provider` rejects target `meta`; `gate_chat` refuses Meta if `is_subscription_active`/`is_trial_blocked` |
-| 11 | Org exclusion (personal-only) | Meta gate refuses `owner_id.startswith("org_")` |
-| 12 | Separate count metric, no Stripe/Metronome | `put_metric("free_tier.meta.message")`; spend 0 by construction |
+| 1 | Meta free-eligibility gate (not trial-blocked · not active-sub · personal-only · trial live) | new branch in `provision_gate` + pre-forward check in `gate_chat` (`connection_pool.py:1786`) |
+| 2 | One trial per `owner_id` (create `trial_local` billing row if none) | `billing_repo.create_if_not_exists` idiom; new `POST /billing/meta-free-start` |
+| 3 | **$3 spend / `trial_end` hard-stop, fail-closed** | Meta branch in `gate_chat` reading `usage-counters` (deny on missing/unreadable) |
+| 4 | **Atomic worst-case reserve** at gate (closes parallel-fan-out TOCTOU) | `gate_chat`, `ADD reserved_microcents … RETURN ALL_NEW` on `usage-counters` (`usage_repo.py:49`) |
+| 5 | Post-turn **spend reconciliation** to actual Meta `usage` × pricing | existing `_safe_record_usage` hook (`websocket_chat.py:847`) → `usage_repo` |
+| 6 | Global daily **spend** kill-switch on shared key | `gate_chat` reads a global spend counter vs `META_FREE_DAILY_GLOBAL_SPEND_CAP` |
+| 7 | Churned-customer block | Meta gate consults `is_trial_blocked` (add `trial_expired` to `TRIAL_BLOCKED_STATUSES`) |
+| 8 | Paid can't downgrade to free | `change_provider` rejects target `meta`; `gate_chat` refuses Meta if `is_subscription_active`/`is_trial_blocked` |
+| 9 | Org exclusion (personal-only) | Meta gate refuses `owner_id.startswith("org_")` |
+
+**Deferred (add only if farming appears):** verified+canonicalized-email keying,
+disposable-domain denylist, and moving the claim off `owner_id` onto a canonical
+identity key.
 
 Meta is an **eligibility axis, never a selectable `provider_choice`** — keep the
 paid set at three; free routing is reached only via the dedicated free-start path.

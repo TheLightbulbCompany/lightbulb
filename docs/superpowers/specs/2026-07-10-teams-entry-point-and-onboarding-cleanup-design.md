@@ -56,52 +56,71 @@ not a free branch buried in onboarding.
 
 ## Design — Project A
 
-### A1. Simplify the onboarding state machine
+**Separation of responsibilities (revised after review):** the account-type decision lives in
+`useOnboardingGate` (which already owns post-signup routing on `/chat`), NOT on the
+`/onboarding` page. `/onboarding` is only the authenticated setup surface for the two flows
+that need one: **team creation** and **invitation acceptance**. Personal signups never touch
+it. This keeps each surface single-purpose and removes the invite-vs-personal races that arise
+when personal completion shares a page with invitation acceptance.
 
-Delete the choose-screen. New precedence in `onboarding/page.tsx`:
+### A1. `useOnboardingGate` owns personal completion; only team/invite redirect
 
-1. **Pending Clerk org invitation** → `invitations` mode. *Unchanged* — preserves the
-   invariant that a user can't hold both personal tenancy and a pending org invite.
-2. **`signupIntent === "team"`** → `org` mode (Clerk `<CreateOrganization>` +
-   `InviteTeammatesStep`). *Internals unchanged.*
-3. **Otherwise** → auto-run the personal path (`handlePersonal()`) behind a spinner.
+The gate runs on `/chat` and, once Clerk state is fully loaded, routes a fresh signup:
 
-Net effect: personal users never see an interstitial; onboarding is a silent pass-through.
-The team path still exists, reached by intent rather than a question.
+1. **Pending invitation** → `router.replace("/onboarding")` (accept surface). *Tenancy
+   invariant unchanged — pending invitations still beat the onboarded flag.*
+2. **Team intent** (see A2) → `router.replace("/onboarding?intent=team")` (org creation).
+3. **Otherwise (personal)** → completed **inline**: best-effort merge-preserving
+   `unsafeMetadata.onboarded = true` write, and the gate returns `ready` so the user drops
+   straight into `/chat`. No `/onboarding` detour, no chooser, no spinner page. The flag is
+   non-critical for routing (personal always resolves to `ready`), so a failed write just
+   self-heals on the next login.
 
-### A2. Thread `intent=team` via a one-hop URL param (not metadata)
+The gate only decides once `clerkLoaded` is true, preserving the "don't act before org context
+settles" guard that prevents the phantom personal-billing race.
 
-Mechanism decision: the codebase already uses `unsafeMetadata` for the durable `onboarded`
-flag, but for the team signal a one-hop URL param is the *simpler and safer* choice — it is
-read synchronously (no async write/read race against the personal auto-complete path) and
-needs no cleanup. Metadata is reserved for values that must survive *multiple* hops (see A3).
+### A2. `/onboarding` handles only team creation + invitation acceptance
 
-- Landing "Create a team" CTA → `/sign-up?intent=team`. **Clerk does NOT reliably carry an
-  arbitrary `?intent=` query through its multi-step signup flow** (email verification, etc.) —
-  the final redirect uses the configured `fallbackRedirectUrl`. So the sign-up page (a server
-  component) reads `searchParams.intent` and bakes the signal into the redirect URL explicitly:
-  `<SignUp fallbackRedirectUrl={intent === "team" ? "/chat?intent=team" : "/chat"} />` (via the
-  `signupRedirectUrl` helper). This does not depend on query-string preservation.
-- `useOnboardingGate` (which runs on `/chat` and previously redirected fresh signups to
-  `/onboarding` with a **bare** path, dropping the query) is changed to **forward
-  `intent`**: `router.replace("/onboarding?intent=team")`.
-- `onboarding/page.tsx` reads `searchParams.get("intent")` synchronously on first render and
-  selects the `org` branch, then lifts it into React state (`explicitMode = "org"`). That
-  state survives Clerk's `CreateOrganization` same-route soft navigation
-  (`afterCreateOrganizationUrl="/onboarding?intent=team"` as belt-and-suspenders), so the
-  post-create render still mounts `InviteTeammatesStep` instead of falling through to the
-  redirect branch. Nothing to clear — the signal is consumed into component state.
+`onboarding/page.tsx` has no personal path. Its effect only:
+
+- **Path 1** — org already active → mark onboarded + redirect to `/chat`.
+- **Path 2** — has memberships, no active org → `setActive` the first, then redirect.
+- **Else** — no org/membership: if an invite accept is **in flight** (`acceptingId` set), HOLD
+  on a spinner (Clerk has dropped the invitation but the membership hasn't propagated — Path 2
+  fires when it lands; redirecting now would bounce the invitee through the gate during that
+  gap and risk mis-classifying them as personal). Otherwise a stray visitor → `/chat`.
+
+`intent=team` selects the `org` mode (Clerk `<CreateOrganization>` + `InviteTeammatesStep`),
+lifted into React state so it survives the `afterCreateOrganizationUrl="/onboarding?intent=team"`
+soft navigation.
+
+### A2b. Team-intent transport: a signup cookie (not URL, not metadata)
+
+**Clerk does NOT reliably carry an arbitrary `?intent=` query through its multi-step signup
+flow** (email verification / SSO callback are distinct sub-routes that drop the original
+query), and its post-signup redirect uses the configured `fallbackRedirectUrl`. So relying on
+the URL is unsafe for the feature's core path. Instead:
+
+- The landing "Create a team" CTA writes a short-lived cookie (`isol8_signup_intent=team`,
+  ~30-min TTL) client-side, and links to `/sign-up?intent=team` (the query still helps
+  single-step signups).
+- `useOnboardingGate` computes team intent from the URL query **or** the cookie, and on the
+  team redirect **consumes and clears** the cookie so a later personal signup in the same
+  browser isn't mis-tagged.
+
+The cookie survives every signup sub-route and the final redirect — the URL query and
+`unsafeMetadata` do not (the latter can't be written by Clerk's prebuilt `<SignUp>`).
 
 ### A3. Deferred fast-follow — stop dropping `provider`
 
-The same gate redirect also drops the `?provider=` param, so fresh signups routed through
-onboarding lose their provider choice and the provider-specific ProvisioningStepper step is
+The gate historically dropped the `?provider=` param on its `/onboarding` redirect, so fresh
+signups lost their provider choice and the provider-specific ProvisioningStepper step was
 silently skipped (a real funnel bug — see memory `project_onboarding_funnel_posthog_blindspot`).
-The correct fix is **durable via `unsafeMetadata.providerChoice`** (this value must survive
-multiple hops all the way to `/chat`, unlike `intent`), read as a fallback in
-`ProvisioningStepper` and preserved through the merge-preserving onboarding-completion writes.
-This is **intentionally deferred** out of Project A to keep the plan and its tests tight; the
-Project A completion writes are already merge-preserving so the fix drops in cleanly.
+The correct fix is durable via `unsafeMetadata.providerChoice` (it must survive multiple hops
+to `/chat`), read as a fallback in `ProvisioningStepper`. **Intentionally deferred** out of
+Project A. (Note: with personal signups no longer redirected through `/onboarding`, the
+provider param now reaches `/chat` directly for the common personal case; the metadata fix
+remains the robust general solution.)
 
 ### A4. Landing page Teams entry point
 
@@ -127,11 +146,14 @@ Captured so context isn't lost; **not** part of this spec's implementation:
 
 ## Testing
 
-- **Onboarding routing (frontend unit/component):** personal default runs `handlePersonal`
-  with no choose-screen; `signupIntent=team` routes to the org branch; pending invitation
-  still forces `invitations` mode and beats `signupIntent`.
-- **Intent threading:** `intent=team` on the sign-up URL survives the onboarding-gate
-  redirect via `unsafeMetadata`; `provider` likewise no longer drops.
+- **Gate routing (`useOnboardingGate`):** a fresh personal signup completes inline
+  (`unsafeMetadata.onboarded` write) and returns `ready` with no `/onboarding` redirect;
+  `intent=team` returns `redirecting` → `/onboarding?intent=team`; pending invitations still
+  redirect to `/onboarding` and beat the onboarded flag.
+- **Onboarding page:** `intent=team` renders `<CreateOrganization>`; pending invitations force
+  the accept screen (no bounce); a stray visitor with neither is redirected to `/chat`.
+- **Cookie transport (`signupIntent`):** `readSignupIntentCookie` parses the value among other
+  cookies, url-decodes, and returns null when absent or for a name that merely contains the key.
 - **Landing:** Teams strip renders, CTA points to `/sign-up?intent=team`.
 - Run `tsc --noEmit` after adding tests (repo CI typechecks test files). Single-file vitest
   runs only — never the full frontend suite.

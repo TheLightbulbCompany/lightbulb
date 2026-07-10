@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   CreateOrganization,
@@ -9,7 +9,6 @@ import {
   useOrganizationList,
   useUser,
 } from "@clerk/nextjs";
-import { useApi } from "@/lib/api";
 import { capture } from "@/lib/analytics";
 import { Button } from "@/components/ui/button";
 import { Users, Mail } from "lucide-react";
@@ -26,18 +25,17 @@ function OnboardingFlow() {
       userMemberships: true,
       userInvitations: true,
     });
-  const api = useApi();
   const [acceptingId, setAcceptingId] = useState<string | null>(null);
-  // Guards the personal auto-complete so it fires exactly once (the effect
-  // that runs it has reactive deps and would otherwise re-enter).
-  const autoRanRef = useRef(false);
 
   const pendingInvitations = userInvitations?.data ?? [];
 
-  // Account type is implied by the landing-page CTA the user clicked:
-  // "Create a team" links to /sign-up?intent=team, and useOnboardingGate
-  // forwards ?intent=team through its redirect to /onboarding. Everyone else
-  // is a personal signup and never sees a choice.
+  // This page handles only the two flows that need an authenticated setup
+  // screen: team creation and invitation acceptance. Personal signups are
+  // completed by useOnboardingGate and never reach here — so there is no
+  // personal path, no auto-complete, and no chooser.
+  //
+  // Team intent arrives as ?intent=team (useOnboardingGate forwards it from
+  // the landing CTA / signup cookie).
   const intentTeam = searchParams.get("intent") === "team";
 
   // Tenancy invariant: pending invitations force the invitations screen —
@@ -85,38 +83,21 @@ function OnboardingFlow() {
     router.push("/chat");
   }
 
-  async function handlePersonal() {
-    capture("workspace_type_selected", { type: "personal" });
-    try {
-      await user?.update({
-        unsafeMetadata: {
-          ...(user.unsafeMetadata as Record<string, unknown> | undefined),
-          onboarded: true,
-        },
-      });
-      await api.syncUser();
-      router.push("/chat");
-    } catch {
-      // Allow a retry on transient failure.
-      autoRanRef.current = false;
-    }
-  }
-
-  // Redirect / auto-complete effect. Handles, in order: org already active,
-  // has memberships (auto-activate first), and the personal fast path.
-  // Skips entirely for the org-creation and invitations UIs — they own their
-  // own flow and rendering.
+  // Completion effect for the org paths. Skips the org-creation and
+  // invitations UIs (they own their own rendering).
   useEffect(() => {
     if (!isLoaded || !orgLoaded || !orgsLoaded) return;
     if (mode === "org" || mode === "invitations") return;
 
-    // Path 1: org already active → mark onboarded + redirect.
+    // Path 1: org already active (just created, or an accepted invite that
+    // Clerk auto-activated) → mark onboarded + redirect.
     if (organization) {
       completeOnboardingAndRedirect();
       return;
     }
-    // Path 2: has memberships but no active org (fresh login on a new device)
-    // → activate the first membership, then redirect.
+    // Path 2: has memberships but no active org (accepted invite propagated,
+    // or fresh login on a new device) → activate the first membership, then
+    // redirect.
     const memberships = userMemberships?.data;
     if (memberships && memberships.length > 0 && setActive) {
       setActive({ organization: memberships[0].organization.id }).then(
@@ -124,14 +105,18 @@ function OnboardingFlow() {
       );
       return;
     }
-    // Path 3: fresh personal signup (no org, no membership, no team intent)
-    // → complete onboarding automatically. No interstitial.
-    if (mode === null && !autoRanRef.current) {
-      autoRanRef.current = true;
-      handlePersonal();
+    // Else: no org, no membership. Two cases:
+    //   • An invite accept is in flight (acceptingId set): Clerk has dropped
+    //     the invitation but the membership hasn't propagated yet. HOLD here
+    //     (spinner below) — Path 2 fires the moment it lands. Redirecting to
+    //     /chat now would bounce the invitee through the gate during that gap
+    //     and risk mis-classifying them as personal.
+    //   • Otherwise a stray user reached /onboarding without a team/invite
+    //     context (personal is owned by the gate) → send them to /chat.
+    if (acceptingId === null) {
+      router.replace("/chat");
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isLoaded, orgLoaded, orgsLoaded, organization, userMemberships, setActive, mode, user]);
+  }, [isLoaded, orgLoaded, orgsLoaded, organization, userMemberships, setActive, mode, acceptingId, router]);
 
   if (!isLoaded || !orgsLoaded || !orgLoaded) return null;
 
@@ -243,13 +228,14 @@ function OnboardingFlow() {
     );
   }
 
-  // Personal fast path (or still resolving org/membership state) → spinner.
-  // handlePersonal() runs from the effect above; this is the visual while it
-  // completes.
+  // Transient spinner: resolving org/membership state, holding while an
+  // accepted invitation propagates, or redirecting a stray visitor to /chat.
   return (
     <div className="flex flex-col items-center justify-center min-h-screen gap-4 bg-background">
       <div className="h-8 w-8 animate-spin rounded-full border-2 border-muted-foreground/20 border-t-primary" />
-      <p className="text-sm text-muted-foreground">Setting up your workspace…</p>
+      <p className="text-sm text-muted-foreground">
+        {acceptingId !== null ? "Joining your team…" : "One moment…"}
+      </p>
     </div>
   );
 }

@@ -3,6 +3,7 @@ import Link from "next/link";
 
 import { capture } from "@/lib/analytics";
 import { PROVIDER_CARDS } from "@/lib/providerCards";
+import { writeSignupIntentCookie } from "@/lib/signupIntent";
 
 export function PricingThreeCard() {
   return (
@@ -77,6 +78,10 @@ export function PricingThreeCard() {
             href="/sign-up?intent=team"
             className="ld-btn"
             onClick={() => {
+              // Robust team-intent transport: the cookie survives Clerk's
+              // multi-step signup (which drops the ?intent=team query); the
+              // gate reads it on /chat and routes to team creation.
+              writeSignupIntentCookie("team");
               capture("landing_pricing_card_clicked", {
                 provider_choice: "team",
                 destination: "/sign-up?intent=team",

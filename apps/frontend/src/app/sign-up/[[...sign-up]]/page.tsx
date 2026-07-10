@@ -2,19 +2,8 @@ import { SignUp } from "@clerk/nextjs";
 import Link from "next/link";
 
 import { Logo } from "@/components/Logo";
-import { signupRedirectUrl } from "@/lib/signupRedirect";
 
-export default async function Page({
-  searchParams,
-}: {
-  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
-}) {
-  // Bake the team signal into Clerk's post-signup redirect. Clerk does not
-  // reliably forward the landing CTA's ?intent=team query through its
-  // multi-step signup flow, so we set the redirect URL explicitly here.
-  const params = await searchParams;
-  const intent = typeof params.intent === "string" ? params.intent : undefined;
-  const redirectUrl = signupRedirectUrl(intent);
+export default function Page() {
   return (
     <>
       <style>{`
@@ -299,7 +288,7 @@ export default async function Page({
               <Logo size="md" />
             </div>
 
-            <SignUp fallbackRedirectUrl={redirectUrl} signInFallbackRedirectUrl="/chat" />
+            <SignUp fallbackRedirectUrl="/chat" signInFallbackRedirectUrl="/chat" />
 
             <div className="auth-footer-links">
               Already have an account?{" "}

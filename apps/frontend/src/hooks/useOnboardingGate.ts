@@ -1,18 +1,20 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth, useOrganization, useOrganizationList, useUser } from "@clerk/nextjs";
+import { clearSignupIntentCookie, readSignupIntentCookie } from "@/lib/signupIntent";
 
 /**
  * Phase of the chat-shell onboarding/context gate.
  *
  * - ``loading``         — Clerk hydration + user/org context not settled yet.
- * - ``redirecting``     — User must visit /onboarding (either: never picked
- *                         personal/org, OR has pending org invitations to
- *                         accept). The hook fires ``router.replace`` itself;
- *                         consumers just need to render a loading shell while
- *                         the navigation lands.
+ * - ``redirecting``     — User must visit /onboarding: either a team signup
+ *                         (needs Clerk's org-creation surface) or a pending
+ *                         invitation to accept. Personal signups are NOT
+ *                         redirected — they're completed inline and go straight
+ *                         to /chat. The hook fires ``router.replace`` itself;
+ *                         consumers just render a loading shell while it lands.
  * - ``auto-activating`` — User has org memberships but no active organization
  *                         in this Clerk session (fresh login on a new device).
  *                         The hook calls ``setActive`` on the first membership;
@@ -62,6 +64,16 @@ export function useOnboardingGate(): OnboardingGatePhase {
   const hasMemberships = (userMemberships?.data?.length ?? 0) > 0;
   const hasPendingInvitations = (userInvitations?.data?.length ?? 0) > 0;
 
+  // Team signal: the landing "Create a team" CTA sets ?intent=team (single-step
+  // signups) and a cookie (survives Clerk's multi-step signup, which drops the
+  // query). Only team signups are routed to /onboarding; personal signups are
+  // completed here and dropped straight into /chat.
+  const teamIntent =
+    searchParams.get("intent") === "team" ||
+    (typeof document !== "undefined" &&
+      readSignupIntentCookie(document.cookie) === "team");
+  const personalDoneRef = useRef(false);
+
   // The three "not ready" conditions. They're mutually exclusive by
   // construction — needsOnboarding requires !hasMemberships, needsAutoActivate
   // requires hasMemberships, needsInvitationFlow requires hasPendingInvitations
@@ -88,19 +100,45 @@ export function useOnboardingGate(): OnboardingGatePhase {
     hasPendingInvitations &&
     !organization;
 
-  // Side effect 1: redirect (idempotent — router.replace dedupes if already
-  // on /onboarding). Both the "no row at all" path and the "pending
-  // invitations" path land on the same /onboarding screen; the page itself
-  // surfaces the right UI based on Clerk state. We forward ?intent=team so a
-  // team signup (landing "Create a team" CTA → /sign-up?intent=team) still
-  // reaches onboarding's org-creation branch — a bare redirect would drop it.
+  // Side effect 1: redirect to /onboarding — but ONLY for the two flows that
+  // need an authenticated setup screen:
+  //   • pending invitation → the accept surface
+  //   • team signup        → Clerk's <CreateOrganization> + invite step
+  // Personal signups are NOT redirected; they're completed inline below and
+  // fall through to "ready" (straight into /chat). The team cookie is consumed
+  // and cleared here so a later personal signup in the same browser isn't
+  // mis-tagged as a team.
   useEffect(() => {
-    if (needsOnboarding || needsInvitationFlow) {
-      const intent = searchParams.get("intent");
-      const target = intent ? `/onboarding?intent=${encodeURIComponent(intent)}` : "/onboarding";
-      router.replace(target);
+    if (needsInvitationFlow) {
+      router.replace("/onboarding");
+      return;
     }
-  }, [needsOnboarding, needsInvitationFlow, router, searchParams]);
+    if (needsOnboarding && teamIntent) {
+      clearSignupIntentCookie();
+      router.replace("/onboarding?intent=team");
+    }
+  }, [needsOnboarding, needsInvitationFlow, teamIntent, router]);
+
+  // Side effect 1b: complete a fresh personal signup in place. No org, no
+  // membership, no invitation, no team intent → this is a personal user, so
+  // mark them onboarded (best-effort — the flag is non-critical for routing,
+  // which returns "ready" regardless) and let them into /chat without a
+  // /onboarding detour.
+  useEffect(() => {
+    if (!(needsOnboarding && !teamIntent) || personalDoneRef.current || !user) return;
+    personalDoneRef.current = true;
+    user
+      .update({
+        unsafeMetadata: {
+          ...(user.unsafeMetadata as Record<string, unknown> | undefined),
+          onboarded: true,
+        },
+      })
+      .catch(() => {
+        // Best-effort: a failed flag write just means the next login re-runs
+        // this harmless idempotent path. Routing is unaffected.
+      });
+  }, [needsOnboarding, teamIntent, user]);
 
   // Side effect 2: auto-activate the first membership. Clerk doesn't persist
   // active-org state across sessions, so without this a user who created an
@@ -116,7 +154,10 @@ export function useOnboardingGate(): OnboardingGatePhase {
   }, [needsAutoActivate, setActive, userMemberships]);
 
   if (!clerkLoaded || isSignedIn !== true) return "loading";
-  if (needsOnboarding || needsInvitationFlow) return "redirecting";
+  // Only team signups and pending invitations get the /onboarding detour.
+  // A fresh personal signup (needsOnboarding && !teamIntent) is completed
+  // inline above and falls through to "ready" — no redirect, no /onboarding.
+  if (needsInvitationFlow || (needsOnboarding && teamIntent)) return "redirecting";
   if (needsAutoActivate) return "auto-activating";
   return "ready";
 }

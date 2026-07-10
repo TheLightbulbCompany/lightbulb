@@ -9,6 +9,7 @@ import { renderHook, waitFor } from "@testing-library/react";
 
 const replaceMock = vi.fn();
 const setActiveMock = vi.fn().mockResolvedValue(undefined);
+const userUpdateMock = vi.fn().mockResolvedValue(undefined);
 
 let searchString = "";
 
@@ -43,7 +44,10 @@ vi.mock("next/navigation", () => ({
 
 vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({ isSignedIn: clerkState.isSignedIn, isLoaded: clerkState.authLoaded }),
-  useUser: () => ({ user: clerkState.user, isLoaded: clerkState.userLoaded }),
+  useUser: () => ({
+    user: clerkState.user ? { ...clerkState.user, update: userUpdateMock } : null,
+    isLoaded: clerkState.userLoaded,
+  }),
   useOrganization: () => ({
     organization: clerkState.organization,
     isLoaded: clerkState.orgLoaded,
@@ -66,7 +70,10 @@ describe("useOnboardingGate", () => {
   beforeEach(() => {
     replaceMock.mockReset();
     setActiveMock.mockReset().mockResolvedValue(undefined);
+    userUpdateMock.mockReset().mockResolvedValue(undefined);
     searchString = "";
+    // Clear any signup-intent cookie a prior test set (jsdom persists it).
+    document.cookie = "isol8_signup_intent=; max-age=0; path=/";
     // Reset to a known baseline: signed-in, fully loaded, personal user
     // who completed onboarding, no orgs, no invitations.
     setClerk({
@@ -122,15 +129,22 @@ describe("useOnboardingGate", () => {
     expect(setActiveMock).not.toHaveBeenCalled();
   });
 
-  it("returns 'redirecting' and replaces to /onboarding for a never-onboarded user with no orgs/invitations", async () => {
+  it("completes a fresh personal signup inline and returns 'ready' (no /onboarding redirect)", async () => {
+    // Personal signups (no team intent, no invitation) are finished here and
+    // dropped straight into /chat — they never visit /onboarding.
     setClerk({
       user: { unsafeMetadata: {} },
       memberships: [],
       invitations: [],
     });
     const { result } = renderHook(() => useOnboardingGate());
-    expect(result.current).toBe("redirecting");
-    await waitFor(() => expect(replaceMock).toHaveBeenCalledWith("/onboarding"));
+    expect(result.current).toBe("ready");
+    await waitFor(() =>
+      expect(userUpdateMock).toHaveBeenCalledWith({
+        unsafeMetadata: { onboarded: true },
+      }),
+    );
+    expect(replaceMock).not.toHaveBeenCalled();
   });
 
   it("returns 'redirecting' and replaces to /onboarding when there are pending invitations", async () => {

@@ -76,9 +76,13 @@ flag, but for the team signal a one-hop URL param is the *simpler and safer* cho
 read synchronously (no async write/read race against the personal auto-complete path) and
 needs no cleanup. Metadata is reserved for values that must survive *multiple* hops (see A3).
 
-- Landing "Create a team" CTA → `/sign-up?intent=team`. Clerk carries the query string onto
-  its post-signup redirect, landing the user on `/chat?intent=team`.
-- `useOnboardingGate` (which runs on `/chat` and today redirects fresh signups to
+- Landing "Create a team" CTA → `/sign-up?intent=team`. **Clerk does NOT reliably carry an
+  arbitrary `?intent=` query through its multi-step signup flow** (email verification, etc.) —
+  the final redirect uses the configured `fallbackRedirectUrl`. So the sign-up page (a server
+  component) reads `searchParams.intent` and bakes the signal into the redirect URL explicitly:
+  `<SignUp fallbackRedirectUrl={intent === "team" ? "/chat?intent=team" : "/chat"} />` (via the
+  `signupRedirectUrl` helper). This does not depend on query-string preservation.
+- `useOnboardingGate` (which runs on `/chat` and previously redirected fresh signups to
   `/onboarding` with a **bare** path, dropping the query) is changed to **forward
   `intent`**: `router.replace("/onboarding?intent=team")`.
 - `onboarding/page.tsx` reads `searchParams.get("intent")` synchronously on first render and

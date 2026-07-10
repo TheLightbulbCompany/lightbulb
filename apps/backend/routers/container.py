@@ -9,7 +9,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from core.auth import AuthContext, get_current_user, resolve_owner_id
+from core.auth import AuthContext, get_current_user, is_org_owner_id, resolve_owner_id
 from core.config import settings
 from core.containers import get_ecs_manager, get_gateway_pool
 from core.containers.ecs_manager import EcsManagerError
@@ -93,6 +93,15 @@ async def container_status(
     auth: AuthContext = Depends(get_current_user),
 ):
     owner_id = resolve_owner_id(auth)
+    # Opportunistic seat reconcile for org owners: converges the Stripe seat
+    # quantity to the live member count without a cron, closing any missed
+    # membership-webhook gap. Fire-and-forget — the reconciler self-guards to
+    # a single DDB read for non-team orgs, and must never add latency or 500
+    # the status poll.
+    if is_org_owner_id(owner_id):
+        from core.services.billing_service import sync_team_seat_quantity
+
+        asyncio.create_task(sync_team_seat_quantity(owner_id))
     ecs_manager = get_ecs_manager()
     # Use resolve_running_container so polling triggers the
     # provisioning -> running health-check transition.

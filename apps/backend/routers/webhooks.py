@@ -345,6 +345,17 @@ async def _handle_organization_membership_created(data: dict) -> None:
         owner_user_id,
     )
 
+    # Keep the org's per-seat subscription quantity in step with membership.
+    # Best-effort: the reconciler self-guards (no-op unless the org has an
+    # active team sub with an item id), and any error is swallowed so the
+    # webhook still 200s — the /container/status reconcile net heals drift.
+    try:
+        from core.services.billing_service import sync_team_seat_quantity
+
+        await sync_team_seat_quantity(org_id)
+    except Exception:
+        logger.exception("seat sync on membership.created failed for org=%s", org_id)
+
 
 async def _handle_organization_membership_deleted(data: dict) -> None:
     """Archive the member's Paperclip membership AND disable their DDB row.
@@ -362,6 +373,7 @@ async def _handle_organization_membership_deleted(data: dict) -> None:
     """
     pud = data.get("public_user_data") or {}
     user_id = pud.get("user_id", "") or data.get("user_id", "")
+    org_id = (data.get("organization") or {}).get("id", "")
     if not user_id:
         logger.warning("Clerk organizationMembership.deleted missing user_id: %s", data)
         return
@@ -446,6 +458,14 @@ async def _handle_organization_membership_deleted(data: dict) -> None:
                     )
     finally:
         await close_paperclip_provisioning(provisioning)
+
+    if org_id:
+        try:
+            from core.services.billing_service import sync_team_seat_quantity
+
+            await sync_team_seat_quantity(org_id)
+        except Exception:
+            logger.exception("seat sync on membership.deleted failed for org=%s", org_id)
 
 
 async def _handle_organization_deleted(data: dict) -> None:

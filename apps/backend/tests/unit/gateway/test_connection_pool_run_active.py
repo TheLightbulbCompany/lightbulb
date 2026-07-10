@@ -108,3 +108,43 @@ async def test_sessions_changed_ignores_unclassified_key(monkeypatch):
         )
 
     assert [m for (m, _t) in forwarded if m.get("type") == "run_active"] == []
+
+
+@pytest.mark.asyncio
+async def test_reset_run_state_dedup_relights_on_reconnect(monkeypatch):
+    # A tab that (re)connects mid-run clears its own containerRunActive, so the
+    # backend must re-announce the still-active run. Dedup would otherwise
+    # suppress the ongoing hasActiveRun:true; reset_run_state_dedup() (called on
+    # frontend connect) makes the next sessions.changed a fresh transition again.
+    conn = GatewayConnection.__new__(GatewayConnection)
+    conn.user_id = "user_1"
+    conn.owner_id = "user_1"
+    conn._active_runs = {}
+    conn._run_state = {}
+    conn._side_run_ids = {}
+    forwarded: list[dict] = []
+
+    async def fake_forward(message, target_member_id=None):
+        forwarded.append(message)
+
+    monkeypatch.setattr(conn, "_forward_to_frontends", fake_forward)
+
+    def changed(active):
+        return {
+            "type": "event",
+            "event": "sessions.changed",
+            "payload": {"sessionKey": "agent:agentA:user_1", "hasActiveRun": active},
+        }
+
+    await conn._handle_message(changed(True))  # forwarded (transition)
+    await conn._handle_message(changed(True))  # deduped
+    assert len([m for m in forwarded if m["type"] == "run_active"]) == 1
+
+    conn.reset_run_state_dedup()  # simulate a frontend (re)connect
+
+    await conn._handle_message(changed(True))  # re-forwarded for the new tab
+    run_active = [m for m in forwarded if m["type"] == "run_active"]
+    assert run_active == [
+        {"type": "run_active", "active": True, "agent_id": "agentA"},
+        {"type": "run_active", "active": True, "agent_id": "agentA"},
+    ]

@@ -307,6 +307,19 @@ class GatewayConnection:
         if run is not None:
             run["last_event_at"] = time.monotonic()
 
+    def reset_run_state_dedup(self) -> None:
+        """Forget the last-forwarded ``run_active`` per session so the next
+        ``sessions.changed`` re-forwards it as a fresh transition.
+
+        Called when a frontend (re)connects: the dedup in the ``sessions.changed``
+        handler suppresses repeat ``hasActiveRun:true`` frames, but a tab that
+        opens/reconnects mid-run has no local busy state (the frontend clears it
+        on disconnect), so it needs the ongoing run re-announced. Clearing the
+        map makes the next event a transition again. Separate from
+        ``_active_runs`` (untouched — that is the parked-vs-dead signal).
+        """
+        self._run_state.clear()
+
     def _clear_active_run(self, session_key: str) -> None:
         """Pop the run keyed by *session_key* (chat.final / error / aborted)."""
         self._active_runs.pop(session_key, None)
@@ -2037,6 +2050,14 @@ class GatewayConnectionPool:
         conn = self._connections.get(user_id)
         if conn is not None:
             conn.invalidate_recipients_cache()
+            # Forget the run-active dedup so a tab that (re)connects or opens
+            # mid-run gets a fresh `run_active` on the next `sessions.changed`
+            # instead of having the still-true state suppressed as a duplicate —
+            # otherwise its status bar sits dark through the active window. The
+            # frontend clears its own `containerRunActive` on disconnect, so
+            # without this the server would never re-light it. (OpenClaw's own
+            # client re-reads sessions.list on reconnect for the same reason.)
+            conn.reset_run_state_dedup()
 
         # Cancel grace period if one is running
         grace = self._grace_tasks.pop(user_id, None)

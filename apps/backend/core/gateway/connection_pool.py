@@ -481,6 +481,7 @@ class GatewayConnection:
         verify_ms = int((time.monotonic() - verify_started) * 1000)
 
         self._reader_task = asyncio.create_task(self._reader_loop())
+        await self._subscribe_session_events()
         put_metric("gateway.connection", dimensions={"event": "connect"})
         self._emit_status_change("HEALTHY", "Gateway connected")
         total_ms = int((time.monotonic() - connect_started) * 1000)
@@ -582,6 +583,25 @@ class GatewayConnection:
                     exc,
                 )
             return
+
+    async def _subscribe_session_events(self) -> None:
+        """Subscribe this connection to OpenClaw `sessions.changed` broadcasts.
+
+        OpenClaw only broadcasts session events to connections that have called
+        `sessions.subscribe` (fork src/gateway/server-methods/sessions.ts:906),
+        and drops the subscription on disconnect. Sent on every connect; because
+        `reopen()` calls `connect()`, this re-subscribes on reconnect too.
+        Fire-and-forget: the `{subscribed:true}` ack is not needed to proceed —
+        if it never lands we simply fall back to stream-derived busy state, so
+        we don't block connect on it. The ack `res` is harmlessly ignored by
+        `_handle_message` (no matching entry in `_pending_rpcs`).
+        """
+        req_id = str(uuid.uuid4())
+        frame = {"type": "req", "id": req_id, "method": "sessions.subscribe", "params": {}}
+        try:
+            await self._ws.send(json.dumps(frame))
+        except Exception:
+            logger.warning("sessions.subscribe send failed user=%s", self.user_id, exc_info=True)
 
     async def send_rpc(self, req_id: str, method: str, params: dict) -> None:
         """Send {type: req} on the gateway WebSocket."""

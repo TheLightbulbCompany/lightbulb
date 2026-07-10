@@ -164,3 +164,72 @@ async def test_webhook_backup_write_bedrock_passes_no_connector(mock_repo):
         byo_provider=None,
         connector_user_id=None,
     )
+
+
+class TestTeamSeatWebhook:
+    """handle_subscription_state records item id + seat count for team subs."""
+
+    @staticmethod
+    def _team_event(**item_overrides):
+        item = {"id": "si_1", "quantity": 4, "price": {"id": "price_seat_test"}}
+        item.update(item_overrides)
+        return {
+            "id": "evt_team",
+            "type": "customer.subscription.created",
+            "data": {
+                "object": {
+                    "id": "sub_team",
+                    "customer": "cus_team",
+                    "status": "active",
+                    "metadata": {"owner_id": "org_team", "purpose": "team_seat"},
+                    "items": {"data": [item]},
+                }
+            },
+        }
+
+    @pytest.mark.asyncio
+    async def test_records_team_seat_state(self, monkeypatch):
+        monkeypatch.setattr("core.config.settings.STRIPE_TEAM_SEAT_PRICE_ID", "price_seat_test")
+        with patch.object(handlers, "billing_repo") as repo, patch.object(handlers, "stripe") as mock_stripe:
+            repo.get_by_owner_id = AsyncMock(return_value={"owner_id": "org_team", "stripe_customer_id": "cus_team"})
+            repo.set_subscription = AsyncMock()
+            repo.set_provider_choice = AsyncMock()
+            repo.set_team_subscription = AsyncMock()
+            mock_stripe.Customer.retrieve.return_value = {"invoice_settings": {"default_payment_method": "pm"}}
+
+            await handlers.handle_subscription_state(self._team_event(), MagicMock())
+
+        repo.set_team_subscription.assert_awaited_once_with(
+            owner_id="org_team",
+            subscription_id="sub_team",
+            subscription_item_id="si_1",
+            status="active",
+            seat_count=4,
+        )
+
+    @pytest.mark.asyncio
+    async def test_flat_sub_does_not_call_set_team_subscription(self, monkeypatch):
+        monkeypatch.setattr("core.config.settings.STRIPE_TEAM_SEAT_PRICE_ID", "price_seat_test")
+        flat_event = {
+            "id": "evt_flat",
+            "type": "customer.subscription.created",
+            "data": {
+                "object": {
+                    "id": "sub_flat",
+                    "customer": "cus_flat",
+                    "status": "trialing",
+                    "metadata": {"owner_id": "user_flat"},
+                    "items": {"data": [{"id": "si_flat", "quantity": 1, "price": {"id": "price_flat_test"}}]},
+                }
+            },
+        }
+        with patch.object(handlers, "billing_repo") as repo, patch.object(handlers, "stripe") as mock_stripe:
+            repo.get_by_owner_id = AsyncMock(return_value={"owner_id": "user_flat", "stripe_customer_id": "cus_flat"})
+            repo.set_subscription = AsyncMock()
+            repo.set_provider_choice = AsyncMock()
+            repo.set_team_subscription = AsyncMock()
+            mock_stripe.Customer.retrieve.return_value = {"invoice_settings": {"default_payment_method": "pm"}}
+
+            await handlers.handle_subscription_state(flat_event, MagicMock())
+
+        repo.set_team_subscription.assert_not_awaited()

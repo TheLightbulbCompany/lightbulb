@@ -58,16 +58,15 @@
 - [ ] **Implement:** at `:28`, before the existing default: `if (row or {}).get("subscription_status") == "trial_local": return "meta", None`.
 - [ ] **Run** → pass. **Commit.**
 
-## Task 5 — `config.py` meta provider branch (+ effort/clamps)
+## Task 5 — `config.py` meta provider branch
 
 **Files:** Modify `core/containers/config.py`; Test `tests/unit/containers/test_config.py`
 
-- [ ] **Test:** `build_provider_block(provider_choice="meta", ...)` returns `({}, {"primary":"meta/muse-spark-1.1","fallbacks":["meta/muse-spark-1.1"]}, {})` (no raise); `build_openclaw_config_dict` for meta sets `agents.defaults` reasoning-effort `medium` + `contextTokens 200000` + `maxTokens 32000`.
-- [ ] **Run** → fails (raises `Unknown provider_choice`).
-- [ ] **Implement:**
-  - `config.py:482` (before the `raise`): add the `if provider_choice == "meta":` branch returning the 3-tuple above (provider is bundled/`enabledByDefault` in the 7.1 base — no `models.providers` block, no plugin entry).
-  - `build_openclaw_config_dict` (`:841`, the `agents.defaults` dict ~`:989-1075`): when `provider_choice == "meta"`, set the reasoning-effort + `contextTokens`/`maxTokens` keys. **Verify exact key placement against the 7.1 schema in Task 9.**
+- [ ] **Test:** `build_provider_block(provider_choice="meta", ...)` returns `({}, {"primary":"meta/muse-spark-1.1","fallbacks":["meta/muse-spark-1.1"]}, {})` (no raise, no AIP ARNs); `build_openclaw_config_dict` for a `meta` owner places `meta/muse-spark-1.1` as `agents.defaults.model` (same slot every provider uses).
+- [ ] **Run** → fails (raises `Unknown provider_choice: 'meta'`).
+- [ ] **Implement:** at `config.py:482` (before the `raise`) add `if provider_choice == "meta": return ({}, {"primary":"meta/muse-spark-1.1","fallbacks":["meta/muse-spark-1.1"]}, {})` — provider is bundled/`enabledByDefault` in the 7.1 base, so no `models.providers` block, no plugin entry. Confirm the three model-ref helpers (`premium_model_ref`/`cheap_model_ref`/`heartbeat_model_ref`) already fall through to `None` for `meta` (CEO/aux inherit the locked model — no change needed).
 - [ ] **Run** → pass. **Commit.**
+- [ ] *(Deferred to Phase B: reasoning-effort `medium` + `contextTokens 200000`/`maxTokens 32000` — the cap's per-turn reserve bound, which needs exact 7.1-schema key placement. Added in Phase B where the cap enforces them. Phase A runs on Muse Spark defaults, uncapped/dev-only.)*
 
 ## Task 6 — `MODEL_API_KEY` injection for meta containers
 

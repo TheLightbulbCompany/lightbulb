@@ -47,6 +47,29 @@ logger = logging.getLogger(__name__)
 _org_provision_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 
+async def ensure_personal_trial_default(auth: AuthContext, owner_id: str) -> None:
+    """Auto-default a brand-new PERSONAL owner into a card-less ``trial_local``
+    billing row (idempotent conditional put — no-op if any row already exists).
+
+    The free tier is PERSONAL-ONLY: orgs get no card-less trial (the master
+    plan refuses org owners; Teams billing is per-seat / no-trial), so
+    ``not auth.is_org_context`` excludes every org context, admin included.
+
+    Called from BOTH ``ensure_user_ready`` (before its gate) AND
+    ``GET /container/status`` (before ITS gate). Each evaluates the provision
+    gate independently, and the row must exist before whichever gate runs
+    first — otherwise the gate sees no billing row, returns ``signup_required``,
+    and the caller short-circuits (``/container/status`` 404s to the
+    ProviderPicker) before the trial is ever created. Keeping the personal-only
+    predicate in one place stops the two gate sites from drifting.
+    """
+    if not auth.is_org_context:
+        await billing_repo.create_trial_local_if_absent(
+            owner_id=owner_id,
+            owner_type="personal",
+        )
+
+
 async def ensure_user_ready(auth: AuthContext, *, provision_container: bool = True) -> None:
     """Single canonical readiness entry point. Idempotent.
 
@@ -68,26 +91,13 @@ async def ensure_user_ready(auth: AuthContext, *, provision_container: bool = Tr
     """
     owner_id = auth.org_id if auth.is_org_context else auth.user_id
 
-    # A genuinely-new PERSONAL owner (no billing row yet) auto-defaults into
-    # a card-less trial_local BEFORE the gate is evaluated, so the gate
-    # (which treats trial_local as active + provision-eligible) returns
-    # None below and the normal Paperclip-seed + background_provision flow
-    # runs. create_trial_local_if_absent is an idempotent conditional put
-    # (no-op if any row already exists), so this is safe on every ~3s poll
-    # and never overwrites a paid/canceled owner.
-    #
-    # The free tier is PERSONAL-ONLY: the master plan refuses org owners,
-    # and Teams billing is per-seat / no-trial (a team enters through the
-    # dedicated org flow, not this trial). So `not auth.is_org_context`
-    # excludes every org context — admin included. A new org admin therefore
-    # gets no auto-trial; they reach chat via a paid Teams subscription. (A
-    # non-admin org member was already excluded here for a different reason:
-    # they ride the org owner's billing account.)
-    if not auth.is_org_context:
-        await billing_repo.create_trial_local_if_absent(
-            owner_id=owner_id,
-            owner_type="personal",
-        )
+    # Auto-default a brand-new personal owner into a card-less trial_local
+    # BEFORE the gate is evaluated, so the gate (which treats trial_local as
+    # active + provision-eligible) returns None below and the normal
+    # Paperclip-seed + background_provision flow runs. Personal-only + the
+    # rationale for the shared helper live in its docstring; /container/status
+    # calls the SAME helper before its own gate.
+    await ensure_personal_trial_default(auth, owner_id)
 
     # The gate check uses the same predicate as /container/status so
     # the helper and the endpoint can never disagree.

@@ -402,7 +402,7 @@ function SettingsPageInner() {
       {/* Top bar */}
       <header className="settings-topbar" style={{ fontFamily: "var(--font-dm-sans), 'DM Sans', sans-serif" }}>
         <div className="settings-topbar-left">
-          <Logo size="md" />
+          <Logo size="md" href="/chat" />
           <nav className="settings-topbar-breadcrumb" aria-label="Breadcrumb">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
               <polyline points="9 18 15 12 9 6" />

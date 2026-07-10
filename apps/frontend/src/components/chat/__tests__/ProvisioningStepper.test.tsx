@@ -91,6 +91,9 @@ let billingMockIsSubscribed = true;
 let billingMockAccount: { provider_choice: string | null; subscription_status?: string | null } | null = {
   provider_choice: "bedrock_claude",
 };
+// Spy for the /billing/account re-fetch the stepper fires when a container is
+// provisioning but billing hasn't caught up to the just-created trial_local.
+let billingMockRefresh = vi.fn();
 vi.mock("@/hooks/useBilling", () => ({
   // Default: provider_choice set, an onboarded owner (the cold-start tests
   // need to get PAST the ProviderPicker gate, which requires isSubscribed AND
@@ -99,6 +102,7 @@ vi.mock("@/hooks/useBilling", () => ({
     isLoading: false,
     isSubscribed: billingMockIsSubscribed,
     account: billingMockAccount,
+    refresh: billingMockRefresh,
   }),
 }));
 
@@ -147,6 +151,7 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     apiDel.mockClear();
     billingMockIsSubscribed = true;
     billingMockAccount = { provider_choice: "bedrock_claude" };
+    billingMockRefresh = vi.fn();
   });
 
   afterEach(() => {
@@ -387,6 +392,35 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     expect(
       screen.getByRole("heading", { name: /Bring your own API key/i }),
     ).toBeInTheDocument();
+  });
+
+  it("bypasses the ProviderPicker while a container is provisioning even if billing lags the trial, and refreshes billing", () => {
+    // Cross-fetch race: /container/status creates the trial_local row and
+    // returns a provisioning container, but /billing/account was fetched
+    // before the row existed so it still reads non-trial. The stepper must
+    // trust the live container (not fall back to the picker) AND pull billing
+    // once so isTrialLocal/isSubscribed catch up and cold-start polling
+    // resumes.
+    billingMockIsSubscribed = false;
+    billingMockAccount = null;
+    useProvMock.mockReturnValue({
+      phase: "normal",
+      container: { status: "provisioning", phase: "provisioning" },
+      blocked: null,
+      refreshInterval: 3000,
+      refresh: vi.fn(),
+    });
+
+    render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+
+    // Picker headline must be absent — the live container bypasses it.
+    expect(screen.queryByText(/ways to power it/i)).not.toBeInTheDocument();
+    // Billing was re-fetched so the trial state can catch up.
+    expect(billingMockRefresh).toHaveBeenCalled();
   });
 
   it("renders team-pending centerpiece when phase=team-pending", () => {

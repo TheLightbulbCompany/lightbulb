@@ -29,6 +29,7 @@ import stripe
 from fastapi import Response
 
 from core.observability.metrics import put_metric, timing
+from core.observability.product_analytics import capture_product_event
 from core.repositories import billing_repo
 from core.services.billing_service import BillingService
 
@@ -145,6 +146,53 @@ async def _maybe_set_customer_default_payment_method(event_data: dict[str, Any])
         logger.exception("Failed to set default payment method for Stripe customer %s", customer_id)
 
 
+def _subscriber_distinct_id(account: dict, event_data: dict) -> str | None:
+    """Clerk USER id to key PostHog events on, so server-side billing events
+    merge onto the same person the frontend ``identify()``s. Personal owners:
+    ``owner_id`` IS the Clerk user id. Org owners: ``owner_id`` is the org id,
+    so prefer the subscribing human's ``clerk_user_id`` threaded through
+    checkout metadata (``create_flat_fee_checkout`` sets it)."""
+    metadata = event_data.get("metadata") or {}
+    return metadata.get("clerk_user_id") or account.get("owner_id")
+
+
+def _bridge_subscription_state(
+    account: dict,
+    event_data: dict,
+    old_status: str | None,
+    new_status: str,
+    metadata_provider: str | None,
+) -> None:
+    """Land the subscription-state transition on the PostHog person (customer
+    analytics) and keep billing state on the profile for segmentation.
+    Complements — does not replace — the EMF ``stripe.subscription`` metric."""
+    if new_status == old_status:
+        return  # payment-method / no-op .updated — nothing to record
+    provider = metadata_provider or account.get("provider_choice")
+    set_person = {
+        "subscription_status": new_status,
+        "is_subscribed": new_status in ("trialing", "active"),
+        "provider_choice": provider,
+        "trial_end": event_data.get("trial_end"),
+    }
+    if new_status == "trialing" and old_status != "trialing":
+        event = "trial_started"
+    elif new_status == "active" and old_status == "trialing":
+        event = "trial_converted"  # the trial->paid moment — the core SaaS metric
+    elif new_status == "active":
+        event = "subscription_activated"
+    elif new_status == "past_due":
+        event = "subscription_past_due"
+    else:
+        event = "subscription_status_changed"
+    capture_product_event(
+        distinct_id=_subscriber_distinct_id(account, event_data),
+        event=event,
+        properties={"provider_choice": provider, "from_status": old_status, "to_status": new_status},
+        set_person=set_person,
+    )
+
+
 async def handle_subscription_state(event: dict[str, Any], billing_service: BillingService) -> Response | None:
     """`customer.subscription.created` + `customer.subscription.updated`.
 
@@ -177,10 +225,15 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
     account = await resolve_owner_account(event_data)
     if not account:
         return None
+    # Capture the prior status BEFORE persisting the new one, so the PostHog
+    # bridge below can detect transitions (esp. trialing -> active, the
+    # trial->paid moment).
+    old_status = account.get("subscription_status")
+    new_status = event_data.get("status", "active")
     await billing_repo.set_subscription(
         owner_id=account["owner_id"],
         subscription_id=event_data["id"],
-        status=event_data.get("status", "active"),
+        status=new_status,
         trial_end=event_data.get("trial_end"),
     )
     metadata = event_data.get("metadata") or {}
@@ -210,6 +263,9 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
                 "Failed to persist provider_choice for owner %s",
                 account["owner_id"],
             )
+    # Customer-analytics bridge (the EMF put_metric above is the operational
+    # counterpart) — land the lifecycle transition on the person.
+    _bridge_subscription_state(account, event_data, old_status, new_status, metadata_provider)
     return None
 
 
@@ -230,6 +286,11 @@ async def handle_trial_will_end(event: dict[str, Any], billing_service: BillingS
             account["owner_id"],
             event_data.get("trial_end"),
         )
+        capture_product_event(
+            distinct_id=_subscriber_distinct_id(account, event_data),
+            event="trial_will_end",
+            properties={"trial_end": event_data.get("trial_end")},
+        )
     return None
 
 
@@ -241,6 +302,20 @@ async def handle_subscription_deleted(event: dict[str, Any], billing_service: Bi
     account = await resolve_owner_account(event_data)
     if not account:
         return None
+    # Customer-analytics bridge: record the churn on the person BEFORE teardown
+    # (so it fires even if container/Paperclip teardown throws). ``was_trialing``
+    # splits trial-abandon (activation problem) from post-charge churn (value
+    # problem) — two different failures needing different fixes.
+    capture_product_event(
+        distinct_id=_subscriber_distinct_id(account, event_data),
+        event="subscription_cancelled",
+        properties={
+            "was_trialing": account.get("subscription_status") == "trialing",
+            "provider_choice": account.get("provider_choice"),
+            "cancel_at_period_end": bool(event_data.get("cancel_at_period_end")),
+        },
+        set_person={"subscription_status": "canceled", "is_subscribed": False},
+    )
     await billing_service.cancel_subscription(account)
     logger.info("Subscription cancelled for owner %s", account["owner_id"])
 

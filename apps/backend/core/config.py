@@ -84,6 +84,13 @@ class Settings(BaseSettings):
     POSTHOG_HOST: str = os.getenv("POSTHOG_HOST", "https://app.posthog.com")
     POSTHOG_PROJECT_ID: str = os.getenv("POSTHOG_PROJECT_ID", "")
     POSTHOG_PROJECT_API_KEY: str = os.getenv("POSTHOG_PROJECT_API_KEY", "")
+    POSTHOG_PROJECT_WRITE_KEY: str = os.getenv("POSTHOG_PROJECT_WRITE_KEY", "")
+    """PostHog project (``phc_``) INGESTION key for SERVER-SIDE capture —
+    distinct from POSTHOG_PROJECT_API_KEY above (a personal ``phx_`` key used
+    only for the read/query Persons API in posthog_admin.py). Used by
+    core/observability/product_analytics.py to land billing-lifecycle events
+    onto the person. This is the SAME public key the frontend ships as
+    NEXT_PUBLIC_POSTHOG_KEY. Empty disables the bridge (events stay EMF-only)."""
 
     # --- IAM ---
     CONTAINER_EXECUTION_ROLE_ARN: str = os.getenv("CONTAINER_EXECUTION_ROLE_ARN", "")

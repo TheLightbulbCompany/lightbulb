@@ -41,6 +41,7 @@ from routers import (
     debug,
     desktop_auth,
     desktop_pair,
+    devices,
     google_accounts,
     hooks_credentials,
     hooks_proxy,
@@ -683,6 +684,7 @@ app.openapi = custom_openapi
 
 # Routes
 app.include_router(users.router, prefix="/api/v1/users", tags=["users"])
+app.include_router(devices.router, prefix="/api/v1/devices", tags=["devices"])
 
 # Clerk webhook events (user lifecycle)
 app.include_router(webhooks.router, prefix="/api/v1/webhooks", tags=["webhooks"])

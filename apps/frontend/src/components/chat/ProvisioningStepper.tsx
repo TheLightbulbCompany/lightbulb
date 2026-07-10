@@ -10,7 +10,7 @@ import {
   CheckCircle,
   Circle,
 } from "lucide-react";
-import { useOrganization } from "@clerk/nextjs";
+import { useOrganization, useAuth } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
 import { useBilling } from "@/hooks/useBilling";
@@ -196,6 +196,13 @@ export function ProvisioningStepper({
 }) {
   const { organization } = useOrganization();
   const isOrg = !!organization;
+  const { userId: clerkUserId } = useAuth();
+  // Per-OWNER activation-marker key so a shared/QA browser doesn't let the first
+  // account's activation suppress onboarding_ready for a later account's real
+  // first cold start. The event is a person-level denominator (PostHog is
+  // identified by Clerk user), so scope the once-ever marker to the owner
+  // (org id for org workspaces, else the Clerk user id).
+  const readyStorageKey = `${ONBOARDING_READY_STORAGE_KEY}:${organization?.id ?? clerkUserId ?? "anon"}`;
   const { account, isLoading: billingLoading, isSubscribed } = useBilling();
   // Set when we first enter the container/gateway phase — _not_ at component
   // mount. Time spent on the pre-provision steps (provider choice, billing
@@ -430,13 +437,13 @@ export function ProvisioningStepper({
       // an activation before.
       let alreadyActivated = false;
       try {
-        alreadyActivated = window.localStorage.getItem(ONBOARDING_READY_STORAGE_KEY) === "1";
+        alreadyActivated = window.localStorage.getItem(readyStorageKey) === "1";
       } catch {
         // storage-disabled browser: fall back to the in-mount ref guard only
       }
       if (!alreadyActivated) {
         try {
-          window.localStorage.setItem(ONBOARDING_READY_STORAGE_KEY, "1");
+          window.localStorage.setItem(readyStorageKey, "1");
         } catch {
           /* best-effort */
         }
@@ -449,7 +456,7 @@ export function ProvisioningStepper({
     if (prev === null) return;
     const completion = nextOnboardingCompletion(prev, phase, STEPS_PAID);
     if (completion) capture("onboarding_step_completed", { ...completion });
-  }, [phase, providerChoice]);
+  }, [phase, providerChoice, readyStorageKey]);
 
   // Record provision-gate blocks (subscription_required / oauth-missing /
   // credits_required / signup_required) keyed to the PERSON, once per code

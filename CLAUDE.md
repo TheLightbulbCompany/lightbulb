@@ -549,7 +549,7 @@ Two fixes:
 
 ### Plan model
 
-Post-2026-04-26 flat-fee cutover: a single $50/mo subscription per owner (personal user OR org). Every container is the same 0.5 vCPU / 1 GB box; there is no longer a tier-based size ladder. There is no scale-to-zero path — containers stay always-on while the subscription is active. A 14-day trial is provisioned by Stripe; trial-clock state is owned by Stripe (do not compute trial-days-left from `trial_end` locally — see memory `feedback_stripe_owns_trial_clock`).
+Post-2026-04-26 flat-fee cutover: a single $50/mo subscription per owner (personal user OR org). Every container is the same 0.5 vCPU / 2 GB box; there is no longer a tier-based size ladder. There is no scale-to-zero path — containers stay always-on while the subscription is active. A 14-day trial is provisioned by Stripe; trial-clock state is owned by Stripe (do not compute trial-days-left from `trial_end` locally — see memory `feedback_stripe_owns_trial_clock`).
 
 Three provider paths the user / org chooses between (stored on the per-owner `billing_accounts` record, not per-user):
 1. **Bedrock managed** — Isol8-billed Bedrock inference, draws from per-owner Bedrock credits.

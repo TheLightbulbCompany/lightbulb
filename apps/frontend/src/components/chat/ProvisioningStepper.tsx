@@ -423,18 +423,20 @@ export function ProvisioningStepper({
         ? { provider_choice: providerChoice }
         : {}),
     });
-    // Activation milestone: the first time the container reaches "ready" after a
-    // witnessed cold start, record it with the real duration (from
-    // provisioningStartRef, stamped on container/gateway-phase entry). This is
-    // the activation DENOMINATOR + time-to-first-value that the step_completed
-    // funnel tail can't give — fast phase-skips drop intermediate
-    // step_completed events, so "reached ready" undercounts ~3x otherwise.
-    if (phase === "ready" && !readyFiredRef.current && sawColdStartRef.current) {
+    // Activation milestone: the first time a container reaches "ready" after a
+    // WITNESSED cold start, record it with the real duration (from
+    // provisioningStartRef). This is the activation DENOMINATOR + time-to-first-
+    // value the step_completed funnel tail can't give (fast phase-skips drop
+    // intermediate events, undercounting "reached ready" ~3x).
+    //
+    // The once-ever marker is written on ANY first observed "ready" — including
+    // a pre-existing user already ready with no cold start this visit — so a
+    // later routine restart (stopped/errored container auto-restarts and
+    // re-enters provisioning) can never be miscounted as a new activation. Only
+    // the witnessed-cold-start case CAPTURES; an already-ready load just
+    // backfills the marker.
+    if (phase === "ready" && !readyFiredRef.current) {
       readyFiredRef.current = true;
-      // A routine restart of an existing user's stopped/errored container also
-      // passes through provisioning, so sawColdStart alone can't tell a first
-      // activation from a replay. Only emit if this browser has never recorded
-      // an activation before.
       let alreadyActivated = false;
       try {
         alreadyActivated = window.localStorage.getItem(readyStorageKey) === "1";
@@ -447,10 +449,12 @@ export function ProvisioningStepper({
         } catch {
           /* best-effort */
         }
-        const start = provisioningStartRef.current;
-        capture("onboarding_ready", {
-          elapsed_ms: start !== null ? Date.now() - start : null,
-        });
+        if (sawColdStartRef.current) {
+          const start = provisioningStartRef.current;
+          capture("onboarding_ready", {
+            elapsed_ms: start !== null ? Date.now() - start : null,
+          });
+        }
       }
     }
     if (prev === null) return;

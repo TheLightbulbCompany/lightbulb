@@ -37,6 +37,7 @@ from core.services.admin_audit import audit_admin_action
 from core.services.admin_service import resolve_admin_owner_id
 from core.services.config_patcher import patch_openclaw_config
 from core.services.idempotency import idempotency
+from core.services.update_service import apply_update
 from schemas.config import ConfigPatchRequest
 
 logger = logging.getLogger(__name__)
@@ -335,6 +336,58 @@ async def admin_container_queue_image_update(
         changes={"new_image": body.new_image},
     )
     return {"status": "queued", "update": item}
+
+
+@router.post(
+    "/users/{user_id}/container/apply-image-update",
+    description=(
+        "Force-apply a container image update NOW (admin-initiated) instead of "
+        "waiting for the owner to accept the Track-2 banner. Resolves user_id to "
+        "owner_id, creates the pending image_update row, then applies it via the "
+        "SAME apply_update() path the owner banner uses: the container's on-disk "
+        "openclaw.json is reused (removed-schema keys stripped first so the newer "
+        "image's strict schema can't crash-loop the gateway) and the per-user "
+        "task-def is rolled to the new image. Non-destructive — EFS workspace and "
+        "agent state are preserved; the container briefly restarts on the new "
+        "image. Returns 409 if the update could not be applied (a prior update is "
+        "already in progress); the row stays queued for a retry or owner-apply. "
+        "Idempotency-Key supported."
+    ),
+)
+@idempotency()
+@audit_admin_action("container.force_apply_image_update")
+async def admin_container_force_apply_image_update(
+    user_id: str,
+    body: QueueImageUpdateRequest,
+    request: Request,
+    auth: AuthContext = Depends(require_platform_admin),
+):
+    owner_id, _ = await resolve_admin_owner_id(user_id)
+    description = body.description or f"Admin force-apply image update to {body.new_image}"
+    item = await update_repo.create(
+        owner_id=owner_id,
+        update_type="image_update",
+        description=description,
+        changes={"new_image": body.new_image},
+        force_by=auth.user_id,
+    )
+    update_id = item["update_id"]
+    applied = await apply_update(owner_id, update_id)
+    if not applied:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Image update could not be applied now (a prior update may be in "
+                f"progress). The update was queued (update_id={update_id}) and can "
+                "be retried or applied by the owner from their update banner."
+            ),
+        )
+    return {
+        "status": "applied",
+        "owner_id": owner_id,
+        "update_id": update_id,
+        "new_image": body.new_image,
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -269,6 +269,108 @@ class TestContainerResize:
         assert ecs.reapply_standard_sizing.await_count == 1
 
 
+class TestContainerForceApplyImageUpdate:
+    """POST /api/v1/admin/users/{user_id}/container/apply-image-update.
+
+    Admin-initiated force-apply of an image update NOW (no waiting for the
+    owner to click the banner). Queues the pending update then applies it via
+    the SAME ``apply_update()`` path the owner banner uses — non-destructive:
+    reuses the container's existing on-disk openclaw.json (strips removed-schema
+    keys first) and rolls the per-user task-def. EFS workspace/state preserved.
+    """
+
+    _CREATED = {"owner_id": "u_target", "update_id": "upd_123", "status": "pending"}
+
+    @pytest.mark.asyncio
+    async def test_happy_path(self, async_client, admin_env):
+        with (
+            patch("routers.admin.update_repo.create", new=AsyncMock(return_value=self._CREATED)) as mock_create,
+            patch("routers.admin.apply_update", new=AsyncMock(return_value=True)) as mock_apply,
+        ):
+            res = await async_client.post(
+                "/api/v1/admin/users/u_target/container/apply-image-update",
+                json={"new_image": "ecr/isol8/openclaw-extended:2026.7.1-beta.3-isol8.1-e8e1cce"},
+            )
+        assert res.status_code == 200
+        body = res.json()
+        assert body["status"] == "applied"
+        assert body["update_id"] == "upd_123"
+        # A pending image_update row was created for the resolved owner...
+        create_kwargs = mock_create.await_args.kwargs
+        assert create_kwargs["owner_id"] == "u_target"
+        assert create_kwargs["update_type"] == "image_update"
+        assert create_kwargs["changes"]["new_image"].endswith("e8e1cce")
+        # ...then applied via the exact apply_update() path the owner banner uses.
+        mock_apply.assert_awaited_once_with("u_target", "upd_123")
+
+    @pytest.mark.asyncio
+    async def test_403_for_non_admin(self, async_client, non_admin_env):
+        res = await async_client.post(
+            "/api/v1/admin/users/u_target/container/apply-image-update",
+            json={"new_image": "img:tag"},
+        )
+        assert res.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_missing_new_image_422(self, async_client, admin_env):
+        res = await async_client.post(
+            "/api/v1/admin/users/u_target/container/apply-image-update",
+            json={},
+        )
+        assert res.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_409_when_apply_precondition_fails(self, async_client, admin_env):
+        """apply_update returns False (already applying / precondition failed) =>
+        409. The row stays queued so the owner banner / a retry can still apply."""
+        with (
+            patch("routers.admin.update_repo.create", new=AsyncMock(return_value=self._CREATED)),
+            patch("routers.admin.apply_update", new=AsyncMock(return_value=False)),
+        ):
+            res = await async_client.post(
+                "/api/v1/admin/users/u_target/container/apply-image-update",
+                json={"new_image": "img:tag"},
+            )
+        assert res.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_audit_row_written(self, async_client, admin_env, mock_audit_repo):
+        with (
+            patch("routers.admin.update_repo.create", new=AsyncMock(return_value=self._CREATED)),
+            patch("routers.admin.apply_update", new=AsyncMock(return_value=True)),
+        ):
+            res = await async_client.post(
+                "/api/v1/admin/users/u_target/container/apply-image-update",
+                json={"new_image": "img:tag"},
+            )
+        assert res.status_code == 200
+        kwargs = mock_audit_repo.await_args.kwargs
+        assert kwargs["action"] == "container.force_apply_image_update"
+        assert kwargs["target_user_id"] == "u_target"
+
+    @pytest.mark.asyncio
+    async def test_idempotent_within_window(self, async_client, admin_env):
+        """Same Idempotency-Key within 60s => the queue+apply runs exactly once."""
+        with (
+            patch("routers.admin.update_repo.create", new=AsyncMock(return_value=self._CREATED)),
+            patch("routers.admin.apply_update", new=AsyncMock(return_value=True)) as mock_apply,
+        ):
+            headers = {"Idempotency-Key": "force-apply-key-1"}
+            body = {"new_image": "img:tag"}
+            r1 = await async_client.post(
+                "/api/v1/admin/users/u_target/container/apply-image-update",
+                json=body,
+                headers=headers,
+            )
+            r2 = await async_client.post(
+                "/api/v1/admin/users/u_target/container/apply-image-update",
+                json=body,
+                headers=headers,
+            )
+        assert r1.json() == r2.json()
+        assert mock_apply.await_count == 1
+
+
 # ===========================================================================
 # Billing actions
 # ===========================================================================

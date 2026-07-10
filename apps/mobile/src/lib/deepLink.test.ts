@@ -14,4 +14,8 @@ describe("parseAgentDeepLink", () => {
     expect(parseAgentDeepLink("https://example.com")).toBeNull();
     expect(parseAgentDeepLink("isol8://agent/")).toBeNull();
   });
+  it("returns null (not throws) for malformed percent-encoding", () => {
+    expect(parseAgentDeepLink("isol8://agent/%")).toBeNull();
+    expect(parseAgentDeepLink("isol8://agent/%zz")).toBeNull();
+  });
 });

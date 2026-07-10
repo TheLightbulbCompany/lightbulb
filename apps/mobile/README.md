@@ -66,6 +66,66 @@ company org account before public App Store launch.
   require a new store build + TestFlight/App Store review. Rule of thumb: if
   `pnpm export:ios` alone can't represent the change, it's a store build.
 
+## Push notifications
+
+When a run **you started** finishes, your phone gets a notification — even with
+the app closed — showing the agent's name and a preview of the reply; tapping it
+opens that agent's chat. That is the whole of v1 (user-initiated runs only;
+proactive cron / channel / Teams pushes are v2). Design + implementation plan:
+`docs/superpowers/specs/2026-07-10-mobile-push-notifications-design.md` and
+`docs/superpowers/plans/2026-07-10-mobile-push-notifications.md`.
+
+**Transport — Expo Push API, no APNs key in our infra.** The backend sends to
+the Expo Push API (`https://exp.host/--/api/v2/push/send`); Expo/EAS fronts APNs
+and manages the APNs signing key, so we hold **no APNs credential**. The only
+backend secret is an **Expo access token** (`EXPO_ACCESS_TOKEN`), which CDK
+declares as a placeholder in AWS Secrets Manager (`isol8/${env}/expo_access_token`)
+and an operator **overwrites out-of-band, per environment**, with the real token
+from expo.dev (`aws secretsmanager put-secret-value`) — it is never committed.
+Device tokens live on the backend `users` row (member-scoped = org-correct), and
+the app registers its token via `POST /api/v1/devices` after sign-in.
+
+**Native-build requirement.** Push needs the `expo-notifications` native module +
+the `aps-environment` entitlement, both baked at **build** time — so push is a
+**store/TestFlight (native) build, not an OTA update**. A `pnpm update:production`
+JS-only OTA can never add it; ship it on a `preview` (device QA) or `production`
+(TestFlight) EAS build. On the iOS **simulator** you can't get a real APNs token,
+so registration no-ops there — use a physical device.
+
+**Testing — `jest-expo`.** The push logic (deep-link parser, foreground-suppression
+decision, `PushRegistration`) is unit-tested with `jest-expo` +
+`@testing-library/react-native`, separate from the shared package's vitest suite:
+
+```bash
+pnpm --filter @isol8/mobile test        # jest-expo runner
+```
+
+The `mobile-ci.yml` PR gate runs it alongside typecheck / lint / bundle. Native
+modules the tests touch (`expo-notifications`, `expo-secure-store`, `expo-device`)
+are mocked in `jest-setup.ts`.
+
+### On-device exit gate (manual — NOT yet run)
+
+> Push can't be exercised in CI or the simulator — it needs a physical device and
+> a real Expo access token in the target env's Secrets Manager. This is the
+> feature's exit gate and has **not been run yet** (it needs a TestFlight/preview
+> build installable on a device). Run it once an EAS `preview` build is available.
+
+After an EAS `preview` build (dev API/Clerk) with the real `EXPO_ACCESS_TOKEN` set
+in the dev secret:
+
+1. Sign in on a **physical** device; grant the notification permission prompt.
+2. Send a message to an agent; **background the app**; confirm a push arrives
+   showing the **agent name** (title) + **reply preview** (body).
+3. **Tap** it → it lands on that agent's chat.
+4. Repeat with **desktop and web closed (phone-only)** to exercise the teardown
+   guard — the backend↔container connection must stay alive through the run so
+   the completion push still fires with nothing else connected.
+5. (Once `getCurrentAgentId` is threaded from the chat screen) with the app
+   **foregrounded on that agent's chat**, confirm **no duplicate banner**. v1
+   ships `getCurrentAgentId → null` (shows all banners), so this step verifies the
+   follow-up, not current behavior.
+
 ## Checks
 
 ```bash

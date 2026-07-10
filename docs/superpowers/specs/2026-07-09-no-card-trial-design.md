@@ -25,8 +25,39 @@ Two walls, attacked together:
 2. **Inference wall** → free tier runs on **Meta Muse Spark 1.1** via a separate,
    walled-off provider (not Bedrock, not metered), on a **shared Meta key**.
 
-Shape: **3-day window + daily message cap**, one trial per verified identity, then
-the existing three provider options (Bedrock / ChatGPT OAuth / BYO) are shown.
+Shape: **3-day window + $3 total spend cap** (whichever first), one trial per
+verified identity, then the existing three provider options (Bedrock / ChatGPT
+OAuth / BYO) are shown.
+
+### Cap: $3 total spend, reserve-worst-case → reconcile (token/dollar based)
+
+The cap is **dollars of Meta spend**, not message count — a giant-context message
+costs far more than a small one, so message count is the wrong unit. Enforced the
+way Anthropic/OpenAI enforce token limits despite not knowing output in advance:
+
+- **Worst case is knowable pre-call.** Input tokens are deterministic before
+  inference; output is bounded by `maxTokens: 32000`. So a turn's worst-case cost =
+  `input × $1.25/M + 32K × $4.25/M`, clamped by the config `contextTokens: 200000`
+  → **≤ ~$0.386/turn**.
+- **Pre-send (in `gate_chat`):** atomically reserve the worst-case dollar cost
+  against the trial's remaining `$3 − spent`. If it won't fit, **block (fail
+  closed)**. This is the reservable, abuse-proof gate (closes the parallel-fan-out
+  TOCTOU — no server concurrency gate exists).
+- **Post-turn (on `chat.final`):** reconcile the reservation to **actual** dollars
+  computed from Meta's reported `usage` (`prompt_tokens`, `completion_tokens`) ×
+  known pricing; refund the unused output allowance. The durable counter then
+  tracks true spend.
+
+**Reconciliation is load-bearing (~20× swing).** With actual-usage reconciliation a
+typical ~$0.02–0.05 turn means **$3 ≈ 60–150 turns**; without it (worst-case
+reservation only) **$3 ≈ 8 turns**. So "Meta `usage` flows into Isol8's accounting"
+is a **hard prerequisite**, verified empirically once the key is wired (one Muse
+Spark turn, diff reported usage vs. recorded). Until verified, the config per-turn
+clamp (200K/32K) is the safety floor.
+
+**Reasoning effort = cost lever.** Muse Spark defaults to `high` and bills thinking
+tokens as output ($4.25/M). Set free-tier to **`medium`** to stretch the $3 and cut
+latency; the $3 ceiling bounds it regardless. Tunable.
 
 ### Non-goals
 - Not permanent freemium (bounded trial, converts or lapses).
@@ -50,6 +81,13 @@ pinned `2026.6.1-isol8.1`), or vanilla upstream. OpenClaw's frozen provider set
 **Reconciliation:** Muse Spark launched **2026-07-09**, so a native `meta`
 provider *cannot* be in our June image. The `docs.openclaw.ai/providers/meta` page
 reflects OpenClaw **latest**. Both observations are correct — it's version skew.
+
+**DECISION (2026-07-10): Path A — bump the image for the native `meta` provider.**
+Requires identifying the OpenClaw release that ships native `meta` and bumping
+`openclaw-version.json` + Dockerfile `FROM` to it (dev → validate → prod), with the
+usual protocol audit + fleet reprovision. Native config uses provider id `meta`,
+model `meta/muse-spark-1.1`, key env var `MODEL_API_KEY`. Path B (below) is retained
+as the fallback if the bump slips.
 
 **Two integration paths:**
 - **Path A (native):** bump the OpenClaw base image to the release shipping native
@@ -122,9 +160,12 @@ the no-train clause + retention govern the Model API before shipping.
 grant via conditional `PutItem attribute_not_exists`, **no TTL**):
 - PK `identity_key` (lowercased, `+tag`-stripped, gmail-dot-stripped verified
   email), `claimed_by_owner_id`, `claimed_at`, `trial_expires_at` (+3d),
-  `message_count`/`task_count` (atomic ADD), `status` ∈
-  {active, exhausted, expired, converted}.
-- Plus a global `free-tier:global:{YYYY-MM-DD}` row for the shared-key kill-switch.
+  `spent_microcents` (atomic ADD — reconciled to actual Meta spend),
+  `reserved_microcents` (transient in-flight reservations), `input_tokens` /
+  `output_tokens` (observability), `status` ∈
+  {active, exhausted, expired, converted}. Cap = **$3 total** (300000 microcents).
+- Plus a global `free-tier:global:{YYYY-MM-DD}` spend row for the shared-key
+  kill-switch.
 
 Do **not** put free state on `billing_accounts` (a pre-sub free user has no billing
 row; `is_trial_blocked` returns false for missing rows —
@@ -139,10 +180,10 @@ billing row is fine as a fast-read cache only.
 | 2 | One-trial-per-identity (conditional PutItem, no TTL) | new `free_trial_repo.claim_if_not_exists` (model on `webhook_dedup.py:84`); called from new `POST /billing/meta-free-start` |
 | 3 | Verified + canonicalized email (don't trust JWT `email`) | `clerk_admin` re-check + `identity.canonicalize_email` in claim path |
 | 4 | Disposable-domain denylist (config-driven; exempt `mailsac.com`) | claim path |
-| 5 | Per-identity COUNT increment on `chat.final` | hook `_safe_record_usage` (`websocket_chat.py:847`) |
-| 6 | Count/expiry hard-stop, **fail-closed** | Meta branch in `gate_chat` |
-| 7 | **Atomic reserve** at gate (closes parallel-fan-out TOCTOU — no server concurrency gate exists) | `gate_chat` Meta branch, `ADD … return_new` like `usage_repo.py:49` |
-| 8 | Global daily kill-switch on shared key | `gate_chat` reads global row vs `META_FREE_DAILY_GLOBAL_CAP` |
+| 5 | Post-turn **spend reconciliation** to actual Meta `usage` × pricing | hook `_safe_record_usage` (`websocket_chat.py:847`) → `free_trial_repo.reconcile_spend` |
+| 6 | **$3 spend / expiry hard-stop, fail-closed** | Meta branch in `gate_chat` |
+| 7 | **Atomic worst-case reserve** at gate (closes parallel-fan-out TOCTOU) | `gate_chat` Meta branch, `ADD reserved_microcents … return_new` like `usage_repo.py:49` |
+| 8 | Global daily **spend** kill-switch on shared key | `gate_chat` reads global spend row vs `META_FREE_DAILY_GLOBAL_SPEND_CAP` |
 | 9 | Churned-customer block | Meta gate consults `is_trial_blocked` (includes `canceled`) |
 | 10 | Paid can't downgrade to free | `change_provider` rejects target `meta`; `gate_chat` refuses Meta if `is_subscription_active`/`is_trial_blocked` |
 | 11 | Org exclusion (personal-only) | Meta gate refuses `owner_id.startswith("org_")` |
@@ -208,26 +249,33 @@ shipping mobile spin-down** — it's the one missing primitive that masks cold s
 
 ---
 
-## Design decisions (open — needed before planning)
+## Design decisions
 
-1. **Provider path:** Path B (custom provider now) vs Path A (bump for native).
-2. **Cap unit & numbers:** messages vs tasks; N/day; 3-day window confirmed?
-3. **Surface scope for v1:** web-first (simplest) vs desktop+iOS at launch. Desktop
-   needs the node-presence fix; iOS needs push before spin-down is bearable.
-   Recommendation: **web-first v1**; desktop/mobile free-tier spin-down deferred
-   behind those fixes.
+**Resolved (2026-07-10):**
+1. **Provider path:** **Path A — bump image for native `meta`** (§A).
+2. **Cap:** **$3 total spend + 3-day window**, whichever first; token/dollar based,
+   reserve-worst-case → reconcile; reasoning effort `medium` (§Cap).
+3. **Surface scope for v1:** **Web + Desktop.** Desktop requires the
+   node-presence-poisoning fix (exclude `node`/`operator` connections from the idle
+   signal + give the node path a wake capability). iOS deferred until the Expo push
+   path lands.
+
+**Open (needed before planning is final):**
 4. **Cap-reached & 3-day-expiry UX** copy + the "show the three providers" handoff.
 5. **Terms gate owner** — who verifies Meta's ToS in-browser before go-live.
+6. **Reconciliation verification** — confirm Meta `usage` flows into Isol8
+   accounting (the load-bearing prerequisite; §Cap). Do this first, before build.
 
-## Cost model
+## Cost model (3-day trial)
 
 | Per trial | Container | Inference (Muse Spark) | Total |
 |---|---|---|---|
-| Always-on | ~$8.30 (14d) | bounded by cap | ~$9 |
-| Idle-deprovisioned (~3 active hrs) | ~$0.10 | cents (cap + $1.25/$4.25) | **<$1** |
+| Always-on (3d) | ~$1.78 | ≤ $3 (hard cap; typ. far less) | ≤ ~$4.78 |
+| Idle-deprovisioned (~3 active hrs) | ~$0.10 | ≤ $3 (typ. $0.30–1 to reach aha) | **typ. <$1**, ≤ ~$3.10 worst case |
 
-Idle-deprovision is the ~12× lever. Meta $20 free credits + cheap price make early
-volume nearly free.
+Inference is now the hard-capped ceiling ($3); idle-deprovision reclaims the
+container floor. Meta's $20 free credits + $1.25/$4.25 pricing make early volume
+nearly free. Worst case per trial is bounded and known.
 
 ## Future work (parked, separate project): paid scale-to-zero
 

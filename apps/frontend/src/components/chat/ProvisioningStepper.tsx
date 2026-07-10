@@ -124,6 +124,12 @@ const TIMEOUT_MS = 300_000;
 // alone can't distinguish a first activation from a replay.
 const ONBOARDING_READY_STORAGE_KEY = "isol8_onboarding_ready_v1";
 
+// Same idiom as ONBOARDING_READY_STORAGE_KEY above, for the free-tier
+// `trial_started` funnel milestone — a distinct marker because a trial owner
+// who later converts to paid must NOT re-fire this on a subsequent
+// container recovery pass.
+const TRIAL_STARTED_STORAGE_KEY = "isol8_trial_started_v1";
+
 /**
  * Rotating idea prompts shown while the container spins up. Kept short (≤ ~52 chars)
  * so they fit on one line and don't cause layout shift. Tone matches the rest of the
@@ -203,6 +209,8 @@ export function ProvisioningStepper({
   // identified by Clerk user), so scope the once-ever marker to the owner
   // (org id for org workspaces, else the Clerk user id).
   const readyStorageKey = `${ONBOARDING_READY_STORAGE_KEY}:${organization?.id ?? clerkUserId ?? "anon"}`;
+  // Same owner-scoping for the trial_started once-marker (see below).
+  const trialStartedStorageKey = `${TRIAL_STARTED_STORAGE_KEY}:${organization?.id ?? clerkUserId ?? "anon"}`;
   const { account, isLoading: billingLoading, isSubscribed } = useBilling();
   // Free-tier discriminator: trial_local accounts are already is_subscribed
   // (the backend added trial_local to _ACTIVE_STATUSES) but never set
@@ -475,6 +483,39 @@ export function ProvisioningStepper({
     const completion = nextOnboardingCompletion(prev, phase, STEPS_PAID);
     if (completion) capture("onboarding_step_completed", { ...completion });
   }, [phase, providerChoice, readyStorageKey]);
+
+  // `trial_started`: the free-tier equivalent of an activation milestone.
+  // trial_local accounts skip payment/provider entirely (see the `phase`
+  // memo above), so there's no natural "step_completed" transition to hang
+  // this off of — it has to be driven directly off `isTrialLocal` becoming
+  // true. Fires on the RISING EDGE only (false -> true), guarded by the same
+  // owner-scoped once-ever localStorage marker idiom as `onboarding_ready`
+  // above, so a returning trial user re-opening /chat doesn't re-fire it.
+  const prevIsTrialLocalRef = useRef(false);
+  useEffect(() => {
+    const wasTrialLocal = prevIsTrialLocalRef.current;
+    prevIsTrialLocalRef.current = isTrialLocal;
+    if (!isTrialLocal || wasTrialLocal) return;
+    // A "recovery" restart (existing trial owner's stopped container
+    // auto-restarting) also re-mounts this component, resetting the ref
+    // above to `false` and thus looking like a rising edge again. Same
+    // reasoning as the onboarding_ready trigger guard: only the "onboarding"
+    // trigger represents a genuine (first) trial start.
+    if (trigger !== "onboarding") return;
+    let alreadyStarted = false;
+    try {
+      alreadyStarted = window.localStorage.getItem(trialStartedStorageKey) === "1";
+    } catch {
+      // storage-disabled browser: best-effort only, may re-fire on reload
+    }
+    if (alreadyStarted) return;
+    try {
+      window.localStorage.setItem(trialStartedStorageKey, "1");
+    } catch {
+      /* best-effort */
+    }
+    capture("trial_started");
+  }, [isTrialLocal, trigger, trialStartedStorageKey]);
 
   // Record provision-gate blocks (subscription_required / oauth-missing /
   // credits_required / signup_required) keyed to the PERSON, once per code

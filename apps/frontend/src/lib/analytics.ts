@@ -124,6 +124,8 @@ export type AnalyticsEvent =
   | "onboarding_step_completed"
   | "onboarding_step_entered"
   | "org_invitation_accepted"
+  | "trial_first_agent_response"
+  | "trial_started"
   | "workspace_type_selected"
   // Signup
   | "signup_started"

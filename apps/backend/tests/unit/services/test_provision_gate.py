@@ -29,6 +29,22 @@ async def test_no_billing_account_returns_signup_required():
 
 
 @pytest.mark.asyncio
+async def test_no_billing_org_owner_returns_team_billing_required():
+    """An org owner (owner_id starts with 'org_') with no billing row gets a
+    DISTINCT team_billing_required code, not the personal signup_required. The
+    free tier is personal-only, so a team never falls into a card-less
+    trial_local — an org with no billing needs per-seat Teams billing, and the
+    frontend keys the Teams paywall off this code rather than the personal
+    provider picker."""
+    with patch("core.services.provision_gate.billing_repo") as repo:
+        repo.get_by_owner_id = AsyncMock(return_value=None)
+        gate = await evaluate_provision_gate(owner_id="org_xyz", is_admin=True)
+    assert gate is not None
+    assert gate.code == "team_billing_required"
+    assert gate.action_admin_only is True
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "status",
     ["canceled", "incomplete", "incomplete_expired", "unpaid", "paused"],
@@ -147,6 +163,26 @@ async def test_trialing_with_credits_returns_none():
             owner_id="user_x",
         )
     assert gate is None  # all gates pass
+
+
+@pytest.mark.asyncio
+async def test_trial_local_no_provider_choice_returns_none():
+    """A trial_local row has NO provider_choice on it — its provider is
+    resolved to `meta` elsewhere, never stored on the billing row. The
+    Layer-2 provider_required check must NOT fire for trial_local; the
+    gate short-circuits to None (provisioning allowed) before Layer 2."""
+    with patch("core.services.provision_gate.billing_repo") as repo:
+        repo.get_by_owner_id = AsyncMock(
+            return_value={
+                "subscription_status": "trial_local",
+                # No provider_choice, no stripe_subscription_id — neither
+                # is written for the no-card local trial.
+            },
+        )
+        gate = await evaluate_provision_gate(
+            owner_id="user_x",
+        )
+    assert gate is None  # Layer-2 provider_required must not fire
 
 
 @pytest.mark.asyncio
@@ -529,6 +565,10 @@ def test_gate_to_payload_shape():
         # Active states.
         ({"subscription_status": "active"}, True),
         ({"subscription_status": "trialing"}, True),
+        # No-card local trial — a Stripe-less trial state that must grant
+        # platform use the same as "trialing" (unblocks chat + Layer 1 of
+        # the provision gate).
+        ({"subscription_status": "trial_local"}, True),
         # Inactive states — none of these grant access regardless of
         # whether ``stripe_subscription_id`` is still set on the row.
         ({"subscription_status": "past_due"}, False),
@@ -584,6 +624,10 @@ def test_is_subscription_active_table(account, expected):
         ({"subscription_status": "incomplete_expired"}, True),
         ({"subscription_status": "unpaid"}, True),
         ({"subscription_status": "paused"}, True),
+        # trial_local must NOT block a fresh trial-creation attempt — a
+        # later paid upgrade (real Stripe trial/subscription) must stay
+        # possible for an account currently in the no-card local trial.
+        ({"subscription_status": "trial_local"}, False),
         # Unknown/future status doesn't block — fail-open is the right
         # choice for the trial-checkout gate (worst case is one extra
         # trial; cancel-loop is gated by Stripe support workflow).

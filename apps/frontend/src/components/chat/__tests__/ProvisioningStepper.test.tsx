@@ -85,14 +85,24 @@ vi.mock("@/lib/api", () => ({
   },
 }));
 
+// Configurable so the trial_local (free-tier) test can flip isSubscribed /
+// account shape without a persisted provider_choice.
+let billingMockIsSubscribed = true;
+let billingMockAccount: { provider_choice: string | null; subscription_status?: string | null } | null = {
+  provider_choice: "bedrock_claude",
+};
+// Spy for the /billing/account re-fetch the stepper fires when a container is
+// provisioning but billing hasn't caught up to the just-created trial_local.
+let billingMockRefresh = vi.fn();
 vi.mock("@/hooks/useBilling", () => ({
-  // provider_choice set: an onboarded owner (the cold-start tests need to
-  // get PAST the ProviderPicker gate, which requires isSubscribed AND a
-  // persisted provider choice).
+  // Default: provider_choice set, an onboarded owner (the cold-start tests
+  // need to get PAST the ProviderPicker gate, which requires isSubscribed AND
+  // a persisted provider choice).
   useBilling: () => ({
     isLoading: false,
-    isSubscribed: true,
-    account: { provider_choice: "bedrock_claude" },
+    isSubscribed: billingMockIsSubscribed,
+    account: billingMockAccount,
+    refresh: billingMockRefresh,
   }),
 }));
 
@@ -139,6 +149,9 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     apiGet.mockClear();
     apiPut.mockClear();
     apiDel.mockClear();
+    billingMockIsSubscribed = true;
+    billingMockAccount = { provider_choice: "bedrock_claude" };
+    billingMockRefresh = vi.fn();
   });
 
   afterEach(() => {
@@ -381,6 +394,35 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     ).toBeInTheDocument();
   });
 
+  it("bypasses the ProviderPicker while a container is provisioning even if billing lags the trial, and refreshes billing", () => {
+    // Cross-fetch race: /container/status creates the trial_local row and
+    // returns a provisioning container, but /billing/account was fetched
+    // before the row existed so it still reads non-trial. The stepper must
+    // trust the live container (not fall back to the picker) AND pull billing
+    // once so isTrialLocal/isSubscribed catch up and cold-start polling
+    // resumes.
+    billingMockIsSubscribed = false;
+    billingMockAccount = null;
+    useProvMock.mockReturnValue({
+      phase: "normal",
+      container: { status: "provisioning", phase: "provisioning" },
+      blocked: null,
+      refreshInterval: 3000,
+      refresh: vi.fn(),
+    });
+
+    render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+
+    // Picker headline must be absent — the live container bypasses it.
+    expect(screen.queryByText(/ways to power it/i)).not.toBeInTheDocument();
+    // Billing was re-fetched so the trial state can catch up.
+    expect(billingMockRefresh).toHaveBeenCalled();
+  });
+
   it("renders team-pending centerpiece when phase=team-pending", () => {
     // Backend Task 8: org members whose admin-owned workspace isn't
     // provisioned yet receive 202 from /container/status. The hook
@@ -436,6 +478,39 @@ describe("ProvisioningStepper blocked-state rendering", () => {
       (args) => args[0] === "/container/provision",
     );
     expect(provisionCalls).toHaveLength(0);
+  });
+
+  it("skips ProviderPicker for a trial_local (free-tier) account and proceeds into provisioning", () => {
+    // trial_local is the free-tier subscription_status: the backend already
+    // treats it as an active subscription (isSubscribed=true), but these
+    // users never set provider_choice. The naive
+    // `isSubscribed && provider_choice` ownerOnboarded check would wrongly
+    // fall through to the ProviderPicker mid-provision — the trap this test
+    // guards against.
+    billingMockIsSubscribed = true;
+    billingMockAccount = { provider_choice: null, subscription_status: "trial_local" };
+
+    useProvMock.mockReturnValue({
+      phase: "normal",
+      blocked: null,
+      refreshInterval: 3000,
+      refresh: vi.fn(),
+      container: { status: "provisioning", phase: "provisioning", substatus: "service_created" },
+    });
+
+    render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+
+    // Must NOT render the ProviderPicker.
+    expect(screen.queryByText(/ways to power it/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: /Sign in with ChatGPT/i }),
+    ).not.toBeInTheDocument();
+    // Must proceed into the container cold-start phase, not "payment".
+    expect(screen.getByText("Provisioning your container...")).toBeInTheDocument();
   });
 
   it("renders ChatGPTOAuthStep when ?provider=chatgpt_oauth even if gate is blocked", async () => {

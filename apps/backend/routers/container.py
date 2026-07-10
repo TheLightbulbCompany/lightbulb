@@ -21,7 +21,7 @@ from core.services.container_provision import (
     background_provision as _background_provision,
 )
 from core.services.provision_gate import evaluate_provision_gate
-from core.services.user_provision import ensure_user_ready
+from core.services.user_provision import ensure_personal_trial_default, ensure_user_ready
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +107,14 @@ async def container_status(
         # CTA instead of trapping the user in a generic "no container"
         # state.
         is_admin = auth.is_org_admin if auth.is_org_context else True
+        # Auto-default a brand-new PERSONAL owner into trial_local BEFORE the
+        # gate. Otherwise the gate sees no billing row, returns signup_required,
+        # and this endpoint 404s below — before ensure_user_ready (the
+        # background trial-creator) is ever dispatched — trapping a fresh
+        # personal signup on the ProviderPicker instead of provisioning Meta.
+        # Idempotent conditional put; no-op for orgs and for owners who already
+        # have a row.
+        await ensure_personal_trial_default(auth, owner_id)
         gate = await evaluate_provision_gate(
             owner_id=owner_id,
             is_admin=is_admin,

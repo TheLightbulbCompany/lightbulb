@@ -19,6 +19,19 @@ def _mock_ensure_metronome_customer():
         yield mock
 
 
+@pytest.fixture(autouse=True)
+def _mock_create_trial_local_if_absent():
+    """ensure_user_ready auto-defaults a genuinely-new owner into
+    trial_local before the gate is evaluated (Task 3); stub it so
+    pre-existing tests never touch real billing DDB. Tests that care
+    about this call inspect/override the mock directly."""
+    with patch(
+        "core.services.user_provision.billing_repo.create_trial_local_if_absent",
+        new=AsyncMock(return_value=None),
+    ) as mock:
+        yield mock
+
+
 def _personal_auth(user_id: str = "user_123", email: str = "u@example.com") -> AuthContext:
     """Personal-context AuthContext (no org)."""
     return AuthContext(
@@ -843,3 +856,135 @@ async def test_metronome_customer_provisioned_for_org_admin_with_org_owner_id(_m
     ):
         await ensure_user_ready(_org_admin_auth("user_admin", "org_xyz", "a@example.com"))
     _mock_ensure_metronome_customer.assert_awaited_once_with(owner_id="org_xyz")
+
+
+# ---------------------------------------------------------------------------
+# Trial auto-default (Task 3)
+# ---------------------------------------------------------------------------
+#
+# A genuinely-new owner (no billing row) is auto-defaulted into trial_local
+# BEFORE the gate is evaluated, so the gate (which now accepts trial_local
+# as active + provision-eligible, per Task 2) returns None and the normal
+# Paperclip-seed + background_provision flow runs. create_trial_local_if_absent
+# is an idempotent no-op if any row already exists (Task 1), so this call is
+# safe on every ~3s poll and never overwrites a paid/canceled owner. The gate
+# itself stays pure -- this is the only new write, and it lives only here.
+
+
+@pytest.mark.asyncio
+async def test_new_personal_owner_creates_trial_before_gate_and_dispatches_provisioning(
+    _mock_create_trial_local_if_absent,
+):
+    """A no-billing NEW personal owner: create_trial_local_if_absent is
+    awaited (with owner_id=user_id, owner_type='personal') BEFORE the gate
+    is evaluated, the gate then returns None, and background_provision is
+    dispatched."""
+    call_order: list[str] = []
+
+    async def fake_create_trial(*, owner_id, owner_type):
+        call_order.append("create_trial")
+        assert owner_id == "user_p"
+        assert owner_type == "personal"
+
+    async def fake_gate(*, owner_id, is_admin):
+        call_order.append("gate")
+        return None
+
+    _mock_create_trial_local_if_absent.side_effect = fake_create_trial
+    captured: list[str] = []
+
+    def capture_task(coro):
+        captured.append(coro.__qualname__)
+        coro.close()
+
+    with (
+        patch("core.services.user_provision.evaluate_provision_gate", side_effect=fake_gate),
+        patch("core.services.user_provision._ensure_paperclip_for_owner", new=AsyncMock()),
+        patch("core.services.user_provision.asyncio.create_task", side_effect=capture_task),
+    ):
+        await ensure_user_ready(_personal_auth("user_p", "p@example.com"))
+
+    assert call_order == ["create_trial", "gate"], f"expected create-then-gate ordering, got {call_order}"
+    _mock_create_trial_local_if_absent.assert_awaited_once_with(owner_id="user_p", owner_type="personal")
+    assert captured == ["background_provision"]
+
+
+@pytest.mark.asyncio
+async def test_org_member_no_billing_does_not_create_trial(_mock_create_trial_local_if_absent):
+    """A no-billing NON-ADMIN org member does not create a trial row -- the
+    predicate `not auth.is_org_context or auth.is_org_admin` excludes them,
+    mirroring the container-dispatch predicate. They ride the org admin's
+    billing account."""
+    fake_provisioning = MagicMock()
+    fake_provisioning.find_org_owner = AsyncMock(return_value=None)
+    fake_provisioning.provision_member = AsyncMock()
+
+    with (
+        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+        patch(
+            "core.services.user_provision.build_paperclip_provisioning", new=AsyncMock(return_value=fake_provisioning)
+        ),
+        patch("core.services.user_provision.close_paperclip_provisioning", new=AsyncMock()),
+        patch("core.services.user_provision.asyncio.create_task", side_effect=lambda c: c.close()),
+    ):
+        await ensure_user_ready(_org_member_auth())
+
+    _mock_create_trial_local_if_absent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_org_admin_no_billing_does_not_create_trial(_mock_create_trial_local_if_absent):
+    """A no-billing NEW org admin does NOT create a trial row. The free tier is
+    personal-only and Teams billing is per-seat/no-trial, so the predicate
+    `not auth.is_org_context` excludes every org context -- admin included. The
+    org-company provisioning flow still runs; only the card-less trial is
+    withheld."""
+    fake_provisioning = MagicMock()
+    fake_provisioning.find_org_owner = AsyncMock(return_value=None)
+    fake_provisioning.try_acquire_org_create_claim = AsyncMock(return_value=True)
+    fake_provisioning.provision_org = AsyncMock()
+    fake_provisioning.get_company_row = AsyncMock(return_value=MagicMock(status="active", org_id="org_xyz"))
+
+    with (
+        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+        patch(
+            "core.services.user_provision.build_paperclip_provisioning", new=AsyncMock(return_value=fake_provisioning)
+        ),
+        patch("core.services.user_provision.close_paperclip_provisioning", new=AsyncMock()),
+        patch("core.services.user_provision.asyncio.create_task", side_effect=lambda c: c.close()),
+    ):
+        await ensure_user_ready(_org_admin_auth("user_admin", "org_xyz", "a@example.com"))
+
+    _mock_create_trial_local_if_absent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_org_admin_join_existing_company_creates_no_trial(_mock_create_trial_local_if_absent):
+    """An org admin joining an already-provisioned company: no trial row is
+    created (orgs never get the card-less trial), and the normal join flow for
+    an org whose company already exists proceeds exactly as before."""
+    fake_owner_row = MagicMock(status="active", company_id="co_1", user_id="user_first")
+    fake_provisioning = MagicMock()
+    fake_provisioning.find_org_owner = AsyncMock(return_value=fake_owner_row)
+    fake_provisioning.provision_member = AsyncMock()
+    fake_provisioning.provision_org = AsyncMock()
+
+    with (
+        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+        patch(
+            "core.services.user_provision.build_paperclip_provisioning", new=AsyncMock(return_value=fake_provisioning)
+        ),
+        patch("core.services.user_provision.close_paperclip_provisioning", new=AsyncMock()),
+        patch("core.services.user_provision.lookup_owner_email", new=AsyncMock(return_value="owner@example.com")),
+        patch("core.services.user_provision.asyncio.create_task", side_effect=lambda c: c.close()),
+    ):
+        await ensure_user_ready(_org_admin_auth("user_second_admin", "org_xyz", "b@example.com"))
+
+    _mock_create_trial_local_if_absent.assert_not_awaited()
+    fake_provisioning.provision_member.assert_awaited_once_with(
+        owner_id="org_xyz",
+        user_id="user_second_admin",
+        email="b@example.com",
+        owner_email="owner@example.com",
+    )
+    fake_provisioning.provision_org.assert_not_awaited()

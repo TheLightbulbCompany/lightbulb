@@ -5,7 +5,66 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from core.containers.ecs_manager import EcsManager
-from core.services.container_provision import background_provision
+from core.services.container_provision import background_provision, resolve_provider_choice
+
+
+# ---------------------------------------------------------------------------
+# resolve_provider_choice
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_provider_choice_trial_local_returns_meta():
+    """A trial_local row (the no-card local trial) resolves to the `meta`
+    provider mode. `meta` is a config-path mode, never a stored
+    provider_choice, so it must NOT be read off the row — it short-circuits
+    before the provider_choice/byo_provider lookup entirely."""
+    with patch("core.services.container_provision.billing_repo") as repo:
+        repo.get_by_owner_id = AsyncMock(
+            return_value={"subscription_status": "trial_local"},
+        )
+        result = await resolve_provider_choice("user_x")
+    assert result == ("meta", None)
+
+
+@pytest.mark.asyncio
+async def test_resolve_provider_choice_bedrock_unchanged():
+    """Existing bedrock_claude path is untouched by the trial_local branch."""
+    with patch("core.services.container_provision.billing_repo") as repo:
+        repo.get_by_owner_id = AsyncMock(
+            return_value={
+                "subscription_status": "active",
+                "provider_choice": "bedrock_claude",
+            },
+        )
+        result = await resolve_provider_choice("user_x")
+    assert result == ("bedrock_claude", None)
+
+
+@pytest.mark.asyncio
+async def test_resolve_provider_choice_byo_key_unchanged():
+    """Existing byo_key path (with its byo_provider) is untouched."""
+    with patch("core.services.container_provision.billing_repo") as repo:
+        repo.get_by_owner_id = AsyncMock(
+            return_value={
+                "subscription_status": "active",
+                "provider_choice": "byo_key",
+                "byo_provider": "anthropic",
+            },
+        )
+        result = await resolve_provider_choice("user_x")
+    assert result == ("byo_key", "anthropic")
+
+
+@pytest.mark.asyncio
+async def test_resolve_provider_choice_no_row_defaults_to_bedrock():
+    """No billing row at all still falls back to bedrock_claude — the
+    legacy default for owners onboarded before per-owner provider_choice
+    storage. Must not be confused with trial_local."""
+    with patch("core.services.container_provision.billing_repo") as repo:
+        repo.get_by_owner_id = AsyncMock(return_value=None)
+        result = await resolve_provider_choice("user_x")
+    assert result == ("bedrock_claude", None)
 
 
 @pytest.mark.asyncio

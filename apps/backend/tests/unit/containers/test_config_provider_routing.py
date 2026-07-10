@@ -56,6 +56,42 @@ async def test_chatgpt_oauth_branch(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_meta_provider_branch(tmp_path):
+    """meta is bundled + enabledByDefault in the 7.1 base image (extensions/meta,
+    muse-spark-1.1). Keyed via MODEL_API_KEY (an ECS task-def secret), never in
+    openclaw.json. Locked single model — fallback == primary so it isn't
+    user-changeable, mirroring the chatgpt_oauth shape (no explicit
+    models.providers block, no plugin entry, since the provider is bundled in
+    the base image)."""
+    out = tmp_path / "openclaw.json"
+    await write_openclaw_config(
+        config_path=out,
+        gateway_token="test-token",
+        provider_choice="meta",
+        user_id="u_1",
+    )
+    cfg = json.loads(out.read_text())
+    model_block = cfg["agents"]["defaults"]["model"]
+    assert model_block["primary"] == "meta/muse-spark-1.1"
+    assert model_block["fallbacks"] == ["meta/muse-spark-1.1"]
+    assert "meta" not in cfg["models"].get("providers", {})
+
+
+def test_build_provider_block_meta_exact_shape():
+    """Direct unit test on the builder: meta returns exactly the locked
+    single-model shape with no providers config and no plugin entries."""
+    assert build_provider_block(
+        provider_choice="meta",
+        user_id="u_1",
+        byo_provider=None,
+    ) == (
+        {},
+        {"primary": "meta/muse-spark-1.1", "fallbacks": ["meta/muse-spark-1.1"]},
+        {},
+    )
+
+
+@pytest.mark.asyncio
 async def test_byo_key_openai_branch(tmp_path):
     out = tmp_path / "openclaw.json"
     await write_openclaw_config(

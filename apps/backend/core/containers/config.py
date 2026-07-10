@@ -479,6 +479,12 @@ def build_provider_block(
                 },
             },
         )
+    if provider_choice == "meta":
+        # meta provider is bundled + enabledByDefault in the 7.1 base image
+        # (extensions/meta, muse-spark-1.1). Key via MODEL_API_KEY env (a task-def
+        # secret set at provision time) — never in openclaw.json. Locked single
+        # model: fallback == primary so it isn't user-changeable.
+        return ({}, {"primary": "meta/muse-spark-1.1", "fallbacks": ["meta/muse-spark-1.1"]}, {})
     raise ValueError(f"Unknown provider_choice: {provider_choice!r}")
 
 

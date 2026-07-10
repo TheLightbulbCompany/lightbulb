@@ -28,6 +28,11 @@ interface AgentChatWindowProps {
   onOpenFile?: (path: string) => void;
 }
 
+// Owner-scoped once-ever marker so `trial_first_agent_response` fires at most
+// once per trial owner — same idiom as ProvisioningStepper's
+// ONBOARDING_READY_STORAGE_KEY / TRIAL_STARTED_STORAGE_KEY.
+const TRIAL_FIRST_RESPONSE_STORAGE_KEY = "isol8_trial_first_response_v1";
+
 // =============================================================================
 // Update Banner
 // =============================================================================
@@ -232,10 +237,36 @@ export function AgentChatWindow({
   onOpenFile,
 }: AgentChatWindowProps): React.ReactElement {
   const { userId } = useAuth();
+  const { organization } = useOrganization();
   // Every user gets their own session — isolates chat history from cron,
   // channels, and other system activity. Matches backend (websocket_chat.py).
   // userId is always defined here — ChatLayout gates on clerkLoaded && isSignedIn.
   const sessionName = userId!;
+  const { account } = useBilling();
+  // Free-tier discriminator — same field ProvisioningStepper uses to derive
+  // isTrialLocal. useAgentChat has no billing context, so this component
+  // (which already reads useBilling) decides whether a completed turn
+  // counts as the `trial_first_agent_response` milestone.
+  const isTrialLocal = account?.subscription_status === "trial_local";
+  const trialFirstResponseFiredRef = useRef(false);
+  const handleChatCompleted = useCallback(() => {
+    if (!isTrialLocal || trialFirstResponseFiredRef.current) return;
+    trialFirstResponseFiredRef.current = true;
+    const storageKey = `${TRIAL_FIRST_RESPONSE_STORAGE_KEY}:${organization?.id ?? userId ?? "anon"}`;
+    let alreadyFired = false;
+    try {
+      alreadyFired = window.localStorage.getItem(storageKey) === "1";
+    } catch {
+      // storage-disabled browser: best-effort only, may re-fire on reload
+    }
+    if (alreadyFired) return;
+    try {
+      window.localStorage.setItem(storageKey, "1");
+    } catch {
+      /* best-effort */
+    }
+    capture("trial_first_agent_response");
+  }, [isTrialLocal, organization?.id, userId]);
   const {
     renderGroups,
     renderItems,
@@ -255,8 +286,7 @@ export function AgentChatWindow({
     retryQueuedMessage,
     activeSessionId,
     historyTruncated,
-  } = useAgentChat(agentId, sessionName);
-  const { account } = useBilling();
+  } = useAgentChat(agentId, sessionName, handleChatCompleted);
 
   // Hydrate the composer pill from the ACTIVE session's persisted row so it
   // reflects what sessions.patch wrote, not a stub. useAgentSessions shares its

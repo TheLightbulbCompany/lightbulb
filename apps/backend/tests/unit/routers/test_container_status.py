@@ -57,6 +57,17 @@ async def _noop_ensure_user_ready(auth, *, provision_container=True):
     return None
 
 
+@pytest.fixture(autouse=True)
+def _stub_personal_trial_default():
+    """The no-container /status path now auto-defaults a personal owner into a
+    trial_local row BEFORE the gate (create-before-gate fix). Stub it by default
+    so the gate→response-mapping tests below don't hit real DynamoDB; the
+    dedicated regression test patches it explicitly to assert the call and its
+    ordering relative to the gate."""
+    with patch("routers.container.ensure_personal_trial_default", new=AsyncMock()) as stub:
+        yield stub
+
+
 class TestColdStartPhaseResolver:
     """Pure unit tests for the (DDB status, pool state) -> phase mapping.
 
@@ -427,10 +438,13 @@ class TestContainerStatusGate:
 
     @pytest.mark.asyncio
     async def test_admin_signup_required_returns_404_for_picker(self):
-        """Admin owner with no billing row: gate fires signup_required,
-        but /status returns 404 so the frontend renders the ProviderPicker
-        (the only checkout entry point) instead of a Subscribe button that
-        loops to /onboarding."""
+        """Router mapping: a signup_required gate for an admin owner → 404, so
+        the frontend renders the ProviderPicker (the checkout entry point)
+        rather than a Subscribe button that loops /onboarding → /chat. A fresh
+        personal signup no longer produces signup_required (it gets a
+        trial_local default first — see
+        test_personal_no_billing_creates_trial_before_gate); this mapping
+        governs the code wherever the gate still emits it."""
         from fastapi import HTTPException
 
         from core.services.provision_gate import Gate
@@ -470,6 +484,81 @@ class TestContainerStatusGate:
                 await container_status(auth=mock_auth)
 
         assert exc.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_personal_no_billing_creates_trial_before_gate(self):
+        """Regression (the core Phase-A flow): the no-container path MUST create
+        the personal trial_local default BEFORE evaluate_provision_gate. Order
+        matters — if the gate runs first it sees no billing row, returns
+        signup_required, and /status 404s before the trial is ever created,
+        trapping a brand-new personal signup on the ProviderPicker instead of
+        provisioning Meta. With the trial created first, the gate clears and
+        /status returns 200 provisioning."""
+        from routers.container import container_status
+
+        order: list[str] = []
+
+        async def rec_trial(auth, owner_id):
+            order.append("trial")
+
+        async def rec_gate(**kwargs):
+            order.append("gate")
+            return None  # trial row now exists → gate clears
+
+        fake_ecs = MagicMock(
+            resolve_running_container=AsyncMock(return_value=(None, None)),
+            get_service_status=AsyncMock(return_value=None),
+        )
+        with (
+            patch("routers.container.ensure_personal_trial_default", new=AsyncMock(side_effect=rec_trial)),
+            patch("routers.container.evaluate_provision_gate", new=AsyncMock(side_effect=rec_gate)),
+            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
+            patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),
+        ):
+            result = await container_status(_personal_auth())
+
+        assert order == ["trial", "gate"], f"trial must be created before the gate, got {order}"
+        assert result["status"] == "provisioning"
+        assert result["phase"] == "provisioning"
+
+    @pytest.mark.asyncio
+    async def test_org_admin_no_billing_returns_team_billing_required_402(self):
+        """Org admin with no billing row: no trial is created (personal-only),
+        the gate returns the distinct team_billing_required code, and /status
+        402s with the structured payload the Teams-billing paywall keys off —
+        NOT the personal signup_required 404."""
+        from fastapi import HTTPException
+
+        from core.services.provision_gate import Gate
+        from routers.container import container_status
+
+        fake_gate = Gate(
+            code="team_billing_required",
+            title="Set up Teams billing",
+            message="Your team needs an active per-seat subscription to start.",
+            action_label="Set up billing",
+            action_href="/settings/billing",
+            action_admin_only=True,
+            owner_role="admin",
+        )
+        fake_ecs = AsyncMock()
+        fake_ecs.resolve_running_container = AsyncMock(return_value=(None, None))
+        fake_ecs.get_service_status = AsyncMock(return_value=None)
+        with (
+            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch(
+                "routers.container.evaluate_provision_gate",
+                new_callable=AsyncMock,
+                return_value=fake_gate,
+            ),
+            patch("routers.container.resolve_owner_id", return_value="org_xyz"),
+        ):
+            with pytest.raises(HTTPException) as exc:
+                await container_status(auth=_org_admin_auth())
+
+        assert exc.value.status_code == 402
+        assert exc.value.detail["blocked"]["code"] == "team_billing_required"
 
     @pytest.mark.asyncio
     async def test_admin_subscription_required_still_returns_402(self):

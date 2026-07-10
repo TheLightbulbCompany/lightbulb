@@ -1,6 +1,7 @@
 """Tests for billing account DynamoDB repository."""
 
 import os
+import time
 from unittest.mock import patch
 
 import boto3
@@ -144,6 +145,56 @@ async def test_set_and_get_by_metronome_customer_id(dynamodb_table):
     assert resolved["owner_id"] == "org_m"
 
     assert await billing_repo.get_by_metronome_customer_id("unknown-uuid") is None
+
+
+@pytest.mark.asyncio
+async def test_create_trial_local_if_absent_writes_trial_row(dynamodb_table):
+    from core.repositories import billing_repo
+
+    before = int(time.time())
+    await billing_repo.create_trial_local_if_absent("user_trial_1", "personal")
+    after = int(time.time())
+
+    item = await billing_repo.get_by_owner_id("user_trial_1")
+    assert item is not None
+    assert item["subscription_status"] == "trial_local"
+    assert item["owner_type"] == "personal"
+    assert "trial_end" in item
+    three_days = 3 * 24 * 60 * 60
+    assert before + three_days <= item["trial_end"] <= after + three_days
+    assert not any(k.startswith("stripe_") for k in item)
+
+
+@pytest.mark.asyncio
+async def test_create_trial_local_if_absent_is_noop_when_row_exists(dynamodb_table):
+    from core.repositories import billing_repo
+
+    await billing_repo.create_trial_local_if_absent("user_trial_2", "personal")
+    first = await billing_repo.get_by_owner_id("user_trial_2")
+
+    # Second call must not overwrite the existing row.
+    await billing_repo.create_trial_local_if_absent("user_trial_2", "org")
+    second = await billing_repo.get_by_owner_id("user_trial_2")
+    assert second == first
+
+
+@pytest.mark.asyncio
+async def test_create_trial_local_if_absent_noop_on_existing_active_row(dynamodb_table):
+    from core.repositories import billing_repo
+
+    await billing_repo.create_if_not_exists("user_trial_3", "cus_active")
+    await billing_repo.set_subscription(
+        owner_id="user_trial_3",
+        subscription_id="sub_active",
+        status="active",
+    )
+    before = await billing_repo.get_by_owner_id("user_trial_3")
+
+    await billing_repo.create_trial_local_if_absent("user_trial_3", "personal")
+    after = await billing_repo.get_by_owner_id("user_trial_3")
+
+    assert after == before
+    assert after["subscription_status"] == "active"
 
 
 @pytest.mark.asyncio

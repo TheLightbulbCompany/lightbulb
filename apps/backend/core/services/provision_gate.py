@@ -29,7 +29,9 @@ logger = logging.getLogger(__name__)
 # Stripe statuses that grant platform use right now. Trialing is included
 # because the trial itself is a valid subscription state on Stripe — billing
 # kicks in at trial_end without any state transition the caller can see.
-_ACTIVE_STATUSES = frozenset({"active", "trialing"})
+# "trial_local" is the no-card local trial — a Stripe-less state, but it
+# grants platform use exactly like "trialing" does.
+_ACTIVE_STATUSES = frozenset({"active", "trialing", "trial_local"})
 
 # Stripe statuses that indicate this account has *ever* been on a paid
 # subscription (or is currently mid-attempt). Used to block fresh
@@ -207,12 +209,29 @@ async def _evaluate_provision_gate_inner(
     if not account:
         # No billing row at all means the owner has never started signup.
         # This is *distinct* from an inactive subscription below, which
-        # has its own re-activation path. Surfaced separately so the
-        # /container/status endpoint can route admins to the
-        # ProviderPicker (which calls POST /billing/trial-checkout —
-        # the only way to create the first billing row) without
-        # accidentally short-circuiting the canceled/unpaid/paused
-        # cases that need /settings/billing instead.
+        # has its own re-activation path.
+        if owner_id.startswith("org_"):
+            # The free tier is personal-only, so a team never falls into a
+            # card-less trial_local. An org with no billing needs per-seat
+            # Teams billing; surface a DISTINCT code the frontend keys the
+            # Teams-billing paywall off (rather than the personal provider
+            # picker). Teams billing itself is a separate workstream — until
+            # it ships, the frontend renders an interim "coming soon" state
+            # for this code; afterwards the same code routes to checkout.
+            return Gate(
+                code="team_billing_required",
+                title="Set up Teams billing",
+                message="Your team needs an active per-seat subscription to start.",
+                action_label="Set up billing",
+                action_href="/settings/billing",
+                action_admin_only=True,
+                owner_role=owner_role,
+            )
+        # Personal owner, no row. Surfaced separately from the inactive
+        # cases so /container/status can route to the ProviderPicker (which
+        # calls POST /billing/trial-checkout — the only way to create the
+        # first billing row) without short-circuiting the
+        # canceled/unpaid/paused cases that need /settings/billing instead.
         return Gate(
             code="signup_required",
             title="Subscribe to start your container",
@@ -270,6 +289,14 @@ async def _evaluate_provision_gate_inner(
             action_admin_only=True,
             owner_role=owner_role,
         )
+
+    # trial_local short-circuit — a no-card local trial has NO
+    # provider_choice on the row (its provider is resolved to `meta`
+    # elsewhere, not stored here), so it must not be sent through the
+    # Layer-2 provider_required check below. A trial_local owner is
+    # provision-eligible without a stored provider.
+    if account.get("subscription_status") == "trial_local":
+        return None
 
     # Layer 2 — provider must be picked.
     #

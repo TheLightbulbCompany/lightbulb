@@ -124,6 +124,12 @@ const TIMEOUT_MS = 300_000;
 // alone can't distinguish a first activation from a replay.
 const ONBOARDING_READY_STORAGE_KEY = "isol8_onboarding_ready_v1";
 
+// Same idiom as ONBOARDING_READY_STORAGE_KEY above, for the free-tier
+// `trial_started` funnel milestone — a distinct marker because a trial owner
+// who later converts to paid must NOT re-fire this on a subsequent
+// container recovery pass.
+const TRIAL_STARTED_STORAGE_KEY = "isol8_trial_started_v1";
+
 /**
  * Rotating idea prompts shown while the container spins up. Kept short (≤ ~52 chars)
  * so they fit on one line and don't cause layout shift. Tone matches the rest of the
@@ -203,7 +209,15 @@ export function ProvisioningStepper({
   // identified by Clerk user), so scope the once-ever marker to the owner
   // (org id for org workspaces, else the Clerk user id).
   const readyStorageKey = `${ONBOARDING_READY_STORAGE_KEY}:${organization?.id ?? clerkUserId ?? "anon"}`;
-  const { account, isLoading: billingLoading, isSubscribed } = useBilling();
+  // Same owner-scoping for the trial_started once-marker (see below).
+  const trialStartedStorageKey = `${TRIAL_STARTED_STORAGE_KEY}:${organization?.id ?? clerkUserId ?? "anon"}`;
+  const { account, isLoading: billingLoading, isSubscribed, refresh: refreshBilling } = useBilling();
+  // Free-tier discriminator: trial_local accounts are already is_subscribed
+  // (the backend added trial_local to _ACTIVE_STATUSES) but never set
+  // provider_choice — there is no provider to pick for the free tier. Used
+  // below to keep these users off the payment short-circuit, the poll gate,
+  // and — the actually-broken case — the ProviderPicker fallback.
+  const isTrialLocal = account?.subscription_status === "trial_local";
   // Set when we first enter the container/gateway phase — _not_ at component
   // mount. Time spent on the pre-provision steps (provider choice, billing
   // checkout, OAuth) shouldn't count against the timeout budget. A ref because
@@ -264,7 +278,7 @@ export function ProvisioningStepper({
   }, [providerStepDone]);
 
   const [reachedReady, setReachedReady] = useState(false);
-  const shouldPollContainer = isSubscribed && !reachedReady;
+  const shouldPollContainer = (isSubscribed || isTrialLocal) && !reachedReady;
 
   // Single canonical /container/status poller. Gate-driven cadence
   // wins when blocked (5s/30s); cold-start polling at 3s otherwise so
@@ -305,6 +319,19 @@ export function ProvisioningStepper({
       refresh();
     });
   }, [onEvent, refresh]);
+
+  // The trial_local row is created as a side effect of /container/status, not
+  // by /billing/account — and useBilling does not revalidate on focus or an
+  // interval. So when a container is provisioning but billing still shows no
+  // active subscription/trial, pull /billing/account once so isTrialLocal /
+  // isSubscribed reflect the just-created trial — which resumes cold-start
+  // polling (shouldPollContainer) and the trial framing/telemetry.
+  // Self-terminating: once billing reports the trial the condition is false.
+  useEffect(() => {
+    if (container && !isSubscribed && !isTrialLocal && !billingLoading) {
+      refreshBilling();
+    }
+  }, [container, isSubscribed, isTrialLocal, billingLoading, refreshBilling]);
 
   // Provisioning is now driven by /container/status: when the gate clears
   // and no container exists, the backend's status endpoint fires
@@ -350,8 +377,12 @@ export function ProvisioningStepper({
     // early step until the reset effect clears stale timing state.
     if (isRegressingFromReady) return "container";
     // Pre-signup user lands in payment phase to pick a provider path.
-    // Recovery flow skips billing — the user already has a subscription.
-    if (trigger !== "recovery" && !isSubscribed) return "payment";
+    // Recovery flow skips billing — the user already has a subscription. A
+    // provisioning container (200 from /container/status) means the backend
+    // already gated this user in — a fresh personal signup gets an
+    // auto-created trial_local there — so don't force payment while the
+    // container is coming up, even if billing hasn't caught up to the trial.
+    if (trigger !== "recovery" && !isSubscribed && !isTrialLocal && !container) return "payment";
     // Provider-specific signup step runs before container provision.
     if (needsProviderStep) return "provider";
 
@@ -381,7 +412,7 @@ export function ProvisioningStepper({
     // ready. Channel setup is no longer forced here; it is nudged via the
     // Get Started guide and lives in Settings → Channels.
     return resolvePostAgentPhase();
-  }, [trigger, isSubscribed, container, containerReady, gatewayHealth, needsProviderStep, isRegressingFromReady]);
+  }, [trigger, isSubscribed, isTrialLocal, container, containerReady, gatewayHealth, needsProviderStep, isRegressingFromReady]);
 
   // Analytics: fire `onboarding_step_completed` (step LEFT) + `onboarding_step_entered`
   // (step ARRIVED) per phase transition.
@@ -467,6 +498,39 @@ export function ProvisioningStepper({
     const completion = nextOnboardingCompletion(prev, phase, STEPS_PAID);
     if (completion) capture("onboarding_step_completed", { ...completion });
   }, [phase, providerChoice, readyStorageKey]);
+
+  // `trial_started`: the free-tier equivalent of an activation milestone.
+  // trial_local accounts skip payment/provider entirely (see the `phase`
+  // memo above), so there's no natural "step_completed" transition to hang
+  // this off of — it has to be driven directly off `isTrialLocal` becoming
+  // true. Fires on the RISING EDGE only (false -> true), guarded by the same
+  // owner-scoped once-ever localStorage marker idiom as `onboarding_ready`
+  // above, so a returning trial user re-opening /chat doesn't re-fire it.
+  const prevIsTrialLocalRef = useRef(false);
+  useEffect(() => {
+    const wasTrialLocal = prevIsTrialLocalRef.current;
+    prevIsTrialLocalRef.current = isTrialLocal;
+    if (!isTrialLocal || wasTrialLocal) return;
+    // A "recovery" restart (existing trial owner's stopped container
+    // auto-restarting) also re-mounts this component, resetting the ref
+    // above to `false` and thus looking like a rising edge again. Same
+    // reasoning as the onboarding_ready trigger guard: only the "onboarding"
+    // trigger represents a genuine (first) trial start.
+    if (trigger !== "onboarding") return;
+    let alreadyStarted = false;
+    try {
+      alreadyStarted = window.localStorage.getItem(trialStartedStorageKey) === "1";
+    } catch {
+      // storage-disabled browser: best-effort only, may re-fire on reload
+    }
+    if (alreadyStarted) return;
+    try {
+      window.localStorage.setItem(trialStartedStorageKey, "1");
+    } catch {
+      /* best-effort */
+    }
+    capture("trial_started");
+  }, [isTrialLocal, trigger, trialStartedStorageKey]);
 
   // Record provision-gate blocks (subscription_required / oauth-missing /
   // credits_required / signup_required) keyed to the PERSON, once per code
@@ -975,8 +1039,21 @@ export function ProvisioningStepper({
   //      is persisted before the Stripe redirect, so
   //      `account.provider_choice` is set but `isSubscribed` is false.
   //      They MUST see the picker again to restart checkout.
+  //
+  //   3. trial_local (free-tier) owner: is_subscribed is TRUE (backend
+  //      treats trial_local as an active subscription) but provider_choice
+  //      is never set — there's no provider to pick on the free tier. The
+  //      `isTrialLocal` guard keeps these users off the picker so they flow
+  //      straight into container/gateway/ready instead of being shown a
+  //      payment step they don't need.
+  //   4. A provisioning container (200 from /container/status) means the
+  //      backend already gated this user in. For a fresh personal signup the
+  //      trial_local row is created there, and /billing/account may not have
+  //      caught up yet — so a live container bypasses the picker too, closing
+  //      the cross-fetch race where a real trial user briefly reads as
+  //      non-trial.
   const ownerOnboarded = isSubscribed && Boolean(account?.provider_choice);
-  if (!ownerOnboarded) {
+  if (!ownerOnboarded && !isTrialLocal && !container) {
     return <ProviderPicker isOrg={isOrg} orgName={organization?.name} />;
   }
 

@@ -2033,6 +2033,8 @@ class TestProvisionUserContainerProviderChoice:
         is created so the codex auth.json is on EFS at first boot.
       * byo_key       -> per-user Secrets Manager ARN is added to the task
         definition's secrets[] block under OPENAI_API_KEY/ANTHROPIC_API_KEY.
+      * meta          -> the single shared Secrets Manager ARN is added to the
+        task definition's secrets[] block under MODEL_API_KEY.
       * bedrock_claude -> no extra setup; AWS creds come from the task IAM role.
     """
 
@@ -2154,6 +2156,122 @@ class TestProvisionUserContainerProviderChoice:
 
             # Service was never created.
             assert not mock_ecs_client.create_service.called
+
+    @pytest.mark.asyncio
+    async def test_provision_meta_attaches_model_api_key_to_task_def(self, manager, mock_ecs_client, mock_efs_client):
+        """For the meta (free-tier) provider, the shared Secrets Manager ARN
+        resolved by key_service.get_meta_secret_arn lands in the registered
+        task def's secrets[] block under MODEL_API_KEY — never in
+        openclaw.json/EFS. Also asserts "meta" is accepted by the
+        provider_choice allowlist (no Unknown provider_choice raise)."""
+        mock_ecs_client.describe_services.return_value = {"services": []}
+        secret_arn = "arn:aws:secretsmanager:us-east-1:123:secret:isol8/dev/meta-model-api-key-AbCdE"
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch(
+                "core.services.key_service.get_meta_secret_arn",
+                new_callable=AsyncMock,
+            ) as mock_get_meta_secret_arn,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+            patch.object(manager, "write_user_configs", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=None)
+            mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_get_meta_secret_arn.return_value = secret_arn
+
+            await manager.provision_user_container(
+                "user_test_123",
+                provider_choice="meta",
+            )
+
+            assert mock_ecs_client.register_task_definition.called
+            reg_kwargs = mock_ecs_client.register_task_definition.call_args.kwargs
+            container_def = reg_kwargs["containerDefinitions"][0]
+            assert "secrets" in container_def, "meta must add a secrets[] block"
+            secrets_list = container_def["secrets"]
+            assert secrets_list == [{"name": "MODEL_API_KEY", "valueFrom": secret_arn}], (
+                f"meta must inject exactly one MODEL_API_KEY secret entry, got {secrets_list}"
+            )
+
+            # The ARN was resolved from the single shared Secrets Manager
+            # secret (no per-user/provider args, unlike get_secret_arn).
+            mock_get_meta_secret_arn.assert_awaited_once_with()
+
+    @pytest.mark.asyncio
+    async def test_provision_meta_missing_secret_arn_raises_before_service_create(
+        self, manager, mock_ecs_client, mock_efs_client
+    ):
+        """If the shared meta-tier secret hasn't been created in Secrets
+        Manager yet, get_meta_secret_arn returns None and provisioning must
+        abort BEFORE create_service — mirrors the byo_key missing-key
+        guard."""
+        mock_ecs_client.describe_services.return_value = {"services": []}
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch(
+                "core.services.key_service.get_meta_secret_arn",
+                new_callable=AsyncMock,
+            ) as mock_get_meta_secret_arn,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+            patch.object(manager, "write_user_configs", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=None)
+            mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_get_meta_secret_arn.return_value = None
+
+            with pytest.raises(EcsManagerError):
+                await manager.provision_user_container("user_test_123", provider_choice="meta")
+
+            assert not mock_ecs_client.create_service.called
+
+    @pytest.mark.asyncio
+    async def test_provision_bedrock_and_byo_do_not_get_model_api_key(self, manager, mock_ecs_client, mock_efs_client):
+        """MODEL_API_KEY is exclusive to the meta provider — bedrock_claude
+        and byo_key provisions must never carry it."""
+        mock_ecs_client.describe_services.return_value = {"services": []}
+        byo_secret_arn = "arn:aws:secretsmanager:us-east-1:123:secret:isol8/dev/user-keys/user_test_123/openai-AbCdE"
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch(
+                "core.services.key_service.get_secret_arn",
+                new_callable=AsyncMock,
+            ) as mock_get_secret_arn,
+            patch(
+                "core.services.key_service.get_meta_secret_arn",
+                new_callable=AsyncMock,
+            ) as mock_get_meta_secret_arn,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+            patch.object(manager, "write_user_configs", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=None)
+            mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_get_secret_arn.return_value = byo_secret_arn
+
+            await manager.provision_user_container("user_test_123", provider_choice="bedrock_claude")
+            reg_kwargs = mock_ecs_client.register_task_definition.call_args.kwargs
+            container_def = reg_kwargs["containerDefinitions"][0]
+            secret_names = {s["name"] for s in container_def.get("secrets") or []}
+            assert "MODEL_API_KEY" not in secret_names
+
+            await manager.provision_user_container("user_test_123", provider_choice="byo_key", byo_provider="openai")
+            reg_kwargs = mock_ecs_client.register_task_definition.call_args.kwargs
+            container_def = reg_kwargs["containerDefinitions"][0]
+            secret_names = {s["name"] for s in container_def.get("secrets") or []}
+            assert "MODEL_API_KEY" not in secret_names
+            assert "OPENAI_API_KEY" in secret_names
+
+            # The meta secret resolver is never consulted for non-meta
+            # providers.
+            assert not mock_get_meta_secret_arn.called
 
     @pytest.mark.asyncio
     async def test_provision_chatgpt_oauth_pre_stages_auth_before_service_create(

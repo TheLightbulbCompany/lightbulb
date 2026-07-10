@@ -52,3 +52,26 @@ export async function queueImageUpdate(
   );
 }
 
+/**
+ * Force-apply an image update to an owner's container NOW — no waiting for the
+ * owner to accept the banner. Targets `/admin/users/{user_id}/container/apply-
+ * image-update`, which queues the pending update then applies it via the same
+ * apply_update() path the owner banner uses: the container's on-disk
+ * openclaw.json is reused (removed-schema keys stripped first) and the per-user
+ * task-def is rolled to the new image. Non-destructive — EFS workspace/state is
+ * preserved; the container briefly restarts on the new image.
+ */
+export async function forceApplyImageUpdate(
+  userId: string,
+  newImage: string,
+  description?: string,
+): Promise<ActionResult> {
+  return adminPost(
+    `/admin/users/${encodeURIComponent(userId)}/container/apply-image-update`,
+    {
+      new_image: newImage,
+      ...(description?.trim() ? { description: description.trim() } : {}),
+    },
+  );
+}
+

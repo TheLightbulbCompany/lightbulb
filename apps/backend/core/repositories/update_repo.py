@@ -62,6 +62,43 @@ async def get_pending(owner_id: str) -> list[dict]:
     return response.get("Items", [])
 
 
+async def get_in_flight(owner_id: str) -> list[dict]:
+    """Return an owner's non-terminal updates: pending, scheduled, or the transient
+    'applying' state.
+
+    Superset of get_pending() (which omits 'applying'). Callers use it to enforce
+    per-owner mutual exclusion on container rolls — apply_update's acquire is keyed
+    per-update_id, so this is the only way to know an owner already has an update
+    queued or mid-apply and must not have a second roll started concurrently.
+    Callers decide which rows actually conflict (e.g. those whose ``changes`` rewrite
+    the task-def) rather than trusting the update_type label.
+
+    Reads are strongly consistent: the guard must see a row written moments earlier
+    (a just-queued update, or a concurrent apply that already flipped to
+    'applying') rather than risk an eventually-consistent miss.
+
+    Paginated: the status FilterExpression is applied AFTER DynamoDB's 1 MB page
+    read, so an owner with enough historical terminal rows could otherwise push a
+    newer in-flight row onto a later page and hide it from the guard.
+    """
+    table = _get_table()
+    items: list[dict] = []
+    last_key: dict | None = None
+    while True:
+        kwargs: dict = {
+            "KeyConditionExpression": Key("owner_id").eq(owner_id),
+            "FilterExpression": Attr("status").is_in(["pending", "scheduled", "applying"]),
+            "ConsistentRead": True,
+        }
+        if last_key is not None:
+            kwargs["ExclusiveStartKey"] = last_key
+        response = await run_in_thread(table.query, **kwargs)
+        items.extend(response.get("Items", []))
+        last_key = response.get("LastEvaluatedKey")
+        if not last_key:
+            return items
+
+
 async def set_status_conditional(
     owner_id: str,
     update_id: str,

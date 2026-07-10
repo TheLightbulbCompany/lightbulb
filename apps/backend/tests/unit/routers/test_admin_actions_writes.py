@@ -269,6 +269,159 @@ class TestContainerResize:
         assert ecs.reapply_standard_sizing.await_count == 1
 
 
+class TestContainerForceApplyImageUpdate:
+    """POST /api/v1/admin/users/{user_id}/container/apply-image-update.
+
+    Admin-initiated force-apply of an image update NOW (no waiting for the
+    owner to click the banner). Queues the pending update then applies it via
+    the SAME ``apply_update()`` path the owner banner uses — non-destructive:
+    reuses the container's existing on-disk openclaw.json (strips removed-schema
+    keys first) and rolls the per-user task-def. EFS workspace/state preserved.
+    """
+
+    _CREATED = {"owner_id": "u_target", "update_id": "upd_123", "status": "pending"}
+
+    @pytest.mark.asyncio
+    async def test_happy_path(self, async_client, admin_env):
+        with (
+            patch("routers.admin.update_repo.get_in_flight", new=AsyncMock(return_value=[])),
+            patch("routers.admin.update_repo.create", new=AsyncMock(return_value=self._CREATED)) as mock_create,
+            patch("routers.admin.apply_update", new=AsyncMock(return_value=True)) as mock_apply,
+        ):
+            res = await async_client.post(
+                "/api/v1/admin/users/u_target/container/apply-image-update",
+                json={"new_image": "ecr/isol8/openclaw-extended:2026.7.1-beta.3-isol8.1-e8e1cce"},
+            )
+        assert res.status_code == 200
+        body = res.json()
+        assert body["status"] == "applied"
+        assert body["update_id"] == "upd_123"
+        # A pending image_update row was created for the resolved owner...
+        create_kwargs = mock_create.await_args.kwargs
+        assert create_kwargs["owner_id"] == "u_target"
+        assert create_kwargs["update_type"] == "image_update"
+        assert create_kwargs["changes"]["new_image"].endswith("e8e1cce")
+        # ...then applied via the exact apply_update() path the owner banner uses.
+        mock_apply.assert_awaited_once_with("u_target", "upd_123")
+
+    @pytest.mark.asyncio
+    async def test_non_container_inflight_does_not_block(self, async_client, admin_env):
+        """An in-flight row that does NOT rewrite the task-def (e.g. a
+        paperclip_provision retry left 'pending', or a pure config_patch) must not
+        block a force image apply — the guard keys on the changes payload, not the
+        update_type label."""
+        non_conflicting = [
+            {"update_id": "prov", "status": "pending", "update_type": "paperclip_provision", "changes": {"op": "seed"}},
+        ]
+        with (
+            patch("routers.admin.update_repo.get_in_flight", new=AsyncMock(return_value=non_conflicting)),
+            patch("routers.admin.update_repo.create", new=AsyncMock(return_value=self._CREATED)),
+            patch("routers.admin.apply_update", new=AsyncMock(return_value=True)) as mock_apply,
+        ):
+            res = await async_client.post(
+                "/api/v1/admin/users/u_target/container/apply-image-update",
+                json={"new_image": "img:tag"},
+            )
+        assert res.status_code == 200
+        mock_apply.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_403_for_non_admin(self, async_client, non_admin_env):
+        res = await async_client.post(
+            "/api/v1/admin/users/u_target/container/apply-image-update",
+            json={"new_image": "img:tag"},
+        )
+        assert res.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_missing_new_image_422(self, async_client, admin_env):
+        res = await async_client.post(
+            "/api/v1/admin/users/u_target/container/apply-image-update",
+            json={},
+        )
+        assert res.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_409_when_owner_has_inflight_task_def_roll(self, async_client, admin_env):
+        """Per-owner mutual exclusion: if another update that rewrites the task-def
+        (carries new_image/new_cpu/new_memory) is already pending/scheduled/applying
+        for the owner, reject with 409 BEFORE creating or applying a new one — else a
+        second concurrent resize_user_container could race and clobber image/size."""
+        with (
+            patch(
+                "routers.admin.update_repo.get_in_flight",
+                new=AsyncMock(
+                    return_value=[{"update_id": "other", "status": "applying", "changes": {"new_image": "old:tag"}}]
+                ),
+            ),
+            patch("routers.admin.update_repo.create", new=AsyncMock()) as mock_create,
+            patch("routers.admin.apply_update", new=AsyncMock()) as mock_apply,
+        ):
+            res = await async_client.post(
+                "/api/v1/admin/users/u_target/container/apply-image-update",
+                json={"new_image": "img:tag"},
+            )
+        assert res.status_code == 409
+        # Guard runs first: neither a new row nor an apply is issued.
+        mock_create.assert_not_awaited()
+        mock_apply.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_502_when_apply_raises(self, async_client, admin_env):
+        """No in-flight row, so the freshly-created row always acquires; a False
+        return therefore means apply_update caught an exception mid-roll and marked
+        the row 'failed'. Surface that as 502 (not a queued-row 409)."""
+        with (
+            patch("routers.admin.update_repo.get_in_flight", new=AsyncMock(return_value=[])),
+            patch("routers.admin.update_repo.create", new=AsyncMock(return_value=self._CREATED)),
+            patch("routers.admin.apply_update", new=AsyncMock(return_value=False)),
+        ):
+            res = await async_client.post(
+                "/api/v1/admin/users/u_target/container/apply-image-update",
+                json={"new_image": "img:tag"},
+            )
+        assert res.status_code == 502
+
+    @pytest.mark.asyncio
+    async def test_audit_row_written(self, async_client, admin_env, mock_audit_repo):
+        with (
+            patch("routers.admin.update_repo.get_in_flight", new=AsyncMock(return_value=[])),
+            patch("routers.admin.update_repo.create", new=AsyncMock(return_value=self._CREATED)),
+            patch("routers.admin.apply_update", new=AsyncMock(return_value=True)),
+        ):
+            res = await async_client.post(
+                "/api/v1/admin/users/u_target/container/apply-image-update",
+                json={"new_image": "img:tag"},
+            )
+        assert res.status_code == 200
+        kwargs = mock_audit_repo.await_args.kwargs
+        assert kwargs["action"] == "container.force_apply_image_update"
+        assert kwargs["target_user_id"] == "u_target"
+
+    @pytest.mark.asyncio
+    async def test_idempotent_within_window(self, async_client, admin_env):
+        """Same Idempotency-Key within 60s => the queue+apply runs exactly once."""
+        with (
+            patch("routers.admin.update_repo.get_in_flight", new=AsyncMock(return_value=[])),
+            patch("routers.admin.update_repo.create", new=AsyncMock(return_value=self._CREATED)),
+            patch("routers.admin.apply_update", new=AsyncMock(return_value=True)) as mock_apply,
+        ):
+            headers = {"Idempotency-Key": "force-apply-key-1"}
+            body = {"new_image": "img:tag"}
+            r1 = await async_client.post(
+                "/api/v1/admin/users/u_target/container/apply-image-update",
+                json=body,
+                headers=headers,
+            )
+            r2 = await async_client.post(
+                "/api/v1/admin/users/u_target/container/apply-image-update",
+                json=body,
+                headers=headers,
+            )
+        assert r1.json() == r2.json()
+        assert mock_apply.await_count == 1
+
+
 # ===========================================================================
 # Billing actions
 # ===========================================================================

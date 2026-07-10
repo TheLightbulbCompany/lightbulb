@@ -161,13 +161,23 @@ async def apply_update(owner_id: str, update_id: str) -> bool:
         from boto3.dynamodb.conditions import Key
 
         table = get_table("pending-updates")
+        # Strongly consistent: we just conditionally flipped this row to
+        # "applying", and callers can create-then-immediately-apply (admin
+        # force-apply), so an eventually-consistent read could miss the row we
+        # just wrote — which would return False here while leaving it stuck in
+        # "applying" and blocking the owner's future rolls.
         response = await run_in_thread(
             table.query,
             KeyConditionExpression=Key("owner_id").eq(owner_id) & Key("update_id").eq(update_id),
+            ConsistentRead=True,
         )
         items = response.get("Items", [])
         if not items:
+            # Should be unreachable after the strongly-consistent read above, but
+            # if it ever happens the row was already flipped to "applying" — clear
+            # it back to a terminal state so it can't wedge the owner's guard.
             logger.error("Update %s not found after acquiring lock (owner=%s)", update_id, owner_id)
+            await update_repo.set_status_conditional(owner_id, update_id, "failed", ["applying"])
             return False
 
         update = items[0]

@@ -37,6 +37,7 @@ from core.services.admin_audit import audit_admin_action
 from core.services.admin_service import resolve_admin_owner_id
 from core.services.config_patcher import patch_openclaw_config
 from core.services.idempotency import idempotency
+from core.services.update_service import apply_update
 from schemas.config import ConfigPatchRequest
 
 logger = logging.getLogger(__name__)
@@ -71,6 +72,20 @@ class QueueImageUpdateRequest(BaseModel):
     # NB: deliberately omitting `force_by` — update_repo persists it but the
     # scheduled worker never reads it. Plumbing it through belongs in a
     # change that also wires the worker to honor it.
+
+
+# apply_update feeds these changes.* fields to resize_user_container, which
+# re-registers the per-user ECS task definition. Two in-flight updates that both
+# carry any of them race on the task-def (last writer wins the image/size), so
+# the force-apply guard treats a row carrying any of them as a conflict —
+# regardless of its update_type label (a paperclip_provision retry or a pure
+# config_patch hot-reload carries none of these and is not a conflict).
+_TASKDEF_ROLL_CHANGE_KEYS = ("new_image", "new_cpu", "new_memory")
+
+
+def _rolls_task_def(changes: object) -> bool:
+    """True if a pending update's ``changes`` would re-register the ECS task def."""
+    return isinstance(changes, dict) and any(k in changes for k in _TASKDEF_ROLL_CHANGE_KEYS)
 
 
 # ---------------------------------------------------------------------------
@@ -335,6 +350,98 @@ async def admin_container_queue_image_update(
         changes={"new_image": body.new_image},
     )
     return {"status": "queued", "update": item}
+
+
+@router.post(
+    "/users/{user_id}/container/apply-image-update",
+    description=(
+        "Force-apply a container image update NOW (admin-initiated) instead of "
+        "waiting for the owner to accept the Track-2 banner. Resolves user_id to "
+        "owner_id, creates the pending image_update row, then applies it via the "
+        "SAME apply_update() path the owner banner uses: the container's on-disk "
+        "openclaw.json is reused (removed-schema keys stripped first so the newer "
+        "image's strict schema can't crash-loop the gateway) and the per-user "
+        "task-def is rolled to the new image. Non-destructive — EFS workspace and "
+        "agent state are preserved; the container briefly restarts on the new "
+        "image. Returns 409 if the update could not be applied (a prior update is "
+        "already in progress); the row stays queued for a retry or owner-apply. "
+        "Idempotency-Key supported."
+    ),
+)
+@idempotency()
+@audit_admin_action("container.force_apply_image_update")
+async def admin_container_force_apply_image_update(
+    user_id: str,
+    body: QueueImageUpdateRequest,
+    request: Request,
+    auth: AuthContext = Depends(require_platform_admin),
+):
+    owner_id, _ = await resolve_admin_owner_id(user_id)
+
+    # Per-owner mutual exclusion. apply_update's acquire is keyed per-update_id,
+    # so a fresh row we create always acquires — that alone does NOT stop a second
+    # roll when the owner already has a container update queued (admin queue button
+    # / generic updates API / scheduled worker) or mid-apply (owner banner). Reject
+    # up front so only one task-def roll is normally in flight per owner.
+    #
+    # Conflict is decided by the changes payload, not the update_type label: any row
+    # apply_update would feed to resize_user_container (new_image / new_cpu /
+    # new_memory) re-registers the task-def and would race this force-apply,
+    # last-writer-wins on the resulting image/size. A paperclip_provision retry or a
+    # pure config_patch hot-reload does not touch the task-def, so it is not a
+    # conflict.
+    #
+    # This read-then-create is not fully atomic: two force-applies landing within
+    # the same instant could both observe no conflict. That residual race is
+    # deliberately not locked out here — the per-user ECS service runs
+    # SINGLE_WRITER_DEPLOYMENT_CONFIG (maximumPercent=100 → never two tasks), so
+    # even two concurrent resize_user_container calls can't put two tasks on the
+    # EFS-SQLite state at once; the worst case is a redundant superseded deployment,
+    # not corruption or data loss. A distributed lock would add stuck-lock failure
+    # modes disproportionate to that bounded, admin-only race.
+    in_flight = await update_repo.get_in_flight(owner_id)
+    conflicting = [u for u in in_flight if _rolls_task_def(u.get("changes"))]
+    if conflicting:
+        statuses = ", ".join(sorted({u.get("status", "?") for u in conflicting}))
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Another container update is already in flight for this owner "
+                f"(status: {statuses}). Wait for it to finish, or clear it, before "
+                "force-applying a new image."
+            ),
+        )
+
+    description = body.description or f"Admin force-apply image update to {body.new_image}"
+    item = await update_repo.create(
+        owner_id=owner_id,
+        update_type="image_update",
+        description=description,
+        changes={"new_image": body.new_image},
+        force_by=auth.user_id,
+    )
+    update_id = item["update_id"]
+    applied = await apply_update(owner_id, update_id)
+    if not applied:
+        # No update was in flight (guarded above) and the row we just created was
+        # 'pending', so apply_update's acquire always succeeds here. A False return
+        # therefore means the roll itself raised — apply_update caught it and marked
+        # the row 'failed', so it is NOT a live queued row the owner can retry from
+        # their banner. Surface it as a server-side failure with the EFS-safe note.
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"The image roll failed while applying (update_id={update_id}; row "
+                "marked failed). The container's EFS workspace/state is unchanged — "
+                "check the ECS service / container logs before retrying."
+            ),
+        )
+    return {
+        "status": "applied",
+        "owner_id": owner_id,
+        "update_id": update_id,
+        "new_image": body.new_image,
+    }
 
 
 # ---------------------------------------------------------------------------

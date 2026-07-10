@@ -18,6 +18,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import type { AvailableImage } from "@/app/admin/_lib/api";
 import {
+  forceApplyImageUpdate,
   queueImageUpdate,
   reprovisionContainer,
   resizeContainer,
@@ -143,6 +144,35 @@ export function ContainerActionsPanel({
     }
   }
 
+  // Force-apply NOW: queues the update then rolls the container onto the new
+  // image immediately (same apply_update() path the owner banner uses — reuses
+  // the on-disk config, strips removed-schema keys first, preserves EFS state).
+  // The container briefly restarts, so this is gated behind a typed confirm.
+  async function handleForceApplyImageUpdate() {
+    clearStatus();
+    const trimmedUrl = effectiveImageUrl.trim();
+    if (!trimmedUrl) {
+      setError("Image URL is required.");
+      return;
+    }
+    setQueueing(true);
+    try {
+      const result = await forceApplyImageUpdate(
+        userId,
+        trimmedUrl,
+        imageDescription.trim() || undefined,
+      );
+      applyResult("Force-apply image update", result.ok, result.error);
+      if (result.ok) {
+        setCustomImageUrl("");
+        setImageDescription("");
+        if (hasImages) setSelectedUri(images[0].image_uri);
+      }
+    } finally {
+      setQueueing(false);
+    }
+  }
+
   function formatPushedAt(iso: string | null | undefined): string {
     if (!iso) return "";
     const d = new Date(iso);
@@ -218,10 +248,14 @@ export function ContainerActionsPanel({
             Queue image update
           </h3>
           <p className="text-xs text-zinc-400">
-            Creates a pending Track 2 image update for this owner. They&apos;ll see a
-            banner in chat and choose when to apply (Update now / Tonight / Remind
-            later). The container keeps running on the current image until they
-            accept.
+            <strong className="text-zinc-300">Queue</strong> creates a pending Track 2
+            update — the owner sees a banner in chat and chooses when to apply
+            (Update now / Tonight / Remind later); the container keeps running on the
+            current image until they accept.{" "}
+            <strong className="text-zinc-300">Apply now</strong> force-rolls the
+            container onto the selected image immediately (no banner wait). Both reuse
+            the container&apos;s existing on-disk config and preserve EFS
+            workspace/agent state — Apply now briefly restarts the container.
           </p>
           {hasImages ? (
             <Select
@@ -303,15 +337,32 @@ export function ContainerActionsPanel({
             rows={2}
             className="text-xs"
           />
-          <Button
-            type="button"
-            variant="default"
-            size="sm"
-            onClick={handleQueueImageUpdate}
-            disabled={queueing || effectiveImageUrl.trim().length === 0}
-          >
-            {queueing ? "Queueing…" : "Queue image update"}
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={handleQueueImageUpdate}
+              disabled={queueing || effectiveImageUrl.trim().length === 0}
+            >
+              {queueing ? "Working…" : "Queue image update"}
+            </Button>
+            <ConfirmActionDialog
+              confirmText={userId}
+              actionLabel="Force-apply image update now"
+              destructive
+              onConfirm={handleForceApplyImageUpdate}
+            >
+              <Button
+                type="button"
+                variant="default"
+                size="sm"
+                disabled={queueing || effectiveImageUrl.trim().length === 0}
+              >
+                {queueing ? "Working…" : "Apply now (force)"}
+              </Button>
+            </ConfirmActionDialog>
+          </div>
         </div>
       </div>
     </Card>

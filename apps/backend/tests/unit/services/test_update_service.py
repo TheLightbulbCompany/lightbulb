@@ -102,3 +102,30 @@ async def test_apply_update_skips_migration_for_resize_only_update():
     assert result is True
     migrate.assert_not_awaited()
     ecs.resize_user_container.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_apply_update_clears_stuck_row_when_refetch_empty():
+    """If the post-acquire re-fetch returns no row (should not happen with the
+    strongly-consistent read, but defensively), the row was already flipped to
+    'applying' — clear it to 'failed' so it can't wedge the owner's in-flight
+    guard and block future rolls."""
+    owner_id, update_id = "owner_x", "upd_x"
+
+    repo = MagicMock()
+    # acquire -> True; the follow-up cleanup write also returns True
+    repo.set_status_conditional = AsyncMock(return_value=True)
+
+    with (
+        patch.object(update_service, "update_repo", repo),
+        patch("core.dynamodb.get_table", return_value=MagicMock()),
+        patch("core.dynamodb.run_in_thread", new=AsyncMock(return_value={"Items": []})),
+    ):
+        result = await update_service.apply_update(owner_id, update_id)
+
+    assert result is False
+    # Two writes: acquire (-> "applying") then the stuck-row cleanup (-> "failed").
+    assert repo.set_status_conditional.await_count == 2
+    cleanup = repo.set_status_conditional.await_args
+    assert cleanup.args[2] == "failed"
+    assert cleanup.args[3] == ["applying"]

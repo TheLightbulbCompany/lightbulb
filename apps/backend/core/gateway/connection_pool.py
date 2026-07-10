@@ -1550,7 +1550,10 @@ class GatewayConnection:
                     # error/aborted never push. Audience is the CANONICAL member
                     # carried on the active-run entry, not the echoed/lowercased
                     # target_member (which would PK-miss the users table).
-                    if state == "final":
+                    # Skip side (`/btw`) runs: they carry no member (carried_member
+                    # is None → would fall back to the owner) and are not the
+                    # user-initiated primary reply v1 push is for.
+                    if state == "final" and not run_is_side:
                         self._dispatch_push_notification(payload, carried_member, event_agent_id)
 
                 # END of the chat.e2e.latency SLO span (alarm W9). Elapsed is

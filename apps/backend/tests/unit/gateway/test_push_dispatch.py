@@ -250,6 +250,37 @@ async def test_terminal_error_state_does_not_push():
     sent.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_side_run_final_does_not_push():
+    """A /btw side-run final must NOT push.
+
+    v1 push is for the user-initiated primary reply only. A side run carries no
+    member (carried_member is None), so without a guard the audience would fall
+    back to the owner and a personal owner would get a push for every aside,
+    sometimes mid-stream. Registering the runId makes _is_side_run True so the
+    terminal treats it as a side run.
+    """
+    conn = _make_terminal_conn(owner_id="user_owner")
+    run_id = "side-run-1"
+    conn.mark_side_run(run_id)  # _is_side_run(run_id) -> True
+    payload = {
+        "sessionKey": "agent:a1:main",
+        "state": "final",
+        "runId": run_id,
+        "message": {"role": "assistant", "content": [{"type": "text", "text": "by the way"}]},
+    }
+    sent = AsyncMock()
+    with (
+        patch("core.services.push_service.send_push_to_user", sent),
+        patch("core.gateway.connection_pool.put_metric"),
+        patch.object(conn, "_forward_to_frontends", AsyncMock()),
+        patch.object(conn, "_resolve_agent_name", AsyncMock(return_value="Friday")),
+    ):
+        await conn._handle_message({"type": "event", "event": "chat", "payload": payload})
+        await asyncio.gather(*list(conn._push_tasks))
+    sent.assert_not_called()
+
+
 def test_has_active_runs():
     # has_active_runs is a pre-existing @property (not a method) on the class.
     conn = GatewayConnection.__new__(GatewayConnection)

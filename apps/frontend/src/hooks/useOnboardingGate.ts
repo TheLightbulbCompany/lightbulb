@@ -99,11 +99,22 @@ export function useOnboardingGate(): OnboardingGatePhase {
     !hasMemberships &&
     hasPendingInvitations &&
     !organization;
+  // Team creation is available to any signed-in user with team intent and no
+  // existing org context — NOT only fresh signups. An already-onboarded
+  // personal user who clicks "Create a team" must still be routed to the
+  // org-creation surface, so this deliberately does NOT require !isOnboarded.
+  const needsTeamCreation =
+    clerkLoaded &&
+    isSignedIn === true &&
+    teamIntent &&
+    !hasMemberships &&
+    !hasPendingInvitations &&
+    !organization;
 
   // Side effect 1: redirect to /onboarding — but ONLY for the two flows that
   // need an authenticated setup screen:
   //   • pending invitation → the accept surface
-  //   • team signup        → Clerk's <CreateOrganization> + invite step
+  //   • team creation      → Clerk's <CreateOrganization> + invite step
   // Personal signups are NOT redirected; they're completed inline below and
   // fall through to "ready" (straight into /chat). The team cookie is consumed
   // and cleared here so a later personal signup in the same browser isn't
@@ -113,11 +124,11 @@ export function useOnboardingGate(): OnboardingGatePhase {
       router.replace("/onboarding");
       return;
     }
-    if (needsOnboarding && teamIntent) {
+    if (needsTeamCreation) {
       clearSignupIntentCookie();
       router.replace("/onboarding?intent=team");
     }
-  }, [needsOnboarding, needsInvitationFlow, teamIntent, router]);
+  }, [needsTeamCreation, needsInvitationFlow, router]);
 
   // Side effect 1b: complete a fresh personal signup in place. No org, no
   // membership, no invitation, no team intent → this is a personal user, so
@@ -154,10 +165,10 @@ export function useOnboardingGate(): OnboardingGatePhase {
   }, [needsAutoActivate, setActive, userMemberships]);
 
   if (!clerkLoaded || isSignedIn !== true) return "loading";
-  // Only team signups and pending invitations get the /onboarding detour.
+  // Only team creation and pending invitations get the /onboarding detour.
   // A fresh personal signup (needsOnboarding && !teamIntent) is completed
   // inline above and falls through to "ready" — no redirect, no /onboarding.
-  if (needsInvitationFlow || (needsOnboarding && teamIntent)) return "redirecting";
+  if (needsInvitationFlow || needsTeamCreation) return "redirecting";
   if (needsAutoActivate) return "auto-activating";
   return "ready";
 }

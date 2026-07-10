@@ -190,4 +190,22 @@ describe("useOnboardingGate", () => {
       expect(replaceMock).toHaveBeenCalledWith("/onboarding?intent=team"),
     );
   });
+
+  it("routes an ALREADY-onboarded user with team intent to org creation", async () => {
+    // "Create a team" must work for existing personal users, not only fresh
+    // signups — so the team redirect does not require !onboarded.
+    searchString = "intent=team";
+    setClerk({
+      user: { unsafeMetadata: { onboarded: true } },
+      memberships: [],
+      invitations: [],
+    });
+    const { result } = renderHook(() => useOnboardingGate());
+    expect(result.current).toBe("redirecting");
+    await waitFor(() =>
+      expect(replaceMock).toHaveBeenCalledWith("/onboarding?intent=team"),
+    );
+    // Not treated as a personal completion.
+    expect(userUpdateMock).not.toHaveBeenCalled();
+  });
 });

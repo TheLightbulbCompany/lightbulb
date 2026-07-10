@@ -2,10 +2,12 @@ import { SignUp } from "@clerk/nextjs";
 import Link from "next/link";
 
 import { Logo } from "@/components/Logo";
+import { SignupIntentCookie } from "@/components/SignupIntentCookie";
 
 export default function Page() {
   return (
     <>
+      <SignupIntentCookie />
       <style>{`
         /* ── LAYOUT ── */
         .auth-layout {

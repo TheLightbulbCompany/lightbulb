@@ -61,6 +61,11 @@ _RECONNECT_FLOOR_S = 5
 # vs-slow-turn signal is greppable in CloudWatch Insights.
 _RUN_LONG_IDLE_S = 300
 
+# TTL for the per-connection agents.list name cache backing push-notification
+# titles. Names change rarely; a short TTL keeps run-completion pushes off a
+# fresh RPC per reply without letting a rename stay stale for long.
+_AGENT_NAME_TTL_S = 60.0
+
 # Bound on the per-connection side-run id set. Entries self-clean on the side
 # run's terminal; this cap is only a safety net for a side run that never emits
 # one. Far above any realistic count of concurrent `/btw` runs on one session.
@@ -162,6 +167,13 @@ class GatewayConnection:
         self._closed = False
         self._grace_task: Optional[asyncio.Task] = None
         self._billing_tasks: Set[asyncio.Task] = set()
+        # Fire-and-forget run-completion push tasks (mirrors _billing_tasks):
+        # tracked so close() can drain them instead of cancelling a send.
+        self._push_tasks: Set[asyncio.Task] = set()
+        # agent_id -> display name, TTL-cached from agents.list for push titles.
+        # None until first resolve; _agent_names_at is the monotonic stamp.
+        self._agent_names: Optional[Dict[str, str]] = None
+        self._agent_names_at: float = 0.0
         # Active LLM runs keyed by OpenClaw sessionKey (agent:{agentId}:{member}).
         # Populated by `mark_run_active` when we dispatch chat.send; cleared by
         # `_handle_message` when the matching chat-terminal event arrives.
@@ -953,6 +965,73 @@ class GatewayConnection:
         self._billing_tasks.add(task)
         task.add_done_callback(self._billing_tasks.discard)
 
+    async def _resolve_agent_name(self, agent_id: str | None) -> str:
+        """Best-effort display name for *agent_id* via a TTL-cached agents.list.
+
+        Returns "" on any failure — the push falls back to a generic title.
+        Uses the same request/response RPC idiom as ``_fetch_and_record_usage``
+        (send + wait_for_response), since ``send_rpc`` only sends.
+        """
+        if not agent_id:
+            return ""
+        now = time.monotonic()
+        if self._agent_names is not None and (now - self._agent_names_at) < _AGENT_NAME_TTL_S:
+            return self._agent_names.get(agent_id, "")
+        try:
+            req_id = str(uuid.uuid4())
+            await self.send_rpc(req_id, "agents.list", {})
+            result = await self.wait_for_response(req_id, timeout=10)
+            agents = result.get("agents", []) if isinstance(result, dict) else (result or [])
+            names: Dict[str, str] = {}
+            for a in agents:
+                if not isinstance(a, dict):
+                    continue
+                aid = a.get("id") or a.get("agent_id")
+                identity = a.get("identity") if isinstance(a.get("identity"), dict) else {}
+                nm = a.get("name") or identity.get("name")
+                if aid and nm:
+                    names[aid] = nm
+            self._agent_names = names
+            self._agent_names_at = now
+            return names.get(agent_id, "")
+        except Exception:
+            logger.warning("agents.list for push-name resolution failed", exc_info=True)
+            return ""
+
+    def _dispatch_push_notification(self, payload: dict, target_member: str | None, agent_id: str | None) -> None:
+        """Fire-and-forget push on a completed run (mirrors _record_usage_from_session).
+
+        Audience = the member who owns the session (org), or the owner (personal,
+        whose key is agent:<id>:main with no member_id). Only pushes to a Clerk
+        user id; an unattributed org session (org_ owner) silently no-ops.
+        """
+        push_user_id = target_member or self.owner_id
+        if not push_user_id or not push_user_id.startswith("user_"):
+            return
+        preview = self._extract_assistant_text(payload)
+        if not preview:
+            return
+        session_key = payload.get("sessionKey")
+
+        async def _send():
+            try:
+                agent_name = await self._resolve_agent_name(agent_id)
+                body = preview if len(preview) <= 120 else preview[:119] + "…"
+                data: Dict[str, str] = {}
+                if agent_id:
+                    data["agentId"] = agent_id
+                if session_key:
+                    data["sessionKey"] = session_key
+                from core.services.push_service import send_push_to_user
+
+                await send_push_to_user(push_user_id, agent_name or "New reply", body, data)
+            except Exception:
+                logger.exception("Push dispatch failed for user %s", push_user_id)
+
+        task = asyncio.create_task(_send())
+        self._push_tasks.add(task)
+        task.add_done_callback(self._push_tasks.discard)
+
     async def _resolve_member_from_session(self, parsed: dict) -> str:
         """Map a parsed session key to the Clerk member_id.
 
@@ -1437,6 +1516,13 @@ class GatewayConnection:
                         run_ended["session_id"] = session_id
                     await self._forward_to_frontends(run_ended, target_member)
 
+                    # Push a notification for a completed reply (fire-and-forget,
+                    # off the reader-loop hot path — mirrors billing at the
+                    # agent-event lifecycle site). Only on a successful final;
+                    # error/aborted never push.
+                    if state == "final":
+                        self._dispatch_push_notification(payload, target_member, event_agent_id)
+
                 # END of the chat.e2e.latency SLO span (alarm W9). Elapsed is
                 # computed from the active-run window's started_at — stamped by
                 # mark_run_active BEFORE the chat.send RPC was forwarded and
@@ -1728,6 +1814,16 @@ class GatewayConnection:
             except Exception:
                 logger.exception(
                     "Error waiting for billing tasks during close for user %s",
+                    self.user_id,
+                )
+        # Drain in-flight push-dispatch tasks too, so teardown doesn't cancel a
+        # notification mid-send.
+        if self._push_tasks:
+            try:
+                await asyncio.wait(self._push_tasks, timeout=5.0)
+            except Exception:
+                logger.exception(
+                    "Error waiting for push tasks during close for user %s",
                     self.user_id,
                 )
         # Graceful RPC drain: the reader loop is still alive here, so in-flight

@@ -52,6 +52,7 @@ import {
 import { StatusIcon } from "@/components/teams/shared/components/StatusIcon";
 import { PriorityIcon } from "@/components/teams/shared/components/PriorityIcon";
 import { Identity } from "@/components/teams/shared/components/Identity";
+import { LiveRunDot } from "@/components/teams/shared/components/LiveRunDot";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { PanelEmptyState } from "@/components/teams/shell";
 import { IssueFiltersPopover } from "@/components/teams/inbox/IssueFiltersPopover";
@@ -609,23 +610,7 @@ function TaskRow({
 
       {/* Live indicator — a pulsing forest dot while an agent run is active on
           this task. Mirrors the board (KanbanCard) so list/board read alike. */}
-      {isLive ? (
-        <span
-          data-testid="task-row-live-dot"
-          className="relative flex h-2 w-2 shrink-0"
-          aria-label="Agent running"
-          title="Agent running"
-        >
-          <span
-            className="absolute inline-flex h-full w-full animate-pulse rounded-full opacity-75"
-            style={{ background: "var(--forest)" }}
-          />
-          <span
-            className="relative inline-flex h-2 w-2 rounded-full"
-            style={{ background: "var(--forest)" }}
-          />
-        </span>
-      ) : null}
+      {isLive ? <LiveRunDot testId="task-row-live-dot" /> : null}
 
       {/* Title (+ collapsed sub-task count) */}
       <span className="min-w-0 flex-1 truncate">

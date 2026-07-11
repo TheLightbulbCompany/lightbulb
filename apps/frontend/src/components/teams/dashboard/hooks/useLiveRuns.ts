@@ -10,37 +10,28 @@
 // of scope for v1. This hook only fetches the live-run METADATA list from
 // `/inbox/live-runs` and lets SWR refresh it on an interval so the "Live"
 // status stays current.
+//
+// The row types + pure display helpers (isRunActive, liveRunActivity,
+// liveRunTitle, buildLiveIssueState, …) live in shared/lib/liveRuns.ts so
+// shared components can use them without importing from this feature dir;
+// they are re-exported here for this hook's existing consumers.
 
 import { useTeamsApi } from "@/hooks/useTeamsApi";
+import type { LiveRun } from "@/components/teams/shared/lib/liveRuns";
 
-/**
- * One live (or recently-finished) agent run, as returned by
- * `GET /teams/inbox/live-runs` → upstream `/api/companies/{id}/live-runs`.
- *
- * Mirrors the projection the upstream live-runs query selects (see
- * paperclip/server/src/routes/agents.ts `/companies/:companyId/live-runs`).
- * Every field is treated as optional/nullable defensively because the BFF
- * forwards the upstream JSON verbatim and the row shape has drifted across
- * upstream versions. `status` is a free string (queued | running | … ).
- *
- * NOTE: this row carries NO in-progress transcript / output text. The agent
- * transcript lives only behind the raw-log endpoint, which we do not consume
- * here — streaming-transcript on these cards is a deliberate follow-up.
- */
-export interface LiveRun {
-  id: string;
-  status?: string | null;
-  agentId?: string | null;
-  agentName?: string | null;
-  issueId?: string | null;
-  createdAt?: string | null;
-  startedAt?: string | null;
-  finishedAt?: string | null;
-  /** Short "what the agent is doing next" hint upstream stamps on the run. */
-  nextAction?: string | null;
-  /** Liveness classification (e.g. "healthy" | "stalled"); display-only. */
-  livenessState?: string | null;
-}
+export type {
+  LiveRun,
+  LiveRunActivity,
+  LiveIssueEntry,
+  RunOutputSilence,
+} from "@/components/teams/shared/lib/liveRuns";
+export {
+  isRunActive,
+  liveRunActivity,
+  liveRunTitle,
+  formatSilenceAgeMs,
+  buildLiveIssueState,
+} from "@/components/teams/shared/lib/liveRuns";
 
 /** The `/inbox/live-runs` envelope is array | {items} | {runs}. Normalize. */
 function normalizeRuns(data: unknown): LiveRun[] {
@@ -51,11 +42,6 @@ function normalizeRuns(data: unknown): LiveRun[] {
     if (Array.isArray(obj.runs)) return obj.runs as LiveRun[];
   }
   return [];
-}
-
-/** A run is "active" (pulsing dot) while queued or running. */
-export function isRunActive(run: LiveRun): boolean {
-  return run.status === "queued" || run.status === "running";
 }
 
 // SWR refresh cadence for the live feed. Upstream polled its dashboard log at

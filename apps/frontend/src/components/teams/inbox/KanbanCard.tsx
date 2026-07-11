@@ -12,6 +12,7 @@ import { teamsDetailUrl } from "@/lib/shellNav";
 import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
 import { PriorityIcon } from "@/components/teams/shared/components/PriorityIcon";
 import { Identity } from "@/components/teams/shared/components/Identity";
+import { LiveRunDot } from "@/components/teams/shared/components/LiveRunDot";
 import type { Issue } from "@/components/teams/shared/types";
 
 export interface KanbanAgent {
@@ -91,19 +92,7 @@ function CardContent({ issue, agents, isLive, isDragging }: CardContentProps) {
           {issue.identifier ?? issue.id.slice(0, 8)}
         </span>
         {isLive && (
-          <span
-            data-testid="kanban-card-live-dot"
-            className="relative flex h-2 w-2 shrink-0 mt-0.5"
-          >
-            <span
-              className="animate-pulse absolute inline-flex h-full w-full rounded-full opacity-75"
-              style={{ backgroundColor: "var(--forest)" }}
-            />
-            <span
-              className="relative inline-flex rounded-full h-2 w-2"
-              style={{ backgroundColor: "var(--forest)" }}
-            />
-          </span>
+          <LiveRunDot testId="kanban-card-live-dot" className="mt-0.5" />
         )}
       </div>
       <p

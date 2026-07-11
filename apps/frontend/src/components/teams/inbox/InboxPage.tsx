@@ -43,6 +43,7 @@ import {
   type IssueFilterState,
 } from "@/components/teams/shared/lib/issueFilters";
 import { useLiveRuns } from "@/components/teams/dashboard/hooks/useLiveRuns";
+import { buildLiveIssueState } from "@/components/teams/shared/lib/liveRuns";
 import {
   loadLastInboxTab,
   saveLastInboxTab,
@@ -180,18 +181,18 @@ export function InboxPage({
     useInboxData();
   const archiveStack = useInboxArchiveStack();
   const readItems = useReadInboxItems(companyId);
-  // Live-run ids power the filters popover's "Live runs only" facet (and any
-  // future row indicator). Same derivation IssuesPanel/ProjectDetail use.
+  // Per-issue live-run state (running / stalled + tooltip) drives BOTH the
+  // per-row live indicator (`IssueRow.live`) and the filters popover's "Live
+  // runs only" facet. The shared fold picks the most severe silence signal
+  // per issue (critical > suspicious > healthy) so a hung run is never
+  // masked by a healthy or milder-stalled one.
   const { runs: liveRuns } = useLiveRuns();
-  const liveIssueIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const run of liveRuns) {
-      if (run.issueId && (run.status === "queued" || run.status === "running")) {
-        ids.add(run.issueId);
-      }
-    }
-    return ids;
-  }, [liveRuns]);
+  const liveIssueState = useMemo(() => buildLiveIssueState(liveRuns), [liveRuns]);
+  // Set view kept for the shared filter predicate (membership-only).
+  const liveIssueIds = useMemo(
+    () => new Set(liveIssueState.keys()),
+    [liveIssueState],
+  );
 
   // 5. Compute the active issue list per tab.
   const activeIssues = useMemo<Issue[]>(() => {
@@ -377,6 +378,7 @@ export function InboxPage({
                 readItems.markRead(id);
               }}
               archivingIds={archiveStack.archivingIssueIds}
+              liveIssueState={liveIssueState}
               searchQuery={searchQuery}
             />
           </div>

@@ -37,6 +37,7 @@ import type { InboxIssueColumn } from "@/components/teams/shared/lib/inboxColumn
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { StatusIcon } from "@/components/teams/shared/components/StatusIcon";
+import { LiveRunDot } from "@/components/teams/shared/components/LiveRunDot";
 
 export const issueTrailingColumns: InboxIssueColumn[] = [
   "assignee",
@@ -218,16 +219,8 @@ export function InboxIssueMetaLeading({
           className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 sm:gap-1.5 sm:px-2"
           style={{ background: "var(--forest-tint)" }}
         >
-          <span className="relative flex h-2 w-2">
-            <span
-              className="absolute inline-flex h-full w-full animate-pulse rounded-full opacity-75"
-              style={{ background: "var(--forest)" }}
-            />
-            <span
-              className="relative inline-flex h-2 w-2 rounded-full"
-              style={{ background: "var(--forest)" }}
-            />
-          </span>
+          {/* Decorative: the pill's own "Live" text carries the meaning. */}
+          <LiveRunDot decorative />
           <span
             className="hidden text-[11px] font-medium sm:inline"
             style={{ color: "var(--forest)" }}

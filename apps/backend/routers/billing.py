@@ -498,14 +498,23 @@ async def create_team_checkout(
 
     # Refuse a second subscription for any state that has ever billed / might
     # bill — Checkout in subscription mode creates a NEW subscription on every
-    # successful return. Same guard set as /trial-checkout.
-    if is_trial_blocked(account):
+    # successful return. Same guard set as /trial-checkout, EXCEPT "canceled":
+    # a canceled org (subscription deleted at Stripe) has no live subscription
+    # and must be able to self-serve a fresh team-checkout, or it's locked out
+    # forever with no path back.
+    if is_trial_blocked(account) and account.get("subscription_status") != "canceled":
         raise HTTPException(
             status_code=409,
             detail=f"already_subscribed:{account.get('subscription_status')}",
         )
 
     member_count = await clerk_admin.get_organization_member_count(owner_id)
+    if member_count <= 0:
+        # get_organization_member_count returns 0 on any Clerk error/outage.
+        # create_team_seat_checkout floors quantity at max(1, member_count),
+        # so proceeding here would silently subscribe the org at a single
+        # seat instead of its real size. Fail loudly instead of under-billing.
+        raise HTTPException(status_code=503, detail="team_size_unavailable")
     try:
         session = await create_team_seat_checkout(owner_id=owner_id, member_count=member_count)
     except BillingServiceError as e:

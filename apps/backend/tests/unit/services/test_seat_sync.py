@@ -42,16 +42,12 @@ async def test_sets_absolute_member_count_on_mismatch(monkeypatch):
     set_team.assert_awaited_once()
     assert set_team.await_args.kwargs["seat_count"] == 5
 
-    # Idempotency key must be time-bucketed, not a bare content-addressed
-    # key — otherwise a later re-set to the same quantity within Stripe's
-    # ~24h idempotency cache window would return the cached (stale) response
-    # instead of actually re-applying the quantity, causing DDB/Stripe drift.
-    idempotency_key = kwargs["idempotency_key"]
-    prefix = "seat_sync:si_1:5:"
-    assert idempotency_key.startswith(prefix)
-    segments = idempotency_key.split(":")
-    assert len(segments) == 4
-    assert segments[3].isdigit()
+    # No idempotency_key: a content-addressed or time-bucketed key would let
+    # an oscillating member count (3->4->3->4 within one bucket) replay
+    # Stripe's cached response instead of re-applying, causing DDB/Stripe
+    # drift. An absolute `quantity=N` set is naturally idempotent on its
+    # own — every distinct call must actually apply.
+    assert "idempotency_key" not in kwargs
 
 
 @pytest.mark.asyncio

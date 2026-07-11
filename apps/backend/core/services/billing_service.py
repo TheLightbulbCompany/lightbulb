@@ -346,7 +346,6 @@ async def sync_team_seat_quantity(owner_id: str) -> int:
                 item_id,
                 quantity=member_count,
                 proration_behavior="create_prorations",
-                idempotency_key=f"seat_sync:{item_id}:{member_count}:{int(time.time() // 300)}",
             )
     except Exception:
         logger.exception("sync_team_seat_quantity: Stripe modify failed for owner %s", owner_id)

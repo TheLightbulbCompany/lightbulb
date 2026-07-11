@@ -305,7 +305,14 @@ async def create_team_seat_checkout(*, owner_id: str, member_count: int) -> stri
         price_id=settings.STRIPE_TEAM_SEAT_PRICE_ID,
         quantity=quantity,
         trial_days=None,
-        metadata={"owner_id": owner_id, "purpose": "team_seat"},
+        # Teams are Bedrock-managed automatically — there is no provider picker
+        # in the team flow. Thread provider_choice into the subscription
+        # metadata so the customer.subscription.* webhook persists it as the
+        # idempotent backup (handle_subscription_state accepts "bedrock_claude"),
+        # mirroring how /trial-checkout threads the personal picker's choice.
+        # The router also writes it synchronously before this call so a poll
+        # returning from Checkout never flashes provider_required.
+        metadata={"owner_id": owner_id, "purpose": "team_seat", "provider_choice": "bedrock_claude"},
         success_url=f"{FRONTEND_URL}/chat?checkout=success",
         cancel_url=f"{FRONTEND_URL}/?checkout=cancel",
         idempotency_key=_checkout_idempotency_key("team_checkout", owner_id),

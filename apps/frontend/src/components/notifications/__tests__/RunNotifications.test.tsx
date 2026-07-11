@@ -23,6 +23,16 @@ vi.mock("@/hooks/useAgents", () => ({
     a.identity?.name || a.name || a.id,
 }));
 
+// Controllable per-test; reset to null (General) in beforeEach.
+let mockActiveSessionId: string | null = null;
+vi.mock("@/hooks/useActiveSession", () => ({
+  useActiveSession: () => ({
+    activeSessionId: mockActiveSessionId,
+    newSession: vi.fn(),
+    selectSession: vi.fn(),
+  }),
+}));
+
 let chatHandlers: Array<(msg: ChatIncomingMessage) => void> = [];
 let eventHandlers: Array<(event: string, data: unknown) => void> = [];
 const send = vi.fn(() => true);
@@ -80,6 +90,7 @@ function mount(props?: Partial<ComponentProps<typeof RunNotifications>>) {
 beforeEach(() => {
   chatHandlers = [];
   eventHandlers = [];
+  mockActiveSessionId = null;
   _resetTeamsEventsForTests();
   send.mockClear();
   notifyLoading.mockClear();
@@ -109,6 +120,19 @@ describe("RunNotifications", () => {
     mount();
     dispatchChat({ type: "chunk", content: "…", runId: "r1", agent_id: "agent-sel" });
     expect(notifyLoading).not.toHaveBeenCalled();
+  });
+
+  it("toasts a background run on a different session of the selected agent", () => {
+    mockActiveSessionId = null; // watching General on agent-sel
+    mount();
+    dispatchChat({
+      type: "chunk",
+      content: "…",
+      runId: "r1",
+      agent_id: "agent-sel",
+      session_id: "s2",
+    });
+    expect(notifyLoading).toHaveBeenCalledTimes(1);
   });
 
   it("resolves a shown run to success with a View action on run_ended done", () => {

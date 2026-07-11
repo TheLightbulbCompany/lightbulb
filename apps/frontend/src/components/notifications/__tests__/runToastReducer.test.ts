@@ -12,18 +12,20 @@ const bgCtx: RunToastContext = {
   selectedAgentId: "agent-sel",
   chatViewActive: true,
   teamsPanelActive: false,
+  selectedSessionId: null,
 };
 
-function chunk(runId: string, agentId?: string): ChatIncomingMessage {
-  return { type: "chunk", content: "hi", runId, agent_id: agentId };
+function chunk(runId: string, agentId?: string, sessionId?: string): ChatIncomingMessage {
+  return { type: "chunk", content: "hi", runId, agent_id: agentId, session_id: sessionId };
 }
 
 function runEnded(
   runId: string,
   outcome: "done" | "error" | "aborted",
   agentId?: string,
+  sessionId?: string,
 ): ChatIncomingMessage {
-  return { type: "run_ended", runId, outcome, agent_id: agentId };
+  return { type: "run_ended", runId, outcome, agent_id: agentId, session_id: sessionId };
 }
 
 describe("reduceChatFrame — run start", () => {
@@ -52,6 +54,42 @@ describe("reduceChatFrame — run start", () => {
     const s = createRunToastState();
     const ctx: RunToastContext = { ...bgCtx, chatViewActive: false };
     expect(reduceChatFrame(s, chunk("r1", "agent-sel"), ctx)).toEqual([
+      { kind: "working", key: "r1", agentId: "agent-sel", source: "chat" },
+    ]);
+  });
+
+  it("suppresses the watched agent when the run's session matches the active session", () => {
+    const s = createRunToastState();
+    const ctx: RunToastContext = { ...bgCtx, selectedSessionId: "s1" };
+    const watched: ChatIncomingMessage = chunk("r1", "agent-sel", "s1");
+    expect(reduceChatFrame(s, watched, ctx)).toEqual([]);
+    // terminal while STILL matching agent+session: stays silent
+    expect(reduceChatFrame(s, runEnded("r1", "done", "agent-sel", "s1"), ctx)).toEqual([]);
+  });
+
+  it("suppresses the watched agent when both are on General (null session)", () => {
+    const s = createRunToastState();
+    const ctx: RunToastContext = { ...bgCtx, selectedSessionId: null };
+    const watched: ChatIncomingMessage = chunk("r1", "agent-sel"); // no session_id -> null
+    expect(reduceChatFrame(s, watched, ctx)).toEqual([]);
+    expect(reduceChatFrame(s, runEnded("r1", "done", "agent-sel"), ctx)).toEqual([]);
+  });
+
+  it("toasts a background run on a DIFFERENT session of the watched agent", () => {
+    const s = createRunToastState();
+    const ctx: RunToastContext = { ...bgCtx, selectedSessionId: "s1" };
+    expect(reduceChatFrame(s, chunk("r1", "agent-sel", "s2"), ctx)).toEqual([
+      { kind: "working", key: "r1", agentId: "agent-sel", source: "chat" },
+    ]);
+    expect(reduceChatFrame(s, runEnded("r1", "done", "agent-sel", "s2"), ctx)).toEqual([
+      { kind: "success", key: "r1", agentId: "agent-sel", source: "chat" },
+    ]);
+  });
+
+  it("toasts a background run in a named session while the watched agent view is on General", () => {
+    const s = createRunToastState();
+    const ctx: RunToastContext = { ...bgCtx, selectedSessionId: null };
+    expect(reduceChatFrame(s, chunk("r1", "agent-sel", "s2"), ctx)).toEqual([
       { kind: "working", key: "r1", agentId: "agent-sel", source: "chat" },
     ]);
   });

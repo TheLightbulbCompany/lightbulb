@@ -8,6 +8,16 @@ from datetime import datetime, timezone
 
 META_MODEL_REF = "meta/muse-spark-1.1"
 
+# The bare (unprefixed) model id + display name, straight from the meta
+# extension manifest's modelCatalog entry (extensions/meta/openclaw.plugin.json).
+# ModelDefinitionSchema.strict() requires both `id` and `name` on every
+# providers_config models[] entry, and OpenClaw's model lookup matches on the
+# manifest's bare id — NOT the `<provider>/<id>` ref form used for
+# agents.defaults.model / agents.list[*].model. Keep META_MODEL_ID in lockstep
+# with the manifest; META_MODEL_REF stays the prefixed form for model refs.
+META_MODEL_ID = "muse-spark-1.1"
+META_MODEL_NAME = "Muse Spark 1.1"
+
 # USD per 1M tokens. cacheRead/cacheWrite default to the input rate as a
 # conservative upper bound until Meta's real cache rates are confirmed.
 _INPUT = 1.25

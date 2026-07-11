@@ -10,6 +10,8 @@ from core.billing.meta_pricing import (
     EFFORT,
     MAX_TOKENS,
     META_COST_USD_PER_MILLION,
+    META_MODEL_ID,
+    META_MODEL_NAME,
     META_MODEL_REF,
 )
 from core.containers.config import (
@@ -71,7 +73,13 @@ async def test_meta_provider_branch(tmp_path):
     user-changeable. Unlike chatgpt_oauth, meta DOES emit an explicit
     ``models.providers.meta`` block (cost + maxTokens) so OpenClaw's
     ``estimatedCostUsd`` reflects the real per-token rate instead of $0 —
-    see the free-tier cost-cap spec."""
+    see the free-tier cost-cap spec.
+
+    The models[0] entry's id/name are the BARE manifest values
+    (muse-spark-1.1 / Muse Spark 1.1), matching the meta extension manifest's
+    modelCatalog entry — NOT the "<provider>/<id>" ref form used for
+    agents.defaults.model. ModelDefinitionSchema.strict() requires both `id`
+    and `name`; omitting `name` fails openclaw.json schema validation."""
     out = tmp_path / "openclaw.json"
     await write_openclaw_config(
         config_path=out,
@@ -85,7 +93,8 @@ async def test_meta_provider_branch(tmp_path):
     assert model_block["fallbacks"] == ["meta/muse-spark-1.1"]
     meta_provider = cfg["models"]["providers"]["meta"]
     entry = meta_provider["models"][0]
-    assert entry["id"] == META_MODEL_REF
+    assert entry["id"] == META_MODEL_ID
+    assert entry["name"] == META_MODEL_NAME
     assert entry["cost"] == META_COST_USD_PER_MILLION
     assert entry["maxTokens"] == MAX_TOKENS
 
@@ -104,7 +113,8 @@ def test_build_provider_block_meta_exact_shape():
     assert default_model == {"primary": META_MODEL_REF, "fallbacks": [META_MODEL_REF]}
     assert plugin_entries == {}
     entry = providers["meta"]["models"][0]
-    assert entry["id"] == META_MODEL_REF
+    assert entry["id"] == META_MODEL_ID
+    assert entry["name"] == META_MODEL_NAME
     assert entry["cost"] == META_COST_USD_PER_MILLION
     assert entry["maxTokens"] == MAX_TOKENS
 
@@ -121,7 +131,8 @@ def test_meta_provider_block_sets_cost_and_clamps():
         byo_provider=None,
     )
     entry = providers["meta"]["models"][0]
-    assert entry["id"] == "meta/muse-spark-1.1"
+    assert entry["id"] == "muse-spark-1.1"
+    assert entry["name"] == "Muse Spark 1.1"
     assert entry["cost"]["input"] == 1.25
     assert entry["cost"]["output"] == 4.25
     assert entry["cost"]["cacheRead"] == 1.25  # conservative default

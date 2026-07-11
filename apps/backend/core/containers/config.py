@@ -21,6 +21,8 @@ from core.billing.meta_pricing import (
     EFFORT,
     MAX_TOKENS,
     META_COST_USD_PER_MILLION,
+    META_MODEL_ID,
+    META_MODEL_NAME,
     META_MODEL_REF,
 )
 from core.config import settings
@@ -502,13 +504,22 @@ def build_provider_block(
         # extension manifest (api.ai.meta.com/v1, openai-responses); this is
         # cosmetic (the manifest already wires the real endpoint via
         # MODEL_API_KEY) but keeps this override from diverging from it.
+        #
+        # id/name are the BARE manifest values (muse-spark-1.1 / Muse Spark
+        # 1.1) — same convention as the bedrock branch above, where the
+        # models[].id is the bare AIP ARN and only agents.defaults.model /
+        # agents.list[*].model use the "<provider>/<id>" ref form
+        # (META_MODEL_REF). ModelDefinitionSchema.strict() also requires
+        # `name` on every entry; omitting it fails openclaw.json validation
+        # and crash-loops the container back to its .bak.
         providers_config = {
             "meta": {
                 "baseUrl": "https://api.ai.meta.com/v1",
                 "api": "openai-responses",
                 "models": [
                     {
-                        "id": META_MODEL_REF,
+                        "id": META_MODEL_ID,
+                        "name": META_MODEL_NAME,
                         "cost": META_COST_USD_PER_MILLION,
                         "maxTokens": MAX_TOKENS,
                     }

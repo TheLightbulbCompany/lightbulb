@@ -22,17 +22,34 @@ def teams_ctx():
 
 
 @pytest.fixture
-def client(teams_ctx):
+def client(teams_ctx, monkeypatch):
+    from core.auth import AuthContext, get_current_user
     from routers.teams import agents as agents_mod
 
     async def fake_ctx():
         return teams_ctx
 
+    async def fake_auth():
+        # Personal owner; resolve_owner_id -> user_id == teams_ctx.owner_id.
+        return AuthContext(user_id="o1")
+
     app.dependency_overrides[agents_mod._ctx] = fake_ctx
+    app.dependency_overrides[get_current_user] = fake_auth
+
+    # #802: the dashboard endpoint (the workspace-status probe) gates on the
+    # owner's container being reachable. Default to reachable so the existing
+    # dashboard tests exercise the ready (200) path; the not-reachable tests
+    # override this.
+    async def _reachable(owner_id: str):
+        return True, "10.0.0.1", "gwtok"
+
+    monkeypatch.setattr(agents_mod, "_container_is_reachable", _reachable)
+
     try:
         yield TestClient(app)
     finally:
         app.dependency_overrides.pop(agents_mod._ctx, None)
+        app.dependency_overrides.pop(get_current_user, None)
 
 
 def test_list_activity(client, monkeypatch):
@@ -442,6 +459,61 @@ def test_dashboard_aggregates_dashboard_and_badges_in_parallel(client, monkeypat
         company_id="co_abc",
         session_cookie="cookie",
     )
+
+
+def test_dashboard_202_and_redispatches_when_container_not_reachable(client, monkeypatch):
+    """#802: the Paperclip row goes active ~2-3s in while the container is still
+    provisioning in the background (or its one dispatch failed silently). The
+    dashboard is the workspace-status probe, so an unreachable container must
+    return 202 (keep the UI polling) and re-dispatch provisioning — NOT report
+    the workspace ready and fetch dashboard data."""
+    from routers.teams import agents as agents_mod
+
+    async def not_reachable(owner_id):
+        return False, None, None
+
+    monkeypatch.setattr(agents_mod, "_container_is_reachable", not_reachable)
+
+    reconcile_calls: list = []
+
+    async def fake_reconcile(auth):
+        reconcile_calls.append(auth)
+        return None  # gate clear -> keep polling
+
+    monkeypatch.setattr(agents_mod, "_self_heal_reconcile", fake_reconcile)
+
+    admin = MagicMock()
+    admin.get_dashboard = AsyncMock(return_value={})
+    admin.get_sidebar_badges = AsyncMock(return_value={})
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.get("/api/v1/teams/dashboard", headers={"Authorization": "Bearer x"})
+    assert r.status_code == 202
+    # Re-dispatched provisioning exactly once.
+    assert len(reconcile_calls) == 1
+    # Did NOT fetch dashboard data while the container is still provisioning.
+    admin.get_dashboard.assert_not_awaited()
+
+
+def test_dashboard_402_when_provision_gate_blocks(client, monkeypatch):
+    """If the container is unreachable AND the provision gate is up (no
+    subscription/credits/provider), surface the gate's CTA payload as 402 (the
+    frontend maps it to subscribe_required) instead of spinning on 202 forever."""
+    from routers.teams import agents as agents_mod
+
+    async def not_reachable(owner_id):
+        return False, None, None
+
+    monkeypatch.setattr(agents_mod, "_container_is_reachable", not_reachable)
+
+    async def fake_reconcile(auth):
+        return {"reason": "subscription_required"}  # gate blocked
+
+    monkeypatch.setattr(agents_mod, "_self_heal_reconcile", fake_reconcile)
+
+    r = client.get("/api/v1/teams/dashboard", headers={"Authorization": "Bearer x"})
+    assert r.status_code == 402
+    assert r.json()["detail"] == {"reason": "subscription_required"}
 
 
 def test_get_sidebar_badges(client, monkeypatch):

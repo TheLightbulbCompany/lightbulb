@@ -365,6 +365,36 @@ async def test_record_usage_none_override_falls_back_to_token_pricing(dynamodb_t
 
 
 @pytest.mark.asyncio
+async def test_meta_uses_raw_cost_microcents(dynamodb_tables):
+    """A ``meta/`` model carrying ``raw_cost_microcents`` (OpenClaw's
+    ``estimatedCostUsd``, made correct in-container for the free-tier path)
+    records it verbatim as spend — NOT recomputed from token counts, and NOT
+    falling through to spend 0 the way an unpriced/non-Bedrock model would.
+    The raw-cost gate covers Bedrock (metered) and meta (free-tier) alike."""
+    from core.repositories import usage_repo
+    from core.services.usage_service import _current_period, record_usage
+
+    await record_usage(
+        owner_id="org_meta",
+        user_id="user_meta",
+        model="meta/muse-spark-1.1",
+        input_tokens=10,
+        output_tokens=5,
+        cache_read=0,
+        cache_write=0,
+        raw_cost_microcents=4242,
+    )
+
+    period = _current_period()
+    owner_usage = await usage_repo.get_period_usage("org_meta", period)
+    assert owner_usage is not None
+    # spend recorded == the raw cost, NOT 0 and NOT recomputed from tokens
+    assert owner_usage["total_spend_microdollars"] == 4242
+    assert owner_usage["total_input_tokens"] == 10
+    assert owner_usage["total_output_tokens"] == 5
+
+
+@pytest.mark.asyncio
 async def test_get_usage_summary_returns_zeros_for_empty(dynamodb_tables):
     from core.services.usage_service import get_usage_summary
 

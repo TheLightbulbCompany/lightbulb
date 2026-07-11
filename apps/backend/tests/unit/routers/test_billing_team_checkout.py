@@ -21,8 +21,19 @@ def _member_ctx():
     return AuthContext(user_id="user_mem", org_id="org_1", org_role="org:member", email="mem@example.com")
 
 
+@pytest.fixture(autouse=True)
+def _stub_set_provider_choice(monkeypatch):
+    """The router now writes provider_choice="bedrock_claude" synchronously
+    before Checkout (teams are Bedrock-managed automatically). Stub the DDB
+    write for every test in this module; tests that reach it can assert on the
+    returned mock."""
+    mock = AsyncMock()
+    monkeypatch.setattr(billing.billing_repo, "set_provider_choice", mock)
+    return mock
+
+
 @pytest.mark.asyncio
-async def test_team_checkout_happy_path(monkeypatch):
+async def test_team_checkout_happy_path(monkeypatch, _stub_set_provider_choice):
     monkeypatch.setattr(
         billing,
         "_get_billing_account",
@@ -38,6 +49,23 @@ async def test_team_checkout_happy_path(monkeypatch):
 
     assert result == {"checkout_url": "https://checkout/team"}
     mock_create.assert_awaited_once_with(owner_id="org_1", member_count=4)
+    # Teams are Bedrock-managed automatically — provider_choice persisted
+    # synchronously before Checkout so no provider_required flash on return.
+    _stub_set_provider_choice.assert_awaited_once_with("org_1", provider_choice="bedrock_claude", byo_provider=None)
+
+
+@pytest.mark.asyncio
+async def test_team_checkout_does_not_set_provider_before_409(monkeypatch, _stub_set_provider_choice):
+    """An org with a LIVE sub 409s at the guard, BEFORE the provider write —
+    so a re-checkout attempt never rewrites provider_choice on an active org."""
+    monkeypatch.setattr(
+        billing,
+        "_get_billing_account",
+        AsyncMock(return_value={"owner_id": "org_1", "stripe_customer_id": "cus_1", "subscription_status": "active"}),
+    )
+    with pytest.raises(HTTPException):
+        await billing.create_team_checkout(auth=_admin_ctx())
+    _stub_set_provider_choice.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -516,6 +516,19 @@ async def create_team_checkout(
             detail=f"already_subscribed:{account.get('subscription_status')}",
         )
 
+    # Teams are Bedrock-managed automatically — there is no provider picker in
+    # the team flow, so persist the choice synchronously BEFORE Checkout (the
+    # same ordering /trial-checkout uses for the personal picker). Without this
+    # a poll returning from Checkout would see an active sub with no
+    # provider_choice and flash the provider_required gate until the webhook
+    # backup lands. create_team_seat_checkout also threads it into the
+    # subscription metadata so the webhook re-asserts it idempotently.
+    await billing_repo.set_provider_choice(
+        owner_id,
+        provider_choice="bedrock_claude",
+        byo_provider=None,
+    )
+
     member_count = await clerk_admin.get_organization_member_count(owner_id)
     if member_count <= 0:
         # get_organization_member_count returns 0 on any Clerk error/outage.

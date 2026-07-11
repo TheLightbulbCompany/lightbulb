@@ -368,7 +368,13 @@ class TestBuildSubscriptionCheckoutSharedSpine:
         assert seen["price_id"] == "price_seat_test"
         assert seen["quantity"] == 4
         assert seen["trial_days"] is None
-        assert seen["metadata"] == {"owner_id": "org_1", "purpose": "team_seat"}
+        # provider_choice threaded in so the webhook backup persists teams as
+        # Bedrock-managed (there is no provider picker in the team flow).
+        assert seen["metadata"] == {
+            "owner_id": "org_1",
+            "purpose": "team_seat",
+            "provider_choice": "bedrock_claude",
+        }
         assert seen["idempotency_key"].startswith("team_checkout:org_1:")
 
     @pytest.mark.asyncio

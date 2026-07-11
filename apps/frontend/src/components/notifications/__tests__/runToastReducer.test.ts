@@ -15,8 +15,17 @@ const bgCtx: RunToastContext = {
   selectedSessionId: null,
 };
 
+// Omit session_id entirely when unset, matching the real wire shape of a
+// General-session frame (backend never stamps session_id on 3-part keys), so
+// tests exercise the `"session_id" in msg === false` branch of the reducer.
 function chunk(runId: string, agentId?: string, sessionId?: string): ChatIncomingMessage {
-  return { type: "chunk", content: "hi", runId, agent_id: agentId, session_id: sessionId };
+  return {
+    type: "chunk",
+    content: "hi",
+    runId,
+    agent_id: agentId,
+    ...(sessionId !== undefined ? { session_id: sessionId } : {}),
+  };
 }
 
 function runEnded(
@@ -25,7 +34,13 @@ function runEnded(
   agentId?: string,
   sessionId?: string,
 ): ChatIncomingMessage {
-  return { type: "run_ended", runId, outcome, agent_id: agentId, session_id: sessionId };
+  return {
+    type: "run_ended",
+    runId,
+    outcome,
+    agent_id: agentId,
+    ...(sessionId !== undefined ? { session_id: sessionId } : {}),
+  };
 }
 
 describe("reduceChatFrame — run start", () => {

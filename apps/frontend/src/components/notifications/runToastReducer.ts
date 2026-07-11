@@ -87,6 +87,10 @@ export function reduceChatFrame(
     if (msg.outcome === "aborted") {
       return tracked?.toastShown ? [{ kind: "dismiss", key: msg.runId }] : [];
     }
+    // `??` falls through when a tracked run's session is null (General); the
+    // run_ended frame for that same run also normalizes to null, so the
+    // resolved session is identical. The fallback only matters for a
+    // never-tracked run (reconnect gap).
     const sessionId =
       tracked?.sessionId ?? ("session_id" in msg ? (msg.session_id ?? null) : null);
     const show = tracked?.toastShown || !chatSuppressed(agentId, sessionId, ctx);

@@ -6,6 +6,7 @@ import { ChatLayout } from "@/components/chat/ChatLayout";
 import { AgentChatWindow } from "@/components/chat/AgentChatWindow";
 import { ControlPanelRouter } from "@/components/control/ControlPanelRouter";
 import { GatewayProvider } from "@/hooks/useGateway";
+import { ExecApprovalsProvider } from "@/hooks/useExecApprovals";
 import { MarketplaceDrawerProvider } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
 import { MarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawer";
 import { MarketplaceToast } from "@/components/marketplace/drawer/MarketplaceToast";
@@ -171,37 +172,39 @@ function ChatPageInner() {
   return (
     <MarketplaceDrawerProvider>
       <GatewayProvider>
-        <ChatLayout
-          activePanel={activePanel}
-          onPanelChange={setActivePanel}
-          openAgentIssues={openAgentIssues}
-          openAgentInspector={openAgentInspector}
-          onClearPanel={clearPanel}
-          onNewTask={startNewTask}
-          fileViewerOpen={fileViewerOpen}
-          activeFilePath={activeFilePath}
-          onOpenFile={handleOpenFile}
-          onCloseFileViewer={handleCloseFileViewer}
-        >
-          {/* Keep AgentChatWindow mounted but hidden so chat state
-              (messages, scroll position, streaming) survives view switches */}
-          <div className={activeView === "chat" ? "flex flex-col h-full min-h-0" : "hidden"}>
-            <AgentChatWindow key={selectedAgentId} agentId={selectedAgentId} onOpenFile={handleOpenFile} />
-          </div>
-          {activeView === "control" && (
-            <div className="flex flex-col h-full min-h-0">
-              {isTeamsPanelKey(activePanel) ? (
-                <InlineTeamsPanel
-                  panel={activePanel}
-                  detailId={detailId}
-                  openDetail={openDetail}
-                />
-              ) : (
-                <ControlPanelRouter panel={activePanel} onPanelChange={setActivePanel} />
-              )}
+        <ExecApprovalsProvider>
+          <ChatLayout
+            activePanel={activePanel}
+            onPanelChange={setActivePanel}
+            openAgentIssues={openAgentIssues}
+            openAgentInspector={openAgentInspector}
+            onClearPanel={clearPanel}
+            onNewTask={startNewTask}
+            fileViewerOpen={fileViewerOpen}
+            activeFilePath={activeFilePath}
+            onOpenFile={handleOpenFile}
+            onCloseFileViewer={handleCloseFileViewer}
+          >
+            {/* Keep AgentChatWindow mounted but hidden so chat state
+                (messages, scroll position, streaming) survives view switches */}
+            <div className={activeView === "chat" ? "flex flex-col h-full min-h-0" : "hidden"}>
+              <AgentChatWindow key={selectedAgentId} agentId={selectedAgentId} onOpenFile={handleOpenFile} />
             </div>
-          )}
-        </ChatLayout>
+            {activeView === "control" && (
+              <div className="flex flex-col h-full min-h-0">
+                {isTeamsPanelKey(activePanel) ? (
+                  <InlineTeamsPanel
+                    panel={activePanel}
+                    detailId={detailId}
+                    openDetail={openDetail}
+                  />
+                ) : (
+                  <ControlPanelRouter panel={activePanel} onPanelChange={setActivePanel} />
+                )}
+              </div>
+            )}
+          </ChatLayout>
+        </ExecApprovalsProvider>
         {/* Drawer + toast must live INSIDE GatewayProvider — useHire() and
             PickAgentStep both call useAgents() which calls useGateway(). */}
         <MarketplaceDrawer />

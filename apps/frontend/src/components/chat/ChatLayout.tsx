@@ -17,7 +17,6 @@ import { OutOfCreditsBanner } from "@/components/chat/OutOfCreditsBanner";
 import { useGateway } from "@/hooks/useGateway";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
 import { buildModelNameMap, displayModelName } from "@/lib/modelDisplay";
-import { ExecApprovalsProvider } from "@/hooks/useExecApprovals";
 import { useAgents, getAgentModelString, agentDisplayName, type Agent } from "@/hooks/useAgents";
 import { useBilling } from "@/hooks/useBilling";
 import { useOnboardingGate } from "@/hooks/useOnboardingGate";
@@ -269,7 +268,7 @@ export function ChatLayout({
   }
 
   return (
-    <ExecApprovalsProvider>
+    <>
       <DesktopPermissionsGate />
       <div className={`app-shell${fileViewerOpen ? " with-file-viewer" : ""}`}>
         <div className={`sidebar-backdrop${sidebarOpen ? " visible" : ""}`} onClick={() => setSidebarOpen(false)} />
@@ -692,6 +691,6 @@ export function ChatLayout({
           }}
         />
       </div>
-    </ExecApprovalsProvider>
+    </>
   );
 }

@@ -20,7 +20,7 @@ verified by hand this session.
 2. **Bottom-right run notifications.** While you're in the app but not looking at an agent, a
    sonner toast tells you a run is happening on it — appearing when the run starts, morphing in
    place to finished/failed on its terminal event, and clicking through to the agent. Covers
-   webchat runs on any agent/session/tab **and** Teams/Paperclip-driven runs. **Zero backend
+   webchat runs on any other agent or tab (per-agent in v1 — see §B5) **and** Teams/Paperclip-driven runs. **Zero backend
    changes.**
 
 Both ship as small frontend PRs with no overlap with the in-flight
@@ -113,7 +113,7 @@ Scope note: `GatewayProvider` is mounted per-page, so toasts fire within the `/c
 
 ### B3. Event sources
 
-**Source 1 — chat frames (webchat runs on any agent/session/tab).**
+**Source 1 — chat frames (webchat runs on any other agent or tab; per-agent suppression in v1 — see §B5).**
 `onChatMessage` (`packages/shared/src/gateway/useGatewayConnection.ts:471-479`) is an
 unfiltered firehose: the backend owner-fanout (`_forward_to_frontends`) already pushes every
 webchat run's frames to every one of the owner's chat connections, and `useAgentChat` merely
@@ -171,6 +171,15 @@ active composer, so they target the watched agent and are suppressed. **Accepted
 side run initiated in *another tab* is indistinguishable from a normal run in v1 (the
 `run_ended` frame carries no side-run marker) and may toast. Mirrors the mobile-push branch's
 side-run exclusion intent without a backend change.
+
+**Accepted residual — suppression is per-agent, not per-session (v1).** The rule keys on
+`agent_id` only, so a background run on a *second session of the currently-selected agent*
+(e.g. you started a task in session S1, then opened session S2 on the same agent) is
+suppressed and does **not** toast when it finishes — even though you aren't watching S1.
+Cross-agent and cross-tab runs (the headline cases) are unaffected. Session-scoped
+suppression is a deliberate fast-follow: it needs the active session id threaded from the
+`useActiveSession` store into the listener, with care around legacy/undefined `session_id` so
+the common single-session case can't start suppressing runs the user *is* watching.
 
 ### B6. Click-through + content
 - Chat-run toasts: fire the existing `selectAgent` window CustomEvent

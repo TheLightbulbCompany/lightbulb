@@ -28,6 +28,7 @@ from typing import Any, Awaitable, Callable
 import stripe
 from fastapi import Response
 
+from core.config import settings
 from core.observability.metrics import put_metric, timing
 from core.observability.product_analytics import capture_product_event
 from core.repositories import billing_repo
@@ -263,6 +264,27 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
                 "Failed to persist provider_choice for owner %s",
                 account["owner_id"],
             )
+    # Teams per-seat subscriptions additionally record the subscription item
+    # id + seat quantity so sync_team_seat_quantity has an item to modify.
+    # Detect by explicit metadata purpose OR by the seat price id. Personal
+    # flat subs skip this entirely.
+    items = (event_data.get("items") or {}).get("data") or []
+    first_item = items[0] if items else {}
+    first_price_id = (first_item.get("price") or {}).get("id")
+    is_team_seat = metadata.get("purpose") == "team_seat" or (
+        bool(settings.STRIPE_TEAM_SEAT_PRICE_ID) and first_price_id == settings.STRIPE_TEAM_SEAT_PRICE_ID
+    )
+    if is_team_seat and first_item:
+        try:
+            await billing_repo.set_team_subscription(
+                owner_id=account["owner_id"],
+                subscription_id=event_data["id"],
+                subscription_item_id=first_item.get("id"),
+                status=new_status,
+                seat_count=int(first_item.get("quantity") or 0),
+            )
+        except Exception:
+            logger.exception("Failed to record team seat state for owner %s", account["owner_id"])
     # Customer-analytics bridge (the EMF put_metric above is the operational
     # counterpart) — land the lifecycle transition on the person.
     _bridge_subscription_state(account, event_data, old_status, new_status, metadata_provider)

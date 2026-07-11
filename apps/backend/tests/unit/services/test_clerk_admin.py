@@ -150,3 +150,37 @@ async def test_get_user_returns_payload_on_200(monkeypatch):
 
     assert result["id"] == "user_a"
     assert result["first_name"] == "Alice"
+
+
+@pytest.mark.asyncio
+async def test_member_count_reads_members_count(monkeypatch):
+    monkeypatch.setattr("core.config.settings.CLERK_SECRET_KEY", "sk_test_xyz")
+    from core.services import clerk_admin
+
+    monkeypatch.setattr(clerk_admin, "get_organization", AsyncMock(return_value={"members_count": 7}))
+    assert await clerk_admin.get_organization_member_count("org_1") == 7
+
+
+@pytest.mark.asyncio
+async def test_member_count_falls_back_to_memberships_total_count(monkeypatch):
+    monkeypatch.setattr("core.config.settings.CLERK_SECRET_KEY", "sk_test_xyz")
+    from core.services import clerk_admin
+
+    # get_organization returns no usable members_count -> fall back to the
+    # memberships list endpoint's total_count.
+    monkeypatch.setattr(clerk_admin, "get_organization", AsyncMock(return_value={}))
+    response = _make_response(200, json_body={"data": [], "total_count": 3})
+    with patch(
+        "core.services.clerk_admin.httpx.AsyncClient",
+        new=lambda *a, **k: _fake_client(response),
+    ):
+        assert await clerk_admin.get_organization_member_count("org_1") == 3
+
+
+@pytest.mark.asyncio
+async def test_member_count_stubs_to_zero_without_secret_key(monkeypatch):
+    monkeypatch.setattr("core.config.settings.CLERK_SECRET_KEY", None)
+    from core.services import clerk_admin
+
+    monkeypatch.setattr(clerk_admin, "get_organization", AsyncMock(return_value=None))
+    assert await clerk_admin.get_organization_member_count("org_1") == 0

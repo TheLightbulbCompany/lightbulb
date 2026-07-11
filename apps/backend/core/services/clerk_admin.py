@@ -168,6 +168,45 @@ async def get_organization(org_id: str) -> dict | None:
     return response.json()
 
 
+async def get_organization_member_count(org_id: str) -> int:
+    """Live member count for a Clerk organization (seat quantity source).
+
+    Prefers ``members_count`` off the org object (one call). Falls back to the
+    memberships list endpoint's ``total_count``. Returns 0 when CLERK_SECRET_KEY
+    is unset or on any network/HTTP error — same defensive posture as the other
+    helpers, so a Clerk outage yields a no-op seat sync rather than a crash.
+    """
+    org = await get_organization(org_id)
+    if org and isinstance(org.get("members_count"), int):
+        return org["members_count"]
+
+    if not settings.CLERK_SECRET_KEY:
+        return 0
+
+    headers = {"Authorization": f"Bearer {settings.CLERK_SECRET_KEY}"}
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
+            response = await client.get(
+                f"{_CLERK_API_BASE}/organizations/{org_id}/memberships",
+                headers=headers,
+                params={"limit": 1},
+            )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("clerk_admin.get_organization_member_count network error: %s", e)
+        return 0
+
+    if response.status_code >= 400:
+        logger.warning("clerk_admin.get_organization_member_count HTTP %s", response.status_code)
+        return 0
+
+    try:
+        payload = response.json()
+    except ValueError:
+        return 0
+    total = payload.get("total_count") if isinstance(payload, dict) else None
+    return total if isinstance(total, int) else 0
+
+
 async def list_user_organizations(user_id: str, *, limit: int = 25) -> list[dict]:
     """Return the orgs a Clerk user belongs to.
 

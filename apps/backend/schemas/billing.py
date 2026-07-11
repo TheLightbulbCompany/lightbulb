@@ -18,6 +18,18 @@ class BillingAccountResponse(BaseModel):
     # to render.
     provider_choice: str | None = None
     byo_provider: str | None = None
+    # Teams (org) per-seat billing. seat_count is the live org member count for
+    # org owners (drives the paywall's "N × $20" math); team_seat_price_usd is
+    # the single server-side source of the per-seat display price. Both None
+    # for personal owners.
+    seat_count: int | None = None
+    team_seat_price_usd: int | None = None
+    # True only for org owners on a REAL per-seat Stripe subscription (one
+    # that recorded subscription_item_id via the webhook). False for
+    # personal owners and for flat/comped/grandfathered org subs that have
+    # no subscription_item_id — those must never render seat-priced
+    # "N x $price" billing math (there is no per-seat Stripe item to price).
+    is_seat_subscription: bool = False
 
 
 class PortalResponse(BaseModel):

@@ -22,6 +22,7 @@ import { replaceSearchParams } from "@/lib/shellNav";
 import { ChatGPTOAuthStep } from "@/components/chat/ChatGPTOAuthStep";
 import { ByoKeyStep } from "@/components/chat/ByoKeyStep";
 import { CreditsStep } from "@/components/chat/CreditsStep";
+import { TeamBillingCard } from "@/components/chat/TeamBillingCard";
 import { Logo } from "@/components/Logo";
 import { PROVIDER_CARDS, type ProviderChoiceId } from "@/lib/providerCards";
 
@@ -211,7 +212,13 @@ export function ProvisioningStepper({
   const readyStorageKey = `${ONBOARDING_READY_STORAGE_KEY}:${organization?.id ?? clerkUserId ?? "anon"}`;
   // Same owner-scoping for the trial_started once-marker (see below).
   const trialStartedStorageKey = `${TRIAL_STARTED_STORAGE_KEY}:${organization?.id ?? clerkUserId ?? "anon"}`;
-  const { account, isLoading: billingLoading, isSubscribed, refresh: refreshBilling } = useBilling();
+  const {
+    account,
+    isLoading: billingLoading,
+    isSubscribed,
+    refresh: refreshBilling,
+    startTeamCheckout,
+  } = useBilling();
   // Free-tier discriminator: trial_local accounts are already is_subscribed
   // (the backend added trial_local to _ACTIVE_STATUSES) but never set
   // provider_choice — there is no provider to pick for the free tier. Used
@@ -861,6 +868,24 @@ export function ProvisioningStepper({
             {copy.desc}
           </p>
         </div>
+      </div>
+    );
+  }
+
+  // Teams billing paywall: the gate returns team_billing_required for an org
+  // owner (or member) with no billing row. Render the real per-seat checkout
+  // card instead of the generic blocked card. TeamBillingCard is admin-gated
+  // internally — a member sees "ask your org admin" with no CTA.
+  if (gatePhase === "blocked" && blocked && blocked.code === "team_billing_required") {
+    return (
+      <div className="flex-1 flex items-center justify-center bg-[#faf7f2]">
+        <TeamBillingCard
+          seatCount={account?.seat_count ?? null}
+          seatPriceUsd={account?.team_seat_price_usd ?? null}
+          ownerRole={blocked.owner_role}
+          isSubscribed={false}
+          onSubscribe={startTeamCheckout}
+        />
       </div>
     );
   }

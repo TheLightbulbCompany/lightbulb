@@ -14,6 +14,7 @@ import { DesktopFileAccess } from "@/components/desktop/DesktopFileAccess";
 import { HandlePicker } from "@/components/marketplace/HandlePicker";
 import { getMySellerProfile, type SellerProfile } from "@/lib/marketplace/api";
 import { Logo } from "@/components/Logo";
+import { TeamBillingCard } from "@/components/chat/TeamBillingCard";
 import { UsagePanel } from "@/components/control/panels/UsagePanel";
 import { LLMPanel } from "@/components/control/panels/LLMPanel";
 import { IntegrationsPanel } from "@/components/control/panels/IntegrationsPanel";
@@ -110,6 +111,7 @@ function BillingPanel() {
     error: accountError,
     isSubscribed,
     openPortal,
+    startTeamCheckout,
   } = useBilling();
   const { membership } = useOrganization();
 
@@ -137,22 +139,6 @@ function BillingPanel() {
     );
   }
 
-  if (membership && membership.role !== "org:admin") {
-    return (
-      <div className="settings-panel" id="panel-billing" role="tabpanel">
-        <h1 className="settings-page-title">Billing</h1>
-        <div className="settings-restricted">
-          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#59534d" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-            <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-          </svg>
-          <div className="settings-restricted-title">Billing restricted</div>
-          <div className="settings-restricted-desc">Contact your organization admin to manage billing and subscription settings.</div>
-        </div>
-      </div>
-    );
-  }
-
   const subscriptionStatus = account?.subscription_status ?? null;
   const trialEndLabel =
     account?.trial_end != null
@@ -162,6 +148,128 @@ function BillingPanel() {
           year: "numeric",
         })
       : null;
+
+  // Org context: Teams billing is per-seat, not the flat $50/mo personal
+  // plan, so org admins get TeamBillingCard instead of the personal card
+  // below — but ONLY when the org is either unsubscribed (the paywall case)
+  // or actually on a real per-seat Stripe subscription
+  // (account.is_seat_subscription). A subscribed org on a flat/comped/
+  // grandfathered sub (no subscription_item_id) has no per-seat Stripe item
+  // to price, so showing "N seats × $price" there is fabricated — it falls
+  // through to the normal subscribed billing view below instead.
+  //
+  // Org-level spend is admin-only, full stop — a non-admin member is routed
+  // to a standalone "Billing restricted" card before any of the
+  // subscription-shape branches below run, so it never sees spend figures
+  // or a Manage/Subscribe control regardless of seat-vs-flat shape.
+  // TeamBillingCard has its own internal member-vs-admin gate (used by the
+  // /chat blocked-screen caller), but we don't reuse it for the member case
+  // here because its seat-math line ("N seats × $price") would be fabricated
+  // for a flat/comped org.
+  const isOrgContext = Boolean(membership);
+  const orgRole: "admin" | "member" = membership?.role === "org:admin" ? "admin" : "member";
+  const isSeatSubscription = Boolean(account?.is_seat_subscription);
+
+  if (isOrgContext && orgRole === "member") {
+    return (
+      <div className="settings-panel" id="panel-billing" role="tabpanel">
+        <h1 className="settings-page-title">Billing</h1>
+        <p className="settings-page-desc">Manage your team&apos;s subscription.</p>
+        <div className="settings-card">
+          <div className="settings-card-title">Billing restricted</div>
+          <div className="settings-card-desc" style={{ marginTop: 4 }}>
+            Contact your organization admin to manage billing and subscription settings.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Below this point, isOrgContext (when true) implies orgRole === "admin" —
+  // the member case returned above.
+
+  if (isOrgContext && (!isSubscribed || isSeatSubscription)) {
+    return (
+      <div className="settings-panel" id="panel-billing" role="tabpanel">
+        <h1 className="settings-page-title">Billing</h1>
+        <p className="settings-page-desc">Manage your team&apos;s subscription.</p>
+
+        {accountError && (
+          <div className="settings-alert settings-alert-error">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            Failed to load billing data. Please refresh the page.
+          </div>
+        )}
+
+        <TeamBillingCard
+          seatCount={account?.seat_count ?? null}
+          seatPriceUsd={account?.team_seat_price_usd ?? null}
+          ownerRole={orgRole}
+          isSubscribed={isSubscribed}
+          onSubscribe={startTeamCheckout}
+          onManage={handlePortal}
+        />
+
+        {/* A real per-seat sub that's actually subscribed has accrued spend
+            (unlike the unsubscribed paywall case above, where there's
+            nothing to report yet) — surface it alongside TeamBillingCard so
+            a seat-sub admin doesn't lose the visibility they'd get on the
+            flat/comped branch below. */}
+        {isSubscribed && account && (
+          <div className="settings-card-desc" style={{ marginTop: 12 }}>
+            Current period spend: {formatDollars(account.current_spend, 4)} · Lifetime: {formatDollars(account.lifetime_spend)}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (isOrgContext) {
+    // Subscribed org, NOT a per-seat sub (flat/comped/grandfathered) — the
+    // normal subscribed billing view, same shape as the personal card
+    // below, restoring the current/lifetime spend line org admins
+    // previously saw pre-org-context-rewrite. No per-seat pricing math.
+    // orgRole is guaranteed "admin" here (member case returned above).
+    return (
+      <div className="settings-panel" id="panel-billing" role="tabpanel">
+        <h1 className="settings-page-title">Billing</h1>
+        <p className="settings-page-desc">Manage your team&apos;s subscription.</p>
+
+        {accountError && (
+          <div className="settings-alert settings-alert-error">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            Failed to load billing data. Please refresh the page.
+          </div>
+        )}
+
+        <div className="settings-card">
+          <div className="settings-card-header">
+            <div>
+              <div className="settings-card-title">
+                Isol8 plan
+                {subscriptionStatus && (
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4, marginLeft: 8, fontSize: 11, fontWeight: 600, color: "#06402B", background: "rgba(6,64,43,.08)", padding: "2px 8px", borderRadius: 999, textTransform: "capitalize" }}>
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                    {subscriptionStatus}
+                  </span>
+                )}
+              </div>
+              <div className="settings-card-desc">Active subscription</div>
+              {account && (
+                <div className="settings-card-desc" style={{ marginTop: 4 }}>
+                  Current period spend: {formatDollars(account.current_spend, 4)} · Lifetime: {formatDollars(account.lifetime_spend)}
+                </div>
+              )}
+            </div>
+            <button type="button" className="settings-btn-outline" onClick={handlePortal} disabled={portalLoading}>
+              {portalLoading && <span className="settings-spinner" style={{ width: 14, height: 14, borderWidth: 2, marginRight: 6, display: "inline-block", verticalAlign: "middle" }} />}
+              Manage Payment
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="settings-panel" id="panel-billing" role="tabpanel">

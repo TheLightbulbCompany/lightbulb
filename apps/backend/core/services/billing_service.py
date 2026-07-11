@@ -153,11 +153,17 @@ class BillingService:
         return session.url
 
     async def cancel_subscription(self, billing_account: dict) -> None:
+        # clear_seat_fields=True: cancellation must also wipe
+        # subscription_item_id + seat_count, not just the subscription
+        # id/status -- otherwise a stale subscription_item_id survives
+        # cancellation and is_seat_subscription (routers/billing.py) keeps
+        # reporting a per-seat subscription that no longer exists.
         await billing_repo.set_subscription(
             owner_id=billing_account["owner_id"],
             subscription_id=None,
             status="canceled",
             trial_end=None,
+            clear_seat_fields=True,
         )
 
 
@@ -202,13 +208,6 @@ async def create_flat_fee_checkout(
     if not settings.STRIPE_FLAT_PRICE_ID:
         raise BillingServiceError("STRIPE_FLAT_PRICE_ID not configured")
 
-    account = await billing_repo.get_by_owner_id(owner_id)
-    if not account or not account.get("stripe_customer_id"):
-        raise BillingServiceError(f"No Stripe customer for owner_id={owner_id}")
-
-    subscription_data: dict = {}
-    if trial_days is not None and trial_days > 0:
-        subscription_data["trial_period_days"] = trial_days
     metadata: dict = {"owner_id": owner_id}
     if provider_choice:
         metadata["provider_choice"] = provider_choice
@@ -216,26 +215,156 @@ async def create_flat_fee_checkout(
         metadata["byo_provider"] = byo_provider
     if clerk_user_id:
         metadata["clerk_user_id"] = clerk_user_id
+
+    return await _build_subscription_checkout(
+        owner_id=owner_id,
+        price_id=settings.STRIPE_FLAT_PRICE_ID,
+        quantity=1,
+        trial_days=trial_days,
+        metadata=metadata,
+        success_url=(
+            f"{FRONTEND_URL}/chat?checkout=success" + (f"&provider={provider_choice}" if provider_choice else "")
+        ),
+        cancel_url=f"{FRONTEND_URL}/?checkout=cancel",
+        idempotency_key=_checkout_idempotency_key("flat_checkout", owner_id, provider_choice or "_"),
+    )
+
+
+def _checkout_idempotency_key(flow: str, owner_id: str, extra: str | None = None) -> str:
+    """The single idempotency-key shape for subscription Checkout sessions.
+
+    5-minute time bucket collapses rapid duplicate clicks / multi-tab retries
+    to one session before the customer.subscription.created webhook + the
+    duplicate-sub guard catch up. ``flow`` namespaces flat vs team; ``extra``
+    carries the flat path's provider_choice so a config change bypasses the
+    cached response naturally.
+    """
+    bucket = int(time.time() // 300)
+    suffix = f":{extra}" if extra is not None else ""
+    return f"{flow}:{owner_id}{suffix}:{bucket}"
+
+
+async def _build_subscription_checkout(
+    *,
+    owner_id: str,
+    price_id: str,
+    quantity: int,
+    trial_days: int | None,
+    metadata: dict,
+    success_url: str,
+    cancel_url: str,
+    idempotency_key: str,
+) -> stripe.checkout.Session:
+    """Single builder for subscription-mode Stripe Checkout sessions.
+
+    Owns the session kwargs, the automatic_tax / customer_update block, and
+    the subscription_data (trial + metadata) assembly so neither the flat
+    (personal) nor the team path copies them. The price-id existence guard
+    stays in each caller because the config key differs.
+    """
+    account = await billing_repo.get_by_owner_id(owner_id)
+    if not account or not account.get("stripe_customer_id"):
+        raise BillingServiceError(f"No Stripe customer for owner_id={owner_id}")
+
+    subscription_data: dict = {}
+    if trial_days is not None and trial_days > 0:
+        subscription_data["trial_period_days"] = trial_days
     subscription_data["metadata"] = metadata
 
     kwargs: dict = dict(
         customer=account["stripe_customer_id"],
         mode="subscription",
-        line_items=[{"price": settings.STRIPE_FLAT_PRICE_ID, "quantity": 1}],
-        success_url=(
-            f"{FRONTEND_URL}/chat?checkout=success" + (f"&provider={provider_choice}" if provider_choice else "")
-        ),
-        cancel_url=f"{FRONTEND_URL}/?checkout=cancel",
+        line_items=[{"price": price_id, "quantity": quantity}],
+        success_url=success_url,
+        cancel_url=cancel_url,
         allow_promotion_codes=True,
         automatic_tax={"enabled": True},
         customer_update={"address": "auto"},
         subscription_data=subscription_data,
-        idempotency_key=f"flat_checkout:{owner_id}:{provider_choice or '_'}:{int(time.time() // 300)}",
+        idempotency_key=idempotency_key,
     )
-
     with timing("stripe.api.latency", {"op": "checkout.session.create"}):
         session = stripe.checkout.Session.create(**kwargs)
     return session
+
+
+async def create_team_seat_checkout(*, owner_id: str, member_count: int) -> stripe.checkout.Session:
+    """Per-seat Teams Checkout: quantity = org member count, NO trial.
+
+    Threads ``purpose="team_seat"`` into subscription metadata so the
+    customer.subscription.* webhook records the subscription item id + seat
+    count via set_team_subscription. Quantity is floored at 1 so a transient
+    member-count read of 0 never creates a zero-quantity subscription.
+    """
+    if not settings.STRIPE_TEAM_SEAT_PRICE_ID:
+        raise BillingServiceError("STRIPE_TEAM_SEAT_PRICE_ID not configured")
+
+    quantity = max(1, member_count)
+    return await _build_subscription_checkout(
+        owner_id=owner_id,
+        price_id=settings.STRIPE_TEAM_SEAT_PRICE_ID,
+        quantity=quantity,
+        trial_days=None,
+        metadata={"owner_id": owner_id, "purpose": "team_seat"},
+        success_url=f"{FRONTEND_URL}/chat?checkout=success",
+        cancel_url=f"{FRONTEND_URL}/?checkout=cancel",
+        idempotency_key=_checkout_idempotency_key("team_checkout", owner_id),
+    )
+
+
+async def sync_team_seat_quantity(owner_id: str) -> int:
+    """Set the team subscription's seat quantity to the live org member count.
+
+    The SINGLE writer of seat quantity — called from the membership webhooks,
+    the reconcile safety-net, and post-checkout. Absolute set (no delta math),
+    idempotent. Returns the resulting seat count.
+
+    No-ops (returns the stored seat_count, or 0) when:
+      - there's no active subscription, or
+      - there's no ``subscription_item_id`` (grandfathered non-seat sub, or a
+        team sub whose creation webhook hasn't landed yet), or
+      - the live count already equals the stored count.
+
+    Stripe errors are logged and swallowed (returns the stored count) so a
+    caller in a webhook path still 200s; the reconcile net heals the drift.
+    """
+    from core.services import clerk_admin
+    from core.services.provision_gate import is_subscription_active
+
+    account = await billing_repo.get_by_owner_id(owner_id)
+    if not account or not is_subscription_active(account):
+        return 0
+
+    item_id = account.get("subscription_item_id")
+    if not item_id:
+        # Grandfathered / not-yet-webhooked — never touch a non-seat sub.
+        return int(account.get("seat_count") or 0)
+
+    current = int(account.get("seat_count") or 0)
+    member_count = await clerk_admin.get_organization_member_count(owner_id)
+    if member_count <= 0 or member_count == current:
+        # 0 = Clerk read failed/stubbed; don't zero a real subscription.
+        return current
+
+    try:
+        with timing("stripe.api.latency", {"op": "subscription_item.modify"}):
+            stripe.SubscriptionItem.modify(
+                item_id,
+                quantity=member_count,
+                proration_behavior="create_prorations",
+            )
+    except Exception:
+        logger.exception("sync_team_seat_quantity: Stripe modify failed for owner %s", owner_id)
+        return current
+
+    await billing_repo.set_team_subscription(
+        owner_id=owner_id,
+        subscription_id=account.get("stripe_subscription_id"),
+        subscription_item_id=item_id,
+        status=account.get("subscription_status"),
+        seat_count=member_count,
+    )
+    return member_count
 
 
 async def create_credit_top_up_checkout(

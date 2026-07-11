@@ -345,6 +345,17 @@ async def _handle_organization_membership_created(data: dict) -> None:
         owner_user_id,
     )
 
+    # Keep the org's per-seat subscription quantity in step with membership.
+    # Best-effort: the reconciler self-guards (no-op unless the org has an
+    # active team sub with an item id), and any error is swallowed so the
+    # webhook still 200s — the /container/status reconcile net heals drift.
+    try:
+        from core.services.billing_service import sync_team_seat_quantity
+
+        await sync_team_seat_quantity(org_id)
+    except Exception:
+        logger.exception("seat sync on membership.created failed for org=%s", org_id)
+
 
 async def _handle_organization_membership_deleted(data: dict) -> None:
     """Archive the member's Paperclip membership AND disable their DDB row.
@@ -362,6 +373,7 @@ async def _handle_organization_membership_deleted(data: dict) -> None:
     """
     pud = data.get("public_user_data") or {}
     user_id = pud.get("user_id", "") or data.get("user_id", "")
+    org_id = (data.get("organization") or {}).get("id", "")
     if not user_id:
         logger.warning("Clerk organizationMembership.deleted missing user_id: %s", data)
         return
@@ -447,9 +459,36 @@ async def _handle_organization_membership_deleted(data: dict) -> None:
     finally:
         await close_paperclip_provisioning(provisioning)
 
+    if org_id:
+        try:
+            from core.services.billing_service import sync_team_seat_quantity
+
+            await sync_team_seat_quantity(org_id)
+        except Exception:
+            logger.exception("seat sync on membership.deleted failed for org=%s", org_id)
+
 
 async def _handle_organization_deleted(data: dict) -> None:
-    """Disable every Paperclip member row attached to the deleted org.
+    """Cancel the org's Stripe subscription so seat billing stops, then
+    disable every Paperclip member row attached to the deleted org.
+
+    The org's per-seat subscription is billed on the org's own
+    ``billing_accounts`` row (owner_id == org_id), which nothing else
+    tears down when the Clerk org itself is deleted -- left alone it
+    would keep charging N seats forever. We cancel it via the same
+    Stripe path the admin "cancel subscription" action uses
+    (``billing_service.cancel_subscription_for_owner``): cancelling at
+    Stripe (not just clearing the DDB row) fires the inbound
+    ``customer.subscription.deleted`` webhook, which handles container
+    teardown. Best-effort -- a Stripe error must not break this webhook,
+    which still has to return 200 to Clerk.
+
+    This runs BEFORE the member-disable sweep below, and in its own
+    independent try/except, so that a failure in the sweep (e.g. the
+    GSI ``table.query`` pagination call throwing on a DynamoDB
+    throttle/error) can never prevent the billing-critical cancel from
+    running. The sweep is Paperclip cleanup, not billing-critical --
+    it must not be able to block the Stripe cancel.
 
     Clerk also fires ``organizationMembership.deleted`` for each
     member, but we belt-and-braces against missed events by sweeping
@@ -459,6 +498,21 @@ async def _handle_organization_deleted(data: dict) -> None:
     if not org_id:
         logger.warning("Clerk organization.deleted missing id: %s", data)
         return
+
+    try:
+        from core.services.billing_service import cancel_subscription_for_owner
+
+        result = await cancel_subscription_for_owner(org_id)
+        logger.info(
+            "Clerk organization.deleted: Stripe subscription cancel for org %s -> %s",
+            org_id,
+            result.get("status"),
+        )
+    except Exception:
+        logger.exception(
+            "Stripe subscription cancel on organization.deleted failed for org %s",
+            org_id,
+        )
 
     from boto3.dynamodb.conditions import Key
 

@@ -88,12 +88,19 @@ vi.mock("@/lib/api", () => ({
 // Configurable so the trial_local (free-tier) test can flip isSubscribed /
 // account shape without a persisted provider_choice.
 let billingMockIsSubscribed = true;
-let billingMockAccount: { provider_choice: string | null; subscription_status?: string | null } | null = {
+let billingMockAccount: {
+  provider_choice: string | null;
+  subscription_status?: string | null;
+  seat_count?: number | null;
+  team_seat_price_usd?: number | null;
+} | null = {
   provider_choice: "bedrock_claude",
 };
 // Spy for the /billing/account re-fetch the stepper fires when a container is
 // provisioning but billing hasn't caught up to the just-created trial_local.
 let billingMockRefresh = vi.fn();
+// Spy for the Teams-billing checkout CTA (team_billing_required blocked test).
+const billingMockStartTeamCheckout = vi.fn();
 vi.mock("@/hooks/useBilling", () => ({
   // Default: provider_choice set, an onboarded owner (the cold-start tests
   // need to get PAST the ProviderPicker gate, which requires isSubscribed AND
@@ -103,6 +110,7 @@ vi.mock("@/hooks/useBilling", () => ({
     isSubscribed: billingMockIsSubscribed,
     account: billingMockAccount,
     refresh: billingMockRefresh,
+    startTeamCheckout: billingMockStartTeamCheckout,
   }),
 }));
 
@@ -152,6 +160,7 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     billingMockIsSubscribed = true;
     billingMockAccount = { provider_choice: "bedrock_claude" };
     billingMockRefresh = vi.fn();
+    billingMockStartTeamCheckout.mockClear();
   });
 
   afterEach(() => {
@@ -360,6 +369,43 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     const checkAgain = screen.getByRole("button", { name: /Check again/ });
     checkAgain.click();
     expect(refresh).toHaveBeenCalled();
+  });
+
+  it("renders TeamBillingCard (not the generic blocked card) for team_billing_required", async () => {
+    billingMockAccount = { provider_choice: null, seat_count: 4, team_seat_price_usd: 20 };
+    useProvMock.mockReturnValue({
+      phase: "blocked",
+      container: null,
+      blocked: {
+        code: "team_billing_required",
+        title: "Subscribe to start your team's containers",
+        message: "Your organization needs a Teams subscription.",
+        action: {
+          kind: "link",
+          label: "Subscribe",
+          href: "/settings/billing",
+          admin_only: true,
+        },
+        owner_role: "admin",
+      },
+      refreshInterval: 5000,
+      refresh: vi.fn(),
+    });
+
+    render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+
+    // The per-seat card, not the generic gate copy.
+    expect(screen.getByText(/4 seats/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Subscribe to start your team's containers/)).not.toBeInTheDocument();
+
+    await act(async () => {
+      screen.getByRole("button", { name: /subscribe your team/i }).click();
+    });
+    expect(billingMockStartTeamCheckout).toHaveBeenCalled();
   });
 
   it("renders the ProviderPicker when phase=needs-signup", () => {

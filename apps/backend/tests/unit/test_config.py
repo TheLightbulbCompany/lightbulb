@@ -62,3 +62,11 @@ def test_ws_gateway_url_overrides_via_env():
     clients which gateway endpoint to connect to; must be overridable via env."""
     settings = Settings()
     assert settings.WS_GATEWAY_URL == "wss://override.example.com"
+
+
+def test_team_seat_settings_have_expected_defaults():
+    s = Settings()
+    # Empty default so the app boots without the CDK-wired price id.
+    assert s.STRIPE_TEAM_SEAT_PRICE_ID == ""
+    # Per-seat display dollars — the single server-side source of the "$20".
+    assert s.TEAM_SEAT_PRICE_USD == 20

@@ -22,6 +22,16 @@ export interface BillingAccount {
   // an org whose admin has already picked.
   provider_choice: string | null;
   byo_provider: string | null;
+  // Teams per-seat billing (org owners only; null for personal). seat_count is
+  // the live org member count; team_seat_price_usd is echoed from backend
+  // config so the paywall never hardcodes the per-seat price.
+  seat_count: number | null;
+  team_seat_price_usd: number | null;
+  // True only for org owners on a REAL per-seat Stripe subscription (one
+  // that recorded a subscription_item_id via the webhook). False for
+  // personal owners and for flat/comped/grandfathered org subs — those
+  // must not render seat-priced "N x $price" billing math.
+  is_seat_subscription: boolean;
 }
 
 export interface MemberUsage {
@@ -89,6 +99,14 @@ export function useBilling() {
     window.location.href = portal_url;
   }, [api]);
 
+  const startTeamCheckout = useCallback(async () => {
+    const { checkout_url } = (await api.post("/billing/team-checkout", {})) as {
+      checkout_url?: string;
+    };
+    if (!checkout_url) throw new Error("No checkout_url returned");
+    window.location.href = checkout_url;
+  }, [api]);
+
   // Same 404→null contract as /billing/account.
   const fetchUsage = useCallback(async (): Promise<UsageSummary | null> => {
     try {
@@ -108,6 +126,7 @@ export function useBilling() {
     error,
     isSubscribed,
     openPortal,
+    startTeamCheckout,
     fetchUsage,
     refresh,
   };

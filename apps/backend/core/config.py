@@ -216,6 +216,14 @@ class Settings(BaseSettings):
     STRIPE_SECRET_KEY: str = os.getenv("STRIPE_SECRET_KEY", "")
     STRIPE_WEBHOOK_SECRET: str = os.getenv("STRIPE_WEBHOOK_SECRET", "")
     STRIPE_FLAT_PRICE_ID: str = ""
+    # Per-seat Stripe price for the Teams (org) subscription. Empty default so
+    # the app boots without it; CDK-wired in dev/prod. Quantity = org member
+    # count, no trial. This is the billing source of truth for "$20/seat".
+    STRIPE_TEAM_SEAT_PRICE_ID: str = ""
+    # Display dollars for one seat, echoed to the frontend via /billing/account
+    # so the paywall renders "N × $20" without hardcoding the number in the UI.
+    # Kept in lockstep with STRIPE_TEAM_SEAT_PRICE_ID's unit amount in Stripe.
+    TEAM_SEAT_PRICE_USD: int = 20
 
     # Marketplace (set by CDK ServiceStack — empty default lets the backend
     # boot in non-marketplace contexts like local unit tests).

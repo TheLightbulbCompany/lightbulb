@@ -553,6 +553,11 @@ class TestContainerStatusGate:
                 return_value=fake_gate,
             ),
             patch("routers.container.resolve_owner_id", return_value="org_xyz"),
+            # Org owner_id also fires the fire-and-forget seat reconcile
+            # (Task 8) before the gate check; stub it so this unit test
+            # doesn't spawn a real background task hitting live DDB/Stripe
+            # code.
+            patch("core.services.billing_service.sync_team_seat_quantity", new_callable=AsyncMock),
         ):
             with pytest.raises(HTTPException) as exc:
                 await container_status(auth=_org_admin_auth())
@@ -649,6 +654,11 @@ class TestContainerStatusGate:
                 return_value=fake_gate,
             ),
             patch("routers.container.resolve_owner_id", return_value="org_x"),
+            # Org owner_id also fires the fire-and-forget seat reconcile
+            # (Task 8) before the gate check; stub it so this unit test
+            # doesn't spawn a real background task hitting live DDB/Stripe
+            # code.
+            patch("core.services.billing_service.sync_team_seat_quantity", new_callable=AsyncMock),
         ):
             with pytest.raises(HTTPException) as exc:
                 await container_status(auth=mock_auth)
@@ -740,7 +750,11 @@ class TestContainerStatusEnsureUserReadyDispatch:
             result = await container_status(_org_admin_auth("user_admin", "org_xyz", "a@example.com"))
         assert result["status"] == "provisioning"
         assert result["phase"] == "provisioning"
-        assert captured == ["_noop_ensure_user_ready"], f"expected ensure_user_ready dispatched, got {captured}"
+        # Org-context owner_id (org_xyz) also triggers the fire-and-forget
+        # seat reconcile (Task 8), dispatched before ensure_user_ready.
+        assert captured == ["sync_team_seat_quantity", "_noop_ensure_user_ready"], (
+            f"expected seat sync + ensure_user_ready dispatched, got {captured}"
+        )
 
     @pytest.mark.asyncio
     async def test_status_no_container_org_member_dispatches_ensure_user_ready_returns_202(self):
@@ -776,7 +790,11 @@ class TestContainerStatusEnsureUserReadyDispatch:
             with pytest.raises(HTTPException) as exc_info:
                 await container_status(_org_member_auth())
         assert exc_info.value.status_code == 202
-        assert captured == ["_noop_ensure_user_ready"], f"expected ensure_user_ready dispatched, got {captured}"
+        # Org-context owner_id also triggers the fire-and-forget seat
+        # reconcile (Task 8), dispatched before ensure_user_ready.
+        assert captured == ["sync_team_seat_quantity", "_noop_ensure_user_ready"], (
+            f"expected seat sync + ensure_user_ready dispatched, got {captured}"
+        )
 
     @pytest.mark.asyncio
     async def test_status_no_container_gate_blocks_returns_402_unchanged(self):
@@ -842,8 +860,10 @@ class TestContainerStatusOrgMemberDispatchOnExisting:
             result = await container_status(_org_member_auth())
 
         assert result["status"] == "running"
-        assert captured == ["_noop_ensure_user_ready"], (
-            f"expected ensure_user_ready dispatched for org member on container-exists path, got {captured}"
+        # Org-context owner_id also triggers the fire-and-forget seat
+        # reconcile (Task 8), dispatched before ensure_user_ready.
+        assert captured == ["sync_team_seat_quantity", "_noop_ensure_user_ready"], (
+            f"expected seat sync + ensure_user_ready dispatched for org member on container-exists path, got {captured}"
         )
 
     @pytest.mark.asyncio
@@ -915,8 +935,10 @@ class TestContainerStatusOrgMemberDispatchOnExisting:
         ):
             await container_status(_org_admin_auth())
 
-        assert captured == ["_noop_ensure_user_ready"], (
-            f"org admin on container-exists path must dispatch ensure_user_ready, got {captured}"
+        # Org-context owner_id also triggers the fire-and-forget seat
+        # reconcile (Task 8), dispatched before ensure_user_ready.
+        assert captured == ["sync_team_seat_quantity", "_noop_ensure_user_ready"], (
+            f"org admin on container-exists path must dispatch seat sync + ensure_user_ready, got {captured}"
         )
 
 

@@ -9,6 +9,7 @@ import { GatewayProvider } from "@/hooks/useGateway";
 import { MarketplaceDrawerProvider } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
 import { MarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawer";
 import { MarketplaceToast } from "@/components/marketplace/drawer/MarketplaceToast";
+import { RunNotifications } from "@/components/notifications/RunNotifications";
 import {
   InlineTeamsPanel,
   isTeamsPanelKey,
@@ -205,6 +206,11 @@ function ChatPageInner() {
             PickAgentStep both call useAgents() which calls useGateway(). */}
         <MarketplaceDrawer />
         <MarketplaceToast />
+        <RunNotifications
+          selectedAgentId={selectedAgentId}
+          activeView={activeView}
+          activePanel={activePanel}
+        />
       </GatewayProvider>
     </MarketplaceDrawerProvider>
   );

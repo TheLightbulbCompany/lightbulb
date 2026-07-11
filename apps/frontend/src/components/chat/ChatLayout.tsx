@@ -487,6 +487,24 @@ export function ChatLayout({
     setSidebarOpen(false);
   }
 
+  // Toast click-through: RunNotifications dispatches selectAgent with
+  // source:"notification". Route it through handleSelectAgent so selection,
+  // ?panel cleanup, and the sidebar all behave exactly like a sidebar click.
+  // ChatLayout's own dispatches carry no source, so this cannot loop.
+  const handleSelectAgentRef = useRef(handleSelectAgent);
+  useEffect(() => {
+    handleSelectAgentRef.current = handleSelectAgent;
+  });
+  useEffect(() => {
+    function onExternalSelectAgent(e: Event) {
+      const detail = (e as CustomEvent<{ agentId?: string; source?: string }>).detail;
+      if (detail?.source !== "notification" || !detail.agentId) return;
+      handleSelectAgentRef.current(detail.agentId);
+    }
+    window.addEventListener("selectAgent", onExternalSelectAgent);
+    return () => window.removeEventListener("selectAgent", onExternalSelectAgent);
+  }, []);
+
   async function handleCreateAgent(): Promise<void> {
     setCreateFormOpen(true);
   }

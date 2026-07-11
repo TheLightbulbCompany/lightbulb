@@ -12,18 +12,35 @@ const bgCtx: RunToastContext = {
   selectedAgentId: "agent-sel",
   chatViewActive: true,
   teamsPanelActive: false,
+  selectedSessionId: null,
 };
 
-function chunk(runId: string, agentId?: string): ChatIncomingMessage {
-  return { type: "chunk", content: "hi", runId, agent_id: agentId };
+// Omit session_id entirely when unset, matching the real wire shape of a
+// General-session frame (backend never stamps session_id on 3-part keys), so
+// tests exercise the `"session_id" in msg === false` branch of the reducer.
+function chunk(runId: string, agentId?: string, sessionId?: string): ChatIncomingMessage {
+  return {
+    type: "chunk",
+    content: "hi",
+    runId,
+    agent_id: agentId,
+    ...(sessionId !== undefined ? { session_id: sessionId } : {}),
+  };
 }
 
 function runEnded(
   runId: string,
   outcome: "done" | "error" | "aborted",
   agentId?: string,
+  sessionId?: string,
 ): ChatIncomingMessage {
-  return { type: "run_ended", runId, outcome, agent_id: agentId };
+  return {
+    type: "run_ended",
+    runId,
+    outcome,
+    agent_id: agentId,
+    ...(sessionId !== undefined ? { session_id: sessionId } : {}),
+  };
 }
 
 describe("reduceChatFrame — run start", () => {
@@ -52,6 +69,42 @@ describe("reduceChatFrame — run start", () => {
     const s = createRunToastState();
     const ctx: RunToastContext = { ...bgCtx, chatViewActive: false };
     expect(reduceChatFrame(s, chunk("r1", "agent-sel"), ctx)).toEqual([
+      { kind: "working", key: "r1", agentId: "agent-sel", source: "chat" },
+    ]);
+  });
+
+  it("suppresses the watched agent when the run's session matches the active session", () => {
+    const s = createRunToastState();
+    const ctx: RunToastContext = { ...bgCtx, selectedSessionId: "s1" };
+    const watched: ChatIncomingMessage = chunk("r1", "agent-sel", "s1");
+    expect(reduceChatFrame(s, watched, ctx)).toEqual([]);
+    // terminal while STILL matching agent+session: stays silent
+    expect(reduceChatFrame(s, runEnded("r1", "done", "agent-sel", "s1"), ctx)).toEqual([]);
+  });
+
+  it("suppresses the watched agent when both are on General (null session)", () => {
+    const s = createRunToastState();
+    const ctx: RunToastContext = { ...bgCtx, selectedSessionId: null };
+    const watched: ChatIncomingMessage = chunk("r1", "agent-sel"); // no session_id -> null
+    expect(reduceChatFrame(s, watched, ctx)).toEqual([]);
+    expect(reduceChatFrame(s, runEnded("r1", "done", "agent-sel"), ctx)).toEqual([]);
+  });
+
+  it("toasts a background run on a DIFFERENT session of the watched agent", () => {
+    const s = createRunToastState();
+    const ctx: RunToastContext = { ...bgCtx, selectedSessionId: "s1" };
+    expect(reduceChatFrame(s, chunk("r1", "agent-sel", "s2"), ctx)).toEqual([
+      { kind: "working", key: "r1", agentId: "agent-sel", source: "chat" },
+    ]);
+    expect(reduceChatFrame(s, runEnded("r1", "done", "agent-sel", "s2"), ctx)).toEqual([
+      { kind: "success", key: "r1", agentId: "agent-sel", source: "chat" },
+    ]);
+  });
+
+  it("toasts a background run in a named session while the watched agent view is on General", () => {
+    const s = createRunToastState();
+    const ctx: RunToastContext = { ...bgCtx, selectedSessionId: null };
+    expect(reduceChatFrame(s, chunk("r1", "agent-sel", "s2"), ctx)).toEqual([
       { kind: "working", key: "r1", agentId: "agent-sel", source: "chat" },
     ]);
   });
@@ -109,6 +162,20 @@ describe("reduceChatFrame — terminals (run_ended only)", () => {
     reduceChatFrame(s, chunk("r1", "agent-sel"), bgCtx); // suppressed at start
     const awayCtx: RunToastContext = { ...bgCtx, chatViewActive: false };
     expect(reduceChatFrame(s, runEnded("r1", "done"), awayCtx)).toEqual([
+      { kind: "success", key: "r1", agentId: "agent-sel", source: "chat" },
+    ]);
+  });
+
+  it("shows completion after the user switched to a DIFFERENT session of the same agent", () => {
+    // The core per-session behavior: a run on the watched agent+session starts
+    // suppressed, then completes while the user is viewing a SECOND session of
+    // the same agent (chat still visible). Per-agent suppression would wrongly
+    // mute it; per-session must toast.
+    const s = createRunToastState();
+    const onS1: RunToastContext = { ...bgCtx, selectedSessionId: "s1" };
+    expect(reduceChatFrame(s, chunk("r1", "agent-sel", "s1"), onS1)).toEqual([]);
+    const onS2: RunToastContext = { ...bgCtx, selectedSessionId: "s2" };
+    expect(reduceChatFrame(s, runEnded("r1", "done", "agent-sel", "s1"), onS2)).toEqual([
       { kind: "success", key: "r1", agentId: "agent-sel", source: "chat" },
     ]);
   });

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { useGateway } from "@/hooks/useGateway";
+import { useActiveSession } from "@/hooks/useActiveSession";
 import { useAgents, agentDisplayName, type Agent } from "@/hooks/useAgents";
 import { capture } from "@/lib/analytics";
 import {
@@ -107,10 +108,12 @@ export function RunNotifications({
 }: RunNotificationsProps): null {
   const { isConnected, send, onEvent, onChatMessage } = useGateway();
   const { agents } = useAgents();
+  const { activeSessionId } = useActiveSession(selectedAgentId);
 
   const stateRef = useRef(createRunToastState());
   const ctxRef = useRef<RunToastContext>({
     selectedAgentId: null,
+    selectedSessionId: null,
     chatViewActive: true,
     teamsPanelActive: false,
   });
@@ -125,6 +128,7 @@ export function RunNotifications({
   useEffect(() => {
     ctxRef.current = {
       selectedAgentId,
+      selectedSessionId: activeSessionId,
       chatViewActive: activeView === "chat",
       teamsPanelActive: activeView === "control" && activePanel.startsWith("teams-"),
     };

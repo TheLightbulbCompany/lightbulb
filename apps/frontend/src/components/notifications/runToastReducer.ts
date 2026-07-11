@@ -11,6 +11,7 @@ import type { ChatIncomingMessage } from "@/hooks/useGateway";
 
 export interface RunToastContext {
   selectedAgentId: string | null;
+  selectedSessionId: string | null;
   chatViewActive: boolean;
   teamsPanelActive: boolean;
 }
@@ -21,6 +22,7 @@ export type RunToastAction =
 
 interface TrackedRun {
   agentId: string;
+  sessionId: string | null;
   toastShown: boolean;
 }
 
@@ -35,12 +37,19 @@ export function createRunToastState(): RunToastState {
 
 export const MAX_TRACKED_RUNS = 200;
 
-// A run the user is already watching (its agent selected, chat visible) never
-// needs a "working" toast. Suppression is re-evaluated per event: a run that
-// started watched still gets its completion toast if the user has navigated
-// away by the time it ends.
-function chatSuppressed(agentId: string, ctx: RunToastContext): boolean {
-  return ctx.chatViewActive && ctx.selectedAgentId === agentId;
+// A run the user is already watching (its agent AND session selected, chat
+// visible) never needs a "working" toast. Suppression is re-evaluated per
+// event: a run that started watched still gets its completion toast if the
+// user has navigated away (agent, session, or view) by the time it ends.
+// `sessionId` is normalized the same way the frame itself is: a
+// missing/undefined session_id == null == the legacy "General" session, so
+// the comparison is apples-to-apples with `ctx.selectedSessionId`.
+function chatSuppressed(agentId: string, sessionId: string | null, ctx: RunToastContext): boolean {
+  return (
+    ctx.chatViewActive &&
+    ctx.selectedAgentId === agentId &&
+    ctx.selectedSessionId === sessionId
+  );
 }
 
 function evictOldest(map: Map<string, TrackedRun>): void {
@@ -78,7 +87,13 @@ export function reduceChatFrame(
     if (msg.outcome === "aborted") {
       return tracked?.toastShown ? [{ kind: "dismiss", key: msg.runId }] : [];
     }
-    const show = tracked?.toastShown || !chatSuppressed(agentId, ctx);
+    // `??` falls through when a tracked run's session is null (General); the
+    // run_ended frame for that same run also normalizes to null, so the
+    // resolved session is identical. The fallback only matters for a
+    // never-tracked run (reconnect gap).
+    const sessionId =
+      tracked?.sessionId ?? ("session_id" in msg ? (msg.session_id ?? null) : null);
+    const show = tracked?.toastShown || !chatSuppressed(agentId, sessionId, ctx);
     if (!show) return [];
     return [
       {
@@ -96,8 +111,10 @@ export function reduceChatFrame(
   if (!runId || !agentId) return [];
   if (state.chatRuns.has(runId)) return [];
 
-  const toastShown = !chatSuppressed(agentId, ctx);
-  state.chatRuns.set(runId, { agentId, toastShown });
+  // Captured once at run-start — a run's session doesn't change mid-run.
+  const sessionId = "session_id" in msg ? (msg.session_id ?? null) : null;
+  const toastShown = !chatSuppressed(agentId, sessionId, ctx);
+  state.chatRuns.set(runId, { agentId, sessionId, toastShown });
   evictOldest(state.chatRuns);
   return toastShown
     ? [{ kind: "working", key: runId, agentId, source: "chat" }]
@@ -132,7 +149,9 @@ export function reduceTeamsRunEvent(
   if (TEAMS_WORKING_STATUSES.has(status)) {
     if (state.teamsRuns.has(runId)) return [];
     const toastShown = !ctx.teamsPanelActive;
-    state.teamsRuns.set(runId, { agentId, toastShown });
+    // sessionId is unused on the teams path (suppression stays keyed on
+    // teamsPanelActive only) — set to null purely to satisfy TrackedRun.
+    state.teamsRuns.set(runId, { agentId, sessionId: null, toastShown });
     evictOldest(state.teamsRuns);
     return toastShown
       ? [{ kind: "working", key, agentId, source: "teams" }]

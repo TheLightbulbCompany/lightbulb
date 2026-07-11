@@ -227,6 +227,49 @@ async def test_carry_canonical_member_through_terminal():
 
 
 @pytest.mark.asyncio
+async def test_push_dispatched_before_active_run_cleared():
+    """Race guard: _dispatch_push_notification must run BEFORE _clear_active_run.
+
+    Clearing empties _active_runs (flipping has_active_runs to False), which is
+    what lets a concurrent _grace_close tear the container connection down. If
+    that happens before the push task is created, the closed-app push is lost.
+    So the terminal path must spawn the push first, then clear.
+    """
+    conn = _make_terminal_conn(owner_id="org_1")
+    conn.mark_run_active("agent:a1:user_Mixed", agent_id="a1", member_id="user_Mixed")
+    payload = {
+        "sessionKey": "agent:a1:user_mixed",
+        "state": "final",
+        "runId": "run-1",
+        "message": {"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
+    }
+    order: list[str] = []
+    real_dispatch = conn._dispatch_push_notification
+    real_clear = conn._clear_active_run
+
+    def rec_dispatch(*a, **k):
+        order.append("dispatch")
+        return real_dispatch(*a, **k)
+
+    def rec_clear(key):
+        order.append("clear")
+        return real_clear(key)
+
+    with (
+        patch("core.services.push_service.send_push_to_user", AsyncMock()),
+        patch("core.gateway.connection_pool.put_metric"),
+        patch.object(conn, "_forward_to_frontends", AsyncMock()),
+        patch.object(conn, "_resolve_agent_name", AsyncMock(return_value="Friday")),
+        patch.object(conn, "_dispatch_push_notification", side_effect=rec_dispatch),
+        patch.object(conn, "_clear_active_run", side_effect=rec_clear),
+    ):
+        await conn._handle_message({"type": "event", "event": "chat", "payload": payload})
+        await asyncio.gather(*list(conn._push_tasks))
+
+    assert order == ["dispatch", "clear"], order
+
+
+@pytest.mark.asyncio
 async def test_terminal_error_state_does_not_push():
     """error/aborted terminals never push (only state == 'final')."""
     conn = _make_terminal_conn(owner_id="org_1")

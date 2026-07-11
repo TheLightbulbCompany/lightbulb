@@ -19,6 +19,15 @@ async def register_device(
     auth: AuthContext = Depends(get_current_user),
 ):
     """Register (or refresh) this device's Expo push token for the caller."""
+    # Ensure the users row exists first. `set_push_token` no-ops on an absent
+    # row (its scoped UpdateItem is conditional on `attribute_exists(user_id)`),
+    # and a brand-new user can POST /devices before the Clerk `user.created`
+    # webhook has written their row — which would store nothing yet return a
+    # false "registered". The client then caches that as success and never
+    # retries, so the user would silently receive no pushes. Creating the row
+    # here (idempotent; mirrors POST /users/sync) makes the write land.
+    if not await user_repo.get(auth.user_id):
+        await user_repo.put(auth.user_id, auth.email)
     entry = {"token": body.token, "platform": body.platform, "updatedAt": utc_now_iso()}
     await user_repo.set_push_token(auth.user_id, body.deviceId, entry)
     return {"status": "registered"}

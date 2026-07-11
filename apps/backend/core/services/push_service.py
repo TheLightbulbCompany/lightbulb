@@ -46,6 +46,20 @@ async def send_push_to_user(user_id: str, title: str, body: str, data: dict | No
             resp.raise_for_status()
             tickets = resp.json().get("data", [])
 
+        # Expo returns one ticket per message. A shorter/absent `data` array
+        # means the response was an error envelope (or a partial send), so the
+        # zip below would silently skip pruning/error-logging for the unmatched
+        # tail (e.g. a DeviceNotRegistered token would never be cleared and keep
+        # receiving doomed pushes). Surface it.
+        if len(tickets) != len(messages):
+            logger.warning(
+                "Expo returned %d tickets for %d messages (user %s) — likely an error "
+                "envelope; some dead-token prunes or errors may be unhandled",
+                len(tickets),
+                len(messages),
+                user_id,
+            )
+
         for (device_id, _token), ticket in zip(entries, tickets):
             if not (isinstance(ticket, dict) and ticket.get("status") == "error"):
                 continue

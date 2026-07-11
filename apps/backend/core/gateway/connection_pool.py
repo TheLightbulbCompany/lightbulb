@@ -1439,7 +1439,12 @@ class GatewayConnection:
                         if active is not None:
                             primary_started_at = active.get("started_at")
                             carried_member = active.get("member_id")
-                        self._clear_active_run(session_key)
+                        # NOTE: _clear_active_run is DEFERRED to after the push
+                        # dispatch in the is_true_terminal block below. Clearing
+                        # here flips has_active_runs to False before the push task
+                        # is spawned, so a concurrent _grace_close could tear the
+                        # connection down mid-forward and cancel the reader before
+                        # the push is ever created — losing the closed-app push.
                 if state == "final":
                     put_metric("chat.message.count")
                     # Deliver thinking from content blocks for models that
@@ -1557,6 +1562,18 @@ class GatewayConnection:
                     # user-initiated primary reply v1 push is for.
                     if state == "final" and not run_is_side:
                         self._dispatch_push_notification(payload, carried_member, event_agent_id)
+
+                    # Clear the non-side active-run window now — AFTER the push
+                    # task has been created — so the teardown guard
+                    # (has_active_runs) keeps the container connection alive
+                    # through terminal processing and the push spawn. This closes
+                    # the race where a concurrent _grace_close, seeing an empty
+                    # _active_runs and no frontends, tore the connection down
+                    # during the run_ended/done forwards and cancelled the reader
+                    # before _dispatch_push_notification ran. Side runs never
+                    # owned the entry, so they must not clear it.
+                    if not run_is_side:
+                        self._clear_active_run(session_key)
 
                 # END of the chat.e2e.latency SLO span (alarm W9). Elapsed is
                 # computed from the active-run window's started_at — stamped by

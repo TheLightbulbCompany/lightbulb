@@ -21,8 +21,10 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
 
+from core.auth import AuthContext, get_current_user, resolve_owner_id
+
 from . import agents as _agents
-from .deps import TeamsContext
+from .deps import TeamsContext, TeamsContextError
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +149,10 @@ async def get_costs(ctx: TeamsContext = Depends(_ctx)):
 
 
 @router.get("/dashboard")
-async def get_dashboard(ctx: TeamsContext = Depends(_ctx)):
+async def get_dashboard(
+    ctx: TeamsContext = Depends(_ctx),
+    auth: AuthContext = Depends(get_current_user),
+):
     """Fetch the dashboard summary + sidebar badges in parallel.
 
     Returns the upstream Paperclip dashboard summary verbatim
@@ -158,6 +163,31 @@ async def get_dashboard(ctx: TeamsContext = Depends(_ctx)):
     Defensive: if upstream returns None or a non-dict, normalize to
     an empty dict so the frontend can still render an empty-state.
     """
+    # #802 — container-readiness gate. The Paperclip row goes ``active`` ~2-3s
+    # into provisioning (``_ctx`` resolves past it), but the owner's container
+    # is created in the BACKGROUND (``asyncio.create_task(background_provision)``
+    # in ``ensure_user_ready``) and may still be starting — or its single
+    # dispatch may have failed silently, leaving no container at all. Since the
+    # frontend uses THIS endpoint as its workspace-status probe
+    # (``useTeamsWorkspaceStatus`` polls it, auto-retrying only on the 202
+    # sentinel), mirror ``/container/status`` here: if the container isn't
+    # reachable yet, re-dispatch provisioning (gate-first, off the request path
+    # — the same #801 self-heal ``/chat`` uses, which decides the restart-safe
+    # container flag from live ECS state) and return 202 so the UI stays on the
+    # provisioning overlay instead of reporting the workspace ready before the
+    # container is. Scoped to this probe only — NOT ``_ctx`` — so the other
+    # ``/teams/*`` data endpoints keep zero per-request ECS cost. Members ride
+    # the owner's shared container, so only owners/admins gate on it.
+    if not auth.is_org_context or auth.is_org_admin:
+        reachable, _ip, _token = await _agents._container_is_reachable(resolve_owner_id(auth))
+        if not reachable:
+            blocked = await _agents._self_heal_reconcile(auth)
+            if blocked is not None:
+                # Provision gate up (no subscription/credits/provider) — surface
+                # the CTA payload; the frontend maps 402 -> subscribe_required.
+                raise TeamsContextError(status_code=402, detail=blocked)
+            raise TeamsContextError(status_code=202, detail="team workspace provisioning")
+
     admin = _agents._admin()
     badges, dash = await asyncio.gather(
         admin.get_sidebar_badges(

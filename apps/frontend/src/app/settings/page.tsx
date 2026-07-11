@@ -150,19 +150,43 @@ function BillingPanel() {
       : null;
 
   // Org context: Teams billing is per-seat, not the flat $50/mo personal
-  // plan, so org members (of either role) get TeamBillingCard instead of the
-  // personal card below — but ONLY when the org is either unsubscribed (the
-  // paywall case) or actually on a real per-seat Stripe subscription
+  // plan, so org admins get TeamBillingCard instead of the personal card
+  // below — but ONLY when the org is either unsubscribed (the paywall case)
+  // or actually on a real per-seat Stripe subscription
   // (account.is_seat_subscription). A subscribed org on a flat/comped/
   // grandfathered sub (no subscription_item_id) has no per-seat Stripe item
   // to price, so showing "N seats × $price" there is fabricated — it falls
   // through to the normal subscribed billing view below instead.
-  // TeamBillingCard is admin-gated internally — a non-admin member sees its
-  // "ask your org admin" message with no CTA, which replaces the old
-  // standalone "Billing restricted" block.
+  //
+  // Org-level spend is admin-only, full stop — a non-admin member is routed
+  // to a standalone "Billing restricted" card before any of the
+  // subscription-shape branches below run, so it never sees spend figures
+  // or a Manage/Subscribe control regardless of seat-vs-flat shape.
+  // TeamBillingCard has its own internal member-vs-admin gate (used by the
+  // /chat blocked-screen caller), but we don't reuse it for the member case
+  // here because its seat-math line ("N seats × $price") would be fabricated
+  // for a flat/comped org.
   const isOrgContext = Boolean(membership);
   const orgRole: "admin" | "member" = membership?.role === "org:admin" ? "admin" : "member";
   const isSeatSubscription = Boolean(account?.is_seat_subscription);
+
+  if (isOrgContext && orgRole === "member") {
+    return (
+      <div className="settings-panel" id="panel-billing" role="tabpanel">
+        <h1 className="settings-page-title">Billing</h1>
+        <p className="settings-page-desc">Manage your team&apos;s subscription.</p>
+        <div className="settings-card">
+          <div className="settings-card-title">Billing restricted</div>
+          <div className="settings-card-desc" style={{ marginTop: 4 }}>
+            Contact your organization admin to manage billing and subscription settings.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Below this point, isOrgContext (when true) implies orgRole === "admin" —
+  // the member case returned above.
 
   if (isOrgContext && (!isSubscribed || isSeatSubscription)) {
     return (
@@ -185,6 +209,17 @@ function BillingPanel() {
           onSubscribe={startTeamCheckout}
           onManage={handlePortal}
         />
+
+        {/* A real per-seat sub that's actually subscribed has accrued spend
+            (unlike the unsubscribed paywall case above, where there's
+            nothing to report yet) — surface it alongside TeamBillingCard so
+            a seat-sub admin doesn't lose the visibility they'd get on the
+            flat/comped branch below. */}
+        {isSubscribed && account && (
+          <div className="settings-card-desc" style={{ marginTop: 12 }}>
+            Current period spend: {formatDollars(account.current_spend, 4)} · Lifetime: {formatDollars(account.lifetime_spend)}
+          </div>
+        )}
       </div>
     );
   }
@@ -194,6 +229,7 @@ function BillingPanel() {
     // normal subscribed billing view, same shape as the personal card
     // below, restoring the current/lifetime spend line org admins
     // previously saw pre-org-context-rewrite. No per-seat pricing math.
+    // orgRole is guaranteed "admin" here (member case returned above).
     return (
       <div className="settings-panel" id="panel-billing" role="tabpanel">
         <h1 className="settings-page-title">Billing</h1>
@@ -225,12 +261,10 @@ function BillingPanel() {
                 </div>
               )}
             </div>
-            {orgRole === "admin" && (
-              <button type="button" className="settings-btn-outline" onClick={handlePortal} disabled={portalLoading}>
-                {portalLoading && <span className="settings-spinner" style={{ width: 14, height: 14, borderWidth: 2, marginRight: 6, display: "inline-block", verticalAlign: "middle" }} />}
-                Manage Payment
-              </button>
-            )}
+            <button type="button" className="settings-btn-outline" onClick={handlePortal} disabled={portalLoading}>
+              {portalLoading && <span className="settings-spinner" style={{ width: 14, height: 14, borderWidth: 2, marginRight: 6, display: "inline-block", verticalAlign: "middle" }} />}
+              Manage Payment
+            </button>
           </div>
         </div>
       </div>

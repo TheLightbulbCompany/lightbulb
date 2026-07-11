@@ -129,4 +129,86 @@ describe("BillingPanel — org context seat-vs-flat branch", () => {
     expect(screen.getByRole("button", { name: /subscribe your team/i })).toBeInTheDocument();
     expect(screen.queryByText("Isol8 plan")).not.toBeInTheDocument();
   });
+
+  it("non-admin member of a flat/comped subscribed org sees no spend and no Manage/CTA button (security fix)", () => {
+    clerk.membership = { role: "org:member" };
+    billing.isSubscribed = true;
+    billing.account = {
+      is_subscribed: true,
+      current_spend: 12.3456,
+      lifetime_spend: 45.6,
+      subscription_status: "active",
+      trial_end: null,
+      provider_choice: null,
+      byo_provider: null,
+      seat_count: 7,
+      team_seat_price_usd: 20,
+      is_seat_subscription: false,
+    };
+
+    render(<SettingsPage />);
+
+    // No spend figures anywhere on the panel for a non-admin member.
+    expect(screen.queryByText(/\$/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Current period spend/i)).not.toBeInTheDocument();
+
+    // No billing controls either.
+    expect(screen.queryByRole("button", { name: /manage/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /subscribe/i })).not.toBeInTheDocument();
+
+    // Restricted messaging instead.
+    expect(screen.getByText(/billing restricted/i)).toBeInTheDocument();
+  });
+
+  it("non-admin member of a real seat-sub org also sees no spend and no Manage/CTA button", () => {
+    clerk.membership = { role: "org:member" };
+    billing.isSubscribed = true;
+    billing.account = {
+      is_subscribed: true,
+      current_spend: 1,
+      lifetime_spend: 2,
+      subscription_status: "active",
+      trial_end: null,
+      provider_choice: null,
+      byo_provider: null,
+      seat_count: 4,
+      team_seat_price_usd: 20,
+      is_seat_subscription: true,
+    };
+
+    render(<SettingsPage />);
+
+    expect(screen.queryByText(/\$/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /manage/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /subscribe/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/billing restricted/i)).toBeInTheDocument();
+  });
+
+  it("admin of a real seat-sub org sees TeamBillingCard AND the current/lifetime spend line", () => {
+    clerk.membership = { role: "org:admin" };
+    billing.isSubscribed = true;
+    billing.account = {
+      is_subscribed: true,
+      current_spend: 3.14,
+      lifetime_spend: 99.5,
+      subscription_status: "active",
+      trial_end: null,
+      provider_choice: null,
+      byo_provider: null,
+      seat_count: 4,
+      team_seat_price_usd: 20,
+      is_seat_subscription: true,
+    };
+
+    render(<SettingsPage />);
+
+    // TeamBillingCard (Manage) is present.
+    expect(screen.getByRole("button", { name: /manage billing/i })).toBeInTheDocument();
+    expect(screen.getByText(/4 seats/i)).toBeInTheDocument();
+
+    // The spend line is ALSO present (Regression 3 fix).
+    expect(screen.getByText(/Current period spend:.*Lifetime:/)).toBeInTheDocument();
+    expect(screen.getByText(/\$3\.1400/)).toBeInTheDocument();
+    expect(screen.getByText(/\$99\.50/)).toBeInTheDocument();
+  });
 });

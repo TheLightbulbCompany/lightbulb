@@ -124,6 +124,21 @@ function getFriendlyDescription(skill: SkillStatusEntry): string {
   return FRIENDLY_DESCRIPTIONS[key] || skill.description || "Extend your agent's capabilities";
 }
 
+// Pull a human-readable message out of an RPC error. Gateway RPC rejections
+// arrive as an Error whose message may be a JSON-encoded error object; surface
+// its `message` field when present so the user sees the real reason instead of
+// a swallowed console log.
+function actionErrorText(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err ?? "");
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed.message === "string" && parsed.message) return parsed.message;
+  } catch {
+    /* not JSON — use raw */
+  }
+  return raw || "Please try again.";
+}
+
 // --- Create-custom-skill helper ---
 
 const CREATE_SKILL_PROMPT =
@@ -480,6 +495,10 @@ function SkillCard({
 }) {
   const [toggleLoading, setToggleLoading] = useState(false);
   const [installLoading, setInstallLoading] = useState<string | null>(null);
+  // Surfaced to the user when a toggle/install fails. Previously these errors
+  // were only console.error'd, so a failed enable/install looked like a no-op
+  // and the user couldn't tell why the skill didn't change.
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const hasMissing =
     (skill.missing?.bins?.length ?? 0) > 0 ||
@@ -488,6 +507,7 @@ function SkillCard({
 
   const handleToggle = async () => {
     setToggleLoading(true);
+    setActionError(null);
     try {
       await callRpc("skills.update", {
         skillKey: skill.skillKey || skill.name,
@@ -497,6 +517,9 @@ function SkillCard({
       onRefresh();
     } catch (err) {
       console.error("Failed to toggle skill:", err);
+      setActionError(
+        `Couldn't ${skill.disabled ? "enable" : "disable"} this skill: ${actionErrorText(err)}`,
+      );
     } finally {
       setToggleLoading(false);
     }
@@ -504,6 +527,7 @@ function SkillCard({
 
   const handleInstall = async (spec: SkillInstallSpec) => {
     setInstallLoading(spec.id);
+    setActionError(null);
     try {
       await callRpc("skills.install", {
         name: skill.name,
@@ -514,6 +538,7 @@ function SkillCard({
       onRefresh();
     } catch (err) {
       console.error("Failed to install:", err);
+      setActionError(`Couldn't install this skill: ${actionErrorText(err)}`);
     } finally {
       setInstallLoading(null);
     }
@@ -551,7 +576,17 @@ function SkillCard({
           </div>
 
           <div className="flex items-center gap-2 flex-shrink-0">
-            {!skill.always && (
+            {skill.always ? (
+              // Managed/required skills have no toggle. Explain why, so it doesn't
+              // read as "I can't modify this and don't know why".
+              <span
+                className="inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-medium bg-[#f0ebe2] text-[#8a8578] cursor-help"
+                title="This skill is always on — it's managed by Isol8 and can't be turned off."
+                style={{ fontFamily: "'DM Sans', sans-serif" }}
+              >
+                Always on
+              </span>
+            ) : (
               <button
                 onClick={handleToggle}
                 disabled={toggleLoading}
@@ -563,6 +598,14 @@ function SkillCard({
             )}
           </div>
         </div>
+
+        {/* Action error — surfaced instead of being swallowed */}
+        {actionError && (
+          <div className="flex items-start gap-1.5 text-xs text-red-600">
+            <AlertTriangle className="h-3 w-3 flex-shrink-0 mt-0.5" />
+            <span>{actionError}</span>
+          </div>
+        )}
 
         {/* Missing dependencies */}
         {hasMissing && (
@@ -694,6 +737,14 @@ function SkillCard({
           </button>
         </div>
       </div>
+
+      {/* Action error — surfaced instead of being swallowed */}
+      {actionError && (
+        <div className="mt-2 flex items-start gap-1.5 text-xs text-red-600">
+          <AlertTriangle className="h-3 w-3 flex-shrink-0 mt-0.5" />
+          <span>{actionError}</span>
+        </div>
+      )}
     </div>
   );
 }

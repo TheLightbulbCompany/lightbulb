@@ -5,16 +5,35 @@ import { SkillsTab } from "../SkillsTab";
 
 const mockData = vi.fn();
 const mockMutate = vi.fn();
+const mockMutation = vi.fn();
 vi.mock("@/hooks/useGatewayRpc", () => ({
   useGatewayRpc: () => ({ data: mockData(), error: undefined, isLoading: false, mutate: mockMutate }),
-  useGatewayRpcMutation: () => vi.fn(),
+  useGatewayRpcMutation: () => mockMutation,
 }));
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
+
+function installedSkill(over: Record<string, unknown> = {}) {
+  return {
+    name: "memory",
+    description: "",
+    source: "bundled",
+    skillKey: "memory",
+    always: false,
+    disabled: false,
+    blockedByAllowlist: false,
+    eligible: true,
+    requirements: { bins: [], env: [], config: [], os: [] },
+    missing: { bins: [], env: [], config: [], os: [] },
+    install: [],
+    ...over,
+  };
+}
 
 describe("SkillsTab", () => {
   beforeEach(() => {
     mockData.mockReset();
     mockMutate.mockReset();
+    mockMutation.mockReset().mockResolvedValue({});
   });
 
   it("renders the skill store header from a skills.status report", () => {
@@ -90,5 +109,29 @@ describe("SkillsTab", () => {
     fireEvent.click(screen.getByRole("button", { name: /create custom skill/i }));
     expect(screen.getByText(/Use your skill-creator skill/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /copy prompt/i })).toBeInTheDocument();
+  });
+
+  it("explains an always-on (managed) skill instead of hiding the control silently", () => {
+    mockData.mockReturnValue({ skills: [installedSkill({ always: true })] });
+    render(<SkillsTab />);
+    expect(screen.getByText(/always on/i)).toBeInTheDocument();
+    // No toggle for a managed skill.
+    expect(screen.queryByRole("button", { name: /^disable$/i })).toBeNull();
+  });
+
+  it("surfaces the reason when a skill toggle fails instead of swallowing it", async () => {
+    // The catch path still console.error's the raw failure — silence it so the
+    // test output stays pristine while we assert the user-facing message.
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    mockData.mockReturnValue({ skills: [installedSkill()] });
+    // Gateway RPC rejections arrive as an Error whose message is a JSON error object.
+    mockMutation.mockRejectedValueOnce(
+      new Error(JSON.stringify({ message: "missing scope: operator.admin" })),
+    );
+    render(<SkillsTab />);
+    fireEvent.click(screen.getByRole("button", { name: /^disable$/i }));
+    expect(await screen.findByText(/couldn't disable this skill/i)).toBeInTheDocument();
+    expect(screen.getByText(/missing scope: operator\.admin/i)).toBeInTheDocument();
+    errSpy.mockRestore();
   });
 });

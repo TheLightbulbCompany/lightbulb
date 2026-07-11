@@ -233,6 +233,7 @@ async def set_subscription(
     subscription_id: str | None,
     status: str,
     trial_end: int | None = None,
+    clear_seat_fields: bool = False,
 ) -> dict | None:
     """Persist Stripe subscription identity + status onto the billing account.
 
@@ -241,6 +242,17 @@ async def set_subscription(
     ``subscription_id`` (or ``None`` on cancellation) + ``status`` + the
     optional ``trial_end`` epoch so the rest of the system can read state
     without re-querying Stripe.
+
+    ``clear_seat_fields`` (default False, opt-in only) also removes
+    ``subscription_item_id`` + ``seat_count`` from the row. Cancellation
+    passes this so a stale ``subscription_item_id`` doesn't linger and make
+    ``is_seat_subscription`` (routers/billing.py) keep reporting a per-seat
+    subscription for an org that no longer has one -- e.g. after it's
+    re-comped onto a flat price, whose webhook never touches
+    ``subscription_item_id``. The created/updated webhook path
+    (``handle_subscription_state``) leaves this False since it calls
+    ``set_team_subscription`` separately/afterward to (re)populate seat
+    fields for live per-seat subs.
     """
     existing = await get_by_owner_id(owner_id)
     if existing is None:
@@ -255,6 +267,9 @@ async def set_subscription(
         existing["trial_end"] = trial_end
     else:
         existing.pop("trial_end", None)
+    if clear_seat_fields:
+        existing.pop("subscription_item_id", None)
+        existing.pop("seat_count", None)
     existing["updated_at"] = utc_now_iso()
 
     table = _get_table()

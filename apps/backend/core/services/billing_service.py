@@ -153,11 +153,17 @@ class BillingService:
         return session.url
 
     async def cancel_subscription(self, billing_account: dict) -> None:
+        # clear_seat_fields=True: cancellation must also wipe
+        # subscription_item_id + seat_count, not just the subscription
+        # id/status -- otherwise a stale subscription_item_id survives
+        # cancellation and is_seat_subscription (routers/billing.py) keeps
+        # reporting a per-seat subscription that no longer exists.
         await billing_repo.set_subscription(
             owner_id=billing_account["owner_id"],
             subscription_id=None,
             status="canceled",
             trial_end=None,
+            clear_seat_fields=True,
         )
 
 

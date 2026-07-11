@@ -2,13 +2,48 @@
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import boto3
 import pytest
+from moto import mock_aws
 
 from core.services import billing_service
 from core.services.billing_service import (
     BillingService,
     BillingServiceError,
 )
+
+
+@pytest.fixture
+def dynamodb_billing_table():
+    """Moto-backed billing-accounts table (mirrors
+    tests/unit/repositories/test_billing_repo.py's fixture) for the one
+    cancel_subscription test that needs real DynamoDB read-then-put
+    semantics rather than a mocked billing_repo."""
+    with mock_aws():
+        client = boto3.resource("dynamodb", region_name="us-east-1")
+        table = client.create_table(
+            TableName="test-billing-accounts",
+            KeySchema=[{"AttributeName": "owner_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[
+                {"AttributeName": "owner_id", "AttributeType": "S"},
+                {"AttributeName": "stripe_customer_id", "AttributeType": "S"},
+            ],
+            GlobalSecondaryIndexes=[
+                {
+                    "IndexName": "stripe-customer-index",
+                    "KeySchema": [{"AttributeName": "stripe_customer_id", "KeyType": "HASH"}],
+                    "Projection": {"ProjectionType": "ALL"},
+                },
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        table.meta.client.get_waiter("table_exists").wait(TableName="test-billing-accounts")
+
+        with (
+            patch("core.dynamodb._table_prefix", "test-"),
+            patch("core.dynamodb._dynamodb_resource", client),
+        ):
+            yield table
 
 
 class TestBillingServiceCreateCustomer:
@@ -196,7 +231,42 @@ class TestBillingServiceCancelSubscription:
             subscription_id=None,
             status="canceled",
             trial_end=None,
+            clear_seat_fields=True,
         )
+
+    @pytest.mark.asyncio
+    async def test_cancel_subscription_clears_stale_seat_fields(self, dynamodb_billing_table):
+        """Regression: cancelling an org's per-seat subscription must clear
+        subscription_item_id + seat_count on the billing row, not just the
+        subscription id/status. A stale subscription_item_id left behind
+        makes ``is_seat_subscription`` (routers/billing.py) report True for
+        an org that is no longer on a per-seat Stripe subscription --
+        re-enabling fabricated "N x $20" seat pricing after e.g. the org is
+        re-comped onto a flat price (whose webhook never touches
+        subscription_item_id)."""
+        from core.repositories import billing_repo
+
+        await billing_repo.create_if_not_exists("org_stale_seats", "cus_stale", owner_type="org")
+        await billing_repo.set_team_subscription(
+            "org_stale_seats",
+            subscription_id="sub_seat_1",
+            subscription_item_id="si_seat_1",
+            status="active",
+            seat_count=7,
+        )
+        billing_row = await billing_repo.get_by_owner_id("org_stale_seats")
+        assert billing_row["subscription_item_id"] == "si_seat_1"
+        assert billing_row["seat_count"] == 7
+
+        await BillingService().cancel_subscription(billing_row)
+
+        after = await billing_repo.get_by_owner_id("org_stale_seats")
+        assert after["subscription_status"] == "canceled"
+        assert after["stripe_subscription_id"] is None
+        assert after.get("subscription_item_id") is None
+        assert after.get("seat_count") is None
+        # Mirrors routers/billing.py's is_seat_subscription predicate.
+        assert bool(after.get("subscription_item_id")) is False
 
 
 class TestCreateFlatFeeCheckout:

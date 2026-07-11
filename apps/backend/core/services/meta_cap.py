@@ -19,9 +19,13 @@ under-counting spend against the cap.
 from core.billing.meta_pricing import CAP_MICROCENTS, RESERVE_MICROCENTS, utc_today
 from core.repositories import billing_repo
 
-# session_key -> (date, reserve_microcents). Single-backend-instance scope;
-# a reserve lost to a restart is simply never refunded (fail-closed).
-_reserves: dict[str, tuple[str, int]] = {}
+# (owner_id, session_key) -> (date, reserve_microcents). Single-backend-instance
+# scope; a reserve lost to a restart is simply never refunded (fail-closed).
+# Owner-scoping the key means a reconcile call with a mismatched owner_id (or a
+# session_key collision across owners) finds no entry and is a clean no-op --
+# it can never pop another owner's reserve and apply its delta to the wrong
+# owner's counter.
+_reserves: dict[tuple[str, str], tuple[str, int]] = {}
 
 
 async def reserve_or_block(owner_id: str, session_key: str) -> bool:
@@ -35,16 +39,17 @@ async def reserve_or_block(owner_id: str, session_key: str) -> bool:
         # already over budget — roll back this reserve and block
         await billing_repo.add_meta_daily_spend(owner_id, date, -RESERVE_MICROCENTS)
         return True
-    _reserves[session_key] = (date, RESERVE_MICROCENTS)
+    _reserves[(owner_id, session_key)] = (date, RESERVE_MICROCENTS)
     return False
 
 
 async def reconcile(owner_id: str, session_key: str, actual_microcents: int) -> None:
     """True the reserve down to the actual turn cost. No-op if
-    ``session_key`` has no outstanding reserve (not a capped turn, or
-    already settled). Fails closed on unknown cost (0/None): keeps the
-    worst-case reserve rather than release it against unknown spend."""
-    held = _reserves.pop(session_key, None)
+    ``(owner_id, session_key)`` has no outstanding reserve (not a capped
+    turn, already settled, or a mismatched owner_id for this session_key).
+    Fails closed on unknown cost (0/None): keeps the worst-case reserve
+    rather than release it against unknown spend."""
+    held = _reserves.pop((owner_id, session_key), None)
     if held is None:
         return  # not a capped turn (or already settled)
     date, reserve = held

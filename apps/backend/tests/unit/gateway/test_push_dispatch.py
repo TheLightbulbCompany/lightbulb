@@ -62,6 +62,7 @@ def _make_terminal_conn(owner_id="org_1"):
     conn._recipients_cache = None
     conn._recipients_cache_ts = 0.0
     conn._active_runs = {}
+    conn._run_state = {}
     conn._side_run_ids = {}
     conn._parked = False
     conn._parked_watchdog_task = None
@@ -168,6 +169,7 @@ def test_active_runs_key_normalized():
     """
     conn = GatewayConnection.__new__(GatewayConnection)
     conn._active_runs = {}
+    conn._run_state = {}
     canonical = "agent:a1:user_MixedCase"
     echoed = "agent:a1:user_mixedcase"
 

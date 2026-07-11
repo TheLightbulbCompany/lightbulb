@@ -16,6 +16,7 @@ import { ApiError, createApiClient } from "@isol8/shared";
 import { usePulse } from "../../components/chat/usePulse";
 import { colors, fonts, radii, spacing, type } from "../../config/theme";
 import { makeAdapter } from "../../lib/adapter";
+import { unregisterDevice } from "../../lib/pushDevice";
 
 // Web-managed billing surface (W2 contract §5): mobile never calls
 // POST /billing/portal — it deep-links out to the web settings page instead.
@@ -249,7 +250,13 @@ function SkeletonCards() {
 // ---------------------------------------------------------------------------
 
 export default function Settings() {
-  const { signOut } = useAuth();
+  const { getToken, signOut } = useAuth();
+  const getTokenRef = useRef(getToken);
+  getTokenRef.current = getToken;
+  const api = useMemo(
+    () => createApiClient(makeAdapter(() => getTokenRef.current())),
+    [],
+  );
   const { user } = useUser();
   // Org context is optional: personal accounts render no org line, and if the
   // hook has nothing loaded we simply skip it (contract §3 mirrors web).
@@ -269,9 +276,17 @@ export default function Settings() {
   const confirmSignOut = useCallback(() => {
     Alert.alert("Sign out", "Are you sure you want to sign out?", [
       { text: "Cancel", style: "cancel" },
-      { text: "Sign out", style: "destructive", onPress: () => void signOut() },
+      {
+        text: "Sign out",
+        style: "destructive",
+        // Unregister this device (best-effort, while still authenticated) so the
+        // leaving user's replies stop pushing to a phone the next account signs
+        // into, then sign out regardless of the cleanup result.
+        onPress: () =>
+          void unregisterDevice((p) => api.del(p)).finally(() => void signOut()),
+      },
     ]);
-  }, [signOut]);
+  }, [signOut, api]);
 
   const manageBillingRow = (
     <Pressable

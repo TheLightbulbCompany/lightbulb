@@ -10,7 +10,7 @@ jest.mock("@isol8/shared", () => ({
 }));
 jest.mock("../../lib/adapter", () => ({ makeAdapter: () => ({}) }));
 jest.mock("@clerk/clerk-expo", () => ({
-  useAuth: () => ({ getToken: async () => "tok" }),
+  useAuth: () => ({ getToken: async () => "tok", userId: "user_1" }),
 }));
 jest.mock("expo-constants", () => ({
   expoConfig: { extra: { eas: { projectId: "proj_1" } } },

@@ -7,6 +7,7 @@ import type { ComponentProps } from "react";
 import { ProvisionGate } from "../../components/provision/ProvisionGate";
 import { PushRegistration } from "../../components/push/PushRegistration";
 import { colors, fonts } from "../../config/theme";
+import { getCurrentAgentId } from "../../lib/activeAgent";
 import { GatewayProvider } from "../../providers/gateway";
 
 // Feather glyphs for each top-level tab, mirroring the web sidebar sections.
@@ -27,10 +28,10 @@ export default function AppLayout() {
 
   return (
     <GatewayProvider>
-      {/* v1: getCurrentAgentId returns null (show all banners). A follow-up can
-          thread the active-agent id from the chat screen for true active-session
-          suppression — the pure shouldSuppressBanner logic is already in place. */}
-      <PushRegistration getCurrentAgentId={() => null} />
+      {/* getCurrentAgentId reads the chat screen's focused agent (activeAgent.ts)
+          so the notification handler suppresses the banner for a reply the user
+          is actively watching stream in. */}
+      <PushRegistration getCurrentAgentId={getCurrentAgentId} />
       <ProvisionGate>
         <Tabs
         screenOptions={{

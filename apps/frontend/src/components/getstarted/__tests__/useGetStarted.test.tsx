@@ -68,7 +68,7 @@ describe("useGetStarted", () => {
     expect(result.current.completed.chat).toBe(true); // completion re-hydrated from metadata
   });
 
-  it("reopening after dismiss clears the dismissed flag so the card is reachable again", () => {
+  it("open() clears and re-persists the dismissed flag (hook contract)", () => {
     const { result } = renderHook(() => useGetStarted({ derived: {} }));
 
     // Dismiss: card closes and the dismissed flag is set + persisted.
@@ -79,8 +79,11 @@ describe("useGetStarted", () => {
       expect.objectContaining({ unsafeMetadata: expect.objectContaining({ getStarted: expect.objectContaining({ dismissed: true }) }) }),
     );
 
-    // Reopen via the launcher: dismissed is cleared (and persisted) so the
-    // card renders again instead of the launcher-only dead-button state.
+    // open() clears (and persists) the dismissed flag. This is the hook-level
+    // contract behind the active-guide launcher's reopen affordance (used when
+    // the card was minimized, not dismissed). A permanent dismiss unmounts the
+    // GetStarted component, so no dismissed-state UI path calls open() — but the
+    // hook contract itself still holds.
     act(() => { result.current.open(); });
     expect(result.current.isOpen).toBe(true);
     expect(result.current.dismissed).toBe(false);

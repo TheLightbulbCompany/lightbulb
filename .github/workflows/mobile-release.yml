@@ -76,6 +76,16 @@ jobs:
       - name: Build iOS .ipa (local build, signed via EAS-managed credentials)
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          # Give EAS Apple Developer Portal access during the non-interactive
+          # build so it can regenerate credentials on its own — e.g. a
+          # provisioning profile that must be reissued after a capability
+          # (like Push Notifications) is added to the App ID. Reuses the same
+          # ASC API key the submit step uses, decoded in the step above. Key ID
+          # + issuer are non-secret identifiers (already in eas.json); only the
+          # .p8 is secret and it stays in EXPO_ASC_API_KEY_BASE64.
+          EXPO_ASC_API_KEY_PATH: ${{ github.workspace }}/apps/mobile/credentials/AuthKey_SZ68D5WBR2.p8
+          EXPO_ASC_KEY_ID: SZ68D5WBR2
+          EXPO_ASC_ISSUER_ID: 7c5f3df2-6cda-46fb-b3d5-2ebbceb1dd0e
         run: |
           set -euo pipefail
           npx -y eas-cli@latest build \

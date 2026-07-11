@@ -1,9 +1,9 @@
 "use client";
 
 import * as React from "react";
-import Link from "next/link";
 import { AlertTriangle, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { handleShellLinkClick } from "@/lib/shellNav";
 
 /**
  * Typed error card rendered when an agent run terminates with an error.
@@ -110,7 +110,9 @@ export function ChatErrorCard({ message, code, onRetry }: ChatErrorCardProps) {
                 variant="outline"
                 className="h-7 px-3 text-xs border-[#c0392b] text-[#7a2018] hover:bg-[#fbd6d2]"
               >
-                <Link href={action.href}>{action.label}</Link>
+                <a href={action.href} onClick={(e) => handleShellLinkClick(e, action.href)}>
+                  {action.label}
+                </a>
               </Button>
             )}
             {onRetry && (

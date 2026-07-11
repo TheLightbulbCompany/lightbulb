@@ -27,6 +27,11 @@ def _auth(user_id: str = "user_paid", org_id: str | None = None) -> MagicMock:
     auth = MagicMock()
     auth.user_id = user_id
     auth.org_id = org_id
+    # Model the real AuthContext.is_org_context property (org_id is not None).
+    # Without this, the bare MagicMock's is_org_context is truthy, so
+    # resolve_owner_id returns org_id (None here) instead of user_id — which
+    # then crashes provision_gate's `owner_id.startswith("org_")` (#1201).
+    auth.is_org_context = org_id is not None
     return auth
 
 

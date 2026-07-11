@@ -32,6 +32,11 @@ async def reserve_or_block(owner_id: str, session_key: str) -> bool:
     """Reserve a worst-case turn cost against today's spend. Returns True
     if the owner is already at/over the daily cap (turn should be
     blocked), False if the reserve was placed and the turn may proceed."""
+    # OpenClaw lowercases the event session key (upstream session-key-utils.ts
+    # .toLowerCase()), but the reserve side's build_chat_session_key embeds the
+    # original mixed-case Clerk user_id -- normalize here so reserve and
+    # reconcile land on the same _reserves key.
+    session_key = session_key.lower()
     date = utc_today()
     new_total = await billing_repo.add_meta_daily_spend(owner_id, date, RESERVE_MICROCENTS)
     spent_before = new_total - RESERVE_MICROCENTS
@@ -49,6 +54,9 @@ async def reconcile(owner_id: str, session_key: str, actual_microcents: int) -> 
     turn, already settled, or a mismatched owner_id for this session_key).
     Fails closed on unknown cost (0/None): keeps the worst-case reserve
     rather than release it against unknown spend."""
+    # OpenClaw lowercases the event session key (upstream session-key-utils.ts
+    # .toLowerCase()); normalize to match the reserve side's key.
+    session_key = session_key.lower()
     held = _reserves.pop((owner_id, session_key), None)
     if held is None:
         return  # not a capped turn (or already settled)

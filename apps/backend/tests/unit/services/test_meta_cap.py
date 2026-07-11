@@ -179,6 +179,37 @@ async def test_reconcile_uses_stored_date_across_midnight(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_reconcile_matches_reserve_across_session_key_casing(monkeypatch):
+    """OpenClaw lowercases the event session key it hands back to
+    ``_fetch_and_record_usage``, but ``gate_chat``'s reserve uses
+    ``build_chat_session_key``, which embeds the original mixed-case Clerk
+    user_id. Both sides must normalize to the same casing so the reconcile
+    actually finds -- and trues down -- the reserve it corresponds to,
+    instead of silently no-op'ing and leaving every reserve stuck at
+    worst-case for the rest of the day."""
+    totals = {}
+
+    async def fake_add(o, d, delta):
+        totals[d] = totals.get(d, 0) + delta
+        return totals[d]
+
+    monkeypatch.setattr("core.services.meta_cap.billing_repo.add_meta_daily_spend", fake_add)
+
+    mixed_case_key = "agent:agent_x:User_ABC"
+    lowercased_key = "agent:agent_x:user_abc"
+
+    blocked = await meta_cap.reserve_or_block("owner1", mixed_case_key)
+    assert blocked is False
+    assert sum(totals.values()) == RESERVE_MICROCENTS
+
+    actual = 1000
+    await meta_cap.reconcile("owner1", lowercased_key, actual_microcents=actual)
+
+    assert sum(totals.values()) == actual  # reserve found and trued down
+    assert meta_cap._reserves == {}  # no orphaned entry left under either casing
+
+
+@pytest.mark.asyncio
 async def test_cross_owner_reconcile_does_not_collide(monkeypatch):
     """reconcile(ownerB, session_key, ...) must never pop ownerA's reserve
     or apply a delta against ownerB's counter for a session_key ownerB

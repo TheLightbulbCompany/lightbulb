@@ -13,6 +13,8 @@ import { teamsDetailUrl } from "@/lib/shellNav";
 import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
 import { cn } from "@/lib/utils";
 import { StatusIcon } from "@/components/teams/shared/components/StatusIcon";
+import { LiveRunDot } from "@/components/teams/shared/components/LiveRunDot";
+import type { LiveRunActivity } from "@/components/teams/dashboard/hooks/useLiveRuns";
 import { productivityReviewTriggerLabel } from "@/components/teams/shared/components/ProductivityReviewBadge";
 import { EditorialButton } from "@/components/teams/shell";
 
@@ -42,6 +44,13 @@ interface IssueRowProps {
   onArchive?: () => void;
   archiveDisabled?: boolean;
   className?: string;
+  /**
+   * Live-run indicator for this issue: `running` (an agent is working now) or
+   * `stalled` (the run has gone quiet). Absent when no run is live. `title`
+   * carries the tooltip copy (silence age / next-action). Derived by the
+   * caller from the `/inbox/live-runs` feed (see `liveRunActivity`).
+   */
+  live?: { activity: LiveRunActivity; title: string } | null;
 }
 
 export function IssueRow({
@@ -65,6 +74,7 @@ export function IssueRow({
   onArchive,
   archiveDisabled,
   className,
+  live = null,
 }: IssueRowProps) {
   // The detail view fetches upstream /api/issues/{id} through the BFF, which
   // resolves by the internal id ONLY — never the human-readable identifier
@@ -133,6 +143,9 @@ export function IssueRow({
       <Eye className="h-2.5 w-2.5" aria-hidden />
     </span>
   ) : null;
+  const liveDot = live ? (
+    <LiveRunDot state={live.activity} title={live.title} />
+  ) : null;
   const hasChecklistStep = checklistStepNumber !== null;
   const checklistStep = hasChecklistStep ? (
     <span
@@ -172,6 +185,7 @@ export function IssueRow({
             className={selectedStatusClass}
           />
         )}
+        {liveDot}
         {productivityReviewIndicator}
       </span>
       <span className="flex min-w-0 flex-1 flex-col gap-1 sm:contents">
@@ -201,6 +215,7 @@ export function IssueRow({
                   blockerAttention={blockerAttention}
                   className={selectedStatusClass}
                 />
+                {liveDot}
                 {productivityReviewIndicator}
               </span>
               {checklistStep}

@@ -29,8 +29,11 @@ import { handleShellLinkClick, teamsDetailUrl } from "@/lib/shellNav";
 import type { Issue } from "@/components/teams/shared/types";
 import {
   isRunActive,
+  liveRunActivity,
+  liveRunTitle,
   type LiveRun,
 } from "@/components/teams/dashboard/hooks/useLiveRuns";
+import { LiveRunDot } from "@/components/teams/shared/components/LiveRunDot";
 import { useRunLog } from "@/components/teams/dashboard/hooks/useRunLog";
 
 // Cap how many cards render in the dashboard strip so the "Agents" section
@@ -40,7 +43,11 @@ const DASHBOARD_RUN_CARD_LIMIT = 4;
 /* ---------- live-status line ---------- */
 
 function liveStatusLabel(run: LiveRun): string {
-  if (isRunActive(run)) return "Live now";
+  // A stalled active run gets the silence-watchdog copy ("Stale run — …")
+  // instead of a bland "Live now", so a hung run reads as stuck at a glance.
+  if (isRunActive(run)) {
+    return liveRunActivity(run) === "stalled" ? liveRunTitle(run) : "Live now";
+  }
   if (run.finishedAt) return `Finished ${timeAgo(run.finishedAt)}`;
   const started = run.startedAt ?? run.createdAt;
   if (started) return `Started ${timeAgo(started)}`;
@@ -153,16 +160,11 @@ function AgentRunCard({
       <div className="flex items-start justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2">
           {active ? (
-            <span className="relative flex size-2.5 shrink-0" aria-hidden>
-              <span
-                className="absolute inline-flex size-full animate-ping rounded-full opacity-60"
-                style={{ backgroundColor: "var(--forest-soft)" }}
-              />
-              <span
-                className="relative inline-flex size-2.5 rounded-full"
-                style={{ backgroundColor: "var(--forest)" }}
-              />
-            </span>
+            <LiveRunDot
+              state={liveRunActivity(run)}
+              size="md"
+              title={liveRunTitle(run)}
+            />
           ) : (
             <span
               className="inline-flex size-2.5 shrink-0 rounded-full"

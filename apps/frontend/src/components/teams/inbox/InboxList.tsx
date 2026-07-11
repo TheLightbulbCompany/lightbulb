@@ -14,6 +14,7 @@ import type {
   InboxGroupedSection,
   InboxWorkItem,
 } from "@/components/teams/shared/lib/inbox";
+import type { LiveRunActivity } from "@/components/teams/dashboard/hooks/useLiveRuns";
 import { IssueRow } from "@/components/teams/inbox/IssueRow";
 import { IssueStatusMenu } from "@/components/teams/issues/IssueStatusMenu";
 import { SwipeToArchive } from "@/components/teams/inbox/SwipeToArchive";
@@ -27,6 +28,12 @@ export interface InboxListProps {
   onMarkRead: (id: string) => void;
   /** Issue ids currently mid-archive (for fade-out CSS). */
   archivingIds: Set<string>;
+  /**
+   * Per-issue live-run state (running / stalled + tooltip) for issues with an
+   * active agent run. Absent map or missing key == no live run. Derived by the
+   * parent from `/inbox/live-runs`; renders the per-row live indicator.
+   */
+  liveIssueState?: Map<string, { activity: LiveRunActivity; title: string }>;
   /** When true, wrap each row in `<SwipeToArchive>` for touch gestures. */
   isMobile?: boolean;
   /**
@@ -65,6 +72,7 @@ export function InboxList({
   onArchive,
   onMarkRead,
   archivingIds,
+  liveIssueState,
   isMobile = false,
   searchQuery,
 }: InboxListProps): JSX.Element {
@@ -95,6 +103,7 @@ export function InboxList({
                     unreadState={item.issue.unread ? "visible" : "hidden"}
                     onMarkRead={() => onMarkRead(id)}
                     onArchive={() => onArchive(id)}
+                    live={liveIssueState?.get(id) ?? null}
                     desktopTrailing={<IssueStatusMenu issue={item.issue} />}
                   />
                 );

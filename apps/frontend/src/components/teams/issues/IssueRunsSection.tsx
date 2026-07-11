@@ -3,12 +3,21 @@
 
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
+import { LiveRunDot } from "@/components/teams/shared/components/LiveRunDot";
 import type { CompanyAgent, IssueRun } from "@/components/teams/shared/types";
+
+function isLiveStatus(status: string): boolean {
+  const s = status.toLowerCase();
+  return s === "running" || s === "queued" || s === "in_progress";
+}
 
 function statusColor(status: string): string {
   const s = status.toLowerCase();
   if (s === "succeeded" || s === "done" || s === "completed") return "var(--forest)";
   if (s === "failed" || s === "error" || s === "cancelled") return "var(--danger)";
+  // In-flight runs read as live (forest), not the neutral grey they fell
+  // through to before — so a running/queued run has a visible affordance.
+  if (isLiveStatus(s)) return "var(--forest)";
   return "var(--mute)";
 }
 
@@ -56,9 +65,10 @@ export function IssueRunsSection({
           return (
             <li key={r.runId} className="flex items-center gap-2 px-3 py-2">
               <span
-                className="text-xs capitalize flex-shrink-0"
+                className="inline-flex flex-shrink-0 items-center gap-1.5 text-xs capitalize"
                 style={{ color: statusColor(r.status) }}
               >
+                {isLiveStatus(r.status) ? <LiveRunDot title="Running now" /> : null}
                 {r.status}
               </span>
               <span className="flex-1 truncate text-[var(--ink)]">{agentName(r.agentId)}</span>

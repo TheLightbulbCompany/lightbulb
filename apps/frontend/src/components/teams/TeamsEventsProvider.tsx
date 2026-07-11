@@ -3,6 +3,11 @@
 import { useCallback, useEffect, useRef } from "react";
 import { useSWRConfig } from "swr";
 import { useGateway } from "@/hooks/useGateway";
+import {
+  acquireTeamsEvents,
+  releaseTeamsEvents,
+  resubscribeTeamsEvents,
+} from "@/lib/teamsSubscription";
 
 /**
  * Mounts inside TeamsLayout (which is inside GatewayProvider). Subscribes
@@ -68,13 +73,22 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
     [mutate],
   );
 
+  // Refcounted hold on the shared per-connection subscription: another
+  // consumer (RunNotifications) may still need teams events after this
+  // panel-scoped provider unmounts. Declared BEFORE the resubscribe effect
+  // per the teamsSubscription ordering contract.
+  useEffect(() => {
+    acquireTeamsEvents();
+    return () => releaseTeamsEvents(send);
+  }, [send]);
+
   // (re)subscribe + full invalidation on connect / reconnect.
   useEffect(() => {
     if (!isConnected) {
       wasConnectedRef.current = false;
       return;
     }
-    send({ type: "teams.subscribe" });
+    resubscribeTeamsEvents(send);
     if (wasConnectedRef.current === false) {
       // Reconnect path: refetch everything because Paperclip's WS has no
       // replay cursor and we may have missed events while disconnected.
@@ -99,13 +113,6 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
       unsub();
     };
   }, [onEvent, mutateKeyPrefix]);
-
-  // Best-effort unsubscribe on unmount.
-  useEffect(() => {
-    return () => {
-      send({ type: "teams.unsubscribe" });
-    };
-  }, [send]);
 
   return <>{children}</>;
 }

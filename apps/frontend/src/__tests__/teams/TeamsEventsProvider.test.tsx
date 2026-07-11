@@ -68,6 +68,7 @@ function invalidatedKeys(): string[] {
 }
 
 import { TeamsEventsProvider, EVENT_KEY_MAP } from "@/components/teams/TeamsEventsProvider";
+import { acquireTeamsEvents, releaseTeamsEvents, _resetTeamsEventsForTests } from "@/lib/teamsSubscription";
 
 beforeEach(() => {
   sendMock.mockReset();
@@ -75,6 +76,7 @@ beforeEach(() => {
   setIsConnected.mockReset();
   eventHandler = null;
   gatewayState.isConnected = false;
+  _resetTeamsEventsForTests();
 });
 
 describe("TeamsEventsProvider", () => {
@@ -174,6 +176,18 @@ describe("TeamsEventsProvider", () => {
     sendMock.mockClear();
     unmount();
     expect(sendMock).toHaveBeenCalledWith({ type: "teams.unsubscribe" });
+  });
+
+  it("does NOT unsubscribe on unmount while another consumer holds the subscription", () => {
+    gatewayState.isConnected = true;
+    // Simulate RunNotifications holding the shared subscription.
+    acquireTeamsEvents();
+    const { unmount } = render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
+    sendMock.mockClear();
+    unmount();
+    expect(sendMock).not.toHaveBeenCalledWith({ type: "teams.unsubscribe" });
+    // Drop the simulated holder so no state escapes this test.
+    releaseTeamsEvents(sendMock);
   });
 
   it("ignores non-teams events (e.g. an OpenClaw event leaking through)", () => {

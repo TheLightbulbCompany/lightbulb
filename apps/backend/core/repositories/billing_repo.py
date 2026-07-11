@@ -3,6 +3,7 @@
 import logging
 import time
 import uuid
+from decimal import Decimal
 
 from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
@@ -388,3 +389,68 @@ async def clear_provider_choice(owner_id: str) -> None:
 async def delete(owner_id: str) -> None:
     table = _get_table()
     await run_in_thread(table.delete_item, Key={"owner_id": owner_id})
+
+
+async def add_meta_daily_spend(owner_id: str, date: str, delta_microcents: int) -> int:
+    """Atomically add ``delta_microcents`` to the meta free-tier daily-spend
+    counter for ``date`` (a ``YYYY-MM-DD`` UTC date key) and return the NEW
+    total for that date.
+
+    Backs the free-tier $3/day cost cap (reserve-as-gate in
+    ``core/services/meta_cap.py``): ``delta_microcents`` may be negative to
+    roll back an over-cap reserve or to true a reserve down to an actual
+    reconciled cost.
+
+    ``ADD`` on a nested map path requires the parent map to already exist.
+    The combined single-expression approach (``SET
+    meta_daily_spend_microcents = if_not_exists(meta_daily_spend_microcents,
+    :empty) ADD meta_daily_spend_microcents.#d :delta``) was tried first and
+    verified against a REAL DynamoDB engine (moto, not a hand mock) — it is
+    REJECTED: ``ValidationException: Two document paths overlap with each
+    other; must remove or rewrite one of these paths``. DynamoDB refuses a
+    ``SET`` on a map and an ``ADD`` on a nested key of that same map in one
+    UpdateExpression. So this is a guarded two-step: (1) initialize the map
+    to ``{}`` only if the row exists and the map is absent yet (a no-op,
+    swallowed ConditionalCheckFailedException, if another caller already won
+    the init race or the map already exists), then (2) the real atomic
+    ``ADD`` on the nested date leaf, still guarded by
+    ``attribute_exists(owner_id)`` so a missing row raises on step 2 either
+    way. No phantom rows — same invariant as the other billing-row setters.
+    """
+    table = _get_table()
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET meta_daily_spend_microcents = :empty",
+            ExpressionAttributeValues={":empty": {}},
+            ConditionExpression=("attribute_exists(owner_id) AND attribute_not_exists(meta_daily_spend_microcents)"),
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        # Map already exists, or the owner row doesn't exist -- the ADD
+        # below re-checks attribute_exists(owner_id) and raises the same
+        # error in the no-row case.
+
+    response = await run_in_thread(
+        table.update_item,
+        Key={"owner_id": owner_id},
+        UpdateExpression="ADD meta_daily_spend_microcents.#d :delta",
+        ExpressionAttributeNames={"#d": date},
+        ExpressionAttributeValues={":delta": Decimal(str(int(delta_microcents)))},
+        ConditionExpression="attribute_exists(owner_id)",
+        ReturnValues="ALL_NEW",
+    )
+    attrs = response.get("Attributes", {})
+    return int(attrs.get("meta_daily_spend_microcents", {}).get(date, 0))
+
+
+async def get_meta_daily_spend(owner_id: str, date: str) -> int:
+    """Read-only lookup of the meta free-tier daily-spend counter for
+    ``date``. Returns 0 when the owner has no billing row, or the row exists
+    but has no spend recorded for that date."""
+    item = await get_by_owner_id(owner_id)
+    if not item:
+        return 0
+    return int(item.get("meta_daily_spend_microcents", {}).get(date, 0))

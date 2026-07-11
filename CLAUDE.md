@@ -223,8 +223,9 @@ isol8/                       # Turborepo monorepo (Isol8AI/isol8)
 |       +-- lib/stacks/      # auth, network, database, container, api, service, paperclip, dns, observability
 |       +-- openclaw/        # Extended OpenClaw Dockerfile (ECR: isol8/openclaw-extended)
 +-- packages/                # Shared packages (empty/future)
-+-- paperclip/               # GITIGNORED — read-only upstream Paperclip clone for greppable reference
++-- paperclip/               # GITIGNORED — read-only VANILLA upstream (paperclipai/paperclip) clone; reference only, NOT what we deploy
 +-- openclaw-version.json    # Pinned upstream + per-env extended image tags
++-- paperclip-version.json   # Pinned Paperclip FORK image (ghcr.io/isol8ai/paperclip) + per-env extended tags
 +-- turbo.json               # Task orchestration
 +-- pnpm-workspace.yaml      # Workspace definitions
 +-- package.json             # Root (devDeps: turbo)
@@ -714,6 +715,8 @@ Located in `apps/infra/lib/stacks/`. Entry point: `apps/infra/lib/app.ts`. Per-e
 | `observability-stack.ts` | CloudWatch dashboards, alarms, log retention |
 
 `apps/infra/openclaw/` is a sibling directory (not a stack) containing the extended OpenClaw Dockerfile + README. Built by `.github/workflows/build-openclaw-image.yml` and pushed to ECR `isol8/openclaw-extended`. The tag Isol8 runs is pinned in `openclaw-version.json`.
+
+**Paperclip is a fork too — verify against the fork, not the in-repo clone.** Like OpenClaw, Paperclip has a vanilla-vs-fork split. The gitignored in-repo `paperclip/` clone tracks **vanilla upstream** (`paperclipai/paperclip`) and is a *read-only reference only*. What we actually deploy is the **Isol8 fork `Isol8AI/paperclip`**, checked out at **`~/Desktop/paperclip-fork`** (branch `isol8/2026.6-circuit-breaker`, released as `v2026.6-isol8.<n>`). The fork carries our patches in **real source** — the openclaw-gateway protocol-v4 fix, the routine circuit breaker, and the agent-delete routines-FK fix. Its own CI builds `ghcr.io/isol8ai/paperclip` (private GHCR, pinned by **digest** in `paperclip-version.json`), which `apps/infra/paperclip-extended/Dockerfile` re-tags into ECR `isol8/paperclip-extended` (via `.github/workflows/build-paperclip-image.yml`) so per-tenant ECS tasks can pull it with execution-role creds. **When you need to confirm what the deployed Paperclip BFF actually returns (route projections, run/liveness fields, watchdog logic), grep `~/Desktop/paperclip-fork`, not the vanilla `paperclip/` clone** — they can diverge. Treat both as outside this repo — do not commit either into it.
 
 ---
 

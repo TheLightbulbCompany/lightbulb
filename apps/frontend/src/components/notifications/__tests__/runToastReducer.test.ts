@@ -166,6 +166,20 @@ describe("reduceChatFrame — terminals (run_ended only)", () => {
     ]);
   });
 
+  it("shows completion after the user switched to a DIFFERENT session of the same agent", () => {
+    // The core per-session behavior: a run on the watched agent+session starts
+    // suppressed, then completes while the user is viewing a SECOND session of
+    // the same agent (chat still visible). Per-agent suppression would wrongly
+    // mute it; per-session must toast.
+    const s = createRunToastState();
+    const onS1: RunToastContext = { ...bgCtx, selectedSessionId: "s1" };
+    expect(reduceChatFrame(s, chunk("r1", "agent-sel", "s1"), onS1)).toEqual([]);
+    const onS2: RunToastContext = { ...bgCtx, selectedSessionId: "s2" };
+    expect(reduceChatFrame(s, runEnded("r1", "done", "agent-sel", "s1"), onS2)).toEqual([
+      { kind: "success", key: "r1", agentId: "agent-sel", source: "chat" },
+    ]);
+  });
+
   it("ignores a never-seen terminal with no agent_id", () => {
     const s = createRunToastState();
     expect(reduceChatFrame(s, runEnded("r9", "done"), bgCtx)).toEqual([]);

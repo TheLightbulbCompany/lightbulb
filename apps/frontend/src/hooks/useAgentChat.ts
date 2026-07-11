@@ -727,12 +727,14 @@ export function useAgentChat(
   useEffect(() => {
     if (!agentId || !cacheKey || !isConnected) return;
     if (historyLoadedRef.current.has(cacheKey)) return;
-    if (_messageCache.has(cacheKey)) {
-      historyLoadedRef.current.add(cacheKey);
-      return;
-    }
+    // Cached transcript paints instantly, but a run that completed while
+    // this hook was unmounted only exists server-side — so always fetch
+    // once per mount and let the server result replace the cache.
+    const hasCache = _messageCache.has(cacheKey);
     const sessionKey = buildChatSessionKey(agentId, sessionName, activeSessionId);
-    Promise.resolve().then(() => setHistoryLoadState("loading"));
+    if (!hasCache) {
+      Promise.resolve().then(() => setHistoryLoadState("loading"));
+    }
     sendReq("chat.history", { sessionKey, limit: 200 })
       .then((result: unknown) => {
         const historyResult = result as { messages?: HistoryMessage[]; truncated?: boolean };
@@ -746,7 +748,12 @@ export function useAgentChat(
         const raw = Array.isArray(historyResult?.messages) ? historyResult.messages : [];
         const projected = projectChatHistoryMessages(raw);
         if (projected.length === 0) {
-          _needsBootstrap.add(cacheKey);
+          // Server has nothing: only flag bootstrap when we ALSO have no
+          // cache — an existing cached transcript must not regress to the
+          // bootstrap suggestion because of an empty/partial server read.
+          if (!hasCache) {
+            _needsBootstrap.add(cacheKey);
+          }
           return;
         }
         if (agentIdRef.current !== agentId) return;

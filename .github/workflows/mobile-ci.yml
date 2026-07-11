@@ -14,50 +14,16 @@ on:
       - 'packages/shared/**'
       - '.github/workflows/mobile-ci.yml'
       - 'pnpm-lock.yaml'
-  # EAS cloud builds are quota-bearing (15 iOS builds/mo on the free plan),
-  # so they are dispatch-only rather than per-merge. Bump to tag-triggered
-  # once TestFlight submission exists (needs the Apple Developer org).
-  workflow_dispatch:
-    inputs:
-      eas_build_profile:
-        description: "EAS build profile (dev API: preview | prod API: production)"
-        type: choice
-        options: [preview, production]
-        default: preview
+  # NOTE: the release lanes live in their own workflows, not here — native
+  # build + TestFlight submit in mobile-release.yml (tag `mobile-v*` / dispatch,
+  # self-hosted macOS runner), JS-only OTA in mobile-ota.yml (merge to main).
 
 env:
   NODE_VERSION: "20"
 
 jobs:
-  eas-build:
-    name: EAS Build
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ${{ vars.CI_RUNNER }}
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: 'pnpm'
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Start EAS build
-        working-directory: apps/mobile
-        env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-        run: npx -y eas-cli@latest build --platform ios --profile ${{ inputs.eas_build_profile }} --non-interactive --no-wait
-
   check-and-bundle:
     name: Check & Bundle
-    if: github.event_name == 'pull_request'
     runs-on: ${{ vars.CI_RUNNER }}
     steps:
       - name: Checkout code

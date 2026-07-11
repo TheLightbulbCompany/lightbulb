@@ -9,7 +9,7 @@
     "scheme": "isol8",
     "userInterfaceStyle": "automatic",
     "runtimeVersion": {
-      "policy": "appVersion"
+      "policy": "fingerprint"
     },
     "updates": {
       "url": "https://u.expo.dev/2def259d-5e79-462b-9b0f-3d01d666ba66"

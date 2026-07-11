@@ -34,11 +34,60 @@ over whatever `.env.local` contains. Plain `pnpm start` falls back to
 
 ## CI/CD + release lanes
 
-**PR gate:** `.github/workflows/mobile-ci.yml` (path-filtered on
-`apps/mobile/**` + `packages/shared/**`) runs shared tests + typecheck/lint
-for both packages + a full iOS Metro bundle on every PR. No secrets needed.
+**PR gate — `mobile-ci.yml`** (path-filtered on `apps/mobile/**` +
+`packages/shared/**`): shared tests + typecheck/lint for both packages + a full
+iOS Metro bundle on every PR. No secrets. Verifies only — ships nothing.
 
-**Builds (EAS):** profiles live in `eas.json` —
+**Two CD lanes, both automated.** Which lane a change takes is decided by
+compatibility, not by inspecting the diff — see *How OTA-vs-build is decided*
+below.
+
+**Lane 1 — native build → TestFlight (`mobile-release.yml`).** Trigger: push a
+`mobile-v*` tag (a deliberate release) or run the workflow manually. It builds
+the `production` `.ipa` **locally on the self-hosted macOS runner**
+(`macos-desktop` — the same box that signs the desktop DMG), so it costs $0 and
+never touches the EAS free-plan cloud-build quota, then `eas submit`s it to
+TestFlight. iOS signing certs live in EAS (fetched via `EXPO_TOKEN`), so unlike
+the desktop build this needs no keychain dance; the only Apple secret is the App
+Store Connect API key, repo secret **`EXPO_ASC_API_KEY_BASE64`** (base64 of
+`credentials/AuthKey_SZ68D5WBR2.p8`, decoded at build time to the path
+`eas.json`'s submit block expects). Cut a release with:
+
+    git tag mobile-v<version> && git push origin mobile-v<version>
+
+First-run caveat: `eas build --local` needs `fastlane` + CocoaPods on the runner;
+if that box has only ever built the desktop app, the build step is where a
+missing toolchain surfaces.
+
+**Lane 2 — JS-only OTA → production channel (`mobile-ota.yml`).** Trigger:
+**every merge to `main`** touching mobile JS surfaces (native-affecting paths are
+excluded). Runs `eas update --channel production` on the standard CI runner (no
+Xcode needed) — installed apps pick the new JS up on next launch, no App Store
+round-trip, no review. The `EXPO_PUBLIC_*` prod values are set in the workflow
+because `eas update` does **not** read `eas.json`'s build-profile env; they must
+stay in sync with `eas.json > build.production.env`. (Manual equivalent:
+`pnpm update:production --message "…"`.)
+
+### How OTA-vs-build is decided (runtimeVersion = fingerprint)
+
+`app.json` sets `runtimeVersion.policy: "fingerprint"`. `@expo/fingerprint`
+hashes the **native** layer — autolinked native modules, `app.json` native
+config, entitlements, `eas.json` — and deliberately excludes your `app/` + `src/`
+JS. That hash is baked into every native build and stamped onto every
+`eas update`; `expo-updates` applies an update only when its fingerprint matches
+the running binary's. So:
+- **JS-only change** → identical fingerprint → OTA reaches installed apps.
+- **Native change** → new fingerprint → the OTA is *not* delivered to existing
+  binaries (a safe no-op), and needs a `mobile-v*` build to ship.
+
+The `mobile-ota.yml` path filter is only a best-effort optimization to skip
+pointless publishes; the fingerprint is the real, crash-proof guard. Human rule
+of thumb for choosing a lane: **if `pnpm export:ios` alone can represent the
+change, it's OTA; otherwise it's a `mobile-v*` build.** Switching to the
+fingerprint policy retires the old `appVersion`-keyed binaries from OTA — the
+first `mobile-v*` build after the switch is the new fingerprint baseline.
+
+**EAS profiles** (`eas.json`):
 
 | Profile | API / Clerk | Purpose |
 |---------|-------------|---------|
@@ -46,25 +95,11 @@ for both packages + a full iOS Metro bundle on every PR. No secrets needed.
 | `preview` | dev | internal-distribution device builds (pre-TestFlight QA) |
 | `production` | prod | TestFlight / App Store, auto-incrementing build number |
 
-The Expo org exists: **`isol8`** (project `@isol8/isol8-mobile`, id
-`2def259d-5e79-462b-9b0f-3d01d666ba66`, linked in app.json). CI auth is the
-`github-ci` robot (Developer role); its token lives in the repo secret
-`EXPO_TOKEN` (rotate from expo.dev → isol8 org → Access tokens). Kick a cloud
-build from the Actions tab → Mobile CI → Run workflow (profile: preview |
-production), or locally with `EXPO_TOKEN=… npx eas-cli build …`. TestFlight is
-currently shipping from the personal Apple Developer account; move to the
+Expo org **`isol8`** (project `@isol8/isol8-mobile`, id
+`2def259d-5e79-462b-9b0f-3d01d666ba66`). CI auth is the `github-ci` robot; token
+in repo secret `EXPO_TOKEN` (rotate from expo.dev → isol8 → Access tokens).
+TestFlight currently ships from the personal Apple Developer account; move to the
 company org account before public App Store launch.
-
-**Staying updated after release:** two lanes.
-- **JS-only changes** ship over-the-air with `pnpm update:production --message
-  "Fix description"` (wrapper around `eas update --channel production`) —
-  installed apps pick them up on next launch, no App Store round-trip. Build 5
-  is the first OTA-capable binary because it includes `expo-updates`; earlier
-  TestFlight builds cannot receive OTA updates. Each `eas.json` profile is
-  pinned to the matching update channel.
-- **Native changes** (new native module, SDK upgrade, app.json/plugins change)
-  require a new store build + TestFlight/App Store review. Rule of thumb: if
-  `pnpm export:ios` alone can't represent the change, it's a store build.
 
 ## Push notifications
 

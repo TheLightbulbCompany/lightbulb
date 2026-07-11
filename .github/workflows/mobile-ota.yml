@@ -1,0 +1,88 @@
+# =============================================================================
+# Mobile OTA — publish a JS-only over-the-air update (Lane 2 of mobile CD).
+#
+# Fires on every merge to main that touches mobile JS surfaces. Runs
+# `eas update --channel production`, which bundles the current JS with Metro and
+# publishes it to the production EAS Update channel; installed apps pick it up on
+# next launch — no App Store round-trip, no Apple review. This is where the great
+# majority of changes ship; only native changes need mobile-release.yml.
+#
+# SAFETY — this is the answer to "how do we know a change is OTA-safe": we don't
+# classify the diff, we enforce compatibility. runtimeVersion.policy is
+# "fingerprint" (app.json), so `eas update` stamps the bundle with a hash of the
+# NATIVE layer (autolinked modules, app.json native config, entitlements, …) and
+# expo-updates only applies an update whose fingerprint matches the running
+# binary. A change that — despite the path filter below — altered native inputs
+# publishes at a NEW fingerprint that no shipped binary has, so it is simply not
+# delivered until a native build ships it (mobile-release.yml). The path filter
+# is a best-effort optimization to skip pointless publishes; the fingerprint is
+# the actual, crash-proof compatibility guard.
+#
+# Runs on the standard CI runner (not the macOS box) — `eas update` only bundles
+# JS, no Xcode needed.
+# =============================================================================
+name: mobile-ota
+
+'on':
+  push:
+    branches: [main]
+    paths:
+      - 'apps/mobile/**'
+      - 'packages/shared/**'
+      # Native-affecting files: a change confined to these needs a build, not an
+      # OTA, so don't waste a publish. (Fingerprint still guards the mixed case.)
+      - '!apps/mobile/app.json'
+      - '!apps/mobile/app.config.*'
+      - '!apps/mobile/eas.json'
+      - '!apps/mobile/package.json'
+      - '!apps/mobile/ios/**'
+      - '!apps/mobile/android/**'
+  workflow_dispatch: {}
+
+# Coalesce rapid merges — only the newest main OTA matters.
+concurrency:
+  group: mobile-ota-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ota-update:
+    name: Publish OTA update (production channel)
+    runs-on: ${{ vars.CI_RUNNER }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: apps/mobile
+    # Metro inlines EXPO_PUBLIC_* at bundle time, and `eas update` does NOT read
+    # eas.json's build-profile env — so the PROD values here MUST mirror
+    # eas.json > build.production.env, or the OTA bundle would point installed
+    # PROD apps at the wrong API / Clerk instance. Both are safe-public (the
+    # Clerk publishable key is base64 of the instance domain), so no secret.
+    env:
+      EXPO_PUBLIC_API_URL: https://api.isol8.co/api/v1
+      EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY: pk_live_Y2xlcmsuaXNvbDguY28k
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        working-directory: .
+        run: pnpm install --frozen-lockfile
+
+      - name: Publish OTA update
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          npx -y eas-cli@latest update \
+            --channel production \
+            --message "CI ${GITHUB_SHA:0:9}: ${GITHUB_REF_NAME}" \
+            --non-interactive

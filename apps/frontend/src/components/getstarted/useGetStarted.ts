@@ -23,6 +23,7 @@ export interface UseGetStarted {
   progress: { done: number; total: number };
   dismissed: boolean;
   seen: boolean;
+  completedFired: boolean;
 }
 
 // The five persisted fields, written as ONE whole object every time (see the
@@ -206,6 +207,6 @@ export function useGetStarted(opts: { derived: Partial<Record<StepId, boolean>> 
     setTab,
     openArticle,
     backToLearn: () => setActiveArticle(null),
-    completed, progress, dismissed, seen,
+    completed, progress, dismissed, seen, completedFired,
   };
 }

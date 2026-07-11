@@ -9,7 +9,8 @@ export interface GetStartedActions { chat: () => void; task: () => void; hire: (
 
 export function GetStarted({ derived, actions }: { derived: Partial<Record<StepId, boolean>>; actions: GetStartedActions }): React.ReactElement | null {
   const gs = useGetStarted({ derived });
-  if (gs.dismissed) return <GetStartedLauncher done={gs.progress.done} total={gs.progress.total} pulse={false} onClick={gs.open} />;
+  const complete = gs.progress.total > 0 && gs.progress.done === gs.progress.total;
+  if (gs.dismissed || gs.completedFired || complete) return null;
 
   const onAction = (id: Exclude<StepId, "meet">) => {
     capture("get_started_step_clicked", { step: id });

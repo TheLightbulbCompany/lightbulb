@@ -5,15 +5,19 @@ import type { ReactElement } from "react";
 const toastError = vi.fn();
 const toastSuccess = vi.fn();
 const toastDefault = vi.fn();
+const toastLoading = vi.fn();
+const toastDismiss = vi.fn();
 vi.mock("sonner", () => ({
   toast: Object.assign((...args: unknown[]) => toastDefault(...args), {
     error: (...args: unknown[]) => toastError(...args),
     success: (...args: unknown[]) => toastSuccess(...args),
+    loading: (...args: unknown[]) => toastLoading(...args),
+    dismiss: (...args: unknown[]) => toastDismiss(...args),
   }),
 }));
 
 import { ReportButton } from "@/components/support/ReportButton";
-import { notify, notifySuccess, notifyError, notifyApiError } from "../notify";
+import { notify, notifySuccess, notifyError, notifyApiError, notifyLoading, notifyFailure, dismissNotification } from "../notify";
 import { ApiError } from "../api";
 
 /** The `opts` arg of the most recent toast.error call. */
@@ -25,6 +29,8 @@ beforeEach(() => {
   toastError.mockClear();
   toastSuccess.mockClear();
   toastDefault.mockClear();
+  toastLoading.mockClear();
+  toastDismiss.mockClear();
 });
 
 describe("notifyError", () => {
@@ -74,5 +80,41 @@ describe("notify / notifySuccess", () => {
     notifySuccess("ok");
     expect(toastDefault.mock.calls.at(-1)![1].duration).toBeLessThan(Infinity);
     expect(toastSuccess.mock.calls.at(-1)![1].duration).toBeLessThan(Infinity);
+  });
+});
+
+describe("notifyLoading", () => {
+  it("is persistent and keyed by dedupeKey", () => {
+    notifyLoading("working…", { dedupeKey: "run-1" });
+    const [msg, opts] = toastLoading.mock.calls.at(-1)!;
+    expect(msg).toBe("working…");
+    expect(opts).toMatchObject({ id: "run-1", duration: Infinity });
+  });
+});
+
+describe("notifyFailure", () => {
+  it("is sticky and forwards a custom action", () => {
+    const onClick = vi.fn();
+    notifyFailure("run failed", { dedupeKey: "run-1", action: { label: "View", onClick } });
+    const [msg, opts] = toastError.mock.calls.at(-1)!;
+    expect(msg).toBe("run failed");
+    expect(opts).toMatchObject({ id: "run-1", duration: Infinity, action: { label: "View" } });
+  });
+});
+
+describe("notifySuccess action passthrough", () => {
+  it("forwards a custom action while keeping auto-dismiss", () => {
+    const onClick = vi.fn();
+    notifySuccess("run finished", { dedupeKey: "run-1", action: { label: "View", onClick } });
+    const [, opts] = toastSuccess.mock.calls.at(-1)!;
+    expect(opts).toMatchObject({ id: "run-1", action: { label: "View" } });
+    expect(opts.duration).not.toBe(Infinity);
+  });
+});
+
+describe("dismissNotification", () => {
+  it("delegates to toast.dismiss with the key", () => {
+    dismissNotification("run-1");
+    expect(toastDismiss).toHaveBeenCalledWith("run-1");
   });
 });

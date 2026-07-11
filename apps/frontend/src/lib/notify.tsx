@@ -13,6 +13,11 @@ export interface NotifyOptions {
   dedupeKey?: string;
 }
 
+export interface NotifyActionOptions extends NotifyOptions {
+  /** Optional action button rendered on the toast's trailing edge. */
+  action?: { label: string; onClick: () => void };
+}
+
 export interface NotifyErrorOptions extends NotifyOptions {
   /** Backend X-Request-ID for the failing request (enables the Report action). */
   requestId?: string | null;
@@ -28,8 +33,41 @@ export function notify(message: string, opts?: NotifyOptions): string | number {
 }
 
 /** Success toast (auto-dismisses). */
-export function notifySuccess(message: string, opts?: NotifyOptions): string | number {
-  return toast.success(message, { id: opts?.dedupeKey, duration: AUTO_DISMISS_MS });
+export function notifySuccess(message: string, opts?: NotifyActionOptions): string | number {
+  return toast.success(message, {
+    id: opts?.dedupeKey,
+    duration: AUTO_DISMISS_MS,
+    action: opts?.action,
+  });
+}
+
+/**
+ * Persistent progress toast (spinner, never auto-dismisses). Resolve it by
+ * calling notifySuccess/notifyFailure/dismissNotification with the same
+ * dedupeKey — sonner replaces the toast in place by id.
+ */
+export function notifyLoading(message: string, opts?: NotifyActionOptions): string | number {
+  return toast.loading(message, {
+    id: opts?.dedupeKey,
+    duration: Infinity,
+    action: opts?.action,
+  });
+}
+
+/**
+ * Sticky failure toast with a caller-supplied action. Distinct from
+ * notifyError, which owns the support Report flow and its ReportButton.
+ */
+export function notifyFailure(message: string, opts?: NotifyActionOptions): string | number {
+  return toast.error(message, {
+    id: opts?.dedupeKey,
+    duration: Infinity,
+    action: opts?.action,
+  });
+}
+
+export function dismissNotification(id: string | number): void {
+  toast.dismiss(id);
 }
 
 /**

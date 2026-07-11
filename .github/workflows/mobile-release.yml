@@ -86,6 +86,9 @@ jobs:
           EXPO_ASC_API_KEY_PATH: ${{ github.workspace }}/apps/mobile/credentials/AuthKey_SZ68D5WBR2.p8
           EXPO_ASC_KEY_ID: SZ68D5WBR2
           EXPO_ASC_ISSUER_ID: 7c5f3df2-6cda-46fb-b3d5-2ebbceb1dd0e
+          # ASC-key auth still needs to know which Developer Portal team to use;
+          # without this EAS tries to prompt ("Apple Team ID:") and dies in CI.
+          EXPO_APPLE_TEAM_ID: WZX4U3C22Y
         run: |
           set -euo pipefail
           npx -y eas-cli@latest build \

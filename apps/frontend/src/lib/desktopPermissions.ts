@@ -16,6 +16,14 @@ export type DesktopPermissionGrant = {
 export const DESKTOP_PERMISSIONS_STORAGE_KEY = "isol8.desktop.permissions.v1";
 export const DESKTOP_PERMISSIONS_CHANGED_EVENT = "isol8:desktop-permissions-changed";
 
+// Cross-tab storage-event filter: only permission-grant writes (or a full
+// localStorage.clear, which fires with key === null) concern the listeners
+// in useGateway / DesktopPermissionsGate. Unrelated keys — notably the
+// frequently-written workspace layout blob — must not wake them.
+export function isPermissionsStorageEvent(event: StorageEvent): boolean {
+  return event.key === null || event.key === DESKTOP_PERMISSIONS_STORAGE_KEY;
+}
+
 export const DEFAULT_DESKTOP_PERMISSIONS: DesktopPermissionSet = {
   screen: true,
   shell: true,

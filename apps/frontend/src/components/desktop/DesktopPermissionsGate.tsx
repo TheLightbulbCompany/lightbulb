@@ -16,6 +16,7 @@ import {
   BASIC_DESKTOP_PERMISSIONS,
   DEFAULT_DESKTOP_PERMISSIONS,
   DesktopPermissionSet,
+  isPermissionsStorageEvent,
   readDesktopPermissionGrant,
   writeDesktopPermissionGrant,
 } from "@/lib/desktopPermissions";
@@ -42,11 +43,14 @@ function getPermissionGateSnapshot(): boolean {
 
 function subscribePermissionGate(onStoreChange: () => void): () => void {
   if (typeof window === "undefined") return () => {};
+  const onStorage = (event: StorageEvent) => {
+    if (isPermissionsStorageEvent(event)) onStoreChange();
+  };
   window.addEventListener(DESKTOP_PERMISSIONS_CHANGED_EVENT, onStoreChange);
-  window.addEventListener("storage", onStoreChange);
+  window.addEventListener("storage", onStorage);
   return () => {
     window.removeEventListener(DESKTOP_PERMISSIONS_CHANGED_EVENT, onStoreChange);
-    window.removeEventListener("storage", onStoreChange);
+    window.removeEventListener("storage", onStorage);
   };
 }
 

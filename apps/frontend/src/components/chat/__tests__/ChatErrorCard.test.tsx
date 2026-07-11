@@ -1,17 +1,8 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
-import React from "react";
 
 import { ChatErrorCard } from "../ChatErrorCard";
-
-vi.mock("next/link", () => ({
-  default: ({ href, children, ...rest }: React.AnchorHTMLAttributes<HTMLAnchorElement> & { href: string }) => (
-    <a href={href} {...rest}>
-      {children}
-    </a>
-  ),
-}));
 
 describe("ChatErrorCard", () => {
   it("renders the rate_limit variant with the three-remedies copy and Switch provider action", () => {

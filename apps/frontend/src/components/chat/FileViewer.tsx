@@ -6,6 +6,7 @@ import { FileTree } from "@/components/chat/FileTree";
 import { FileContentViewer } from "@/components/chat/FileContentViewer";
 import { useWorkspaceTree, useWorkspaceFile, useConfigFiles, useConfigFile } from "@/hooks/useWorkspaceFiles";
 import { useApi } from "@/lib/api";
+import "./FileViewer.css";
 
 const CONFIG_ALLOWLIST = [
   "SOUL.md",
@@ -150,42 +151,6 @@ export function FileViewer({ agentId, initialFilePath, onClose }: FileViewerProp
 
   return (
     <div className="file-viewer-panel">
-      <style>{`
-        .file-viewer-panel {
-          display: flex;
-          flex-direction: column;
-          height: 100%;
-          background: #faf7f2;
-          border-left: 1px solid #e0dbd0;
-        }
-        .file-viewer-header {
-          display: flex;
-          align-items: center;
-          gap: 12px;
-          padding: 0 16px;
-          height: 56px;
-          border-bottom: 1px solid #e0dbd0;
-          background: #faf7f2;
-          flex-shrink: 0;
-        }
-        .file-viewer-body {
-          display: flex;
-          flex: 1;
-          min-height: 0;
-        }
-        .file-viewer-tree {
-          width: 220px;
-          border-right: 1px solid #e0dbd0;
-          flex-shrink: 0;
-          overflow: hidden;
-        }
-        .file-viewer-content {
-          flex: 1;
-          min-width: 0;
-          overflow: hidden;
-        }
-      `}</style>
-
       <div className="file-viewer-header">
         <div role="tablist" aria-label="File viewer tabs" className="flex items-center gap-1">
           <button

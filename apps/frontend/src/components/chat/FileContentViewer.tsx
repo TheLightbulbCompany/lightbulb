@@ -20,6 +20,7 @@ export function FileContentViewer({ file, isLoading, error, onSave, onDirtyChang
   const [originalContent, setOriginalContent] = React.useState("");
   const [saving, setSaving] = React.useState(false);
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
+  const rootRef = React.useRef<HTMLDivElement | null>(null);
 
   const dirty = editContent !== originalContent;
 
@@ -61,10 +62,13 @@ export function FileContentViewer({ file, isLoading, error, onSave, onDirtyChang
 
   React.useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      if ((e.metaKey || e.ctrlKey) && e.key === "s" && canSaveRef.current) {
-        e.preventDefault();
-        handleSaveRef.current();
-      }
+      if (!(e.metaKey || e.ctrlKey) || e.key !== "s") return;
+      if (!canSaveRef.current) return;
+      // Only the instance that owns focus responds — with several viewers
+      // docked side by side, one Cmd+S must not save all of them.
+      if (!rootRef.current?.contains(document.activeElement)) return;
+      e.preventDefault();
+      handleSaveRef.current();
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
@@ -72,7 +76,7 @@ export function FileContentViewer({ file, isLoading, error, onSave, onDirtyChang
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center h-full text-[#8a8578]">
+      <div ref={rootRef} className="flex items-center justify-center h-full text-[#8a8578]">
         <Loader2 className="h-5 w-5 animate-spin mr-2" />
         Loading file...
       </div>
@@ -81,7 +85,7 @@ export function FileContentViewer({ file, isLoading, error, onSave, onDirtyChang
 
   if (error) {
     return (
-      <div className="flex items-center justify-center h-full text-red-500 text-sm">
+      <div ref={rootRef} className="flex items-center justify-center h-full text-red-500 text-sm">
         Could not load file.
       </div>
     );
@@ -89,7 +93,7 @@ export function FileContentViewer({ file, isLoading, error, onSave, onDirtyChang
 
   if (!file) {
     return (
-      <div className="flex items-center justify-center h-full text-[#8a8578] text-sm">
+      <div ref={rootRef} className="flex items-center justify-center h-full text-[#8a8578] text-sm">
         Select a file to view its contents.
       </div>
     );
@@ -98,7 +102,7 @@ export function FileContentViewer({ file, isLoading, error, onSave, onDirtyChang
   // Image preview (read-only)
   if (file.binary && file.mime_type.startsWith("image/") && file.content) {
     return (
-      <div className="p-4 flex items-center justify-center">
+      <div ref={rootRef} className="p-4 flex items-center justify-center">
         <img
           src={`data:${file.mime_type};base64,${file.content}`}
           alt={file.name}
@@ -111,16 +115,20 @@ export function FileContentViewer({ file, isLoading, error, onSave, onDirtyChang
   // Binary file (read-only)
   if (file.binary || file.content === null) {
     return (
-      <div className="flex items-center justify-center h-full text-[#8a8578] text-sm">
+      <div ref={rootRef} className="flex items-center justify-center h-full text-[#8a8578] text-sm">
         Binary file — preview not available.
       </div>
     );
   }
 
   // Editable text file. The header + textarea are shared by the plain
-  // editor and the Code tab of the .lobster viewer.
+  // editor and the Code tab of the .lobster viewer. In the tabbed case the
+  // root ref lives on the Tabs root (so tab triggers count as "inside"),
+  // not here — a ref on the nested editor would be nulled out whenever the
+  // Code tab unmounts, breaking the Cmd+S focus gate.
+  const isLobster = file.name.endsWith(".lobster");
   const editor = (
-    <div className="flex flex-col h-full">
+    <div ref={isLobster ? undefined : rootRef} className="flex flex-col h-full">
       <div className="flex items-center justify-between px-3 py-1.5 bg-[#f3efe6] border-b border-[#e0dbd0] flex-shrink-0">
         <span className="text-xs text-[#8a8578]">{file.name}</span>
         <div className="flex items-center gap-2">
@@ -147,8 +155,8 @@ export function FileContentViewer({ file, isLoading, error, onSave, onDirtyChang
 
   // .lobster files get a Graph (default) | Code tab pair. Graph renders the
   // current editor content so it reflects unsaved edits when you switch back.
-  if (file.name.endsWith(".lobster")) {
-    return <LobsterTabbedViewer editor={editor} content={editContent} />;
+  if (isLobster) {
+    return <LobsterTabbedViewer rootRef={rootRef} editor={editor} content={editContent} />;
   }
 
   return editor;
@@ -157,13 +165,15 @@ export function FileContentViewer({ file, isLoading, error, onSave, onDirtyChang
 function LobsterTabbedViewer({
   editor,
   content,
+  rootRef,
 }: {
   editor: React.ReactNode;
   content: string;
+  rootRef: React.Ref<HTMLDivElement>;
 }) {
   const [tab, setTab] = React.useState<"graph" | "code">("graph");
   return (
-    <Tabs value={tab} onValueChange={(v) => setTab(v as "graph" | "code")} className="flex flex-col h-full">
+    <Tabs ref={rootRef} value={tab} onValueChange={(v) => setTab(v as "graph" | "code")} className="flex flex-col h-full">
       {/* The line variant drops shadcn's default pill so the tabs read as part
           of the viewer's header band; active state is a flat green underline. */}
       <TabsList

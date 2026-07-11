@@ -1,5 +1,7 @@
 """User repository -- DynamoDB operations for the users table."""
 
+from botocore.exceptions import ClientError
+
 from core.dynamodb import get_table, run_in_thread, utc_now_iso
 
 
@@ -42,3 +44,64 @@ async def put(user_id: str, email: str | None = None) -> dict:
 async def delete(user_id: str) -> None:
     table = _get_table()
     await run_in_thread(table.delete_item, Key={"user_id": user_id})
+
+
+async def set_push_token(user_id: str, device_id: str, entry: dict) -> None:
+    """Write one Expo push token into the user's ``push_tokens`` map.
+
+    Scoped, server-atomic UpdateItem touching only its one map key (mirrors
+    container_repo._put_paired_device) so a concurrent write of another device
+    or another attribute can't clobber it. ``entry`` = {token, platform, updatedAt}.
+    Requires the users row to exist (it always does for a signed-in user who
+    hit /users/sync); no-op if it doesn't.
+    """
+    table = _get_table()
+    # 1. Ensure the map exists — a nested SET fails if its parent map is absent.
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"user_id": user_id},
+            UpdateExpression="SET #pt = if_not_exists(#pt, :empty)",
+            ConditionExpression="attribute_exists(user_id)",
+            ExpressionAttributeNames={"#pt": "push_tokens"},
+            ExpressionAttributeValues={":empty": {}},
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return  # no users row — nothing to write onto
+        raise
+    # 2. Scoped set of the single device key.
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"user_id": user_id},
+            UpdateExpression="SET #pt.#did = :entry",
+            ConditionExpression="attribute_exists(user_id)",
+            ExpressionAttributeNames={"#pt": "push_tokens", "#did": device_id},
+            ExpressionAttributeValues={":entry": entry},
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return  # row deleted mid-write — no-op
+        raise
+
+
+async def clear_push_token(user_id: str, device_id: str) -> None:
+    """Remove one device's push token (sign-out, or Expo DeviceNotRegistered prune).
+
+    Scoped REMOVE of the single map key so a racing writer of other attributes
+    cannot resurrect the removed entry. No-op if the row is absent.
+    """
+    table = _get_table()
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"user_id": user_id},
+            UpdateExpression="REMOVE #pt.#did",
+            ConditionExpression="attribute_exists(user_id)",
+            ExpressionAttributeNames={"#pt": "push_tokens", "#did": device_id},
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return  # no users row — nothing to remove
+        raise

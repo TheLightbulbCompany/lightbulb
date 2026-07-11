@@ -1,7 +1,7 @@
 import { useUser } from "@clerk/clerk-expo";
 import Feather from "@expo/vector-icons/Feather";
 import { randomUUID } from "expo-crypto";
-import { Stack, useLocalSearchParams } from "expo-router";
+import { Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Animated,
@@ -24,6 +24,7 @@ import { TimelineSkeleton } from "../../../components/chat/TimelineSkeleton";
 import { ToolPill, type ToolPillStatus } from "../../../components/chat/ToolPill";
 import { usePulse } from "../../../components/chat/usePulse";
 import { colors, fonts, radii, spacing } from "../../../config/theme";
+import { setCurrentAgentId } from "../../../lib/activeAgent";
 import { projectHistoryToChatItems } from "../../../lib/chatHistory";
 import { buildChatSessionKey } from "../../../lib/sessionKey";
 import { useGateway } from "../../../providers/gateway";
@@ -62,6 +63,14 @@ function ReconnectingBanner() {
  */
 export default function AgentChat() {
   const { agentId, name } = useLocalSearchParams<{ agentId: string; name?: string }>();
+  // Publish the focused agent so the push notification handler suppresses the
+  // banner for a reply the user is actively watching stream in (activeAgent.ts).
+  useFocusEffect(
+    useCallback(() => {
+      setCurrentAgentId(agentId ?? null);
+      return () => setCurrentAgentId(null);
+    }, [agentId]),
+  );
   const gateway = useGateway();
   // Session keys embed the Clerk user id (contract §1); history/session
   // fetches wait for Clerk to load it.

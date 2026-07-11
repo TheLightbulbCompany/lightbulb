@@ -11,7 +11,8 @@
     "lint": "expo lint",
     "typecheck": "tsc --noEmit",
     "export:ios": "expo export --platform ios",
-    "update:production": "eas update --channel production"
+    "update:production": "eas update --channel production",
+    "test": "jest --ci"
   },
   "dependencies": {
     "@clerk/clerk-expo": "^2.19.31",
@@ -24,9 +25,11 @@
     "expo-constants": "~57.0.3",
     "expo-crypto": "~57.0.0",
     "expo-dev-client": "~57.0.5",
+    "expo-device": "~57.0.0",
     "expo-font": "~57.0.0",
     "expo-image": "~57.0.0",
     "expo-linking": "~57.0.2",
+    "expo-notifications": "~57.0.3",
     "expo-router": "~57.0.4",
     "expo-secure-store": "~57.0.0",
     "expo-splash-screen": "~57.0.2",
@@ -46,14 +49,23 @@
     "react-native-worklets": "0.10.0"
   },
   "devDependencies": {
+    "@babel/core": "^7.29.0",
+    "@testing-library/react-native": "^14.0.1",
+    "@types/jest": "^29.5.14",
     "@types/react": "~19.2.2",
+    "babel-preset-expo": "~57.0.0",
     "eslint": "^9",
     "eslint-config-expo": "~10.0.0",
+    "jest": "~29.7.0",
+    "jest-expo": "~57.0.1",
+    "react-test-renderer": "19.2.3",
     "typescript": "~6.0.3"
   },
   "expo": {
     "install": {
-      "exclude": ["eslint-config-expo"]
+      "exclude": [
+        "eslint-config-expo"
+      ]
     }
   }
 }

@@ -2,11 +2,15 @@
 
 **Status:** Phases 0–6 shipped — full end-user parity (auth, chat with
 history/sessions, settings/billing, all control panels, teams inbox,
-marketplace buyer, provision-gate states). Phases 7–8 (push notifications,
-TestFlight/App Store) blocked externally on the Apple Developer **org**
-enrollment (D-U-N-S submitted 2026-07-06, individual→org conversion pending).
-Local device testing works today via `expo run:ios --device` (Expo Go is
-pinned to SDK 54 and unusable — see the dev-build note).
+marketplace buyer, provision-gate states). **Phase 7 Task 1/2 (push
+notifications) specced + implemented** behind a manual on-device exit gate —
+see `docs/superpowers/specs/2026-07-10-mobile-push-notifications-design.md`
+and `docs/superpowers/plans/2026-07-10-mobile-push-notifications.md`. The
+remaining Phase 7–8 work (polish pass, TestFlight/App Store) is still blocked
+externally on the Apple Developer **org** enrollment (D-U-N-S submitted
+2026-07-06, individual→org conversion pending). Local device testing works
+today via `expo run:ios --device` (Expo Go is pinned to SDK 54 and unusable —
+see the dev-build note).
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -145,8 +149,14 @@ pinned to SDK 54 and unusable — see the dev-build note).
 
 **Exit gate:** agent-run-completed push arrives with app backgrounded; deep-link opens the right chat; app icon/splash/launch polish done.
 
-- [ ] **Task 1: Backend push endpoint (the one server change).** Design + implement device-token registration (`POST /api/v1/devices` on the users surface, DDB-backed) and a notification dispatch hook on `run_ended` for backgrounded users, via `expo-notifications` push service (or bare APNs — decide with infra posture in mind; CDK changes go through `apps/infra`). This slice follows the repo's full CI/CD rules (CDK for any infra, watch runs after push).
-- [ ] **Task 2: Client side** — permission prompt UX, token registration, notification → deep-link routing (`isol8://` or universal links), badge counts.
+**Task 1/2 specced + implemented** in `docs/superpowers/specs/2026-07-10-mobile-push-notifications-design.md` (design) and `docs/superpowers/plans/2026-07-10-mobile-push-notifications.md` (task-by-task implementation plan). v1 scope is the **user-initiated** slice only: a run *you started* completing pushes to *your* device(s); proactive cron / channel / Teams pushes need a durable container→backend outbound-event mechanism and are v2. Key decisions locked while implementing:
+
+- **Expo Push API, not bare APNs.** The hosted backend + Expo-managed app collapse the self-hosted push apparatus (APNs relay, App Attest, receipts) down to *token → POST to our backend → Expo Push API*. Expo/EAS fronts APNs and manages the signing key — **no APNs credential in our infra**. The Expo Push API accepts anonymous sends by default, so **no backend secret is needed** (an optional per-account access token for anti-spoofing can be enabled later on the EAS Dashboard).
+- **Token store on the `users` row (member-scoped), not a new table and not `containers.paired_devices`.** A push token addresses a *human* (member) — org-correct — whereas `paired_devices` is an owner/container-scoped *auth* structure. Written via new scoped `user_repo.set_push_token` / `clear_push_token` `update_item`s (never a full `put`).
+- **Audience = the canonical dispatch `user_id` carried on the `_active_runs` entry, NOT the echoed session-key member id.** Upstream OpenClaw lowercases session keys, but the `users` PK is the mixed-case Clerk id; a case-sensitive lookup on a lowercased id would silently miss. So `mark_run_active` stashes the canonical member id (the JWT sub) on the run entry, and `_dispatch_push_notification` reads it back at `run_ended`. This forced folding `_active_runs` keys to `.lower()` consistently on both store and read — which also repaired a latent key-mismatch bug (run-entry leak for mixed-case users + the `chat.e2e.latency` SLO metric never emitting for them). A teardown guard holds the container connection open while a run is active so a phone-only send-then-close still delivers.
+
+- [x] **Task 1: Backend push endpoint (the one server change).** Done: device-token registration (`POST` / `DELETE /api/v1/devices`, dedicated `routers/devices.py`, DDB `users`-row map) + a fire-and-forget push dispatch on the once-per-run `run_ended` terminal in `connection_pool.py` (member-scoped, agent-name title, ~120-char reply preview) via `core/services/push_service.py` → Expo Push API (anonymous sends; no backend secret) plus the active-run teardown guard.
+- [x] **Task 2: Client side** — Done: permission prompt + Expo-token registration (`<PushRegistration/>` mounted inside the signed-in `GatewayProvider` subtree), `isol8://agent/<id>` deep-link parse + notification-tap routing, and a foreground-suppression handler. `jest-expo` + `@testing-library/react-native` runner added (T7) and wired into `mobile-ci.yml`. **Deferred:** active-session suppression ships with `getCurrentAgentId → null` (shows all banners; pure decision is in place, threading the active agent id is a small follow-up); badge counts are v2. On-device exit gate is manual and **not yet run** (needs a device-installable EAS build) — checklist in `apps/mobile/README.md`.
 - [ ] **Task 3: Polish pass** — icons, splash, haptics, keyboard avoidance audit, accessibility (VoiceOver on chat timeline), performance profile of the message list.
 
 ## Phase 8 — CI/CD, TestFlight, App Store

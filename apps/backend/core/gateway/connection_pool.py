@@ -35,6 +35,8 @@ _HANDSHAKE_TIMEOUT = 10  # seconds
 _RPC_TIMEOUT = 30  # seconds
 _RPC_DRAIN_TIMEOUT = 5.0  # graceful-shutdown: wait this long for in-flight RPCs to settle before closing the WS
 _GRACE_PERIOD = 30  # seconds before closing idle connection
+_PUSH_GRACE_CEILING_S = 300  # max extra hold while a run is active (bounded by parked watchdog)
+_ACTIVE_RUN_POLL_S = 5  # re-check cadence for the active-run hold
 
 # Application-level WebSocket keepalive tuned for long-running LLM turns.
 # The websockets library defaults ping_interval=20 / ping_timeout=20 — fine for
@@ -60,6 +62,11 @@ _RECONNECT_FLOOR_S = 5
 # emit `gateway.run.long_idle` metrics + structured logs so the deadlock-
 # vs-slow-turn signal is greppable in CloudWatch Insights.
 _RUN_LONG_IDLE_S = 300
+
+# TTL for the per-connection agents.list name cache backing push-notification
+# titles. Names change rarely; a short TTL keeps run-completion pushes off a
+# fresh RPC per reply without letting a rename stay stale for long.
+_AGENT_NAME_TTL_S = 60.0
 
 # Bound on the per-connection side-run id set. Entries self-clean on the side
 # run's terminal; this cap is only a safety net for a side run that never emits
@@ -162,6 +169,13 @@ class GatewayConnection:
         self._closed = False
         self._grace_task: Optional[asyncio.Task] = None
         self._billing_tasks: Set[asyncio.Task] = set()
+        # Fire-and-forget run-completion push tasks (mirrors _billing_tasks):
+        # tracked so close() can drain them instead of cancelling a send.
+        self._push_tasks: Set[asyncio.Task] = set()
+        # agent_id -> display name, TTL-cached from agents.list for push titles.
+        # None until first resolve; _agent_names_at is the monotonic stamp.
+        self._agent_names: Optional[Dict[str, str]] = None
+        self._agent_names_at: float = 0.0
         # Active LLM runs keyed by OpenClaw sessionKey (agent:{agentId}:{member}).
         # Populated by `mark_run_active` when we dispatch chat.send; cleared by
         # `_handle_message` when the matching chat-terminal event arrives.
@@ -269,7 +283,7 @@ class GatewayConnection:
     def has_active_runs(self) -> bool:
         return bool(self._active_runs)
 
-    def mark_run_active(self, session_key: str, agent_id: str | None = None) -> None:
+    def mark_run_active(self, session_key: str, agent_id: str | None = None, member_id: str | None = None) -> None:
         """Record an in-flight run for *session_key* (parked-vs-dead signal).
 
         Called from the chat dispatcher before the chat.send RPC is forwarded so
@@ -278,19 +292,34 @@ class GatewayConnection:
         decision (`_on_reader_loop_exit` / `is_alive`), which keys on
         ``_active_runs`` non-emptiness. Idempotent — re-marking refreshes
         started_at without losing the existing last_event_at.
+
+        *member_id* is the CANONICAL Clerk id of the dispatching member (the JWT
+        sub, mixed-case) — carried on the entry so the run-completion push can
+        target the users-table PK. It must NOT come from the echoed session key,
+        which OpenClaw lowercases (a case-sensitive PK lookup would miss).
+
+        The dict key is folded to lowercase because the dispatcher stores the
+        CANONICAL (mixed-case) key while OpenClaw echoes it LOWERCASED; only the
+        userId segment can carry case (agentId is a lowercase UUID, sessionId is
+        regex-forced lowercase), so ``key.lower()`` on both sides always agrees.
         """
+        key = session_key.lower()
         now = time.monotonic()
-        existing = self._active_runs.get(session_key)
+        existing = self._active_runs.get(key)
         if existing is not None:
             existing["started_at"] = now
             existing["last_event_at"] = now
             if agent_id:
                 existing["agent_id"] = agent_id
+            if member_id:
+                existing["member_id"] = member_id
             return
-        self._active_runs[session_key] = {
+        self._active_runs[key] = {
             "started_at": now,
             "last_event_at": now,
             "agent_id": agent_id or "",
+            # Canonical dispatch member id for the run-completion push audience.
+            "member_id": member_id,
             # Set when OpenClaw emits an approval-requested agent event for this
             # session; consumed by `_is_true_terminal` so the interim chat
             # `final` that closes the approval bracket does NOT end the run.
@@ -303,7 +332,9 @@ class GatewayConnection:
         No-op if no run is active for the key (e.g. cron / channel sessions).
         Cheap enough to call on every inbound agent/chat event.
         """
-        run = self._active_runs.get(session_key)
+        # Fold the key: the store side (mark_run_active) lowercases, so reads
+        # keyed on the echoed (already-lowercased) key must too.
+        run = self._active_runs.get(session_key.lower())
         if run is not None:
             run["last_event_at"] = time.monotonic()
 
@@ -322,7 +353,7 @@ class GatewayConnection:
 
     def _clear_active_run(self, session_key: str) -> None:
         """Pop the run keyed by *session_key* (chat.final / error / aborted)."""
-        self._active_runs.pop(session_key, None)
+        self._active_runs.pop(session_key.lower(), None)
         # Reset run-active dedup so the next run's first `hasActiveRun:true`
         # sessions.changed is forwarded as a fresh transition. (The frontend
         # busy-gate is already closed by the run_ended/done/error frame; this
@@ -375,7 +406,7 @@ class GatewayConnection:
 
         No-op when no run is tracked for the key (cron / channel sessions).
         """
-        run = self._active_runs.get(session_key)
+        run = self._active_runs.get(session_key.lower())
         if run is not None:
             run["awaiting_approval"] = True
 
@@ -407,7 +438,7 @@ class GatewayConnection:
         """
         if state in ("error", "aborted"):
             return True
-        run = self._active_runs.get(session_key)
+        run = self._active_runs.get(session_key.lower())
         if run is not None and run.get("awaiting_approval"):
             # Suppress Run A's genuine terminal final so the per-session window
             # survives the approval; the separate follow-up run's final clears it.
@@ -953,6 +984,78 @@ class GatewayConnection:
         self._billing_tasks.add(task)
         task.add_done_callback(self._billing_tasks.discard)
 
+    async def _resolve_agent_name(self, agent_id: str | None) -> str:
+        """Best-effort display name for *agent_id* via a TTL-cached agents.list.
+
+        Returns "" on any failure — the push falls back to a generic title.
+        Uses the same request/response RPC idiom as ``_fetch_and_record_usage``
+        (send + wait_for_response), since ``send_rpc`` only sends.
+        """
+        if not agent_id:
+            return ""
+        now = time.monotonic()
+        if self._agent_names is not None and (now - self._agent_names_at) < _AGENT_NAME_TTL_S:
+            return self._agent_names.get(agent_id, "")
+        try:
+            req_id = str(uuid.uuid4())
+            await self.send_rpc(req_id, "agents.list", {})
+            result = await self.wait_for_response(req_id, timeout=10)
+            agents = result.get("agents", []) if isinstance(result, dict) else (result or [])
+            names: Dict[str, str] = {}
+            for a in agents:
+                if not isinstance(a, dict):
+                    continue
+                aid = a.get("id") or a.get("agent_id")
+                identity = a.get("identity") if isinstance(a.get("identity"), dict) else {}
+                nm = a.get("name") or identity.get("name")
+                if aid and nm:
+                    names[aid] = nm
+            self._agent_names = names
+            self._agent_names_at = now
+            return names.get(agent_id, "")
+        except Exception:
+            logger.warning("agents.list for push-name resolution failed", exc_info=True)
+            return ""
+
+    def _dispatch_push_notification(self, payload: dict, carried_member: str | None, agent_id: str | None) -> None:
+        """Fire-and-forget push on a completed run (mirrors _record_usage_from_session).
+
+        Audience = *carried_member* (the CANONICAL Clerk id of the dispatching
+        member, carried on the active-run entry by ``mark_run_active``), or the
+        owner (personal, whose key is agent:<id>:main with no member_id). It is
+        deliberately NOT the ``target_member`` parsed from the echoed session key
+        — OpenClaw lowercases that, and the users-table PK lookup in
+        ``send_push_to_user`` is case-sensitive, so a lowercased id would miss.
+        Only pushes to a Clerk user id; an unattributed org session (org_ owner,
+        no carried member) silently no-ops.
+        """
+        push_user_id = carried_member or self.owner_id
+        if not push_user_id or not push_user_id.startswith("user_"):
+            return
+        preview = self._extract_assistant_text(payload)
+        if not preview:
+            return
+        session_key = payload.get("sessionKey")
+
+        async def _send():
+            try:
+                agent_name = await self._resolve_agent_name(agent_id)
+                body = preview if len(preview) <= 120 else preview[:119] + "…"
+                data: Dict[str, str] = {}
+                if agent_id:
+                    data["agentId"] = agent_id
+                if session_key:
+                    data["sessionKey"] = session_key
+                from core.services.push_service import send_push_to_user
+
+                await send_push_to_user(push_user_id, agent_name or "New reply", body, data)
+            except Exception:
+                logger.exception("Push dispatch failed for user %s", push_user_id)
+
+        task = asyncio.create_task(_send())
+        self._push_tasks.add(task)
+        task.add_done_callback(self._push_tasks.discard)
+
     async def _resolve_member_from_session(self, parsed: dict) -> str:
         """Map a parsed session key to the Clerk member_id.
 
@@ -1311,6 +1414,11 @@ class GatewayConnection:
                 # bracket that stays active, or a run we never marked), in which
                 # case no metric is emitted.
                 primary_started_at: float | None = None
+                # Canonical dispatch member id carried on the active-run entry
+                # (mark_run_active), read back here for the run-completion push
+                # audience. NOT the echoed/lowercased target_member — see
+                # _dispatch_push_notification.
+                carried_member: str | None = None
                 if run_is_side:
                     self._forget_side_run(run_id)
                     is_true_terminal = True
@@ -1327,10 +1435,16 @@ class GatewayConnection:
                     # authoritative `run_ended` forward below.
                     is_true_terminal = bool(session_key) and self._is_true_terminal(session_key, state)
                     if is_true_terminal:
-                        active = self._active_runs.get(session_key)
+                        active = self._active_runs.get(session_key.lower())
                         if active is not None:
                             primary_started_at = active.get("started_at")
-                        self._clear_active_run(session_key)
+                            carried_member = active.get("member_id")
+                        # NOTE: _clear_active_run is DEFERRED to after the push
+                        # dispatch in the is_true_terminal block below. Clearing
+                        # here flips has_active_runs to False before the push task
+                        # is spawned, so a concurrent _grace_close could tear the
+                        # connection down mid-forward and cancel the reader before
+                        # the push is ever created — losing the closed-app push.
                 if state == "final":
                     put_metric("chat.message.count")
                     # Deliver thinking from content blocks for models that
@@ -1436,6 +1550,30 @@ class GatewayConnection:
                     if session_id is not None:
                         run_ended["session_id"] = session_id
                     await self._forward_to_frontends(run_ended, target_member)
+
+                    # Push a notification for a completed reply (fire-and-forget,
+                    # off the reader-loop hot path — mirrors billing at the
+                    # agent-event lifecycle site). Only on a successful final;
+                    # error/aborted never push. Audience is the CANONICAL member
+                    # carried on the active-run entry, not the echoed/lowercased
+                    # target_member (which would PK-miss the users table).
+                    # Skip side (`/btw`) runs: they carry no member (carried_member
+                    # is None → would fall back to the owner) and are not the
+                    # user-initiated primary reply v1 push is for.
+                    if state == "final" and not run_is_side:
+                        self._dispatch_push_notification(payload, carried_member, event_agent_id)
+
+                    # Clear the non-side active-run window now — AFTER the push
+                    # task has been created — so the teardown guard
+                    # (has_active_runs) keeps the container connection alive
+                    # through terminal processing and the push spawn. This closes
+                    # the race where a concurrent _grace_close, seeing an empty
+                    # _active_runs and no frontends, tore the connection down
+                    # during the run_ended/done forwards and cancelled the reader
+                    # before _dispatch_push_notification ran. Side runs never
+                    # owned the entry, so they must not clear it.
+                    if not run_is_side:
+                        self._clear_active_run(session_key)
 
                 # END of the chat.e2e.latency SLO span (alarm W9). Elapsed is
                 # computed from the active-run window's started_at — stamped by
@@ -1730,6 +1868,16 @@ class GatewayConnection:
                     "Error waiting for billing tasks during close for user %s",
                     self.user_id,
                 )
+        # Drain in-flight push-dispatch tasks too, so teardown doesn't cancel a
+        # notification mid-send.
+        if self._push_tasks:
+            try:
+                await asyncio.wait(self._push_tasks, timeout=5.0)
+            except Exception:
+                logger.exception(
+                    "Error waiting for push tasks during close for user %s",
+                    self.user_id,
+                )
         # Graceful RPC drain: the reader loop is still alive here, so in-flight
         # RPCs can still receive their `res` and resolve. Wait (bounded) for the
         # pending set to settle BEFORE tearing down the transport, instead of
@@ -1812,6 +1960,7 @@ class GatewayConnectionPool:
         user_id: str,
         session_key: str,
         agent_id: str | None = None,
+        member_id: str | None = None,
     ) -> None:
         """Public entry point for the chat dispatcher.
 
@@ -1822,11 +1971,14 @@ class GatewayConnectionPool:
         connection exists is simply lost. The chat dispatcher therefore calls
         ``ensure_connection`` before marking on every non-side send, which
         guarantees a connection here. Idempotent.
+
+        *member_id* is the CANONICAL Clerk id of the dispatching member (carried
+        onto the active-run entry for the run-completion push audience).
         """
         conn = self._connections.get(user_id)
         if conn is None:
             return
-        conn.mark_run_active(session_key, agent_id)
+        conn.mark_run_active(session_key, agent_id, member_id=member_id)
 
     def clear_active_run(self, user_id: str, session_key: str) -> None:
         """Tear down the active-run window opened by ``mark_run_active``.
@@ -2081,11 +2233,27 @@ class GatewayConnectionPool:
             self._grace_tasks[user_id] = asyncio.create_task(self._grace_close(user_id))
 
     async def _grace_close(self, user_id: str) -> None:
-        """Wait grace period, then close gateway connection if still idle."""
+        """Wait the grace period, then close the gateway connection if still idle.
+
+        Guard: while a run is still in flight for this owner, HOLD the connection
+        open (bounded by _PUSH_GRACE_CEILING_S) so the reader loop still observes
+        run_ended and can fire the completion push — even with no client attached
+        (e.g. a phone that sent then closed). Clients re-appearing cancels this
+        task via remove/add_frontend_connection, so the loop also exits when a
+        client returns.
+
+        ``has_active_runs`` is a ``@property`` — read it as an attribute (no parens).
+        """
         try:
             await asyncio.sleep(_GRACE_PERIOD)
-            fcs = self._frontend_connections.get(user_id, set())
-            if not fcs:
+            waited = 0.0
+            while not self._frontend_connections.get(user_id) and waited < _PUSH_GRACE_CEILING_S:
+                conn = self._connections.get(user_id)
+                if conn is None or not conn.has_active_runs:
+                    break
+                await asyncio.sleep(_ACTIVE_RUN_POLL_S)
+                waited += _ACTIVE_RUN_POLL_S
+            if not self._frontend_connections.get(user_id):
                 await self.close_user(user_id)
         except asyncio.CancelledError:
             pass

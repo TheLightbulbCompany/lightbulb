@@ -20,6 +20,7 @@ def _make_conn():
     conn._ws = _FakeWS()
     conn._pending_rpcs = {}
     conn._billing_tasks = set()
+    conn._push_tasks = set()
     conn._grace_task = None
     conn._parked_watchdog_task = None
     conn._reader_task = None

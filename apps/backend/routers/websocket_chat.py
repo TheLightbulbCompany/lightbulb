@@ -1959,7 +1959,10 @@ async def _process_agent_chat_background(
 
         if not side:
             await pool.ensure_connection(owner_id, ip, container["gateway_token"])
-            pool.mark_run_active(owner_id, session_key, agent_id)
+            # user_id is the authenticated MEMBER (JWT sub, canonical/mixed-case);
+            # carry it so the run-completion push targets the users-table PK
+            # (NOT the lowercased member parsed from the echoed session key).
+            pool.mark_run_active(owner_id, session_key, agent_id, member_id=user_id)
             run_active_marked = True
         else:
             # Side (`/btw`) run: register its runId so the agent-event handler

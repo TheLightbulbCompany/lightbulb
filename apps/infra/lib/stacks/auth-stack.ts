@@ -34,7 +34,6 @@ export class AuthStack extends cdk.Stack {
   public readonly metronomeApiKey: secretsmanager.Secret;
   public readonly metronomeWebhookSecret: secretsmanager.Secret;
   public readonly resendApiKey: secretsmanager.Secret;
-
   constructor(scope: Construct, id: string, props: AuthStackProps) {
     super(scope, id, props);
 

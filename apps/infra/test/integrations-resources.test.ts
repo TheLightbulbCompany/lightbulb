@@ -98,7 +98,6 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
       metronomeApiKey: `isol8/${environment}/metronome_api_key`,
       metronomeWebhookSecret: `isol8/${environment}/metronome_webhook_secret`,
       resendApiKey: `isol8/${environment}/resend_api_key`,
-      expoAccessToken: `isol8/${environment}/expo_access_token`,
       wsInternalSecret: `isol8/${environment}/ws_internal_secret`,
     },
     kmsKeyArn: kmsKey.keyArn,

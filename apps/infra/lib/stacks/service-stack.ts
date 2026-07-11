@@ -80,8 +80,6 @@ export interface SecretNames {
    * real re_… key is set (email_service gates on the key prefix).
    */
   resendApiKey: string;
-  /** Expo access-token secret name (isol8/{env}/expo_access_token). */
-  expoAccessToken: string;
   /**
    * Shared secret the WebSocket Lambdas attach to authenticate themselves to
    * the backend /api/v1/ws/* endpoints. Same secret AuthStack creates and the
@@ -1340,9 +1338,6 @@ export class ServiceStack extends cdk.Stack {
         ),
         RESEND_API_KEY: ecs.Secret.fromSecretsManager(
           secretsmanager.Secret.fromSecretNameV2(this, "ImportResendApiKey", props.secretNames.resendApiKey),
-        ),
-        EXPO_ACCESS_TOKEN: ecs.Secret.fromSecretsManager(
-          secretsmanager.Secret.fromSecretNameV2(this, "ImportExpoAccessToken", props.secretNames.expoAccessToken),
         ),
         // Shared secret the WS Lambdas attach as x-isol8-ws-internal. The
         // backend compares it (require_ws_internal_caller) only when

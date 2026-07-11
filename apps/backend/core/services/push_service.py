@@ -1,12 +1,12 @@
 """Send agent-completion push notifications via the Expo Push API.
 
 Best-effort: never raises into the caller (the gateway reader loop). Expo
-fronts APNs/FCM, so we hold no APNs key — only an optional EXPO_ACCESS_TOKEN
-bearer (injected as a container secret by infra) for send authentication.
+fronts APNs/FCM, so we hold no APNs key. The Expo Push API accepts anonymous
+sends by default; we do NOT use an access token. If we later want anti-spoofing,
+enable "enhanced push security" on the EAS Dashboard and attach a Bearer here.
 """
 
 import logging
-import os
 
 import httpx
 
@@ -37,9 +37,6 @@ async def send_push_to_user(user_id: str, title: str, body: str, data: dict | No
             {"to": token, "title": title, "body": body, "data": data or {}, "sound": "default"} for _, token in entries
         ]
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
-        access_token = os.environ.get("EXPO_ACCESS_TOKEN")
-        if access_token:
-            headers["Authorization"] = f"Bearer {access_token}"
 
         async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
             resp = await client.post(EXPO_PUSH_URL, json=messages, headers=headers)

@@ -77,13 +77,13 @@ proactive cron / channel / Teams pushes are v2). Design + implementation plan:
 
 **Transport — Expo Push API, no APNs key in our infra.** The backend sends to
 the Expo Push API (`https://exp.host/--/api/v2/push/send`); Expo/EAS fronts APNs
-and manages the APNs signing key, so we hold **no APNs credential**. The only
-backend secret is an **Expo access token** (`EXPO_ACCESS_TOKEN`), which CDK
-declares as a placeholder in AWS Secrets Manager (`isol8/${env}/expo_access_token`)
-and an operator **overwrites out-of-band, per environment**, with the real token
-from expo.dev (`aws secretsmanager put-secret-value`) — it is never committed.
-Device tokens live on the backend `users` row (member-scoped = org-correct), and
-the app registers its token via `POST /api/v1/devices` after sign-in.
+and manages the APNs signing key, so we hold **no APNs credential**. The Expo
+Push API accepts **anonymous sends by default**, so there is **no backend secret
+to set** — pushes work out of the box. (Optional anti-spoofing for later: enable
+"enhanced push security" on the EAS Dashboard and attach a per-account access
+token as a `Bearer` in `push_service` — a future hardening, not required.) Device
+tokens live on the backend `users` row (member-scoped = org-correct), and the app
+registers its token via `POST /api/v1/devices` after sign-in.
 
 **Native-build requirement.** Push needs the `expo-notifications` native module +
 the `aps-environment` entitlement, both baked at **build** time — so push is a
@@ -106,13 +106,12 @@ are mocked in `jest-setup.ts`.
 
 ### On-device exit gate (manual — NOT yet run)
 
-> Push can't be exercised in CI or the simulator — it needs a physical device and
-> a real Expo access token in the target env's Secrets Manager. This is the
-> feature's exit gate and has **not been run yet** (it needs a TestFlight/preview
-> build installable on a device). Run it once an EAS `preview` build is available.
+> Push can't be exercised in CI or the simulator — it needs a physical device.
+> This is the feature's exit gate and has **not been run yet** (it needs a
+> TestFlight/preview build installable on a device). Run it once an EAS `preview`
+> build is available.
 
-After an EAS `preview` build (dev API/Clerk) with the real `EXPO_ACCESS_TOKEN` set
-in the dev secret:
+After an EAS `preview` build (dev API/Clerk):
 
 1. Sign in on a **physical** device; grant the notification permission prompt.
 2. Send a message to an agent; **background the app**; confirm a push arrives

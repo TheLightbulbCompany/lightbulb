@@ -34,8 +34,6 @@ export class AuthStack extends cdk.Stack {
   public readonly metronomeApiKey: secretsmanager.Secret;
   public readonly metronomeWebhookSecret: secretsmanager.Secret;
   public readonly resendApiKey: secretsmanager.Secret;
-  public readonly expoAccessToken: secretsmanager.Secret;
-
   constructor(scope: Construct, id: string, props: AuthStackProps) {
     super(scope, id, props);
 
@@ -166,17 +164,6 @@ export class AuthStack extends cdk.Stack {
       "resend_api_key",
       { passwordLength: 48, excludePunctuation: true },
       "Resend API bearer token for transactional email. Overwritten out-of-band with the real re_… key after the Resend domain runbook.",
-    );
-
-    // Expo access token for the Expo Push API (mobile push notifications).
-    // CDK generates a placeholder; operator overwrites out-of-band with the
-    // real Expo access token via `aws secretsmanager put-secret-value`. Same
-    // isol8/{env}/* CMK + wildcard read as the other secrets — no extra IAM.
-    this.expoAccessToken = createSecret(
-      "ExpoAccessToken",
-      "expo_access_token",
-      { passwordLength: 48, excludePunctuation: true },
-      "Expo access token for the Expo Push API. Overwritten out-of-band with the real token from expo.dev.",
     );
 
     // Bootstrap admin Better Auth credentials. CDK creates the secret

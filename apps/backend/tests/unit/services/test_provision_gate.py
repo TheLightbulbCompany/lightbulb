@@ -101,6 +101,31 @@ async def test_billing_account_without_subscription_id_returns_signup_required()
 
 
 @pytest.mark.asyncio
+async def test_org_abandoned_team_checkout_returns_team_billing_required():
+    """An org that STARTED /billing/team-checkout and abandoned it has a
+    customer row (create_customer_for_owner writes stripe_customer_id before
+    the Stripe tab) with no subscription_status. The personal companion above
+    routes such a None-status row to signup_required (/onboarding) — but an
+    org must NOT be funneled into the personal picker. It routes back to the
+    Teams paywall (team_billing_required, /settings/billing), from which
+    team-checkout can be retried (the 409 guard excepts a None-status row)."""
+    with patch("core.services.provision_gate.billing_repo") as repo:
+        repo.get_by_owner_id = AsyncMock(
+            return_value={
+                "owner_id": "org_abandoned",
+                "stripe_customer_id": "cus_org",
+                # No stripe_subscription_id, no subscription_status —
+                # team checkout was abandoned before Stripe issued a sub.
+            },
+        )
+        gate = await evaluate_provision_gate(owner_id="org_abandoned", is_admin=True)
+    assert gate is not None
+    assert gate.code == "team_billing_required"
+    assert gate.action_href == "/settings/billing"
+    assert gate.action_admin_only is True
+
+
+@pytest.mark.asyncio
 async def test_canceled_subscription_with_cleared_subscription_id_routes_to_billing():
     """The in-app cancel path (BillingService.cancel_subscription) clears
     stripe_subscription_id

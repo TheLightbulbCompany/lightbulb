@@ -137,6 +137,29 @@ class Gate:
         }
 
 
+def _team_billing_required_gate(owner_role: str) -> Gate:
+    """The Teams per-seat paywall gate.
+
+    An org owner without an *active* per-seat subscription is always routed
+    here — the free tier is personal-only, so a team never falls into the
+    card-less ``trial_local`` path and must never be sent to the personal
+    ``signup_required`` picker (``/onboarding``). Surfaced both when the org
+    has no billing row at all AND when it has a customer row from an abandoned
+    team checkout (``stripe_customer_id`` written, ``subscription_status``
+    still None) — both mean "no live seat subscription", and the frontend keys
+    the Teams-billing paywall off this single code.
+    """
+    return Gate(
+        code="team_billing_required",
+        title="Set up Teams billing",
+        message="Your team needs an active per-seat subscription to start.",
+        action_label="Set up billing",
+        action_href="/settings/billing",
+        action_admin_only=True,
+        owner_role=owner_role,
+    )
+
+
 async def _has_oauth_tokens(token_owner: str, owner_id: str) -> bool:
     """Whether ``token_owner`` has ChatGPT OAuth tokens bound to ``owner_id``.
 
@@ -215,18 +238,8 @@ async def _evaluate_provision_gate_inner(
             # card-less trial_local. An org with no billing needs per-seat
             # Teams billing; surface a DISTINCT code the frontend keys the
             # Teams-billing paywall off (rather than the personal provider
-            # picker). Teams billing itself is a separate workstream — until
-            # it ships, the frontend renders an interim "coming soon" state
-            # for this code; afterwards the same code routes to checkout.
-            return Gate(
-                code="team_billing_required",
-                title="Set up Teams billing",
-                message="Your team needs an active per-seat subscription to start.",
-                action_label="Set up billing",
-                action_href="/settings/billing",
-                action_admin_only=True,
-                owner_role=owner_role,
-            )
+            # picker).
+            return _team_billing_required_gate(owner_role)
         # Personal owner, no row. Surfaced separately from the inactive
         # cases so /container/status can route to the ProviderPicker (which
         # calls POST /billing/trial-checkout — the only way to create the
@@ -280,6 +293,15 @@ async def _evaluate_provision_gate_inner(
                 action_admin_only=True,
                 owner_role=owner_role,
             )
+        # An org with a customer row but no subscription state (status None)
+        # is a team that STARTED team checkout and abandoned it — the customer
+        # row was written by create_customer_for_owner before the Stripe tab.
+        # Route it back to the Teams paywall, NOT the personal /onboarding
+        # picker below (which would funnel an org admin into the personal
+        # signup path). The /billing/team-checkout 409 guard excepts a
+        # None-status row, so the retry from the paywall proceeds cleanly.
+        if owner_id.startswith("org_"):
+            return _team_billing_required_gate(owner_role)
         return Gate(
             code="signup_required",
             title="Subscribe to start your container",

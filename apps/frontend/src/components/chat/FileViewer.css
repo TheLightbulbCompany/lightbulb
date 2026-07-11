@@ -1,0 +1,35 @@
+/* src/components/chat/FileViewer.css — extracted from the former inline
+   <style> so two docked instances don't inject duplicate global tags. */
+.file-viewer-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: #faf7f2;
+  border-left: 1px solid #e0dbd0;
+}
+.file-viewer-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 16px;
+  height: 56px;
+  border-bottom: 1px solid #e0dbd0;
+  background: #faf7f2;
+  flex-shrink: 0;
+}
+.file-viewer-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+.file-viewer-tree {
+  width: 220px;
+  border-right: 1px solid #e0dbd0;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+.file-viewer-content {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}

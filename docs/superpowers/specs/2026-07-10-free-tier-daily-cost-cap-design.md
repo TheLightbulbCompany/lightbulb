@@ -45,11 +45,15 @@ and the upgrade *action* behind the cap's CTA (Phase C).
   0, ~30× Bedrock undercount historically, unrun reconcile scripts). The cap
   uses its **own isolated counter**, not that pipeline.
 
-### Meta Muse Spark pricing (our authoritative constant)
+### Meta Muse Spark pricing (our authoritative rate)
 
-`meta/muse-spark-1.1`: **$1.25 / 1M input tokens**, **$4.25 / 1M output
-tokens** (reasoning/"thinking" tokens bill as output). Lives as a backend
-constant, the single source of truth for the cap.
+`meta/muse-spark-1.1`: **$1.25 / 1M input**, **$4.25 / 1M output** (reasoning
+tokens bill as output). Cache-read/write rates: **TBC at plan time** (confirm
+from Meta / OpenClaw meta docs; if unknown, set `cacheRead = input rate` as a
+conservative upper bound so the in-container `estimatedCostUsd` cannot
+under-count cache). Used in two places: **(a)** written into the trial
+container's `models.providers.meta.models[0].cost` so `estimatedCostUsd` is
+correct, and **(b)** a backend constant for the pre-send **worst-case reserve**.
 
 ---
 
@@ -71,35 +75,59 @@ A new attribute on the `billing_accounts` item (the row `gate_chat` already
 reads):
 
 ```
-meta_daily_spend_microdollars: { "<UTC-date>": <int microdollars> }
+meta_daily_spend_microcents: { "<UTC-date>": <int microdollars> }
     e.g. { "2026-07-10": 214000, "2026-07-11": 41000 }
 ```
 
-- **Microdollars** (int, 1 USD = 1e6) to keep atomic integer arithmetic;
-  matches the existing `*_microdollars` convention in `usage_service`.
-- **Atomic** DynamoDB `ADD meta_daily_spend_microdollars.<date> :delta` so
+- **Microcents** (int; 1 USD = 1e6 microcents) to keep atomic integer
+  arithmetic and match the unit `record_usage` / `estimatedCostUsd` already
+  produce (`connection_pool.py:1040`). Named accurately — the existing
+  `total_spend_microdollars` is a misnomer that *also* stores microcents;
+  don't propagate the wrong name. Cap constant: `CAP = 3_000_000` ($3).
+- **Atomic** DynamoDB `ADD meta_daily_spend_microcents.<date> :delta` so
   concurrent turns cannot race the counter (no read-modify-write).
 - **Self-resetting**: a new UTC day is a new map key → a fresh $3, with no
   reset job. Old keys are harmless (bounded by the ≤3-day trial; a TTL-style
   prune is optional, out of scope).
 - Only written for `trial_local` owners. Never touched for paid owners.
 
-### 2. Backend cost function (tamper-proof)
+### 2. Cost source: in-container rate → `estimatedCostUsd` (cache-inclusive)
 
-```
-cost_microdollars(input_tokens, output_tokens) =
-    round(input_tokens  * META_INPUT_RATE_MICRO_PER_TOKEN)
-  + round(output_tokens * META_OUTPUT_RATE_MICRO_PER_TOKEN)
-```
+OpenClaw computes a per-turn `estimatedCostUsd` that **includes cache tokens**
+(from its internal per-run snapshot). It reads $0 for meta today only because
+the meta model catalog bakes the rate to 0. **Fix the rate in the trial
+container's config** — `models.providers.meta.models[0].cost =
+{ input, output, cacheRead, cacheWrite }` in USD-per-million — and
+`estimatedCostUsd` becomes the authoritative, cache-inclusive per-turn cost.
 
-Rates derived from the pricing constant above and held in backend code — a
-free user editing `openclaw.json` cannot change them. **Cache-token caveat:**
-cache-read/write token counts may not reach the backend (`sessions.list`
-omits them). The cap ignores the cache portion, which *under*-counts a small,
-cheap slice of real cost — it errs toward the user, acceptable for a $3 gate.
-(We separately set the real rates in the trial container's config so the
-in-app cost UI does not show users $0; that is cosmetic and is **not** the
-cap's source of truth.)
+**Why not compute from token counts in the backend:** `sessions.list` (the
+backend's post-turn token source) **omits** cache-read/write token counts, and
+for a cached conversation cache is up to ~97% of real cost
+(`connection_pool.py:1028-1035`). Computing from the backend's input+output
+tokens alone would under-count by up to ~30× — the same hole that made the
+Bedrock ledger 30× low. `estimatedCostUsd` sidesteps it because OpenClaw
+applies the (now-correct) rate to the full cache-inclusive snapshot internally.
+
+**The reconcile point already reads it.** `_fetch_and_record_usage`
+(`connection_pool.py:1036-1042`, call to `record_usage` at `:1080`) converts
+`estimatedCostUsd` → `raw_cost_microcents` and passes it through. Two small
+changes make it flow for meta:
+- **`record_usage`** (`usage_service.py:87`) currently honors
+  `raw_cost_microcents` only for `amazon-bedrock/` models — extend it to honor
+  the meta ref too (else meta still records spend 0 via the token path).
+- The cap reads that same per-turn cost to reconcile its counter (§3).
+
+**Tamper posture:** the rate now lives in container config on EFS, so a free
+user with exec could edit it back to 0. That vector is closed by **sub-spec 2
+(entitlement)**, which locks config/exec for free users; until then the
+**fail-closed reserve** (§3) is the floor — a turn whose reconciled cost comes
+back 0/missing keeps its worst-case reserve rather than being refunded, so a
+zeroed rate cannot fully bypass the cap.
+
+*Unit note:* the internal spend unit is **microcents** (1 USD = 1e6
+microcents), despite the misleadingly-named `*_microdollars` fields — mirror
+`connection_pool.py:1040` (`round(usd * 1_000_000)`) and stay in microcents
+throughout.
 
 ### 3. Reserve → gate → reconcile
 
@@ -108,22 +136,23 @@ The chat chokepoint decides *before* a turn runs, but real cost is known
 
 ```
 PRE-SEND  (gate_chat, before forwarding the turn to the container)
-  spent = sum(meta_daily_spend_microdollars[today])   # this owner, today
+  spent = sum(meta_daily_spend_microcents[today])   # this owner, today
   if spent >= CAP ($3):
       return { blocked: true, code: "meta_daily_cap", message: ... }   # BLOCK
   reserve = worst_case_turn_cost()                    # clamp-bounded, see below
-  ADD meta_daily_spend_microdollars.today += reserve  # atomic reservation
+  ADD meta_daily_spend_microcents.today += reserve  # atomic reservation
   remember `reserve` for this run (keyed by session/run id)
 
 TURN RUNS
 
-POST-TURN (usage callback, on chat.final)
-  actual = cost_microdollars(input_tokens, output_tokens)   # backend-computed
-  ADD meta_daily_spend_microdollars.today += (actual - reserve)   # reconcile
-      # net effect: counter reflects true spend; the reservation already
-      # prevented any parallel burst from crossing $3 mid-flight
-  FAIL-CLOSED: if the turn errors / disconnects / actual is unavailable,
-      the reserve STAYS (no reconcile, no refund).
+POST-TURN (in _fetch_and_record_usage, after the turn settles)
+  actual = raw_cost_microcents        # from estimatedCostUsd — cache-inclusive
+  if actual is a valid positive number:
+      ADD meta_daily_spend_microcents.today += (actual - reserve)   # reconcile
+      # net: counter reflects true (cache-inclusive) spend; the reservation
+      # already prevented any parallel burst from crossing $3 mid-flight
+  else:   # FAIL-CLOSED — turn errored / disconnected / cost 0-or-missing
+      leave the reserve in place (no reconcile, no refund)
 ```
 
 - **Concurrency:** the atomic reservation is the guard. N parallel turns each
@@ -201,9 +230,11 @@ Client ──chat──▶ backend chat chokepoint (gate_chat, pre-send)
   self-heals at UTC rollover. Correct direction for a cost gate.
 - **Concurrent burst:** atomic reservation blocks the turn that would cross
   $3 at pre-send.
-- **Missing/partial token counts on `chat.final`:** treat as fail-closed —
-  keep the worst-case reserve rather than reconcile to an unknown/low value.
-- **Cache tokens absent:** accepted small under-count (errs toward user).
+- **`estimatedCostUsd` missing / 0 / unparseable** (errored turn, or a zeroed
+  in-container rate): fail-closed — keep the worst-case reserve, no reconcile.
+- **Cache-inclusive by construction:** cost comes from `estimatedCostUsd`
+  (OpenClaw applies the rate to the full snapshot), so the ~30× cache
+  under-count of the token-based path does not apply.
 - **Clock/date boundary:** UTC date computed server-side at gate time; a turn
   reserved just before midnight and reconciled just after applies both writes
   to whichever key each step reads — bounded, harmless (at most one turn's
@@ -231,9 +262,13 @@ Unit tests (backend):
 
 ## Open items to resolve at plan time (not blocking the design)
 
-- Confirm the exact `chat.final` usage payload fields the backend already
-  receives (input/output token names; whether any cache counts are present).
-- Confirm the run-id/session-key used to correlate a pre-send reserve with its
-  post-turn reconcile.
-- Decide the microdollar rate constants' exact integer form
-  (`META_INPUT_RATE_MICRO_PER_TOKEN` etc.) to avoid float drift.
+- Confirm Meta muse-spark `cacheRead`/`cacheWrite` rates for the in-container
+  cost config (else conservative `cacheRead = input rate`).
+- **Reserve↔reconcile correlation** (now grounded): the reserve is placed at
+  the gate where `session_key` is in scope (`websocket_chat.py:1828`), and
+  settled in `_fetch_and_record_usage(session_key, …)`
+  (`connection_pool.py:978`). Confirm a per-owner in-memory reserve map keyed
+  by `session_key` is the cleanest carrier — `run_id_for_send` is computed
+  *after* the gate (`:1958`), so it cannot key the reserve.
+- Integer rate form to avoid float drift (microcents-per-token is numerically
+  USD-per-million; mirror `bedrock_pricing.ModelRate`).

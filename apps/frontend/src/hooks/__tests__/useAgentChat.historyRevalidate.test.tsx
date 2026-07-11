@@ -177,4 +177,63 @@ describe("useAgentChat — history revalidates on mount (transcript-loss fix)", 
     );
     expect(loadingFlags).not.toContain(true);
   });
+
+  it("a message sent during the in-flight revalidation survives it (view AND cache)", async () => {
+    let resolveSecond: (v: { messages: Array<Record<string, unknown>> }) => void = () => {};
+    let generalFetches = 0;
+    sendReq.mockReset().mockImplementation((method: string, params?: Record<string, unknown>) => {
+      if (method === "chat.history" && params?.sessionKey === GENERAL_KEY) {
+        generalFetches += 1;
+        if (generalFetches === 2) {
+          // Hold the remount's revalidation open so a send can race it.
+          return new Promise((res) => {
+            resolveSecond = res;
+          });
+        }
+        if (generalFetches >= 3) {
+          // The third mount's revalidation stays pending forever: the cache
+          // assertion below reads the transcript that paints synchronously
+          // from the module cache, before any fetch could resolve.
+          return new Promise(() => {});
+        }
+        return Promise.resolve(historyWithoutReply());
+      }
+      return Promise.resolve({ messages: [] });
+    });
+
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    const first = renderHook(() => useAgentChat("agent-X", "user-1"));
+    await waitFor(() => {
+      expect(JSON.stringify(first.result.current.renderItems)).toContain("answer A");
+    });
+    first.unmount();
+
+    // Cached remount: the revalidation fetch is invisible (no loading state,
+    // input enabled) so the user can send while it is in flight.
+    const second = renderHook(() => useAgentChat("agent-X", "user-1"));
+    await waitFor(() => {
+      expect(historyCallsFor(GENERAL_KEY)).toBe(2);
+    });
+    await act(async () => {
+      await second.result.current.sendMessage("hello");
+    });
+    expect(JSON.stringify(second.result.current.renderItems)).toContain("hello");
+
+    // The pre-send snapshot resolves late. It must NOT clobber the
+    // optimistic send from the live view...
+    await act(async () => {
+      resolveSecond(historyWithoutReply());
+      await Promise.resolve();
+    });
+    const view = JSON.stringify(second.result.current.renderItems);
+    expect(view).toContain("hello");
+    expect(view).toContain("answer A");
+
+    // ...nor from the module cache: a fresh mount paints the cached
+    // transcript synchronously, and it must still hold the sent message.
+    second.unmount();
+    const third = renderHook(() => useAgentChat("agent-X", "user-1"));
+    expect(JSON.stringify(third.result.current.renderItems)).toContain("hello");
+    third.unmount();
+  });
 });

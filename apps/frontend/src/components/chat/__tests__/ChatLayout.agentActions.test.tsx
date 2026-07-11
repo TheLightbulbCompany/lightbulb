@@ -107,9 +107,6 @@ vi.mock("@/hooks/useTeamsApi", () => ({
 }));
 
 // ---- Everything else: passthrough / null stubs ----
-vi.mock("@/hooks/useExecApprovals", () => ({
-  ExecApprovalsProvider: ({ children }: { children: React.ReactNode }) => children,
-}));
 vi.mock("@/components/chat/ProvisioningStepper", () => ({
   ProvisioningStepper: ({ children }: { children: React.ReactNode }) => children,
 }));

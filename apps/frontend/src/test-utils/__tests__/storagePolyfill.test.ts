@@ -15,4 +15,24 @@ describe("installStoragePolyfill", () => {
     expect(window.localStorage.getItem("a")).toBeNull();
     restore();
   });
+
+  it("restore() drops the polyfill instances from every target it installed on", () => {
+    const restore = installStoragePolyfill();
+    const polyLocal = window.localStorage;
+    const polySession = window.sessionStorage;
+    // Sanity: the polyfill really is what's installed pre-restore.
+    expect(globalThis.localStorage).toBe(polyLocal);
+    expect(globalThis.sessionStorage).toBe(polySession);
+    restore();
+    // Identity assertion via own-property descriptors rather than property
+    // reads — a restored native accessor may throw when invoked in some
+    // environments. The Map-backed instances captured above must no longer
+    // be reachable as an own value on either globalThis or window.
+    for (const target of [globalThis, window] as object[]) {
+      const localDesc = Object.getOwnPropertyDescriptor(target, "localStorage");
+      const sessionDesc = Object.getOwnPropertyDescriptor(target, "sessionStorage");
+      expect(localDesc?.value).not.toBe(polyLocal);
+      expect(sessionDesc?.value).not.toBe(polySession);
+    }
+  });
 });

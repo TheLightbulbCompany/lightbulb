@@ -724,6 +724,17 @@ export function useAgentChat(
   // ---- Fetch history on mount / agent change ----
   const historyLoadedRef = useRef<Set<string>>(new Set());
 
+  // Monotonic counter of LOCAL transcript mutations that must survive the
+  // mount-time history revalidation: optimistic user appends, folded run
+  // output, error bubbles, user-initiated clears. The revalidation fetch
+  // below snapshots it at issue time; a different value at resolve time means
+  // the server snapshot predates a local mutation and applying it would drop
+  // that mutation. Deliberately per-instance (not per-session): an unrelated
+  // session's mutation can suppress another session's apply, but that
+  // over-suppression is safe — we keep local state, which self-heals on the
+  // next mount's revalidation — whereas under-suppression loses messages.
+  const transcriptMutationSeqRef = useRef(0);
+
   useEffect(() => {
     if (!agentId || !cacheKey || !isConnected) return;
     if (historyLoadedRef.current.has(cacheKey)) return;
@@ -735,14 +746,27 @@ export function useAgentChat(
     if (!hasCache) {
       Promise.resolve().then(() => setHistoryLoadState("loading"));
     }
+    const mutationSeqAtIssue = transcriptMutationSeqRef.current;
     sendReq("chat.history", { sessionKey, limit: 200 })
       .then((result: unknown) => {
         const historyResult = result as { messages?: HistoryMessage[]; truncated?: boolean };
         historyLoadedRef.current.add(cacheKey);
-        if (historyResult?.truncated === true) {
-          _truncatedHistory.add(cacheKey);
-        } else {
-          _truncatedHistory.delete(cacheKey);
+        // A local transcript mutation while this fetch was in flight (a sent
+        // message, a folded run, a clear) means the snapshot is stale —
+        // applying it would silently drop that mutation from BOTH the live
+        // view and the cache. On cached mounts this fetch is invisible (no
+        // loading state, input enabled), so a send racing it is routine.
+        // Keep local state; the next mount's revalidation self-heals any
+        // divergence. The truncated flag follows the same skip: it describes
+        // the discarded snapshot, and flipping it while keeping the local
+        // transcript would show a banner that doesn't match the screen.
+        const staleSnapshot = transcriptMutationSeqRef.current !== mutationSeqAtIssue;
+        if (!staleSnapshot) {
+          if (historyResult?.truncated === true) {
+            _truncatedHistory.add(cacheKey);
+          } else {
+            _truncatedHistory.delete(cacheKey);
+          }
         }
         setHistoryLoadState("done");
         const raw = Array.isArray(historyResult?.messages) ? historyResult.messages : [];
@@ -756,6 +780,7 @@ export function useAgentChat(
           }
           return;
         }
+        if (staleSnapshot) return;
         if (agentIdRef.current !== agentId) return;
         // Always cache under the key this fetch was issued for; only touch
         // the live transcript if the user is still ON that session. A fetch
@@ -1129,6 +1154,11 @@ export function useAgentChat(
         // cleared there). Append the tool_result block to that message
         // so the approved command's output reaches history and the UI,
         // instead of being silently dropped.
+        //
+        // Local mutation the in-flight history revalidation must not
+        // clobber. Bumped unconditionally (the updater below may return
+        // prev unchanged) — over-suppression is safe, see the seq ref.
+        transcriptMutationSeqRef.current += 1;
         setChatMessages((prev) => {
           for (let i = prev.length - 1; i >= 0; i--) {
             const m = prev[i];
@@ -1316,6 +1346,8 @@ export function useAgentChat(
             timestamp: Date.now(),
             runId,
           };
+          // Local mutation the in-flight history revalidation must not clobber.
+          transcriptMutationSeqRef.current += 1;
           setChatMessages((prev) => [...prev, synthesized]);
           const segText = segments.reduce((acc, s) => acc + s.text.length, 0);
           turnAssistantLenRef.current += segText + (tailStream?.length ?? 0);
@@ -1429,6 +1461,10 @@ export function useAgentChat(
           runId: msg.runId,
           errorCode,
         };
+        // Local mutation the in-flight history revalidation must not clobber
+        // (the error bubble exists only client-side — a server snapshot can
+        // never contain it).
+        transcriptMutationSeqRef.current += 1;
         setChatMessages((prev) => [...prev, errMsg]);
         // Clear ALL live state — including tool state. Without clearing
         // tools, a tool that was still `running` when the error arrived
@@ -1532,6 +1568,8 @@ export function useAgentChat(
         content: [{ type: "text", text: message }],
         timestamp: Date.now(),
       };
+      // Local mutation the in-flight history revalidation must not clobber.
+      transcriptMutationSeqRef.current += 1;
       setChatMessages((prev) => [...prev, userMsg]);
       setIsStreaming(true);
 
@@ -1998,6 +2036,9 @@ export function useAgentChat(
     // chat — mark its runId as cancelled so the handler drops them.
     const activeRunId = clientRunIdRef.current;
     if (activeRunId) cancelledRunIdsRef.current.add(activeRunId);
+    // Local mutation the in-flight history revalidation must not clobber —
+    // a background refetch resolving after a /clear would un-clear the view.
+    transcriptMutationSeqRef.current += 1;
     setChatMessages([]);
     setChatStream(null);
     chatStreamRunIdRef.current = null;

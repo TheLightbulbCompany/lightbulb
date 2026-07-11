@@ -469,12 +469,8 @@ async def _handle_organization_membership_deleted(data: dict) -> None:
 
 
 async def _handle_organization_deleted(data: dict) -> None:
-    """Disable every Paperclip member row attached to the deleted org,
-    and cancel the org's Stripe subscription so seat billing stops.
-
-    Clerk also fires ``organizationMembership.deleted`` for each
-    member, but we belt-and-braces against missed events by sweeping
-    the org-id GSI. ``disable`` is idempotent so a double-fire is safe.
+    """Cancel the org's Stripe subscription so seat billing stops, then
+    disable every Paperclip member row attached to the deleted org.
 
     The org's per-seat subscription is billed on the org's own
     ``billing_accounts`` row (owner_id == org_id), which nothing else
@@ -486,11 +482,37 @@ async def _handle_organization_deleted(data: dict) -> None:
     ``customer.subscription.deleted`` webhook, which handles container
     teardown. Best-effort -- a Stripe error must not break this webhook,
     which still has to return 200 to Clerk.
+
+    This runs BEFORE the member-disable sweep below, and in its own
+    independent try/except, so that a failure in the sweep (e.g. the
+    GSI ``table.query`` pagination call throwing on a DynamoDB
+    throttle/error) can never prevent the billing-critical cancel from
+    running. The sweep is Paperclip cleanup, not billing-critical --
+    it must not be able to block the Stripe cancel.
+
+    Clerk also fires ``organizationMembership.deleted`` for each
+    member, but we belt-and-braces against missed events by sweeping
+    the org-id GSI. ``disable`` is idempotent so a double-fire is safe.
     """
     org_id = data.get("id", "")
     if not org_id:
         logger.warning("Clerk organization.deleted missing id: %s", data)
         return
+
+    try:
+        from core.services.billing_service import cancel_subscription_for_owner
+
+        result = await cancel_subscription_for_owner(org_id)
+        logger.info(
+            "Clerk organization.deleted: Stripe subscription cancel for org %s -> %s",
+            org_id,
+            result.get("status"),
+        )
+    except Exception:
+        logger.exception(
+            "Stripe subscription cancel on organization.deleted failed for org %s",
+            org_id,
+        )
 
     from boto3.dynamodb.conditions import Key
 
@@ -541,21 +563,6 @@ async def _handle_organization_deleted(data: dict) -> None:
         )
     finally:
         await close_paperclip_provisioning(provisioning)
-
-    try:
-        from core.services.billing_service import cancel_subscription_for_owner
-
-        result = await cancel_subscription_for_owner(org_id)
-        logger.info(
-            "Clerk organization.deleted: Stripe subscription cancel for org %s -> %s",
-            org_id,
-            result.get("status"),
-        )
-    except Exception:
-        logger.exception(
-            "Stripe subscription cancel on organization.deleted failed for org %s",
-            org_id,
-        )
 
 
 async def _handle_user_deleted_paperclip(user_id: str) -> None:

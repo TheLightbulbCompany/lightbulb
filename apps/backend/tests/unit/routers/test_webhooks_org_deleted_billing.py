@@ -122,3 +122,60 @@ async def test_organization_deleted_stripe_error_is_swallowed(monkeypatch):
     ):
         # Must not raise.
         await webhooks._handle_organization_deleted({"id": "org_broken"})
+
+
+@pytest.mark.asyncio
+async def test_organization_deleted_member_sweep_failure_does_not_block_cancel(monkeypatch):
+    """If the member-disable sweep's GSI query blows up (DynamoDB throttle,
+    GSI error, etc.), the Stripe cancel must still run.
+
+    Before this fix, the sweep's outer ``table.query`` pagination call was
+    not wrapped in try/except -- only the per-item ``disable()`` call was.
+    A query failure propagated out of the handler *before* the Stripe
+    cancel step ever ran, and because the Clerk webhook route records the
+    svix event as "seen" before dispatch (with no delete-on-failure
+    rollback), Clerk's retry of the same event was swallowed as a
+    duplicate. Net effect: the subscription was never canceled --
+    indefinite billing, the exact bug this handler exists to close.
+
+    The fix runs the Stripe-cancel step first, inside its own independent
+    best-effort try/except, so a sweep failure can never prevent it. The
+    sweep itself is untouched -- its ``table.query`` call is still
+    unwrapped, so the sweep failure still propagates out of the handler
+    (a separate, pre-existing, out-of-scope gap in the Clerk webhook
+    route's dedupe-rollback handling). What matters here is that the
+    Stripe cancel has already run by the time that happens.
+    """
+    from routers import webhooks
+
+    provisioning = MagicMock()
+    provisioning.disable = AsyncMock()
+    broken_table = MagicMock()
+    broken_table.query.side_effect = RuntimeError("GSI throttled")
+    provisioning._repo = MagicMock()
+    provisioning._repo._table.return_value = broken_table
+
+    monkeypatch.setattr(webhooks, "build_paperclip_provisioning", AsyncMock(return_value=provisioning))
+    monkeypatch.setattr(webhooks, "close_paperclip_provisioning", AsyncMock())
+
+    billing_row = {"owner_id": "org_sweep_fail", "stripe_subscription_id": "sub_456"}
+    with (
+        patch(
+            "core.services.billing_service.billing_repo.get_by_owner_id",
+            new=AsyncMock(return_value=billing_row),
+        ),
+        patch(
+            "core.services.billing_service.billing_repo.set_subscription",
+            new=AsyncMock(),
+        ),
+        patch("core.services.billing_service.stripe.Subscription.delete") as mock_delete,
+    ):
+        # The sweep's GSI query throws and that still propagates (untouched,
+        # pre-existing behavior) -- but the Stripe cancel must have already
+        # run before it does.
+        with pytest.raises(RuntimeError, match="GSI throttled"):
+            await webhooks._handle_organization_deleted({"id": "org_sweep_fail"})
+
+    mock_delete.assert_called_once()
+    call_args, _call_kwargs = mock_delete.call_args
+    assert call_args[0] == "sub_456"

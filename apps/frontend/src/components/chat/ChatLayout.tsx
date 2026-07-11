@@ -2,7 +2,6 @@
 
 import "./ChatLayout.css";
 import { useEffect, useMemo, useRef, useState } from "react";
-import useSWR from "swr";
 import { useAuth, useUser, UserButton } from "@clerk/nextjs";
 
 import { capture } from "@/lib/analytics";
@@ -19,7 +18,6 @@ import { useGateway } from "@/hooks/useGateway";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
 import { buildModelNameMap, displayModelName } from "@/lib/modelDisplay";
 import { ExecApprovalsProvider } from "@/hooks/useExecApprovals";
-import { useApi } from "@/lib/api";
 import { useAgents, getAgentModelString, agentDisplayName, type Agent } from "@/hooks/useAgents";
 import { useBilling } from "@/hooks/useBilling";
 import { useOnboardingGate } from "@/hooks/useOnboardingGate";
@@ -31,7 +29,6 @@ import { AgentCreateDialog, AgentRenameDialog, AgentDeleteDialog, SessionDeleteD
 import { Monogram, StatusDot } from "@/components/agents/AgentIdentity";
 import { fromInstalledAgent } from "@/lib/agentDesign";
 import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
-import { myListings } from "@/lib/marketplace/api";
 import { DesktopUpdater } from "@/components/desktop/DesktopUpdater";
 import { DesktopPermissionsGate } from "@/components/desktop/DesktopPermissionsGate";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
@@ -39,27 +36,15 @@ import { emitStep } from "@/components/getstarted/getStartedEvents";
 import { GetStarted } from "@/components/getstarted/GetStarted";
 import { useProvisioningState } from "@/hooks/useProvisioningState";
 import { TEAMS_PANEL_PREFIX } from "@/components/chat/InlineTeamsPanel";
-import { pushSearchParams, replaceSearchParams } from "@/lib/shellNav";
-import { teamsQueryKeys } from "@/components/teams/shared/queryKeys";
+import { pushSearchParams } from "@/lib/shellNav";
 import { useAgentMutations } from "@/components/teams/agents/hooks/useAgentMutations";
 import { SessionList } from "@/components/chat/SessionList";
 import { useActiveSession } from "@/hooks/useActiveSession";
 import { useAgentSessions, type AgentSession } from "@/hooks/useAgentSessions";
-
-/** Minimal shape of `/channels/links/me` — only what the guide's
- *  `channel`-complete derivation reads. A bot is keyed by its agent's UUID
- *  (channels are created per-agent, not on a fixed "main" agent); `linked`
- *  flips true once a member has paired their identity to the bot. */
-interface ChannelBotEntry {
-  agent_id: string;
-  linked: boolean;
-}
-interface ChannelLinksResponse {
-  telegram: ChannelBotEntry[];
-  discord: ChannelBotEntry[];
-  slack: ChannelBotEntry[];
-  can_create_bots: boolean;
-}
+import { useUserSyncOnce } from "@/components/chat/shell/useUserSyncOnce";
+import { useCheckoutReturn } from "@/components/chat/shell/useCheckoutReturn";
+import { useSellerPublishedAgents } from "@/components/chat/shell/useSellerPublishedAgents";
+import { useGetStartedDerived } from "@/components/chat/shell/useGetStartedDerived";
 
 interface ChatLayoutProps {
   children: React.ReactNode;
@@ -103,11 +88,10 @@ export function ChatLayout({
   // user who was always meant to be an org member. The state machine +
   // the router.replace / setActive side effects live in the hook.
   const onboardingPhase = useOnboardingGate();
-  const { isSignedIn, getToken, userId: clerkUserId } = useAuth();
+  const { isSignedIn, userId: clerkUserId } = useAuth();
   const { user } = useUser();
-  const api = useApi();
   const { agents, defaultId, createAgent, deleteAgent, updateAgent } = useAgents();
-  const { refresh: refreshBilling, account, isSubscribed } = useBilling();
+  const { account, isSubscribed } = useBilling();
   const { nodeConnected } = useGateway();
   // Models catalog for the sidebar agent rows: resolves Bedrock
   // application-inference-profile ARNs to display names ("Claude Opus 4.6")
@@ -117,19 +101,9 @@ export function ChatLayout({
   const searchParams = useSearchParams();
 
   const [userSelectedId, setUserSelectedId] = useState<string | null>(null);
-  // Stripe Checkout returns either ?subscription=success (legacy) or
-  // ?checkout=success (new trial-checkout flow). Both should trigger the
-  // billing-refresh + URL-cleanup effect.
-  //
-  // Two separate state slices keyed off the same URL param so the banner
-  // and the polling lifecycle are independent — banner auto-dismisses at
-  // 5s, polling continues for up to 30s. Without this split the
-  // banner-dismiss tear-down clobbers the poll interval.
-  const cameFromCheckout =
-    searchParams.get("subscription") === "success" ||
-    searchParams.get("checkout") === "success";
-  const [showSubscriptionSuccess, setShowSubscriptionSuccess] = useState(() => cameFromCheckout);
-  const [pollingForWebhook, setPollingForWebhook] = useState(() => cameFromCheckout);
+  // Stripe checkout-return handling (banner + webhook polling + URL cleanup)
+  // lives in the shared shell hook.
+  const { showSubscriptionSuccess } = useCheckoutReturn();
   const [recoveryTriggered, setRecoveryTriggered] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const { openSupport } = useSupport();
@@ -184,11 +158,6 @@ export function ChatLayout({
     }
   }
 
-  // Per-mount latch so the /users/sync effect (which re-runs on every render
-  // because `api` identity churns) fires the sync at most once. See the effect
-  // below for the full rationale.
-  const syncStartedRef = useRef(false);
-
   const subscriptionStatus = account?.subscription_status ?? null;
   const userName = user?.fullName || user?.firstName || "User";
   const userInitials = userName
@@ -198,53 +167,9 @@ export function ChatLayout({
     .slice(0, 2)
     .toUpperCase();
 
-  // /users/sync waits for the gate to be ``ready``. Firing sync with a
-  // pre-activation JWT used to create phantom personal billing rows — the
-  // backend no longer does that write, but we gate here too so other
-  // context-sensitive endpoints called from sync paths (future-proofing)
-  // don't misresolve owner_id either.
-  //
-  // Synchronous in-flight latch (`syncStartedRef`): this effect depends on
-  // `api`, which `useApi()` returns as a fresh object every render, so it
-  // re-runs on every re-render — and ChatLayout re-renders frequently while
-  // data hooks settle (e.g. `useProvisioningState` polling `/container/status`).
-  // The sessionStorage guard below is only written *after* the async
-  // `syncUser()` resolves, so during that in-flight window the re-render
-  // burst would re-fire `syncUser` several times (a real over-fetch, since
-  // sync is a network POST). The ref latches synchronously before the call
-  // so the effect fires sync at most once per mount; sessionStorage handles
-  // the cross-mount / cross-session dedupe. On failure we release the latch
-  // (sessionStorage is only written on success) so a genuine error can retry.
-  useEffect(() => {
-    if (!isSignedIn) return;
-    if (onboardingPhase !== "ready") return;
-    if (syncStartedRef.current) return;
-    // Once per browser session: sync is an idempotent Clerk→DDB upsert and
-    // ChatLayout remounts on every view switch / page load — re-firing it
-    // each time is pure backend load.
-    const syncedKey = "isol8:user-synced";
-    try {
-      if (sessionStorage.getItem(syncedKey)) return;
-    } catch {
-      // sessionStorage unavailable (privacy mode) — fall through and sync.
-    }
-    syncStartedRef.current = true;
-    api
-      .syncUser()
-      .then(() => {
-        try {
-          sessionStorage.setItem(syncedKey, "1");
-        } catch {
-          // best effort
-        }
-      })
-      .catch((err: unknown) => {
-        // Release the latch so the next render can retry — the session
-        // guard is only set on success, so a failed sync must stay retryable.
-        syncStartedRef.current = false;
-        console.error("User sync failed:", err);
-      });
-  }, [isSignedIn, api, onboardingPhase]);
+  // One-shot /users/sync (see the hook for the JWT-gating + latch rationale).
+  // Enabled = the same guard set the original effect's early returns used.
+  useUserSyncOnce(Boolean(isSignedIn) && onboardingPhase === "ready");
 
   // Dispatch DOM event so page.tsx picks up the current agent (external system sync)
   const lastDispatchedRef = useRef<string | null>(null);
@@ -254,59 +179,6 @@ export function ChatLayout({
       dispatchSelectAgentEvent(currentAgentId);
     }
   }, [currentAgentId]);
-
-  // Post-checkout confirmation: refresh billing + clean URL.
-  // Strip ONLY ?checkout / ?subscription, preserving ?provider= so the
-  // ProvisioningStepper can still render the provider-specific step
-  // (ChatGPTOAuthStep / ByoKeyStep / CreditsStep) — without this, the
-  // OAuth + BYO paths break because the wizard never gets to the step
-  // that collects the user's credentials.
-  useEffect(() => {
-    if (!showSubscriptionSuccess) return;
-
-    refreshBilling();
-    const params = new URLSearchParams(searchParams.toString());
-    params.delete("checkout");
-    params.delete("subscription");
-    replaceSearchParams(params);
-
-    const dismissTimer = setTimeout(() => setShowSubscriptionSuccess(false), 5000);
-    return () => clearTimeout(dismissTimer);
-  }, [showSubscriptionSuccess, refreshBilling, searchParams]);
-
-  // Post-credit-checkout return. Stripe sends users back with
-  // ?credits=success (or =cancel) when they finish the credit top-up
-  // flow. We just strip the param — the credit balance refresh happens
-  // automatically via useCredits' refreshInterval/onFocus, and the
-  // ProvisioningStepper re-evaluates needsProviderStep on URL change so
-  // the wizard advances out of CreditsStep on success.
-  const cameFromCreditsCheckout = searchParams.get("credits") !== null;
-  useEffect(() => {
-    if (!cameFromCreditsCheckout) return;
-    const params = new URLSearchParams(searchParams.toString());
-    params.delete("credits");
-    replaceSearchParams(params);
-  }, [cameFromCreditsCheckout, searchParams]);
-
-  // Race against Stripe webhook delivery: the user returns from Checkout
-  // before customer.subscription.created lands at our webhook endpoint
-  // (typically <2s, but variable). Without polling, the wizard would
-  // bounce back to the ProviderPicker because is_subscribed stays False
-  // until the webhook persists subscription_status. Poll every 2s for up
-  // to 30s — once is_subscribed flips True we stop early, otherwise we
-  // give up so we don't poll forever.
-  //
-  // Keyed on `pollingForWebhook` (independent of the banner state) so the
-  // banner's 5s auto-dismiss doesn't cancel the longer poll loop.
-  useEffect(() => {
-    if (!pollingForWebhook || isSubscribed) return;
-    const pollInterval = setInterval(() => refreshBilling(), 2000);
-    const giveUpTimer = setTimeout(() => setPollingForWebhook(false), 30_000);
-    return () => {
-      clearInterval(pollInterval);
-      clearTimeout(giveUpTimer);
-    };
-  }, [pollingForWebhook, isSubscribed, refreshBilling]);
 
   // Marketplace drawer: when a hire completes, the provider sets
   // `freshlyInstalledAgentId` so the matching sidebar row plays the
@@ -321,33 +193,9 @@ export function ChatLayout({
     return () => clearTimeout(handle);
   }, [drawerState.freshlyInstalledAgentId, setFreshlyInstalled]);
 
-  // Fetch the seller's listings so we can render a gold pub-dot on the
-  // sidebar avatar of agents the user has published. Cross-references
-  // listing.manifest_json.agent_id (source agent at publish time) with the
-  // current installed agent set. Best-effort — failure drops the badge
-  // silently rather than breaking the chat shell.
-  // SWR (vs. a mount effect) so the call dedupes across ChatLayout
-  // remounts and never re-fires on Clerk's getToken identity churn — the
-  // effect form refetched on every auth-state render. Best-effort: errors
-  // drop the badge silently (no retry; the badge isn't load-bearing).
-  const { data: sellerListings } = useSWR(
-    user?.id ? ["seller-listings", user.id] : null,
-    async ([, sellerId]: [string, string]) => {
-      const jwt = await getToken();
-      if (!jwt) return { items: [] };
-      return myListings({ sellerId, jwt });
-    },
-    { revalidateOnFocus: false, dedupingInterval: 300_000, shouldRetryOnError: false },
-  );
-  const publishedAgentIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const listing of sellerListings?.items ?? []) {
-      const sourceAgentId = (listing as unknown as { manifest_json?: { agent_id?: string } })
-        .manifest_json?.agent_id;
-      if (sourceAgentId) ids.add(sourceAgentId);
-    }
-    return ids;
-  }, [sellerListings]);
+  // Gold pub-dot on the sidebar avatar of agents the user has published —
+  // the seller-listings read + cross-reference lives in the shared shell hook.
+  const publishedAgentIds = useSellerPublishedAgents();
 
   // "Get started" guide. Gate the floating guide — AND its completion-signal
   // fetches — on the signal that the chat surface is actually live and
@@ -370,111 +218,9 @@ export function ChatLayout({
   // additionally requires the gateway pool to have connected.
   const { container } = useProvisioningState();
   const chatReady = container?.phase === "ready";
-  // `channel` complete = the user has actually connected a channel: ANY
-  // provider has at least one bot a member has paired their identity to
-  // (`linked: true`), for ANY agent. Channels are created per-agent (keyed by
-  // the agent's UUID), so the old `agent_id === "main"` check matched no real
-  // bot and the step never ticked once channels moved to the per-agent tab.
-  // `linked` (not bare bot-exists) is the truest "connected" signal and mirrors
-  // the `emitStep("channel")` producer in BotSetupWizard, which fires on the
-  // same pairing success. Null SWR key until `chatReady` (SWR's canonical
-  // conditional-fetch gate) so `/channels/links/me` never fires during the
-  // cold-start window.
-  const { data: channelLinks } = useSWR<ChannelLinksResponse>(
-    chatReady ? "/channels/links/me" : null,
-    () => api.get("/channels/links/me") as Promise<ChannelLinksResponse>,
-    // Channel-link state changes rarely (only on a bot pairing) and feeds
-    // a single boolean — don't revalidate on every window focus. Mirrors
-    // the sibling seller-listings read.
-    { revalidateOnFocus: false, dedupingInterval: 300_000 },
-  );
-  const channelLinked =
-    !!channelLinks &&
-    (["telegram", "discord", "slack"] as const).some((p) =>
-      channelLinks[p]?.some((b) => b.linked),
-    );
-  // `task` complete = the team already has >= 1 task. We only consume the
-  // task-exists boolean, so read just the `all` inbox tab directly (via the
-  // same bearer-only `useTeamsApi` the roster fetch above uses) rather than
-  // `useInboxData`, which fans out to three reads (mine/recent/all) for
-  // surfaces that render the full inbox — two of those are pure waste here.
-  // The key is `useInboxData`'s exact `all` key, so this shares SWR's cache
-  // with the inbox panel when it's open (no duplicate fetch). Gated on
-  // `chatReady` (null key) so it never fires during the cold-start window.
-  // Residual: a legacy pre-Paperclip owner whose container is live but whose
-  // Teams workspace was never provisioned can still see this read error-retry
-  // once `chatReady` is true. We do NOT add a `useTeamsWorkspaceStatus` gate
-  // here because that hook has no `enabled` param and would itself fire an
-  // always-on `/teams/dashboard` poll during the provisioning window this
-  // fix is meant to keep quiet.
-  const { data: allInbox } = readTeams<{ items?: unknown[] } | unknown[]>(
-    chatReady ? teamsQueryKeys.inbox.list("all", {}) : null,
-  );
-  const taskExists = Array.isArray(allInbox)
-    ? allInbox.length > 0
-    : (allInbox?.items?.length ?? 0) > 0;
-  // `hire` complete = the user has at least one marketplace-installed
-  // specialist. The truest persistent signal is the set of `.template`
-  // sidecars EFS writes on every marketplace deploy (catalog_service), which
-  // `/marketplace/me/installed-templates` enumerates. It mirrors the
-  // `emitStep("hire")` producer (a fresh install) but survives reloads, so a
-  // user who hired BEFORE the guide shipped still sees the step ticked. The
-  // gateway roster (`agents.list`) carries NO installed-from-marketplace
-  // marker — `agents.update`'s schema is strict, so no source/listing field
-  // survives a deploy — and a "count past Friday + Atlas" heuristic can't tell
-  // a hired specialist from a user-created agent (Atlas isn't even reliably
-  // identifiable in the gateway roster), so the sidecar list is the only sound
-  // source. Null SWR key until `chatReady`, low-frequency (mirrors the
-  // seller-listings fetch) so it never fires during the cold-start window.
-  const { data: installedTemplates } = useSWR<{ installed: { agent_id: string }[] }>(
-    chatReady ? "/marketplace/me/installed-templates" : null,
-    () =>
-      api.get("/marketplace/me/installed-templates") as Promise<{
-        installed: { agent_id: string }[];
-      }>,
-    { revalidateOnFocus: false, dedupingInterval: 300_000 },
-  );
-  const hireDone = (installedTemplates?.installed?.length ?? 0) > 0;
-  // `chat` complete = the user has ever held a REAL conversation. OpenClaw
-  // creates a session the first time a user actually chats, and `sessions.list`
-  // enumerates them — the cheap persistent read that backfills the step for
-  // users who chatted before the guide shipped (the in-app `emitStep("chat")`
-  // producer only covers chats sent while the guide is mounted).
-  //
-  // Two guards keep this from false-positiving on a brand-new container, where
-  // a bare session-exists count would pre-tick the step before the user types:
-  //   - `includeUnknown: false` (plus `includeGlobal: false`): the
-  //     Paperclip/openclaw adapter handshake (Friday/Atlas connecting) can
-  //     create a non-global "unknown" session at provision time, before any
-  //     user message. Counting those, or the implicit `global` session, would
-  //     tick "chat done" on first load. Only genuine agent sessions count.
-  //   - require `totalTokens > 0` on at least one session: even a genuine
-  //     session can be opened empty (handshake / focus) with no model
-  //     round-trip, so existence alone still mis-fires. A token-bearing
-  //     session is the truest "a real chat happened" signal.
-  // The newest session may itself be a zero-token shell, so fetch a small
-  // bounded window (not `limit: 1`) to be sure a token-bearing one is visible —
-  // still cheap (no last-message / derived-title enrichment). Gated on
-  // `chatReady` via a null method (the gateway pool is connected by then) and
-  // low-frequency (dedupingInterval bumped to 5min, overriding the hook's 10s)
-  // so it is not an always-on poll; the hook's event-driven revalidation stays
-  // throttled. The `emitStep("chat")` event still completes real in-app chats
-  // instantly (OR'd in `useGetStarted`), so this read only backfills history.
-  const { data: sessionsData } = useGatewayRpc<
-    { sessions?: { totalTokens?: number }[] } | { totalTokens?: number }[]
-  >(
-    chatReady ? "sessions.list" : null,
-    { includeGlobal: false, includeUnknown: false, limit: 25 },
-    { dedupingInterval: 300_000 },
-  );
-  const chatSessions = Array.isArray(sessionsData)
-    ? sessionsData
-    : sessionsData?.sessions ?? [];
-  const chatStarted = chatSessions.some((s) => (s.totalTokens ?? 0) > 0);
-  const getStartedDerived = useMemo(
-    () => ({ chat: chatStarted, hire: hireDone, channel: channelLinked, task: taskExists }),
-    [chatStarted, hireDone, channelLinked, taskExists],
-  );
+  // The four completion signals (chat/hire/channel/task) are derived in the
+  // shared shell hook; each read stays null-keyed until `chatReady`.
+  const getStartedDerived = useGetStartedDerived(chatReady);
 
   function handleSelectAgent(agentId: string): void {
     capture("agent_selected", { agent_id: agentId });

@@ -210,6 +210,98 @@ async def test_reconcile_matches_reserve_across_session_key_casing(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_release_refunds_reserve(monkeypatch):
+    """release() is a full refund (not fail-closed like reconcile): the
+    turn never dispatched to OpenClaw, so it provably cost $0. The reserve
+    must net back to zero and the _reserves entry must be cleared."""
+    totals = {}
+
+    async def fake_add(o, d, delta):
+        totals[d] = totals.get(d, 0) + delta
+        return totals[d]
+
+    monkeypatch.setattr("core.services.meta_cap.billing_repo.add_meta_daily_spend", fake_add)
+
+    blocked = await meta_cap.reserve_or_block("user_x", "sk1")
+    assert blocked is False
+    date = meta_cap.utc_today()
+    assert totals[date] == RESERVE_MICROCENTS
+    assert ("user_x", "sk1") in meta_cap._reserves
+
+    await meta_cap.release("user_x", "sk1")
+
+    assert totals[date] == 0  # fully refunded, not just trued down
+    assert ("user_x", "sk1") not in meta_cap._reserves
+
+
+@pytest.mark.asyncio
+async def test_release_no_reserve_is_noop(monkeypatch):
+    """release() for an (owner, session_key) with no outstanding reserve
+    (never reserved, already reconciled, or already released) must not
+    touch the counter and must not raise."""
+    calls = []
+
+    async def fake_add(o, d, delta):
+        calls.append((o, d, delta))
+        return delta
+
+    monkeypatch.setattr("core.services.meta_cap.billing_repo.add_meta_daily_spend", fake_add)
+
+    await meta_cap.release("user_x", "never_reserved")
+
+    assert calls == []  # no DDB call at all
+    assert meta_cap._reserves == {}
+
+
+@pytest.mark.asyncio
+async def test_release_uses_stored_date_across_midnight(monkeypatch):
+    """Mirrors reconcile's stored-date discipline: a release that runs
+    after midnight (utc_today() now returns D2) must still credit the
+    refund against D1, the date the reserve was placed on."""
+    totals = {}
+
+    async def fake_add(o, d, delta):
+        totals[d] = totals.get(d, 0) + delta
+        return totals[d]
+
+    monkeypatch.setattr("core.services.meta_cap.billing_repo.add_meta_daily_spend", fake_add)
+    monkeypatch.setattr("core.services.meta_cap.utc_today", lambda: "2026-07-10")
+    await meta_cap.reserve_or_block("user_x", "sk1")
+    assert totals["2026-07-10"] == RESERVE_MICROCENTS
+
+    monkeypatch.setattr("core.services.meta_cap.utc_today", lambda: "2026-07-11")
+    await meta_cap.release("user_x", "sk1")
+
+    assert totals["2026-07-10"] == 0  # refund applied to D1
+    assert "2026-07-11" not in totals  # D2 untouched
+
+
+@pytest.mark.asyncio
+async def test_release_matches_reserve_across_session_key_casing(monkeypatch):
+    """Same casing normalization as reconcile: OpenClaw's event session key
+    is lowercased, but the reserve side's key embeds the original
+    mixed-case Clerk user_id. release() must normalize to find it."""
+    totals = {}
+
+    async def fake_add(o, d, delta):
+        totals[d] = totals.get(d, 0) + delta
+        return totals[d]
+
+    monkeypatch.setattr("core.services.meta_cap.billing_repo.add_meta_daily_spend", fake_add)
+
+    mixed_case_key = "agent:agent_x:User_ABC"
+    lowercased_key = "agent:agent_x:user_abc"
+
+    blocked = await meta_cap.reserve_or_block("owner1", mixed_case_key)
+    assert blocked is False
+
+    await meta_cap.release("owner1", lowercased_key)
+
+    assert sum(totals.values()) == 0  # fully refunded
+    assert meta_cap._reserves == {}
+
+
+@pytest.mark.asyncio
 async def test_cross_owner_reconcile_does_not_collide(monkeypatch):
     """reconcile(ownerB, session_key, ...) must never pop ownerA's reserve
     or apply a delta against ownerB's counter for a session_key ownerB

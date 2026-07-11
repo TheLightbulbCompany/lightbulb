@@ -2042,6 +2042,32 @@ async def _process_agent_chat_background(
     # The flag guarantees pool + session_key are bound (the mark is past both).
     if run_active_marked:
         pool.clear_active_run(owner_id, session_key)
+
+    # Refund the free-tier Meta-cap reserve (if any) placed by gate_chat for
+    # this turn. chat.send never reached OpenClaw on ANY of the branches
+    # above (timeout / connection error / gateway error / unknown), so the
+    # turn provably cost $0 -- unlike reconcile's fail-closed "cost
+    # unknown" case (a turn that DID run but never reported usage), a full
+    # refund is the correct direction here. Leaving the reserve in place
+    # would permanently lock a free-tier owner out of the daily cap on
+    # every dispatch failure (e.g. a container flap), despite Isol8 having
+    # spent nothing on the turn.
+    #
+    # meta_cap.release is a clean no-op when there's no outstanding reserve
+    # (paid / non-trial owners never place one, and a gate that blocked the
+    # turn already rolled its own reserve back) -- so it's called
+    # unconditionally rather than re-checking subscription_status here.
+    # Wrapped so a release failure can never mask the original chat.send
+    # error being reported to the client below (this also safely absorbs a
+    # NameError if session_key was never bound -- i.e. the failure happened
+    # before line ~1828, before any reserve could exist for this turn).
+    try:
+        from core.services import meta_cap
+
+        await meta_cap.release(owner_id, session_key)
+    except Exception:
+        logger.warning("[%s] meta_cap.release failed for agent=%s", user_id, agent_id)
+
     try:
         management_api.send_message(
             connection_id,

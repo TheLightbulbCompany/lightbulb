@@ -389,6 +389,71 @@ class TestProcessAgentChatBackground:
         assert sent_msg["type"] == "error"
 
     @pytest.mark.asyncio
+    async def test_dispatch_failure_releases_meta_cap_reserve(
+        self, mock_ecs_manager, mock_pool, mock_mgmt_api, container_with_ip
+    ):
+        """A failed chat.send dispatch means the turn never reached
+        OpenClaw, so any free-tier Meta-cap reserve gate_chat placed for it
+        must be refunded -- otherwise the worst-case reserve sticks around
+        forever (no lifecycle/end will ever fire to reconcile it), and a
+        few failed sends during a container flap permanently locks the
+        owner out of the daily free-tier cap. meta_cap.release is a no-op
+        for paid/non-trial owners, so it's called unconditionally on every
+        dispatch-failure branch — verify it fires here regardless of which
+        exception type caused the failure."""
+        mock_pool.send_rpc = AsyncMock(side_effect=RuntimeError("Connection lost"))
+        with patch("core.services.meta_cap.release", new=AsyncMock()) as release_mock:
+            await _process_agent_chat_background(
+                connection_id="conn-1",
+                user_id="user-1",
+                owner_id="user-1",
+                agent_id="luna",
+                message="Hello!",
+            )
+        release_mock.assert_awaited_once_with("user-1", "agent:luna:user-1")
+
+    @pytest.mark.asyncio
+    async def test_dispatch_failure_release_error_does_not_mask_original_error(
+        self, mock_ecs_manager, mock_pool, mock_mgmt_api, container_with_ip
+    ):
+        """meta_cap.release itself raising must not prevent the original
+        chat.send failure from being reported to the client -- a refund
+        bug must never swallow the user-facing error notification."""
+        mock_pool.send_rpc = AsyncMock(side_effect=RuntimeError("Connection lost"))
+        with patch(
+            "core.services.meta_cap.release",
+            new=AsyncMock(side_effect=RuntimeError("release boom")),
+        ):
+            await _process_agent_chat_background(
+                connection_id="conn-1",
+                user_id="user-1",
+                owner_id="user-1",
+                agent_id="luna",
+                message="Hello!",
+            )
+        sent_msg = mock_mgmt_api.send_message.call_args[0][1]
+        assert sent_msg["type"] == "error"
+        assert "Connection lost" in sent_msg["message"]
+
+    @pytest.mark.asyncio
+    async def test_successful_send_does_not_release_meta_cap_reserve(
+        self, mock_ecs_manager, mock_pool, mock_mgmt_api, container_with_ip
+    ):
+        """A successful chat.send dispatch must NOT release the reserve --
+        settlement for a turn that actually reached OpenClaw belongs solely
+        to the post-turn reconcile path (lifecycle/end), not to this
+        dispatch success path."""
+        with patch("core.services.meta_cap.release", new=AsyncMock()) as release_mock:
+            await _process_agent_chat_background(
+                connection_id="conn-1",
+                user_id="user-1",
+                owner_id="user-1",
+                agent_id="luna",
+                message="Hello!",
+            )
+        release_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_side_send_failure_does_not_clear_active_run(
         self, mock_ecs_manager, mock_pool, mock_mgmt_api, container_with_ip
     ):

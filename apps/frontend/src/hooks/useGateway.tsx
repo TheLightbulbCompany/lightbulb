@@ -16,6 +16,7 @@ import {
 import { WS_URL } from "@/lib/api";
 import {
   DESKTOP_PERMISSIONS_CHANGED_EVENT,
+  isPermissionsStorageEvent,
   readDesktopPermissionGrant,
 } from "@/lib/desktopPermissions";
 
@@ -78,11 +79,14 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (typeof window === "undefined") return;
     const bump = () => setDesktopPermissionRevision((value) => value + 1);
+    const onStorage = (event: StorageEvent) => {
+      if (isPermissionsStorageEvent(event)) bump();
+    };
     window.addEventListener(DESKTOP_PERMISSIONS_CHANGED_EVENT, bump);
-    window.addEventListener("storage", bump);
+    window.addEventListener("storage", onStorage);
     return () => {
       window.removeEventListener(DESKTOP_PERMISSIONS_CHANGED_EVENT, bump);
-      window.removeEventListener("storage", bump);
+      window.removeEventListener("storage", onStorage);
     };
   }, []);
 

@@ -16,6 +16,13 @@ import time
 from pathlib import Path
 
 from core import openclaw_version
+from core.billing.meta_pricing import (
+    CONTEXT_TOKENS,
+    EFFORT,
+    MAX_TOKENS,
+    META_COST_USD_PER_MILLION,
+    META_MODEL_REF,
+)
 from core.config import settings
 from core.services.paperclip_meta import (
     PAPERCLIP_AGENT_ROLES,
@@ -484,7 +491,35 @@ def build_provider_block(
         # (extensions/meta, muse-spark-1.1). Key via MODEL_API_KEY env (a task-def
         # secret set at provision time) — never in openclaw.json. Locked single
         # model: fallback == primary so it isn't user-changeable.
-        return ({}, {"primary": "meta/muse-spark-1.1", "fallbacks": ["meta/muse-spark-1.1"]}, {})
+        #
+        # Unlike chatgpt_oauth (which omits models.providers.openai entirely
+        # to avoid shadowing the OAuth-backed built-in provider), meta DOES
+        # need an explicit providers_config entry: the free-tier $3/day cap
+        # relies on OpenClaw's own `estimatedCostUsd`, which is computed from
+        # the model's `cost` block. Without it, the bundled manifest's
+        # catalog defaults the rate to 0 and every turn reports $0 spent —
+        # see core/billing/meta_pricing.py. baseUrl/api mirror the meta
+        # extension manifest (api.ai.meta.com/v1, openai-responses); this is
+        # cosmetic (the manifest already wires the real endpoint via
+        # MODEL_API_KEY) but keeps this override from diverging from it.
+        providers_config = {
+            "meta": {
+                "baseUrl": "https://api.ai.meta.com/v1",
+                "api": "openai-responses",
+                "models": [
+                    {
+                        "id": META_MODEL_REF,
+                        "cost": META_COST_USD_PER_MILLION,
+                        "maxTokens": MAX_TOKENS,
+                    }
+                ],
+            }
+        }
+        return (
+            providers_config,
+            {"primary": META_MODEL_REF, "fallbacks": [META_MODEL_REF]},
+            {},
+        )
     raise ValueError(f"Unknown provider_choice: {provider_choice!r}")
 
 
@@ -995,6 +1030,15 @@ def build_openclaw_config_dict(
         "agents": {
             "defaults": {
                 "model": default_model,
+                # contextTokens is a first-class agents.defaults key (NOT
+                # inside `params`) that tells OpenClaw the model's effective
+                # context budget, used both by contextPruning's trigger
+                # ratios (see the comment below) and by estimatedCostUsd's
+                # cache-inclusive math. Only meta needs it set explicitly —
+                # its bundled manifest doesn't declare a contextWindow the
+                # way the Bedrock catalog entries do above. Other providers
+                # omit the key and inherit OpenClaw's per-model default.
+                **({"contextTokens": CONTEXT_TOKENS} if provider_choice == "meta" else {}),
                 # Global default provider params applied to all models before
                 # per-model/per-agent overrides (openclaw
                 # zod-schema.agent-defaults.ts is a free-form record). The
@@ -1005,7 +1049,17 @@ def build_openclaw_config_dict(
                 # window so re-reads land within it, cutting input-token cost.
                 # the openai provider ignores the key, so it's a global no-op
                 # there — set unconditionally rather than per-provider.
-                "params": {"cacheRetention": "long"},
+                #
+                # meta additionally threads `effort` (reasoning effort) and a
+                # per-turn `maxTokens` clamp through this same free-form dict
+                # — the free-tier $3/day cap's pre-send reserve
+                # (meta_pricing.RESERVE_MICROCENTS) assumes a bounded
+                # worst-case turn, so the model must actually be clamped to
+                # match, not just priced.
+                "params": {
+                    "cacheRetention": "long",
+                    **({"effort": EFFORT, "maxTokens": MAX_TOKENS} if provider_choice == "meta" else {}),
+                },
                 # contextLimits is a no-op stub (its schema doesn't change
                 # behavior when empty); kept as an explicit default.
                 "contextLimits": {},

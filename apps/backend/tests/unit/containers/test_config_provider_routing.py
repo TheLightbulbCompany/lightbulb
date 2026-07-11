@@ -5,7 +5,15 @@ import json
 import pytest
 
 from core.billing.bedrock_pricing import get_rate
+from core.billing.meta_pricing import (
+    CONTEXT_TOKENS,
+    EFFORT,
+    MAX_TOKENS,
+    META_COST_USD_PER_MILLION,
+    META_MODEL_REF,
+)
 from core.containers.config import (
+    build_openclaw_config_dict,
     build_provider_block,
     cheap_model_ref,
     heartbeat_model_ref,
@@ -60,9 +68,10 @@ async def test_meta_provider_branch(tmp_path):
     """meta is bundled + enabledByDefault in the 7.1 base image (extensions/meta,
     muse-spark-1.1). Keyed via MODEL_API_KEY (an ECS task-def secret), never in
     openclaw.json. Locked single model — fallback == primary so it isn't
-    user-changeable, mirroring the chatgpt_oauth shape (no explicit
-    models.providers block, no plugin entry, since the provider is bundled in
-    the base image)."""
+    user-changeable. Unlike chatgpt_oauth, meta DOES emit an explicit
+    ``models.providers.meta`` block (cost + maxTokens) so OpenClaw's
+    ``estimatedCostUsd`` reflects the real per-token rate instead of $0 —
+    see the free-tier cost-cap spec."""
     out = tmp_path / "openclaw.json"
     await write_openclaw_config(
         config_path=out,
@@ -74,21 +83,64 @@ async def test_meta_provider_branch(tmp_path):
     model_block = cfg["agents"]["defaults"]["model"]
     assert model_block["primary"] == "meta/muse-spark-1.1"
     assert model_block["fallbacks"] == ["meta/muse-spark-1.1"]
-    assert "meta" not in cfg["models"].get("providers", {})
+    meta_provider = cfg["models"]["providers"]["meta"]
+    entry = meta_provider["models"][0]
+    assert entry["id"] == META_MODEL_REF
+    assert entry["cost"] == META_COST_USD_PER_MILLION
+    assert entry["maxTokens"] == MAX_TOKENS
 
 
 def test_build_provider_block_meta_exact_shape():
-    """Direct unit test on the builder: meta returns exactly the locked
-    single-model shape with no providers config and no plugin entries."""
-    assert build_provider_block(
+    """Direct unit test on the builder: meta returns a locked single-model
+    shape (fallback == primary, not user-changeable) with an explicit
+    providers_config carrying the real cost rate + maxTokens clamp, and no
+    plugin entries (the meta extension is bundled + enabledByDefault in the
+    base image)."""
+    providers, default_model, plugin_entries = build_provider_block(
         provider_choice="meta",
         user_id="u_1",
         byo_provider=None,
-    ) == (
-        {},
-        {"primary": "meta/muse-spark-1.1", "fallbacks": ["meta/muse-spark-1.1"]},
-        {},
     )
+    assert default_model == {"primary": META_MODEL_REF, "fallbacks": [META_MODEL_REF]}
+    assert plugin_entries == {}
+    entry = providers["meta"]["models"][0]
+    assert entry["id"] == META_MODEL_REF
+    assert entry["cost"] == META_COST_USD_PER_MILLION
+    assert entry["maxTokens"] == MAX_TOKENS
+
+
+def test_meta_provider_block_sets_cost_and_clamps():
+    """Direct unit test per Task 3 brief: the meta providers_config entry
+    carries the real per-token rate (input/output distinct, cacheRead
+    conservatively defaulted to the input rate) + the maxTokens clamp, so
+    OpenClaw's estimatedCostUsd is cache-inclusive-correct instead of the
+    $0 the empty providers_config previously produced."""
+    providers, _, _ = build_provider_block(
+        provider_choice="meta",
+        user_id="u_1",
+        byo_provider=None,
+    )
+    entry = providers["meta"]["models"][0]
+    assert entry["id"] == "meta/muse-spark-1.1"
+    assert entry["cost"]["input"] == 1.25
+    assert entry["cost"]["output"] == 4.25
+    assert entry["cost"]["cacheRead"] == 1.25  # conservative default
+    assert entry["maxTokens"] == 32000
+
+
+def test_meta_config_sets_agent_defaults_clamps():
+    """Direct unit test per Task 3 brief: the meta path sets
+    agents.defaults.contextTokens (first-class key) and threads
+    effort/maxTokens into the free-form agents.defaults.params dict."""
+    cfg = build_openclaw_config_dict(
+        user_id="u_1",
+        gateway_token="test-token",
+        provider_choice="meta",
+    )
+    d = cfg["agents"]["defaults"]
+    assert d["contextTokens"] == CONTEXT_TOKENS == 200_000
+    assert d["params"]["effort"] == EFFORT == "medium"
+    assert d["params"]["maxTokens"] == MAX_TOKENS == 32_000
 
 
 @pytest.mark.asyncio

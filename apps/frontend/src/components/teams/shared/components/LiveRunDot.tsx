@@ -1,7 +1,7 @@
 "use client";
 
 import { cn } from "@/lib/utils";
-import type { LiveRunActivity } from "@/components/teams/dashboard/hooks/useLiveRuns";
+import type { LiveRunActivity } from "@/components/teams/shared/lib/liveRuns";
 
 interface LiveRunDotProps {
   /** Healthy "running" (forest ping) vs "stalled" (amber pulse). */
@@ -10,27 +10,41 @@ interface LiveRunDotProps {
   size?: "sm" | "md";
   /** Tooltip + a11y label; falls back to a per-state default. */
   title?: string;
+  /**
+   * Render as purely decorative (aria-hidden, no role). Use when the run
+   * state is already announced by adjacent visible text (e.g. the Dashboard
+   * card's status line) so screen readers don't hear it twice. The hover
+   * `title` tooltip is kept either way.
+   */
+  decorative?: boolean;
   className?: string;
   testId?: string;
 }
 
-const TONE: Record<LiveRunActivity, { color: string; anim: string; label: string }> = {
-  // A lively forest "ping" reads as working; a slow amber "pulse" reads as
-  // stuck / needs-a-look — never red (the run is still live, not failed).
-  running: { color: "var(--forest)", anim: "animate-ping", label: "Agent running" },
-  stalled: { color: "var(--warn)", anim: "animate-pulse", label: "Agent may be stuck" },
+const TONE: Record<LiveRunActivity, { color: string; halo: string; label: string }> = {
+  // A lively soft-forest "ping" reads as working; a slow amber "pulse" reads
+  // as stuck / needs-a-look — never red (the run is still live, not failed).
+  running: { color: "var(--forest)", halo: "var(--forest-soft)", label: "Agent running" },
+  stalled: { color: "var(--warn)", halo: "var(--warn)", label: "Agent may be stuck" },
 };
 
 /**
- * Live-run status dot shared across the Teams surfaces (Inbox list, Dashboard
- * active-agents, issue detail). The stalled classification is upstream-
- * authoritative (see `liveRunActivity`), not a local heuristic — so a hung
- * overnight run looks visibly stuck instead of silently "Live now".
+ * Live-run status dot shared across the Teams surfaces (Inbox list, Kanban,
+ * Tasks list, Dashboard active-agents, issue detail). The stalled
+ * classification is upstream-authoritative (see `liveRunActivity`), not a
+ * local heuristic — so a hung overnight run looks visibly stuck instead of
+ * silently "Live now".
+ *
+ * Animation semantics: running = expanding ping halo; stalled = the dot
+ * itself pulses (opacity fade). The stalled animation MUST be on the core
+ * dot — `animate-pulse` has no scale, so on an equal-size halo underneath
+ * the opaque core it would be fully occluded and render static.
  */
 export function LiveRunDot({
   state = "running",
   size = "sm",
   title,
+  decorative = false,
   className,
   testId,
 }: LiveRunDotProps) {
@@ -41,17 +55,24 @@ export function LiveRunDot({
     <span
       data-testid={testId}
       className={cn("relative inline-flex shrink-0", dim, className)}
-      role="img"
-      aria-label={label}
+      role={decorative ? undefined : "img"}
+      aria-label={decorative ? undefined : label}
+      aria-hidden={decorative ? true : undefined}
       title={label}
     >
+      {state === "running" ? (
+        <span
+          className="absolute inline-flex h-full w-full animate-ping rounded-full opacity-60"
+          style={{ backgroundColor: tone.halo }}
+          aria-hidden
+        />
+      ) : null}
       <span
-        className={cn("absolute inline-flex h-full w-full rounded-full opacity-70", tone.anim)}
-        style={{ backgroundColor: tone.color }}
-        aria-hidden
-      />
-      <span
-        className={cn("relative inline-flex rounded-full", dim)}
+        className={cn(
+          "relative inline-flex rounded-full",
+          dim,
+          state === "stalled" && "animate-pulse",
+        )}
         style={{ backgroundColor: tone.color }}
         aria-hidden
       />

@@ -160,10 +160,14 @@ function AgentRunCard({
       <div className="flex items-start justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2">
           {active ? (
+            // Decorative: the card's status line below already renders the
+            // same state copy — announcing the dot too would double it up
+            // for screen readers.
             <LiveRunDot
               state={liveRunActivity(run)}
               size="md"
               title={liveRunTitle(run)}
+              decorative
             />
           ) : (
             <span

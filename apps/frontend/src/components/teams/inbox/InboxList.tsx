@@ -14,7 +14,7 @@ import type {
   InboxGroupedSection,
   InboxWorkItem,
 } from "@/components/teams/shared/lib/inbox";
-import type { LiveRunActivity } from "@/components/teams/dashboard/hooks/useLiveRuns";
+import type { LiveIssueEntry } from "@/components/teams/shared/lib/liveRuns";
 import { IssueRow } from "@/components/teams/inbox/IssueRow";
 import { IssueStatusMenu } from "@/components/teams/issues/IssueStatusMenu";
 import { SwipeToArchive } from "@/components/teams/inbox/SwipeToArchive";
@@ -33,7 +33,7 @@ export interface InboxListProps {
    * active agent run. Absent map or missing key == no live run. Derived by the
    * parent from `/inbox/live-runs`; renders the per-row live indicator.
    */
-  liveIssueState?: Map<string, { activity: LiveRunActivity; title: string }>;
+  liveIssueState?: Map<string, LiveIssueEntry>;
   /** When true, wrap each row in `<SwipeToArchive>` for touch gestures. */
   isMobile?: boolean;
   /**

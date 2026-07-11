@@ -14,7 +14,7 @@ import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
 import { cn } from "@/lib/utils";
 import { StatusIcon } from "@/components/teams/shared/components/StatusIcon";
 import { LiveRunDot } from "@/components/teams/shared/components/LiveRunDot";
-import type { LiveRunActivity } from "@/components/teams/dashboard/hooks/useLiveRuns";
+import type { LiveIssueEntry } from "@/components/teams/shared/lib/liveRuns";
 import { productivityReviewTriggerLabel } from "@/components/teams/shared/components/ProductivityReviewBadge";
 import { EditorialButton } from "@/components/teams/shell";
 
@@ -48,9 +48,9 @@ interface IssueRowProps {
    * Live-run indicator for this issue: `running` (an agent is working now) or
    * `stalled` (the run has gone quiet). Absent when no run is live. `title`
    * carries the tooltip copy (silence age / next-action). Derived by the
-   * caller from the `/inbox/live-runs` feed (see `liveRunActivity`).
+   * caller from the `/inbox/live-runs` feed (see `buildLiveIssueState`).
    */
-  live?: { activity: LiveRunActivity; title: string } | null;
+  live?: LiveIssueEntry | null;
 }
 
 export function IssueRow({

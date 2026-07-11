@@ -14,6 +14,12 @@ import { Button } from "@/components/ui/button";
  * tailored copy + an action button so the user knows what to do next,
  * instead of seeing a generic "Failed to generate" block.
  *
+ * `meta_daily_cap` is a separate, Isol8-side code (not an OpenClaw
+ * errorKind) — the gate_chat free-tier $3/day cost cap blocks the turn
+ * before it ever reaches OpenClaw (core/gateway/connection_pool.py). It gets
+ * its own branch below so a free-tier user sees a distinct "come back
+ * tomorrow or upgrade" state rather than a generic failure.
+ *
  * For unknown / unmapped codes we still show the upstream message
  * verbatim — that is strictly better than masking it with a generic
  * "encountered an error, please try again" string the way the old
@@ -77,6 +83,17 @@ function describeError(code: string | undefined, message: string): ErrorPresenta
         description:
           message ||
           "The model declined to respond, usually due to content policy. Try rephrasing your message.",
+      };
+    case "meta_daily_cap":
+      return {
+        title: "Daily free limit reached",
+        description:
+          message ||
+          "You've used today's free allowance — resets tomorrow. Upgrade to keep going.",
+        // The upgrade *action* (checkout) is a later phase — for now this
+        // just deep-links to the Billing settings panel, same pattern as
+        // TrialBanner's "Manage" link.
+        action: { label: "Upgrade", href: "/settings?panel=billing" },
       };
     case "unknown":
     default:

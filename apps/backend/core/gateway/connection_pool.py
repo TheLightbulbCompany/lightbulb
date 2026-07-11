@@ -976,7 +976,21 @@ class GatewayConnection:
         return self.user_id
 
     async def _fetch_and_record_usage(self, session_key: str, member_user_id: str) -> None:
-        """Fetch session token counts via RPC and record usage."""
+        """Fetch session token counts via RPC and record usage.
+
+        Always settles the meta-cap reserve placed by ``gate_chat`` for this
+        turn (``meta_cap.reconcile``, in the ``finally`` below) regardless of
+        which early-return / exception path is taken — session not found,
+        zero tokens, ``sessions.list`` RPC failure, or a ``record_usage``
+        failure must never orphan a reserve. ``reconcile`` is a no-op for
+        non-capped turns (no matching reserve for this owner/session_key)
+        and fails closed on unknown cost, so calling it unconditionally
+        here is always safe.
+        """
+        # Bound before the try so the finally can always reconcile with the
+        # best-known cost, even if an exception fires before this is set
+        # below (e.g. the sessions.list RPC itself times out).
+        raw_cost_microcents: int | None = None
         try:
             # Query sessions.list to get token data for this session
             req_id = str(uuid.uuid4())
@@ -1034,7 +1048,6 @@ class GatewayConnection:
             # estimatedCostUsd as the authoritative raw cost; otherwise fall
             # back to token-based pricing. 1 USD = 1_000_000 microcents.
             estimated_cost_usd = session.get("estimatedCostUsd")
-            raw_cost_microcents: int | None = None
             try:
                 if estimated_cost_usd is not None and float(estimated_cost_usd) > 0:
                     raw_cost_microcents = round(float(estimated_cost_usd) * 1_000_000)
@@ -1098,6 +1111,23 @@ class GatewayConnection:
         except Exception:
             put_metric("chat.session_usage.fetch.error")
             logger.exception("Failed to fetch session usage for user %s", self.user_id)
+        finally:
+            # Always settle — a reserve placed in gate_chat must never be
+            # orphaned just because usage lookup failed/returned early
+            # above. Isolate reconcile's own exception so it can never mask
+            # whatever happened in the usage-fetch flow above (which is
+            # already fully handled by the try/except this finally hangs
+            # off of).
+            from core.services import meta_cap
+
+            try:
+                await meta_cap.reconcile(self.user_id, session_key, raw_cost_microcents or 0)
+            except Exception:
+                logger.exception(
+                    "Failed to reconcile meta cap reserve for user %s session %s",
+                    self.user_id,
+                    session_key,
+                )
 
     async def _handle_message(self, data: dict) -> None:
         """Route an incoming gateway message.
@@ -1856,10 +1886,11 @@ class GatewayConnectionPool:
             return
         conn.mark_side_run(run_id)
 
-    async def gate_chat(self, *, user_id: str, owner_id: str) -> dict:
-        """Pre-chat hard-stop for card-3 (bedrock_claude) users.
+    async def gate_chat(self, *, user_id: str, owner_id: str, session_key: str) -> dict:
+        """Pre-chat hard-stop for card-3 (bedrock_claude) users and the
+        free-tier ``trial_local`` Meta cost cap.
 
-        Two layers (audit M1 expanded the second one):
+        Layers (audit M1 expanded the second one; the Meta cap is a third):
 
         1. **Subscription status.** The billing row's ``subscription_status``
            must be ``active`` or ``trialing``. Cards 1 + 2 used to bypass
@@ -1869,23 +1900,46 @@ class GatewayConnectionPool:
            an org/personal user whose ``subscription.deleted`` webhook
            landed could keep talking through the gateway indefinitely on
            cards 1 + 2.
-        2. **Card-3 balance.** When ``provider_choice`` is
+        2. **Free-tier Meta $3/day cost cap.** ``trial_local`` owners run
+           on the "meta" provider (Facebook Llama), billed straight to
+           Isol8 — unlike cards 1-3 there's no BYOK/OAuth/Bedrock-credit
+           backstop, so this is pure Isol8 cost. Reserve a worst-case
+           turn cost before dispatch (``meta_cap.reserve_or_block``);
+           ``_fetch_and_record_usage`` trues it down once actual usage is
+           known. This must run BEFORE the card-3 layer below: a
+           ``trial_local`` billing row never carries ``provider_choice``
+           (it's not a stored choice, see
+           ``container_provision.resolve_provider_choice``), so it would
+           otherwise fall through Layer 3's early "not bedrock_claude"
+           return without ever being capped.
+        3. **Card-3 balance.** When ``provider_choice`` is
            ``bedrock_claude``, the owner must not be blocked by the
            Metronome fast-gate read (webhook-fed flag + lazy getNetBalance
            refresh — see ``core/services/metronome_gate.py``). Cards 1
            + 2 don't draw from prepaid credits, so they're not gated
            on balance.
 
-        Both layers key on ``owner_id`` (org_id for org context, user_id
+        All layers key on ``owner_id`` (org_id for org context, user_id
         for personal). ``user_id`` is the chatting member, retained on
         the signature for logging / future per-user telemetry.
+        ``session_key`` scopes the Meta-cap reserve to this specific turn
+        so it can be trued up post-turn without colliding with other
+        in-flight turns for the same owner.
 
         Returns:
             ``{"blocked": False}`` when chat may proceed.
             ``{"blocked": True, "code": <code>, "message": ...}``
             when the chat must NOT be forwarded to OpenClaw.
+
+        A raised exception (e.g. ``meta_cap.reserve_or_block``'s rollback
+        ADD is a network call) is intentionally NOT caught here — it
+        propagates to the caller, which treats a gate error the same as
+        any other chat-send failure (notifies the client, never forwards
+        to OpenClaw). Swallowing it into ``{"blocked": False}`` would be
+        the unsafe direction for a cost cap.
         """
         from core.repositories import billing_repo
+        from core.services import meta_cap
         from core.services.metronome_gate import is_owner_blocked
         from core.services.provision_gate import is_subscription_active
 
@@ -1902,7 +1956,16 @@ class GatewayConnectionPool:
                 "message": ("Your subscription is not active. Reactivate to continue chatting."),
             }
 
-        # --- Layer 2: card-3 credit balance --------------------------
+        # --- Layer 2: free-tier Meta $3/day cost cap ------------------
+        if account and account.get("subscription_status") == "trial_local":
+            if await meta_cap.reserve_or_block(owner_id, session_key):
+                return {
+                    "blocked": True,
+                    "code": "meta_daily_cap",
+                    "message": ("You've used today's free allowance — resets tomorrow. Upgrade to keep going."),
+                }
+
+        # --- Layer 3: card-3 credit balance --------------------------
         # provider_choice lives on the billing_accounts row (per owner);
         # credits also pool at the owner level so org members all draw
         # from one balance funded by the

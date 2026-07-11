@@ -41,7 +41,7 @@ async def test_card3_blocked_by_metronome_gate():
         ),
         patch("core.services.metronome_gate.is_owner_blocked", new=AsyncMock(return_value=True)),
     ):
-        result = await pool.gate_chat(user_id="u_1", owner_id="o_1")
+        result = await pool.gate_chat(user_id="u_1", owner_id="o_1", session_key="sk_test")
     assert result["blocked"] is True
     assert result["code"] == "out_of_credits"
     assert "Top up" in result["message"]
@@ -62,7 +62,7 @@ async def test_card3_not_blocked_when_gate_clear():
         ),
         patch("core.services.metronome_gate.is_owner_blocked", new=AsyncMock(return_value=False)),
     ):
-        result = await pool.gate_chat(user_id="u_1", owner_id="o_1")
+        result = await pool.gate_chat(user_id="u_1", owner_id="o_1", session_key="sk_test")
     assert result == {"blocked": False}
 
 
@@ -84,7 +84,7 @@ async def test_card3_gate_keyed_on_owner_for_org_credits_pool():
         patch("core.repositories.billing_repo.get_by_owner_id", new=billing_mock),
         patch("core.services.metronome_gate.is_owner_blocked", new=blocked),
     ):
-        result = await pool.gate_chat(user_id="member_X", owner_id="org_Y")
+        result = await pool.gate_chat(user_id="member_X", owner_id="org_Y", session_key="sk_test")
 
     assert result == {"blocked": False}
     billing_mock.assert_awaited_once_with("org_Y")
@@ -107,7 +107,7 @@ async def test_card1_oauth_user_never_gated_by_credits():
         ),
         patch("core.services.metronome_gate.is_owner_blocked", new=blocked),
     ):
-        result = await pool.gate_chat(user_id="u_1", owner_id="o_1")
+        result = await pool.gate_chat(user_id="u_1", owner_id="o_1", session_key="sk_test")
     assert result == {"blocked": False}
     blocked.assert_not_called()
 
@@ -128,7 +128,7 @@ async def test_card2_byo_user_never_gated_by_credits():
         ),
         patch("core.services.metronome_gate.is_owner_blocked", new=blocked),
     ):
-        result = await pool.gate_chat(user_id="u_1", owner_id="o_1")
+        result = await pool.gate_chat(user_id="u_1", owner_id="o_1", session_key="sk_test")
     assert result == {"blocked": False}
     blocked.assert_not_called()
 
@@ -148,7 +148,7 @@ async def test_billing_row_without_provider_choice_never_gated():
             }
         ),
     ):
-        result = await pool.gate_chat(user_id="u_legacy", owner_id="o_legacy")
+        result = await pool.gate_chat(user_id="u_legacy", owner_id="o_legacy", session_key="sk_test")
     assert result == {"blocked": False}
 
 
@@ -169,7 +169,7 @@ async def test_inactive_subscription_blocks_chat_regardless_of_provider(status):
         "core.repositories.billing_repo.get_by_owner_id",
         new=AsyncMock(return_value={"subscription_status": status}),
     ):
-        result = await pool.gate_chat(user_id="u_1", owner_id="u_1")
+        result = await pool.gate_chat(user_id="u_1", owner_id="u_1", session_key="sk_test")
     assert result["blocked"] is True
     assert result["code"] == "subscription_inactive"
 
@@ -190,7 +190,7 @@ async def test_active_or_trialing_subscription_does_not_trigger_sub_gate(status)
             }
         ),
     ):
-        result = await pool.gate_chat(user_id="u_1", owner_id="u_1")
+        result = await pool.gate_chat(user_id="u_1", owner_id="u_1", session_key="sk_test")
     assert result == {"blocked": False}
 
 
@@ -205,7 +205,7 @@ async def test_missing_billing_row_blocks_chat_when_owner_id_provided():
         "core.repositories.billing_repo.get_by_owner_id",
         new=AsyncMock(return_value=None),
     ):
-        result = await pool.gate_chat(user_id="u_1", owner_id="u_1")
+        result = await pool.gate_chat(user_id="u_1", owner_id="u_1", session_key="sk_test")
     assert result["blocked"] is True
     assert result["code"] == "subscription_inactive"
 
@@ -225,7 +225,7 @@ async def test_legacy_billing_row_without_status_does_not_block():
             }
         ),
     ):
-        result = await pool.gate_chat(user_id="u_1", owner_id="u_1")
+        result = await pool.gate_chat(user_id="u_1", owner_id="u_1", session_key="sk_test")
     assert result == {"blocked": False}
 
 

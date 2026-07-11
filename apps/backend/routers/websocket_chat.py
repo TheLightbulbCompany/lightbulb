@@ -1906,7 +1906,7 @@ async def _process_agent_chat_background(
         # — they aren't billed against prepaid credits — but they DO
         # have to honor the subscription gate so a canceled-sub user
         # can't keep talking through the gateway indefinitely.
-        gate = await pool.gate_chat(user_id=user_id, owner_id=owner_id)
+        gate = await pool.gate_chat(user_id=user_id, owner_id=owner_id, session_key=session_key)
         if gate.get("blocked"):
             put_metric("chat.error", dimensions={"reason": gate.get("code", "blocked")})
             logger.info(

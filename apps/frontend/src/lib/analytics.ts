@@ -115,6 +115,9 @@ export type AnalyticsEvent =
   // MCP
   | "mcp_server_added"
   | "mcp_server_removed"
+  // Notifications
+  | "run_notification_clicked"
+  | "run_notification_shown"
   // Plugins
   | "plugin_toggled"
   // Onboarding

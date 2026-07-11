@@ -139,15 +139,32 @@ function BillingPanel() {
     );
   }
 
+  const subscriptionStatus = account?.subscription_status ?? null;
+  const trialEndLabel =
+    account?.trial_end != null
+      ? new Date(account.trial_end * 1000).toLocaleDateString(undefined, {
+          month: "short",
+          day: "numeric",
+          year: "numeric",
+        })
+      : null;
+
   // Org context: Teams billing is per-seat, not the flat $50/mo personal
   // plan, so org members (of either role) get TeamBillingCard instead of the
-  // personal card below. TeamBillingCard is admin-gated internally — a
-  // non-admin member sees its "ask your org admin" message with no CTA,
-  // which replaces the old standalone "Billing restricted" block.
+  // personal card below — but ONLY when the org is either unsubscribed (the
+  // paywall case) or actually on a real per-seat Stripe subscription
+  // (account.is_seat_subscription). A subscribed org on a flat/comped/
+  // grandfathered sub (no subscription_item_id) has no per-seat Stripe item
+  // to price, so showing "N seats × $price" there is fabricated — it falls
+  // through to the normal subscribed billing view below instead.
+  // TeamBillingCard is admin-gated internally — a non-admin member sees its
+  // "ask your org admin" message with no CTA, which replaces the old
+  // standalone "Billing restricted" block.
   const isOrgContext = Boolean(membership);
   const orgRole: "admin" | "member" = membership?.role === "org:admin" ? "admin" : "member";
+  const isSeatSubscription = Boolean(account?.is_seat_subscription);
 
-  if (isOrgContext) {
+  if (isOrgContext && (!isSubscribed || isSeatSubscription)) {
     return (
       <div className="settings-panel" id="panel-billing" role="tabpanel">
         <h1 className="settings-page-title">Billing</h1>
@@ -172,15 +189,53 @@ function BillingPanel() {
     );
   }
 
-  const subscriptionStatus = account?.subscription_status ?? null;
-  const trialEndLabel =
-    account?.trial_end != null
-      ? new Date(account.trial_end * 1000).toLocaleDateString(undefined, {
-          month: "short",
-          day: "numeric",
-          year: "numeric",
-        })
-      : null;
+  if (isOrgContext) {
+    // Subscribed org, NOT a per-seat sub (flat/comped/grandfathered) — the
+    // normal subscribed billing view, same shape as the personal card
+    // below, restoring the current/lifetime spend line org admins
+    // previously saw pre-org-context-rewrite. No per-seat pricing math.
+    return (
+      <div className="settings-panel" id="panel-billing" role="tabpanel">
+        <h1 className="settings-page-title">Billing</h1>
+        <p className="settings-page-desc">Manage your team&apos;s subscription.</p>
+
+        {accountError && (
+          <div className="settings-alert settings-alert-error">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            Failed to load billing data. Please refresh the page.
+          </div>
+        )}
+
+        <div className="settings-card">
+          <div className="settings-card-header">
+            <div>
+              <div className="settings-card-title">
+                Isol8 plan
+                {subscriptionStatus && (
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4, marginLeft: 8, fontSize: 11, fontWeight: 600, color: "#06402B", background: "rgba(6,64,43,.08)", padding: "2px 8px", borderRadius: 999, textTransform: "capitalize" }}>
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                    {subscriptionStatus}
+                  </span>
+                )}
+              </div>
+              <div className="settings-card-desc">Active subscription</div>
+              {account && (
+                <div className="settings-card-desc" style={{ marginTop: 4 }}>
+                  Current period spend: {formatDollars(account.current_spend, 4)} · Lifetime: {formatDollars(account.lifetime_spend)}
+                </div>
+              )}
+            </div>
+            {orgRole === "admin" && (
+              <button type="button" className="settings-btn-outline" onClick={handlePortal} disabled={portalLoading}>
+                {portalLoading && <span className="settings-spinner" style={{ width: 14, height: 14, borderWidth: 2, marginRight: 6, display: "inline-block", verticalAlign: "middle" }} />}
+                Manage Payment
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="settings-panel" id="panel-billing" role="tabpanel">

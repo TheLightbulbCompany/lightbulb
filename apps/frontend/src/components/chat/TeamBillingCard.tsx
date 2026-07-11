@@ -29,10 +29,15 @@ export function TeamBillingCard({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const seats = seatCount ?? 0;
   const price = seatPriceUsd ?? 0;
-  const total = seats * price;
   const isAdmin = ownerRole === "admin";
+  // seatCount is null while Clerk membership is still loading (or
+  // unavailable). Rendering "0 seats × $20 = $0/mo" in that window is a
+  // misleading flash — show a neutral placeholder until it resolves to a
+  // real number.
+  const seatsKnown = seatCount != null;
+  const seats = seatCount ?? 0;
+  const total = seats * price;
 
   const run = useCallback(
     async (fn?: () => Promise<void>) => {
@@ -53,8 +58,14 @@ export function TeamBillingCard({
     <div className="settings-card" style={{ maxWidth: 440 }}>
       <div className="settings-card-title">Teams billing</div>
       <div className="settings-card-desc" style={{ marginTop: 4 }}>
-        {seats} {seats === 1 ? "seat" : "seats"} × ${price} = <strong>${total}/mo</strong>. Every member of your
-        organization is a seat.
+        {seatsKnown ? (
+          <>
+            {seats} {seats === 1 ? "seat" : "seats"} × ${price} = <strong>${total}/mo</strong>. Every member of your
+            organization is a seat.
+          </>
+        ) : (
+          "Loading team size…"
+        )}
       </div>
 
       {error && (

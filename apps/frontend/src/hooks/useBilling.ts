@@ -27,6 +27,11 @@ export interface BillingAccount {
   // config so the paywall never hardcodes the per-seat price.
   seat_count: number | null;
   team_seat_price_usd: number | null;
+  // True only for org owners on a REAL per-seat Stripe subscription (one
+  // that recorded a subscription_item_id via the webhook). False for
+  // personal owners and for flat/comped/grandfathered org subs — those
+  // must not render seat-priced "N x $price" billing math.
+  is_seat_subscription: boolean;
 }
 
 export interface MemberUsage {

@@ -33,4 +33,11 @@ describe("TeamBillingCard", () => {
     fireEvent.click(screen.getByRole("button", { name: /manage billing/i }));
     expect(onManage).toHaveBeenCalled();
   });
+
+  it("shows a neutral loading placeholder instead of '0 seats × $0' when seatCount is null", () => {
+    render(<TeamBillingCard seatCount={null} seatPriceUsd={20} ownerRole="admin" />);
+    expect(screen.getByText(/loading team size/i)).toBeInTheDocument();
+    expect(screen.queryByText(/0 seats/i)).toBeNull();
+    expect(screen.queryByText(/\$0\/mo/)).toBeNull();
+  });
 });

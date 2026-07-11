@@ -124,11 +124,18 @@ async def get_billing_account(
     # sync_team_seat_quantity. Personal owners keep both fields None.
     seat_count: int | None = None
     team_seat_price_usd: int | None = None
+    # is_seat_subscription discriminates a REAL per-seat Stripe subscription
+    # (subscription_item_id set by the webhook — see
+    # stripe_webhook_handlers.py) from a flat/comped/grandfathered org sub
+    # that has no per-seat Stripe item. Only the former should ever render
+    # "N seats x $price" billing math on the frontend.
+    is_seat_subscription = False
     if is_org_owner_id(owner_id):
         live = await clerk_admin.get_organization_member_count(owner_id)
         stored = int(account.get("seat_count") or 0) if account else 0
         seat_count = live if live > 0 else (stored or None)
         team_seat_price_usd = settings.TEAM_SEAT_PRICE_USD
+        is_seat_subscription = bool(account and account.get("subscription_item_id"))
 
     return BillingAccountResponse(
         is_subscribed=is_subscribed,
@@ -140,6 +147,7 @@ async def get_billing_account(
         byo_provider=account.get("byo_provider") if account else None,
         seat_count=seat_count,
         team_seat_price_usd=team_seat_price_usd,
+        is_seat_subscription=is_seat_subscription,
     )
 
 

@@ -150,12 +150,14 @@ The broker's `subscribe` is idempotent per connection (set-based —
 unmount (`TeamsEventsProvider.tsx:103-106`). Both consumers share one WS connection ID, so
 closing a Teams panel would silently kill the listener's subscription too.
 
-Fix: a tiny module-level refcounted helper — `acquire(send)` / `release(send)` — that sends
-`{type:"teams.subscribe"}` on 0→1 and `{type:"teams.unsubscribe"}` on 1→0, and re-sends
-subscribe on gateway reconnect while refcount > 0 (both call sites already resubscribe on
-connect today; the helper centralizes it). `RunNotifications` and `TeamsEventsProvider` both
-switch to it. Net effect with the listener always mounted: the subscription is effectively
-always-on inside `/chat`, and panel open/close no longer churns it.
+Fix: a tiny module-level refcounted helper — `acquire()` / `release(send)` /
+`resubscribe(send)`. Acquire only registers interest (it never sends — the existing provider
+test pins "no sends while disconnected"); `resubscribe` emits `{type:"teams.subscribe"}` iff
+refcount > 0 and is called by each consumer whenever `isConnected` is true (mount + every
+reconnect — both call sites already resubscribe on connect today; the helper centralizes it);
+`release` emits `{type:"teams.unsubscribe"}` only on the 1→0 transition. `RunNotifications`
+and `TeamsEventsProvider` both switch to it. Net effect with the listener always mounted: the
+subscription is effectively always-on inside `/chat`, and panel open/close no longer churns it.
 
 ### B5. Suppression rule
 No toast when `frame.agent_id === selectedAgentId && activeView === "chat"` — the user is

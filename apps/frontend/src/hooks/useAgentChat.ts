@@ -747,10 +747,14 @@ export function useAgentChat(
       Promise.resolve().then(() => setHistoryLoadState("loading"));
     }
     const mutationSeqAtIssue = transcriptMutationSeqRef.current;
+    // Latch BEFORE the async fetch, not inside `.then`: two effect runs before
+    // the first resolves (an isConnected flicker, a StrictMode double-mount)
+    // would each pass the has()-guard above and fire a duplicate chat.history.
+    // The `.catch` un-latches so a failed fetch still retries on the next run.
+    historyLoadedRef.current.add(cacheKey);
     sendReq("chat.history", { sessionKey, limit: 200 })
       .then((result: unknown) => {
         const historyResult = result as { messages?: HistoryMessage[]; truncated?: boolean };
-        historyLoadedRef.current.add(cacheKey);
         // A local transcript mutation while this fetch was in flight (a sent
         // message, a folded run, a clear) means the snapshot is stale —
         // applying it would silently drop that mutation from BOTH the live
@@ -772,11 +776,27 @@ export function useAgentChat(
         const raw = Array.isArray(historyResult?.messages) ? historyResult.messages : [];
         const projected = projectChatHistoryMessages(raw);
         if (projected.length === 0) {
-          // Server has nothing: only flag bootstrap when we ALSO have no
-          // cache — an existing cached transcript must not regress to the
-          // bootstrap suggestion because of an empty/partial server read.
           if (!hasCache) {
+            // Genuinely fresh session (no cache AND empty server): offer the
+            // bootstrap suggestion.
             _needsBootstrap.add(cacheKey);
+            return;
+          }
+          // We DID have a cached transcript but the server is authoritatively
+          // empty (a chat.clear elsewhere, a reprovision). A local mutation
+          // since this fetch was issued means the in-flight run owns the
+          // transcript — keep the cache; the next mount's revalidation
+          // self-heals. This IS server truth, so a clean (non-stale) empty
+          // read must not keep showing ghost history.
+          if (staleSnapshot) return;
+          // Purge the stale cache so the ghost transcript can't resurrect on
+          // the next mount, flag bootstrap (the session is empty now), and
+          // clear the live view if the user is still on this exact session.
+          _messageCache.delete(cacheKey);
+          _needsBootstrap.add(cacheKey);
+          if (agentIdRef.current !== agentId) return;
+          if (activeSessionIdRef.current === (activeSessionId ?? null)) {
+            setChatMessages([]);
           }
           return;
         }
@@ -792,9 +812,11 @@ export function useAgentChat(
       })
       .catch((err: unknown) => {
         console.warn("Failed to fetch chat history:", err);
-        // Deliberately NOT latched into historyLoadedRef: a failed fetch
-        // (gateway drop, container restart) must retry on the next visit or
-        // reconnect instead of leaving this session blank until page reload.
+        // Un-latch (the marker was set BEFORE the fetch for in-flight dedupe):
+        // a failed fetch (gateway drop, container restart) must retry on the
+        // next visit or reconnect instead of leaving this session blank until
+        // page reload.
+        historyLoadedRef.current.delete(cacheKey);
         setHistoryLoadState("done");
       });
   }, [agentId, cacheKey, sessionName, activeSessionId, isConnected, sendReq, setChatMessages, historyRefetchNonce]);

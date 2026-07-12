@@ -12,14 +12,13 @@ import {
 
 import { capture } from "@/lib/analytics";
 import {
-  DESKTOP_PERMISSIONS_CHANGED_EVENT,
   BASIC_DESKTOP_PERMISSIONS,
   DEFAULT_DESKTOP_PERMISSIONS,
   DesktopPermissionSet,
-  isPermissionsStorageEvent,
   readDesktopPermissionGrant,
   writeDesktopPermissionGrant,
 } from "@/lib/desktopPermissions";
+import { subscribeDesktopPermissions } from "@/lib/desktopPermissionsSubscribe";
 
 type TauriBridge = {
   core?: {
@@ -39,19 +38,6 @@ function getTauri(): TauriBridge | null {
 
 function getPermissionGateSnapshot(): boolean {
   return getTauri() !== null && readDesktopPermissionGrant() === null;
-}
-
-function subscribePermissionGate(onStoreChange: () => void): () => void {
-  if (typeof window === "undefined") return () => {};
-  const onStorage = (event: StorageEvent) => {
-    if (isPermissionsStorageEvent(event)) onStoreChange();
-  };
-  window.addEventListener(DESKTOP_PERMISSIONS_CHANGED_EVENT, onStoreChange);
-  window.addEventListener("storage", onStorage);
-  return () => {
-    window.removeEventListener(DESKTOP_PERMISSIONS_CHANGED_EVENT, onStoreChange);
-    window.removeEventListener("storage", onStorage);
-  };
 }
 
 const ITEMS: Array<{
@@ -88,7 +74,7 @@ const ITEMS: Array<{
 
 export function DesktopPermissionsGate() {
   const shouldShowGate = useSyncExternalStore(
-    subscribePermissionGate,
+    subscribeDesktopPermissions,
     getPermissionGateSnapshot,
     () => false,
   );

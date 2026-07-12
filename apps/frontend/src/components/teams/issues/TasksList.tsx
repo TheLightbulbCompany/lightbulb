@@ -961,7 +961,11 @@ export function TasksList({
           action={{ label: "New task", onClick: onNewTask }}
         />
       ) : viewMode === "board" ? (
-        <div className="h-[calc(100vh-18rem)] min-h-[24rem]">
+        // tasks-board-region: inside a dock panel, workspace.css overrides
+        // the viewport-height fallback below with a slot-relative height so
+        // the board fills the panel (columns scroll vertically, the board
+        // scrolls horizontally). The class is inert in the mobile shell.
+        <div className="tasks-board-region h-[calc(100vh-18rem)] min-h-[24rem]">
           <KanbanBoard
             issues={sorted}
             agents={agents}

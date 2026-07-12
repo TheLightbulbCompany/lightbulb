@@ -42,7 +42,10 @@ export function TeamsDockPanel(props: IDockviewPanelProps<TeamsDockPanelParams>)
     props.api.updateParameters({ [key]: undefined });
 
   return (
-    <div className="editorial-page h-full overflow-auto">
+    // workspace-panel-page (workspace.css): this wrapper IS the panel's
+    // scroll container — it collapses editorial-page's viewport min-height
+    // to the dock slot and lets descendants size against the slot (cqh).
+    <div className="editorial-page workspace-panel-page h-full overflow-auto">
       <TeamsPanelRouter
         panel={params.teamsKey}
         detailId={params.detailId ?? null}

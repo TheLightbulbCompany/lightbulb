@@ -17,7 +17,6 @@ import {
 } from "dockview-react";
 import { useOnboardingGate } from "@/hooks/useOnboardingGate";
 import { useAgents } from "@/hooks/useAgents";
-import { useProvisioningState } from "@/hooks/useProvisioningState";
 import { replaceSearchParams } from "@/lib/shellNav";
 import { capture } from "@/lib/analytics";
 import { ProvisioningStepper } from "@/components/chat/ProvisioningStepper";
@@ -97,9 +96,10 @@ export function WorkspaceShell(): React.ReactElement {
 
   useUserSyncOnce(Boolean(isSignedIn) && onboardingPhase === "ready");
   const { showSubscriptionSuccess } = useCheckoutReturn();
-  const { container } = useProvisioningState();
-  const chatReady = container?.phase === "ready";
-  const getStartedDerived = useGetStartedDerived(chatReady);
+  // `chatReady` + the four completion signals (chat/hire/channel/task) are
+  // derived in the shared shell hook — see its doc comment for the
+  // readiness-gate rationale.
+  const { chatReady, ...getStartedDerived } = useGetStartedDerived();
   const { open: openMarketplace } = useMarketplaceDrawer();
 
   // [BODY 3: reconciler] — pure decision in workspaceShellReconciler; this

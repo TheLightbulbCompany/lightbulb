@@ -6,22 +6,9 @@ import useSWR from "swr";
 import { useApi } from "@/lib/api";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
+import { useChannelLinks } from "@/hooks/useChannelLinks";
+import { useProvisioningState } from "@/hooks/useProvisioningState";
 import { teamsQueryKeys } from "@/components/teams/shared/queryKeys";
-
-/** Minimal shape of `/channels/links/me` — only what the guide's
- *  `channel`-complete derivation reads. A bot is keyed by its agent's UUID
- *  (channels are created per-agent, not on a fixed "main" agent); `linked`
- *  flips true once a member has paired their identity to the bot. */
-interface ChannelBotEntry {
-  agent_id: string;
-  linked: boolean;
-}
-interface ChannelLinksResponse {
-  telegram: ChannelBotEntry[];
-  discord: ChannelBotEntry[];
-  slack: ChannelBotEntry[];
-  can_create_bots: boolean;
-}
 
 export interface GetStartedDerivedSignals {
   chat: boolean;
@@ -30,9 +17,31 @@ export interface GetStartedDerivedSignals {
   task: boolean;
 }
 
-export function useGetStartedDerived(chatReady: boolean): GetStartedDerivedSignals {
+export function useGetStartedDerived(): GetStartedDerivedSignals & { chatReady: boolean } {
   const api = useApi();
   const { read: readTeams } = useTeamsApi();
+
+  // "Get started" guide readiness gate. Gate the floating guide — AND its
+  // completion-signal fetches below — on the signal that the chat surface is
+  // actually live and interactive, NOT on `useProvisioningState().phase ===
+  // "normal"`. That phase is "normal" for ANY 200 from /container/status,
+  // which includes the entire cold-start window (status="provisioning",
+  // phase="provisioning" / "starting"). Gating on it would mount the
+  // launcher + the auto-opened first-run card ON TOP of the
+  // ProvisioningStepper's "Provisioning your container…" loader — handing
+  // off to surfaces that don't exist yet (empty agents[], hidden composer)
+  // and burning the one-time `seen: true` flag before the user can act.
+  //
+  // The canonical "chat is live" signal is the backend-reported cold-start
+  // phase reaching "ready" — the exact gate the sibling ProvisioningStepper
+  // uses to stop its loader and render the chat `children` (it shares the
+  // `/container/status` SWR cache via the same `useProvisioningState` key, so
+  // `container.phase` here flips to "ready" in the same render the stepper
+  // does). It is strictly stronger than `phase === "normal"`: a non-null
+  // `container` already implies a 200 ("normal"), and `.phase === "ready"`
+  // additionally requires the gateway pool to have connected.
+  const { container } = useProvisioningState();
+  const chatReady = container?.phase === "ready";
 
   // `channel` complete = the user has actually connected a channel: ANY
   // provider has at least one bot a member has paired their identity to
@@ -41,27 +50,16 @@ export function useGetStartedDerived(chatReady: boolean): GetStartedDerivedSigna
   // bot and the step never ticked once channels moved to the per-agent tab.
   // `linked` (not bare bot-exists) is the truest "connected" signal and mirrors
   // the `emitStep("channel")` producer in BotSetupWizard, which fires on the
-  // same pairing success. Null SWR key until `chatReady` (SWR's canonical
-  // conditional-fetch gate) so `/channels/links/me` never fires during the
-  // cold-start window.
-  const { data: channelLinks } = useSWR<ChannelLinksResponse>(
-    chatReady ? "/channels/links/me" : null,
-    () => api.get("/channels/links/me") as Promise<ChannelLinksResponse>,
-    // Channel-link state changes rarely (only on a bot pairing) and feeds
-    // a single boolean — don't revalidate on every window focus. Mirrors
-    // the sibling seller-listings read.
-    { revalidateOnFocus: false, dedupingInterval: 300_000 },
-  );
-  const channelLinked =
-    !!channelLinks &&
-    (["telegram", "discord", "slack"] as const).some((p) =>
-      channelLinks[p]?.some((b) => b.linked),
-    );
+  // same pairing success. The hoisted `useChannelLinks` hook owns the
+  // `/channels/links/me` read (null-keyed until `chatReady`) and the
+  // `.some(linked)` derivation — see its own doc comment for the SWR options.
+  const { channelLinked } = useChannelLinks(chatReady);
   // `task` complete = the team already has >= 1 task. We only consume the
   // task-exists boolean, so read just the `all` inbox tab directly (via the
-  // same bearer-only `useTeamsApi` the roster fetch above uses) rather than
-  // `useInboxData`, which fans out to three reads (mine/recent/all) for
-  // surfaces that render the full inbox — two of those are pure waste here.
+  // same bearer-only `useTeamsApi` hook — safe to call without a Teams
+  // provider context) rather than `useInboxData`, which fans out to three
+  // reads (mine/recent/all) for surfaces that render the full inbox — two of
+  // those are pure waste here.
   // The key is `useInboxData`'s exact `all` key, so this shares SWR's cache
   // with the inbox panel when it's open (no duplicate fetch). Gated on
   // `chatReady` (null key) so it never fires during the cold-start window.
@@ -89,7 +87,8 @@ export function useGetStartedDerived(chatReady: boolean): GetStartedDerivedSigna
   // a hired specialist from a user-created agent (Atlas isn't even reliably
   // identifiable in the gateway roster), so the sidecar list is the only sound
   // source. Null SWR key until `chatReady`, low-frequency (mirrors the
-  // seller-listings fetch) so it never fires during the cold-start window.
+  // `useChannelLinks` options above) so it never fires during the cold-start
+  // window.
   const { data: installedTemplates } = useSWR<{ installed: { agent_id: string }[] }>(
     chatReady ? "/marketplace/me/installed-templates" : null,
     () =>
@@ -136,8 +135,14 @@ export function useGetStartedDerived(chatReady: boolean): GetStartedDerivedSigna
     : sessionsData?.sessions ?? [];
   const chatStarted = chatSessions.some((s) => (s.totalTokens ?? 0) > 0);
   const getStartedDerived = useMemo(
-    () => ({ chat: chatStarted, hire: hireDone, channel: channelLinked, task: taskExists }),
-    [chatStarted, hireDone, channelLinked, taskExists],
+    () => ({
+      chat: chatStarted,
+      hire: hireDone,
+      channel: channelLinked,
+      task: taskExists,
+      chatReady,
+    }),
+    [chatStarted, hireDone, channelLinked, taskExists, chatReady],
   );
 
   return getStartedDerived;

@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import useSWR from "swr";
 import { Plus, Trash2, CheckCircle2, AlertCircle } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -19,19 +18,7 @@ import { useApi } from "@/lib/api";
 import { type Provider, PROVIDERS, PROVIDER_LABELS, formatBotHandle } from "@/lib/channels";
 import { BotSetupWizard } from "@/components/channels/BotSetupWizard";
 import { useBilling } from "@/hooks/useBilling";
-
-interface BotEntry {
-  agent_id: string;
-  bot_username: string;
-  linked: boolean;
-}
-
-interface LinksMeResponse {
-  telegram: BotEntry[];
-  discord: BotEntry[];
-  slack: BotEntry[];
-  can_create_bots: boolean;
-}
+import { useChannelLinks } from "@/hooks/useChannelLinks";
 
 interface AgentChannelsSectionProps {
   agentId: string;
@@ -40,10 +27,7 @@ interface AgentChannelsSectionProps {
 export function AgentChannelsSection({ agentId }: AgentChannelsSectionProps) {
   const api = useApi();
   const { isSubscribed } = useBilling();
-  const { data, mutate } = useSWR<LinksMeResponse>(
-    "/channels/links/me",
-    () => api.get("/channels/links/me") as Promise<LinksMeResponse>,
-  );
+  const { channelLinks: data, refresh: mutate } = useChannelLinks(true);
   const [wizardFor, setWizardFor] = useState<{ provider: Provider; mode: "create" | "link-only" } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Provider | null>(null);
   const [deleting, setDeleting] = useState(false);

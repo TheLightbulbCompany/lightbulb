@@ -33,7 +33,6 @@ import { DesktopPermissionsGate } from "@/components/desktop/DesktopPermissionsG
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { emitStep } from "@/components/getstarted/getStartedEvents";
 import { GetStarted } from "@/components/getstarted/GetStarted";
-import { useProvisioningState } from "@/hooks/useProvisioningState";
 import { TEAMS_PANEL_PREFIX } from "@/components/chat/InlineTeamsPanel";
 import { pushSearchParams } from "@/lib/shellNav";
 import { useAgentMutations } from "@/components/teams/agents/hooks/useAgentMutations";
@@ -196,30 +195,13 @@ export function ChatLayout({
   // the seller-listings read + cross-reference lives in the shared shell hook.
   const publishedAgentIds = useSellerPublishedAgents();
 
-  // "Get started" guide. Gate the floating guide — AND its completion-signal
-  // fetches — on the signal that the chat surface is actually live and
-  // interactive, NOT on `useProvisioningState().phase === "normal"`. That
-  // phase is "normal" for ANY 200 from /container/status, which includes the
-  // entire cold-start window (status="provisioning", phase="provisioning" /
-  // "starting"). Gating on it would mount the launcher + the auto-opened
-  // first-run card ON TOP of the ProvisioningStepper's "Provisioning your
-  // container…" loader — handing off to surfaces that don't exist yet (empty
-  // agents[], hidden composer) and burning the one-time `seen: true` flag
-  // before the user can act.
-  //
-  // The canonical "chat is live" signal is the backend-reported cold-start
-  // phase reaching "ready" — the exact gate the sibling ProvisioningStepper
-  // uses to stop its loader and render the chat `children` (it shares the
-  // `/container/status` SWR cache via the same `useProvisioningState` key, so
-  // `container.phase` here flips to "ready" in the same render the stepper
-  // does). It is strictly stronger than `phase === "normal"`: a non-null
-  // `container` already implies a 200 ("normal"), and `.phase === "ready"`
-  // additionally requires the gateway pool to have connected.
-  const { container } = useProvisioningState();
-  const chatReady = container?.phase === "ready";
-  // The four completion signals (chat/hire/channel/task) are derived in the
-  // shared shell hook; each read stays null-keyed until `chatReady`.
-  const getStartedDerived = useGetStartedDerived(chatReady);
+  // "Get started" guide. `chatReady` (the signal that the chat surface is
+  // actually live and interactive) and the four completion signals
+  // (chat/hire/channel/task) are all derived in the shared shell hook — see
+  // its doc comment for the full readiness-gate rationale (why `chatReady`
+  // is stronger than `useProvisioningState().phase === "normal"`) and why
+  // each completion read stays null-keyed until `chatReady`.
+  const { chatReady, ...getStartedDerived } = useGetStartedDerived();
 
   function handleSelectAgent(agentId: string): void {
     capture("agent_selected", { agent_id: agentId });

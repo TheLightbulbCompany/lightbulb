@@ -306,6 +306,9 @@ async def test_state_file_failure_does_not_block_template_writes(monkeypatch):
     "provider_choice,byo_provider,expected_substring",
     [
         ("bedrock_claude", None, "Bedrock"),
+        # A trial owner's seeded USER.md read "unknown (bedrock_trial)" — Friday
+        # was told her own inference path was unknown.
+        ("bedrock_trial", None, "free trial"),
         ("chatgpt_oauth", None, "ChatGPT"),
         ("byo_key", "anthropic", "BYO Anthropic"),
         ("byo_key", "openai", "BYO OpenAI"),

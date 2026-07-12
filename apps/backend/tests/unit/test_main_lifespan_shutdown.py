@@ -13,6 +13,7 @@ async def test_lifespan_shutdown_sets_flag_and_is_bounded(monkeypatch):
     # Stub the heavy startup/shutdown collaborators.
     monkeypatch.setattr(main, "startup_containers", lambda: asyncio.sleep(0))
     monkeypatch.setattr(main, "_resume_provisioning_transitions", lambda: asyncio.sleep(0))
+    monkeypatch.setattr(main, "_reconcile_trial_idle_containers", lambda: asyncio.sleep(0))
     monkeypatch.setattr(main, "run_scheduled_worker", lambda: asyncio.sleep(3600))
     monkeypatch.setattr(main, "_running_count_gauge_loop", lambda: asyncio.sleep(3600))
     monkeypatch.setattr(main, "_build_teams_event_broker", lambda: asyncio.sleep(0, result=None))

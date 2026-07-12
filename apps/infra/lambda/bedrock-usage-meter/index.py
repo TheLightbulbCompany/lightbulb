@@ -1,13 +1,48 @@
-"""Bedrock invocation-log usage meter — direct Metronome ingest.
+"""Bedrock invocation-log usage meter — Metronome ingest (paid) + trial cap (trial).
 
 A CloudWatch Logs subscription delivers gzipped+base64 records of Bedrock
 model-invocation logs. This Lambda parses each record, attributes it to an
-owner via the per-env aip-owners reverse table, and POSTs one event per record
-straight to Metronome's /v1/ingest. Metronome rates the event (rate card),
-maintains the prepaid balance, and dedups exactly-once on ``transaction_id``
-(the Bedrock requestId, 34-day window) — so DLQ redrives and CW-Logs batch
-retries are always safe to replay. There is no backend hop and no JWT: the
-only credential is the vendor-issued Metronome API key.
+owner via the per-env aip-owners reverse table, and then splits on the
+owner's ``plan`` (an attribute of that SAME reverse row — zero extra reads):
+
+  plan == "paid"  -> POST one event per record straight to Metronome's
+                     /v1/ingest. Metronome rates the event (rate card),
+                     maintains the prepaid balance, and dedups exactly-once on
+                     ``transaction_id`` (the Bedrock requestId, 34-day window)
+                     — so DLQ redrives and CW-Logs batch retries are always
+                     safe to replay. Untouched by everything below: a paid
+                     record never touches the dedup table, never touches the
+                     daily counter, and can never be killed by the cap.
+  plan == "trial" -> price the record LOCALLY (the rate table below) and ADD
+                     the microcents to the owner's free-tier daily-spend
+                     counter, then REVOKE Bedrock at the $3/day cap. A trial
+                     owner has no Stripe customer and therefore no Metronome
+                     contract, so a trial record is NEVER ingested — an ingest
+                     would either fail or accrue an uncollectable invoice.
+
+Anything that is not exactly "trial" (including a legacy row written before
+the attribute existed) is treated as paid: the money path must fail towards
+"bill it", never towards "silently drop it".
+
+THE CAP IS THE ONLY REAL FENCE. The container holds its own AWS credentials
+and calls Bedrock directly — the backend is not on the inference path. So the
+only thing that provably stops a free owner's spend is removing the
+container's ability to invoke: delete the per-owner scoped inline IAM policy
+(every subsequent invoke is AccessDenied within ~5-15s of IAM propagation)
+AND set the owner's ECS service to desiredCount=0 (the instant stop for an
+already-admitted streaming call, which the IAM revoke does not kill). Those
+two actions are fired INDEPENDENTLY — a failure of one must still attempt the
+other — and both are idempotent (a missing policy is already-revoked; a
+stopped service is already-stopped). This mirrors ecs_manager.kill_owner_bedrock.
+
+REPLAY SAFETY. Metronome's transaction_id dedup is what makes the paid path
+replay-safe; a DynamoDB ADD has NO such dedup, so a CW-Logs batch retry or a
+DLQ redrive would double-count the trial counter and false-lock-out a real
+user. Every counter write is therefore guarded by a conditional PutItem on the
+per-env invocation-dedup table (PK requestId, 48h TTL — past CloudWatch's
+retry + redrive horizon). The guard protects the COUNTER ONLY: a replayed
+paid record still ingests (Metronome dedups it), which is the paid path's
+correctness story and must not be regressed.
 
 ONE CODEBASE, TWO FUNCTION INSTANCES. The account-scoped meter stack deploys
 this asset twice — a dev instance and a prod instance — because Bedrock
@@ -19,8 +54,14 @@ filter routes dev records to the dev instance and prod records to the prod
 instance. The instances differ ONLY in env vars (never code conditionals):
   - METRONOME_API_KEY_SECRET_ARN : dev -> sandbox token, prod -> live token
   - AIP_OWNERS_TABLE             : isol8-{env}-bedrock-aip-owners
+  - INVOCATION_DEDUP_TABLE       : isol8-{env}-bedrock-invocation-dedup
+  - BILLING_TABLE                : isol8-{env}-billing-accounts
+  - CONTAINERS_TABLE             : isol8-{env}-containers
+  - ECS_CLUSTER_PREFIX           : isol8-{env}-container-  (cluster discovery)
   - DLQ_URL                      : that instance's own SQS DLQ
-  - METER_ENV                    : the env dimension on emitted metrics
+  - METER_ENV                    : the env dimension on emitted metrics, AND
+                                   the env segment of the per-owner IAM role
+                                   name (isol8-{env}-owner-bedrock-{owner})
 
 CLOUDWATCH-ONLY, and never even needs the response body. EVERY count we bill
 on is recorded at the TOP LEVEL of the CloudWatch record and read inline:
@@ -51,24 +92,101 @@ revenue leak must alarm instead).
 
 import base64
 import gzip
+import hashlib
 import json
 import logging
 import os
+import re
 import time
 import urllib.request
+from datetime import datetime, timezone
 
 import boto3
+from botocore.exceptions import ClientError
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 METRONOME_INGEST_URL_DEFAULT = "https://api.metronome.com/v1/ingest"
 
-# Cold-start caches: the Metronome bearer token and the boto3 clients are
-# fetched/built once per Lambda container and reused across invocations.
+# Free-tier daily cost cap. Lockstep with core/services/trial_cap.CAP_MICROCENTS
+# (the READ side — gates chat with a friendly message). This module is the
+# WRITE side and the only enforcement that actually stops spend.
+# 1 dollar = 100 cents = 1,000,000 microcents, so $3.00/day = 3,000,000.
+CAP_MICROCENTS = 3_000_000
+
+# Dedup rows outlive CloudWatch Logs' retry horizon and any plausible DLQ
+# redrive (the DLQ itself retains for 14 days, but a redrive that late is an
+# operator action on records we would rather under-count than double-count).
+DEDUP_TTL_SECONDS = 48 * 3600
+
+# The inline policy name that build_owner_bedrock_policy attaches to the
+# per-owner role — deleting it is the IAM half of the kill.
+OWNER_BEDROCK_POLICY_NAME = "owner-bedrock"
+
+# --------------------------------------------------------------------------
+# Local rate table — the THIRD copy of these numbers (backend
+# core/billing/bedrock_pricing._RATES and the containers/config.py catalog
+# cost blocks are the other two). The Lambda has no VPC and no backend import
+# path, so it cannot share the module; a lockstep test in test_index.py
+# asserts this table is byte-equal to the backend's, because without it these
+# WILL drift and the cap will enforce the wrong dollar amount.
+#
+# USD per MILLION tokens, AWS-verified `us.` Regional (CRIS) rate card.
+# cache_read is the 0.1x input rate; cache_write is the 1-HOUR tier (2x input)
+# because agents.defaults.params.cacheRetention is pinned to "long". Cache
+# tokens dominate a real agent turn — omitting them undercounts ~30x, which is
+# precisely the runaway this cap exists to stop.
+# --------------------------------------------------------------------------
+_RATES = {
+    "anthropic.claude-sonnet-4-6": {
+        "input": 3.3,
+        "output": 16.5,
+        "cache_write": 6.6,
+        "cache_read": 0.33,
+    },
+    "anthropic.claude-opus-4-6-v1": {
+        "input": 5.5,
+        "output": 27.5,
+        "cache_write": 11.0,
+        "cache_read": 0.55,
+    },
+    "anthropic.claude-haiku-4-5-20251001-v1:0": {
+        "input": 1.1,
+        "output": 5.5,
+        "cache_write": 2.2,
+        "cache_read": 0.11,
+    },
+}
+
+# Tier (the AIP "lane" the owner's reverse row carries) -> rate-table key. The
+# record's modelId is the per-owner AIP ARN, which carries no foundation-model
+# id, so the tier is the ONLY bridge from a record to a price. Mirrors
+# core/billing/bedrock_aip.TIER_TO_FM (also lockstep-tested).
+TIER_TO_FM = {
+    "opus": "anthropic.claude-opus-4-6-v1",
+    "sonnet": "anthropic.claude-sonnet-4-6",
+    "haiku": "anthropic.claude-haiku-4-5-20251001-v1:0",
+}
+
+# Cold-start caches: the Metronome bearer token, the boto3 clients and the
+# resolved ECS cluster ARN are fetched/built once per Lambda container and
+# reused across invocations.
 _METRONOME_TOKEN = None
 _DDB = None
 _SQS = None
+_IAM = None
+_ECS = None
+_CLUSTER_ARN = None
+
+
+class UnknownTierError(Exception):
+    """The reverse row's tier maps to no known foundation model — unpriceable.
+
+    Deliberately not a KeyError subclass, for the same reason as the backend's
+    UnknownModelError: a pricing failure must never be swallowed by an
+    unrelated `except KeyError:`.
+    """
 
 
 def _ddb():
@@ -83,6 +201,20 @@ def _sqs():
     if _SQS is None:
         _SQS = boto3.client("sqs")
     return _SQS
+
+
+def _iam():
+    global _IAM
+    if _IAM is None:
+        _IAM = boto3.client("iam")
+    return _IAM
+
+
+def _ecs():
+    global _ECS
+    if _ECS is None:
+        _ECS = boto3.client("ecs")
+    return _ECS
 
 
 def _metronome_token():
@@ -233,19 +365,26 @@ def _extract(record):
 
 
 def _resolve_owner_and_tier(record):
-    """Resolve (owner_id, tier) from the record's AIP ARN, or (None, None).
+    """Resolve (owner_id, tier, plan) from the record's AIP ARN, or (None, None, None).
 
     The record's ``modelId`` is the per-owner application-inference-profile
     ARN; the aip-owners reverse table (written atomically per row at provision
-    by bedrock_aip.persist_owner_aips) maps it to ``owner_id`` + ``tier`` in
-    ONE GetItem. The per-owner IAM role can only invoke that owner's own AIPs,
-    so every record reaching this instance's subscription filter should
-    resolve — a miss means the reverse row is absent (a provisioning gap) and
-    must surface on the alarmed meter.unattributed metric, never be ingested.
+    by bedrock_aip.persist_owner_aips) maps it to ``owner_id`` + ``tier`` +
+    ``plan`` in ONE GetItem. The per-owner IAM role can only invoke that
+    owner's own AIPs, so every record reaching this instance's subscription
+    filter should resolve — a miss means the reverse row is absent (a
+    provisioning gap) and must surface on the alarmed meter.unattributed
+    metric, never be ingested.
+
+    ``plan`` rides along in the read that was happening anyway (zero extra
+    reads). It defaults to "paid" when absent — rows written before the
+    attribute existed carry no plan, and the money path must fail towards
+    "bill it" rather than towards "silently drop it".
 
     A DDB transport error deliberately propagates: the whole batch fails and
     CloudWatch Logs retries it, which is safe because Metronome dedups any
-    already-ingested records on transaction_id.
+    already-ingested records on transaction_id and the trial counter is
+    guarded by its own per-requestId dedup row.
     """
     resp = _ddb().get_item(
         TableName=os.environ["AIP_OWNERS_TABLE"],
@@ -253,10 +392,11 @@ def _resolve_owner_and_tier(record):
     )
     item = resp.get("Item")
     if not item:
-        return (None, None)
+        return (None, None, None)
     owner = (item.get("owner_id") or {}).get("S")
     tier = (item.get("tier") or {}).get("S")
-    return (owner or None, tier or None)
+    plan = (item.get("plan") or {}).get("S") or "paid"
+    return (owner or None, tier or None, plan)
 
 
 def _ingest_to_metronome(parsed):
@@ -298,6 +438,286 @@ def _ingest_to_metronome(parsed):
     urllib.request.urlopen(req, timeout=10)
 
 
+# ===========================================================================
+# TRIAL PATH — price locally, count, and kill at the cap.
+# Nothing below this line runs for a paid owner.
+# ===========================================================================
+
+
+def _price_from_tier(tier, *, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens):
+    """Price one invocation in microcents from the owner's tier. PURE.
+
+    Byte-for-byte the backend's bedrock_pricing.price_from_tier: tier ->
+    TIER_TO_FM -> rate -> per-component int() truncation, summed. The
+    per-component truncation (rather than truncating the sum) is deliberate —
+    it is what the backend does, and the lockstep test asserts both tables and
+    this arithmetic agree with it.
+
+    Raises:
+        UnknownTierError: the tier maps to no known foundation model.
+    """
+    fm_id = TIER_TO_FM.get(tier) if tier else None
+    rate = _RATES.get(fm_id) if fm_id else None
+    if rate is None:
+        raise UnknownTierError(tier)
+    return (
+        int(input_tokens * rate["input"])
+        + int(output_tokens * rate["output"])
+        + int(cache_read_tokens * rate["cache_read"])
+        + int(cache_write_tokens * rate["cache_write"])
+    )
+
+
+def _utc_today():
+    """Today's UTC date key (YYYY-MM-DD) — the counter's day bucket.
+
+    Deliberately "now", not the record's own timestamp. The counter is a rate
+    limiter, not a ledger (nobody is ever invoiced from it — a trial owner has
+    no Stripe customer), and the read side (trial_cap.is_over_daily_cap) asks
+    "how much has this owner spent TODAY". Bucketing a late-delivered record
+    into a past day would both under-defend today and let a DLQ redrive kill an
+    owner for a day that already rolled over. Records arrive seconds-to-minutes
+    after the invocation, so the two clocks agree in every real case.
+    """
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def _claim_request(request_id):
+    """Claim ``request_id`` for the counter. True = first delivery, count it.
+
+    THE REPLAY GUARD. CloudWatch Logs retries a whole batch on any raised
+    error and DLQ redrives are declared always-safe-to-replay — both are only
+    true because Metronome dedups on transaction_id. A DynamoDB ADD has no
+    such dedup, so an unguarded counter would double-count on every retry and
+    false-lock-out a real user at half the real spend.
+
+    Conditional PutItem on the per-env dedup table; a ConditionalCheckFailed
+    means we already counted this record. Claim-then-ADD is deliberately
+    at-most-once: if the ADD fails after the claim lands, the record DLQs
+    (alarmed, redrivable by an operator) and the redrive SKIPS the counter
+    rather than risking a double count on an ADD whose response was merely
+    lost. Under-counting one record is recoverable; false-locking a user out
+    of a product they are evaluating is not.
+
+    Guards the COUNTER only — the paid path never calls this, so a replayed
+    paid record still ingests (Metronome dedups it).
+    """
+    try:
+        _ddb().put_item(
+            TableName=os.environ["INVOCATION_DEDUP_TABLE"],
+            Item={
+                "request_id": {"S": request_id},
+                "ttl": {"N": str(int(time.time()) + DEDUP_TTL_SECONDS)},
+            },
+            ConditionExpression="attribute_not_exists(request_id)",
+        )
+        return True
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise
+
+
+def _add_daily_spend(owner_id, date_key, delta_microcents):
+    """ADD ``delta_microcents`` to billing-accounts.meta_daily_spend_microcents.{date}
+    and return the NEW total for that day.
+
+    Mirrors billing_repo.add_meta_daily_spend in raw boto3. It is a GUARDED
+    TWO-STEP because DynamoDB rejects a SET on a map and an ADD on a nested key
+    of that same map in one UpdateExpression ("Two document paths overlap"):
+      1. initialize the map to {} only if the row exists and the map is absent
+         (a swallowed ConditionalCheckFailed if another writer won the race or
+         the map already exists), then
+      2. the real atomic ADD on the nested date leaf, still guarded by
+         attribute_exists(owner_id) so a missing billing row raises instead of
+         creating a phantom.
+
+    The attribute name is a historical holdover and is kept deliberately: live
+    rows carry it. It is simply the trial daily-spend counter now, and this
+    Lambda is its SOLE writer (a second writer would double-count).
+    """
+    table = os.environ["BILLING_TABLE"]
+    try:
+        _ddb().update_item(
+            TableName=table,
+            Key={"owner_id": {"S": owner_id}},
+            UpdateExpression="SET meta_daily_spend_microcents = :empty",
+            ExpressionAttributeValues={":empty": {"M": {}}},
+            ConditionExpression=("attribute_exists(owner_id) AND attribute_not_exists(meta_daily_spend_microcents)"),
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        # Map already exists, or the owner row doesn't — the ADD below
+        # re-checks attribute_exists(owner_id) and raises in the no-row case.
+
+    resp = _ddb().update_item(
+        TableName=table,
+        Key={"owner_id": {"S": owner_id}},
+        UpdateExpression="ADD meta_daily_spend_microcents.#d :delta",
+        ExpressionAttributeNames={"#d": date_key},
+        ExpressionAttributeValues={":delta": {"N": str(int(delta_microcents))}},
+        ConditionExpression="attribute_exists(owner_id)",
+        ReturnValues="ALL_NEW",
+    )
+    day = resp.get("Attributes", {}).get("meta_daily_spend_microcents", {}).get("M", {}).get(date_key, {})
+    return int(day.get("N", 0))
+
+
+def _owner_role_name(owner_id):
+    """The per-owner ECS task role. Mirrors bedrock_aip._owner_role_name — the
+    CDK scopes iam:DeleteRolePolicy to exactly this 'isol8-{env}-owner-bedrock-*'
+    prefix."""
+    return f"isol8-{os.environ['METER_ENV']}-owner-bedrock-{owner_id}"
+
+
+def _service_name(owner_id):
+    """The owner's ECS service name. Mirrors ecs_manager._service_name — the
+    backend's own stop path DERIVES this name the same way rather than reading
+    the containers row, so deriving it here needs no DynamoDB read and cannot
+    disagree with the service that actually exists."""
+    uid_hash = hashlib.sha256(owner_id.encode()).hexdigest()[:12]
+    safe_uid = re.sub(r"[^a-zA-Z0-9_-]", "", owner_id)[:40]
+    return f"openclaw-{safe_uid}-{uid_hash}"
+
+
+def _cluster_arn():
+    """The env's ECS cluster ARN, discovered once per container and cached.
+
+    The cluster is created by each env's container stack with a CFN-generated
+    physical name (isol8-{env}-container-Cluster<hash>-<random>) — renaming it
+    would REPLACE it and destroy every per-user service, so the name cannot be
+    made deterministic. This account-scoped stack (instantiated in the prod
+    stage, holding BOTH env instances) also cannot hold a cross-stage object
+    ref to the dev cluster. So the name is resolved at runtime by prefix, from
+    an env var, keeping the "instances differ only in env vars" rule intact.
+    """
+    global _CLUSTER_ARN
+    if _CLUSTER_ARN is None:
+        prefix = os.environ["ECS_CLUSTER_PREFIX"]
+        matches = []
+        token = None
+        while True:
+            kwargs = {"nextToken": token} if token else {}
+            page = _ecs().list_clusters(**kwargs)
+            matches += [arn for arn in page.get("clusterArns", []) if arn.split("/")[-1].startswith(prefix)]
+            token = page.get("nextToken")
+            if not token:
+                break
+        if not matches:
+            raise RuntimeError(f"no ECS cluster with prefix {prefix!r}")
+        if len(matches) > 1:
+            logger.warning("meter: %d clusters match prefix %s, using %s", len(matches), prefix, matches[0])
+        _CLUSTER_ARN = matches[0]
+    return _CLUSTER_ARN
+
+
+def _revoke_owner_iam(owner_id):
+    """Delete the owner's scoped inline Bedrock policy. Idempotent: NoSuchEntity
+    means it is already revoked.
+
+    Eventually consistent (~5-15s of IAM propagation), so it is fired FIRST to
+    start that clock — but it does NOT kill an already-admitted streaming call,
+    which is why it is paired with the ECS stop.
+    """
+    try:
+        _iam().delete_role_policy(
+            RoleName=_owner_role_name(owner_id),
+            PolicyName=OWNER_BEDROCK_POLICY_NAME,
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "NoSuchEntity":
+            raise
+
+
+def _stop_owner_service(owner_id):
+    """Scale the owner's ECS service to 0 — the guaranteed instant stop.
+    Idempotent: a missing or inactive service is already stopped."""
+    try:
+        _ecs().update_service(
+            cluster=_cluster_arn(),
+            service=_service_name(owner_id),
+            desiredCount=0,
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] not in ("ServiceNotFoundException", "ServiceNotActiveException"):
+            raise
+
+
+def _stamp_bedrock_revoked(owner_id):
+    """Mark the containers row so the backend can see the revoke — the daily
+    restore reads this flag to re-attach the policy when the day rolls over."""
+    _ddb().update_item(
+        TableName=os.environ["CONTAINERS_TABLE"],
+        Key={"owner_id": {"S": owner_id}},
+        UpdateExpression="SET bedrock_revoked = :t",
+        ExpressionAttributeValues={":t": {"BOOL": True}},
+        ConditionExpression="attribute_exists(owner_id)",
+    )
+
+
+def _kill_owner_bedrock(owner_id):
+    """Cut the owner off from Bedrock. Never raises.
+
+    The two kill actions are INDEPENDENT: a revoke failure must still attempt
+    the ECS stop, and vice versa — coupling them would let one transient IAM
+    error leave a runaway container invoking Bedrock indefinitely. Each is
+    idempotent, so a redundant call is harmless. Every failure emits its own
+    alarmed metric: an un-executed kill is real money, so it must page rather
+    than fail the batch (raising here would fail records that are already
+    counted, and CW Logs would retry them into the dedup guard for nothing).
+    """
+    _emit_metric("meter.cap_kill", owner_id=owner_id)
+    # Looked up on the module at call time (not bound at def time) so each step
+    # stays independently patchable/testable.
+    steps = (
+        ("iam_revoke", _revoke_owner_iam, "meter.kill_iam_error"),
+        ("ecs_stop", _stop_owner_service, "meter.kill_ecs_error"),
+        ("revoked_stamp", _stamp_bedrock_revoked, "meter.kill_stamp_error"),
+    )
+    for label, step, metric in steps:
+        try:
+            step(owner_id)
+        except Exception as exc:  # noqa: BLE001 - each kill step is independent
+            _emit_metric(metric, owner_id=owner_id)
+            logger.exception("meter: kill step %s failed for owner %s: %s", label, owner_id, exc)
+
+
+def _meter_trial_spend(parsed):
+    """Price a trial record, count it once, and kill at the cap.
+
+    Raises:
+        UnknownTierError: the tier is unpriceable (caller DLQs + alarms).
+        ClientError: a DynamoDB transport failure (caller DLQs + alarms).
+    """
+    owner_id = parsed["owner_id"]
+    microcents = _price_from_tier(
+        parsed["tier"],
+        input_tokens=parsed["input_tokens"],
+        output_tokens=parsed["output_tokens"],
+        cache_read_tokens=parsed["cache_read_tokens"],
+        cache_write_tokens=parsed["cache_write_tokens"],
+    )
+    if not _claim_request(parsed["request_id"]):
+        logger.info("meter: replay of req=%s, counter already applied", parsed["request_id"])
+        _emit_metric("meter.replay_skipped", owner_id=owner_id)
+        return
+
+    total = _add_daily_spend(owner_id, _utc_today(), microcents)
+    # Kill on the CROSSING, not on every over-cap record: the records already
+    # in flight when the cap is crossed each land afterwards, and re-killing on
+    # each of them would be pure noise. The pre-add total is the new total
+    # minus this record's own price — no extra read.
+    if total >= CAP_MICROCENTS > total - microcents:
+        logger.warning(
+            "meter: owner %s crossed the daily cap (%d >= %d microcents) — revoking Bedrock",
+            owner_id,
+            total,
+            CAP_MICROCENTS,
+        )
+        _kill_owner_bedrock(owner_id)
+
+
 def handler(event, context):
     payload = json.loads(gzip.decompress(base64.b64decode(event["awslogs"]["data"])))
     # CloudWatch Logs delivers a non-JSON health-probe message when a
@@ -326,10 +746,12 @@ def handler(event, context):
             _send_to_dlq(log_event, "unparseable_log_event")
             continue
         # Shape guard BEFORE any use of the record: valid JSON is not
-        # necessarily a usable record. requestId is load-bearing — it becomes
-        # the Metronome transaction_id, which is the ENTIRE replay/dedup
-        # safety story (DLQ redrives, CW Logs batch retries), so an event
-        # without one must never be ingested. modelId is the attribution key.
+        # necessarily a usable record. requestId is load-bearing — it is BOTH
+        # the Metronome transaction_id AND the trial counter's dedup key, i.e.
+        # the ENTIRE replay/dedup safety story (DLQ redrives, CW Logs batch
+        # retries). An event without one must never be ingested and must never
+        # be counted (an empty key would collapse every such record onto one
+        # dedup row and count only the first). modelId is the attribution key.
         malformed = None
         if not isinstance(record, dict):
             malformed = "not a dict"
@@ -349,7 +771,7 @@ def handler(event, context):
             _emit_metric("meter.parse_failed")
             _send_to_dlq(log_event, f"extract_failed: {exc}")
             continue
-        owner_id, tier = _resolve_owner_and_tier(record)
+        owner_id, tier, plan = _resolve_owner_and_tier(record)
         if owner_id is None:
             # NEVER ingest unattributed: a customer-less event lands in
             # Metronome's unmatched-events bin and silently vanishes from
@@ -369,6 +791,28 @@ def handler(event, context):
             continue
         parsed["owner_id"] = owner_id
         parsed["tier"] = tier
+        parsed["plan"] = plan
+        if plan == "trial":
+            # Trial owners have no Stripe customer and therefore no Metronome
+            # contract — an ingest would fail, or worse, accrue an
+            # uncollectable invoice. They are metered LOCALLY instead, and the
+            # cap is the only thing that actually stops their spend. Anything
+            # that is not exactly "trial" falls through to the paid path
+            # untouched (byte-identical to the pre-cap Lambda).
+            try:
+                _meter_trial_spend(parsed)
+            except UnknownTierError as exc:
+                logger.error("meter: unpriceable tier %r req=%s, DLQ + skip", tier, parsed["request_id"])
+                _emit_metric("meter.unknown_model")
+                _send_to_dlq(log_event, f"unpriceable_tier: {exc}")
+            except Exception as exc:  # noqa: BLE001 - a counter failure must DLQ, not drop
+                # An uncounted record is spend we cannot see, so it is held on
+                # the DLQ + alarmed. Redriving is safe: the dedup guard makes
+                # the counter at-most-once.
+                logger.error("meter: trial counter failed, DLQ + skip: %s", exc)
+                _emit_metric("meter.counter_error")
+                _send_to_dlq(log_event, f"counter_error: {exc}")
+            continue
         try:
             _ingest_to_metronome(parsed)
         except Exception as exc:  # noqa: BLE001 - any transport error must DLQ, not drop

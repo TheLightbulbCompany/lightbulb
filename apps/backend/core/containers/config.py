@@ -43,6 +43,68 @@ DEPLOYED_UPSTREAM_VERSION = openclaw_version.deployed_upstream_version()
 # built from this, and ecs_manager imports it, so the two can't drift.
 CHANNEL_PROVIDER_IDS = ("telegram", "discord", "slack")
 
+# The two Bedrock config modes. Both emit the same `amazon-bedrock` provider
+# block shape; they differ in the CATALOG (how many tiers the owner's IAM lets
+# them invoke) and in POLICY (a trial container must not self-run).
+#
+#   bedrock_claude — the paid three-tier ladder (opus / sonnet / haiku).
+#   bedrock_trial  — the no-card free tier. Exactly ONE tier (sonnet), because
+#                    ensure_owner_aips mints one AIP and build_owner_bedrock_policy
+#                    pins the owner's IAM role to it: emitting opus/haiku here
+#                    would AccessDenied on every turn that touched them.
+#
+# `bedrock_trial` is a config MODE resolved from the owner's subscription_status
+# (`trial_local`), never a stored provider_choice — same relationship the deleted
+# `meta` branch had. It is deliberately a distinct provider_choice string rather
+# than an inference from the AIP map so the trial LOCKDOWN below is an explicit
+# product decision, not an accident of how many AIPs happen to exist.
+BEDROCK_TRIAL_CHOICE = "bedrock_trial"
+BEDROCK_PROVIDER_CHOICES = ("bedrock_claude", BEDROCK_TRIAL_CHOICE)
+
+# ---------------------------------------------------------------------------
+# Runaway bounds — applied to EVERY provider path (see build_openclaw_config_dict).
+#
+# These bound how far a run can RUN AWAY; none of them changes what an agent can
+# DO. OpenClaw's agentic loop is a literal `while (true)` with no step, tool-call
+# or token cap (the strict 7.1 schema rejects maxSteps/maxToolCalls/budget
+# outright), so without these a single un-aborted loop can burn thousands of
+# dollars against whichever credential the owner is on.
+#
+# They are NOT the enforcement fence — the agent has `exec: full` and can rewrite
+# its own openclaw.json. The fence is the IAM revoke + desiredCount=0 kill switch.
+# These are free insurance that shrinks the per-incident blast radius.
+# ---------------------------------------------------------------------------
+
+# agents.defaults.timeoutSeconds — the big one. Upstream defaults to 172800
+# (48 HOURS) and Isol8 has never set it. 30 minutes sits far above any real turn
+# (the Paperclip adapter already runs with a 600s cap in production) while turning
+# a ~$2,600 runaway into a ~$27 one.
+AGENT_RUN_TIMEOUT_SECONDS = 1800
+
+# agents.defaults.runRetries.max — upstream default is 160, and each retry
+# re-arms the deadline above (so 160 × 30m is not a bound at all).
+AGENT_RUN_RETRIES_MAX = 8
+
+# agents.defaults.subagents.maxConcurrent — upstream default 8. The subagent lane
+# does NOT count against the main agents.defaults.maxConcurrent semaphore, so it
+# needs its own bound. (maxConcurrent itself is deliberately left at its upstream
+# default of 4 — it is already a real global semaphore every entrance passes.)
+#
+# TRIAL ONLY, unlike the other three bounds. Those (timeoutSeconds, runRetries,
+# loopDetection) are sane everywhere: no legitimate run wants 48 hours or 160
+# retries. This one is different — it throttles *capability*, and for a paid
+# owner the spend is bounded by their own credits or their own API key, so
+# there is no reason to make them delegate more slowly than upstream allows.
+AGENT_SUBAGENT_MAX_CONCURRENT_TRIAL = 2
+
+# agents.defaults.contextTokens — BEDROCK ONLY. Our Bedrock catalog declares a
+# 1,000,000-token context window, so one call may take up to ~$6.74 of input.
+# Bounding the effective budget caps that and triggers compaction/contextPruning
+# earlier (their ratios are measured against this value, not the model's
+# advertised window). Deliberately not set on the other paths: the ChatGPT/Codex
+# path serves ~272k and must keep inheriting its own budget.
+BEDROCK_CONTEXT_TOKENS = 200_000
+
 
 # =============================================================================
 # Node device identity helpers
@@ -374,7 +436,7 @@ def build_provider_block(
                 {},
             )
         raise ValueError(f"byo_provider must be 'openai' or 'anthropic' for byo_key, got {byo_provider!r}")
-    if provider_choice == "bedrock_claude":
+    if provider_choice in BEDROCK_PROVIDER_CHOICES:
         # Static catalog — exactly the models we price in
         # core/billing/bedrock_pricing.py. Discovery is OFF: the per-user
         # container's task role only has bedrock:InvokeModel, and surfacing
@@ -403,24 +465,42 @@ def build_provider_block(
         # cannot invoke -> every chat AccessDeniedException. Require the owner's
         # AIP ARNs here; raise loud at provision rather than silently at first
         # chat. ensure_owner_aips (bedrock_aip.py) is the upstream producer.
-        if not aip_arns or not all(t in aip_arns for t in ("opus", "sonnet", "haiku")):
+        #
+        # The catalog is the intersection of "models we price" and "AIPs this
+        # owner's IAM role can actually invoke": every tier PRESENT in aip_arns
+        # is emitted, every absent tier is omitted. sonnet is the one hard
+        # requirement — it is agents.defaults.model.primary on both bedrock
+        # modes, so an owner without it could not invoke anything at all.
+        #
+        # A trial owner has exactly one AIP (sonnet). Emitting the three-tier
+        # ladder for them would hand every turn a model IAM denies; the old
+        # all-three-or-raise gate made that a hard provision failure instead.
+        if not aip_arns or "sonnet" not in aip_arns:
             raise ValueError(
-                "bedrock_claude requires aip_arns with opus/sonnet/haiku keys "
+                f"{provider_choice} requires aip_arns with at least a 'sonnet' key "
                 "(per-owner AIP ARNs). Run ensure_owner_aips before write_user_configs."
             )
-        opus_id = aip_arns["opus"]
+        is_trial = provider_choice == BEDROCK_TRIAL_CHOICE
         sonnet_id = aip_arns["sonnet"]
-        haiku_id = aip_arns["haiku"]
-        bedrock_models = [
-            {
-                "id": opus_id,
-                "name": "Claude Opus 4.6",
-                "reasoning": True,
-                "input": ["text", "image"],
-                "cost": {"input": 5.5, "output": 27.5, "cacheRead": 0.55, "cacheWrite": 11.0},
-                "contextWindow": 1_000_000,
-                "maxTokens": 8192,
-            },
+        # A trial owner is pinned to ONE model regardless of what the map carries
+        # (defense in depth against a stale/over-minted AIP map on a trial row).
+        opus_id = None if is_trial else aip_arns.get("opus")
+        haiku_id = None if is_trial else aip_arns.get("haiku")
+
+        bedrock_models = []
+        if opus_id:
+            bedrock_models.append(
+                {
+                    "id": opus_id,
+                    "name": "Claude Opus 4.6",
+                    "reasoning": True,
+                    "input": ["text", "image"],
+                    "cost": {"input": 5.5, "output": 27.5, "cacheRead": 0.55, "cacheWrite": 11.0},
+                    "contextWindow": 1_000_000,
+                    "maxTokens": 8192,
+                }
+            )
+        bedrock_models.append(
             {
                 "id": sonnet_id,
                 "name": "Claude Sonnet 4.6",
@@ -429,21 +509,30 @@ def build_provider_block(
                 "cost": {"input": 3.3, "output": 16.5, "cacheRead": 0.33, "cacheWrite": 6.6},
                 "contextWindow": 1_000_000,
                 "maxTokens": 8192,
-            },
-            {
-                # Cheap aux-task tier — compaction / heartbeat / memory-flush.
-                # The date-stamped inference-profile id is the only valid Haiku
-                # 4.5 profile; the bare us.anthropic.claude-haiku-4-5 throws
-                # ValidationException on invoke.
-                "id": haiku_id,
-                "name": "Claude Haiku 4.5",
-                "reasoning": True,
-                "input": ["text", "image"],
-                "cost": {"input": 1.1, "output": 5.5, "cacheRead": 0.11, "cacheWrite": 2.2},
-                "contextWindow": 200_000,
-                "maxTokens": 8192,
-            },
-        ]
+            }
+        )
+        if haiku_id:
+            bedrock_models.append(
+                {
+                    # Cheap aux-task tier — compaction / heartbeat / memory-flush.
+                    # The date-stamped inference-profile id is the only valid Haiku
+                    # 4.5 profile; the bare us.anthropic.claude-haiku-4-5 throws
+                    # ValidationException on invoke.
+                    "id": haiku_id,
+                    "name": "Claude Haiku 4.5",
+                    "reasoning": True,
+                    "input": ["text", "image"],
+                    "cost": {"input": 1.1, "output": 5.5, "cacheRead": 0.11, "cacheWrite": 2.2},
+                    "contextWindow": 200_000,
+                    "maxTokens": 8192,
+                }
+            )
+        # Fallbacks are error-only, not cost routing. With a haiku tier the
+        # failover REDUCES spend (cheapest priced tier). With no cheaper tier —
+        # the trial's single-model catalog — the fallback is the primary itself:
+        # there is nothing else the owner's IAM role can invoke, and pointing at
+        # a model it can't would turn any transient error into a hard failure.
+        fallback_id = haiku_id or sonnet_id
         return (
             {
                 "amazon-bedrock": {
@@ -471,7 +560,7 @@ def build_provider_block(
                 #
                 # Users can still override per-agent via agents.list[*].model.
                 "primary": f"amazon-bedrock/{sonnet_id}",
-                "fallbacks": [f"amazon-bedrock/{haiku_id}"],
+                "fallbacks": [f"amazon-bedrock/{fallback_id}"],
             },
             {
                 "amazon-bedrock": {
@@ -479,12 +568,6 @@ def build_provider_block(
                 },
             },
         )
-    if provider_choice == "meta":
-        # meta provider is bundled + enabledByDefault in the 7.1 base image
-        # (extensions/meta, muse-spark-1.1). Key via MODEL_API_KEY env (a task-def
-        # secret set at provision time) — never in openclaw.json. Locked single
-        # model: fallback == primary so it isn't user-changeable.
-        return ({}, {"primary": "meta/muse-spark-1.1", "fallbacks": ["meta/muse-spark-1.1"]}, {})
     raise ValueError(f"Unknown provider_choice: {provider_choice!r}")
 
 
@@ -500,11 +583,19 @@ def premium_model_ref(
     because it's a flat-rate plan — there's no cheaper tier to demote the
     default to, so the CEO inherits the same model as everyone else.
 
+    ``bedrock_trial`` — and any Bedrock owner whose AIP map carries no ``opus``
+    — also returns ``None``: their IAM role is pinned to the AIPs they actually
+    hold, so pinning Friday to an opus profile they don't own would
+    AccessDeniedException on every one of the CEO's turns. A missing map still
+    raises: that's a provisioning bug, not a one-tier owner.
+
     Returns the same ref style as ``build_provider_block`` (``<provider>/<id>``).
     """
-    if provider_choice == "bedrock_claude":
-        if not aip_arns or "opus" not in aip_arns:
-            raise ValueError("bedrock_claude premium_model_ref requires aip_arns['opus']")
+    if provider_choice in BEDROCK_PROVIDER_CHOICES:
+        if not aip_arns:
+            raise ValueError(f"{provider_choice} premium_model_ref requires aip_arns")
+        if provider_choice == BEDROCK_TRIAL_CHOICE or "opus" not in aip_arns:
+            return None
         return f"amazon-bedrock/{aip_arns['opus']}"
     if provider_choice == "byo_key":
         if byo_provider == "anthropic":
@@ -537,11 +628,20 @@ def cheap_model_ref(
     invoke — so compaction runs. The general rule: only return a model the
     selected provider/auth path can actually invoke as a summarizer.
 
+    ``bedrock_trial`` — and any Bedrock owner whose AIP map carries no ``haiku``
+    — returns ``None`` for the same reason ``premium_model_ref`` does: the
+    owner's IAM role can only invoke the AIPs they hold, so routing compaction /
+    memory-flush to a haiku profile they don't own would make every compaction
+    fail (and, unrecovered, kill the turn with a context overflow). ``None``
+    lets aux work inherit the single model they CAN invoke.
+
     Returns the same ref style as ``build_provider_block`` (``<provider>/<id>``).
     """
-    if provider_choice == "bedrock_claude":
-        if not aip_arns or "haiku" not in aip_arns:
-            raise ValueError("bedrock_claude cheap_model_ref requires aip_arns['haiku']")
+    if provider_choice in BEDROCK_PROVIDER_CHOICES:
+        if not aip_arns:
+            raise ValueError(f"{provider_choice} cheap_model_ref requires aip_arns")
+        if provider_choice == BEDROCK_TRIAL_CHOICE or "haiku" not in aip_arns:
+            return None
         return f"amazon-bedrock/{aip_arns['haiku']}"
     if provider_choice == "byo_key":
         if byo_provider == "anthropic":
@@ -796,7 +896,15 @@ def derive_enabled_harnesses(provider_choice: str, byo_provider: str | None) -> 
     Gemini is intentionally absent: there is no Google credential path on the
     platform today, so no owner can authenticate it. Returns ``[]`` for any
     unrecognized combination (caller emits no ACP block).
+
+    ``bedrock_trial`` returns ``[]`` — no ACP on the free tier. Two independent
+    reasons: (1) the Claude Code harness invokes Bedrock model ids of its own
+    choosing, which the trial owner's one-AIP IAM policy denies, so every ACP
+    turn would fail anyway; (2) it is an autonomy/spend surface that belongs on
+    the paid tier alongside cron and the heartbeat.
     """
+    if provider_choice == BEDROCK_TRIAL_CHOICE:
+        return []
     if provider_choice == "bedrock_claude":
         return ["claude"]
     if provider_choice == "chatgpt_oauth":
@@ -888,6 +996,13 @@ def build_openclaw_config_dict(
     # Fail fast — caller must regenerate via secrets.token_urlsafe before retry.
     if not gateway_token:
         raise ValueError("gateway_token must be a non-empty string")
+
+    # The free-tier Bedrock config mode. Everything keyed off this flag is a
+    # LOCKDOWN of autonomous / always-on surfaces: a trial container must only
+    # ever run when a human is in the loop, because its only spend fence is the
+    # AWS-side meter + IAM kill switch, and a self-run (cron, heartbeat, a
+    # channel bot) burns credits with nobody watching.
+    is_bedrock_trial = provider_choice == BEDROCK_TRIAL_CHOICE
 
     providers_config, default_model, plugin_entries = build_provider_block(
         provider_choice=provider_choice,
@@ -995,6 +1110,26 @@ def build_openclaw_config_dict(
         "agents": {
             "defaults": {
                 "model": default_model,
+                # --- runaway bounds (see the module constants) -----------------
+                # The agentic loop is a literal `while (true)`: no step,
+                # tool-call or token cap exists in the strict 7.1 schema, so
+                # this wall-clock deadline is the ONLY thing that ends a loop
+                # that stops making progress. Upstream's default is 48 HOURS.
+                # Applies to every provider — a runaway is a support incident on
+                # the owner's own key just as much as on our Bedrock credits.
+                "timeoutSeconds": AGENT_RUN_TIMEOUT_SECONDS,
+                # Each retry RE-ARMS the deadline above, so the upstream default
+                # of 160 would make timeoutSeconds meaningless.
+                "runRetries": {"max": AGENT_RUN_RETRIES_MAX},
+                # contextTokens is a first-class agents.defaults key (NOT inside
+                # `params`). It sets the EFFECTIVE context budget: both
+                # contextPruning's trigger ratios and compaction measure against
+                # it rather than the model's advertised window. Only the Bedrock
+                # catalog above declares a 1M window (one call ≈ up to $6.74 of
+                # input), so only the Bedrock modes bound it; other providers
+                # omit the key and inherit OpenClaw's per-model default (the
+                # ChatGPT/Codex path serves ~272k and must keep its own).
+                **({"contextTokens": BEDROCK_CONTEXT_TOKENS} if provider_choice in BEDROCK_PROVIDER_CHOICES else {}),
                 # Global default provider params applied to all models before
                 # per-model/per-agent overrides (openclaw
                 # zod-schema.agent-defaults.ts is a free-form record). The
@@ -1005,7 +1140,9 @@ def build_openclaw_config_dict(
                 # window so re-reads land within it, cutting input-token cost.
                 # the openai provider ignores the key, so it's a global no-op
                 # there — set unconditionally rather than per-provider.
-                "params": {"cacheRetention": "long"},
+                "params": {
+                    "cacheRetention": "long",
+                },
                 # contextLimits is a no-op stub (its schema doesn't change
                 # behavior when empty); kept as an explicit default.
                 "contextLimits": {},
@@ -1070,7 +1207,18 @@ def build_openclaw_config_dict(
                 # (which stays None on OAuth for the Codex native-compaction
                 # constraint). `None` only when a provider has no cheaper tier,
                 # in which case the heartbeat inherits the default model.
-                "heartbeat": {"every": "30m", **({"model": heartbeat_model} if heartbeat_model else {})},
+                #
+                # The BEDROCK TRIAL omits the key entirely rather than disabling
+                # it in place: a present `heartbeat` key is truthy to OpenClaw
+                # regardless of its contents (it falls back to a 30m interval
+                # with `target: none`), so this is the only way to stop it. The
+                # heartbeat is a recurring self-run per agent — a trial
+                # container must not burn credits with no human in the loop.
+                **(
+                    {}
+                    if is_bedrock_trial
+                    else {"heartbeat": {"every": "30m", **({"model": heartbeat_model} if heartbeat_model else {})}}
+                ),
                 "workspace": "/home/node/.openclaw/workspaces",
                 # Memory recall stays ON for every owner (memory-core registers
                 # memory_search/memory_get, and the "Memory Recall" prompt
@@ -1100,7 +1248,21 @@ def build_openclaw_config_dict(
                 # cross-agent *session* viewing (tools.sessions.visibility /
                 # tools.agentToAgent) is a separate gate we deliberately leave at
                 # its default. Not subject to the sandbox visibility clamp.
-                "subagents": {"allowAgents": ["*"]},
+                #
+                # `maxConcurrent` is a runaway bound, not a capability limit: the
+                # subagent lane does NOT count against agents.defaults.maxConcurrent
+                # (the global semaphore every other entrance passes through), so a
+                # fan-out loop can run 8 parallel agents — 8 parallel spends — by
+                # default. Two at a time still lets an agent delegate; it just
+                # can't multiply itself out of the cap.
+                "subagents": {
+                    "allowAgents": ["*"],
+                    **(
+                        {"maxConcurrent": AGENT_SUBAGENT_MAX_CONCURRENT_TRIAL}
+                        if provider_choice == BEDROCK_TRIAL_CHOICE
+                        else {}
+                    ),
+                },
             },
             # Per-agent settings. reasoningDefault is not allowed in
             # agents.defaults (see openclaw zod-schema.agent-defaults.ts), so
@@ -1160,6 +1322,13 @@ def build_openclaw_config_dict(
             # scheduling surface). Recurring work goes through the Paperclip
             # routines API, which the bundled `paperclip` skill teaches.
             "deny": ["canvas", "nodes", "cron"],
+            # Upstream's own tool-loop circuit breaker — genericRepeat /
+            # knownPollNoProgress / pingPong detectors that trip when an agent
+            # calls the same tool with the same args over and over. It defaults
+            # to DISABLED. Enabling it costs nothing and is the one bound that
+            # stops a stuck loop on its own merits rather than on the clock; the
+            # thresholds are left at their upstream defaults.
+            "loopDetection": {"enabled": True},
             **_build_exec_policy(),
             "web": {
                 "fetch": {"enabled": True},
@@ -1181,6 +1350,17 @@ def build_openclaw_config_dict(
                 "video": {"enabled": False},
             },
         },
+        # The BEDROCK TRIAL additionally kills the cron SERVICE outright, not
+        # just the tool: trial containers must not self-run. This closes the
+        # in-container scheduler (including memory-dreaming's own registrations)
+        # as a self-run surface that the tool-level deny above doesn't reach —
+        # the cron TOOL is already denied fleet-wide via tools.deny, so this is
+        # belt-and-suspenders against anything that could still arm a schedule
+        # (an imported/carried-forward job, future config drift). Schema-verified
+        # key: `cron.enabled` is a boolean on the pinned 7.1 CronSchema. Paid
+        # providers emit no cron key at all — the service stays on, governed by
+        # tools.deny as before.
+        **({"cron": {"enabled": False}} if is_bedrock_trial else {}),
         "skills": {
             "install": {
                 "nodeManager": "npm",
@@ -1383,7 +1563,14 @@ def build_openclaw_config_dict(
     # and its allowFrom pairings are silently dropped. Recreate the sibling route
     # bindings too, since config_patcher adds those per-PATCH and the overwrite
     # would otherwise lose them (without a binding the bot misroutes to main).
-    if channel_accounts:
+    #
+    # Skipped on the BEDROCK TRIAL: a channel bot is an inbound self-run surface
+    # (any Telegram peer can wake the agent, with no human of ours in the loop),
+    # so a trial reprovision must not resurrect saved accounts. This closes the
+    # carried-forward path, so an owner who upgraded-then-reverted — or whose row
+    # still carries stale accounts — can't have a channel silently re-armed
+    # underneath them.
+    if channel_accounts and not is_bedrock_trial:
         bindings = config.setdefault("bindings", [])
         channels = config.setdefault("channels", {})
         for provider, accounts in channel_accounts.items():
@@ -1452,7 +1639,10 @@ async def write_openclaw_config(
         gateway_token: Shared secret for container auth. Required because
             ``gateway.auth.mode = "token"``.
         provider_choice: One of ``"chatgpt_oauth"``, ``"byo_key"``,
-            ``"bedrock_claude"``.
+            ``"bedrock_claude"``, ``"bedrock_trial"``. ``bedrock_trial`` is the
+            free-tier config MODE (one AIP tier + the self-run lockdown),
+            resolved from the owner's ``trial_local`` subscription_status — it
+            is never a stored provider_choice.
         user_id: Owner ID; surfaced for completeness — the chatgpt_oauth
             path no longer carries it into the config (auth.json directory
             is set via the CODEX_HOME env var on the per-user ECS task).

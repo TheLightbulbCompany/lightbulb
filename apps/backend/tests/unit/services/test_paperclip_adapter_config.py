@@ -54,6 +54,7 @@ def test_validate_gateway_url_rejects_unknown_formats(url):
 def test_synthesize_returns_canonical_shape(monkeypatch):
     # With no internal URL configured, no paperclipApiUrl override is added.
     monkeypatch.setattr(settings, "PAPERCLIP_INTERNAL_URL", "")
+    monkeypatch.setattr(settings, "PUBLIC_API_BASE", "https://api-dev.isol8.co")
     cfg = synthesize_openclaw_adapter(
         gateway_url="wss://ws-dev.isol8.co",
         service_token="JWT_TOKEN_HERE",
@@ -73,6 +74,9 @@ def test_synthesize_returns_canonical_shape(monkeypatch):
     # mislabeled `timed_out` + retried.
     assert cfg["timeoutSec"] == 600
     assert cfg["waitTimeoutMs"] == 600_000
+    # Every seeded agent (trial AND paid) carries the pre-run allowance URL so
+    # the adapter checks the daily cap before dialing; the endpoint says yes for
+    # paid owners, so conversion needs no adapterConfig edit.
     assert set(cfg.keys()) == {
         "url",
         "authToken",

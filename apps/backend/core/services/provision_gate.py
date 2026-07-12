@@ -5,12 +5,13 @@ Both `/container/provision` and `/container/status` consult this helper and
 return its structured payload on 402, so the two endpoints can never
 disagree about the gate state.
 
-This module also owns the two pure billing-state predicates that
+This module also owns the pure billing-state predicates that
 ``evaluate_provision_gate`` (and several callers outside the gate) need:
-``is_subscription_active`` and ``is_trial_blocked``. They live here so
-every site that asks "is this billing account currently usable?" hits
+``is_subscription_active``, ``is_trial_blocked``, and
+``has_always_on_entitlement``. They live here so every site that asks
+"is this billing account currently usable?" (or "is it paid?") hits
 the same code path — see the call sites in ``core.gateway.connection_pool``,
-``routers.config``, and ``routers.billing``.
+``routers.config``, ``routers.hooks_proxy``, and ``routers.billing``.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from core.observability.metrics import put_metric
+from core.observability.product_analytics import capture_once_per_owner_per_day
 from core.repositories import billing_repo
 
 logger = logging.getLogger(__name__)
@@ -85,6 +87,35 @@ def is_subscription_active(account: Mapping[str, Any] | None) -> bool:
         return False
     status = account.get("subscription_status")
     if status in _ACTIVE_STATUSES:
+        return True
+    return status is None and bool(account.get("stripe_subscription_id"))
+
+
+# Statuses that carry the PAID always-on entitlement. Deliberately excludes
+# "trial_local" — the no-card local trial grants platform use (see
+# ``_ACTIVE_STATUSES``) but never always-on autonomy.
+_ENTITLED_STATUSES = frozenset({"active", "trialing"})
+
+
+def has_always_on_entitlement(account: Mapping[str, Any] | None) -> bool:
+    """Paid-only predicate for ALWAYS-ON features (webhooks, channels,
+    Paperclip routines, autonomous heartbeats).
+
+    Distinct axis from ``is_subscription_active``: ``trial_local`` owners
+    ARE subscription-active (interactive chat and interactive Teams are
+    part of the free tier) but are NEVER always-on entitled — autonomy is
+    what the $50/mo subscription buys. Fail-closed: no row = not entitled.
+
+    The legacy fallback mirrors ``is_subscription_active`` exactly:
+    it only applies while ``subscription_status`` is None (rows whose
+    status hasn't been backfilled yet), so an explicit non-paid status —
+    ``trial_local``, ``canceled``, ``past_due`` — can never ride a stale
+    ``stripe_subscription_id`` into entitlement.
+    """
+    if not account:
+        return False
+    status = account.get("subscription_status")
+    if status in _ENTITLED_STATUSES:
         return True
     return status is None and bool(account.get("stripe_subscription_id"))
 
@@ -160,6 +191,66 @@ def _team_billing_required_gate(owner_role: str) -> Gate:
     )
 
 
+async def maybe_restore_trial_bedrock(*, owner_id: str, container: Mapping[str, Any] | None) -> None:
+    """Give a capped-out trial owner their Bedrock access back once they're
+    eligible again — the daily counterpart to the meter Lambda's revoke.
+
+    IAM revocation does not expire on its own; the daily-spend counter does
+    (a new UTC day is a new map key), but nothing else gives the policy back.
+    Without this, "$3/day" is really "$3, once, ever." The owner comes to us
+    on the status/provision poll — no worker, no sweeper.
+
+    Fires only when ALL THREE hold:
+      1. ``container`` (already in hand on the caller's path — no extra read
+         for it) carries ``bedrock_revoked`` — otherwise this is a no-op with
+         ZERO reads, the overwhelmingly common case.
+      2. The owner is STILL ``trial_local``. A paid owner can also carry
+         ``bedrock_revoked`` (Metronome low-balance enforcement uses the same
+         flag) — that restore path is ``metronome_gate._maybe_restore_bedrock``,
+         gated on a CONFIRMED positive Metronome balance, and is untouched by
+         this function. Restoring a paid owner here would hand back Bedrock
+         with no balance check at all.
+      3. ``trial_cap.reason_for_account`` — the account-accepting twin of
+         ``trial_block_reason``, the SAME predicate ``ecs_manager.
+         start_user_service`` consults before starting a trial owner's
+         container — is None for the row already read in step 2 (no second
+         GetItem of the billing row just to re-derive the same answer). A
+         TRIAL_EXPIRED reason must NEVER restore: expiry is permanent, unlike
+         the daily cap, which self-clears on the next UTC day.
+
+    Mutates ``container["bedrock_revoked"]`` to False in place on a
+    successful restore so the rest of THIS request sees the up-to-date row
+    (``restore_owner_bedrock`` already persists the clear to DynamoDB).
+
+    Best-effort: a restore failure is logged and swallowed, never raised —
+    the status/provision poll must keep answering normally. The owner stays
+    revoked and the next poll simply retries.
+    """
+    if not container or not container.get("bedrock_revoked"):
+        return
+
+    account = await billing_repo.get_by_owner_id(owner_id)
+    if not account or account.get("subscription_status") != "trial_local":
+        return
+
+    from core.services import trial_cap
+
+    if await trial_cap.reason_for_account(owner_id, account) is not None:
+        return
+
+    from core.billing.bedrock_aip import restore_owner_bedrock
+
+    try:
+        await restore_owner_bedrock(owner_id)
+    except Exception:
+        logger.exception(
+            "Trial Bedrock restore failed for owner %s — bedrock_revoked stays set; next poll retries",
+            owner_id,
+        )
+        return
+    container["bedrock_revoked"] = False
+
+
 async def _has_oauth_tokens(token_owner: str, owner_id: str) -> bool:
     """Whether ``token_owner`` has ChatGPT OAuth tokens bound to ``owner_id``.
 
@@ -179,6 +270,38 @@ async def _has_oauth_tokens(token_owner: str, owner_id: str) -> bool:
     from core.services import oauth_service
 
     return await oauth_service.has_active_oauth(user_id=token_owner, bound_to=owner_id)
+
+
+def meta_daily_cap_gate(owner_role: str) -> Gate:
+    """The blocked-gate a trial_local owner sees once they cross the $3/day
+    Meta cap. Shared so the provision gate and the /container/status wake
+    path render an identical 'daily limit' card (not a spinner)."""
+    return Gate(
+        code="meta_daily_cap",
+        title="Daily free limit reached",
+        message="You've used today's free allowance — resets tomorrow. Upgrade to keep going.",
+        action_label="Upgrade",
+        action_href="/settings?panel=billing",
+        action_admin_only=False,
+        owner_role=owner_role,
+    )
+
+
+def trial_expired_gate(owner_role: str) -> Gate:
+    """The blocked-gate a trial_local owner sees once their 3-day window
+    (``trial_end``, stamped by ``billing_repo.create_trial_local_if_absent``
+    at signup) has passed. Mirrors ``meta_daily_cap_gate`` field-for-field
+    so the provision gate and gate_chat's Layer 2 render an identical
+    'trial ended' card instead of a spinner or a generic error."""
+    return Gate(
+        code="trial_expired",
+        title="Your free trial has ended",
+        message="Your 3-day free trial has ended. Pick a plan to keep your agent.",
+        action_label="Upgrade",
+        action_href="/settings?panel=billing",
+        action_admin_only=False,
+        owner_role=owner_role,
+    )
 
 
 async def evaluate_provision_gate(
@@ -208,6 +331,11 @@ async def evaluate_provision_gate(
             put_metric("provision.gate.blocked", dimensions={"code": gate.code})
         except Exception:  # noqa: BLE001 — telemetry must not break provisioning
             logger.debug("provision.gate.blocked metric emission failed", exc_info=True)
+        if gate.code == "trial_expired":
+            # Trial funnel telemetry (customer-analytics twin of the EMF
+            # metric above): /container/status polls every ~3s while
+            # blocked, so dedup to once per owner per UTC day.
+            capture_once_per_owner_per_day(owner_id=owner_id, event="trial_expired_block")
     return gate
 
 
@@ -313,11 +441,26 @@ async def _evaluate_provision_gate_inner(
         )
 
     # trial_local short-circuit — a no-card local trial has NO
-    # provider_choice on the row (its provider is resolved to `meta`
-    # elsewhere, not stored here), so it must not be sent through the
+    # provider_choice on the row (its provider is a config-path mode resolved
+    # at provision time, not stored here), so it must not be sent through the
     # Layer-2 provider_required check below. A trial_local owner is
     # provision-eligible without a stored provider.
     if account.get("subscription_status") == "trial_local":
+        # ONE predicate, shared with ecs_manager.start_user_service and the
+        # daily Bedrock-restore trigger, so the gate and every start path can
+        # never disagree about whether a trial owner may have a container.
+        # This branch used to inline its own expiry+cap check; the chokepoint
+        # inlined only the cap, and an EXPIRED trial could therefore wake a
+        # container the gate would have refused. Do not re-inline it.
+        #
+        # ``account`` is already in hand, so this spends no extra billing read.
+        from core.services import trial_cap
+
+        reason = await trial_cap.reason_for_account(owner_id, account)
+        if reason == trial_cap.TRIAL_EXPIRED:
+            return trial_expired_gate(owner_role)
+        if reason == trial_cap.DAILY_CAP:
+            return meta_daily_cap_gate(owner_role)
         return None
 
     # Layer 2 — provider must be picked.

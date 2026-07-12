@@ -723,7 +723,8 @@ class TestAdminMutationOwnerResolution:
         with patch("routers.admin.get_ecs_manager", return_value=ecs):
             res = await async_client.post("/api/v1/admin/users/user_123/container/start")
         assert res.status_code == 200
-        ecs.start_user_service.assert_awaited_once_with("org_abc")
+        # force=True: the audited admin break-glass bypasses the start guards.
+        ecs.start_user_service.assert_awaited_once_with("org_abc", force=True)
 
     @pytest.mark.asyncio
     async def test_container_reprovision_uses_org_owner_id(self, async_client, admin_env, org_mode):

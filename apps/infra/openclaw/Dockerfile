@@ -79,11 +79,6 @@ RUN git clone --depth=1 https://github.com/openhue/openhue-cli.git /tmp/openhue 
 # Fat (non-slim) variant: bundles plugin runtime deps so first-use of
 # browser/codex/channels doesn't pay a ~6min lazy npm-install on cold start.
 FROM ghcr.io/isol8ai/agent:2026.7.1-beta.3-isol8.1
-# Base bundles the native `meta` provider (extensions/meta, enabledByDefault) —
-# it is NOT in the fork's package.json `files` prune list, so it ships in the base
-# image and needs no bake layer here (unlike slack/discord/bedrock/lobster/parallel/acpx
-# below, which upstream prunes and we re-bake). meta/muse-spark-1.1, MODEL_API_KEY.
-#
 # PLUGIN-PIN POLICY (read before bumping the @openclaw/* pins below): the baked
 # plugins pin to the latest PUBLISHED 7.1-line plugin dist on npm, which is
 # 2026.7.1-beta.2 as of this bump — beta.3 plugin dists are NOT published yet

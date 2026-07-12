@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from core.auth import AuthContext
-from core.services.user_provision import ensure_user_ready
+from core.services.user_provision import ensure_personal_trial_default, ensure_user_ready
 
 
 @pytest.fixture(autouse=True)
@@ -988,3 +988,49 @@ async def test_org_admin_join_existing_company_creates_no_trial(_mock_create_tri
         owner_email="owner@example.com",
     )
     fake_provisioning.provision_org.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# trial_started telemetry (Task 16) — fires ONLY on the call that actually
+# creates the row, never on a later idempotent no-op (each ~3s poll calls
+# ensure_personal_trial_default again).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ensure_personal_trial_default_fires_trial_started_on_create(
+    _mock_create_trial_local_if_absent,
+):
+    """billing_repo.create_trial_local_if_absent returning True (this call
+    actually wrote the row) fires trial_started keyed on the owner id."""
+    _mock_create_trial_local_if_absent.return_value = True
+    with patch("core.services.user_provision.capture_product_event") as mock_capture:
+        await ensure_personal_trial_default(_personal_auth("user_p", "p@example.com"), "user_p")
+
+    mock_capture.assert_called_once_with(distinct_id="user_p", event="trial_started")
+
+
+@pytest.mark.asyncio
+async def test_ensure_personal_trial_default_does_not_refire_on_noop(
+    _mock_create_trial_local_if_absent,
+):
+    """A pre-existing row (the idempotent no-op branch, e.g. the SECOND of
+    two ~3s polls) returns False -- must not re-fire trial_started."""
+    _mock_create_trial_local_if_absent.return_value = False
+    with patch("core.services.user_provision.capture_product_event") as mock_capture:
+        await ensure_personal_trial_default(_personal_auth("user_p", "p@example.com"), "user_p")
+
+    mock_capture.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_ensure_personal_trial_default_org_context_never_captures(
+    _mock_create_trial_local_if_absent,
+):
+    """Org context never even calls create_trial_local_if_absent (free tier
+    is personal-only) so trial_started can never fire for an org."""
+    with patch("core.services.user_provision.capture_product_event") as mock_capture:
+        await ensure_personal_trial_default(_org_admin_auth("user_admin", "org_xyz", "a@example.com"), "org_xyz")
+
+    _mock_create_trial_local_if_absent.assert_not_awaited()
+    mock_capture.assert_not_called()

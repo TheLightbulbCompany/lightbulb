@@ -1,5 +1,6 @@
 """Tests for per-owner task-role threading + bedrock AIP provision wiring."""
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -351,3 +352,231 @@ class TestNonBedrockProvisionMint:
         # The restart re-register used the freshly-minted per-owner role, even
         # though the (legacy) row carried no bedrock_role_arn.
         assert register.call_args.kwargs["task_role_arn"] == role_arn
+
+
+class TestTrialProvisionMint:
+    """`bedrock_trial` — the no-card free tier. A trial owner is a REAL Bedrock
+    owner (the grant is NOT skipped); what makes the tier safe is that the mint
+    is scoped to ONE tier, and build_owner_bedrock_policy pins the owner's IAM
+    role to exactly the AIPs it is handed. See TestTrialProvisionPolicyPin for
+    the assertion on the generated policy document."""
+
+    @staticmethod
+    def _trial_arns() -> dict[str, str]:
+        return {"sonnet": "arn:aws:bedrock:us-east-1:123456789:application-inference-profile/s"}
+
+    @pytest.mark.asyncio
+    async def test_trial_mints_only_sonnet_and_keeps_the_bedrock_grant(self, manager, monkeypatch):
+        arns = self._trial_arns()
+        role_arn = "arn:aws:iam::123456789:role/isol8-dev-owner-bedrock-user_trial"
+
+        ensure_aips = AsyncMock(return_value=arns)
+        ensure_role = AsyncMock(return_value=role_arn)
+        monkeypatch.setattr("core.billing.bedrock_aip.ensure_owner_aips", ensure_aips)
+        monkeypatch.setattr("core.billing.bedrock_aip.ensure_owner_bedrock_role", ensure_role)
+        monkeypatch.setattr("core.containers.ecs_manager.put_metric", MagicMock())
+
+        monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))
+        manager._service_exists = MagicMock(return_value=None)
+        create_svc = AsyncMock(return_value="openclaw-user_trial-hash")
+        write_cfg = AsyncMock()
+        manager.create_user_service = create_svc
+        manager.write_user_configs = write_cfg
+        manager.start_user_service = AsyncMock()
+
+        await manager.provision_user_container("user_trial", provider_choice="bedrock_trial", owner_type="personal")
+
+        # ONE tier. `tiers=["sonnet"]` is what makes ensure_owner_aips stamp
+        # plan="trial" on the reverse rows (the meter Lambda's kill-switch arm).
+        ensure_aips.assert_awaited_once_with("user_trial", tiers=["sonnet"])
+        # The grant is NOT skipped — a trial owner needs a real, scoped role.
+        ensure_role.assert_awaited_once_with("user_trial", arns, skip_bedrock_grant=False)
+        assert create_svc.call_args.kwargs["task_role_arn"] == role_arn
+        # The trial CONFIG MODE + the one-tier AIP map reach the config writer.
+        assert write_cfg.call_args.kwargs["provider_choice"] == "bedrock_trial"
+        assert write_cfg.call_args.kwargs["aip_arns"] == arns
+
+    @pytest.mark.asyncio
+    async def test_trial_gets_no_acp_harness_env(self, manager, monkeypatch):
+        """derive_enabled_harnesses returns [] for bedrock_trial — no ACP on the
+        free tier — so the task must carry no Claude-Code Bedrock env either.
+        (It could not be built anyway: the harness env needs a haiku AIP the
+        trial owner does not have.)"""
+        arns = self._trial_arns()
+        monkeypatch.setattr("core.billing.bedrock_aip.ensure_owner_aips", AsyncMock(return_value=arns))
+        monkeypatch.setattr(
+            "core.billing.bedrock_aip.ensure_owner_bedrock_role",
+            AsyncMock(return_value="arn:aws:iam::123456789:role/isol8-dev-owner-bedrock-user_trial"),
+        )
+        monkeypatch.setattr("core.containers.ecs_manager.put_metric", MagicMock())
+        monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))
+        manager._service_exists = MagicMock(return_value=None)
+        create_svc = AsyncMock(return_value="openclaw-user_trial-hash")
+        manager.create_user_service = create_svc
+        manager.write_user_configs = AsyncMock()
+        manager.start_user_service = AsyncMock()
+
+        # ACP_ENABLED is truthy on the mocked settings (as it is in dev+prod).
+        await manager.provision_user_container("user_trial", provider_choice="bedrock_trial", owner_type="personal")
+
+        env_names = {e["name"] for e in create_svc.call_args.kwargs["environment_for_task"]}
+        assert "CLAUDE_CODE_USE_BEDROCK" not in env_names
+        assert "ANTHROPIC_MODEL" not in env_names
+
+    @pytest.mark.asyncio
+    async def test_revoked_trial_owner_provision_does_not_regrant_bedrock(self, manager, monkeypatch):
+        """The $3/day cap kill-switch revokes a trial owner's Bedrock grant. A
+        re-provision must not silently restore it — same C6 guard the paid path
+        has, and on the free tier it is the ONLY thing stopping spend."""
+        arns = self._trial_arns()
+        ensure_role = AsyncMock(return_value="arn:aws:iam::123456789:role/isol8-dev-owner-bedrock-user_capped")
+        monkeypatch.setattr("core.billing.bedrock_aip.ensure_owner_aips", AsyncMock(return_value=arns))
+        monkeypatch.setattr("core.billing.bedrock_aip.ensure_owner_bedrock_role", ensure_role)
+        monkeypatch.setattr("core.containers.ecs_manager.put_metric", MagicMock())
+        monkeypatch.setattr(
+            "core.repositories.container_repo.get_by_owner_id",
+            AsyncMock(
+                return_value={
+                    "owner_id": "user_capped",
+                    "bedrock_revoked": True,
+                    "hook_token": "ht",
+                }
+            ),
+        )
+        manager._service_exists = MagicMock(return_value=None)
+        manager.create_user_service = AsyncMock(return_value="openclaw-user_capped-hash")
+        manager.write_user_configs = AsyncMock()
+        manager.start_user_service = AsyncMock()
+
+        await manager.provision_user_container("user_capped", provider_choice="bedrock_trial", owner_type="personal")
+
+        ensure_role.assert_awaited_once_with("user_capped", arns, skip_bedrock_grant=True)
+
+
+@pytest.fixture
+def wired_bedrock_aip(monkeypatch):
+    """Run the REAL mint (ensure_owner_aips + ensure_owner_bedrock_role) against
+    fake AWS clients, so the provision path's GENERATED IAM policy document and
+    reverse-index rows can be asserted on directly — not just the call args."""
+    import core.billing.bedrock_aip as mod
+
+    account = "877352799272"
+    role_arn = f"arn:aws:iam::{account}:role/isol8-dev-owner-bedrock-x"
+
+    def _create(**kwargs):
+        profile_id = kwargs["modelSource"]["copyFrom"].split(":inference-profile/")[1]
+        tier = next(t for t, p in mod.SYSTEM_PROFILE_ID.items() if p == profile_id)
+        return {
+            "inferenceProfileArn": (f"arn:aws:bedrock:us-east-1:{account}:application-inference-profile/{tier}-aip")
+        }
+
+    bedrock = MagicMock()
+    bedrock.create_inference_profile.side_effect = _create
+
+    iam = MagicMock()
+    iam.get_role.return_value = {"Role": {"Arn": role_arn, "Tags": [{"Key": "trust_hardened", "Value": "1"}]}}
+
+    table = MagicMock()
+
+    monkeypatch.setattr(mod, "_bedrock_client", lambda: bedrock)
+    monkeypatch.setattr(mod, "_iam_client", lambda: iam)
+    monkeypatch.setattr(mod, "_aip_owners_table", lambda: table)
+    monkeypatch.setattr(mod, "_caller_account_id", AsyncMock(return_value=account))
+    monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
+    monkeypatch.setattr(mod.settings, "BEDROCK_OWNER_BASE_POLICY_ARN", "", raising=False)
+    # Fresh owner: no containers row yet (update_fields no-ops, exactly like DDB).
+    monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))
+    monkeypatch.setattr("core.repositories.container_repo.update_fields", AsyncMock(return_value=None))
+
+    return MagicMock(bedrock=bedrock, iam=iam, table=table, role_arn=role_arn, account=account)
+
+
+def _reverse_rows(table) -> list[dict]:
+    return [call.kwargs["Item"] for call in table.put_item.call_args_list]
+
+
+def _inline_policy_doc(iam) -> dict:
+    """The scoped Bedrock inline policy the provision actually PUT on the role."""
+    assert iam.put_role_policy.call_count == 1, "the Bedrock grant was skipped or double-put"
+    kwargs = iam.put_role_policy.call_args.kwargs
+    assert kwargs["PolicyName"] == "owner-bedrock"
+    return json.loads(kwargs["PolicyDocument"])
+
+
+def _invoke_allows(doc: dict) -> list[dict]:
+    return [s for s in doc["Statement"] if s["Effect"] == "Allow" and "bedrock:InvokeModel" in s["Action"]]
+
+
+def _denies_create_profile(doc: dict) -> bool:
+    return any(s["Effect"] == "Deny" and s["Action"] == "bedrock:CreateInferenceProfile" for s in doc["Statement"])
+
+
+class TestTrialProvisionPolicyPin:
+    """THE security boundary. A trial owner has `exec: full` and can rewrite
+    their own openclaw.json — the config is not a fence. What they cannot do is
+    invoke a model their task role has no credential path to. These assert on
+    the IAM policy document the provision actually generates."""
+
+    async def _provision(self, manager, monkeypatch, owner_id: str, provider_choice: str) -> None:
+        monkeypatch.setattr("core.containers.ecs_manager.put_metric", MagicMock())
+        manager._service_exists = MagicMock(return_value=None)
+        manager.create_user_service = AsyncMock(return_value=f"openclaw-{owner_id}-hash")
+        manager.write_user_configs = AsyncMock()
+        manager.start_user_service = AsyncMock()
+        await manager.provision_user_container(owner_id, provider_choice=provider_choice, owner_type="personal")
+
+    @pytest.mark.asyncio
+    async def test_trial_role_can_invoke_only_the_sonnet_profile(self, manager, wired_bedrock_aip, monkeypatch):
+        aws = wired_bedrock_aip
+        await self._provision(manager, monkeypatch, "user_trial", "bedrock_trial")
+
+        # Exactly one AIP minted, and it is sonnet — no opus, no haiku.
+        assert aws.bedrock.create_inference_profile.call_count == 1
+        rows = _reverse_rows(aws.table)
+        assert len(rows) == 1
+        assert rows[0]["owner_id"] == "user_trial"
+        assert rows[0]["tier"] == "sonnet"
+        # plan="trial" is what tells the meter Lambda to count-and-kill instead
+        # of ingesting to Metronome (a trial owner has no Stripe customer).
+        assert rows[0]["plan"] == "trial"
+        sonnet_aip = rows[0]["aip_arn"]
+
+        doc = _inline_policy_doc(aws.iam)
+        allows = _invoke_allows(doc)
+        assert allows, "the trial owner got NO Bedrock grant — they cannot chat at all"
+        for stmt in allows:
+            pinned = stmt.get("Condition", {}).get("ArnEquals", {}).get("bedrock:InferenceProfileArn")
+            if pinned is None:
+                # The unconditional (profile-resource) Allow: only this owner's
+                # own AIP. Anything else here would be an escape hatch.
+                assert stmt["Resource"] == [sonnet_aip]
+            else:
+                # The raw-foundation-model Allow is reachable ONLY through the
+                # owner's own profile — which is sonnet, and only sonnet. This is
+                # why the 9 FM ARNs listed as Resource cannot become an Opus call.
+                assert pinned == [sonnet_aip]
+        # ...and they cannot mint themselves a wider profile.
+        assert _denies_create_profile(doc)
+
+    @pytest.mark.asyncio
+    async def test_paid_role_still_gets_all_three_profiles(self, manager, wired_bedrock_aip, monkeypatch):
+        """The paid path is byte-identical: three tiers, plan="paid", and an
+        unconditional Allow over all three AIPs."""
+        aws = wired_bedrock_aip
+        await self._provision(manager, monkeypatch, "user_paid", "bedrock_claude")
+
+        assert aws.bedrock.create_inference_profile.call_count == 3
+        rows = _reverse_rows(aws.table)
+        assert {r["tier"] for r in rows} == {"opus", "sonnet", "haiku"}
+        assert {r["plan"] for r in rows} == {"paid"}
+        all_aips = sorted(r["aip_arn"] for r in rows)
+
+        doc = _inline_policy_doc(aws.iam)
+        allows = _invoke_allows(doc)
+        unconditional = [s for s in allows if "Condition" not in s]
+        assert len(unconditional) == 1
+        assert sorted(unconditional[0]["Resource"]) == all_aips
+        gated = [s for s in allows if "Condition" in s]
+        assert len(gated) == 1
+        assert sorted(gated[0]["Condition"]["ArnEquals"]["bedrock:InferenceProfileArn"]) == all_aips
+        assert _denies_create_profile(doc)

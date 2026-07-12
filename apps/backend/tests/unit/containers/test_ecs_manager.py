@@ -4,12 +4,20 @@ Uses mocked boto3 clients and container_repo -- no real AWS or
 DynamoDB required.
 """
 
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from botocore.exceptions import ClientError
 
-from core.containers.ecs_manager import EcsManager, EcsManagerError, GATEWAY_PORT
+from core.containers.ecs_manager import (
+    START_REFUSED_CAP,
+    START_REFUSED_CONVERTING,
+    ContainerStartRefused,
+    EcsManager,
+    EcsManagerError,
+    GATEWAY_PORT,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -40,6 +48,28 @@ def _mock_bedrock_mint(monkeypatch):
     monkeypatch.setattr(
         "core.billing.bedrock_aip.ensure_owner_bedrock_role",
         _AsyncMock(return_value="arn:aws:iam::123456789:role/isol8-dev-owner-bedrock-user_test_123"),
+    )
+
+
+@pytest.fixture(autouse=True)
+def _start_guards_clear(monkeypatch):
+    """Default the two start-chokepoint guards to "clear".
+
+    ``start_user_service`` now refuses to start a container for an over-cap
+    trial owner or while a trial->paid conversion owns the row. Both guards read
+    DynamoDB (``billing_repo`` for the cap, ``container_repo`` for the
+    conversion stamp), so without a default the pre-existing lifecycle tests —
+    which patch neither — would reach real AWS. ``None`` from both reads is the
+    honest "no billing row, no container row" state: not a trial owner, no
+    conversion. TestStartUserServiceGuards overrides these per-test.
+    """
+    monkeypatch.setattr(
+        "core.repositories.billing_repo.get_by_owner_id",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        "core.repositories.container_repo.get_by_owner_id",
+        AsyncMock(return_value=None),
     )
 
 
@@ -732,6 +762,210 @@ class TestStartUserService:
             cb = dc.get("deploymentCircuitBreaker") or {}
             assert cb.get("enable") is True
             assert cb.get("rollback") is False
+
+
+# ---------------------------------------------------------------------------
+# start_user_service — the start chokepoint's guards
+# ---------------------------------------------------------------------------
+
+
+class TestStartUserServiceGuards:
+    """``start_user_service`` is the ONE place every container start passes.
+
+    Both guards used to live only on the ``GET /container/status`` auto-retry
+    branch, so ``POST /container/provision`` — which restarts a stopped
+    container directly — bypassed both:
+
+      1. The free-tier daily cap. A trial_local owner whose container the cap
+         scaled to zero could simply wake it back up.
+      2. The trial->paid conversion. ``reprovision_for_user`` scales the trial
+         container to zero and then BLOCKS in a ~90s drain wait, because the
+         per-owner state is WAL-mode SQLite on EFS and a second live task on it
+         is our documented corruption mode. A start during that window IS that
+         second task.
+
+    So the checks moved down here. These tests drive the REAL predicates
+    (``trial_cap.is_over_daily_cap`` and ``conversion_guard_active``) through
+    stubbed repos rather than mocking the predicates out, so a change in either
+    one is caught here.
+    """
+
+    @staticmethod
+    def _billing(monkeypatch, *, subscription_status: str | None, spent_microcents: int = 0):
+        """Stub the billing repo the real ``is_over_daily_cap`` reads through."""
+        monkeypatch.setattr(
+            "core.repositories.billing_repo.get_by_owner_id",
+            AsyncMock(return_value=({"subscription_status": subscription_status} if subscription_status else None)),
+        )
+        monkeypatch.setattr(
+            "core.repositories.billing_repo.get_meta_daily_spend",
+            AsyncMock(return_value=spent_microcents),
+        )
+
+    @staticmethod
+    def _container(monkeypatch, row: dict | None):
+        """Stub the container row the conversion guard reads."""
+        monkeypatch.setattr(
+            "core.repositories.container_repo.get_by_owner_id",
+            AsyncMock(return_value=row),
+        )
+        monkeypatch.setattr(
+            "core.repositories.container_repo.update_status",
+            AsyncMock(return_value=row),
+        )
+
+    @pytest.mark.asyncio
+    async def test_over_cap_trial_owner_is_refused(self, manager, mock_ecs_client, monkeypatch):
+        """The whole point: a capped-out trial owner cannot wake their own
+        container. ECS is never touched — the container stays down until the
+        counter resets (UTC midnight) or the owner upgrades."""
+        from core.services.trial_cap import CAP_MICROCENTS
+
+        self._billing(monkeypatch, subscription_status="trial_local", spent_microcents=CAP_MICROCENTS)
+        self._container(monkeypatch, _make_container_dict(status="stopped"))
+
+        with patch.object(manager, "_await_running_transition", new_callable=AsyncMock):
+            with pytest.raises(ContainerStartRefused) as exc:
+                await manager.start_user_service("user_test_123")
+
+        assert exc.value.reason == START_REFUSED_CAP
+        mock_ecs_client.update_service.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_under_cap_trial_owner_starts(self, manager, mock_ecs_client, monkeypatch):
+        """A trial owner UNDER the cap is a normal user: their container starts."""
+        from core.services.trial_cap import CAP_MICROCENTS
+
+        self._billing(monkeypatch, subscription_status="trial_local", spent_microcents=CAP_MICROCENTS - 1)
+        self._container(monkeypatch, _make_container_dict(status="stopped"))
+
+        with patch.object(manager, "_await_running_transition", new_callable=AsyncMock):
+            await manager.start_user_service("user_test_123")
+
+        mock_ecs_client.update_service.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_paid_owner_starts_regardless_of_spend(self, manager, mock_ecs_client, monkeypatch):
+        """The cap is a FREE-TIER cap. A paying owner is never subject to it,
+        no matter what today's spend is — is_over_daily_cap self-gates on
+        subscription_status == "trial_local"."""
+        from core.services.trial_cap import CAP_MICROCENTS
+
+        self._billing(monkeypatch, subscription_status="active", spent_microcents=CAP_MICROCENTS * 100)
+        self._container(monkeypatch, _make_container_dict(status="stopped"))
+
+        with patch.object(manager, "_await_running_transition", new_callable=AsyncMock):
+            await manager.start_user_service("user_test_123")
+
+        mock_ecs_client.update_service.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_conversion_in_flight_is_refused(self, manager, mock_ecs_client, monkeypatch):
+        """The corruption door. Note substatus is None, not "converting": the
+        conversion's own ``stop_user_service`` writes update_status(owner,
+        "stopped") — substatus defaults to None — so the label is GONE the
+        instant the drain starts. Only the ``conversion_started_at`` timestamp
+        survives, and it alone has to hold the start off for the whole drain."""
+        row = _make_container_dict(status="stopped")
+        row["substatus"] = None
+        row["conversion_pending"] = True
+        row["conversion_started_at"] = datetime.now(timezone.utc).isoformat()
+        self._billing(monkeypatch, subscription_status="active")
+        self._container(monkeypatch, row)
+
+        with patch.object(manager, "_await_running_transition", new_callable=AsyncMock):
+            with pytest.raises(ContainerStartRefused) as exc:
+                await manager.start_user_service("user_test_123")
+
+        assert exc.value.reason == START_REFUSED_CONVERTING
+        mock_ecs_client.update_service.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_conversion_in_flight_starts(self, manager, mock_ecs_client, monkeypatch):
+        """A container whose conversion stamp has lapsed (the reprovision is
+        long done, or its task died) must not be wedged shut forever — the
+        guard window is time-boxed for exactly this reason."""
+        from core.services.stripe_webhook_handlers import CONVERSION_GUARD_SECONDS
+
+        row = _make_container_dict(status="stopped")
+        row["substatus"] = None
+        row["conversion_started_at"] = (
+            datetime.now(timezone.utc) - timedelta(seconds=CONVERSION_GUARD_SECONDS + 60)
+        ).isoformat()
+        self._billing(monkeypatch, subscription_status="active")
+        self._container(monkeypatch, row)
+
+        with patch.object(manager, "_await_running_transition", new_callable=AsyncMock):
+            await manager.start_user_service("user_test_123")
+
+        mock_ecs_client.update_service.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_force_bypasses_both_guards(self, manager, mock_ecs_client, monkeypatch):
+        """``force=True`` is the named escape hatch for SYSTEM and OPERATOR
+        callers — provision_user_container's own restart (which IS the
+        conversion's reprovision, so guarding it would deadlock it), the
+        audited admin start, and the dev-only debug routes. Nothing a customer
+        can reach passes it."""
+        from core.services.trial_cap import CAP_MICROCENTS
+
+        row = _make_container_dict(status="stopped")
+        row["conversion_pending"] = True
+        row["conversion_started_at"] = datetime.now(timezone.utc).isoformat()
+        self._billing(monkeypatch, subscription_status="trial_local", spent_microcents=CAP_MICROCENTS)
+        self._container(monkeypatch, row)
+
+        with patch.object(manager, "_await_running_transition", new_callable=AsyncMock):
+            await manager.start_user_service("user_test_123", force=True)
+
+        mock_ecs_client.update_service.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_refusal_is_not_an_ecs_error(self, manager, mock_ecs_client, monkeypatch):
+        """A refusal is NOT a failure. Every ``except EcsManagerError`` in the
+        codebase means "provisioning broke" — it 503s the caller and writes
+        status="error" on the row. Neither is true here, so ContainerStartRefused
+        must not be catchable as one."""
+        from core.services.trial_cap import CAP_MICROCENTS
+
+        self._billing(monkeypatch, subscription_status="trial_local", spent_microcents=CAP_MICROCENTS)
+        self._container(monkeypatch, _make_container_dict(status="stopped"))
+
+        with patch.object(manager, "_await_running_transition", new_callable=AsyncMock):
+            with pytest.raises(ContainerStartRefused):
+                try:
+                    await manager.start_user_service("user_test_123")
+                except EcsManagerError as e:  # pragma: no cover - the bug this guards
+                    pytest.fail(f"a refusal must not be an EcsManagerError: {e!r}")
+
+    @pytest.mark.asyncio
+    async def test_provision_user_container_start_is_not_guarded(self, manager, mock_ecs_client, monkeypatch):
+        """provision_user_container's own start MUST bypass the guards, or the
+        trial->paid conversion deadlocks itself: the conversion stamps the row,
+        THEN dispatches background_provision -> provision_user_container, which
+        would find its own stamp and refuse to start the container it just
+        reprovisioned."""
+        from core.services.trial_cap import CAP_MICROCENTS
+
+        row = _make_container_dict(status="stopped")
+        row["conversion_pending"] = True
+        row["conversion_started_at"] = datetime.now(timezone.utc).isoformat()
+        self._billing(monkeypatch, subscription_status="trial_local", spent_microcents=CAP_MICROCENTS)
+        self._container(monkeypatch, row)
+
+        started = AsyncMock()
+        with (
+            patch("core.containers.ecs_manager.container_repo") as repo,
+            patch.object(manager, "_service_exists", new=MagicMock(return_value=None)),
+            patch.object(manager, "create_user_service", new=AsyncMock(return_value="svc")),
+            patch.object(manager, "write_user_configs", new=AsyncMock()),
+            patch.object(manager, "start_user_service", new=started),
+            patch("core.containers.ecs_manager.put_metric"),
+        ):
+            repo.get_by_owner_id = AsyncMock(return_value=None)
+            await manager.provision_user_container("user_test_123", provider_choice="bedrock_claude")
+
+        started.assert_awaited_once_with("user_test_123", force=True)
 
 
 # ---------------------------------------------------------------------------
@@ -2033,8 +2267,6 @@ class TestProvisionUserContainerProviderChoice:
         is created so the codex auth.json is on EFS at first boot.
       * byo_key       -> per-user Secrets Manager ARN is added to the task
         definition's secrets[] block under OPENAI_API_KEY/ANTHROPIC_API_KEY.
-      * meta          -> the single shared Secrets Manager ARN is added to the
-        task definition's secrets[] block under MODEL_API_KEY.
       * bedrock_claude -> no extra setup; AWS creds come from the task IAM role.
     """
 
@@ -2156,122 +2388,6 @@ class TestProvisionUserContainerProviderChoice:
 
             # Service was never created.
             assert not mock_ecs_client.create_service.called
-
-    @pytest.mark.asyncio
-    async def test_provision_meta_attaches_model_api_key_to_task_def(self, manager, mock_ecs_client, mock_efs_client):
-        """For the meta (free-tier) provider, the shared Secrets Manager ARN
-        resolved by key_service.get_meta_secret_arn lands in the registered
-        task def's secrets[] block under MODEL_API_KEY — never in
-        openclaw.json/EFS. Also asserts "meta" is accepted by the
-        provider_choice allowlist (no Unknown provider_choice raise)."""
-        mock_ecs_client.describe_services.return_value = {"services": []}
-        secret_arn = "arn:aws:secretsmanager:us-east-1:123:secret:isol8/dev/meta-model-api-key-AbCdE"
-
-        with (
-            patch("core.containers.ecs_manager.container_repo") as mock_repo,
-            patch(
-                "core.services.key_service.get_meta_secret_arn",
-                new_callable=AsyncMock,
-            ) as mock_get_meta_secret_arn,
-            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
-            patch.object(manager, "write_user_configs", new_callable=AsyncMock),
-        ):
-            mock_repo.get_by_owner_id = AsyncMock(return_value=None)
-            mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
-            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict(status="provisioning"))
-            mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="provisioning"))
-            mock_get_meta_secret_arn.return_value = secret_arn
-
-            await manager.provision_user_container(
-                "user_test_123",
-                provider_choice="meta",
-            )
-
-            assert mock_ecs_client.register_task_definition.called
-            reg_kwargs = mock_ecs_client.register_task_definition.call_args.kwargs
-            container_def = reg_kwargs["containerDefinitions"][0]
-            assert "secrets" in container_def, "meta must add a secrets[] block"
-            secrets_list = container_def["secrets"]
-            assert secrets_list == [{"name": "MODEL_API_KEY", "valueFrom": secret_arn}], (
-                f"meta must inject exactly one MODEL_API_KEY secret entry, got {secrets_list}"
-            )
-
-            # The ARN was resolved from the single shared Secrets Manager
-            # secret (no per-user/provider args, unlike get_secret_arn).
-            mock_get_meta_secret_arn.assert_awaited_once_with()
-
-    @pytest.mark.asyncio
-    async def test_provision_meta_missing_secret_arn_raises_before_service_create(
-        self, manager, mock_ecs_client, mock_efs_client
-    ):
-        """If the shared meta-tier secret hasn't been created in Secrets
-        Manager yet, get_meta_secret_arn returns None and provisioning must
-        abort BEFORE create_service — mirrors the byo_key missing-key
-        guard."""
-        mock_ecs_client.describe_services.return_value = {"services": []}
-
-        with (
-            patch("core.containers.ecs_manager.container_repo") as mock_repo,
-            patch(
-                "core.services.key_service.get_meta_secret_arn",
-                new_callable=AsyncMock,
-            ) as mock_get_meta_secret_arn,
-            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
-            patch.object(manager, "write_user_configs", new_callable=AsyncMock),
-        ):
-            mock_repo.get_by_owner_id = AsyncMock(return_value=None)
-            mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
-            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict(status="provisioning"))
-            mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="provisioning"))
-            mock_get_meta_secret_arn.return_value = None
-
-            with pytest.raises(EcsManagerError):
-                await manager.provision_user_container("user_test_123", provider_choice="meta")
-
-            assert not mock_ecs_client.create_service.called
-
-    @pytest.mark.asyncio
-    async def test_provision_bedrock_and_byo_do_not_get_model_api_key(self, manager, mock_ecs_client, mock_efs_client):
-        """MODEL_API_KEY is exclusive to the meta provider — bedrock_claude
-        and byo_key provisions must never carry it."""
-        mock_ecs_client.describe_services.return_value = {"services": []}
-        byo_secret_arn = "arn:aws:secretsmanager:us-east-1:123:secret:isol8/dev/user-keys/user_test_123/openai-AbCdE"
-
-        with (
-            patch("core.containers.ecs_manager.container_repo") as mock_repo,
-            patch(
-                "core.services.key_service.get_secret_arn",
-                new_callable=AsyncMock,
-            ) as mock_get_secret_arn,
-            patch(
-                "core.services.key_service.get_meta_secret_arn",
-                new_callable=AsyncMock,
-            ) as mock_get_meta_secret_arn,
-            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
-            patch.object(manager, "write_user_configs", new_callable=AsyncMock),
-        ):
-            mock_repo.get_by_owner_id = AsyncMock(return_value=None)
-            mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
-            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict(status="provisioning"))
-            mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="provisioning"))
-            mock_get_secret_arn.return_value = byo_secret_arn
-
-            await manager.provision_user_container("user_test_123", provider_choice="bedrock_claude")
-            reg_kwargs = mock_ecs_client.register_task_definition.call_args.kwargs
-            container_def = reg_kwargs["containerDefinitions"][0]
-            secret_names = {s["name"] for s in container_def.get("secrets") or []}
-            assert "MODEL_API_KEY" not in secret_names
-
-            await manager.provision_user_container("user_test_123", provider_choice="byo_key", byo_provider="openai")
-            reg_kwargs = mock_ecs_client.register_task_definition.call_args.kwargs
-            container_def = reg_kwargs["containerDefinitions"][0]
-            secret_names = {s["name"] for s in container_def.get("secrets") or []}
-            assert "MODEL_API_KEY" not in secret_names
-            assert "OPENAI_API_KEY" in secret_names
-
-            # The meta secret resolver is never consulted for non-meta
-            # providers.
-            assert not mock_get_meta_secret_arn.called
 
     @pytest.mark.asyncio
     async def test_provision_chatgpt_oauth_pre_stages_auth_before_service_create(
@@ -2798,3 +2914,17 @@ async def test_pre_stage_oauth_does_not_clear_default_agent_row(manager):
 
     stage.assert_awaited_once()
     clear.assert_not_called()
+
+
+def test_start_refusal_codes_match_the_trial_cap_reasons():
+    """The refusal codes are literals in ecs_manager (trial_cap is imported
+    lazily there to avoid a module cycle), so pin them to the real reasons.
+
+    They MUST be the same strings the provision gate uses, because a router maps
+    a refusal straight to the matching gate's payload — an owner must see the
+    identical 402 card whichever door they knocked on."""
+    from core.containers.ecs_manager import START_REFUSED_CAP, START_REFUSED_EXPIRED
+    from core.services import trial_cap
+
+    assert START_REFUSED_CAP == trial_cap.DAILY_CAP
+    assert START_REFUSED_EXPIRED == trial_cap.TRIAL_EXPIRED

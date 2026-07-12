@@ -44,6 +44,7 @@ from core.services.provision_gate import evaluate_provision_gate
 from core.services.user_provision import ensure_user_ready
 
 from . import deps as deps_mod
+from ._guards import require_under_daily_cap
 from .deps import TeamsContext, envelope_list
 from .schemas import CreateAgentBody, PatchAgentBody, WakeAgentBody
 
@@ -739,7 +740,12 @@ async def wake_agent(
     Maps to upstream ``POST /api/agents/{id}/wakeup``. The wakeup response is
     a run/ack envelope (no agent record), but redact defensively so a future
     upstream change that echoes adapterConfig can never leak the service token.
+
+    Waking an agent dispatches a run immediately server-side inside
+    Paperclip, so this is a Meta-spend front door. The free-tier $3/day
+    cap is checked here, BEFORE the proxy call reaches Paperclip.
     """
+    await require_under_daily_cap(ctx.owner_id)
     return _redact_agent(
         await _admin().wake_agent(
             agent_id=agent_id,

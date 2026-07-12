@@ -63,7 +63,7 @@ def _reset_rate_limiter():
 @pytest.mark.asyncio
 async def test_hooks_proxy_end_to_end(stub_container, monkeypatch):
     from main import app
-    from core.repositories import container_repo
+    from core.repositories import billing_repo, container_repo
 
     token = secrets.token_urlsafe(32)
     fake_container = {
@@ -76,6 +76,11 @@ async def test_hooks_proxy_end_to_end(stub_container, monkeypatch):
     async def fake_get(owner_id):
         return fake_container if owner_id == "u_e2e" else None
 
+    async def fake_billing_get(owner_id):
+        # Paid owner — the always-on entitlement gate must pass so the
+        # request reaches the forwarding path under test.
+        return {"owner_id": owner_id, "subscription_status": "active"}
+
     async def fake_resolve(owner_id):
         return (fake_container, "127.0.0.1")
 
@@ -84,6 +89,7 @@ async def test_hooks_proxy_end_to_end(stub_container, monkeypatch):
 
     monkeypatch.setattr(hooks_proxy, "GATEWAY_PORT", stub_container["port"])
     monkeypatch.setattr(container_repo, "get_by_owner_id", fake_get)
+    monkeypatch.setattr(billing_repo, "get_by_owner_id", fake_billing_get)
     monkeypatch.setattr(hooks_proxy.ecs_manager, "resolve_running_container", fake_resolve)
 
     client = TestClient(app)

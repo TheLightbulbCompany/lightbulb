@@ -251,9 +251,10 @@ async def test_create_trial_local_if_absent_writes_trial_row(dynamodb_table):
     from core.repositories import billing_repo
 
     before = int(time.time())
-    await billing_repo.create_trial_local_if_absent("user_trial_1", "personal")
+    created = await billing_repo.create_trial_local_if_absent("user_trial_1", "personal")
     after = int(time.time())
 
+    assert created is True, "the call that actually writes the row must return True"
     item = await billing_repo.get_by_owner_id("user_trial_1")
     assert item is not None
     assert item["subscription_status"] == "trial_local"
@@ -268,13 +269,15 @@ async def test_create_trial_local_if_absent_writes_trial_row(dynamodb_table):
 async def test_create_trial_local_if_absent_is_noop_when_row_exists(dynamodb_table):
     from core.repositories import billing_repo
 
-    await billing_repo.create_trial_local_if_absent("user_trial_2", "personal")
+    first_created = await billing_repo.create_trial_local_if_absent("user_trial_2", "personal")
     first = await billing_repo.get_by_owner_id("user_trial_2")
+    assert first_created is True
 
     # Second call must not overwrite the existing row.
-    await billing_repo.create_trial_local_if_absent("user_trial_2", "org")
+    second_created = await billing_repo.create_trial_local_if_absent("user_trial_2", "org")
     second = await billing_repo.get_by_owner_id("user_trial_2")
     assert second == first
+    assert second_created is False, "the no-op branch must return False"
 
 
 @pytest.mark.asyncio
@@ -289,11 +292,12 @@ async def test_create_trial_local_if_absent_noop_on_existing_active_row(dynamodb
     )
     before = await billing_repo.get_by_owner_id("user_trial_3")
 
-    await billing_repo.create_trial_local_if_absent("user_trial_3", "personal")
+    created = await billing_repo.create_trial_local_if_absent("user_trial_3", "personal")
     after = await billing_repo.get_by_owner_id("user_trial_3")
 
     assert after == before
     assert after["subscription_status"] == "active"
+    assert created is False
 
 
 @pytest.mark.asyncio
@@ -309,3 +313,98 @@ async def test_set_metronome_ids_requires_existing_row(dynamodb_table):
             "org_ghost", metronome_customer_id="cust-uuid-1", metronome_contract_id="contract-1"
         )
     assert await billing_repo.get_by_owner_id("org_ghost") is None
+
+
+@pytest.mark.asyncio
+async def test_add_meta_daily_spend_accumulates_per_date(dynamodb_table):
+    """First add creates the nested map + leaf; second add accumulates the
+    same day; a different date is an independent leaf."""
+    from core.repositories import billing_repo
+
+    await billing_repo.create_if_not_exists("user_x", "cus_meta")
+
+    t1 = await billing_repo.add_meta_daily_spend("user_x", "2026-07-10", 1000)
+    t2 = await billing_repo.add_meta_daily_spend("user_x", "2026-07-10", 500)
+    assert t1 == 1000
+    assert t2 == 1500
+
+    t3 = await billing_repo.add_meta_daily_spend("user_x", "2026-07-11", 200)
+    assert t3 == 200
+
+    assert await billing_repo.get_meta_daily_spend("user_x", "2026-07-10") == 1500
+    assert await billing_repo.get_meta_daily_spend("user_x", "2026-07-11") == 200
+
+
+@pytest.mark.asyncio
+async def test_add_meta_daily_spend_supports_negative_delta_rollback(dynamodb_table):
+    """The ADD verb is signed: a negative delta subtracts. No caller writes
+    negatives today (the meter Lambda only ever adds priced invocations), but
+    the primitive's arithmetic must stay correct — a correction/backfill is the
+    obvious future caller, and a silently-clamped ADD would be a money bug."""
+    from core.repositories import billing_repo
+
+    await billing_repo.create_if_not_exists("user_y", "cus_meta2")
+    await billing_repo.add_meta_daily_spend("user_y", "2026-07-10", 1000)
+    total = await billing_repo.add_meta_daily_spend("user_y", "2026-07-10", -400)
+    assert total == 600
+
+
+@pytest.mark.asyncio
+async def test_get_meta_daily_spend_defaults_to_zero(dynamodb_table):
+    from core.repositories import billing_repo
+
+    await billing_repo.create_if_not_exists("user_z", "cus_meta3")
+    # row exists but no spend recorded yet for this date
+    assert await billing_repo.get_meta_daily_spend("user_z", "2026-07-10") == 0
+    # no billing row at all for this owner
+    assert await billing_repo.get_meta_daily_spend("ghost_owner", "2026-07-10") == 0
+
+
+@pytest.mark.asyncio
+async def test_add_meta_daily_spend_requires_existing_row(dynamodb_table):
+    """No phantom billing rows — same invariant as set_metronome_ids /
+    clear_provider_choice."""
+    from botocore.exceptions import ClientError
+
+    from core.repositories import billing_repo
+
+    with pytest.raises(ClientError):
+        await billing_repo.add_meta_daily_spend("ghost_owner", "2026-07-10", 1000)
+    assert await billing_repo.get_by_owner_id("ghost_owner") is None
+
+
+@pytest.mark.asyncio
+async def test_set_stripe_customer_id_backfills_existing_trial_local_row(dynamodb_table):
+    """The card-less trial_local row (create_trial_local_if_absent) writes no
+    stripe_* fields. set_stripe_customer_id must be able to backfill one onto
+    that existing row without disturbing the rest of its state — this is the
+    write billing_service.create_customer_for_owner uses to let a trial_local
+    owner reach /billing/trial-checkout."""
+    from core.repositories import billing_repo
+
+    created = await billing_repo.create_trial_local_if_absent("user_backfill", "personal")
+    assert created is True
+    before = await billing_repo.get_by_owner_id("user_backfill")
+    assert "stripe_customer_id" not in before
+
+    await billing_repo.set_stripe_customer_id("user_backfill", stripe_customer_id="cus_backfilled")
+
+    after = await billing_repo.get_by_owner_id("user_backfill")
+    assert after["stripe_customer_id"] == "cus_backfilled"
+    # Rest of the trial row is untouched.
+    assert after["subscription_status"] == "trial_local"
+    assert after["trial_end"] == before["trial_end"]
+
+
+@pytest.mark.asyncio
+async def test_set_stripe_customer_id_requires_existing_row(dynamodb_table):
+    """No phantom billing rows — same invariant as set_metronome_ids /
+    add_meta_daily_spend / clear_provider_choice. A conditional update
+    against a missing owner_id must raise, never silently upsert."""
+    from botocore.exceptions import ClientError
+
+    from core.repositories import billing_repo
+
+    with pytest.raises(ClientError):
+        await billing_repo.set_stripe_customer_id("ghost_owner", stripe_customer_id="cus_phantom")
+    assert await billing_repo.get_by_owner_id("ghost_owner") is None

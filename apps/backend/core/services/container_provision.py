@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 
 from core.containers import get_ecs_manager
+from core.containers.config import BEDROCK_TRIAL_CHOICE
 from core.observability.logging import bind_log_context
 from core.repositories import billing_repo
 
@@ -19,16 +20,26 @@ logger = logging.getLogger(__name__)
 async def resolve_provider_choice(owner_id: str) -> tuple[str, str | None]:
     """Look up the owner's provider_choice (+ byo_provider) from billing_repo.
 
-    Mirrors routers/container.py:_resolve_provider_choice. Falls back
-    to bedrock_claude when no row or no choice is persisted, matching
-    the legacy default and keeping recovery working for owners
-    onboarded before per-owner provider_choice storage.
+    The single resolver for the whole provision surface — routers/container.py,
+    routers/container_recover.py, catalog_service and the reapply script all
+    import THIS function (there is no second copy to keep in sync). Falls back
+    to bedrock_claude when no row or no choice is persisted, matching the legacy
+    default and keeping recovery working for owners onboarded before per-owner
+    provider_choice storage.
     """
     row = await billing_repo.get_by_owner_id(owner_id)
     if (row or {}).get("subscription_status") == "trial_local":
-        # No-card local trial: `meta` is a config-path mode, never a stored
-        # provider_choice, so it must never be read off the row.
-        return "meta", None
+        # No-card local trial. `trial_local` is a subscription_status, never a
+        # stored provider_choice, so the provider must never be read off the
+        # row — a trial owner's row carries none, and this function never
+        # writes one back.
+        #
+        # The free tier runs on Bedrock through the `bedrock_trial` CONFIG MODE:
+        # a single, IAM-pinned Sonnet inference profile (ecs_manager mints
+        # tiers=["sonnet"], and build_owner_bedrock_policy scopes the owner's
+        # task role to exactly that AIP). Returning "bedrock_claude" here would
+        # hand a card-less owner the full paid three-tier ladder — Opus included.
+        return BEDROCK_TRIAL_CHOICE, None
     provider_choice = (row or {}).get("provider_choice") or "bedrock_claude"
     byo_provider = (row or {}).get("byo_provider") if provider_choice == "byo_key" else None
     return provider_choice, byo_provider

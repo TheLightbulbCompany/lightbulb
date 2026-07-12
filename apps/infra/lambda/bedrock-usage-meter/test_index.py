@@ -1,18 +1,38 @@
-"""Tests for the Bedrock usage-meter Lambda — extraction, attribution, ingest.
+"""Tests for the Bedrock usage-meter Lambda — extraction, attribution, ingest,
+the free-trial daily counter, and the cap kill.
 
-Direct-Metronome design: the Lambda parses each CloudWatch invocation-log
-record, resolves (owner_id, tier) with one GetItem on the per-env aip-owners
-reverse table, and POSTs a single-event JSON array to Metronome /v1/ingest.
+Two-plan design: the Lambda parses each CloudWatch invocation-log record,
+resolves (owner_id, tier, plan) with ONE GetItem on the per-env aip-owners
+reverse table, then splits:
+
+  paid  -> POST a single-event JSON array to Metronome /v1/ingest. Byte-
+           identical to the pre-cap Lambda: no dedup row, no counter, no kill.
+  trial -> price the record LOCALLY, ADD the microcents to
+           billing-accounts.meta_daily_spend_microcents.{UTC date}, and at
+           $3/day revoke the owner's Bedrock IAM policy AND stop their ECS
+           service. NEVER ingested (a trial owner has no Metronome contract).
+
 ALL billable counts are read from the TOP LEVEL of the record
 (`input.inputTokenCount` / `output.outputTokenCount` /
 `input.cacheReadInputTokenCount` / `input.cacheWriteInputTokenCount`); the
 nested `output.outputBodyJson.usage` block is a defensive fallback only.
 
 Failure posture under test: every per-record failure (unparseable record,
-malformed record shape, unattributed owner, missing tier, Metronome transport
-error) DLQs the raw log event + emits a metric + continues the batch — never
-a silent drop, and an unattributed or transaction-id-less record is NEVER
-ingested.
+malformed record shape, unattributed owner, missing tier, unpriceable tier,
+counter failure, Metronome transport error) DLQs the raw log event + emits a
+metric + continues the batch — never a silent drop, and an unattributed or
+transaction-id-less record is NEVER ingested.
+
+The DynamoDB paths (the dedup guard and the guarded two-step counter) are
+exercised against a REAL DynamoDB engine (moto), not a hand mock: the counter
+is a nested-map ADD that DynamoDB rejects if written naively, so a mock would
+happily pass code that fails in production. IAM and ECS are stubbed — the
+assertions are on the exact calls, which is the whole contract.
+
+Running: these tests need `boto3`, `moto` and the backend importable (the
+lockstep rate-table test imports core.billing.bedrock_pricing) — run them with
+the backend's env, e.g.
+    apps/backend/.venv/bin/python -m pytest apps/infra/lambda/bedrock-usage-meter -q
 """
 
 import base64
@@ -20,20 +40,41 @@ import gzip
 import json
 import os
 import sys
+import time
+from contextlib import contextmanager
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
+import boto3
 import pytest
+from botocore.exceptions import ClientError
+from moto import mock_aws
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIXTURES = os.path.join(HERE, "fixtures")
+BACKEND = os.path.abspath(os.path.join(HERE, "..", "..", "..", "backend"))
+
+BILLING_TABLE = "isol8-dev-billing-accounts"
+CONTAINERS_TABLE = "isol8-dev-containers"
+DEDUP_TABLE = "isol8-dev-bedrock-invocation-dedup"
+CLUSTER_ARN = "arn:aws:ecs:us-east-1:877352799272:cluster/isol8-dev-container-ClusterEB0386A7-L9MzqPCGDupk"
 
 OWNER_ITEM = {
     "Item": {
         "aip_arn": {"S": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-opus-org_abc"},
         "owner_id": {"S": "org_abc"},
         "tier": {"S": "opus"},
+        "plan": {"S": "paid"},
     }
 }
+
+# The fixture's four non-zero token counts (1200 in / 350 out / 142000
+# cache-read / 9800 cache-write) priced on the SONNET rate card — the trial
+# tier. Cache tokens are ~92% of it: the no-cache price of the same record is
+# 9,735 microcents, so a meter that ignored the cache counts would undercount
+# this record ~12x and the $3 cap would fire days late.
+SONNET_PRICE_MICROCENTS = 121_275
+SONNET_PRICE_NO_CACHE = 9_735
 
 
 def _load(name):
@@ -47,16 +88,28 @@ def _awslogs_event(*records):
     return {"awslogs": {"data": base64.b64encode(raw).decode()}}
 
 
+def _utc_today():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
 @pytest.fixture(autouse=True)
 def lambda_env(monkeypatch):
     monkeypatch.setenv("METRONOME_API_KEY", "metronome-token-abc")
     monkeypatch.setenv("AIP_OWNERS_TABLE", "isol8-dev-bedrock-aip-owners")
+    monkeypatch.setenv("INVOCATION_DEDUP_TABLE", DEDUP_TABLE)
+    monkeypatch.setenv("BILLING_TABLE", BILLING_TABLE)
+    monkeypatch.setenv("CONTAINERS_TABLE", CONTAINERS_TABLE)
+    monkeypatch.setenv("ECS_CLUSTER_PREFIX", "isol8-dev-container-")
     monkeypatch.setenv("DLQ_URL", "https://sqs.test.local/dlq")
     monkeypatch.setenv("METER_ENV", "dev")
+    # moto refuses to run without credentials + a region.
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
     if HERE not in sys.path:
         sys.path.insert(0, HERE)
     # Re-import fresh per test so the module-global cold-start caches (token,
-    # boto3 clients) never leak state between tests.
+    # boto3 clients, resolved cluster ARN) never leak state between tests.
     sys.modules.pop("index", None)
     import index  # noqa: F401
 
@@ -64,8 +117,49 @@ def lambda_env(monkeypatch):
     sys.modules.pop("index", None)
 
 
-def _stub_resolver(owner="org_abc", tier="opus"):
-    return patch("index._resolve_owner_and_tier", return_value=(owner, tier))
+def _stub_resolver(owner="org_abc", tier="opus", plan="paid"):
+    return patch("index._resolve_owner_and_tier", return_value=(owner, tier, plan))
+
+
+@contextmanager
+def _aws_world(*, owner="org_abc", starting_spend=None, billing_row=True, container_row=True):
+    """A real (moto) DynamoDB with the three tables the counter path touches,
+    plus stubbed IAM/ECS clients. Yields (ddb, iam, ecs).
+
+    The counter is a nested-map ADD guarded by a conditional map init — a hand
+    mock would accept the naive single-expression form DynamoDB rejects, so
+    the money path is tested against the real engine.
+    """
+    import index
+
+    with mock_aws():
+        ddb = boto3.client("dynamodb", region_name="us-east-1")
+        for table, key in ((BILLING_TABLE, "owner_id"), (CONTAINERS_TABLE, "owner_id"), (DEDUP_TABLE, "request_id")):
+            ddb.create_table(
+                TableName=table,
+                KeySchema=[{"AttributeName": key, "KeyType": "HASH"}],
+                AttributeDefinitions=[{"AttributeName": key, "AttributeType": "S"}],
+                BillingMode="PAY_PER_REQUEST",
+            )
+        if billing_row:
+            item = {"owner_id": {"S": owner}, "subscription_status": {"S": "trial_local"}}
+            if starting_spend is not None:
+                item["meta_daily_spend_microcents"] = {"M": {_utc_today(): {"N": str(starting_spend)}}}
+            ddb.put_item(TableName=BILLING_TABLE, Item=item)
+        if container_row:
+            ddb.put_item(TableName=CONTAINERS_TABLE, Item={"owner_id": {"S": owner}, "status": {"S": "running"}})
+
+        iam, ecs = MagicMock(), MagicMock()
+        ecs.list_clusters.return_value = {"clusterArns": [CLUSTER_ARN]}
+        with patch.object(index, "_iam", return_value=iam), patch.object(index, "_ecs", return_value=ecs):
+            yield ddb, iam, ecs
+
+
+def _daily_spend(ddb, owner="org_abc"):
+    """The owner's whole meta_daily_spend_microcents map, as {date: int}."""
+    item = ddb.get_item(TableName=BILLING_TABLE, Key={"owner_id": {"S": owner}}).get("Item", {})
+    day_map = item.get("meta_daily_spend_microcents", {}).get("M", {})
+    return {date: int(v["N"]) for date, v in day_map.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +225,8 @@ def test_extract_falls_back_to_nested_usage_when_top_level_absent():
 
 
 def test_resolve_owner_and_tier_reads_reverse_table():
+    """owner + tier + plan all come out of ONE GetItem — `plan` rides along in
+    the read that was already happening, so the trial branch costs zero reads."""
     import index
 
     record = _load("inline_record.json")
@@ -138,22 +234,44 @@ def test_resolve_owner_and_tier_reads_reverse_table():
     fake_ddb.get_item.return_value = OWNER_ITEM
 
     with patch("index._ddb", return_value=fake_ddb):
-        owner, tier = index._resolve_owner_and_tier(record)
+        owner, tier, plan = index._resolve_owner_and_tier(record)
 
-    assert (owner, tier) == ("org_abc", "opus")
+    assert (owner, tier, plan) == ("org_abc", "opus", "paid")
     fake_ddb.get_item.assert_called_once_with(
         TableName="isol8-dev-bedrock-aip-owners",
         Key={"aip_arn": {"S": record["modelId"]}},
     )
 
 
-def test_resolve_owner_miss_returns_none_pair():
+def test_resolve_reads_trial_plan_from_reverse_row():
+    import index
+
+    item = {"Item": dict(OWNER_ITEM["Item"], plan={"S": "trial"}, tier={"S": "sonnet"})}
+    fake_ddb = MagicMock()
+    fake_ddb.get_item.return_value = item
+    with patch("index._ddb", return_value=fake_ddb):
+        assert index._resolve_owner_and_tier(_load("inline_record.json")) == ("org_abc", "sonnet", "trial")
+
+
+def test_resolve_defaults_missing_plan_to_paid():
+    """Rows written before the `plan` attribute existed carry none. The money
+    path must fail towards "bill it", never towards "silently drop it"."""
+    import index
+
+    legacy = {"Item": {k: v for k, v in OWNER_ITEM["Item"].items() if k != "plan"}}
+    fake_ddb = MagicMock()
+    fake_ddb.get_item.return_value = legacy
+    with patch("index._ddb", return_value=fake_ddb):
+        assert index._resolve_owner_and_tier(_load("inline_record.json")) == ("org_abc", "opus", "paid")
+
+
+def test_resolve_owner_miss_returns_none_triple():
     import index
 
     fake_ddb = MagicMock()
     fake_ddb.get_item.return_value = {}
     with patch("index._ddb", return_value=fake_ddb):
-        assert index._resolve_owner_and_tier(_load("inline_record.json")) == (None, None)
+        assert index._resolve_owner_and_tier(_load("inline_record.json")) == (None, None, None)
 
 
 def test_handler_unattributed_dlqs_and_never_ingests():
@@ -498,3 +616,523 @@ def test_send_to_dlq_raises_when_no_queue_configured(monkeypatch):
     monkeypatch.delenv("DLQ_URL", raising=False)
     with pytest.raises(RuntimeError):
         index._send_to_dlq({"message": "{}"}, "transport_error: boom")
+
+
+# ---------------------------------------------------------------------------
+# LOCAL PRICING. Third copy of the rate table (backend _RATES + the config.py
+# catalog cost blocks are the other two) — the Lambda has no VPC and no backend
+# import path, so it cannot share the module. The lockstep test is what keeps
+# the three from drifting; without it the cap would silently enforce the wrong
+# dollar amount.
+# ---------------------------------------------------------------------------
+
+
+def _backend_pricing():
+    """Import the backend's pricing module (the source of truth for the rates).
+
+    Deliberately a HARD import, not an importorskip: a skipped lockstep test is
+    a drift detector that never fires.
+    """
+    os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
+    if BACKEND not in sys.path:
+        sys.path.insert(0, BACKEND)
+    from core.billing import bedrock_aip, bedrock_pricing
+
+    return bedrock_pricing, bedrock_aip
+
+
+def test_lambda_rate_table_matches_backend_bedrock_pricing():
+    """The Lambda's rate table and tier map must equal the backend's, exactly."""
+    import index
+
+    bedrock_pricing, bedrock_aip = _backend_pricing()
+
+    assert index._RATES == bedrock_pricing._RATES
+    assert index.TIER_TO_FM == bedrock_aip.TIER_TO_FM
+
+
+def test_lambda_pricing_matches_backend_price_from_tier():
+    """Same table AND same arithmetic (per-component int() truncation) — a
+    matching table with a different rounding rule would still drift the cap."""
+    import index
+
+    bedrock_pricing, _ = _backend_pricing()
+    record = _load("inline_record.json")
+    counts = {
+        "input_tokens": record["input"]["inputTokenCount"],
+        "output_tokens": record["output"]["outputTokenCount"],
+        "cache_read_tokens": record["input"]["cacheReadInputTokenCount"],
+        "cache_write_tokens": record["input"]["cacheWriteInputTokenCount"],
+    }
+    for tier in index.TIER_TO_FM:
+        assert index._price_from_tier(tier, **counts) == bedrock_pricing.price_from_tier(tier, **counts)
+
+
+def test_price_includes_cache_read_and_cache_write():
+    """All four token counts are billed. Cache tokens are ~92% of this record's
+    price — a meter that dropped them would undercount ~12x."""
+    import index
+
+    record = _load("inline_record.json")
+    counts = {
+        "input_tokens": record["input"]["inputTokenCount"],
+        "output_tokens": record["output"]["outputTokenCount"],
+        "cache_read_tokens": record["input"]["cacheReadInputTokenCount"],
+        "cache_write_tokens": record["input"]["cacheWriteInputTokenCount"],
+    }
+    assert all(v > 0 for v in counts.values()), "fixture must keep all four counts non-zero"
+
+    assert index._price_from_tier("sonnet", **counts) == SONNET_PRICE_MICROCENTS
+    assert index._price_from_tier("sonnet", **dict(counts, cache_read_tokens=0, cache_write_tokens=0)) == (
+        SONNET_PRICE_NO_CACHE
+    )
+
+
+def test_unknown_tier_is_unpriceable():
+    import index
+
+    with pytest.raises(index.UnknownTierError):
+        index._price_from_tier("gpt-9", input_tokens=1, output_tokens=1, cache_read_tokens=0, cache_write_tokens=0)
+
+
+# ---------------------------------------------------------------------------
+# TRIAL COUNTER. Against a REAL DynamoDB engine (moto): the counter is a
+# nested-map ADD, which DynamoDB rejects if combined with the map init in one
+# expression — a hand mock would pass code that fails in production.
+# ---------------------------------------------------------------------------
+
+
+def test_trial_record_adds_priced_spend_to_todays_key_and_never_ingests():
+    import index
+
+    record = _load("inline_record.json")
+    ingested = []
+
+    with (
+        _aws_world() as (ddb, iam, ecs),
+        _stub_resolver(tier="sonnet", plan="trial"),
+        patch.object(index, "_ingest_to_metronome", side_effect=lambda p: ingested.append(p)),
+    ):
+        result = index.handler(_awslogs_event(record), None)
+        # Read back INSIDE the moto context — outside it, boto3 talks to real AWS.
+        spend = _daily_spend(ddb)
+
+    assert result == {"statusCode": 200}
+    # Trial owners have no Stripe customer and therefore no Metronome contract.
+    assert ingested == []
+    assert spend == {_utc_today(): SONNET_PRICE_MICROCENTS}
+    # Far under the cap: nothing is killed.
+    iam.delete_role_policy.assert_not_called()
+    ecs.update_service.assert_not_called()
+
+
+def test_trial_counter_accumulates_across_records():
+    """The guarded two-step must ADD (not overwrite) on an existing day key."""
+    import index
+
+    first = _load("inline_record.json")
+    second = _load("inline_record.json")
+    second["requestId"] = "second-record-id"
+
+    with _aws_world() as (ddb, _iam, _ecs), _stub_resolver(tier="sonnet", plan="trial"):
+        index.handler(_awslogs_event(first, second), None)
+        spend = _daily_spend(ddb)
+
+    assert spend == {_utc_today(): 2 * SONNET_PRICE_MICROCENTS}
+
+
+def test_trial_counter_initializes_map_on_a_row_that_has_none():
+    """A fresh billing row has no meta_daily_spend_microcents map at all. The
+    conditional map-init step is what makes the nested ADD legal."""
+    import index
+
+    with _aws_world(starting_spend=None) as (ddb, _iam, _ecs):
+        assert _daily_spend(ddb) == {}
+        total = index._add_daily_spend("org_abc", _utc_today(), 500)
+        assert _daily_spend(ddb) == {_utc_today(): 500}
+
+    assert total == 500
+
+
+def test_trial_counter_raises_on_a_missing_billing_row():
+    """No phantom rows: a trial owner with no billing row is a provisioning gap
+    that must alarm, not a row the meter invents."""
+    import index
+
+    with _aws_world(billing_row=False), pytest.raises(ClientError):
+        index._add_daily_spend("org_abc", _utc_today(), 500)
+
+
+def test_missing_billing_row_dlqs_as_counter_error_and_continues():
+    import index
+
+    record = _load("inline_record.json")
+    dlqd, metrics = [], []
+
+    with (
+        _aws_world(billing_row=False),
+        _stub_resolver(tier="sonnet", plan="trial"),
+        patch.object(index, "_send_to_dlq", side_effect=lambda e, r: dlqd.append((e, r))),
+        patch.object(index, "_emit_metric", side_effect=lambda n, **k: metrics.append(n)),
+    ):
+        result = index.handler(_awslogs_event(record), None)
+
+    assert result == {"statusCode": 200}
+    assert len(dlqd) == 1
+    assert dlqd[0][1].startswith("counter_error:")
+    assert "meter.counter_error" in metrics
+
+
+def test_unpriceable_tier_dlqs_and_never_counts():
+    import index
+
+    record = _load("inline_record.json")
+    dlqd, metrics = [], []
+
+    with (
+        _aws_world() as (ddb, _iam, _ecs),
+        _stub_resolver(tier="mystery", plan="trial"),
+        patch.object(index, "_send_to_dlq", side_effect=lambda e, r: dlqd.append((e, r))),
+        patch.object(index, "_emit_metric", side_effect=lambda n, **k: metrics.append(n)),
+    ):
+        index.handler(_awslogs_event(record), None)
+        spend = _daily_spend(ddb)
+
+    assert spend == {}
+    assert dlqd[0][1].startswith("unpriceable_tier:")
+    assert "meter.unknown_model" in metrics
+
+
+# ---------------------------------------------------------------------------
+# REPLAY SAFETY. CloudWatch Logs retries whole batches and DLQ redrives replay
+# them; a DynamoDB ADD has no dedup. The per-requestId conditional put guards
+# the COUNTER — and ONLY the counter: the Metronome ingest keeps its own 34-day
+# dedup and must still run on a replay.
+# ---------------------------------------------------------------------------
+
+
+def test_same_request_id_delivered_twice_counts_once():
+    import index
+
+    record = _load("inline_record.json")
+    metrics = []
+
+    with (
+        _aws_world() as (ddb, _iam, _ecs),
+        _stub_resolver(tier="sonnet", plan="trial"),
+        patch.object(index, "_emit_metric", side_effect=lambda n, **k: metrics.append(n)),
+    ):
+        index.handler(_awslogs_event(record), None)
+        index.handler(_awslogs_event(record), None)  # the CW-Logs batch retry
+        spend = _daily_spend(ddb)
+
+    assert spend == {_utc_today(): SONNET_PRICE_MICROCENTS}
+    assert metrics.count("meter.replay_skipped") == 1
+    # A replay is not a failure: it must not DLQ or trip a failure alarm.
+    assert not any(m.endswith("_error") for m in metrics)
+
+
+def test_replay_of_a_paid_record_still_ingests_both_times():
+    """The dedup guard protects the counter, NOT the ingest. Metronome dedups on
+    transaction_id (34 days) and that is the paid path's correctness story —
+    suppressing a replayed ingest would regress it."""
+    import index
+
+    record = _load("inline_record.json")
+    ingested = []
+
+    with (
+        _aws_world(),
+        _stub_resolver(plan="paid"),
+        patch.object(index, "_ingest_to_metronome", side_effect=lambda p: ingested.append(p)),
+    ):
+        index.handler(_awslogs_event(record), None)
+        index.handler(_awslogs_event(record), None)
+
+    assert len(ingested) == 2
+    assert {p["request_id"] for p in ingested} == {record["requestId"]}
+
+
+def test_claim_request_is_first_write_wins():
+    import index
+
+    with _aws_world() as (ddb, _iam, _ecs):
+        assert index._claim_request("req-1") is True
+        assert index._claim_request("req-1") is False
+        assert index._claim_request("req-2") is True
+
+        row = ddb.get_item(TableName=DEDUP_TABLE, Key={"request_id": {"S": "req-1"}})["Item"]
+        # 48h TTL — past CloudWatch's retry + redrive horizon.
+        assert int(row["ttl"]["N"]) - int(time.time()) > 47 * 3600
+
+
+# ---------------------------------------------------------------------------
+# THE PAID PATH IS BYTE-IDENTICAL. A paid record must POST to Metronome exactly
+# as before and touch NOTHING else — no dedup row, no counter, no kill, ever.
+# ---------------------------------------------------------------------------
+
+
+def test_paid_record_ingests_and_touches_no_counter():
+    import index
+
+    record = _load("inline_record.json")
+    ingested = []
+
+    with (
+        _aws_world() as (ddb, iam, ecs),
+        _stub_resolver(plan="paid"),
+        patch.object(index, "_ingest_to_metronome", side_effect=lambda p: ingested.append(p)),
+    ):
+        index.handler(_awslogs_event(record), None)
+        spend = _daily_spend(ddb)
+        dedup_rows = ddb.scan(TableName=DEDUP_TABLE)["Count"]
+
+    assert len(ingested) == 1
+    assert spend == {}
+    assert dedup_rows == 0
+    iam.delete_role_policy.assert_not_called()
+    ecs.update_service.assert_not_called()
+
+
+def test_paid_owner_crossing_three_dollars_is_untouched():
+    """The cap is a TRIAL construct. A paid owner is billed through Metronome
+    and must never be revoked, stopped, or counted — no matter the spend."""
+    import index
+
+    record = _load("inline_record.json")
+    record["input"]["inputTokenCount"] = 100_000_000  # ~$330 in one record
+    ingested = []
+
+    with (
+        _aws_world(starting_spend=2_999_999) as (ddb, iam, ecs),
+        _stub_resolver(plan="paid"),
+        patch.object(index, "_ingest_to_metronome", side_effect=lambda p: ingested.append(p)),
+    ):
+        index.handler(_awslogs_event(record), None)
+        spend = _daily_spend(ddb)
+        dedup_rows = ddb.scan(TableName=DEDUP_TABLE)["Count"]
+
+    assert len(ingested) == 1
+    # The pre-existing counter value is untouched (the meter did not ADD to it).
+    assert spend == {_utc_today(): 2_999_999}
+    assert dedup_rows == 0
+    iam.delete_role_policy.assert_not_called()
+    ecs.update_service.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# THE KILL. The container holds its own AWS credentials and calls Bedrock
+# directly, so revoking the per-owner IAM policy + stopping the ECS service is
+# the ONLY thing that provably stops a free owner's spend.
+# ---------------------------------------------------------------------------
+
+
+def test_crossing_the_cap_revokes_iam_and_stops_ecs_exactly_once():
+    import index
+
+    record = _load("inline_record.json")  # 121,275 microcents on sonnet
+    under = index.CAP_MICROCENTS - 1_000  # one record takes us over
+
+    with (
+        _aws_world(starting_spend=under) as (ddb, iam, ecs),
+        _stub_resolver(tier="sonnet", plan="trial"),
+    ):
+        index.handler(_awslogs_event(record), None)
+        spend = _daily_spend(ddb)
+        container = ddb.get_item(TableName=CONTAINERS_TABLE, Key={"owner_id": {"S": "org_abc"}})["Item"]
+
+    assert spend == {_utc_today(): under + SONNET_PRICE_MICROCENTS}
+
+    iam.delete_role_policy.assert_called_once_with(
+        RoleName="isol8-dev-owner-bedrock-org_abc",
+        PolicyName="owner-bedrock",
+    )
+    ecs.update_service.assert_called_once_with(
+        cluster=CLUSTER_ARN,
+        service=index._service_name("org_abc"),
+        desiredCount=0,
+    )
+    # The backend's daily-restore path reads this flag.
+    assert container["bedrock_revoked"]["BOOL"] is True
+
+
+def test_staying_under_the_cap_kills_nothing():
+    import index
+
+    record = _load("inline_record.json")
+
+    with (
+        _aws_world(starting_spend=1_000) as (ddb, iam, ecs),
+        _stub_resolver(tier="sonnet", plan="trial"),
+    ):
+        index.handler(_awslogs_event(record), None)
+        spend = _daily_spend(ddb)
+        container = ddb.get_item(TableName=CONTAINERS_TABLE, Key={"owner_id": {"S": "org_abc"}})["Item"]
+
+    assert spend == {_utc_today(): 1_000 + SONNET_PRICE_MICROCENTS}
+    iam.delete_role_policy.assert_not_called()
+    ecs.update_service.assert_not_called()
+    assert "bedrock_revoked" not in container
+
+
+def test_records_already_in_flight_past_the_cap_do_not_re_kill():
+    """The kill fires on the CROSSING. Records already in flight when the cap is
+    crossed land afterwards and must not each re-fire it."""
+    import index
+
+    crossing = _load("inline_record.json")
+    trailing = _load("inline_record.json")
+    trailing["requestId"] = "trailing-record-id"
+
+    with (
+        _aws_world(starting_spend=index.CAP_MICROCENTS - 1_000) as (_ddb, iam, ecs),
+        _stub_resolver(tier="sonnet", plan="trial"),
+    ):
+        index.handler(_awslogs_event(crossing, trailing), None)
+
+    assert iam.delete_role_policy.call_count == 1
+    assert ecs.update_service.call_count == 1
+
+
+def test_kill_is_independent_iam_failure_still_stops_ecs():
+    """A revoke failure must NOT skip the ECS stop — coupling them would let one
+    transient IAM error leave a runaway container invoking Bedrock."""
+    import index
+
+    stopped, stamped, metrics = [], [], []
+
+    with (
+        patch.object(index, "_revoke_owner_iam", side_effect=RuntimeError("iam 503")),
+        patch.object(index, "_stop_owner_service", side_effect=lambda o: stopped.append(o)),
+        patch.object(index, "_stamp_bedrock_revoked", side_effect=lambda o: stamped.append(o)),
+        patch.object(index, "_emit_metric", side_effect=lambda n, **k: metrics.append(n)),
+    ):
+        index._kill_owner_bedrock("org_abc")  # must not raise
+
+    assert stopped == ["org_abc"]
+    assert stamped == ["org_abc"]
+    assert "meter.kill_iam_error" in metrics
+
+
+def test_kill_is_independent_ecs_failure_still_revokes_and_stamps():
+    import index
+
+    revoked, stamped, metrics = [], [], []
+
+    with (
+        patch.object(index, "_revoke_owner_iam", side_effect=lambda o: revoked.append(o)),
+        patch.object(index, "_stop_owner_service", side_effect=RuntimeError("ecs 503")),
+        patch.object(index, "_stamp_bedrock_revoked", side_effect=lambda o: stamped.append(o)),
+        patch.object(index, "_emit_metric", side_effect=lambda n, **k: metrics.append(n)),
+    ):
+        index._kill_owner_bedrock("org_abc")
+
+    assert revoked == ["org_abc"]
+    assert stamped == ["org_abc"]
+    assert "meter.kill_ecs_error" in metrics
+
+
+def test_kill_failure_never_fails_the_batch():
+    """Every kill step failing must still leave the record counted and the batch
+    green — the failure pages via its metric instead."""
+    import index
+
+    record = _load("inline_record.json")
+    dlqd, metrics = [], []
+
+    with (
+        _aws_world(starting_spend=index.CAP_MICROCENTS - 1_000) as (ddb, iam, ecs),
+        _stub_resolver(tier="sonnet", plan="trial"),
+        patch.object(index, "_send_to_dlq", side_effect=lambda e, r: dlqd.append((e, r))),
+        patch.object(index, "_emit_metric", side_effect=lambda n, **k: metrics.append(n)),
+    ):
+        iam.delete_role_policy.side_effect = RuntimeError("iam down")
+        ecs.update_service.side_effect = RuntimeError("ecs down")
+        result = index.handler(_awslogs_event(record), None)
+        spend = _daily_spend(ddb)
+
+    assert result == {"statusCode": 200}
+    assert dlqd == []
+    assert spend == {_utc_today(): index.CAP_MICROCENTS - 1_000 + SONNET_PRICE_MICROCENTS}
+    assert "meter.kill_iam_error" in metrics
+    assert "meter.kill_ecs_error" in metrics
+
+
+def test_revoke_is_idempotent_a_missing_policy_is_already_revoked():
+    import index
+
+    iam = MagicMock()
+    iam.delete_role_policy.side_effect = ClientError(
+        {"Error": {"Code": "NoSuchEntity", "Message": "policy not found"}}, "DeleteRolePolicy"
+    )
+    with patch.object(index, "_iam", return_value=iam):
+        index._revoke_owner_iam("org_abc")  # must not raise
+
+
+def test_revoke_surfaces_a_real_iam_error():
+    import index
+
+    iam = MagicMock()
+    iam.delete_role_policy.side_effect = ClientError(
+        {"Error": {"Code": "AccessDenied", "Message": "nope"}}, "DeleteRolePolicy"
+    )
+    with patch.object(index, "_iam", return_value=iam), pytest.raises(ClientError):
+        index._revoke_owner_iam("org_abc")
+
+
+@pytest.mark.parametrize("code", ["ServiceNotFoundException", "ServiceNotActiveException"])
+def test_stop_is_idempotent_a_stopped_service_is_already_stopped(code):
+    import index
+
+    ecs = MagicMock()
+    ecs.list_clusters.return_value = {"clusterArns": [CLUSTER_ARN]}
+    ecs.update_service.side_effect = ClientError({"Error": {"Code": code, "Message": "gone"}}, "UpdateService")
+    with patch.object(index, "_ecs", return_value=ecs):
+        index._stop_owner_service("org_abc")  # must not raise
+
+
+def test_stop_surfaces_a_real_ecs_error():
+    import index
+
+    ecs = MagicMock()
+    ecs.list_clusters.return_value = {"clusterArns": [CLUSTER_ARN]}
+    ecs.update_service.side_effect = ClientError(
+        {"Error": {"Code": "InvalidParameterException", "Message": "nope"}}, "UpdateService"
+    )
+    with patch.object(index, "_ecs", return_value=ecs), pytest.raises(ClientError):
+        index._stop_owner_service("org_abc")
+
+
+def test_cluster_is_resolved_by_prefix_and_cached():
+    """The cluster's physical name is CFN-generated (renaming it would REPLACE
+    it and destroy every per-user service), and this account-scoped stack cannot
+    hold a cross-stage ref to the dev cluster — so it is resolved at runtime by
+    prefix, once per container."""
+    import index
+
+    ecs = MagicMock()
+    ecs.list_clusters.return_value = {
+        "clusterArns": [
+            "arn:aws:ecs:us-east-1:877352799272:cluster/goosetown-dev-shared",
+            CLUSTER_ARN,
+            "arn:aws:ecs:us-east-1:877352799272:cluster/isol8-prod-container-ClusterEB0386A7-Uc0EwgAC9DcQ",
+        ]
+    }
+    with patch.object(index, "_ecs", return_value=ecs):
+        assert index._cluster_arn() == CLUSTER_ARN
+        assert index._cluster_arn() == CLUSTER_ARN
+
+    assert ecs.list_clusters.call_count == 1
+
+
+def test_service_name_matches_the_backend_derivation():
+    """Mirrors ecs_manager._service_name — the backend's own stop path derives
+    the name this way, so a mismatch here would UpdateService a service that
+    does not exist and the kill's instant half would silently no-op."""
+    import hashlib
+
+    import index
+
+    owner = "org_2abcDEF"
+    expected = f"openclaw-{owner}-{hashlib.sha256(owner.encode()).hexdigest()[:12]}"
+    assert index._service_name(owner) == expected

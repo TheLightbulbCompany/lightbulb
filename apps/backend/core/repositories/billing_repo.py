@@ -3,6 +3,7 @@
 import logging
 import time
 import uuid
+from decimal import Decimal
 
 from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
@@ -132,6 +133,39 @@ async def set_metronome_customer_id(
     )
 
 
+async def set_stripe_customer_id(
+    owner_id: str,
+    *,
+    stripe_customer_id: str,
+) -> None:
+    """Backfill a Stripe customer id onto an EXISTING billing row.
+
+    The only row that reaches this today is the card-less ``trial_local``
+    row (``create_trial_local_if_absent`` deliberately writes no
+    ``stripe_*`` fields so a brand-new signup can chat before any Stripe
+    customer exists). ``billing_service.create_customer_for_owner`` calls
+    this when it finds a row that exists but has no ``stripe_customer_id`` —
+    without this backfill, ``create_flat_fee_checkout`` always sees a
+    Stripe-customer-less account and raises, and every free-tier user hits
+    an HTTP 400 on Upgrade. Same existing-row condition as the other
+    billing-row setters (``set_metronome_ids``, ``set_metronome_customer_id``,
+    ``set_credits_auto_charge``) — an unconditional update would upsert a
+    phantom ``{owner_id, stripe_customer_id}`` row for a caller that got the
+    owner_id wrong, silently orphaning it from the rest of the billing state.
+    """
+    table = _get_table()
+    await run_in_thread(
+        table.update_item,
+        Key={"owner_id": owner_id},
+        UpdateExpression="SET stripe_customer_id = :c, updated_at = :t",
+        ExpressionAttributeValues={
+            ":c": stripe_customer_id,
+            ":t": utc_now_iso(),
+        },
+        ConditionExpression="attribute_exists(owner_id)",
+    )
+
+
 async def set_credits_auto_charge(owner_id: str, *, enabled: bool) -> None:
     """Persist the owner's one-click top-up consent.
 
@@ -194,7 +228,7 @@ async def create_if_not_exists(
 _TRIAL_LOCAL_DURATION_SECONDS = 3 * 24 * 60 * 60
 
 
-async def create_trial_local_if_absent(owner_id: str, owner_type: str) -> None:
+async def create_trial_local_if_absent(owner_id: str, owner_type: str) -> bool:
     """Atomically create a card-less local trial billing row if one doesn't
     exist for this owner.
 
@@ -204,6 +238,10 @@ async def create_trial_local_if_absent(owner_id: str, owner_type: str) -> None:
     status) silently no-ops rather than overwriting. No ``stripe_*`` fields
     are written -- this row exists purely so a brand-new signup can chat
     before any Stripe customer/subscription is created.
+
+    Returns ``True`` iff THIS call actually created the row (the "create
+    branch" callers key a one-time side effect off, e.g. the ``trial_started``
+    product event), ``False`` on every no-op path.
     """
     table = _get_table()
     now = utc_now_iso()
@@ -223,8 +261,9 @@ async def create_trial_local_if_absent(owner_id: str, owner_type: str) -> None:
         )
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return
+            return False
         raise
+    return True
 
 
 async def set_subscription(
@@ -433,3 +472,73 @@ async def clear_provider_choice(owner_id: str) -> None:
 async def delete(owner_id: str) -> None:
     table = _get_table()
     await run_in_thread(table.delete_item, Key={"owner_id": owner_id})
+
+
+async def add_meta_daily_spend(owner_id: str, date: str, delta_microcents: int) -> int:
+    """Atomically add ``delta_microcents`` to the free-tier daily-spend
+    counter for ``date`` (a ``YYYY-MM-DD`` UTC date key) and return the NEW
+    total for that date.
+
+    Backs the free-tier $3/day cost cap read by
+    ``core/services/trial_cap.is_over_daily_cap``. The **Bedrock
+    invocation-log meter Lambda is the sole writer** of this counter — it
+    prices every model invocation at the AWS layer and ADDs it here. No
+    in-band backend path writes it; two writers would double-count.
+
+    The attribute name (``meta_daily_spend_microcents``) is a historical
+    holdover from the Meta free tier and is kept deliberately — live rows
+    carry it. It is now simply the trial daily-spend counter.
+
+    ``ADD`` on a nested map path requires the parent map to already exist.
+    The combined single-expression approach (``SET
+    meta_daily_spend_microcents = if_not_exists(meta_daily_spend_microcents,
+    :empty) ADD meta_daily_spend_microcents.#d :delta``) was tried first and
+    verified against a REAL DynamoDB engine (moto, not a hand mock) — it is
+    REJECTED: ``ValidationException: Two document paths overlap with each
+    other; must remove or rewrite one of these paths``. DynamoDB refuses a
+    ``SET`` on a map and an ``ADD`` on a nested key of that same map in one
+    UpdateExpression. So this is a guarded two-step: (1) initialize the map
+    to ``{}`` only if the row exists and the map is absent yet (a no-op,
+    swallowed ConditionalCheckFailedException, if another caller already won
+    the init race or the map already exists), then (2) the real atomic
+    ``ADD`` on the nested date leaf, still guarded by
+    ``attribute_exists(owner_id)`` so a missing row raises on step 2 either
+    way. No phantom rows — same invariant as the other billing-row setters.
+    """
+    table = _get_table()
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET meta_daily_spend_microcents = :empty",
+            ExpressionAttributeValues={":empty": {}},
+            ConditionExpression=("attribute_exists(owner_id) AND attribute_not_exists(meta_daily_spend_microcents)"),
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        # Map already exists, or the owner row doesn't exist -- the ADD
+        # below re-checks attribute_exists(owner_id) and raises the same
+        # error in the no-row case.
+
+    response = await run_in_thread(
+        table.update_item,
+        Key={"owner_id": owner_id},
+        UpdateExpression="ADD meta_daily_spend_microcents.#d :delta",
+        ExpressionAttributeNames={"#d": date},
+        ExpressionAttributeValues={":delta": Decimal(str(int(delta_microcents)))},
+        ConditionExpression="attribute_exists(owner_id)",
+        ReturnValues="ALL_NEW",
+    )
+    attrs = response.get("Attributes", {})
+    return int(attrs.get("meta_daily_spend_microcents", {}).get(date, 0))
+
+
+async def get_meta_daily_spend(owner_id: str, date: str) -> int:
+    """Read-only lookup of the free-tier daily-spend counter for ``date``.
+    Returns 0 when the owner has no billing row, or the row exists but has no
+    spend recorded for that date."""
+    item = await get_by_owner_id(owner_id)
+    if not item:
+        return 0
+    return int(item.get("meta_daily_spend_microcents", {}).get(date, 0))

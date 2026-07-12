@@ -283,7 +283,13 @@ async def admin_container_start(
 ):
     owner_id, _ = await resolve_admin_owner_id(user_id)
     ecs = get_ecs_manager()
-    return await ecs.start_user_service(owner_id)
+    # force: the operator break-glass. start_user_service refuses a customer
+    # start when the free-tier cap is up or a trial->paid conversion owns the
+    # row; an admin start is neither, and it is the ONLY manual lever to bring
+    # back a container whose conversion marker got stranded (a backend deploy
+    # mid-drain leaves substatus="converting" on the row). Platform-admin only
+    # and audited by @audit_admin_action above.
+    return await ecs.start_user_service(owner_id, force=True)
 
 
 @router.post(

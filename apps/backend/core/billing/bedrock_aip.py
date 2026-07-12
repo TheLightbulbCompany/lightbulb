@@ -165,12 +165,20 @@ async def persist_owner_aips(
     aip_arns: dict[str, str],
     *,
     role_arn: str | None = None,
+    plan: str = "paid",
 ) -> None:
     """Persist the per-owner AIP map (and optional role ARN) to BOTH the
     containers row and the bedrock-aip-owners reverse table.
 
     The reverse table is the read path for resolve_owner_from_aip_arn (Plan 3);
     the containers row is the read path for the config builder + resize/restart.
+
+    `plan` ("paid" or "trial") is stamped onto every reverse row. The meter
+    Lambda already does exactly one GetItem on this table per invocation
+    (resolve_owner_and_tier_from_aip_arn) to attribute owner + tier — `plan`
+    rides along for free in that same read, letting the Lambda skip Metronome
+    ingest for trial owners (who have no Stripe customer / Metronome contract)
+    without a second lookup.
     """
     fields: dict = {"bedrock_aip_arns": aip_arns}
     if role_arn is not None:
@@ -179,15 +187,15 @@ async def persist_owner_aips(
 
     table = _aip_owners_table()
     for tier, arn in aip_arns.items():
-        await _put_reverse_row(table, arn=arn, owner_id=owner_id, tier=tier)
+        await _put_reverse_row(table, arn=arn, owner_id=owner_id, tier=tier, plan=plan)
 
 
-async def _put_reverse_row(table, *, arn: str, owner_id: str, tier: str) -> None:
+async def _put_reverse_row(table, *, arn: str, owner_id: str, tier: str, plan: str = "paid") -> None:
     from core.dynamodb import run_in_thread
 
     await run_in_thread(
         table.put_item,
-        Item={"aip_arn": arn, "owner_id": owner_id, "tier": tier},
+        Item={"aip_arn": arn, "owner_id": owner_id, "tier": tier, "plan": plan},
     )
 
 
@@ -287,33 +295,50 @@ def _aip_name(owner_id: str, tier: str) -> str:
     return f"isol8-{_env()}-{owner_id}-{tier}"
 
 
-async def ensure_owner_aips(owner_id: str) -> dict[str, str]:
-    """Idempotently create the 3 per-owner AIPs (one per tier); return
-    {tier: aip_arn}. Persists to the containers row + reverse table.
+async def ensure_owner_aips(owner_id: str, *, tiers: list[str] | None = None) -> dict[str, str]:
+    """Idempotently create the per-owner AIPs for `tiers` (one per tier);
+    return {tier: aip_arn}. Persists to the containers row + reverse table.
 
-    Idempotent: if all 3 tiers are already persisted, returns them without any
-    Bedrock control-plane call — but STILL re-puts the reverse-index rows
-    (review C1). The row update and the reverse PutItems in persist_owner_aips
-    are NOT atomic; a prior partial failure (row written, one reverse PutItem
-    failed) leaves resolve_owner_from_aip_arn unable to attribute that AIP. The
-    reverse PutItems are idempotent (same key, same value), so re-running them
-    on the short-circuit path is cheap and self-heals the index.
+    `tiers=None` (the default) mints all 3 tiers (opus/sonnet/haiku) — today's
+    paid-owner behavior, unchanged in call shape or effect. `tiers=["sonnet"]`
+    mints ONLY that tier — the free-trial shape. This is the security
+    boundary, not just a cost optimization: build_owner_bedrock_policy scopes
+    the owner's IAM role to exactly the AIP ARNs it is given, so a
+    single-tier mint means the resulting role can invoke only that one model
+    — a trial owner cannot reach Opus even by rewriting their own
+    openclaw.json, because the container has no credential path to it.
+
+    The reverse-row `plan` attribute mirrors the same split: "paid" when
+    `tiers` is None, "trial" otherwise. See persist_owner_aips for why this
+    is free for the meter Lambda to read.
+
+    Idempotent: if all requested tiers are already persisted, returns them
+    without any Bedrock control-plane call — but STILL re-puts the
+    reverse-index rows (review C1). The row update and the reverse PutItems in
+    persist_owner_aips are NOT atomic; a prior partial failure (row written,
+    one reverse PutItem failed) leaves resolve_owner_from_aip_arn unable to
+    attribute that AIP. The reverse PutItems are idempotent (same key, same
+    value), so re-running them on the short-circuit path is cheap and
+    self-heals the index.
     """
     from core.dynamodb import run_in_thread
 
+    target_tiers: tuple[str, ...] = tuple(tiers) if tiers is not None else TIERS
+    plan = "paid" if tiers is None else "trial"
+
     existing = await read_owner_aips(owner_id)
-    if existing and all(tier in existing for tier in TIERS):
+    if existing and all(tier in existing for tier in target_tiers):
         # Self-heal the reverse index in case a prior run's reverse PutItems
         # partially failed after the row was written (C1 inconsistency window).
         table = _aip_owners_table()
         for tier, arn in existing.items():
-            await _put_reverse_row(table, arn=arn, owner_id=owner_id, tier=tier)
+            await _put_reverse_row(table, arn=arn, owner_id=owner_id, tier=tier, plan=plan)
         return existing
 
     client = _bedrock_client()
     account_id = await _caller_account_id()
     arns: dict[str, str] = dict(existing or {})
-    for tier in TIERS:
+    for tier in target_tiers:
         if tier in arns:
             continue
         name = _aip_name(owner_id, tier)
@@ -343,7 +368,7 @@ async def ensure_owner_aips(owner_id: str) -> dict[str, str]:
                 raise  # conflict but we can't find it — surface the real error
             arns[tier] = adopted
 
-    await persist_owner_aips(owner_id, arns)
+    await persist_owner_aips(owner_id, arns, plan=plan)
     return arns
 
 

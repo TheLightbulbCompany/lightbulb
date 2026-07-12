@@ -134,6 +134,9 @@ def test_respond_forwards_answers_camelcase(client, monkeypatch):
     admin = MagicMock()
     admin.respond_interaction = AsyncMock(return_value={"status": "responded"})
     _patch_admin(monkeypatch, admin)
+    from routers.teams import interactions as interactions_mod
+
+    monkeypatch.setattr(interactions_mod.trial_cap, "is_over_daily_cap", AsyncMock(return_value=False))
 
     r = client.post(
         "/api/v1/teams/issues/iss_1/interactions/int_1/respond",
@@ -209,3 +212,55 @@ def test_reject_rejects_smuggled_field(client):
         headers={"Authorization": "Bearer x"},
     )
     assert r.status_code == 422
+
+
+def test_respond_blocked_over_cap(client, monkeypatch):
+    """A trial_local owner over the free-tier $3/day Meta cap gets a 402
+    with the structured meta_daily_cap payload -- BEFORE the request ever
+    reaches Paperclip (responding to an ask_user_questions interaction
+    triggers a fresh Friday run server-side, so the check must run ahead of
+    the proxy call to actually stop the spend)."""
+    admin = MagicMock()
+    admin.respond_interaction = AsyncMock(return_value={"status": "responded"})
+    _patch_admin(monkeypatch, admin)
+    from routers.teams import interactions as interactions_mod
+
+    monkeypatch.setattr(interactions_mod.trial_cap, "is_over_daily_cap", AsyncMock(return_value=True))
+
+    r = client.post(
+        "/api/v1/teams/issues/iss_1/interactions/int_1/respond",
+        json={"answers": [{"questionId": "q1", "optionIds": ["a"]}]},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 402
+    body = r.json()["detail"]
+    assert body == {
+        "blocked": True,
+        "code": "meta_daily_cap",
+        "message": "You've used today's free allowance — resets tomorrow. Upgrade to keep going.",
+    }
+    admin.respond_interaction.assert_not_awaited()
+
+
+def test_respond_proceeds_under_cap(client, monkeypatch):
+    """An under-cap (or paid) owner's response proceeds to Paperclip as
+    normal."""
+    admin = MagicMock()
+    admin.respond_interaction = AsyncMock(return_value={"status": "responded"})
+    _patch_admin(monkeypatch, admin)
+    from routers.teams import interactions as interactions_mod
+
+    monkeypatch.setattr(interactions_mod.trial_cap, "is_over_daily_cap", AsyncMock(return_value=False))
+
+    r = client.post(
+        "/api/v1/teams/issues/iss_1/interactions/int_1/respond",
+        json={"answers": [{"questionId": "q1", "optionIds": ["a"]}]},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    admin.respond_interaction.assert_awaited_once_with(
+        issue_id="iss_1",
+        interaction_id="int_1",
+        body={"answers": [{"questionId": "q1", "optionIds": ["a"]}]},
+        session_cookie="cookie",
+    )

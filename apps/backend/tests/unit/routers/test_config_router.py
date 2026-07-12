@@ -109,6 +109,40 @@ def test_patch_config_no_subscription_channels_rejected(client):
         cleanup()
 
 
+def test_patch_config_trial_local_channels_rejected(client):
+    """trial_local grants platform use (is_subscription_active) but channels
+    are an always-on PAID feature — bots keep triggering runs while the owner
+    is away. The gate must use the paid-only entitlement predicate."""
+    cleanup = _patch_auth(_personal_auth())
+    try:
+        with patch("routers.config.patch_openclaw_config", AsyncMock()) as mock_patch, _mock_billing("trial_local"):
+            resp = client.patch(
+                "/api/v1/config",
+                json={"patch": {"channels": {"telegram": {"enabled": True}}}},
+            )
+        assert resp.status_code == 403
+        assert "channels_require_subscription" in resp.json().get("detail", "")
+        mock_patch.assert_not_called()
+    finally:
+        cleanup()
+
+
+def test_patch_config_trial_local_non_channels_succeeds(client):
+    """The paid gate only guards channel fields — a trial_local owner can
+    still patch the rest of their config."""
+    cleanup = _patch_auth(_personal_auth())
+    try:
+        with patch("routers.config.patch_openclaw_config", AsyncMock()) as mock_patch, _mock_billing("trial_local"):
+            resp = client.patch(
+                "/api/v1/config",
+                json={"patch": {"tools": {"profile": "full"}}},
+            )
+        assert resp.status_code == 200
+        mock_patch.assert_awaited_once()
+    finally:
+        cleanup()
+
+
 def test_patch_config_no_subscription_non_channels_succeeds(client):
     cleanup = _patch_auth(_personal_auth())
     try:

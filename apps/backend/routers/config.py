@@ -2,7 +2,8 @@
 
 GET wraps read_openclaw_config_from_efs; PATCH wraps patch_openclaw_config.
 Derives owner_id from the auth context, enforces org_admin for org callers
-on writes, and tier-gates channel-related patches behind Starter+.
+on writes, and gates channel-related patches behind the paid always-on
+entitlement (channels are autonomous — not part of the free tier).
 """
 
 import logging
@@ -21,7 +22,7 @@ from core.services.config_patcher import (
     ConfigPatchError,
     patch_openclaw_config,
 )
-from core.services.provision_gate import is_subscription_active
+from core.services.provision_gate import has_always_on_entitlement
 from schemas.config import ConfigPatchRequest
 
 logger = logging.getLogger(__name__)
@@ -128,8 +129,8 @@ async def get_config(
     description=(
         "Deep-merges the patch into the caller's owner_id openclaw.json on EFS. "
         "Derives owner_id from auth context (org_id if org, else user_id). "
-        "Requires org_admin for org callers. Channel fields require an active or "
-        "trialing subscription."
+        "Requires org_admin for org callers. Channel fields require the paid "
+        "always-on entitlement (active or Stripe-trialing subscription)."
     ),
 )
 async def patch_config(
@@ -141,14 +142,15 @@ async def patch_config(
 
     owner_id = resolve_owner_id(auth)
 
-    # Subscription gate on channel fields. Channels require an actively
-    # usable subscription — pre-signup users (no billing row) and
-    # canceled/past_due users can't bind bots. The legacy
-    # stripe_subscription_id fallback (for accounts mid-cutover) is
-    # handled inside ``is_subscription_active``.
+    # Always-on entitlement gate on channel fields. Channels are a PAID
+    # always-on feature — bound bots keep triggering runs while the owner
+    # is away, so trial_local owners (who can chat) must not bind them,
+    # and neither can pre-signup (no billing row) or canceled/past_due
+    # users. The legacy stripe_subscription_id fallback (for accounts
+    # mid-cutover) is handled inside ``has_always_on_entitlement``.
     if _patch_touches_channels(body.patch):
         account = await billing_repo.get_by_owner_id(owner_id)
-        if not is_subscription_active(account):
+        if not has_always_on_entitlement(account):
             raise HTTPException(
                 status_code=403,
                 detail="channels_require_subscription",

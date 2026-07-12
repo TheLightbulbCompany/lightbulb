@@ -432,6 +432,22 @@ async def create_trial_checkout(
                     detail=f"already_subscribed:{live_sub.get('status')}",
                 )
 
+    # A trial_local row EXISTS but carries no stripe_customer_id — the trial row
+    # is written with no stripe_* fields so a brand-new signup can chat before
+    # any Stripe object exists. The `if not account` branch above therefore
+    # skipped customer creation for exactly the owners who need it, and
+    # create_flat_fee_checkout then raised "No Stripe customer": every free user
+    # who clicked Upgrade got a 400. Backfill here — AFTER the already-subscribed
+    # guards, so we never mint a Stripe customer for a caller we are about to
+    # refuse.
+    if not account.get("stripe_customer_id"):
+        owner_type = get_owner_type(auth)
+        account = await BillingService().create_customer_for_owner(
+            owner_id=owner_id,
+            owner_type=owner_type,
+            email=auth.email,
+        )
+
     # Synchronously persist provider_choice on the billing row BEFORE
     # creating the Stripe Checkout session. Closes the race where the user
     # lands on /chat and triggers /container/provision before the

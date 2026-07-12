@@ -141,10 +141,12 @@ def test_create_routine_trigger_rejects_non_schedule(client, admin):
 def test_run_routine_proxies_upstream(client, monkeypatch):
     """POST /teams/routines/{id}/run proxies upstream + forwards body."""
     from routers.teams import agents as agents_mod
+    from routers.teams import _guards as guards_mod
 
     admin = MagicMock()
     admin.run_routine = AsyncMock(return_value={"runId": "run_test_123", "status": "queued"})
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(guards_mod.trial_cap, "is_over_daily_cap", AsyncMock(return_value=False))
 
     r = client.post(
         "/api/v1/teams/routines/r1/run",
@@ -159,6 +161,36 @@ def test_run_routine_proxies_upstream(client, monkeypatch):
         body={"source": "manual"},
         session_cookie="cookie",
     )
+
+
+def test_run_routine_blocked_over_cap(client, monkeypatch):
+    """A trial_local owner over the free-tier $3/day Meta cap gets a 402
+    with the structured meta_daily_cap payload -- BEFORE the request ever
+    reaches Paperclip (manually firing a routine dispatches a run
+    immediately server-side, so the check must run ahead of the proxy
+    call to actually stop the spend)."""
+    from routers.teams import agents as agents_mod
+    from routers.teams import _guards as guards_mod
+
+    admin = MagicMock()
+    admin.run_routine = AsyncMock(return_value={"runId": "run_test_123", "status": "queued"})
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(guards_mod.trial_cap, "is_over_daily_cap", AsyncMock(return_value=True))
+
+    r = client.post(
+        "/api/v1/teams/routines/r1/run",
+        json={"source": "manual"},
+        headers={"Authorization": "Bearer x"},
+    )
+
+    assert r.status_code == 402
+    body = r.json()["detail"]
+    assert body == {
+        "blocked": True,
+        "code": "meta_daily_cap",
+        "message": "You've used today's free allowance — resets tomorrow. Upgrade to keep going.",
+    }
+    admin.run_routine.assert_not_awaited()
 
 
 def test_list_routine_runs_returns_envelope(client, monkeypatch):

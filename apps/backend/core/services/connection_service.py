@@ -14,6 +14,13 @@ DynamoDB Table Schema:
 - userId (S) - the authenticated user's ID
 - orgId (S) - organization ID (empty string if None)
 - connectedAt (S) - ISO timestamp of connection
+- lastPingAt (N) - epoch seconds of the last liveness stamp (stamped at
+  connect by store_connection, refreshed by touch_connection on the
+  frontend's ~30s ping)
+- ttl (N) - epoch seconds; DynamoDB native TTL sweep attribute
+  (timeToLiveAttribute, api-stack.ts:277). Stamped alongside lastPingAt
+  so a missed $disconnect (crashed tab, dropped connection) still gets
+  reaped instead of leaving a zombie row forever.
 
 Note: Table creation is handled by Terraform, not this service.
 """
@@ -21,6 +28,7 @@ Note: Table creation is handled by Terraform, not this service.
 import asyncio
 import logging
 import os
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -28,6 +36,26 @@ import boto3
 from botocore.exceptions import ClientError
 
 logger = logging.getLogger(__name__)
+
+# TTL grace period stamped on every connect + ping refresh: how long a row
+# survives past its last liveness stamp before DynamoDB's TTL sweep deletes
+# it if $disconnect is never called (crashed tab, dropped connection, etc).
+_TTL_WINDOW_SECONDS = 7200  # 2 hours
+
+# touch_connection in-process throttle: skip the DynamoDB write if the same
+# connection_id was touched more recently than this. The frontend pings
+# every ~30s, so this collapses roughly every other ping into a no-op.
+_PING_THROTTLE_SECONDS = 60
+
+# count_live_chat_connections freshness window: a chat row counts as "live"
+# if lastPingAt is within this many seconds of now (four missed 30s pings).
+_LIVE_WINDOW_SECONDS = 120
+
+# Bound on the in-process touch throttle dict (see touch_connection). Once
+# it grows past this many tracked connection_ids it is cleared outright
+# rather than evicted entry-by-entry -- simplest bound that still keeps
+# memory flat across a long-running process life.
+_TOUCH_THROTTLE_MAX_ENTRIES = 10_000
 
 
 class ConnectionServiceError(Exception):
@@ -57,6 +85,9 @@ class ConnectionService:
         # Explicitly set region to avoid NoRegionError in containerized environments
         region = region_name or os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
         self._client = boto3.client("dynamodb", region_name=region)
+        # In-process throttle for touch_connection -- see that method's
+        # docstring for scope (single-backend-instance posture) and bound.
+        self._touch_throttle: dict[str, float] = {}
 
     def store_connection(
         self,
@@ -79,7 +110,9 @@ class ConnectionService:
         Raises:
             ConnectionServiceError: If DynamoDB operation fails
         """
-        connected_at = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(timezone.utc)
+        connected_at = now.isoformat()
+        now_epoch = int(now.timestamp())
 
         item = {
             "connectionId": {"S": connection_id},
@@ -88,6 +121,8 @@ class ConnectionService:
             "ownerId": {"S": (org_id or user_id)},  # owner = org for org members, else the user
             "connectedAt": {"S": connected_at},
             "connectionType": {"S": connection_type},
+            "lastPingAt": {"N": str(now_epoch)},
+            "ttl": {"N": str(now_epoch + _TTL_WINDOW_SECONDS)},
         }
 
         try:
@@ -276,6 +311,163 @@ class ConnectionService:
             raise ConnectionServiceError(
                 f"Failed to query connections for owner {owner_id}: {e.response['Error']['Message']}"
             ) from e
+
+    async def touch_connection(self, connection_id: str) -> None:
+        """Refresh liveness stamps (lastPingAt + ttl) for connection_id.
+
+        Called fire-and-forget from the ping handler in
+        routers/websocket_chat.py (``asyncio.create_task(...)``, never
+        awaited) right after the pong is sent, so the pong latency never
+        gains a DDB round-trip. Because nothing awaits this coroutine, it
+        must swallow its own errors -- an exception here would only ever
+        surface as an asyncio "Task exception was never retrieved"
+        warning, never anything actionable to a caller.
+
+        Throttled in-process to at most one DynamoDB write per
+        connection_id every ``_PING_THROTTLE_SECONDS``. The frontend pings
+        on a ~30s cadence, so this collapses roughly every other ping into
+        a no-op instead of writing on every single one. The throttle dict
+        lives on this instance/process -- same posture as other in-process
+        rate-limit state in this codebase (e.g.
+        ``routers/hooks_proxy.py::_RATE_BUCKETS_PER_OWNER``,
+        ``routers/connections.py::_aws_cli_rate_buckets``): correct as
+        long as the backend runs at desiredCount=1. If it's ever scaled
+        horizontally, each instance throttles independently -- a
+        connection touched via a different instance inside the window
+        just gets rewritten again, which is harmless (one extra write),
+        not incorrect. Bounded to avoid unbounded growth over a long
+        process lifetime: once the dict holds
+        ``_TOUCH_THROTTLE_MAX_ENTRIES`` tracked ids it is cleared outright
+        (cheap to recompute -- worst case is one extra write per
+        connection right after a clear) rather than tracked with
+        per-entry eviction.
+
+        Uses a conditional update (``attribute_exists(connectionId)``) so
+        a ping that races a concurrent $disconnect can't resurrect a
+        phantom row -- if the connection was already deleted, this is a
+        silent no-op rather than recreating a row with only lastPingAt/ttl
+        and none of the owner/user/type fields callers depend on.
+        """
+        now = time.time()
+        last_touch = self._touch_throttle.get(connection_id)
+        if last_touch is not None and (now - last_touch) < _PING_THROTTLE_SECONDS:
+            return
+
+        if len(self._touch_throttle) >= _TOUCH_THROTTLE_MAX_ENTRIES:
+            self._touch_throttle.clear()
+        self._touch_throttle[connection_id] = now
+
+        now_epoch = int(now)
+
+        def _update() -> None:
+            self._client.update_item(
+                TableName=self.table_name,
+                Key={"connectionId": {"S": connection_id}},
+                UpdateExpression="SET lastPingAt = :p, #ttl = :t",
+                ConditionExpression="attribute_exists(connectionId)",
+                ExpressionAttributeNames={"#ttl": "ttl"},
+                ExpressionAttributeValues={
+                    ":p": {"N": str(now_epoch)},
+                    ":t": {"N": str(now_epoch + _TTL_WINDOW_SECONDS)},
+                },
+            )
+
+        try:
+            await asyncio.to_thread(_update)
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                logger.debug(
+                    "touch_connection: %s no longer exists (disconnected concurrently)",
+                    connection_id,
+                )
+            else:
+                logger.warning(
+                    "Failed to touch connection %s (best-effort liveness stamp): %s",
+                    connection_id,
+                    e.response["Error"]["Message"],
+                )
+
+    async def count_live_chat_connections(self, owner_id: str) -> int:
+        """Count live chat-typed WS connections for owner_id.
+
+        "Live" (binding rules, see docs/superpowers/sdd/task-11-brief.md --
+        a later task's scale-to-zero "is anyone here?" check consumes this
+        count, and that stop side must over-preserve, never over-kill):
+          - connectionType == "chat" only. node/operator connections are
+            transparent pipes (desktop node-host, control-UI proxy), not
+            "someone looking at the chat UI".
+          - lastPingAt within ``_LIVE_WINDOW_SECONDS`` (120s -- four missed
+            30s pings) of now counts as live.
+          - lastPingAt MISSING also counts as live. This covers rows
+            written before this liveness stamping shipped (pre-deploy) and
+            the brief window right after $connect before the frontend's
+            first ping lands. Treating "we don't know" as "live" is the
+            deliberate fail-safe: undercounting live connections risks a
+            later scale-to-zero decision killing an active session, which
+            is exactly the failure mode this plumbing exists to prevent.
+
+        query_by_owner resolves candidates via the by-owner-id GSI, whose
+        INCLUDE projection only carries userId + connectionType (not
+        lastPingAt -- see the GSI comment in api-stack.ts), so each chat
+        candidate needs one extra base-table read to check freshness.
+        """
+        rows = await self.query_by_owner(owner_id)
+        chat_ids = [connection_id for connection_id, _user_id, connection_type in rows if connection_type == "chat"]
+        if not chat_ids:
+            return 0
+
+        now = time.time()
+
+        def _count() -> int:
+            live = 0
+            for connection_id in chat_ids:
+                response = self._client.get_item(
+                    TableName=self.table_name,
+                    Key={"connectionId": {"S": connection_id}},
+                    ProjectionExpression="lastPingAt",
+                )
+                item = response.get("Item")
+                if item is None:
+                    # Disconnected between the GSI query and this read.
+                    continue
+                raw = item.get("lastPingAt", {}).get("N")
+                if raw is None or (now - float(raw)) < _LIVE_WINDOW_SECONDS:
+                    live += 1
+            return live
+
+        try:
+            return await asyncio.to_thread(_count)
+        except ClientError as e:
+            logger.error(
+                "Failed to count live chat connections for owner %s: %s",
+                owner_id,
+                e.response["Error"]["Message"],
+            )
+            raise ConnectionServiceError(
+                f"Failed to count live chat connections for owner {owner_id}: {e.response['Error']['Message']}"
+            ) from e
+
+    async def has_live_operator_connection(self, owner_id: str) -> bool:
+        """Is a Paperclip run executing against this owner's container right now?
+
+        The openclaw_gateway adapter opens its WS in ``execute()``, runs the
+        turn, and closes — so an ``operator``-typed connection exists EXACTLY
+        while a Paperclip-initiated run is in flight. That makes this a direct
+        read of "is Paperclip using the container", with no run-state tracking
+        of our own to keep in sync.
+
+        Scale-to-zero needs it because ``has_active_runs`` only ever sees
+        WEBCHAT runs: a trial owner who posts a Teams comment and closes their
+        tab has a live Friday run the pool is completely blind to, and stopping
+        the container under it kills a legitimate turn — the exact over-kill the
+        stop path's "over-preserve, never over-kill" rule forbids.
+
+        No freshness check, unlike the chat count: an operator row is written at
+        ``$connect`` and deleted at ``$disconnect``, and the adapter does not
+        ping. Its mere existence is the signal.
+        """
+        rows = await self.query_by_owner(owner_id)
+        return any(connection_type == "operator" for _connection_id, _user_id, connection_type in rows)
 
     async def delete_all_for_user(self, user_id: str) -> int:
         """Delete every WS connection row owned by ``user_id``.

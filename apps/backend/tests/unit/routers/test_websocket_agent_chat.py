@@ -315,20 +315,88 @@ class TestProcessAgentChatBackground:
 
     @pytest.mark.asyncio
     async def test_no_container_sends_error(self, mock_ecs_manager, mock_pool, mock_mgmt_api):
-        """No container should send error to frontend, not call pool."""
+        """A truly-absent row (owner never provisioned) keeps the legacy
+        subscribe copy — and carries NO `container_waking` code."""
         mock_ecs_manager.resolve_running_container = AsyncMock(return_value=(None, None))
-        await _process_agent_chat_background(
-            connection_id="conn-1",
-            user_id="user-1",
-            owner_id="user-1",
-            agent_id="luna",
-            message="Hello!",
-        )
+        with patch(
+            "core.repositories.container_repo.get_by_owner_id",
+            AsyncMock(return_value=None),
+        ):
+            await _process_agent_chat_background(
+                connection_id="conn-1",
+                user_id="user-1",
+                owner_id="user-1",
+                agent_id="luna",
+                message="Hello!",
+            )
         mock_pool.send_rpc.assert_not_called()
         mock_mgmt_api.send_message.assert_called_once()
         sent_msg = mock_mgmt_api.send_message.call_args[0][1]
         assert sent_msg["type"] == "error"
         assert "No container" in sent_msg["message"]
+        assert "code" not in sent_msg
+
+    @pytest.mark.asyncio
+    async def test_stopped_container_sends_waking(self, mock_ecs_manager, mock_pool, mock_mgmt_api):
+        """A scaled-to-zero ("stopped") row is simply asleep — resolve_running_container
+        returns (None, None) for it just like an absent row, so the dispatcher must
+        re-fetch and distinguish the two. A stopped row gets a benign
+        `container_waking` frame (the client triggers the /container/status wake),
+        NOT the misleading subscribe copy, plus a distinct chat.error metric reason."""
+        mock_ecs_manager.resolve_running_container = AsyncMock(return_value=(None, None))
+        with (
+            patch(
+                "core.repositories.container_repo.get_by_owner_id",
+                AsyncMock(return_value={"owner_id": "user-1", "status": "stopped"}),
+            ),
+            patch("routers.websocket_chat.put_metric") as mock_metric,
+        ):
+            await _process_agent_chat_background(
+                connection_id="conn-1",
+                user_id="user-1",
+                owner_id="user-1",
+                agent_id="luna",
+                message="Hello!",
+            )
+        mock_pool.send_rpc.assert_not_called()
+        mock_mgmt_api.send_message.assert_called_once()
+        sent_msg = mock_mgmt_api.send_message.call_args[0][1]
+        assert sent_msg["type"] == "error"
+        assert sent_msg["code"] == "container_waking"
+        assert sent_msg["message"] == "Waking your agent — this takes about a minute."
+        assert sent_msg["agent_id"] == "luna"
+        # Distinct reason so dashboards separate "asleep" from "never had one".
+        mock_metric.assert_any_call("chat.error", dimensions={"reason": "container_waking"})
+        # General-session send: no session_id key stamped (demux reads absent
+        # as the null/General session).
+        assert "session_id" not in sent_msg
+
+    @pytest.mark.asyncio
+    async def test_error_frames_carry_named_session_id(self, mock_ecs_manager, mock_pool, mock_mgmt_api):
+        """Error frames must carry the request's session_id for NAMED-session
+        sends: the frontend demuxes error frames by session and silently drops
+        mismatches, so an unstamped frame is invisible to a named-session tab
+        and its busy gate sticks."""
+        session_id = "0b6f9c1e-8f2a-4b7e-9c3d-2a1b4c5d6e7f"
+        mock_ecs_manager.resolve_running_container = AsyncMock(return_value=(None, None))
+        with (
+            patch(
+                "core.repositories.container_repo.get_by_owner_id",
+                AsyncMock(return_value={"owner_id": "user-1", "status": "stopped"}),
+            ),
+            patch("routers.websocket_chat.put_metric"),
+        ):
+            await _process_agent_chat_background(
+                connection_id="conn-1",
+                user_id="user-1",
+                owner_id="user-1",
+                agent_id="luna",
+                message="Hello!",
+                session_id=session_id,
+            )
+        sent_msg = mock_mgmt_api.send_message.call_args[0][1]
+        assert sent_msg["code"] == "container_waking"
+        assert sent_msg["session_id"] == session_id
 
     @pytest.mark.asyncio
     async def test_no_ip_sends_error(self, mock_ecs_manager, mock_pool, mock_mgmt_api):
@@ -753,6 +821,15 @@ class TestProcessAgentSteerBackground:
         mock_ecs_manager.resolve_running_container = AsyncMock(return_value=(container, "10.0.1.5"))
         return container
 
+    @pytest.fixture(autouse=True)
+    def mock_is_over_daily_cap(self):
+        """The steer path consults the free-tier daily cap before forwarding its
+        chat.send. Default every test in this class to under-cap (False) so the
+        existing dispatch / active-run tests are unaffected; the over-cap test
+        flips the return value to True."""
+        with patch("core.services.trial_cap.is_over_daily_cap", new=AsyncMock(return_value=False)) as m:
+            yield m
+
     @pytest.mark.asyncio
     async def test_steer_forwards_chat_send_deliver_false(
         self, mock_ecs_manager, mock_pool, mock_mgmt_api, container_with_ip
@@ -816,6 +893,54 @@ class TestProcessAgentSteerBackground:
         _, frame = mock_mgmt_api.send_message.call_args[0]
         assert frame["type"] == "error"
         assert frame["code"] == "steer_failed"
+
+    @pytest.mark.asyncio
+    async def test_over_cap_steer_refused_no_dispatch(
+        self, mock_ecs_manager, mock_pool, mock_mgmt_api, container_with_ip, mock_is_over_daily_cap
+    ):
+        """An over-cap trial owner steering must NOT forward a fresh chat.send.
+        A steer is a raw chat.send that costs real model tokens, so an over-cap
+        owner could otherwise keep steering straight past the $3/day cap with no
+        402 card. The owner gets a meta_daily_cap error frame and nothing
+        dispatches."""
+        mock_is_over_daily_cap.return_value = True
+        await _process_agent_steer_background(
+            connection_id="conn-1",
+            user_id="user-1",
+            owner_id="user-1",
+            agent_id="luna",
+            text="focus on the API",
+        )
+        mock_pool.send_rpc.assert_not_called()
+        mock_is_over_daily_cap.assert_awaited_once_with("user-1")
+        mock_mgmt_api.send_message.assert_called_once()
+        _, frame = mock_mgmt_api.send_message.call_args[0]
+        assert frame["type"] == "error"
+        assert frame["code"] == "meta_daily_cap"
+
+    @pytest.mark.asyncio
+    async def test_under_cap_steer_dispatches_via_readonly_check(
+        self,
+        mock_ecs_manager,
+        mock_pool,
+        mock_mgmt_api,
+        container_with_ip,
+        mock_is_over_daily_cap,
+    ):
+        """Under the cap, the steer dispatches — via the READ-ONLY
+        is_over_daily_cap check, which writes nothing. The meter Lambda counts
+        the steer's actual cost at the AWS layer like any other invocation."""
+        with patch("core.repositories.billing_repo.add_meta_daily_spend", new=AsyncMock()) as add_mock:
+            await _process_agent_steer_background(
+                connection_id="conn-1",
+                user_id="user-1",
+                owner_id="user-1",
+                agent_id="luna",
+                text="focus on the API",
+            )
+        mock_pool.send_rpc.assert_called_once()
+        mock_is_over_daily_cap.assert_awaited_once_with("user-1")
+        add_mock.assert_not_awaited()  # read-only: no counter write on the send path
 
 
 # ---------------------------------------------------------------------------
@@ -932,3 +1057,94 @@ class TestAgentChatSideChannel:
             message="hello",
         )
         mock_pool.mark_run_active.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Free-tier command lockdown: DELETED
+#
+# The lockdown (refuse /btw side runs + send suppressCommandInterpretation)
+# existed only because the pre-send reserve could not count a concurrent side
+# run. With the Bedrock meter Lambda counting every invocation at the AWS
+# layer, /btw is counted like anything else — so the reason to refuse it is
+# gone. These are the regression guards for the new contract.
+# ---------------------------------------------------------------------------
+
+
+class TestNoFreeTierCommandLockdown:
+    """gate_chat no longer rides a ``suppress_commands`` flag, and the chat
+    dispatcher no longer branches on one. A trial owner's sends must be
+    byte-identical to a paid owner's."""
+
+    @pytest.fixture
+    def mock_ecs_manager(self):
+        with patch("routers.websocket_chat.get_ecs_manager") as mock_getter:
+            manager = AsyncMock()
+            mock_getter.return_value = manager
+            yield manager
+
+    @pytest.fixture
+    def mock_pool(self):
+        with patch("routers.websocket_chat.get_gateway_pool") as mock_getter:
+            pool = AsyncMock()
+            pool.send_rpc = AsyncMock(return_value={"runId": "run-1", "status": "started"})
+            # The ONLY unblocked shape gate_chat returns now.
+            pool.gate_chat = AsyncMock(return_value={"blocked": False})
+            pool.mark_run_active = MagicMock()
+            pool.clear_active_run = MagicMock()
+            pool.mark_side_run = MagicMock()
+            mock_getter.return_value = pool
+            yield pool
+
+    @pytest.fixture
+    def mock_mgmt_api(self):
+        with patch("routers.websocket_chat.get_management_api_client") as mock_getter:
+            client = MagicMock()
+            client.send_message = MagicMock(return_value=True)
+            mock_getter.return_value = client
+            yield client
+
+    @pytest.fixture
+    def container_with_ip(self, mock_ecs_manager):
+        container = {"gateway_token": "test-gw-token", "owner_id": "user-1"}
+        mock_ecs_manager.resolve_running_container = AsyncMock(return_value=(container, "10.0.1.5"))
+        return container
+
+    @pytest.mark.asyncio
+    async def test_trial_side_run_dispatches_normally(
+        self, mock_ecs_manager, mock_pool, mock_mgmt_api, container_with_ip
+    ):
+        """A trial owner's /btw side run dispatches like anyone else's — no
+        ``side_runs_require_subscription`` refusal frame. The meter counts the
+        side run's invocations at the AWS layer, so it cannot escape the cap."""
+        await _process_agent_chat_background(
+            connection_id="conn-1",
+            user_id="user-1",
+            owner_id="user-1",
+            agent_id="luna",
+            message="/btw what's the weather",
+            side=True,
+        )
+        mock_pool.send_rpc.assert_called_once()
+        assert mock_pool.send_rpc.call_args[1]["method"] == "chat.send"
+        mock_pool.mark_side_run.assert_called_once()
+        for call in mock_mgmt_api.send_message.call_args_list:
+            frame = call[0][1]
+            assert frame.get("code") != "side_runs_require_subscription"
+
+    @pytest.mark.asyncio
+    async def test_send_never_carries_suppress_command_interpretation(
+        self, mock_ecs_manager, mock_pool, mock_mgmt_api, container_with_ip
+    ):
+        """No send — trial or paid — carries ``suppressCommandInterpretation``.
+        Full command support for every owner."""
+        await _process_agent_chat_background(
+            connection_id="conn-1",
+            user_id="user-1",
+            owner_id="user-1",
+            agent_id="luna",
+            message="hello there",
+            side=False,
+        )
+        mock_pool.send_rpc.assert_called_once()
+        params = mock_pool.send_rpc.call_args[1]["params"]
+        assert "suppressCommandInterpretation" not in params

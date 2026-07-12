@@ -96,14 +96,18 @@ async def test_abort_builds_4part_key(mock_ecs, mock_pool, mock_mgmt):
 
 @pytest.mark.asyncio
 async def test_steer_builds_4part_key(mock_ecs, mock_pool, mock_mgmt):
-    await _process_agent_steer_background(
-        connection_id="c",
-        user_id="user-1",
-        owner_id="user-1",
-        agent_id="luna",
-        text="stop",
-        session_id=_UUID,
-    )
+    # The steer path consults the free-tier daily cap before forwarding; pin it
+    # under-cap so the read-path stays isolated from billing_repo in this
+    # session-key test.
+    with patch("core.services.trial_cap.is_over_daily_cap", new=AsyncMock(return_value=False)):
+        await _process_agent_steer_background(
+            connection_id="c",
+            user_id="user-1",
+            owner_id="user-1",
+            agent_id="luna",
+            text="stop",
+            session_id=_UUID,
+        )
     assert mock_pool.send_rpc.call_args[1]["params"]["sessionKey"] == f"agent:luna:user-1:{_UUID}"
 
 

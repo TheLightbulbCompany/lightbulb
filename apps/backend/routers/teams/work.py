@@ -13,6 +13,7 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends
 
 from . import agents as _agents
+from ._guards import require_under_daily_cap
 from .deps import TeamsContext, envelope_list
 from .schemas import (
     CreateGoalBody,
@@ -106,7 +107,12 @@ async def run_routine(
     Body is forwarded to upstream as-is — upstream's ``runRoutineSchema``
     accepts optional ``reason`` / ``inputOverrides`` and is the source of
     truth for validation.
+
+    Firing a routine dispatches a run immediately server-side inside
+    Paperclip, so this is a Meta-spend front door. The free-tier $3/day
+    cap is checked here, BEFORE the proxy call reaches Paperclip.
     """
+    await require_under_daily_cap(ctx.owner_id)
     return await _agents._admin().run_routine(
         routine_id=routine_id,
         body=body,

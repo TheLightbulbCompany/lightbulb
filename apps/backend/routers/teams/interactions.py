@@ -23,7 +23,10 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
+from core.services import trial_cap  # noqa: F401 — patch target for existing tests (see _guards.py)
+
 from . import agents as _agents
+from ._guards import require_under_daily_cap
 from .deps import TeamsContext, envelope_list
 from .schemas import (
     AcceptInteractionBody,
@@ -93,7 +96,15 @@ async def respond_interaction(
     body: RespondInteractionBody,
     ctx: TeamsContext = Depends(_ctx),
 ):
-    """Respond to an ``ask_user_questions`` interaction with the user's answers."""
+    """Respond to an ``ask_user_questions`` interaction with the user's answers.
+
+    Responding resumes a fresh Friday (or the assigned agent) run
+    server-side inside Paperclip, so this is a Meta-spend front door. The
+    free-tier $3/day cap is checked here, BEFORE the proxy call reaches
+    Paperclip -- that's what actually stops the spend, since there is no
+    enforcement point downstream of this proxy.
+    """
+    await require_under_daily_cap(ctx.owner_id)
     return await _agents._admin().respond_interaction(
         issue_id=issue_id,
         interaction_id=interaction_id,

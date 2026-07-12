@@ -277,6 +277,48 @@ async def _resume_provisioning_transitions() -> None:
         logger.info("Resumed provisioning -> running poller for %s", owner_id)
 
 
+async def _reconcile_trial_idle_containers() -> None:
+    """One-time boot sweep that stops trial containers leaked across a restart.
+
+    Task 12's extended-idle scale-to-zero (``GatewayConnectionPool._grace_close``
+    / ``_maybe_stop_trial_container``) is in-process: the grace timer that
+    watches a ``trial_local`` owner after their last chat tab closes is a plain
+    ``asyncio.Task`` living on a single backend instance. A deploy or crash
+    kills that task mid-grace, and nothing else re-arms the stop check — the
+    container it was watching keeps running (and billing Bedrock credits)
+    forever. This is the one-time recovery for exactly that leak: on boot,
+    read every ``status="running"`` container row and dispatch its owner
+    straight to ``pool._maybe_stop_trial_container``.
+
+    Deliberately does NOT re-derive the trial_local / active-run / live-chat
+    pre-filters here. ``_maybe_stop_trial_container`` already re-runs its full
+    veto ladder from scratch on every call (billing_repo re-read, has_active_runs,
+    is_parked, cross-task live-chat count via connection_service) — every row is
+    dispatched unconditionally and the method itself decides who is actually
+    safe to stop. Duplicating those reads in this pass would double the DDB
+    traffic for zero extra safety and risk drifting out of sync with the one
+    place (Task 12) that already owns "who never gets stopped."
+
+    ONE-TIME — no loop, no interval. This codebase deliberately runs no
+    sweepers: whatever leaked from a previous process's death is caught at
+    the next restart, and Task 12's event-driven grace covers every
+    subsequent connect/disconnect without polling. A steady-state interval
+    here would just be a slower, wasteful version of the same veto ladder
+    this function already dispatches to once.
+    """
+    try:
+        rows = await container_repo.get_by_status("running")
+    except Exception:
+        logger.warning("Could not reconcile trial idle containers on startup", exc_info=True)
+        return
+
+    pool = get_gateway_pool()
+    for row in rows:
+        owner_id = row["owner_id"]
+        asyncio.create_task(pool._maybe_stop_trial_container(owner_id, trigger="boot_reconcile"))
+        logger.info("Boot reconcile: dispatched trial-stop check for %s", owner_id)
+
+
 async def _build_teams_event_broker():
     """Construct the singleton TeamsEventBroker used by /ws/message.
 
@@ -365,6 +407,7 @@ async def lifespan(app: FastAPI):
     set_shutting_down(False)
     await startup_containers()
     await _resume_provisioning_transitions()
+    await _reconcile_trial_idle_containers()
     worker_task = asyncio.create_task(run_scheduled_worker())
 
     # Teams event broker — proxies Paperclip's per-company live-events WS
@@ -777,6 +820,9 @@ app.include_router(admin_router.router, prefix="/api/v1")
 # Teams BFF — native UI for Paperclip. The router itself carries the
 # /teams prefix; mounting under /api/v1 yields /api/v1/teams/*.
 app.include_router(teams_router, prefix="/api/v1")
+
+# Pre-run allowance gate for the openclaw_gateway adapter (free-tier cap).
+# Router carries the /paperclip prefix; mounting under /api/v1 yields
 
 # Paperclip proxy router — mounted at the sentinel prefix that
 # HostDispatcherMiddleware rewrites paths to. Never reachable directly

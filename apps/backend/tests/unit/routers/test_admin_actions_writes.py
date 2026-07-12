@@ -195,7 +195,11 @@ class TestContainerStart:
         with patch("routers.admin.get_ecs_manager", return_value=ecs):
             res = await async_client.post("/api/v1/admin/users/u_target/container/start")
         assert res.status_code == 200
-        ecs.start_user_service.assert_awaited_once_with("u_target")
+        # force=True is the operator break-glass: an admin start is not subject
+        # to the free-tier cap or the trial-conversion guard that
+        # start_user_service applies to customer-driven starts, and it is the
+        # only manual lever for a container with a stranded conversion marker.
+        ecs.start_user_service.assert_awaited_once_with("u_target", force=True)
 
     @pytest.mark.asyncio
     async def test_403_for_non_admin(self, async_client, non_admin_env):

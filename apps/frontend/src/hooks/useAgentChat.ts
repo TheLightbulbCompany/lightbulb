@@ -20,6 +20,7 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect, useMemo } from "react";
+import { useSWRConfig } from "swr";
 import {
   useGateway,
   type ChatIncomingMessage,
@@ -367,6 +368,23 @@ export function useAgentChat(
   onChatCompleted?: () => void,
 ): UseAgentChatReturn {
   const { isConnected, sendChat, send, onChatMessage, sendReq } = useGateway();
+
+  // Shared SWR mutate, used to force ONE revalidation of the
+  // `/container/status` key that useProvisioningState owns when a chat send
+  // lands on a scaled-to-zero (trial) container — see the `container_waking`
+  // branch in the onChatMessage handler below. We reach it via useSWRConfig
+  // rather than importing useProvisioningState().refresh() so this generic,
+  // billing-agnostic hook stays free of Clerk's useAuth (which every consumer
+  // and unit test would otherwise have to provide); mutate hits the exact key
+  // the sibling ProvisioningStepper subscribes to, so its isRegressingFromReady
+  // machinery flips to the cold-start UI as soon as the fresh (non-ready) row
+  // arrives. Mirrored to a ref so the once-registered handler reads it without
+  // a resubscribe.
+  const { mutate: swrMutate } = useSWRConfig();
+  const swrMutateRef = useRef(swrMutate);
+  useEffect(() => {
+    swrMutateRef.current = swrMutate;
+  }, [swrMutate]);
 
   const { activeSessionId, newSession, selectSession } =
     useActiveSession(agentId);
@@ -1446,17 +1464,40 @@ export function useAgentChat(
           return;
         }
 
+        // A trial container that scaled to zero answers a chat send with a
+        // benign `container_waking` code instead of a hard failure. Kick ONE
+        // /container/status revalidation so the sibling ProvisioningStepper —
+        // which subscribes to the same SWR key — sees the now-non-ready phase
+        // and flips to its cold-start UI (isRegressingFromReady), then back to
+        // ready on the container's status_change:HEALTHY push; the status
+        // endpoint's ensure_user_ready is what actually restarts the stopped
+        // box. The frame still flows through the terminal-error path below to
+        // release the busy gate + drain the queue (it carries no runId, exactly
+        // like the no-container / billing-block transport errors), but is
+        // rendered as CALM plain text — no errorCode (so MessageList doesn't
+        // upgrade it to a red ChatErrorCard) and no top-level error banner — so
+        // the user sees "Waking your agent…", not "Failed to generate".
+        const isWaking = msg.code === "container_waking";
+        if (isWaking) {
+          swrMutateRef.current("/container/status");
+        }
+
         // Genuine terminal error (past the agent_busy / steer_failed
         // non-terminal no-ops above) — belt-and-suspenders close, same as
         // the run_ended / done branches.
         setContainerRunActive(false);
 
         const displayError = friendlyError(msg.message);
-        const errorCode = msg.code;
-        // Append an assistant-role error message to chatMessages.
+        const errorCode = isWaking ? undefined : msg.code;
+        // Append an assistant-role message. A waking notice renders as calm
+        // plain markdown (no "Error: " prefix, no errorCode); a genuine error
+        // carries the "Error: " prefix + errorCode that MessageList upgrades
+        // to a typed ChatErrorCard.
         const errMsg: HistoryMessage = {
           role: "assistant",
-          content: [{ type: "text", text: `Error: ${displayError}` }],
+          content: [
+            { type: "text", text: isWaking ? displayError : `Error: ${displayError}` },
+          ],
           timestamp: Date.now(),
           runId: msg.runId,
           errorCode,
@@ -1479,7 +1520,10 @@ export function useAgentChat(
         toolStreamByIdRef.current.clear();
         toolStreamOrderRef.current = [];
         setChatToolMessages([]);
-        setError(displayError);
+        // A waking notice is not a failure — leave the top-level `error` (which
+        // drives AgentChatWindow's full pink "Error" banner) untouched so the
+        // brief window before the stepper takes over stays calm.
+        if (!isWaking) setError(displayError);
         // Did THIS error end the active run? A terminal agent error carries
         // the run's runId (the no-runId agent_busy notice was handled and
         // returned above). Capture state before clearing so we can drain.

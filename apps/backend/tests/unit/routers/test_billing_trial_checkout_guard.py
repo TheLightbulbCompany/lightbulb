@@ -198,3 +198,46 @@ async def test_trial_checkout_in_org_context_skips_pending_invite_check(app, moc
             mock_clerk.list_pending_invitations_for_user.assert_not_awaited()
     finally:
         app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+@patch("core.services.billing_service.create_flat_fee_checkout")
+@patch("core.services.billing_service.BillingService.create_customer_for_owner")
+@patch("routers.billing.clerk_admin")
+@patch("routers.billing.billing_repo")
+async def test_trial_local_owner_gets_a_stripe_customer_backfilled(
+    mock_repo, mock_clerk, mock_create_customer, mock_create_checkout, async_client
+):
+    """A trial_local row EXISTS but carries no stripe_customer_id, so guarding
+    customer creation on ``if not account`` skipped it for exactly the owners
+    who needed it — and create_flat_fee_checkout then raised "No Stripe
+    customer", 400ing every free user who clicked Upgrade. The guard must key on
+    the MISSING FIELD, not the missing row."""
+    mock_repo.get_by_owner_id = AsyncMock(
+        return_value={
+            "owner_id": "user_test_123",
+            "owner_type": "personal",
+            "subscription_status": "trial_local",
+            # no stripe_customer_id — the trial row writes no stripe_* fields
+        }
+    )
+    mock_repo.set_provider_choice = AsyncMock(return_value=None)
+    mock_clerk.list_pending_invitations_for_user = AsyncMock(return_value=[])
+    mock_create_customer.return_value = {
+        "owner_id": "user_test_123",
+        "owner_type": "personal",
+        "subscription_status": "trial_local",
+        "stripe_customer_id": "cus_backfilled",
+    }
+    mock_create_checkout.return_value = type("Session", (), {"url": "https://checkout.stripe.com/x"})()
+
+    resp = await async_client.post(
+        "/api/v1/billing/trial-checkout",
+        json={"provider_choice": "bedrock_claude"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    # The backfill ran for the trial row (this is the fix)...
+    mock_create_customer.assert_awaited_once()
+    # ...and checkout reached Stripe instead of raising "No Stripe customer".
+    mock_create_checkout.assert_called_once()

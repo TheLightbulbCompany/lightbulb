@@ -38,7 +38,7 @@ describe("BedrockMeterStack", () => {
     expect(envs).toEqual(["dev", "prod"]);
   });
 
-  test("each instance is configured purely via env vars (table, DLQ, secret)", () => {
+  test("each instance is configured purely via env vars (tables, DLQ, secret, cluster)", () => {
     for (const meterEnv of ["dev", "prod"]) {
       template.hasResourceProperties("AWS::Lambda::Function", {
         Runtime: "python3.12",
@@ -46,10 +46,30 @@ describe("BedrockMeterStack", () => {
           Variables: Match.objectLike({
             METER_ENV: meterEnv,
             AIP_OWNERS_TABLE: `isol8-${meterEnv}-bedrock-aip-owners`,
+            BILLING_TABLE: `isol8-${meterEnv}-billing-accounts`,
+            CONTAINERS_TABLE: `isol8-${meterEnv}-containers`,
+            ECS_CLUSTER_PREFIX: `isol8-${meterEnv}-container-`,
+            INVOCATION_DEDUP_TABLE: Match.anyValue(),
             DLQ_URL: Match.anyValue(),
             METRONOME_API_KEY_SECRET_ARN: Match.anyValue(),
           }),
         },
+      });
+    }
+  });
+
+  test("one per-requestId dedup table per instance, TTL'd (the replay guard)", () => {
+    // A DynamoDB ADD has no dedup. CW Logs retries whole batches and DLQ
+    // redrives replay them, so an unguarded counter double-counts and
+    // false-locks-out real users — this table is what makes the counter
+    // at-most-once.
+    template.resourceCountIs("AWS::DynamoDB::Table", 2);
+    for (const meterEnv of ["dev", "prod"]) {
+      template.hasResourceProperties("AWS::DynamoDB::Table", {
+        TableName: `isol8-${meterEnv}-bedrock-invocation-dedup`,
+        KeySchema: [{ AttributeName: "request_id", KeyType: "HASH" }],
+        BillingMode: "PAY_PER_REQUEST",
+        TimeToLiveSpecification: { AttributeName: "ttl", Enabled: true },
       });
     }
   });
@@ -107,17 +127,22 @@ describe("BedrockMeterStack", () => {
     expect(policies).toContain("table/isol8-prod-bedrock-aip-owners");
   });
 
-  test("kms:Decrypt is confined to SecretsManager+DynamoDB-mediated decryption", () => {
-    // The per-env secrets AND the aip-owners tables are CMK-encrypted with
-    // each env's auth-stack key; the dev CMK ARN is unknowable from this
-    // prod-stage stack, so the grant is resource-* but condition-scoped to
-    // kms:ViaService. DynamoDB MUST be in the list — without it the
-    // attribution GetItem dies with KMS AccessDenied (live-verified).
+  test("kms grant covers BOTH Decrypt and GenerateDataKey, ViaService-confined", () => {
+    // The per-env secrets AND the aip-owners/billing/containers tables are
+    // CMK-encrypted with each env's auth-stack key; the dev CMK ARN is
+    // unknowable from this prod-stage stack, so the grant is resource-* but
+    // condition-scoped to kms:ViaService. DynamoDB MUST be in the list —
+    // without it the attribution GetItem dies with KMS AccessDenied
+    // (live-verified).
+    //
+    // GenerateDataKey is what makes the WRITES work. A Decrypt-only role
+    // GetItems happily and fails every UpdateItem — the trial counter would
+    // pass every test and fail only in the deployed environment.
     template.hasResourceProperties("AWS::IAM::Policy", {
       PolicyDocument: {
         Statement: Match.arrayWith([
           Match.objectLike({
-            Action: "kms:Decrypt",
+            Action: ["kms:Decrypt", "kms:GenerateDataKey"],
             Condition: {
               StringEquals: {
                 "kms:ViaService": [
@@ -130,6 +155,85 @@ describe("BedrockMeterStack", () => {
         ]),
       },
     });
+  });
+
+  test("each instance can write ONLY its own env's counter + revoked flag", () => {
+    // UpdateItem on the env's billing-accounts (the daily counter) and
+    // containers (the bedrock_revoked flag the daily restore reads) — and
+    // nothing else. No cross-env reach, no PutItem/DeleteItem on either.
+    for (const meterEnv of ["dev", "prod"]) {
+      template.hasResourceProperties("AWS::IAM::Policy", {
+        PolicyDocument: {
+          Statement: Match.arrayWith([
+            Match.objectLike({
+              Action: "dynamodb:UpdateItem",
+              Effect: "Allow",
+              Resource: [
+                `arn:aws:dynamodb:us-east-1:877352799272:table/isol8-${meterEnv}-billing-accounts`,
+                `arn:aws:dynamodb:us-east-1:877352799272:table/isol8-${meterEnv}-containers`,
+              ],
+            }),
+          ]),
+        },
+      });
+    }
+  });
+
+  test("the dedup table grant is PutItem only (a claim must not be rollback-able)", () => {
+    const policies = JSON.stringify(template.findResources("AWS::IAM::Policy"));
+    expect(policies).toContain("dynamodb:PutItem");
+    expect(policies).not.toContain("dynamodb:DeleteItem");
+    expect(policies).not.toContain("dynamodb:BatchWriteItem");
+  });
+
+  test("THE KILL: iam:DeleteRolePolicy scoped to the per-owner role prefix", () => {
+    // The container holds its own AWS credentials and calls Bedrock directly,
+    // so deleting the per-owner role's scoped inline policy is the only thing
+    // that stops a free owner's spend. Scoped to the owner-role name prefix:
+    // this Lambda can strip Bedrock from a per-owner task role and NOTHING
+    // else (never the backend's role, never its own).
+    for (const meterEnv of ["dev", "prod"]) {
+      template.hasResourceProperties("AWS::IAM::Policy", {
+        PolicyDocument: {
+          Statement: Match.arrayWith([
+            Match.objectLike({
+              Action: "iam:DeleteRolePolicy",
+              Effect: "Allow",
+              Resource: `arn:aws:iam::877352799272:role/isol8-${meterEnv}-owner-bedrock-*`,
+            }),
+          ]),
+        },
+      });
+    }
+    const policies = JSON.stringify(template.findResources("AWS::IAM::Policy"));
+    // Revoke only — the meter must never be able to mint or widen a policy.
+    expect(policies).not.toContain("iam:PutRolePolicy");
+    expect(policies).not.toContain("iam:AttachRolePolicy");
+  });
+
+  test("THE KILL: ecs:UpdateService scoped to the env's per-user services", () => {
+    // The IAM revoke is ~5-15s eventually consistent and does not kill an
+    // already-admitted streaming call — desiredCount=0 is the instant stop.
+    // Scoped to the env's cluster + the per-user openclaw-* service name, so
+    // the meter can never touch the backend's own service.
+    for (const meterEnv of ["dev", "prod"]) {
+      template.hasResourceProperties("AWS::IAM::Policy", {
+        PolicyDocument: {
+          Statement: Match.arrayWith([
+            Match.objectLike({
+              Action: "ecs:UpdateService",
+              Effect: "Allow",
+              Resource: `arn:aws:ecs:us-east-1:877352799272:service/isol8-${meterEnv}-container-*/openclaw-*`,
+            }),
+          ]),
+        },
+      });
+    }
+    const policies = JSON.stringify(template.findResources("AWS::IAM::Policy"));
+    expect(policies).toContain("ecs:ListClusters");
+    // No destructive ECS verbs: the kill scales to zero, it never deletes.
+    expect(policies).not.toContain("ecs:DeleteService");
+    expect(policies).not.toContain("ecs:StopTask");
   });
 
   test("per-env Metronome secrets referenced by name; NO bedrock_meter_token anywhere", () => {
@@ -233,18 +337,27 @@ describe("BedrockMeterStack", () => {
     }
   });
 
-  test("alarms per instance: DLQ depth + 4 skip metrics + fn errors, env-scoped dimensions", () => {
-    // (1 DLQ + 4 skip-metric + 1 fn-Errors) alarms x 2 instances = 12. Each
-    // skip-metric alarm scopes to its instance via the env dimension so dev
+  test("alarms per instance: DLQ depth + 8 skip/failure metrics + fn errors, env-scoped dimensions", () => {
+    // (1 DLQ + 8 skip/failure-metric + 1 fn-Errors) alarms x 2 instances = 20.
+    // Each metric alarm scopes to its instance via the env dimension so dev
     // noise never pages prod (both Lambdas share namespace Isol8 + the
     // service name).
-    template.resourceCountIs("AWS::CloudWatch::Alarm", 12);
+    //
+    // The kill_* alarms are the most important ones in the stack: they mean
+    // the cap fired and the owner is STILL able to spend. meter.cap_kill and
+    // meter.replay_skipped are deliberately NOT alarmed — a trial owner
+    // hitting their cap and a CW-Logs batch retry are normal operation.
+    template.resourceCountIs("AWS::CloudWatch::Alarm", 20);
     for (const meterEnv of ["dev", "prod"]) {
       for (const metricName of [
         "meter.unattributed",
         "meter.unknown_model",
         "meter.transport_error",
         "meter.parse_failed",
+        "meter.counter_error",
+        "meter.kill_iam_error",
+        "meter.kill_ecs_error",
+        "meter.kill_stamp_error",
       ]) {
         template.hasResourceProperties("AWS::CloudWatch::Alarm", {
           AlarmName: `isol8-${meterEnv}-${metricName.replace(/\./g, "-")}`,

@@ -15,9 +15,13 @@ from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.containers import get_ecs_manager
 from core.gateway.operator_rpc import gateway_rpc_oneshot
 from core.repositories import container_repo
+from core.services import trial_cap
 from core.services.container_provision import (
     resolve_provider_choice as _resolve_provider_choice,
 )
+from core.services.provision_gate import meta_daily_cap_gate
+from core.services.stripe_webhook_handlers import conversion_guard_active
+from routers.container import _owner_role
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +105,33 @@ async def container_recover(
 
         # 2. Container is stopped or error -> full re-provision
         if status in ("stopped", "error"):
+            # This is a WAKE, and it is customer-reachable, so it passes the same
+            # two guards ``ecs_manager.start_user_service`` applies to every other
+            # start. It cannot inherit them: it wakes the container through
+            # ``provision_user_container``, whose own start is force=True (that
+            # call IS a provision — the trial->paid conversion's reprovision runs
+            # through it and would otherwise deadlock against its own marker).
+            # So the third door checks the same predicates here.
+            if conversion_guard_active(container):
+                # A trial->paid conversion owns this row and is mid-drain. Its
+                # reprovision is already in flight; a second one from here would
+                # put a task on the EFS-WAL SQLite next to the draining one —
+                # the documented corruption mode. It is already recovering.
+                logger.info("Recover for owner %s stood down: conversion reprovision in flight", owner_id)
+                return {
+                    "action": "already_recovering",
+                    "state": "RECOVERING",
+                    "reason": "A subscription upgrade is reprovisioning this container",
+                }
+            if await trial_cap.is_over_daily_cap(owner_id):
+                # The free-tier cap is what scaled this container to zero. Waking
+                # it is exactly what the cap forbids — same 402 limit card the
+                # other doors return.
+                raise HTTPException(
+                    status_code=402,
+                    detail=meta_daily_cap_gate(_owner_role(auth)).to_payload(),
+                )
+
             reason = container.get("last_error", f"Container is {status}")
             logger.info("Recovering owner %s: reprovision (status=%s)", owner_id, status)
             try:

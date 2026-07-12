@@ -338,6 +338,7 @@ class TestOpenclawConfigStaticSectionsAcrossProviders:
             ("byo_key", {"byo_provider": "openai"}),
             ("byo_key", {"byo_provider": "anthropic"}),
             ("bedrock_claude", {}),
+            ("bedrock_trial", {}),
         ],
     )
     def test_gateway_present_for_every_provider(self, provider_choice, kwargs):
@@ -352,6 +353,7 @@ class TestOpenclawConfigStaticSectionsAcrossProviders:
             ("byo_key", {"byo_provider": "openai"}),
             ("byo_key", {"byo_provider": "anthropic"}),
             ("bedrock_claude", {}),
+            ("bedrock_trial", {}),
         ],
     )
     def test_channels_empty_for_every_provider(self, provider_choice, kwargs):
@@ -365,6 +367,7 @@ class TestOpenclawConfigStaticSectionsAcrossProviders:
             ("byo_key", {"byo_provider": "openai"}),
             ("byo_key", {"byo_provider": "anthropic"}),
             ("bedrock_claude", {}),
+            ("bedrock_trial", {}),
         ],
     )
     def test_workflow_plugins_enabled_for_every_provider(self, provider_choice, kwargs):
@@ -377,7 +380,7 @@ class TestOpenclawConfigStaticSectionsAcrossProviders:
         assert entries["llm-task"] == {"enabled": True}
         assert entries["aws-exec-profile"] == {"enabled": True}
         # The provider block's own entry must survive the merge.
-        if provider_choice == "bedrock_claude":
+        if provider_choice in ("bedrock_claude", "bedrock_trial"):
             assert entries["amazon-bedrock"]["config"]["discovery"]["enabled"] is False
 
 

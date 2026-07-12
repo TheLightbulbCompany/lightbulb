@@ -25,6 +25,7 @@ from collections import defaultdict
 from core.auth import AuthContext
 from core.billing.metronome_provisioning import ensure_metronome_customer
 from core.observability.metrics import put_metric
+from core.observability.product_analytics import capture_product_event
 from core.repositories import billing_repo
 from core.services.container_provision import background_provision
 from core.services.paperclip_admin_client import PaperclipApiError
@@ -64,10 +65,14 @@ async def ensure_personal_trial_default(auth: AuthContext, owner_id: str) -> Non
     predicate in one place stops the two gate sites from drifting.
     """
     if not auth.is_org_context:
-        await billing_repo.create_trial_local_if_absent(
+        created = await billing_repo.create_trial_local_if_absent(
             owner_id=owner_id,
             owner_type="personal",
         )
+        if created:
+            # Only the call that actually wrote the row fires this — every
+            # later idempotent no-op (each ~3s poll) must not re-fire it.
+            capture_product_event(distinct_id=owner_id, event="trial_started")
 
 
 async def ensure_user_ready(auth: AuthContext, *, provision_container: bool = True) -> None:

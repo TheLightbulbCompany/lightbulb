@@ -8,6 +8,12 @@ import { PANEL_COMPONENT_KEYS, ONE_SHOT_PARAMS } from "./panelRegistry";
 
 const KEY_PREFIX = "isol8.workspace.layout.v1";
 
+// Params that may live on a panel while it's open but must NOT survive into
+// the persisted blob. initialTab is a navigation intent (the Get Started
+// "Connect a channel" CTA), not view state — persisting it would land the
+// inspector on that tab on EVERY restore, forever.
+const PERSIST_ONLY_STRIP = ["initialTab"] as const;
+
 interface StoredLayout {
   version: 1;
   savedAt: string;
@@ -36,6 +42,7 @@ export function sanitizeLayout(raw: SerializedDockview): SerializedDockview {
     if (params) {
       params = { ...params };
       for (const oneShot of ONE_SHOT_PARAMS) delete params[oneShot];
+      for (const key of PERSIST_ONLY_STRIP) delete params[key];
     }
     panels[id] = { ...state, contentComponent: component, params };
   }

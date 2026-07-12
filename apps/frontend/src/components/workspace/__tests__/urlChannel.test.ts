@@ -5,6 +5,8 @@ import {
   stripOneShots,
   buildPanelUrl,
   clearPanelFromUrl,
+  clearClosedPanelFromUrl,
+  clearDurableParamFromUrl,
 } from "../urlChannel";
 
 describe("parseCommand", () => {
@@ -82,11 +84,65 @@ describe("clearPanelFromUrl", () => {
       clearPanelFromUrl("?panel=teams-issue-detail&detailId=OTHER", "teams-issue-detail:ADM-9"),
     ).toBeNull();
   });
-  it("returns null when clearing would leave the search unchanged", () => {
-    // ?panel=chat&agentId=… is parseable grammar (describePanel accepts
-    // agentId) but chat's durable set is ["agent"] — nothing to delete, so
-    // no identical replaceState may be issued.
-    expect(clearPanelFromUrl("?panel=chat&agentId=a-1", "chat:a-1")).toBeNull();
+  it("clears the explicit ?panel=chat grammar fully (agent OR agentId form)", () => {
+    // Both forms are parseable grammar (describePanel accepts agent ?? agentId)
+    // — closing the chat panel must leave no dangling ?panel=chat / ?agentId.
+    expect(clearPanelFromUrl("?panel=chat&agent=a-1", "chat:a-1")).toBe("");
+    expect(clearPanelFromUrl("?panel=chat&agentId=a-1", "chat:a-1")).toBe("");
+  });
+  it("clears ?path when the URL-named file viewer closes", () => {
+    expect(clearPanelFromUrl("?panel=file-viewer&path=%2Fnotes.md", "file-viewer")).toBe("");
+  });
+  it("clears ?tab when the URL-named inbox closes", () => {
+    expect(clearPanelFromUrl("?panel=teams-inbox&tab=approvals", "teams-inbox")).toBe("");
+  });
+});
+
+describe("clearClosedPanelFromUrl (sentinel unification)", () => {
+  it("clears ?agent=<concrete default> when the sentinel chat panel closes", () => {
+    // The reconciler focused the sentinel for this command (openChatPanel's
+    // unification), so the close event carries chat:__default__ while the URL
+    // names the concrete id.
+    expect(clearClosedPanelFromUrl("?agent=friday-id", "chat:__default__", () => "friday-id")).toBe(
+      "",
+    );
+  });
+  it("clears a sentinel-named URL when the concrete default panel closes", () => {
+    expect(
+      clearClosedPanelFromUrl("?agent=__default__", "chat:friday-id", () => "friday-id"),
+    ).toBe("");
+  });
+  it("returns null when the resolver doesn't know the default agent", () => {
+    expect(
+      clearClosedPanelFromUrl("?agent=friday-id", "chat:__default__", () => undefined),
+    ).toBeNull();
+  });
+  it("does not unify a NON-default concrete id with the sentinel", () => {
+    expect(
+      clearClosedPanelFromUrl("?agent=other-id", "chat:__default__", () => "friday-id"),
+    ).toBeNull();
+  });
+  it("passes plain (non-sentinel) closes straight through", () => {
+    expect(clearClosedPanelFromUrl("?agent=agent-1", "chat:agent-1", () => undefined)).toBe("");
+    expect(clearClosedPanelFromUrl("?panel=teams-inbox", "teams-inbox", () => "friday-id")).toBe(
+      "",
+    );
+    expect(clearClosedPanelFromUrl("?panel=teams-inbox", "teams-issues", () => "friday-id")).toBeNull();
+  });
+});
+
+describe("clearDurableParamFromUrl", () => {
+  it("strips the param when the URL command names the panel", () => {
+    expect(clearDurableParamFromUrl("?panel=teams-issues&agent=a-1", "teams-issues", "agent")).toBe(
+      "panel=teams-issues",
+    );
+  });
+  it("returns null when the URL names a different panel", () => {
+    expect(clearDurableParamFromUrl("?panel=teams-inbox", "teams-issues", "agent")).toBeNull();
+    expect(clearDurableParamFromUrl("", "teams-issues", "agent")).toBeNull();
+  });
+  it("returns null when the param is absent (no identical replaceState)", () => {
+    expect(clearDurableParamFromUrl("?panel=teams-issues", "teams-issues", "agent")).toBeNull();
   });
 });
 

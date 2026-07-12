@@ -1,7 +1,6 @@
 "use client";
 
 import type { IDockviewPanelProps } from "dockview-react";
-import { useEffect, useState } from "react";
 import { TeamsPanelRouter } from "@/components/teams/TeamsPanelRouter";
 import { useTeamsWorkspaceStatus } from "@/hooks/useTeamsApi";
 import {
@@ -9,11 +8,15 @@ import {
   SubscribeOverlay,
   ErrorOverlay,
 } from "@/components/teams/TeamsStatusOverlays";
+import { replaceSearchParams } from "@/lib/shellNav";
+import { clearDurableParamFromUrl } from "../urlChannel";
+import { useDockPanelParams } from "./useDockPanelParams";
 
 interface TeamsDockPanelParams {
   teamsKey: string; // "inbox" | "issues" | … | "issue-detail" | …
   detailId?: string;
   agent?: string; // durable issues filter
+  tab?: string; // durable inbox band deep link
   new?: string; // one-shot, re-delivered via updateParameters
   newIssue?: string; // one-shot
 }
@@ -27,12 +30,9 @@ export function TeamsDockPanel(props: IDockviewPanelProps<TeamsDockPanelParams>)
   const status = useTeamsWorkspaceStatus();
 
   // One-shots re-deliver via updateParameters on an already-open panel —
-  // subscribe to parameter changes so a second ?new=task command re-fires.
-  const [params, setParams] = useState(props.params);
-  useEffect(() => {
-    const d = props.api.onDidParametersChange((next) => setParams(next as TeamsDockPanelParams));
-    return () => d.dispose();
-  }, [props.api]);
+  // the hook subscribes to parameter changes (merging dockview's PARTIAL
+  // payloads) so a second ?new=task command re-fires without wiping teamsKey.
+  const params = useDockPanelParams(props);
 
   if (status.kind === "provisioning") return <ProvisioningOverlay />;
   if (status.kind === "subscribe_required") return <SubscribeOverlay />;
@@ -48,13 +48,25 @@ export function TeamsDockPanel(props: IDockviewPanelProps<TeamsDockPanelParams>)
         detailId={params.detailId ?? null}
         panelParams={{
           ...(params.agent ? { agent: params.agent } : {}),
+          ...(params.tab ? { tab: params.tab } : {}),
           ...(params.new ? { new: params.new } : {}),
           ...(params.newIssue ? { newIssue: params.newIssue } : {}),
         }}
         onConsumeOneShot={clearOneShot}
-        onUpdateDurableParam={(key, value) =>
-          props.api.updateParameters({ [key]: value ?? undefined })
-        }
+        onUpdateDurableParam={(key, value) => {
+          props.api.updateParameters({ [key]: value ?? undefined });
+          // Dismissing a durable filter must also strip it from the URL when
+          // the current URL command names this panel — otherwise a refresh
+          // re-executes the command and resurrects the dismissed filter.
+          if (value === null) {
+            const cleared = clearDurableParamFromUrl(
+              window.location.search,
+              props.api.id,
+              key,
+            );
+            if (cleared !== null) replaceSearchParams(new URLSearchParams(cleared));
+          }
+        }}
       />
     </div>
   );

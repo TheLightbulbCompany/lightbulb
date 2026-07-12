@@ -23,9 +23,11 @@ export interface InboxPanelProps {
   newIssue?: "1" | "onboarding" | null;
   /** Fired once the intent is honored so the shell strips its channel. */
   onNewIssueConsumed?: () => void;
+  /** ?tab deep link threaded from the shell's channel; validated downstream. */
+  initialTab?: string | null;
 }
 
-export function InboxPanel({ newIssue, onNewIssueConsumed }: InboxPanelProps = {}) {
+export function InboxPanel({ newIssue, onNewIssueConsumed, initialTab }: InboxPanelProps = {}) {
   const { organization, isLoaded: orgLoaded } = useOrganization();
   const { user, isLoaded: userLoaded } = useUser();
 
@@ -51,6 +53,7 @@ export function InboxPanel({ newIssue, onNewIssueConsumed }: InboxPanelProps = {
       agents={agentsData?.agents ?? []}
       newIssue={newIssue}
       onNewIssueConsumed={onNewIssueConsumed}
+      initialTab={initialTab}
     />
   );
 }

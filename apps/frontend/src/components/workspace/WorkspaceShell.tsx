@@ -37,7 +37,8 @@ import { WorkspaceSidebar } from "./WorkspaceSidebar";
 import { WorkspaceHeader } from "./WorkspaceHeader";
 import { buildMissionControlLayout } from "./buildDefaultLayout";
 import { readLayout, writeLayout, clearLayout } from "./layoutStorage";
-import { clearPanelFromUrl } from "./urlChannel";
+import { clearClosedPanelFromUrl } from "./urlChannel";
+import { requestFocusComposer } from "@/lib/focusComposerRequest";
 import { deriveReconcilerAction, isCommandTargetOpen } from "./workspaceShellReconciler";
 import {
   attachDockviewApi,
@@ -77,10 +78,12 @@ export function WorkspaceShell(): React.ReactElement {
   const { userId, isSignedIn } = useAuth();
   const { organization } = useOrganization();
   const scopeId = organization?.id ?? userId ?? "anon"; // gate below makes "anon" unreachable
-  const { defaultId } = useAgents();
+  const { defaultId, isSettled: agentsSettled } = useAgents();
   const defaultIdRef = useRef<string | undefined>(defaultId);
+  const agentsSettledRef = useRef(agentsSettled);
   useEffect(() => {
     defaultIdRef.current = defaultId;
+    agentsSettledRef.current = agentsSettled;
   });
   // Sentinel re-resolution: the snapshot resolves chat:__default__ through
   // defaultIdRef at recompute time, and the roster arriving is not a dockview
@@ -124,7 +127,14 @@ export function WorkspaceShell(): React.ReactElement {
     // latch reset), so the pending URL command applies then.
     const snapshot = getWorkspaceSnapshot();
     if (!snapshot.ready) return;
-    const decision = deriveReconcilerAction(search, lastAppliedRef.current);
+    // Chat commands are deferred (null decision — nothing latched, nothing
+    // stripped) while the agent roster is unsettled; the isSettled effect
+    // below re-runs this once the default id is knowable.
+    const decision = deriveReconcilerAction(
+      search,
+      lastAppliedRef.current,
+      agentsSettledRef.current,
+    );
     if (!decision) return;
     lastAppliedRef.current = decision.nextSignature;
     const { command } = decision;
@@ -156,6 +166,14 @@ export function WorkspaceShell(): React.ReactElement {
     // opening — the URL command. (Task 11 review handoff.)
     runReconciler(window.location.search);
   }, [searchParams, runReconciler]);
+
+  // A chat command that arrived while the roster was unsettled was deferred
+  // (not latched) — re-run the reconciler once useAgents settles so the
+  // pending URL command executes against a knowable default agent id.
+  // Declared AFTER the ref-sync effect above so agentsSettledRef is fresh.
+  useEffect(() => {
+    if (agentsSettled) runReconciler(window.location.search);
+  }, [agentsSettled, runReconciler]);
 
   // [BODY 1 + 2: onReady — attach, restore, URL command, clear-on-close,
   // persistence] with the teardown mirrored in the dock-unmount sentinel.
@@ -190,11 +208,17 @@ export function WorkspaceShell(): React.ReactElement {
       runReconciler(window.location.search);
 
       // Clear-on-close: closing the URL-named panel canonicalizes the URL in
-      // place (replace, never push) so refresh can't resurrect it.
+      // place (replace, never push) so refresh can't resurrect it. Sentinel-
+      // unified: closing chat:__default__ while the URL names the concrete
+      // default agent (and vice versa) still clears.
       disposablesRef.current.push(
         api.onDidRemovePanel((panel) => {
           if (isShellOperationInProgress()) return;
-          const cleared = clearPanelFromUrl(window.location.search, panel.id);
+          const cleared = clearClosedPanelFromUrl(
+            window.location.search,
+            panel.id,
+            () => defaultIdRef.current,
+          );
           if (cleared !== null) replaceSearchParams(new URLSearchParams(cleared));
         }),
       );
@@ -352,6 +376,14 @@ export function WorkspaceShell(): React.ReactElement {
                     // bail rather than opening a chat panel for "".
                     const target = defaultIdRef.current;
                     if (!target) return;
+                    // Record the focus intent BEFORE opening: when openChatPanel
+                    // ADDS a new dock panel, its ChatInput hasn't mounted (or
+                    // registered its window listener) yet — the CustomEvent below
+                    // would be lost, so the freshly-mounted composer consumes
+                    // this pending request instead. The already-mounted case is
+                    // covered by the event; its listener also consumes the slot
+                    // so the two paths can't double-fire.
+                    requestFocusComposer(target);
                     openChatPanel(target);
                     window.dispatchEvent(
                       new CustomEvent("getstarted:focus-composer", { detail: { agentId: target } }),

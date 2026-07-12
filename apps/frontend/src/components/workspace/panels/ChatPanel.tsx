@@ -100,7 +100,15 @@ export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.Re
       <div className="min-h-0 flex-1">
         <AgentChatWindow
           agentId={resolvedId}
-          onOpenFile={(path) => openPanel("file-viewer", path ? { path } : {})}
+          // Bind the viewer to THIS chat's agent: dockview activates the
+          // freshly opened viewer, so the focused-chat fallback resolves to
+          // null (→ default agent) at exactly the moment the file opens.
+          onOpenFile={(path) =>
+            openPanel("file-viewer", {
+              ...(path ? { path } : {}),
+              ...(resolvedId ? { agent: resolvedId } : {}),
+            })
+          }
         />
       </div>
     </div>

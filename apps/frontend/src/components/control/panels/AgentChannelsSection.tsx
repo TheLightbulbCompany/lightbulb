@@ -44,7 +44,11 @@ export function AgentChannelsSection({ agentId }: AgentChannelsSectionProps) {
     return () => window.removeEventListener("keydown", onKey);
   }, [wizardFor, deleteTarget]);
 
-  if (error) {
+  // Error screen only when there's nothing to show: SWR keeps stale `data`
+  // through a failed revalidation, and a transient blip (a mutate() after
+  // wizard completion hitting one 5xx) must not swap an already-rendered bot
+  // list for an error card that never self-heals.
+  if (error && !data) {
     return (
       <div className="p-4 space-y-2">
         <p className="text-sm text-[#dc2626]">Failed to load channels.</p>

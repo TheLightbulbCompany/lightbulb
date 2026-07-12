@@ -73,6 +73,21 @@ describe("layoutStorage", () => {
     expect(clean.panels["teams-issues"].params).toEqual({ teamsKey: "issues", agent: "a-1" });
   });
 
+  it("sanitizer strips persist-only params (initialTab) so a nav intent can't restore forever", () => {
+    const dirty = minimalLayout({
+      "agent-inspector": {
+        id: "agent-inspector",
+        contentComponent: "control",
+        params: { controlKey: "agent-inspector", agentId: "a", initialTab: "channels" },
+      },
+    });
+    const clean = sanitizeLayout(dirty);
+    expect(clean.panels["agent-inspector"].params).toEqual({
+      controlKey: "agent-inspector",
+      agentId: "a",
+    });
+  });
+
   it("clearLayout removes only its own key", () => {
     writeLayout("u1", minimalLayout({}));
     window.localStorage.setItem("unrelated", "x");

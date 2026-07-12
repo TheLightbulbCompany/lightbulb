@@ -98,6 +98,7 @@ function MobileChatShell() {
   // report one-shot consumption / durable clears back through the callbacks
   // below, which strip the matching URL param (replace-only).
   const agentParam = searchParams.get("agent");
+  const tabParam = searchParams.get("tab");
   const oneShots = {
     new: searchParams.get("new") ?? undefined,
     newIssue: searchParams.get("newIssue") ?? undefined,
@@ -148,10 +149,12 @@ function MobileChatShell() {
       const params = new URLSearchParams(searchParams.toString());
       params.set("panel", next);
       // Plain panel nav shows an UNFILTERED view: drop any stale agent
-      // filter (from "See her work") and detail id (from an Open → row) so
-      // switching panels never carries another panel's filter/detail state.
+      // filter (from "See her work"), detail id (from an Open → row), and
+      // inbox tab deep link so switching panels never carries another
+      // panel's filter/detail state.
       params.delete("agent");
       params.delete("detailId");
+      params.delete("tab");
       pushSearchParams(params);
     },
     [searchParams],
@@ -292,6 +295,7 @@ function MobileChatShell() {
                 leaveToList={leaveToList}
                 panelParams={{
                   ...(agentParam ? { agent: agentParam } : {}),
+                  ...(tabParam ? { tab: tabParam } : {}),
                   ...(oneShots.new ? { new: oneShots.new } : {}),
                   ...(oneShots.newIssue ? { newIssue: oneShots.newIssue } : {}),
                 }}

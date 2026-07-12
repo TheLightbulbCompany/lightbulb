@@ -14,6 +14,7 @@ import { pushSearchParams, replaceSearchParams } from "@/lib/shellNav";
 import {
   describePanel,
   chatPanelId,
+  clearablePanelParamKeys,
   DEFAULT_AGENT_SENTINEL,
   type PanelDescriptor,
 } from "./panelRegistry";
@@ -23,6 +24,12 @@ export interface WorkspaceSnapshot {
   ready: boolean;
   activePanelId: string | null;
   focusedChatAgentId: string | null; // sentinel RESOLVED when possible
+  // Sticky variant of focusedChatAgentId: the last chat agent that WAS
+  // focused, surviving focus moving to a non-chat panel (dockview activates a
+  // newly added panel, so the file viewer opened from a chat is itself the
+  // active panel — the momentary null must not resolve it to the default
+  // agent). Never reset to null while the dock is attached.
+  lastFocusedChatAgentId: string | null;
   visibleChatAgentIds: string[]; // one entry per dockview group whose active panel is a chat panel
   teamsPanelVisible: boolean;
   openPanelIds: string[];
@@ -39,6 +46,7 @@ function emptySnapshot(): WorkspaceSnapshot {
     ready: false,
     activePanelId: null,
     focusedChatAgentId: null,
+    lastFocusedChatAgentId: null,
     visibleChatAgentIds: [],
     teamsPanelVisible: false,
     openPanelIds: [],
@@ -77,10 +85,13 @@ function recomputeSnapshot(): void {
         .filter((id): id is string => id !== null),
     ),
   );
+  const focusedChatAgentId = agentIdOfChatPanel(active);
   _snapshot = {
     ready: true,
     activePanelId: active?.id ?? null,
-    focusedChatAgentId: agentIdOfChatPanel(active),
+    focusedChatAgentId,
+    // Sticky: keep the previous value while a non-chat panel is focused.
+    lastFocusedChatAgentId: focusedChatAgentId ?? _snapshot.lastFocusedChatAgentId,
     visibleChatAgentIds,
     // Visible = the ACTIVE tab of some group (same traversal as
     // visibleChatAgentIds), NOT merely open: Mission Control keeps teams
@@ -136,8 +147,18 @@ function addOrFocus(descriptor: PanelDescriptor, extraParams?: Record<string, st
     // fresh durable params (opening file B while file A's viewer is open has
     // to actually switch files) AND any one-shots (a second ?new=task
     // command). Panels watch these via onDidParametersChange. Merge semantics:
-    // updateParameters merges, so params absent from this open are untouched.
-    const nextParams = { ...descriptor.params, ...extraParams };
+    // updateParameters merges, so a clearable durable param (an agent filter,
+    // an inspector tab) that this open does NOT carry must be cleared with an
+    // explicit `undefined` — a plain navigation to an already-open Tasks
+    // panel shows the UNFILTERED list, matching the mobile invariant that
+    // plain panel nav drops stale ?agent/detail state.
+    const nextParams: Record<string, string | undefined> = {
+      ...descriptor.params,
+      ...extraParams,
+    };
+    for (const k of clearablePanelParamKeys(descriptor.panelId)) {
+      if (!(k in nextParams)) nextParams[k] = undefined;
+    }
     if (Object.keys(nextParams).length > 0) {
       existing.api.updateParameters(nextParams);
     }

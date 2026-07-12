@@ -44,6 +44,7 @@ import {
 import { useLiveRuns } from "@/components/teams/dashboard/hooks/useLiveRuns";
 import { buildLiveIssueState } from "@/components/teams/shared/lib/liveRuns";
 import {
+  isInboxTab,
   loadLastInboxTab,
   saveLastInboxTab,
 } from "@/components/teams/shared/lib/inboxStorage";
@@ -74,6 +75,12 @@ export interface InboxPageProps {
   newIssue?: "1" | "onboarding" | null;
   /** Fired once the intent is honored so the shell strips its channel. */
   onNewIssueConsumed?: () => void;
+  /**
+   * ?tab deep link (bookmarks/shared links from when tab clicks wrote the
+   * URL). Read-side only: seeds/overrides the active tab when it names a
+   * known tab; tab clicks still persist ONLY to localStorage.
+   */
+  initialTab?: string | null;
 }
 
 /**
@@ -90,6 +97,7 @@ export function InboxPage({
   labels = [],
   newIssue = null,
   onNewIssueConsumed,
+  initialTab = null,
 }: InboxPageProps) {
   // Inside the /chat shell a nav provider is present → open the issue detail
   // in-shell. Without one (bare mount), fall back to committing the canonical
@@ -106,12 +114,20 @@ export function InboxPage({
     [inlineNav],
   );
 
-  // 1. Active tab, persisted per-owner in localStorage so a fresh visit honors
-  //    the user's last tab. (The tab is no longer mirrored to the URL — it is
-  //    presentation state the shell doesn't need to address.)
+  // 1. Active tab: a validated ?tab deep link wins on first render, else the
+  //    per-owner localStorage last-tab. (Tab clicks are no longer mirrored to
+  //    the URL — they persist only to localStorage — but inbound deep links
+  //    are still honored: real bookmarks carry ?tab from when clicks wrote
+  //    it.) A re-delivered deep link on an already-mounted panel re-applies
+  //    via the render-time prev-compare below.
   const [tab, setTabState] = useState<InboxTab>(() =>
-    loadLastInboxTab(companyId),
+    isInboxTab(initialTab) ? initialTab : loadLastInboxTab(companyId),
   );
+  const [prevInitialTab, setPrevInitialTab] = useState(initialTab);
+  if (initialTab !== prevInitialTab) {
+    setPrevInitialTab(initialTab);
+    if (isInboxTab(initialTab)) setTabState(initialTab);
+  }
 
   const setTab = useCallback(
     (next: InboxTab) => {

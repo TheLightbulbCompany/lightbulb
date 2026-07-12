@@ -4,6 +4,7 @@ import {
   chatPanelId,
   describePanel,
   durableParamsFor,
+  clearablePanelParamKeys,
   DEFAULT_AGENT_SENTINEL,
   PANEL_COMPONENT_KEYS,
 } from "../panelRegistry";
@@ -83,9 +84,48 @@ describe("panelRegistry", () => {
     expect(durableParamsFor("teams-issue-detail:ADM-1")).toEqual(["panel", "detailId"]);
     expect(durableParamsFor("agent-inspector")).toEqual(["panel", "agent", "inspectorTab"]);
     expect(durableParamsFor("teams-issues")).toEqual(["panel", "agent"]);
-    expect(durableParamsFor("teams-inbox")).toEqual(["panel"]);
-    // Bare ?agent names a chat panel (rule 7) — close must clear it.
-    expect(durableParamsFor("chat:a-1")).toEqual(["agent"]);
+    expect(durableParamsFor("teams-inbox")).toEqual(["panel", "tab"]);
+    // ?panel=file-viewer&path=… is registered grammar — close must clear the
+    // path (and any agent binding), not just ?panel.
+    expect(durableParamsFor("file-viewer")).toEqual(["panel", "path", "agent"]);
+    // Bare ?agent names a chat panel (rule 7) — close must clear it, and the
+    // explicit ?panel=chat grammar (agent OR agentId) must clear fully too.
+    expect(durableParamsFor("chat:a-1")).toEqual(["panel", "agent", "agentId"]);
+  });
+
+  it("names the clearable PANEL params a plain re-open must reset", () => {
+    expect(clearablePanelParamKeys("teams-issues")).toEqual(["agent"]);
+    expect(clearablePanelParamKeys("teams-inbox")).toEqual(["tab"]);
+    expect(clearablePanelParamKeys("file-viewer")).toEqual(["path", "agent"]);
+    expect(clearablePanelParamKeys("agent-inspector")).toEqual(["agentId", "initialTab"]);
+    expect(clearablePanelParamKeys("control:agents")).toEqual(["agentId", "initialTab"]);
+    expect(clearablePanelParamKeys("teams-dashboard")).toEqual([]);
+    expect(clearablePanelParamKeys("chat:a-1")).toEqual([]);
+  });
+
+  it("rejects prototype-chain keys — Object.prototype members are not panels", () => {
+    expect(describePanel("constructor", {})).toBeNull();
+    expect(describePanel("toString", {})).toBeNull();
+    expect(describePanel("hasOwnProperty", {})).toBeNull();
+    expect(describePanel("teams-constructor", { detailId: "x" })).toBeNull();
+    expect(describePanel("teams-valueOf", {})).toBeNull();
+    // resolvePanelAlias must not resolve inherited keys either.
+    expect(resolvePanelAlias("constructor")).toBe("constructor");
+  });
+
+  it("file-viewer carries path + opening agent as durable params", () => {
+    expect(describePanel("file-viewer", { path: "/a.md", agent: "a-1" })?.params).toEqual({
+      path: "/a.md",
+      agent: "a-1",
+    });
+    expect(describePanel("file-viewer", {})?.params).toEqual({});
+  });
+
+  it("teams-inbox accepts a ?tab deep link as a durable param", () => {
+    expect(describePanel("teams-inbox", { tab: "approvals" })?.params).toEqual({
+      teamsKey: "inbox",
+      tab: "approvals",
+    });
   });
 
   it("registers exactly the component keys the shell's components map will have", () => {

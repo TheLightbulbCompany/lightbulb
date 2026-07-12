@@ -41,6 +41,16 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
   const [selectedAgent, setSelectedAgent] = useState<string | null>(
     () => initialAgentId,
   );
+  // Deep links can arrive on an ALREADY-mounted panel (the desktop dock keeps
+  // panels alive and re-delivers params on focus) — re-apply on a changed
+  // initialAgentId during render (React's "adjust state when a prop changes"
+  // pattern, mirroring AgentInspectorPanel). A cleared param (null) resets to
+  // the list, matching the plain-nav-drops-stale-selection invariant.
+  const [prevInitialAgentId, setPrevInitialAgentId] = useState(initialAgentId);
+  if (initialAgentId !== prevInitialAgentId) {
+    setPrevInitialAgentId(initialAgentId);
+    setSelectedAgent(initialAgentId);
+  }
   const [activeTab, setActiveTab] = useState<AgentTab>("overview");
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);

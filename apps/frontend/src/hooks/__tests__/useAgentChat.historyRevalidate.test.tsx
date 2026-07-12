@@ -322,13 +322,17 @@ describe("useAgentChat — history revalidates on mount (transcript-loss fix)", 
     });
   });
 
-  it("clears a cached transcript when the server is authoritatively empty (bootstrap flagged)", async () => {
+  it("keeps a cached transcript when the server returns empty (no purge, no bootstrap regression)", async () => {
+    // An empty-but-200 chat.history read is NOT an authoritative "this
+    // session was cleared" signal — a container mid-restart/update or a
+    // not-yet-loaded session store returns exactly this. A cached transcript
+    // must survive it: no cache purge, no live-view clear, no bootstrap flag.
     let generalFetches = 0;
     sendReq.mockReset().mockImplementation((method: string, params?: Record<string, unknown>) => {
       if (method === "chat.history" && params?.sessionKey === GENERAL_KEY) {
         generalFetches += 1;
-        // First mount seeds the cache; every later mount sees an empty server
-        // (chat.clear elsewhere / reprovision wiped the session).
+        // First mount seeds the cache; every later mount sees a transient
+        // empty server read.
         return generalFetches >= 2
           ? Promise.resolve({ messages: [] })
           : Promise.resolve(historyWithoutReply());
@@ -346,77 +350,20 @@ describe("useAgentChat — history revalidates on mount (transcript-loss fix)", 
     const second = renderHook(() => useAgentChat("agent-X", "user-1"));
     // The cached transcript paints instantly...
     expect(JSON.stringify(second.result.current.renderItems)).toContain("answer A");
-    // ...then the authoritative-empty server truth clears the ghost history
-    // AND flags bootstrap (the session is genuinely empty now).
-    await waitFor(() => {
-      expect(second.result.current.needsBootstrap).toBe(true);
-    });
-    expect(JSON.stringify(second.result.current.renderItems)).not.toContain("answer A");
-    second.unmount();
-
-    // The stale cache entry was deleted, so a fresh mount does NOT resurrect it.
-    const third = renderHook(() => useAgentChat("agent-X", "user-1"));
-    expect(JSON.stringify(third.result.current.renderItems)).not.toContain("answer A");
-    third.unmount();
-  });
-
-  it("keeps the cache when an authoritative-empty fetch resolves after a local send", async () => {
-    let resolveSecond: (v: { messages: Array<Record<string, unknown>> }) => void = () => {};
-    let generalFetches = 0;
-    sendReq.mockReset().mockImplementation((method: string, params?: Record<string, unknown>) => {
-      if (method === "chat.history" && params?.sessionKey === GENERAL_KEY) {
-        generalFetches += 1;
-        if (generalFetches === 2) {
-          // Hold the remount's revalidation open so a send can race it.
-          return new Promise((res) => {
-            resolveSecond = res;
-          });
-        }
-        if (generalFetches >= 3) {
-          // The third mount's revalidation stays pending forever: the cache
-          // assertion below reads the transcript painted synchronously from
-          // the module cache, before any fetch could resolve.
-          return new Promise(() => {});
-        }
-        return Promise.resolve(historyWithoutReply());
-      }
-      return Promise.resolve({ messages: [] });
-    });
-
-    const { useAgentChat } = await import("@/hooks/useAgentChat");
-    const first = renderHook(() => useAgentChat("agent-X", "user-1"));
-    await waitFor(() => {
-      expect(JSON.stringify(first.result.current.renderItems)).toContain("answer A");
-    });
-    first.unmount();
-
-    const second = renderHook(() => useAgentChat("agent-X", "user-1"));
+    // ...and the empty revalidation resolving must not clobber it.
     await waitFor(() => {
       expect(historyCallsFor(GENERAL_KEY)).toBe(2);
     });
     await act(async () => {
-      await second.result.current.sendMessage("hello");
-    });
-    expect(JSON.stringify(second.result.current.renderItems)).toContain("hello");
-
-    // The authoritative-empty snapshot resolves LATE. Because a local send
-    // landed while it was in flight (seq bumped), the reconcile must SKIP:
-    // the run in flight owns the transcript — cache kept, not purged.
-    await act(async () => {
-      resolveSecond({ messages: [] });
       await Promise.resolve();
     });
-    const view = JSON.stringify(second.result.current.renderItems);
-    expect(view).toContain("hello");
-    expect(view).toContain("answer A");
+    expect(JSON.stringify(second.result.current.renderItems)).toContain("answer A");
     expect(second.result.current.needsBootstrap).toBe(false);
     second.unmount();
 
-    // A fresh mount still paints the cached transcript synchronously.
+    // The cache entry survives, so a fresh mount still paints it.
     const third = renderHook(() => useAgentChat("agent-X", "user-1"));
-    const thirdView = JSON.stringify(third.result.current.renderItems);
-    expect(thirdView).toContain("hello");
-    expect(thirdView).toContain("answer A");
+    expect(JSON.stringify(third.result.current.renderItems)).toContain("answer A");
     third.unmount();
   });
 });

@@ -1,9 +1,9 @@
 "use client";
 
 import type { IDockviewPanelProps } from "dockview-react";
-import { useEffect, useState } from "react";
 import { ControlPanelRouter } from "@/components/control/ControlPanelRouter";
 import { openPanel } from "../workspaceController";
+import { useDockPanelParams } from "./useDockPanelParams";
 
 interface ControlDockPanelParams {
   controlKey: string; // "overview" | "sessions" | "agents" | "agent-inspector" | …
@@ -14,12 +14,9 @@ interface ControlDockPanelParams {
 
 export function ControlDockPanel(props: IDockviewPanelProps<ControlDockPanelParams>): React.ReactElement {
   // One-shots (action) re-deliver via updateParameters on an already-open
-  // panel — subscribe to parameter changes so a repeated command re-fires.
-  const [params, setParams] = useState(props.params);
-  useEffect(() => {
-    const d = props.api.onDidParametersChange((next) => setParams(next as ControlDockPanelParams));
-    return () => d.dispose();
-  }, [props.api]);
+  // panel — the hook subscribes to parameter changes (merging dockview's
+  // PARTIAL payloads) so a repeated command re-fires without wiping controlKey.
+  const params = useDockPanelParams(props);
 
   return (
     <div className="editorial-page h-full overflow-auto">

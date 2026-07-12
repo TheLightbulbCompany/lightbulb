@@ -107,6 +107,35 @@ describe("deriveReconcilerAction — lastApplied latch", () => {
   });
 });
 
+describe("deriveReconcilerAction — chat commands defer until the roster settles", () => {
+  it("returns null (no latch, no strip) for a chat command while agents are unsettled", () => {
+    // Cold load: /chat?agent=<concrete-default-id> while agents.list is in
+    // flight. Executing now would fail openChatPanel's sentinel unification
+    // and add a duplicate panel beside chat:__default__ — so the decision is
+    // deferred entirely: nothing latched, nothing executed.
+    expect(deriveReconcilerAction("?agent=friday-id", null, false)).toBeNull();
+    expect(deriveReconcilerAction("?panel=chat&agent=friday-id", null, false)).toBeNull();
+  });
+
+  it("the deferred command executes once agents settle (nothing was latched)", () => {
+    // The shell re-runs the reconciler when isSettled flips true; because the
+    // deferral latched nothing, the same search now produces the command.
+    const d = deriveReconcilerAction("?agent=friday-id", null, true);
+    expect(d?.command?.descriptor.panelId).toBe("chat:friday-id");
+  });
+
+  it("non-chat commands execute regardless of roster settlement", () => {
+    const d = deriveReconcilerAction("?panel=teams-inbox", null, false);
+    expect(d?.command?.descriptor.panelId).toBe("teams-inbox");
+  });
+
+  it("non-command URLs still latch while unsettled", () => {
+    const d = deriveReconcilerAction("?utm_source=x", null, false);
+    expect(d).not.toBeNull();
+    expect(d!.command).toBeNull();
+  });
+});
+
 describe("deriveReconcilerAction — one-shot strip ordering", () => {
   it("recomputes the latch AFTER stripping so the strip doesn't re-execute", () => {
     const d = deriveReconcilerAction("?panel=teams-issues&new=task", null);

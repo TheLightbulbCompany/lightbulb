@@ -132,6 +132,7 @@ export function TeamsPanelRouter({
       <InboxPanel
         newIssue={normalizeNewIssue(panelParams?.newIssue)}
         onNewIssueConsumed={() => onConsumeOneShot?.("newIssue")}
+        initialTab={panelParams?.tab ?? null}
       />
     );
   }

@@ -112,6 +112,40 @@ describe("workspaceController", () => {
     expect(panel.api.updateParameters).toHaveBeenCalledWith({ path: "b.md" });
   });
 
+  it("re-opening an existing panel CLEARS clearable durable params absent from the new open", () => {
+    const api = makeFakeApi();
+    attachDockviewApi(api, () => undefined);
+    openPanel("teams-issues", { agent: "A" });
+    // Plain (unfiltered) navigation to the already-open Tasks panel must
+    // clear the stale agent filter with an explicit undefined — dockview's
+    // updateParameters merges, so omission alone would keep the filter.
+    openPanel("teams-issues", {});
+    const panel = api.getPanel("teams-issues") as unknown as {
+      api: { updateParameters: ReturnType<typeof vi.fn> };
+    };
+    // toEqual/toHaveBeenCalledWith ignore undefined-valued keys, but the
+    // EXPLICIT `agent: undefined` is the whole fix (dockview deletes params
+    // set to undefined) — assert own-property presence directly.
+    const callArg = panel.api.updateParameters.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(callArg.teamsKey).toBe("issues");
+    expect(Object.prototype.hasOwnProperty.call(callArg, "agent")).toBe(true);
+    expect(callArg.agent).toBeUndefined();
+  });
+
+  it("re-opening with the SAME durable param re-delivers it (no spurious clear)", () => {
+    const api = makeFakeApi();
+    attachDockviewApi(api, () => undefined);
+    openPanel("teams-issues", { agent: "A" });
+    openPanel("teams-issues", { agent: "B" });
+    const panel = api.getPanel("teams-issues") as unknown as {
+      api: { updateParameters: ReturnType<typeof vi.fn> };
+    };
+    expect(panel.api.updateParameters).toHaveBeenCalledWith({
+      teamsKey: "issues",
+      agent: "B",
+    });
+  });
+
   it("openPanel with pushUrl writes the canonical URL once", () => {
     const api = makeFakeApi();
     attachDockviewApi(api, () => undefined);
@@ -165,6 +199,23 @@ describe("workspaceController", () => {
     openPanel("teams-inbox");
     expect(_snapshotForTests().focusedChatAgentId).toBeNull();
     expect(_snapshotForTests().activePanelId).toBe("teams-inbox");
+  });
+
+  it("lastFocusedChatAgentId is sticky across focus moving to a non-chat panel", () => {
+    // dockview activates a freshly added panel, so opening the file viewer
+    // from a chat makes the viewer itself the active panel — the momentary
+    // focusedChatAgentId null must not lose which chat opened it.
+    const api = makeFakeApi();
+    attachDockviewApi(api, () => "friday-id");
+    openChatPanel("a-1");
+    expect(_snapshotForTests().focusedChatAgentId).toBe("a-1");
+    expect(_snapshotForTests().lastFocusedChatAgentId).toBe("a-1");
+    openPanel("teams-inbox");
+    expect(_snapshotForTests().focusedChatAgentId).toBeNull();
+    expect(_snapshotForTests().lastFocusedChatAgentId).toBe("a-1");
+    // Focusing a DIFFERENT chat panel re-points the sticky field.
+    openChatPanel("a-2");
+    expect(_snapshotForTests().lastFocusedChatAgentId).toBe("a-2");
   });
 
   it("tracks visible chat agent ids from dockview groups", () => {

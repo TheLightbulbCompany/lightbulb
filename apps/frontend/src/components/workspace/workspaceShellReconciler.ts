@@ -43,6 +43,14 @@ export interface ReconcilerDecision {
 export function deriveReconcilerAction(
   search: string,
   lastApplied: string | null,
+  // Whether useAgents has SETTLED (data !== undefined). While the roster is
+  // in flight the default agent id is unknowable, so a chat command naming
+  // the concrete default agent would fail openChatPanel's sentinel
+  // unification and add a duplicate panel beside chat:__default__ — one the
+  // layout writer then persists. Chat commands are therefore DEFERRED (no
+  // execute, no latch, no strip) until the roster settles; the shell re-runs
+  // the reconciler when isSettled flips true.
+  agentsSettled = true,
 ): ReconcilerDecision | null {
   const sig = commandSignature(search);
   if (sig === lastApplied) return null;
@@ -51,6 +59,8 @@ export function deriveReconcilerAction(
   if (!command) {
     return { nextSignature: sig, command: null, panelKey: null, durableParams: {}, strippedSearch: null };
   }
+
+  if (command.descriptor.component === "chat" && !agentsSettled) return null;
 
   const strippedSearch = stripOneShots(search);
   const nextSignature = strippedSearch !== null ? commandSignature(strippedSearch) : sig;

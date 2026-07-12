@@ -776,27 +776,16 @@ export function useAgentChat(
         const raw = Array.isArray(historyResult?.messages) ? historyResult.messages : [];
         const projected = projectChatHistoryMessages(raw);
         if (projected.length === 0) {
+          // Server has nothing: only flag bootstrap when we ALSO have no
+          // cache — an existing cached transcript must not regress to the
+          // bootstrap suggestion because of an empty/partial server read.
+          // An empty-but-200 read is NOT a reliable "authoritatively empty"
+          // signal (container mid-restart/update, session store not yet
+          // loaded, session-key casing mismatch all return it), so a cached
+          // transcript is deliberately kept as-is until the server exposes a
+          // true authoritative-empty marker.
           if (!hasCache) {
-            // Genuinely fresh session (no cache AND empty server): offer the
-            // bootstrap suggestion.
             _needsBootstrap.add(cacheKey);
-            return;
-          }
-          // We DID have a cached transcript but the server is authoritatively
-          // empty (a chat.clear elsewhere, a reprovision). A local mutation
-          // since this fetch was issued means the in-flight run owns the
-          // transcript — keep the cache; the next mount's revalidation
-          // self-heals. This IS server truth, so a clean (non-stale) empty
-          // read must not keep showing ghost history.
-          if (staleSnapshot) return;
-          // Purge the stale cache so the ghost transcript can't resurrect on
-          // the next mount, flag bootstrap (the session is empty now), and
-          // clear the live view if the user is still on this exact session.
-          _messageCache.delete(cacheKey);
-          _needsBootstrap.add(cacheKey);
-          if (agentIdRef.current !== agentId) return;
-          if (activeSessionIdRef.current === (activeSessionId ?? null)) {
-            setChatMessages([]);
           }
           return;
         }

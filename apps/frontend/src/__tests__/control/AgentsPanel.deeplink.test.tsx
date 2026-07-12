@@ -35,4 +35,21 @@ describe("AgentsPanel deep link", () => {
     render(<AgentsPanel />);
     expect(screen.getByText("Select an agent to view details")).toBeInTheDocument();
   });
+
+  it("re-applies a CHANGED initialAgentId on an already-mounted panel", () => {
+    // Desktop dock panels stay mounted; a deep link to an open panel arrives
+    // as a prop change (updateParameters → panelParams), not a remount — the
+    // render-time prev-compare must re-apply it.
+    const { rerender } = render(<AgentsPanel initialAgentId="a2" />);
+    expect(screen.getByText("overview:a2")).toBeInTheDocument();
+    rerender(<AgentsPanel initialAgentId="a1" />);
+    expect(screen.getByText("overview:a1")).toBeInTheDocument();
+  });
+
+  it("a cleared initialAgentId (plain nav) resets to the list", () => {
+    const { rerender } = render(<AgentsPanel initialAgentId="a2" />);
+    expect(screen.getByText("overview:a2")).toBeInTheDocument();
+    rerender(<AgentsPanel initialAgentId={null} />);
+    expect(screen.getByText("Select an agent to view details")).toBeInTheDocument();
+  });
 });

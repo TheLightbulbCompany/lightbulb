@@ -332,7 +332,7 @@ describe("InboxPage", () => {
   test("keyboard-open opens the detail in-shell when a nav provider is present", () => {
     const openDetail = vi.fn();
     render(
-      <InlineTeamsNavProvider value={{ openDetail }}>
+      <InlineTeamsNavProvider value={{ openDetail, leaveToList: vi.fn() }}>
         <InboxPage {...baseProps} />
       </InlineTeamsNavProvider>,
     );
@@ -356,7 +356,7 @@ describe("InboxPage", () => {
     const openDetail = vi.fn();
 
     render(
-      <InlineTeamsNavProvider value={{ openDetail }}>
+      <InlineTeamsNavProvider value={{ openDetail, leaveToList: vi.fn() }}>
         <InboxPage {...baseProps} />
       </InlineTeamsNavProvider>,
     );

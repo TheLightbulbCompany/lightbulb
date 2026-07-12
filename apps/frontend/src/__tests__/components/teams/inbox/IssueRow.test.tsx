@@ -73,7 +73,7 @@ test("inside the inline nav shell, clicking the row opens the detail in-shell", 
   // through openDetail("issue-detail", id) instead of a full Link navigation.
   const openDetail = vi.fn();
   const { container } = render(
-    <InlineTeamsNavProvider value={{ openDetail }}>
+    <InlineTeamsNavProvider value={{ openDetail, leaveToList: vi.fn() }}>
       <IssueRow issue={issue} />
     </InlineTeamsNavProvider>,
   );
@@ -105,7 +105,7 @@ test("inside the shell, a modified click keeps native link behavior (new tab)", 
   // and replace the inline panel instead.
   const openDetail = vi.fn();
   const { container } = render(
-    <InlineTeamsNavProvider value={{ openDetail }}>
+    <InlineTeamsNavProvider value={{ openDetail, leaveToList: vi.fn() }}>
       <IssueRow issue={issue} />
     </InlineTeamsNavProvider>,
   );

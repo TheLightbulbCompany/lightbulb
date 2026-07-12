@@ -21,15 +21,13 @@ vi.mock("../panels/AgentInspectorPanel", () => ({
   AgentInspectorPanel: () => <div data-testid="agent-inspector-panel" />,
 }));
 
-describe("ControlPanelRouter credits redirect", () => {
-  it("renders Model & Credits when the legacy ?panel=credits key arrives", () => {
-    const onPanelChange = vi.fn();
-    render(<ControlPanelRouter panel="credits" onPanelChange={onPanelChange} />);
-    expect(screen.getByTestId("llm-panel")).toBeInTheDocument();
-    expect(onPanelChange).toHaveBeenCalledWith("llm");
-  });
-
-  it("renders mapped panels directly for non-legacy keys", () => {
+// Legacy-key resolution (credits→llm) moved OUT of this router into the shared
+// panelRegistry (resolvePanelAlias) — the shell resolves the alias before
+// mounting the router, replace-only, so the old push-trap is gone. That
+// mapping is covered by panelRegistry.test.ts; this router now only routes
+// already-resolved keys.
+describe("ControlPanelRouter routing", () => {
+  it("renders mapped panels directly for their key", () => {
     render(<ControlPanelRouter panel="llm" onPanelChange={vi.fn()} />);
     expect(screen.getByTestId("llm-panel")).toBeInTheDocument();
   });
@@ -39,7 +37,7 @@ describe("ControlPanelRouter credits redirect", () => {
     expect(screen.getByTestId("overview-panel")).toBeInTheDocument();
   });
 
-  it("does NOT call onPanelChange for non-legacy keys", () => {
+  it("does NOT call onPanelChange for a plain key", () => {
     const onPanelChange = vi.fn();
     render(<ControlPanelRouter panel="overview" onPanelChange={onPanelChange} />);
     expect(onPanelChange).not.toHaveBeenCalled();
@@ -48,11 +46,6 @@ describe("ControlPanelRouter credits redirect", () => {
   it("mounts the skills store directly (no Capabilities tab wrapper)", () => {
     render(<ControlPanelRouter panel="skills" onPanelChange={vi.fn()} />);
     expect(screen.getByTestId("skills-store")).toBeInTheDocument();
-  });
-
-  it("redirect path tolerates a missing onPanelChange callback", () => {
-    render(<ControlPanelRouter panel="credits" />);
-    expect(screen.getByTestId("llm-panel")).toBeInTheDocument();
   });
 
   it("routes the agent-inspector key to AgentInspectorPanel", () => {

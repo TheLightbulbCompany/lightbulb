@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { useApi } from "@/lib/api";
 import { notifyApiError } from "@/lib/notify";
@@ -242,47 +241,44 @@ function EmptyStateCard({
   );
 }
 
-export function LLMPanel() {
+export interface LLMPanelProps {
+  /**
+   * One-shot intent to auto-open the change-provider modal. ChatErrorCard's
+   * rate_limit action and the provider_required gate's action_href both route
+   * here relying on this auto-open. The shell reads its own channel
+   * (``?action=change-provider`` on mobile) and threads it down. null = no intent.
+   */
+  initialAction?: "change-provider" | null;
+  /** Fired once the intent is honored so the shell strips its channel. */
+  onActionConsumed?: () => void;
+}
+
+export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelProps = {}) {
   const api = useApi();
-  const searchParams = useSearchParams();
   const { data: user, mutate } = useSWR<UserData | null>(
     "/users/me",
     (p: string) => api.get(p) as Promise<UserData | null>,
   );
-  // Open the change-provider modal automatically when the URL carries
-  // ``?action=change-provider``. ChatErrorCard's rate_limit action links
-  // here, and the provider_required gate's action_href points here too —
-  // both rely on this auto-open so a single click takes the user straight
-  // to the picker.
-  //
-  // The auto-open is computed *once* in the initial useState callback so
-  // we never call setState from inside an effect (which would trip the
-  // react-hooks/set-state-in-effect rule). The companion run-once effect
-  // below strips the param from the URL so a refresh doesn't re-pop the
-  // modal, but does not touch React state.
+  // Auto-open the change-provider modal when the shell delivers the intent.
+  // Seed from the prop on first render (no effect-driven setState, which would
+  // trip react-hooks/set-state-in-effect), and — so a second command to an
+  // already-mounted panel re-pops the modal (the old initializer-only read
+  // ignored it) — re-open on a null→change-provider transition via the
+  // render-time prev-compare pattern. The companion effect reports consumption
+  // so the shell strips its channel; it does not touch the modal's open state.
   const [modalOpen, setModalOpen] = useState(
-    () => searchParams.get("action") === "change-provider",
+    () => initialAction === "change-provider",
   );
+  const [prevInitialAction, setPrevInitialAction] = useState(initialAction);
+  if (initialAction !== prevInitialAction) {
+    setPrevInitialAction(initialAction);
+    if (initialAction === "change-provider") setModalOpen(true);
+  }
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    const href = window.location?.href;
-    if (!href) return;
-    let url: URL;
-    try {
-      url = new URL(href);
-    } catch {
-      return;
-    }
-    if (url.searchParams.get("action") !== "change-provider") return;
-    url.searchParams.delete("action");
-    window.history.replaceState({}, "", url.toString());
-    // Run-once on mount. searchParams from next/navigation is referentially
-    // stable inside a single Suspense boundary, but we intentionally do not
-    // re-strip on later changes — the modal's open state controls the URL
-    // from here.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (initialAction !== "change-provider") return;
+    onActionConsumed?.();
+  }, [initialAction, onActionConsumed]);
 
   // Live container auth health for the provider dot. The panel mounts under the
   // control surface's GatewayProvider, so the RPC resolves. These hooks sit

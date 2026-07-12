@@ -27,6 +27,7 @@ import { useIssueInteractions } from "./hooks/useIssueInteractions";
 import { useInteractionMutations } from "./hooks/useInteractionMutations";
 import { patchExecutionPolicy } from "./executionPolicy";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
+import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
 import { replaceSearchParams } from "@/lib/shellNav";
 import {
   DropdownMenu,
@@ -178,9 +179,15 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
   const [deleting, setDeleting] = useState(false);
 
   // The issue is gone (deleted or hidden) — swap the now-dead detail view for
-  // the Tasks list. Replaced (not pushed) so Back never lands on the dead
-  // detail view of an issue that no longer exists.
+  // the Tasks list. In-shell this goes through the nav context (which commits a
+  // replace-only URL move so Back never resurrects the dead row); standalone /
+  // test renders (no provider) fall back to the direct window.location rewrite.
+  const nav = useInlineTeamsNav();
   const leaveForTasksList = () => {
+    if (nav) {
+      nav.leaveToList("teams-issues");
+      return;
+    }
     const params = new URLSearchParams(window.location.search);
     params.set("panel", "teams-issues");
     params.delete("detailId");

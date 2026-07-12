@@ -253,6 +253,33 @@ describe("LLMPanel", () => {
     expect(screen.getByTestId("provider-health-dot")).toHaveAttribute("data-color", "neutral");
   });
 
+  it("opens the change-provider modal from the initialAction prop", () => {
+    mockSWRData.mockReturnValue({ provider_choice: "bedrock_claude" });
+    render(<LLMPanel initialAction="change-provider" />);
+    expect(screen.getByTestId("change-provider-modal-open")).toBeInTheDocument();
+  });
+
+  it("re-opens the modal when initialAction goes null→change-provider on a mounted panel", () => {
+    mockSWRData.mockReturnValue({ provider_choice: "bedrock_claude" });
+    const { rerender } = render(<LLMPanel initialAction={null} />);
+    expect(
+      screen.queryByTestId("change-provider-modal-open"),
+    ).not.toBeInTheDocument();
+    // A second command to an already-mounted panel must re-pop the modal —
+    // the old useState-initializer-only read ignored it.
+    rerender(<LLMPanel initialAction="change-provider" />);
+    expect(screen.getByTestId("change-provider-modal-open")).toBeInTheDocument();
+  });
+
+  it("reports consumption via onActionConsumed when initialAction is delivered", async () => {
+    mockSWRData.mockReturnValue({ provider_choice: "bedrock_claude" });
+    const onActionConsumed = vi.fn();
+    render(
+      <LLMPanel initialAction="change-provider" onActionConsumed={onActionConsumed} />,
+    );
+    await waitFor(() => expect(onActionConsumed).toHaveBeenCalledTimes(1));
+  });
+
   it("busts the gateway cache then revalidates the read key when Refresh is clicked", async () => {
     mockSWRData.mockReturnValue({ provider_choice: "bedrock_claude" });
     mockAuthStatusData.mockReturnValue({

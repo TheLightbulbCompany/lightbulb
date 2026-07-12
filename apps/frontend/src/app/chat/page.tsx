@@ -17,6 +17,7 @@ import {
   TEAMS_PANEL_PREFIX,
 } from "@/components/chat/InlineTeamsPanel";
 import { preloadTeamsPanels } from "@/components/teams/TeamsPanelRouter";
+import { resolvePanelAlias } from "@/components/workspace/panelRegistry";
 import { pushSearchParams, replaceSearchParams } from "@/lib/shellNav";
 
 export default function ChatPage() {
@@ -33,14 +34,73 @@ export default function ChatPage() {
 
 function ChatPageInner() {
   const searchParams = useSearchParams();
-  // Single source of truth for view + panel is the URL. ?panel=credits is a
-  // legacy deep link — the panel router remaps it to the Model & Credits
-  // panel. The view is derived purely from ?panel (a Company/System panel →
-  // control; no panel → chat); there's no tab-switcher.
+  // Single source of truth for view + panel is the URL. Legacy deep links
+  // (?panel=credits, ?panel=teams-approvals, …) are resolved to their live key
+  // via resolvePanelAlias below. The view is derived purely from ?panel (a
+  // Company/System panel → control; no panel → chat); there's no tab-switcher.
   const panelParam = searchParams.get("panel");
   const detailId = searchParams.get("detailId");
   const activeView: "chat" | "control" = panelParam ? "control" : "chat";
-  const activePanel: string = panelParam || "overview";
+  // Resolve retired panel keys (credits→llm, teams-approvals→teams-inbox, …)
+  // through the shared registry so the panel renders under its live key
+  // immediately. The URL is canonicalized in the effect below.
+  const activePanel: string = panelParam ? resolvePanelAlias(panelParam) : "overview";
+
+  // Canonicalize a retired panel key in the address bar. Replace-only (no
+  // history entry) — this is what fixes the old credits→llm push-trap, where
+  // ControlPanelRouter's remap pushed and trapped Back on ?panel=credits.
+  useEffect(() => {
+    if (!panelParam) return;
+    const resolved = resolvePanelAlias(panelParam);
+    if (resolved === panelParam) return;
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("panel", resolved);
+    params.delete("detailId");
+    replaceSearchParams(params);
+  }, [panelParam, searchParams]);
+
+  // Per-panel params derived once from the URL (mobile's channel) and threaded
+  // down. Panels no longer read the URL themselves; they consume these props and
+  // report one-shot consumption / durable clears back through the callbacks
+  // below, which strip the matching URL param (replace-only).
+  const agentParam = searchParams.get("agent");
+  const oneShots = {
+    new: searchParams.get("new") ?? undefined,
+    newIssue: searchParams.get("newIssue") ?? undefined,
+    action: searchParams.get("action") ?? undefined,
+    inspectorTab: searchParams.get("inspectorTab") ?? undefined,
+  };
+  const stripParam = useCallback(
+    (key: string) => {
+      const params = new URLSearchParams(searchParams.toString());
+      if (params.has(key)) {
+        params.delete(key);
+        replaceSearchParams(params);
+      }
+    },
+    [searchParams],
+  );
+  const updateDurableParam = useCallback(
+    (key: string, value: string | null) => {
+      const params = new URLSearchParams(searchParams.toString());
+      if (value === null) params.delete(key);
+      else params.set(key, value);
+      replaceSearchParams(params);
+    },
+    [searchParams],
+  );
+  // A detail view whose row was just deleted/hidden swaps itself for the list.
+  // Replace, never push — Back must not resurrect a deleted row.
+  const leaveToList = useCallback(
+    (listPanelKey: string) => {
+      const params = new URLSearchParams(searchParams.toString());
+      params.set("panel", listPanelKey);
+      params.delete("detailId");
+      params.delete("agent");
+      replaceSearchParams(params);
+    },
+    [searchParams],
+  );
 
   // Navigational transitions commit through the History API (shellNav) so
   // each in-shell move (panel switch, list→detail) pushes a history entry the
@@ -197,9 +257,26 @@ function ChatPageInner() {
                     panel={activePanel}
                     detailId={detailId}
                     openDetail={openDetail}
+                    leaveToList={leaveToList}
+                    panelParams={{
+                      ...(agentParam ? { agent: agentParam } : {}),
+                      ...(oneShots.new ? { new: oneShots.new } : {}),
+                      ...(oneShots.newIssue ? { newIssue: oneShots.newIssue } : {}),
+                    }}
+                    onConsumeOneShot={stripParam}
+                    onUpdateDurableParam={updateDurableParam}
                   />
                 ) : (
-                  <ControlPanelRouter panel={activePanel} onPanelChange={setActivePanel} />
+                  <ControlPanelRouter
+                    panel={activePanel}
+                    onPanelChange={setActivePanel}
+                    panelParams={{
+                      ...(agentParam ? { agentId: agentParam } : {}),
+                      ...(oneShots.inspectorTab ? { initialTab: oneShots.inspectorTab } : {}),
+                      ...(oneShots.action ? { action: oneShots.action } : {}),
+                    }}
+                    onConsumeOneShot={stripParam}
+                  />
                 )}
               </div>
             )}

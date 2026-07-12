@@ -1,21 +1,18 @@
 // apps/frontend/src/__tests__/teams/TeamsPanelRouter.redirect.test.tsx
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { render } from "@testing-library/react";
 
 import { TeamsPanelRouter } from "@/components/teams/TeamsPanelRouter";
 
-beforeEach(() => {
-  window.history.replaceState(null, "", "/chat?panel=teams-approvals");
-});
-
-describe("TeamsPanelRouter retirement", () => {
-  it("remaps the retired approvals panel key to the inbox in place", () => {
+describe("TeamsPanelRouter alias handling", () => {
+  it("no longer rewrites the URL for a retired key — the shell resolves aliases upstream", () => {
     const replaceStateSpy = vi.spyOn(window.history, "replaceState");
-    const { container } = render(<TeamsPanelRouter panel="approvals" />);
-    // Renders nothing itself — the shell re-renders with the aliased key.
-    expect(container).toBeEmptyDOMElement();
-    const target = replaceStateSpy.mock.calls.at(-1)?.[2] as string;
-    expect(target).toContain("panel=teams-inbox");
+    // The router used to remap approvals→inbox itself via replaceState. That
+    // now lives in resolvePanelAlias (covered by panelRegistry.test.ts) and is
+    // applied by the shell before the router ever sees a retired key, so the
+    // router must not touch the URL.
+    render(<TeamsPanelRouter panel="approvals" />);
+    expect(replaceStateSpy).not.toHaveBeenCalled();
     replaceStateSpy.mockRestore();
   });
 });

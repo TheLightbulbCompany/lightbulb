@@ -7,7 +7,7 @@
 // actual POST /issues body shape is asserted in the NewIssueDialog and
 // useIssueMutations tests.
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { act, render, screen, fireEvent } from "@testing-library/react";
 import type { Issue } from "@/components/teams/shared/types";
 
 // Path-aware read mock shared across all tests. `seededIssues` is reset per
@@ -88,5 +88,29 @@ describe("IssuesPanel", () => {
     // The status circle is the inline easy-action — it carries the status
     // label as its accessible name so it can be opened to change status.
     expect(screen.getByLabelText(/todo/i)).toBeInTheDocument();
+  });
+
+  // Prop-driven create-dialog intent (was the ?new=task URL read). The mobile
+  // shell now hands `newTask` down as a prop and strips its own URL param when
+  // the panel reports consumption via onNewTaskConsumed.
+  it("opens the create dialog from the newTask prop and reports consumption on close", () => {
+    const onNewTaskConsumed = vi.fn();
+    render(<IssuesPanel newTask onNewTaskConsumed={onNewTaskConsumed} />);
+    expect(screen.getByTestId("new-issue-dialog-stub")).toBeInTheDocument();
+    // Drive the dialog's close the way NewIssueDialog would (Cancel / Esc):
+    // the panel's onOpenChange(false) path must fire onNewTaskConsumed.
+    const lastProps = newIssueDialogStub.mock.calls.at(-1)![0] as {
+      onOpenChange: (next: boolean) => void;
+    };
+    act(() => lastProps.onOpenChange(false));
+    expect(onNewTaskConsumed).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId("new-issue-dialog-stub")).not.toBeInTheDocument();
+  });
+
+  it("re-opens the dialog when newTask goes false→true on a mounted panel", () => {
+    const { rerender } = render(<IssuesPanel newTask={false} />);
+    expect(screen.queryByTestId("new-issue-dialog-stub")).not.toBeInTheDocument();
+    rerender(<IssuesPanel newTask />);
+    expect(screen.getByTestId("new-issue-dialog-stub")).toBeInTheDocument();
   });
 });

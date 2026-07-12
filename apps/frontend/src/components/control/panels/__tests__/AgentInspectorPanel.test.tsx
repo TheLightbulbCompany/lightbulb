@@ -35,16 +35,15 @@ vi.mock("@/components/teams/panels/RoutinesPanel", () => ({
   ),
 }));
 
-// ?agent drives which agent the inspector inspects; ?inspectorTab deep-links
-// the initial tab (set by the Get Started "Connect a channel" CTA).
+// agentId drives which agent the inspector inspects; initialTab deep-links the
+// initial tab (set by the Get Started "Connect a channel" CTA). Both are now
+// props fed by the shell — a small helper renders with the current fixtures.
 let agentParam: string | null = "agent_42";
 let inspectorTabParam: string | null = null;
-vi.mock("next/navigation", () => ({
-  useSearchParams: () => ({
-    get: (k: string) =>
-      k === "agent" ? agentParam : k === "inspectorTab" ? inspectorTabParam : null,
-  }),
-}));
+const renderInspector = () =>
+  render(
+    <AgentInspectorPanel agentId={agentParam} initialTab={inspectorTabParam} />,
+  );
 
 // agents.list feeds the header (name/emoji), mirroring AgentsPanel.
 const agentsListData: { defaultId?: string; agents?: Array<{ id: string; name?: string; identity?: { emoji?: string } }> } =
@@ -102,7 +101,7 @@ describe("AgentInspectorPanel", () => {
   });
 
   it("renders the five tab labels", () => {
-    render(<AgentInspectorPanel />);
+    renderInspector();
     expect(screen.getByRole("tab", { name: "Overview" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Instructions" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Tools" })).toBeInTheDocument();
@@ -111,7 +110,7 @@ describe("AgentInspectorPanel", () => {
   });
 
   it("orders the tabs Overview·Instructions·Tools·Channels·Schedule", () => {
-    render(<AgentInspectorPanel />);
+    renderInspector();
     const labels = screen.getAllByRole("tab").map((t) => t.textContent);
     expect(labels).toEqual([
       "Overview",
@@ -123,7 +122,7 @@ describe("AgentInspectorPanel", () => {
   });
 
   it("mounts the Instructions tab with the ?agent id when selected", () => {
-    render(<AgentInspectorPanel />);
+    renderInspector();
     fireEvent.click(screen.getByRole("tab", { name: "Instructions" }));
     expect(screen.getByTestId("instructions-tab")).toHaveTextContent(
       "instructions:agent_42",
@@ -132,14 +131,14 @@ describe("AgentInspectorPanel", () => {
   });
 
   it("mounts the Overview tab by default with the ?agent id", () => {
-    render(<AgentInspectorPanel />);
+    renderInspector();
     expect(screen.getByTestId("overview-tab")).toHaveTextContent("overview:agent_42");
     expect(screen.queryByTestId("tools-tab")).not.toBeInTheDocument();
   });
 
   it("opens the Channels tab when ?inspectorTab=channels deep-links in", () => {
     inspectorTabParam = "channels";
-    render(<AgentInspectorPanel />);
+    renderInspector();
     expect(screen.getByTestId("channels-tab")).toHaveTextContent("channels:agent_42");
     expect(screen.queryByTestId("overview-tab")).not.toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Channels" })).toHaveAttribute(
@@ -151,19 +150,19 @@ describe("AgentInspectorPanel", () => {
   it("falls back to Overview when ?inspectorTab=channels but the owner is unsubscribed", () => {
     subscribed = false;
     inspectorTabParam = "channels";
-    render(<AgentInspectorPanel />);
+    renderInspector();
     expect(screen.getByTestId("overview-tab")).toHaveTextContent("overview:agent_42");
     expect(screen.queryByTestId("channels-tab")).not.toBeInTheDocument();
   });
 
   it("falls back to Overview for an unknown ?inspectorTab value", () => {
     inspectorTabParam = "bogus";
-    render(<AgentInspectorPanel />);
+    renderInspector();
     expect(screen.getByTestId("overview-tab")).toHaveTextContent("overview:agent_42");
   });
 
   it("switches the mounted tab when a tab is clicked", () => {
-    render(<AgentInspectorPanel />);
+    renderInspector();
     fireEvent.click(screen.getByRole("tab", { name: "Tools" }));
     expect(screen.getByTestId("tools-tab")).toHaveTextContent("tools:agent_42");
     expect(screen.queryByTestId("overview-tab")).not.toBeInTheDocument();
@@ -174,7 +173,7 @@ describe("AgentInspectorPanel", () => {
   });
 
   it("mounts the RoutinesPanel scoped to the inspected agent on the Schedule tab", () => {
-    render(<AgentInspectorPanel />);
+    renderInspector();
     fireEvent.click(screen.getByRole("tab", { name: "Schedule" }));
     expect(screen.getByTestId("schedule-tab")).toHaveTextContent(
       "schedule:agent_42",
@@ -183,7 +182,7 @@ describe("AgentInspectorPanel", () => {
   });
 
   it("marks the active tab with aria-selected for screen readers", () => {
-    render(<AgentInspectorPanel />);
+    renderInspector();
     expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute(
       "aria-selected",
       "true",
@@ -200,34 +199,34 @@ describe("AgentInspectorPanel", () => {
   });
 
   it("renders the agent name in the header", () => {
-    render(<AgentInspectorPanel />);
+    renderInspector();
     expect(screen.getByText("Scout")).toBeInTheDocument();
   });
 
   it("hides the Channels tab for non-subscribed owners", () => {
     subscribed = false;
-    render(<AgentInspectorPanel />);
+    renderInspector();
     expect(screen.queryByRole("tab", { name: "Channels" })).not.toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Overview" })).toBeInTheDocument();
   });
 
   it("shows a calm empty state when no ?agent is present", () => {
     agentParam = null;
-    render(<AgentInspectorPanel />);
+    renderInspector();
     expect(screen.getByText(/select an agent/i)).toBeInTheDocument();
     expect(screen.queryByTestId("overview-tab")).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "Overview" })).not.toBeInTheDocument();
   });
 
   it("renders the org controls when the Teams roster has the ?agent id", () => {
-    render(<AgentInspectorPanel />);
+    renderInspector();
     expect(screen.getByTestId("org-controls")).toHaveTextContent("org:agent_42");
   });
 
   it("renders nothing org-side when the Teams roster errors", () => {
     rosterError = new Error("boom");
     rosterData = undefined;
-    render(<AgentInspectorPanel />);
+    renderInspector();
     // Overview tab still mounts; the org section degrades to nothing so a
     // pause/resume POST never fires against a missing Paperclip row.
     expect(screen.getByTestId("overview-tab")).toBeInTheDocument();
@@ -236,13 +235,13 @@ describe("AgentInspectorPanel", () => {
 
   it("renders nothing org-side when the agent is absent from the roster", () => {
     rosterData = { agents: [{ id: "someone_else", name: "Other" }] };
-    render(<AgentInspectorPanel />);
+    renderInspector();
     expect(screen.getByTestId("overview-tab")).toBeInTheDocument();
     expect(screen.queryByTestId("org-controls")).not.toBeInTheDocument();
   });
 
   it("keeps the org section on the Overview tab only", () => {
-    render(<AgentInspectorPanel />);
+    renderInspector();
     expect(screen.getByTestId("org-controls")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("tab", { name: "Tools" }));
     expect(screen.queryByTestId("org-controls")).not.toBeInTheDocument();

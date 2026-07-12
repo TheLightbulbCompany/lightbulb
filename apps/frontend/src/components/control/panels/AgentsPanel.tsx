@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { useSearchParams } from "next/navigation";
 import {
   Loader2,
   RefreshCw,
@@ -23,20 +22,24 @@ import type { AgentEntry, AgentsListResponse } from "./agents-types";
 
 type AgentTab = "overview" | "tools" | "channels";
 
-export function AgentsPanel() {
+export interface AgentsPanelProps {
+  /**
+   * Deep-link: selects this agent on first render (the Teams "Edit in control
+   * panel" link). The shell reads its own channel (the ?agent URL param on
+   * mobile) and threads it down. An unknown id falls back to the list.
+   */
+  initialAgentId?: string | null;
+}
+
+export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
   const { data: rawData, error, isLoading, mutate } = useGatewayRpc<AgentsListResponse>("agents.list");
   const callRpc = useGatewayRpcMutation();
   // Channels require an active subscription (or trial). Pre-signup users
   // shouldn't see the Channels tab.
   const { isSubscribed } = useBilling();
   const channelsEnabled = isSubscribed;
-  // Deep-link: /chat?panel=agents&agent=<id> selects that agent on
-  // first render. This is the single editing entry point for agent meta (the
-  // Teams "Edit in control panel" link points here). An unknown id falls back
-  // to the list (selected resolves to undefined below).
-  const searchParams = useSearchParams();
   const [selectedAgent, setSelectedAgent] = useState<string | null>(
-    () => searchParams.get("agent"),
+    () => initialAgentId,
   );
   const [activeTab, setActiveTab] = useState<AgentTab>("overview");
   const [showCreateForm, setShowCreateForm] = useState(false);

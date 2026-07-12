@@ -6,7 +6,6 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "next/navigation";
 
 import { Inbox as InboxIcon } from "lucide-react";
 
@@ -23,7 +22,7 @@ import {
 } from "@/components/getstarted/getStartedFirstTask";
 
 import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
-import { replaceSearchParams, teamsDetailUrl } from "@/lib/shellNav";
+import { teamsDetailUrl } from "@/lib/shellNav";
 import { useInboxData } from "@/components/teams/inbox/hooks/useInboxData";
 import { useInboxKeyboardNav } from "@/components/teams/inbox/hooks/useInboxKeyboardNav";
 import { useInboxArchiveStack } from "@/components/teams/inbox/hooks/useInboxArchiveStack";
@@ -57,20 +56,6 @@ import type {
   IssueProject,
 } from "@/components/teams/shared/types";
 
-const KNOWN_INBOX_TABS = new Set<InboxTab>([
-  "mine",
-  "recent",
-  "all",
-  "unread",
-  "approvals",
-  "runs",
-  "joins",
-]);
-
-function isInboxTab(value: string | null): value is InboxTab {
-  return value !== null && KNOWN_INBOX_TABS.has(value as InboxTab);
-}
-
 export interface InboxPageProps {
   /** Owner id used as the localStorage namespace + cross-tab `storage` key. */
   companyId: string;
@@ -81,6 +66,14 @@ export interface InboxPageProps {
   members?: CompanyMember[];
   projects?: IssueProject[];
   labels?: IssueLabel[];
+  /**
+   * One-shot deep-link intent to pop the create dialog open: "1" = blank
+   * composer, "onboarding" = the Get Started first-task step. Threaded by the
+   * shell from its own channel (URL param on mobile). null = no intent.
+   */
+  newIssue?: "1" | "onboarding" | null;
+  /** Fired once the intent is honored so the shell strips its channel. */
+  onNewIssueConsumed?: () => void;
 }
 
 /**
@@ -95,8 +88,9 @@ export function InboxPage({
   members = [],
   projects = [],
   labels = [],
+  newIssue = null,
+  onNewIssueConsumed,
 }: InboxPageProps) {
-  const searchParams = useSearchParams();
   // Inside the /chat shell a nav provider is present → open the issue detail
   // in-shell. Without one (bare mount), fall back to committing the canonical
   // in-shell URL directly — same destination, no provider hop.
@@ -112,23 +106,19 @@ export function InboxPage({
     [inlineNav],
   );
 
-  // 1. URL-synced tab. The URL wins on first render, falling back to
-  //    localStorage so a fresh `/teams/inbox` link still honors the user's
-  //    last tab.
-  const urlTabParam = searchParams.get("tab");
+  // 1. Active tab, persisted per-owner in localStorage so a fresh visit honors
+  //    the user's last tab. (The tab is no longer mirrored to the URL — it is
+  //    presentation state the shell doesn't need to address.)
   const [tab, setTabState] = useState<InboxTab>(() =>
-    isInboxTab(urlTabParam) ? urlTabParam : loadLastInboxTab(companyId),
+    loadLastInboxTab(companyId),
   );
 
   const setTab = useCallback(
     (next: InboxTab) => {
       setTabState(next);
       saveLastInboxTab(companyId, next);
-      const params = new URLSearchParams(searchParams.toString());
-      params.set("tab", next);
-      replaceSearchParams(params);
     },
-    [companyId, searchParams],
+    [companyId],
   );
 
   // 2. Search + filter state.
@@ -141,40 +131,37 @@ export function InboxPage({
 
   // 3b. NewIssueDialog open state.
   //
-  // Deep-link entry: a navigation can route here to pop the dialog straight
-  // open. "1" = blank composer; "onboarding" = the Get Started first-task step,
-  // which pre-fills a CEO-directed task. Opening is done WITHOUT an effect-driven
-  // setState (the lint rule forbids it, and it would cascade renders): the open
-  // state is lazily seeded from the param on first render, and a later same-page
-  // re-navigation (re-triggering the step while this panel is already mounted,
-  // which only changes the URL) is detected by comparing the param against its
-  // previous value DURING render — React's "adjust state when a prop changes"
-  // pattern, the same one the selection clamp below uses. The effect then ONLY
-  // strips the param via a URL replace (not setState), so a refresh / back-nav
-  // can't reopen it. The prefill intent is captured as STATE — not re-derived
-  // from the param — so it survives the strip and any later same-page re-open.
-  const newIssueParam = searchParams.get("newIssue");
+  // Deep-link entry: the shell hands down a one-shot `newIssue` intent to pop
+  // the dialog straight open. "1" = blank composer; "onboarding" = the Get
+  // Started first-task step, which pre-fills a CEO-directed task. Opening is done
+  // WITHOUT an effect-driven setState (the lint rule forbids it, and it would
+  // cascade renders): the open state is lazily seeded from the prop on first
+  // render, and a later re-delivery (the same intent fired again while this panel
+  // is mounted) is detected by comparing the prop against its previous value
+  // DURING render — React's "adjust state when a prop changes" pattern, the same
+  // one the selection clamp below uses. The effect then ONLY reports consumption
+  // so the shell strips its channel (not setState), keeping a refresh / back-nav
+  // from reopening it. The prefill intent is captured as STATE — not re-derived
+  // from the prop — so it survives the strip and any later re-open.
   const [newIssueOpen, setNewIssueOpen] = useState(
-    () => newIssueParam === "1" || newIssueParam === "onboarding",
+    () => newIssue === "1" || newIssue === "onboarding",
   );
   const [newIssuePrefill, setNewIssuePrefill] = useState(
-    () => newIssueParam === "onboarding",
+    () => newIssue === "onboarding",
   );
-  const [prevNewIssueParam, setPrevNewIssueParam] = useState(newIssueParam);
-  if (newIssueParam !== prevNewIssueParam) {
-    setPrevNewIssueParam(newIssueParam);
-    if (newIssueParam === "1" || newIssueParam === "onboarding") {
+  const [prevNewIssue, setPrevNewIssue] = useState(newIssue);
+  if (newIssue !== prevNewIssue) {
+    setPrevNewIssue(newIssue);
+    if (newIssue === "1" || newIssue === "onboarding") {
       setNewIssueOpen(true);
-      setNewIssuePrefill(newIssueParam === "onboarding");
+      setNewIssuePrefill(newIssue === "onboarding");
     }
   }
 
   useEffect(() => {
-    if (newIssueParam !== "1" && newIssueParam !== "onboarding") return;
-    const params = new URLSearchParams(searchParams.toString());
-    params.delete("newIssue");
-    replaceSearchParams(params);
-  }, [newIssueParam, searchParams]);
+    if (newIssue !== "1" && newIssue !== "onboarding") return;
+    onNewIssueConsumed?.();
+  }, [newIssue, onNewIssueConsumed]);
 
   // 4. Data + side-effect hooks.
   const { mineIssues, touchedIssues, allIssues, isLoading, isError } =

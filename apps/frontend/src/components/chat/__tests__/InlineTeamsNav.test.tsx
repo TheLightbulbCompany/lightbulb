@@ -13,7 +13,8 @@ describe("useInlineTeamsNav", () => {
 
   it("returns the provided value inside the provider", () => {
     const openDetail = () => {};
-    const value = { openDetail };
+    const leaveToList = () => {};
+    const value = { openDetail, leaveToList };
     const { result } = renderHook(() => useInlineTeamsNav(), {
       wrapper: ({ children }) => (
         <InlineTeamsNavProvider value={value}>

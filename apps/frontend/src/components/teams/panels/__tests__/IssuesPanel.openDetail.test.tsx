@@ -46,7 +46,7 @@ beforeEach(() => {
 describe("IssuesPanel Open affordance", () => {
   it("row click calls openDetail with the issue id when a nav provider is present", () => {
     const openDetail = vi.fn();
-    const value: InlineTeamsNavValue = { openDetail };
+    const value: InlineTeamsNavValue = { openDetail, leaveToList: vi.fn() };
     render(
       <InlineTeamsNavProvider value={value}>
         <IssuesPanel />

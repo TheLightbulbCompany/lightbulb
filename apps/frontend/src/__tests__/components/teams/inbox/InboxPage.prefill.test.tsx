@@ -2,11 +2,9 @@ import { describe, test, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import type { CompanyAgent, Issue } from "@/components/teams/shared/types";
 
-// Mutable holder so a test can flip the search params mid-lifecycle (the real
-// page's effect strips `?newIssue` via router.replace after the dialog opens).
-const params = vi.hoisted(() => ({
-  current: new URLSearchParams("newIssue=onboarding"),
-}));
+// The create-dialog deep-link is a prop now (`newIssue`), not a URL read. The
+// shell strips its own channel after the dialog opens — modelled below by
+// re-rendering with the prop cleared.
 
 vi.mock("@/components/teams/inbox/hooks/useInboxData", () => ({
   useInboxData: vi.fn(),
@@ -45,7 +43,7 @@ vi.mock("next/navigation", () => ({
     back: vi.fn(),
   }),
   usePathname: () => "/",
-  useSearchParams: () => params.current,
+  useSearchParams: () => new URLSearchParams(),
 }));
 
 import { InboxPage } from "@/components/teams/inbox/InboxPage";
@@ -61,7 +59,6 @@ const agents: CompanyAgent[] = [
 
 beforeEach(() => {
   vi.clearAllMocks();
-  params.current = new URLSearchParams("newIssue=onboarding");
   vi.mocked(useInboxData).mockReturnValue({
     mineIssues: [] as Issue[],
     touchedIssues: [] as Issue[],
@@ -99,9 +96,14 @@ beforeEach(() => {
 });
 
 describe("InboxPage onboarding pre-fill", () => {
-  test("?newIssue=onboarding opens the dialog pre-filled with the CEO task", () => {
+  test("newIssue=onboarding opens the dialog pre-filled with the CEO task", () => {
     render(
-      <InboxPage companyId="co_1" currentUserId="u_1" agents={agents} />,
+      <InboxPage
+        companyId="co_1"
+        currentUserId="u_1"
+        agents={agents}
+        newIssue="onboarding"
+      />,
     );
     expect(screen.getByPlaceholderText("Task title")).toHaveValue(
       "Build out my team for [your goal]",
@@ -109,19 +111,28 @@ describe("InboxPage onboarding pre-fill", () => {
     expect(screen.getByLabelText(/assign to agent/i)).toHaveValue("friday");
   });
 
-  test("stays open + pre-filled after the param is stripped", () => {
+  test("stays open + pre-filled after the intent is consumed", () => {
     const { rerender } = render(
-      <InboxPage companyId="co_1" currentUserId="u_1" agents={agents} />,
+      <InboxPage
+        companyId="co_1"
+        currentUserId="u_1"
+        agents={agents}
+        newIssue="onboarding"
+      />,
     );
     expect(screen.getByPlaceholderText("Task title")).toHaveValue(
       "Build out my team for [your goal]",
     );
 
-    // Simulate the effect that strips `?newIssue` after the dialog opens: the
-    // param vanishes, but the prefill lives in React state so it must survive.
-    params.current = new URLSearchParams("");
+    // Simulate the shell stripping its channel after the dialog opens: the
+    // prop clears, but the prefill lives in React state so it must survive.
     rerender(
-      <InboxPage companyId="co_1" currentUserId="u_1" agents={agents} />,
+      <InboxPage
+        companyId="co_1"
+        currentUserId="u_1"
+        agents={agents}
+        newIssue={null}
+      />,
     );
     expect(screen.getByPlaceholderText("Task title")).toHaveValue(
       "Build out my team for [your goal]",

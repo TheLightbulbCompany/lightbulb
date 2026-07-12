@@ -64,9 +64,18 @@ function recomputeSnapshot(): void {
   }
   const active = _api.activePanel;
   const openPanelIds = _api.panels.map((p) => p.id);
-  const visibleChatAgentIds = _api.groups
-    .map((g) => agentIdOfChatPanel(g.activePanel))
-    .filter((id): id is string => id !== null);
+  // Dedupe: a restored layout can hold both a sentinel chat panel
+  // (chat:__default__) and the concrete chat panel it resolves to in separate
+  // groups — both map to the same agentId, and a duplicate would wrongly widen
+  // the desktop suppression key set (harmless there, but the snapshot is a
+  // shared contract, so keep it clean).
+  const visibleChatAgentIds = Array.from(
+    new Set(
+      _api.groups
+        .map((g) => agentIdOfChatPanel(g.activePanel))
+        .filter((id): id is string => id !== null),
+    ),
+  );
   _snapshot = {
     ready: true,
     activePanelId: active?.id ?? null,
@@ -88,6 +97,10 @@ export function attachDockviewApi(
     api.onDidActivePanelChange(() => recomputeSnapshot()),
     api.onDidAddPanel(() => recomputeSnapshot()),
     api.onDidRemovePanel(() => recomputeSnapshot()),
+    // A background group's active-panel change (drag-move a tab between groups,
+    // reorder tabs) fires none of the above but changes which chat panels are
+    // the active tab of a visible group — so visibleChatAgentIds must refresh.
+    api.onDidLayoutChange(() => recomputeSnapshot()),
   ];
   recomputeSnapshot();
   return () => {

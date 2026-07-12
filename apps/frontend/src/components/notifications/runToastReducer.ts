@@ -10,9 +10,16 @@ import type { ChatIncomingMessage } from "@/hooks/useGateway";
  */
 
 export interface RunToastContext {
-  selectedAgentId: string | null;
-  selectedSessionId: string | null;
-  chatViewActive: boolean;
+  // Keys the user is currently watching. Two grammars share one set:
+  //   `${agentId}`               — bare, agent-level. Suppresses EVERY run for
+  //                                that agent (desktop: an agent's chat panel is
+  //                                visible, so any of its runs is on-screen).
+  //   `${agentId}:${sessionId}`  — per-session (sessionId normalized `?? ""`,
+  //                                so General/null == the trailing-colon key).
+  // Mobile emits compound-only keys (byte-equivalent to the old per-session
+  // selectedAgent/selectedSession/chatViewActive logic); desktop emits both a
+  // bare and a compound key per visible chat panel.
+  watchedChatKeys: ReadonlySet<string>;
   teamsPanelActive: boolean;
 }
 
@@ -37,18 +44,18 @@ export function createRunToastState(): RunToastState {
 
 export const MAX_TRACKED_RUNS = 200;
 
-// A run the user is already watching (its agent AND session selected, chat
-// visible) never needs a "working" toast. Suppression is re-evaluated per
-// event: a run that started watched still gets its completion toast if the
-// user has navigated away (agent, session, or view) by the time it ends.
-// `sessionId` is normalized the same way the frame itself is: a
-// missing/undefined session_id == null == the legacy "General" session, so
-// the comparison is apples-to-apples with `ctx.selectedSessionId`.
+// A run the user is already watching never needs a "working" toast.
+// Suppression is re-evaluated per event: a run that started watched still gets
+// its completion toast if the user has navigated away (the watched key set no
+// longer contains its agent/session) by the time it ends. `sessionId` is
+// normalized `?? ""` to build the compound key exactly as the ctx builders do,
+// so a missing/undefined session_id == null == the "General" trailing-colon
+// key. The bare-agent branch lets a visible desktop chat panel suppress every
+// run for its agent regardless of the run's session.
 function chatSuppressed(agentId: string, sessionId: string | null, ctx: RunToastContext): boolean {
   return (
-    ctx.chatViewActive &&
-    ctx.selectedAgentId === agentId &&
-    ctx.selectedSessionId === sessionId
+    ctx.watchedChatKeys.has(agentId) ||
+    ctx.watchedChatKeys.has(`${agentId}:${sessionId ?? ""}`)
   );
 }
 

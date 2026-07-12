@@ -174,6 +174,26 @@ describe("workspaceController", () => {
     expect(_snapshotForTests().visibleChatAgentIds).toEqual(["a-1"]);
   });
 
+  it("dedupes visibleChatAgentIds when a sentinel and its concrete panel are both visible", () => {
+    // A restored layout can hold the sentinel chat panel (chat:__default__,
+    // resolving to friday-id) and the concrete chat:friday-id panel in separate
+    // groups. Both resolve to the same agent — the snapshot must list it once.
+    const sentinel = { id: "chat:__default__" };
+    const concrete = { id: "chat:friday-id" };
+    const api = {
+      activePanel: concrete,
+      panels: [sentinel, concrete],
+      groups: [{ activePanel: sentinel }, { activePanel: concrete }],
+      getPanel: () => undefined,
+      onDidActivePanelChange: () => ({ dispose: vi.fn() }),
+      onDidAddPanel: () => ({ dispose: vi.fn() }),
+      onDidRemovePanel: () => ({ dispose: vi.fn() }),
+      onDidLayoutChange: () => ({ dispose: vi.fn() }),
+    } as unknown as DockviewApi;
+    attachDockviewApi(api, () => "friday-id");
+    expect(_snapshotForTests().visibleChatAgentIds).toEqual(["friday-id"]);
+  });
+
   it("closeChatPanelIfOpen closes an open chat panel under the shell-op guard", () => {
     const api = makeFakeApi();
     attachDockviewApi(api, () => undefined);

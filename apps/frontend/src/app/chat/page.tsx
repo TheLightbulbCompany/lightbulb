@@ -287,6 +287,7 @@ function ChatPageInner() {
         <MarketplaceDrawer />
         <MarketplaceToast />
         <RunNotifications
+          mode="mobile"
           selectedAgentId={selectedAgentId}
           activeView={activeView}
           activePanel={activePanel}

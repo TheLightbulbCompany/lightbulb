@@ -8,11 +8,16 @@ cache-inclusive token counts, deduped on Bedrock's ``requestId``. No backend
 path writes to it. That makes the counter complete by construction and means the
 backend never needs a pre-send reserve to bound in-flight spend.
 
-What survives here are read-only primitives: ``is_over_daily_cap`` (what
-``gate_chat`` Layer 2, the Teams BFF guards and the chat-steer path all call),
-``trial_block_reason`` (the container-start chokepoint's single check), and
-``reason_for_account`` (the same predicate for a caller that already holds the
-billing row). Blocking on any of these is UX — the authoritative stop is the
+What survives here are read-only primitives: ``trial_block_reason`` (ONE
+billing read — the single check used by gate_chat Layer 2, the container-start
+chokepoint, /container/recover, the container-wake path, the chat-steer path and
+the Teams BFF run guards) and ``reason_for_account`` (the same predicate for a
+caller that already holds the billing row).
+
+There is deliberately NO cap-only primitive. One used to exist, and four
+separate doors reached for it and so checked only HALF the predicate — happily
+waking or dispatching work for a trial owner whose window had EXPIRED but who
+was under today's $3. Every door must answer the whole question. Blocking on any of these is UX — the authoritative stop is the
 meter's revoke-AIP + ``desiredCount=0`` pairing. The INVERSE — giving a
 capped-out trial owner their Bedrock access back once the day rolls over —
 lives one layer up, in ``core.services.provision_gate.maybe_restore_trial_bedrock``,
@@ -35,25 +40,6 @@ DAILY_CAP = "meta_daily_cap"
 
 def utc_today() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-
-async def is_over_daily_cap(owner_id: str) -> bool:
-    """Read-only check: has ``owner_id`` — a ``trial_local`` owner — already
-    spent >= ``CAP_MICROCENTS`` today?
-
-    Gated on ``subscription_status == "trial_local"``: paid owners are never
-    subject to the free-tier cap, and an owner with no billing row is not a
-    trial owner either, so both return False.
-
-    The DDB attribute stays ``meta_daily_spend_microcents`` — a historical
-    name kept deliberately (live dev rows carry it); it is now simply the
-    trial daily-spend counter, and the meter Lambda is its sole writer.
-    """
-    account = await billing_repo.get_by_owner_id(owner_id)
-    if not account or account.get("subscription_status") != "trial_local":
-        return False
-    spent = await billing_repo.get_meta_daily_spend(owner_id, utc_today())
-    return spent >= CAP_MICROCENTS
 
 
 def _is_expired(account: dict) -> bool:

@@ -479,7 +479,7 @@ def _utc_today():
 
     Deliberately "now", not the record's own timestamp. The counter is a rate
     limiter, not a ledger (nobody is ever invoiced from it — a trial owner has
-    no Stripe customer), and the read side (trial_cap.is_over_daily_cap) asks
+    no Stripe customer), and the read side (trial_cap.trial_block_reason) asks
     "how much has this owner spent TODAY". Bucketing a late-delivered record
     into a past day would both under-defend today and let a DLQ redrive kill an
     owner for a day that already rolled over. Records arrive seconds-to-minutes

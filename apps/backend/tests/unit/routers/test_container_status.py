@@ -1065,7 +1065,7 @@ class TestContainerStatusTrialConversion:
         return (
             patch("routers.container.get_ecs_manager", return_value=TestContainerStatusTrialConversion._ecs(row)),
             patch("routers.container.evaluate_provision_gate", new=AsyncMock(return_value=None)),
-            patch("core.services.trial_cap.is_over_daily_cap", new=AsyncMock(return_value=False)),
+            patch("core.services.trial_cap.trial_block_reason", new=AsyncMock(return_value=None)),
             patch("routers.container._safe_phase", return_value="provisioning"),
             patch("routers.container.container_repo", new=repo),
             patch.object(handlers, "container_repo", new=repo),

@@ -876,7 +876,7 @@ class EcsManager:
            their container scaled to zero *by* the cap. Waking it is exactly
            what the cap forbids, so the container stays down until the counter
            resets (UTC midnight) or the owner upgrades. Same predicate the
-           status path uses (``trial_cap.is_over_daily_cap``), so the two can
+           status path uses (``trial_cap.trial_block_reason``), so the two can
            never disagree.
 
         2. TRIAL->PAID CONVERSION IN FLIGHT. ``reprovision_for_user`` scales the

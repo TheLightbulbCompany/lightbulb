@@ -785,14 +785,14 @@ class TestStartUserServiceGuards:
          second task.
 
     So the checks moved down here. These tests drive the REAL predicates
-    (``trial_cap.is_over_daily_cap`` and ``conversion_guard_active``) through
+    (``trial_cap.trial_block_reason`` and ``conversion_guard_active``) through
     stubbed repos rather than mocking the predicates out, so a change in either
     one is caught here.
     """
 
     @staticmethod
     def _billing(monkeypatch, *, subscription_status: str | None, spent_microcents: int = 0):
-        """Stub the billing repo the real ``is_over_daily_cap`` reads through."""
+        """Stub the billing repo the real ``trial_block_reason`` reads through."""
         monkeypatch.setattr(
             "core.repositories.billing_repo.get_by_owner_id",
             AsyncMock(return_value=({"subscription_status": subscription_status} if subscription_status else None)),
@@ -847,7 +847,7 @@ class TestStartUserServiceGuards:
     @pytest.mark.asyncio
     async def test_paid_owner_starts_regardless_of_spend(self, manager, mock_ecs_client, monkeypatch):
         """The cap is a FREE-TIER cap. A paying owner is never subject to it,
-        no matter what today's spend is — is_over_daily_cap self-gates on
+        no matter what today's spend is — trial_block_reason self-gates on
         subscription_status == "trial_local"."""
         from core.services.trial_cap import CAP_MICROCENTS
 

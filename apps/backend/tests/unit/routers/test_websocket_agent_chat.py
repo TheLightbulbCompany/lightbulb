@@ -12,6 +12,8 @@ Uses the same pattern as test_websocket_chat.py:
 """
 
 import pytest
+
+from core.services import trial_cap
 from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
@@ -822,12 +824,12 @@ class TestProcessAgentSteerBackground:
         return container
 
     @pytest.fixture(autouse=True)
-    def mock_is_over_daily_cap(self):
+    def mock_trial_block_reason(self):
         """The steer path consults the free-tier daily cap before forwarding its
         chat.send. Default every test in this class to under-cap (False) so the
         existing dispatch / active-run tests are unaffected; the over-cap test
         flips the return value to True."""
-        with patch("core.services.trial_cap.is_over_daily_cap", new=AsyncMock(return_value=False)) as m:
+        with patch("core.services.trial_cap.trial_block_reason", new=AsyncMock(return_value=None)) as m:
             yield m
 
     @pytest.mark.asyncio
@@ -896,14 +898,14 @@ class TestProcessAgentSteerBackground:
 
     @pytest.mark.asyncio
     async def test_over_cap_steer_refused_no_dispatch(
-        self, mock_ecs_manager, mock_pool, mock_mgmt_api, container_with_ip, mock_is_over_daily_cap
+        self, mock_ecs_manager, mock_pool, mock_mgmt_api, container_with_ip, mock_trial_block_reason
     ):
         """An over-cap trial owner steering must NOT forward a fresh chat.send.
         A steer is a raw chat.send that costs real model tokens, so an over-cap
         owner could otherwise keep steering straight past the $3/day cap with no
         402 card. The owner gets a meta_daily_cap error frame and nothing
         dispatches."""
-        mock_is_over_daily_cap.return_value = True
+        mock_trial_block_reason.return_value = trial_cap.DAILY_CAP
         await _process_agent_steer_background(
             connection_id="conn-1",
             user_id="user-1",
@@ -912,7 +914,7 @@ class TestProcessAgentSteerBackground:
             text="focus on the API",
         )
         mock_pool.send_rpc.assert_not_called()
-        mock_is_over_daily_cap.assert_awaited_once_with("user-1")
+        mock_trial_block_reason.assert_awaited_once_with("user-1")
         mock_mgmt_api.send_message.assert_called_once()
         _, frame = mock_mgmt_api.send_message.call_args[0]
         assert frame["type"] == "error"
@@ -925,10 +927,10 @@ class TestProcessAgentSteerBackground:
         mock_pool,
         mock_mgmt_api,
         container_with_ip,
-        mock_is_over_daily_cap,
+        mock_trial_block_reason,
     ):
         """Under the cap, the steer dispatches — via the READ-ONLY
-        is_over_daily_cap check, which writes nothing. The meter Lambda counts
+        trial_block_reason check, which writes nothing. The meter Lambda counts
         the steer's actual cost at the AWS layer like any other invocation."""
         with patch("core.repositories.billing_repo.add_meta_daily_spend", new=AsyncMock()) as add_mock:
             await _process_agent_steer_background(
@@ -939,7 +941,7 @@ class TestProcessAgentSteerBackground:
                 text="focus on the API",
             )
         mock_pool.send_rpc.assert_called_once()
-        mock_is_over_daily_cap.assert_awaited_once_with("user-1")
+        mock_trial_block_reason.assert_awaited_once_with("user-1")
         add_mock.assert_not_awaited()  # read-only: no counter write on the send path
 
 

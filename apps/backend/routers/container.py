@@ -246,17 +246,23 @@ async def container_status(
     # status, and bedrock_claude users need a positive credit balance.
     retryable_states = ("error", "stopped")
     if container.get("status") in retryable_states and not conversion_active:
-        # A container the free-tier cap scaled to zero must NOT auto-retry/wake.
-        # Surface the "daily limit" card so the frontend shows the limit (not a
-        # spinner) and the container stays down until the counter resets (UTC
-        # midnight) or the owner upgrades.
-        from core.services import trial_cap
+        # A container the free tier scaled to zero must NOT auto-retry/wake.
+        # Surface the limit card so the frontend shows the block (not a spinner)
+        # and the container stays down until the counter resets (UTC midnight)
+        # or the owner upgrades.
+        #
+        # The FULL trial predicate, not just the cap. An expired trial was
+        # already denied the wake — _assert_provision_allowed below raises, and
+        # its 402 is deliberately swallowed as a may-I-auto-retry predicate — but
+        # the owner then got a bare "stopped" container with no explanation
+        # instead of the trial_expired card every other door renders.
+        from core.services import provision_gate, trial_cap
 
-        if await trial_cap.is_over_daily_cap(owner_id):
-            raise HTTPException(
-                status_code=402,
-                detail=meta_daily_cap_gate(_owner_role(auth)).to_payload(),
-            )
+        trial_gate = provision_gate.gate_for_trial_reason(
+            await trial_cap.trial_block_reason(owner_id), _owner_role(auth)
+        )
+        if trial_gate is not None:
+            raise HTTPException(status_code=402, detail=trial_gate.to_payload())
         try:
             await _assert_provision_allowed(
                 owner_id,

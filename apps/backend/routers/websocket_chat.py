@@ -2372,26 +2372,33 @@ async def _process_agent_steer_background(
 
         pool = get_gateway_pool()
 
-        # Free-tier daily-cap gate for the steer path. A steer is a raw
-        # chat.send that costs real model tokens (queue-mode merges it into the
-        # in-flight run, but it still costs), so without this an over-cap trial
-        # owner would keep steering past the $3/day cap with no 402 card — the
-        # primary agent_chat send is gated by gate_chat, but this path forwards
-        # its own chat.send with no gate. Same read-only cap primitive as
+        # Free-tier gate for the steer path. A steer is a raw chat.send that
+        # costs real model tokens (queue-mode merges it into the in-flight run,
+        # but it still costs), and it needs only a RUNNING container — not an
+        # in-flight run — so without a gate here it is an ungated chat entrance:
+        # the primary agent_chat send is gated by gate_chat, but this path
+        # forwards its own chat.send.
+        #
+        # It checks the FULL trial predicate, not just the cap. Checking only
+        # the cap left a trial owner whose window had expired — but whose
+        # container was still up — able to keep steering (and spending) after
+        # gate_chat had already started refusing their sends. Same predicate as
         # gate_chat Layer 2; the steer's actual cost is counted by the meter
         # Lambda at the AWS layer like every other invocation.
-        from core.services import trial_cap
+        from core.services import provision_gate, trial_cap
 
-        if await trial_cap.is_over_daily_cap(owner_id):
-            put_metric("chat.error", dimensions={"reason": "meta_daily_cap"})
-            logger.info("[%s] chat.steer BLOCKED (meta_daily_cap) agent=%s", user_id, agent_id)
+        steer_reason = await trial_cap.trial_block_reason(owner_id)
+        if steer_reason is not None:
+            gate = provision_gate.gate_for_trial_reason(steer_reason, owner_role="admin")
+            put_metric("chat.error", dimensions={"reason": steer_reason})
+            logger.info("[%s] chat.steer BLOCKED (%s) agent=%s", user_id, steer_reason, agent_id)
             management_api.send_message(
                 connection_id,
                 {
                     "type": "error",
-                    "code": "meta_daily_cap",
+                    "code": gate.code,
                     "agent_id": agent_id,
-                    "message": "You've used today's free allowance — resets tomorrow. Upgrade to keep going.",
+                    "message": gate.message,
                 },
             )
             return

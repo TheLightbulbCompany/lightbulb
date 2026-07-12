@@ -2162,21 +2162,24 @@ class GatewayConnectionPool:
         #
         # Guarded on the status we already have in hand from Layer 1 so a
         # paid owner's chat never pays for the extra billing read
-        # ``is_over_daily_cap`` does. ``is_over_daily_cap`` self-gates on the
-        # same predicate, so this is belt-and-braces, not a second contract.
+        # ``reason_for_account`` does. That helper self-gates on the same
+        # predicate, so this is belt-and-braces, not a second contract.
         if account is not None and account.get("subscription_status") == "trial_local":
-            # Expired 3-day trial. Same read-time comparison as
-            # provision_gate.trial_expired_gate — trial_local's clock is ours
-            # by construction, no persisted flip, no worker. Reuses the
-            # ``account`` row already loaded by Layer 1 — no extra DDB read.
-            trial_end = account.get("trial_end")
-            if trial_end is not None and int(time.time()) > int(trial_end):
+            # ONE predicate, shared with the provision gate, the container-start
+            # chokepoint, /container/recover and the Teams run guards, so no door
+            # can disagree about whether a trial owner has runway. This branch
+            # used to inline its own trial_end comparison — a third copy of that
+            # arithmetic, and exactly the drift the shared helper exists to
+            # prevent. ``account`` is already in hand from Layer 1, so
+            # reason_for_account spends no extra DDB read.
+            reason = await trial_cap.reason_for_account(owner_id, account)
+            if reason == trial_cap.TRIAL_EXPIRED:
                 return {
                     "blocked": True,
                     "code": "trial_expired",
                     "message": "Your 3-day free trial has ended. Pick a plan to keep your agent.",
                 }
-            if await trial_cap.is_over_daily_cap(owner_id):
+            if reason == trial_cap.DAILY_CAP:
                 # Trial funnel telemetry: first block of the UTC day per
                 # owner (dedup below) — every later turn re-hits this same
                 # branch until midnight or upgrade, so without the dedup a

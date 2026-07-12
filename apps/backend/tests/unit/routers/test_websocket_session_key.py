@@ -99,7 +99,7 @@ async def test_steer_builds_4part_key(mock_ecs, mock_pool, mock_mgmt):
     # The steer path consults the free-tier daily cap before forwarding; pin it
     # under-cap so the read-path stays isolated from billing_repo in this
     # session-key test.
-    with patch("core.services.trial_cap.is_over_daily_cap", new=AsyncMock(return_value=False)):
+    with patch("core.services.trial_cap.trial_block_reason", new=AsyncMock(return_value=None)):
         await _process_agent_steer_background(
             connection_id="c",
             user_id="user-1",

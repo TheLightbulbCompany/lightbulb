@@ -1,7 +1,7 @@
 """Tests for the free-tier $3/day cap wired into the live chat path.
 
 ``GatewayConnectionPool.gate_chat`` Layer 2 is a **read-only** check of the
-daily-spend counter (``trial_cap.is_over_daily_cap``). It places NO reserve
+daily-spend counter (via ``trial_cap.reason_for_account``). It places NO reserve
 and writes nothing — the Bedrock invocation-log meter Lambda is the sole
 writer of the counter and the authoritative enforcement (revoke the owner's
 inference profile + ``desiredCount=0``). Blocking here is UX.
@@ -16,6 +16,8 @@ import time
 from unittest.mock import AsyncMock, patch
 
 import pytest
+
+from core.services import trial_cap
 
 from core.gateway.connection_pool import GatewayConnection, GatewayConnectionPool
 
@@ -34,8 +36,8 @@ async def test_gate_blocks_trial_owner_at_cap():
             new=AsyncMock(return_value={"subscription_status": "trial_local"}),
         ),
         patch(
-            "core.services.trial_cap.is_over_daily_cap",
-            new=AsyncMock(return_value=True),
+            "core.services.trial_cap.reason_for_account",
+            new=AsyncMock(return_value=trial_cap.DAILY_CAP),
         ) as cap_mock,
         patch(
             "core.observability.product_analytics.capture_once_per_owner_per_day",
@@ -46,7 +48,7 @@ async def test_gate_blocks_trial_owner_at_cap():
     assert gate["blocked"] is True
     assert gate["code"] == "meta_daily_cap"
     assert isinstance(gate["message"], str) and gate["message"]
-    cap_mock.assert_awaited_once_with("u")
+    cap_mock.assert_awaited_once_with("u", {"subscription_status": "trial_local"})
     capture_mock.assert_called_once_with(owner_id="u", event="trial_cap_reached")
 
 
@@ -92,8 +94,8 @@ async def test_gate_does_not_read_the_container_row():
             new=AsyncMock(return_value={"subscription_status": "trial_local"}),
         ),
         patch(
-            "core.services.trial_cap.is_over_daily_cap",
-            new=AsyncMock(return_value=False),
+            "core.services.trial_cap.reason_for_account",
+            new=AsyncMock(return_value=None),
         ),
         patch("core.repositories.container_repo.get_by_owner_id", new=AsyncMock()) as container_mock,
     ):
@@ -121,8 +123,8 @@ async def test_paid_owner_is_never_capped():
         ),
         patch("core.services.metronome_gate.is_owner_blocked", new=AsyncMock(return_value=False)),
         patch(
-            "core.services.trial_cap.is_over_daily_cap",
-            new=AsyncMock(return_value=True),
+            "core.services.trial_cap.reason_for_account",
+            new=AsyncMock(return_value=trial_cap.DAILY_CAP),
         ) as cap_mock,
     ):
         gate = await pool.gate_chat(user_id="u", owner_id="u", session_key="sk1")
@@ -150,8 +152,8 @@ async def test_paid_owner_with_stale_trial_end_is_not_expired_or_capped():
             ),
         ),
         patch(
-            "core.services.trial_cap.is_over_daily_cap",
-            new=AsyncMock(return_value=True),
+            "core.services.trial_cap.reason_for_account",
+            new=AsyncMock(return_value=trial_cap.DAILY_CAP),
         ) as cap_mock,
     ):
         gate = await pool.gate_chat(user_id="u", owner_id="u", session_key="sk1")
@@ -176,16 +178,17 @@ async def test_gate_blocks_expired_trial_before_the_cap_check():
             ),
         ),
         patch(
-            "core.services.trial_cap.is_over_daily_cap",
-            new=AsyncMock(return_value=False),
-        ) as cap_mock,
+            "core.services.trial_cap.billing_repo.get_meta_daily_spend",
+            new=AsyncMock(return_value=0),
+        ) as spend_mock,
     ):
         gate = await pool.gate_chat(user_id="u", owner_id="u", session_key="sk1")
 
     assert gate["blocked"] is True
     assert gate["code"] == "trial_expired"
     assert isinstance(gate["message"], str) and gate["message"]
-    cap_mock.assert_not_awaited()
+    # Expiry short-circuits: the daily-spend counter is never even read.
+    spend_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -200,7 +203,7 @@ async def test_gate_chat_cap_read_raise_propagates():
             new=AsyncMock(return_value={"subscription_status": "trial_local"}),
         ),
         patch(
-            "core.services.trial_cap.is_over_daily_cap",
+            "core.services.trial_cap.reason_for_account",
             new=AsyncMock(side_effect=RuntimeError("dynamodb boom")),
         ),
     ):

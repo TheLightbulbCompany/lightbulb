@@ -480,7 +480,7 @@ async def add_meta_daily_spend(owner_id: str, date: str, delta_microcents: int) 
     total for that date.
 
     Backs the free-tier $3/day cost cap read by
-    ``core/services/trial_cap.is_over_daily_cap``. The **Bedrock
+    ``core/services/trial_cap.trial_block_reason``. The **Bedrock
     invocation-log meter Lambda is the sole writer** of this counter — it
     prices every model invocation at the AWS layer and ADDs it here. No
     in-band backend path writes it; two writers would double-count.

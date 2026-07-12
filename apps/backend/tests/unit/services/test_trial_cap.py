@@ -1,10 +1,14 @@
-"""Tests for the free-tier $3/day cap read primitive.
+"""Tests for the free-tier trial predicate.
 
-``is_over_daily_cap`` is the ONLY cap primitive: it is what gate_chat's
-Layer 2, the Teams BFF guards, the
-chat-steer path and the container-wake check all call. It is a pure read of
-the daily-spend counter the Bedrock meter Lambda maintains — the backend
-never writes to that counter and places no reserve.
+``trial_block_reason`` is the ONLY trial primitive: it is what gate_chat's
+Layer 2, the container-start chokepoint, /container/recover, the container-wake
+check, the chat-steer path and the Teams BFF run guards all call. It is a pure
+read of the daily-spend counter the Bedrock meter Lambda maintains (plus the
+locally-stamped trial_end) — the backend never writes to that counter and places
+no reserve.
+
+There is deliberately no cap-ONLY primitive: one used to exist and four doors
+reached for it, checking only half the predicate.
 """
 
 import pytest
@@ -14,7 +18,7 @@ from core.services.trial_cap import CAP_MICROCENTS
 
 
 @pytest.mark.asyncio
-async def test_is_over_daily_cap_true_for_trial_local_at_cap(monkeypatch):
+async def test_trial_block_reason_true_for_trial_local_at_cap(monkeypatch):
     """A trial_local owner whose spend has reached exactly CAP_MICROCENTS is
     over the cap (the block condition is >=)."""
 
@@ -27,11 +31,11 @@ async def test_is_over_daily_cap_true_for_trial_local_at_cap(monkeypatch):
     monkeypatch.setattr("core.services.trial_cap.billing_repo.get_by_owner_id", fake_get_by_owner_id)
     monkeypatch.setattr("core.services.trial_cap.billing_repo.get_meta_daily_spend", fake_get_meta_daily_spend)
 
-    assert await trial_cap.is_over_daily_cap("owner1") is True
+    assert await trial_cap.trial_block_reason("owner1") == trial_cap.DAILY_CAP
 
 
 @pytest.mark.asyncio
-async def test_is_over_daily_cap_true_for_trial_local_over_cap(monkeypatch):
+async def test_trial_block_reason_true_for_trial_local_over_cap(monkeypatch):
     async def fake_get_by_owner_id(owner_id):
         return {"owner_id": owner_id, "subscription_status": "trial_local"}
 
@@ -41,11 +45,11 @@ async def test_is_over_daily_cap_true_for_trial_local_over_cap(monkeypatch):
     monkeypatch.setattr("core.services.trial_cap.billing_repo.get_by_owner_id", fake_get_by_owner_id)
     monkeypatch.setattr("core.services.trial_cap.billing_repo.get_meta_daily_spend", fake_get_meta_daily_spend)
 
-    assert await trial_cap.is_over_daily_cap("owner1") is True
+    assert await trial_cap.trial_block_reason("owner1") == trial_cap.DAILY_CAP
 
 
 @pytest.mark.asyncio
-async def test_is_over_daily_cap_false_for_trial_local_under_cap(monkeypatch):
+async def test_trial_block_reason_false_for_trial_local_under_cap(monkeypatch):
     async def fake_get_by_owner_id(owner_id):
         return {"owner_id": owner_id, "subscription_status": "trial_local"}
 
@@ -55,11 +59,11 @@ async def test_is_over_daily_cap_false_for_trial_local_under_cap(monkeypatch):
     monkeypatch.setattr("core.services.trial_cap.billing_repo.get_by_owner_id", fake_get_by_owner_id)
     monkeypatch.setattr("core.services.trial_cap.billing_repo.get_meta_daily_spend", fake_get_meta_daily_spend)
 
-    assert await trial_cap.is_over_daily_cap("owner1") is False
+    assert await trial_cap.trial_block_reason("owner1") is None
 
 
 @pytest.mark.asyncio
-async def test_is_over_daily_cap_false_for_paid_owner_even_if_over_cap(monkeypatch):
+async def test_trial_block_reason_false_for_paid_owner_even_if_over_cap(monkeypatch):
     """A paid (active) owner is never blocked by this check, even if their
     (hypothetical) daily-spend counter is over CAP_MICROCENTS -- the free-tier
     cap only applies to trial_local owners."""
@@ -76,12 +80,12 @@ async def test_is_over_daily_cap_false_for_paid_owner_even_if_over_cap(monkeypat
     monkeypatch.setattr("core.services.trial_cap.billing_repo.get_by_owner_id", fake_get_by_owner_id)
     monkeypatch.setattr("core.services.trial_cap.billing_repo.get_meta_daily_spend", fake_get_meta_daily_spend)
 
-    assert await trial_cap.is_over_daily_cap("owner1") is False
+    assert await trial_cap.trial_block_reason("owner1") is None
     assert spend_calls == []  # short-circuits before the spend read
 
 
 @pytest.mark.asyncio
-async def test_is_over_daily_cap_false_for_no_account(monkeypatch):
+async def test_trial_block_reason_false_for_no_account(monkeypatch):
     async def fake_get_by_owner_id(owner_id):
         return None
 
@@ -94,13 +98,13 @@ async def test_is_over_daily_cap_false_for_no_account(monkeypatch):
     monkeypatch.setattr("core.services.trial_cap.billing_repo.get_by_owner_id", fake_get_by_owner_id)
     monkeypatch.setattr("core.services.trial_cap.billing_repo.get_meta_daily_spend", fake_get_meta_daily_spend)
 
-    assert await trial_cap.is_over_daily_cap("owner1") is False
+    assert await trial_cap.trial_block_reason("owner1") is None
     assert spend_calls == []  # short-circuits before the spend read
 
 
 @pytest.mark.asyncio
 async def test_no_backend_path_writes_the_counter(monkeypatch):
-    """The meter Lambda is the SOLE writer. ``is_over_daily_cap`` — the only
+    """The meter Lambda is the SOLE writer. ``trial_block_reason`` — the only
     surviving cap primitive — must never ADD to the counter, or the Lambda's
     tally would double-count."""
     writes = []
@@ -119,7 +123,7 @@ async def test_no_backend_path_writes_the_counter(monkeypatch):
     monkeypatch.setattr("core.services.trial_cap.billing_repo.get_meta_daily_spend", fake_get_meta_daily_spend)
     monkeypatch.setattr("core.services.trial_cap.billing_repo.add_meta_daily_spend", fake_add)
 
-    await trial_cap.is_over_daily_cap("owner1")
+    await trial_cap.trial_block_reason("owner1")
 
     assert writes == []
 
@@ -144,9 +148,10 @@ async def test_trial_block_reason_catches_an_expired_trial(monkeypatch):
     monkeypatch.setattr("core.services.trial_cap.billing_repo.get_by_owner_id", fake_account)
     monkeypatch.setattr("core.services.trial_cap.billing_repo.get_meta_daily_spend", fake_spend)
 
+    # Expiry blocks even at zero spend. There is no longer a cap-only predicate
+    # that could miss this: it was deleted precisely because four doors reached
+    # for it and so checked only half the question.
     assert await trial_cap.trial_block_reason("user_x") == trial_cap.TRIAL_EXPIRED
-    # ...and the cap-only predicate does NOT catch it — which is exactly the gap.
-    assert await trial_cap.is_over_daily_cap("user_x") is False
 
 
 @pytest.mark.asyncio

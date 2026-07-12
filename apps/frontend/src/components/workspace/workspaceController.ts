@@ -64,6 +64,7 @@ function recomputeSnapshot(): void {
   }
   const active = _api.activePanel;
   const openPanelIds = _api.panels.map((p) => p.id);
+  const groupActivePanels = _api.groups.map((g) => g.activePanel);
   // Dedupe: a restored layout can hold both a sentinel chat panel
   // (chat:__default__) and the concrete chat panel it resolves to in separate
   // groups — both map to the same agentId, and a duplicate would wrongly widen
@@ -71,8 +72,8 @@ function recomputeSnapshot(): void {
   // shared contract, so keep it clean).
   const visibleChatAgentIds = Array.from(
     new Set(
-      _api.groups
-        .map((g) => agentIdOfChatPanel(g.activePanel))
+      groupActivePanels
+        .map((p) => agentIdOfChatPanel(p))
         .filter((id): id is string => id !== null),
     ),
   );
@@ -81,7 +82,13 @@ function recomputeSnapshot(): void {
     activePanelId: active?.id ?? null,
     focusedChatAgentId: agentIdOfChatPanel(active),
     visibleChatAgentIds,
-    teamsPanelVisible: openPanelIds.some((id) => id.startsWith("teams-")),
+    // Visible = the ACTIVE tab of some group (same traversal as
+    // visibleChatAgentIds), NOT merely open: Mission Control keeps teams
+    // panels permanently open, so open-based suppression would swallow every
+    // teams run toast on the default layout.
+    teamsPanelVisible: groupActivePanels.some(
+      (p) => p !== undefined && p.id.startsWith("teams-"),
+    ),
     openPanelIds,
   };
   notify();
@@ -109,6 +116,16 @@ export function attachDockviewApi(
     _resolveDefaultAgentId = () => undefined;
     recomputeSnapshot();
   };
+}
+
+// The snapshot's sentinel resolution (chat:__default__ → concrete agent id)
+// reads the default-agent resolver at recompute time, but the roster arriving
+// is not a dockview event — none of the attach-time listeners fire. The shell
+// calls this when the resolved default id changes so a cold load re-resolves
+// focusedChatAgentId / visibleChatAgentIds. Safe no-op when no api is
+// attached (the snapshot is already the empty one).
+export function refreshWorkspaceSnapshot(): void {
+  recomputeSnapshot();
 }
 
 function addOrFocus(descriptor: PanelDescriptor, extraParams?: Record<string, string>): void {
@@ -204,9 +221,10 @@ export function closeSubjectDeleted(selfPanelId: string, listPanelKey: string): 
 }
 
 // Sidebar agent-delete: close the agent's chat panel if it happens to be
-// open. No URL involvement (chat is never URL-named — see
-// panelRegistry.durableParamsFor) — just remove it under the shell-op guard
-// so the clear-on-close listener doesn't misfire against a durable panel.
+// open. Removed under the shell-op guard so the clear-on-close listener
+// doesn't touch the URL mid-delete; a bare ?agent still naming the deleted
+// agent is left for the reconciler, which resolves it to the agent-gone
+// state.
 export function closeChatPanelIfOpen(agentId: string): void {
   if (!_api) return;
   const panel = _api.getPanel(chatPanelId(agentId));

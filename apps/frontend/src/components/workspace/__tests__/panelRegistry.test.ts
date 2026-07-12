@@ -84,7 +84,8 @@ describe("panelRegistry", () => {
     expect(durableParamsFor("agent-inspector")).toEqual(["panel", "agent", "inspectorTab"]);
     expect(durableParamsFor("teams-issues")).toEqual(["panel", "agent"]);
     expect(durableParamsFor("teams-inbox")).toEqual(["panel"]);
-    expect(durableParamsFor("chat:a-1")).toEqual([]); // chat is never URL-named
+    // Bare ?agent names a chat panel (rule 7) — close must clear it.
+    expect(durableParamsFor("chat:a-1")).toEqual(["agent"]);
   });
 
   it("registers exactly the component keys the shell's components map will have", () => {

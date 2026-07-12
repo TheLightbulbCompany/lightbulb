@@ -83,18 +83,17 @@ export function buildPanelUrl(panelKey: string, params: Record<string, string>):
 }
 
 // Closing the URL-named panel canonicalizes the URL in place (replace, never
-// push) so a refresh can't resurrect the panel the user just closed.
-// urlPanelKey is the raw ?panel value (alias-resolved by the caller).
-export function clearPanelFromUrl(
-  search: string,
-  closedPanelId: string,
-  urlPanelKey: string,
-): string | null {
+// push) so a refresh can't resurrect the panel the user just closed. Returns
+// null when the URL names a different panel — or when clearing would leave
+// the search string unchanged, so the caller never issues an identical
+// replaceState.
+export function clearPanelFromUrl(search: string, closedPanelId: string): string | null {
   const command = parseCommand(search);
   if (!command || command.descriptor.panelId !== closedPanelId) return null;
   const params = toParams(search);
+  const before = params.toString();
   for (const k of durableParamsFor(closedPanelId)) params.delete(k);
   for (const k of ONE_SHOT_PARAMS) params.delete(k);
-  void urlPanelKey;
-  return params.toString();
+  const result = params.toString();
+  return result === before ? null : result;
 }

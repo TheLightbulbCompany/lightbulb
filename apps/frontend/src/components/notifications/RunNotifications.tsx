@@ -165,8 +165,9 @@ export function RunNotifications(props: RunNotificationsProps): null {
             // Desktop: every visible chat panel contributes a bare (agent-level)
             // key plus the compound key for the session it is showing.
             watchedChatKeys: buildDesktopWatchedKeys(workspace.visibleChatAgentIds),
-            // v1 approximation: an OPEN teams panel counts as active. See the
-            // teamsPanelVisible note in workspaceController.
+            // A teams panel counts as active only while it is the ACTIVE tab
+            // of some dockview group — open-but-background tabs don't
+            // suppress. See the teamsPanelVisible note in workspaceController.
             teamsPanelActive: workspace.teamsPanelVisible,
           };
     agentsRef.current = agents;

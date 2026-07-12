@@ -47,6 +47,7 @@ import {
   isShellOperationInProgress,
   resetWorkspaceLayout,
   getWorkspaceSnapshot,
+  refreshWorkspaceSnapshot,
   useWorkspaceState,
 } from "./workspaceController";
 
@@ -81,6 +82,15 @@ export function WorkspaceShell(): React.ReactElement {
   useEffect(() => {
     defaultIdRef.current = defaultId;
   });
+  // Sentinel re-resolution: the snapshot resolves chat:__default__ through
+  // defaultIdRef at recompute time, and the roster arriving is not a dockview
+  // event — without this, a cold load leaves focusedChatAgentId /
+  // visibleChatAgentIds null (no sidebar highlight, no SessionList, toast
+  // suppression misses the watched run) until some unrelated layout event.
+  // Declared AFTER the ref-sync effect above so the ref is fresh when it runs.
+  useEffect(() => {
+    refreshWorkspaceSnapshot();
+  }, [defaultId]);
 
   const searchParams = useSearchParams();
   const lastAppliedRef = useRef<string | null>(null);
@@ -184,11 +194,7 @@ export function WorkspaceShell(): React.ReactElement {
       disposablesRef.current.push(
         api.onDidRemovePanel((panel) => {
           if (isShellOperationInProgress()) return;
-          const cleared = clearPanelFromUrl(
-            window.location.search,
-            panel.id,
-            new URLSearchParams(window.location.search).get("panel") ?? "",
-          );
+          const cleared = clearPanelFromUrl(window.location.search, panel.id);
           if (cleared !== null) replaceSearchParams(new URLSearchParams(cleared));
         }),
       );

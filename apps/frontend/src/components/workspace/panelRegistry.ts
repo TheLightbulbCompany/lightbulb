@@ -154,7 +154,10 @@ export function describePanel(
 // the clear-on-close replaceState clears exactly this set so a refresh
 // can't resurrect a deliberately closed panel with stale filter state.
 export function durableParamsFor(panelId: string): string[] {
-  if (panelId.startsWith("chat:")) return []; // chat is never URL-named
+  // Bare ?agent IS a chat command (urlChannel rule 7 — marketplace
+  // deploy-success links), so closing a chat panel must clear the agent
+  // param or a refresh resurrects the panel the user just closed.
+  if (panelId.startsWith("chat:")) return ["agent"];
   if (panelId === "agent-inspector") return ["panel", "agent", "inspectorTab"];
   if (panelId === "control:agents") return ["panel", "agent"];
   if (panelId === "teams-issues") return ["panel", "agent"];

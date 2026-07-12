@@ -351,3 +351,22 @@ Each entry cites where to verify it in the current tree.
    (`RunNotifications.tsx:155-160`) — no bare-agent key — to stay
    byte-equivalent with the pre-dock single-chat suppression logic, where
    only one chat view is ever active at a time.
+4. **Rule 7's "unknown agent → focus default chat" ships as an agent-gone
+   panel with a Close button.** At reconcile time the shell cannot tell an
+   agent id that no longer exists apart from one whose roster simply hasn't
+   loaded yet (unknowable-vs-unloaded — `useAgents` may still be settling
+   when the URL command executes), so the reconciler opens the chat panel
+   for the requested id and `ChatPanel` renders "This agent no longer
+   exists" with a Close button once the roster settles without it
+   (`ChatPanel.tsx` `agentGone` gate), instead of silently redirecting focus
+   to the default chat.
+5. **The desktop reconciler resolves retired aliases without canonicalizing
+   the address bar.** Mobile canonicalizes a retired `?panel=` key in place
+   via `replaceSearchParams` (`app/chat/page.tsx`, MobileChatShell's
+   canonicalization effect). The desktop reconciler resolves the alias
+   (`deriveReconcilerAction` → `resolvePanelAlias`) and opens the resolved
+   panel, but leaves the legacy key in the address bar — the URL retains
+   e.g. `?panel=credits` while the `control:llm` panel renders. Harmless
+   under the latch (the signature is of the raw URL, so no re-execution),
+   just visibly non-canonical until the next explicit navigation writes the
+   URL.

@@ -65,17 +65,28 @@ describe("buildPanelUrl", () => {
 describe("clearPanelFromUrl", () => {
   it("clears the full durable set when the closed panel is URL-named", () => {
     expect(
-      clearPanelFromUrl("?panel=agent-inspector&agent=a-1&inspectorTab=channels", "agent-inspector", "agent-inspector"),
+      clearPanelFromUrl("?panel=agent-inspector&agent=a-1&inspectorTab=channels", "agent-inspector"),
     ).toBe("");
     expect(
-      clearPanelFromUrl("?panel=teams-issue-detail&detailId=ADM-9", "teams-issue-detail:ADM-9", "teams-issue-detail"),
+      clearPanelFromUrl("?panel=teams-issue-detail&detailId=ADM-9", "teams-issue-detail:ADM-9"),
     ).toBe("");
   });
+  it("clears ?agent when the closed panel is the bare-?agent chat command", () => {
+    // Rule 7 makes bare ?agent a chat command, so closing that chat panel
+    // must clear it — otherwise refresh resurrects the closed panel.
+    expect(clearPanelFromUrl("?agent=agent-uuid-1", "chat:agent-uuid-1")).toBe("");
+  });
   it("returns null when the closed panel is not the URL-named one", () => {
-    expect(clearPanelFromUrl("?panel=teams-inbox", "teams-issues", "teams-inbox")).toBeNull();
+    expect(clearPanelFromUrl("?panel=teams-inbox", "teams-issues")).toBeNull();
     expect(
-      clearPanelFromUrl("?panel=teams-issue-detail&detailId=OTHER", "teams-issue-detail:ADM-9", "teams-issue-detail"),
+      clearPanelFromUrl("?panel=teams-issue-detail&detailId=OTHER", "teams-issue-detail:ADM-9"),
     ).toBeNull();
+  });
+  it("returns null when clearing would leave the search unchanged", () => {
+    // ?panel=chat&agentId=… is parseable grammar (describePanel accepts
+    // agentId) but chat's durable set is ["agent"] — nothing to delete, so
+    // no identical replaceState may be issued.
+    expect(clearPanelFromUrl("?panel=chat&agentId=a-1", "chat:a-1")).toBeNull();
   });
 });
 

@@ -7,6 +7,7 @@ import {
   closeSubjectDeleted,
   closeChatPanelIfOpen,
   isShellOperationInProgress,
+  refreshWorkspaceSnapshot,
   _resetControllerForTests,
   _snapshotForTests,
 } from "../workspaceController";
@@ -192,6 +193,63 @@ describe("workspaceController", () => {
     } as unknown as DockviewApi;
     attachDockviewApi(api, () => "friday-id");
     expect(_snapshotForTests().visibleChatAgentIds).toEqual(["friday-id"]);
+  });
+
+  it("refreshWorkspaceSnapshot re-resolves the sentinel when the roster arrives late", () => {
+    // Cold load: the sentinel chat panel opens before useAgents().defaultId
+    // exists, so the snapshot can't resolve it. The roster arriving is not a
+    // dockview event — the shell must call refreshWorkspaceSnapshot to
+    // re-resolve, or sidebar highlight / SessionList / toast suppression stay
+    // broken until some unrelated layout event.
+    const api = makeFakeApi();
+    let rosterDefaultId: string | undefined = undefined; // roster not loaded yet
+    attachDockviewApi(api, () => rosterDefaultId);
+    openPanel("chat", { agent: "__default__" }); // Mission Control sentinel
+    expect(_snapshotForTests().focusedChatAgentId).toBeNull();
+    expect(_snapshotForTests().visibleChatAgentIds).toEqual([]);
+    rosterDefaultId = "friday-id"; // roster arrives
+    refreshWorkspaceSnapshot();
+    expect(_snapshotForTests().focusedChatAgentId).toBe("friday-id");
+    expect(_snapshotForTests().visibleChatAgentIds).toContain("friday-id");
+  });
+
+  it("teamsPanelVisible requires a teams panel to be some group's ACTIVE tab, not merely open", () => {
+    // Mission Control keeps teams panels permanently OPEN — if open counted
+    // as visible, teams run toasts would be suppressed forever on the
+    // default layout.
+    const teams = { id: "teams-inbox" };
+    const chatA = { id: "chat:a-1" };
+    const stubs = {
+      getPanel: () => undefined,
+      onDidActivePanelChange: () => ({ dispose: vi.fn() }),
+      onDidAddPanel: () => ({ dispose: vi.fn() }),
+      onDidRemovePanel: () => ({ dispose: vi.fn() }),
+      onDidLayoutChange: () => ({ dispose: vi.fn() }),
+    };
+    // Teams panel open but a BACKGROUND tab (its group's active tab is chat):
+    const detach = attachDockviewApi(
+      {
+        ...stubs,
+        activePanel: chatA,
+        panels: [teams, chatA],
+        groups: [{ activePanel: chatA }],
+      } as unknown as DockviewApi,
+      () => undefined,
+    );
+    expect(_snapshotForTests().openPanelIds).toContain("teams-inbox");
+    expect(_snapshotForTests().teamsPanelVisible).toBe(false);
+    detach();
+    // Teams panel is the active tab of a BACKGROUND group (dock focus on chat):
+    attachDockviewApi(
+      {
+        ...stubs,
+        activePanel: chatA,
+        panels: [teams, chatA],
+        groups: [{ activePanel: chatA }, { activePanel: teams }],
+      } as unknown as DockviewApi,
+      () => undefined,
+    );
+    expect(_snapshotForTests().teamsPanelVisible).toBe(true);
   });
 
   it("closeChatPanelIfOpen closes an open chat panel under the shell-op guard", () => {

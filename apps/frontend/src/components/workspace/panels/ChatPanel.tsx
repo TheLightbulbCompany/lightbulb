@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { IDockviewPanelProps } from "dockview-react";
 import { SlidersHorizontal, ListTodo, Pause, Play, X } from "lucide-react";
 import { AgentChatWindow } from "@/components/chat/AgentChatWindow";
@@ -44,8 +44,14 @@ export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.Re
     return agent ? agentDisplayName(agent) : raw === DEFAULT_AGENT_SENTINEL ? "Chat" : raw;
   }, [agents, resolvedId, raw]);
 
-  // Keep the dockview tab title in sync with the resolved agent name.
-  if (props.api.title !== title) props.api.setTitle(title);
+  // Keep the dockview tab title in sync with the resolved agent name. An
+  // effect, not a render-phase write: setTitle fires dockview's
+  // onDidLayoutChange as an AsapEvent microtask, which would otherwise run
+  // BEFORE React's passive effects sync the shell's defaultIdRef — the
+  // controller's recompute would then read the stale resolver.
+  useEffect(() => {
+    if (props.api.title !== title) props.api.setTitle(title);
+  }, [props.api, title]);
 
   if (agentGone) {
     return (

@@ -91,12 +91,12 @@ function ChatPageInner() {
   );
   // A detail view whose row was just deleted/hidden swaps itself for the list.
   // Replace, never push — Back must not resurrect a deleted row.
+  // Preserves the ?agent filter so returning to a filtered list restores the filter.
   const leaveToList = useCallback(
     (listPanelKey: string) => {
       const params = new URLSearchParams(searchParams.toString());
       params.set("panel", listPanelKey);
       params.delete("detailId");
-      params.delete("agent");
       replaceSearchParams(params);
     },
     [searchParams],

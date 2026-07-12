@@ -69,7 +69,16 @@ One provider-aware endpoint; the response carries a `mode` discriminator so the 
 
 Placement, naming, and admin gating unchanged (Settings → Usage; dockview `control:usage`).
 
-### 5. Drive-by fixes
+### 5. Mobile app parity (`apps/mobile`)
+
+The Expo app mirrors the web surfaces and gets the same treatment:
+
+- **`src/app/(app)/control/usage.tsx`**: remove the "Total spend / Lifetime" dollar card and the per-member spend value; consume `GET /billing/spend` and render the same three modes as web (billed MTD + per-model split for Bedrock, quota bars for OAuth, tokens-only for BYOK). Token grid and per-member request/token rows stay.
+- **`src/app/(app)/teams/index.tsx`**: the "MONTH SPEND" tile already renders only when `dashboard.costs?.monthSpendCents` is present, so the backend dashboard re-point (§3) flows through with no data change — verify the tile reads correctly for a Bedrock owner and disappears for OAuth/BYOK orgs.
+- **`src/app/(app)/settings.tsx`**: types `current_spend`/`lifetime_spend` but never renders them — just drop the dead fields from the local `BillingAccount` type.
+- Mobile has no Costs panel, so no removal needed there.
+
+### 6. Drive-by fixes
 
 - `admin_service.get_overview` reads usage period `"current"`, which `record_usage` never writes (rows are `YYYY-MM` / `lifetime` / `member:*`) → read the current `YYYY-MM` period so the admin usage view stops being permanently empty.
 - `usage_service.py` docstring claims the raw-cost override covers `meta/` refs; the code gate (`_is_bedrock_model`) excludes them and the Meta trial is dead — fix the docstring.
@@ -84,6 +93,7 @@ Placement, naming, and admin gating unchanged (Settings → Usage; dockview `con
 
 - Backend unit: `/billing/spend` per provider path (bedrock happy-path invoice parse incl. tier→name mapping; oauth happy + degraded; byok; trial), MetronomeClient invoice read (mocked HTTP), dashboard costs re-point (bedrock vs non-bedrock), cache behavior, admin `get_overview` period fix.
 - Frontend: UsagePanel per-mode render tests (single-file vitest); DashboardPanel card presence/absence; removed surfaces stay removed (no spend strings in BillingPanel).
+- Mobile: usage screen per-mode render tests; teams MONTH SPEND tile presence/absence.
 - Live validation (dev): one Bedrock owner — compare `/billing/spend` MTD against the Metronome dashboard's draft invoice; one OAuth owner — quota bars match Codex CLI `/status`.
 
 ## Out of scope

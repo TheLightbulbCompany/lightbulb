@@ -305,3 +305,68 @@ multi-session panels, mobile dock, backend layout persistence.
 
 Line refs verified 2026-07-10/11 against origin/main; re-verify during
 implementation planning — main moves fast.
+
+## Implementation deviations (PR-2)
+
+Recorded where the shipped PR-2 implementation diverged from the plan above.
+Each entry cites where to verify it in the current tree.
+
+1. **Teams providers mount unconditionally above the dock, not gated on
+   layout content.** §3 originally called for `TeamsProvidersHost` to render
+   `InlineTeamsNavProvider` / `TeamsEventsProvider` / `CommandPaletteProvider`
+   "only while ≥1 teams panel is in the layout." As built,
+   `WorkspaceShell.tsx` wraps the entire shell (sidebar, header, dock) in all
+   three providers unconditionally (`WorkspaceShell.tsx:317-372`). Reason:
+   `RunNotifications` — mounted once inside `GatewayProvider`, above
+   `WorkspaceShell` — already holds a **permanent** refcount on the teams
+   event subscription for its own lifetime via
+   `acquireTeamsEvents()`/`releaseTeamsEvents()`
+   (`RunNotifications.tsx:178-181`), so gating the providers on layout
+   content would not have avoided the socket-subscription cost anyway — it
+   was already being paid unconditionally. The actually-expensive piece —
+   `useTeamsWorkspaceStatus`'s `/teams/dashboard` poll (3s × 30 retries on
+   202) — is instead gated per panel: each `TeamsDockPanel` instance calls
+   the hook independently (`TeamsDockPanel.tsx:27`), so the poll only starts
+   once a teams panel is actually opened, and SWR dedupes concurrent calls
+   across multiple simultaneously-open teams panels into one shared request
+   (`useTeamsApi.ts:158-184`, `dedupingInterval: 2000`).
+2. **Legacy control panel keys open as dock panels for URL grammar parity,
+   despite not being sidebar surfaces.** `panelRegistry.ts`'s `CONTROL_KEYS`
+   map (`overview`, `sessions`, `channels`, `usage`, `agents`, `skills`,
+   `llm`, `integrations`, `dreams`, `skill-proposals`) resolves each key to a
+   `component: "control"` dock panel purely so existing internal links
+   (`ChatErrorCard` → `?panel=llm`, `AgentManageSection` →
+   `?panel=agents&agent=…`) keep working under the byte-identical-URL-grammar
+   rule (§6 rule 9) — see the comment at `panelRegistry.ts:59-61`. None of
+   these keys are reachable from the workspace sidebar; `/settings` remains
+   their canonical UI home.
+3. **`RunNotifications` suppression keys differ by shell.** The desktop
+   shell's `watchedChatKeys` set contains both a bare per-agent key
+   (`agentId`) for every visible chat panel *and* a compound
+   `agentId:sessionId` key for whichever session that panel is currently
+   showing (`buildDesktopWatchedKeys`, `RunNotifications.tsx:61-68,167`) —
+   needed because a dock can show several chat panels at once, and a run in
+   a panel whose active session isn't the one that started it must still be
+   suppressed. Mobile builds **compound-only** keys
+   (`RunNotifications.tsx:155-160`) — no bare-agent key — to stay
+   byte-equivalent with the pre-dock single-chat suppression logic, where
+   only one chat view is ever active at a time.
+4. **Rule 7's "unknown agent → focus default chat" ships as an agent-gone
+   panel with a Close button.** At reconcile time the shell cannot tell an
+   agent id that no longer exists apart from one whose roster simply hasn't
+   loaded yet (unknowable-vs-unloaded — `useAgents` may still be settling
+   when the URL command executes), so the reconciler opens the chat panel
+   for the requested id and `ChatPanel` renders "This agent no longer
+   exists" with a Close button once the roster settles without it
+   (`ChatPanel.tsx` `agentGone` gate), instead of silently redirecting focus
+   to the default chat.
+5. **The desktop reconciler resolves retired aliases without canonicalizing
+   the address bar.** Mobile canonicalizes a retired `?panel=` key in place
+   via `replaceSearchParams` (`app/chat/page.tsx`, MobileChatShell's
+   canonicalization effect). The desktop reconciler resolves the alias
+   (`deriveReconcilerAction` → `resolvePanelAlias`) and opens the resolved
+   panel, but leaves the legacy key in the address bar — the URL retains
+   e.g. `?panel=credits` while the `control:llm` panel renders. Harmless
+   under the latch (the signature is of the raw URL, so no re-execution),
+   just visibly non-canonical until the next explicit navigation writes the
+   URL.

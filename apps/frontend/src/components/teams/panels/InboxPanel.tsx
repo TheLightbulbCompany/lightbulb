@@ -18,7 +18,16 @@ import type { CompanyAgent } from "@/components/teams/shared/types";
  * loading state for `useTeamsWorkspaceStatus.kind === "loading"`, so the brief
  * gap here is invisible to users.
  */
-export function InboxPanel() {
+export interface InboxPanelProps {
+  /** One-shot create-dialog intent threaded down from the shell's channel. */
+  newIssue?: "1" | "onboarding" | null;
+  /** Fired once the intent is honored so the shell strips its channel. */
+  onNewIssueConsumed?: () => void;
+  /** ?tab deep link threaded from the shell's channel; validated downstream. */
+  initialTab?: string | null;
+}
+
+export function InboxPanel({ newIssue, onNewIssueConsumed, initialTab }: InboxPanelProps = {}) {
   const { organization, isLoaded: orgLoaded } = useOrganization();
   const { user, isLoaded: userLoaded } = useUser();
 
@@ -42,6 +51,9 @@ export function InboxPanel() {
       companyId={companyId}
       currentUserId={currentUserId}
       agents={agentsData?.agents ?? []}
+      newIssue={newIssue}
+      onNewIssueConsumed={onNewIssueConsumed}
+      initialTab={initialTab}
     />
   );
 }

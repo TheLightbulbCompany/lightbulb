@@ -1,6 +1,5 @@
 "use client";
 
-import { useEffect } from "react";
 import { OverviewPanel } from "./panels/OverviewPanel";
 import { SessionsPanel } from "./panels/SessionsPanel";
 import { UsagePanel } from "./panels/UsagePanel";
@@ -17,39 +16,62 @@ import { AgentInspectorPanel } from "./panels/AgentInspectorPanel";
 interface ControlPanelRouterProps {
   panel: string;
   onPanelChange?: (panel: string) => void;
+  // Params the shell feeds the panels, read from its own channel (URL on
+  // mobile, dockview params on desktop): { agentId?, initialTab?, action? }.
+  // Legacy keys (e.g. credits→llm) are resolved by the shell/registry before
+  // reaching here.
+  panelParams?: Record<string, string>;
+  onConsumeOneShot?: (key: "action") => void;
 }
 
+// Propless panels — rendered as <Panel /> with no params. Panels that take
+// params (agents, llm, agent-inspector) are special-cased in the body below.
 const PANELS: Record<string, React.ComponentType> = {
   overview: OverviewPanel,
   sessions: SessionsPanel,
   channels: ChannelsStatusPanel,
   usage: UsagePanel,
-  agents: AgentsPanel,
   skills: SkillsTab,
-  llm: LLMPanel,
   integrations: IntegrationsPanel,
   dreams: DreamsPanel,
   "skill-proposals": SkillProposalsPanel,
-  "agent-inspector": AgentInspectorPanel,
 };
 
-export function ControlPanelRouter({ panel, onPanelChange }: ControlPanelRouterProps) {
-  // "credits" is a legacy key — the panel merged into Model & Credits.
-  // Remap unconditionally (bookmarks, ?panel=credits deep links) and sync
-  // the parent so URL + sidebar highlight match what actually rendered.
-  const resolvedPanel = panel === "credits" ? "llm" : panel;
-
-  useEffect(() => {
-    if (panel === "credits") onPanelChange?.("llm");
-  }, [panel, onPanelChange]);
-
-  // OverviewPanel is the only panel that takes the panel-switch callback —
-  // its summary cards deep-link into other panels. Every other panel takes
-  // no props.
-  if (resolvedPanel === "overview") {
+export function ControlPanelRouter({
+  panel,
+  onPanelChange,
+  panelParams,
+  onConsumeOneShot,
+}: ControlPanelRouterProps) {
+  // OverviewPanel is the only propless panel that takes the panel-switch
+  // callback — its summary cards deep-link into other panels.
+  if (panel === "overview") {
     return <OverviewPanel onPanelChange={onPanelChange} />;
   }
 
-  const Panel = PANELS[resolvedPanel] || PANELS.overview;
+  // Param-taking panels — threaded from panelParams.
+  if (panel === "agents") {
+    return <AgentsPanel initialAgentId={panelParams?.agentId ?? null} />;
+  }
+  if (panel === "agent-inspector") {
+    return (
+      <AgentInspectorPanel
+        agentId={panelParams?.agentId ?? null}
+        initialTab={panelParams?.initialTab ?? null}
+      />
+    );
+  }
+  if (panel === "llm") {
+    return (
+      <LLMPanel
+        initialAction={
+          panelParams?.action === "change-provider" ? "change-provider" : null
+        }
+        onActionConsumed={() => onConsumeOneShot?.("action")}
+      />
+    );
+  }
+
+  const Panel = PANELS[panel] || PANELS.overview;
   return <Panel />;
 }

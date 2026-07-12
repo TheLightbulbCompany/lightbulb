@@ -1,7 +1,6 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { useSearchParams } from "next/navigation";
 import { Bot, ScrollText, Wrench, MessageSquare, CalendarClock } from "lucide-react";
 import { AgentOverviewTab } from "./AgentOverviewTab";
 import { AgentInstructionsTab } from "./AgentInstructionsTab";
@@ -34,22 +33,30 @@ const TABS: { id: InspectorTab; icon: typeof Bot; label: string }[] = [
   { id: "schedule", icon: CalendarClock, label: "Schedule" },
 ];
 
-function isInspectorTab(v: string | null): v is InspectorTab {
-  return v !== null && TABS.some((t) => t.id === v);
+function isInspectorTab(v: string | null | undefined): v is InspectorTab {
+  return v != null && TABS.some((t) => t.id === v);
+}
+
+export interface AgentInspectorPanelProps {
+  /** The inspected agent id (from the roster's "Inspect agent"). null = none. */
+  agentId?: string | null;
+  /** Deep-link initial tab (Get Started "Connect a channel" CTA). null = default. */
+  initialTab?: string | null;
 }
 
 /**
  * Per-agent inspector shell (increment 1 of the unified-nav migration).
  *
- * Reads the inspected agent id from `?agent` and re-mounts the EXISTING
+ * Takes the inspected agent id as a prop (each shell reads its own channel: the
+ * ?agent URL param on mobile, dock params on desktop) and re-mounts the EXISTING
  * per-agent control surfaces (Overview / Tools / Channels) as tabs — the same
  * components AgentsPanel mounts in its detail pane, wired with the same props.
  * No new write path: every save still flows through the tabs' existing RPCs.
  */
-export function AgentInspectorPanel() {
-  const searchParams = useSearchParams();
-  const agentId = searchParams.get("agent");
-
+export function AgentInspectorPanel({
+  agentId = null,
+  initialTab = null,
+}: AgentInspectorPanelProps = {}) {
   // Channels require an active subscription (or trial), mirroring AgentsPanel.
   const { isSubscribed } = useBilling();
   const channelsEnabled = isSubscribed;
@@ -78,18 +85,23 @@ export function AgentInspectorPanel() {
   );
 
   // The Get Started "Connect a channel" CTA deep-links here with
-  // ?inspectorTab=channels so a fresh user lands directly on the bot-create
-  // surface. Read once at mount (mirroring AgentsPanel's ?agent deep-link);
-  // manual tab clicks own the state thereafter. Falls back to Overview for a
+  // initialTab=channels so a fresh user lands directly on the bot-create
+  // surface. Seeded at mount; manual tab clicks own the state thereafter. A
+  // new command with a different tab re-applies (render-time prev-compare) so a
+  // re-delivered intent isn't ignored. Falls back to Overview for a
   // missing/unknown tab, or when the requested Channels tab is hidden because
   // the owner has no active subscription.
-  const requestedTab = searchParams.get("inspectorTab");
+  const canApplyInitialTab =
+    isInspectorTab(initialTab) &&
+    (initialTab !== "channels" || channelsEnabled);
   const [activeTab, setActiveTab] = useState<InspectorTab>(() =>
-    isInspectorTab(requestedTab) &&
-    (requestedTab !== "channels" || channelsEnabled)
-      ? requestedTab
-      : "overview",
+    canApplyInitialTab ? (initialTab as InspectorTab) : "overview",
   );
+  const [prevInitialTab, setPrevInitialTab] = useState(initialTab);
+  if (initialTab !== prevInitialTab) {
+    setPrevInitialTab(initialTab);
+    if (canApplyInitialTab) setActiveTab(initialTab as InspectorTab);
+  }
 
   if (!agentId) {
     return (

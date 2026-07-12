@@ -29,6 +29,18 @@ const KNOWN_INBOX_TABS_MAP: Record<InboxTab, true> = {
 const DEFAULT_INBOX_TAB: InboxTab = "mine";
 
 /**
+ * Runtime InboxTab validation for external inputs (?tab deep links, threaded
+ * panel params). Own-property check — `in` would walk the prototype chain and
+ * accept "constructor" et al.
+ */
+export function isInboxTab(value: string | null | undefined): value is InboxTab {
+  return (
+    typeof value === "string" &&
+    Object.prototype.hasOwnProperty.call(KNOWN_INBOX_TABS_MAP, value)
+  );
+}
+
+/**
  * Build the namespaced localStorage key for a per-company inbox preference.
  * Exported for tests + cross-tab `storage` event filtering.
  */

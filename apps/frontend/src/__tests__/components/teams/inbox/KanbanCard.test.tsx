@@ -113,7 +113,7 @@ describe("Kanban card inline-shell routing", () => {
   it("routes a plain click through openDetail when inside the nav shell", () => {
     const openDetail = vi.fn();
     const { container } = render(
-      <InlineTeamsNavProvider value={{ openDetail }}>
+      <InlineTeamsNavProvider value={{ openDetail, leaveToList: vi.fn() }}>
         <KanbanCardOverlay issue={baseIssue} agents={[]} />
       </InlineTeamsNavProvider>,
     );
@@ -126,7 +126,7 @@ describe("Kanban card inline-shell routing", () => {
   it("keeps native link behavior for a modified click (new tab)", () => {
     const openDetail = vi.fn();
     const { container } = render(
-      <InlineTeamsNavProvider value={{ openDetail }}>
+      <InlineTeamsNavProvider value={{ openDetail, leaveToList: vi.fn() }}>
         <KanbanCardOverlay issue={baseIssue} agents={[]} />
       </InlineTeamsNavProvider>,
     );

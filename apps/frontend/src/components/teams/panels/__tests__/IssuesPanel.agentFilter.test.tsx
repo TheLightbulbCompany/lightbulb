@@ -2,25 +2,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import type { Issue } from "@/components/teams/shared/types";
 
-// `?agent=<id>` deep link from the /chat roster's "See her work" affordance.
-// This overrides tests/setup.ts's global next/navigation mock so we can drive
-// the panel with a specific search string. The dismiss chip commits its param
-// strip through the History API (shellNav), so those tests spy on
-// window.history.replaceState rather than the router.
-const { searchParamsRef } = vi.hoisted(() => ({
-  searchParamsRef: { current: new URLSearchParams() },
-}));
-
-vi.mock("next/navigation", () => ({
-  useRouter: () => ({
-    push: vi.fn(),
-    replace: vi.fn(),
-    prefetch: vi.fn(),
-    back: vi.fn(),
-  }),
-  usePathname: () => "/chat",
-  useSearchParams: () => searchParamsRef.current,
-}));
+// The agent-scope filter (from the /chat roster's "See her work" affordance) is
+// now a prop, not a URL read. The dismiss chip reports the clear back to the
+// shell via onAgentFilterCleared instead of committing a URL strip itself.
 
 // `/issues` returns a mixed-assignee set; `/agents` resolves the chip name.
 const ISSUES: Issue[] = [
@@ -57,51 +41,45 @@ import { IssuesPanel } from "../IssuesPanel";
 
 beforeEach(() => {
   vi.clearAllMocks();
-  searchParamsRef.current = new URLSearchParams();
 });
 
-describe("IssuesPanel agent filter (?agent)", () => {
-  it("shows only the matching agent's issues when ?agent is set", () => {
-    searchParamsRef.current = new URLSearchParams("agent=agent_friday");
-    render(<IssuesPanel />);
+describe("IssuesPanel agent filter (agentFilter prop)", () => {
+  it("shows only the matching agent's issues when agentFilter is set", () => {
+    render(<IssuesPanel agentFilter="agent_friday" />);
     expect(screen.getByText("Alpha task")).toBeInTheDocument();
     expect(screen.queryByText("Bravo task")).not.toBeInTheDocument();
     expect(screen.queryByText("Charlie task")).not.toBeInTheDocument();
   });
 
-  it("shows all issues when ?agent is absent", () => {
+  it("shows all issues when agentFilter is absent", () => {
     render(<IssuesPanel />);
     expect(screen.getByText("Alpha task")).toBeInTheDocument();
     expect(screen.getByText("Bravo task")).toBeInTheDocument();
     expect(screen.getByText("Charlie task")).toBeInTheDocument();
   });
 
-  it("renders a dismissible filter chip resolving the agent name when ?agent is set", () => {
-    searchParamsRef.current = new URLSearchParams("agent=agent_friday");
-    render(<IssuesPanel />);
+  it("renders a dismissible filter chip resolving the agent name when agentFilter is set", () => {
+    render(<IssuesPanel agentFilter="agent_friday" />);
     // Chip text resolves the roster name rather than the raw id. Scope the
     // match to the chip's "Filtered to …" copy — a plain /Friday/ now also
     // matches the per-row assignee chip (rows surface the assignee name).
     expect(screen.getByText(/Filtered to Friday/)).toBeInTheDocument();
   });
 
-  it("does not render the filter chip when ?agent is absent", () => {
+  it("does not render the filter chip when agentFilter is absent", () => {
     render(<IssuesPanel />);
     expect(screen.queryByLabelText(/clear agent filter/i)).not.toBeInTheDocument();
   });
 
-  it("dismiss chip clears ONLY the agent param (preserving others) via history.replaceState", () => {
-    const replaceStateSpy = vi.spyOn(window.history, "replaceState");
-    searchParamsRef.current = new URLSearchParams(
-      "panel=teams-issues&agent=agent_friday&other=kept",
+  it("dismiss chip reports the clear via onAgentFilterCleared (the shell owns the URL strip)", () => {
+    const onAgentFilterCleared = vi.fn();
+    render(
+      <IssuesPanel
+        agentFilter="agent_friday"
+        onAgentFilterCleared={onAgentFilterCleared}
+      />,
     );
-    render(<IssuesPanel />);
     fireEvent.click(screen.getByLabelText(/clear agent filter/i));
-    expect(replaceStateSpy).toHaveBeenCalledTimes(1);
-    const target = replaceStateSpy.mock.calls[0][2] as string;
-    expect(target).not.toMatch(/agent=/);
-    expect(target).toMatch(/panel=teams-issues/);
-    expect(target).toMatch(/other=kept/);
-    replaceStateSpy.mockRestore();
+    expect(onAgentFilterCleared).toHaveBeenCalledTimes(1);
   });
 });

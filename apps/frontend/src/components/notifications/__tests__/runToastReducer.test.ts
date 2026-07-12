@@ -8,12 +8,18 @@ import {
   type RunToastContext,
 } from "../runToastReducer";
 
-const bgCtx: RunToastContext = {
-  selectedAgentId: "agent-sel",
-  chatViewActive: true,
-  teamsPanelActive: false,
-  selectedSessionId: null,
-};
+// New ctx shape: watchedChatKeys is a set of `${agentId}` (bare — agent-level,
+// desktop) and `${agentId}:${sessionId ?? ""}` (per-session) entries the user
+// is watching. A frame is suppressed iff its bare-agent key OR its
+// agent:session key is present. Mobile builds compound-only keys (per-session,
+// byte-equivalent to the old selectedAgentId/selectedSessionId/chatViewActive
+// logic); a General/null session maps to the trailing-colon key "agent:".
+function chatCtx(keys: string[], teamsPanelActive = false): RunToastContext {
+  return { watchedChatKeys: new Set(keys), teamsPanelActive };
+}
+
+// Mobile watching (agent-sel, General/null) in chat view — the old bgCtx.
+const bgCtx: RunToastContext = chatCtx(["agent-sel:"]);
 
 // Omit session_id entirely when unset, matching the real wire shape of a
 // General-session frame (backend never stamps session_id on 3-part keys), so
@@ -67,7 +73,7 @@ describe("reduceChatFrame — run start", () => {
 
   it("does not suppress the selected agent while a panel is open", () => {
     const s = createRunToastState();
-    const ctx: RunToastContext = { ...bgCtx, chatViewActive: false };
+    const ctx: RunToastContext = chatCtx([]); // nothing watched (chat view not active)
     expect(reduceChatFrame(s, chunk("r1", "agent-sel"), ctx)).toEqual([
       { kind: "working", key: "r1", agentId: "agent-sel", source: "chat" },
     ]);
@@ -75,7 +81,7 @@ describe("reduceChatFrame — run start", () => {
 
   it("suppresses the watched agent when the run's session matches the active session", () => {
     const s = createRunToastState();
-    const ctx: RunToastContext = { ...bgCtx, selectedSessionId: "s1" };
+    const ctx: RunToastContext = chatCtx(["agent-sel:s1"]);
     const watched: ChatIncomingMessage = chunk("r1", "agent-sel", "s1");
     expect(reduceChatFrame(s, watched, ctx)).toEqual([]);
     // terminal while STILL matching agent+session: stays silent
@@ -84,7 +90,7 @@ describe("reduceChatFrame — run start", () => {
 
   it("suppresses the watched agent when both are on General (null session)", () => {
     const s = createRunToastState();
-    const ctx: RunToastContext = { ...bgCtx, selectedSessionId: null };
+    const ctx: RunToastContext = chatCtx(["agent-sel:"]);
     const watched: ChatIncomingMessage = chunk("r1", "agent-sel"); // no session_id -> null
     expect(reduceChatFrame(s, watched, ctx)).toEqual([]);
     expect(reduceChatFrame(s, runEnded("r1", "done", "agent-sel"), ctx)).toEqual([]);
@@ -92,7 +98,7 @@ describe("reduceChatFrame — run start", () => {
 
   it("toasts a background run on a DIFFERENT session of the watched agent", () => {
     const s = createRunToastState();
-    const ctx: RunToastContext = { ...bgCtx, selectedSessionId: "s1" };
+    const ctx: RunToastContext = chatCtx(["agent-sel:s1"]);
     expect(reduceChatFrame(s, chunk("r1", "agent-sel", "s2"), ctx)).toEqual([
       { kind: "working", key: "r1", agentId: "agent-sel", source: "chat" },
     ]);
@@ -103,7 +109,7 @@ describe("reduceChatFrame — run start", () => {
 
   it("toasts a background run in a named session while the watched agent view is on General", () => {
     const s = createRunToastState();
-    const ctx: RunToastContext = { ...bgCtx, selectedSessionId: null };
+    const ctx: RunToastContext = chatCtx(["agent-sel:"]);
     expect(reduceChatFrame(s, chunk("r1", "agent-sel", "s2"), ctx)).toEqual([
       { kind: "working", key: "r1", agentId: "agent-sel", source: "chat" },
     ]);
@@ -122,6 +128,46 @@ describe("reduceChatFrame — run start", () => {
     expect(
       reduceChatFrame(s, { type: "done", runId: "r1", agent_id: "agent-bg" }, bgCtx),
     ).toEqual([]);
+  });
+});
+
+describe("reduceChatFrame — desktop multi-panel suppression", () => {
+  // Desktop builds watchedChatKeys from EVERY visible chat panel: for each
+  // visible agent it adds the bare `agentId` (agent-level suppression) plus the
+  // `${agentId}:${session}` key for the session that panel is showing. A chat
+  // run is suppressed iff its agent's panel is visible — even if that panel is
+  // not the single focused tab.
+
+  it("suppresses a run whose agent panel is visible but not the focused tab", () => {
+    const s = createRunToastState();
+    // Two agents visible in different groups; B is not the focused panel but is
+    // the active tab of its group, so its keys are watched.
+    const ctx = chatCtx(["A", "A:sa", "B", "B:sb"]);
+    expect(reduceChatFrame(s, chunk("r1", "B", "sb"), ctx)).toEqual([]);
+    expect(reduceChatFrame(s, runEnded("r1", "done", "B", "sb"), ctx)).toEqual([]);
+  });
+
+  it("toasts a run for an agent whose panel is NOT visible", () => {
+    const s = createRunToastState();
+    const ctx = chatCtx(["A", "A:sa"]); // only A visible
+    expect(reduceChatFrame(s, chunk("r1", "C", "sc"), ctx)).toEqual([
+      { kind: "working", key: "r1", agentId: "C", source: "chat" },
+    ]);
+  });
+
+  it("suppresses ALL sessions of a visible agent via the bare-agent key", () => {
+    const s = createRunToastState();
+    // On desktop the per-agent chat panel is right there, so a background run on
+    // a DIFFERENT session of the visible agent is still suppressed (agent-level),
+    // unlike mobile's strict per-session behavior.
+    const ctx = chatCtx(["A", "A:sa"]);
+    expect(reduceChatFrame(s, chunk("r1", "A", "s-other"), ctx)).toEqual([]);
+  });
+
+  it("suppresses a sessionless frame on bare-agent match", () => {
+    const s = createRunToastState();
+    const ctx = chatCtx(["A", "A:"]); // A visible on General/null
+    expect(reduceChatFrame(s, chunk("r1", "A"), ctx)).toEqual([]); // no session_id -> null
   });
 });
 
@@ -160,7 +206,7 @@ describe("reduceChatFrame — terminals (run_ended only)", () => {
   it("shows completion for a run that started suppressed if the user navigated away", () => {
     const s = createRunToastState();
     reduceChatFrame(s, chunk("r1", "agent-sel"), bgCtx); // suppressed at start
-    const awayCtx: RunToastContext = { ...bgCtx, chatViewActive: false };
+    const awayCtx: RunToastContext = chatCtx([]); // chat no longer active
     expect(reduceChatFrame(s, runEnded("r1", "done"), awayCtx)).toEqual([
       { kind: "success", key: "r1", agentId: "agent-sel", source: "chat" },
     ]);
@@ -172,9 +218,9 @@ describe("reduceChatFrame — terminals (run_ended only)", () => {
     // the same agent (chat still visible). Per-agent suppression would wrongly
     // mute it; per-session must toast.
     const s = createRunToastState();
-    const onS1: RunToastContext = { ...bgCtx, selectedSessionId: "s1" };
+    const onS1: RunToastContext = chatCtx(["agent-sel:s1"]);
     expect(reduceChatFrame(s, chunk("r1", "agent-sel", "s1"), onS1)).toEqual([]);
-    const onS2: RunToastContext = { ...bgCtx, selectedSessionId: "s2" };
+    const onS2: RunToastContext = chatCtx(["agent-sel:s2"]);
     expect(reduceChatFrame(s, runEnded("r1", "done", "agent-sel", "s1"), onS2)).toEqual([
       { kind: "success", key: "r1", agentId: "agent-sel", source: "chat" },
     ]);
@@ -208,7 +254,7 @@ describe("reduceTeamsRunEvent", () => {
 
   it("suppresses working while a teams panel is open, then toasts terminal after leaving", () => {
     const s = createRunToastState();
-    const onTeams: RunToastContext = { ...bgCtx, teamsPanelActive: true };
+    const onTeams: RunToastContext = chatCtx(["agent-sel:"], true);
     expect(
       reduceTeamsRunEvent(s, "teams.heartbeat.run.queued", { runId: "t1", agentId: "pa1" }, onTeams),
     ).toEqual([]);

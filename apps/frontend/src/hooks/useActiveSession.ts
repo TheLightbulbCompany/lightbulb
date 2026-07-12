@@ -26,6 +26,15 @@ function read(agentId: string | null): string | null {
   return _activeByAgent.get(agentId) ?? null;
 }
 
+// Non-hook read of the module store for callers that need the active session of
+// an arbitrary agent outside a component's own useActiveSession subscription —
+// notably RunNotifications' desktop path, which must resolve a session per
+// visible chat agent and so cannot call the hook in a loop. Returns null
+// (General) when the agent has never selected a session.
+export function getActiveSessionId(agentId: string): string | null {
+  return read(agentId);
+}
+
 function write(agentId: string, sessionId: string | null): void {
   _activeByAgent.set(agentId, sessionId);
   emit();

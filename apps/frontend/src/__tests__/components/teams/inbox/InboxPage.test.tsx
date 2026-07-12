@@ -157,6 +157,23 @@ describe("InboxPage", () => {
     expect(screen.getByText(/no new inbox items/i)).toBeInTheDocument();
   });
 
+  test("a ?tab deep link (initialTab) seeds the active tab ahead of the stored default", () => {
+    render(<InboxPage {...baseProps} initialTab="unread" />);
+    expect(screen.getByText(/no new inbox items/i)).toBeInTheDocument();
+  });
+
+  test("an unknown initialTab falls back to the stored/default tab", () => {
+    render(<InboxPage {...baseProps} initialTab="constructor" />);
+    expect(screen.getByText(/inbox zero/i)).toBeInTheDocument();
+  });
+
+  test("a re-delivered initialTab re-applies on an already-mounted page", () => {
+    const { rerender } = render(<InboxPage {...baseProps} />);
+    expect(screen.getByText(/inbox zero/i)).toBeInTheDocument();
+    rerender(<InboxPage {...baseProps} initialTab="recent" />);
+    expect(screen.getByText(/no recent inbox items/i)).toBeInTheDocument();
+  });
+
   test("clicking the recent tab swaps the empty-state copy", () => {
     render(<InboxPage {...baseProps} />);
     fireEvent.click(screen.getByRole("tab", { name: /recent/i }));
@@ -332,7 +349,7 @@ describe("InboxPage", () => {
   test("keyboard-open opens the detail in-shell when a nav provider is present", () => {
     const openDetail = vi.fn();
     render(
-      <InlineTeamsNavProvider value={{ openDetail }}>
+      <InlineTeamsNavProvider value={{ openDetail, leaveToList: vi.fn() }}>
         <InboxPage {...baseProps} />
       </InlineTeamsNavProvider>,
     );
@@ -356,7 +373,7 @@ describe("InboxPage", () => {
     const openDetail = vi.fn();
 
     render(
-      <InlineTeamsNavProvider value={{ openDetail }}>
+      <InlineTeamsNavProvider value={{ openDetail, leaveToList: vi.fn() }}>
         <InboxPage {...baseProps} />
       </InlineTeamsNavProvider>,
     );

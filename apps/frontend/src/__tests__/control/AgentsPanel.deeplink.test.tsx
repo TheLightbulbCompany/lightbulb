@@ -2,11 +2,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 
-const searchParams = new URLSearchParams();
-
-vi.mock("next/navigation", () => ({
-  useSearchParams: () => searchParams,
-}));
 vi.mock("@/hooks/useGatewayRpc", () => ({
   useGatewayRpc: () => ({
     data: { agents: [{ id: "a1", name: "Alpha" }, { id: "a2", name: "Beta" }], defaultId: "a1" },
@@ -28,18 +23,33 @@ vi.mock("@/components/control/panels/AgentCreateForm", () => ({ AgentCreateForm:
 import { AgentsPanel } from "@/components/control/panels/AgentsPanel";
 
 describe("AgentsPanel deep link", () => {
-  it("selects the agent named in the ?agent= query param on first render", () => {
-    searchParams.set("agent", "a2");
-    render(<AgentsPanel />);
+  it("selects the agent named in the initialAgentId prop on first render", () => {
+    render(<AgentsPanel initialAgentId="a2" />);
     // The detail pane renders the selected agent's overview tab, not the
     // "Select an agent" placeholder.
     expect(screen.getByText("overview:a2")).toBeInTheDocument();
     expect(screen.queryByText("Select an agent to view details")).toBeNull();
   });
 
-  it("shows the placeholder when no ?agent= param is present", () => {
-    searchParams.delete("agent");
+  it("shows the placeholder when no initialAgentId prop is present", () => {
     render(<AgentsPanel />);
+    expect(screen.getByText("Select an agent to view details")).toBeInTheDocument();
+  });
+
+  it("re-applies a CHANGED initialAgentId on an already-mounted panel", () => {
+    // Desktop dock panels stay mounted; a deep link to an open panel arrives
+    // as a prop change (updateParameters → panelParams), not a remount — the
+    // render-time prev-compare must re-apply it.
+    const { rerender } = render(<AgentsPanel initialAgentId="a2" />);
+    expect(screen.getByText("overview:a2")).toBeInTheDocument();
+    rerender(<AgentsPanel initialAgentId="a1" />);
+    expect(screen.getByText("overview:a1")).toBeInTheDocument();
+  });
+
+  it("a cleared initialAgentId (plain nav) resets to the list", () => {
+    const { rerender } = render(<AgentsPanel initialAgentId="a2" />);
+    expect(screen.getByText("overview:a2")).toBeInTheDocument();
+    rerender(<AgentsPanel initialAgentId={null} />);
     expect(screen.getByText("Select an agent to view details")).toBeInTheDocument();
   });
 });

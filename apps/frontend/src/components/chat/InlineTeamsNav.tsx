@@ -9,6 +9,15 @@ import { createContext, useContext } from "react";
 // hook returns null and the panel falls back to its <a href> navigation.
 export interface InlineTeamsNavValue {
   openDetail: (panelKey: string, id: string) => void;
+  // Detail-delete escape: a detail view whose row was just deleted/hidden
+  // swaps itself for the given list panel. Committed replace-only by the shell
+  // so Back never resurrects the dead row. Detail pages fall back to a direct
+  // window.location rewrite when no provider is mounted (standalone/test).
+  // `selfDetailId` lets the caller identify its OWN detail row: the desktop
+  // dock closes exactly that panel (focus can move between clicking Delete
+  // and confirming, so the active panel is not reliably the invoker); the
+  // mobile shell's URL rewrite has no per-panel identity and ignores it.
+  leaveToList: (listPanelKey: string, selfDetailId?: string) => void;
 }
 
 const InlineTeamsNavContext = createContext<InlineTeamsNavValue | null>(null);

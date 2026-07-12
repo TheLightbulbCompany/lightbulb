@@ -1,9 +1,7 @@
 "use client";
 
-import { useEffect } from "react";
 import dynamic from "next/dynamic";
 import { PageSkeleton } from "@/components/teams/shared/components/PageSkeleton";
-import { replaceSearchParams } from "@/lib/shellNav";
 
 // Shown while a panel's code-split chunk loads. Without a loading fallback,
 // next/dynamic renders nothing and a first visit flashes a blank pane before
@@ -54,6 +52,18 @@ const RoutineDetailPanel = dynamic(DETAIL_LOADERS.routine, { loading: PanelSkele
 const ProjectDetailPanel = dynamic(DETAIL_LOADERS.project, { loading: PanelSkeleton });
 const GoalDetailPanel = dynamic(DETAIL_LOADERS.goal, { loading: PanelSkeleton });
 
+// Issues + Inbox take params/callbacks (unlike the propless list panels in
+// PANELS), so they get their own prop-typed dynamic wrappers. They point at the
+// same chunks preloadTeamsPanels() already warms via PANEL_LOADERS.
+const IssuesPanel = dynamic(
+  () => import("./panels/IssuesPanel").then((m) => m.IssuesPanel),
+  { loading: PanelSkeleton },
+);
+const InboxPanel = dynamic(
+  () => import("./panels/InboxPanel").then((m) => m.InboxPanel),
+  { loading: PanelSkeleton },
+);
+
 // Warm every panel chunk (called from the shell during browser idle time) so
 // the first open of a panel mounts from the module cache instead of fetching
 // its chunk on click. Failures are ignored — the dynamic() wrappers refetch
@@ -67,34 +77,31 @@ export function preloadTeamsPanels(): void {
   }
 }
 
-// Panel keys removed from the nav but still reachable by old bookmarks —
-// remapped in place (URL canonicalized, no history entry) to the surface
-// that absorbed them.
-const RETIRED_PANEL_ALIASES: Record<string, string> = {
-  approvals: "inbox", // folded into the inbox "Needs attention" band
-  members: "settings", // members management lives in Settings now
-  skills: "dashboard", // Paperclip company-skills panel retired — inert for gateway agents; skills live in the per-agent Skill Store
-};
+function normalizeNewIssue(
+  value: string | undefined,
+): "1" | "onboarding" | null {
+  return value === "1" || value === "onboarding" ? value : null;
+}
+
+export interface TeamsPanelRouterProps {
+  panel: string;
+  detailId?: string | null;
+  // Params the shell feeds each panel, read from its own channel (URL on
+  // mobile, dockview params on desktop): { agent?, newIssue?, new? }. Retired
+  // panel keys are resolved to their live surface by the shell/registry before
+  // reaching here — this router no longer rewrites the URL for aliases.
+  panelParams?: Record<string, string>;
+  onConsumeOneShot?: (key: "new" | "newIssue") => void;
+  onUpdateDurableParam?: (key: "agent", value: string | null) => void;
+}
 
 export function TeamsPanelRouter({
   panel,
   detailId,
-}: {
-  panel: string;
-  detailId?: string | null;
-}) {
-  const alias = RETIRED_PANEL_ALIASES[panel];
-
-  useEffect(() => {
-    if (!alias) return;
-    const params = new URLSearchParams(window.location.search);
-    params.set("panel", `teams-${alias}`);
-    params.delete("detailId");
-    replaceSearchParams(params);
-  }, [alias]);
-
-  if (alias) return null;
-
+  panelParams,
+  onConsumeOneShot,
+  onUpdateDurableParam,
+}: TeamsPanelRouterProps) {
   // Detail branch — must precede the list map. A detail key without a
   // detailId falls through to "Unknown panel" below (no id to render).
   if (detailId) {
@@ -106,6 +113,28 @@ export function TeamsPanelRouter({
       return <ProjectDetailPanel projectId={detailId} />;
     if (panel === "goal-detail")
       return <GoalDetailPanel goalId={detailId} />;
+  }
+
+  // Param-taking list panels — threaded from panelParams; the consume callbacks
+  // let each shell strip its own channel.
+  if (panel === "issues") {
+    return (
+      <IssuesPanel
+        agentFilter={panelParams?.agent ?? null}
+        newTask={panelParams?.new === "task"}
+        onNewTaskConsumed={() => onConsumeOneShot?.("new")}
+        onAgentFilterCleared={() => onUpdateDurableParam?.("agent", null)}
+      />
+    );
+  }
+  if (panel === "inbox") {
+    return (
+      <InboxPanel
+        newIssue={normalizeNewIssue(panelParams?.newIssue)}
+        onNewIssueConsumed={() => onConsumeOneShot?.("newIssue")}
+        initialTab={panelParams?.tab ?? null}
+      />
+    );
   }
 
   const Cmp = PANELS[panel];

@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import useSWR from "swr";
 import { Plus, Trash2, CheckCircle2, AlertCircle } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -19,19 +18,7 @@ import { useApi } from "@/lib/api";
 import { type Provider, PROVIDERS, PROVIDER_LABELS, formatBotHandle } from "@/lib/channels";
 import { BotSetupWizard } from "@/components/channels/BotSetupWizard";
 import { useBilling } from "@/hooks/useBilling";
-
-interface BotEntry {
-  agent_id: string;
-  bot_username: string;
-  linked: boolean;
-}
-
-interface LinksMeResponse {
-  telegram: BotEntry[];
-  discord: BotEntry[];
-  slack: BotEntry[];
-  can_create_bots: boolean;
-}
+import { useChannelLinks } from "@/hooks/useChannelLinks";
 
 interface AgentChannelsSectionProps {
   agentId: string;
@@ -40,10 +27,7 @@ interface AgentChannelsSectionProps {
 export function AgentChannelsSection({ agentId }: AgentChannelsSectionProps) {
   const api = useApi();
   const { isSubscribed } = useBilling();
-  const { data, mutate } = useSWR<LinksMeResponse>(
-    "/channels/links/me",
-    () => api.get("/channels/links/me") as Promise<LinksMeResponse>,
-  );
+  const { channelLinks: data, error, isLoading, refresh: mutate } = useChannelLinks(true);
   const [wizardFor, setWizardFor] = useState<{ provider: Provider; mode: "create" | "link-only" } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Provider | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -60,7 +44,22 @@ export function AgentChannelsSection({ agentId }: AgentChannelsSectionProps) {
     return () => window.removeEventListener("keydown", onKey);
   }, [wizardFor, deleteTarget]);
 
-  if (!data) {
+  // Error screen only when there's nothing to show: SWR keeps stale `data`
+  // through a failed revalidation, and a transient blip (a mutate() after
+  // wizard completion hitting one 5xx) must not swap an already-rendered bot
+  // list for an error card that never self-heals.
+  if (error && !data) {
+    return (
+      <div className="p-4 space-y-2">
+        <p className="text-sm text-[#dc2626]">Failed to load channels.</p>
+        <Button variant="outline" size="sm" onClick={() => mutate()}>
+          Retry
+        </Button>
+      </div>
+    );
+  }
+
+  if (isLoading || !data) {
     return <div className="p-4 text-sm text-[#8a8578]">Loading channels…</div>;
   }
 

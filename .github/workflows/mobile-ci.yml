@@ -31,6 +31,11 @@ jobs:
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
+        with:
+          # Per-job install dir: concurrent jobs on the shared self-hosted
+          # runner home race the default ~/setup-pnpm (ENOTEMPTY on rmdir)
+          # when this workflow and frontend-ci fire on the same PR.
+          dest: ${{ runner.temp }}/setup-pnpm
 
       - name: Setup Node.js
         uses: actions/setup-node@v4

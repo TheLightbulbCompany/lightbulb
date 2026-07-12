@@ -76,9 +76,12 @@ function dispatchEvent(event: string, payload: unknown): void {
   });
 }
 
-function mount(props?: Partial<ComponentProps<typeof RunNotifications>>) {
+type MobileProps = Extract<ComponentProps<typeof RunNotifications>, { mode: "mobile" }>;
+
+function mount(props?: Partial<Omit<MobileProps, "mode">>) {
   return render(
     <RunNotifications
+      mode="mobile"
       selectedAgentId="agent-sel"
       activeView="chat"
       activePanel="overview"

@@ -2,7 +2,6 @@
 
 import { useMemo, useState } from "react";
 import { X } from "lucide-react";
-import { useSearchParams } from "next/navigation";
 import { useUser } from "@clerk/nextjs";
 import {
   EditorialButton,
@@ -14,7 +13,6 @@ import { TasksList } from "@/components/teams/issues/TasksList";
 import { useIssueMutations } from "@/components/teams/issues/hooks/useIssueMutations";
 import { useLiveRuns } from "@/components/teams/dashboard/hooks/useLiveRuns";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
-import { replaceSearchParams } from "@/lib/shellNav";
 import type {
   CompanyAgent,
   Issue,
@@ -22,18 +20,36 @@ import type {
   IssueUpdateInput,
 } from "@/components/teams/shared/types";
 
+export interface IssuesPanelProps {
+  /** Agent-scope filter (from the roster's "See her work →"). null = no filter. */
+  agentFilter?: string | null;
+  /** One-shot intent to auto-open the create dialog (from the "New task" pill). */
+  newTask?: boolean;
+  /** Fired when the create dialog closes — the shell strips its one-shot param. */
+  onNewTaskConsumed?: () => void;
+  /** Fired when the filter chip is dismissed — the shell clears its durable param. */
+  onAgentFilterCleared?: () => void;
+}
+
 // Route stays /teams/issues; the surface is relabelled "Tasks" everywhere the
 // user reads it. Internally Paperclip still calls these rows "issues" — the BFF
 // and detail routes are unchanged.
-export function IssuesPanel() {
+//
+// The panel is prop-driven: each shell (mobile /chat page, desktop dock) reads
+// its own channel (URL vs dockview params) and feeds `agentFilter` / `newTask`
+// down, and strips its channel via the consume callbacks. With all props
+// absent the panel renders its unfiltered, no-dialog default (standalone/test).
+export function IssuesPanel({
+  agentFilter: agentFilterProp = null,
+  newTask = false,
+  onNewTaskConsumed,
+  onAgentFilterCleared,
+}: IssuesPanelProps = {}) {
   const { read } = useTeamsApi();
   const { update } = useIssueMutations();
-  // `?agent=<id>` is set by the /chat roster's "See her work →" deep link.
-  // The /issues BFF takes no server agent filter for this surface, so we
-  // filter client-side on `assigneeAgentId` (the inbox does the same).
-  // Standalone /teams never sets this param → no filter.
-  const searchParams = useSearchParams();
-  const agentFilter = searchParams.get("agent");
+  // The /issues BFF takes no server agent filter for this surface, so we filter
+  // client-side on `assigneeAgentId` (the inbox does the same).
+  const agentFilter = agentFilterProp ?? null;
 
   const { data, isLoading, error, mutate } = read<{ issues: Issue[] }>(
     "/issues",
@@ -50,23 +66,26 @@ export function IssuesPanel() {
   // dashboard does (useLiveRuns → isRunActive); SWR self-refreshes the feed.
   const { runs: liveRuns } = useLiveRuns();
   const { user } = useUser();
-  const [creating, setCreating] = useState(false);
+  // Seed from the one-shot so a mount that already carries the intent opens the
+  // dialog on first render (no effect); the prev-compare below covers re-delivery.
+  const [creating, setCreating] = useState(newTask);
   const [search, setSearch] = useState("");
 
-  // The sidebar create pill's "New task" routes here with ?new=task. Derive the
-  // dialog-open from that intent OR local state — rather than a setState-in-
-  // effect, which would cascade renders — and strip the param on close so a
-  // refresh or Back doesn't re-open it. Mirrors the ?agent filter-read above:
-  // the URL stays the single source of truth.
-  const wantsNewTask = searchParams.get("new") === "task";
-  const newTaskOpen = creating || wantsNewTask;
+  // The sidebar create pill's "New task" delivers a one-shot `newTask` prop.
+  // Seed the dialog-open from it and, so a second command to an already-mounted
+  // panel re-opens the dialog, re-open on a false→true transition using the
+  // render-time prev-compare pattern (React "adjust state when a prop changes")
+  // rather than a setState-in-effect that would cascade renders. Closing reports
+  // consumption so the shell strips its channel (URL param on mobile).
+  const [prevNewTask, setPrevNewTask] = useState(newTask);
+  if (newTask !== prevNewTask) {
+    setPrevNewTask(newTask);
+    if (newTask) setCreating(true);
+  }
+  const newTaskOpen = creating;
   const closeNewTask = () => {
     setCreating(false);
-    if (searchParams.get("new")) {
-      const params = new URLSearchParams(searchParams.toString());
-      params.delete("new");
-      replaceSearchParams(params);
-    }
+    onNewTaskConsumed?.();
   };
 
   const liveIssueIds = useMemo(() => {
@@ -100,11 +119,10 @@ export function IssuesPanel() {
     return match?.name ?? "one agent";
   }, [agentFilter, agentsData]);
 
-  // Dismiss chip: strip ONLY the `agent` param, preserving panel/etc.
+  // Dismiss chip: report the clear to the shell, which drops its durable
+  // channel (the ?agent URL param on mobile, the dock param on desktop).
   const clearAgentFilter = () => {
-    const params = new URLSearchParams(searchParams.toString());
-    params.delete("agent");
-    replaceSearchParams(params);
+    onAgentFilterCleared?.();
   };
 
   // TasksList's inline status circle + board drag both patch the issue; route

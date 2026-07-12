@@ -14,6 +14,9 @@ let chatHandlers: Array<(msg: ChatIncomingMessage) => void> = [];
 const sendReq = vi.fn();
 const sendChat = vi.fn();
 const send = vi.fn();
+// Mutable so a test can flicker the connection (isConnected false→true) to
+// drive a second history-effect run and prove the in-flight dedupe latch.
+let mockIsConnected = true;
 
 vi.mock("@/hooks/useGateway", () => ({
   useGateway: (): {
@@ -28,7 +31,7 @@ vi.mock("@/hooks/useGateway", () => ({
     onChatMessage: (h: (m: ChatIncomingMessage) => void) => () => void;
     reconnect: () => void;
   } => ({
-    isConnected: true,
+    isConnected: mockIsConnected,
     nodeConnected: false,
     error: null,
     reconnectAttempt: 0,
@@ -78,6 +81,7 @@ function historyCallsFor(sessionKey: string): number {
 describe("useAgentChat — history revalidates on mount (transcript-loss fix)", () => {
   beforeEach(() => {
     chatHandlers = [];
+    mockIsConnected = true;
     sendChat.mockReset();
     send.mockReset().mockReturnValue(true);
     sendReq.mockReset().mockImplementation(async (method: string, params?: Record<string, unknown>) => {
@@ -234,6 +238,132 @@ describe("useAgentChat — history revalidates on mount (transcript-loss fix)", 
     second.unmount();
     const third = renderHook(() => useAgentChat("agent-X", "user-1"));
     expect(JSON.stringify(third.result.current.renderItems)).toContain("hello");
+    third.unmount();
+  });
+
+  it("dedupes in-flight fetches: two rapid effect runs make ONE chat.history call", async () => {
+    sendReq.mockReset().mockImplementation((method: string, params?: Record<string, unknown>) => {
+      if (method === "chat.history" && params?.sessionKey === GENERAL_KEY) {
+        // Never resolves: the fetch stays in flight across the flicker, so the
+        // dedupe latch (set BEFORE sendReq) is the only thing that can keep a
+        // second effect run from re-firing chat.history.
+        return new Promise<{ messages: Array<Record<string, unknown>> }>(() => {});
+      }
+      return Promise.resolve({ messages: [] });
+    });
+
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    mockIsConnected = true;
+    const { rerender } = renderHook(() => useAgentChat("agent-X", "user-1"));
+    await waitFor(() => {
+      expect(historyCallsFor(GENERAL_KEY)).toBe(1);
+    });
+
+    // isConnected flickers false→true while the first fetch is still pending.
+    // Latching only in `.then` would leave the marker unset here and re-fire
+    // the RPC; latching before sendReq makes the second run early-return.
+    act(() => {
+      mockIsConnected = false;
+      rerender();
+    });
+    act(() => {
+      mockIsConnected = true;
+      rerender();
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(historyCallsFor(GENERAL_KEY)).toBe(1);
+  });
+
+  it("a failed history fetch un-latches so the next effect run retries", async () => {
+    let calls = 0;
+    sendReq.mockReset().mockImplementation((method: string, params?: Record<string, unknown>) => {
+      if (method === "chat.history" && params?.sessionKey === GENERAL_KEY) {
+        calls += 1;
+        if (calls === 1) return Promise.reject(new Error("gateway drop"));
+        return Promise.resolve(historyWithReply());
+      }
+      return Promise.resolve({ messages: [] });
+    });
+
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    mockIsConnected = true;
+    const { rerender, result } = renderHook(() => useAgentChat("agent-X", "user-1"));
+
+    // First fetch rejects; its `.catch` must un-latch the loaded marker so a
+    // later run can retry (a failed fetch can't leave the session blank).
+    await waitFor(() => {
+      expect(historyCallsFor(GENERAL_KEY)).toBe(1);
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // A reconnect flicker triggers the retry.
+    act(() => {
+      mockIsConnected = false;
+      rerender();
+    });
+    act(() => {
+      mockIsConnected = true;
+      rerender();
+    });
+
+    await waitFor(() => {
+      expect(historyCallsFor(GENERAL_KEY)).toBe(2);
+    });
+    await waitFor(() => {
+      expect(JSON.stringify(result.current.renderItems)).toContain(
+        "answer B (finished while unmounted)",
+      );
+    });
+  });
+
+  it("keeps a cached transcript when the server returns empty (no purge, no bootstrap regression)", async () => {
+    // An empty-but-200 chat.history read is NOT an authoritative "this
+    // session was cleared" signal — a container mid-restart/update or a
+    // not-yet-loaded session store returns exactly this. A cached transcript
+    // must survive it: no cache purge, no live-view clear, no bootstrap flag.
+    let generalFetches = 0;
+    sendReq.mockReset().mockImplementation((method: string, params?: Record<string, unknown>) => {
+      if (method === "chat.history" && params?.sessionKey === GENERAL_KEY) {
+        generalFetches += 1;
+        // First mount seeds the cache; every later mount sees a transient
+        // empty server read.
+        return generalFetches >= 2
+          ? Promise.resolve({ messages: [] })
+          : Promise.resolve(historyWithoutReply());
+      }
+      return Promise.resolve({ messages: [] });
+    });
+
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    const first = renderHook(() => useAgentChat("agent-X", "user-1"));
+    await waitFor(() => {
+      expect(JSON.stringify(first.result.current.renderItems)).toContain("answer A");
+    });
+    first.unmount();
+
+    const second = renderHook(() => useAgentChat("agent-X", "user-1"));
+    // The cached transcript paints instantly...
+    expect(JSON.stringify(second.result.current.renderItems)).toContain("answer A");
+    // ...and the empty revalidation resolving must not clobber it.
+    await waitFor(() => {
+      expect(historyCallsFor(GENERAL_KEY)).toBe(2);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(JSON.stringify(second.result.current.renderItems)).toContain("answer A");
+    expect(second.result.current.needsBootstrap).toBe(false);
+    second.unmount();
+
+    // The cache entry survives, so a fresh mount still paints it.
+    const third = renderHook(() => useAgentChat("agent-X", "user-1"));
+    expect(JSON.stringify(third.result.current.renderItems)).toContain("answer A");
     third.unmount();
   });
 });

@@ -14,11 +14,8 @@ import {
   type GatewayConnectionValue,
 } from "@isol8/shared";
 import { WS_URL } from "@/lib/api";
-import {
-  DESKTOP_PERMISSIONS_CHANGED_EVENT,
-  isPermissionsStorageEvent,
-  readDesktopPermissionGrant,
-} from "@/lib/desktopPermissions";
+import { readDesktopPermissionGrant } from "@/lib/desktopPermissions";
+import { subscribeDesktopPermissions } from "@/lib/desktopPermissionsSubscribe";
 
 // The connection machine (reconnect/backoff, keepalive, RPC correlation,
 // message routing) lives in @isol8/shared so web and mobile share one
@@ -77,17 +74,9 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
   }, [setNodeConnected]);
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    const bump = () => setDesktopPermissionRevision((value) => value + 1);
-    const onStorage = (event: StorageEvent) => {
-      if (isPermissionsStorageEvent(event)) bump();
-    };
-    window.addEventListener(DESKTOP_PERMISSIONS_CHANGED_EVENT, bump);
-    window.addEventListener("storage", onStorage);
-    return () => {
-      window.removeEventListener(DESKTOP_PERMISSIONS_CHANGED_EVENT, bump);
-      window.removeEventListener("storage", onStorage);
-    };
+    return subscribeDesktopPermissions(() =>
+      setDesktopPermissionRevision((value) => value + 1),
+    );
   }, []);
 
   // ---- Tauri desktop: push auth identity when Clerk user changes or WS reconnects ----

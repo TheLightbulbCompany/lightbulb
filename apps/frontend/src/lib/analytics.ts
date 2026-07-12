@@ -139,7 +139,10 @@ export type AnalyticsEvent =
   | "clawhub_searched"
   // Support
   | "support_ticket_submitted"
-  | "support_contact_clicked";
+  | "support_contact_clicked"
+  // Workspace shell
+  | "workspace_layout_reset"
+  | "workspace_panel_opened";
 
 /**
  * Type exposing the ``__loaded`` flag PostHog sets after ``init()``

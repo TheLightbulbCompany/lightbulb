@@ -73,7 +73,7 @@ describe("TasksList", () => {
   it("hides a task from the row menu without navigating the row link", async () => {
     const user = userEvent.setup();
     const openDetail = vi.fn();
-    const nav: InlineTeamsNavValue = { openDetail };
+    const nav: InlineTeamsNavValue = { openDetail, leaveToList: vi.fn() };
     const issues = [issue({ id: "iso-7", title: "Archive me", status: "todo" })];
     render(
       <InlineTeamsNavProvider value={nav}>

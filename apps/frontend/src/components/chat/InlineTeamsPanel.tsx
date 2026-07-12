@@ -26,10 +26,18 @@ export function InlineTeamsPanel({
   panel,
   detailId,
   openDetail,
+  leaveToList,
+  panelParams,
+  onConsumeOneShot,
+  onUpdateDurableParam,
 }: {
   panel: string;
   detailId?: string | null;
   openDetail?: (panelKey: string, id: string) => void;
+  leaveToList?: (listPanelKey: string) => void;
+  panelParams?: Record<string, string>;
+  onConsumeOneShot?: (key: "new" | "newIssue") => void;
+  onUpdateDurableParam?: (key: "agent", value: string | null) => void;
 }): React.ReactElement {
   const teamsPanel = panel.slice(TEAMS_PANEL_PREFIX.length);
   // Mirror the workspace-status gate /teams applies in TeamsLayout: surface the
@@ -41,14 +49,26 @@ export function InlineTeamsPanel({
   if (status.kind === "subscribe_required") return <SubscribeOverlay />;
   if (status.kind === "error") return <ErrorOverlay error={status.error} />;
   // The nav provider lets a list panel's "Open →" row open its detail view
-  // in-shell (via openDetail) instead of leaving for /teams. openDetail is a
-  // no-op fallback when the shell didn't supply one.
+  // in-shell (openDetail) and lets a detail view whose row was deleted swap
+  // itself for the list (leaveToList). Both are no-op fallbacks when the shell
+  // didn't supply them.
   return (
-    <InlineTeamsNavProvider value={{ openDetail: openDetail ?? (() => {}) }}>
+    <InlineTeamsNavProvider
+      value={{
+        openDetail: openDetail ?? (() => {}),
+        leaveToList: leaveToList ?? (() => {}),
+      }}
+    >
       <TeamsEventsProvider>
         <CommandPaletteProvider>
           <div className="editorial-page h-full overflow-auto">
-            <TeamsPanelRouter panel={teamsPanel} detailId={detailId} />
+            <TeamsPanelRouter
+              panel={teamsPanel}
+              detailId={detailId}
+              panelParams={panelParams}
+              onConsumeOneShot={onConsumeOneShot}
+              onUpdateDurableParam={onUpdateDurableParam}
+            />
           </div>
         </CommandPaletteProvider>
       </TeamsEventsProvider>

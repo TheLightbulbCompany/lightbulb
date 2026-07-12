@@ -6,6 +6,7 @@ import { capture } from "@/lib/analytics";
 import { ArrowUp, Plus, X, FileIcon, Loader2, Square, CornerDownRight, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { parseSlashInput } from "@/lib/slashCommands";
+import { consumeFocusComposerRequest } from "@/lib/focusComposerRequest";
 import { useSlashCommands } from "@/hooks/useSlashCommands";
 import { SlashCommandMenu, flattenVisible } from "@/components/chat/SlashCommandMenu";
 
@@ -85,6 +86,12 @@ export function ChatInput({
   const sizeErrorIdRef = React.useRef(0);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
+  // Mirror the agentId prop into a ref so the (deps-`[]`) focus-composer
+  // listener can read the CURRENT agent without re-subscribing on every switch.
+  const agentIdRef = React.useRef(agentId);
+  React.useEffect(() => {
+    agentIdRef.current = agentId;
+  }, [agentId]);
 
   // Slash-command menu. The menu is "open" only when the whole input is a
   // bare command token (`/foo`) with no argument text yet — once the user
@@ -127,10 +134,10 @@ export function ChatInput({
   // layout and reports offsetParent === null even for visible nodes — so
   // the visible-render focus test still passes synchronously. Window-scoped
   // CustomEvent keeps ChatLayout decoupled from this component's ref.
-  React.useEffect(() => {
+  const focusRafRef = React.useRef(0);
+  const runFocusRoutine = React.useCallback(() => {
     // ~1s at 60fps — bounded so a never-visible composer can't spin forever.
     const MAX_ATTEMPTS = 60;
-    let raf = 0;
     const tryFocus = (attempt: number) => {
       const el = textareaRef.current;
       if (!el) return;
@@ -138,19 +145,41 @@ export function ChatInput({
       // Focus landed (the chat surface is visible) — done.
       if (document.activeElement === el) return;
       if (attempt < MAX_ATTEMPTS) {
-        raf = requestAnimationFrame(() => tryFocus(attempt + 1));
+        focusRafRef.current = requestAnimationFrame(() => tryFocus(attempt + 1));
       }
     };
-    const onFocusRequest = () => {
-      if (raf) cancelAnimationFrame(raf);
-      tryFocus(0);
+    if (focusRafRef.current) cancelAnimationFrame(focusRafRef.current);
+    tryFocus(0);
+  }, []);
+
+  React.useEffect(() => {
+    const onFocusRequest = (e: Event) => {
+      const detail = (e as CustomEvent<{ agentId?: string }>).detail;
+      // Targeted dispatch (desktop dock, where N composers are mounted at once):
+      // only the matching agent's composer responds. Untargeted dispatch
+      // (mobile ChatLayout, single mounted composer): detail?.agentId is
+      // undefined, so this guard is skipped and today's behavior is preserved.
+      if (detail?.agentId && detail.agentId !== agentIdRef.current) return;
+      // Consume any pending module-store request for this agent so the
+      // mount-path effect below can't re-fire the same handoff.
+      if (detail?.agentId) consumeFocusComposerRequest(detail.agentId);
+      runFocusRoutine();
     };
     window.addEventListener("getstarted:focus-composer", onFocusRequest);
     return () => {
       window.removeEventListener("getstarted:focus-composer", onFocusRequest);
-      if (raf) cancelAnimationFrame(raf);
+      if (focusRafRef.current) cancelAnimationFrame(focusRafRef.current);
     };
-  }, []);
+  }, [runFocusRoutine]);
+
+  // Fresh-panel handoff: the shell records the focus intent BEFORE opening a
+  // new chat dock panel (this composer didn't exist when the CustomEvent
+  // fired). Consume it once this composer knows its agent — covers both a
+  // plain mount and a sentinel panel whose agentId resolves late.
+  React.useEffect(() => {
+    if (!agentId) return;
+    if (consumeFocusComposerRequest(agentId)) runFocusRoutine();
+  }, [agentId, runFocusRoutine]);
 
   const showSizeError = React.useCallback((message: string) => {
     if (sizeErrorTimerRef.current) {

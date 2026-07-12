@@ -18,6 +18,7 @@ import { GoalStatusIcon } from "./GoalStatusIcon";
 import { useGoalDetail } from "./hooks/useGoalDetail";
 import { useGoalMutations } from "./hooks/useGoalMutations";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
+import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
 import { notifyApiError } from "@/lib/notify";
 import {
   handleShellLinkClick,
@@ -73,6 +74,7 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
   const { read } = useTeamsApi();
   const { data: agentsResp } = read<{ agents: CompanyAgent[] }>("/agents");
   const agents = agentsResp?.agents ?? [];
+  const nav = useInlineTeamsNav();
 
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -83,11 +85,19 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
       await mutations.remove(goalId);
       setDeleteOpen(false);
       // The goal is gone — swap the now-dead detail view for the Goals list.
-      // Replaced (not pushed) so Back never lands on the deleted goal.
-      const params = new URLSearchParams(window.location.search);
-      params.set("panel", "teams-goals");
-      params.delete("detailId");
-      replaceSearchParams(params);
+      // In-shell this goes through the nav context (a replace-only URL move so
+      // Back never lands on the deleted goal); standalone / test renders (no
+      // provider) fall back to the direct window.location rewrite.
+      if (nav) {
+        // Pass our own id so the desktop dock closes THIS detail panel, not
+        // whichever panel happens to be active when the delete confirms.
+        nav.leaveToList("teams-goals", goalId);
+      } else {
+        const params = new URLSearchParams(window.location.search);
+        params.set("panel", "teams-goals");
+        params.delete("detailId");
+        replaceSearchParams(params);
+      }
     } catch (e) {
       // Surface the failure instead of silently leaving the dialog open with
       // no feedback — the goal is still there; the user needs to know.

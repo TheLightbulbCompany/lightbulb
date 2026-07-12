@@ -6,6 +6,9 @@ import type { FileInfo } from "@/hooks/useWorkspaceFiles";
 import { notifyApiError } from "@/lib/notify";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { LobsterGraphView } from "@/components/chat/LobsterGraphView";
+import { useScopedHotkey } from "@/hooks/useScopedHotkey";
+
+const isSaveHotkey = (e: KeyboardEvent) => (e.metaKey || e.ctrlKey) && e.key === "s";
 
 interface FileContentViewerProps {
   file: FileInfo | null;
@@ -51,28 +54,11 @@ export function FileContentViewer({ file, isLoading, error, onSave, onDirtyChang
     }
   }, [onSave, editContent, originalContent]);
 
-  // Cmd/Ctrl+S save shortcut — refs avoid stale closure
-  const handleSaveRef = React.useRef(handleSave);
-  handleSaveRef.current = handleSave;
-
-  const canSaveRef = React.useRef(false);
-  canSaveRef.current = Boolean(
-    onSave && file && !file.binary && file.content != null,
-  );
-
-  React.useEffect(() => {
-    function handleKeyDown(e: KeyboardEvent) {
-      if (!(e.metaKey || e.ctrlKey) || e.key !== "s") return;
-      if (!canSaveRef.current) return;
-      // Only the instance that owns focus responds — with several viewers
-      // docked side by side, one Cmd+S must not save all of them.
-      if (!rootRef.current?.contains(document.activeElement)) return;
-      e.preventDefault();
-      handleSaveRef.current();
-    }
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
+  // Cmd/Ctrl+S save shortcut, scoped to whichever viewer instance owns
+  // focus — with several viewers docked side by side, one Cmd+S must not
+  // save all of them.
+  const canSave = Boolean(onSave && file && !file.binary && file.content != null);
+  useScopedHotkey(rootRef, isSaveHotkey, handleSave, canSave);
 
   if (isLoading) {
     return (

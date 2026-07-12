@@ -747,10 +747,14 @@ export function useAgentChat(
       Promise.resolve().then(() => setHistoryLoadState("loading"));
     }
     const mutationSeqAtIssue = transcriptMutationSeqRef.current;
+    // Latch BEFORE the async fetch, not inside `.then`: two effect runs before
+    // the first resolves (an isConnected flicker, a StrictMode double-mount)
+    // would each pass the has()-guard above and fire a duplicate chat.history.
+    // The `.catch` un-latches so a failed fetch still retries on the next run.
+    historyLoadedRef.current.add(cacheKey);
     sendReq("chat.history", { sessionKey, limit: 200 })
       .then((result: unknown) => {
         const historyResult = result as { messages?: HistoryMessage[]; truncated?: boolean };
-        historyLoadedRef.current.add(cacheKey);
         // A local transcript mutation while this fetch was in flight (a sent
         // message, a folded run, a clear) means the snapshot is stale —
         // applying it would silently drop that mutation from BOTH the live
@@ -775,6 +779,11 @@ export function useAgentChat(
           // Server has nothing: only flag bootstrap when we ALSO have no
           // cache — an existing cached transcript must not regress to the
           // bootstrap suggestion because of an empty/partial server read.
+          // An empty-but-200 read is NOT a reliable "authoritatively empty"
+          // signal (container mid-restart/update, session store not yet
+          // loaded, session-key casing mismatch all return it), so a cached
+          // transcript is deliberately kept as-is until the server exposes a
+          // true authoritative-empty marker.
           if (!hasCache) {
             _needsBootstrap.add(cacheKey);
           }
@@ -792,9 +801,11 @@ export function useAgentChat(
       })
       .catch((err: unknown) => {
         console.warn("Failed to fetch chat history:", err);
-        // Deliberately NOT latched into historyLoadedRef: a failed fetch
-        // (gateway drop, container restart) must retry on the next visit or
-        // reconnect instead of leaving this session blank until page reload.
+        // Un-latch (the marker was set BEFORE the fetch for in-flight dedupe):
+        // a failed fetch (gateway drop, container restart) must retry on the
+        // next visit or reconnect instead of leaving this session blank until
+        // page reload.
+        historyLoadedRef.current.delete(cacheKey);
         setHistoryLoadState("done");
       });
   }, [agentId, cacheKey, sessionName, activeSessionId, isConnected, sendReq, setChatMessages, historyRefetchNonce]);

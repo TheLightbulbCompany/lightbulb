@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import useSWR from "swr";
 import { CheckCircle2, AlertCircle } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -20,19 +19,7 @@ import { type Provider, PROVIDERS, PROVIDER_LABELS, formatBotHandle } from "@/li
 import { BotSetupWizard } from "@/components/channels/BotSetupWizard";
 import { GatewayProvider } from "@/hooks/useGateway";
 import { useBilling } from "@/hooks/useBilling";
-
-interface BotEntry {
-  agent_id: string;
-  bot_username: string;
-  linked: boolean;
-}
-
-interface LinksMeResponse {
-  telegram: BotEntry[];
-  discord: BotEntry[];
-  slack: BotEntry[];
-  can_create_bots: boolean;
-}
+import { useChannelLinks } from "@/hooks/useChannelLinks";
 
 export function MyChannelsSection() {
   // The bot setup wizard pokes the user's container gateway over WS (to
@@ -51,10 +38,7 @@ function MyChannelsSectionInner() {
   const api = useApi();
   const { isSubscribed } = useBilling();
   // bot_username is now populated by the backend via channels.status probe
-  const { data, error, isLoading, mutate } = useSWR<LinksMeResponse>(
-    "/channels/links/me",
-    () => api.get("/channels/links/me") as Promise<LinksMeResponse>,
-  );
+  const { channelLinks: data, error, isLoading, refresh: mutate } = useChannelLinks(true);
   const [wizard, setWizard] = useState<{ provider: Provider; agentId: string } | null>(null);
   const [unlinkTarget, setUnlinkTarget] = useState<{ provider: Provider; agentId: string } | null>(null);
   const [unlinking, setUnlinking] = useState(false);

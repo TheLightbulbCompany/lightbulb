@@ -102,10 +102,14 @@ function addOrFocus(descriptor: PanelDescriptor, extraParams?: Record<string, st
   if (!_api) return;
   const existing = _api.getPanel(descriptor.panelId);
   if (existing) {
-    if (extraParams && Object.keys(extraParams).length > 0) {
-      // One-shot re-delivery to an already-open panel (e.g. a second
-      // ?new=task command): panels watch these via onDidParametersChange.
-      existing.api.updateParameters(extraParams);
+    // Re-open of an already-open panel must re-deliver BOTH the descriptor's
+    // fresh durable params (opening file B while file A's viewer is open has
+    // to actually switch files) AND any one-shots (a second ?new=task
+    // command). Panels watch these via onDidParametersChange. Merge semantics:
+    // updateParameters merges, so params absent from this open are untouched.
+    const nextParams = { ...descriptor.params, ...extraParams };
+    if (Object.keys(nextParams).length > 0) {
+      existing.api.updateParameters(nextParams);
     }
     existing.api.setActive();
     return;
@@ -206,8 +210,11 @@ export function isShellOperationInProgress(): boolean {
   return _shellOpDepth > 0;
 }
 
-// Reset = clear + rebuild the code-built default. reuseExistingPanels keeps
-// matching panel instances alive (a live chat panel survives a reset).
+// Reset = destroy and rebuild. clear() removes EVERY panel and group — no
+// instance survives (a live chat panel is torn down with the rest) — then
+// `build` constructs the code-built default layout from scratch. Runs under
+// the shell-op guard so the clear-on-close URL listener ignores the mass
+// removals.
 export function resetWorkspaceLayout(build: (api: DockviewApi) => void): void {
   if (!_api) return;
   _shellOpDepth += 1;
@@ -234,6 +241,13 @@ export function useWorkspaceState(): WorkspaceSnapshot {
     () => _snapshot,
     () => _snapshot,
   );
+}
+
+// Synchronous read of the live snapshot for non-React callers (the shell's
+// URL reconciler checks panel newness for analytics at execute time, before
+// any re-render would refresh a useWorkspaceState value).
+export function getWorkspaceSnapshot(): WorkspaceSnapshot {
+  return _snapshot;
 }
 
 export function _snapshotForTests(): WorkspaceSnapshot {

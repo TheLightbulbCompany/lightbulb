@@ -1,12 +1,14 @@
 /* Dockable workspace shell grid.
  *
- * A fixed 280px sidebar spanning full height, with a header row + dock fill on
- * the right:
+ * A fixed 280px sidebar spanning full height, with a flex-column main area on
+ * the right (header row, then banners + stepper + dock fill):
  *
  *     +-----------+------------------+
  *     |           |     header       |   <- 56px row
  *     |  sidebar  +------------------+
- *     |  (280px)  |      dock        |   <- 1fr fill
+ *     |  (280px)  | content          |
+ *     |           |  banners         |
+ *     |           |  dock (flex fill)|
  *     +-----------+------------------+
  *
  * The sidebar itself reuses ChatLayout.css's `.cream-sidebar` block (roster,
@@ -21,10 +23,7 @@
 .workspace-shell {
   display: grid;
   grid-template-columns: 280px 1fr;
-  grid-template-rows: 56px 1fr;
-  grid-template-areas:
-    "sidebar header"
-    "sidebar dock";
+  grid-template-areas: "sidebar main";
   height: 100vh;
   overflow: hidden;
 }
@@ -33,8 +32,16 @@
   grid-area: sidebar;
 }
 
+.workspace-main {
+  grid-area: main;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
 .workspace-header {
-  grid-area: header;
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -45,8 +52,19 @@
   background: #faf7f2;
 }
 
+/* Banners stack at their natural height; the stepper/dock fills the rest.
+ * ProvisioningStepper renders its children bare (<>{children}</>), so the
+ * dock wrapper is a direct flex child of .workspace-content. */
+.workspace-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: #faf7f2;
+}
+
 .workspace-dock {
-  grid-area: dock;
+  flex: 1;
   min-width: 0;
   min-height: 0;
   background: #faf7f2;

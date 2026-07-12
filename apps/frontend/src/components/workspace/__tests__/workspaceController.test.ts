@@ -95,6 +95,22 @@ describe("workspaceController", () => {
     expect(api.addPanel).toHaveBeenCalledTimes(1); // focused, not re-added
   });
 
+  it("focusing an existing panel re-delivers fresh durable params via updateParameters", () => {
+    const api = makeFakeApi();
+    attachDockviewApi(api, () => undefined);
+    openPanel("file-viewer", { path: "a.md" });
+    expect(api.addPanel).toHaveBeenCalledTimes(1);
+    // Opening file B while file A's viewer is open must actually switch files —
+    // the focus path must re-deliver the descriptor's fresh durable params,
+    // not just one-shots.
+    openPanel("file-viewer", { path: "b.md" });
+    expect(api.addPanel).toHaveBeenCalledTimes(1); // focused, not re-added
+    const panel = api.getPanel("file-viewer") as unknown as {
+      api: { updateParameters: ReturnType<typeof vi.fn> };
+    };
+    expect(panel.api.updateParameters).toHaveBeenCalledWith({ path: "b.md" });
+  });
+
   it("openPanel with pushUrl writes the canonical URL once", () => {
     const api = makeFakeApi();
     attachDockviewApi(api, () => undefined);

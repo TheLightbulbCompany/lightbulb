@@ -21,11 +21,13 @@ export function useScopedHotkey(
   const handlerRef = React.useRef(handler);
   const enabledRef = React.useRef(enabled);
 
-  // Sync the latest matcher/handler/enabled into refs after each render —
-  // this runs in an effect (not render body) so it doesn't trip the "no ref
-  // writes during render" rule, and it settles before the next keydown can
-  // read the refs below.
-  React.useEffect(() => {
+  // Sync the latest matcher/handler/enabled into refs on every commit. A
+  // LAYOUT effect (not a passive one) is load-bearing here: the keydown
+  // listener is a raw window listener with no React event-delegation flush
+  // protection, so a native keystroke landing between paint and a passive
+  // effect flush would read the previous render's values. useLayoutEffect
+  // runs synchronously with commit, closing that stale-closure window.
+  React.useLayoutEffect(() => {
     matcherRef.current = matcher;
     handlerRef.current = handler;
     enabledRef.current = enabled;

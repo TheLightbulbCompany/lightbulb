@@ -5,7 +5,7 @@ The **counter is written by the Bedrock invocation-log meter Lambda**
 the AWS layer — webchat, cron, channels, Paperclip/Teams runs with no browser
 tab, memory compaction, embeddings, the raw RPC proxy — with AWS-sourced,
 cache-inclusive token counts, deduped on Bedrock's ``requestId``. No backend
-path ADDs to it. That makes the counter complete by construction and means the
+path writes to it. That makes the counter complete by construction and means the
 backend never needs a pre-send reserve to bound in-flight spend.
 
 What survives here are read-only primitives: ``is_over_daily_cap`` (what

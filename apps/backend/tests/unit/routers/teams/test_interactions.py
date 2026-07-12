@@ -15,6 +15,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
+from core.services import trial_cap
+
 from main import app
 from routers.teams.deps import TeamsContext
 
@@ -134,9 +136,8 @@ def test_respond_forwards_answers_camelcase(client, monkeypatch):
     admin = MagicMock()
     admin.respond_interaction = AsyncMock(return_value={"status": "responded"})
     _patch_admin(monkeypatch, admin)
-    from routers.teams import interactions as interactions_mod
 
-    monkeypatch.setattr(interactions_mod.trial_cap, "is_over_daily_cap", AsyncMock(return_value=False))
+    monkeypatch.setattr(trial_cap, "trial_block_reason", AsyncMock(return_value=None))
 
     r = client.post(
         "/api/v1/teams/issues/iss_1/interactions/int_1/respond",
@@ -223,9 +224,8 @@ def test_respond_blocked_over_cap(client, monkeypatch):
     admin = MagicMock()
     admin.respond_interaction = AsyncMock(return_value={"status": "responded"})
     _patch_admin(monkeypatch, admin)
-    from routers.teams import interactions as interactions_mod
 
-    monkeypatch.setattr(interactions_mod.trial_cap, "is_over_daily_cap", AsyncMock(return_value=True))
+    monkeypatch.setattr(trial_cap, "trial_block_reason", AsyncMock(return_value=trial_cap.DAILY_CAP))
 
     r = client.post(
         "/api/v1/teams/issues/iss_1/interactions/int_1/respond",
@@ -248,9 +248,8 @@ def test_respond_proceeds_under_cap(client, monkeypatch):
     admin = MagicMock()
     admin.respond_interaction = AsyncMock(return_value={"status": "responded"})
     _patch_admin(monkeypatch, admin)
-    from routers.teams import interactions as interactions_mod
 
-    monkeypatch.setattr(interactions_mod.trial_cap, "is_over_daily_cap", AsyncMock(return_value=False))
+    monkeypatch.setattr(trial_cap, "trial_block_reason", AsyncMock(return_value=None))
 
     r = client.post(
         "/api/v1/teams/issues/iss_1/interactions/int_1/respond",

@@ -36,13 +36,14 @@ other — and both are idempotent (a missing policy is already-revoked; a
 stopped service is already-stopped). This mirrors ecs_manager.kill_owner_bedrock.
 
 REPLAY SAFETY. Metronome's transaction_id dedup is what makes the paid path
-replay-safe; a DynamoDB ADD has NO such dedup, so a CW-Logs batch retry or a
-DLQ redrive would double-count the trial counter and false-lock-out a real
-user. Every counter write is therefore guarded by a conditional PutItem on the
-per-env invocation-dedup table (PK requestId, 48h TTL — past CloudWatch's
-retry + redrive horizon). The guard protects the COUNTER ONLY: a replayed
-paid record still ingests (Metronome dedups it), which is the paid path's
-correctness story and must not be regressed.
+replay-safe; a DynamoDB counter increment has NO such dedup, so a CW-Logs batch
+retry or a DLQ redrive would double-count the trial counter and false-lock-out a
+real user. Every counter write is therefore guarded by a conditional PutItem on
+the per-env invocation-dedup table (PK requestId), whose TTL is deliberately set
+LONGER than the DLQ's 14-day retention — see DEDUP_TTL_SECONDS. The guard
+protects the COUNTER ONLY: a replayed paid record still ingests (Metronome
+dedups it), which is the paid path's correctness story and must not be
+regressed.
 
 ONE CODEBASE, TWO FUNCTION INSTANCES. The account-scoped meter stack deploys
 this asset twice — a dev instance and a prod instance — because Bedrock
@@ -115,10 +116,15 @@ METRONOME_INGEST_URL_DEFAULT = "https://api.metronome.com/v1/ingest"
 # 1 dollar = 100 cents = 1,000,000 microcents, so $3.00/day = 3,000,000.
 CAP_MICROCENTS = 3_000_000
 
-# Dedup rows outlive CloudWatch Logs' retry horizon and any plausible DLQ
-# redrive (the DLQ itself retains for 14 days, but a redrive that late is an
-# operator action on records we would rather under-count than double-count).
-DEDUP_TTL_SECONDS = 48 * 3600
+# Dedup rows MUST outlive the longest window in which a record can be
+# redelivered, which is the DLQ's own retention: bedrock-meter-stack sets
+# retentionPeriod = 14 days. Anything shorter is not "safely under-counting" —
+# it is the opposite. Once the claim row TTLs out, the conditional PutItem
+# SUCCEEDS again, so a redrive past the TTL re-applies the counter and
+# DOUBLE-counts, falsely locking a real trial user out early. 15 days gives a
+# day of margin over the DLQ. The rows are a requestId plus a timestamp and
+# TTL deletes are free, so the storage is noise.
+DEDUP_TTL_SECONDS = 15 * 24 * 3600
 
 # The inline policy name that build_owner_bedrock_policy attaches to the
 # per-owner role — deleting it is the IAM half of the kill.
@@ -548,15 +554,24 @@ def _add_daily_spend(owner_id, date_key, delta_microcents):
     except ClientError as e:
         if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
             raise
-        # Map already exists, or the owner row doesn't — the ADD below
+        # Map already exists, or the owner row doesn't — the increment below
         # re-checks attribute_exists(owner_id) and raises in the no-row case.
 
+    # Nested-path SET + if_not_exists, not ADD. Both are legal on a nested
+    # leaf against a real DynamoDB engine, but AWS recommends SET over ADD and
+    # this write IS the spend fence — an increment that silently fails to
+    # apply is an unbounded bill. Mirrors billing_repo.add_meta_daily_spend.
     resp = _ddb().update_item(
         TableName=table,
         Key={"owner_id": {"S": owner_id}},
-        UpdateExpression="ADD meta_daily_spend_microcents.#d :delta",
+        UpdateExpression=(
+            "SET meta_daily_spend_microcents.#d = if_not_exists(meta_daily_spend_microcents.#d, :zero) + :delta"
+        ),
         ExpressionAttributeNames={"#d": date_key},
-        ExpressionAttributeValues={":delta": {"N": str(int(delta_microcents))}},
+        ExpressionAttributeValues={
+            ":delta": {"N": str(int(delta_microcents))},
+            ":zero": {"N": "0"},
+        },
         ConditionExpression="attribute_exists(owner_id)",
         ReturnValues="ALL_NEW",
     )

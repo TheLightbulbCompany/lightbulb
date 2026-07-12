@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from core.services import trial_cap
+
 from main import app
 from routers.teams.deps import TeamsContext
 from routers.teams.issues import patch_issue
@@ -240,10 +242,9 @@ def test_monitor_check_now(client, monkeypatch):
     admin = MagicMock()
     admin.monitor_check_now = AsyncMock(return_value={"ok": True})
     from routers.teams import agents as agents_mod
-    from routers.teams import _guards as guards_mod
 
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
-    monkeypatch.setattr(guards_mod.trial_cap, "is_over_daily_cap", AsyncMock(return_value=False))
+    monkeypatch.setattr(trial_cap, "trial_block_reason", AsyncMock(return_value=None))
 
     r = client.post(
         "/api/v1/teams/issues/iss_1/monitor/check-now",
@@ -265,10 +266,9 @@ def test_monitor_check_now_blocked_over_cap(client, monkeypatch):
     admin = MagicMock()
     admin.monitor_check_now = AsyncMock(return_value={"ok": True})
     from routers.teams import agents as agents_mod
-    from routers.teams import _guards as guards_mod
 
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
-    monkeypatch.setattr(guards_mod.trial_cap, "is_over_daily_cap", AsyncMock(return_value=True))
+    monkeypatch.setattr(trial_cap, "trial_block_reason", AsyncMock(return_value=trial_cap.DAILY_CAP))
 
     r = client.post(
         "/api/v1/teams/issues/iss_1/monitor/check-now",
@@ -344,10 +344,9 @@ def test_add_issue_comment(client, monkeypatch):
     admin = MagicMock()
     admin.add_issue_comment = AsyncMock(return_value={"id": "cmt_new", "body": "hello"})
     from routers.teams import agents as agents_mod
-    from routers.teams import issues as issues_mod
 
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
-    monkeypatch.setattr(issues_mod.trial_cap, "is_over_daily_cap", AsyncMock(return_value=False))
+    monkeypatch.setattr(trial_cap, "trial_block_reason", AsyncMock(return_value=None))
 
     r = client.post(
         "/api/v1/teams/issues/iss_1/comments",
@@ -390,10 +389,9 @@ def test_add_issue_comment_blocked_over_cap(client, monkeypatch):
     admin = MagicMock()
     admin.add_issue_comment = AsyncMock(return_value={"id": "cmt_new", "body": "hello"})
     from routers.teams import agents as agents_mod
-    from routers.teams import issues as issues_mod
 
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
-    monkeypatch.setattr(issues_mod.trial_cap, "is_over_daily_cap", AsyncMock(return_value=True))
+    monkeypatch.setattr(trial_cap, "trial_block_reason", AsyncMock(return_value=trial_cap.DAILY_CAP))
 
     r = client.post(
         "/api/v1/teams/issues/iss_1/comments",
@@ -416,10 +414,9 @@ def test_add_issue_comment_proceeds_under_cap(client, monkeypatch):
     admin = MagicMock()
     admin.add_issue_comment = AsyncMock(return_value={"id": "cmt_new", "body": "hello"})
     from routers.teams import agents as agents_mod
-    from routers.teams import issues as issues_mod
 
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
-    monkeypatch.setattr(issues_mod.trial_cap, "is_over_daily_cap", AsyncMock(return_value=False))
+    monkeypatch.setattr(trial_cap, "trial_block_reason", AsyncMock(return_value=None))
 
     r = client.post(
         "/api/v1/teams/issues/iss_1/comments",

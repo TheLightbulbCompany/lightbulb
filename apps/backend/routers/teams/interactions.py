@@ -23,10 +23,9 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from core.services import trial_cap  # noqa: F401 — patch target for existing tests (see _guards.py)
 
 from . import agents as _agents
-from ._guards import require_under_daily_cap
+from ._guards import require_trial_runway
 from .deps import TeamsContext, envelope_list
 from .schemas import (
     AcceptInteractionBody,
@@ -104,7 +103,7 @@ async def respond_interaction(
     Paperclip -- that's what actually stops the spend, since there is no
     enforcement point downstream of this proxy.
     """
-    await require_under_daily_cap(ctx.owner_id)
+    await require_trial_runway(ctx.owner_id)
     return await _agents._admin().respond_interaction(
         issue_id=issue_id,
         interaction_id=interaction_id,

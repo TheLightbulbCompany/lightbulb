@@ -489,19 +489,23 @@ async def add_meta_daily_spend(owner_id: str, date: str, delta_microcents: int) 
     holdover from the Meta free tier and is kept deliberately — live rows
     carry it. It is now simply the trial daily-spend counter.
 
-    ``ADD`` on a nested map path requires the parent map to already exist.
-    The combined single-expression approach (``SET
-    meta_daily_spend_microcents = if_not_exists(meta_daily_spend_microcents,
-    :empty) ADD meta_daily_spend_microcents.#d :delta``) was tried first and
-    verified against a REAL DynamoDB engine (moto, not a hand mock) — it is
-    REJECTED: ``ValidationException: Two document paths overlap with each
-    other; must remove or rewrite one of these paths``. DynamoDB refuses a
-    ``SET`` on a map and an ``ADD`` on a nested key of that same map in one
-    UpdateExpression. So this is a guarded two-step: (1) initialize the map
-    to ``{}`` only if the row exists and the map is absent yet (a no-op,
-    swallowed ConditionalCheckFailedException, if another caller already won
-    the init race or the map already exists), then (2) the real atomic
-    ``ADD`` on the nested date leaf, still guarded by
+    The increment is a nested-path ``SET`` with ``if_not_exists`` rather than
+    an ``ADD``. Both forms are accepted by a real DynamoDB engine on a nested
+    leaf (verified against DynamoDB Local, which is AWS's own engine — the
+    "ADD is top-level-only" folklore is not in the API reference, whose sole
+    stated ADD restriction is the Number/set data type), but AWS explicitly
+    recommends ``SET`` over ``ADD``, and this counter is the trial spend
+    fence: if it silently fails to apply, nothing stops the burn. Prefer the
+    construct that needs no argument to defend.
+
+    A nested ``SET`` still requires the parent map to already exist, and a
+    single combined expression (``SET meta_daily_spend_microcents =
+    if_not_exists(...), meta_daily_spend_microcents.#d = ...``) is REJECTED —
+    ``ValidationException: Two document paths overlap with each other`` — so
+    this stays a guarded two-step: (1) initialize the map to ``{}`` only if
+    the row exists and the map is absent (a no-op, swallowed
+    ConditionalCheckFailedException, if another caller won the init race),
+    then (2) the atomic increment on the nested date leaf, still guarded by
     ``attribute_exists(owner_id)`` so a missing row raises on step 2 either
     way. No phantom rows — same invariant as the other billing-row setters.
     """
@@ -524,9 +528,14 @@ async def add_meta_daily_spend(owner_id: str, date: str, delta_microcents: int) 
     response = await run_in_thread(
         table.update_item,
         Key={"owner_id": owner_id},
-        UpdateExpression="ADD meta_daily_spend_microcents.#d :delta",
+        UpdateExpression=(
+            "SET meta_daily_spend_microcents.#d = if_not_exists(meta_daily_spend_microcents.#d, :zero) + :delta"
+        ),
         ExpressionAttributeNames={"#d": date},
-        ExpressionAttributeValues={":delta": Decimal(str(int(delta_microcents)))},
+        ExpressionAttributeValues={
+            ":delta": Decimal(str(int(delta_microcents))),
+            ":zero": Decimal(0),
+        },
         ConditionExpression="attribute_exists(owner_id)",
         ReturnValues="ALL_NEW",
     )

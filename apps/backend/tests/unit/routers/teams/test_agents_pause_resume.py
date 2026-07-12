@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
+from core.services import trial_cap
 from routers.teams import agents as agents_mod
 from routers.teams.deps import TeamsContext
 
@@ -43,14 +44,13 @@ async def test_resume_agent_route_calls_admin_resume():
 async def test_wake_agent_route_calls_admin_wakeup_with_camel_body():
     """The failed-run Retry route forwards a camelCase, none-dropped body to
     the admin wake_agent (source/reason), threading the session cookie."""
-    from routers.teams import _guards as guards_mod
     from routers.teams.schemas import WakeAgentBody
 
     fake_admin = MagicMock()
     fake_admin.wake_agent = AsyncMock(return_value={"ok": True})
     with (
         patch("routers.teams.agents._admin", return_value=fake_admin),
-        patch.object(guards_mod.trial_cap, "is_over_daily_cap", AsyncMock(return_value=False)),
+        patch.object(trial_cap, "trial_block_reason", AsyncMock(return_value=None)),
     ):
         out = await agents_mod.wake_agent(
             "a1",
@@ -72,14 +72,13 @@ async def test_wake_agent_blocked_over_cap():
     reaches Paperclip (the failed-run Retry action dispatches a run
     immediately server-side, so the check must run ahead of the proxy
     call to actually stop the spend)."""
-    from routers.teams import _guards as guards_mod
     from routers.teams.schemas import WakeAgentBody
 
     fake_admin = MagicMock()
     fake_admin.wake_agent = AsyncMock(return_value={"ok": True})
     with (
         patch("routers.teams.agents._admin", return_value=fake_admin),
-        patch.object(guards_mod.trial_cap, "is_over_daily_cap", AsyncMock(return_value=True)),
+        patch.object(trial_cap, "trial_block_reason", AsyncMock(return_value=trial_cap.DAILY_CAP)),
     ):
         with pytest.raises(HTTPException) as exc_info:
             await agents_mod.wake_agent(

@@ -167,3 +167,21 @@ async def test_trial_block_reason_none_for_a_healthy_trial_and_for_paid(monkeypa
 
     monkeypatch.setattr("core.services.trial_cap.billing_repo.get_by_owner_id", paid)
     assert await trial_cap.trial_block_reason("user_x") is None
+
+
+# ---------------------------------------------------------------------------
+# The ONE reason -> Gate mapping. Every door that can start, wake, or dispatch
+# work on a trial container routes through this, so they cannot disagree.
+
+
+def test_gate_for_trial_reason_maps_both_reasons_and_passes_none_through():
+    from core.services import provision_gate
+
+    assert provision_gate.gate_for_trial_reason(None, "admin") is None
+
+    expired = provision_gate.gate_for_trial_reason(trial_cap.TRIAL_EXPIRED, "admin")
+    assert expired.code == "trial_expired"
+
+    capped = provision_gate.gate_for_trial_reason(trial_cap.DAILY_CAP, "member")
+    assert capped.code == "meta_daily_cap"
+    assert capped.owner_role == "member"

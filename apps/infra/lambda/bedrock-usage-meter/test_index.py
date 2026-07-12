@@ -743,7 +743,7 @@ def test_trial_counter_accumulates_across_records():
 
 def test_trial_counter_initializes_map_on_a_row_that_has_none():
     """A fresh billing row has no meta_daily_spend_microcents map at all. The
-    conditional map-init step is what makes the nested ADD legal."""
+    conditional map-init step is what makes the nested-path SET legal."""
     import index
 
     with _aws_world(starting_spend=None) as (ddb, _iam, _ecs):

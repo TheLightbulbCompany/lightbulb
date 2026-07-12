@@ -44,7 +44,7 @@ from core.services.provision_gate import evaluate_provision_gate
 from core.services.user_provision import ensure_user_ready
 
 from . import deps as deps_mod
-from ._guards import require_under_daily_cap
+from ._guards import require_trial_runway
 from .deps import TeamsContext, envelope_list
 from .schemas import CreateAgentBody, PatchAgentBody, WakeAgentBody
 
@@ -745,7 +745,7 @@ async def wake_agent(
     Paperclip, so this is a Meta-spend front door. The free-tier $3/day
     cap is checked here, BEFORE the proxy call reaches Paperclip.
     """
-    await require_under_daily_cap(ctx.owner_id)
+    await require_trial_runway(ctx.owner_id)
     return _redact_agent(
         await _admin().wake_agent(
             agent_id=agent_id,

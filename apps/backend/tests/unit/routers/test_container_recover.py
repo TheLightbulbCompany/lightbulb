@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from core.services import trial_cap
+
 
 class TestContainerRecover:
     """Test POST /api/v1/container/recover."""
@@ -48,7 +50,7 @@ class TestContainerRecover:
         """Recovering a stopped container is a WAKE, so it now checks the
         free-tier daily cap (which reads billing_repo). Default it to "under the
         cap" for the pre-existing tests; the guard tests below override it."""
-        with patch("core.services.trial_cap.is_over_daily_cap", new=AsyncMock(return_value=False)) as m:
+        with patch("core.services.trial_cap.trial_block_reason", new=AsyncMock(return_value=None)) as m:
             yield m
 
     # --- CONTAINER_DOWN: full re-provision ---
@@ -196,11 +198,39 @@ class TestContainerRecover:
         )
         mock_ecs_manager.provision_user_container = AsyncMock(return_value="openclaw-new")
 
-        with patch("core.services.trial_cap.is_over_daily_cap", new=AsyncMock(return_value=True)):
+        with patch(
+            "core.services.trial_cap.trial_block_reason",
+            new=AsyncMock(return_value=trial_cap.DAILY_CAP),
+        ):
             response = await async_client.post("/api/v1/container/recover")
 
         assert response.status_code == 402
         assert response.json()["detail"]["blocked"]["code"] == "meta_daily_cap"
+        mock_ecs_manager.provision_user_container.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_recover_refuses_to_wake_an_expired_trial_owner_under_the_cap(
+        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc
+    ):
+        """The OTHER half of the trial predicate. This door used to check only the
+        daily cap, so an owner whose trial window had ENDED but who was under
+        today's $3 fell straight through to provision_user_container — whose start
+        is force=True and therefore skips start_user_service's own check — and woke
+        a container that was out of runway. Fresh Bedrock spend on a dead trial."""
+        mock_ecs_manager.resolve_running_container = AsyncMock(return_value=(None, None))
+        mock_ecs_manager.get_service_status = AsyncMock(
+            return_value={"owner_id": "user_test_123", "status": "stopped", "substatus": None}
+        )
+        mock_ecs_manager.provision_user_container = AsyncMock(return_value="openclaw-new")
+
+        with patch(
+            "core.services.trial_cap.trial_block_reason",
+            new=AsyncMock(return_value=trial_cap.TRIAL_EXPIRED),
+        ):
+            response = await async_client.post("/api/v1/container/recover")
+
+        assert response.status_code == 402
+        assert response.json()["detail"]["blocked"]["code"] == "trial_expired"
         mock_ecs_manager.provision_user_container.assert_not_called()
 
     @pytest.mark.asyncio
@@ -224,7 +254,7 @@ class TestContainerRecover:
         )
         mock_ecs_manager.provision_user_container = AsyncMock(return_value="openclaw-new")
 
-        with patch("core.services.trial_cap.is_over_daily_cap", new=AsyncMock(return_value=False)):
+        with patch("core.services.trial_cap.trial_block_reason", new=AsyncMock(return_value=None)):
             response = await async_client.post("/api/v1/container/recover")
 
         assert response.status_code == 200

@@ -24,6 +24,7 @@ from typing import Any
 from core.observability.metrics import put_metric
 from core.observability.product_analytics import capture_once_per_owner_per_day
 from core.repositories import billing_repo
+from core.services import trial_cap
 
 logger = logging.getLogger(__name__)
 
@@ -287,6 +288,24 @@ def meta_daily_cap_gate(owner_role: str) -> Gate:
     )
 
 
+def gate_for_trial_reason(reason: str | None, owner_role: str) -> Gate | None:
+    """Map a ``trial_cap.trial_block_reason`` result to the card it renders.
+
+    The ONE reason->Gate mapping. Every door that can start, wake, or dispatch
+    work on a trial container — the provision gate below, ``/container/recover``,
+    and the Teams BFF run guards — routes through this, so they cannot render
+    different verdicts (or different copy) for the same owner. Two of those
+    doors previously inlined only the daily-cap half of the predicate and would
+    happily wake an EXPIRED trial; that is the bug this exists to make
+    unrepresentable. Returns None when the owner is not blocked.
+    """
+    if reason == trial_cap.TRIAL_EXPIRED:
+        return trial_expired_gate(owner_role)
+    if reason == trial_cap.DAILY_CAP:
+        return meta_daily_cap_gate(owner_role)
+    return None
+
+
 def trial_expired_gate(owner_role: str) -> Gate:
     """The blocked-gate a trial_local owner sees once their 3-day window
     (``trial_end``, stamped by ``billing_repo.create_trial_local_if_absent``
@@ -454,14 +473,8 @@ async def _evaluate_provision_gate_inner(
         # container the gate would have refused. Do not re-inline it.
         #
         # ``account`` is already in hand, so this spends no extra billing read.
-        from core.services import trial_cap
-
         reason = await trial_cap.reason_for_account(owner_id, account)
-        if reason == trial_cap.TRIAL_EXPIRED:
-            return trial_expired_gate(owner_role)
-        if reason == trial_cap.DAILY_CAP:
-            return meta_daily_cap_gate(owner_role)
-        return None
+        return gate_for_trial_reason(reason, owner_role)
 
     # Layer 2 — provider must be picked.
     #

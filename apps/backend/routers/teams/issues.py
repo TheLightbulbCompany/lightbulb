@@ -16,10 +16,9 @@ from fastapi.responses import StreamingResponse
 # subclasses); isinstance-check against the base so it matches both.
 from starlette.datastructures import UploadFile
 
-from core.services import trial_cap  # noqa: F401 — patch target for existing tests (see _guards.py)
 
 from . import agents as _agents
-from ._guards import require_under_daily_cap
+from ._guards import require_trial_runway
 from .deps import TeamsContext, envelope_list
 from .schemas import AddIssueCommentBody, CreateIssueBody, PatchIssueBody
 
@@ -211,7 +210,7 @@ async def monitor_check_now(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
     Paperclip, so this is a Meta-spend front door. The free-tier $3/day
     cap is checked here, BEFORE the proxy call reaches Paperclip.
     """
-    await require_under_daily_cap(ctx.owner_id)
+    await require_trial_runway(ctx.owner_id)
     return await _agents._admin().monitor_check_now(
         issue_id=issue_id,
         session_cookie=ctx.session_cookie,
@@ -268,7 +267,7 @@ async def add_issue_comment(
     that's what actually stops the spend, since there is no enforcement
     point downstream of this proxy.
     """
-    await require_under_daily_cap(ctx.owner_id)
+    await require_trial_runway(ctx.owner_id)
     return await _agents._admin().add_issue_comment(
         issue_id=issue_id,
         body=body.model_dump(by_alias=True),

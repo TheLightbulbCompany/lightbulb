@@ -90,6 +90,12 @@ export function useAgents() {
     agents,
     defaultId,
     isLoading,
+    // Roster has settled once the RPC has resolved (success OR error) — SWR
+    // `data` flips from undefined to a value exactly once. Consumers gating
+    // "agent no longer exists" must wait for this: `isLoading` is false during
+    // error-retry cycles and `agents` defaults to [] before the first fetch,
+    // so either alone would false-fire against a persisted panel at load.
+    isSettled: data !== undefined,
     error,
     refresh: () => mutate(),
     createAgent,

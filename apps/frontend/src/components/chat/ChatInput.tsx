@@ -85,6 +85,12 @@ export function ChatInput({
   const sizeErrorIdRef = React.useRef(0);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
+  // Mirror the agentId prop into a ref so the (deps-`[]`) focus-composer
+  // listener can read the CURRENT agent without re-subscribing on every switch.
+  const agentIdRef = React.useRef(agentId);
+  React.useEffect(() => {
+    agentIdRef.current = agentId;
+  }, [agentId]);
 
   // Slash-command menu. The menu is "open" only when the whole input is a
   // bare command token (`/foo`) with no argument text yet — once the user
@@ -141,7 +147,13 @@ export function ChatInput({
         raf = requestAnimationFrame(() => tryFocus(attempt + 1));
       }
     };
-    const onFocusRequest = () => {
+    const onFocusRequest = (e: Event) => {
+      const detail = (e as CustomEvent<{ agentId?: string }>).detail;
+      // Targeted dispatch (desktop dock, where N composers are mounted at once):
+      // only the matching agent's composer responds. Untargeted dispatch
+      // (mobile ChatLayout, single mounted composer): detail?.agentId is
+      // undefined, so this guard is skipped and today's behavior is preserved.
+      if (detail?.agentId && detail.agentId !== agentIdRef.current) return;
       if (raf) cancelAnimationFrame(raf);
       tryFocus(0);
     };

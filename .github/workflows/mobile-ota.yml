@@ -77,6 +77,33 @@ jobs:
         working-directory: .
         run: pnpm install --frozen-lockfile
 
+      # Bundle ourselves with --clear so Metro cannot reuse a stale transform
+      # cache. The self-hosted runner's cache persists across jobs, and Metro's
+      # cache key does NOT include EXPO_PUBLIC_* values — so the PR gate's
+      # no-env `expo export` once poisoned an OTA with an empty Clerk key
+      # ("Missing Clerk key" on device). Reproduced deterministically:
+      # export(no env) then export(env, no clear) → key absent from bundle.
+      - name: Export bundle (cache-cleared)
+        run: npx expo export --platform ios --clear --output-dir dist
+
+      # Publish only a bundle we have verified: the prod Clerk key and API URL
+      # must be inlined in the Hermes bytecode. A poisoned bundle fails the
+      # job instead of reaching devices.
+      - name: Verify env is inlined in the bundle
+        run: |
+          set -euo pipefail
+          HBC=$(find dist -name '*.hbc' | head -1)
+          test -n "$HBC" || { echo '::error::no .hbc bundle produced'; exit 1; }
+          FAIL=0
+          grep -aq "$EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY" "$HBC" \
+            || { echo '::error::Clerk publishable key NOT inlined in OTA bundle'; FAIL=1; }
+          grep -aq 'https://api.isol8.co' "$HBC" \
+            || { echo '::error::prod API URL NOT inlined in OTA bundle'; FAIL=1; }
+          grep -aq 'api-dev.isol8.co' "$HBC" \
+            && { echo '::error::DEV fallback URL present in OTA bundle (env not applied)'; FAIL=1; }
+          exit $FAIL
+
+      # --skip-bundler publishes the exact dist we just verified.
       - name: Publish OTA update
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
@@ -84,5 +111,8 @@ jobs:
           set -euo pipefail
           npx -y eas-cli@latest update \
             --channel production \
+            --platform ios \
+            --skip-bundler \
+            --input-dir dist \
             --message "CI ${GITHUB_SHA:0:9}: ${GITHUB_REF_NAME}" \
             --non-interactive

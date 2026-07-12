@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from core.auth import AuthContext
-from core.services.user_provision import ensure_user_ready
+from core.services.user_provision import ensure_personal_trial_default, ensure_user_ready
 
 
 @pytest.fixture(autouse=True)
@@ -874,11 +874,20 @@ async def test_metronome_customer_provisioned_for_org_admin_with_org_owner_id(_m
 @pytest.mark.asyncio
 async def test_new_personal_owner_creates_trial_before_gate_and_dispatches_provisioning(
     _mock_create_trial_local_if_absent,
+    _fresh_personal_signup,
+    monkeypatch,
 ):
     """A no-billing NEW personal owner: create_trial_local_if_absent is
     awaited (with owner_id=user_id, owner_type='personal') BEFORE the gate
     is evaluated, the gate then returns None, and background_provision is
     dispatched."""
+    # The free tier ships DARK: FREE_TIER_ENABLED defaults off so that landing
+    # this code cannot, by itself, open a public no-card tier (deploy.yml has no
+    # environment gate — every merge to main reaches prod). This test exercises
+    # the ENABLED path.
+    from core.config import settings as _settings
+
+    monkeypatch.setattr(_settings, "FREE_TIER_ENABLED", True)
     call_order: list[str] = []
 
     async def fake_create_trial(*, owner_id, owner_type):
@@ -988,3 +997,158 @@ async def test_org_admin_join_existing_company_creates_no_trial(_mock_create_tri
         owner_email="owner@example.com",
     )
     fake_provisioning.provision_org.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# trial_started telemetry (Task 16) — fires ONLY on the call that actually
+# creates the row, never on a later idempotent no-op (each ~3s poll calls
+# ensure_personal_trial_default again).
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _fresh_personal_signup(monkeypatch):
+    """Brand-new personal user: no billing row yet, no pending org invitation."""
+    monkeypatch.setattr(
+        "core.services.user_provision.billing_repo.get_by_owner_id",
+        AsyncMock(return_value=None),
+    )
+    invites = AsyncMock(return_value=[])
+    monkeypatch.setattr(
+        "core.services.user_provision.clerk_admin.list_pending_invitations_for_user",
+        invites,
+    )
+    return invites
+
+
+@pytest.mark.asyncio
+async def test_ensure_personal_trial_default_fires_trial_started_on_create(
+    _mock_create_trial_local_if_absent,
+    _fresh_personal_signup,
+    monkeypatch,
+):
+    """billing_repo.create_trial_local_if_absent returning True (this call
+    actually wrote the row) fires trial_started keyed on the owner id."""
+    # The free tier ships DARK: FREE_TIER_ENABLED defaults off so that landing
+    # this code cannot, by itself, open a public no-card tier (deploy.yml has no
+    # environment gate — every merge to main reaches prod). This test exercises
+    # the ENABLED path.
+    from core.config import settings as _settings
+
+    monkeypatch.setattr(_settings, "FREE_TIER_ENABLED", True)
+    _mock_create_trial_local_if_absent.return_value = True
+    with patch("core.services.user_provision.capture_product_event") as mock_capture:
+        await ensure_personal_trial_default(_personal_auth("user_p", "p@example.com"), "user_p")
+
+    mock_capture.assert_called_once_with(distinct_id="user_p", event="trial_started")
+
+
+@pytest.mark.asyncio
+async def test_ensure_personal_trial_default_does_not_refire_on_noop(
+    _mock_create_trial_local_if_absent,
+    _fresh_personal_signup,
+    monkeypatch,
+):
+    """A pre-existing row (the idempotent no-op branch, e.g. the SECOND of
+    two ~3s polls) returns False -- must not re-fire trial_started."""
+    from core.config import settings as _settings
+
+    monkeypatch.setattr(_settings, "FREE_TIER_ENABLED", True)
+    _mock_create_trial_local_if_absent.return_value = False
+    with patch("core.services.user_provision.capture_product_event") as mock_capture:
+        await ensure_personal_trial_default(_personal_auth("user_p", "p@example.com"), "user_p")
+
+    mock_capture.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_ensure_personal_trial_default_org_context_never_captures(
+    _mock_create_trial_local_if_absent,
+):
+    """Org context never even calls create_trial_local_if_absent (free tier
+    is personal-only) so trial_started can never fire for an org."""
+    with patch("core.services.user_provision.capture_product_event") as mock_capture:
+        await ensure_personal_trial_default(_org_admin_auth("user_admin", "org_xyz", "a@example.com"), "org_xyz")
+
+    _mock_create_trial_local_if_absent.assert_not_awaited()
+    mock_capture.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_free_tier_ships_dark_when_the_flag_is_off(monkeypatch):
+    """deploy.yml has NO environment gate — every merge to main reaches prod —
+    so landing the free-tier code must not, by itself, open a public no-card
+    tier. With FREE_TIER_ENABLED off, no trial row is ever written."""
+    from core.config import settings as _settings
+    from core.services import user_provision
+
+    monkeypatch.setattr(_settings, "FREE_TIER_ENABLED", False)
+    create = AsyncMock()
+    monkeypatch.setattr(user_provision.billing_repo, "create_trial_local_if_absent", create)
+
+    auth = MagicMock()
+    auth.is_org_context = False
+    await user_provision.ensure_personal_trial_default(auth, "user_x")
+
+    create.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Tenancy invariant (Gate B): a user with a pending org invitation may not take
+# a personal plan — they must accept the invite and become a seat.
+# /billing/trial-checkout has always enforced this. The auto-trial default runs
+# on every /container/status poll, so without the same check it is simply a way
+# around that gate: the invited user need only let the poll run to land a
+# personal trial_local row + a personal container.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pending_org_invitation_refuses_the_personal_trial_default(
+    _mock_create_trial_local_if_absent,
+    monkeypatch,
+):
+    from core.config import settings as _settings
+
+    monkeypatch.setattr(_settings, "FREE_TIER_ENABLED", True)
+    monkeypatch.setattr(
+        "core.services.user_provision.billing_repo.get_by_owner_id",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        "core.services.user_provision.clerk_admin.list_pending_invitations_for_user",
+        AsyncMock(return_value=[{"public_organization_data": {"name": "Acme"}}]),
+    )
+
+    with patch("core.services.user_provision.capture_product_event") as mock_capture:
+        await ensure_personal_trial_default(_personal_auth("user_p", "p@example.com"), "user_p")
+
+    _mock_create_trial_local_if_absent.assert_not_awaited()
+    mock_capture.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_an_existing_billing_row_short_circuits_before_the_clerk_call(
+    _mock_create_trial_local_if_absent,
+    monkeypatch,
+):
+    """This helper runs on EVERY ~3s /container/status poll. The invitation
+    lookup is a Clerk API call and must not fire on each one — an existing
+    billing row means there is nothing to create, so we never reach Clerk."""
+    from core.config import settings as _settings
+
+    monkeypatch.setattr(_settings, "FREE_TIER_ENABLED", True)
+    monkeypatch.setattr(
+        "core.services.user_provision.billing_repo.get_by_owner_id",
+        AsyncMock(return_value={"owner_id": "user_p", "subscription_status": "trial_local"}),
+    )
+    invites = AsyncMock(return_value=[])
+    monkeypatch.setattr(
+        "core.services.user_provision.clerk_admin.list_pending_invitations_for_user",
+        invites,
+    )
+
+    await ensure_personal_trial_default(_personal_auth("user_p", "p@example.com"), "user_p")
+
+    invites.assert_not_awaited()
+    _mock_create_trial_local_if_absent.assert_not_awaited()

@@ -27,8 +27,10 @@ token_events = st.fixed_dictionaries(
 )
 
 # Config builder inputs for the brick test. Values are the real provider_choice
-# branches in core/containers/config.py (bedrock_claude / chatgpt_oauth / byo_key /
-# meta — the free-tier Muse Spark tier).
-provider_choices = st.sampled_from(["bedrock_claude", "chatgpt_oauth", "byo_key", "meta"])
+# branches in core/containers/config.py. `bedrock_trial` is the free-tier config
+# MODE (one AIP tier + the self-run lockdown: cron off, no heartbeat) — it emits
+# keys no other branch does, so it must be sampled here or nothing proves those
+# keys can't crash-loop a container.
+provider_choices = st.sampled_from(["bedrock_claude", "bedrock_trial", "chatgpt_oauth", "byo_key"])
 byo_providers = st.sampled_from(["anthropic", "openai"])
 owner_types = st.sampled_from(["personal", "org"])

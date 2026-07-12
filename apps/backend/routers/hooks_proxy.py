@@ -37,7 +37,8 @@ from fastapi import APIRouter, HTTPException, Request, Response
 
 from core.config import settings
 from core.containers import get_ecs_manager
-from core.repositories import container_repo, hook_event_repo
+from core.repositories import billing_repo, container_repo, hook_event_repo
+from core.services.provision_gate import has_always_on_entitlement
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -119,8 +120,8 @@ async def proxy_hook(owner_id: str, hook_path: str, request: Request) -> Respons
     X-Forwarded-* with the true caller IP, and forwards to the container's
     ``/hooks`` ingress. Audits every call to the ``hook-events`` DDB table.
 
-    Returns the upstream's status code verbatim, or 401/404/429/503 for
-    auth/lookup/rate-limit/availability failures.
+    Returns the upstream's status code verbatim, or 401/402/404/429/503 for
+    auth/entitlement/lookup/rate-limit/availability failures.
     """
     # Defense-in-depth: prevent path-traversal escape from the /hooks/* containment.
     # Without this, a holder of a valid hook_token could probe non-/hooks paths on
@@ -146,6 +147,19 @@ async def proxy_hook(owner_id: str, hook_path: str, request: Request) -> Respons
     expected = container.get("hook_token") or ""
     if not expected or not hmac.compare_digest(presented, expected):
         raise HTTPException(status_code=401, detail="invalid_token")
+
+    # 3b. Always-on entitlement — webhooks are a paid feature. Trial owners'
+    # tokens are real (every container mints one) but must not trigger runs.
+    billing = await billing_repo.get_by_owner_id(owner_id)
+    if not has_always_on_entitlement(billing):
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "blocked": True,
+                "code": "always_on_requires_subscription",
+                "message": "Webhooks are available on the paid plan. Upgrade to enable always-on automation.",
+            },
+        )
 
     # 4. Rate limit (after auth so 401s don't fill the bucket)
     if not _check_rate_limit(owner_id):

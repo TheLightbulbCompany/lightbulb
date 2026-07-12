@@ -58,7 +58,19 @@ class BillingService:
         ``stripe_customer_id``.
 
         Resolution order:
-          1. Existing DDB row for this owner_id → return it (no Stripe call).
+          1. Existing DDB row for this owner_id WITH a ``stripe_customer_id``
+             → return it (no Stripe call).
+          1b. Existing DDB row WITHOUT a ``stripe_customer_id`` — the
+              card-less ``trial_local`` row (``create_trial_local_if_absent``
+              deliberately writes no ``stripe_*`` fields) is the only row
+              that reaches this today — falls through to steps 2-3 below to
+              mint/reuse a customer, then BACKFILLS it onto the existing row
+              via ``billing_repo.set_stripe_customer_id`` rather than
+              attempting a fresh ``create_if_not_exists`` (which would raise
+              ``AlreadyExistsError`` against a row that's already there).
+              Without this, ``create_flat_fee_checkout`` always sees no
+              Stripe customer and raises — every free-tier user hits an
+              HTTP 400 on Upgrade.
           2. ``stripe.Customer.list(email=...)`` → reuse the most recent match.
              ``list`` is exact-match and immediately consistent (unlike
              ``search``, which has indexing lag).
@@ -69,7 +81,7 @@ class BillingService:
         unique. See ``handle_stripe_webhook`` in ``routers/billing.py``.
         """
         existing = await billing_repo.get_by_owner_id(owner_id)
-        if existing:
+        if existing and existing.get("stripe_customer_id"):
             return existing
 
         # Normalize so a single human typing/signing in with mixed case
@@ -102,6 +114,15 @@ class BillingService:
             customer_id = customer.id
             created_locally = True
             put_metric("stripe.customer.email_dedup", dimensions={"result": "create"})
+
+        if existing:
+            # Backfill path (1b above) — the row already exists (trial_local
+            # today), so persist onto it instead of racing a fresh
+            # create_if_not_exists, which would raise AlreadyExistsError
+            # against a row that's already there.
+            await billing_repo.set_stripe_customer_id(owner_id, stripe_customer_id=customer_id)
+            existing["stripe_customer_id"] = customer_id
+            return existing
 
         try:
             return await billing_repo.create_if_not_exists(
@@ -679,6 +700,17 @@ async def change_provider(
             "no_billing_account",
             "No billing account. Subscribe via /onboarding first.",
             status_code=404,
+        )
+    # A no-card local-trial row converts to a paid plan through
+    # /billing/trial-checkout, where the provider is chosen at checkout — NOT
+    # through this post-onboarding switch. trial_local counts as "active" for
+    # is_subscription_active, so guard it explicitly here (before any Stripe /
+    # reprovision work) rather than let it fall through onto the meta box.
+    if account.get("subscription_status") == "trial_local":
+        raise ChangeProviderError(
+            "use_trial_checkout",
+            "Pick a plan first — provider selection happens at checkout for free-tier accounts.",
+            status_code=409,
         )
     if not is_subscription_active(account):
         raise ChangeProviderError(

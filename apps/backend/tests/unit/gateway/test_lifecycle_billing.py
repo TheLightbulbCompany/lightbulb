@@ -190,3 +190,54 @@ async def test_chat_final_no_longer_calls_billing(conn):
     # But UI signal IS forwarded ({"type": "done"})
     any_done = any(isinstance(c[0][0], dict) and c[0][0].get("type") == "done" for c in mock_forward.call_args_list)
     assert any_done
+
+
+# --- the usage-settle trigger schedules per lifecycle/end delivery ---
+#
+# There is NO runId dedup here any more: the free-tier daily-spend counter is
+# written by the Bedrock meter Lambda (which dedups on Bedrock's own requestId
+# at the AWS layer), and nothing on this path writes it. What remains is the
+# analytics usage recording, whose posture is the same as before the (now
+# deleted) reserve subsystem introduced the dedup.
+
+
+@pytest.mark.asyncio
+async def test_different_runid_schedules_each_time(conn):
+    """Distinct runIds are independent turns -- each schedules its own fetch."""
+    payload_a = {
+        "runId": "run-a",
+        "stream": "lifecycle",
+        "data": {"phase": "end"},
+        "sessionKey": "agent:main:user_bob",
+    }
+    payload_b = {
+        "runId": "run-b",
+        "stream": "lifecycle",
+        "data": {"phase": "end"},
+        "sessionKey": "agent:main:user_bob",
+    }
+
+    with patch.object(conn, "_fetch_and_record_usage", AsyncMock()) as mock_fetch:
+        conn._record_usage_from_session(payload_a)
+        conn._record_usage_from_session(payload_b)
+        await asyncio.sleep(0)
+
+    assert mock_fetch.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_missing_runid_always_schedules(conn):
+    """No runId on the payload -> still schedule: a real usage event must never
+    be silently dropped."""
+    payload = {
+        "stream": "lifecycle",
+        "data": {"phase": "end"},
+        "sessionKey": "agent:main:user_bob",
+    }
+
+    with patch.object(conn, "_fetch_and_record_usage", AsyncMock()) as mock_fetch:
+        conn._record_usage_from_session(dict(payload))
+        conn._record_usage_from_session(dict(payload))
+        await asyncio.sleep(0)
+
+    assert mock_fetch.await_count == 2

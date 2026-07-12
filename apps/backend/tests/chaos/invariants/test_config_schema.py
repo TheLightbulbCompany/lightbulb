@@ -26,6 +26,14 @@ _DUMMY_AIP = {
     "sonnet": "arn:aws:bedrock:us-east-1:0:inference-profile/sonnet",
     "haiku": "arn:aws:bedrock:us-east-1:0:inference-profile/haiku",
 }
+# A trial owner holds exactly ONE AIP — ensure_owner_aips mints one tier and the
+# IAM policy pins them to it.
+_DUMMY_TRIAL_AIP = {"sonnet": _DUMMY_AIP["sonnet"]}
+
+_AIPS_BY_CHOICE = {
+    "bedrock_claude": _DUMMY_AIP,
+    "bedrock_trial": _DUMMY_TRIAL_AIP,
+}
 
 
 def _build(provider_choice: str, byo_provider: str, owner_type: str) -> dict:
@@ -35,7 +43,7 @@ def _build(provider_choice: str, byo_provider: str, owner_type: str) -> dict:
         provider_choice=provider_choice,
         byo_provider=byo_provider if provider_choice == "byo_key" else None,
         owner_type=owner_type,
-        aip_arns=_DUMMY_AIP if provider_choice == "bedrock_claude" else None,
+        aip_arns=_AIPS_BY_CHOICE.get(provider_choice),
     )
 
 

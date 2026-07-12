@@ -12,7 +12,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from core.auth import AuthContext, get_current_user, is_org_owner_id, resolve_owner_id
 from core.config import settings
 from core.containers import get_ecs_manager, get_gateway_pool
-from core.containers.ecs_manager import EcsManagerError
+from core.containers.ecs_manager import (
+    START_REFUSED_CAP,
+    START_REFUSED_EXPIRED,
+    ContainerStartRefused,
+    EcsManagerError,
+)
 from core.services.management_api_client import ManagementApiClientError
 from core.observability.metrics import put_metric, timing
 from core.repositories import container_repo
@@ -20,10 +25,25 @@ from core.services.container_provision import (
     resolve_provider_choice as _resolve_provider_choice,
     background_provision as _background_provision,
 )
-from core.services.provision_gate import evaluate_provision_gate
+from core.services.provision_gate import (
+    evaluate_provision_gate,
+    maybe_restore_trial_bedrock,
+    meta_daily_cap_gate,
+    trial_expired_gate,
+)
+from core.services.stripe_webhook_handlers import CONVERTING_SUBSTATUS, maybe_resume_stuck_conversion
 from core.services.user_provision import ensure_personal_trial_default, ensure_user_ready
 
 logger = logging.getLogger(__name__)
+
+
+# A start refusal carries the SAME code as the provision gate's, so each maps
+# straight to the gate that renders it. Keeping them in one map means a new
+# refusal reason cannot be added without deciding what the owner sees.
+_TRIAL_REFUSAL_GATES = {
+    START_REFUSED_CAP: meta_daily_cap_gate,
+    START_REFUSED_EXPIRED: trial_expired_gate,
+}
 
 router = APIRouter()
 
@@ -50,6 +70,15 @@ def _resolve_cold_start_phase(container: dict, gateway_pool, owner_id: str) -> s
     if gateway_pool.is_user_connected(owner_id):
         return "ready"
     return "starting"
+
+
+def _owner_role(auth: AuthContext) -> str:
+    """ "admin" | "member" — the role a Gate payload is rendered for.
+
+    Personal owners are always admin of themselves.
+    """
+    is_admin = auth.is_org_admin if auth.is_org_context else True
+    return "admin" if is_admin else "member"
 
 
 async def _assert_provision_allowed(
@@ -184,13 +213,56 @@ async def container_status(
             "phase": "provisioning",
         }
 
+    # Daily Bedrock restore: a capped-out (or previously-expired-and-now-
+    # renewed) trial owner's container row may still carry bedrock_revoked
+    # from the meter Lambda's kill. The owner is polling US right now, so this
+    # is the trigger — no worker. No-op (zero extra reads) unless the flag is
+    # actually set. See provision_gate.maybe_restore_trial_bedrock docstring.
+    await maybe_restore_trial_bedrock(owner_id=owner_id, container=container)
+
+    # Trial→paid conversion owns the container row while it stops + drains the
+    # trial box (see core/services/stripe_webhook_handlers.py). Two things
+    # happen here:
+    #
+    #   - While a conversion is live, the auto-retry below MUST stand down. The
+    #     conversion's reprovision blocks in a ~90s drain wait to guarantee a
+    #     single EFS-WAL SQLite writer; the just-paid owner polls this endpoint
+    #     every ~3s and sees "stopped", and — being paid — passes the gate. An
+    #     auto-retry there dispatches a second provision with NO drain wait and
+    #     lands a new task on top of the draining one. That is the documented
+    #     corruption / crash-loop mode.
+    #
+    #   - If the conversion's fire-and-forget task died, nothing else will ever
+    #     re-fire it (Stripe's retry sees old_status != "trial_local"), so a
+    #     PAYING owner keeps the trial container forever. This poll is the only
+    #     thing that runs again, so it re-dispatches — idempotently and
+    #     rate-limited to at most once per guard window.
+    conversion_active = await maybe_resume_stuck_conversion(owner_id, container)
+
     # Auto-retry: if container is in a failed/stuck state AND the owner can
     # currently afford to provision, trigger re-provisioning in the
     # background. The same gate as /provision (audit C1) — bare
     # subscription-id existence wasn't enough; we need active/trialing
     # status, and bedrock_claude users need a positive credit balance.
     retryable_states = ("error", "stopped")
-    if container.get("status") in retryable_states:
+    if container.get("status") in retryable_states and not conversion_active:
+        # A container the free tier scaled to zero must NOT auto-retry/wake.
+        # Surface the limit card so the frontend shows the block (not a spinner)
+        # and the container stays down until the counter resets (UTC midnight)
+        # or the owner upgrades.
+        #
+        # The FULL trial predicate, not just the cap. An expired trial was
+        # already denied the wake — _assert_provision_allowed below raises, and
+        # its 402 is deliberately swallowed as a may-I-auto-retry predicate — but
+        # the owner then got a bare "stopped" container with no explanation
+        # instead of the trial_expired card every other door renders.
+        from core.services import provision_gate, trial_cap
+
+        trial_gate = provision_gate.gate_for_trial_reason(
+            await trial_cap.trial_block_reason(owner_id), _owner_role(auth)
+        )
+        if trial_gate is not None:
+            raise HTTPException(status_code=402, detail=trial_gate.to_payload())
         try:
             await _assert_provision_allowed(
                 owner_id,
@@ -275,11 +347,16 @@ def _safe_phase(container: dict, owner_id: str) -> str:
     description=(
         "Creates a new container for the authenticated owner (user or org). "
         "Idempotent — returns existing container if one already exists. "
-        "Only provisions for the resolved owner_id (org in org context, user in personal)."
+        "Only provisions for the resolved owner_id (org in org context, user in personal). "
+        "Restarting a stopped container passes the start guards: an over-cap "
+        "free-tier owner gets the 402 daily-limit gate, and a container a "
+        "trial→paid conversion is reprovisioning is left alone (200, "
+        "status=provisioning)."
     ),
     operation_id="container_provision",
     responses={
-        200: {"description": "Container provisioned or already exists"},
+        200: {"description": "Container provisioned, already exists, or is being reprovisioned"},
+        402: {"description": "Provision/start gate is up (structured blocked payload)"},
         503: {"description": "Provisioning failed"},
     },
 )
@@ -298,6 +375,16 @@ async def container_provision(
             # Container was scaled to zero -- restart it. This is the
             # cold-start path; emit a metric so we can answer "how often do
             # users hit a cold start" and "how long does the restart take".
+            #
+            # The payment gate is deliberately NOT applied here (see the comment
+            # above), which is precisely why the two *start* guards — the
+            # free-tier daily cap and the trial->paid conversion — live inside
+            # start_user_service instead of being duplicated into this branch.
+            # This endpoint is the second door onto the same stopped container
+            # that GET /container/status auto-retries; before the guards moved
+            # down, a capped-out trial owner could simply POST here to wake the
+            # container the cap had just put to sleep, and a POST landing during
+            # a conversion's ~90s drain re-opened the EFS-WAL double-writer race.
             try:
                 with timing("gateway.cold_start.latency"):
                     await get_ecs_manager().start_user_service(owner_id)
@@ -305,6 +392,37 @@ async def container_provision(
                 logger.info("Restarted stopped container for owner %s", owner_id)
                 return {
                     "status": "provisioning",
+                    "service_name": existing.get("service_name"),
+                    "owner_id": owner_id,
+                    "already_existed": True,
+                }
+            except ContainerStartRefused as refusal:
+                # A guard is up. NOT a failure (so no cold_start error metric,
+                # no 503): the container is healthy, we are declining to wake it.
+                put_metric(
+                    "gateway.cold_start.count",
+                    dimensions={"outcome": "refused"},
+                )
+                if refusal.reason in _TRIAL_REFUSAL_GATES:
+                    # The same 402 card GET /container/status returns — same gate,
+                    # same payload, whichever door the owner knocks on.
+                    raise HTTPException(
+                        status_code=402,
+                        detail=_TRIAL_REFUSAL_GATES[refusal.reason](_owner_role(auth)).to_payload(),
+                    )
+                # Conversion in flight. The container IS coming back — the
+                # conversion's own reprovision will start it once the old task has
+                # drained — so this is not an error to surface. Answer with the
+                # pollable provisioning shape this endpoint already returns (it is
+                # documented as idempotent) and let the caller poll
+                # /container/status, which reports the same converting state.
+                logger.info(
+                    "Refused to wake container for owner %s: trial-conversion reprovision in flight",
+                    owner_id,
+                )
+                return {
+                    "status": "provisioning",
+                    "substatus": CONVERTING_SUBSTATUS,
                     "service_name": existing.get("service_name"),
                     "owner_id": owner_id,
                     "already_existed": True,

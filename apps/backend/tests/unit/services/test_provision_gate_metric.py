@@ -43,6 +43,51 @@ async def test_blocked_gate_emits_metric_with_code():
 
 
 @pytest.mark.asyncio
+async def test_trial_expired_gate_emits_metric_and_dedup_telemetry():
+    """The trial_expired gate is both metric-coded (like any other blocked
+    code, covered above) AND fires the trial_expired_block PostHog capture
+    (Task 16) — /container/status polls every ~3s while blocked, so the
+    capture must be the DEDUPED helper, not a bare capture_product_event."""
+    import time
+
+    account = {
+        "subscription_status": "trial_local",
+        "trial_end": int(time.time()) - 60,
+    }
+    with (
+        patch("core.services.provision_gate.put_metric"),
+        patch(
+            "core.services.provision_gate.billing_repo.get_by_owner_id",
+            new=AsyncMock(return_value=account),
+        ),
+        patch("core.services.provision_gate.capture_once_per_owner_per_day") as mock_capture,
+    ):
+        gate = await provision_gate.evaluate_provision_gate(owner_id="user_x", is_admin=True)
+    assert gate is not None
+    assert gate.code == "trial_expired"
+    mock_capture.assert_called_once_with(owner_id="user_x", event="trial_expired_block")
+
+
+@pytest.mark.asyncio
+async def test_non_trial_expired_blocked_gate_does_not_fire_trial_expired_telemetry():
+    """A DIFFERENT blocked code (e.g. subscription_required) must never fire
+    the trial_expired_block capture."""
+    account = {"subscription_status": "canceled", "stripe_subscription_id": "sub_x"}
+    with (
+        patch("core.services.provision_gate.put_metric"),
+        patch(
+            "core.services.provision_gate.billing_repo.get_by_owner_id",
+            new=AsyncMock(return_value=account),
+        ),
+        patch("core.services.provision_gate.capture_once_per_owner_per_day") as mock_capture,
+    ):
+        gate = await provision_gate.evaluate_provision_gate(owner_id="org_x", is_admin=True)
+    assert gate is not None
+    assert gate.code == "subscription_required"
+    mock_capture.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_allowed_provision_emits_no_metric():
     # Active bedrock subscription, credits available → gate passes (None).
     account = {

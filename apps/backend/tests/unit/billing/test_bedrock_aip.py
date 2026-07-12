@@ -190,6 +190,30 @@ class TestPersistence:
 
         assert await read_owner_aips("org_abc") is None
 
+    @pytest.mark.asyncio
+    async def test_persist_defaults_reverse_row_plan_to_paid(self, aip_tables):
+        from core.billing.bedrock_aip import persist_owner_aips
+
+        arns = {"sonnet": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/s"}
+        await persist_owner_aips("org_abc", arns)
+        resp = aip_tables.get_item(
+            TableName="test-aip-owners",
+            Key={"aip_arn": {"S": arns["sonnet"]}},
+        )
+        assert resp["Item"]["plan"]["S"] == "paid"
+
+    @pytest.mark.asyncio
+    async def test_persist_writes_trial_plan_when_specified(self, aip_tables):
+        from core.billing.bedrock_aip import persist_owner_aips
+
+        arns = {"sonnet": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/s"}
+        await persist_owner_aips("org_abc", arns, plan="trial")
+        resp = aip_tables.get_item(
+            TableName="test-aip-owners",
+            Key={"aip_arn": {"S": arns["sonnet"]}},
+        )
+        assert resp["Item"]["plan"]["S"] == "trial"
+
 
 class TestResolveOwner:
     @pytest.mark.asyncio
@@ -401,6 +425,135 @@ class TestEnsureAips:
         assert set(arns) == {"opus", "sonnet", "haiku"}
         # Adopted AIPs are persisted -> reverse lookup resolves.
         assert await mod.resolve_owner_from_aip_arn(arns["sonnet"]) == "org_abc"
+
+    @pytest.mark.asyncio
+    async def test_default_tiers_none_mints_three_with_paid_plan(self, aip_tables, monkeypatch):
+        """tiers=None (the call shape every existing caller uses today) must
+        remain byte-identical: all 3 tiers minted, reverse rows carry
+        plan="paid"."""
+        import core.billing.bedrock_aip as mod
+
+        created = {}
+
+        def _create(**kwargs):
+            src = kwargs["modelSource"]["copyFrom"]
+            profile_id = src.split(":inference-profile/")[1]
+            tier = next(t for t, p in mod.SYSTEM_PROFILE_ID.items() if p == profile_id)
+            created[tier] = kwargs
+            arn = f"arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/{tier}-aip"
+            return {"inferenceProfileArn": arn}
+
+        fake = MagicMock()
+        fake.create_inference_profile.side_effect = _create
+        monkeypatch.setattr(mod, "_bedrock_client", lambda: fake)
+        monkeypatch.setattr(mod, "_caller_account_id", AsyncMock(return_value="877352799272"))
+        monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
+
+        # No `tiers` kwarg at all — the exact call shape ecs_manager.py uses.
+        arns = await mod.ensure_owner_aips("org_paid")
+
+        assert set(arns) == {"opus", "sonnet", "haiku"}
+        assert fake.create_inference_profile.call_count == 3
+        for tier in ("opus", "sonnet", "haiku"):
+            resp = aip_tables.get_item(
+                TableName="test-aip-owners",
+                Key={"aip_arn": {"S": arns[tier]}},
+            )
+            assert resp["Item"]["plan"]["S"] == "paid"
+
+    @pytest.mark.asyncio
+    async def test_single_tier_mints_exactly_one_aip_and_persists_trial_plan(self, aip_tables, monkeypatch):
+        import core.billing.bedrock_aip as mod
+
+        created = {}
+
+        def _create(**kwargs):
+            src = kwargs["modelSource"]["copyFrom"]
+            profile_id = src.split(":inference-profile/")[1]
+            tier = next(t for t, p in mod.SYSTEM_PROFILE_ID.items() if p == profile_id)
+            created[tier] = kwargs
+            arn = f"arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/{tier}-aip"
+            return {"inferenceProfileArn": arn}
+
+        fake = MagicMock()
+        fake.create_inference_profile.side_effect = _create
+        monkeypatch.setattr(mod, "_bedrock_client", lambda: fake)
+        monkeypatch.setattr(mod, "_caller_account_id", AsyncMock(return_value="877352799272"))
+        monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
+
+        arns = await mod.ensure_owner_aips("org_trial", tiers=["sonnet"])
+
+        assert set(arns) == {"sonnet"}
+        assert fake.create_inference_profile.call_count == 1
+        assert "opus" not in created
+        assert "haiku" not in created
+
+        resp = aip_tables.get_item(
+            TableName="test-aip-owners",
+            Key={"aip_arn": {"S": arns["sonnet"]}},
+        )
+        assert resp["Item"]["owner_id"]["S"] == "org_trial"
+        assert resp["Item"]["tier"]["S"] == "sonnet"
+        assert resp["Item"]["plan"]["S"] == "trial"
+
+    @pytest.mark.asyncio
+    async def test_single_tier_idempotent_short_circuit_repersists_trial_plan(self, aip_tables, monkeypatch):
+        """The C1 self-heal (short-circuit still re-puts reverse rows) must keep
+        working for a single-tier trial mint, and the re-put must now carry
+        plan="trial". Uses "org_abc" (the aip_tables fixture's pre-seeded
+        containers row) — update_fields no-ops on an owner with no row, so a
+        fresh owner id here would never persist to the containers row and the
+        short-circuit this test targets would never trigger."""
+        import core.billing.bedrock_aip as mod
+
+        arns = {"sonnet": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/s"}
+        await mod.persist_owner_aips("org_abc", arns, plan="trial")
+
+        fake = MagicMock()
+        monkeypatch.setattr(mod, "_bedrock_client", lambda: fake)
+        monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
+
+        got = await mod.ensure_owner_aips("org_abc", tiers=["sonnet"])
+        assert got == arns
+        fake.create_inference_profile.assert_not_called()
+
+        resp = aip_tables.get_item(
+            TableName="test-aip-owners",
+            Key={"aip_arn": {"S": arns["sonnet"]}},
+        )
+        assert resp["Item"]["plan"]["S"] == "trial"
+
+    @pytest.mark.asyncio
+    async def test_single_tier_mint_feeds_policy_pinned_to_one_model(self, aip_tables, monkeypatch):
+        """SECURITY PROPERTY: minting only the sonnet tier and feeding the
+        result into build_owner_bedrock_policy produces a per-owner IAM policy
+        whose unconditional AIP-invoke Allow lists ONLY that one AIP ARN, and
+        whose FM-invoke condition scopes to only that one AIP — a trial owner's
+        role has no path to opus/haiku, even via a raw foundation-model ARN."""
+        import core.billing.bedrock_aip as mod
+
+        def _create(**kwargs):
+            return {
+                "inferenceProfileArn": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/sonnet-aip"
+            }
+
+        fake = MagicMock()
+        fake.create_inference_profile.side_effect = _create
+        monkeypatch.setattr(mod, "_bedrock_client", lambda: fake)
+        monkeypatch.setattr(mod, "_caller_account_id", AsyncMock(return_value="877352799272"))
+        monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
+
+        arns = await mod.ensure_owner_aips("org_trial", tiers=["sonnet"])
+        doc = mod.build_owner_bedrock_policy(
+            owner_id="org_trial",
+            aip_arns=arns,
+            regions=mod.FAN_OUT_REGIONS,
+        )
+
+        aip_stmt = next(s for s in doc["Statement"] if s.get("Sid") == "OwnerScopedProfileInvoke")
+        assert aip_stmt["Resource"] == [arns["sonnet"]]
+        fm_stmt = next(s for s in doc["Statement"] if s.get("Sid") == "OwnerScopedFmViaProfile")
+        assert fm_stmt["Condition"]["ArnEquals"]["bedrock:InferenceProfileArn"] == [arns["sonnet"]]
 
 
 def _no_such_entity():

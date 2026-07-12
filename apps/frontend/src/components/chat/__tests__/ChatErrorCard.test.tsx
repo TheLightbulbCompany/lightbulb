@@ -43,6 +43,37 @@ describe("ChatErrorCard", () => {
     expect(screen.getByText("Request refused")).toBeInTheDocument();
   });
 
+  it("renders the meta_daily_cap variant with the backend message and an Upgrade action", () => {
+    render(
+      <ChatErrorCard
+        code="meta_daily_cap"
+        message="You've used today's free allowance — resets tomorrow. Upgrade to keep going."
+      />,
+    );
+    // Distinct from a generic "Failed to generate" error card.
+    expect(screen.queryByText("Failed to generate")).not.toBeInTheDocument();
+    expect(
+      screen.getByText("You've used today's free allowance — resets tomorrow. Upgrade to keep going."),
+    ).toBeInTheDocument();
+    const link = screen.getByRole("link", { name: "Upgrade" });
+    expect(link).toHaveAttribute("href", "/settings?panel=billing");
+  });
+
+  it("renders the trial_expired variant with the backend message and an Upgrade action", () => {
+    render(
+      <ChatErrorCard
+        code="trial_expired"
+        message="Your 3-day free trial has ended. Pick a plan to keep your agent."
+      />,
+    );
+    expect(screen.getByText("Your free trial has ended")).toBeInTheDocument();
+    expect(
+      screen.getByText("Your 3-day free trial has ended. Pick a plan to keep your agent."),
+    ).toBeInTheDocument();
+    const link = screen.getByRole("link", { name: "Upgrade" });
+    expect(link).toHaveAttribute("href", "/settings?panel=billing");
+  });
+
   it("falls back to a generic title for unknown codes and shows the upstream message verbatim", () => {
     render(<ChatErrorCard code="weird_new_code" message="some upstream detail" />);
     expect(screen.getByText("Failed to generate")).toBeInTheDocument();

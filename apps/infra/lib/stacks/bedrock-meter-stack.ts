@@ -1,5 +1,6 @@
 import * as path from "path";
 import * as cdk from "aws-cdk-lib";
+import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as logs from "aws-cdk-lib/aws-logs";
@@ -13,8 +14,17 @@ import * as cr from "aws-cdk-lib/custom-resources";
 import { Construct } from "constructs";
 
 // =============================================================================
-// BedrockMeterStack — account-scoped Bedrock usage meter, direct Metronome
-// ingest. ONE codebase -> TWO function instances (dev + prod).
+// BedrockMeterStack — account-scoped Bedrock usage meter. ONE codebase -> TWO
+// function instances (dev + prod). Paid owners are ingested to Metronome;
+// TRIAL owners are priced locally, counted, and CUT OFF at the $3/day cap.
+// =============================================================================
+// The cap is the load-bearing part. The per-user container holds its own AWS
+// credentials and calls Bedrock directly — the backend is not on the inference
+// path — so the only thing that provably stops a free owner's spend is taking
+// away the container's ability to invoke: delete the per-owner scoped inline
+// IAM policy AND set its ECS service to desiredCount=0. Hence this Lambda's
+// role carries iam:DeleteRolePolicy + ecs:UpdateService, tightly scoped to the
+// per-owner role-name prefix and the per-user service-name prefix.
 // =============================================================================
 // Instantiated ONCE (prod stage only). Bedrock model-invocation logging is an
 // ACCOUNT+REGION-level config (one per region) and there is ONE invocation-log
@@ -153,6 +163,33 @@ export class BedrockMeterStack extends cdk.Stack {
         retentionPeriod: cdk.Duration.days(14),
       });
 
+      // THE REPLAY GUARD for the trial counter. Metronome dedups the paid path
+      // on transaction_id (34 days) — which is the ONLY reason CW-Logs batch
+      // retries and DLQ redrives are safe to replay. A DynamoDB ADD has no such
+      // dedup, so the daily-spend counter needs its own: a conditional PutItem
+      // keyed on the Bedrock requestId. Without it a single batch retry
+      // double-counts and false-locks-out a real user at half their real spend.
+      //
+      // 48h TTL: past CloudWatch's retry horizon and any redrive we would still
+      // want counted. AWS-owned encryption, not the per-env CMK: the CMK is
+      // created by each env's auth stack and its ARN is unknowable from this
+      // prod-stage stack (cross-stage), and the rows hold nothing but a request
+      // id and a timestamp. DESTROY for the same reason as the log group — a
+      // RETAIN policy on a FIXED-name resource orphans it on any
+      // CREATE-rollback and the orphan then blocks every subsequent CREATE with
+      // AlreadyExists. This is 48h-ephemeral replay state, not a system of
+      // record.
+      const dedupTable = new dynamodb.Table(this, `MeterDedupTable${idSuffix}`, {
+        tableName: `isol8-${meterEnv}-bedrock-invocation-dedup`,
+        partitionKey: {
+          name: "request_id",
+          type: dynamodb.AttributeType.STRING,
+        },
+        billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+        timeToLiveAttribute: "ttl",
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      });
+
       // No explicit functionName: a fixed name would CREATE-before-DELETE
       // collide with the pre-rework function on the replacement update. CFN
       // names the functions; nothing references them by name (alarms and the
@@ -168,11 +205,26 @@ export class BedrockMeterStack extends cdk.Stack {
         environment: {
           // The synchronous per-record fail-safe sink the Lambda code sends to.
           DLQ_URL: dlq.queueUrl,
-          // Per-env attribution table: aip_arn -> {owner_id, tier}.
+          // Per-env attribution table: aip_arn -> {owner_id, tier, plan}.
           AIP_OWNERS_TABLE: `isol8-${meterEnv}-bedrock-aip-owners`,
+          // Per-requestId replay guard for the trial counter.
+          INVOCATION_DEDUP_TABLE: dedupTable.tableName,
+          // The trial daily-spend counter lives on the billing row
+          // (meta_daily_spend_microcents.{YYYY-MM-DD}); the revoked flag the
+          // backend's daily restore reads lives on the containers row.
+          BILLING_TABLE: `isol8-${meterEnv}-billing-accounts`,
+          CONTAINERS_TABLE: `isol8-${meterEnv}-containers`,
+          // The per-user ECS services live in the env's container-stack cluster,
+          // whose physical name is CFN-generated (renaming it would REPLACE the
+          // cluster and destroy every per-user service) and, for dev, unknowable
+          // from this prod-stage stack. The Lambda resolves it once per cold
+          // start by listing clusters and matching this prefix — keeping the
+          // "instances differ ONLY in env vars" rule intact.
+          ECS_CLUSTER_PREFIX: `isol8-${meterEnv}-container-`,
           // The env dimension on the Lambda's EMF metrics — both instances
           // share namespace Isol8 + service=isol8-bedrock-meter, so this is
-          // what keeps dev noise out of the prod alarms.
+          // what keeps dev noise out of the prod alarms. ALSO the env segment
+          // of the per-owner IAM role name the kill deletes its policy from.
           METER_ENV: meterEnv,
         },
         logRetention: logs.RetentionDays.ONE_MONTH,
@@ -199,19 +251,27 @@ export class BedrockMeterStack extends cdk.Stack {
 
       // grantRead only adds GetSecretValue — the secrets are CMK-encrypted
       // with each env's auth-stack key, and the dev CMK's ARN is unknowable
-      // from this prod-stage stack (cross-stage). The aip-owners DynamoDB
-      // tables are encrypted with the SAME per-env CMKs, so GetItem needs
-      // kms:Decrypt mediated by DynamoDB too (live-verified: without it the
-      // attribution read dies with KMS AccessDenied and the batch sits in
-      // CW Logs retry). Grant kms:Decrypt broadly but confined by
-      // kms:ViaService to Secrets Manager + DynamoDB in this region — the
-      // role can only read its own metronome_api_key secret and its env's
-      // aip-owners table, so the effective reach is just those CMKs.
+      // from this prod-stage stack (cross-stage). The aip-owners, billing and
+      // containers DynamoDB tables are encrypted with the SAME per-env CMKs, so
+      // reads need kms:Decrypt mediated by DynamoDB too (live-verified: without
+      // it the attribution read dies with KMS AccessDenied and the batch sits
+      // in CW Logs retry).
+      //
+      // kms:GenerateDataKey IS LOAD-BEARING, not padding. A CMK-encrypted table
+      // needs Decrypt to READ and GenerateDataKey to WRITE; a Decrypt-only role
+      // does GetItem happily and then fails EVERY UpdateItem — i.e. the trial
+      // counter would work in every test and fail only in the deployed
+      // environment, silently, with real money on the other side.
+      //
+      // Granted broadly but confined by kms:ViaService to Secrets Manager +
+      // DynamoDB in this region — the role can only reach its own
+      // metronome_api_key secret and its env's three tables, so the effective
+      // reach is just those CMKs.
       fn.addToRolePolicy(
         new iam.PolicyStatement({
           sid: "KmsDecryptViaServices",
           effect: iam.Effect.ALLOW,
-          actions: ["kms:Decrypt"],
+          actions: ["kms:Decrypt", "kms:GenerateDataKey"],
           resources: ["*"],
           conditions: {
             StringEquals: {
@@ -226,7 +286,9 @@ export class BedrockMeterStack extends cdk.Stack {
 
       // Attribution read: one GetItem per record on the env's aip-owners
       // reverse table (owned by that env's database stack; ARN-by-convention
-      // for the same no-cross-stage-ref reason as the secret above).
+      // for the same no-cross-stage-ref reason as the secret above). That one
+      // row carries owner_id + tier + plan, so the trial branch costs no extra
+      // read.
       fn.addToRolePolicy(
         new iam.PolicyStatement({
           sid: "AipOwnersGetItem",
@@ -235,6 +297,77 @@ export class BedrockMeterStack extends cdk.Stack {
           resources: [
             `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${meterEnv}-bedrock-aip-owners`,
           ],
+        }),
+      );
+
+      // The replay guard's conditional PutItem. PutItem only: the Lambda never
+      // reads or deletes a dedup row — a claim it cannot roll back is exactly
+      // the point (at-most-once counting; we would rather under-count a record
+      // whose ADD failed than double-count one whose ADD response was lost).
+      fn.addToRolePolicy(
+        new iam.PolicyStatement({
+          sid: "InvocationDedupPutItem",
+          effect: iam.Effect.ALLOW,
+          actions: ["dynamodb:PutItem"],
+          resources: [dedupTable.tableArn],
+        }),
+      );
+
+      // The trial counter (billing-accounts.meta_daily_spend_microcents) and
+      // the revoked flag the backend's daily restore reads
+      // (containers.bedrock_revoked). UpdateItem only — the meter never creates
+      // or deletes either row.
+      fn.addToRolePolicy(
+        new iam.PolicyStatement({
+          sid: "TrialCounterAndRevokedFlagUpdateItem",
+          effect: iam.Effect.ALLOW,
+          actions: ["dynamodb:UpdateItem"],
+          resources: [
+            `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${meterEnv}-billing-accounts`,
+            `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${meterEnv}-containers`,
+          ],
+        }),
+      );
+
+      // THE KILL, half one: delete the per-owner role's scoped inline Bedrock
+      // policy. Scoped to the owner-role name prefix the backend mints
+      // (bedrock_aip._owner_role_name) — this role can strip Bedrock from a
+      // per-owner task role and NOTHING else.
+      fn.addToRolePolicy(
+        new iam.PolicyStatement({
+          sid: "RevokeOwnerBedrockPolicy",
+          effect: iam.Effect.ALLOW,
+          actions: ["iam:DeleteRolePolicy"],
+          resources: [
+            `arn:aws:iam::${this.account}:role/isol8-${meterEnv}-owner-bedrock-*`,
+          ],
+        }),
+      );
+
+      // THE KILL, half two: desiredCount=0 on the owner's own service. The IAM
+      // revoke is ~5-15s eventually consistent and does NOT kill an
+      // already-admitted streaming call — this is the instant stop, which is
+      // why the two are fired independently and neither may depend on the
+      // other. ListClusters carries no resource-level permissions (it is the
+      // cold-start cluster discovery); UpdateService is scoped to the env's
+      // cluster and the per-user openclaw-* service name, so the meter cannot
+      // touch the backend's own service.
+      fn.addToRolePolicy(
+        new iam.PolicyStatement({
+          sid: "StopOwnerContainer",
+          effect: iam.Effect.ALLOW,
+          actions: ["ecs:UpdateService"],
+          resources: [
+            `arn:aws:ecs:${this.region}:${this.account}:service/isol8-${meterEnv}-container-*/openclaw-*`,
+          ],
+        }),
+      );
+      fn.addToRolePolicy(
+        new iam.PolicyStatement({
+          sid: "DiscoverEnvCluster",
+          effect: iam.Effect.ALLOW,
+          actions: ["ecs:ListClusters"],
+          resources: ["*"],
         }),
       );
 
@@ -318,11 +451,24 @@ export class BedrockMeterStack extends cdk.Stack {
       // emit into namespace Isol8 with service=isol8-bedrock-meter, so each
       // alarm scopes to ITS instance via the env dimension — otherwise dev
       // noise would page prod.
+      //
+      // The counter/kill metrics are the same class of problem as a revenue
+      // leak, from the other direction: meter.counter_error means trial spend
+      // is going uncounted (the cap will fire late or never), and a
+      // meter.kill_*_error means the cap FIRED and the owner is still able to
+      // spend — the one failure in this system that burns money in real time.
+      // Both must page. (meter.cap_kill and meter.replay_skipped are NOT
+      // alarmed: a trial owner hitting their cap, and a CW-Logs batch retry,
+      // are both normal operation.)
       const skipMetrics: Array<[string, string]> = [
         ["meter.unattributed", "MeterUnattributedAlarm"],
         ["meter.unknown_model", "MeterUnknownModelAlarm"],
         ["meter.transport_error", "MeterTransportErrorAlarm"],
         ["meter.parse_failed", "MeterParseFailedAlarm"],
+        ["meter.counter_error", "MeterCounterErrorAlarm"],
+        ["meter.kill_iam_error", "MeterKillIamErrorAlarm"],
+        ["meter.kill_ecs_error", "MeterKillEcsErrorAlarm"],
+        ["meter.kill_stamp_error", "MeterKillStampErrorAlarm"],
       ];
       for (const [metricName, alarmId] of skipMetrics) {
         const alarm = new cloudwatch.Alarm(this, `${alarmId}${idSuffix}`, {

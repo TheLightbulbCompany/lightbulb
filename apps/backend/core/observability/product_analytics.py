@@ -27,6 +27,7 @@ import logging
 from typing import Any
 
 from core.config import settings
+from core.services.trial_cap import utc_today
 
 logger = logging.getLogger(__name__)
 
@@ -88,3 +89,42 @@ def capture_product_event(
         client.capture(distinct_id, event, props)
     except Exception:
         logger.warning("PostHog capture failed (event=%s owner=%s)", event, distinct_id, exc_info=True)
+
+
+# Bounded in-process dedup for once-per-owner-per-day capture events
+# (``trial_cap_reached``, ``trial_expired_block``) — both fire from a
+# decision point a caller re-evaluates on every poll/turn once the
+# blocking condition holds (the daily cap, an expired local trial), so
+# without this an owner stuck behind either block would spam the same
+# event on every retry. Insertion-ordered dict used as a bounded FIFO set
+# — same idiom as ``connection_pool.GatewayConnection._side_run_ids``.
+# In-process, SINGLE-BACKEND-INSTANCE scope: a restart (or a fleet running
+# more than one backend task) simply re-fires the event once more per
+# instance — acceptable for a funnel count, where "roughly once a day"
+# beats persisting extra DynamoDB state for exact-once dedup.
+_DAILY_DEDUP_CAP = 4096
+_daily_dedup_seen: dict[tuple[str, str, str], None] = {}
+
+
+def capture_once_per_owner_per_day(
+    *,
+    owner_id: str,
+    event: str,
+    properties: dict | None = None,
+) -> None:
+    """``capture_product_event`` gated to at most once per (event, owner,
+    UTC day) via the in-process dedup set above. ``owner_id`` doubles as
+    ``distinct_id`` — both new callers key exclusively on the personal
+    free-tier trial_local path, where the owner IS the Clerk user id.
+    """
+    key = (event, owner_id, utc_today())
+    if key in _daily_dedup_seen:
+        return
+    # Insert BEFORE capturing so a burst of near-simultaneous callers (a
+    # retried request racing the original) can't all slip through as if
+    # none of them had been seen yet.
+    _daily_dedup_seen[key] = None
+    while len(_daily_dedup_seen) > _DAILY_DEDUP_CAP:
+        oldest = next(iter(_daily_dedup_seen))
+        del _daily_dedup_seen[oldest]
+    capture_product_event(distinct_id=owner_id, event=event, properties=properties)

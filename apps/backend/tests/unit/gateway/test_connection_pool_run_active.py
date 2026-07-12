@@ -32,6 +32,7 @@ async def test_sessions_changed_forwards_run_active_for_webchat(monkeypatch):
     conn._active_runs = {}
     conn._run_state = {}
     conn._side_run_ids = {}
+    conn._push_tasks = set()
     forwarded: list[tuple[dict, str | None]] = []
 
     async def fake_forward(message, target_member_id=None):
@@ -58,6 +59,7 @@ async def test_sessions_changed_dedupes_and_scopes(monkeypatch):
     conn._active_runs = {}
     conn._run_state = {}
     conn._side_run_ids = {}
+    conn._push_tasks = set()
     forwarded: list[dict] = []
 
     async def fake_forward(message, target_member_id=None):
@@ -95,6 +97,7 @@ async def test_sessions_changed_ignores_unclassified_key(monkeypatch):
     conn._active_runs = {}
     conn._run_state = {}
     conn._side_run_ids = {}
+    conn._push_tasks = set()
     forwarded: list[tuple[dict, str | None]] = []
 
     async def fake_forward(message, target_member_id=None):
@@ -111,6 +114,57 @@ async def test_sessions_changed_ignores_unclassified_key(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_mixed_case_session_key_clears_on_lowercased_terminal_event(monkeypatch):
+    """Regression: ``build_chat_session_key`` embeds the raw (mixed-case)
+    Clerk user_id, so the dispatcher's ``mark_run_active`` stores the
+    active-run entry under a MIXED-CASE session_key. OpenClaw lowercases the
+    ENTIRE session key on every event it emits (upstream
+    session-key-utils.ts), so the chat-terminal branch in ``_handle_message``
+    clears using a LOWERCASED key. If the store and the clear don't normalize
+    the same way, the entry never clears — ``has_active_runs`` stays
+    stale-True forever, and ``_grace_close`` permanently skips the
+    trial-stop arm for any owner who has ever chatted (scale-to-zero dead)."""
+    conn = GatewayConnection.__new__(GatewayConnection)
+    # Realistic Clerk user id: "user_" prefix + base58, which is
+    # near-guaranteed to contain uppercase characters.
+    mixed_case_user_id = "user_2abcDEFghiJKLmnoPQR"
+    conn.user_id = mixed_case_user_id
+    conn.owner_id = mixed_case_user_id
+    conn._active_runs = {}
+    conn._run_state = {}
+    conn._side_run_ids = {}
+    conn._push_tasks = set()
+
+    async def fake_forward(message, target_member_id=None):
+        return None
+
+    monkeypatch.setattr(conn, "_forward_to_frontends", fake_forward)
+
+    # Dispatcher side: build_chat_session_key(agent_id, user_id, None) embeds
+    # the raw mixed-case Clerk user_id.
+    mixed_case_session_key = f"agent:agentA:{mixed_case_user_id}"
+    conn.mark_run_active(mixed_case_session_key, agent_id="agentA")
+    assert conn.has_active_runs is True
+
+    # Event side: OpenClaw lowercases the whole sessionKey before it ever
+    # reaches us.
+    terminal_event = {
+        "type": "event",
+        "event": "chat",
+        "payload": {
+            "sessionKey": mixed_case_session_key.lower(),
+            "state": "final",
+            "runId": "run-1",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
+        },
+    }
+    await conn._handle_message(terminal_event)
+
+    assert conn._active_runs == {}, "the active-run entry must clear despite the casing mismatch"
+    assert conn.has_active_runs is False
+
+
+@pytest.mark.asyncio
 async def test_reset_run_state_dedup_relights_on_reconnect(monkeypatch):
     # A tab that (re)connects mid-run clears its own containerRunActive, so the
     # backend must re-announce the still-active run. Dedup would otherwise
@@ -122,6 +176,7 @@ async def test_reset_run_state_dedup_relights_on_reconnect(monkeypatch):
     conn._active_runs = {}
     conn._run_state = {}
     conn._side_run_ids = {}
+    conn._push_tasks = set()
     forwarded: list[dict] = []
 
     async def fake_forward(message, target_member_id=None):

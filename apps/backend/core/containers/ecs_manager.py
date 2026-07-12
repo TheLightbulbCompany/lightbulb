@@ -22,6 +22,8 @@ from core.config import settings
 from core.dynamodb import utc_now_iso
 from core.observability.metrics import put_metric, timing
 from core.containers.config import (
+    BEDROCK_PROVIDER_CHOICES,
+    BEDROCK_TRIAL_CHOICE,
     CHANNEL_PROVIDER_IDS,
     build_device_paired_json,
     generate_node_device_identity,
@@ -42,6 +44,18 @@ GATEWAY_PORT = 18789
 # so the resize/register paths pull from a single place.
 PER_USER_CPU = "512"
 PER_USER_MEMORY_MIB = "2048"
+
+# The AIP tiers minted for a `bedrock_trial` (no-card free tier) owner. ONE
+# tier, and it must be sonnet: config.py makes sonnet the trial's
+# agents.defaults.model.primary and hard-fails a Bedrock config without it.
+#
+# This list IS the free tier's security boundary, not a cost optimization.
+# build_owner_bedrock_policy scopes the per-owner task role to exactly the AIPs
+# it is handed and explicitly denies bedrock:CreateInferenceProfile, so a
+# one-tier mint leaves the container with no credential path to Opus/Haiku —
+# the owner cannot reach them even by rewriting their own openclaw.json (which
+# they can do: agents run with `exec: full`).
+BEDROCK_TRIAL_TIERS = ["sonnet"]
 
 # Per-user services run exactly one task whose OpenClaw process writes SQLite
 # state (chat history, task runs, memory) into a shared per-owner EFS dir in
@@ -190,6 +204,47 @@ class EcsManagerError(Exception):
 
     def __init__(self, message: str, user_id: str = ""):
         super().__init__(message)
+        self.user_id = user_id
+
+
+# Why ``start_user_service`` may refuse to start a container. Both are POLICY
+# refusals, not failures — see ContainerStartRefused.
+#
+# START_REFUSED_CAP / START_REFUSED_EXPIRED are deliberately the *same strings*
+# as the provision gate's ``meta_daily_cap`` / ``trial_expired`` codes, so a
+# router can hand either straight to the matching gate's ``.to_payload()`` and
+# the owner sees the identical 402 card whichever door they knocked on.
+# (Literals, not imports of trial_cap.DAILY_CAP/TRIAL_EXPIRED: trial_cap is
+# imported lazily inside the guard to avoid a module cycle. A lockstep test
+# pins these to it so they cannot drift.)
+START_REFUSED_CAP = "meta_daily_cap"
+START_REFUSED_EXPIRED = "trial_expired"
+START_REFUSED_CONVERTING = "conversion_in_flight"
+
+# Copy for each trial refusal. Keyed by the reason ``trial_cap.trial_block_reason``
+# returns, so a new reason cannot be added without giving the owner words.
+_TRIAL_REFUSAL_COPY = {
+    START_REFUSED_CAP: "You've used today's free allowance — resets tomorrow.",
+    START_REFUSED_EXPIRED: "Your 3-day free trial has ended.",
+}
+
+
+class ContainerStartRefused(Exception):
+    """A guard refused to start a container. NOTHING FAILED.
+
+    Deliberately NOT an ``EcsManagerError``: every ``except EcsManagerError`` in
+    this codebase means "provisioning broke" and reacts accordingly — 503 to the
+    caller, ``status="error"`` on the container row, rollback of AWS resources.
+    A refusal is none of those things: the container is fine, we are declining to
+    start it. Making this a subclass would silently route every refusal into
+    those handlers and mark healthy rows broken.
+
+    ``reason`` is one of the ``START_REFUSED_*`` constants above.
+    """
+
+    def __init__(self, reason: str, user_id: str, message: str):
+        super().__init__(message)
+        self.reason = reason
         self.user_id = user_id
 
 
@@ -807,8 +862,68 @@ class EcsManager:
         await self.stop_user_service(owner_id)
         logger.warning("Bedrock kill-switch completed for owner %s", owner_id)
 
-    async def start_user_service(self, user_id: str) -> None:
+    async def _assert_start_allowed(self, user_id: str) -> None:
+        """The two guards every customer-driven container start must pass.
+
+        This is the chokepoint. Both checks used to live ONLY on the
+        ``GET /container/status`` auto-retry branch, so ``POST
+        /container/provision`` — which restarts a stopped container directly —
+        bypassed both. Duplicating them into a second router branch is how they
+        drifted apart in the first place; they live here instead, where no
+        caller can forget them.
+
+        1. FREE-TIER DAILY CAP. A ``trial_local`` owner over the $3/day cap had
+           their container scaled to zero *by* the cap. Waking it is exactly
+           what the cap forbids, so the container stays down until the counter
+           resets (UTC midnight) or the owner upgrades. Same predicate the
+           status path uses (``trial_cap.trial_block_reason``), so the two can
+           never disagree.
+
+        2. TRIAL->PAID CONVERSION IN FLIGHT. ``reprovision_for_user`` scales the
+           trial container to zero and then BLOCKS in a ~90s drain wait — the
+           per-owner state is WAL-mode SQLite on EFS and a second live task
+           holding it open is our documented corruption mode. A start inside
+           that window IS that second task. ``conversion_guard_active`` is the
+           same predicate the status path stands down on; it keys off the
+           ``conversion_started_at`` TIMESTAMP rather than the ``converting``
+           substatus, because ``stop_user_service`` writes
+           ``update_status(owner, "stopped")`` — substatus defaults to None —
+           and so clobbers the label the moment the drain begins.
+
+        Raises:
+            ContainerStartRefused: If either guard is up. Never EcsManagerError:
+                nothing failed, so the row must not be marked "error".
+        """
+        # Lazy imports: both modules sit above core.containers in the import
+        # graph (stripe_webhook_handlers reaches back into it via
+        # ``from core.containers import get_ecs_manager``), so importing either
+        # at module scope would close a cycle.
+        from core.services import trial_cap
+        from core.services.stripe_webhook_handlers import conversion_guard_active
+
+        container = await container_repo.get_by_owner_id(user_id)
+        if conversion_guard_active(container):
+            put_metric("container.start.refused", dimensions={"reason": START_REFUSED_CONVERTING})
+            raise ContainerStartRefused(
+                START_REFUSED_CONVERTING,
+                user_id,
+                "A subscription upgrade is reprovisioning this container; it will come back on its own.",
+            )
+
+        # ONE read covering both ways a free-tier owner runs out of runway.
+        # Checking only the cap here would let an EXPIRED trial wake its own
+        # container through this path — the gate refuses it, this would not.
+        reason = await trial_cap.trial_block_reason(user_id)
+        if reason:
+            put_metric("container.start.refused", dimensions={"reason": reason})
+            raise ContainerStartRefused(reason, user_id, _TRIAL_REFUSAL_COPY[reason])
+
+    async def start_user_service(self, user_id: str, *, force: bool = False) -> None:
         """Scale a user's ECS service to 1 (running).
+
+        THE START CHOKEPOINT. Unless ``force``, every start runs
+        ``_assert_start_allowed`` first — the free-tier daily cap and the
+        trial->paid conversion guard.
 
         Fires _await_running_transition afterwards so the provisioning -> running
         transition happens eventually even if the user disconnects before the
@@ -827,10 +942,27 @@ class EcsManager:
 
         Args:
             user_id: Clerk user ID.
+            force: Skip the start guards. SYSTEM and OPERATOR callers only —
+                never a customer-reachable path:
+                  - ``provision_user_container``'s own start. It is the
+                    conversion's reprovision (and the auto-retry's), dispatched
+                    *after* the row is stamped — guarding it would deadlock the
+                    conversion against its own marker. Its callers gate
+                    themselves upstream (``evaluate_provision_gate``, which
+                    already returns the same ``meta_daily_cap`` gate).
+                  - the audited admin start (``POST /admin/users/{id}
+                    /container/start``) — the operator break-glass, and the only
+                    manual lever to un-wedge a container carrying a stranded
+                    ``converting`` substatus.
+                  - the dev-only ``/debug/provision`` routes (403 in prod).
 
         Raises:
+            ContainerStartRefused: If a start guard is up (and not ``force``).
             EcsManagerError: If the ECS update_service call fails.
         """
+        if not force:
+            await self._assert_start_allowed(user_id)
+
         service_name = self._service_name(user_id)
         put_metric("container.lifecycle.state_change", dimensions={"state": "starting"})
 
@@ -1432,32 +1564,6 @@ class EcsManager:
         env_var_name = "OPENAI_API_KEY" if byo_provider == "openai" else "ANTHROPIC_API_KEY"
         return [{"name": env_var_name, "valueFrom": secret_arn}]
 
-    async def _build_meta_secrets_for_task(self, user_id: str) -> list[dict]:
-        """Build the ECS task ``secrets:`` block for a ``meta`` (free-tier)
-        provisioning.
-
-        Resolves the single shared free-tier model-API-key secret ARN from
-        Secrets Manager (via ``key_service.get_meta_secret_arn`` — the same
-        describe-secret idiom as BYOK's ``_build_byo_secrets_for_user``, but
-        keyed on one container-wide secret rather than per-user) and turns it
-        into a single ``secrets:`` entry injected as ``MODEL_API_KEY``. The
-        execution role already grants ``secretsmanager:GetSecretValue`` +
-        ``kms:Decrypt`` on the general CMK, so no CDK/IAM change is needed to
-        read it. Never written into ``openclaw.json``/EFS — see
-        ``config.py``'s ``meta`` provider_choice branch.
-        """
-        from core.services.key_service import get_meta_secret_arn
-
-        secret_arn = await get_meta_secret_arn()
-        if not secret_arn:
-            raise EcsManagerError(
-                "No meta-tier model API key configured in Secrets Manager "
-                "(isol8/<env>/meta-model-api-key) - caller should not "
-                "provision meta containers until it exists",
-                user_id,
-            )
-        return [{"name": "MODEL_API_KEY", "valueFrom": secret_arn}]
-
     async def _pre_stage_oauth_for_user(
         self,
         user_id: str,
@@ -1531,10 +1637,14 @@ class EcsManager:
         Args:
             user_id: Clerk user ID.
             provider_choice: One of ``"chatgpt_oauth"``, ``"byo_key"``,
-                ``"bedrock_claude"``, ``"meta"``. Selects the LLM provider
-                block in openclaw.json and drives any pre-task setup (codex
-                auth pre-stage for chatgpt_oauth, per-user Secrets Manager
-                wiring for byo_key, shared Secrets Manager wiring for meta).
+                ``"bedrock_claude"``, ``"bedrock_trial"``. Selects the LLM
+                provider block in openclaw.json and drives any pre-task setup
+                (codex auth pre-stage for chatgpt_oauth, per-user Secrets
+                Manager wiring for byo_key, per-owner AIP + IAM mint for both
+                Bedrock modes). ``bedrock_trial`` is a config-path MODE
+                resolved from the owner's ``trial_local`` subscription_status
+                (container_provision.resolve_provider_choice) — it is never a
+                stored provider_choice.
             byo_provider: Required when ``provider_choice == "byo_key"``;
                 one of ``"openai"`` or ``"anthropic"``.
             owner_type: "personal" or "org" (for EFS access-point tagging).
@@ -1563,10 +1673,8 @@ class EcsManager:
                     user_id,
                 )
             secrets_for_task = await self._build_byo_secrets_for_user(user_id, byo_provider)
-        elif provider_choice == "meta":
-            secrets_for_task = await self._build_meta_secrets_for_task(user_id)
 
-        if provider_choice not in ("chatgpt_oauth", "byo_key", "bedrock_claude", "meta"):
+        if provider_choice not in ("chatgpt_oauth", "byo_key", *BEDROCK_PROVIDER_CHOICES):
             raise EcsManagerError(
                 f"Unknown provider_choice: {provider_choice!r}",
                 user_id,
@@ -1597,12 +1705,24 @@ class EcsManager:
 
         bedrock_aip_arns: dict[str, str] | None = None
         bedrock_role_arn: str | None = None
-        if provider_choice == "bedrock_claude":
+        if provider_choice in BEDROCK_PROVIDER_CHOICES:
             # Bedrock owner: mint the per-owner AIPs + scoped IAM role. The
             # container's openclaw.json model ids become the AIP ARNs; if the
             # AIPs were absent at first boot the container would AccessDenied on
             # the AIP-scoped role.
-            bedrock_aip_arns = await ensure_owner_aips(user_id)
+            #
+            # A `bedrock_trial` (no-card free tier) owner is a REAL Bedrock owner
+            # — the grant is NOT skipped. What bounds them is the SCOPE of the
+            # mint: one tier (sonnet), which pins their task role to one model
+            # (see BEDROCK_TRIAL_TIERS). The paid call shape is left exactly as
+            # it was — no `tiers` kwarg — so ensure_owner_aips keeps stamping
+            # plan="paid" on the reverse rows; the trial mint stamps
+            # plan="trial", which is what arms the meter Lambda's daily-cap kill
+            # switch (a trial owner has no Stripe customer to meter).
+            if provider_choice == BEDROCK_TRIAL_CHOICE:
+                bedrock_aip_arns = await ensure_owner_aips(user_id, tiers=BEDROCK_TRIAL_TIERS)
+            else:
+                bedrock_aip_arns = await ensure_owner_aips(user_id)
 
             # KILL-SWITCH GUARD: ensure_owner_bedrock_role always re-puts the
             # scoped inline policy, so calling it for a revoked owner would
@@ -1610,7 +1730,10 @@ class EcsManager:
             # any re-provision/restart. Mint the AIPs + role SHELL (so the task
             # role exists + carries EFS/logs/ssm), but do NOT re-grant the
             # Bedrock inline policy if the owner is revoked. Plan 4 owns
-            # un-revoking (restore_owner_bedrock), not provision.
+            # un-revoking (restore_owner_bedrock), not provision. This matters
+            # doubly on the free tier: the revoke IS the daily-cap enforcement,
+            # so a re-provision that re-granted it would hand a capped trial
+            # owner an unlimited reset.
             is_revoked = bool(existing and existing.get("bedrock_revoked"))
             bedrock_role_arn = await ensure_owner_bedrock_role(user_id, bedrock_aip_arns, skip_bedrock_grant=is_revoked)
 
@@ -1620,10 +1743,15 @@ class EcsManager:
             # Bedrock grant is withheld above, so pointing the harness at it
             # would only AccessDeny. Points Claude Code at the owner's AIP ARNs
             # so its inference is billed to the owner (see helper docstring).
-            if settings.ACP_ENABLED and not is_revoked and bedrock_aip_arns:
+            #
+            # PAID ONLY. derive_enabled_harnesses returns [] for bedrock_trial
+            # (no ACP on the free tier), so a trial container gets no acp block
+            # to drive — and the harness env could not be built for one anyway:
+            # it needs a haiku AIP the trial owner deliberately does not have.
+            if provider_choice == "bedrock_claude" and settings.ACP_ENABLED and not is_revoked and bedrock_aip_arns:
                 environment_for_task.extend(_build_bedrock_acp_harness_env(bedrock_aip_arns))
         else:
-            # Non-Bedrock owner (chatgpt_oauth / byo_key / meta): mint/keep the
+            # Non-Bedrock owner (chatgpt_oauth / byo_key): mint/keep the
             # per-owner role SHELL — base EFS/logs/ssm policy + permissions
             # boundary — but pass skip_bedrock_grant=True so it carries NO
             # Bedrock inline policy, and DO NOT mint Bedrock AIPs (the owner
@@ -1656,7 +1784,7 @@ class EcsManager:
                 # silently emit a null auth.token (see config.py validation).
                 gateway_token = (existing.get("gateway_token") if existing else None) or secrets.token_urlsafe(32)
 
-                # Update gateway token and write configs
+                # Update gateway token and write configs.
                 if existing:
                     await container_repo.update_fields(
                         user_id,
@@ -1782,8 +1910,9 @@ class EcsManager:
                 else:
                     # No access point on record (shouldn't happen for an
                     # ACTIVE service but fall back to the simple start path).
+                    # force: this IS a provision — see the Step 4 comment below.
                     try:
-                        await self.start_user_service(user_id)
+                        await self.start_user_service(user_id, force=True)
                     except EcsManagerError:
                         put_metric("container.provision", dimensions={"status": "error"})
                         put_metric("container.error_state")
@@ -1918,9 +2047,21 @@ class EcsManager:
             await self._update_container(user_id, status="error", substatus=None)
             raise EcsManagerError(f"Failed to write configs for user {user_id}: {e}", user_id)
 
-        # Step 4: Start the container
+        # Step 4: Start the container.
+        #
+        # force: this call IS the provision, not a wake. Two reasons it must not
+        # re-run the start guards:
+        #   - The trial->paid conversion STAMPS the container row and then
+        #     dispatches this provision. Guarding here would make the conversion
+        #     refuse to start the container it just reprovisioned — a deadlock
+        #     against its own marker, and the paying customer is left with
+        #     nothing running.
+        #   - Every caller that reaches provision_user_container has already
+        #     passed evaluate_provision_gate (which returns the same
+        #     meta_daily_cap gate for an over-cap trial owner) or is a
+        #     deliberate system/operator reprovision.
         try:
-            await self.start_user_service(user_id)
+            await self.start_user_service(user_id, force=True)
         except EcsManagerError:
             put_metric("container.provision", dimensions={"status": "error"})
             put_metric("container.error_state")
@@ -2146,8 +2287,10 @@ class EcsManager:
                 per-owner. Treated as ``owner_id`` internally.
             gateway_token: Auth token for the OpenClaw gateway HTTP API.
             provider_choice: One of ``"chatgpt_oauth"``, ``"byo_key"``,
-                ``"bedrock_claude"``. Drives which provider block lands in
-                openclaw.json.
+                ``"bedrock_claude"``, ``"bedrock_trial"``. Drives which
+                provider block lands in openclaw.json (both Bedrock modes emit
+                the same provider shape; ``bedrock_trial`` emits a one-model
+                catalog and the free-tier lockdown).
             byo_provider: ``"openai"`` or ``"anthropic"``. Required when
                 ``provider_choice == "byo_key"`` so the right model block is
                 emitted; ignored otherwise.

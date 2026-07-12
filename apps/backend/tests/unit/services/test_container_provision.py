@@ -1,9 +1,11 @@
 """Unit tests for the extracted background_provision helper."""
 
+from typing import get_args
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from core.containers.config import BEDROCK_TRIAL_CHOICE
 from core.containers.ecs_manager import EcsManager
 from core.services.container_provision import background_provision, resolve_provider_choice
 
@@ -14,17 +16,60 @@ from core.services.container_provision import background_provision, resolve_prov
 
 
 @pytest.mark.asyncio
-async def test_resolve_provider_choice_trial_local_returns_meta():
-    """A trial_local row (the no-card local trial) resolves to the `meta`
-    provider mode. `meta` is a config-path mode, never a stored
-    provider_choice, so it must NOT be read off the row — it short-circuits
-    before the provider_choice/byo_provider lookup entirely."""
+async def test_resolve_provider_choice_trial_local_short_circuits_to_bedrock_trial():
+    """A trial_local row (the no-card local trial) short-circuits BEFORE the
+    provider_choice/byo_provider lookup — `trial_local` is a
+    subscription_status, never a stored provider_choice, so the provider must
+    not be read off the row (a trial row carries none).
+
+    It resolves to the one-tier `bedrock_trial` CONFIG MODE. Falling through to
+    `bedrock_claude` would hand a card-less owner the full paid three-tier
+    ladder — Opus included."""
     with patch("core.services.container_provision.billing_repo") as repo:
         repo.get_by_owner_id = AsyncMock(
-            return_value={"subscription_status": "trial_local"},
+            return_value={"subscription_status": "trial_local", "provider_choice": "byo_key"},
         )
         result = await resolve_provider_choice("user_x")
-    assert result == ("meta", None)
+    # Short-circuits: the row's stray provider_choice/byo_provider is ignored.
+    assert result == (BEDROCK_TRIAL_CHOICE, None)
+    assert result[0] == "bedrock_trial"
+
+
+@pytest.mark.asyncio
+async def test_resolve_provider_choice_trial_local_writes_nothing():
+    """`bedrock_trial` is a config-path mode, never a STORED provider_choice —
+    resolving one must not write it back onto the billing row."""
+    with patch("core.services.container_provision.billing_repo") as repo:
+        repo.get_by_owner_id = AsyncMock(return_value={"subscription_status": "trial_local"})
+        await resolve_provider_choice("user_x")
+    repo.update_fields.assert_not_called()
+    repo.upsert.assert_not_called()
+
+
+def _literal_values(annotation) -> set[str]:
+    """Flatten the string values out of a (possibly optional) Literal."""
+    values: set[str] = set()
+    for arg in get_args(annotation):
+        if isinstance(arg, str):
+            values.add(arg)
+        else:
+            values |= _literal_values(arg)
+    return values
+
+
+def test_bedrock_trial_is_not_an_acceptable_stored_provider_choice():
+    """The only write paths for provider_choice are POST /billing/trial-checkout
+    and POST /billing/provider. Both validate against a Literal that must NOT
+    admit `bedrock_trial` — a request body could otherwise persist the trial
+    config mode as a paid owner's provider, and the trial lockdown (one AIP, no
+    cron/ACP/heartbeat) would silently apply to a paying customer."""
+    from routers.billing import ChangeProviderRequest, TrialCheckoutRequest
+    from schemas.user_schemas import SyncUserRequest
+
+    for model in (TrialCheckoutRequest, ChangeProviderRequest, SyncUserRequest):
+        allowed = _literal_values(model.model_fields["provider_choice"].annotation)
+        assert allowed, f"{model.__name__}.provider_choice is not a Literal any more"
+        assert BEDROCK_TRIAL_CHOICE not in allowed, f"{model.__name__} admits {BEDROCK_TRIAL_CHOICE}"
 
 
 @pytest.mark.asyncio

@@ -9,6 +9,7 @@ on:
     branches: [main]
     paths:
       - 'apps/backend/**'
+      - 'apps/infra/lambda/bedrock-usage-meter/**'
       - '.github/workflows/backend.yml'
 
 env:
@@ -58,6 +59,20 @@ jobs:
           AWS_SECRET_ACCESS_KEY: testing
           DEBUG: "false"
         run: uv run pytest tests/ -v --cov=. --cov-report=xml --cov-report=term-missing
+        working-directory: apps/backend
+
+      # The Bedrock meter Lambda is the free tier's counter and kill switch. Its
+      # tests need the backend venv (moto, plus the lockstep test that imports
+      # core.billing.bedrock_pricing), so they run here rather than in the infra
+      # job. The lockstep test is the ONLY thing keeping the three copies of the
+      # rate table — backend _RATES, containers/config.py cost blocks, and the
+      # Lambda's own — from silently drifting apart.
+      - name: Run Bedrock meter Lambda tests
+        env:
+          AWS_DEFAULT_REGION: us-east-1
+          AWS_ACCESS_KEY_ID: testing
+          AWS_SECRET_ACCESS_KEY: testing
+        run: uv run pytest ../infra/lambda/bedrock-usage-meter -v
         working-directory: apps/backend
 
       - name: Upload coverage

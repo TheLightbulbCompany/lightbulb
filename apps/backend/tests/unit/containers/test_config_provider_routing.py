@@ -6,6 +6,7 @@ import pytest
 
 from core.billing.bedrock_pricing import get_rate
 from core.containers.config import (
+    build_openclaw_config_dict,
     build_provider_block,
     cheap_model_ref,
     heartbeat_model_ref,
@@ -55,40 +56,19 @@ async def test_chatgpt_oauth_branch(tmp_path):
     assert "openai" not in cfg["models"].get("providers", {})
 
 
-@pytest.mark.asyncio
-async def test_meta_provider_branch(tmp_path):
-    """meta is bundled + enabledByDefault in the 7.1 base image (extensions/meta,
-    muse-spark-1.1). Keyed via MODEL_API_KEY (an ECS task-def secret), never in
-    openclaw.json. Locked single model — fallback == primary so it isn't
-    user-changeable, mirroring the chatgpt_oauth shape (no explicit
-    models.providers block, no plugin entry, since the provider is bundled in
-    the base image)."""
-    out = tmp_path / "openclaw.json"
-    await write_openclaw_config(
-        config_path=out,
+def test_config_keeps_cron_service_and_heartbeat():
+    """The emitted config carries no top-level `cron` block (the in-container
+    cron SERVICE stays on, governed by tools.deny) and keeps the 30m heartbeat
+    cadence. The trial lockdown that switched both off for the deleted `meta`
+    provider is re-homed onto the Bedrock trial config mode."""
+    cfg = build_openclaw_config_dict(
+        user_id="u_1",
         gateway_token="test-token",
-        provider_choice="meta",
-        user_id="u_1",
+        provider_choice="bedrock_claude",
+        aip_arns=_AIPS,
     )
-    cfg = json.loads(out.read_text())
-    model_block = cfg["agents"]["defaults"]["model"]
-    assert model_block["primary"] == "meta/muse-spark-1.1"
-    assert model_block["fallbacks"] == ["meta/muse-spark-1.1"]
-    assert "meta" not in cfg["models"].get("providers", {})
-
-
-def test_build_provider_block_meta_exact_shape():
-    """Direct unit test on the builder: meta returns exactly the locked
-    single-model shape with no providers config and no plugin entries."""
-    assert build_provider_block(
-        provider_choice="meta",
-        user_id="u_1",
-        byo_provider=None,
-    ) == (
-        {},
-        {"primary": "meta/muse-spark-1.1", "fallbacks": ["meta/muse-spark-1.1"]},
-        {},
-    )
+    assert "cron" not in cfg
+    assert cfg["agents"]["defaults"]["heartbeat"]["every"] == "30m"
 
 
 @pytest.mark.asyncio
@@ -689,3 +669,290 @@ def test_config_cost_blocks_match_bedrock_pricing_rates():
             assert model["cost"][camel] == rate[snake], (
                 f"{rate_key}: cost.{camel}={model['cost'][camel]} != _RATES[{snake}]={rate[snake]}"
             )
+
+
+# =============================================================================
+# Bedrock TRIAL config mode (one tier + lockdown) and the runaway bounds
+# =============================================================================
+
+# A trial owner's IAM role is pinned to a SINGLE AIP (sonnet) — minting one
+# tier pins them to one model, so the emitted catalog must carry exactly that
+# one model or every chat AccessDenies.
+_TRIAL_AIPS = {"sonnet": _AIPS["sonnet"]}
+
+_SONNET_REF = f"amazon-bedrock/{_AIPS['sonnet']}"
+
+_PAPERCLIP_AGENTS = [
+    {"id": "agent_friday", "role": "ceo", "name": "Friday"},
+    {"id": "agent_atlas", "role": "general", "name": "Atlas"},
+]
+
+_CHANNEL_ACCOUNTS = {
+    "telegram": {"acct_1": {"token": "tg-token", "allowFrom": ["12345"]}},
+}
+
+
+def _trial_cfg(**kwargs) -> dict:
+    defaults = {
+        "user_id": "u_trial",
+        "gateway_token": "test-token",
+        "provider_choice": "bedrock_trial",
+        "aip_arns": _TRIAL_AIPS,
+    }
+    defaults.update(kwargs)
+    return build_openclaw_config_dict(**defaults)
+
+
+def _paid_cfg(**kwargs) -> dict:
+    defaults = {
+        "user_id": "u_paid",
+        "gateway_token": "test-token",
+        "provider_choice": "bedrock_claude",
+        "aip_arns": _AIPS,
+    }
+    defaults.update(kwargs)
+    return build_openclaw_config_dict(**defaults)
+
+
+# --- (a) one-tier shape -------------------------------------------------------
+
+
+def test_bedrock_trial_emits_exactly_one_model():
+    providers, default_model, plugin_entries = build_provider_block(
+        provider_choice="bedrock_trial",
+        user_id="u_trial",
+        byo_provider=None,
+        aip_arns=_TRIAL_AIPS,
+    )
+    models = providers["amazon-bedrock"]["models"]
+    assert [m["id"] for m in models] == [_AIPS["sonnet"]]
+    assert models[0]["name"] == "Claude Sonnet 4.6"
+    assert models[0]["cost"] == {"input": 3.3, "output": 16.5, "cacheRead": 0.33, "cacheWrite": 6.6}
+    # Primary == fallback: there is no cheaper/premium tier to route to, and
+    # the single model must not be user-swappable to one IAM would deny.
+    assert default_model == {"primary": _SONNET_REF, "fallbacks": [_SONNET_REF]}
+    # Discovery stays off — same as the paid path.
+    assert plugin_entries["amazon-bedrock"]["config"]["discovery"]["enabled"] is False
+
+
+def test_bedrock_trial_has_no_premium_or_cheap_ladder():
+    assert premium_model_ref("bedrock_trial", None, aip_arns=_TRIAL_AIPS) is None
+    assert cheap_model_ref("bedrock_trial", None, aip_arns=_TRIAL_AIPS) is None
+    assert heartbeat_model_ref("bedrock_trial", None, aip_arns=_TRIAL_AIPS) is None
+
+
+def test_bedrock_trial_ceo_inherits_the_single_default_model():
+    """No opus tier exists, so Friday must NOT carry a per-agent model override."""
+    cfg = _trial_cfg(paperclip_agents=_PAPERCLIP_AGENTS)
+    friday = next(a for a in cfg["agents"]["list"] if a["id"] == "agent_friday")
+    assert friday["default"] is True
+    assert "model" not in friday
+    assert cfg["agents"]["defaults"]["model"]["primary"] == _SONNET_REF
+
+
+def test_bedrock_trial_aux_operations_inherit_the_single_model():
+    """No haiku tier — compaction/memoryFlush must not pin a model the owner's
+    IAM policy would deny."""
+    compaction = _trial_cfg()["agents"]["defaults"]["compaction"]
+    assert compaction["midTurnPrecheck"] == {"enabled": True}
+    assert "model" not in compaction
+    assert "memoryFlush" not in compaction
+
+
+def test_one_aip_bedrock_claude_no_longer_raises():
+    """The hard-fail on a partial AIP map is gone: emit exactly the tiers the
+    owner's IAM actually permits. (Policy lockdown is keyed on the trial
+    provider mode, NOT on the tier count — a one-tier bedrock_claude owner
+    keeps the paid policy.)"""
+    cfg = build_openclaw_config_dict(
+        user_id="u_1",
+        gateway_token="test-token",
+        provider_choice="bedrock_claude",
+        aip_arns=_TRIAL_AIPS,
+    )
+    models = cfg["models"]["providers"]["amazon-bedrock"]["models"]
+    assert [m["id"] for m in models] == [_AIPS["sonnet"]]
+    assert cfg["agents"]["defaults"]["model"] == {"primary": _SONNET_REF, "fallbacks": [_SONNET_REF]}
+    assert "cron" not in cfg
+    assert cfg["agents"]["defaults"]["heartbeat"]["every"] == "30m"
+
+
+@pytest.mark.parametrize("provider_choice", ["bedrock_claude", "bedrock_trial"])
+@pytest.mark.parametrize("bad_aips", [None, {}, {"opus": _AIPS["opus"], "haiku": _AIPS["haiku"]}])
+def test_bedrock_without_sonnet_aip_fails_closed(provider_choice, bad_aips):
+    """Sonnet is the default model on every bedrock path — no sonnet AIP means
+    the container could not invoke anything. Raise loud at provision."""
+    with pytest.raises(ValueError, match="aip_arns"):
+        build_openclaw_config_dict(
+            user_id="u_1",
+            gateway_token="test-token",
+            provider_choice=provider_choice,
+            aip_arns=bad_aips,
+        )
+
+
+# --- (b) trial lockdown (re-homed from the deleted meta branch) ---------------
+
+
+def test_bedrock_trial_disables_cron_service():
+    assert _trial_cfg()["cron"] == {"enabled": False}
+
+
+def test_bedrock_trial_omits_heartbeat():
+    """A present `heartbeat` key is truthy to OpenClaw regardless of contents,
+    so the only way to stop the recurring self-run is to omit it."""
+    assert "heartbeat" not in _trial_cfg()["agents"]["defaults"]
+
+
+def test_bedrock_trial_skips_channel_account_reinjection():
+    cfg = _trial_cfg(channel_accounts=_CHANNEL_ACCOUNTS)
+    assert cfg["channels"] == {}
+    assert "bindings" not in cfg
+
+
+def test_bedrock_trial_emits_no_acp_block():
+    """ACP harnesses (Claude Code via Bedrock) invoke model ids the one-tier
+    AIP policy denies — and are an autonomy surface a trial must not get."""
+    cfg = _trial_cfg(acp_enabled=True)
+    assert "acp" not in cfg
+    assert "acpx" not in cfg["plugins"]["entries"]
+
+
+def test_paid_bedrock_keeps_cron_heartbeat_channels_and_acp():
+    """The trial lockdown must not leak onto the paid path."""
+    cfg = _paid_cfg(channel_accounts=_CHANNEL_ACCOUNTS, acp_enabled=True)
+    assert "cron" not in cfg
+    assert cfg["agents"]["defaults"]["heartbeat"] == {
+        "every": "30m",
+        "model": f"amazon-bedrock/{_AIPS['haiku']}",
+    }
+    assert cfg["channels"]["telegram"]["enabled"] is True
+    assert cfg["channels"]["telegram"]["accounts"] == _CHANNEL_ACCOUNTS["telegram"]
+    assert cfg["bindings"] == [
+        {"type": "route", "agentId": "acct_1", "match": {"channel": "telegram", "accountId": "acct_1"}}
+    ]
+    assert cfg["acp"]["allowedAgents"] == ["claude"]
+
+
+def test_paid_bedrock_three_tier_ladder_is_unchanged():
+    """Byte-identical paid ladder: catalog order, primary/fallback, CEO premium
+    pin, cheap-tier aux routing."""
+    cfg = _paid_cfg(paperclip_agents=_PAPERCLIP_AGENTS)
+    models = cfg["models"]["providers"]["amazon-bedrock"]["models"]
+    assert [m["id"] for m in models] == [_AIPS["opus"], _AIPS["sonnet"], _AIPS["haiku"]]
+    assert cfg["agents"]["defaults"]["model"] == {
+        "primary": _SONNET_REF,
+        "fallbacks": [f"amazon-bedrock/{_AIPS['haiku']}"],
+    }
+    friday = next(a for a in cfg["agents"]["list"] if a["id"] == "agent_friday")
+    assert friday["model"] == f"amazon-bedrock/{_AIPS['opus']}"
+    compaction = cfg["agents"]["defaults"]["compaction"]
+    assert compaction["model"] == f"amazon-bedrock/{_AIPS['haiku']}"
+    assert compaction["memoryFlush"] == {"model": f"amazon-bedrock/{_AIPS['haiku']}"}
+
+
+# --- (c) runaway bounds — asserted on BOTH the trial and the paid path --------
+
+_BOUNDED_CONFIGS = [
+    ("bedrock_trial", {"aip_arns": _TRIAL_AIPS}),
+    ("bedrock_claude", {"aip_arns": _AIPS}),
+    ("chatgpt_oauth", {}),
+    ("byo_key", {"byo_provider": "anthropic"}),
+    ("byo_key", {"byo_provider": "openai"}),
+]
+
+
+@pytest.mark.parametrize("provider_choice,kwargs", _BOUNDED_CONFIGS)
+def test_agent_run_deadline_is_thirty_minutes(provider_choice, kwargs):
+    """agents.defaults.timeoutSeconds defaults to 172800 (48h) upstream, and the
+    agentic loop has no step/tool-call/token cap — this wall clock is the ONLY
+    thing that stops a runaway run."""
+    cfg = build_openclaw_config_dict(
+        user_id="u_1", gateway_token="test-token", provider_choice=provider_choice, **kwargs
+    )
+    assert cfg["agents"]["defaults"]["timeoutSeconds"] == 1800
+
+
+@pytest.mark.parametrize("provider_choice,kwargs", _BOUNDED_CONFIGS)
+def test_run_retries_capped(provider_choice, kwargs):
+    """Upstream default is 160 retries, each of which re-arms the deadline."""
+    cfg = build_openclaw_config_dict(
+        user_id="u_1", gateway_token="test-token", provider_choice=provider_choice, **kwargs
+    )
+    assert cfg["agents"]["defaults"]["runRetries"] == {"max": 8}
+
+
+def test_subagent_concurrency_capped_on_trial_only():
+    """Subagents do NOT count against agents.defaults.maxConcurrent, so the
+    fan-out lane needs its own bound (upstream default 8) — but only where the
+    spend is OURS.
+
+    Unlike the other three bounds (timeoutSeconds, runRetries, loopDetection),
+    which are sane everywhere because no legitimate run wants 48 hours or 160
+    retries, this one throttles CAPABILITY. A paid owner's spend is bounded by
+    their own credits or their own API key, so there is no reason to make them
+    delegate more slowly than upstream allows."""
+    trial = build_openclaw_config_dict(
+        user_id="u_1",
+        gateway_token="test-token",
+        provider_choice="bedrock_trial",
+        aip_arns={"sonnet": "arn:aws:bedrock:us-east-1:1:application-inference-profile/s"},
+    )
+    assert trial["agents"]["defaults"]["subagents"]["maxConcurrent"] == 2
+    # The roster-visibility wildcard must survive alongside the bound.
+    assert trial["agents"]["defaults"]["subagents"]["allowAgents"] == ["*"]
+
+    paid = build_openclaw_config_dict(
+        user_id="u_1",
+        gateway_token="test-token",
+        provider_choice="bedrock_claude",
+        aip_arns={
+            "sonnet": "arn:aws:bedrock:us-east-1:1:application-inference-profile/s",
+            "opus": "arn:aws:bedrock:us-east-1:1:application-inference-profile/o",
+            "haiku": "arn:aws:bedrock:us-east-1:1:application-inference-profile/h",
+        },
+    )
+    assert "maxConcurrent" not in paid["agents"]["defaults"]["subagents"]
+    assert paid["agents"]["defaults"]["subagents"]["allowAgents"] == ["*"]
+
+
+@pytest.mark.parametrize("provider_choice,kwargs", _BOUNDED_CONFIGS)
+def test_tool_loop_detection_enabled(provider_choice, kwargs):
+    """Upstream's own circuit breaker, which defaults to OFF."""
+    cfg = build_openclaw_config_dict(
+        user_id="u_1", gateway_token="test-token", provider_choice=provider_choice, **kwargs
+    )
+    assert cfg["tools"]["loopDetection"] == {"enabled": True}
+
+
+@pytest.mark.parametrize("provider_choice,kwargs", _BOUNDED_CONFIGS)
+def test_global_agent_semaphore_and_cache_retention_untouched(provider_choice, kwargs):
+    """agents.defaults.maxConcurrent stays at its upstream default of 4, and
+    cacheRetention stays "long" — "none" would kill cache READS too and make a
+    long loop dramatically MORE expensive."""
+    cfg = build_openclaw_config_dict(
+        user_id="u_1", gateway_token="test-token", provider_choice=provider_choice, **kwargs
+    )
+    assert "maxConcurrent" not in cfg["agents"]["defaults"]
+    assert cfg["agents"]["defaults"]["params"]["cacheRetention"] == "long"
+
+
+@pytest.mark.parametrize("provider_choice,kwargs", [_BOUNDED_CONFIGS[0], _BOUNDED_CONFIGS[1]])
+def test_bedrock_context_tokens_bounded(provider_choice, kwargs):
+    """The Bedrock catalog declares a 1M context window, so a single call could
+    take ~$6.74 of input. Bound the effective budget (and trigger compaction
+    earlier)."""
+    cfg = build_openclaw_config_dict(
+        user_id="u_1", gateway_token="test-token", provider_choice=provider_choice, **kwargs
+    )
+    assert cfg["agents"]["defaults"]["contextTokens"] == 200_000
+
+
+@pytest.mark.parametrize("provider_choice,kwargs", _BOUNDED_CONFIGS[2:])
+def test_context_tokens_unset_off_bedrock(provider_choice, kwargs):
+    """contextTokens is derived from the Bedrock catalog's declared window; the
+    ChatGPT/Codex path serves ~272k and must keep inheriting its own budget."""
+    cfg = build_openclaw_config_dict(
+        user_id="u_1", gateway_token="test-token", provider_choice=provider_choice, **kwargs
+    )
+    assert "contextTokens" not in cfg["agents"]["defaults"]

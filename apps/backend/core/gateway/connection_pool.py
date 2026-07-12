@@ -38,6 +38,30 @@ _GRACE_PERIOD = 30  # seconds before closing idle connection
 _PUSH_GRACE_CEILING_S = 300  # max extra hold while a run is active (bounded by parked watchdog)
 _ACTIVE_RUN_POLL_S = 5  # re-check cadence for the active-run hold
 
+# Second, longer grace applied ONLY to free-tier (trial_local) owners after
+# the gateway WS is closed: if the owner still looks idle by every liveness
+# check after this window, the container itself is stopped (desiredCount=0).
+# Sub-spec 3 (event-driven scale-to-zero). Deliberately generous — a trial
+# container costs ~$0.02/hr, but killing a container out from under a slow
+# turn or a just-reopened tab costs trust. Over-preserve, never over-kill.
+_TRIAL_STOP_GRACE_S = 150
+
+# Layer 3 of scale-to-zero: recovers a LOST API Gateway `$disconnect`. The
+# browser pings every 30s (see websocket_chat.py's ping handler); if API
+# Gateway fails to deliver a `$disconnect` for a closed tab, nothing else
+# ever calls `remove_frontend_connection` for it, so the owner's
+# `_frontend_connections` entry never empties, `_grace_close` never arms,
+# and a trial container idles forever even with nobody home. 180s = 6
+# missed pings is comfortably past any single dropped ping (jitter, a
+# backgrounded tab throttled by the browser) while still catching a truly
+# gone tab in a bounded window. On expiry we force-clear the stale entry
+# and flow into the exact same `remove_frontend_connection` tail a normal
+# disconnect takes — so Task 12's veto ladder (`_maybe_stop_trial_container`,
+# gated on cross-task DDB truth via `count_live_chat_connections`) still
+# owns the actual stop decision. A healthy tab on another backend task is
+# still protected.
+_CLIENT_DEADLINE_S = 180
+
 # Application-level WebSocket keepalive tuned for long-running LLM turns.
 # The websockets library defaults ping_interval=20 / ping_timeout=20 — fine for
 # REST-shaped traffic, but the OpenClaw Node event loop legitimately blocks
@@ -331,6 +355,9 @@ class GatewayConnection:
 
         No-op if no run is active for the key (e.g. cron / channel sessions).
         Cheap enough to call on every inbound agent/chat event.
+
+        Normalized to lowercase — see `mark_run_active` for why store/read
+        must agree on casing.
         """
         # Fold the key: the store side (mark_run_active) lowercases, so reads
         # keyed on the echoed (already-lowercased) key must too.
@@ -405,6 +432,9 @@ class GatewayConnection:
         session, DIFFERENT runId) that re-clears it.
 
         No-op when no run is tracked for the key (cron / channel sessions).
+
+        Normalized to lowercase — see `mark_run_active` for why store/read
+        must agree on casing.
         """
         run = self._active_runs.get(session_key.lower())
         if run is not None:
@@ -945,6 +975,10 @@ class GatewayConnection:
         Triggered from the `agent` event lifecycle/end branch below (not
         from chat.final, which only fires for webchat and doesn't exist for
         channel-driven runs).
+
+        Analytics only — the free-tier daily-spend counter is written by the
+        Bedrock meter Lambda, which does its own per-``requestId`` dedup at
+        the AWS layer. No runId dedup here.
         """
         session_key = payload.get("sessionKey", "")
         if not session_key:
@@ -1079,7 +1113,16 @@ class GatewayConnection:
         return self.user_id
 
     async def _fetch_and_record_usage(self, session_key: str, member_user_id: str) -> None:
-        """Fetch session token counts via RPC and record usage."""
+        """Fetch session token counts via RPC and record usage.
+
+        Analytics only. The free-tier daily-spend counter is NOT written
+        here — the Bedrock invocation-log meter Lambda is its sole writer
+        (it sees every invocation at the AWS layer, cache-inclusive and
+        deduped on Bedrock's ``requestId``). A second in-band writer would
+        double-count.
+        """
+        raw_cost_microcents: int | None = None
+        model: str = "unknown"
         try:
             # Query sessions.list to get token data for this session
             req_id = str(uuid.uuid4())
@@ -1137,7 +1180,6 @@ class GatewayConnection:
             # estimatedCostUsd as the authoritative raw cost; otherwise fall
             # back to token-based pricing. 1 USD = 1_000_000 microcents.
             estimated_cost_usd = session.get("estimatedCostUsd")
-            raw_cost_microcents: int | None = None
             try:
                 if estimated_cost_usd is not None and float(estimated_cost_usd) > 0:
                     raw_cost_microcents = round(float(estimated_cost_usd) * 1_000_000)
@@ -1649,9 +1691,14 @@ class GatewayConnection:
                 if session_source != "webchat":
                     return
                 active = bool(payload.get("hasActiveRun"))
-                if self._run_state.get(session_key) == active:
+                # Normalized to lowercase — see `mark_run_active` for why
+                # every ``_active_runs``/``_run_state`` touch must agree on
+                # casing (this dict is written only from event-side keys, but
+                # normalize anyway rather than trust upstream's casing).
+                run_state_key = session_key.lower()
+                if self._run_state.get(run_state_key) == active:
                     return
-                self._run_state[session_key] = active
+                self._run_state[run_state_key] = active
                 fwd_ra: dict = {"type": "run_active", "active": active}
                 event_agent_id = parsed_key.get("agent_id")
                 if event_agent_id:
@@ -1935,6 +1982,13 @@ class GatewayConnectionPool:
         self._frontend_connections: Dict[str, Set[str]] = {}  # owner_id -> set of conn_ids
         self._lock = asyncio.Lock()
         self._grace_tasks: Dict[str, asyncio.Task] = {}
+        # Per-owner client-liveness deadline (Layer 3 of scale-to-zero — see
+        # `_CLIENT_DEADLINE_S`). One `asyncio.TimerHandle` per owner, armed by
+        # `note_client_activity`. In-process, single-backend-instance scope —
+        # same posture as `_grace_tasks` (desiredCount=1 for the backend
+        # service), so a timer armed on this task is the only one that can
+        # exist for a given owner.
+        self._client_deadline_handles: Dict[str, asyncio.TimerHandle] = {}
         # Per-user reconnect attempt timestamps for the `_RECONNECT_FLOOR_S`
         # storm guard. Tracks the start of the *most recent* reconnect (not
         # success / failure) so a single bad container can't burn the
@@ -1954,6 +2008,27 @@ class GatewayConnectionPool:
         """
         conn = self._connections.get(user_id)
         return conn is not None and conn.is_alive
+
+    def has_active_runs(self, owner_id: str) -> bool:
+        """Whether the owner's gateway connection has an in-flight webchat run.
+
+        Thin pool-level delegate over the connection's ``has_active_runs``
+        property. No connection at all → False (nothing running here). Used as
+        a scale-to-zero veto: never stop a container mid-turn. Webchat-only —
+        a Paperclip/Teams run is instead caught by the live-chat-connection
+        count (the Teams UI holds a chat-typed WS).
+        """
+        conn = self._connections.get(owner_id)
+        return conn is not None and conn.has_active_runs
+
+    def is_parked(self, owner_id: str) -> bool:
+        """Whether the owner's connection is parked (WS dropped mid-run,
+        presumed alive). No connection → False. Scale-to-zero veto: a parked
+        connection means OpenClaw was streaming recently and will reconnect
+        lazily — killing it would abort the run it is presumed to still hold.
+        """
+        conn = self._connections.get(owner_id)
+        return conn is not None and conn._parked
 
     def mark_run_active(
         self,
@@ -2008,36 +2083,59 @@ class GatewayConnectionPool:
             return
         conn.mark_side_run(run_id)
 
-    async def gate_chat(self, *, user_id: str, owner_id: str) -> dict:
-        """Pre-chat hard-stop for card-3 (bedrock_claude) users.
+    async def gate_chat(self, *, user_id: str, owner_id: str, session_key: str) -> dict:
+        """Pre-chat hard-stop for card-3 (bedrock_claude) users and the
+        free-tier ``trial_local`` daily cost cap.
 
-        Two layers (audit M1 expanded the second one):
+        Layers:
 
         1. **Subscription status.** The billing row's ``subscription_status``
-           must be ``active`` or ``trialing``. Cards 1 + 2 used to bypass
-           the gate entirely because their LLM cost lives on the user's
-           own provider account — but the *container* itself is on us, so
-           a canceled subscription should still block chat. Without this,
-           an org/personal user whose ``subscription.deleted`` webhook
+           must be ``active``, ``trialing`` or ``trial_local``. Cards 1 + 2
+           used to bypass the gate entirely because their LLM cost lives on
+           the user's own provider account — but the *container* itself is on
+           us, so a canceled subscription should still block chat. Without
+           this, an org/personal user whose ``subscription.deleted`` webhook
            landed could keep talking through the gateway indefinitely on
            cards 1 + 2.
-        2. **Card-3 balance.** When ``provider_choice`` is
+        2. **Free-tier $3/day cost cap.** A ``trial_local`` owner's model
+           spend is pure Isol8 cost (no BYOK/OAuth/credit backstop). This is
+           a **read-only** check of the daily-spend counter the Bedrock
+           invocation-log meter Lambda maintains — the backend never writes
+           to it and places no reserve, because the meter counts every
+           invocation at the AWS layer and enforces the real stop (revoke the
+           owner's inference profile + ``desiredCount=0``). Blocking here is
+           purely UX: a clean 402 card instead of a burnt turn. A sub-check
+           first blocks with ``code="trial_expired"`` when ``trial_end`` has
+           passed. Both are gated on ``subscription_status == "trial_local"``
+           — the single trial predicate — so a paid owner mid-upgrade-window
+           with a stale ``trial_end`` is never told their trial expired, and
+           never capped.
+        3. **Card-3 balance.** When ``provider_choice`` is
            ``bedrock_claude``, the owner must not be blocked by the
            Metronome fast-gate read (webhook-fed flag + lazy getNetBalance
            refresh — see ``core/services/metronome_gate.py``). Cards 1
            + 2 don't draw from prepaid credits, so they're not gated
            on balance.
 
-        Both layers key on ``owner_id`` (org_id for org context, user_id
+        All layers key on ``owner_id`` (org_id for org context, user_id
         for personal). ``user_id`` is the chatting member, retained on
         the signature for logging / future per-user telemetry.
+        ``session_key`` is retained for logging / future per-turn telemetry.
 
         Returns:
-            ``{"blocked": False}`` when chat may proceed.
+            ``{"blocked": False}`` when chat may proceed;
             ``{"blocked": True, "code": <code>, "message": ...}``
             when the chat must NOT be forwarded to OpenClaw.
+
+        A raised exception (the cap read is a network call) is intentionally
+        NOT caught here — it propagates to the caller, which treats a gate
+        error the same as any other chat-send failure (notifies the client,
+        never forwards to OpenClaw). Swallowing it into ``{"blocked": False}``
+        would be the unsafe direction for a cost cap.
         """
+        from core.observability.product_analytics import capture_once_per_owner_per_day
         from core.repositories import billing_repo
+        from core.services import trial_cap
         from core.services.metronome_gate import is_owner_blocked
         from core.services.provision_gate import is_subscription_active
 
@@ -2054,7 +2152,46 @@ class GatewayConnectionPool:
                 "message": ("Your subscription is not active. Reactivate to continue chatting."),
             }
 
-        # --- Layer 2: card-3 credit balance --------------------------
+        # --- Layer 2: free-tier $3/day cost cap ----------------------
+        # Keyed on subscription_status == "trial_local" — the single trial
+        # predicate. The container row is NOT consulted: the counter is
+        # written by the meter Lambda (which keys on the owner's inference
+        # profile, not on any container-row stamp), and the moment billing
+        # flips to paid the owner is off the cap by definition — their
+        # spend lands on Metronome, not here.
+        #
+        # Guarded on the status we already have in hand from Layer 1 so a
+        # paid owner's chat never pays for the extra billing read
+        # ``reason_for_account`` does. That helper self-gates on the same
+        # predicate, so this is belt-and-braces, not a second contract.
+        if account is not None and account.get("subscription_status") == "trial_local":
+            # ONE predicate, shared with the provision gate, the container-start
+            # chokepoint, /container/recover and the Teams run guards, so no door
+            # can disagree about whether a trial owner has runway. This branch
+            # used to inline its own trial_end comparison — a third copy of that
+            # arithmetic, and exactly the drift the shared helper exists to
+            # prevent. ``account`` is already in hand from Layer 1, so
+            # reason_for_account spends no extra DDB read.
+            reason = await trial_cap.reason_for_account(owner_id, account)
+            if reason == trial_cap.TRIAL_EXPIRED:
+                return {
+                    "blocked": True,
+                    "code": "trial_expired",
+                    "message": "Your 3-day free trial has ended. Pick a plan to keep your agent.",
+                }
+            if reason == trial_cap.DAILY_CAP:
+                # Trial funnel telemetry: first block of the UTC day per
+                # owner (dedup below) — every later turn re-hits this same
+                # branch until midnight or upgrade, so without the dedup a
+                # single owner would spam one event per chat send.
+                capture_once_per_owner_per_day(owner_id=owner_id, event="trial_cap_reached")
+                return {
+                    "blocked": True,
+                    "code": "meta_daily_cap",
+                    "message": ("You've used today's free allowance — resets tomorrow. Upgrade to keep going."),
+                }
+
+        # --- Layer 3: card-3 credit balance --------------------------
         # provider_choice lives on the billing_accounts row (per owner);
         # credits also pool at the owner level so org members all draw
         # from one balance funded by the
@@ -2216,6 +2353,94 @@ class GatewayConnectionPool:
         if grace and not grace.done():
             grace.cancel()
 
+        # Arm/reset the client-liveness deadline (Layer 3) — a fresh
+        # registration is activity too, not just pings.
+        self.note_client_activity(user_id)
+
+    def note_client_activity(self, owner_id: str) -> None:
+        """(Re)arm the per-owner client-liveness deadline.
+
+        Called on every ping (`websocket_chat.ws_message`'s ping handler,
+        alongside the existing `_touch_liveness` DDB stamp) and from
+        `add_frontend_connection` — both are "the browser is still there"
+        signals. Cancels any existing timer and reschedules a fresh one
+        `_CLIENT_DEADLINE_S` out; on expiry `_on_client_deadline_expired`
+        force-clears the owner's frontend set and flows into the same tail
+        `remove_frontend_connection` takes on a normal disconnect (arms
+        `_grace_close`, Task 12's veto ladder).
+
+        No-ops when the owner has no registered frontend connection — the
+        timer must exist only while there is a connection set for it to
+        eventually clear (guards a stray/late ping racing a disconnect).
+        Also no-ops (best-effort) when there is no running event loop, which
+        never happens in production (both callers run inside a live FastAPI
+        request coroutine) but keeps this safe to call from synchronous test
+        contexts.
+        """
+        self._cancel_client_deadline(owner_id)
+        if not self._frontend_connections.get(owner_id):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        handle = loop.call_later(_CLIENT_DEADLINE_S, self._fire_client_deadline, owner_id)
+        self._client_deadline_handles[owner_id] = handle
+
+    def _cancel_client_deadline(self, owner_id: str) -> None:
+        """Cancel + drop the owner's client-liveness timer, if any.
+
+        Idempotent — safe to call whether or not a timer is currently armed.
+        Called on every path that empties (or might empty)
+        `_frontend_connections[owner_id]`: `remove_frontend_connection` (when
+        the set drains) and `close_user` (defense in depth — always cancels,
+        even off a path that didn't go through `remove_frontend_connection`).
+        """
+        handle = self._client_deadline_handles.pop(owner_id, None)
+        if handle is not None:
+            handle.cancel()
+
+    def _fire_client_deadline(self, owner_id: str) -> None:
+        """`TimerHandle` callback (sync, runs on the event loop thread).
+
+        Just spawns the async expiry check — `_on_client_deadline_expired`
+        needs to await `remove_frontend_connection`'s downstream
+        `_grace_close` task creation and touches `_frontend_connections`,
+        neither of which a bare callback can do directly.
+        """
+        self._client_deadline_handles.pop(owner_id, None)
+        asyncio.create_task(self._on_client_deadline_expired(owner_id))
+
+    async def _on_client_deadline_expired(self, owner_id: str) -> None:
+        """No ping (or reconnect) arrived for `_CLIENT_DEADLINE_S` — presume
+        a lost `$disconnect` and recover it.
+
+        Re-reads `_frontend_connections` at fire time rather than trusting
+        any captured state, so a set that already emptied via a different
+        path (e.g. a dead-connection prune inside `GatewayConnection`) is a
+        harmless no-op here — nothing to force-clear, nothing to arm.
+
+        When the set is non-empty, force-clears it by routing every
+        registered connection id through `remove_frontend_connection` — the
+        SAME function a normal `$disconnect` calls — so the last removal
+        arms `_grace_close` exactly the way Task 12 already verified. This
+        deliberately does not duplicate any of that veto logic; it only
+        recovers the missing disconnect signal.
+        """
+        fcs = self._frontend_connections.get(owner_id)
+        if not fcs:
+            return
+        logger.warning(
+            "Client liveness deadline expired for owner=%s (no ping in %ss) — "
+            "force-clearing %d stale frontend connection(s)",
+            owner_id,
+            _CLIENT_DEADLINE_S,
+            len(fcs),
+        )
+        put_metric("gateway.client_deadline.expired")
+        for conn_id in list(fcs):
+            self.remove_frontend_connection(owner_id, conn_id)
+
     def remove_frontend_connection(self, user_id: str, connection_id: str) -> None:
         """Unregister a frontend connection. Start grace period if none remain."""
         fcs = self._frontend_connections.get(user_id)
@@ -2228,9 +2453,16 @@ class GatewayConnectionPool:
         if conn is not None:
             conn.invalidate_recipients_cache()
 
-        # Start grace period if no frontend connections remain
-        if not fcs and user_id in self._connections:
-            self._grace_tasks[user_id] = asyncio.create_task(self._grace_close(user_id))
+        if not fcs:
+            # No frontends left. Normal disconnects supersede the client-
+            # liveness deadline entirely — it must never outlive an empty
+            # connection set (it would otherwise fire later and no-op, but
+            # cancelling promptly keeps `_client_deadline_handles` honest).
+            self._cancel_client_deadline(user_id)
+            # Start grace period if no frontend connections remain AND a
+            # gateway connection actually exists to tear down.
+            if user_id in self._connections:
+                self._grace_tasks[user_id] = asyncio.create_task(self._grace_close(user_id))
 
     async def _grace_close(self, user_id: str) -> None:
         """Wait the grace period, then close the gateway connection if still idle.
@@ -2242,7 +2474,15 @@ class GatewayConnectionPool:
         task via remove/add_frontend_connection, so the loop also exits when a
         client returns.
 
-        ``has_active_runs`` is a ``@property`` — read it as an attribute (no parens).
+        Then, for free-tier (``trial_local``) owners, a second and longer grace
+        follows the WS close: if the owner still has no live chat clients, no
+        in-flight webchat run and no parked connection, the container itself is
+        stopped (desiredCount=0) via ``_maybe_stop_trial_container``. Event-driven
+        only — this task exists solely because a last-disconnect event armed it;
+        the wake path is the existing GET /container/status auto-retry (cap-gated).
+
+        ``conn.has_active_runs`` is a ``@property``; the pool-level
+        ``self.has_active_runs(owner)`` is a method. Both are used below.
         """
         try:
             await asyncio.sleep(_GRACE_PERIOD)
@@ -2253,10 +2493,92 @@ class GatewayConnectionPool:
                     break
                 await asyncio.sleep(_ACTIVE_RUN_POLL_S)
                 waited += _ACTIVE_RUN_POLL_S
-            if not self._frontend_connections.get(user_id):
-                await self.close_user(user_id)
+            if self._frontend_connections.get(user_id):
+                return  # a client came back while we held the connection open
+
+            # Decide trial-ness AND run-state BEFORE close_user: afterwards the
+            # GatewayConnection is popped, so has_active_runs/is_parked would
+            # always read "no connection" and could never see a run that was live
+            # at close time. A run still in flight here (the push-grace ceiling
+            # lapsed with one running) means the container is actively working
+            # even though the last tab closed — the trial-stop arm must NOT be
+            # armed on top of it. (Lazy billing_repo import matches gate_chat:
+            # core.containers imports this module, so a top-level repo import
+            # would be circular.)
+            from core.repositories import billing_repo
+
+            # A failed billing read must not skip close_user (the behavior this
+            # method has always guaranteed) — treat the owner as non-trial and
+            # fall through to the plain WS close.
+            try:
+                account = await billing_repo.get_by_owner_id(user_id)
+            except Exception:
+                logger.exception("grace-close billing read failed user=%s", user_id)
+                account = None
+            is_trial = bool(account) and account.get("subscription_status") == "trial_local"
+            run_in_flight = self.has_active_runs(user_id) or self.is_parked(user_id)
+            await self.close_user(user_id)
+            if not (is_trial and not run_in_flight):
+                return
+            # close_user popped this task out of _grace_tasks; re-register it so a
+            # reconnect's add_frontend_connection cancels the extended sleep
+            # cleanly (defense in depth with the fire-time frontend re-check in
+            # _maybe_stop_trial_container). The grace task now outlives the WS
+            # close — nothing else keys teardown off _grace_tasks membership.
+            self._grace_tasks[user_id] = asyncio.current_task()
+            try:
+                await asyncio.sleep(_TRIAL_STOP_GRACE_S)
+                await self._maybe_stop_trial_container(user_id)
+            finally:
+                if self._grace_tasks.get(user_id) is asyncio.current_task():
+                    self._grace_tasks.pop(user_id, None)
         except asyncio.CancelledError:
             pass
+
+    async def _maybe_stop_trial_container(self, owner_id: str, trigger: str = "grace") -> None:
+        """Stop a trial container that provably has nobody using it.
+
+        Every check must pass; any doubt = don't stop (over-preserve, never
+        over-kill — the container costs ~$0.02/hr, a killed run costs trust).
+        Re-checks ``trial_local`` at fire time so an owner who converted to a
+        paid plan during the grace is never stopped out from under their first
+        paid session (the stop deliberately keys on ``subscription_status``,
+        not the still-meta container row the cap side keys on).
+
+        Also called directly by Tasks 13/14 with a different *trigger* metric
+        dimension. Those callers may invoke while a GatewayConnection still
+        exists, so the has_active_runs/is_parked vetoes below are load-bearing
+        there. In the grace path they always read "no connection" (close_user
+        already ran) — the meaningful vetoes there are the frontend re-check,
+        the trial re-read, and the cross-task live-chat count.
+        """
+        try:
+            if self._frontend_connections.get(owner_id):
+                return  # a client reconnected on this task
+            from core.repositories import billing_repo
+
+            account = await billing_repo.get_by_owner_id(owner_id)
+            if not account or account.get("subscription_status") != "trial_local":
+                return
+            if self.has_active_runs(owner_id) or self.is_parked(owner_id):
+                return  # in-flight/parked webchat run — never kill mid-turn
+            if await self._conn_svc.count_live_chat_connections(owner_id) > 0:
+                return  # cross-task truth: another backend task holds a live tab
+            if await self._conn_svc.has_live_operator_connection(owner_id):
+                # A Paperclip run is executing RIGHT NOW. has_active_runs above
+                # is webchat-only and is blind to it: a trial owner who posts a
+                # Teams comment and closes their tab has a live Friday run the
+                # pool never sees. Stopping the container under it kills a
+                # legitimate turn — over-kill, which this ladder forbids. The
+                # adapter opens its WS in execute() and closes it when the run
+                # ends, so the connection's existence IS the run.
+                return
+            from core.containers import get_ecs_manager
+
+            await get_ecs_manager().stop_user_service(owner_id)
+            put_metric("gateway.trial_scale_to_zero", dimensions={"trigger": trigger})
+        except Exception:
+            logger.exception("trial scale-to-zero check failed owner=%s", owner_id)
 
     async def close_user(self, user_id: str) -> None:
         """Close gateway connection for a user."""
@@ -2266,6 +2588,11 @@ class GatewayConnectionPool:
             await conn.close()
         self._frontend_connections.pop(user_id, None)
         self._grace_tasks.pop(user_id, None)
+        # This pops the whole frontend-connection entry regardless of
+        # whether it was already emptied via `remove_frontend_connection` —
+        # defense in depth so the client-liveness deadline can never outlive
+        # the connection set it protects (see `_cancel_client_deadline`).
+        self._cancel_client_deadline(user_id)
         # Drop the reconnect-floor entry so a fresh user (e.g. someone who
         # signed out and back in on the same backend task) doesn't inherit
         # a stale throttle from the previous session.

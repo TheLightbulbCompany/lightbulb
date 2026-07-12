@@ -1,12 +1,25 @@
 """Tests for container endpoints: GET /status and POST /gateway/restart."""
 
+import contextlib
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from core.auth import AuthContext
+from core.services.stripe_webhook_handlers import CONVERSION_GUARD_SECONDS
 from routers.container import _resolve_cold_start_phase
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _stale_iso() -> str:
+    """A conversion stamp older than the guard window — i.e. a dead dispatch."""
+    return (datetime.now(timezone.utc) - timedelta(seconds=CONVERSION_GUARD_SECONDS + 60)).isoformat()
 
 
 def _personal_auth(user_id: str = "user_x", email: str = "u@example.com") -> AuthContext:
@@ -1007,3 +1020,410 @@ class TestGatewayRestart:
         response = await async_client.post("/api/v1/container/gateway/restart")
         assert response.status_code == 502
         assert "Gateway is not responding" in response.json()["detail"]
+
+
+class TestContainerStatusTrialConversion:
+    """GET /container/status vs. the trial→paid conversion (Task 12).
+
+    (a) The conversion's `reprovision_for_user` scales the trial container to
+        zero and then BLOCKS in a ~90s drain wait — a single EFS-WAL SQLite
+        writer is required, and two live tasks corrupt it. The just-paid owner
+        is polling /status every ~3s; without a guard, that poll sees
+        status="stopped", passes the gate (they're paid now), and dispatches
+        its OWN background_provision with no drain wait. Two provisions race.
+
+    (b) The conversion is one fire-and-forget task. If it dies, Stripe never
+        re-fires it (its retry sees old_status != "trial_local"), and the
+        paying customer keeps the trial container forever. The status path is
+        the only thing that runs again — so it self-heals, rate-limited.
+    """
+
+    @staticmethod
+    def _ecs(row):
+        """ECS manager stub: a stopped/error row resolves through
+        get_service_status, a running one through resolve_running_container."""
+        running = row.get("status") == "running"
+        return MagicMock(
+            resolve_running_container=AsyncMock(return_value=((row, "10.0.0.1") if running else (None, None))),
+            get_service_status=AsyncMock(return_value=row),
+        )
+
+    @staticmethod
+    def _patches(row, *, subscription_status="active", captured=None, repo=None):
+        """Common wiring: gate clear, not over the cap, phase stubbed, and the
+        conversion helpers' repos stubbed. ``repo`` is the fake container_repo
+        whose update_fields mutates ``row`` in place, so a re-stamped
+        rate-limit anchor is visible to the NEXT poll."""
+        from core.services import stripe_webhook_handlers as handlers
+
+        def capture_task(coro):
+            if captured is not None:
+                captured.append(coro.__qualname__)
+            coro.close()
+            return MagicMock()
+
+        return (
+            patch("routers.container.get_ecs_manager", return_value=TestContainerStatusTrialConversion._ecs(row)),
+            patch("routers.container.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+            patch("core.services.trial_cap.trial_block_reason", new=AsyncMock(return_value=None)),
+            patch("routers.container._safe_phase", return_value="provisioning"),
+            patch("routers.container.container_repo", new=repo),
+            patch.object(handlers, "container_repo", new=repo),
+            patch.object(
+                handlers,
+                "billing_repo",
+                new=MagicMock(
+                    get_by_owner_id=AsyncMock(return_value={"subscription_status": subscription_status}),
+                ),
+            ),
+            patch("routers.container.asyncio.create_task", side_effect=capture_task),
+        )
+
+    @staticmethod
+    def _repo(row):
+        """container_repo double whose writes land on ``row``."""
+
+        async def update_fields(owner_id, fields):
+            row.update(fields)
+            return row
+
+        async def update_status(owner_id, status, substatus=None):
+            row.update({"status": status, "substatus": substatus})
+            return row
+
+        return MagicMock(
+            update_fields=AsyncMock(side_effect=update_fields),
+            update_status=AsyncMock(side_effect=update_status),
+        )
+
+    @pytest.mark.asyncio
+    async def test_converting_row_is_not_auto_retried(self):
+        """A row the conversion owns (substatus=converting) must NOT be
+        auto-retried — that second background_provision has no drain wait and
+        would run a task alongside the one still draining."""
+        from routers.container import container_status
+
+        row = {
+            "service_name": "svc",
+            "status": "stopped",
+            "substatus": "converting",
+            "conversion_pending": True,
+            "conversion_started_at": _now_iso(),
+        }
+        repo = self._repo(row)
+        captured: list[str] = []
+        with contextlib.ExitStack() as stack:
+            for p in self._patches(row, captured=captured, repo=repo):
+                stack.enter_context(p)
+            result = await container_status(_personal_auth())
+
+        repo.update_status.assert_not_awaited()
+        assert captured == [], f"a converting row must not dispatch a provision, got {captured}"
+        assert result["substatus"] == "converting"
+
+    @pytest.mark.asyncio
+    async def test_draining_row_with_clobbered_substatus_is_not_auto_retried(self):
+        """The actual race. ecs_manager.stop_user_service writes
+        update_status(owner, "stopped") — substatus defaults to None — so the
+        converting substatus is GONE the moment the drain starts. Only the
+        conversion_started_at anchor survives, and it alone must hold the
+        auto-retry off for the whole drain."""
+        from routers.container import container_status
+
+        row = {
+            "service_name": "svc",
+            "status": "stopped",
+            "substatus": None,  # clobbered by stop_user_service
+            "conversion_pending": True,
+            "conversion_started_at": _now_iso(),
+        }
+        repo = self._repo(row)
+        captured: list[str] = []
+        with contextlib.ExitStack() as stack:
+            for p in self._patches(row, captured=captured, repo=repo):
+                stack.enter_context(p)
+            await container_status(_personal_auth())
+
+        repo.update_status.assert_not_awaited()
+        assert captured == [], f"a draining conversion must not dispatch a provision, got {captured}"
+
+    @pytest.mark.asyncio
+    async def test_plain_stopped_row_still_auto_retries(self):
+        """Regression: an ordinary stopped row (no conversion marker) keeps the
+        pre-existing auto-retry behaviour."""
+        from routers.container import container_status
+
+        row = {"service_name": "svc", "status": "stopped", "substatus": None}
+        repo = self._repo(row)
+        captured: list[str] = []
+        with contextlib.ExitStack() as stack:
+            for p in self._patches(row, captured=captured, repo=repo):
+                stack.enter_context(p)
+            result = await container_status(_personal_auth())
+
+        repo.update_status.assert_awaited_once_with("user_x", "provisioning", "auto_retry")
+        assert captured == ["background_provision"], f"expected the ordinary auto-retry, got {captured}"
+        assert result["status"] == "provisioning"
+        assert result["substatus"] == "auto_retry"
+
+    @pytest.mark.asyncio
+    async def test_stuck_conversion_redispatches_at_most_once_per_guard_window(self):
+        """Paid billing + a container still carrying conversion_pending long
+        past the guard window == the conversion task died. The status path
+        re-dispatches it — ONCE. The poll runs every ~3s; three polls in a row
+        must produce exactly one reprovision, or the self-heal is a storm."""
+        from routers.container import container_status
+
+        row = {
+            "service_name": "svc",
+            "status": "running",  # still the trial box: never got stopped
+            "substatus": None,
+            "conversion_pending": True,
+            "conversion_started_at": _stale_iso(),
+        }
+        repo = self._repo(row)
+        captured: list[str] = []
+        with contextlib.ExitStack() as stack:
+            for p in self._patches(row, captured=captured, repo=repo):
+                stack.enter_context(p)
+            for _ in range(3):  # ~9s of polling
+                await container_status(_personal_auth())
+
+        assert captured == ["run_conversion_reprovision"], (
+            f"a stuck conversion must re-dispatch exactly once per guard window, got {captured}"
+        )
+        assert row["substatus"] == "converting"
+
+    @pytest.mark.asyncio
+    async def test_no_self_heal_when_billing_is_not_paid(self):
+        """The self-heal fires only when billing SAYS PAID. A canceled owner's
+        stale marker is dropped and the row falls back to the ordinary
+        auto-retry + gate path."""
+        from routers.container import container_status
+
+        row = {
+            "service_name": "svc",
+            "status": "running",
+            "substatus": None,
+            "conversion_pending": True,
+            "conversion_started_at": _stale_iso(),
+        }
+        repo = self._repo(row)
+        captured: list[str] = []
+        with contextlib.ExitStack() as stack:
+            for p in self._patches(row, subscription_status="canceled", captured=captured, repo=repo):
+                stack.enter_context(p)
+            await container_status(_personal_auth())
+
+        assert captured == []
+        assert row["conversion_pending"] is False
+
+
+class TestContainerStatusTrialBedrockRestore:
+    """GET /container/status vs. the daily Bedrock restore trigger (Task 7).
+
+    The meter Lambda's IAM revoke does not expire on its own. This is the
+    ONLY place a trial owner's stopped-by-cap container gets its Bedrock
+    grant back — the owner polling /status IS the trigger, so it must fire
+    on the same request that then proceeds to the ordinary auto-retry logic.
+    """
+
+    @staticmethod
+    def _ecs(row):
+        running = row.get("status") == "running"
+        return MagicMock(
+            resolve_running_container=AsyncMock(return_value=((row, "10.0.0.1") if running else (None, None))),
+            get_service_status=AsyncMock(return_value=row),
+        )
+
+    @staticmethod
+    def _repo(row):
+        async def update_status(owner_id, status, substatus=None):
+            row.update({"status": status, "substatus": substatus})
+            return row
+
+        return MagicMock(update_status=AsyncMock(side_effect=update_status))
+
+    @pytest.mark.asyncio
+    async def test_revoked_stopped_row_restores_bedrock_then_auto_retries(self):
+        """Revoked + new day (under cap, not expired): restore_owner_bedrock
+        fires, bedrock_revoked clears on the row, AND the ordinary auto-retry
+        still proceeds in the SAME poll — 'let the normal provisioning path
+        bring the container back'."""
+        from routers.container import container_status
+
+        row = {"service_name": "svc", "status": "stopped", "substatus": None, "bedrock_revoked": True}
+        repo = self._repo(row)
+        restore = AsyncMock()
+        captured: list[str] = []
+
+        def capture_task(coro):
+            captured.append(coro.__qualname__)
+            coro.close()
+            return MagicMock()
+
+        with (
+            patch("routers.container.get_ecs_manager", return_value=self._ecs(row)),
+            patch("routers.container.container_repo", new=repo),
+            patch(
+                "core.services.provision_gate.billing_repo.get_by_owner_id",
+                new=AsyncMock(return_value={"subscription_status": "trial_local", "trial_end": None}),
+            ),
+            patch("core.services.trial_cap.billing_repo.get_meta_daily_spend", new=AsyncMock(return_value=0)),
+            patch("core.billing.bedrock_aip.restore_owner_bedrock", new=restore),
+            patch("routers.container.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+            patch("routers.container._safe_phase", return_value="provisioning"),
+            patch("routers.container.asyncio.create_task", side_effect=capture_task),
+        ):
+            result = await container_status(_personal_auth())
+
+        restore.assert_awaited_once_with("user_x")
+        assert row["bedrock_revoked"] is False
+        assert captured == ["background_provision"], f"expected auto-retry to still fire, got {captured}"
+        assert result["status"] == "provisioning"
+
+    @pytest.mark.asyncio
+    async def test_not_revoked_row_makes_no_billing_call_for_restore(self):
+        """The overwhelmingly common poll: no bedrock_revoked flag at all —
+        the restore trigger must not even read the billing row."""
+        from routers.container import container_status
+
+        row = {"service_name": "svc", "status": "running", "substatus": None}
+        billing_read = AsyncMock()
+
+        with (
+            patch("routers.container.get_ecs_manager", return_value=self._ecs(row)),
+            patch("core.services.provision_gate.billing_repo.get_by_owner_id", new=billing_read),
+            patch("core.billing.bedrock_aip.restore_owner_bedrock", new=AsyncMock()) as restore,
+            patch("routers.container._safe_phase", return_value="ready"),
+        ):
+            result = await container_status(_personal_auth())
+
+        billing_read.assert_not_called()
+        restore.assert_not_awaited()
+        assert result["status"] == "running"
+
+    @pytest.mark.asyncio
+    async def test_restore_failure_does_not_break_the_status_poll(self):
+        """A restore that raises must be logged and swallowed — /status still
+        answers normally (not a 500), and the ordinary auto-retry proceeds
+        regardless (bedrock_revoked simply stays set for the next poll)."""
+        from routers.container import container_status
+
+        row = {"service_name": "svc", "status": "stopped", "substatus": None, "bedrock_revoked": True}
+        repo = self._repo(row)
+        captured: list[str] = []
+
+        def capture_task(coro):
+            captured.append(coro.__qualname__)
+            coro.close()
+            return MagicMock()
+
+        with (
+            patch("routers.container.get_ecs_manager", return_value=self._ecs(row)),
+            patch("routers.container.container_repo", new=repo),
+            patch(
+                "core.services.provision_gate.billing_repo.get_by_owner_id",
+                new=AsyncMock(return_value={"subscription_status": "trial_local", "trial_end": None}),
+            ),
+            patch("core.services.trial_cap.billing_repo.get_meta_daily_spend", new=AsyncMock(return_value=0)),
+            patch(
+                "core.billing.bedrock_aip.restore_owner_bedrock",
+                new=AsyncMock(side_effect=RuntimeError("boom")),
+            ),
+            patch("routers.container.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+            patch("routers.container._safe_phase", return_value="provisioning"),
+            patch("routers.container.asyncio.create_task", side_effect=capture_task),
+        ):
+            result = await container_status(_personal_auth())  # must not raise
+
+        assert row["bedrock_revoked"] is True  # restore never landed
+        assert result["status"] == "provisioning"  # the poll still answers normally
+
+
+class TestContainerProvisionStartGuards:
+    """POST /container/provision vs. the start chokepoint (Task 13).
+
+    /provision restarts a `stopped` container directly — the branch deliberately
+    skips the payment gate ("billing churns; don't 402 someone asking about a
+    container they already have"), which meant it ALSO skipped the free-tier cap
+    and the conversion guard that GET /container/status applies. Two doors, one
+    guarded. Both checks now live in ``ecs_manager.start_user_service``; these
+    tests pin how this router surfaces each refusal.
+    """
+
+    @staticmethod
+    def _ecs(*, refusal: Exception | None = None):
+        return MagicMock(
+            start_user_service=AsyncMock(side_effect=refusal),
+        )
+
+    @staticmethod
+    def _stopped_row():
+        return {"status": "stopped", "service_name": "openclaw-foo"}
+
+    @pytest.mark.asyncio
+    async def test_over_cap_owner_gets_the_same_402_limit_card_as_the_status_path(self):
+        """The whole point: a capped-out trial owner who calls /provision
+        directly gets the identical limit card GET /status returns — not a
+        woken container."""
+        from core.containers.ecs_manager import START_REFUSED_CAP, ContainerStartRefused
+        from core.services.provision_gate import meta_daily_cap_gate
+        from routers.container import container_provision
+
+        ecs = self._ecs(refusal=ContainerStartRefused(START_REFUSED_CAP, "user_x", "over cap"))
+        with (
+            patch(
+                "routers.container.container_repo.get_by_owner_id",
+                new=AsyncMock(return_value=self._stopped_row()),
+            ),
+            patch("routers.container.get_ecs_manager", return_value=ecs),
+        ):
+            with pytest.raises(HTTPException) as exc:
+                await container_provision(_personal_auth())
+
+        assert exc.value.status_code == 402
+        assert exc.value.detail == meta_daily_cap_gate("admin").to_payload()
+        assert exc.value.detail["blocked"]["code"] == "meta_daily_cap"
+
+    @pytest.mark.asyncio
+    async def test_conversion_in_flight_returns_a_pollable_status_and_starts_nothing(self):
+        """A conversion reprovision is mid-drain. /provision must not dispatch a
+        second one (the EFS-WAL double-writer), and must not hand the caller an
+        error either — the container IS coming back. Return the pollable
+        provisioning shape the caller already understands."""
+        from core.containers.ecs_manager import START_REFUSED_CONVERTING, ContainerStartRefused
+        from routers.container import container_provision
+
+        ecs = self._ecs(refusal=ContainerStartRefused(START_REFUSED_CONVERTING, "user_x", "converting"))
+        with (
+            patch(
+                "routers.container.container_repo.get_by_owner_id",
+                new=AsyncMock(return_value=self._stopped_row()),
+            ),
+            patch("routers.container.get_ecs_manager", return_value=ecs),
+        ):
+            result = await container_provision(_personal_auth())
+
+        assert result["status"] == "provisioning"
+        assert result["substatus"] == "converting"
+        assert result["already_existed"] is True
+
+    @pytest.mark.asyncio
+    async def test_unrefused_start_still_restarts_the_container(self):
+        """Regression: the ordinary cold start (paid owner, under-cap trial,
+        no conversion) still wakes the container."""
+        from routers.container import container_provision
+
+        ecs = self._ecs()
+        with (
+            patch(
+                "routers.container.container_repo.get_by_owner_id",
+                new=AsyncMock(return_value=self._stopped_row()),
+            ),
+            patch("routers.container.get_ecs_manager", return_value=ecs),
+        ):
+            result = await container_provision(_personal_auth())
+
+        ecs.start_user_service.assert_awaited_once_with("user_x")
+        assert result["status"] == "provisioning"

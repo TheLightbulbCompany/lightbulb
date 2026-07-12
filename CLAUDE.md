@@ -550,7 +550,22 @@ Two fixes:
 
 ### Plan model
 
-Post-2026-04-26 flat-fee cutover: a single $50/mo subscription per owner (personal user OR org). Every container is the same 0.5 vCPU / 2 GB box; there is no longer a tier-based size ladder. There is no scale-to-zero path — containers stay always-on while the subscription is active. A 14-day trial is provisioned by Stripe; trial-clock state is owned by Stripe (do not compute trial-days-left from `trial_end` locally — see memory `feedback_stripe_owns_trial_clock`).
+Post-2026-04-26 flat-fee cutover: a single $50/mo subscription per owner (personal user OR org). Every container is the same 0.5 vCPU / 2 GB box; there is no longer a tier-based size ladder. Paid containers stay always-on while the subscription is active. A 14-day trial is provisioned by Stripe; trial-clock state is owned by Stripe (do not compute trial-days-left from `trial_end` locally — see memory `feedback_stripe_owns_trial_clock`).
+
+### Free tier (no card) — `trial_local`
+
+A first-time personal signup with no billing row gets a `trial_local` row and a container **provisioned exactly like a paid Bedrock one, except with a SINGLE per-owner application-inference profile (the `sonnet` tier)**. That single AIP is the security boundary: `build_owner_bedrock_policy` denies raw foundation-model invoke and denies `CreateInferenceProfile`, so a trial owner is pinned to one model at the IAM layer and cannot reach Opus even by rewriting their own `openclaw.json`. `bedrock_trial` is a **config-path mode**, never a stored `provider_choice`.
+
+**The enforcement model — read this before changing anything here.** The container holds its own AWS credentials and calls Bedrock directly, so the backend is NOT on the inference path. The only thing that provably stops spend is removing the container's ability to invoke:
+
+- **The counter** is the Bedrock invocation-log **meter Lambda** (`apps/infra/lambda/bedrock-usage-meter/`). Its CloudWatch filter keys on the per-owner IAM role + inference profile, so it sees EVERY model call — webchat, cron, channels, Paperclip runs with no browser tab, memory compaction, embeddings — with AWS-sourced, cache-inclusive token counts, deduped on Bedrock's `requestId`. **It is the SOLE writer of the daily-spend counter**; no backend path ADDs to it. A tampered or crash-looping container cannot hide from it.
+- **The stop** is `kill_owner_bedrock` (revoke the per-owner inline IAM policy + `desiredCount=0`), fired by the Lambda at **$3/day** (`trial_cap.CAP_MICROCENTS`). IAM revocation does not expire, so the status path restores it when the day rolls over.
+- **The gates** (`gate_chat`, the Teams guards, `ecs_manager.start_user_service`) are read-only checks on that counter. **They are UX, not the fence** — they exist so an owner sees a limit card instead of a failed run. Do not add a pre-send reserve; one existed, was the source of most of a 15-defect review, and was deleted.
+- **The container config bounds** (`agents.defaults.timeoutSeconds`, `runRetries.max`, `subagents.maxConcurrent`, `tools.loopDetection`) shrink the blast radius of a runaway loop. They are **insurance, not the fence** — a trial agent has `exec: full` and can rewrite its own `openclaw.json`. Note `timeoutSeconds` defaults to **48 HOURS** upstream and the agentic loop has no step/tool-call/token cap at all, so this is the only bound on a runaway run.
+
+Trial containers scale to zero when idle and wake on the next `/container/status` poll (cap-gated). Trial owners are never ingested to Metronome — they have no Stripe customer, and Metronome is a ledger, not a valve (its threshold alerts poll on a ≥3-minute tick and it never blocks usage).
+
+### Paid provider paths
 
 Three provider paths the user / org chooses between (stored on the per-owner `billing_accounts` record, not per-user):
 1. **Bedrock managed** — Isol8-billed Bedrock inference, draws from per-owner Bedrock credits.

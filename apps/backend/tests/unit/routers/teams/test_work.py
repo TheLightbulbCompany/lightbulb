@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
+from core.services import trial_cap
+
 from main import app
 from routers.teams.deps import TeamsContext
 
@@ -145,6 +147,7 @@ def test_run_routine_proxies_upstream(client, monkeypatch):
     admin = MagicMock()
     admin.run_routine = AsyncMock(return_value={"runId": "run_test_123", "status": "queued"})
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(trial_cap, "trial_block_reason", AsyncMock(return_value=None))
 
     r = client.post(
         "/api/v1/teams/routines/r1/run",
@@ -159,6 +162,58 @@ def test_run_routine_proxies_upstream(client, monkeypatch):
         body={"source": "manual"},
         session_cookie="cookie",
     )
+
+
+def test_run_routine_blocked_over_cap(client, monkeypatch):
+    """A trial_local owner over the free-tier $3/day Meta cap gets a 402
+    with the structured meta_daily_cap payload -- BEFORE the request ever
+    reaches Paperclip (manually firing a routine dispatches a run
+    immediately server-side, so the check must run ahead of the proxy
+    call to actually stop the spend)."""
+    from routers.teams import agents as agents_mod
+
+    admin = MagicMock()
+    admin.run_routine = AsyncMock(return_value={"runId": "run_test_123", "status": "queued"})
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(trial_cap, "trial_block_reason", AsyncMock(return_value=trial_cap.DAILY_CAP))
+
+    r = client.post(
+        "/api/v1/teams/routines/r1/run",
+        json={"source": "manual"},
+        headers={"Authorization": "Bearer x"},
+    )
+
+    assert r.status_code == 402
+    body = r.json()["detail"]
+    assert body == {
+        "blocked": True,
+        "code": "meta_daily_cap",
+        "message": "You've used today's free allowance — resets tomorrow. Upgrade to keep going.",
+    }
+    admin.run_routine.assert_not_awaited()
+
+
+def test_run_routine_blocked_when_the_trial_window_has_expired(client, monkeypatch):
+    """The OTHER half of the trial predicate. This guard used to check only the
+    daily cap, so an owner whose 3-day window had ENDED but who was under today's
+    $3 could still fire a routine — dispatching a Paperclip run (and fresh Bedrock
+    spend) that a chat message would have been refused."""
+    from routers.teams import agents as agents_mod
+
+    admin = MagicMock()
+    admin.run_routine = AsyncMock(return_value={"runId": "run_test_123", "status": "queued"})
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(trial_cap, "trial_block_reason", AsyncMock(return_value=trial_cap.TRIAL_EXPIRED))
+
+    r = client.post(
+        "/api/v1/teams/routines/r1/run",
+        json={"source": "manual"},
+        headers={"Authorization": "Bearer x"},
+    )
+
+    assert r.status_code == 402
+    assert r.json()["detail"]["code"] == "trial_expired"
+    admin.run_routine.assert_not_awaited()
 
 
 def test_list_routine_runs_returns_envelope(client, monkeypatch):

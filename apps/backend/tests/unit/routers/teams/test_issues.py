@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from core.services import trial_cap
+
 from main import app
 from routers.teams.deps import TeamsContext
 from routers.teams.issues import patch_issue
@@ -242,6 +244,7 @@ def test_monitor_check_now(client, monkeypatch):
     from routers.teams import agents as agents_mod
 
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(trial_cap, "trial_block_reason", AsyncMock(return_value=None))
 
     r = client.post(
         "/api/v1/teams/issues/iss_1/monitor/check-now",
@@ -252,6 +255,33 @@ def test_monitor_check_now(client, monkeypatch):
         issue_id="iss_1",
         session_cookie="cookie",
     )
+
+
+def test_monitor_check_now_blocked_over_cap(client, monkeypatch):
+    """A trial_local owner over the free-tier $3/day Meta cap gets a 402
+    with the structured meta_daily_cap payload -- BEFORE the request ever
+    reaches Paperclip (an immediate re-check dispatches a run right away
+    server-side, so the check must run ahead of the proxy call to
+    actually stop the spend)."""
+    admin = MagicMock()
+    admin.monitor_check_now = AsyncMock(return_value={"ok": True})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(trial_cap, "trial_block_reason", AsyncMock(return_value=trial_cap.DAILY_CAP))
+
+    r = client.post(
+        "/api/v1/teams/issues/iss_1/monitor/check-now",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 402
+    body = r.json()["detail"]
+    assert body == {
+        "blocked": True,
+        "code": "meta_daily_cap",
+        "message": "You've used today's free allowance — resets tomorrow. Upgrade to keep going.",
+    }
+    admin.monitor_check_now.assert_not_awaited()
 
 
 def test_mark_issue_read(client, monkeypatch):
@@ -316,6 +346,7 @@ def test_add_issue_comment(client, monkeypatch):
     from routers.teams import agents as agents_mod
 
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(trial_cap, "trial_block_reason", AsyncMock(return_value=None))
 
     r = client.post(
         "/api/v1/teams/issues/iss_1/comments",
@@ -348,6 +379,56 @@ def test_add_issue_comment_requires_body_field(client):
         headers={"Authorization": "Bearer x"},
     )
     assert r.status_code == 422
+
+
+def test_add_issue_comment_blocked_over_cap(client, monkeypatch):
+    """A trial_local owner over the free-tier $3/day Meta cap gets a 402
+    with the structured meta_daily_cap payload -- BEFORE the request ever
+    reaches Paperclip (a comment triggers Friday to run server-side, so the
+    check must run ahead of the proxy call to actually stop the spend)."""
+    admin = MagicMock()
+    admin.add_issue_comment = AsyncMock(return_value={"id": "cmt_new", "body": "hello"})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(trial_cap, "trial_block_reason", AsyncMock(return_value=trial_cap.DAILY_CAP))
+
+    r = client.post(
+        "/api/v1/teams/issues/iss_1/comments",
+        json={"body": "hello"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 402
+    body = r.json()["detail"]
+    assert body == {
+        "blocked": True,
+        "code": "meta_daily_cap",
+        "message": "You've used today's free allowance — resets tomorrow. Upgrade to keep going.",
+    }
+    admin.add_issue_comment.assert_not_awaited()
+
+
+def test_add_issue_comment_proceeds_under_cap(client, monkeypatch):
+    """An under-cap (or paid) owner's comment proceeds to Paperclip as
+    normal."""
+    admin = MagicMock()
+    admin.add_issue_comment = AsyncMock(return_value={"id": "cmt_new", "body": "hello"})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(trial_cap, "trial_block_reason", AsyncMock(return_value=None))
+
+    r = client.post(
+        "/api/v1/teams/issues/iss_1/comments",
+        json={"body": "hello"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    admin.add_issue_comment.assert_awaited_once_with(
+        issue_id="iss_1",
+        body={"body": "hello"},
+        session_cookie="cookie",
+    )
 
 
 def test_list_labels_returns_envelope(client, monkeypatch):

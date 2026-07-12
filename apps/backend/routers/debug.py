@@ -93,7 +93,10 @@ async def provision_container(
         )
 
         # Step 3: Now start the container — configs are on EFS.
-        await ecs_manager.start_user_service(owner_id)
+        # force: this route IS a provision (it just created the service and
+        # wrote the configs), and it is a developer tool — 403 in production, so
+        # it is not a door a customer can use to wake a capped container.
+        await ecs_manager.start_user_service(owner_id, force=True)
 
         return {
             "status": "provisioned",
@@ -149,7 +152,9 @@ async def redeploy_container(
             owner_type=owner_type,
         )
 
-        await ecs_manager.start_user_service(owner_id)
+        # force: dev-only redeploy (403 in prod) — an operator action, not a
+        # customer wake. Same escape hatch as the POST route above.
+        await ecs_manager.start_user_service(owner_id, force=True)
 
         return {
             "status": "redeploying",

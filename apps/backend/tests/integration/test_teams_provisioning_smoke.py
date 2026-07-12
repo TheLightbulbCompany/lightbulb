@@ -338,9 +338,15 @@ async def test_create_agent_through_bff_sends_canonical_adapter(
         f"got {upstream_body.get('adapterType')!r}"
     )
 
-    # 2. The adapterConfig dict carries exactly the canonical fields. The last
-    #    two (timeoutSec/waitTimeoutMs) bound the gateway run timeout so a
+    # 2. The adapterConfig dict carries exactly the canonical fields. The
+    #    timeoutSec/waitTimeoutMs pair bounds the gateway run timeout so a
     #    long-running agent run isn't abandoned as a soft timeout mid-flight.
+    #
+    #    There is deliberately NO pre-run cap gate here. The free tier is
+    #    enforced at the AWS layer (the Bedrock meter Lambda revokes the owner's
+    #    IAM policy and scales the container to zero at the daily cap), so an
+    #    over-cap owner's container is OFF — a Paperclip run cannot reach it to
+    #    be refused. An adapter-side allowance check would be unreachable code.
     adapter_config = upstream_body["adapterConfig"]
     assert set(adapter_config.keys()) == {
         "url",

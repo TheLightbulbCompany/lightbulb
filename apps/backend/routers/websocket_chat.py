@@ -186,6 +186,37 @@ _RPC_RESULT_DISCARDED_METHODS = {"sessions.patch"}
 _SESSION_PREVIEW_MAX_CHARS = 280
 
 
+# Gateway methods that DISPATCH AN AGENT RUN — their container-side handler
+# enters OpenClaw's chat.send dispatch boundary and starts a new inference turn.
+# Verified against the pinned fork's gateway server-methods:
+#   chat.send       chat.ts      — the canonical dispatch
+#   sessions.send   sessions.ts  — runSessionSendLike() -> chatHandlers["chat.send"]
+#   sessions.steer  sessions.ts  — same helper, same dispatch
+#   agent           agent.ts     — "shares the chat.send / sessions.send boundary"
+# Deliberately NOT here: chat.abort (terminates a run), agent.wait (awaits an
+# existing runId), chat.inject (transcript write), tools.invoke (tool exec, no
+# model turn). Container-side dispatch is exact-match on the method string, so a
+# variant that isn't in this set cannot reach a run-dispatching handler.
+#
+# Chat has exactly ONE entrance from a client: the typed `agent_chat` WS message
+# (`agent_steer` for a steer). That path gates the send, opens the parked-vs-dead
+# run window (`mark_run_active`), and drives the streaming UX. The generic RPC
+# proxy below does none of that, so forwarding a run-dispatching method through
+# it starts a run the backend does not know about — a second, unowned door into
+# chat. This is NOT a cost fence (the expensive lanes — agent tool loops, cron,
+# Paperclip, channels — never touch this proxy); it removes a duplication. Every
+# other method the proxy forwards untouched.
+_RUN_DISPATCH_METHODS = frozenset({"chat.send", "sessions.send", "sessions.steer", "agent"})
+
+# The typed WS message that owns each refused method's job.
+_RUN_DISPATCH_ALTERNATIVE = {
+    "chat.send": "agent_chat",
+    "sessions.send": "agent_chat",
+    "sessions.steer": "agent_steer",
+    "agent": "agent_chat",
+}
+
+
 def _slim_sessions_list_previews(result):
     """Cap per-row lastMessage previews so sessions.list stays frame-sized."""
     if not isinstance(result, dict) or not isinstance(result.get("sessions"), list):
@@ -632,6 +663,36 @@ async def ws_message(
     if msg_type == "ping":
         management_api = await get_management_api_client()
         management_api.send_message(x_connection_id, {"type": "pong"})
+
+        async def _touch_liveness() -> None:
+            # Fire-and-forget liveness stamp -- never awaited by the caller
+            # below, so the pong above never gains a DDB round-trip. Nothing
+            # awaits this task, so it must swallow its own errors: an
+            # exception here would otherwise only ever surface as an
+            # asyncio "Task exception was never retrieved" warning.
+            # touch_connection already logs real DynamoDB failures
+            # internally (see its docstring) -- this is a last-resort net.
+            try:
+                await connection_service.touch_connection(x_connection_id)
+            except Exception:
+                logger.debug("touch_connection task failed for %s", x_connection_id, exc_info=True)
+
+        asyncio.create_task(_touch_liveness())
+
+        # Layer 3 of scale-to-zero (Task 13): reset this owner's per-owner
+        # client-liveness deadline. If API Gateway ever loses this owner's
+        # $disconnect, nothing else clears `_frontend_connections` for
+        # them -- this deadline is what eventually recovers it. Purely
+        # in-process (dict lookups + a timer reschedule, no I/O), so unlike
+        # `_touch_liveness` above it is cheap enough to call inline rather
+        # than via a background task -- but still swallow errors so a pool
+        # lookup hiccup can never fail the pong.
+        try:
+            pool = get_gateway_pool()
+            pool.note_client_activity(owner_id)
+        except Exception:
+            logger.debug("note_client_activity failed for owner=%s", owner_id, exc_info=True)
+
         return Response(status_code=200)
 
     # Teams BFF realtime: browser opts into / out of Paperclip event fanout.
@@ -1486,6 +1547,40 @@ async def _process_rpc_background(
         logger.info("[%s] rpc %s owner=%s conn=%s", user_id, method, owner_id, connection_id[:12])
     management_api = await get_management_api_client()
 
+    # One entrance per run: the raw RPC proxy does not dispatch agent runs.
+    # See _RUN_DISPATCH_METHODS. Refuse before touching ECS or the pool so the
+    # call is a no-op on the container, and point the caller at the typed
+    # message that owns this job.
+    if method in _RUN_DISPATCH_METHODS:
+        use = _RUN_DISPATCH_ALTERNATIVE[method]
+        logger.warning(
+            "[%s] rpc %s refused (run dispatch is not proxied; use %s) owner=%s conn=%s",
+            user_id,
+            method,
+            use,
+            owner_id,
+            connection_id[:12],
+        )
+        put_metric("rpc.refused", dimensions={"method": method, "reason": "run_dispatch"})
+        management_api.send_message(
+            connection_id,
+            {
+                "type": "res",
+                "id": req_id,
+                "ok": False,
+                "error": {
+                    "code": "INVALID_REQUEST",
+                    "message": (
+                        f'"{method}" is not available over the RPC proxy — it would start an '
+                        "agent run outside the chat path. Send a WebSocket message of type "
+                        f'"{use}" instead.'
+                    ),
+                    "details": {"method": method, "use": use},
+                },
+            },
+        )
+        return
+
     try:
         ecs_manager = get_ecs_manager()
         container, ip = await ecs_manager.resolve_running_container(owner_id)
@@ -1787,12 +1882,60 @@ async def _process_agent_chat_background(
     # assigned. Only ever True for non-side sends past the mark_run_active line.
     run_active_marked = False
 
+    # Every error frame this function hand-builds must carry the request's
+    # session_id (when the send targeted a named session): the frontend
+    # demuxes error frames by session and DROPS frames whose session doesn't
+    # match the active one — without this, a named-session user never sees
+    # the error and their busy gate sticks. General-session sends
+    # (session_id None) omit the key, which the demux reads as null.
+    err_session = {"session_id": session_id} if session_id else {}
+
     try:
         # Look up user's container and discover task IP
         ecs_manager = get_ecs_manager()
         container, ip = await ecs_manager.resolve_running_container(owner_id)
 
         if not container:
+            # resolve_running_container returns (None, None) for BOTH a truly
+            # absent row and a row that exists but is scaled to zero
+            # ("stopped" — the free-tier reaper's scale-to-zero path). Re-fetch
+            # the row to tell them apart: a stopped box is merely asleep, and
+            # the next GET /container/status poll wakes it (ensure_user_ready),
+            # so telling the user to "subscribe" is both wrong and alarming.
+            # Emit a distinct `container_waking` frame + metric reason so the
+            # client can trigger that wake and dashboards can separate "asleep"
+            # from "never had one". Best-effort: a re-fetch failure falls back
+            # to the legacy copy (mirrors the enriched-log re-fetch below).
+            row = None
+            try:
+                from core.repositories import container_repo as _cr
+
+                row = await _cr.get_by_owner_id(owner_id)
+            except Exception:
+                logger.warning(
+                    "[%s] chat.send: container status re-fetch failed for owner=%s",
+                    user_id,
+                    owner_id,
+                )
+            if row and row.get("status") == "stopped":
+                put_metric("chat.error", dimensions={"reason": "container_waking"})
+                logger.info(
+                    "[%s] chat.send: container stopped (scaled to zero) for owner=%s — signaling wake",
+                    user_id,
+                    owner_id,
+                )
+                management_api.send_message(
+                    connection_id,
+                    {
+                        "type": "error",
+                        "agent_id": agent_id,
+                        "code": "container_waking",
+                        "message": "Waking your agent — this takes about a minute.",
+                        **err_session,
+                    },
+                )
+                return
+
             put_metric("chat.error", dimensions={"reason": "container_unreachable"})
             logger.warning("[%s] chat.send FAIL: no container for owner=%s", user_id, owner_id)
             management_api.send_message(
@@ -1801,6 +1944,7 @@ async def _process_agent_chat_background(
                     "type": "error",
                     "agent_id": agent_id,
                     "message": "No container provisioned. Please subscribe to start chatting.",
+                    **err_session,
                 },
             )
             return
@@ -1814,6 +1958,7 @@ async def _process_agent_chat_background(
                     "type": "error",
                     "agent_id": agent_id,
                     "message": "Your agent is starting up. Please try again in a moment.",
+                    **err_session,
                 },
             )
             return
@@ -1906,7 +2051,7 @@ async def _process_agent_chat_background(
         # — they aren't billed against prepaid credits — but they DO
         # have to honor the subscription gate so a canceled-sub user
         # can't keep talking through the gateway indefinitely.
-        gate = await pool.gate_chat(user_id=user_id, owner_id=owner_id)
+        gate = await pool.gate_chat(user_id=user_id, owner_id=owner_id, session_key=session_key)
         if gate.get("blocked"):
             put_metric("chat.error", dimensions={"reason": gate.get("code", "blocked")})
             logger.info(
@@ -1923,6 +2068,7 @@ async def _process_agent_chat_background(
                         "code": gate.get("code", "blocked"),
                         "message": gate.get("message", "Chat blocked"),
                         "agent_id": agent_id,
+                        **err_session,
                     },
                 )
             except Exception:
@@ -2045,6 +2191,7 @@ async def _process_agent_chat_background(
     # The flag guarantees pool + session_key are bound (the mark is past both).
     if run_active_marked:
         pool.clear_active_run(owner_id, session_key)
+
     try:
         management_api.send_message(
             connection_id,
@@ -2052,6 +2199,7 @@ async def _process_agent_chat_background(
                 "type": "error",
                 "agent_id": agent_id,
                 "message": f"Failed to send message: {chat_err}",
+                **err_session,
             },
         )
     except Exception:
@@ -2223,6 +2371,38 @@ async def _process_agent_steer_background(
             return
 
         pool = get_gateway_pool()
+
+        # Free-tier gate for the steer path. A steer is a raw chat.send that
+        # costs real model tokens (queue-mode merges it into the in-flight run,
+        # but it still costs), and it needs only a RUNNING container — not an
+        # in-flight run — so without a gate here it is an ungated chat entrance:
+        # the primary agent_chat send is gated by gate_chat, but this path
+        # forwards its own chat.send.
+        #
+        # It checks the FULL trial predicate, not just the cap. Checking only
+        # the cap left a trial owner whose window had expired — but whose
+        # container was still up — able to keep steering (and spending) after
+        # gate_chat had already started refusing their sends. Same predicate as
+        # gate_chat Layer 2; the steer's actual cost is counted by the meter
+        # Lambda at the AWS layer like every other invocation.
+        from core.services import provision_gate, trial_cap
+
+        steer_reason = await trial_cap.trial_block_reason(owner_id)
+        if steer_reason is not None:
+            gate = provision_gate.gate_for_trial_reason(steer_reason, owner_role="admin")
+            put_metric("chat.error", dimensions={"reason": steer_reason})
+            logger.info("[%s] chat.steer BLOCKED (%s) agent=%s", user_id, steer_reason, agent_id)
+            management_api.send_message(
+                connection_id,
+                {
+                    "type": "error",
+                    "code": gate.code,
+                    "agent_id": agent_id,
+                    "message": gate.message,
+                },
+            )
+            return
+
         await pool.send_rpc(
             user_id=owner_id,
             req_id=str(uuid4()),

@@ -15,6 +15,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
+from core.services import trial_cap
+
 from main import app
 from routers.teams.deps import TeamsContext
 
@@ -49,6 +51,10 @@ def _patch_admin(monkeypatch, admin):
     from routers.teams import agents as agents_mod
 
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    # Every resolution route is gated on the trial predicate, so the default for
+    # a happy-path test is "this owner has runway". A test that wants the block
+    # overrides this afterwards. Without a stub the guard does a real DDB read.
+    monkeypatch.setattr(trial_cap, "trial_block_reason", AsyncMock(return_value=None))
 
 
 def test_list_interactions_envelopes_and_proxies_session(client, monkeypatch):
@@ -135,6 +141,8 @@ def test_respond_forwards_answers_camelcase(client, monkeypatch):
     admin.respond_interaction = AsyncMock(return_value={"status": "responded"})
     _patch_admin(monkeypatch, admin)
 
+    monkeypatch.setattr(trial_cap, "trial_block_reason", AsyncMock(return_value=None))
+
     r = client.post(
         "/api/v1/teams/issues/iss_1/interactions/int_1/respond",
         json={
@@ -209,3 +217,94 @@ def test_reject_rejects_smuggled_field(client):
         headers={"Authorization": "Bearer x"},
     )
     assert r.status_code == 422
+
+
+def test_respond_blocked_over_cap(client, monkeypatch):
+    """A trial_local owner over the free-tier $3/day Meta cap gets a 402
+    with the structured meta_daily_cap payload -- BEFORE the request ever
+    reaches Paperclip (responding to an ask_user_questions interaction
+    triggers a fresh Friday run server-side, so the check must run ahead of
+    the proxy call to actually stop the spend)."""
+    admin = MagicMock()
+    admin.respond_interaction = AsyncMock(return_value={"status": "responded"})
+    _patch_admin(monkeypatch, admin)
+
+    monkeypatch.setattr(trial_cap, "trial_block_reason", AsyncMock(return_value=trial_cap.DAILY_CAP))
+
+    r = client.post(
+        "/api/v1/teams/issues/iss_1/interactions/int_1/respond",
+        json={"answers": [{"questionId": "q1", "optionIds": ["a"]}]},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 402
+    body = r.json()["detail"]
+    assert body == {
+        "blocked": True,
+        "code": "meta_daily_cap",
+        "message": "You've used today's free allowance — resets tomorrow. Upgrade to keep going.",
+    }
+    admin.respond_interaction.assert_not_awaited()
+
+
+def test_respond_proceeds_under_cap(client, monkeypatch):
+    """An under-cap (or paid) owner's response proceeds to Paperclip as
+    normal."""
+    admin = MagicMock()
+    admin.respond_interaction = AsyncMock(return_value={"status": "responded"})
+    _patch_admin(monkeypatch, admin)
+
+    monkeypatch.setattr(trial_cap, "trial_block_reason", AsyncMock(return_value=None))
+
+    r = client.post(
+        "/api/v1/teams/issues/iss_1/interactions/int_1/respond",
+        json={"answers": [{"questionId": "q1", "optionIds": ["a"]}]},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    admin.respond_interaction.assert_awaited_once_with(
+        issue_id="iss_1",
+        interaction_id="int_1",
+        body={"answers": [{"questionId": "q1", "optionIds": ["a"]}]},
+        session_cookie="cookie",
+    )
+
+
+# ---------------------------------------------------------------------------
+# EVERY resolution route is a spend door, not just `respond`.
+#
+# Upstream Paperclip's accept / reject / respond / cancel routes ALL call
+# queueResolvedInteractionContinuationWakeup (see server/src/routes/issues.ts) —
+# the agent is blocked waiting on a human answer, and "no" and "cancel" are
+# answers too: each one resumes the run and costs model tokens. Gating only
+# `respond` left three ungated doors into Bedrock spend.
+
+_RESOLUTION_ROUTES = [
+    ("accept", {}),
+    ("reject", {"reason": "no thanks"}),
+    ("respond", {"answers": [{"questionId": "q1", "optionIds": ["a"]}]}),
+    ("cancel", {"reason": "never mind"}),
+]
+
+
+@pytest.mark.parametrize("route,body", _RESOLUTION_ROUTES)
+@pytest.mark.parametrize(
+    "reason,code",
+    [("meta_daily_cap", "meta_daily_cap"), ("trial_expired", "trial_expired")],
+)
+def test_every_interaction_resolution_route_is_gated(client, monkeypatch, route, body, reason, code):
+    admin = MagicMock()
+    for name in ("accept_interaction", "reject_interaction", "respond_interaction", "cancel_interaction"):
+        setattr(admin, name, AsyncMock(return_value={"status": "ok"}))
+    _patch_admin(monkeypatch, admin)
+    monkeypatch.setattr(trial_cap, "trial_block_reason", AsyncMock(return_value=reason))
+
+    r = client.post(
+        f"/api/v1/teams/issues/iss_1/interactions/int_1/{route}",
+        json=body,
+        headers={"Authorization": "Bearer x"},
+    )
+
+    assert r.status_code == 402, f"{route} is an ungated spend door"
+    assert r.json()["detail"]["code"] == code
+    # The wake never reached Paperclip — there is no enforcement point downstream.
+    getattr(admin, f"{route}_interaction").assert_not_awaited()

@@ -43,6 +43,16 @@ def fake_container():
     }
 
 
+def _mock_billing(status: str | None):
+    """Mock the billing-account lookup behind the always-on entitlement gate.
+    Pass `None` for the no-billing-row case; pass "active"/"trial_local"/etc.
+    to simulate the corresponding subscription state."""
+    return patch(
+        "routers.hooks_proxy.billing_repo.get_by_owner_id",
+        AsyncMock(return_value=None if status is None else {"subscription_status": status}),
+    )
+
+
 def test_missing_authorization_returns_401(client, fake_container):
     with patch("routers.hooks_proxy.container_repo.get_by_owner_id", new=AsyncMock(return_value=fake_container)):
         r = client.post("/api/v1/hooks/u/u_1/wake", json={})
@@ -69,10 +79,67 @@ def test_unknown_owner_returns_404(client):
         assert r.status_code == 404
 
 
+def test_trial_local_owner_returns_402(client, fake_container):
+    """A trial owner's hook token is real (every container mints one), but
+    webhooks are a paid always-on feature — the proxy must refuse with the
+    structured 402 before any rate-limit or container-resolution work."""
+    with (
+        patch("routers.hooks_proxy.container_repo.get_by_owner_id", new=AsyncMock(return_value=fake_container)),
+        _mock_billing("trial_local"),
+        patch("routers.hooks_proxy.ecs_manager.resolve_running_container", new=AsyncMock()) as resolve,
+    ):
+        r = client.post(
+            "/api/v1/hooks/u/u_1/wake",
+            headers={"Authorization": "Bearer " + fake_container["hook_token"]},
+            json={},
+        )
+    assert r.status_code == 402
+    detail = r.json()["detail"]
+    assert detail["blocked"] is True
+    assert detail["code"] == "always_on_requires_subscription"
+    resolve.assert_not_awaited()
+
+
+def test_missing_billing_row_returns_402(client, fake_container):
+    """Fail-closed: no billing row at all = not entitled."""
+    with (
+        patch("routers.hooks_proxy.container_repo.get_by_owner_id", new=AsyncMock(return_value=fake_container)),
+        _mock_billing(None),
+    ):
+        r = client.post(
+            "/api/v1/hooks/u/u_1/wake",
+            headers={"Authorization": "Bearer " + fake_container["hook_token"]},
+            json={},
+        )
+    assert r.status_code == 402
+    assert r.json()["detail"]["code"] == "always_on_requires_subscription"
+
+
+def test_active_owner_passes_entitlement_gate(client, fake_container):
+    """An active (paid) owner sails through the 402 gate to container-IP
+    resolution — no-IP 503 here proves the request got past entitlement."""
+    with (
+        patch("routers.hooks_proxy.container_repo.get_by_owner_id", new=AsyncMock(return_value=fake_container)),
+        _mock_billing("active"),
+        patch(
+            "routers.hooks_proxy.ecs_manager.resolve_running_container",
+            new=AsyncMock(return_value=(fake_container, None)),
+        ) as resolve,
+    ):
+        r = client.post(
+            "/api/v1/hooks/u/u_1/wake",
+            headers={"Authorization": "Bearer " + fake_container["hook_token"]},
+            json={},
+        )
+    assert r.status_code == 503
+    resolve.assert_awaited_once()
+
+
 def test_no_running_task_returns_503(client, fake_container):
     """When EcsManager.resolve_running_container returns no IP, 503 + Retry-After."""
     with (
         patch("routers.hooks_proxy.container_repo.get_by_owner_id", new=AsyncMock(return_value=fake_container)),
+        _mock_billing("active"),
         patch(
             "routers.hooks_proxy.ecs_manager.resolve_running_container",
             new=AsyncMock(return_value=(fake_container, None)),
@@ -101,6 +168,7 @@ def test_successful_forward_passes_body_and_writes_audit(client, fake_container)
 
     with (
         patch("routers.hooks_proxy.container_repo.get_by_owner_id", new=AsyncMock(return_value=fake_container)),
+        _mock_billing("active"),
         patch(
             "routers.hooks_proxy.ecs_manager.resolve_running_container",
             new=AsyncMock(return_value=(fake_container, "10.0.42.17")),
@@ -150,6 +218,7 @@ def test_audit_write_failure_does_not_drop_proxied_call(client, fake_container):
 
     with (
         patch("routers.hooks_proxy.container_repo.get_by_owner_id", new=AsyncMock(return_value=fake_container)),
+        _mock_billing("active"),
         patch(
             "routers.hooks_proxy.ecs_manager.resolve_running_container",
             new=AsyncMock(return_value=(fake_container, "10.0.42.17")),
@@ -179,6 +248,7 @@ def test_query_string_is_forwarded_verbatim(client, fake_container):
 
     with (
         patch("routers.hooks_proxy.container_repo.get_by_owner_id", new=AsyncMock(return_value=fake_container)),
+        _mock_billing("active"),
         patch(
             "routers.hooks_proxy.ecs_manager.resolve_running_container",
             new=AsyncMock(return_value=(fake_container, "10.0.42.17")),
@@ -239,6 +309,7 @@ def test_rate_limiter_returns_429_after_60_per_minute(client, fake_container):
 
     with (
         patch("routers.hooks_proxy.container_repo.get_by_owner_id", new=AsyncMock(return_value=fake_container)),
+        _mock_billing("active"),
         patch(
             "routers.hooks_proxy.ecs_manager.resolve_running_container",
             new=AsyncMock(return_value=(fake_container, "10.0.42.17")),

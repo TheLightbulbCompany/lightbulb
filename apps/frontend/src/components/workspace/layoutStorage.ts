@@ -11,8 +11,10 @@ const KEY_PREFIX = "isol8.workspace.layout.v1";
 // Params that may live on a panel while it's open but must NOT survive into
 // the persisted blob. initialTab is a navigation intent (the Get Started
 // "Connect a channel" CTA), not view state — persisting it would land the
-// inspector on that tab on EVERY restore, forever.
-const PERSIST_ONLY_STRIP = ["initialTab"] as const;
+// inspector on that tab on EVERY restore, forever. Same for the inbox's
+// deep-linked tab: the user's chosen tab lives in localStorage, and a
+// persisted tab param would silently override it on every reload.
+const PERSIST_ONLY_STRIP = ["initialTab", "tab"] as const;
 
 interface StoredLayout {
   version: 1;

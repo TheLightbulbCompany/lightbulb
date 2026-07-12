@@ -1,7 +1,7 @@
 import { useUser } from "@clerk/clerk-expo";
 import Feather from "@expo/vector-icons/Feather";
 import { randomUUID } from "expo-crypto";
-import { Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
+import { router, Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Animated,
@@ -411,6 +411,23 @@ export default function AgentChat() {
           title: activeSessionLabel
             ? `${agentName} — ${activeSessionLabel}`
             : agentName,
+          // This screen is a hidden tab sibling (href: null), not a pushed
+          // stack screen, so no automatic back chevron — provide one that
+          // returns to the agent grid.
+          headerLeft: () => (
+            <Pressable
+              style={styles.headerAction}
+              onPress={() => {
+                if (router.canGoBack()) router.back();
+                else router.replace("/(app)/chat");
+              }}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="Back to agents"
+            >
+              <Feather name="chevron-left" size={22} color={colors.ink} />
+            </Pressable>
+          ),
           headerRight: () => (
             <Pressable
               style={styles.headerAction}

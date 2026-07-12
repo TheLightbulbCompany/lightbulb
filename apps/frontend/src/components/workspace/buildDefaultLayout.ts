@@ -1,4 +1,4 @@
-// Mission Control: sentinel CEO chat on the left, Tasks board and Inbox
+// Mission Control: sentinel CEO chat on the left, Dashboard and Inbox
 // stacked on the right. Built by code (never persisted as a preset blob) so
 // the default evolves with releases; Reset re-applies it.
 import type { DockviewApi } from "dockview-react";
@@ -14,10 +14,10 @@ export function buildMissionControlLayout(api: DockviewApi): void {
     renderer: "always",
   });
   api.addPanel({
-    id: "teams-issues",
+    id: "teams-dashboard",
     component: "teams",
-    title: "Tasks",
-    params: { teamsKey: "issues" },
+    title: "Dashboard",
+    params: { teamsKey: "dashboard" },
     position: { referencePanel: chatId, direction: "right" },
     // Chat keeps ~55% — dockview splits 50/50 by default; initialWidth on
     // the right group nudges it. 45% of a 1440 dock ≈ 648.
@@ -28,7 +28,7 @@ export function buildMissionControlLayout(api: DockviewApi): void {
     component: "teams",
     title: "Inbox",
     params: { teamsKey: "inbox" },
-    position: { referencePanel: "teams-issues", direction: "below" },
+    position: { referencePanel: "teams-dashboard", direction: "below" },
   });
   api.getPanel(chatId)?.api.setActive();
 }

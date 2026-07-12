@@ -11,7 +11,13 @@ on:
 jobs:
   e2e:
     name: Playwright E2E vs dev
-    runs-on: ${{ vars.CI_RUNNER }}
+    # GitHub-hosted, NOT vars.CI_RUNNER. The self-hosted runner is Ubuntu 26.04,
+    # which Playwright refuses to install browsers for -- "Cannot install
+    # dependencies for ubuntu26.04-x64 with Playwright 1.58.2" -- so
+    # `playwright install --with-deps` hard-fails and the suite never runs.
+    # This job only drives a public URL (dev.isol8.co), so it needs nothing from
+    # the self-hosted host. Manual-dispatch only; no deploy path touches it.
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - name: Checkout

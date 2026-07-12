@@ -60,6 +60,7 @@ function makeFakeApi() {
     },
     onDidAddPanel: () => ({ dispose: vi.fn() }),
     onDidRemovePanel: () => ({ dispose: vi.fn() }),
+    onDidLayoutChange: () => ({ dispose: vi.fn() }),
     panels: [] as unknown[],
     groups: [] as unknown[],
   };
@@ -123,6 +124,26 @@ describe("deriveReconcilerAction — one-shot strip ordering", () => {
     const d = deriveReconcilerAction("?panel=teams-inbox", null);
     expect(d!.strippedSearch).toBeNull();
     expect(d!.nextSignature).toBe(commandSignature("?panel=teams-inbox"));
+  });
+});
+
+describe("deriveReconcilerAction — warm first mount reads live window.location", () => {
+  // WorkspaceShell's reconciler effect passes window.location.search (the LIVE
+  // URL), using searchParams only as the re-run trigger. onReady strips +
+  // latches to the POST-strip signature synchronously; the effect then re-runs
+  // and must see the already-stripped URL so it latches out. This models that:
+  // executing a one-shot command latches the post-strip signature, and a re-run
+  // reading the post-strip window.location value returns null (no double-open).
+  it("latches out when re-run reads the post-strip URL against the post-strip latch", () => {
+    const first = deriveReconcilerAction("?panel=teams-issues&new=task", null)!;
+    expect(first.command?.oneShots).toEqual({ new: "task" });
+    // onReady applied the strip → window.location.search is now the stripped
+    // value, and lastApplied holds the post-strip signature.
+    const liveSearch = first.strippedSearch!; // "panel=teams-issues"
+    expect(deriveReconcilerAction(liveSearch, first.nextSignature)).toBeNull();
+    // Contrast: reading the STALE pre-strip search (the old searchParams.toString
+    // path) would NOT latch out — it re-executes the command:
+    expect(deriveReconcilerAction("?panel=teams-issues&new=task", first.nextSignature)).not.toBeNull();
   });
 });
 

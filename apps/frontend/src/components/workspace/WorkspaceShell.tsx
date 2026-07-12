@@ -137,7 +137,14 @@ export function WorkspaceShell(): React.ReactElement {
   }, []);
 
   useEffect(() => {
-    runReconciler(searchParams.toString());
+    // searchParams is the re-run TRIGGER only. Reconcile against the LIVE
+    // window.location.search, not the Next-parsed searchParams: onReady strips
+    // the URL synchronously via replaceSearchParams (History API) BEFORE Next's
+    // searchParams updates, so reading window.location here makes that strip
+    // visible to this effect. A warm first mount then latches out (post-strip
+    // search vs the post-strip signature) instead of re-executing — and re-
+    // opening — the URL command. (Task 11 review handoff.)
+    runReconciler(window.location.search);
   }, [searchParams, runReconciler]);
 
   // [BODY 1 + 2: onReady — attach, restore, URL command, clear-on-close,

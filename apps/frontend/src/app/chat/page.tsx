@@ -19,6 +19,8 @@ import {
 import { preloadTeamsPanels } from "@/components/teams/TeamsPanelRouter";
 import { resolvePanelAlias } from "@/components/workspace/panelRegistry";
 import { pushSearchParams, replaceSearchParams } from "@/lib/shellNav";
+import { useIsDesktop } from "@/hooks/useIsDesktop";
+import { WorkspaceShell } from "@/components/workspace/WorkspaceShell";
 
 export default function ChatPage() {
   // useSearchParams() forces dynamic rendering; wrap in Suspense so the
@@ -33,6 +35,38 @@ export default function ChatPage() {
 }
 
 function ChatPageInner() {
+  // Desktop gets the dockable-workspace shell; mobile keeps the classic
+  // single-pane ChatLayout. useIsDesktop's server snapshot is false, so SSR
+  // renders mobile and the desktop shell swaps in on hydration. Crossing the
+  // breakpoint remounts the other shell — chat state survives via module
+  // stores + _messageCache; the dock layout persists in localStorage.
+  const isDesktop = useIsDesktop();
+  return (
+    <MarketplaceDrawerProvider>
+      <GatewayProvider>
+        <ExecApprovalsProvider>
+          {isDesktop ? <WorkspaceShell /> : <MobileChatShell />}
+        </ExecApprovalsProvider>
+        {/* Drawer + toast must live INSIDE GatewayProvider — useHire() and
+            PickAgentStep both call useAgents() which calls useGateway(). */}
+        <MarketplaceDrawer />
+        <MarketplaceToast />
+        {/* Each branch mounts its own RunNotifications variant; only ONE renders
+            at a time. Desktop derives its watched keys from the dock snapshot
+            (no props); mobile threads the selected agent + view/panel (mounted
+            inside MobileChatShell, colocated with the state that feeds it).
+            Both stay inside GatewayProvider. */}
+        {isDesktop ? <RunNotifications mode="desktop" /> : null}
+      </GatewayProvider>
+    </MarketplaceDrawerProvider>
+  );
+}
+
+// The mobile (single-pane) shell: the classic ChatLayout + URL-driven control
+// panel composition. Holds all of the page's param derivation, nav helpers,
+// selection state, and the mode="mobile" RunNotifications mount. The desktop
+// branch (WorkspaceShell) owns its own equivalents — none of this runs there.
+function MobileChatShell() {
   const searchParams = useSearchParams();
   // Single source of truth for view + panel is the URL. Legacy deep links
   // (?panel=credits, ?panel=teams-approvals, …) are resolved to their live key
@@ -230,69 +264,63 @@ function ChatPageInner() {
   }, []);
 
   return (
-    <MarketplaceDrawerProvider>
-      <GatewayProvider>
-        <ExecApprovalsProvider>
-          <ChatLayout
-            activePanel={activePanel}
-            onPanelChange={setActivePanel}
-            openAgentIssues={openAgentIssues}
-            openAgentInspector={openAgentInspector}
-            onClearPanel={clearPanel}
-            onNewTask={startNewTask}
-            fileViewerOpen={fileViewerOpen}
-            activeFilePath={activeFilePath}
-            onOpenFile={handleOpenFile}
-            onCloseFileViewer={handleCloseFileViewer}
-          >
-            {/* Keep AgentChatWindow mounted but hidden so chat state
-                (messages, scroll position, streaming) survives view switches */}
-            <div className={activeView === "chat" ? "flex flex-col h-full min-h-0" : "hidden"}>
-              <AgentChatWindow key={selectedAgentId} agentId={selectedAgentId} onOpenFile={handleOpenFile} />
-            </div>
-            {activeView === "control" && (
-              <div className="flex flex-col h-full min-h-0">
-                {isTeamsPanelKey(activePanel) ? (
-                  <InlineTeamsPanel
-                    panel={activePanel}
-                    detailId={detailId}
-                    openDetail={openDetail}
-                    leaveToList={leaveToList}
-                    panelParams={{
-                      ...(agentParam ? { agent: agentParam } : {}),
-                      ...(oneShots.new ? { new: oneShots.new } : {}),
-                      ...(oneShots.newIssue ? { newIssue: oneShots.newIssue } : {}),
-                    }}
-                    onConsumeOneShot={stripParam}
-                    onUpdateDurableParam={updateDurableParam}
-                  />
-                ) : (
-                  <ControlPanelRouter
-                    panel={activePanel}
-                    onPanelChange={setActivePanel}
-                    panelParams={{
-                      ...(agentParam ? { agentId: agentParam } : {}),
-                      ...(oneShots.inspectorTab ? { initialTab: oneShots.inspectorTab } : {}),
-                      ...(oneShots.action ? { action: oneShots.action } : {}),
-                    }}
-                    onConsumeOneShot={stripParam}
-                  />
-                )}
-              </div>
+    <>
+      <ChatLayout
+        activePanel={activePanel}
+        onPanelChange={setActivePanel}
+        openAgentIssues={openAgentIssues}
+        openAgentInspector={openAgentInspector}
+        onClearPanel={clearPanel}
+        onNewTask={startNewTask}
+        fileViewerOpen={fileViewerOpen}
+        activeFilePath={activeFilePath}
+        onOpenFile={handleOpenFile}
+        onCloseFileViewer={handleCloseFileViewer}
+      >
+        {/* Keep AgentChatWindow mounted but hidden so chat state
+            (messages, scroll position, streaming) survives view switches */}
+        <div className={activeView === "chat" ? "flex flex-col h-full min-h-0" : "hidden"}>
+          <AgentChatWindow key={selectedAgentId} agentId={selectedAgentId} onOpenFile={handleOpenFile} />
+        </div>
+        {activeView === "control" && (
+          <div className="flex flex-col h-full min-h-0">
+            {isTeamsPanelKey(activePanel) ? (
+              <InlineTeamsPanel
+                panel={activePanel}
+                detailId={detailId}
+                openDetail={openDetail}
+                leaveToList={leaveToList}
+                panelParams={{
+                  ...(agentParam ? { agent: agentParam } : {}),
+                  ...(oneShots.new ? { new: oneShots.new } : {}),
+                  ...(oneShots.newIssue ? { newIssue: oneShots.newIssue } : {}),
+                }}
+                onConsumeOneShot={stripParam}
+                onUpdateDurableParam={updateDurableParam}
+              />
+            ) : (
+              <ControlPanelRouter
+                panel={activePanel}
+                onPanelChange={setActivePanel}
+                panelParams={{
+                  ...(agentParam ? { agentId: agentParam } : {}),
+                  ...(oneShots.inspectorTab ? { initialTab: oneShots.inspectorTab } : {}),
+                  ...(oneShots.action ? { action: oneShots.action } : {}),
+                }}
+                onConsumeOneShot={stripParam}
+              />
             )}
-          </ChatLayout>
-        </ExecApprovalsProvider>
-        {/* Drawer + toast must live INSIDE GatewayProvider — useHire() and
-            PickAgentStep both call useAgents() which calls useGateway(). */}
-        <MarketplaceDrawer />
-        <MarketplaceToast />
-        <RunNotifications
-          mode="mobile"
-          selectedAgentId={selectedAgentId}
-          activeView={activeView}
-          activePanel={activePanel}
-        />
-      </GatewayProvider>
-    </MarketplaceDrawerProvider>
+          </div>
+        )}
+      </ChatLayout>
+      {/* Sibling of ChatLayout, still inside GatewayProvider (MobileChatShell
+          renders under it). Colocated with the selection/view state it reads. */}
+      <RunNotifications
+        mode="mobile"
+        selectedAgentId={selectedAgentId}
+        activeView={activeView}
+        activePanel={activePanel}
+      />
+    </>
   );
 }

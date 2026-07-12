@@ -3,7 +3,7 @@ import { agentDisplayName, type AgentsListResponse } from "@isol8/shared";
 
 import { colors, fonts, radii, spacing } from "../../config/theme";
 
-type Agent = AgentsListResponse["agents"][number];
+type Agent = NonNullable<AgentsListResponse["agents"]>[number];
 
 interface Props {
   visible: boolean;

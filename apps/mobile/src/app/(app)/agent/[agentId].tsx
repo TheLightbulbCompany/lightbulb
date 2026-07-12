@@ -62,7 +62,8 @@ function ReconnectingBanner() {
  * AgentHead whose glyph pulses while the run is active.
  */
 export default function AgentChat() {
-  const { agentId, name } = useLocalSearchParams<{ agentId: string; name?: string }>();
+  const { agentId, name, newSession: newSessionParam } =
+    useLocalSearchParams<{ agentId: string; name?: string; newSession?: string }>();
   // Publish the focused agent so the push notification handler suppresses the
   // banner for a reply the user is actively watching stream in (activeAgent.ts).
   useFocusEffect(
@@ -107,6 +108,7 @@ export default function AgentChat() {
   const segmentRef = useRef(0);
   const lastCumulativeLenRef = useRef(0);
   const listRef = useRef<FlatList<ChatItem>>(null);
+  const inputRef = useRef<TextInput>(null);
 
   useEffect(() => {
     return gateway.onChatMessage((msg) => {
@@ -318,6 +320,19 @@ export default function AgentChat() {
     switchSession(id, null);
     setSheetOpen(false);
   }, [switchSession]);
+
+  // "New task" from the roster navigates here with `newSession=1`: mint a
+  // fresh session once on mount and focus the composer. A ref guard keeps it
+  // from re-firing on re-render (the param stays in the URL for the screen's
+  // lifetime).
+  const didNewSessionParamRef = useRef(false);
+  useEffect(() => {
+    if (newSessionParam === "1" && !didNewSessionParamRef.current) {
+      didNewSessionParamRef.current = true;
+      newSession();
+      inputRef.current?.focus();
+    }
+  }, [newSessionParam, newSession]);
 
   const send = useCallback(() => {
     const text = input.trim();
@@ -551,6 +566,7 @@ export default function AgentChat() {
         <View style={[styles.card, inputFocused && styles.cardFocused]}>
           <View style={styles.inputZone}>
             <TextInput
+              ref={inputRef}
               style={[styles.input, { height: inputHeight }]}
               placeholder="Ask anything"
               placeholderTextColor={colors.placeholder}

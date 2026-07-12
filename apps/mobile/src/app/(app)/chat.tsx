@@ -1,5 +1,6 @@
+import Feather from "@expo/vector-icons/Feather";
 import { router } from "expo-router";
-import { type ReactElement } from "react";
+import { type ReactElement, useState } from "react";
 import {
   Animated,
   FlatList,
@@ -15,6 +16,7 @@ import {
 } from "@isol8/shared";
 
 import { colors, fonts, radii, spacing, type } from "../../config/theme";
+import { AgentPickerSheet } from "../../components/chat/AgentPickerSheet";
 import { usePulse } from "../../components/chat/usePulse";
 import { useGateway } from "../../providers/gateway";
 
@@ -55,15 +57,25 @@ function HealthRow({
   );
 }
 
-// 28px tinted avatar tile — Lora italic-bold initial, or the agent's emoji
-// inside the same tile when one is set (spec §5 Monogram).
-function Monogram({ name, emoji }: { name: string; emoji?: string }) {
+// Tinted avatar tile — Lora italic-bold initial, or the agent's emoji inside
+// the same tile when one is set (spec §5 Monogram). `big` = 44px grid variant.
+function Monogram({
+  name,
+  emoji,
+  big,
+}: {
+  name: string;
+  emoji?: string;
+  big?: boolean;
+}) {
   return (
-    <View style={styles.monogram}>
+    <View style={[styles.monogram, big && styles.monogramBig]}>
       {emoji ? (
-        <Text style={styles.monogramEmoji}>{emoji}</Text>
+        <Text style={big ? styles.monogramEmojiBig : styles.monogramEmoji}>
+          {emoji}
+        </Text>
       ) : (
-        <Text style={styles.monogramLetter}>
+        <Text style={big ? styles.monogramLetterBig : styles.monogramLetter}>
           {(name.trim()[0] ?? "8").toUpperCase()}
         </Text>
       )}
@@ -71,28 +83,23 @@ function Monogram({ name, emoji }: { name: string; emoji?: string }) {
   );
 }
 
-// Static "active" status dot with soft halo (spec §5 StatusDot).
-function StatusDot() {
-  return (
-    <View style={styles.statusHalo}>
-      <View style={styles.statusDot} />
-    </View>
-  );
-}
-
-// Three pulsing placeholder rows while agents.list is in flight (spec §7).
-function SkeletonRows() {
+// Four pulsing placeholder tiles (2×2) while agents.list is in flight (§7).
+function SkeletonGrid() {
   const pulse = usePulse(true, 0.55);
   return (
-    <View style={styles.skeletonGroup}>
-      {[0, 1, 2].map((i) => (
-        <Animated.View key={i} style={[styles.skeletonRow, { opacity: pulse }]} />
+    <View style={styles.skeletonGrid}>
+      {[0, 1, 2, 3].map((i) => (
+        <Animated.View
+          key={i}
+          style={[styles.skeletonTile, { opacity: pulse }]}
+        />
       ))}
     </View>
   );
 }
 
-// Agent roster — entry point to per-agent chat. Streams over the same
+// Agent roster — a 2-column grid of agent tiles, plus a "New task" entry that
+// starts a fresh session with a picked agent. Streams over the same
 // agents.list RPC the web sidebar uses.
 export default function Chat() {
   const gateway = useGateway();
@@ -103,6 +110,7 @@ export default function Chat() {
   const agents = data?.agents ?? [];
   const connectionDown = !gateway.isConnected && gateway.error != null;
   const showEmpty = agents.length === 0 && !isLoading && data != null;
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   let body: ReactElement;
   if (error) {
@@ -126,6 +134,8 @@ export default function Chat() {
       <FlatList
         data={agents}
         keyExtractor={(a) => a.id}
+        numColumns={2}
+        columnWrapperStyle={styles.column}
         style={styles.list}
         contentContainerStyle={[
           styles.listContent,
@@ -141,7 +151,7 @@ export default function Chat() {
         }
         ListEmptyComponent={
           isLoading || !data ? (
-            <SkeletonRows />
+            <SkeletonGrid />
           ) : (
             <View style={styles.emptyWrap}>
               <Text style={styles.emptyGlyph}>8</Text>
@@ -151,7 +161,7 @@ export default function Chat() {
         }
         renderItem={({ item }) => (
           <Pressable
-            style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+            style={({ pressed }) => [styles.tile, pressed && styles.tilePressed]}
             onPress={() =>
               router.push({
                 pathname: "/(app)/agent/[agentId]",
@@ -162,16 +172,15 @@ export default function Chat() {
             <Monogram
               name={agentDisplayName(item)}
               emoji={item.identity?.emoji ?? undefined}
+              big
             />
-            <View style={styles.rowText}>
-              <Text style={styles.name} numberOfLines={1}>
-                {agentDisplayName(item)}
-              </Text>
-              <Text style={styles.id} numberOfLines={1}>
-                {item.id}
-              </Text>
+            <Text style={styles.tileName} numberOfLines={2}>
+              {agentDisplayName(item)}
+            </Text>
+            <View style={styles.tileStatus}>
+              <View style={styles.statusDot} />
+              <Text style={styles.statusLabel}>Active</Text>
             </View>
-            <StatusDot />
           </Pressable>
         )}
       />
@@ -181,7 +190,34 @@ export default function Chat() {
   return (
     <View style={styles.page}>
       <HealthRow isConnected={gateway.isConnected} errorMessage={gateway.error} />
+      {agents.length > 0 ? (
+        <Pressable
+          style={({ pressed }) => [styles.newTask, pressed && styles.newTaskPressed]}
+          onPress={() => setPickerOpen(true)}
+          accessibilityRole="button"
+          accessibilityLabel="New task"
+        >
+          <Feather name="plus" size={16} color={colors.cream} />
+          <Text style={styles.newTaskLabel}>New task</Text>
+        </Pressable>
+      ) : null}
       {body}
+      <AgentPickerSheet
+        visible={pickerOpen}
+        agents={agents}
+        onClose={() => setPickerOpen(false)}
+        onPick={(agent) => {
+          setPickerOpen(false);
+          router.push({
+            pathname: "/(app)/agent/[agentId]",
+            params: {
+              agentId: agent.id,
+              name: agentDisplayName(agent),
+              newSession: "1",
+            },
+          });
+        }}
+      />
     </View>
   );
 }
@@ -193,6 +229,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     paddingBottom: spacing.xl,
   },
+  column: { gap: spacing.sm },
   centerGrow: {
     flexGrow: 1,
     alignItems: "center",
@@ -219,6 +256,26 @@ const styles = StyleSheet.create({
   },
   healthLabelDown: { color: colors.danger },
 
+  // "New task" primary action (start a fresh session with a picked agent).
+  newTask: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.xs,
+    marginHorizontal: spacing.md,
+    marginBottom: spacing.sm,
+    paddingVertical: spacing.sm,
+    borderRadius: radii.md,
+    backgroundColor: colors.forest,
+  },
+  newTaskPressed: { opacity: 0.85 },
+  newTaskLabel: {
+    fontFamily: fonts.dmSansMedium,
+    fontSize: 14,
+    lineHeight: 18,
+    color: colors.cream,
+  },
+
   // Section label (spec §5).
   sectionLabel: {
     ...type.overline,
@@ -227,15 +284,22 @@ const styles = StyleSheet.create({
   },
   sectionCount: { color: colors.sectionCount },
 
-  // Roster rows (spec §5).
-  row: {
-    flexDirection: "row",
+  // Agent tiles (2-column grid).
+  tile: {
+    flex: 1,
+    minHeight: 120,
     alignItems: "center",
-    gap: 10,
-    padding: spacing.sm,
-    borderRadius: 10,
+    justifyContent: "center",
+    gap: spacing.sm,
+    paddingVertical: spacing.lg,
+    paddingHorizontal: spacing.sm,
+    backgroundColor: colors.cream,
+    borderWidth: 1,
+    borderColor: colors.edge,
+    borderRadius: radii.lg,
+    marginBottom: spacing.sm,
   },
-  rowPressed: { backgroundColor: colors.rowPressed },
+  tilePressed: { backgroundColor: colors.creamPressed },
   monogram: {
     width: 28,
     height: 28,
@@ -244,38 +308,42 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  monogramBig: { width: 44, height: 44, borderRadius: radii.lg },
   monogramLetter: {
     fontFamily: fonts.loraBoldItalic,
     fontSize: 14,
     color: colors.forest,
   },
+  monogramLetterBig: {
+    fontFamily: fonts.loraBoldItalic,
+    fontSize: 20,
+    color: colors.forest,
+  },
   monogramEmoji: { fontSize: 14 },
-  rowText: { flex: 1 },
-  name: {
+  monogramEmojiBig: { fontSize: 22 },
+  tileName: {
     fontFamily: fonts.dmSansMedium,
-    fontSize: 13,
+    fontSize: 14,
     lineHeight: 18,
     color: colors.ink,
+    textAlign: "center",
   },
-  id: {
-    fontFamily: fonts.dmSans,
-    fontSize: 11,
-    lineHeight: 15,
-    color: colors.mute,
-  },
-  statusHalo: {
-    width: 13,
-    height: 13,
-    borderRadius: 7,
-    backgroundColor: colors.forestHalo,
+  tileStatus: {
+    flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
+    gap: spacing.xs,
   },
   statusDot: {
     width: 7,
     height: 7,
     borderRadius: 4,
     backgroundColor: colors.forestSoft,
+  },
+  statusLabel: {
+    fontFamily: fonts.dmSans,
+    fontSize: 11,
+    lineHeight: 14,
+    color: colors.mute,
   },
 
   // Empty state (spec §7).
@@ -287,11 +355,17 @@ const styles = StyleSheet.create({
     color: colors.ink,
   },
 
-  // Loading skeletons (spec §7).
-  skeletonGroup: { alignSelf: "stretch", gap: spacing.sm },
-  skeletonRow: {
-    height: 44,
-    borderRadius: 10,
+  // Loading skeletons — 2×2 tile grid (spec §7).
+  skeletonGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.sm,
+  },
+  skeletonTile: {
+    flexGrow: 1,
+    flexBasis: "45%",
+    minHeight: 120,
+    borderRadius: radii.lg,
     backgroundColor: colors.skeleton,
   },
 

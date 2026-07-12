@@ -3,7 +3,7 @@ import type { DockviewApi } from "dockview-react";
 import { buildMissionControlLayout } from "../buildDefaultLayout";
 
 describe("buildMissionControlLayout", () => {
-  it("opens sentinel chat, tasks right, inbox below tasks — chat active last", () => {
+  it("opens sentinel chat, dashboard right, inbox below dashboard — chat active last", () => {
     const calls: Array<Record<string, unknown>> = [];
     const api = {
       addPanel: vi.fn((opts: Record<string, unknown>) => {
@@ -18,15 +18,16 @@ describe("buildMissionControlLayout", () => {
 
     buildMissionControlLayout(api);
 
-    expect(calls.map((c) => c.id)).toEqual(["chat:__default__", "teams-issues", "teams-inbox"]);
+    expect(calls.map((c) => c.id)).toEqual(["chat:__default__", "teams-dashboard", "teams-inbox"]);
     expect(calls[0]).toMatchObject({ component: "chat", renderer: "always" });
     expect(calls[1]).toMatchObject({
       component: "teams",
+      params: { teamsKey: "dashboard" },
       position: { referencePanel: "chat:__default__", direction: "right" },
     });
     expect(calls[2]).toMatchObject({
       component: "teams",
-      position: { referencePanel: "teams-issues", direction: "below" },
+      position: { referencePanel: "teams-dashboard", direction: "below" },
     });
     // Chat ends focused (spec: default layout focuses the conversation)
     expect(calls[0].id).toBe("chat:__default__");

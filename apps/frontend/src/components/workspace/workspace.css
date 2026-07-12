@@ -69,3 +69,53 @@
   min-height: 0;
   background: #faf7f2;
 }
+
+/* ── Panel-content scroll model ──────────────────────────────────────────
+ *
+ * TeamsDockPanel / ControlDockPanel wrap their content in
+ * `editorial-page workspace-panel-page h-full overflow-auto`: the wrapper
+ * IS the panel's scroll container. globals.css gives `.editorial-page`
+ * `min-height: 100vh` — correct in the old shell where that div sat inside
+ * the scrolling `.main-content`, but fatal here: min-height beats h-full,
+ * the wrapper grows taller than its dock slot, and everything below the
+ * slot's clip line becomes unreachable.
+ *
+ * Scoped by a class the dock hosts add THEMSELVES (not by `.workspace-dock`
+ * ancestry), so the rules hold regardless of where dockview mounts panel
+ * content and stay inert in the mobile shell, which shares these panels.
+ */
+.workspace-panel-page.editorial-page {
+  /* h-full wins: the wrapper is exactly the dock slot, and its
+   * overflow-auto scrollport equals the visible area. */
+  min-height: 0;
+  /* Size container: descendants size viewport-height regions against the
+   * SLOT (100cqh) instead of the viewport. The wrapper's own size is
+   * already content-independent (h-full), so size containment is free. */
+  container-type: size;
+}
+
+/* Panels' own `.editorial-page` roots fill the slot (cream background all
+ * the way down on short content) and grow naturally past it — the wrapper
+ * scrolls the overflow. Replaces their min-height:100vh inside the dock. */
+.workspace-panel-page .editorial-page {
+  min-height: 100%;
+}
+
+/* Viewport-height regions → slot-height. Fallback heights (Tailwind
+ * `h-[calc(100vh-18rem)]` / `h-[calc(100dvh-16rem)]`) still apply in the
+ * mobile shell; the offsets here are those old-shell tunings minus the
+ * 3.5rem app header that no longer sits above a dock panel. The Tailwind
+ * min-height floors (24rem / 420px) stay active — a too-short slot lets
+ * the page grow and the wrapper scroll instead of crushing the region. */
+
+/* Tasks board (TasksList board view): fills the slot below the masthead /
+ * toolbar chrome; columns keep their own vertical scroll, the board keeps
+ * horizontal scroll. */
+.workspace-panel-page .tasks-board-region {
+  height: calc(100cqh - 14.5rem);
+}
+
+/* Org-chart pan/zoom canvas. */
+.workspace-panel-page .org-chart-viewport {
+  height: calc(100cqh - 12.5rem);
+}

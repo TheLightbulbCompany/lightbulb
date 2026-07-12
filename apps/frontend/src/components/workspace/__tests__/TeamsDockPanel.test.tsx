@@ -91,6 +91,21 @@ describe("TeamsDockPanel — partial parameter updates", () => {
   });
 });
 
+describe("TeamsDockPanel — scroll-container wrapper", () => {
+  it("marks the wrapper as the panel scroll container (workspace-panel-page)", () => {
+    // The wrapper IS the panel's scroll container: `workspace-panel-page`
+    // collapses editorial-page's min-height:100vh to the dock slot
+    // (workspace.css) — without it, content below the slot's clip line is
+    // unreachable. h-full + overflow-auto complete the scroll model.
+    const { props } = makePanelProps("teams-dashboard", { teamsKey: "dashboard" });
+    const { container } = render(<TeamsDockPanel {...props} />);
+    const wrapper = container.firstElementChild as HTMLElement;
+    for (const cls of ["editorial-page", "workspace-panel-page", "h-full", "overflow-auto"]) {
+      expect(wrapper.classList.contains(cls)).toBe(true);
+    }
+  });
+});
+
 describe("TeamsDockPanel — durable-param clear strips the URL", () => {
   it("dismissing the agent filter clears ?agent when the URL names this panel", () => {
     window.history.replaceState(null, "", "/chat?panel=teams-issues&agent=a-1");

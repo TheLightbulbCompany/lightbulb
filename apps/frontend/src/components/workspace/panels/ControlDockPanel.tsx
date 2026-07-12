@@ -19,7 +19,10 @@ export function ControlDockPanel(props: IDockviewPanelProps<ControlDockPanelPara
   const params = useDockPanelParams(props);
 
   return (
-    <div className="editorial-page h-full overflow-auto">
+    // workspace-panel-page (workspace.css): this wrapper IS the panel's
+    // scroll container — it collapses editorial-page's viewport min-height
+    // to the dock slot and lets descendants size against the slot (cqh).
+    <div className="editorial-page workspace-panel-page h-full overflow-auto">
       <ControlPanelRouter
         panel={params.controlKey}
         // OverviewPanel's summary cards deep-link into other control panels via

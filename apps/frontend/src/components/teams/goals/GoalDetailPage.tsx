@@ -89,7 +89,9 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
       // Back never lands on the deleted goal); standalone / test renders (no
       // provider) fall back to the direct window.location rewrite.
       if (nav) {
-        nav.leaveToList("teams-goals");
+        // Pass our own id so the desktop dock closes THIS detail panel, not
+        // whichever panel happens to be active when the delete confirms.
+        nav.leaveToList("teams-goals", goalId);
       } else {
         const params = new URLSearchParams(window.location.search);
         params.set("panel", "teams-goals");

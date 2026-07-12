@@ -13,7 +13,11 @@ export interface InlineTeamsNavValue {
   // swaps itself for the given list panel. Committed replace-only by the shell
   // so Back never resurrects the dead row. Detail pages fall back to a direct
   // window.location rewrite when no provider is mounted (standalone/test).
-  leaveToList: (listPanelKey: string) => void;
+  // `selfDetailId` lets the caller identify its OWN detail row: the desktop
+  // dock closes exactly that panel (focus can move between clicking Delete
+  // and confirming, so the active panel is not reliably the invoker); the
+  // mobile shell's URL rewrite has no per-panel identity and ignores it.
+  leaveToList: (listPanelKey: string, selfDetailId?: string) => void;
 }
 
 const InlineTeamsNavContext = createContext<InlineTeamsNavValue | null>(null);

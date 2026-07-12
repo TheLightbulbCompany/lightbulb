@@ -58,6 +58,16 @@ const ISOL8_THEME: DockviewTheme = { ...themeLight, name: "isol8", gap: 4 };
 // same id grammar as panelRegistry.durableParamsFor.
 const TEAMS_DETAIL_PANEL_ID_RE = /^teams-(issue|routine|project|goal)-detail:/;
 
+// List panel key → its detail panel key, so a self-identifying leaveToList
+// caller (list key + its own detail id) maps to the exact dock panel id
+// without trusting dock focus.
+const DETAIL_KEY_BY_LIST_KEY: Readonly<Record<string, string>> = {
+  "teams-issues": "teams-issue-detail",
+  "teams-goals": "teams-goal-detail",
+  "teams-projects": "teams-project-detail",
+  "teams-routines": "teams-routine-detail",
+};
+
 // The recovery regression unmounts the dock mid-session (ProvisioningStepper
 // swaps its children for the loader) without unmounting WorkspaceShell, so the
 // shell's own effect cleanups never run. This sentinel rides INSIDE the dock
@@ -309,10 +319,26 @@ export function WorkspaceShell(): React.ReactElement {
     () => ({
       openDetail: (panelKey: string, id: string) =>
         openPanel(`teams-${panelKey}`, { detailId: id }, { pushUrl: true }),
-      leaveToList: (listPanelKey: string) => {
-        // The detail panel calling this is the dock's active panel. Guard on
-        // the id grammar so a stray call from a non-detail surface can't
-        // close an unrelated panel.
+      leaveToList: (listPanelKey: string, selfDetailId?: string) => {
+        // Prefer the caller's self-identification: dock focus can move
+        // between clicking Delete and confirming (the confirm dialog is a
+        // portal — peeking another tab meanwhile is easy), so the ACTIVE
+        // panel is not reliably the invoking detail panel.
+        if (selfDetailId) {
+          const detailKey = Object.prototype.hasOwnProperty.call(
+            DETAIL_KEY_BY_LIST_KEY,
+            listPanelKey,
+          )
+            ? DETAIL_KEY_BY_LIST_KEY[listPanelKey]
+            : undefined;
+          if (detailKey) {
+            closeSubjectDeleted(`${detailKey}:${selfDetailId}`, listPanelKey);
+            return;
+          }
+        }
+        // Fallback (no self id): the invoking detail panel is assumed to be
+        // the dock's active panel. Guard on the id grammar so a stray call
+        // from a non-detail surface can't close an unrelated panel.
         const selfPanelId = activePanelIdRef.current;
         if (!selfPanelId || !TEAMS_DETAIL_PANEL_ID_RE.test(selfPanelId)) return;
         closeSubjectDeleted(selfPanelId, listPanelKey);

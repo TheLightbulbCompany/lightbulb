@@ -185,7 +185,9 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
   const nav = useInlineTeamsNav();
   const leaveForTasksList = () => {
     if (nav) {
-      nav.leaveToList("teams-issues");
+      // Pass our own id so the desktop dock closes THIS detail panel, not
+      // whichever panel happens to be active when the delete confirms.
+      nav.leaveToList("teams-issues", issueId);
       return;
     }
     const params = new URLSearchParams(window.location.search);

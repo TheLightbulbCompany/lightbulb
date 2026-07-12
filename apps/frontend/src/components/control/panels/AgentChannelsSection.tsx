@@ -27,7 +27,7 @@ interface AgentChannelsSectionProps {
 export function AgentChannelsSection({ agentId }: AgentChannelsSectionProps) {
   const api = useApi();
   const { isSubscribed } = useBilling();
-  const { channelLinks: data, refresh: mutate } = useChannelLinks(true);
+  const { channelLinks: data, error, isLoading, refresh: mutate } = useChannelLinks(true);
   const [wizardFor, setWizardFor] = useState<{ provider: Provider; mode: "create" | "link-only" } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Provider | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -44,7 +44,18 @@ export function AgentChannelsSection({ agentId }: AgentChannelsSectionProps) {
     return () => window.removeEventListener("keydown", onKey);
   }, [wizardFor, deleteTarget]);
 
-  if (!data) {
+  if (error) {
+    return (
+      <div className="p-4 space-y-2">
+        <p className="text-sm text-[#dc2626]">Failed to load channels.</p>
+        <Button variant="outline" size="sm" onClick={() => mutate()}>
+          Retry
+        </Button>
+      </div>
+    );
+  }
+
+  if (isLoading || !data) {
     return <div className="p-4 text-sm text-[#8a8578]">Loading channels…</div>;
   }
 

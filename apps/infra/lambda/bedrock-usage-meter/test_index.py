@@ -975,9 +975,16 @@ def test_staying_under_the_cap_kills_nothing():
     assert "bedrock_revoked" not in container
 
 
-def test_records_already_in_flight_past_the_cap_do_not_re_kill():
-    """The kill fires on the CROSSING. Records already in flight when the cap is
-    crossed land afterwards and must not each re-fire it."""
+def test_every_over_cap_record_re_asserts_the_kill():
+    """The kill is RE-FIRED on every over-cap record, not just the crossing one.
+
+    This looks redundant and is the only retry the fence has.
+    ``_kill_owner_bedrock`` never raises — it swallows each step's failure so one
+    transient IAM error cannot fail a batch of already-counted records — so if
+    the kill were fired only on the crossing, a blip there would never be
+    retried: every later record also satisfies ``total - microcents >= CAP``, the
+    crossing test is false forever, and the owner keeps invoking Bedrock. Each
+    step is idempotent, so re-asserting costs nothing."""
     import index
 
     crossing = _load("inline_record.json")
@@ -990,8 +997,37 @@ def test_records_already_in_flight_past_the_cap_do_not_re_kill():
     ):
         index.handler(_awslogs_event(crossing, trailing), None)
 
-    assert iam.delete_role_policy.call_count == 1
-    assert ecs.update_service.call_count == 1
+    assert iam.delete_role_policy.call_count == 2
+    assert ecs.update_service.call_count == 2
+
+
+def test_a_transient_kill_failure_on_the_crossing_is_retried_by_the_next_record():
+    """THE regression this retry exists for. IAM blips on the crossing record —
+    the failure is swallowed (by design: it must not fail already-counted
+    records), so the owner is still able to invoke Bedrock. The next over-cap
+    record must land the kill. Under a crossing-only kill this owner would spend
+    unbounded until a human read the alarm."""
+    import index
+
+    crossing = _load("inline_record.json")
+    trailing = _load("inline_record.json")
+    trailing["requestId"] = "trailing-record-id"
+
+    with (
+        _aws_world(starting_spend=index.CAP_MICROCENTS - 1_000) as (_ddb, iam, ecs),
+        _stub_resolver(tier="sonnet", plan="trial"),
+    ):
+        # Transient failure on the crossing record only; the retry succeeds.
+        iam.delete_role_policy.side_effect = [
+            ClientError({"Error": {"Code": "Throttling", "Message": "rate exceeded"}}, "DeleteRolePolicy"),
+            None,
+        ]
+        index.handler(_awslogs_event(crossing, trailing), None)
+
+    # The revoke was attempted twice and SUCCEEDED on the retry — the owner is
+    # actually cut off, not merely alarmed about.
+    assert iam.delete_role_policy.call_count == 2
+    assert ecs.update_service.call_count == 2
 
 
 def test_kill_is_independent_iam_failure_still_stops_ecs():

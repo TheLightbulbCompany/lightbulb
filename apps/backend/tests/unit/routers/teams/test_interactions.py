@@ -51,6 +51,10 @@ def _patch_admin(monkeypatch, admin):
     from routers.teams import agents as agents_mod
 
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    # Every resolution route is gated on the trial predicate, so the default for
+    # a happy-path test is "this owner has runway". A test that wants the block
+    # overrides this afterwards. Without a stub the guard does a real DDB read.
+    monkeypatch.setattr(trial_cap, "trial_block_reason", AsyncMock(return_value=None))
 
 
 def test_list_interactions_envelopes_and_proxies_session(client, monkeypatch):
@@ -263,3 +267,44 @@ def test_respond_proceeds_under_cap(client, monkeypatch):
         body={"answers": [{"questionId": "q1", "optionIds": ["a"]}]},
         session_cookie="cookie",
     )
+
+
+# ---------------------------------------------------------------------------
+# EVERY resolution route is a spend door, not just `respond`.
+#
+# Upstream Paperclip's accept / reject / respond / cancel routes ALL call
+# queueResolvedInteractionContinuationWakeup (see server/src/routes/issues.ts) —
+# the agent is blocked waiting on a human answer, and "no" and "cancel" are
+# answers too: each one resumes the run and costs model tokens. Gating only
+# `respond` left three ungated doors into Bedrock spend.
+
+_RESOLUTION_ROUTES = [
+    ("accept", {}),
+    ("reject", {"reason": "no thanks"}),
+    ("respond", {"answers": [{"questionId": "q1", "optionIds": ["a"]}]}),
+    ("cancel", {"reason": "never mind"}),
+]
+
+
+@pytest.mark.parametrize("route,body", _RESOLUTION_ROUTES)
+@pytest.mark.parametrize(
+    "reason,code",
+    [("meta_daily_cap", "meta_daily_cap"), ("trial_expired", "trial_expired")],
+)
+def test_every_interaction_resolution_route_is_gated(client, monkeypatch, route, body, reason, code):
+    admin = MagicMock()
+    for name in ("accept_interaction", "reject_interaction", "respond_interaction", "cancel_interaction"):
+        setattr(admin, name, AsyncMock(return_value={"status": "ok"}))
+    _patch_admin(monkeypatch, admin)
+    monkeypatch.setattr(trial_cap, "trial_block_reason", AsyncMock(return_value=reason))
+
+    r = client.post(
+        f"/api/v1/teams/issues/iss_1/interactions/int_1/{route}",
+        json=body,
+        headers={"Authorization": "Bearer x"},
+    )
+
+    assert r.status_code == 402, f"{route} is an ungated spend door"
+    assert r.json()["detail"]["code"] == code
+    # The wake never reached Paperclip — there is no enforcement point downstream.
+    getattr(admin, f"{route}_interaction").assert_not_awaited()

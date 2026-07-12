@@ -671,7 +671,7 @@ def _stamp_bedrock_revoked(owner_id):
     )
 
 
-def _kill_owner_bedrock(owner_id):
+def _kill_owner_bedrock(owner_id, *, crossed=True):
     """Cut the owner off from Bedrock. Never raises.
 
     The two kill actions are INDEPENDENT: a revoke failure must still attempt
@@ -681,8 +681,15 @@ def _kill_owner_bedrock(owner_id):
     alarmed metric: an un-executed kill is real money, so it must page rather
     than fail the batch (raising here would fail records that are already
     counted, and CW Logs would retry them into the dedup guard for nothing).
+
+    ``crossed`` is False when this is a RETRY on a later over-cap record rather
+    than the threshold-crossing one (see _meter_trial_spend). The retry runs the
+    same idempotent steps — every step swallows its own already-done error, so a
+    redundant kill emits no failure metric — but does not re-emit ``cap_kill``,
+    which counts owners capped, not records landed.
     """
-    _emit_metric("meter.cap_kill", owner_id=owner_id)
+    if crossed:
+        _emit_metric("meter.cap_kill", owner_id=owner_id)
     # Looked up on the module at call time (not bound at def time) so each step
     # stays independently patchable/testable.
     steps = (
@@ -719,18 +726,41 @@ def _meter_trial_spend(parsed):
         return
 
     total = _add_daily_spend(owner_id, _utc_today(), microcents)
-    # Kill on the CROSSING, not on every over-cap record: the records already
-    # in flight when the cap is crossed each land afterwards, and re-killing on
-    # each of them would be pure noise. The pre-add total is the new total
-    # minus this record's own price — no extra read.
-    if total >= CAP_MICROCENTS > total - microcents:
+    if total < CAP_MICROCENTS:
+        return
+
+    # Fire the kill on EVERY over-cap record, not only the threshold-crossing
+    # one. This looks redundant and is not: _kill_owner_bedrock NEVER RAISES —
+    # it swallows each step's failure so one transient IAM error cannot fail a
+    # batch of already-counted records — so a crossing-only kill has NO RETRY.
+    # If IAM or ECS blips on that single record, every later record also has
+    # `total - microcents >= CAP`, the crossing test is false forever, and the
+    # owner keeps invoking Bedrock until a human reads the alarm. That is the
+    # one failure this whole module exists to prevent.
+    #
+    # Retrying is safe and self-limiting: all three steps are idempotent and
+    # swallow their own already-done errors (NoSuchEntity / ServiceNotFound), so
+    # a redundant kill raises nothing and emits no failure metric. And once the
+    # kill lands the container stops invoking, so the retries stop on their own
+    # — only the records already in flight at the crossing land afterwards.
+    #
+    # The pre-add total is the new total minus this record's own price, so the
+    # crossing test costs no extra read.
+    crossed = CAP_MICROCENTS > total - microcents
+    if crossed:
         logger.warning(
             "meter: owner %s crossed the daily cap (%d >= %d microcents) — revoking Bedrock",
             owner_id,
             total,
             CAP_MICROCENTS,
         )
-        _kill_owner_bedrock(owner_id)
+    else:
+        logger.info(
+            "meter: owner %s still over the daily cap (%d microcents) — re-asserting the kill",
+            owner_id,
+            total,
+        )
+    _kill_owner_bedrock(owner_id, crossed=crossed)
 
 
 def handler(event, context):

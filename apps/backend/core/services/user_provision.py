@@ -28,6 +28,7 @@ from core.observability.metrics import put_metric
 from core.observability.product_analytics import capture_product_event
 from core.config import settings
 from core.repositories import billing_repo
+from core.services import clerk_admin
 from core.services.container_provision import background_provision
 from core.services.paperclip_admin_client import PaperclipApiError
 from core.services.paperclip_owner_email import lookup_owner_email
@@ -64,21 +65,49 @@ async def ensure_personal_trial_default(auth: AuthContext, owner_id: str) -> Non
     and the caller short-circuits (``/container/status`` 404s to the
     ProviderPicker) before the trial is ever created. Keeping the personal-only
     predicate in one place stops the two gate sites from drifting.
+
+    Enforces the SAME tenancy invariant (Gate B) as ``/billing/trial-checkout``:
+    a user with a pending org invitation may not take a personal plan — they
+    must accept the invite and become a seat. Without it, this auto-default
+    would be a way around that gate: the invited user need only let the
+    ``/container/status`` poll run to land a personal ``trial_local`` row and a
+    personal container. The frontend normally routes them to the invitation
+    screen, but a direct poll or a routing race must not be able to violate a
+    backend invariant.
     """
     if not settings.FREE_TIER_ENABLED:
         # Ships dark. deploy.yml has no environment gate, so a merge reaches BOTH
         # dev and prod — without this, landing the free-tier code would open a
         # public no-card tier (real Bedrock spend, on us) the moment it deployed.
         return
-    if not auth.is_org_context:
-        created = await billing_repo.create_trial_local_if_absent(
-            owner_id=owner_id,
-            owner_type="personal",
+    if auth.is_org_context:
+        return
+
+    # Short-circuit on an existing row BEFORE the Clerk call. This helper runs on
+    # every ~3s /container/status poll; the invitation lookup is a Clerk API call
+    # and must not run on each one. Once the row exists there is nothing to
+    # create, so the only callers that reach Clerk are those at the actual signup
+    # moment (no billing row yet) — and an invited user gets routed to the
+    # invitation screen rather than left polling.
+    if await billing_repo.get_by_owner_id(owner_id):
+        return
+
+    pending = await clerk_admin.list_pending_invitations_for_user(auth.user_id)
+    if pending:
+        logger.info(
+            "user_provision: personal trial default refused for user=%s — pending org invitation",
+            auth.user_id,
         )
-        if created:
-            # Only the call that actually wrote the row fires this — every
-            # later idempotent no-op (each ~3s poll) must not re-fire it.
-            capture_product_event(distinct_id=owner_id, event="trial_started")
+        return
+
+    created = await billing_repo.create_trial_local_if_absent(
+        owner_id=owner_id,
+        owner_type="personal",
+    )
+    if created:
+        # Only the call that actually wrote the row fires this — every
+        # later idempotent no-op (each ~3s poll) must not re-fire it.
+        capture_product_event(distinct_id=owner_id, event="trial_started")
 
 
 async def ensure_user_ready(auth: AuthContext, *, provision_container: bool = True) -> None:

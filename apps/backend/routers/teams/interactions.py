@@ -63,7 +63,14 @@ async def accept_interaction(
 
     Body is whitelisted to the optional ``selected_client_keys`` /
     ``selected_option_ids``; an empty body accepts all/defaults.
+
+    A spend door: upstream's accept route calls
+    ``queueResolvedInteractionContinuationWakeup`` (and
+    ``queueIssueAssignmentWakeup`` for a continuation issue), which dispatches an
+    agent run server-side inside Paperclip. Gated BEFORE the proxy call — there
+    is no enforcement point downstream of it.
     """
+    await require_trial_runway(ctx.owner_id)
     return await _agents._admin().accept_interaction(
         issue_id=issue_id,
         interaction_id=interaction_id,
@@ -79,7 +86,14 @@ async def reject_interaction(
     body: RejectInteractionBody,
     ctx: TeamsContext = Depends(_ctx),
 ):
-    """Reject a pending thread interaction, optionally with a reason."""
+    """Reject a pending thread interaction, optionally with a reason.
+
+    A spend door, despite the name: upstream's reject route ALSO calls
+    ``queueResolvedInteractionContinuationWakeup``. The agent is blocked waiting
+    on an answer, and "the human said no" is an answer — it resumes the run and
+    costs model tokens exactly like an accept. Gated for the same reason.
+    """
+    await require_trial_runway(ctx.owner_id)
     return await _agents._admin().reject_interaction(
         issue_id=issue_id,
         interaction_id=interaction_id,
@@ -98,10 +112,9 @@ async def respond_interaction(
     """Respond to an ``ask_user_questions`` interaction with the user's answers.
 
     Responding resumes a fresh Friday (or the assigned agent) run
-    server-side inside Paperclip, so this is a Meta-spend front door. The
-    free-tier $3/day cap is checked here, BEFORE the proxy call reaches
-    Paperclip -- that's what actually stops the spend, since there is no
-    enforcement point downstream of this proxy.
+    server-side inside Paperclip, so this is a spend door. Gated BEFORE the
+    proxy call reaches Paperclip -- there is no enforcement point downstream
+    of this proxy.
     """
     await require_trial_runway(ctx.owner_id)
     return await _agents._admin().respond_interaction(
@@ -119,7 +132,14 @@ async def cancel_interaction(
     body: CancelInteractionBody,
     ctx: TeamsContext = Depends(_ctx),
 ):
-    """Cancel an ``ask_user_questions`` interaction, optionally with a reason."""
+    """Cancel an ``ask_user_questions`` interaction, optionally with a reason.
+
+    A spend door for the same reason as reject: upstream's cancel route calls
+    ``queueResolvedInteractionContinuationWakeup`` too, resuming the waiting
+    agent. All four resolution routes (accept/reject/respond/cancel) wake the
+    agent; all four are gated.
+    """
+    await require_trial_runway(ctx.owner_id)
     return await _agents._admin().cancel_interaction(
         issue_id=issue_id,
         interaction_id=interaction_id,

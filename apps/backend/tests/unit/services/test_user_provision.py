@@ -32,6 +32,21 @@ def _mock_create_trial_local_if_absent():
         yield mock
 
 
+@pytest.fixture
+def _stub_trial_default():
+    """Neutralize the unconditional trial-default prelude for tests that
+    exercise ensure_user_ready's provisioning orchestration rather than the
+    trial row itself. The trial-default path has its own dedicated tests
+    (test_new_personal_owner_* and test_ensure_personal_trial_default_*),
+    which call the real helper; everything else stubs it so the personal
+    path never reaches billing/Clerk DDB."""
+    with patch(
+        "core.services.user_provision.ensure_personal_trial_default",
+        new=AsyncMock(),
+    ) as mock:
+        yield mock
+
+
 def _personal_auth(user_id: str = "user_123", email: str = "u@example.com") -> AuthContext:
     """Personal-context AuthContext (no org)."""
     return AuthContext(
@@ -71,7 +86,7 @@ def _org_member_auth(
 
 
 @pytest.mark.asyncio
-async def test_ensure_user_ready_no_op_when_gate_blocks():
+async def test_ensure_user_ready_no_op_when_gate_blocks(_stub_trial_default):
     """If evaluate_provision_gate returns a Gate (not None), nothing
     is provisioned. Caller's pre-condition responsibility."""
     fake_gate = MagicMock()  # truthy non-None
@@ -96,7 +111,7 @@ async def test_ensure_user_ready_no_op_when_gate_blocks():
 
 
 @pytest.mark.asyncio
-async def test_ensure_paperclip_for_owner_personal_calls_provision_org():
+async def test_ensure_paperclip_for_owner_personal_calls_provision_org(_stub_trial_default):
     """Personal user → provision_org with owner_id == user_id."""
     fake_provisioning = MagicMock()
     fake_provisioning.provision_org = AsyncMock()
@@ -489,7 +504,7 @@ async def test_ensure_paperclip_for_member_threads_owner_user_id_to_lookup_owner
 
 
 @pytest.mark.asyncio
-async def test_ensure_user_ready_dispatches_container_for_owner():
+async def test_ensure_user_ready_dispatches_container_for_owner(_stub_trial_default):
     """Owner path → background_provision dispatched as task."""
     captured: list[str] = []
 
@@ -632,7 +647,7 @@ async def test_ensure_paperclip_for_member_reraises_non_409_paperclip_error():
 
 
 @pytest.mark.asyncio
-async def test_ensure_paperclip_for_owner_idempotent_on_duplicate_409():
+async def test_ensure_paperclip_for_owner_idempotent_on_duplicate_409(_stub_trial_default):
     """provision_org raising PaperclipApiError(409) must be treated as
     success — the canonical /container/status trigger
     may fire this on every owner poll until container exists, so duplicate
@@ -687,7 +702,7 @@ async def test_ensure_paperclip_for_owner_idempotent_on_duplicate_409():
 
 
 @pytest.mark.asyncio
-async def test_ensure_paperclip_for_owner_reraises_non_409_paperclip_error():
+async def test_ensure_paperclip_for_owner_reraises_non_409_paperclip_error(_stub_trial_default):
     """Non-409 PaperclipApiError must propagate — only the duplicate-409
     race is treated as idempotent. A blanket swallow would mask transient
     5xx and credential errors from operator visibility (e.g. a Paperclip
@@ -786,7 +801,7 @@ async def test_provision_container_false_skips_container_dispatch_for_admin():
 
 
 @pytest.mark.asyncio
-async def test_metronome_failure_does_not_block_provisioning(_mock_ensure_metronome_customer):
+async def test_metronome_failure_does_not_block_provisioning(_mock_ensure_metronome_customer, _stub_trial_default):
     """A Metronome 5xx (or any error) on the inline customer-provision call is
     best-effort: paperclip provisioning + container dispatch still run, and
     nothing raises. The short-circuit keys on the persisted
@@ -875,19 +890,11 @@ async def test_metronome_customer_provisioned_for_org_admin_with_org_owner_id(_m
 async def test_new_personal_owner_creates_trial_before_gate_and_dispatches_provisioning(
     _mock_create_trial_local_if_absent,
     _fresh_personal_signup,
-    monkeypatch,
 ):
     """A no-billing NEW personal owner: create_trial_local_if_absent is
     awaited (with owner_id=user_id, owner_type='personal') BEFORE the gate
     is evaluated, the gate then returns None, and background_provision is
     dispatched."""
-    # The free tier ships DARK: FREE_TIER_ENABLED defaults off so that landing
-    # this code cannot, by itself, open a public no-card tier (deploy.yml has no
-    # environment gate — every merge to main reaches prod). This test exercises
-    # the ENABLED path.
-    from core.config import settings as _settings
-
-    monkeypatch.setattr(_settings, "FREE_TIER_ENABLED", True)
     call_order: list[str] = []
 
     async def fake_create_trial(*, owner_id, owner_type):
@@ -1025,17 +1032,9 @@ def _fresh_personal_signup(monkeypatch):
 async def test_ensure_personal_trial_default_fires_trial_started_on_create(
     _mock_create_trial_local_if_absent,
     _fresh_personal_signup,
-    monkeypatch,
 ):
     """billing_repo.create_trial_local_if_absent returning True (this call
     actually wrote the row) fires trial_started keyed on the owner id."""
-    # The free tier ships DARK: FREE_TIER_ENABLED defaults off so that landing
-    # this code cannot, by itself, open a public no-card tier (deploy.yml has no
-    # environment gate — every merge to main reaches prod). This test exercises
-    # the ENABLED path.
-    from core.config import settings as _settings
-
-    monkeypatch.setattr(_settings, "FREE_TIER_ENABLED", True)
     _mock_create_trial_local_if_absent.return_value = True
     with patch("core.services.user_provision.capture_product_event") as mock_capture:
         await ensure_personal_trial_default(_personal_auth("user_p", "p@example.com"), "user_p")
@@ -1047,13 +1046,9 @@ async def test_ensure_personal_trial_default_fires_trial_started_on_create(
 async def test_ensure_personal_trial_default_does_not_refire_on_noop(
     _mock_create_trial_local_if_absent,
     _fresh_personal_signup,
-    monkeypatch,
 ):
     """A pre-existing row (the idempotent no-op branch, e.g. the SECOND of
     two ~3s polls) returns False -- must not re-fire trial_started."""
-    from core.config import settings as _settings
-
-    monkeypatch.setattr(_settings, "FREE_TIER_ENABLED", True)
     _mock_create_trial_local_if_absent.return_value = False
     with patch("core.services.user_provision.capture_product_event") as mock_capture:
         await ensure_personal_trial_default(_personal_auth("user_p", "p@example.com"), "user_p")
@@ -1074,25 +1069,6 @@ async def test_ensure_personal_trial_default_org_context_never_captures(
     mock_capture.assert_not_called()
 
 
-@pytest.mark.asyncio
-async def test_free_tier_ships_dark_when_the_flag_is_off(monkeypatch):
-    """deploy.yml has NO environment gate — every merge to main reaches prod —
-    so landing the free-tier code must not, by itself, open a public no-card
-    tier. With FREE_TIER_ENABLED off, no trial row is ever written."""
-    from core.config import settings as _settings
-    from core.services import user_provision
-
-    monkeypatch.setattr(_settings, "FREE_TIER_ENABLED", False)
-    create = AsyncMock()
-    monkeypatch.setattr(user_provision.billing_repo, "create_trial_local_if_absent", create)
-
-    auth = MagicMock()
-    auth.is_org_context = False
-    await user_provision.ensure_personal_trial_default(auth, "user_x")
-
-    create.assert_not_awaited()
-
-
 # ---------------------------------------------------------------------------
 # Tenancy invariant (Gate B): a user with a pending org invitation may not take
 # a personal plan — they must accept the invite and become a seat.
@@ -1108,9 +1084,6 @@ async def test_pending_org_invitation_refuses_the_personal_trial_default(
     _mock_create_trial_local_if_absent,
     monkeypatch,
 ):
-    from core.config import settings as _settings
-
-    monkeypatch.setattr(_settings, "FREE_TIER_ENABLED", True)
     monkeypatch.setattr(
         "core.services.user_provision.billing_repo.get_by_owner_id",
         AsyncMock(return_value=None),
@@ -1135,9 +1108,6 @@ async def test_an_existing_billing_row_short_circuits_before_the_clerk_call(
     """This helper runs on EVERY ~3s /container/status poll. The invitation
     lookup is a Clerk API call and must not fire on each one — an existing
     billing row means there is nothing to create, so we never reach Clerk."""
-    from core.config import settings as _settings
-
-    monkeypatch.setattr(_settings, "FREE_TIER_ENABLED", True)
     monkeypatch.setattr(
         "core.services.user_provision.billing_repo.get_by_owner_id",
         AsyncMock(return_value={"owner_id": "user_p", "subscription_status": "trial_local"}),

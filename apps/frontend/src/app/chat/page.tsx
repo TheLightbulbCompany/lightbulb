@@ -4,6 +4,7 @@ import { Suspense, useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { ChatLayout } from "@/components/chat/ChatLayout";
 import { AgentChatWindow } from "@/components/chat/AgentChatWindow";
+import { useAgents } from "@/hooks/useAgents";
 import { ControlPanelRouter } from "@/components/control/ControlPanelRouter";
 import { GatewayProvider } from "@/hooks/useGateway";
 import { ExecApprovalsProvider } from "@/hooks/useExecApprovals";
@@ -240,6 +241,14 @@ function MobileChatShell() {
   }, []);
 
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  // Resolve the default agent when nothing is explicitly selected, mirroring
+  // ChatLayout's own `currentAgentId = userSelectedId ?? defaultId ?? …`. On
+  // this mobile shell `selectedAgentId` stays null until the user taps a
+  // roster row, so without this the chat window would bind to a null agent —
+  // and the first-run auto-kickoff (which requires agentId === defaultId)
+  // would never fire.
+  const { defaultId } = useAgents();
+  const effectiveAgentId = selectedAgentId ?? defaultId ?? null;
   const [fileViewerOpen, setFileViewerOpen] = useState(false);
   const [activeFilePath, setActiveFilePath] = useState<string | null>(null);
 
@@ -283,7 +292,7 @@ function MobileChatShell() {
         {/* Keep AgentChatWindow mounted but hidden so chat state
             (messages, scroll position, streaming) survives view switches */}
         <div className={activeView === "chat" ? "flex flex-col h-full min-h-0" : "hidden"}>
-          <AgentChatWindow key={selectedAgentId} agentId={selectedAgentId} onOpenFile={handleOpenFile} />
+          <AgentChatWindow key={effectiveAgentId} agentId={effectiveAgentId} onOpenFile={handleOpenFile} />
         </div>
         {activeView === "control" && (
           <div className="flex flex-col h-full min-h-0">

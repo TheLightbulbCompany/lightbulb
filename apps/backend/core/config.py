@@ -30,12 +30,6 @@ class Settings(BaseSettings):
     AWS_REGION: str = os.getenv("AWS_REGION", "us-east-1")
     BEDROCK_ENABLED: bool = os.getenv("BEDROCK_ENABLED", "true").lower() == "true"
 
-    # No-card free tier. Defaults OFF: deploy.yml ships every merge to BOTH dev
-    # and prod with no environment gate, so without this a merge would silently
-    # open a public free tier — real Bedrock spend, on us, for every new signup.
-    # The code ships dark; flip this per-env when the business is ready.
-    FREE_TIER_ENABLED: bool = os.getenv("FREE_TIER_ENABLED", "false").lower() == "true"
-
     # CORS Configuration (comma-separated origins; deployed values set by Terraform)
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:5173"
 

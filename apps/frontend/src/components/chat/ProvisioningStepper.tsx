@@ -10,9 +10,11 @@ import {
   CheckCircle,
   Circle,
 } from "lucide-react";
-import { useOrganization, useAuth } from "@clerk/nextjs";
+import { useOrganization, useAuth, useUser } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
+import { readFirstRun } from "@/lib/firstRun";
+import { FirstRunFunnel } from "@/components/onboarding/FirstRunFunnel";
 import { useBilling } from "@/hooks/useBilling";
 import { useProvisioningState, type ColdStartPhase, type BlockedPayload } from "@/hooks/useProvisioningState";
 import { useGateway } from "@/hooks/useGateway";
@@ -204,6 +206,9 @@ export function ProvisioningStepper({
   const { organization } = useOrganization();
   const isOrg = !!organization;
   const { userId: clerkUserId } = useAuth();
+  // Clerk user object — the first-run funnel branch below reads (and its
+  // component writes) user.unsafeMetadata.firstRun.
+  const { user } = useUser();
   // Per-OWNER activation-marker key so a shared/QA browser doesn't let the first
   // account's activation suppress onboarding_ready for a later account's real
   // first cold start. The event is a person-level denominator (PostHog is
@@ -623,6 +628,27 @@ export function ProvisioningStepper({
     const interval = setInterval(tick, 1000);
     return () => clearInterval(interval);
   }, [phase]);
+
+  // First-run funnel: a trial signup must resolve the funnel (submit a
+  // business brief or skip) before reaching chat — INCLUDING when the
+  // container provisions fast and hits `ready` before they finish choosing
+  // or typing. Placed BEFORE the ready return so a quick provision can't
+  // drop the funnel and lose the in-progress brief (and leave the kickoff
+  // hook, which requires briefSubmitted, unable to fire). Gated on
+  // gatePhase === "normal" so it never preempts a blocked / needs-signup /
+  // team-pending state. The `user` guard is load-bearing beyond null-safety:
+  // submit/skip write user.unsafeMetadata, so without a loaded Clerk user the
+  // funnel would be a dead-end form.
+  const firstRun = readFirstRun(user);
+  if (
+    isTrialLocal &&
+    user &&
+    gatePhase === "normal" &&
+    !firstRun.briefSubmitted &&
+    !firstRun.skipped
+  ) {
+    return <FirstRunFunnel />;
+  }
 
   // Ready — render children
   if (phase === "ready") {

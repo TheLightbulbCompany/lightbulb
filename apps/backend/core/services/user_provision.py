@@ -26,7 +26,6 @@ from core.auth import AuthContext
 from core.billing.metronome_provisioning import ensure_metronome_customer
 from core.observability.metrics import put_metric
 from core.observability.product_analytics import capture_product_event
-from core.config import settings
 from core.repositories import billing_repo
 from core.services import clerk_admin
 from core.services.container_provision import background_provision
@@ -75,11 +74,6 @@ async def ensure_personal_trial_default(auth: AuthContext, owner_id: str) -> Non
     screen, but a direct poll or a routing race must not be able to violate a
     backend invariant.
     """
-    if not settings.FREE_TIER_ENABLED:
-        # Ships dark. deploy.yml has no environment gate, so a merge reaches BOTH
-        # dev and prod — without this, landing the free-tier code would open a
-        # public no-card tier (real Bedrock spend, on us) the moment it deployed.
-        return
     if auth.is_org_context:
         return
 

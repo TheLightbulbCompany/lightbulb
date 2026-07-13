@@ -5,6 +5,7 @@ import { useMemo, useState } from "react";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { useRunTranscript } from "@/components/teams/runs/useRunTranscript";
 import { EditorialButton } from "@/components/teams/shell";
+import { formatSilenceAgeMs } from "@/components/teams/shared/lib/liveRuns";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import type { CompanyAgent, RunDetail, RunEvent } from "@/components/teams/shared/types";
 
@@ -84,6 +85,7 @@ export function RunDetailPanel({ runId }: { runId: string }) {
   const { read, post } = useTeamsApi();
   const [acting, setActing] = useState<"cancel" | "retry" | "resume" | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [wdActing, setWdActing] = useState(false);
 
   // A run link can target a heartbeat-run (the normal case) or a legacy
   // generic run; read both, prefer the heartbeat-run.
@@ -172,6 +174,29 @@ export function RunDetailPanel({ runId }: { runId: string }) {
     }
   }
 
+  const silence = run?.outputSilence ?? null;
+  const silenceLevel = silence?.level ?? null;
+  const showWatchdog = silenceLevel === "suspicious" || silenceLevel === "critical";
+
+  async function decideWatchdog(decision: "continue" | "snooze" | "dismissed_false_positive") {
+    if (!run || wdActing) return;
+    setWdActing(true);
+    setActionError(null);
+    try {
+      const body: Record<string, unknown> = { decision };
+      if (decision === "snooze") {
+        body.snoozedUntil = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+        body.reason = "Snoozed from run detail";
+      }
+      await post(`/heartbeat-runs/${run.id}/watchdog-decisions`, body);
+      await hb.mutate();
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "Watchdog decision failed.");
+    } finally {
+      setWdActing(false);
+    }
+  }
+
   const canCancel = isActiveStatus(run?.status);
   const s = (run?.status ?? "").toLowerCase();
   const canRetry = s === "failed" || s === "timed_out";
@@ -228,6 +253,34 @@ export function RunDetailPanel({ runId }: { runId: string }) {
             </p>
           )}
         </div>
+
+        {showWatchdog && (
+          <section
+            className="flex flex-col gap-2 rounded px-3 py-2 text-sm"
+            style={{
+              border: `1px solid color-mix(in srgb, ${silenceLevel === "critical" ? "var(--danger)" : "var(--warn)"} 35%, var(--edge))`,
+              background: `color-mix(in srgb, ${silenceLevel === "critical" ? "var(--danger)" : "var(--warn)"} 8%, transparent)`,
+            }}
+          >
+            <p className="font-medium">
+              {silenceLevel === "critical" ? "Stale-run watchdog alert" : "Output silence warning"}
+            </p>
+            <p className="text-xs" style={{ color: "var(--mute)" }}>
+              This run has been silent for {formatSilenceAgeMs(silence?.silenceAgeMs ?? null) ?? "an extended period"}.
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <EditorialButton variant="secondary" size="sm" disabled={wdActing} onClick={() => decideWatchdog("continue")}>
+                Continue monitoring
+              </EditorialButton>
+              <EditorialButton variant="secondary" size="sm" disabled={wdActing} onClick={() => decideWatchdog("snooze")}>
+                Snooze 1h
+              </EditorialButton>
+              <EditorialButton variant="secondary" size="sm" disabled={wdActing} onClick={() => decideWatchdog("dismissed_false_positive")}>
+                Mark false positive
+              </EditorialButton>
+            </div>
+          </section>
+        )}
 
         {(run.error || run.retryExhaustedReason || run.stderrExcerpt) && (
           <section

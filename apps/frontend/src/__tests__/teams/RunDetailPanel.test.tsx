@@ -129,4 +129,39 @@ describe("RunDetailPanel", () => {
     render(<RunDetailPanel runId="r1" />);
     expect(screen.getByRole("button", { name: "Resume run" })).toBeInTheDocument();
   });
+
+  it("shows the silence watchdog banner and records a snooze", async () => {
+    mockReads({
+      "/heartbeat-runs/r1/log": { content: "" },
+      "/heartbeat-runs/r1/events": { events: [] },
+      "/heartbeat-runs/r1": {
+        id: "r1",
+        agentId: "agt_1",
+        status: "running",
+        outputSilence: { level: "critical", silenceAgeMs: 4 * 3600 * 1000 },
+      },
+      "/agents": { agents: [] },
+    });
+    post.mockResolvedValue({ id: "wd_1", decision: "snooze" });
+    render(<RunDetailPanel runId="r1" />);
+    expect(screen.getByText(/silent for/i)).toBeInTheDocument();
+    screen.getByRole("button", { name: "Snooze 1h" }).click();
+    await vi.waitFor(() => {
+      expect(post).toHaveBeenCalledWith(
+        "/heartbeat-runs/r1/watchdog-decisions",
+        expect.objectContaining({ decision: "snooze", snoozedUntil: expect.any(String) }),
+      );
+    });
+  });
+
+  it("hides the watchdog banner when silence level is ok", () => {
+    mockReads({
+      "/heartbeat-runs/r1/log": { content: "" },
+      "/heartbeat-runs/r1/events": { events: [] },
+      "/heartbeat-runs/r1": { id: "r1", status: "running", outputSilence: { level: "ok" } },
+      "/agents": { agents: [] },
+    });
+    render(<RunDetailPanel runId="r1" />);
+    expect(screen.queryByText(/silent for/i)).not.toBeInTheDocument();
+  });
 });

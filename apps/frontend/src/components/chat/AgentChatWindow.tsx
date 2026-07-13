@@ -16,10 +16,12 @@ import { resolveSessionModelRef } from "@/lib/models";
 import { useAgents, agentDisplayName } from "@/hooks/useAgents";
 import { useApi } from "@/lib/api";
 import { isSnoozed, setSnoozed, updateSnoozeKey } from "@/lib/snooze";
-import { useAuth, useOrganization } from "@clerk/nextjs";
+import { readFirstRun, writeFirstRun } from "@/lib/firstRun";
+import { useAuth, useOrganization, useUser } from "@clerk/nextjs";
 import { Loader2, RefreshCw, Clock, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useGateway } from "@/hooks/useGateway";
+import { useFirstRunKickoff } from "@/hooks/useFirstRunKickoff";
 
 import type { ChatIncomingMessage } from "@/hooks/useGateway";
 
@@ -238,6 +240,7 @@ export function AgentChatWindow({
 }: AgentChatWindowProps): React.ReactElement {
   const { userId } = useAuth();
   const { organization } = useOrganization();
+  const { user } = useUser();
   // Every user gets their own session — isolates chat history from cron,
   // channels, and other system activity. Matches backend (websocket_chat.py).
   // userId is always defined here — ChatLayout gates on clerkLoaded && isSignedIn.
@@ -250,6 +253,15 @@ export function AgentChatWindow({
   const isTrialLocal = account?.subscription_status === "trial_local";
   const trialFirstResponseFiredRef = useRef(false);
   const handleChatCompleted = useCallback(() => {
+    // First-run kickoff completion (spec §4.C) — independent of the
+    // trial-local gate below: a run only ever has firstRun.started === true
+    // when the kickoff hook fired it, which already implies a trial_local
+    // owner (FirstRunFunnel only renders for trial_local).
+    const fr = readFirstRun(user);
+    if (user && fr.started && !fr.completed) {
+      void writeFirstRun(user, { completed: true });
+      capture("first_run_show_completed");
+    }
     if (!isTrialLocal || trialFirstResponseFiredRef.current) return;
     trialFirstResponseFiredRef.current = true;
     const storageKey = `${TRIAL_FIRST_RESPONSE_STORAGE_KEY}:${organization?.id ?? userId ?? "anon"}`;
@@ -266,7 +278,7 @@ export function AgentChatWindow({
       /* best-effort */
     }
     capture("trial_first_agent_response");
-  }, [isTrialLocal, organization?.id, userId]);
+  }, [isTrialLocal, organization?.id, userId, user]);
   const {
     renderGroups,
     renderItems,
@@ -320,9 +332,11 @@ export function AgentChatWindow({
       />
     ) : null;
 
-  const { agents } = useAgents();
+  const { agents, defaultId } = useAgents();
   const activeAgent = agents.find((a) => a.id === agentId);
   const agentName = activeAgent?.identity?.name ?? activeAgent?.name ?? agentId ?? undefined;
+
+  useFirstRunKickoff({ user, agentId, defaultId, sendMessage });
 
   const api = useApi();
   const [isUploading, setIsUploading] = useState(false);

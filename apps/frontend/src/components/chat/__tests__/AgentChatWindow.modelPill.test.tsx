@@ -19,6 +19,8 @@ vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({ getToken: vi.fn(), isSignedIn: true, userId: "user_1" }),
   useOrganization: () => ({ organization: null, membership: null, isLoaded: true }),
+  // AgentChatWindow now reads user for the first-run kickoff hook.
+  useUser: () => ({ isSignedIn: true, isLoaded: true, user: { id: "user_1" } }),
 }));
 
 vi.mock("@/hooks/useGateway", () => ({

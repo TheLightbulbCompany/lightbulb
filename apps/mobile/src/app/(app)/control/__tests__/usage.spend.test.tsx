@@ -100,29 +100,44 @@ describe("UsagePanel provider-aware spend", () => {
       by_model: null,
       period_start: null,
       plan: null,
-      windows: [{ label: "Week", used_percent: 61.4, resets_at_ms: null }],
+      windows: [{ label: "Weekly", used_percent: 61.4, resets_at_ms: null }],
     });
 
     await render(<UsagePanel />);
 
-    expect(await screen.findByText("Week limit")).toBeTruthy();
+    expect(await screen.findByText("Weekly limit")).toBeTruthy();
     expect(screen.getByText("61% used")).toBeTruthy();
   });
 
-  it("oauth_quota: renders plan badge and reset time when present", async () => {
+  it("oauth_quota: renders plan badge as-is and reset time when present", async () => {
     mockEndpoints({
       mode: "oauth_quota",
       billed_month_to_date_cents: null,
       by_model: null,
       period_start: null,
-      plan: "pro",
-      windows: [{ label: "Week", used_percent: 61.4, resets_at_ms: 1234567890000 }],
+      plan: "Pro Lite",
+      windows: [{ label: "Weekly", used_percent: 61.4, resets_at_ms: 1234567890000 }],
     });
 
     await render(<UsagePanel />);
 
-    expect(await screen.findByText("pro")).toBeTruthy();
+    expect(await screen.findByText("Pro Lite")).toBeTruthy();
     expect(screen.getByText(/61% used · resets/)).toBeTruthy();
+  });
+
+  it("oauth_quota: shows <1% used for a fractional used_percent instead of rounding to 0%", async () => {
+    mockEndpoints({
+      mode: "oauth_quota",
+      billed_month_to_date_cents: null,
+      by_model: null,
+      period_start: null,
+      plan: "Free",
+      windows: [{ label: "Daily", used_percent: 0.4, resets_at_ms: null }],
+    });
+
+    await render(<UsagePanel />);
+
+    expect(await screen.findByText("<1% used")).toBeTruthy();
   });
 
   it("member rows: show name + request count, never a member dollar value", async () => {

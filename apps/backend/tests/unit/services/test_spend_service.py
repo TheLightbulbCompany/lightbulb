@@ -195,10 +195,10 @@ async def test_summary_oauth_maps_quota_windows():
     with p1, p2:
         payload = await spend_service.get_spend_summary("owner-1", "chatgpt_oauth")
     assert payload["mode"] == "oauth_quota"
-    assert payload["plan"] == "pro"
+    assert payload["plan"] == "Pro"
     assert payload["windows"] == [
-        {"label": "5h", "used_percent": 43, "resets_at_ms": 1789000000000},
-        {"label": "Week", "used_percent": 61, "resets_at_ms": None},
+        {"label": "5-hour", "used_percent": 43, "resets_at_ms": 1789000000000},
+        {"label": "Weekly", "used_percent": 61, "resets_at_ms": None},
     ]
 
 
@@ -230,10 +230,102 @@ async def test_summary_oauth_accepts_legacy_openai_codex_provider_id():
     with p1, p2:
         payload = await spend_service.get_spend_summary("owner-1", "chatgpt_oauth")
     assert payload["mode"] == "oauth_quota"
-    assert payload["plan"] == "plus"
+    assert payload["plan"] == "Plus"
     assert payload["windows"] == [
-        {"label": "5h", "used_percent": 12, "resets_at_ms": 1789000001000},
+        {"label": "5-hour", "used_percent": 12, "resets_at_ms": 1789000001000},
     ]
+
+
+PARTIAL_USED_PERCENT_RESULT = {
+    "ts": 1,
+    "providers": [
+        {
+            "provider": "openai",
+            "usage": {
+                "plan": "prolite",
+                "windows": [
+                    {"label": "168h", "usedPercent": 30, "resetAt": 1789000000000},
+                    {"label": "24h"},
+                ],
+            },
+        },
+    ],
+}
+
+
+@pytest.mark.asyncio
+async def test_summary_oauth_drops_window_without_used_percent():
+    """A window whose payload omits usedPercent must never be fabricated as
+    0% -- it's dropped rather than rendered with a confident-but-fake bar."""
+    p1, p2 = _patch_gateway(rpc_result=PARTIAL_USED_PERCENT_RESULT)
+    with p1, p2:
+        payload = await spend_service.get_spend_summary("owner-1", "chatgpt_oauth")
+    assert payload["mode"] == "oauth_quota"
+    assert payload["plan"] == "Pro Lite"
+    assert payload["windows"] == [
+        {"label": "Weekly", "used_percent": 30, "resets_at_ms": 1789000000000},
+    ]
+
+
+ALL_MISSING_USED_PERCENT_RESULT = {
+    "ts": 1,
+    "providers": [
+        {
+            "provider": "openai",
+            "usage": {
+                "plan": "pro",
+                "windows": [
+                    {"label": "168h"},
+                    {"label": "24h"},
+                ],
+            },
+        },
+    ],
+}
+
+
+@pytest.mark.asyncio
+async def test_summary_oauth_all_windows_missing_used_percent_degrades_to_tokens_only():
+    p1, p2 = _patch_gateway(rpc_result=ALL_MISSING_USED_PERCENT_RESULT)
+    with p1, p2:
+        payload = await spend_service.get_spend_summary("owner-1", "chatgpt_oauth")
+    assert payload == {"mode": "tokens_only"}
+
+
+@pytest.mark.parametrize(
+    ("raw_label", "expected"),
+    [
+        ("168h", "Weekly"),
+        ("200h", "Weekly"),
+        ("24h", "Daily"),
+        ("48h", "Daily"),
+        ("5h", "5-hour"),
+        ("Week", "Weekly"),
+        ("Day", "Daily"),
+        ("something-else", "something-else"),
+    ],
+)
+def test_normalize_window_label(raw_label, expected):
+    assert spend_service._normalize_window_label(raw_label) == expected
+
+
+@pytest.mark.parametrize(
+    ("raw_plan", "expected"),
+    [
+        ("prolite", "Pro Lite"),
+        ("PROLITE", "Pro Lite"),
+        ("free", "Free"),
+        ("plus", "Plus"),
+        ("pro", "Pro"),
+        ("business", "Business"),
+        ("team", "Team"),
+        ("enterprise", "Enterprise"),
+        ("some_unknown_plan", "Some Unknown Plan"),
+        (None, None),
+    ],
+)
+def test_display_plan(raw_plan, expected):
+    assert spend_service._display_plan(raw_plan) == expected
 
 
 @pytest.mark.asyncio

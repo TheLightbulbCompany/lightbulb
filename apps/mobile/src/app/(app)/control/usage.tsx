@@ -222,22 +222,27 @@ function OauthQuotaCard({ spend }: { spend: SpendResponse }) {
         </View>
       )}
       {(spend.windows ?? []).map((w, i) => {
-        const pct = Math.max(0, Math.min(100, Math.round(w.used_percent)));
+        const clamped = Math.max(0, Math.min(100, w.used_percent));
+        const pctText = clamped > 0 && clamped < 1 ? "<1" : Math.round(clamped);
         const resetText = formatResetTime(w.resets_at_ms);
         return (
           <View key={w.label} style={i > 0 ? styles.memberRowBorder : undefined}>
             <View style={styles.spendHead}>
               <Text style={styles.overline}>{w.label} limit</Text>
               <Text style={styles.captionText}>
-                {pct}% used{resetText ? ` · resets ${resetText}` : ""}
+                {pctText}% used{resetText ? ` · resets ${resetText}` : ""}
               </Text>
             </View>
             <View style={styles.quotaBarTrack}>
-              <View style={[styles.quotaBarFill, { width: `${pct}%` }]} />
+              <View style={[styles.quotaBarFill, { width: `${clamped}%` }]} />
             </View>
           </View>
         );
       })}
+      <Text style={styles.captionText}>Included in your ChatGPT plan.</Text>
+      <Text style={styles.captionText}>
+        Rolling plan windows — separate from the monthly token totals below.
+      </Text>
     </Card>
   );
 }
@@ -427,7 +432,6 @@ const styles = StyleSheet.create({
     fontSize: 10,
     lineHeight: 14,
     letterSpacing: 0.6,
-    textTransform: "uppercase",
     color: colors.mute,
   },
 

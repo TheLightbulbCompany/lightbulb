@@ -75,6 +75,9 @@ describe("UsagePanel spend display", () => {
     expect(await screen.findByText("$12.34")).toBeInTheDocument();
     expect(screen.getByText(/Billed this month/i)).toBeInTheDocument();
     expect(screen.getByText("Claude Opus")).toBeInTheDocument();
+    const creditsLink = screen.getByText("Manage credits");
+    expect(creditsLink).toBeInTheDocument();
+    expect(creditsLink.closest("a")).toHaveAttribute("href", "/chat?panel=llm");
   });
 
   it("oauth mode renders quota windows", async () => {

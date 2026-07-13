@@ -2,6 +2,7 @@
 
 import { useCallback } from "react";
 import useSWR from "swr";
+import Link from "next/link";
 import { Loader2, RefreshCw, AlertCircle } from "lucide-react";
 import { useOrganization } from "@clerk/nextjs";
 import { useBilling } from "@/hooks/useBilling";
@@ -116,6 +117,12 @@ export function UsagePanel() {
           <p className="text-[10px] text-[#8a8578]/60">
             From your credits invoice — matches what you&apos;re charged.
           </p>
+          <Link
+            href="/chat?panel=llm"
+            className="inline-block text-xs text-[#8a8578] hover:text-[#1a1a1a] underline underline-offset-2"
+          >
+            Manage credits
+          </Link>
         </div>
       )}
       {spend?.mode === "oauth_quota" && (

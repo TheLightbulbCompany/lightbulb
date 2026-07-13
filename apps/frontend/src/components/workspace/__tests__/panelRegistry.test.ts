@@ -15,6 +15,7 @@ describe("panelRegistry", () => {
     expect(resolvePanelAlias("teams-approvals")).toBe("teams-inbox");
     expect(resolvePanelAlias("teams-members")).toBe("teams-settings");
     expect(resolvePanelAlias("teams-skills")).toBe("teams-dashboard");
+    expect(resolvePanelAlias("teams-costs")).toBe("teams-dashboard");
     expect(resolvePanelAlias("teams-inbox")).toBe("teams-inbox");
   });
 

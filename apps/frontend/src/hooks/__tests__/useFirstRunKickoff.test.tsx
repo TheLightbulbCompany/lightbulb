@@ -17,6 +17,15 @@ function fakeUser(
   } as never;
 }
 
+// Flush the microtask queue without a real timer, so a (hypothetically)
+// unguarded second kickoff's `await writeFirstRun(...); await sendMessage(...)`
+// chain has room to run before we assert on it.
+async function flushMicrotasks(): Promise<void> {
+  for (let i = 0; i < 10; i++) {
+    await Promise.resolve();
+  }
+}
+
 describe("useFirstRunKickoff", () => {
   it("sends the prompt once when brief submitted and not started", async () => {
     const sendMessage = vi.fn().mockResolvedValue(undefined);
@@ -27,6 +36,61 @@ describe("useFirstRunKickoff", () => {
     await waitFor(() => expect(sendMessage).toHaveBeenCalledWith(FIRST_RUN_PROMPT));
     rerender();
     expect(sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("blocks a genuine second effect run via the `fired` ref guard", async () => {
+    // A same-props rerender (the test above) never re-invokes the effect
+    // body at all — React's dep-comparison bails out before the guard is
+    // ever consulted, so that test would still pass with `fired.current`
+    // deleted entirely. Here we pass a NEW `sendMessage` function reference
+    // on the second render, which changes the effect's dependency array and
+    // forces React to genuinely re-run the effect body. The only thing that
+    // can stop a second send at that point is the `fired.current` ref guard.
+    //
+    // The mocked `update` below is a no-op that does NOT mutate `user`, so
+    // `user.unsafeMetadata.firstRun` stays `{ briefSubmitted: true }`
+    // (no `started`) across both renders. That isolates the REF guard: the
+    // durable-flag (`started`) gate can't be what blocks the second send,
+    // because as far as the hook's next read is concerned, `started` was
+    // never persisted.
+    //
+    // sendMessage1's promise is deliberately left UNRESOLVED until after the
+    // second render: rerender() is synchronous (React flushes effects before
+    // it returns), so calling it while the first kickoff is still in flight
+    // forces the second effect's synchronous top-of-effect guard check to
+    // run at the earliest possible moment — the tightest race window for
+    // `fired.current` to have not been set yet. A `waitFor(...)`-then-rerender
+    // shape (with an eagerly-resolving mock) would let the whole first
+    // kickoff — including a guard set anywhere inside it — finish before the
+    // test ever calls rerender, which would hide a "guard set too late" bug.
+    let resolveSend1: (() => void) | undefined;
+    const sendMessage1 = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveSend1 = resolve;
+        }),
+    );
+    const user = fakeUser({ briefSubmitted: true });
+
+    const { rerender } = renderHook(
+      ({ sendMessage }) =>
+        useFirstRunKickoff({ user, agentId: "a1", defaultId: "a1", sendMessage }),
+      { initialProps: { sendMessage: sendMessage1 } },
+    );
+    await waitFor(() => expect(sendMessage1).toHaveBeenCalledWith(FIRST_RUN_PROMPT));
+    expect(sendMessage1).toHaveBeenCalledTimes(1);
+
+    const sendMessage2 = vi.fn().mockResolvedValue(undefined);
+    rerender({ sendMessage: sendMessage2 });
+    await flushMicrotasks();
+
+    expect(sendMessage2).not.toHaveBeenCalled();
+    expect(sendMessage1).toHaveBeenCalledTimes(1);
+
+    // Let the first kickoff's pending promise settle so it doesn't leak
+    // into other tests.
+    resolveSend1?.();
+    await flushMicrotasks();
   });
 
   it("does nothing when already started", () => {

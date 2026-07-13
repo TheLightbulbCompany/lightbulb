@@ -259,7 +259,9 @@ export function AgentChatWindow({
     // owner (FirstRunFunnel only renders for trial_local).
     const fr = readFirstRun(user);
     if (user && fr.started && !fr.completed) {
-      void writeFirstRun(user, { completed: true });
+      void writeFirstRun(user, { completed: true }).catch((err) =>
+        console.error("first-run completion write failed", err),
+      );
       capture("first_run_show_completed");
     }
     if (!isTrialLocal || trialFirstResponseFiredRef.current) return;

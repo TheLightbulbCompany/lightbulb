@@ -1593,3 +1593,10 @@ git commit -m "feat(teams): output-silence watchdog banner + decisions on run de
 - **Routine-run drill-down** — different upstream entity (`routine_runs`); would need its own BFF route and panel kind.
 - **nextOffset-walking full-log pagination** — the tail-256KiB read covers the real cases; revisit only if users hit the truncation notice in practice.
 - **Watchdog surfacing on IssueDetailPage** — upstream shows the silent-run banner in the issue run ledger too; ours stays on run detail for v1 (the issue page's run rows now link there).
+
+## Fast-follows recorded at final review (2026-07-12)
+
+- **Events timeline headroom** — the panel reads the BFF default 200 events with no truncation signal; pass `limit=1000` and add a truncated-notice matching the transcript's treatment.
+- **Mutate the events key after cancel** — `act()` refreshes only the run row, so the cancellation lifecycle event doesn't appear until remount.
+- **Truncated-transcript first line** — the tail read can start mid-NDJSON record, rendering one raw JSON fragment; drop the first line when `truncated`.
+- **Wake acknowledgment UX** — skipped wakes now surface via the error line; a transient positive acknowledgment ("Retry requested") for successful wakes is the remaining half (mirror FailedRunRow's phase pattern).

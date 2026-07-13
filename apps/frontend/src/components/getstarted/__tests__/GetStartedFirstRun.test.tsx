@@ -25,7 +25,8 @@ function baseGs(): UseGetStarted {
   };
 }
 
-vi.mock("../useGetStarted", () => ({ useGetStarted: () => baseGs() }));
+const useGetStartedSpy = vi.fn(() => baseGs());
+vi.mock("../useGetStarted", () => ({ useGetStarted: () => useGetStartedSpy() }));
 
 import { GetStarted } from "../GetStarted";
 
@@ -35,5 +36,14 @@ describe("GetStarted with an active first-run", () => {
     const { container } = render(<GetStarted derived={{}} actions={actions} />);
     expect(container).toBeEmptyDOMElement();
     expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  it("never mounts useGetStarted for a first-run user (no hook side effects)", () => {
+    useGetStartedSpy.mockClear();
+    const actions = { chat: vi.fn(), task: vi.fn(), hire: vi.fn(), channel: vi.fn() };
+    render(<GetStarted derived={{}} actions={actions} />);
+    // The first-run gate returns before rendering the guide, so the hook —
+    // and its auto-open / capture / emitStep side effects — never runs.
+    expect(useGetStartedSpy).not.toHaveBeenCalled();
   });
 });

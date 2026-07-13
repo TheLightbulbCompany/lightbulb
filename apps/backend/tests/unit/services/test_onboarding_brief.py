@@ -6,6 +6,7 @@ semantics (BRIEF.md write-if-missing decides whether BOOTSTRAP.md is
 overwritten and whether the caller should create the Set-up issue).
 """
 
+import pytest
 from unittest.mock import MagicMock
 
 from core.services.onboarding_brief import (
@@ -100,3 +101,24 @@ def test_stage_first_run_files_replay_touches_nothing_else():
     assert wrote is False
     # Replay must not clobber a BOOTSTRAP the container may have consumed.
     ws.write_file.assert_not_called()
+
+
+def test_stage_first_run_files_rolls_back_brief_when_bootstrap_write_fails():
+    """If BRIEF is claimed but the BOOTSTRAP write raises, the marker is
+    deleted and the error propagates — so a retry re-stages both files
+    instead of short-circuiting to a half-staged workspace."""
+    ws = MagicMock()
+    ws.write_file_if_missing = MagicMock(return_value=True)
+    ws.write_file = MagicMock(side_effect=RuntimeError("efs boom"))
+    ws.delete_file = MagicMock()
+
+    with pytest.raises(RuntimeError, match="efs boom"):
+        stage_first_run_files(
+            workspace=ws,
+            owner_id=OWNER,
+            friday_agent_id=FRIDAY_ID,
+            brief_md="brief",
+            bootstrap_md="bootstrap",
+        )
+
+    ws.delete_file.assert_called_once_with(OWNER, f"workspaces/{FRIDAY_ID}/BRIEF.md")

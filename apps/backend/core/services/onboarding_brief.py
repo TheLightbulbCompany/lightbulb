@@ -142,11 +142,25 @@ def stage_first_run_files(
     existed — a replay — in which case NOTHING else is touched (the
     container may already have consumed the bootstrap; the caller must
     also skip issue creation).
+
+    Staging is all-or-nothing on the marker: BRIEF.md is the atomic claim,
+    but if the BOOTSTRAP write then fails we roll the claim back by deleting
+    BRIEF.md, so a retry re-stages BOTH files rather than seeing the marker
+    and short-circuiting to a half-staged workspace (BRIEF present, first-run
+    bootstrap missing). A genuine replay — both files already written — still
+    returns False on the write_file_if_missing claim and leaves the possibly
+    container-evolved BOOTSTRAP untouched.
     """
     brief_rel = f"workspaces/{friday_agent_id}/BRIEF.md"
     wrote = workspace.write_file_if_missing(owner_id, brief_rel, brief_md)
     if not wrote:
         return False
     bootstrap_rel = f"workspaces/{friday_agent_id}/BOOTSTRAP.md"
-    workspace.write_file(owner_id, bootstrap_rel, bootstrap_md)
+    try:
+        workspace.write_file(owner_id, bootstrap_rel, bootstrap_md)
+    except Exception:
+        # Undo the marker so this staging isn't recorded as complete — the
+        # next submit re-claims BRIEF.md fresh and re-stages both files.
+        workspace.delete_file(owner_id, brief_rel)
+        raise
     return True

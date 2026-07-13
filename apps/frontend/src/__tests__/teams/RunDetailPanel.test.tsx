@@ -79,6 +79,19 @@ describe("RunDetailPanel", () => {
     expect(screen.getByText(/showing the last 256 KiB/i)).toBeInTheDocument();
   });
 
+  it("shows the events truncation notice when the page is full", () => {
+    mockReads({
+      "/heartbeat-runs/r1/log": { content: "" },
+      "/heartbeat-runs/r1/events": {
+        events: Array.from({ length: 1000 }, (_, i) => ({ seq: i + 1, eventType: "lifecycle", message: `e${i}` })),
+      },
+      "/heartbeat-runs/r1": { id: "r1", status: "running" },
+      "/agents": { agents: [] },
+    });
+    render(<RunDetailPanel runId="r1" />);
+    expect(screen.getByText("Showing the first 1,000 events.")).toBeInTheDocument();
+  });
+
   it("cancels a running run", async () => {
     mockReads({
       "/heartbeat-runs/r1/log": { content: "" },

@@ -46,10 +46,18 @@ export function useRunTranscript(
   });
 
   const lines = useMemo(() => {
-    const content = data?.content;
+    let content = data?.content;
     if (!content) return [];
+    if (truncated) {
+      // A tail read's byte offset can land mid-NDJSON-record; drop everything
+      // up to and including the first newline so parsing starts at the first
+      // complete record. Trimming raw content (not the first parsed line) is
+      // the faithful fix — a record's chunk can contain embedded newlines.
+      const firstNewline = content.indexOf("\n");
+      content = firstNewline === -1 ? "" : content.slice(firstNewline + 1);
+    }
     return parseLogLines(content);
-  }, [data?.content]);
+  }, [data?.content, truncated]);
 
   return { lines, truncated, isLoading };
 }

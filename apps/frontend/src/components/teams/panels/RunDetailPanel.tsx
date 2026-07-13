@@ -9,6 +9,12 @@ import { formatSilenceAgeMs } from "@/components/teams/shared/lib/liveRuns";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import type { CompanyAgent, RunDetail, RunEvent } from "@/components/teams/shared/types";
 
+// The BFF defaults the events read to 200 and clamps at 1000; ask for the
+// ceiling so long runs don't hide later failure/cancel/watchdog events
+// (events are seq-ordered ascending, so the default page is the OLDEST 200).
+// Full seq-paging is deliberately out of scope at v1 scale.
+const RUN_EVENTS_LIMIT = 1000;
+
 // Free upstream string — color the known vocabulary, default to mute.
 function statusColor(status: string | null | undefined): string {
   const s = (status ?? "").toLowerCase();
@@ -113,7 +119,7 @@ export function RunDetailPanel({ runId }: { runId: string }) {
 
   const active = isActiveStatus(run?.status);
   const { data: eventsData } = read<{ events: RunEvent[] }>(
-    `/heartbeat-runs/${runId}/events`,
+    `/heartbeat-runs/${runId}/events?limit=${RUN_EVENTS_LIMIT}`,
     {
       refreshInterval: active ? 15_000 : 0,
       revalidateOnFocus: false,
@@ -346,6 +352,11 @@ export function RunDetailPanel({ runId }: { runId: string }) {
 
         <section className="flex flex-col gap-3">
           <h2 className="section-label"><b>Events</b></h2>
+          {events.length >= RUN_EVENTS_LIMIT && (
+            <p className="text-xs italic" style={{ color: "var(--mute)" }}>
+              Showing the first 1,000 events.
+            </p>
+          )}
           {events.length === 0 ? (
             <p className="text-sm italic" style={{ color: "var(--mute)" }}>
               No events recorded.

@@ -28,8 +28,13 @@ describe("useRunTranscript", () => {
     expect(result.current.truncated).toBe(false);
   });
 
-  it("tail-reads oversized logs from logBytes-cap and reports truncated", () => {
-    read.mockReturnValue({ data: { content: line("tail") }, isLoading: false });
+  it("tail-reads oversized logs from logBytes-cap, dropping the partial first record", () => {
+    // The tail offset can land mid-record — the first "line" of the read is
+    // garbage and must be dropped before parsing.
+    read.mockReturnValue({
+      data: { content: line("partial-garbage") + line("tail") },
+      isLoading: false,
+    });
     const logBytes = RUN_TRANSCRIPT_LIMIT_BYTES + 5_000;
     const { result } = renderHook(() =>
       useRunTranscript("r1", { active: false, logBytes }),
@@ -38,6 +43,7 @@ describe("useRunTranscript", () => {
       `/heartbeat-runs/r1/log?offset=5000&limitBytes=${RUN_TRANSCRIPT_LIMIT_BYTES}`,
       expect.anything(),
     );
+    expect(result.current.lines).toEqual(["tail"]);
     expect(result.current.truncated).toBe(true);
   });
 });

@@ -65,8 +65,8 @@ async def submit_brief(
     if auth.is_org_context:
         raise HTTPException(status_code=403, detail="personal_only")
 
-    # trial_local rows only exist when FREE_TIER_ENABLED, so gating on the
-    # status also enforces the flag; paid/org users are out of v1 scope.
+    # The first-run flow is the no-card free tier: only a trial_local owner
+    # gets the funnel + brief. Paid and org owners are out of v1 scope.
     account = await billing_repo.get_by_owner_id(ctx.owner_id)
     if (account or {}).get("subscription_status") != "trial_local":
         raise HTTPException(status_code=403, detail="trial_only")

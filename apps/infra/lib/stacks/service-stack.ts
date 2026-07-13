@@ -1100,13 +1100,6 @@ export class ServiceStack extends cdk.Stack {
         // LocalStack needs this to redirect boto3 calls inside the ECS container
         ...(env === "local" ? { AWS_ENDPOINT_URL: "http://localhost.localstack.cloud:4566" } : {}),
         BEDROCK_ENABLED: env === "local" ? "false" : "true",
-        // No-card free tier. ON in dev so it can be exercised; OFF in prod until
-        // the business says go. deploy.yml has no environment gate — every merge
-        // to main reaches prod — so this flag is what stops landing the code from
-        // silently opening a public free tier (real Bedrock spend, on us, per
-        // signup). Flip to "true" for prod to launch; no redeploy of anything
-        // else is needed.
-        FREE_TIER_ENABLED: env === "prod" ? "false" : "true",
         EFS_MOUNT_PATH: "/mnt/efs/users",
         EFS_FILE_SYSTEM_ID: props.container.efsFileSystem.fileSystemId,
         CONTAINER_EXECUTION_ROLE_ARN:

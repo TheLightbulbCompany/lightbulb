@@ -517,8 +517,6 @@ export interface DashboardTaskBuckets {
 
 export interface DashboardCosts {
   monthSpendCents: number;
-  monthBudgetCents: number;
-  monthUtilizationPercent: number;
 }
 
 export interface DashboardBudgets {
@@ -529,7 +527,7 @@ export interface DashboardSummary {
   agents: DashboardAgentBuckets;
   tasks: DashboardTaskBuckets;
   runActivity: DashboardRunActivityDay[];
-  costs: DashboardCosts;
+  costs?: DashboardCosts;
   pendingApprovals: number;
   budgets: DashboardBudgets;
 }

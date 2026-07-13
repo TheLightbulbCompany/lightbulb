@@ -61,7 +61,6 @@ test("DashboardSummary minimum-shape construction compiles", () => {
     agents: {},
     tasks: {},
     runActivity: [],
-    costs: { monthSpendCents: 0, monthBudgetCents: 0, monthUtilizationPercent: 0 },
     pendingApprovals: 0,
     budgets: { pendingApprovals: 0 },
   };
@@ -74,7 +73,7 @@ test("DashboardResponse wraps summary + optional sidebar_badges", () => {
       agents: { active: 1 },
       tasks: { open: 2 },
       runActivity: [{ date: "2026-05-06", succeeded: 1, failed: 0, other: 0, total: 1 }],
-      costs: { monthSpendCents: 100, monthBudgetCents: 0, monthUtilizationPercent: 0 },
+      costs: { monthSpendCents: 100 },
       pendingApprovals: 0,
       budgets: { pendingApprovals: 0 },
     },

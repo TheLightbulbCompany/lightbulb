@@ -7,7 +7,7 @@
 import { teamsPanelUrl } from "@/lib/shellNav";
 import {
   LayoutDashboard, Inbox, Bot, CircleDot, ClipboardCheck, Repeat, Target,
-  FolderOpen, History, DollarSign, Settings, Network,
+  FolderOpen, History, Settings, Network,
 } from "lucide-react";
 import type { ComponentType, SVGProps } from "react";
 
@@ -31,7 +31,6 @@ export const NAV_ACTIONS: CommandPaletteAction[] = [
   { id: "go-goals", label: "Goals", path: teamsPanelUrl("goals"), Icon: Target },
   { id: "go-projects", label: "Projects", path: teamsPanelUrl("projects"), Icon: FolderOpen },
   { id: "go-activity", label: "Activity", path: teamsPanelUrl("activity"), Icon: History, keywords: ["events", "log"] },
-  { id: "go-costs", label: "Costs", path: teamsPanelUrl("costs"), Icon: DollarSign, keywords: ["billing", "spend"] },
   { id: "go-settings", label: "Settings", path: teamsPanelUrl("settings"), Icon: Settings },
 ];
 

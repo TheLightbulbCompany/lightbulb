@@ -74,7 +74,7 @@ describe("FailedRunRow", () => {
         onDismiss={() => {}}
       />,
     );
-    expect(screen.getByRole("link", { name: "View" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "View run run_9" })).toHaveAttribute(
       "href",
       "/chat?panel=teams-run-detail&detailId=run_9",
     );

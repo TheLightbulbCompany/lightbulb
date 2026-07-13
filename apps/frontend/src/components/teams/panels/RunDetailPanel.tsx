@@ -23,10 +23,16 @@ function isActiveStatus(status: string | null | undefined): boolean {
   return s === "running" || s === "queued" || s === "scheduled_retry";
 }
 
+function nonEmptyString(v: unknown): string | null {
+  return typeof v === "string" && v ? v : null;
+}
+
 // Upstream's retry/resume wakes re-target the source issue via a payload
 // subset of the run's contextSnapshot. Mirrors AgentDetail's own builders:
 // retry sends issueId/taskId/taskKey only; resume additionally carries a
-// commentId, preferring the snapshot's wakeCommentId over commentId.
+// commentId, preferring the snapshot's wakeCommentId over commentId. Each
+// candidate is normalized BEFORE coalescing so an empty or non-string
+// wakeCommentId still falls through to a valid commentId.
 function contextPayload(
   run: RunDetail,
   opts?: { withComment?: boolean },
@@ -34,11 +40,12 @@ function contextPayload(
   const snap = run.contextSnapshot ?? {};
   const out: Record<string, unknown> = {};
   for (const k of ["issueId", "taskId", "taskKey"]) {
-    if (typeof snap[k] === "string" && snap[k]) out[k] = snap[k];
+    const v = nonEmptyString(snap[k]);
+    if (v) out[k] = v;
   }
   if (opts?.withComment) {
-    const commentId = snap["wakeCommentId"] ?? snap["commentId"];
-    if (typeof commentId === "string" && commentId) out.commentId = commentId;
+    const commentId = nonEmptyString(snap["wakeCommentId"]) ?? nonEmptyString(snap["commentId"]);
+    if (commentId) out.commentId = commentId;
   }
   return out;
 }
@@ -149,22 +156,36 @@ export function RunDetailPanel({ runId }: { runId: string }) {
     );
   }
 
+  // Cross-guard: a run action and a watchdog decision share actionError, so
+  // neither may start while the other is in flight.
+  const busy = acting !== null || wdActing;
+
   async function act(kind: "cancel" | "retry" | "resume") {
-    if (!run || acting) return;
+    if (!run || busy) return;
     setActing(kind);
     setActionError(null);
     try {
       if (kind === "cancel") {
         await post(`/heartbeat-runs/${run.id}/cancel`, {});
       } else if (run.agentId) {
-        await post(`/agents/${run.agentId}/wakeup`, {
-          source: "on_demand",
-          reason: kind === "retry" ? "retry_failed_run" : "resume_process_lost_run",
-          payload:
-            kind === "retry"
-              ? contextPayload(run)
-              : { resumeFromRunId: run.id, ...contextPayload(run, { withComment: true }) },
-        });
+        // Upstream's wakeup responds with the new run, or a "skipped"
+        // envelope carrying no id — surface the skip instead of a silent
+        // no-op success.
+        const res = await post<{ id?: unknown; message?: unknown } | null>(
+          `/agents/${run.agentId}/wakeup`,
+          {
+            source: "on_demand",
+            reason: kind === "retry" ? "retry_failed_run" : "resume_process_lost_run",
+            payload:
+              kind === "retry"
+                ? contextPayload(run)
+                : { resumeFromRunId: run.id, ...contextPayload(run, { withComment: true }) },
+          },
+        );
+        if (!res?.id) {
+          setActionError(String(res?.message ?? "Request was skipped — the agent may already be running."));
+          return;
+        }
       }
       await hb.mutate();
     } catch (e) {
@@ -179,7 +200,7 @@ export function RunDetailPanel({ runId }: { runId: string }) {
   const showWatchdog = silenceLevel === "suspicious" || silenceLevel === "critical";
 
   async function decideWatchdog(decision: "continue" | "snooze" | "dismissed_false_positive") {
-    if (!run || wdActing) return;
+    if (!run || busy) return;
     setWdActing(true);
     setActionError(null);
     try {
@@ -232,17 +253,17 @@ export function RunDetailPanel({ runId }: { runId: string }) {
           </div>
           <div className="flex items-center gap-2">
             {canCancel && (
-              <EditorialButton variant="secondary" size="sm" onClick={() => act("cancel")} disabled={acting !== null}>
+              <EditorialButton variant="secondary" size="sm" onClick={() => act("cancel")} disabled={busy}>
                 {acting === "cancel" ? "Cancelling…" : "Cancel run"}
               </EditorialButton>
             )}
             {canResume && (
-              <EditorialButton variant="secondary" size="sm" onClick={() => act("resume")} disabled={acting !== null}>
+              <EditorialButton variant="secondary" size="sm" onClick={() => act("resume")} disabled={busy}>
                 {acting === "resume" ? "Resuming…" : "Resume run"}
               </EditorialButton>
             )}
             {canRetry && run?.agentId && (
-              <EditorialButton variant="secondary" size="sm" onClick={() => act("retry")} disabled={acting !== null}>
+              <EditorialButton variant="secondary" size="sm" onClick={() => act("retry")} disabled={busy}>
                 {acting === "retry" ? "Retrying…" : "Retry"}
               </EditorialButton>
             )}
@@ -269,13 +290,13 @@ export function RunDetailPanel({ runId }: { runId: string }) {
               This run has been silent for {formatSilenceAgeMs(silence?.silenceAgeMs ?? null) ?? "an extended period"}.
             </p>
             <div className="flex flex-wrap items-center gap-2">
-              <EditorialButton variant="secondary" size="sm" disabled={wdActing} onClick={() => decideWatchdog("continue")}>
+              <EditorialButton variant="secondary" size="sm" disabled={busy} onClick={() => decideWatchdog("continue")}>
                 Continue monitoring
               </EditorialButton>
-              <EditorialButton variant="secondary" size="sm" disabled={wdActing} onClick={() => decideWatchdog("snooze")}>
+              <EditorialButton variant="secondary" size="sm" disabled={busy} onClick={() => decideWatchdog("snooze")}>
                 Snooze 1h
               </EditorialButton>
-              <EditorialButton variant="secondary" size="sm" disabled={wdActing} onClick={() => decideWatchdog("dismissed_false_positive")}>
+              <EditorialButton variant="secondary" size="sm" disabled={busy} onClick={() => decideWatchdog("dismissed_false_positive")}>
                 Mark false positive
               </EditorialButton>
             </div>

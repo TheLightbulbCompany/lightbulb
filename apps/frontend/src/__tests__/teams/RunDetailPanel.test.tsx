@@ -130,6 +130,44 @@ describe("RunDetailPanel", () => {
     expect(screen.getByRole("button", { name: "Resume run" })).toBeInTheDocument();
   });
 
+  it("resumes with commentId fallback when wakeCommentId is empty", async () => {
+    mockReads({
+      "/heartbeat-runs/r1/log": { content: "" },
+      "/heartbeat-runs/r1/events": { events: [] },
+      "/heartbeat-runs/r1": {
+        id: "r1",
+        agentId: "agt_1",
+        status: "failed",
+        errorCode: "process_lost",
+        contextSnapshot: { wakeCommentId: "", commentId: "cmt_9", issueId: "iss_7" },
+      },
+      "/agents": { agents: [] },
+    });
+    post.mockResolvedValue({ id: "r2", status: "queued" });
+    render(<RunDetailPanel runId="r1" />);
+    screen.getByRole("button", { name: "Resume run" }).click();
+    await vi.waitFor(() =>
+      expect(post).toHaveBeenCalledWith("/agents/agt_1/wakeup", {
+        source: "on_demand",
+        reason: "resume_process_lost_run",
+        payload: { resumeFromRunId: "r1", issueId: "iss_7", commentId: "cmt_9" },
+      }),
+    );
+  });
+
+  it("surfaces a skipped wake instead of treating it as success", async () => {
+    mockReads({
+      "/heartbeat-runs/r1/log": { content: "" },
+      "/heartbeat-runs/r1/events": { events: [] },
+      "/heartbeat-runs/r1": { id: "r1", agentId: "agt_1", status: "failed", errorCode: "process_lost" },
+      "/agents": { agents: [] },
+    });
+    post.mockResolvedValue({ message: "Agent is already running" });
+    render(<RunDetailPanel runId="r1" />);
+    screen.getByRole("button", { name: "Resume run" }).click();
+    expect(await screen.findByText("Agent is already running")).toBeInTheDocument();
+  });
+
   it("shows the silence watchdog banner and records a snooze", async () => {
     mockReads({
       "/heartbeat-runs/r1/log": { content: "" },

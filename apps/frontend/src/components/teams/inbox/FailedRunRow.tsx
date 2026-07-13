@@ -74,6 +74,7 @@ export function FailedRunRow({
         <a
           href={teamsDetailUrl("run", run.id)}
           onClick={(e) => handleShellLinkClick(e, teamsDetailUrl("run", run.id))}
+          aria-label={`View run ${run.id}`}
           className="text-xs hover:underline"
           style={{ color: "var(--forest)" }}
         >

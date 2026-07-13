@@ -50,8 +50,12 @@ def test_render_first_run_bootstrap_orders_board_first():
     md = render_first_run_bootstrap(first_name="Max")
     assert "BRIEF.md" in md
     # Board-first ordering: claiming the Set-up issue must be instructed
-    # before deep research (spec §4.D).
-    assert md.index("check out") < md.index("research")
+    # before deep research (spec §4.D). Anchor on the deep-research step's
+    # own text, not the word "research" (step 2's comment contains it too).
+    assert md.index("check out") < md.index("Deep research")
+    # Missing-issue tolerance: step 2 tells Friday to create the Set-up
+    # issue herself when issue creation failed server-side.
+    assert "create it yourself" in md
     assert "Max" in md
 
 

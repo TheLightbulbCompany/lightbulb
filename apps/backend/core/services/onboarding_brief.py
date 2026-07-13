@@ -55,7 +55,8 @@ Load your Paperclip identity first (see AGENTS.md — the export block for
    briefly as you go — no walls of text between actions.
 2. IMMEDIATELY find the issue titled "Set up …" on the board, check out
    the issue, and comment "On it — researching your market now." Do this
-   before any research.
+   before any research. If no "Set up …" issue exists, create it yourself
+   first (title "Set up <company>"), then check it out.
 3. Quick pass: read BRIEF.md (this workspace). On the grow path, fetch
    their website once. Then create exactly 3 starter tasks on the board —
    short specific titles, one-line descriptions. Stubs are fine; you will

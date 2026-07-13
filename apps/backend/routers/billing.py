@@ -22,6 +22,7 @@ from core.observability.metrics import put_metric, timing
 from core.repositories import billing_repo, usage_repo
 from core.services import clerk_admin, spend_service
 from core.services.billing_service import BillingService
+from core.services.container_provision import resolve_provider_choice
 from core.services.stripe_webhook_handlers import STRIPE_WEBHOOK_HANDLERS
 from core.services.provision_gate import (
     TRIAL_BLOCKED_STATUSES,
@@ -248,18 +249,23 @@ async def get_spend(auth: AuthContext = Depends(get_current_user)):
     if auth.is_org_context:
         require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
+    # resolve_provider_choice is THE single resolver (container_provision.py)
+    # — it subsumes the old raw billing-row read + None short-circuit here,
+    # and additionally defaults a legacy owner with no stored provider_choice
+    # to bedrock_claude (instead of silently degrading them to tokens_only),
+    # and maps trial_local owners to the bedrock_trial config mode, which
+    # spend_service.get_spend_summary has no branch for and so falls through
+    # to tokens_only — the free tier deliberately shows no dollars.
     try:
-        account = await billing_repo.get_by_owner_id(owner_id) or {}
+        provider_choice, _byo_provider = await resolve_provider_choice(owner_id)
     except Exception:
         logger.warning(
-            "billing_repo read failed for owner %s — degrading /billing/spend to tokens_only",
+            "resolve_provider_choice failed for owner %s — degrading /billing/spend to tokens_only",
             owner_id,
             exc_info=True,
         )
         return SpendResponse(mode="tokens_only")
-    if account.get("provider_choice") is None:
-        return SpendResponse(mode="tokens_only")
-    payload = await spend_service.get_spend_summary(owner_id, account.get("provider_choice"))
+    payload = await spend_service.get_spend_summary(owner_id, provider_choice)
     return SpendResponse(**payload)
 
 

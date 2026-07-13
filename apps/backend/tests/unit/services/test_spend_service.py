@@ -307,6 +307,15 @@ async def test_summary_byok_and_unknown_are_tokens_only():
 
 
 @pytest.mark.asyncio
+async def test_summary_bedrock_trial_is_tokens_only():
+    """resolve_provider_choice resolves trial_local owners to the
+    bedrock_trial config mode (never a stored provider_choice) — this
+    module has no branch for it, and it must fall through to tokens_only
+    rather than get treated as billed bedrock_claude spend."""
+    assert await spend_service.get_spend_summary("owner-1", "bedrock_trial") == {"mode": "tokens_only"}
+
+
+@pytest.mark.asyncio
 async def test_summary_bedrock_uses_billed_spend():
     billed = spend_service.BilledSpend(total_cents=1234, by_model=[], period_start="2026-07-01")
     with patch.object(spend_service, "get_billed_month_spend", new=AsyncMock(return_value=billed)):

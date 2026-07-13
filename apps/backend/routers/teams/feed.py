@@ -28,8 +28,8 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
-from core.repositories import billing_repo
 from core.services import spend_service
+from core.services.container_provision import resolve_provider_choice
 
 from . import agents as _agents
 from .deps import TeamsContext, TeamsContextError
@@ -204,21 +204,33 @@ async def get_dashboard(
     # runs — a structural undercount. The billed number comes from
     # Metronome (the invoice we actually charge). Every provision-eligible
     # owner gets a metronome_customer_id regardless of provider_choice (see
-    # user_provision.py), so gate on the Bedrock path explicitly — otherwise
-    # OAuth/BYOK/trial owners would get a real (if zero) BilledSpend and
-    # render a permanent, misleading "Month Spend $0.00" card. The billing-
-    # row read is failure-tolerant: any error just omits the costs block,
-    # matching spend_service's own "display-only, never blocks" contract.
+    # user_provision.py), so gate on the resolved Bedrock path explicitly —
+    # otherwise OAuth/BYOK/trial owners would get a real (if zero)
+    # BilledSpend and render a permanent, misleading "Month Spend $0.00"
+    # card. The raw billing-row's ``provider_choice`` is never read directly
+    # here — ``resolve_provider_choice`` is THE single resolver (see
+    # container_provision.py) and defaults a legacy owner with no stored
+    # choice to bedrock_claude, and separately maps trial_local owners to
+    # the bedrock_trial config mode (never billed). The resolver call is
+    # failure-tolerant: any error just omits the costs block, matching
+    # spend_service's own "display-only, never blocks" contract.
     dash.pop("costs", None)
-    try:
-        account = await billing_repo.get_by_owner_id(resolve_owner_id(auth)) or {}
-    except Exception:
-        logger.warning("dashboard: billing-account read failed; omitting costs block", exc_info=True)
-        account = None
-    if account is not None and account.get("provider_choice") == "bedrock_claude":
-        billed = await spend_service.get_billed_month_spend(resolve_owner_id(auth))
-        if billed is not None:
-            dash["costs"] = {"monthSpendCents": billed.total_cents}
+    # GET /billing/spend restricts billed-spend detail to org admins
+    # (require_org_admin) — a non-admin org member must not be able to read
+    # via the dashboard what the billing API 403s them from. Mirrors the
+    # same condition the container-readiness gate above uses.
+    if not auth.is_org_context or auth.is_org_admin:
+        try:
+            provider_choice, _byo_provider = await resolve_provider_choice(resolve_owner_id(auth))
+        except Exception:
+            logger.warning("dashboard: provider_choice resolution failed; omitting costs block", exc_info=True)
+            provider_choice = None
+        if provider_choice == "bedrock_claude":
+            billed = await spend_service.get_billed_month_spend(resolve_owner_id(auth))
+            if billed is not None:
+                dash["costs"] = {"monthSpendCents": billed.total_cents}
+        # bedrock_trial deliberately shows no dollars — the free tier omits
+        # the costs block just like OAuth/BYOK.
     return {
         "dashboard": dash,
         "sidebar_badges": badges,

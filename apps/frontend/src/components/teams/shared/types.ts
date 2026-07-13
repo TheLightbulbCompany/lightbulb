@@ -5,6 +5,8 @@
 // (MIT, © 2025 Paperclip AI). Subset retained for IssueRow / IssueColumns /
 // IssueFiltersPopover. Full type lives in upstream packages/shared/src/types/.
 
+import type { RunOutputSilence } from "@/components/teams/shared/lib/liveRuns";
+
 export type IssueStatus =
   | "backlog"
   | "todo"
@@ -337,6 +339,53 @@ export interface IssueRun {
   agentId?: string | null;
   startedAt?: string | null;
   finishedAt?: string | null;
+  createdAt?: string | null;
+}
+
+/** Full heartbeat-run row for the run-detail panel (upstream
+ *  `GET /api/heartbeat-runs/{id}`, verbatim pass-through via the BFF).
+ *  Field set verified against the fork's shared HeartbeatRun type; every
+ *  field is optional-defensive because upstream row shapes drift. */
+export interface RunDetail {
+  id: string;
+  agentId?: string | null;
+  /** Free string; known vocab: queued | scheduled_retry | running |
+   *  succeeded | failed | cancelled | timed_out. Render defensively. */
+  status?: string | null;
+  invocationSource?: string | null;
+  triggerDetail?: string | null;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  createdAt?: string | null;
+  error?: string | null;
+  errorCode?: string | null;
+  exitCode?: number | null;
+  signal?: string | null;
+  usageJson?: Record<string, unknown> | null;
+  sessionIdBefore?: string | null;
+  sessionIdAfter?: string | null;
+  logBytes?: number | null;
+  stdoutExcerpt?: string | null;
+  stderrExcerpt?: string | null;
+  retryOfRunId?: string | null;
+  retryExhaustedReason?: string | null;
+  livenessState?: string | null;
+  livenessReason?: string | null;
+  nextAction?: string | null;
+  lastUsefulActionAt?: string | null;
+  contextSnapshot?: Record<string, unknown> | null;
+  outputSilence?: RunOutputSilence | null;
+}
+
+/** One `heartbeat_run_events` row (upstream events timeline). */
+export interface RunEvent {
+  id?: number;
+  seq: number;
+  eventType?: string | null;
+  stream?: string | null;
+  level?: string | null;
+  message?: string | null;
+  payload?: Record<string, unknown> | null;
   createdAt?: string | null;
 }
 

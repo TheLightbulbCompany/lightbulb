@@ -41,7 +41,7 @@ interface RunLogResponse {
  * raw text so a store that ever writes plain lines still renders something
  * rather than dropping silently. Blank lines are filtered.
  */
-function parseLogLines(content: string): string[] {
+export function parseLogLines(content: string): string[] {
   const out: string[] = [];
   for (const rawLine of content.split("\n")) {
     const trimmed = rawLine.trim();

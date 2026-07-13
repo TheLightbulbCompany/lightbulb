@@ -71,6 +71,19 @@ interface Routine {
 
 /* ── field accessors (tolerant of upstream + legacy shapes) ──────────────── */
 
+/** Human copy for a blocked-gate 402 (e.g. routines_require_subscription).
+ *
+ * The shared API client only promotes a STRING `detail` to `ApiError.message`,
+ * so a structured `{blocked, code, message}` body would otherwise surface as a
+ * stringified exception. It does keep the parsed body, which is what we read
+ * here — the difference between "Error: API 402" and an actual upgrade prompt.
+ */
+function gateMessage(e: unknown): string {
+  const body = (e as { body?: { detail?: { message?: string } } })?.body;
+  const msg = body?.detail?.message;
+  return typeof msg === "string" && msg ? msg : String(e);
+}
+
 function routineName(r: Routine): string {
   return r.title ?? r.name ?? "Untitled routine";
 }
@@ -824,7 +837,7 @@ function CreateRoutineDialog({
       });
       onCreated();
     } catch (e) {
-      setErr(String(e));
+      setErr(gateMessage(e));
       setSubmitting(false);
     }
   }

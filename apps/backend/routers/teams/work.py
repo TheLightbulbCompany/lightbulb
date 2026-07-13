@@ -13,7 +13,7 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends
 
 from . import agents as _agents
-from ._guards import require_trial_runway
+from ._guards import require_always_on_entitlement, require_trial_runway
 from .deps import TeamsContext, envelope_list
 from .schemas import (
     CreateGoalBody,
@@ -47,7 +47,14 @@ async def create_routine(
     body: CreateRoutineBody,
     ctx: TeamsContext = Depends(_ctx),
 ):
-    """Create a routine."""
+    """Create a routine.
+
+    Always-on entitlement gate: a routine is scheduled automation, which is what
+    the subscription buys. A trial owner's container scales to zero on tab close
+    and nothing wakes it for a scheduled dispatch, so a routine they create would
+    silently never fire — see require_always_on_entitlement.
+    """
+    await require_always_on_entitlement(ctx.owner_id)
     return await _agents._admin().create_routine(
         company_id=ctx.company_id,
         body=body.model_dump(exclude_none=True, by_alias=True),
@@ -65,7 +72,12 @@ async def create_routine_trigger(
 
     The cron schedule lives on a separate trigger, not the routine row —
     the create dialog calls this after creating the routine itself.
+
+    Gated separately from ``create_routine``: the trigger IS the schedule, so an
+    ungated trigger endpoint would let a trial owner attach autonomy to a routine
+    that already exists (e.g. one seeded before the gate, or created upstream).
     """
+    await require_always_on_entitlement(ctx.owner_id)
     return await _agents._admin().create_routine_trigger(
         routine_id=routine_id,
         body=body.model_dump(exclude_none=True, by_alias=True),

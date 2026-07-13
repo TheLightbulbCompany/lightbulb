@@ -133,3 +133,65 @@ def test_get_run_log_rejects_oversized_limit(client, monkeypatch):
     )
     assert r.status_code == 422
     admin.get_run_log.assert_not_awaited()
+
+
+def test_get_run_events_defaults(client, monkeypatch):
+    """`GET /teams/heartbeat-runs/{id}/events` wraps upstream's raw event
+    array in the standard list envelope, with afterSeq=0 / limit=200."""
+    admin = MagicMock()
+    admin.get_run_events = AsyncMock(
+        return_value=[
+            {
+                "id": 1,
+                "runId": "run_1",
+                "seq": 1,
+                "eventType": "lifecycle",
+                "level": "info",
+                "message": "run started",
+            }
+        ]
+    )
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.get(
+        "/api/v1/teams/heartbeat-runs/run_1/events",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["events"][0]["eventType"] == "lifecycle"
+    admin.get_run_events.assert_awaited_once_with(
+        run_id="run_1",
+        session_cookie="cookie",
+        after_seq=0,
+        limit=200,
+    )
+
+
+def test_get_run_events_passes_after_seq_and_limit(client, monkeypatch):
+    """The route forwards `afterSeq` and `limit` and clamps limit to 1000."""
+    admin = MagicMock()
+    admin.get_run_events = AsyncMock(return_value=[])
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.get(
+        "/api/v1/teams/heartbeat-runs/run_1/events?afterSeq=17&limit=50",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    admin.get_run_events.assert_awaited_once_with(
+        run_id="run_1",
+        session_cookie="cookie",
+        after_seq=17,
+        limit=50,
+    )
+
+    r = client.get(
+        "/api/v1/teams/heartbeat-runs/run_1/events?limit=99999",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 422

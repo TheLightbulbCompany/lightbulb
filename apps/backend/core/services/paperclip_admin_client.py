@@ -993,6 +993,27 @@ class PaperclipAdminClient:
             params={"offset": str(offset), "limitBytes": str(limit_bytes)},
         )
 
+    async def get_run_events(
+        self,
+        *,
+        session_cookie: str,
+        run_id: str,
+        after_seq: int = 0,
+        limit: int = 200,
+    ) -> list | dict:
+        """List a heartbeat run's structured event timeline.
+
+        Maps to ``GET /api/heartbeat-runs/{runId}/events``. Upstream returns
+        a raw JSON array of ``heartbeat_run_events`` rows (seq-ordered,
+        payloads redacted server-side); ``afterSeq`` pages forward and
+        ``limit`` is clamped upstream to 1..1000.
+        """
+        return await self._get(
+            f"/api/heartbeat-runs/{run_id}/events",
+            session_cookie=session_cookie,
+            params={"afterSeq": str(after_seq), "limit": str(limit)},
+        )
+
     # ------------------------------------------------------------------
     # Approvals
     # ------------------------------------------------------------------

@@ -11,7 +11,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query
 
 from . import agents as _agents
-from .deps import TeamsContext
+from .deps import TeamsContext, envelope_list
 
 router = APIRouter()
 _ctx = _agents._ctx
@@ -65,3 +65,25 @@ async def get_run_log(
         offset=offset,
         limit_bytes=limit_bytes,
     )
+
+
+@router.get("/heartbeat-runs/{run_id}/events")
+async def get_run_events(
+    run_id: str,
+    after_seq: int = Query(0, ge=0, alias="afterSeq"),
+    limit: int = Query(200, ge=1, le=1000),
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """List the structured event timeline for a heartbeat run.
+
+    Maps to upstream ``GET /api/heartbeat-runs/{runId}/events``. Upstream
+    responds with a raw array; wrap it in the standard list envelope so the
+    frontend reads ``data.events`` like every other Teams list surface.
+    """
+    rows = await _agents._admin().get_run_events(
+        run_id=run_id,
+        session_cookie=ctx.session_cookie,
+        after_seq=after_seq,
+        limit=limit,
+    )
+    return envelope_list(rows, "events")

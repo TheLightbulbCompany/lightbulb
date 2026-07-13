@@ -20,8 +20,9 @@ from core.auth import (
 from core.config import settings
 from core.observability.metrics import put_metric, timing
 from core.repositories import billing_repo, usage_repo
-from core.services import clerk_admin
+from core.services import clerk_admin, spend_service
 from core.services.billing_service import BillingService
+from core.services.container_provision import resolve_provider_choice
 from core.services.stripe_webhook_handlers import STRIPE_WEBHOOK_HANDLERS
 from core.services.provision_gate import (
     TRIAL_BLOCKED_STATUSES,
@@ -39,6 +40,7 @@ from schemas.billing import (
     MyUsageResponse,
     PricingResponse,
     ModelPriceResponse,
+    SpendResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -227,6 +229,44 @@ async def get_my_usage(
         total_output_tokens=m.get("total_output_tokens", 0),
         request_count=m.get("request_count", 0),
     )
+
+
+@router.get(
+    "/spend",
+    response_model=SpendResponse,
+    summary="Provider-aware spend summary",
+    description=(
+        "Bedrock owners: month-to-date BILLED spend from Metronome with a "
+        "per-model split. ChatGPT-OAuth owners: plan-quota windows. BYOK/"
+        "trial/degraded: tokens_only (the panel keeps its token grid). "
+        "Display-only; never errors on upstream failure."
+    ),
+    operation_id="get_spend",
+)
+async def get_spend(auth: AuthContext = Depends(get_current_user)):
+    # Same org-member gating as GET /billing/usage — spend is billing-account
+    # detail, not something a non-admin org member should be able to read.
+    if auth.is_org_context:
+        require_org_admin(auth)
+    owner_id = resolve_owner_id(auth)
+    # resolve_provider_choice is THE single resolver (container_provision.py)
+    # — it subsumes the old raw billing-row read + None short-circuit here,
+    # and additionally defaults a legacy owner with no stored provider_choice
+    # to bedrock_claude (instead of silently degrading them to tokens_only),
+    # and maps trial_local owners to the bedrock_trial config mode, which
+    # spend_service.get_spend_summary has no branch for and so falls through
+    # to tokens_only — the free tier deliberately shows no dollars.
+    try:
+        provider_choice, _byo_provider = await resolve_provider_choice(owner_id)
+    except Exception:
+        logger.warning(
+            "resolve_provider_choice failed for owner %s — degrading /billing/spend to tokens_only",
+            owner_id,
+            exc_info=True,
+        )
+        return SpendResponse(mode="tokens_only")
+    payload = await spend_service.get_spend_summary(owner_id, provider_choice)
+    return SpendResponse(**payload)
 
 
 @router.get(

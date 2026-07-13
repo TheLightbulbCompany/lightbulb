@@ -55,11 +55,6 @@ const EMPTY_DASHBOARD: DashboardSummary = {
   agents: {},
   tasks: {},
   runActivity: [],
-  costs: {
-    monthSpendCents: 0,
-    monthBudgetCents: 0,
-    monthUtilizationPercent: 0,
-  },
   pendingApprovals: 0,
   budgets: { pendingApprovals: 0 },
 };
@@ -290,23 +285,16 @@ export function DashboardPanel() {
             </span>
           }
         />
-        <MetricCard
-          icon={DollarSign}
-          value={formatCents(dashboard.costs.monthSpendCents)}
-          label="Month Spend"
-          to={teamsPanelUrl("costs")}
-          onClick={(e) => handleShellLinkClick(e, teamsPanelUrl("costs"))}
-          description={
-            dashboard.costs.monthBudgetCents > 0 ? (
-              <span>
-                {dashboard.costs.monthUtilizationPercent}% of{" "}
-                {formatCents(dashboard.costs.monthBudgetCents)} budget
-              </span>
-            ) : (
-              <span>Unlimited budget</span>
-            )
-          }
-        />
+        {dashboard.costs != null && (
+          <MetricCard
+            icon={DollarSign}
+            value={formatCents(dashboard.costs.monthSpendCents)}
+            label="Month Spend"
+            to="/chat?panel=usage"
+            onClick={(e) => handleShellLinkClick(e, "/chat?panel=usage")}
+            description={<span>Billed credits this month</span>}
+          />
+        )}
         <MetricCard
           icon={ShieldCheck}
           value={totalApprovals}

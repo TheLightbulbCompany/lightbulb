@@ -48,6 +48,29 @@ interface UsageSummary {
   by_member: UsageMember[];
 }
 
+// Mirrors apps/frontend/src/hooks/useSpend.ts verbatim (SpendResponse wire
+// shape from GET /billing/spend).
+interface SpendByModel {
+  model: string;
+  tier: string;
+  cents: number;
+}
+
+interface SpendQuotaWindow {
+  label: string;
+  used_percent: number;
+  resets_at_ms: number | null;
+}
+
+interface SpendResponse {
+  mode: "bedrock" | "oauth_quota" | "tokens_only";
+  billed_month_to_date_cents: number | null;
+  by_model: SpendByModel[] | null;
+  period_start: string | null;
+  plan: string | null;
+  windows: SpendQuotaWindow[] | null;
+}
+
 type UsageState =
   | { kind: "loading" }
   | { kind: "error"; message: string }
@@ -55,7 +78,7 @@ type UsageState =
   | { kind: "none" }
   /** 403 or client-side org gate — admin-only surface. */
   | { kind: "restricted" }
-  | { kind: "ready"; usage: UsageSummary };
+  | { kind: "ready"; usage: UsageSummary; spend: SpendResponse };
 
 // ---------------------------------------------------------------------------
 // Data hook — getTokenRef pattern (settings.tsx): pin Clerk's churning
@@ -86,9 +109,16 @@ function useUsageData(orgRestricted: boolean) {
     }
     setState((prev) => (prev.kind === "ready" ? prev : { kind: "loading" }));
     try {
-      const usage = (await api.get("/billing/usage")) as UsageSummary;
+      // Spend failures must not fail the whole screen — a provider-detail
+      // fetch is enhancement, not load-bearing; fall back to tokens_only.
+      const [usage, spend] = await Promise.all([
+        api.get("/billing/usage") as Promise<UsageSummary>,
+        (api.get("/billing/spend") as Promise<SpendResponse>).catch(
+          () => ({ mode: "tokens_only" }) as SpendResponse,
+        ),
+      ]);
       if (loadSeq.current !== seq) return;
-      setState({ kind: "ready", usage });
+      setState({ kind: "ready", usage, spend });
     } catch (err) {
       if (loadSeq.current !== seq) return;
       if (err instanceof ApiError && err.status === 404) {
@@ -143,6 +173,72 @@ function Tile({ label, value }: { label: string; value: string }) {
         {value}
       </Text>
     </View>
+  );
+}
+
+// Mode blocks (contract §6 provider-aware spend): rendered above the token
+// tile grid when the billing account has a dollar/quota story to tell.
+// tokens_only (BYOK, trial, degraded upstream) renders neither.
+
+function BedrockSpendCard({ spend }: { spend: SpendResponse }) {
+  const cents = spend.billed_month_to_date_cents ?? 0;
+  return (
+    <Card>
+      <Text style={styles.overline}>Billed this month</Text>
+      <Text style={styles.spendValue}>${(cents / 100).toFixed(2)}</Text>
+      {(spend.by_model ?? []).map((row, i) => (
+        <View
+          key={`${row.model}-${i}`}
+          style={[styles.memberRow, i > 0 && styles.memberRowBorder]}
+        >
+          <Text style={styles.memberName} numberOfLines={1}>
+            {row.model}
+          </Text>
+          <Text style={styles.memberTokens}>${(row.cents / 100).toFixed(2)}</Text>
+        </View>
+      ))}
+    </Card>
+  );
+}
+
+// Matches apps/frontend/src/components/control/panels/UsagePanel.tsx's
+// oauth_quota block formatting: weekday + hour:minute, no seconds/date.
+function formatResetTime(resetsAtMs: number | null): string | null {
+  if (resetsAtMs == null) return null;
+  return new Date(resetsAtMs).toLocaleString([], {
+    weekday: "short",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function OauthQuotaCard({ spend }: { spend: SpendResponse }) {
+  return (
+    <Card>
+      {spend.plan && (
+        <View style={styles.spendHead}>
+          <Text style={styles.overline}>PLAN</Text>
+          <Text style={styles.planBadge}>{spend.plan}</Text>
+        </View>
+      )}
+      {(spend.windows ?? []).map((w, i) => {
+        const pct = Math.max(0, Math.min(100, Math.round(w.used_percent)));
+        const resetText = formatResetTime(w.resets_at_ms);
+        return (
+          <View key={w.label} style={i > 0 ? styles.memberRowBorder : undefined}>
+            <View style={styles.spendHead}>
+              <Text style={styles.overline}>{w.label} limit</Text>
+              <Text style={styles.captionText}>
+                {pct}% used{resetText ? ` · resets ${resetText}` : ""}
+              </Text>
+            </View>
+            <View style={styles.quotaBarTrack}>
+              <View style={[styles.quotaBarFill, { width: `${pct}%` }]} />
+            </View>
+          </View>
+        );
+      })}
+    </Card>
   );
 }
 
@@ -226,18 +322,15 @@ export default function UsagePanel() {
     );
   } else {
     const u = state.usage;
+    const s = state.spend;
     body = (
       <>
-        <Card>
-          <View style={styles.spendHead}>
-            <Text style={styles.overline}>THIS PERIOD</Text>
-            {u.period !== "" && <Text style={styles.periodText}>{u.period}</Text>}
-          </View>
-          <Text style={styles.spendValue}>${u.total_spend.toFixed(4)}</Text>
-          <Text style={styles.captionText}>
-            Lifetime · ${u.lifetime_spend.toFixed(2)}
-          </Text>
-        </Card>
+        {u.period !== "" && (
+          <Text style={styles.periodText}>{u.period}</Text>
+        )}
+
+        {s.mode === "bedrock" && <BedrockSpendCard spend={s} />}
+        {s.mode === "oauth_quota" && <OauthQuotaCard spend={s} />}
 
         <View style={styles.grid}>
           <Tile label="INPUT" value={formatTokens(u.total_input_tokens)} />
@@ -259,10 +352,7 @@ export default function UsagePanel() {
                   {memberName(m)}
                 </Text>
                 <View style={styles.memberMeta}>
-                  <Text style={styles.memberTokens}>
-                    {formatTokens(m.total_input_tokens + m.total_output_tokens)} tok
-                  </Text>
-                  <Text style={styles.memberSpend}>${m.total_spend.toFixed(2)}</Text>
+                  <Text style={styles.memberTokens}>{m.request_count} req</Text>
                 </View>
               </View>
             ))}
@@ -332,6 +422,14 @@ const styles = StyleSheet.create({
     lineHeight: 32,
     color: colors.ink,
   },
+  planBadge: {
+    fontFamily: fonts.mono,
+    fontSize: 10,
+    lineHeight: 14,
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+    color: colors.mute,
+  },
 
   // Token tile grid.
   grid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.md },
@@ -385,11 +483,18 @@ const styles = StyleSheet.create({
     lineHeight: 14,
     color: colors.muteSoft,
   },
-  memberSpend: {
-    fontFamily: fonts.dmSansMedium,
-    fontSize: 13,
-    lineHeight: 16,
-    color: colors.ink,
+  // Provider quota bar (oauth_quota mode).
+  quotaBarTrack: {
+    height: 6,
+    borderRadius: radii.xs,
+    backgroundColor: colors.edge,
+    marginTop: spacing.xs,
+    overflow: "hidden",
+  },
+  quotaBarFill: {
+    height: "100%",
+    borderRadius: radii.xs,
+    backgroundColor: colors.forest,
   },
 
   // Loading skeleton (§7).

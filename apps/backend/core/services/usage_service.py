@@ -63,20 +63,19 @@ async def record_usage(
     column the legacy code wrote to (DDB schema unchanged for backward
     compatibility — column name is a misnomer; values are microcents).
 
-    When ``raw_cost_microcents`` is supplied AND the model is a Bedrock ref
-    OR a ``meta/`` (free-tier) ref, it is recorded verbatim as spend instead
-    of recomputing from token counts. The caller sources it from OpenClaw's
+    When ``raw_cost_microcents`` is supplied AND the model is a
+    ``amazon-bedrock/`` ref, it is recorded verbatim as spend instead of
+    recomputing from token counts. The caller sources it from OpenClaw's
     ``estimatedCostUsd`` (cache-inclusive), which is the authoritative cost:
     ``sessions.list`` omits cache token counts, and cache tokens are ~99.99%
     of volume, so the token-based path captures only ~3% of real cost. The
-    override is gated to Bedrock + meta because those are the only
-    Isol8-billed paths (Bedrock metered, meta free-tier-capped); non-Bedrock,
-    non-meta sessions (ChatGPT OAuth / OpenAI / BYO) are user-paid / flat-rate,
-    so recording their ``estimatedCostUsd`` as Isol8 spend would contradict
-    the books — they record spend 0 even when the override is present. Token
-    counts are still recorded for analytics in all cases. ``None`` (the
-    default — no ``estimatedCostUsd`` on the row) falls back to the
-    token-based path unchanged.
+    override is gated to Bedrock because it is the only Isol8-billed,
+    metered path; non-Bedrock sessions (ChatGPT OAuth / OpenAI / BYO) are
+    user-paid / flat-rate, so recording their ``estimatedCostUsd`` as Isol8
+    spend would contradict the books — they record spend 0 even when the
+    override is present. Token counts are still recorded for analytics in
+    all cases. ``None`` (the default — no ``estimatedCostUsd`` on the row)
+    falls back to the token-based path unchanged.
     """
     bare_model = _strip_provider_prefix(model)
     # The raw-cost override (OpenClaw's cache-inclusive ``estimatedCostUsd``)

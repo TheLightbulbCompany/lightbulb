@@ -1,0 +1,232 @@
+"""Provider-aware spend summary for the user-facing usage surface.
+
+Three modes, one per provider path (see the 2026-07-12 design spec):
+
+- ``bedrock``      — month-to-date BILLED spend from the Metronome draft
+                     usage invoice (the number Metronome finalizes), with a
+                     per-model split from the ``tier`` pricing group.
+- ``oauth_quota``  — ChatGPT plan-quota windows proxied from the container's
+                     ``models.authStatus`` gateway RPC.
+- ``tokens_only``  — BYOK / trial / any degraded case. The panel renders the
+                     token grid it already has; this module adds nothing.
+
+Display-only. The provision/chat gates never read this module; a failure
+here must never block anything — every branch degrades, never raises.
+"""
+
+import asyncio
+import logging
+import time
+from dataclasses import dataclass
+from uuid import uuid4
+
+import httpx
+
+from core.config import settings
+from core.observability.metrics import put_metric
+from core.repositories import billing_repo
+
+logger = logging.getLogger(__name__)
+
+# Cache TTL for the Metronome draft-invoice read. The panel revalidates on
+# focus; without this every remount would hit Metronome.
+_CACHE_TTL_SECONDS = 60.0
+_spend_cache: dict[str, tuple[float, "BilledSpend"]] = {}
+
+# tier (Metronome pricing-group value) -> display name. Tiers are the model
+# families the meter Lambda prices by; unknown tiers fall back to the raw key.
+_TIER_DISPLAY_NAMES = {
+    "opus": "Claude Opus",
+    "sonnet": "Claude Sonnet",
+    "haiku": "Claude Haiku",
+}
+
+# provider ids that identify the ChatGPT-OAuth entry in models.authStatus.
+# The deployed 7.1 fork reports "openai", but containers keep their
+# provision-time image until reprovision, and older images (plus the
+# frontend's own llm-auth-status mapping) still emit the retired
+# "openai-codex" id. Accept either.
+_OAUTH_PROVIDER_IDS = frozenset({"openai", "openai-codex"})
+
+
+@dataclass
+class BilledSpend:
+    total_cents: int
+    by_model: list[dict]
+    period_start: str | None
+
+
+async def _list_draft_invoices(customer_id: str) -> list[dict]:
+    """Scoped Metronome client construction (patchable in tests).
+
+    Mirrors the sibling ``async with httpx.AsyncClient(base_url=..., ...)``
+    idiom used by ``metronome_gate.py`` / ``metronome_provisioning.py`` /
+    ``metronome_funding.py``. A bare ``httpx.AsyncClient()`` (no
+    ``base_url``) makes every ``MetronomeClient`` request relative-path,
+    which raises ``httpx.UnsupportedProtocol`` on every real call.
+
+    Metronome's own docs describe the list response as an invoice SUMMARY
+    and point callers at the single-invoice Get Invoice endpoint for
+    detailed line items — we could not disprove that the list response
+    omits ``line_items`` (dev has had no usage this billing period to
+    check against). So every invoice id from the list is re-fetched via
+    ``get_customer_invoice``, and the DETAIL response is what gets
+    returned (and summed) — never the list's own ``line_items``. Both the
+    list call and every per-invoice detail call share the one AsyncClient
+    for this refresh.
+    """
+    from core.billing.metronome_client import for_settings
+
+    async with httpx.AsyncClient(base_url=settings.METRONOME_BASE_URL, timeout=5.0) as http:
+        client = for_settings(http)
+        summaries = await client.list_customer_invoices(customer_id=customer_id)
+        invoices = []
+        for summary in summaries:
+            invoice_id = summary.get("id")
+            if not invoice_id:
+                invoices.append(summary)
+                continue
+            detail = await client.get_customer_invoice(customer_id=customer_id, invoice_id=invoice_id)
+            invoices.append(detail or summary)
+        return invoices
+
+
+async def get_billed_month_spend(owner_id: str) -> BilledSpend | None:
+    """Month-to-date billed spend from the Metronome draft invoice.
+
+    None when the Metronome lifecycle is off, the owner has no Metronome
+    customer, or Metronome errors — callers hide the dollar surface then.
+    Usage line items only: an item counts iff its pricing_group_values
+    carry a ``tier``; commit/credit draw-downs (no tier, negative totals)
+    are excluded — remaining credits are the balance surface's job.
+
+    Never raises: a DDB throttle on the billing-account read degrades to
+    None exactly like a Metronome error, per this module's "display-only,
+    never blocks" contract.
+    """
+    if not settings.METRONOME_LIFECYCLE_ENABLED:
+        return None
+
+    cached = _spend_cache.get(owner_id)
+    if cached and (time.monotonic() - cached[0]) < _CACHE_TTL_SECONDS:
+        return cached[1]
+
+    try:
+        account = await billing_repo.get_by_owner_id(owner_id) or {}
+        customer_id = account.get("metronome_customer_id")
+        if not customer_id:
+            return None
+
+        invoices = await _list_draft_invoices(customer_id)
+    except Exception:
+        put_metric("billing.spend.metronome_error")
+        logger.warning("spend: Metronome draft-invoice read failed for %s", owner_id, exc_info=True)
+        return None
+
+    by_tier: dict[str, int] = {}
+    period_start: str | None = None
+    for invoice in invoices:
+        period_start = period_start or invoice.get("start_timestamp")
+        for item in invoice.get("line_items") or []:
+            tier = (item.get("pricing_group_values") or {}).get("tier")
+            if not tier:
+                continue
+            by_tier[tier] = by_tier.get(tier, 0) + round(float(item.get("total") or 0))
+
+    by_model = [
+        {"model": _TIER_DISPLAY_NAMES.get(tier, tier), "tier": tier, "cents": cents}
+        for tier, cents in sorted(by_tier.items(), key=lambda kv: -kv[1])
+    ]
+    billed = BilledSpend(
+        total_cents=sum(by_tier.values()),
+        by_model=by_model,
+        period_start=period_start,
+    )
+    _spend_cache[owner_id] = (time.monotonic(), billed)
+    return billed
+
+
+def _ecs_manager():
+    from core.containers import get_ecs_manager
+
+    return get_ecs_manager()
+
+
+def _gateway_pool():
+    from core.containers import get_gateway_pool
+
+    return get_gateway_pool()
+
+
+async def _oauth_quota_payload(owner_id: str) -> dict | None:
+    """ChatGPT plan-quota windows via the container's models.authStatus RPC.
+
+    None on ANY failure (container down, RPC error, usage block absent —
+    the upstream quota endpoint is unofficial and may vanish); the caller
+    falls back to tokens_only. OpenClaw caches upstream 60s; no cache here.
+    """
+    try:
+        container, ip = await _ecs_manager().resolve_running_container(owner_id)
+        if not container or not ip:
+            return None
+        # The pool's send_rpc has no timeout param of its own — it awaits
+        # GatewayConnection.wait_for_response's default _RPC_TIMEOUT (30s).
+        # This probe is display-only (feeds /billing/spend, which mobile's
+        # usage screen Promise.all's alongside the token summary), so it
+        # must not hold that endpoint open for the pool's full RPC budget
+        # if a container accepts models.authStatus but never answers.
+        result = await asyncio.wait_for(
+            _gateway_pool().send_rpc(
+                user_id=owner_id,
+                # A fresh id per call, not one keyed on owner_id: overlapping
+                # /billing/spend requests for the same owner would otherwise
+                # share a req_id, and the gateway pool's _pending_rpcs dict
+                # (keyed by req_id) could deliver one caller's response future
+                # to the other.
+                req_id=f"spend-authstatus-{uuid4().hex}",
+                method="models.authStatus",
+                params={},
+                ip=ip,
+                token=container["gateway_token"],
+            ),
+            timeout=5.0,
+        )
+        for provider in (result or {}).get("providers") or []:
+            if provider.get("provider") not in _OAUTH_PROVIDER_IDS:
+                continue
+            usage = provider.get("usage") or {}
+            windows = [
+                {
+                    "label": w.get("label", ""),
+                    "used_percent": w.get("usedPercent", 0),
+                    "resets_at_ms": w.get("resetAt"),
+                }
+                for w in usage.get("windows") or []
+            ]
+            if not windows:
+                # Keep scanning: a later matching entry (e.g. a second
+                # provider id alias) may carry the actual usage windows.
+                continue
+            return {"mode": "oauth_quota", "plan": usage.get("plan"), "windows": windows}
+        return None
+    except Exception:
+        put_metric("billing.spend.authstatus_error")
+        logger.warning("spend: models.authStatus quota read failed for %s", owner_id, exc_info=True)
+        return None
+
+
+async def get_spend_summary(owner_id: str, provider_choice: str | None) -> dict:
+    """The /billing/spend payload. Never raises — degraded == tokens_only."""
+    if provider_choice == "bedrock_claude":
+        billed = await get_billed_month_spend(owner_id)
+        if billed is None:
+            return {"mode": "tokens_only"}
+        return {
+            "mode": "bedrock",
+            "billed_month_to_date_cents": billed.total_cents,
+            "by_model": billed.by_model,
+            "period_start": billed.period_start,
+        }
+    if provider_choice == "chatgpt_oauth":
+        return await _oauth_quota_payload(owner_id) or {"mode": "tokens_only"}
+    return {"mode": "tokens_only"}

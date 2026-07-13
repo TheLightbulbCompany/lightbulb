@@ -2,24 +2,26 @@
 
 import { useCallback } from "react";
 import useSWR from "swr";
+import Link from "next/link";
 import { Loader2, RefreshCw, AlertCircle } from "lucide-react";
 import { useOrganization } from "@clerk/nextjs";
 import { useBilling } from "@/hooks/useBilling";
 import type { UsageSummary } from "@/hooks/useBilling";
+import { useSpend } from "@/hooks/useSpend";
 import { Button } from "@/components/ui/button";
 
 // =============================================================================
 // Helpers
 // =============================================================================
 
-function formatDollars(amount: number, decimals = 2): string {
-  return `$${amount.toFixed(decimals)}`;
-}
-
 function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
   return n.toLocaleString();
+}
+
+function formatCents(cents: number): string {
+  return `$${(cents / 100).toFixed(2)}`;
 }
 
 // =============================================================================
@@ -30,6 +32,7 @@ export function UsagePanel() {
   const { account, isLoading: accountLoading, fetchUsage, refresh } = useBilling();
   const { membership } = useOrganization();
   const isOrgAdmin = !membership || membership.role === "org:admin";
+  const { spend } = useSpend();
 
   // SWR-cached rather than fetched into local state on mount: panels
   // unmount/remount on every shell navigation, and an uncached read here
@@ -97,6 +100,60 @@ export function UsagePanel() {
         </div>
       )}
 
+      {spend?.mode === "bedrock" && (
+        <div className="rounded-lg border border-[#e0dbd0] p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-medium">Billed this month</h3>
+            <span className="text-lg font-semibold font-mono">
+              {formatCents(spend.billed_month_to_date_cents ?? 0)}
+            </span>
+          </div>
+          {(spend.by_model ?? []).map((row) => (
+            <div key={row.tier} className="flex items-center justify-between text-xs text-[#8a8578]">
+              <span>{row.model}</span>
+              <span className="font-mono">{formatCents(row.cents)}</span>
+            </div>
+          ))}
+          <p className="text-[10px] text-[#8a8578]/60">
+            From your credits invoice — matches what you&apos;re charged.
+          </p>
+          <Link
+            href="/chat?panel=llm"
+            className="inline-block text-xs text-[#8a8578] hover:text-[#1a1a1a] underline underline-offset-2"
+          >
+            Manage credits
+          </Link>
+        </div>
+      )}
+      {spend?.mode === "oauth_quota" && (
+        <div className="rounded-lg border border-[#e0dbd0] p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-medium">ChatGPT plan limits</h3>
+            {spend.plan && <span className="text-xs uppercase text-[#8a8578]">{spend.plan}</span>}
+          </div>
+          {(spend.windows ?? []).map((w) => (
+            <div key={w.label} className="space-y-1">
+              <div className="flex items-center justify-between text-xs">
+                <span>{w.label} limit</span>
+                <span className="text-[#8a8578]">
+                  {Math.round(w.used_percent)}% used
+                  {w.resets_at_ms
+                    ? ` · resets ${new Date(w.resets_at_ms).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}`
+                    : ""}
+                </span>
+              </div>
+              <div className="h-1.5 rounded bg-[#e0dbd0]">
+                <div
+                  className="h-1.5 rounded bg-[#1a1a1a]"
+                  style={{ width: `${Math.min(100, Math.max(0, w.used_percent))}%` }}
+                />
+              </div>
+            </div>
+          ))}
+          <p className="text-[10px] text-[#8a8578]/60">Included in your ChatGPT plan.</p>
+        </div>
+      )}
+
       {usage && (
         <div className="rounded-lg border border-[#e0dbd0] p-4 space-y-3">
           <h3 className="text-sm font-medium">Token Usage</h3>
@@ -120,7 +177,6 @@ export function UsagePanel() {
           </div>
           <div className="border-t border-[#e0dbd0] pt-2 flex items-center justify-between text-xs text-[#8a8578]">
             <span>{usage.request_count} requests this period</span>
-            <span>Total spend: {formatDollars(usage.total_spend, 4)}</span>
           </div>
         </div>
       )}
@@ -135,7 +191,6 @@ export function UsagePanel() {
               <tr className="border-b border-[#e0dbd0] text-[#8a8578]">
                 <th className="text-left px-4 py-2 font-medium">Member</th>
                 <th className="text-right px-4 py-2 font-medium">Requests</th>
-                <th className="text-right px-4 py-2 font-medium">Spend</th>
               </tr>
             </thead>
             <tbody>
@@ -150,24 +205,10 @@ export function UsagePanel() {
                   <td className="px-4 py-2 text-right text-[#8a8578]">
                     {member.request_count}
                   </td>
-                  <td className="px-4 py-2 text-right font-mono">
-                    {formatDollars(member.total_spend, 4)}
-                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
-        </div>
-      )}
-
-      {(usage || account) && (
-        <div className="rounded-lg border border-[#e0dbd0] p-4">
-          <div className="flex items-center justify-between text-sm">
-            <span className="text-[#8a8578]">Lifetime Spend</span>
-            <span className="font-mono font-medium">
-              {formatDollars(usage?.lifetime_spend ?? account?.lifetime_spend ?? 0)}
-            </span>
-          </div>
         </div>
       )}
     </div>

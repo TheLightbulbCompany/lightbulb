@@ -72,11 +72,7 @@ describe("DashboardPanel", () => {
               agents: { active: 1, running: 2, paused: 0, error: 0 },
               tasks: { open: 5, inProgress: 0, blocked: 1, done: 3 },
               runActivity: [],
-              costs: {
-                monthSpendCents: 1234,
-                monthBudgetCents: 0,
-                monthUtilizationPercent: 0,
-              },
+              costs: { monthSpendCents: 1234 },
               pendingApprovals: 2,
               budgets: { pendingApprovals: 1 },
             },
@@ -104,11 +100,7 @@ describe("DashboardPanel", () => {
               agents: {},
               tasks: {},
               runActivity: [],
-              costs: {
-                monthSpendCents: 0,
-                monthBudgetCents: 0,
-                monthUtilizationPercent: 0,
-              },
+              costs: { monthSpendCents: 0 },
               pendingApprovals: 0,
               budgets: { pendingApprovals: 0 },
             },
@@ -133,11 +125,7 @@ describe("DashboardPanel", () => {
               agents: {},
               tasks: {},
               runActivity: [],
-              costs: {
-                monthSpendCents: 0,
-                monthBudgetCents: 0,
-                monthUtilizationPercent: 0,
-              },
+              costs: { monthSpendCents: 0 },
               pendingApprovals: 0,
               budgets: { pendingApprovals: 0 },
             },
@@ -159,11 +147,7 @@ describe("DashboardPanel", () => {
               agents: {},
               tasks: {},
               runActivity: [],
-              costs: {
-                monthSpendCents: 0,
-                monthBudgetCents: 0,
-                monthUtilizationPercent: 0,
-              },
+              costs: { monthSpendCents: 0 },
               pendingApprovals: 0,
               budgets: { pendingApprovals: 0 },
             },
@@ -196,11 +180,7 @@ describe("DashboardPanel", () => {
               agents: {},
               tasks: {},
               runActivity: [],
-              costs: {
-                monthSpendCents: 12345,
-                monthBudgetCents: 50000,
-                monthUtilizationPercent: 25,
-              },
+              costs: { monthSpendCents: 12345 },
               pendingApprovals: 0,
               budgets: { pendingApprovals: 0 },
             },
@@ -211,10 +191,7 @@ describe("DashboardPanel", () => {
     );
     render(<DashboardPanel />);
     expect(screen.getByText("$123.45")).toBeInTheDocument();
-    // utilization summary in description block
-    expect(
-      screen.getByText(/25% of \$500\.00 budget/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/Billed credits this month/i)).toBeInTheDocument();
   });
 
   test("renders Recent Tasks sorted by updatedAt desc, newest first", () => {
@@ -226,11 +203,7 @@ describe("DashboardPanel", () => {
               agents: {},
               tasks: {},
               runActivity: [],
-              costs: {
-                monthSpendCents: 0,
-                monthBudgetCents: 0,
-                monthUtilizationPercent: 0,
-              },
+              costs: { monthSpendCents: 0 },
               pendingApprovals: 0,
               budgets: { pendingApprovals: 0 },
             },
@@ -296,11 +269,7 @@ describe("DashboardPanel", () => {
               agents: {},
               tasks: {},
               runActivity: [],
-              costs: {
-                monthSpendCents: 0,
-                monthBudgetCents: 0,
-                monthUtilizationPercent: 0,
-              },
+              costs: { monthSpendCents: 0 },
               pendingApprovals: 0,
               budgets: { pendingApprovals: 0 },
             },
@@ -322,11 +291,7 @@ describe("DashboardPanel", () => {
               agents: {},
               tasks: {},
               runActivity: [],
-              costs: {
-                monthSpendCents: 0,
-                monthBudgetCents: 0,
-                monthUtilizationPercent: 0,
-              },
+              costs: { monthSpendCents: 0 },
               pendingApprovals: 0,
               budgets: { pendingApprovals: 0 },
             },

@@ -6,6 +6,7 @@ router layer in Phase C.
 
 import asyncio
 import os
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -167,6 +168,35 @@ async def test_get_overview_errors_dont_starve_other_sources():
 
     assert result["billing"]["error"] == "ddb_blip"
     assert result["container"]["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_get_overview_reads_current_month_usage_period():
+    """usage_repo rows only exist as YYYY-MM / lifetime / member:* keys — the
+    literal string "current" is never written, so the read must use the
+    actual current UTC month."""
+    from core.services import admin_service
+
+    now = datetime.now(timezone.utc)
+    expected_period = f"{now.year}-{now.month:02d}"
+
+    usage_mock = AsyncMock(return_value={"tokens": 1000})
+
+    with (
+        patch("core.services.admin_service.clerk_admin.get_user", new=AsyncMock(return_value={"id": "u1"})),
+        patch(
+            "core.services.admin_service.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"status": "running"}),
+        ),
+        patch(
+            "core.services.admin_service.billing_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"plan_tier": "starter"}),
+        ),
+        patch("core.services.admin_service.usage_repo.get_period_usage", new=usage_mock),
+    ):
+        await admin_service.get_overview("u1")
+
+    usage_mock.assert_awaited_with("u1", expected_period)
 
 
 # ---- list_user_agents -----------------------------------------------------

@@ -14,11 +14,7 @@ const mockRead = vi.fn((path: string) => {
           agents: { active: 5, running: 5, paused: 0, error: 0 },
           tasks: { open: 12, inProgress: 0, blocked: 0, done: 0 },
           runActivity: [],
-          costs: {
-            monthSpendCents: 4250,
-            monthBudgetCents: 0,
-            monthUtilizationPercent: 0,
-          },
+          costs: { monthSpendCents: 4250 },
           pendingApprovals: 0,
           budgets: { pendingApprovals: 0 },
         },

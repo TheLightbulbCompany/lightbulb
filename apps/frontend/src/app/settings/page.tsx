@@ -55,14 +55,6 @@ type Panel =
   | "marketplace";
 
 // =============================================================================
-// Helpers
-// =============================================================================
-
-function formatDollars(amount: number, decimals = 2): string {
-  return `$${amount.toFixed(decimals)}`;
-}
-
-// =============================================================================
 // Profile Panel
 // =============================================================================
 
@@ -209,17 +201,6 @@ function BillingPanel() {
           onSubscribe={startTeamCheckout}
           onManage={handlePortal}
         />
-
-        {/* A real per-seat sub that's actually subscribed has accrued spend
-            (unlike the unsubscribed paywall case above, where there's
-            nothing to report yet) — surface it alongside TeamBillingCard so
-            a seat-sub admin doesn't lose the visibility they'd get on the
-            flat/comped branch below. */}
-        {isSubscribed && account && (
-          <div className="settings-card-desc" style={{ marginTop: 12 }}>
-            Current period spend: {formatDollars(account.current_spend, 4)} · Lifetime: {formatDollars(account.lifetime_spend)}
-          </div>
-        )}
       </div>
     );
   }
@@ -255,11 +236,6 @@ function BillingPanel() {
                 )}
               </div>
               <div className="settings-card-desc">Active subscription</div>
-              {account && (
-                <div className="settings-card-desc" style={{ marginTop: 4 }}>
-                  Current period spend: {formatDollars(account.current_spend, 4)} · Lifetime: {formatDollars(account.lifetime_spend)}
-                </div>
-              )}
             </div>
             <button type="button" className="settings-btn-outline" onClick={handlePortal} disabled={portalLoading}>
               {portalLoading && <span className="settings-spinner" style={{ width: 14, height: 14, borderWidth: 2, marginRight: 6, display: "inline-block", verticalAlign: "middle" }} />}
@@ -304,11 +280,6 @@ function BillingPanel() {
                   ? "Active subscription"
                   : "No active subscription"}
             </div>
-            {account && (
-              <div className="settings-card-desc" style={{ marginTop: 4 }}>
-                Current period spend: {formatDollars(account.current_spend, 4)} · Lifetime: {formatDollars(account.lifetime_spend)}
-              </div>
-            )}
           </div>
           {isSubscribed ? (
             <button type="button" className="settings-btn-outline" onClick={handlePortal} disabled={portalLoading}>

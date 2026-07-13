@@ -24,6 +24,7 @@ export const RETIRED_PANEL_ALIASES: Readonly<Record<string, string>> = {
   "teams-approvals": "teams-inbox",
   "teams-members": "teams-settings",
   "teams-skills": "teams-dashboard",
+  "teams-costs": "teams-dashboard",
 };
 
 // One-shot intents: copied to the target panel's open params, immediately
@@ -45,7 +46,6 @@ const TEAMS_LIST_KEYS: Readonly<Record<string, string>> = {
   goals: "Goals",
   projects: "Projects",
   activity: "Activity",
-  costs: "Costs",
   settings: "Team Settings",
 };
 

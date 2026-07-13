@@ -92,10 +92,9 @@ describe("BillingPanel — org context seat-vs-flat branch", () => {
     expect(screen.getByText("Isol8 plan")).toBeInTheDocument();
     expect(screen.getByText("Active subscription")).toBeInTheDocument();
 
-    // The spend line is preserved (current + lifetime).
-    expect(screen.getByText(/Current period spend:.*Lifetime:/)).toBeInTheDocument();
-    expect(screen.getByText(/\$12\.3456/)).toBeInTheDocument();
-    expect(screen.getByText(/\$45\.60/)).toBeInTheDocument();
+    // The spend line was removed from the settings billing card (provider-
+    // aware spend now lives on the dashboard Month Spend card / Usage panel).
+    expect(screen.queryByText(/Current period spend/i)).not.toBeInTheDocument();
   });
 
   it("real seat-sub org (is_seat_subscription: true, subscribed) renders TeamBillingCard", () => {
@@ -184,7 +183,7 @@ describe("BillingPanel — org context seat-vs-flat branch", () => {
     expect(screen.getByText(/billing restricted/i)).toBeInTheDocument();
   });
 
-  it("admin of a real seat-sub org sees TeamBillingCard AND the current/lifetime spend line", () => {
+  it("admin of a real seat-sub org sees TeamBillingCard without a spend line", () => {
     clerk.membership = { role: "org:admin" };
     billing.isSubscribed = true;
     billing.account = {
@@ -206,9 +205,7 @@ describe("BillingPanel — org context seat-vs-flat branch", () => {
     expect(screen.getByRole("button", { name: /manage billing/i })).toBeInTheDocument();
     expect(screen.getByText(/4 seats/i)).toBeInTheDocument();
 
-    // The spend line is ALSO present (Regression 3 fix).
-    expect(screen.getByText(/Current period spend:.*Lifetime:/)).toBeInTheDocument();
-    expect(screen.getByText(/\$3\.1400/)).toBeInTheDocument();
-    expect(screen.getByText(/\$99\.50/)).toBeInTheDocument();
+    // The spend line was removed from the settings billing card.
+    expect(screen.queryByText(/Current period spend/i)).not.toBeInTheDocument();
   });
 });

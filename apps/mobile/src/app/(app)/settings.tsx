@@ -28,8 +28,6 @@ const MANAGE_BILLING_URL = "https://isol8.co/settings?panel=billing";
 
 interface BillingAccount {
   is_subscribed: boolean;
-  current_spend: number;
-  lifetime_spend: number;
   subscription_status: string | null;
   /** Unix epoch SECONDS. Stripe owns the trial clock — render-only. */
   trial_end: number | null;

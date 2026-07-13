@@ -1,9 +1,15 @@
-"""Teams BFF — Activity + Costs + Dashboard.
+"""Teams BFF — Activity + Dashboard.
 
-All three are pure-read aggregation surfaces. Dashboard fans out
-into two upstream calls (the dashboard summary and the sidebar
-badge counts) and merges them into one response so the panel
-renders in a single round-trip.
+Both are pure-read aggregation surfaces. Dashboard fans out into two
+upstream calls (the dashboard summary and the sidebar badge counts) and
+merges them into one response so the panel renders in a single
+round-trip. Dashboard's ``costs`` block is NOT the upstream Paperclip
+value — for owners on the Bedrock provider path it is replaced with the
+Metronome-billed month spend (see ``get_dashboard``); every other
+provider path (OAuth, BYOK, trial) omits the block entirely, since a
+metronome_customer_id exists for every provision-eligible owner
+regardless of provider and would otherwise render a misleading $0.00
+card. There is no standalone ``/costs`` route.
 
 Activity events carry a raw ``actorId`` — the Better Auth (Paperclip)
 principal id, NOT a Clerk id and NOT a display name. ``list_activity``
@@ -22,6 +28,8 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
+from core.services import spend_service
+from core.services.container_provision import resolve_provider_choice
 
 from . import agents as _agents
 from .deps import TeamsContext, TeamsContextError
@@ -139,15 +147,6 @@ async def list_activity(
     return payload
 
 
-@router.get("/costs")
-async def get_costs(ctx: TeamsContext = Depends(_ctx)):
-    """Fetch the company costs summary."""
-    return await _agents._admin().get_costs(
-        company_id=ctx.company_id,
-        session_cookie=ctx.session_cookie,
-    )
-
-
 @router.get("/dashboard")
 async def get_dashboard(
     ctx: TeamsContext = Depends(_ctx),
@@ -155,10 +154,11 @@ async def get_dashboard(
 ):
     """Fetch the dashboard summary + sidebar badges in parallel.
 
-    Returns the upstream Paperclip dashboard summary verbatim
-    (``agents`` / ``tasks`` / ``runActivity`` / ``costs`` /
-    ``pendingApprovals`` / ``budgets``) so the panel can render the
-    full set of metric tiles + charts without further fan-out.
+    Returns the upstream Paperclip dashboard summary
+    (``agents`` / ``tasks`` / ``runActivity`` / ``pendingApprovals`` /
+    ``budgets``) so the panel can render the full set of metric tiles +
+    charts without further fan-out. The ``costs`` block is NEVER the
+    upstream Paperclip value — see the replacement below.
 
     Defensive: if upstream returns None or a non-dict, normalize to
     an empty dict so the frontend can still render an empty-state.
@@ -199,8 +199,40 @@ async def get_dashboard(
             session_cookie=ctx.session_cookie,
         ),
     )
+    dash = dash if isinstance(dash, dict) else {}
+    # Paperclip's cost_events ledger only sees successful Paperclip-driven
+    # runs — a structural undercount. The billed number comes from
+    # Metronome (the invoice we actually charge). Every provision-eligible
+    # owner gets a metronome_customer_id regardless of provider_choice (see
+    # user_provision.py), so gate on the resolved Bedrock path explicitly —
+    # otherwise OAuth/BYOK/trial owners would get a real (if zero)
+    # BilledSpend and render a permanent, misleading "Month Spend $0.00"
+    # card. The raw billing-row's ``provider_choice`` is never read directly
+    # here — ``resolve_provider_choice`` is THE single resolver (see
+    # container_provision.py) and defaults a legacy owner with no stored
+    # choice to bedrock_claude, and separately maps trial_local owners to
+    # the bedrock_trial config mode (never billed). The resolver call is
+    # failure-tolerant: any error just omits the costs block, matching
+    # spend_service's own "display-only, never blocks" contract.
+    dash.pop("costs", None)
+    # GET /billing/spend restricts billed-spend detail to org admins
+    # (require_org_admin) — a non-admin org member must not be able to read
+    # via the dashboard what the billing API 403s them from. Mirrors the
+    # same condition the container-readiness gate above uses.
+    if not auth.is_org_context or auth.is_org_admin:
+        try:
+            provider_choice, _byo_provider = await resolve_provider_choice(resolve_owner_id(auth))
+        except Exception:
+            logger.warning("dashboard: provider_choice resolution failed; omitting costs block", exc_info=True)
+            provider_choice = None
+        if provider_choice == "bedrock_claude":
+            billed = await spend_service.get_billed_month_spend(resolve_owner_id(auth))
+            if billed is not None:
+                dash["costs"] = {"monthSpendCents": billed.total_cents}
+        # bedrock_trial deliberately shows no dollars — the free tier omits
+        # the costs block just like OAuth/BYOK.
     return {
-        "dashboard": dash if isinstance(dash, dict) else {},
+        "dashboard": dash,
         "sidebar_badges": badges,
     }
 

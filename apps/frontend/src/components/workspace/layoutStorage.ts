@@ -4,7 +4,7 @@
 // persistent). NEVER call localStorage.clear() here: a key===null storage
 // event is treated as a permissions event by the gateway listeners.
 import type { SerializedDockview } from "dockview-react";
-import { PANEL_COMPONENT_KEYS, ONE_SHOT_PARAMS } from "./panelRegistry";
+import { PANEL_COMPONENT_KEYS, ONE_SHOT_PARAMS, RETIRED_PANEL_ALIASES } from "./panelRegistry";
 
 const KEY_PREFIX = "isol8.workspace.layout.v1";
 
@@ -22,6 +22,95 @@ interface StoredLayout {
   layout: SerializedDockview;
 }
 
+function hasOwnKey(obj: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+// RETIRED_PANEL_ALIASES is otherwise applied replace-only to URL commands
+// (see panelRegistry.ts) — a saved dockview layout restores panel ids/params
+// straight from localStorage, bypassing that resolver entirely. A layout
+// saved before a panel was retired still carries the old id, so it must be
+// migrated here too. Two id shapes show up in practice: teams-* aliases are
+// bare panel ids (panelId === registry key), non-teams aliases (credits→llm)
+// are control-panel ids carrying the `control:` prefix.
+function migrateRetiredPanelId(
+  id: string,
+): { id: string; teamsKey?: string; controlKey?: string } | null {
+  if (hasOwnKey(RETIRED_PANEL_ALIASES, id)) {
+    const target = RETIRED_PANEL_ALIASES[id];
+    if (target.startsWith("teams-")) {
+      return { id: target, teamsKey: target.slice("teams-".length) };
+    }
+    return null;
+  }
+  if (id.startsWith("control:")) {
+    const key = id.slice("control:".length);
+    if (hasOwnKey(RETIRED_PANEL_ALIASES, key)) {
+      const target = RETIRED_PANEL_ALIASES[key];
+      return { id: `control:${target}`, controlKey: target };
+    }
+  }
+  return null;
+}
+
+type GridNode = SerializedDockview["grid"]["root"];
+
+// Panel ids also live in the grid tree (each leaf group's `views` + optional
+// `activeView`), independent of the flat `panels` map — a rename or drop in
+// `panels` must be mirrored there or dockview restores a group referencing a
+// panel id that no longer exists.
+//
+// A drop can also empty out a leaf entirely (the retired panel was the only
+// tab in its group) — an empty `views` array restores as a blank pane, so
+// such leaves are pruned (return null) rather than kept with zero views.
+// Pruning propagates upward: a branch left with no surviving children is
+// itself pruned, and a branch left with exactly one surviving child
+// collapses to that child (dockview's SerializedGridObject shape has no
+// concept of a branch with a single member — the branch node's own
+// `size`/`visible` describe the slot it held in ITS parent, so those are
+// preserved on the promoted child; the child's own size was relative to the
+// discarded branch and no longer applies now that it fills the whole slot).
+function migrateGridNode(
+  node: GridNode,
+  renamed: Readonly<Record<string, string>>,
+  dropped: ReadonlySet<string>,
+): GridNode | null {
+  if (node.type === "branch") {
+    const children = (node.data as GridNode[])
+      .map((child) => migrateGridNode(child, renamed, dropped))
+      .filter((child): child is GridNode => child !== null);
+    if (children.length === 0) return null;
+    if (children.length === 1) {
+      const [only] = children;
+      return { ...only, size: node.size, visible: node.visible } as GridNode;
+    }
+    return { ...node, data: children } as GridNode;
+  }
+  const leaf = node.data as unknown as {
+    views: string[];
+    activeView?: string;
+    [key: string]: unknown;
+  };
+  const views = leaf.views.filter((v) => !dropped.has(v)).map((v) => renamed[v] ?? v);
+  if (views.length === 0) return null;
+  let activeView = leaf.activeView;
+  if (activeView !== undefined) {
+    activeView = dropped.has(activeView) ? views[0] : (renamed[activeView] ?? activeView);
+  }
+  return { ...node, data: { ...leaf, views, activeView } } as GridNode;
+}
+
+// Collect every surviving group id (leaf `data.id`) in a pruned grid tree, so
+// `activeGroup` can be repointed off a group that pruning just removed.
+function collectGroupIds(node: GridNode, out: Set<string>): void {
+  if (node.type === "branch") {
+    for (const child of node.data as GridNode[]) collectGroupIds(child, out);
+    return;
+  }
+  const leaf = node.data as unknown as { id?: string };
+  if (leaf.id) out.add(leaf.id);
+}
+
 export function layoutStorageKey(scopeId: string): string {
   return `${KEY_PREFIX}:${scopeId}`;
 }
@@ -34,8 +123,18 @@ export function layoutStorageKey(scopeId: string): string {
 // components map: the deserializer defaults a missing contentComponent to
 // the literal string 'unknown'.
 export function sanitizeLayout(raw: SerializedDockview): SerializedDockview {
+  const rawPanels = raw.panels ?? {};
   const panels: SerializedDockview["panels"] = {};
-  for (const [id, state] of Object.entries(raw.panels ?? {})) {
+  const renamed: Record<string, string> = {};
+  const dropped = new Set<string>();
+  // Targets already produced by this migration pass (by an original panel
+  // id or by an earlier retired-panel rename). Two retired panels can alias
+  // to the same target (e.g. teams-skills and teams-costs both -> the same
+  // consolidated panel) — without this, the second rename would overwrite
+  // the first in `panels`, leaving a duplicate view id in the grid tree.
+  const claimedTargets = new Set<string>();
+
+  for (const [id, state] of Object.entries(rawPanels)) {
     const component =
       state.contentComponent && PANEL_COMPONENT_KEYS.has(state.contentComponent)
         ? state.contentComponent
@@ -46,10 +145,51 @@ export function sanitizeLayout(raw: SerializedDockview): SerializedDockview {
       for (const oneShot of ONE_SHOT_PARAMS) delete params[oneShot];
       for (const key of PERSIST_ONLY_STRIP) delete params[key];
     }
-    panels[id] = { ...state, contentComponent: component, params };
+
+    let finalId = id;
+    const migration = migrateRetiredPanelId(id);
+    if (migration) {
+      if (hasOwnKey(rawPanels, migration.id) || claimedTargets.has(migration.id)) {
+        // Target panel is already open in this same layout, or an earlier
+        // retired panel in this same pass already renamed to it — dropping
+        // the retired duplicate is simpler and safer than merging two panel
+        // states into one id.
+        dropped.add(id);
+        continue;
+      }
+      finalId = migration.id;
+      renamed[id] = finalId;
+      claimedTargets.add(finalId);
+      if (params) {
+        if (migration.teamsKey !== undefined) params.teamsKey = migration.teamsKey;
+        if (migration.controlKey !== undefined) params.controlKey = migration.controlKey;
+      }
+    }
+
+    panels[finalId] = { ...state, id: finalId, contentComponent: component, params };
   }
-  const clean: SerializedDockview = { grid: raw.grid, panels };
-  if (raw.activeGroup !== undefined) clean.activeGroup = raw.activeGroup;
+
+  let grid = raw.grid;
+  let activeGroup = raw.activeGroup;
+  if (Object.keys(renamed).length || dropped.size) {
+    // The root itself can only be pruned away if literally every panel in
+    // the layout got dropped, which can't happen from a duplicate-target
+    // drop (the alias target survives elsewhere) — but fall back to the
+    // original root rather than crash if it ever does.
+    const migratedRoot = migrateGridNode(raw.grid.root, renamed, dropped);
+    if (migratedRoot) {
+      grid = { ...raw.grid, root: migratedRoot };
+      if (activeGroup !== undefined) {
+        const survivingGroupIds = new Set<string>();
+        collectGroupIds(migratedRoot, survivingGroupIds);
+        if (!survivingGroupIds.has(activeGroup)) {
+          activeGroup = survivingGroupIds.values().next().value;
+        }
+      }
+    }
+  }
+  const clean: SerializedDockview = { grid, panels };
+  if (activeGroup !== undefined) clean.activeGroup = activeGroup;
   // floatingGroups / popoutGroups / edgeGroups deliberately dropped:
   // disableFloatingGroups only blocks user-initiated floats — persisted
   // floating groups would still restore (and popouts window.open a 404).

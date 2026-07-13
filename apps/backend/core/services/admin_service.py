@@ -22,6 +22,7 @@ import asyncio
 import json
 import logging
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 from core import openclaw_version
@@ -232,7 +233,10 @@ async def get_overview(user_id: str) -> dict:
     personal-mode rows (admin-org-owner-id fix). The returned ``org`` field
     is null for personal-mode users and {id, slug, name, role} otherwise.
     """
-    period = "current"  # usage_repo uses "YYYY-MM" or "current"; current covers month-to-date
+    # usage_repo rows only exist as "YYYY-MM" / "lifetime" / "member:*" keys —
+    # read the actual current UTC month, matching usage_service._current_period().
+    now = datetime.now(timezone.utc)
+    period = f"{now.year}-{now.month:02d}"
 
     owner_id, org_context = await resolve_admin_owner_id(user_id)
 

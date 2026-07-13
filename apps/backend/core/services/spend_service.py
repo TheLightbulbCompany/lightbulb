@@ -17,6 +17,7 @@ here must never block anything — every branch degrades, never raises.
 import logging
 import time
 from dataclasses import dataclass
+from uuid import uuid4
 
 import httpx
 
@@ -55,11 +56,31 @@ async def _list_draft_invoices(customer_id: str) -> list[dict]:
     ``metronome_funding.py``. A bare ``httpx.AsyncClient()`` (no
     ``base_url``) makes every ``MetronomeClient`` request relative-path,
     which raises ``httpx.UnsupportedProtocol`` on every real call.
+
+    Metronome's own docs describe the list response as an invoice SUMMARY
+    and point callers at the single-invoice Get Invoice endpoint for
+    detailed line items — we could not disprove that the list response
+    omits ``line_items`` (dev has had no usage this billing period to
+    check against). So every invoice id from the list is re-fetched via
+    ``get_customer_invoice``, and the DETAIL response is what gets
+    returned (and summed) — never the list's own ``line_items``. Both the
+    list call and every per-invoice detail call share the one AsyncClient
+    for this refresh.
     """
     from core.billing.metronome_client import for_settings
 
     async with httpx.AsyncClient(base_url=settings.METRONOME_BASE_URL, timeout=5.0) as http:
-        return await for_settings(http).list_customer_invoices(customer_id=customer_id)
+        client = for_settings(http)
+        summaries = await client.list_customer_invoices(customer_id=customer_id)
+        invoices = []
+        for summary in summaries:
+            invoice_id = summary.get("id")
+            if not invoice_id:
+                invoices.append(summary)
+                continue
+            detail = await client.get_customer_invoice(customer_id=customer_id, invoice_id=invoice_id)
+            invoices.append(detail or summary)
+        return invoices
 
 
 async def get_billed_month_spend(owner_id: str) -> BilledSpend | None:
@@ -142,7 +163,12 @@ async def _oauth_quota_payload(owner_id: str) -> dict | None:
             return None
         result = await _gateway_pool().send_rpc(
             user_id=owner_id,
-            req_id=f"spend-authstatus-{owner_id}",
+            # A fresh id per call, not one keyed on owner_id: overlapping
+            # /billing/spend requests for the same owner would otherwise
+            # share a req_id, and the gateway pool's _pending_rpcs dict
+            # (keyed by req_id) could deliver one caller's response future
+            # to the other.
+            req_id=f"spend-authstatus-{uuid4().hex}",
             method="models.authStatus",
             params={},
             ip=ip,

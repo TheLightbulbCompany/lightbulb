@@ -346,9 +346,24 @@ class MetronomeClient:
         pricing_group_values (our ``tier`` key), which is what the
         user-facing spend surface renders. Read-only display path — the
         gates never call this.
+
+        Metronome's docs describe this list response as an invoice SUMMARY
+        and direct callers to the single-invoice Get Invoice endpoint for
+        detailed line items — callers of this method should treat
+        ``line_items`` here as unreliable and re-fetch via
+        ``get_customer_invoice`` before summing.
         """
         body = await self._get(f"/customers/{customer_id}/invoices", params={"status": status})
         return body.get("data") or []
+
+    async def get_customer_invoice(self, *, customer_id: str, invoice_id: str) -> dict:
+        """GET /v1/customers/{customer_id}/invoices/{invoice_id} — full detail
+        for one invoice. This is Metronome's documented "Get Invoice"
+        endpoint, which — unlike ``list_customer_invoices`` — is guaranteed
+        to carry full ``line_items``. Returns the ``data`` sub-object (empty
+        dict when absent)."""
+        body = await self._get(f"/customers/{customer_id}/invoices/{invoice_id}")
+        return body.get("data") or {}
 
 
 def for_settings(http_client: httpx.AsyncClient) -> MetronomeClient:

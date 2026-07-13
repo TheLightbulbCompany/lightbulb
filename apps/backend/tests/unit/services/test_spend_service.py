@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from core.billing.metronome_client import MetronomeClient
 from core.services import spend_service
 
 
@@ -121,6 +122,41 @@ async def test_billed_spend_cached_within_ttl():
 
 
 @pytest.mark.asyncio
+async def test_billed_spend_uses_invoice_detail_when_list_omits_line_items():
+    """Finding P1: Metronome's list endpoint returns invoice SUMMARIES whose
+    line_items may be empty ("use the Get Invoice endpoint for detailed
+    line items" per Metronome's docs) — the real ``_list_draft_invoices``
+    (not mocked away here) must re-fetch each invoice by id and sum the
+    DETAIL response, not the list one."""
+    list_invoice = {"id": "inv-1", "start_timestamp": "2026-07-01T00:00:00+00:00", "line_items": []}
+    detail_invoice = {
+        "id": "inv-1",
+        "start_timestamp": "2026-07-01T00:00:00+00:00",
+        "line_items": [
+            {"name": "Sonnet usage", "total": 500.0, "pricing_group_values": {"tier": "sonnet"}},
+        ],
+    }
+    with (
+        _patch_lifecycle(True),
+        patch.object(
+            spend_service.billing_repo,
+            "get_by_owner_id",
+            new=AsyncMock(return_value={"metronome_customer_id": "cus-1"}),
+        ),
+        patch.object(MetronomeClient, "list_customer_invoices", new=AsyncMock(return_value=[list_invoice])),
+        patch.object(
+            MetronomeClient, "get_customer_invoice", new=AsyncMock(return_value=detail_invoice)
+        ) as get_invoice,
+    ):
+        billed = await spend_service.get_billed_month_spend("owner-1")
+
+    get_invoice.assert_awaited_once_with(customer_id="cus-1", invoice_id="inv-1")
+    assert billed is not None
+    assert billed.total_cents == 500
+    assert billed.by_model == [{"model": "Claude Sonnet", "tier": "sonnet", "cents": 500}]
+
+
+@pytest.mark.asyncio
 async def test_billed_spend_none_when_billing_repo_raises():
     """Finding #3 regression: a DDB throttle on the billing-account read must
     degrade to None, not propagate — this module's "never raises" contract
@@ -196,6 +232,24 @@ async def test_summary_oauth_degrades_when_no_container():
     with p1, p2:
         payload = await spend_service.get_spend_summary("owner-1", "chatgpt_oauth")
     assert payload == {"mode": "tokens_only"}
+
+
+@pytest.mark.asyncio
+async def test_summary_oauth_uses_unique_req_id_per_call():
+    """Finding P2: a fixed req_id keyed only on owner_id lets two
+    overlapping /billing/spend requests for the same owner cross-deliver
+    responses in the gateway pool's _pending_rpcs (keyed by req_id)."""
+    p1, p2 = _patch_gateway(rpc_result=AUTH_STATUS_RESULT)
+    with p1, p2:
+        await spend_service.get_spend_summary("owner-1", "chatgpt_oauth")
+        pool = spend_service._gateway_pool()
+        first_req_id = pool.send_rpc.call_args.kwargs["req_id"]
+
+        await spend_service.get_spend_summary("owner-1", "chatgpt_oauth")
+        second_req_id = pool.send_rpc.call_args.kwargs["req_id"]
+
+    assert first_req_id != second_req_id
+    assert first_req_id.startswith("spend-authstatus-")
 
 
 @pytest.mark.asyncio

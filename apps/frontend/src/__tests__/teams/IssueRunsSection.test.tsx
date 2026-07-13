@@ -38,4 +38,17 @@ describe("IssueRunsSection", () => {
     expect(statuses[1]).toMatch(/succeeded/i);
     expect(screen.getAllByText(/Atlas/).length).toBeGreaterThan(0);
   });
+
+  it("links each run row to the run-detail panel", () => {
+    read.mockReturnValue({
+      data: { runs: [run("run_1", "ag1", "succeeded", "2026-05-01T00:00:00Z")] },
+      isLoading: false, error: null, mutate: vi.fn(),
+    });
+    render(<IssueRunsSection issueId="iss1" agents={[{ id: "ag1", name: "Atlas" } as never]} />);
+    const link = screen.getByRole("link", { name: /view run/i });
+    expect(link).toHaveAttribute(
+      "href",
+      "/chat?panel=teams-run-detail&detailId=run_1",
+    );
+  });
 });

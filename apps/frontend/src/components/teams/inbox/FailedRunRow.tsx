@@ -6,6 +6,7 @@ import { AlertTriangle } from "lucide-react";
 import { EditorialButton } from "@/components/teams/shell";
 import { useAgentWake } from "@/components/teams/inbox/hooks/useAgentWake";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
+import { teamsDetailUrl, handleShellLinkClick } from "@/lib/shellNav";
 import type { HeartbeatRun } from "@/components/teams/shared/types";
 
 /** Transient state of the Retry action. ``error`` keeps the button live so a
@@ -70,6 +71,14 @@ export function FailedRunRow({
       </div>
       {run.startedAt && <span className="text-xs text-[var(--mute)]">{timeAgo(run.startedAt)}</span>}
       <div className="flex items-center gap-2">
+        <a
+          href={teamsDetailUrl("run", run.id)}
+          onClick={(e) => handleShellLinkClick(e, teamsDetailUrl("run", run.id))}
+          className="text-xs hover:underline"
+          style={{ color: "var(--forest)" }}
+        >
+          View
+        </a>
         {run.agentId && (
           <EditorialButton
             variant="secondary"

@@ -178,6 +178,14 @@ function AgentRunCard({
           )}
           <Identity name={agentName} size="sm" />
         </div>
+        <a
+          href={teamsDetailUrl("run", run.id)}
+          onClick={(e) => handleShellLinkClick(e, teamsDetailUrl("run", run.id))}
+          className="flex-shrink-0 text-[11px] hover:underline"
+          style={{ color: "var(--mute)" }}
+        >
+          Details
+        </a>
       </div>
 
       {/* Live status line */}

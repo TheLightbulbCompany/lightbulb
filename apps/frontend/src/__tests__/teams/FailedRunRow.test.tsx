@@ -66,6 +66,20 @@ describe("FailedRunRow", () => {
     expect(screen.queryByRole("button", { name: /retry/i })).toBeNull();
   });
 
+  it("renders a View link to the run-detail panel", () => {
+    render(
+      <FailedRunRow
+        run={{ id: "run_9", agentId: "agt_1", status: "failed", startedAt: null, completedAt: null, failureReason: null }}
+        agentName="Lens"
+        onDismiss={() => {}}
+      />,
+    );
+    expect(screen.getByRole("link", { name: "View" })).toHaveAttribute(
+      "href",
+      "/chat?panel=teams-run-detail&detailId=run_9",
+    );
+  });
+
   it("tolerates a wake failure without crashing the row", async () => {
     wakeAgent.mockRejectedValueOnce(new Error("boom"));
     render(<FailedRunRow run={RUN} agentName="Atlas" onDismiss={vi.fn()} />);

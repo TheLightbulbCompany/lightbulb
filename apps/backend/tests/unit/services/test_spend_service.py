@@ -134,3 +134,91 @@ async def test_billed_spend_none_when_billing_repo_raises():
         ),
     ):
         assert await spend_service.get_billed_month_spend("owner-1") is None
+
+
+AUTH_STATUS_RESULT = {
+    "ts": 1,
+    "providers": [
+        {"provider": "anthropic"},
+        {
+            "provider": "openai",
+            "usage": {
+                "plan": "pro",
+                "windows": [
+                    {"label": "5h", "usedPercent": 43, "resetAt": 1789000000000},
+                    {"label": "Week", "usedPercent": 61},
+                ],
+            },
+        },
+    ],
+}
+
+
+def _patch_gateway(rpc_result=None, rpc_error=None, container=("c", "10.0.0.1")):
+    """Patch the ecs/pool accessors spend_service uses for the OAuth branch."""
+    ecs = AsyncMock()
+    ecs.resolve_running_container.return_value = ({"gateway_token": "tok"}, container[1]) if container else (None, None)
+    pool = AsyncMock()
+    if rpc_error:
+        pool.send_rpc.side_effect = rpc_error
+    else:
+        pool.send_rpc.return_value = rpc_result
+    return (
+        patch.object(spend_service, "_ecs_manager", return_value=ecs),
+        patch.object(spend_service, "_gateway_pool", return_value=pool),
+    )
+
+
+@pytest.mark.asyncio
+async def test_summary_oauth_maps_quota_windows():
+    p1, p2 = _patch_gateway(rpc_result=AUTH_STATUS_RESULT)
+    with p1, p2:
+        payload = await spend_service.get_spend_summary("owner-1", "chatgpt_oauth")
+    assert payload["mode"] == "oauth_quota"
+    assert payload["plan"] == "pro"
+    assert payload["windows"] == [
+        {"label": "5h", "used_percent": 43, "resets_at_ms": 1789000000000},
+        {"label": "Week", "used_percent": 61, "resets_at_ms": None},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_summary_oauth_degrades_to_tokens_only_on_rpc_failure():
+    p1, p2 = _patch_gateway(rpc_error=RuntimeError("container gone"))
+    with p1, p2:
+        payload = await spend_service.get_spend_summary("owner-1", "chatgpt_oauth")
+    assert payload == {"mode": "tokens_only"}
+
+
+@pytest.mark.asyncio
+async def test_summary_oauth_degrades_when_no_container():
+    p1, p2 = _patch_gateway(container=None)
+    with p1, p2:
+        payload = await spend_service.get_spend_summary("owner-1", "chatgpt_oauth")
+    assert payload == {"mode": "tokens_only"}
+
+
+@pytest.mark.asyncio
+async def test_summary_byok_and_unknown_are_tokens_only():
+    assert await spend_service.get_spend_summary("owner-1", "byo_key") == {"mode": "tokens_only"}
+    assert await spend_service.get_spend_summary("owner-1", None) == {"mode": "tokens_only"}
+
+
+@pytest.mark.asyncio
+async def test_summary_bedrock_uses_billed_spend():
+    billed = spend_service.BilledSpend(total_cents=1234, by_model=[], period_start="2026-07-01")
+    with patch.object(spend_service, "get_billed_month_spend", new=AsyncMock(return_value=billed)):
+        payload = await spend_service.get_spend_summary("owner-1", "bedrock_claude")
+    assert payload == {
+        "mode": "bedrock",
+        "billed_month_to_date_cents": 1234,
+        "by_model": [],
+        "period_start": "2026-07-01",
+    }
+
+
+@pytest.mark.asyncio
+async def test_summary_bedrock_degrades_when_metronome_unavailable():
+    with patch.object(spend_service, "get_billed_month_spend", new=AsyncMock(return_value=None)):
+        payload = await spend_service.get_spend_summary("owner-1", "bedrock_claude")
+    assert payload == {"mode": "tokens_only"}

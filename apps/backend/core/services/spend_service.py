@@ -113,3 +113,72 @@ async def get_billed_month_spend(owner_id: str) -> BilledSpend | None:
     )
     _spend_cache[owner_id] = (time.monotonic(), billed)
     return billed
+
+
+def _ecs_manager():
+    from core.containers import get_ecs_manager
+
+    return get_ecs_manager()
+
+
+def _gateway_pool():
+    from core.containers import get_gateway_pool
+
+    return get_gateway_pool()
+
+
+async def _oauth_quota_payload(owner_id: str) -> dict | None:
+    """ChatGPT plan-quota windows via the container's models.authStatus RPC.
+
+    None on ANY failure (container down, RPC error, usage block absent —
+    the upstream quota endpoint is unofficial and may vanish); the caller
+    falls back to tokens_only. OpenClaw caches upstream 60s; no cache here.
+    """
+    try:
+        container, ip = await _ecs_manager().resolve_running_container(owner_id)
+        if not container or not ip:
+            return None
+        result = await _gateway_pool().send_rpc(
+            user_id=owner_id,
+            req_id=f"spend-authstatus-{owner_id}",
+            method="models.authStatus",
+            params={},
+            ip=ip,
+            token=container["gateway_token"],
+        )
+        for provider in (result or {}).get("providers") or []:
+            if provider.get("provider") != "openai":
+                continue
+            usage = provider.get("usage") or {}
+            windows = [
+                {
+                    "label": w.get("label", ""),
+                    "used_percent": w.get("usedPercent", 0),
+                    "resets_at_ms": w.get("resetAt"),
+                }
+                for w in usage.get("windows") or []
+            ]
+            if not windows:
+                return None
+            return {"mode": "oauth_quota", "plan": usage.get("plan"), "windows": windows}
+        return None
+    except Exception:
+        logger.warning("spend: models.authStatus quota read failed for %s", owner_id, exc_info=True)
+        return None
+
+
+async def get_spend_summary(owner_id: str, provider_choice: str | None) -> dict:
+    """The /billing/spend payload. Never raises — degraded == tokens_only."""
+    if provider_choice == "bedrock_claude":
+        billed = await get_billed_month_spend(owner_id)
+        if billed is None:
+            return {"mode": "tokens_only"}
+        return {
+            "mode": "bedrock",
+            "billed_month_to_date_cents": billed.total_cents,
+            "by_model": billed.by_model,
+            "period_start": billed.period_start,
+        }
+    if provider_choice == "chatgpt_oauth":
+        return await _oauth_quota_payload(owner_id) or {"mode": "tokens_only"}
+    return {"mode": "tokens_only"}

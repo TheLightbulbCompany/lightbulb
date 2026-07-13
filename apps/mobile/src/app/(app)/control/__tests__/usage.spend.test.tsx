@@ -100,13 +100,29 @@ describe("UsagePanel provider-aware spend", () => {
       by_model: null,
       period_start: null,
       plan: null,
-      windows: [{ label: "Week", used_percent: 61.4, resets_at_ms: 1234567890 }],
+      windows: [{ label: "Week", used_percent: 61.4, resets_at_ms: null }],
     });
 
     await render(<UsagePanel />);
 
     expect(await screen.findByText("Week limit")).toBeTruthy();
     expect(screen.getByText("61% used")).toBeTruthy();
+  });
+
+  it("oauth_quota: renders plan badge and reset time when present", async () => {
+    mockEndpoints({
+      mode: "oauth_quota",
+      billed_month_to_date_cents: null,
+      by_model: null,
+      period_start: null,
+      plan: "pro",
+      windows: [{ label: "Week", used_percent: 61.4, resets_at_ms: 1234567890000 }],
+    });
+
+    await render(<UsagePanel />);
+
+    expect(await screen.findByText("pro")).toBeTruthy();
+    expect(screen.getByText(/61% used · resets/)).toBeTruthy();
   });
 
   it("member rows: show name + request count, never a member dollar value", async () => {

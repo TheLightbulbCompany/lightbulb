@@ -201,16 +201,36 @@ function BedrockSpendCard({ spend }: { spend: SpendResponse }) {
   );
 }
 
+// Matches apps/frontend/src/components/control/panels/UsagePanel.tsx's
+// oauth_quota block formatting: weekday + hour:minute, no seconds/date.
+function formatResetTime(resetsAtMs: number | null): string | null {
+  if (resetsAtMs == null) return null;
+  return new Date(resetsAtMs).toLocaleString([], {
+    weekday: "short",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
 function OauthQuotaCard({ spend }: { spend: SpendResponse }) {
   return (
     <Card>
+      {spend.plan && (
+        <View style={styles.spendHead}>
+          <Text style={styles.overline}>PLAN</Text>
+          <Text style={styles.planBadge}>{spend.plan}</Text>
+        </View>
+      )}
       {(spend.windows ?? []).map((w, i) => {
         const pct = Math.max(0, Math.min(100, Math.round(w.used_percent)));
+        const resetText = formatResetTime(w.resets_at_ms);
         return (
           <View key={w.label} style={i > 0 ? styles.memberRowBorder : undefined}>
             <View style={styles.spendHead}>
               <Text style={styles.overline}>{w.label} limit</Text>
-              <Text style={styles.captionText}>{pct}% used</Text>
+              <Text style={styles.captionText}>
+                {pct}% used{resetText ? ` · resets ${resetText}` : ""}
+              </Text>
             </View>
             <View style={styles.quotaBarTrack}>
               <View style={[styles.quotaBarFill, { width: `${pct}%` }]} />
@@ -401,6 +421,14 @@ const styles = StyleSheet.create({
     fontSize: 26,
     lineHeight: 32,
     color: colors.ink,
+  },
+  planBadge: {
+    fontFamily: fonts.mono,
+    fontSize: 10,
+    lineHeight: 14,
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+    color: colors.mute,
   },
 
   // Token tile grid.

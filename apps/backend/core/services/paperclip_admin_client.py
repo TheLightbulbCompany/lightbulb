@@ -1943,21 +1943,6 @@ class PaperclipAdminClient:
             params=params,
         )
 
-    async def get_costs(
-        self,
-        *,
-        session_cookie: str,
-        company_id: str,
-    ) -> dict:
-        """Fetch the company costs summary.
-
-        Maps to ``GET /api/companies/{companyId}/costs``.
-        """
-        return await self._get(
-            f"/api/companies/{company_id}/costs",
-            session_cookie=session_cookie,
-        )
-
     async def get_dashboard(
         self,
         *,

@@ -1,9 +1,11 @@
-"""Teams BFF — Activity + Costs + Dashboard.
+"""Teams BFF — Activity + Dashboard.
 
-All three are pure-read aggregation surfaces. Dashboard fans out
-into two upstream calls (the dashboard summary and the sidebar
-badge counts) and merges them into one response so the panel
-renders in a single round-trip.
+Both are pure-read aggregation surfaces. Dashboard fans out into two
+upstream calls (the dashboard summary and the sidebar badge counts) and
+merges them into one response so the panel renders in a single
+round-trip. Dashboard's ``costs`` block is NOT the upstream Paperclip
+value — it is replaced with the Metronome-billed month spend (see
+``get_dashboard``); there is no standalone ``/costs`` route.
 
 Activity events carry a raw ``actorId`` — the Better Auth (Paperclip)
 principal id, NOT a Clerk id and NOT a display name. ``list_activity``
@@ -22,6 +24,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
+from core.services import spend_service
 
 from . import agents as _agents
 from .deps import TeamsContext, TeamsContextError
@@ -139,15 +142,6 @@ async def list_activity(
     return payload
 
 
-@router.get("/costs")
-async def get_costs(ctx: TeamsContext = Depends(_ctx)):
-    """Fetch the company costs summary."""
-    return await _agents._admin().get_costs(
-        company_id=ctx.company_id,
-        session_cookie=ctx.session_cookie,
-    )
-
-
 @router.get("/dashboard")
 async def get_dashboard(
     ctx: TeamsContext = Depends(_ctx),
@@ -155,10 +149,11 @@ async def get_dashboard(
 ):
     """Fetch the dashboard summary + sidebar badges in parallel.
 
-    Returns the upstream Paperclip dashboard summary verbatim
-    (``agents`` / ``tasks`` / ``runActivity`` / ``costs`` /
-    ``pendingApprovals`` / ``budgets``) so the panel can render the
-    full set of metric tiles + charts without further fan-out.
+    Returns the upstream Paperclip dashboard summary
+    (``agents`` / ``tasks`` / ``runActivity`` / ``pendingApprovals`` /
+    ``budgets``) so the panel can render the full set of metric tiles +
+    charts without further fan-out. The ``costs`` block is NEVER the
+    upstream Paperclip value — see the replacement below.
 
     Defensive: if upstream returns None or a non-dict, normalize to
     an empty dict so the frontend can still render an empty-state.
@@ -199,8 +194,18 @@ async def get_dashboard(
             session_cookie=ctx.session_cookie,
         ),
     )
+    dash = dash if isinstance(dash, dict) else {}
+    # Paperclip's cost_events ledger only sees successful Paperclip-driven
+    # runs — a structural undercount. The billed number comes from
+    # Metronome (the invoice we actually charge); when the owner isn't on
+    # the Bedrock path (or Metronome is down) the costs block is omitted
+    # and the frontend hides the Month Spend card.
+    dash.pop("costs", None)
+    billed = await spend_service.get_billed_month_spend(resolve_owner_id(auth))
+    if billed is not None:
+        dash["costs"] = {"monthSpendCents": billed.total_cents}
     return {
-        "dashboard": dash if isinstance(dash, dict) else {},
+        "dashboard": dash,
         "sidebar_badges": badges,
     }
 

@@ -357,29 +357,15 @@ def test_list_activity_personal_context_uses_self_pairing(client, monkeypatch):
         app.dependency_overrides.pop(agents_mod._ctx, None)
 
 
-def test_get_costs(client, monkeypatch):
-    admin = MagicMock()
-    admin.get_costs = AsyncMock(return_value={"total": 0})
-    from routers.teams import agents as agents_mod
-
-    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
-
-    r = client.get(
-        "/api/v1/teams/costs",
-        headers={"Authorization": "Bearer x"},
-    )
-    assert r.status_code == 200
-    admin.get_costs.assert_awaited_once_with(
-        company_id="co_abc",
-        session_cookie="cookie",
-    )
-
-
 def test_dashboard_returns_upstream_shape_verbatim(client, monkeypatch):
     """Dashboard endpoint must return the upstream Paperclip summary
-    verbatim — agents / tasks / costs / runActivity stay nested so the
+    verbatim for agents / tasks / runActivity — those stay nested so the
     panel can render full metric tiles + charts without further fan-out.
-    sidebar_badges is passed through unchanged."""
+    sidebar_badges is passed through unchanged. ``costs`` is the one
+    exception: Paperclip's cost_events undercount is replaced by the
+    Metronome-billed spend (see the dedicated
+    ``test_feed_dashboard_costs.py`` for that contract) — here Metronome
+    is off, so the block is omitted entirely."""
     upstream_dashboard = {
         "companyId": "co_abc",
         "agents": {"active": 2, "running": 1, "paused": 4, "error": 1},
@@ -395,11 +381,17 @@ def test_dashboard_returns_upstream_shape_verbatim(client, monkeypatch):
         ],
     }
     admin = MagicMock()
-    admin.get_dashboard = AsyncMock(return_value=upstream_dashboard)
+    admin.get_dashboard = AsyncMock(return_value=dict(upstream_dashboard))
     admin.get_sidebar_badges = AsyncMock(return_value={"inbox": 3})
     from routers.teams import agents as agents_mod
+    from routers.teams import feed as feed_mod
 
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(
+        feed_mod.spend_service,
+        "get_billed_month_spend",
+        AsyncMock(return_value=None),
+    )
 
     r = client.get(
         "/api/v1/teams/dashboard",
@@ -407,8 +399,10 @@ def test_dashboard_returns_upstream_shape_verbatim(client, monkeypatch):
     )
     assert r.status_code == 200
     body = r.json()
+    expected_dashboard = dict(upstream_dashboard)
+    expected_dashboard.pop("costs")
     assert body == {
-        "dashboard": upstream_dashboard,
+        "dashboard": expected_dashboard,
         "sidebar_badges": {"inbox": 3},
     }
 

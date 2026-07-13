@@ -4,8 +4,12 @@ Both are pure-read aggregation surfaces. Dashboard fans out into two
 upstream calls (the dashboard summary and the sidebar badge counts) and
 merges them into one response so the panel renders in a single
 round-trip. Dashboard's ``costs`` block is NOT the upstream Paperclip
-value — it is replaced with the Metronome-billed month spend (see
-``get_dashboard``); there is no standalone ``/costs`` route.
+value — for owners on the Bedrock provider path it is replaced with the
+Metronome-billed month spend (see ``get_dashboard``); every other
+provider path (OAuth, BYOK, trial) omits the block entirely, since a
+metronome_customer_id exists for every provision-eligible owner
+regardless of provider and would otherwise render a misleading $0.00
+card. There is no standalone ``/costs`` route.
 
 Activity events carry a raw ``actorId`` — the Better Auth (Paperclip)
 principal id, NOT a Clerk id and NOT a display name. ``list_activity``
@@ -24,6 +28,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
+from core.repositories import billing_repo
 from core.services import spend_service
 
 from . import agents as _agents
@@ -197,13 +202,23 @@ async def get_dashboard(
     dash = dash if isinstance(dash, dict) else {}
     # Paperclip's cost_events ledger only sees successful Paperclip-driven
     # runs — a structural undercount. The billed number comes from
-    # Metronome (the invoice we actually charge); when the owner isn't on
-    # the Bedrock path (or Metronome is down) the costs block is omitted
-    # and the frontend hides the Month Spend card.
+    # Metronome (the invoice we actually charge). Every provision-eligible
+    # owner gets a metronome_customer_id regardless of provider_choice (see
+    # user_provision.py), so gate on the Bedrock path explicitly — otherwise
+    # OAuth/BYOK/trial owners would get a real (if zero) BilledSpend and
+    # render a permanent, misleading "Month Spend $0.00" card. The billing-
+    # row read is failure-tolerant: any error just omits the costs block,
+    # matching spend_service's own "display-only, never blocks" contract.
     dash.pop("costs", None)
-    billed = await spend_service.get_billed_month_spend(resolve_owner_id(auth))
-    if billed is not None:
-        dash["costs"] = {"monthSpendCents": billed.total_cents}
+    try:
+        account = await billing_repo.get_by_owner_id(resolve_owner_id(auth)) or {}
+    except Exception:
+        logger.warning("dashboard: billing-account read failed; omitting costs block", exc_info=True)
+        account = None
+    if account is not None and account.get("provider_choice") == "bedrock_claude":
+        billed = await spend_service.get_billed_month_spend(resolve_owner_id(auth))
+        if billed is not None:
+            dash["costs"] = {"monthSpendCents": billed.total_cents}
     return {
         "dashboard": dash,
         "sidebar_badges": badges,

@@ -65,6 +65,11 @@ def test_dashboard_costs_replaced_with_billed_spend(client, monkeypatch):
 
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
     monkeypatch.setattr(
+        feed_mod.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"provider_choice": "bedrock_claude"}),
+    )
+    monkeypatch.setattr(
         feed_mod.spend_service,
         "get_billed_month_spend",
         AsyncMock(return_value=BilledSpend(total_cents=1234, by_model=[], period_start=None)),
@@ -84,9 +89,67 @@ def test_dashboard_costs_omitted_when_not_billed(client, monkeypatch):
 
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
     monkeypatch.setattr(
+        feed_mod.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"provider_choice": "bedrock_claude"}),
+    )
+    monkeypatch.setattr(
         feed_mod.spend_service,
         "get_billed_month_spend",
         AsyncMock(return_value=None),
+    )
+
+    r = client.get("/api/v1/teams/dashboard", headers={"Authorization": "Bearer x"})
+    assert r.status_code == 200
+    assert "costs" not in r.json()["dashboard"]
+
+
+def test_dashboard_costs_omitted_for_non_bedrock_owner_with_metronome_customer(client, monkeypatch):
+    """Every provision-eligible owner gets a metronome_customer_id regardless
+    of provider (see user_provision.py / metronome_provisioning.py) — so the
+    costs block must gate on provider_choice, not on Metronome customer
+    existence, or an OAuth/BYOK/trial owner gets a permanent misleading
+    $0.00 Month Spend card."""
+    admin = MagicMock()
+    admin.get_dashboard = AsyncMock(return_value=dict(PAPERCLIP_DASH))
+    admin.get_sidebar_badges = AsyncMock(return_value={})
+    from routers.teams import agents as agents_mod
+    from routers.teams import feed as feed_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(
+        feed_mod.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(
+            return_value={
+                "provider_choice": "chatgpt_oauth",
+                "metronome_customer_id": "cust_123",
+            }
+        ),
+    )
+    get_billed = AsyncMock(return_value=BilledSpend(total_cents=0, by_model=[], period_start=None))
+    monkeypatch.setattr(feed_mod.spend_service, "get_billed_month_spend", get_billed)
+
+    r = client.get("/api/v1/teams/dashboard", headers={"Authorization": "Bearer x"})
+    assert r.status_code == 200
+    assert "costs" not in r.json()["dashboard"]
+    get_billed.assert_not_awaited()
+
+
+def test_dashboard_costs_omitted_on_billing_repo_error(client, monkeypatch):
+    """A billing-account read failure must never 500 the dashboard — the
+    costs block is display-only and degrades to omitted."""
+    admin = MagicMock()
+    admin.get_dashboard = AsyncMock(return_value=dict(PAPERCLIP_DASH))
+    admin.get_sidebar_badges = AsyncMock(return_value={})
+    from routers.teams import agents as agents_mod
+    from routers.teams import feed as feed_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(
+        feed_mod.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(side_effect=RuntimeError("DDB throttled")),
     )
 
     r = client.get("/api/v1/teams/dashboard", headers={"Authorization": "Bearer x"})

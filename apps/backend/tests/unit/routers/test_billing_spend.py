@@ -43,3 +43,15 @@ async def test_spend_endpoint_tokens_only_without_billing_row(async_client):
         resp = await async_client.get("/api/v1/billing/spend")
     assert resp.status_code == 200
     assert resp.json()["mode"] == "tokens_only"
+
+
+@pytest.mark.asyncio
+async def test_spend_endpoint_rejects_non_admin_org_member(async_client_org_member):
+    """Same org-member gating as GET /billing/usage — a non-admin member must
+    not be able to read the org's billing-account spend detail."""
+    with patch(
+        "routers.billing.billing_repo.get_by_owner_id",
+        new=AsyncMock(return_value={"provider_choice": "bedrock_claude"}),
+    ):
+        resp = await async_client_org_member.get("/api/v1/billing/spend")
+    assert resp.status_code == 403

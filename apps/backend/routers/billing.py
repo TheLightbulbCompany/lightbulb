@@ -243,6 +243,10 @@ async def get_my_usage(
     operation_id="get_spend",
 )
 async def get_spend(auth: AuthContext = Depends(get_current_user)):
+    # Same org-member gating as GET /billing/usage — spend is billing-account
+    # detail, not something a non-admin org member should be able to read.
+    if auth.is_org_context:
+        require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
     account = await billing_repo.get_by_owner_id(owner_id) or {}
     if account.get("provider_choice") is None:

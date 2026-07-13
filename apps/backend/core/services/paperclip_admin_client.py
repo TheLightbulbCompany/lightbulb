@@ -993,6 +993,67 @@ class PaperclipAdminClient:
             params={"offset": str(offset), "limitBytes": str(limit_bytes)},
         )
 
+    async def get_run_events(
+        self,
+        *,
+        session_cookie: str,
+        run_id: str,
+        after_seq: int = 0,
+        limit: int = 200,
+    ) -> list | dict:
+        """List a heartbeat run's structured event timeline.
+
+        Maps to ``GET /api/heartbeat-runs/{runId}/events``. Upstream returns
+        a raw JSON array of ``heartbeat_run_events`` rows (seq-ordered,
+        payloads redacted server-side); ``afterSeq`` pages forward and
+        ``limit`` is clamped upstream to 1..1000.
+        """
+        return await self._get(
+            f"/api/heartbeat-runs/{run_id}/events",
+            session_cookie=session_cookie,
+            params={"afterSeq": str(after_seq), "limit": str(limit)},
+        )
+
+    async def cancel_heartbeat_run(
+        self,
+        *,
+        session_cookie: str,
+        run_id: str,
+    ) -> dict | None:
+        """Cancel a queued/running heartbeat run.
+
+        Maps to ``POST /api/heartbeat-runs/{runId}/cancel`` (board-actor
+        gated upstream; the BFF's per-user session cookie is a board actor).
+        Upstream returns the cancelled run row, or JSON null when the run
+        was already terminal.
+        """
+        return await self._post(
+            f"/api/heartbeat-runs/{run_id}/cancel",
+            session_cookie=session_cookie,
+            json={},
+        )
+
+    async def record_watchdog_decision(
+        self,
+        *,
+        session_cookie: str,
+        run_id: str,
+        body: dict,
+    ) -> dict:
+        """Record an operator decision on a silent/stalled run.
+
+        Maps to ``POST /api/heartbeat-runs/{runId}/watchdog-decisions``.
+        ``body`` is the camelCase wire dict (``decision``, optional
+        ``evaluationIssueId`` / ``reason`` / ``snoozedUntil``); upstream
+        validates the snooze-must-be-future rule and returns the inserted
+        ``heartbeat_run_watchdog_decisions`` row.
+        """
+        return await self._post(
+            f"/api/heartbeat-runs/{run_id}/watchdog-decisions",
+            session_cookie=session_cookie,
+            json=body,
+        )
+
     # ------------------------------------------------------------------
     # Approvals
     # ------------------------------------------------------------------

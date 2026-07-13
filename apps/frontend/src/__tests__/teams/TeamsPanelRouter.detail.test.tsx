@@ -20,6 +20,11 @@ vi.mock("@/components/teams/panels/ProjectDetailPanel", () => ({
     <div data-testid="project-detail">{projectId}</div>
   ),
 }));
+vi.mock("@/components/teams/panels/RunDetailPanel", () => ({
+  RunDetailPanel: ({ runId }: { runId: string }) => (
+    <div data-testid="run-detail-panel">{runId}</div>
+  ),
+}));
 
 import { TeamsPanelRouter } from "@/components/teams/TeamsPanelRouter";
 
@@ -45,6 +50,12 @@ describe("TeamsPanelRouter detail branch", () => {
     expect(await screen.findByTestId("project-detail")).toHaveTextContent(
       "prj_789",
     );
+  });
+
+  it("renders RunDetailPanel for panel=run-detail", async () => {
+    render(<TeamsPanelRouter panel="run-detail" detailId="r1" />);
+    // The dynamic chunk resolves async; the mocked RunDetailPanel renders a marker.
+    expect(await screen.findByTestId("run-detail-panel")).toBeInTheDocument();
   });
 
   it("renders Unknown panel when a detail key arrives without a detailId", () => {

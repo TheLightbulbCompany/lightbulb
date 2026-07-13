@@ -61,8 +61,12 @@ class WakeAgentBody(_Strict):
     # defaults server-side, so a bare wake is valid. The failed-run Retry
     # sends source="on_demand", reason="retry". ``source`` is constrained to
     # the upstream enum so the BFF rejects junk before it reaches Paperclip.
+    # ``payload`` is upstream's free-form ``record(string, unknown)`` — the
+    # run-detail Retry/Resume actions use it to target the original issue
+    # (``{issueId, taskId, taskKey}``) or run (``{resumeFromRunId}``).
     source: Optional[str] = Field(default=None, pattern=r"^(timer|assignment|on_demand|automation)$")
     reason: Optional[str] = Field(default=None, max_length=2000)
+    payload: Optional[dict] = None
 
 
 class CreateIssueBody(_Strict):
@@ -311,3 +315,13 @@ class PatchCompanySettingsBody(_Strict):
 
     display_name: Optional[str] = Field(default=None, min_length=1, max_length=80)
     description: Optional[str] = Field(default=None, max_length=4000)
+
+
+class WatchdogDecisionBody(_Strict):
+    # Mirrors upstream's watchdog-decisions route contract: the decision enum
+    # is validated here so junk 422s at the BFF boundary; ``snoozedUntil``'s
+    # required-future-when-snoozing rule stays upstream (it owns the clock).
+    decision: str = Field(pattern=r"^(snooze|continue|dismissed_false_positive)$")
+    evaluation_issue_id: Optional[str] = None
+    reason: Optional[str] = Field(default=None, max_length=4000)
+    snoozed_until: Optional[str] = None

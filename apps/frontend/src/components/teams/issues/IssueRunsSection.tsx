@@ -3,6 +3,7 @@
 
 import { useMemo } from "react";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
+import { teamsDetailUrl, handleShellLinkClick } from "@/lib/shellNav";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { LiveRunDot } from "@/components/teams/shared/components/LiveRunDot";
 import { useLiveRuns } from "@/components/teams/dashboard/hooks/useLiveRuns";
@@ -104,6 +105,15 @@ export function IssueRunsSection({
               </span>
               <span className="flex-1 truncate text-[var(--ink)]">{agentName(r.agentId)}</span>
               {when && <span className="text-xs text-[var(--mute)]">{timeAgo(when)}</span>}
+              <a
+                href={teamsDetailUrl("run", r.runId)}
+                onClick={(e) => handleShellLinkClick(e, teamsDetailUrl("run", r.runId))}
+                aria-label={`View run ${r.runId}`}
+                className="text-xs hover:underline"
+                style={{ color: "var(--forest)" }}
+              >
+                View run
+              </a>
             </li>
           );
         })}

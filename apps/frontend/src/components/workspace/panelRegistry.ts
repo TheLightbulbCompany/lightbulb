@@ -54,6 +54,7 @@ const TEAMS_DETAIL_KEYS: Readonly<Record<string, string>> = {
   "routine-detail": "Routine",
   "project-detail": "Project",
   "goal-detail": "Goal",
+  "run-detail": "Run",
 };
 
 // Legacy control keys kept for URL grammar parity (ChatErrorCard links to
@@ -180,7 +181,7 @@ export function durableParamsFor(panelId: string): string[] {
   if (panelId === "control:agents") return ["panel", "agent"];
   if (panelId === "teams-issues") return ["panel", "agent"];
   if (panelId === "teams-inbox") return ["panel", "tab"];
-  if (/^teams-(issue|routine|project|goal)-detail:/.test(panelId)) return ["panel", "detailId"];
+  if (/^teams-(issue|routine|project|goal|run)-detail:/.test(panelId)) return ["panel", "detailId"];
   return ["panel"];
 }
 

@@ -88,6 +88,83 @@ describe("layoutStorage", () => {
     });
   });
 
+  function leafLayout(views: string[], activeView: string, panels: SerializedDockview["panels"]): SerializedDockview {
+    return {
+      grid: {
+        root: {
+          type: "leaf",
+          data: { id: "group-1", views, activeView },
+        },
+        height: 600,
+        width: 800,
+        orientation: "HORIZONTAL" as SerializedDockview["grid"]["orientation"],
+      },
+      panels,
+    } as unknown as SerializedDockview;
+  }
+
+  it("sanitizer migrates a retired teams-costs layout entry to teams-dashboard", () => {
+    const dirty = leafLayout(["teams-costs"], "teams-costs", {
+      "teams-costs": {
+        id: "teams-costs",
+        contentComponent: "teams",
+        params: { teamsKey: "costs" },
+      },
+    });
+    const clean = sanitizeLayout(dirty);
+    expect(clean.panels["teams-costs"]).toBeUndefined();
+    expect(clean.panels["teams-dashboard"]).toEqual({
+      id: "teams-dashboard",
+      contentComponent: "teams",
+      params: { teamsKey: "dashboard" },
+    });
+    const leafData = (clean.grid.root as unknown as { data: { views: string[]; activeView: string } }).data;
+    expect(leafData.views).toEqual(["teams-dashboard"]);
+    expect(leafData.activeView).toBe("teams-dashboard");
+  });
+
+  it("sanitizer migrates a retired teams-skills layout entry to teams-dashboard", () => {
+    const dirty = leafLayout(["teams-skills"], "teams-skills", {
+      "teams-skills": {
+        id: "teams-skills",
+        contentComponent: "teams",
+        params: { teamsKey: "skills" },
+      },
+    });
+    const clean = sanitizeLayout(dirty);
+    expect(clean.panels["teams-skills"]).toBeUndefined();
+    expect(clean.panels["teams-dashboard"]).toEqual({
+      id: "teams-dashboard",
+      contentComponent: "teams",
+      params: { teamsKey: "dashboard" },
+    });
+    const leafData = (clean.grid.root as unknown as { data: { views: string[]; activeView: string } }).data;
+    expect(leafData.views).toEqual(["teams-dashboard"]);
+    expect(leafData.activeView).toBe("teams-dashboard");
+  });
+
+  it("sanitizer drops a retired panel instead of duplicating an already-open target", () => {
+    const dirty = leafLayout(["teams-costs", "teams-dashboard"], "teams-costs", {
+      "teams-costs": {
+        id: "teams-costs",
+        contentComponent: "teams",
+        params: { teamsKey: "costs" },
+      },
+      "teams-dashboard": {
+        id: "teams-dashboard",
+        contentComponent: "teams",
+        params: { teamsKey: "dashboard" },
+      },
+    });
+    const clean = sanitizeLayout(dirty);
+    expect(clean.panels["teams-costs"]).toBeUndefined();
+    expect(Object.keys(clean.panels)).toEqual(["teams-dashboard"]);
+    const leafData = (clean.grid.root as unknown as { data: { views: string[]; activeView: string } }).data;
+    expect(leafData.views).toEqual(["teams-dashboard"]);
+    // the dropped id was activeView — falls back to the remaining view
+    expect(leafData.activeView).toBe("teams-dashboard");
+  });
+
   it("clearLayout removes only its own key", () => {
     writeLayout("u1", minimalLayout({}));
     window.localStorage.setItem("unrelated", "x");

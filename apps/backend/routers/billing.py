@@ -248,7 +248,15 @@ async def get_spend(auth: AuthContext = Depends(get_current_user)):
     if auth.is_org_context:
         require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
-    account = await billing_repo.get_by_owner_id(owner_id) or {}
+    try:
+        account = await billing_repo.get_by_owner_id(owner_id) or {}
+    except Exception:
+        logger.warning(
+            "billing_repo read failed for owner %s — degrading /billing/spend to tokens_only",
+            owner_id,
+            exc_info=True,
+        )
+        return SpendResponse(mode="tokens_only")
     if account.get("provider_choice") is None:
         return SpendResponse(mode="tokens_only")
     payload = await spend_service.get_spend_summary(owner_id, account.get("provider_choice"))

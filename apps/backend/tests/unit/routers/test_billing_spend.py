@@ -46,6 +46,19 @@ async def test_spend_endpoint_tokens_only_without_billing_row(async_client):
 
 
 @pytest.mark.asyncio
+async def test_spend_endpoint_degrades_to_tokens_only_on_repo_error(async_client):
+    """A DynamoDB throttle/read error on the billing-account lookup must not
+    500 a display-only endpoint that promises degraded=tokens_only."""
+    with patch(
+        "routers.billing.billing_repo.get_by_owner_id",
+        new=AsyncMock(side_effect=RuntimeError("ddb throttled")),
+    ):
+        resp = await async_client.get("/api/v1/billing/spend")
+    assert resp.status_code == 200
+    assert resp.json()["mode"] == "tokens_only"
+
+
+@pytest.mark.asyncio
 async def test_spend_endpoint_rejects_non_admin_org_member(async_client_org_member):
     """Same org-member gating as GET /billing/usage — a non-admin member must
     not be able to read the org's billing-account spend detail."""

@@ -4,7 +4,7 @@
 // persistent). NEVER call localStorage.clear() here: a key===null storage
 // event is treated as a permissions event by the gateway listeners.
 import type { SerializedDockview } from "dockview-react";
-import { PANEL_COMPONENT_KEYS, ONE_SHOT_PARAMS } from "./panelRegistry";
+import { PANEL_COMPONENT_KEYS, ONE_SHOT_PARAMS, RETIRED_PANEL_ALIASES } from "./panelRegistry";
 
 const KEY_PREFIX = "isol8.workspace.layout.v1";
 
@@ -22,6 +22,65 @@ interface StoredLayout {
   layout: SerializedDockview;
 }
 
+function hasOwnKey(obj: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+// RETIRED_PANEL_ALIASES is otherwise applied replace-only to URL commands
+// (see panelRegistry.ts) — a saved dockview layout restores panel ids/params
+// straight from localStorage, bypassing that resolver entirely. A layout
+// saved before a panel was retired still carries the old id, so it must be
+// migrated here too. Two id shapes show up in practice: teams-* aliases are
+// bare panel ids (panelId === registry key), non-teams aliases (credits→llm)
+// are control-panel ids carrying the `control:` prefix.
+function migrateRetiredPanelId(
+  id: string,
+): { id: string; teamsKey?: string; controlKey?: string } | null {
+  if (hasOwnKey(RETIRED_PANEL_ALIASES, id)) {
+    const target = RETIRED_PANEL_ALIASES[id];
+    if (target.startsWith("teams-")) {
+      return { id: target, teamsKey: target.slice("teams-".length) };
+    }
+    return null;
+  }
+  if (id.startsWith("control:")) {
+    const key = id.slice("control:".length);
+    if (hasOwnKey(RETIRED_PANEL_ALIASES, key)) {
+      const target = RETIRED_PANEL_ALIASES[key];
+      return { id: `control:${target}`, controlKey: target };
+    }
+  }
+  return null;
+}
+
+type GridNode = SerializedDockview["grid"]["root"];
+
+// Panel ids also live in the grid tree (each leaf group's `views` + optional
+// `activeView`), independent of the flat `panels` map — a rename or drop in
+// `panels` must be mirrored there or dockview restores a group referencing a
+// panel id that no longer exists.
+function migrateGridNode(
+  node: GridNode,
+  renamed: Readonly<Record<string, string>>,
+  dropped: ReadonlySet<string>,
+): GridNode {
+  if (node.type === "branch") {
+    const data = (node.data as GridNode[]).map((child) => migrateGridNode(child, renamed, dropped));
+    return { ...node, data } as GridNode;
+  }
+  const leaf = node.data as unknown as {
+    views: string[];
+    activeView?: string;
+    [key: string]: unknown;
+  };
+  const views = leaf.views.filter((v) => !dropped.has(v)).map((v) => renamed[v] ?? v);
+  let activeView = leaf.activeView;
+  if (activeView !== undefined) {
+    activeView = dropped.has(activeView) ? views[0] : (renamed[activeView] ?? activeView);
+  }
+  return { ...node, data: { ...leaf, views, activeView } } as GridNode;
+}
+
 export function layoutStorageKey(scopeId: string): string {
   return `${KEY_PREFIX}:${scopeId}`;
 }
@@ -34,8 +93,12 @@ export function layoutStorageKey(scopeId: string): string {
 // components map: the deserializer defaults a missing contentComponent to
 // the literal string 'unknown'.
 export function sanitizeLayout(raw: SerializedDockview): SerializedDockview {
+  const rawPanels = raw.panels ?? {};
   const panels: SerializedDockview["panels"] = {};
-  for (const [id, state] of Object.entries(raw.panels ?? {})) {
+  const renamed: Record<string, string> = {};
+  const dropped = new Set<string>();
+
+  for (const [id, state] of Object.entries(rawPanels)) {
     const component =
       state.contentComponent && PANEL_COMPONENT_KEYS.has(state.contentComponent)
         ? state.contentComponent
@@ -46,9 +109,33 @@ export function sanitizeLayout(raw: SerializedDockview): SerializedDockview {
       for (const oneShot of ONE_SHOT_PARAMS) delete params[oneShot];
       for (const key of PERSIST_ONLY_STRIP) delete params[key];
     }
-    panels[id] = { ...state, contentComponent: component, params };
+
+    let finalId = id;
+    const migration = migrateRetiredPanelId(id);
+    if (migration) {
+      if (hasOwnKey(rawPanels, migration.id)) {
+        // Target panel is already open in this same layout — dropping the
+        // retired duplicate is simpler and safer than merging two panel
+        // states into one id.
+        dropped.add(id);
+        continue;
+      }
+      finalId = migration.id;
+      renamed[id] = finalId;
+      if (params) {
+        if (migration.teamsKey !== undefined) params.teamsKey = migration.teamsKey;
+        if (migration.controlKey !== undefined) params.controlKey = migration.controlKey;
+      }
+    }
+
+    panels[finalId] = { ...state, id: finalId, contentComponent: component, params };
   }
-  const clean: SerializedDockview = { grid: raw.grid, panels };
+
+  const grid =
+    Object.keys(renamed).length || dropped.size
+      ? { ...raw.grid, root: migrateGridNode(raw.grid.root, renamed, dropped) }
+      : raw.grid;
+  const clean: SerializedDockview = { grid, panels };
   if (raw.activeGroup !== undefined) clean.activeGroup = raw.activeGroup;
   // floatingGroups / popoutGroups / edgeGroups deliberately dropped:
   // disableFloatingGroups only blocks user-initiated floats — persisted

@@ -470,3 +470,83 @@ def test_paid_owner_can_still_create_routines(client, monkeypatch, route, body, 
 
     assert r.status_code == 200, r.text
     getattr(admin, method).assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Re-ACTIVATION is the same lever as creation.
+#
+# Gating only create left a walk-around: a trial owner with a pre-existing
+# routine (seeded before the gate, or created through the Paperclip catch-all
+# proxy) could just flip it back on. The enable toggle PATCHes exactly
+# {status: "active"} (RoutinesPanel.toggle).
+#
+# But pause/rename/delete MUST stay open — refusing those would trap someone
+# with automation they cannot turn off. Only activation reaches for autonomy.
+
+
+def _trial(monkeypatch):
+    monkeypatch.setattr(
+        "routers.teams._guards.billing_repo.get_by_owner_id",
+        AsyncMock(return_value={"subscription_status": "trial_local"}),
+    )
+
+
+def test_trial_owner_cannot_reactivate_a_routine(client, admin, monkeypatch):
+    _trial(monkeypatch)
+
+    r = client.patch(
+        "/api/v1/teams/routines/r1",
+        json={"status": "active"},
+        headers={"Authorization": "Bearer x"},
+    )
+
+    assert r.status_code == 402
+    assert r.json()["detail"]["code"] == "routines_require_subscription"
+    admin.patch_routine.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"status": "paused"},
+        {"title": "renamed"},
+        {"status": "archived"},
+    ],
+)
+def test_trial_owner_can_still_pause_rename_and_archive(client, admin, monkeypatch, body):
+    """The escape hatch. Never trap a trial owner with automation they can't stop."""
+    _trial(monkeypatch)
+
+    r = client.patch(
+        "/api/v1/teams/routines/r1",
+        json=body,
+        headers={"Authorization": "Bearer x"},
+    )
+
+    assert r.status_code == 200, r.text
+    admin.patch_routine.assert_awaited_once()
+
+
+def test_trial_owner_can_still_delete_a_routine(client, admin, monkeypatch):
+    _trial(monkeypatch)
+
+    r = client.delete("/api/v1/teams/routines/r1", headers={"Authorization": "Bearer x"})
+
+    assert r.status_code == 200
+    admin.delete_routine.assert_awaited_once()
+
+
+def test_paid_owner_can_still_reactivate(client, admin, monkeypatch):
+    monkeypatch.setattr(
+        "routers.teams._guards.billing_repo.get_by_owner_id",
+        AsyncMock(return_value={"subscription_status": "active"}),
+    )
+
+    r = client.patch(
+        "/api/v1/teams/routines/r1",
+        json={"status": "active"},
+        headers={"Authorization": "Bearer x"},
+    )
+
+    assert r.status_code == 200, r.text
+    admin.patch_routine.assert_awaited_once()

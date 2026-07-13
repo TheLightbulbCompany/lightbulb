@@ -91,7 +91,21 @@ async def patch_routine(
     body: PatchRoutineBody,
     ctx: TeamsContext = Depends(_ctx),
 ):
-    """Patch a routine."""
+    """Patch a routine.
+
+    Gated ONLY on activation. Flipping ``status`` to ``active`` is the same lever
+    as creating a routine — it is what makes the schedule fire — and the enable
+    toggle PATCHes exactly ``{status: "active"}``. Without this, a trial owner
+    could re-enable any pre-existing routine (one seeded before this gate, or
+    created through the Paperclip pass-through) and walk straight around the
+    create-side check.
+
+    Pause, rename, reassign and delete stay OPEN to trial owners on purpose:
+    refusing those would trap someone with automation they cannot turn off, and
+    only activation reaches for autonomy.
+    """
+    if body.status == "active":
+        await require_always_on_entitlement(ctx.owner_id)
     return await _agents._admin().patch_routine(
         routine_id=routine_id,
         body=body.model_dump(exclude_none=True, by_alias=True),

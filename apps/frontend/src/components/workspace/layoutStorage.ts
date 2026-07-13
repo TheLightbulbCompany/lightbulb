@@ -97,6 +97,12 @@ export function sanitizeLayout(raw: SerializedDockview): SerializedDockview {
   const panels: SerializedDockview["panels"] = {};
   const renamed: Record<string, string> = {};
   const dropped = new Set<string>();
+  // Targets already produced by this migration pass (by an original panel
+  // id or by an earlier retired-panel rename). Two retired panels can alias
+  // to the same target (e.g. teams-skills and teams-costs both -> the same
+  // consolidated panel) — without this, the second rename would overwrite
+  // the first in `panels`, leaving a duplicate view id in the grid tree.
+  const claimedTargets = new Set<string>();
 
   for (const [id, state] of Object.entries(rawPanels)) {
     const component =
@@ -113,15 +119,17 @@ export function sanitizeLayout(raw: SerializedDockview): SerializedDockview {
     let finalId = id;
     const migration = migrateRetiredPanelId(id);
     if (migration) {
-      if (hasOwnKey(rawPanels, migration.id)) {
-        // Target panel is already open in this same layout — dropping the
-        // retired duplicate is simpler and safer than merging two panel
+      if (hasOwnKey(rawPanels, migration.id) || claimedTargets.has(migration.id)) {
+        // Target panel is already open in this same layout, or an earlier
+        // retired panel in this same pass already renamed to it — dropping
+        // the retired duplicate is simpler and safer than merging two panel
         // states into one id.
         dropped.add(id);
         continue;
       }
       finalId = migration.id;
       renamed[id] = finalId;
+      claimedTargets.add(finalId);
       if (params) {
         if (migration.teamsKey !== undefined) params.teamsKey = migration.teamsKey;
         if (migration.controlKey !== undefined) params.controlKey = migration.controlKey;

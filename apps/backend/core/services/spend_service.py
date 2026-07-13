@@ -40,6 +40,13 @@ _TIER_DISPLAY_NAMES = {
     "haiku": "Claude Haiku",
 }
 
+# provider ids that identify the ChatGPT-OAuth entry in models.authStatus.
+# The deployed 7.1 fork reports "openai", but containers keep their
+# provision-time image until reprovision, and older images (plus the
+# frontend's own llm-auth-status mapping) still emit the retired
+# "openai-codex" id. Accept either.
+_OAUTH_PROVIDER_IDS = frozenset({"openai", "openai-codex"})
+
 
 @dataclass
 class BilledSpend:
@@ -175,7 +182,7 @@ async def _oauth_quota_payload(owner_id: str) -> dict | None:
             token=container["gateway_token"],
         )
         for provider in (result or {}).get("providers") or []:
-            if provider.get("provider") != "openai":
+            if provider.get("provider") not in _OAUTH_PROVIDER_IDS:
                 continue
             usage = provider.get("usage") or {}
             windows = [
@@ -187,7 +194,9 @@ async def _oauth_quota_payload(owner_id: str) -> dict | None:
                 for w in usage.get("windows") or []
             ]
             if not windows:
-                return None
+                # Keep scanning: a later matching entry (e.g. a second
+                # provider id alias) may carry the actual usage windows.
+                continue
             return {"mode": "oauth_quota", "plan": usage.get("plan"), "windows": windows}
         return None
     except Exception:

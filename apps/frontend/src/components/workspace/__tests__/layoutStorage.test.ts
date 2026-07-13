@@ -165,6 +165,33 @@ describe("layoutStorage", () => {
     expect(leafData.activeView).toBe("teams-dashboard");
   });
 
+  it("sanitizer dedupes two retired panels that alias to the same absent target", () => {
+    // Regression: teams-skills and teams-costs both alias to teams-dashboard.
+    // Neither is already open — without target-collision tracking, both
+    // would rename to "teams-dashboard" and the second write would silently
+    // overwrite the first in `panels`, while the grid tree ends up with two
+    // "teams-dashboard" view entries (a corrupt/duplicated dockview group).
+    const dirty = leafLayout(["teams-skills", "teams-costs"], "teams-skills", {
+      "teams-skills": {
+        id: "teams-skills",
+        contentComponent: "teams",
+        params: { teamsKey: "skills" },
+      },
+      "teams-costs": {
+        id: "teams-costs",
+        contentComponent: "teams",
+        params: { teamsKey: "costs" },
+      },
+    });
+    const clean = sanitizeLayout(dirty);
+    expect(clean.panels["teams-skills"]).toBeUndefined();
+    expect(clean.panels["teams-costs"]).toBeUndefined();
+    expect(Object.keys(clean.panels)).toEqual(["teams-dashboard"]);
+    const leafData = (clean.grid.root as unknown as { data: { views: string[]; activeView: string } }).data;
+    expect(leafData.views).toEqual(["teams-dashboard"]);
+    expect(leafData.activeView).toBe("teams-dashboard");
+  });
+
   it("clearLayout removes only its own key", () => {
     writeLayout("u1", minimalLayout({}));
     window.localStorage.setItem("unrelated", "x");

@@ -218,6 +218,40 @@ async def test_summary_oauth_maps_quota_windows():
     ]
 
 
+LEGACY_AUTH_STATUS_RESULT = {
+    "ts": 1,
+    "providers": [
+        {"provider": "anthropic"},
+        {
+            "provider": "openai-codex",
+            "usage": {
+                "plan": "plus",
+                "windows": [
+                    {"label": "5h", "usedPercent": 12, "resetAt": 1789000001000},
+                ],
+            },
+        },
+    ],
+}
+
+
+@pytest.mark.asyncio
+async def test_summary_oauth_accepts_legacy_openai_codex_provider_id():
+    """Finding round-3 P2: older container images (containers keep their
+    provision-time image until reprovision) and the frontend's own
+    llm-auth-status mapping still emit the retired "openai-codex" provider
+    id for the ChatGPT-OAuth entry — not just "openai" as the current 7.1
+    fork reports it."""
+    p1, p2 = _patch_gateway(rpc_result=LEGACY_AUTH_STATUS_RESULT)
+    with p1, p2:
+        payload = await spend_service.get_spend_summary("owner-1", "chatgpt_oauth")
+    assert payload["mode"] == "oauth_quota"
+    assert payload["plan"] == "plus"
+    assert payload["windows"] == [
+        {"label": "5h", "used_percent": 12, "resets_at_ms": 1789000001000},
+    ]
+
+
 @pytest.mark.asyncio
 async def test_summary_oauth_degrades_to_tokens_only_on_rpc_failure():
     p1, p2 = _patch_gateway(rpc_error=RuntimeError("container gone"))

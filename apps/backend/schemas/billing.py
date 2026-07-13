@@ -1,5 +1,7 @@
 """Pydantic schemas for billing API endpoints."""
 
+from typing import Literal
+
 from pydantic import BaseModel
 
 
@@ -75,3 +77,27 @@ class MyUsageResponse(BaseModel):
 
 class PricingResponse(BaseModel):
     models: dict[str, ModelPriceResponse]
+
+
+class SpendByModel(BaseModel):
+    model: str
+    tier: str
+    cents: int
+
+
+class SpendQuotaWindow(BaseModel):
+    label: str
+    used_percent: float
+    resets_at_ms: int | None = None
+
+
+class SpendResponse(BaseModel):
+    """Provider-aware spend summary. `mode` picks the render variant:
+    bedrock -> billed fields; oauth_quota -> plan/windows; tokens_only -> neither."""
+
+    mode: Literal["bedrock", "oauth_quota", "tokens_only"]
+    billed_month_to_date_cents: int | None = None
+    by_model: list[SpendByModel] | None = None
+    period_start: str | None = None
+    plan: str | None = None
+    windows: list[SpendQuotaWindow] | None = None

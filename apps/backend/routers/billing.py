@@ -20,7 +20,7 @@ from core.auth import (
 from core.config import settings
 from core.observability.metrics import put_metric, timing
 from core.repositories import billing_repo, usage_repo
-from core.services import clerk_admin
+from core.services import clerk_admin, spend_service
 from core.services.billing_service import BillingService
 from core.services.stripe_webhook_handlers import STRIPE_WEBHOOK_HANDLERS
 from core.services.provision_gate import (
@@ -39,6 +39,7 @@ from schemas.billing import (
     MyUsageResponse,
     PricingResponse,
     ModelPriceResponse,
+    SpendResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -227,6 +228,27 @@ async def get_my_usage(
         total_output_tokens=m.get("total_output_tokens", 0),
         request_count=m.get("request_count", 0),
     )
+
+
+@router.get(
+    "/spend",
+    response_model=SpendResponse,
+    summary="Provider-aware spend summary",
+    description=(
+        "Bedrock owners: month-to-date BILLED spend from Metronome with a "
+        "per-model split. ChatGPT-OAuth owners: plan-quota windows. BYOK/"
+        "trial/degraded: tokens_only (the panel keeps its token grid). "
+        "Display-only; never errors on upstream failure."
+    ),
+    operation_id="get_spend",
+)
+async def get_spend(auth: AuthContext = Depends(get_current_user)):
+    owner_id = resolve_owner_id(auth)
+    account = await billing_repo.get_by_owner_id(owner_id) or {}
+    if account.get("provider_choice") is None:
+        return SpendResponse(mode="tokens_only")
+    payload = await spend_service.get_spend_summary(owner_id, account.get("provider_choice"))
+    return SpendResponse(**payload)
 
 
 @router.get(

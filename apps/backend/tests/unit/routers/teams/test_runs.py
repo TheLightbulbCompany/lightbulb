@@ -216,3 +216,45 @@ def test_cancel_run(client, monkeypatch):
         run_id="run_1",
         session_cookie="cookie",
     )
+
+
+def test_record_watchdog_decision(client, monkeypatch):
+    """Forwards the camelCase decision body verbatim; returns the row."""
+    admin = MagicMock()
+    admin.record_watchdog_decision = AsyncMock(return_value={"id": "wd_1", "decision": "snooze"})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.post(
+        "/api/v1/teams/heartbeat-runs/run_1/watchdog-decisions",
+        json={
+            "decision": "snooze",
+            "snoozedUntil": "2027-01-01T00:00:00Z",
+            "reason": "long research run",
+        },
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    assert r.json()["decision"] == "snooze"
+    admin.record_watchdog_decision.assert_awaited_once_with(
+        run_id="run_1",
+        session_cookie="cookie",
+        body={
+            "decision": "snooze",
+            "snoozedUntil": "2027-01-01T00:00:00Z",
+            "reason": "long research run",
+        },
+    )
+
+
+def test_watchdog_decision_rejects_bad_decision(client, monkeypatch):
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: MagicMock())
+    r = client.post(
+        "/api/v1/teams/heartbeat-runs/run_1/watchdog-decisions",
+        json={"decision": "explode"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 422

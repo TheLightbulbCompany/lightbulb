@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, Query
 
 from . import agents as _agents
 from .deps import TeamsContext, envelope_list
+from .schemas import WatchdogDecisionBody
 
 router = APIRouter()
 _ctx = _agents._ctx
@@ -100,4 +101,19 @@ async def cancel_run(run_id: str, ctx: TeamsContext = Depends(_ctx)):
     return await _agents._admin().cancel_heartbeat_run(
         run_id=run_id,
         session_cookie=ctx.session_cookie,
+    )
+
+
+@router.post("/heartbeat-runs/{run_id}/watchdog-decisions")
+async def record_watchdog_decision(
+    run_id: str,
+    body: WatchdogDecisionBody,
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """Record a watchdog decision (continue / snooze / false-positive) for a
+    silent run. Maps to upstream ``POST /api/heartbeat-runs/{runId}/watchdog-decisions``."""
+    return await _agents._admin().record_watchdog_decision(
+        run_id=run_id,
+        session_cookie=ctx.session_cookie,
+        body=body.model_dump(exclude_none=True, by_alias=True),
     )

@@ -315,3 +315,13 @@ class PatchCompanySettingsBody(_Strict):
 
     display_name: Optional[str] = Field(default=None, min_length=1, max_length=80)
     description: Optional[str] = Field(default=None, max_length=4000)
+
+
+class WatchdogDecisionBody(_Strict):
+    # Mirrors upstream's watchdog-decisions route contract: the decision enum
+    # is validated here so junk 422s at the BFF boundary; ``snoozedUntil``'s
+    # required-future-when-snoozing rule stays upstream (it owns the clock).
+    decision: str = Field(pattern=r"^(snooze|continue|dismissed_false_positive)$")
+    evaluation_issue_id: Optional[str] = None
+    reason: Optional[str] = Field(default=None, max_length=4000)
+    snoozed_until: Optional[str] = None

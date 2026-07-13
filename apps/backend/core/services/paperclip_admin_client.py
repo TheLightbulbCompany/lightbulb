@@ -1033,6 +1033,27 @@ class PaperclipAdminClient:
             json={},
         )
 
+    async def record_watchdog_decision(
+        self,
+        *,
+        session_cookie: str,
+        run_id: str,
+        body: dict,
+    ) -> dict:
+        """Record an operator decision on a silent/stalled run.
+
+        Maps to ``POST /api/heartbeat-runs/{runId}/watchdog-decisions``.
+        ``body`` is the camelCase wire dict (``decision``, optional
+        ``evaluationIssueId`` / ``reason`` / ``snoozedUntil``); upstream
+        validates the snooze-must-be-future rule and returns the inserted
+        ``heartbeat_run_watchdog_decisions`` row.
+        """
+        return await self._post(
+            f"/api/heartbeat-runs/{run_id}/watchdog-decisions",
+            session_cookie=session_cookie,
+            json=body,
+        )
+
     # ------------------------------------------------------------------
     # Approvals
     # ------------------------------------------------------------------

@@ -50,11 +50,15 @@ def client(ctx, monkeypatch):
     ws.write_file = MagicMock()
     monkeypatch.setattr(onboarding_mod, "get_workspace", lambda: ws)
 
+    get_billing = AsyncMock(return_value={"subscription_status": "trial_local"})
+    monkeypatch.setattr(onboarding_mod.billing_repo, "get_by_owner_id", get_billing)
+
     app.dependency_overrides[get_current_user] = _personal_auth
     app.dependency_overrides[onboarding_mod._ctx] = lambda: ctx
     with TestClient(app) as c:
         c.admin = admin
         c.ws = ws
+        c.billing = get_billing
         yield c
     app.dependency_overrides.clear()
 
@@ -97,6 +101,19 @@ def test_org_context_rejected(client):
     )
     assert resp.status_code == 403
     assert resp.json()["detail"] == "personal_only"
+
+
+def test_non_trial_billing_rejected(client):
+    client.billing.return_value = {"subscription_status": "active"}
+    resp = client.post(
+        "/api/v1/onboarding/brief",
+        json={"path": "new", "input": "an agency"},
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == "trial_only"
+    client.admin.list_agents.assert_not_awaited()
+    client.ws.write_file_if_missing.assert_not_called()
+    client.admin.create_issue.assert_not_awaited()
 
 
 def test_no_friday_yet_returns_409(client):

@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 from core.auth import AuthContext, get_current_user
 from core.containers import get_workspace
 from core.observability.product_analytics import capture_product_event
+from core.repositories import billing_repo
 from core.services.paperclip_admin_client import PaperclipApiError
 from core.services.onboarding_brief import (
     render_brief_md,
@@ -63,6 +64,12 @@ async def submit_brief(
 ):
     if auth.is_org_context:
         raise HTTPException(status_code=403, detail="personal_only")
+
+    # trial_local rows only exist when FREE_TIER_ENABLED, so gating on the
+    # status also enforces the flag; paid/org users are out of v1 scope.
+    account = await billing_repo.get_by_owner_id(ctx.owner_id)
+    if (account or {}).get("subscription_status") != "trial_local":
+        raise HTTPException(status_code=403, detail="trial_only")
 
     admin = _agents._admin()
     try:

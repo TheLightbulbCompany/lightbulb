@@ -195,3 +195,24 @@ def test_get_run_events_passes_after_seq_and_limit(client, monkeypatch):
         headers={"Authorization": "Bearer x"},
     )
     assert r.status_code == 422
+
+
+def test_cancel_run(client, monkeypatch):
+    """`POST /teams/heartbeat-runs/{id}/cancel` proxies upstream cancel and
+    returns the cancelled run row verbatim."""
+    admin = MagicMock()
+    admin.cancel_heartbeat_run = AsyncMock(return_value={"id": "run_1", "status": "cancelled"})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.post(
+        "/api/v1/teams/heartbeat-runs/run_1/cancel",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    assert r.json()["status"] == "cancelled"
+    admin.cancel_heartbeat_run.assert_awaited_once_with(
+        run_id="run_1",
+        session_cookie="cookie",
+    )

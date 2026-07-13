@@ -103,6 +103,27 @@ def test_wake_agent_rejects_unknown_source_and_extra_fields():
         WakeAgentBody(adapterType="evil")
 
 
+def test_wake_agent_body_accepts_payload():
+    from routers.teams.schemas import WakeAgentBody
+
+    body = WakeAgentBody(
+        source="on_demand",
+        reason="retry_failed_run",
+        payload={"issueId": "iss_1", "taskKey": "ADM-42"},
+    )
+    dumped = body.model_dump(exclude_none=True, by_alias=True)
+    assert dumped["payload"] == {"issueId": "iss_1", "taskKey": "ADM-42"}
+
+
+def test_wake_agent_body_still_rejects_unknown_fields():
+    import pytest as _pytest
+    from pydantic import ValidationError
+    from routers.teams.schemas import WakeAgentBody
+
+    with _pytest.raises(ValidationError):
+        WakeAgentBody(source="on_demand", adapterConfig={"url": "x"})
+
+
 def test_create_issue_accepts_work_mode_and_status():
     """The composer can file a task straight into a status and pick an
     execution work mode — both forward camelCase to upstream's

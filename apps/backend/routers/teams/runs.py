@@ -1,9 +1,10 @@
 """Teams BFF — Heartbeat Runs.
 
-Read-only resource that surfaces upstream Paperclip's heartbeat-run
-detail. Used by the agent-run page that Inbox failed-run rows link into.
-Reuses the shared ``_ctx`` Depends helper so auth + session cookie
-plumbing is consistent across the Teams BFF.
+Surfaces upstream Paperclip's heartbeat-run detail (run row, log slice,
+event timeline) plus the cancel action. Used by the agent-run page that
+Inbox failed-run rows link into. Reuses the shared ``_ctx`` Depends
+helper so auth + session cookie plumbing is consistent across the
+Teams BFF.
 """
 
 from __future__ import annotations
@@ -87,3 +88,16 @@ async def get_run_events(
         limit=limit,
     )
     return envelope_list(rows, "events")
+
+
+@router.post("/heartbeat-runs/{run_id}/cancel")
+async def cancel_run(run_id: str, ctx: TeamsContext = Depends(_ctx)):
+    """Cancel a queued/running heartbeat run.
+
+    Maps to upstream ``POST /api/heartbeat-runs/{runId}/cancel``. Stopping a
+    run never *starts* spend, so no trial-runway gate here (unlike wakeup).
+    """
+    return await _agents._admin().cancel_heartbeat_run(
+        run_id=run_id,
+        session_cookie=ctx.session_cookie,
+    )

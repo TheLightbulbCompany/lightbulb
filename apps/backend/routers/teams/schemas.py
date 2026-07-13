@@ -61,8 +61,12 @@ class WakeAgentBody(_Strict):
     # defaults server-side, so a bare wake is valid. The failed-run Retry
     # sends source="on_demand", reason="retry". ``source`` is constrained to
     # the upstream enum so the BFF rejects junk before it reaches Paperclip.
+    # ``payload`` is upstream's free-form ``record(string, unknown)`` — the
+    # run-detail Retry/Resume actions use it to target the original issue
+    # (``{issueId, taskId, taskKey}``) or run (``{resumeFromRunId}``).
     source: Optional[str] = Field(default=None, pattern=r"^(timer|assignment|on_demand|automation)$")
     reason: Optional[str] = Field(default=None, max_length=2000)
+    payload: Optional[dict] = None
 
 
 class CreateIssueBody(_Strict):

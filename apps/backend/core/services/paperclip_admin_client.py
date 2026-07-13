@@ -1014,6 +1014,25 @@ class PaperclipAdminClient:
             params={"afterSeq": str(after_seq), "limit": str(limit)},
         )
 
+    async def cancel_heartbeat_run(
+        self,
+        *,
+        session_cookie: str,
+        run_id: str,
+    ) -> dict | None:
+        """Cancel a queued/running heartbeat run.
+
+        Maps to ``POST /api/heartbeat-runs/{runId}/cancel`` (board-actor
+        gated upstream; the BFF's per-user session cookie is a board actor).
+        Upstream returns the cancelled run row, or JSON null when the run
+        was already terminal.
+        """
+        return await self._post(
+            f"/api/heartbeat-runs/{run_id}/cancel",
+            session_cookie=session_cookie,
+            json={},
+        )
+
     # ------------------------------------------------------------------
     # Approvals
     # ------------------------------------------------------------------

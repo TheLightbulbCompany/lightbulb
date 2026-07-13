@@ -73,7 +73,7 @@ Placement, naming, and admin gating unchanged (Settings → Usage; dockview `con
 
 The Expo app mirrors the web surfaces and gets the same treatment:
 
-- **`src/app/(app)/control/usage.tsx`**: remove the "Total spend / Lifetime" dollar card and the per-member spend value; consume `GET /billing/spend` and render the same three modes as web (billed MTD + per-model split for Bedrock, quota bars for OAuth, tokens-only for BYOK). Token grid and per-member request/token rows stay.
+- **`src/app/(app)/control/usage.tsx`**: remove the "Total spend / Lifetime" dollar card and the per-member spend value; consume `GET /billing/spend` and render the same three modes as web (billed MTD + per-model split for Bedrock, quota bars for OAuth, tokens-only for BYOK). Token grid stays; per-member rows show name + request count (mobile's per-member token count is dropped for parity with the web member table).
 - **`src/app/(app)/teams/index.tsx`**: the "MONTH SPEND" tile already renders only when `dashboard.costs?.monthSpendCents` is present, so the backend dashboard re-point (§3) flows through with no data change — verify the tile reads correctly for a Bedrock owner and disappears for OAuth/BYOK orgs.
 - **`src/app/(app)/settings.tsx`**: types `current_spend`/`lifetime_spend` but never renders them — just drop the dead fields from the local `BillingAccount` type.
 - Mobile has no Costs panel, so no removal needed there.

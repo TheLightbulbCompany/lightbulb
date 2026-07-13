@@ -78,4 +78,55 @@ describe("RunDetailPanel", () => {
     render(<RunDetailPanel runId="r1" />);
     expect(screen.getByText(/showing the last 256 KiB/i)).toBeInTheDocument();
   });
+
+  it("cancels a running run", async () => {
+    mockReads({
+      "/heartbeat-runs/r1/log": { content: "" },
+      "/heartbeat-runs/r1/events": { events: [] },
+      "/heartbeat-runs/r1": { id: "r1", agentId: "agt_1", status: "running" },
+      "/agents": { agents: [] },
+    });
+    post.mockResolvedValue({ id: "r1", status: "cancelled" });
+    render(<RunDetailPanel runId="r1" />);
+    const btn = screen.getByRole("button", { name: "Cancel run" });
+    btn.click();
+    await vi.waitFor(() =>
+      expect(post).toHaveBeenCalledWith("/heartbeat-runs/r1/cancel", {}),
+    );
+  });
+
+  it("retries a timed-out run against its source issue", async () => {
+    mockReads({
+      "/heartbeat-runs/r1/log": { content: "" },
+      "/heartbeat-runs/r1/events": { events: [] },
+      "/heartbeat-runs/r1": {
+        id: "r1",
+        agentId: "agt_1",
+        status: "timed_out",
+        contextSnapshot: { issueId: "iss_7", taskKey: "ADM-42", other: "ignore" },
+      },
+      "/agents": { agents: [] },
+    });
+    post.mockResolvedValue({});
+    render(<RunDetailPanel runId="r1" />);
+    screen.getByRole("button", { name: "Retry" }).click();
+    await vi.waitFor(() =>
+      expect(post).toHaveBeenCalledWith("/agents/agt_1/wakeup", {
+        source: "on_demand",
+        reason: "retry_failed_run",
+        payload: { issueId: "iss_7", taskKey: "ADM-42" },
+      }),
+    );
+  });
+
+  it("offers Resume only for process-lost failures", () => {
+    mockReads({
+      "/heartbeat-runs/r1/log": { content: "" },
+      "/heartbeat-runs/r1/events": { events: [] },
+      "/heartbeat-runs/r1": { id: "r1", agentId: "agt_1", status: "failed", errorCode: "process_lost" },
+      "/agents": { agents: [] },
+    });
+    render(<RunDetailPanel runId="r1" />);
+    expect(screen.getByRole("button", { name: "Resume run" })).toBeInTheDocument();
+  });
 });

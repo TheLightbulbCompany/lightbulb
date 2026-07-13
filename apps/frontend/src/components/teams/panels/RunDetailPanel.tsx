@@ -1,9 +1,10 @@
 // apps/frontend/src/components/teams/panels/RunDetailPanel.tsx
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { useRunTranscript } from "@/components/teams/runs/useRunTranscript";
+import { EditorialButton } from "@/components/teams/shell";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import type { CompanyAgent, RunDetail, RunEvent } from "@/components/teams/shared/types";
 
@@ -19,6 +20,26 @@ function statusColor(status: string | null | undefined): string {
 function isActiveStatus(status: string | null | undefined): boolean {
   const s = (status ?? "").toLowerCase();
   return s === "running" || s === "queued" || s === "scheduled_retry";
+}
+
+// Upstream's retry/resume wakes re-target the source issue via a payload
+// subset of the run's contextSnapshot. Mirrors AgentDetail's own builders:
+// retry sends issueId/taskId/taskKey only; resume additionally carries a
+// commentId, preferring the snapshot's wakeCommentId over commentId.
+function contextPayload(
+  run: RunDetail,
+  opts?: { withComment?: boolean },
+): Record<string, unknown> {
+  const snap = run.contextSnapshot ?? {};
+  const out: Record<string, unknown> = {};
+  for (const k of ["issueId", "taskId", "taskKey"]) {
+    if (typeof snap[k] === "string" && snap[k]) out[k] = snap[k];
+  }
+  if (opts?.withComment) {
+    const commentId = snap["wakeCommentId"] ?? snap["commentId"];
+    if (typeof commentId === "string" && commentId) out.commentId = commentId;
+  }
+  return out;
 }
 
 // Mirrors upstream's runMetrics: usageJson carries camelCase or snake_case
@@ -60,7 +81,9 @@ function Prop({ label, children }: { label: string; children: React.ReactNode })
 }
 
 export function RunDetailPanel({ runId }: { runId: string }) {
-  const { read } = useTeamsApi();
+  const { read, post } = useTeamsApi();
+  const [acting, setActing] = useState<"cancel" | "retry" | "resume" | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   // A run link can target a heartbeat-run (the normal case) or a legacy
   // generic run; read both, prefer the heartbeat-run.
@@ -124,6 +147,36 @@ export function RunDetailPanel({ runId }: { runId: string }) {
     );
   }
 
+  async function act(kind: "cancel" | "retry" | "resume") {
+    if (!run || acting) return;
+    setActing(kind);
+    setActionError(null);
+    try {
+      if (kind === "cancel") {
+        await post(`/heartbeat-runs/${run.id}/cancel`, {});
+      } else if (run.agentId) {
+        await post(`/agents/${run.agentId}/wakeup`, {
+          source: "on_demand",
+          reason: kind === "retry" ? "retry_failed_run" : "resume_process_lost_run",
+          payload:
+            kind === "retry"
+              ? contextPayload(run)
+              : { resumeFromRunId: run.id, ...contextPayload(run, { withComment: true }) },
+        });
+      }
+      await hb.mutate();
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "Action failed.");
+    } finally {
+      setActing(null);
+    }
+  }
+
+  const canCancel = isActiveStatus(run?.status);
+  const s = (run?.status ?? "").toLowerCase();
+  const canRetry = s === "failed" || s === "timed_out";
+  const canResume = s === "failed" && run?.errorCode === "process_lost" && !!run?.agentId;
+
   const usage = run.usageJson ?? null;
   const input = usageNumber(usage, "inputTokens", "input_tokens");
   const output = usageNumber(usage, "outputTokens", "output_tokens");
@@ -152,6 +205,28 @@ export function RunDetailPanel({ runId }: { runId: string }) {
               </span>
             )}
           </div>
+          <div className="flex items-center gap-2">
+            {canCancel && (
+              <EditorialButton variant="secondary" size="sm" onClick={() => act("cancel")} disabled={acting !== null}>
+                {acting === "cancel" ? "Cancelling…" : "Cancel run"}
+              </EditorialButton>
+            )}
+            {canResume && (
+              <EditorialButton variant="secondary" size="sm" onClick={() => act("resume")} disabled={acting !== null}>
+                {acting === "resume" ? "Resuming…" : "Resume run"}
+              </EditorialButton>
+            )}
+            {canRetry && run?.agentId && (
+              <EditorialButton variant="secondary" size="sm" onClick={() => act("retry")} disabled={acting !== null}>
+                {acting === "retry" ? "Retrying…" : "Retry"}
+              </EditorialButton>
+            )}
+          </div>
+          {actionError && (
+            <p className="text-xs" style={{ color: "var(--danger)" }}>
+              {actionError}
+            </p>
+          )}
         </div>
 
         {(run.error || run.retryExhaustedReason || run.stderrExcerpt) && (

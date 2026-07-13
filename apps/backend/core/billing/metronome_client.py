@@ -338,6 +338,18 @@ class MetronomeClient:
         body = await self._post("/contracts/customerBalances/getNetBalance", {"customer_id": customer_id})
         return body.get("data", {})
 
+    async def list_customer_invoices(self, *, customer_id: str, status: str = "DRAFT") -> list[dict]:
+        """GET /v1/customers/{id}/invoices — invoice list for one customer.
+
+        With status=DRAFT this returns the continuously-updated draft usage
+        invoice for the current billing period; its line_items carry
+        pricing_group_values (our ``tier`` key), which is what the
+        user-facing spend surface renders. Read-only display path — the
+        gates never call this.
+        """
+        body = await self._get(f"/customers/{customer_id}/invoices", params={"status": status})
+        return body.get("data") or []
+
 
 def for_settings(http_client: httpx.AsyncClient) -> MetronomeClient:
     """Build a client from settings, given a caller-owned AsyncClient.

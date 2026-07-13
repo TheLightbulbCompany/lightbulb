@@ -170,8 +170,12 @@ export class BedrockMeterStack extends cdk.Stack {
       // keyed on the Bedrock requestId. Without it a single batch retry
       // double-counts and false-locks-out a real user at half their real spend.
       //
-      // 48h TTL: past CloudWatch's retry horizon and any redrive we would still
-      // want counted. AWS-owned encryption, not the per-env CMK: the CMK is
+      // TTL (see DEDUP_TTL_SECONDS in index.py) is 15 DAYS, deliberately LONGER
+      // than this DLQ's 14-day retention. A shorter TTL does not "safely
+      // under-count": once the claim row expires the conditional PutItem
+      // succeeds again, so a redrive past the TTL RE-APPLIES the counter and
+      // double-counts, false-locking a real user out early. Do not shorten it.
+      // AWS-owned encryption, not the per-env CMK: the CMK is
       // created by each env's auth stack and its ARN is unknowable from this
       // prod-stage stack (cross-stage), and the rows hold nothing but a request
       // id and a timestamp. DESTROY for the same reason as the log group — a
@@ -410,6 +414,24 @@ export class BedrockMeterStack extends cdk.Stack {
       );
       const alarmAction = new cloudwatchActions.SnsAction(alarmTopic);
 
+      // A meter.kill_*_error means the cap FIRED and the owner is STILL ABLE TO
+      // SPEND — the one failure in this system that burns money in real time,
+      // and the only one with no self-healing path (the kill is now re-asserted
+      // on every over-cap record, but if IAM/ECS is durably broken that retry
+      // never lands). alerts-warn is email-only to alerts@; that is not a
+      // response to unbounded spend. These go to the PAGE topic (SMS + oncall@),
+      // which is what the comment above has always said they must do.
+      const pageTopic = sns.Topic.fromTopicArn(
+        this,
+        `MeterPage${idSuffix}`,
+        `arn:aws:sns:${this.region}:${this.account}:isol8-${meterEnv}-alerts-page`,
+      );
+      const pageAction = new cloudwatchActions.SnsAction(pageTopic);
+      const PAGING_METRICS = new Set([
+        "meter.kill_iam_error",
+        "meter.kill_ecs_error",
+      ]);
+
       const dlqAlarm = new cloudwatch.Alarm(this, `MeterDlqNotEmptyAlarm${idSuffix}`, {
         alarmName: `isol8-${meterEnv}-bedrock-meter-dlq-not-empty`,
         alarmDescription:
@@ -469,6 +491,7 @@ export class BedrockMeterStack extends cdk.Stack {
         ["meter.kill_iam_error", "MeterKillIamErrorAlarm"],
         ["meter.kill_ecs_error", "MeterKillEcsErrorAlarm"],
         ["meter.kill_stamp_error", "MeterKillStampErrorAlarm"],
+        ["meter.malformed_record", "MeterMalformedRecordAlarm"],
       ];
       for (const [metricName, alarmId] of skipMetrics) {
         const alarm = new cloudwatch.Alarm(this, `${alarmId}${idSuffix}`, {
@@ -490,7 +513,9 @@ export class BedrockMeterStack extends cdk.Stack {
           evaluationPeriods: 1,
           treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
         });
-        alarm.addAlarmAction(alarmAction);
+        alarm.addAlarmAction(
+          PAGING_METRICS.has(metricName) ? pageAction : alarmAction,
+        );
       }
     }
 

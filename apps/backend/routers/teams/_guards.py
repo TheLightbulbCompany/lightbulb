@@ -13,7 +13,49 @@ and dispatch a Paperclip run that a chat message would have been refused.
 
 from fastapi import HTTPException
 
+from core.repositories import billing_repo
 from core.services import provision_gate, trial_cap
+
+
+async def require_always_on_entitlement(owner_id: str) -> None:
+    """403 unless the owner may create ALWAYS-ON automation.
+
+    Autonomy is what the subscription buys — ``has_always_on_entitlement`` is
+    False for ``trial_local`` — and its docstring has always listed "Paperclip
+    routines" among the features it gates. Until now nothing enforced that on
+    any routine path: a trial owner could create a routine and attach a cron
+    trigger with no check at all.
+
+    Gating CREATION (not just the manual ``/run`` dispatch) is the point. A
+    trial container scales to zero when the tab closes, and NO Paperclip or
+    operator dispatch path calls ``start_user_service`` —
+    ``resolve_running_container`` simply returns ``(None, None)`` for a stopped
+    container. So a routine a trial owner schedules for 3am does not "run inside
+    the $3/day cap": it does not run AT ALL, silently, every night. Letting them
+    build that is worse than refusing it. This is a broken-affordance fix, not a
+    paywall move — spend was already fenced by the meter Lambda's daily cap.
+
+    Same predicate as the channel gate in ``routers/config.py``, but a 402 with
+    the structured ``{blocked, code, message}`` body every other trial block in
+    the system uses — not that gate's bare-string 403. The shared API client
+    drops a non-string ``detail`` but keeps the parsed body on ``ApiError``, so
+    this shape is what lets the UI render an upgrade card at exactly the moment
+    the user reached for autonomy, instead of a stringified exception.
+    """
+    account = await billing_repo.get_by_owner_id(owner_id)
+    if not provision_gate.has_always_on_entitlement(account):
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "blocked": True,
+                "code": "routines_require_subscription",
+                "message": (
+                    "Scheduled routines are part of a paid plan — on the free "
+                    "plan your agents only run while you're here. Upgrade to let "
+                    "them work on a schedule."
+                ),
+            },
+        )
 
 
 async def require_trial_runway(owner_id: str) -> None:

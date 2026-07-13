@@ -62,6 +62,13 @@ def admin(monkeypatch):
     from routers.teams import agents as agents_mod
 
     monkeypatch.setattr(agents_mod, "_admin", lambda: a)
+    # Routine create/trigger are always-on-entitled (paid). Default these tests
+    # to an entitled owner; the trial cases override this stub explicitly.
+    # Without it the guard does a real DDB read.
+    monkeypatch.setattr(
+        "routers.teams._guards.billing_repo.get_by_owner_id",
+        AsyncMock(return_value={"subscription_status": "active"}),
+    )
     return a
 
 
@@ -392,3 +399,154 @@ def test_get_project(client, admin):
         project_id="pr_1",
         session_cookie="cookie",
     )
+
+
+# ---------------------------------------------------------------------------
+# Routine CREATION is always-on-entitled (paid), not just routine RUN.
+#
+# has_always_on_entitlement's docstring has always listed "Paperclip routines"
+# among the features it gates, but no routine path enforced it: a trial owner
+# could create a routine and attach a cron trigger with zero checks.
+#
+# The reason this matters is NOT the paywall (spend was already fenced by the
+# meter Lambda's $3/day cap). It is that a trial container scales to zero on tab
+# close and NO Paperclip/operator dispatch path calls start_user_service, so a
+# routine a trial owner schedules for 3am would silently never fire. We were
+# letting them build a broken thing.
+
+
+@pytest.mark.parametrize(
+    "route,body",
+    [
+        ("/api/v1/teams/routines", {"title": "nightly report"}),
+        ("/api/v1/teams/routines/r1/triggers", {"cronExpression": "0 3 * * *"}),
+    ],
+)
+def test_trial_owner_cannot_create_a_routine_or_attach_a_schedule(client, monkeypatch, route, body):
+    from routers.teams import agents as agents_mod
+
+    admin = MagicMock()
+    admin.create_routine = AsyncMock(return_value={"id": "r1"})
+    admin.create_routine_trigger = AsyncMock(return_value={"id": "t1"})
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    # trial_local => has_always_on_entitlement is False
+    monkeypatch.setattr(
+        "routers.teams._guards.billing_repo.get_by_owner_id",
+        AsyncMock(return_value={"subscription_status": "trial_local"}),
+    )
+
+    r = client.post(route, json=body, headers={"Authorization": "Bearer x"})
+
+    assert r.status_code == 402
+    body = r.json()["detail"]
+    assert body["code"] == "routines_require_subscription"
+    assert body["blocked"] is True
+    assert isinstance(body["message"], str) and body["message"]
+    admin.create_routine.assert_not_awaited()
+    admin.create_routine_trigger.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "route,body,method",
+    [
+        ("/api/v1/teams/routines", {"title": "nightly report"}, "create_routine"),
+        ("/api/v1/teams/routines/r1/triggers", {"cronExpression": "0 3 * * *"}, "create_routine_trigger"),
+    ],
+)
+def test_paid_owner_can_still_create_routines(client, monkeypatch, route, body, method):
+    """The gate must not break the paying customer it exists to protect."""
+    from routers.teams import agents as agents_mod
+
+    admin = MagicMock()
+    admin.create_routine = AsyncMock(return_value={"id": "r1"})
+    admin.create_routine_trigger = AsyncMock(return_value={"id": "t1"})
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(
+        "routers.teams._guards.billing_repo.get_by_owner_id",
+        AsyncMock(return_value={"subscription_status": "active"}),
+    )
+
+    r = client.post(route, json=body, headers={"Authorization": "Bearer x"})
+
+    assert r.status_code == 200, r.text
+    getattr(admin, method).assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Re-ACTIVATION is the same lever as creation.
+#
+# Gating only create left a walk-around: a trial owner with a pre-existing
+# routine (seeded before the gate, or created through the Paperclip catch-all
+# proxy) could just flip it back on. The enable toggle PATCHes exactly
+# {status: "active"} (RoutinesPanel.toggle).
+#
+# But pause/rename/delete MUST stay open — refusing those would trap someone
+# with automation they cannot turn off. Only activation reaches for autonomy.
+
+
+def _trial(monkeypatch):
+    monkeypatch.setattr(
+        "routers.teams._guards.billing_repo.get_by_owner_id",
+        AsyncMock(return_value={"subscription_status": "trial_local"}),
+    )
+
+
+def test_trial_owner_cannot_reactivate_a_routine(client, admin, monkeypatch):
+    _trial(monkeypatch)
+
+    r = client.patch(
+        "/api/v1/teams/routines/r1",
+        json={"status": "active"},
+        headers={"Authorization": "Bearer x"},
+    )
+
+    assert r.status_code == 402
+    assert r.json()["detail"]["code"] == "routines_require_subscription"
+    admin.patch_routine.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"status": "paused"},
+        {"title": "renamed"},
+        {"status": "archived"},
+    ],
+)
+def test_trial_owner_can_still_pause_rename_and_archive(client, admin, monkeypatch, body):
+    """The escape hatch. Never trap a trial owner with automation they can't stop."""
+    _trial(monkeypatch)
+
+    r = client.patch(
+        "/api/v1/teams/routines/r1",
+        json=body,
+        headers={"Authorization": "Bearer x"},
+    )
+
+    assert r.status_code == 200, r.text
+    admin.patch_routine.assert_awaited_once()
+
+
+def test_trial_owner_can_still_delete_a_routine(client, admin, monkeypatch):
+    _trial(monkeypatch)
+
+    r = client.delete("/api/v1/teams/routines/r1", headers={"Authorization": "Bearer x"})
+
+    assert r.status_code == 200
+    admin.delete_routine.assert_awaited_once()
+
+
+def test_paid_owner_can_still_reactivate(client, admin, monkeypatch):
+    monkeypatch.setattr(
+        "routers.teams._guards.billing_repo.get_by_owner_id",
+        AsyncMock(return_value={"subscription_status": "active"}),
+    )
+
+    r = client.patch(
+        "/api/v1/teams/routines/r1",
+        json={"status": "active"},
+        headers={"Authorization": "Bearer x"},
+    )
+
+    assert r.status_code == 200, r.text
+    admin.patch_routine.assert_awaited_once()

@@ -337,8 +337,8 @@ describe("BedrockMeterStack", () => {
     }
   });
 
-  test("alarms per instance: DLQ depth + 8 skip/failure metrics + fn errors, env-scoped dimensions", () => {
-    // (1 DLQ + 8 skip/failure-metric + 1 fn-Errors) alarms x 2 instances = 20.
+  test("alarms per instance: DLQ depth + 9 skip/failure metrics + fn errors, env-scoped dimensions", () => {
+    // (1 DLQ + 9 skip/failure-metric + 1 fn-Errors) alarms x 2 instances = 22.
     // Each metric alarm scopes to its instance via the env dimension so dev
     // noise never pages prod (both Lambdas share namespace Isol8 + the
     // service name).
@@ -347,7 +347,7 @@ describe("BedrockMeterStack", () => {
     // the cap fired and the owner is STILL able to spend. meter.cap_kill and
     // meter.replay_skipped are deliberately NOT alarmed — a trial owner
     // hitting their cap and a CW-Logs batch retry are normal operation.
-    template.resourceCountIs("AWS::CloudWatch::Alarm", 20);
+    template.resourceCountIs("AWS::CloudWatch::Alarm", 22);
     for (const meterEnv of ["dev", "prod"]) {
       for (const metricName of [
         "meter.unattributed",
@@ -358,6 +358,7 @@ describe("BedrockMeterStack", () => {
         "meter.kill_iam_error",
         "meter.kill_ecs_error",
         "meter.kill_stamp_error",
+        "meter.malformed_record",
       ]) {
         template.hasResourceProperties("AWS::CloudWatch::Alarm", {
           AlarmName: `isol8-${meterEnv}-${metricName.replace(/\./g, "-")}`,
@@ -432,21 +433,38 @@ describe("BedrockMeterStack", () => {
     }
   });
 
-  test("alarms page to each env's OWN alerts-warn topic; no topics minted", () => {
-    // An alarm with no action only flips a console dot. Each instance's
-    // alarms must target its env's existing isol8-{env}-alerts-warn topic so
-    // dev pages dev and prod pages prod — and this stack mints NO new topic.
+  test("kill-failure alarms PAGE; the rest warn; each to its OWN env topic; no topics minted", () => {
+    // An alarm with no action only flips a console dot. Each instance's alarms
+    // must target its own env's topic so dev pages dev and prod pages prod —
+    // and this stack mints NO new topic.
+    //
+    // THE ROUTING SPLIT IS A SAFETY PROPERTY, not a preference. A
+    // meter.kill_*_error means the cap FIRED and the owner is STILL ABLE TO
+    // SPEND — the one failure here that burns money in real time. alerts-warn
+    // is email-only to alerts@; that is not a response to unbounded spend. So
+    // the two kill actions go to alerts-page (SMS + oncall@). Everything else
+    // is a revenue-leak / hygiene signal and warns.
     template.resourceCountIs("AWS::SNS::Topic", 0);
+    // Alarm names replace only the DOTS in the metric name, so the underscores
+    // survive: meter.kill_iam_error -> isol8-{env}-meter-kill_iam_error.
+    const PAGING = ["meter-kill_iam_error", "meter-kill_ecs_error"];
     const alarms = Object.values(
       template.findResources("AWS::CloudWatch::Alarm"),
     ) as any[];
+    let paged = 0;
     for (const alarm of alarms) {
       expect(alarm.Properties.AlarmActions?.length).toBeGreaterThan(0);
       const name: string = alarm.Properties.AlarmName;
       const expectedEnv = name.startsWith("isol8-dev-") ? "dev" : "prod";
+      const pages = PAGING.some((m) => name.endsWith(m));
+      const tier = pages ? "page" : "warn";
+      if (pages) paged++;
       expect(JSON.stringify(alarm.Properties.AlarmActions)).toContain(
-        `isol8-${expectedEnv}-alerts-warn`,
+        `isol8-${expectedEnv}-alerts-${tier}`,
       );
     }
+    // Both kill-failure alarms, both envs. If this drops, a failed kill went
+    // silent again.
+    expect(paged).toBe(4);
   });
 });

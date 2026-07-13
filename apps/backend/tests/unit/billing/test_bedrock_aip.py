@@ -524,6 +524,50 @@ class TestEnsureAips:
         assert resp["Item"]["plan"]["S"] == "trial"
 
     @pytest.mark.asyncio
+    async def test_failed_upgrade_mint_never_leaves_a_paying_owner_stamped_trial(self, aip_tables, monkeypatch):
+        """THE PAYING-CUSTOMER KILL. A trial owner converts to paid: ensure_owner_aips
+        is called with tiers=None to mint opus + haiku on top of the existing sonnet.
+
+        persist_owner_aips runs only at the END of that function, so if ANY
+        create_inference_profile raises, it never runs — and the pre-existing sonnet
+        reverse row keeps plan="trial". The meter Lambda reads exactly that row to
+        decide whether to apply the $3/day cap and the IAM-revoke + ECS desiredCount=0
+        kill. So one transient mint failure during an upgrade would cut a PAYING
+        customer off from Bedrock and stop their container.
+
+        The plan must be re-stamped for the tiers already held BEFORE any mint is
+        attempted: it is a property of the owner, not of the mint's outcome.
+        """
+        import core.billing.bedrock_aip as mod
+
+        sonnet = "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/s"
+        await mod.persist_owner_aips("org_abc", {"sonnet": sonnet}, plan="trial")
+
+        # The upgrade mint blows up partway through (transient AWS error).
+        fake = MagicMock()
+        fake.create_inference_profile.side_effect = ClientError(
+            {"Error": {"Code": "ThrottlingException", "Message": "rate exceeded"}},
+            "CreateInferenceProfile",
+        )
+        monkeypatch.setattr(mod, "_bedrock_client", lambda: fake)
+        monkeypatch.setattr(mod, "_caller_account_id", AsyncMock(return_value="877352799272"))
+        monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
+
+        with pytest.raises(ClientError):
+            await mod.ensure_owner_aips("org_abc")  # tiers=None -> the PAID tier set
+
+        # The mint failed and persist_owner_aips never ran — but the owner is paid,
+        # so the row the meter reads must NOT still say "trial".
+        resp = aip_tables.get_item(
+            TableName="test-aip-owners",
+            Key={"aip_arn": {"S": sonnet}},
+        )
+        assert resp["Item"]["plan"]["S"] == "paid", (
+            "a converted owner is still stamped trial after a failed upgrade mint — "
+            "the meter would cap and KILL a paying customer"
+        )
+
+    @pytest.mark.asyncio
     async def test_single_tier_mint_feeds_policy_pinned_to_one_model(self, aip_tables, monkeypatch):
         """SECURITY PROPERTY: minting only the sonnet tier and feeding the
         result into build_owner_bedrock_policy produces a per-owner IAM policy

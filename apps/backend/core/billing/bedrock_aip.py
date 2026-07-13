@@ -338,6 +338,24 @@ async def ensure_owner_aips(owner_id: str, *, tiers: list[str] | None = None) ->
     client = _bedrock_client()
     account_id = await _caller_account_id()
     arns: dict[str, str] = dict(existing or {})
+
+    # Re-stamp the plan on the tiers we ALREADY hold, BEFORE minting the rest.
+    #
+    # ``plan`` is a property of the OWNER — of which tier-set the caller asked
+    # for — not of whether the mint below succeeds. persist_owner_aips runs only
+    # at the END of this function, so without this, a raise from any
+    # create_inference_profile would leave a CONVERTED owner's pre-existing
+    # sonnet row still stamped "trial". The meter Lambda reads exactly that row
+    # to decide whether to apply the $3/day cap and the IAM-revoke + ECS
+    # desiredCount=0 kill. One transient haiku mint failure during a
+    # trial->paid upgrade would therefore cut a PAYING customer off from Bedrock
+    # and stop their container. Stamping first makes the plan correct the moment
+    # we know it, and the reverse PutItems are idempotent so this is cheap.
+    if arns:
+        table = _aip_owners_table()
+        for tier, arn in arns.items():
+            await _put_reverse_row(table, arn=arn, owner_id=owner_id, tier=tier, plan=plan)
+
     for tier in target_tiers:
         if tier in arns:
             continue

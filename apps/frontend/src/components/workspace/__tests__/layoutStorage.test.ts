@@ -192,6 +192,61 @@ describe("layoutStorage", () => {
     expect(leafData.activeView).toBe("teams-dashboard");
   });
 
+  it("sanitizer prunes a group emptied when its only tab is a dropped retired-panel duplicate", () => {
+    // Regression (round-4 finding): teams-costs is the ONLY tab in group-1;
+    // teams-dashboard (its alias target) is already open in group-2. The
+    // duplicate-target branch drops teams-costs, which would otherwise
+    // leave group-1 restored as an empty pane. It must be pruned, and the
+    // branch (now down to one child) must collapse to group-2 rather than
+    // persist a redundant single-child split.
+    const dirty = {
+      grid: {
+        root: {
+          type: "branch",
+          size: 800,
+          data: [
+            { type: "leaf", size: 400, data: { id: "group-1", views: ["teams-costs"], activeView: "teams-costs" } },
+            {
+              type: "leaf",
+              size: 400,
+              data: { id: "group-2", views: ["teams-dashboard"], activeView: "teams-dashboard" },
+            },
+          ],
+        },
+        height: 600,
+        width: 800,
+        orientation: "HORIZONTAL" as SerializedDockview["grid"]["orientation"],
+      },
+      panels: {
+        "teams-costs": { id: "teams-costs", contentComponent: "teams", params: { teamsKey: "costs" } },
+        "teams-dashboard": {
+          id: "teams-dashboard",
+          contentComponent: "teams",
+          params: { teamsKey: "dashboard" },
+        },
+      },
+      activeGroup: "group-1",
+    } as unknown as SerializedDockview;
+
+    const clean = sanitizeLayout(dirty);
+
+    expect(clean.panels["teams-costs"]).toBeUndefined();
+    expect(Object.keys(clean.panels)).toEqual(["teams-dashboard"]);
+
+    // The branch collapsed to its sole surviving child — no empty group-1
+    // leaf anywhere in the tree, and no redundant single-child branch.
+    expect(clean.grid.root.type).toBe("leaf");
+    const leafData = (clean.grid.root as unknown as {
+      data: { id: string; views: string[]; activeView: string };
+    }).data;
+    expect(leafData.id).toBe("group-2");
+    expect(leafData.views).toEqual(["teams-dashboard"]);
+    expect(leafData.activeView).toBe("teams-dashboard");
+
+    // activeGroup pointed at the pruned group-1 — must be repointed off it.
+    expect(clean.activeGroup).toBe("group-2");
+  });
+
   it("clearLayout removes only its own key", () => {
     writeLayout("u1", minimalLayout({}));
     window.localStorage.setItem("unrelated", "x");

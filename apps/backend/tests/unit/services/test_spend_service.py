@@ -1,5 +1,6 @@
 """spend_service — provider-aware spend summary building blocks."""
 
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -263,6 +264,19 @@ async def test_summary_oauth_degrades_to_tokens_only_on_rpc_failure():
 @pytest.mark.asyncio
 async def test_summary_oauth_degrades_when_no_container():
     p1, p2 = _patch_gateway(container=None)
+    with p1, p2:
+        payload = await spend_service.get_spend_summary("owner-1", "chatgpt_oauth")
+    assert payload == {"mode": "tokens_only"}
+
+
+@pytest.mark.asyncio
+async def test_summary_oauth_degrades_when_authstatus_rpc_hangs():
+    """Finding round-4 P2: the pool's send_rpc has no timeout of its own —
+    it awaits the connection's default 30s _RPC_TIMEOUT. This display-only
+    probe must bound its own wait (5s) so a container that accepts but
+    never answers models.authStatus can't hold /billing/spend (and
+    mobile's Promise.all'd usage screen) open for 30s."""
+    p1, p2 = _patch_gateway(rpc_error=asyncio.TimeoutError())
     with p1, p2:
         payload = await spend_service.get_spend_summary("owner-1", "chatgpt_oauth")
     assert payload == {"mode": "tokens_only"}

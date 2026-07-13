@@ -59,14 +59,32 @@ type GridNode = SerializedDockview["grid"]["root"];
 // `activeView`), independent of the flat `panels` map — a rename or drop in
 // `panels` must be mirrored there or dockview restores a group referencing a
 // panel id that no longer exists.
+//
+// A drop can also empty out a leaf entirely (the retired panel was the only
+// tab in its group) — an empty `views` array restores as a blank pane, so
+// such leaves are pruned (return null) rather than kept with zero views.
+// Pruning propagates upward: a branch left with no surviving children is
+// itself pruned, and a branch left with exactly one surviving child
+// collapses to that child (dockview's SerializedGridObject shape has no
+// concept of a branch with a single member — the branch node's own
+// `size`/`visible` describe the slot it held in ITS parent, so those are
+// preserved on the promoted child; the child's own size was relative to the
+// discarded branch and no longer applies now that it fills the whole slot).
 function migrateGridNode(
   node: GridNode,
   renamed: Readonly<Record<string, string>>,
   dropped: ReadonlySet<string>,
-): GridNode {
+): GridNode | null {
   if (node.type === "branch") {
-    const data = (node.data as GridNode[]).map((child) => migrateGridNode(child, renamed, dropped));
-    return { ...node, data } as GridNode;
+    const children = (node.data as GridNode[])
+      .map((child) => migrateGridNode(child, renamed, dropped))
+      .filter((child): child is GridNode => child !== null);
+    if (children.length === 0) return null;
+    if (children.length === 1) {
+      const [only] = children;
+      return { ...only, size: node.size, visible: node.visible } as GridNode;
+    }
+    return { ...node, data: children } as GridNode;
   }
   const leaf = node.data as unknown as {
     views: string[];
@@ -74,11 +92,23 @@ function migrateGridNode(
     [key: string]: unknown;
   };
   const views = leaf.views.filter((v) => !dropped.has(v)).map((v) => renamed[v] ?? v);
+  if (views.length === 0) return null;
   let activeView = leaf.activeView;
   if (activeView !== undefined) {
     activeView = dropped.has(activeView) ? views[0] : (renamed[activeView] ?? activeView);
   }
   return { ...node, data: { ...leaf, views, activeView } } as GridNode;
+}
+
+// Collect every surviving group id (leaf `data.id`) in a pruned grid tree, so
+// `activeGroup` can be repointed off a group that pruning just removed.
+function collectGroupIds(node: GridNode, out: Set<string>): void {
+  if (node.type === "branch") {
+    for (const child of node.data as GridNode[]) collectGroupIds(child, out);
+    return;
+  }
+  const leaf = node.data as unknown as { id?: string };
+  if (leaf.id) out.add(leaf.id);
 }
 
 export function layoutStorageKey(scopeId: string): string {
@@ -139,12 +169,27 @@ export function sanitizeLayout(raw: SerializedDockview): SerializedDockview {
     panels[finalId] = { ...state, id: finalId, contentComponent: component, params };
   }
 
-  const grid =
-    Object.keys(renamed).length || dropped.size
-      ? { ...raw.grid, root: migrateGridNode(raw.grid.root, renamed, dropped) }
-      : raw.grid;
+  let grid = raw.grid;
+  let activeGroup = raw.activeGroup;
+  if (Object.keys(renamed).length || dropped.size) {
+    // The root itself can only be pruned away if literally every panel in
+    // the layout got dropped, which can't happen from a duplicate-target
+    // drop (the alias target survives elsewhere) — but fall back to the
+    // original root rather than crash if it ever does.
+    const migratedRoot = migrateGridNode(raw.grid.root, renamed, dropped);
+    if (migratedRoot) {
+      grid = { ...raw.grid, root: migratedRoot };
+      if (activeGroup !== undefined) {
+        const survivingGroupIds = new Set<string>();
+        collectGroupIds(migratedRoot, survivingGroupIds);
+        if (!survivingGroupIds.has(activeGroup)) {
+          activeGroup = survivingGroupIds.values().next().value;
+        }
+      }
+    }
+  }
   const clean: SerializedDockview = { grid, panels };
-  if (raw.activeGroup !== undefined) clean.activeGroup = raw.activeGroup;
+  if (activeGroup !== undefined) clean.activeGroup = activeGroup;
   // floatingGroups / popoutGroups / edgeGroups deliberately dropped:
   // disableFloatingGroups only blocks user-initiated floats — persisted
   // floating groups would still restore (and popouts window.open a 404).

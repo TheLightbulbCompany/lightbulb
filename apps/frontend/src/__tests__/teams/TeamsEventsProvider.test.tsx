@@ -28,6 +28,20 @@ vi.mock("swr", () => ({
   useSWRConfig: () => ({ mutate: mutateMock }),
 }));
 
+// Mirrors the `gatewayState` mutable-ref pattern above: each test sets
+// `userState.current` before rendering to control what `readFirstRun`
+// sees, overriding the global `@clerk/nextjs` mock from tests/setup.ts
+// (which carries no `unsafeMetadata.firstRun`).
+const userState: { current: { unsafeMetadata?: Record<string, unknown> } | null } = {
+  current: { unsafeMetadata: {} },
+};
+vi.mock("@clerk/nextjs", () => ({
+  useUser: () => ({ user: userState.current }),
+}));
+
+const { captureMock } = vi.hoisted(() => ({ captureMock: vi.fn() }));
+vi.mock("@/lib/analytics", () => ({ capture: captureMock }));
+
 /**
  * The provider switched from `mutate(stringKey)` to `mutate(predicate)` so
  * query-stringed cache keys (e.g. `/teams/inbox?tab=mine`) get invalidated
@@ -74,8 +88,10 @@ beforeEach(() => {
   sendMock.mockReset();
   mutateMock.mockReset();
   setIsConnected.mockReset();
+  captureMock.mockReset();
   eventHandler = null;
   gatewayState.isConnected = false;
+  userState.current = { unsafeMetadata: {} };
   _resetTeamsEventsForTests();
 });
 
@@ -107,6 +123,46 @@ describe("TeamsEventsProvider", () => {
     expect(keys).not.toContain("/teams/inbox-foo");
     // Non-listed keys must not be invalidated either.
     expect(keys).not.toContain("/teams/agents");
+  });
+
+  it("captures first_run_board_pulse on teams.activity.logged during an active first-run show", () => {
+    gatewayState.isConnected = true;
+    userState.current = { unsafeMetadata: { firstRun: { started: true, completed: false } } };
+    render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
+    act(() => {
+      eventHandler!("teams.activity.logged", {});
+    });
+    expect(captureMock).toHaveBeenCalledWith("first_run_board_pulse");
+  });
+
+  it("does not capture first_run_board_pulse once the first-run show has completed", () => {
+    gatewayState.isConnected = true;
+    userState.current = { unsafeMetadata: { firstRun: { started: true, completed: true } } };
+    render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
+    act(() => {
+      eventHandler!("teams.activity.logged", {});
+    });
+    expect(captureMock).not.toHaveBeenCalled();
+  });
+
+  it("does not capture first_run_board_pulse for a user who never entered the first-run show", () => {
+    gatewayState.isConnected = true;
+    userState.current = { unsafeMetadata: {} };
+    render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
+    act(() => {
+      eventHandler!("teams.activity.logged", {});
+    });
+    expect(captureMock).not.toHaveBeenCalled();
+  });
+
+  it("does not capture first_run_board_pulse for unrelated teams events during an active show", () => {
+    gatewayState.isConnected = true;
+    userState.current = { unsafeMetadata: { firstRun: { started: true, completed: false } } };
+    render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
+    act(() => {
+      eventHandler!("teams.agent.status", {});
+    });
+    expect(captureMock).not.toHaveBeenCalled();
   });
 
   it("invalidates dashboard + agents on teams.agent.status", () => {

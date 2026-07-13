@@ -2,7 +2,10 @@
 
 import { useCallback, useEffect, useRef } from "react";
 import { useSWRConfig } from "swr";
+import { useUser } from "@clerk/nextjs";
 import { useGateway } from "@/hooks/useGateway";
+import { capture } from "@/lib/analytics";
+import { readFirstRun } from "@/lib/firstRun";
 import {
   acquireTeamsEvents,
   releaseTeamsEvents,
@@ -50,6 +53,7 @@ export const EVENT_KEY_MAP: Record<string, string[]> = {
 export function TeamsEventsProvider({ children }: { children: React.ReactNode }) {
   const { isConnected, send, onEvent } = useGateway();
   const { mutate } = useSWRConfig();
+  const { user } = useUser();
   // null = never observed; false = observed disconnected; true = observed connected.
   // Full invalidation only fires on a tracked false→true transition (true reconnect),
   // NOT on the first mount when we were already connected.
@@ -105,6 +109,14 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
         for (const key of ALL_KEYS) mutateKeyPrefix(key);
         return;
       }
+      if (event === "teams.activity.logged") {
+        // Prod telemetry proxy for "a board pulse reached this client"
+        // during an active first-run show (spec §4.G gate 1). True e2e
+        // latency needs a BFF-side emit timestamp, which activity.logged
+        // payloads don't carry — a follow-up if pulse counts look wrong.
+        const { started, completed } = readFirstRun(user);
+        if (started && !completed) capture("first_run_board_pulse");
+      }
       const keys = EVENT_KEY_MAP[event];
       if (!keys || keys.length === 0) return;
       for (const key of keys) mutateKeyPrefix(key);
@@ -112,7 +124,7 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
     return () => {
       unsub();
     };
-  }, [onEvent, mutateKeyPrefix]);
+  }, [onEvent, mutateKeyPrefix, user]);
 
   return <>{children}</>;
 }

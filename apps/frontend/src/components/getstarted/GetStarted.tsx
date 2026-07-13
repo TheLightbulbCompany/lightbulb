@@ -1,5 +1,7 @@
 "use client";
+import { useUser } from "@clerk/nextjs";
 import { capture } from "@/lib/analytics";
+import { readFirstRun } from "@/lib/firstRun";
 import { GetStartedLauncher } from "./GetStartedLauncher";
 import { GetStartedCard } from "./GetStartedCard";
 import { useGetStarted } from "./useGetStarted";
@@ -10,6 +12,11 @@ export interface GetStartedActions { chat: () => void; task: () => void; hire: (
 export function GetStarted({ derived, actions }: { derived: Partial<Record<StepId, boolean>>; actions: GetStartedActions }): React.ReactElement | null {
   const gs = useGetStarted({ derived });
   const complete = gs.progress.total > 0 && gs.progress.done === gs.progress.total;
+  const { user } = useUser();
+  const firstRun = readFirstRun(user);
+  // First-run users saw Friday do the checklist's steps herself (spec §7) —
+  // "what Friday already did" supersedes "what you must do".
+  if (firstRun.briefSubmitted) return null;
   if (gs.dismissed || gs.completedFired || complete) return null;
 
   const onAction = (id: Exclude<StepId, "meet">) => {

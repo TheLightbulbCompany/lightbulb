@@ -338,7 +338,7 @@ export function AgentChatWindow({
   const activeAgent = agents.find((a) => a.id === agentId);
   const agentName = activeAgent?.identity?.name ?? activeAgent?.name ?? agentId ?? undefined;
 
-  useFirstRunKickoff({ user, agentId, defaultId, sendMessage });
+  useFirstRunKickoff({ user, agentId, defaultId, isConnected, sendMessage });
 
   const api = useApi();
   const [isUploading, setIsUploading] = useState(false);

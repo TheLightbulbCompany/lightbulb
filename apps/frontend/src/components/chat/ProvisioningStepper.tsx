@@ -629,6 +629,27 @@ export function ProvisioningStepper({
     return () => clearInterval(interval);
   }, [phase]);
 
+  // First-run funnel: a trial signup must resolve the funnel (submit a
+  // business brief or skip) before reaching chat — INCLUDING when the
+  // container provisions fast and hits `ready` before they finish choosing
+  // or typing. Placed BEFORE the ready return so a quick provision can't
+  // drop the funnel and lose the in-progress brief (and leave the kickoff
+  // hook, which requires briefSubmitted, unable to fire). Gated on
+  // gatePhase === "normal" so it never preempts a blocked / needs-signup /
+  // team-pending state. The `user` guard is load-bearing beyond null-safety:
+  // submit/skip write user.unsafeMetadata, so without a loaded Clerk user the
+  // funnel would be a dead-end form.
+  const firstRun = readFirstRun(user);
+  if (
+    isTrialLocal &&
+    user &&
+    gatePhase === "normal" &&
+    !firstRun.briefSubmitted &&
+    !firstRun.skipped
+  ) {
+    return <FirstRunFunnel />;
+  }
+
   // Ready — render children
   if (phase === "ready") {
     return <>{children}</>;
@@ -1116,22 +1137,6 @@ export function ProvisioningStepper({
         </div>
       </div>
     );
-  }
-
-  // First-run funnel: trial signups describe their business while the
-  // container provisions (spec §3). Flag writes flip this branch off and
-  // fall through to the cold-start card below. The `user` guard is load-
-  // bearing beyond null-safety: submit/skip write user.unsafeMetadata, so
-  // without a loaded Clerk user the funnel would be a dead-end form.
-  const firstRun = readFirstRun(user);
-  if (
-    isTrialLocal &&
-    user &&
-    !firstRun.briefSubmitted &&
-    !firstRun.skipped &&
-    (phase === "container" || phase === "gateway" || phase === "channels-sidecars" || phase === "agent")
-  ) {
-    return <FirstRunFunnel />;
   }
 
   // Provisioning stepper — animated 4-step flow

@@ -24,17 +24,27 @@ type UserResource = NonNullable<ReturnType<typeof useUser>["user"]>;
  * On write/send failure we log and reset the `fired` guard so a later
  * remount can retry — better no kickoff than one that can never fire again.
  * A write rejection must NOT fall through to send.
+ *
+ * The kickoff waits for a live gateway connection (`isConnected`) before it
+ * marks `started` and sends. Without this, an effect that runs mid-(re)connect
+ * would hit `sendMessage`'s in-memory waiting-reconnect queue: the send
+ * resolves locally but the prompt may never reach the agent, and because
+ * `started` is already persisted a reload would permanently skip the kickoff.
+ * Gating on the connection defers the whole attempt until a durable dispatch
+ * is possible; the effect re-runs when `isConnected` flips true.
  */
 export function useFirstRunKickoff(opts: {
   user: UserResource | null | undefined;
   agentId: string | null;
   defaultId: string | null | undefined;
+  isConnected: boolean;
   sendMessage: (message: string) => Promise<void>;
 }) {
-  const { user, agentId, defaultId, sendMessage } = opts;
+  const { user, agentId, defaultId, isConnected, sendMessage } = opts;
   const fired = React.useRef(false);
   React.useEffect(() => {
     if (fired.current || !user) return;
+    if (!isConnected) return;
     const fr = readFirstRun(user);
     if (!fr.briefSubmitted || fr.started) return;
     if (!agentId || !defaultId || agentId !== defaultId) return;
@@ -49,5 +59,5 @@ export function useFirstRunKickoff(opts: {
         fired.current = false;
       }
     })();
-  }, [user, agentId, defaultId, sendMessage]);
+  }, [user, agentId, defaultId, isConnected, sendMessage]);
 }

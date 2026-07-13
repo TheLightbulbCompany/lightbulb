@@ -31,7 +31,7 @@ describe("useFirstRunKickoff", () => {
     const sendMessage = vi.fn().mockResolvedValue(undefined);
     const user = fakeUser({ briefSubmitted: true });
     const { rerender } = renderHook(() =>
-      useFirstRunKickoff({ user, agentId: "a1", defaultId: "a1", sendMessage }),
+      useFirstRunKickoff({ user, agentId: "a1", defaultId: "a1", isConnected: true, sendMessage }),
     );
     await waitFor(() => expect(sendMessage).toHaveBeenCalledWith(FIRST_RUN_PROMPT));
     rerender();
@@ -74,7 +74,7 @@ describe("useFirstRunKickoff", () => {
 
     const { rerender } = renderHook(
       ({ sendMessage }) =>
-        useFirstRunKickoff({ user, agentId: "a1", defaultId: "a1", sendMessage }),
+        useFirstRunKickoff({ user, agentId: "a1", defaultId: "a1", isConnected: true, sendMessage }),
       { initialProps: { sendMessage: sendMessage1 } },
     );
     await waitFor(() => expect(sendMessage1).toHaveBeenCalledWith(FIRST_RUN_PROMPT));
@@ -97,16 +97,36 @@ describe("useFirstRunKickoff", () => {
     const sendMessage = vi.fn();
     const user = fakeUser({ briefSubmitted: true, started: true });
     renderHook(() =>
-      useFirstRunKickoff({ user, agentId: "a1", defaultId: "a1", sendMessage }),
+      useFirstRunKickoff({ user, agentId: "a1", defaultId: "a1", isConnected: true, sendMessage }),
     );
     expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("waits for a live connection before firing, then fires once connected", async () => {
+    // While disconnected, the kickoff must NOT run — marking `started` before
+    // a durable dispatch is possible would lose the prompt to the in-memory
+    // reconnect queue and permanently suppress a retry.
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    const user = fakeUser({ briefSubmitted: true });
+    const { rerender } = renderHook(
+      ({ isConnected }) =>
+        useFirstRunKickoff({ user, agentId: "a1", defaultId: "a1", isConnected, sendMessage }),
+      { initialProps: { isConnected: false } },
+    );
+    await flushMicrotasks();
+    expect(sendMessage).not.toHaveBeenCalled();
+
+    // Connection establishes → effect re-runs → kickoff fires exactly once.
+    rerender({ isConnected: true });
+    await waitFor(() => expect(sendMessage).toHaveBeenCalledWith(FIRST_RUN_PROMPT));
+    expect(sendMessage).toHaveBeenCalledTimes(1);
   });
 
   it("does nothing on a non-default agent window", () => {
     const sendMessage = vi.fn();
     const user = fakeUser({ briefSubmitted: true });
     renderHook(() =>
-      useFirstRunKickoff({ user, agentId: "a2", defaultId: "a1", sendMessage }),
+      useFirstRunKickoff({ user, agentId: "a2", defaultId: "a1", isConnected: true, sendMessage }),
     );
     expect(sendMessage).not.toHaveBeenCalled();
   });
@@ -118,7 +138,7 @@ describe("useFirstRunKickoff", () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
     renderHook(() =>
-      useFirstRunKickoff({ user, agentId: "a1", defaultId: "a1", sendMessage }),
+      useFirstRunKickoff({ user, agentId: "a1", defaultId: "a1", isConnected: true, sendMessage }),
     );
 
     // Wait a tick for the rejected write's catch handler to run.

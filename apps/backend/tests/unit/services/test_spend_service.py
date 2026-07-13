@@ -33,11 +33,9 @@ def _patch_lifecycle(enabled: bool):
 
 @pytest.mark.asyncio
 async def test_billed_spend_sums_tier_line_items_and_skips_credit_items():
-    client = AsyncMock()
-    client.list_customer_invoices.return_value = [DRAFT_INVOICE]
     with (
         _patch_lifecycle(True),
-        patch.object(spend_service, "_metronome_client", return_value=client),
+        patch.object(spend_service, "_list_draft_invoices", new=AsyncMock(return_value=[DRAFT_INVOICE])),
         patch.object(
             spend_service.billing_repo,
             "get_by_owner_id",
@@ -72,11 +70,13 @@ async def test_billed_spend_none_without_metronome_customer():
 
 @pytest.mark.asyncio
 async def test_billed_spend_none_on_metronome_error():
-    client = AsyncMock()
-    client.list_customer_invoices.side_effect = RuntimeError("metronome down")
     with (
         _patch_lifecycle(True),
-        patch.object(spend_service, "_metronome_client", return_value=client),
+        patch.object(
+            spend_service,
+            "_list_draft_invoices",
+            new=AsyncMock(side_effect=RuntimeError("metronome down")),
+        ),
         patch.object(
             spend_service.billing_repo,
             "get_by_owner_id",
@@ -88,11 +88,9 @@ async def test_billed_spend_none_on_metronome_error():
 
 @pytest.mark.asyncio
 async def test_billed_spend_zero_when_no_draft_invoice_yet():
-    client = AsyncMock()
-    client.list_customer_invoices.return_value = []
     with (
         _patch_lifecycle(True),
-        patch.object(spend_service, "_metronome_client", return_value=client),
+        patch.object(spend_service, "_list_draft_invoices", new=AsyncMock(return_value=[])),
         patch.object(
             spend_service.billing_repo,
             "get_by_owner_id",
@@ -107,11 +105,10 @@ async def test_billed_spend_zero_when_no_draft_invoice_yet():
 
 @pytest.mark.asyncio
 async def test_billed_spend_cached_within_ttl():
-    client = AsyncMock()
-    client.list_customer_invoices.return_value = [DRAFT_INVOICE]
+    invoices_mock = AsyncMock(return_value=[DRAFT_INVOICE])
     with (
         _patch_lifecycle(True),
-        patch.object(spend_service, "_metronome_client", return_value=client),
+        patch.object(spend_service, "_list_draft_invoices", new=invoices_mock),
         patch.object(
             spend_service.billing_repo,
             "get_by_owner_id",
@@ -120,4 +117,20 @@ async def test_billed_spend_cached_within_ttl():
     ):
         await spend_service.get_billed_month_spend("owner-1")
         await spend_service.get_billed_month_spend("owner-1")
-    assert client.list_customer_invoices.await_count == 1
+    assert invoices_mock.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_billed_spend_none_when_billing_repo_raises():
+    """Finding #3 regression: a DDB throttle on the billing-account read must
+    degrade to None, not propagate — this module's "never raises" contract
+    covers the repo read too, not just the Metronome call."""
+    with (
+        _patch_lifecycle(True),
+        patch.object(
+            spend_service.billing_repo,
+            "get_by_owner_id",
+            new=AsyncMock(side_effect=RuntimeError("DDB throttled")),
+        ),
+    ):
+        assert await spend_service.get_billed_month_spend("owner-1") is None

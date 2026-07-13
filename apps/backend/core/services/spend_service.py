@@ -46,11 +46,19 @@ class BilledSpend:
     period_start: str | None
 
 
-def _metronome_client():
-    """Late-bound client factory (patchable in tests)."""
+async def _list_draft_invoices(customer_id: str) -> list[dict]:
+    """Scoped Metronome client construction (patchable in tests).
+
+    Mirrors the sibling ``async with httpx.AsyncClient(base_url=..., ...)``
+    idiom used by ``metronome_gate.py`` / ``metronome_provisioning.py`` /
+    ``metronome_funding.py``. A bare ``httpx.AsyncClient()`` (no
+    ``base_url``) makes every ``MetronomeClient`` request relative-path,
+    which raises ``httpx.UnsupportedProtocol`` on every real call.
+    """
     from core.billing.metronome_client import for_settings
 
-    return for_settings(httpx.AsyncClient())
+    async with httpx.AsyncClient(base_url=settings.METRONOME_BASE_URL, timeout=5.0) as http:
+        return await for_settings(http).list_customer_invoices(customer_id=customer_id)
 
 
 async def get_billed_month_spend(owner_id: str) -> BilledSpend | None:
@@ -61,6 +69,10 @@ async def get_billed_month_spend(owner_id: str) -> BilledSpend | None:
     Usage line items only: an item counts iff its pricing_group_values
     carry a ``tier``; commit/credit draw-downs (no tier, negative totals)
     are excluded — remaining credits are the balance surface's job.
+
+    Never raises: a DDB throttle on the billing-account read degrades to
+    None exactly like a Metronome error, per this module's "display-only,
+    never blocks" contract.
     """
     if not settings.METRONOME_LIFECYCLE_ENABLED:
         return None
@@ -69,13 +81,13 @@ async def get_billed_month_spend(owner_id: str) -> BilledSpend | None:
     if cached and (time.monotonic() - cached[0]) < _CACHE_TTL_SECONDS:
         return cached[1]
 
-    account = await billing_repo.get_by_owner_id(owner_id) or {}
-    customer_id = account.get("metronome_customer_id")
-    if not customer_id:
-        return None
-
     try:
-        invoices = await _metronome_client().list_customer_invoices(customer_id=customer_id)
+        account = await billing_repo.get_by_owner_id(owner_id) or {}
+        customer_id = account.get("metronome_customer_id")
+        if not customer_id:
+            return None
+
+        invoices = await _list_draft_invoices(customer_id)
     except Exception:
         logger.warning("spend: Metronome draft-invoice read failed for %s", owner_id, exc_info=True)
         return None

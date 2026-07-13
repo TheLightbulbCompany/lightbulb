@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from main import app
 from core.auth import AuthContext, get_current_user
+from core.services.paperclip_admin_client import PaperclipApiError
 import routers.onboarding as onboarding_mod
 from routers.teams import agents as agents_mod
 
@@ -95,6 +96,7 @@ def test_org_context_rejected(client):
         json={"path": "new", "input": "an agency"},
     )
     assert resp.status_code == 403
+    assert resp.json()["detail"] == "personal_only"
 
 
 def test_no_friday_yet_returns_409(client):
@@ -104,4 +106,40 @@ def test_no_friday_yet_returns_409(client):
         json={"path": "new", "input": "an agency"},
     )
     assert resp.status_code == 409
+    assert resp.json()["detail"] == "not_ready"
     client.ws.write_file_if_missing.assert_not_called()
+
+
+def test_paperclip_error_returns_retryable_409(client):
+    client.admin.list_agents.side_effect = PaperclipApiError("paperclip down", status_code=503, body=None)
+    resp = client.post(
+        "/api/v1/onboarding/brief",
+        json={"path": "new", "input": "an agency"},
+    )
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "not_ready"
+    client.ws.write_file_if_missing.assert_not_called()
+
+
+def test_issue_creation_failure_still_returns_staged(client):
+    client.admin.create_issue.side_effect = Exception("boom")
+    resp = client.post(
+        "/api/v1/onboarding/brief",
+        json={"path": "grow", "input": "https://acme.com"},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "staged", "friday_agent_id": "friday-uuid"}
+
+
+def test_submit_captures_analytics_event(client, monkeypatch):
+    capture = MagicMock()
+    monkeypatch.setattr(onboarding_mod, "capture_product_event", capture)
+    resp = client.post(
+        "/api/v1/onboarding/brief",
+        json={"path": "grow", "input": "https://acme.com"},
+    )
+    assert resp.status_code == 200
+    capture.assert_called_once()
+    kwargs = capture.call_args.kwargs
+    assert kwargs["event"] == "first_run_brief_submitted"
+    assert kwargs["properties"] == {"path": "grow"}

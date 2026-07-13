@@ -13,12 +13,14 @@ from __future__ import annotations
 import logging
 from typing import Literal
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user
 from core.containers import get_workspace
 from core.observability.product_analytics import capture_product_event
+from core.services.paperclip_admin_client import PaperclipApiError
 from core.services.onboarding_brief import (
     render_brief_md,
     render_first_run_bootstrap,
@@ -63,7 +65,18 @@ async def submit_brief(
         raise HTTPException(status_code=403, detail="personal_only")
 
     admin = _agents._admin()
-    agents = await admin.list_agents(session_cookie=ctx.session_cookie, company_id=ctx.company_id)
+    try:
+        agents = await admin.list_agents(session_cookie=ctx.session_cookie, company_id=ctx.company_id)
+    except (PaperclipApiError, httpx.HTTPError, RuntimeError) as e:
+        # Paperclip availability issue (API error, transport failure, or
+        # credential load) — same set paperclip_openclaw_pairing treats as
+        # transient. The funnel client retries on 409, not 500.
+        logger.warning(
+            "onboarding: list_agents failed for %s -- Paperclip not ready: %s",
+            ctx.owner_id,
+            e,
+        )
+        raise HTTPException(status_code=409, detail="not_ready") from e
     friday = next((a for a in agents if a.get("role") == "ceo"), None)
     if friday is None:
         # Paperclip seed hasn't landed Friday yet — client retries.

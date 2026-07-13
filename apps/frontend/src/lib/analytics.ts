@@ -101,6 +101,11 @@ export type AnalyticsEvent =
   | "cron_job_deleted"
   | "cron_job_toggled"
   | "cron_job_triggered"
+  // First-run funnel
+  | "first_run_brief_skipped"
+  | "first_run_brief_submitted"
+  | "first_run_kickoff_sent"
+  | "first_run_show_completed"
   // Get started guide
   | "get_started_article_opened"
   | "get_started_completed"

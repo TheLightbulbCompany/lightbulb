@@ -26,7 +26,6 @@ type UserResource = NonNullable<ReturnType<typeof useUser>["user"]>;
 
 export interface FirstRunMeta {
   briefSubmitted?: boolean;
-  skipped?: boolean;
   started?: boolean;
   completed?: boolean;
   path?: "new" | "grow";

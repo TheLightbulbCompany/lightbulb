@@ -15,7 +15,7 @@ from typing import Literal
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from core.auth import AuthContext, get_current_user
 from core.containers import get_workspace
@@ -37,8 +37,29 @@ _ctx = _agents._ctx
 
 class BriefBody(BaseModel):
     path: Literal["new", "grow"]
-    input: str = Field(min_length=3, max_length=2000)
+    input: str | None = Field(default=None, max_length=2000)
     detail: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def _check_input(self) -> "BriefBody":
+        """`new` may omit the idea; `grow` may not omit the website.
+
+        An absent `input` on the `new` path is the "I don't know yet — you
+        pick" button: the missing idea IS the signal, and BRIEF.md tells
+        Friday to choose one. Blank-but-present is normalized to absent so a
+        client posting "" gets that same brief rather than one quoting an
+        empty string back at her.
+        """
+        cleaned = (self.input or "").strip()
+        if not cleaned:
+            if self.path == "grow":
+                raise ValueError("input is required on the grow path")
+            self.input = None
+        elif len(cleaned) < 3:
+            raise ValueError("input must be at least 3 characters")
+        else:
+            self.input = cleaned
+        return self
 
 
 def _first_name(auth: AuthContext) -> str:
@@ -107,6 +128,6 @@ async def submit_brief(
     capture_product_event(
         distinct_id=auth.user_id,
         event="first_run_brief_submitted",
-        properties={"path": body.path},
+        properties={"path": body.path, "no_idea": body.input is None},
     )
     return {"status": "staged", "friday_agent_id": friday_id}

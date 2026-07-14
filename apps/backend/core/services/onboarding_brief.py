@@ -28,7 +28,7 @@ _BRIEF_TEMPLATE = """\
 The human just signed up and told us about the company they want run.
 
 - **Path:** {path}  (new = starting something new, grow = existing business)
-- **Their words, verbatim:** {user_input}
+{idea_block}\
 {detail_line}\
 - **Name:** {display_name}
 - **Email:** {email}
@@ -36,6 +36,25 @@ The human just signed up and told us about the company they want run.
 Treat their words as the seed, not the ceiling — on the `grow` path the
 input is usually their website; fetch it first. Research the person as
 well as the business (their public presence tells you who you work for).
+"""
+
+_IDEA_LINE = "- **Their words, verbatim:** {user_input}\n"
+
+# No idea given: they clicked "I don't know yet — you pick". The absence is
+# the instruction. Their email is the only lead we have, so say so plainly
+# rather than leaving her to infer it.
+_NO_IDEA_BLOCK = """\
+- **Their words, verbatim:** *(nothing — they told us they don't have an
+  idea yet and asked you to pick one for them.)*
+
+**So choosing the business is job zero.** Work out who this person is before
+you decide: their email address is below, and you have `web_search`. If the
+domain is their own company's, that site tells you most of what you need. If
+it's a personal address, search the address itself and their name for a
+public footprint — what they've built, written, or worked on. Then commit to
+ONE business you can argue for, given who they are, and tell them what you
+chose and why. If the trail was cold, say so honestly and back your own
+judgment anyway — do not stall waiting for them to answer.
 """
 
 _FIRST_RUN_BOOTSTRAP_TEMPLATE = """\
@@ -57,7 +76,11 @@ Load your Paperclip identity first (see AGENTS.md — the export block for
 
 1. Greet {first_name} by name in ONE line, then start working. Narrate
    briefly as you go — no walls of text between actions.
-2. Read BRIEF.md (this workspace) to learn what business you're running.
+2. Read BRIEF.md (this workspace) to learn what business you're running. If
+   it says they have no idea yet, picking one is your first job — look them
+   up (their email is in the brief, and you have web_search), commit to a
+   single business you can argue for, and say what you chose and why. Then
+   carry on below as though it had been their idea all along.
 3. Understand the business: research it and its market with web_search —
    on the grow path, fetch their website first. This is the heart of the
    session; actually understand who they serve and what they're up against.
@@ -104,15 +127,17 @@ USER.md, MISSION.md, and MEMORY.md.
 def render_brief_md(
     *,
     path: str,
-    user_input: str,
+    user_input: str | None,
     detail: str | None,
     display_name: str,
     email: str,
 ) -> str:
+    """Render BRIEF.md. ``user_input`` is None on the "you pick" button."""
+    idea_block = _IDEA_LINE.format(user_input=user_input) if user_input else _NO_IDEA_BLOCK
     detail_line = f"- **Extra detail:** {detail}\n" if detail else ""
     return _BRIEF_TEMPLATE.format(
         path=path,
-        user_input=user_input,
+        idea_block=idea_block,
         detail_line=detail_line,
         display_name=display_name,
         email=email,

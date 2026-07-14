@@ -14,6 +14,8 @@ import { capture } from "@/lib/analytics";
 import { writeFirstRun } from "@/lib/firstRun";
 
 type Path = "new" | "grow";
+/** "noIdea" = they clicked "I don't know yet — you pick": submit with no input. */
+type Mode = "idea" | "noIdea";
 const RETRY_MS = 3000;
 const MAX_RETRIES = 5;
 
@@ -23,6 +25,10 @@ const CHOICE_BTN =
   "w-full rounded-full bg-[#06402B] hover:bg-[#0a5138] text-[#faf7f2] py-4 text-sm font-semibold tracking-wide transition-colors";
 const INPUT =
   "w-full rounded-xl border border-[#e0dbd0] bg-white p-3 text-sm text-[#1a1a1a] placeholder:text-[#b5af9f] focus:outline-none focus:border-[#06402B]";
+// Outline, not filled: this is the escape hatch for the undecided, and it
+// should not compete with Continue for the user who already has an idea.
+const SECONDARY_BTN =
+  "w-full rounded-full border border-[#d6d0c3] bg-transparent hover:bg-[#f1ede4] text-[#1a1a1a] py-3 text-sm font-medium tracking-wide transition-colors disabled:opacity-50";
 
 export function FirstRunFunnel() {
   const { user } = useUser();
@@ -31,46 +37,62 @@ export function FirstRunFunnel() {
   const [input, setInput] = React.useState("");
   const [detail, setDetail] = React.useState("");
   const [state, setState] = React.useState<"idle" | "submitting" | "waiting" | "error">("idle");
+  // Which submission the user made, so Retry replays the same one. Passed
+  // explicitly into submit() rather than read from here — this state only
+  // exists to survive the round trip to the Retry button.
+  const [mode, setMode] = React.useState<Mode>("idea");
 
-  const submit = React.useCallback(async () => {
-    if (!user || input.trim().length < 3) return;
-    setState("submitting");
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      try {
-        const resp = await api.post("/onboarding/brief", {
-          path,
-          input: input.trim(),
-          detail: path === "new" && detail.trim() ? detail.trim() : undefined,
-        });
-        // The backend `_ctx` dependency can 202 while Paperclip is still
-        // provisioning — the api client treats any 2xx as success, so we
-        // check the body to tell "staged" apart from "not really". Anything
-        // else (including that 202 shape) is retried via the same loop.
-        const status = (resp as { status?: string } | null)?.status;
-        if (status === "staged" || status === "already_submitted") {
-          await writeFirstRun(user, { briefSubmitted: true, path: path ?? undefined });
-          capture("first_run_brief_submitted", { path });
+  const submit = React.useCallback(
+    async (submitMode: Mode) => {
+      const noIdea = submitMode === "noIdea";
+      setMode(submitMode);
+      if (!user) return;
+      if (!noIdea && input.trim().length < 3) return;
+      setState("submitting");
+      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        try {
+          // No input at all on the "you pick" button: the absent idea IS the
+          // signal, and BRIEF.md tells Friday to choose one from what she can
+          // find out about them. Sending "" instead would be a brief quoting an
+          // empty string back at her.
+          const resp = await api.post("/onboarding/brief", {
+            path,
+            input: noIdea ? undefined : input.trim(),
+            detail: !noIdea && path === "new" && detail.trim() ? detail.trim() : undefined,
+          });
+          // The backend `_ctx` dependency can 202 while Paperclip is still
+          // provisioning — the api client treats any 2xx as success, so we
+          // check the body to tell "staged" apart from "not really". Anything
+          // else (including that 202 shape) is retried via the same loop.
+          const status = (resp as { status?: string } | null)?.status;
+          if (status === "staged" || status === "already_submitted") {
+            await writeFirstRun(user, { briefSubmitted: true, path: path ?? undefined });
+            // snake_case to match both the repo's property convention and the
+            // backend's emission of this same event name.
+            capture("first_run_brief_submitted", { path, no_idea: noIdea });
+            return;
+          }
+          if (attempt < MAX_RETRIES) {
+            setState("waiting");
+            await new Promise((r) => setTimeout(r, RETRY_MS));
+            continue;
+          }
+          setState("error");
+          return;
+        } catch (err) {
+          const httpStatus = (err as { status?: number }).status;
+          if (httpStatus === 409 && attempt < MAX_RETRIES) {
+            setState("waiting");
+            await new Promise((r) => setTimeout(r, RETRY_MS));
+            continue;
+          }
+          setState("error");
           return;
         }
-        if (attempt < MAX_RETRIES) {
-          setState("waiting");
-          await new Promise((r) => setTimeout(r, RETRY_MS));
-          continue;
-        }
-        setState("error");
-        return;
-      } catch (err) {
-        const httpStatus = (err as { status?: number }).status;
-        if (httpStatus === 409 && attempt < MAX_RETRIES) {
-          setState("waiting");
-          await new Promise((r) => setTimeout(r, RETRY_MS));
-          continue;
-        }
-        setState("error");
-        return;
       }
-    }
-  }, [api, user, path, input, detail]);
+    },
+    [api, user, path, input, detail],
+  );
 
   const busy = state === "submitting" || state === "waiting";
 
@@ -136,17 +158,35 @@ export function FirstRunFunnel() {
                 onChange={(e) => setInput(e.target.value)}
               />
             )}
-            <button
-              className={`${CHOICE_BTN} disabled:opacity-50`}
-              disabled={busy || input.trim().length < 3}
-              onClick={submit}
-            >
-              {state === "waiting" ? "Setting things up…" : "Continue →"}
-            </button>
+            <div className="space-y-3">
+              <button
+                className={`${CHOICE_BTN} disabled:opacity-50`}
+                disabled={busy || input.trim().length < 3}
+                onClick={() => submit("idea")}
+              >
+                {state === "waiting" && mode === "idea" ? "Setting things up…" : "Continue →"}
+              </button>
+              {path === "new" && (
+                <div className="space-y-1.5 pt-1">
+                  <button
+                    className={SECONDARY_BTN}
+                    disabled={busy}
+                    onClick={() => submit("noIdea")}
+                  >
+                    {busy && mode === "noIdea"
+                      ? "Setting things up…"
+                      : "I don’t know yet — you pick"}
+                  </button>
+                  <p className="text-xs italic text-center text-[#8a8578]">
+                    Friday will look you up and choose something
+                  </p>
+                </div>
+              )}
+            </div>
             {state === "error" && (
               <p className="text-sm text-[#b32424]">
                 Couldn&apos;t save that just yet.{" "}
-                <button className="underline" onClick={submit}>
+                <button className="underline" onClick={() => submit(mode)}>
                   Retry
                 </button>
               </p>

@@ -104,6 +104,69 @@ describe("FirstRunFunnel", () => {
     }
   });
 
+  it("submits with no input when the user says they don't know yet", async () => {
+    // The absent idea IS the signal: BRIEF.md then tells Friday to look them
+    // up and pick one. Sending "" instead would brief her with an empty quote.
+    post.mockResolvedValue({ status: "staged", friday_agent_id: "f1" });
+    render(<FirstRunFunnel />);
+
+    fireEvent.click(screen.getByRole("button", { name: /start something new/i }));
+    // Enabled on an empty textarea — that is the whole point of it.
+    fireEvent.click(screen.getByRole("button", { name: /don.t know yet/i }));
+
+    await waitFor(() => {
+      expect(post).toHaveBeenCalledWith("/onboarding/brief", {
+        path: "new",
+        input: undefined,
+        detail: undefined,
+      });
+    });
+    await waitFor(() => {
+      expect(update.mock.calls[0][0].unsafeMetadata.firstRun.briefSubmitted).toBe(true);
+    });
+  });
+
+  it("offers the you-pick button on the new path only", () => {
+    render(<FirstRunFunnel />);
+    fireEvent.click(screen.getByRole("button", { name: /grow my business/i }));
+    // A grow user already has a business — there is nothing to pick for them,
+    // and the backend 422s a grow brief with no website.
+    expect(screen.queryByRole("button", { name: /don.t know yet/i })).toBeNull();
+  });
+
+  it("retries the no-idea submit as a no-idea submit", async () => {
+    // Regression guard: Retry must replay the SAME submission. Replaying it as
+    // a normal one would hit the >=3-char guard against an empty textarea and
+    // silently do nothing, stranding the user on the error state forever.
+    vi.useFakeTimers();
+    try {
+      post.mockRejectedValue({ status: 409 });
+      render(<FirstRunFunnel />);
+      fireEvent.click(screen.getByRole("button", { name: /start something new/i }));
+      fireEvent.click(screen.getByRole("button", { name: /don.t know yet/i }));
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(MAX_RETRIES * RETRY_MS + 1000);
+      });
+      await vi.waitFor(() =>
+        expect(screen.getByText(/couldn.t save that just yet/i)).toBeInTheDocument(),
+      );
+
+      post.mockResolvedValue({ status: "staged", friday_agent_id: "f1" });
+      fireEvent.click(screen.getByRole("button", { name: /retry/i }));
+
+      await vi.waitFor(() => {
+        expect(post).toHaveBeenLastCalledWith("/onboarding/brief", {
+          path: "new",
+          input: undefined,
+          detail: undefined,
+        });
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("offers no skip — the funnel is the committed onboarding front door", () => {
     render(<FirstRunFunnel />);
     // Path-picker screen: no skip.

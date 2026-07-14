@@ -42,7 +42,6 @@ def ctx():
 def client(ctx, monkeypatch):
     admin = MagicMock()
     admin.list_agents = AsyncMock(return_value=[FRIDAY, ATLAS])
-    admin.create_issue = AsyncMock(return_value={"id": "issue-1"})
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
 
     ws = MagicMock()
@@ -63,7 +62,7 @@ def client(ctx, monkeypatch):
     app.dependency_overrides.clear()
 
 
-def test_fresh_submit_stages_files_and_creates_issue(client):
+def test_fresh_submit_stages_files_without_seeding_a_board_issue(client):
     resp = client.post(
         "/api/v1/onboarding/brief",
         json={"path": "grow", "input": "https://acme.com", "detail": "Austin builds"},
@@ -76,12 +75,12 @@ def test_fresh_submit_stages_files_and_creates_issue(client):
     assert brief_call.args[1] == "workspaces/friday-uuid/BRIEF.md"
     assert "https://acme.com" in brief_call.args[2]
 
-    issue_body = client.admin.create_issue.await_args.kwargs["body"]
-    assert issue_body["assigneeAgentId"] == "friday-uuid"
-    assert issue_body["title"].startswith("Set up")
+    # The board is no longer seeded on submit — Friday fills it at the END of
+    # her research session with the three next-move tasks she proposes.
+    client.admin.create_issue.assert_not_called()
 
 
-def test_replay_returns_already_submitted_and_skips_issue(client):
+def test_replay_returns_already_submitted(client):
     client.ws.write_file_if_missing.return_value = False
     resp = client.post(
         "/api/v1/onboarding/brief",
@@ -89,7 +88,6 @@ def test_replay_returns_already_submitted_and_skips_issue(client):
     )
     assert resp.status_code == 200
     assert resp.json() == {"status": "already_submitted"}
-    client.admin.create_issue.assert_not_awaited()
     client.ws.write_file.assert_not_called()
 
 
@@ -113,7 +111,6 @@ def test_non_trial_billing_rejected(client):
     assert resp.json()["detail"] == "trial_only"
     client.admin.list_agents.assert_not_awaited()
     client.ws.write_file_if_missing.assert_not_called()
-    client.admin.create_issue.assert_not_awaited()
 
 
 def test_no_friday_yet_returns_409(client):
@@ -136,16 +133,6 @@ def test_paperclip_error_returns_retryable_409(client):
     assert resp.status_code == 409
     assert resp.json()["detail"] == "not_ready"
     client.ws.write_file_if_missing.assert_not_called()
-
-
-def test_issue_creation_failure_still_returns_staged(client):
-    client.admin.create_issue.side_effect = Exception("boom")
-    resp = client.post(
-        "/api/v1/onboarding/brief",
-        json={"path": "grow", "input": "https://acme.com"},
-    )
-    assert resp.status_code == 200
-    assert resp.json() == {"status": "staged", "friday_agent_id": "friday-uuid"}
 
 
 def test_submit_captures_analytics_event(client, monkeypatch):

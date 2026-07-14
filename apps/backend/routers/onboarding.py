@@ -25,7 +25,6 @@ from core.services.paperclip_admin_client import PaperclipApiError
 from core.services.onboarding_brief import (
     render_brief_md,
     render_first_run_bootstrap,
-    setup_issue_payload,
     stage_first_run_files,
 )
 from routers.teams import agents as _agents
@@ -45,15 +44,6 @@ class BriefBody(BaseModel):
 def _first_name(auth: AuthContext) -> str:
     local = (auth.email or "").split("@")[0].strip()
     return local.replace(".", " ").title() or "there"
-
-
-def _label(body: BriefBody) -> str:
-    """Issue-title label: strip scheme/path from grow URLs, else first words."""
-    if body.path == "grow":
-        host = body.input.split("//")[-1].split("/")[0].strip()
-        return host or body.input[:40]
-    words = body.input.split()
-    return " ".join(words[:5]) + ("…" if len(words) > 5 else "")
 
 
 @router.post("/brief")
@@ -110,17 +100,10 @@ async def submit_brief(
     if not wrote:
         return {"status": "already_submitted"}
 
-    try:
-        await admin.create_issue(
-            company_id=ctx.company_id,
-            body=setup_issue_payload(label=_label(body), friday_agent_id=friday_id),
-            session_cookie=ctx.session_cookie,
-        )
-    except Exception:
-        # Best-effort: the show still works from BRIEF.md alone (Friday's
-        # bootstrap step 2 tolerates a missing Set-up issue by creating it).
-        logger.exception("onboarding: Set-up issue creation failed for %s", ctx.owner_id)
-
+    # No board seeding here: the first run is Friday's own research session,
+    # and the board fills at the END of it with the three next-move tasks
+    # she proposes (BOOTSTRAP step 5). Each of those runs later as its own
+    # session when the owner picks it.
     capture_product_event(
         distinct_id=auth.user_id,
         event="first_run_brief_submitted",

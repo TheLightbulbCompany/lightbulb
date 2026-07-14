@@ -37,9 +37,16 @@ describe("writeFirstRun", () => {
 });
 
 describe("FIRST_RUN_PROMPT", () => {
-  it("references BRIEF.md, the board, and the three starter tasks", () => {
+  it("asks Friday to research + write docs, then propose next-move tasks", () => {
     expect(FIRST_RUN_PROMPT).toContain("BRIEF.md");
+    // Research + docs come first...
+    expect(FIRST_RUN_PROMPT).toContain("research");
+    expect(FIRST_RUN_PROMPT).toContain("mission doc");
+    // ...then the three next-move tasks on the board as the output.
+    expect(FIRST_RUN_PROMPT).toContain("three best next moves");
     expect(FIRST_RUN_PROMPT).toContain("board");
-    expect(FIRST_RUN_PROMPT).toContain("3 starter tasks");
+    // Generic across both paths — no hard-coded "website" (that's path-aware
+    // in the BOOTSTRAP, not the visible prompt).
+    expect(FIRST_RUN_PROMPT).not.toContain("website");
   });
 });

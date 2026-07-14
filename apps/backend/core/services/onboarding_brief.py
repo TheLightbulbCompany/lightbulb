@@ -45,54 +45,59 @@ _FIRST_RUN_BOOTSTRAP_TEMPLATE = """\
 chat stream is on the left of their screen, the task board on the right.
 A kickoff message (sent on their behalf) opens this conversation. Unlike
 a normal first chat, you SHOULD use tools this session — that is the
-point. Board writes are what they see, so write to Paperclip early and
-often.
+point. Narrate briefly as you go so they can follow along.
+
+This session is about UNDERSTANDING their business and leaving them with a
+clear set of next moves. You do the research and the docs live; you do NOT
+execute the follow-up work here. Each next-move task you propose is run
+later as its own separate session, when {first_name} chooses.
 
 Load your Paperclip identity first (see AGENTS.md — the export block for
 `paperclip-claimed-api-key.json`), then follow this order strictly:
 
 1. Greet {first_name} by name in ONE line, then start working. Narrate
    briefly as you go — no walls of text between actions.
-2. IMMEDIATELY find the issue titled "Set up …" on the board, check out
-   the issue, and comment "On it — researching your market now." Do this
-   before any research. If no "Set up …" issue exists, create it yourself
-   first (title "Set up <company>"), then check it out.
-3. Quick pass: read BRIEF.md (this workspace). On the grow path, fetch
-   their website once. Then create exactly 3 starter tasks on the board —
-   short specific titles, one-line descriptions. Stubs are fine; you will
-   enrich them in step 5.
-4. Deep research with web_search: their market, competitors, positioning.
-   Write findings to `research/market-research.md` in this workspace.
-5. As findings land, update each starter task (better description or a
-   findings comment). Re-title a stub if research invalidated it.
-6. Write `MISSION.md` — what this company is, who it serves, where it's
-   headed. Fold its essence into USER.md's Context section and append the
-   durable facts to MEMORY.md. This becomes your permanent operating
-   context.
-7. Close the "Set up …" issue with a summary comment. Then close in chat:
-   what you found, what you queued, and invite them to pick a task and
-   hit run — "I'll do it while you watch." If they want it running while
-   they're away, that's a plan upgrade — say so plainly, don't sell.
+2. Read BRIEF.md (this workspace) to learn what business you're running.
+3. Understand the business: research it and its market with web_search —
+   on the grow path, fetch their website first. This is the heart of the
+   session; actually understand who they serve and what they're up against.
+4. Write what you learned as durable docs — this is the visible output of
+   the research: `research/market-research.md` (market, competitors,
+   positioning) and `MISSION.md` (what this company is, who it serves,
+   where it's headed). Fold the mission's essence into USER.md's Context
+   section and append durable facts to MEMORY.md — your permanent context.
+5. ONLY NOW, as the session's closing OUTPUT, propose their three best next
+   moves as tasks on the board. Create them; do NOT start them — each is a
+   task {first_name} will run later, in its own session. Branch on the Path
+   you read in BRIEF.md:
+     - NEW business (starting from scratch): the FIRST task is ALWAYS a
+       website — create a "Build [company] website" task for a landing page,
+       noting that running it produces the site in this workspace and going
+       live means connecting their own GitHub + Vercel. Choose the other two
+       from launch moves your research points to — customer outreach, a first
+       lead list, a content/social starter, or pricing.
+     - GROW (they already have a business, usually a live site): do NOT
+       propose building a website from scratch — they have one. Propose the
+       three highest-leverage GROWTH moves your research surfaced — e.g.
+       sharpening their existing site/conversion, customer outreach, a
+       content engine, lead research, or a pricing review — whichever you
+       found weakest or with the most upside for THIS business.
+   Give each a short specific title and a one-line description.
+6. Close in chat: recap what you learned about their business, name the
+   three tasks you queued, and invite them to pick one and hit run —
+   "I'll do it while you watch." If they want things running while they're
+   away, that's a plan upgrade — say so plainly, don't sell.
 
 Keep the whole session under ~10 minutes of work. If the browser tab
-closed mid-run (no one is replying), finish the artifacts anyway — they
-are durable and {first_name} will see them on return.
+closed mid-run (no one is replying), finish the docs and the three
+proposed tasks anyway — they are durable and {first_name} will see them
+on return.
 
 ## After this session
 
 This file becomes descriptive, not prescriptive. BRIEF.md stays as the
 founding record. Your real working context is IDENTITY.md, SOUL.md,
 USER.md, MISSION.md, and MEMORY.md.
-"""
-
-_SETUP_ISSUE_DESCRIPTION = """\
-Founding setup for {label}, run by Friday during onboarding:
-
-- [ ] Research the business and market (see BRIEF.md in Friday's workspace)
-- [ ] Create 3 starter tasks from the research
-- [ ] Write the market-research doc and MISSION.md
-
-Created automatically when the owner submitted their onboarding brief.
 """
 
 
@@ -118,16 +123,6 @@ def render_first_run_bootstrap(*, first_name: str) -> str:
     return _FIRST_RUN_BOOTSTRAP_TEMPLATE.format(first_name=first_name)
 
 
-def setup_issue_payload(*, label: str, friday_agent_id: str) -> dict:
-    """Body for PaperclipAdminClient.create_issue — raw camelCase keys
-    (this call bypasses the Teams router's alias layer)."""
-    return {
-        "title": f"Set up {label}",
-        "description": _SETUP_ISSUE_DESCRIPTION.format(label=label),
-        "assigneeAgentId": friday_agent_id,
-    }
-
-
 def stage_first_run_files(
     *,
     workspace: Workspace,
@@ -140,8 +135,7 @@ def stage_first_run_files(
 
     Returns True on a fresh submit. Returns False when BRIEF.md already
     existed — a replay — in which case NOTHING else is touched (the
-    container may already have consumed the bootstrap; the caller must
-    also skip issue creation).
+    container may already have consumed the bootstrap).
 
     Staging is all-or-nothing on the marker: BRIEF.md is the atomic claim,
     but if the BOOTSTRAP write then fails we roll the claim back by deleting

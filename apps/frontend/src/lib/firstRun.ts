@@ -10,8 +10,11 @@
  * FIRST_RUN_PROMPT is the visible kickoff message auto-sent to Friday
  * (spec §4.C). Its runbook counterpart is the BOOTSTRAP.md first-run
  * variant in apps/backend/core/services/onboarding_brief.py — keep the
- * two in sync (both name BRIEF.md, the Set-up issue, 3 starter tasks,
- * the research doc, MISSION.md).
+ * two in sync: research the business, write the market-research + mission
+ * docs, THEN propose three next-move tasks as the closing output (not
+ * up-front). The tasks are path-aware — website-first for a NEW business,
+ * growth moves for a GROW one — but that branching lives in the BOOTSTRAP,
+ * so this visible prompt stays generic for both paths.
  */
 import type { useUser } from "@clerk/nextjs";
 
@@ -47,8 +50,8 @@ export async function writeFirstRun(
 }
 
 export const FIRST_RUN_PROMPT = [
-  "Friday — I just set up my company. Read BRIEF.md in your workspace and run my onboarding:",
-  "claim the \"Set up\" task on the board, create 3 starter tasks from a quick first pass,",
-  "then research my market properly, enrich the tasks with what you find, write the research",
-  "doc and MISSION.md, and close out with a summary. Narrate as you go — I'm watching the board.",
+  "Friday — I just set up my company. Read BRIEF.md, then really dig into my business and",
+  "market and write up what you learn (a market-research doc and a mission doc). Once you",
+  "get it, put my three best next moves on the board as tasks. Talk me through it as you go —",
+  "I'm watching.",
 ].join(" ");

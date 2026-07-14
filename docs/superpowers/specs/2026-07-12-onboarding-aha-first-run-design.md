@@ -80,8 +80,8 @@ t=0      Clerk signup completes → lands on /chat
            ProviderPicker occupies today): "Start something new" / "Grow my business"
 
 t≈30–60s User submits the brief (idea text or website URL)
-         · Brief written to Friday's workspace on EFS (§4, step B)
-         · A "Set up {company}" issue appears on the Paperclip board
+         · Brief written to Friday's workspace on EFS (§4, step B). The board is
+           NOT seeded here — it fills at the END of the run.
          · Waiting state: honest copy — "Spinning up your company's container…"
            with the live elapsed clock. No theater.
 
@@ -91,12 +91,13 @@ t≈2–4min Container ready → THE SHOW
            what was asked of Friday
          · Layout becomes a split view (dockview preset):
              LEFT  — Friday's general session (Surface A, §4.H), streaming live
-             RIGHT — the Teams board, tasks appearing as she creates them
-         · Friday's first session, ordered board-first (§4.D): claims the "Set up"
-           issue within seconds → creates 3 starter-task stubs in the first two
-           minutes → deep research → enriches each task with findings → mission
-           doc → closes with a summary message addressed to the user by name.
-           The right pane pulses with every write (§4.G) — no refresh, ever.
+             RIGHT — the Teams board, which fills with the three next-move tasks
+                     at the end of the run
+         · Friday's first session, research-first (§4.D): understand the business →
+           write market-research.md + MISSION.md (watched live in the left pane) →
+           propose 3 next-move tasks on the board as the closing output (path-aware:
+           website-first for a new business, growth moves for a grow one) → close
+           with a summary addressed to the user by name, inviting them to run one.
          · The user can type into the session at any point — it is a normal chat
            session with their CEO, not a replay
 
@@ -130,10 +131,10 @@ exists):
   the path chosen (new/grow), the user's input verbatim, and their name/email — the
   same personalization Polsia uses to research the signup user, not just the company.
 - Selects the first-run variant of `BOOTSTRAP.md` (§ below).
-- Creates one Paperclip issue via the backend's existing Paperclip client:
-  **"Set up {company_or_idea}"**, assigned to Friday — so the right pane has content
-  the moment the split view opens, and the onboarding run itself is visible work on
-  the board.
+- Does NOT seed any board issue (revised 2026-07-13). The first run is Friday's own
+  research session; the board fills at the END with the three next-move tasks she
+  proposes (§4.D step 4). The "watch Friday work" moment lives in the left/chat pane
+  during research, not in early board writes.
 - Submission state = file existence on EFS. No DDB onboarding table, no new state
   store. (Re-render of the form checks brief existence through the workspace read
   path.)
@@ -144,9 +145,9 @@ frontend observes (container `ready` + brief submitted + first-run not completed
 user's behalf, visibly** — the message appears in the transcript as the first thing
 "they" said to Friday. No hidden backend dispatch, no backend first-run detection.
 The visible prompt carries the human-readable ask — read the brief, research the
-business, create the starter tasks on the board, write the mission doc — while the
-first-run `BOOTSTRAP.md` variant carries the mechanics (board-first ordering §4.D,
-file paths, Paperclip key loading). Transparency is the point: the user sees exactly
+business, write the mission + research docs, then propose the next-move tasks — while
+the first-run `BOOTSTRAP.md` variant carries the mechanics (the research-first ordering
+and path-aware task proposals of §4.D, file paths, Paperclip key loading). Transparency is the point: the user sees exactly
 what was asked, learns by example how to drive Friday, and can interrupt or steer at
 any moment because this is a normal message in their normal chat session.
 
@@ -154,46 +155,43 @@ Why the main chat session and not a Paperclip-issue-driven run: the left pane mu
 conversational — the user should be able to interrupt, ask questions, and steer,
 exactly like Polsia's "talk to your AI CEO" panel (their #1 engagement surface:
 15 messages/user/day). Issue runs are isolated, non-conversational sessions (§4.H).
-Friday instead **checks out and closes the "Set up" issue herself** during the run
-(her AGENTS.md playbook already covers checkout/comment/close), so the board reflects
-the work without the session living inside the issue.
+The first run stays a plain chat session; its only board writes are the **three
+next-move tasks it creates at the end** (§4.D step 4), which the user then runs as
+their own Surface-B sessions.
 
 If the user closes the tab before or during the show, the same frontend condition
 re-fires on next visit (brief exists, first-run incomplete) and the BOOTSTRAP resume
 path (§4.F) backstops a partially-consumed brief.
 
-**D. The run itself — Friday's playbook, ordered for the board, not for the
-research.** The first-run `BOOTSTRAP.md` variant directs her opening session (this is
-prompt-work, the same lever `friday_identity.py` already pulls). The ordering rule:
-**board movement first, board movement continuously.** Every Paperclip write she
-makes (create, checkout, comment, status change, close) emits a live event that
-auto-refreshes the user's board (§4.G), so the prompt sequences writes to keep the
-right pane pulsing through the whole show instead of dumping results at the end:
+**D. The run itself — research and docs first, tasks as the closing OUTPUT**
+(revised 2026-07-13, PR follow-up to #1240). The first-run `BOOTSTRAP.md` variant
+directs her opening session (prompt-work, the same lever `friday_identity.py`
+pulls). We deliberately reversed the earlier "board-first" ordering: the two-surfaces
+model (§4.H) makes each task its own future Surface-B session, so the first session's
+job is to *understand the business* (research + docs, watched live in the left/chat
+pane), and its **output** is three next-move tasks the user runs later. The board is
+NOT pre-seeded; it stays empty during research and fills at the end. Order:
 
-1. **(~0–15s) Greet + claim.** One-line greeting to {first_name} — then immediately
-   check out the pre-seeded "Set up {company}" issue and comment *"On it —
-   researching your market now."* First automatic board update lands within seconds
-   of the session starting, before any research.
-2. **(~15–90s) Quick-pass tasks.** After one fast pass (grow path: a single
-   `web_fetch` of their homepage; new path: the brief alone), create the 3 starter
-   tasks as titled stubs with one-line descriptions. Three more board pulses inside
-   the first two minutes. Task quality at this stage is deliberately "good title,
-   thin body" — enrichment comes in step 4.
-3. **(minutes 2–6) Deep research.** `web_search` (Parallel keyless MCP, configured
-   fleet-wide) + site/competitor fetches. Write `research/market-research.md`.
-   Narrate findings in chat as they land — the left pane carries this phase.
-4. **(as findings land) Enrich the tasks.** Update each starter task's description /
-   add a findings comment per task — each write is another live board update, and it
-   closes the quality gap the stubs opened. Re-title or replace a stub if the
-   research invalidates it.
-5. **(final minutes) Mission + memory.** Write `MISSION.md`; fold its essence into
-   `USER.md` and `MEMORY.md` so the mission becomes permanent operating context, not
-   a souvenir. (Polsia's mission doc is the basis of the memory file every future
-   agent loads. Same move.)
-6. **Close.** Close the "Set up" issue with a summary comment; final chat message:
-   what she found, what she queued, and the coda invitation — *"pick one and hit
-   run — I'll do it while you watch."* (That run is free, §6.) The autonomy
-   tee-up — *"want me to keep this running while you're away?"* — is the
+1. **Greet + start.** One-line greeting to {first_name}, then start working, narrating
+   briefly. Read `BRIEF.md`.
+2. **Understand the business.** `web_search` (Parallel keyless MCP, configured
+   fleet-wide) + on the grow path fetch their site first. This is the heart of the
+   session; the left/chat pane carries it live.
+3. **Write the docs (the visible research output).** `research/market-research.md`
+   (market, competitors, positioning) and `MISSION.md`; fold the mission into
+   `USER.md` Context + `MEMORY.md` so it becomes permanent operating context.
+4. **Propose three next-move tasks — the closing OUTPUT.** Create them on the board
+   (do NOT execute them; each runs later as its own Surface-B session). **Path-aware:**
+   on the **new** path the first task is always *"Build [company] website"* (a landing
+   page — note the run produces the site in-workspace; going live needs the owner's
+   GitHub + Vercel), plus two launch moves. On the **grow** path they already have a
+   site — do NOT propose a from-scratch website; propose the three highest-leverage
+   *growth* moves the research surfaced (sharpen the existing site/conversion,
+   outreach, content, leads, pricing).
+5. **Close.** Final chat message: what she learned, the three tasks she queued, and
+   the coda invitation — *"pick one and hit run — I'll do it while you watch."* (That
+   run is free, §6.) The autonomy tee-up — *"want me to keep this running while you're
+   away?"* — is the
    paywall's cue, not hers.
 
 Bounds: the existing trial config bounds (timeout, retry, loop-detection) plus a
@@ -300,7 +298,7 @@ railway (existing integration vs platform-provisioned build), then phase it.
 |---|---|---|
 | Market-research doc | "It understood my business in 3 minutes" | `web_search`/`web_fetch` + workspace file; viewable in Files panel |
 | Mission doc → context | "My company has a brain that remembers" | Workspace file, folded into USER.md/MEMORY.md |
-| 3 starter tasks | "There's a plan on the board already" | Paperclip issues via Friday's claimed key |
+| 3 next-move tasks | "Here's exactly what to do next" | Paperclip issues via Friday's claimed key, created at the END of the run; path-aware (website-first for new, growth moves for grow) |
 
 ### V2 — capability demos (no new infra, prompt + UX work only)
 
@@ -433,9 +431,9 @@ The runtime rule in §2 governs.
 1. Exact `BRIEF.md` schema + the one optional clarifying field on the new-idea path.
 2. First-run-completed marker: file in Friday's workspace (consistent with §2.5) vs
    deriving from BRIEF consumption — decide in implementation.
-3. Whether Friday's "Set up {company}" issue checkout counts against any interactive
-   Teams limits for trial owners (verify the guard treats assignment-driven checkout
-   by an interactive session as interactive).
+3. ~~"Set up" issue checkout limits~~ — moot: the flow no longer seeds or checks out
+   a Set-up issue (revised 2026-07-13). The first run is a plain chat session that
+   creates the three next-move task issues at the end.
 4. Skip-the-form rate to watch: if high, test making the funnel pre-signup (Polsia
    collects the idea *before* auth).
 5. Mission-doc naming/placement conventions so marketplace export filters and

@@ -104,29 +104,12 @@ describe("FirstRunFunnel", () => {
     }
   });
 
-  it("disables Skip while a retry is in flight", async () => {
-    vi.useFakeTimers();
-    try {
-      post.mockRejectedValueOnce(Object.assign(new Error("conflict"), { status: 409 }));
-      render(<FirstRunFunnel />);
-      enterGrowPathAndSubmit();
-
-      await vi.waitFor(() =>
-        expect(screen.getByRole("button", { name: /setting things up/i })).toBeInTheDocument(),
-      );
-      expect(screen.getByRole("button", { name: /skip for now/i })).toBeDisabled();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("skip writes skipped flag without posting", async () => {
+  it("offers no skip — the funnel is the committed onboarding front door", () => {
     render(<FirstRunFunnel />);
+    // Path-picker screen: no skip.
+    expect(screen.queryByRole("button", { name: /skip/i })).toBeNull();
+    // ...and none on the input screen either.
     fireEvent.click(screen.getByRole("button", { name: /start something new/i }));
-    fireEvent.click(screen.getByRole("button", { name: /skip for now/i }));
-    await waitFor(() => {
-      expect(update.mock.calls[0][0].unsafeMetadata.firstRun.skipped).toBe(true);
-    });
-    expect(post).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: /skip/i })).toBeNull();
   });
 });

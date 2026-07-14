@@ -103,7 +103,6 @@ export type AnalyticsEvent =
   | "cron_job_triggered"
   // First-run funnel
   | "first_run_board_pulse"
-  | "first_run_brief_skipped"
   | "first_run_brief_submitted"
   | "first_run_kickoff_sent"
   | "first_run_show_completed"

@@ -629,24 +629,17 @@ export function ProvisioningStepper({
     return () => clearInterval(interval);
   }, [phase]);
 
-  // First-run funnel: a trial signup must resolve the funnel (submit a
-  // business brief or skip) before reaching chat — INCLUDING when the
-  // container provisions fast and hits `ready` before they finish choosing
-  // or typing. Placed BEFORE the ready return so a quick provision can't
-  // drop the funnel and lose the in-progress brief (and leave the kickoff
-  // hook, which requires briefSubmitted, unable to fire). Gated on
-  // gatePhase === "normal" so it never preempts a blocked / needs-signup /
-  // team-pending state. The `user` guard is load-bearing beyond null-safety:
-  // submit/skip write user.unsafeMetadata, so without a loaded Clerk user the
-  // funnel would be a dead-end form.
+  // First-run funnel: a trial signup describes their business here before
+  // reaching chat — it's the committed onboarding front door (no skip), so
+  // the only way past it is submitting the brief. Placed BEFORE the ready
+  // return so a quick provision can't drop the funnel and lose the in-progress
+  // brief (and leave the kickoff hook, which requires briefSubmitted, unable
+  // to fire). Gated on gatePhase === "normal" so it never preempts a blocked /
+  // needs-signup / team-pending state. The `user` guard is load-bearing beyond
+  // null-safety: submit writes user.unsafeMetadata, so without a loaded Clerk
+  // user the funnel would be a dead-end form.
   const firstRun = readFirstRun(user);
-  if (
-    isTrialLocal &&
-    user &&
-    gatePhase === "normal" &&
-    !firstRun.briefSubmitted &&
-    !firstRun.skipped
-  ) {
+  if (isTrialLocal && user && gatePhase === "normal" && !firstRun.briefSubmitted) {
     return <FirstRunFunnel />;
   }
 
@@ -1065,8 +1058,16 @@ export function ProvisioningStepper({
     );
   }
 
-  // Loading billing
-  if (billingLoading) {
+  // Loading billing OR the first /container/status poll hasn't resolved yet.
+  // Holding a neutral spinner over BOTH is what kills the provider-picker
+  // flash for a brand-new trial signup: /billing/account returns null a beat
+  // before the status poll creates the trial_local row and returns a
+  // provisioning container, and in that gap the legacy fallback below
+  // (!isTrialLocal && !container) would briefly render the paywall picker.
+  // gatePhase === "loading" is the pre-first-response state, so waiting it
+  // out means the next thing a new trial user sees is the funnel, not a
+  // payment step they don't need.
+  if (billingLoading || gatePhase === "loading") {
     return (
       <div className="flex-1 flex items-center justify-center">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />

@@ -328,6 +328,12 @@ export class ServiceStack extends cdk.Stack {
             // Lets ensure_owner_bedrock_role converge a previously-minted role's
             // trust policy onto the SourceAccount/SourceArn-conditioned form.
             "iam:UpdateAssumeRolePolicy",
+            // Account-wipe tool (Task 5): lets bedrock_aip.delete_owner_bedrock_role
+            // remove the per-owner role once its inline policy is deleted and the
+            // base managed policy is detached (IAM refuses DeleteRole otherwise).
+            // Same owner-bedrock-* resource scope as the rest of this statement —
+            // never touches the shared base managed policy itself.
+            "iam:DeleteRole",
           ],
           resources: [
             `arn:aws:iam::${this.account}:role/isol8-${env}-owner-bedrock-*`,

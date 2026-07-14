@@ -221,6 +221,28 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     });
   });
 
+  // Account-wipe tool (Task 5): the backend needs to delete the per-owner
+  // Bedrock role once its policies are detached. Scoped to the same
+  // owner-bedrock-* role-name pattern as the rest of OwnerBedrockRoleManage —
+  // never a bare "*", and never reaching the shared base managed policy.
+  test("backend role can delete per-owner bedrock roles, scoped to the owner-bedrock-* role pattern", () => {
+    // OwnerBedrockRoleManage has a single-element `resources` array, so CDK
+    // synthesizes it as a bare Resource string (not a list) — unlike the
+    // multi-resource IamPassRole statement asserted with arrayWith() above.
+    template.hasResourceProperties("AWS::IAM::ManagedPolicy", {
+      ManagedPolicyName: "isol8-dev-backend-owner-bedrock-manage",
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Sid: "OwnerBedrockRoleManage",
+            Action: Match.arrayWith(["iam:DeleteRole"]),
+            Resource: "arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-*",
+          }),
+        ]),
+      }),
+    });
+  });
+
   test("backend container has the BEDROCK_OWNER_ROLE_PREFIX env var", () => {
     template.hasResourceProperties("AWS::ECS::TaskDefinition", {
       ContainerDefinitions: Match.arrayWith([

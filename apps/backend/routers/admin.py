@@ -18,19 +18,31 @@ distinct side-effect.
 """
 
 import logging
+import time
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from core.auth import AuthContext, require_platform_admin
+from core.auth import AuthContext, is_org_owner_id, require_platform_admin
 from core.containers import get_ecs_manager, get_gateway_pool
-from core.repositories import admin_actions_repo, update_repo  # noqa: F401 — admin_actions_repo is patch target for tests
+from core.repositories import (  # noqa: F401 — admin_actions_repo is patch target for tests
+    admin_actions_repo,
+    update_repo,
+    user_repo,
+)
 from core.services import (
     admin_service,
     billing_service,
     clerk_admin,
     system_health,
+)
+from core.services.account_wipe import (
+    BootstrapAccountProtectedError,
+    OrgWipeUnsupportedError,
+    preview_wipe,
+    resolve_account_emails,
+    wipe_account,
 )
 from core.services.admin_access import require_admin_read_access
 from core.services.admin_audit import audit_admin_action
@@ -57,6 +69,13 @@ class IssueCreditRequest(BaseModel):
 
 class MarkInvoiceResolvedRequest(BaseModel):
     invoice_id: str = Field(..., description="Stripe invoice id")
+
+
+class WipeConfirmRequest(BaseModel):
+    confirm_email: str = Field(
+        ...,
+        description="Type-to-confirm: must match the account's email on file, checked server-side.",
+    )
 
 
 class QueueImageUpdateRequest(BaseModel):
@@ -672,3 +691,119 @@ async def admin_agent_clear_sessions(
         method="sessions.clear",
         req_prefix="admin-agent-clear-",
     )
+
+
+# ---------------------------------------------------------------------------
+# Account wipe (docs/superpowers/specs/2026-07-14-admin-account-wipe-design.md)
+# ---------------------------------------------------------------------------
+#
+# Deliberately NOT wrapped with @audit_admin_action like the rest of this
+# file — that decorator's audit payload is built from the *request* (the
+# body/capture_params), but the design spec wants the wipe's audit row to
+# carry the *report* (what actually happened, per step). The execute
+# endpoint below writes the admin-actions row itself, after the teardown
+# runs, with the report as the payload. The preview endpoint is read-only
+# and intentionally writes no audit row at all — it deletes nothing.
+
+
+@router.post(
+    "/users/{owner_id}/wipe/preview",
+    description=(
+        "Read-only dry-run: enumerate every resource that exists for the owner "
+        "and would be torn down by a wipe (Paperclip company + Aurora user, "
+        "ECS service + EFS, Bedrock AIP(s) + IAM role, Metronome, Stripe, "
+        "DDB rows, Clerk user). Calls no delete method. Personal owners only — "
+        "org owners get 400 org_wipe_unsupported."
+    ),
+)
+async def admin_wipe_preview(
+    owner_id: str,
+    auth: AuthContext = Depends(require_platform_admin),
+):
+    try:
+        report = await preview_wipe(owner_id)
+    except OrgWipeUnsupportedError:
+        raise HTTPException(status_code=400, detail="org_wipe_unsupported")
+    except BootstrapAccountProtectedError:
+        raise HTTPException(status_code=400, detail="bootstrap_account_protected")
+    return report.to_dict()
+
+
+@router.post(
+    "/users/{owner_id}/wipe",
+    description=(
+        "Execute the full, audited account teardown. Requires `confirm_email` "
+        "to match one of the account's email addresses — looked up server-side "
+        "from Clerk (the account's email addresses), matched case-insensitively, "
+        "never trusted from the client — else 400 email_mismatch and nothing is "
+        "deleted. Partial-failure-tolerant: a "
+        "step failing does not abort the others or fail this request; the "
+        "returned report is the source of truth for what remains and what to "
+        "re-run. Writes an admin-actions audit row with the full report. "
+        "Personal owners only — org owners get 400 org_wipe_unsupported."
+    ),
+)
+async def admin_wipe_execute(
+    owner_id: str,
+    body: WipeConfirmRequest,
+    request: Request,
+    auth: AuthContext = Depends(require_platform_admin),
+):
+    # Refuse org owners up front — before the email match — so a direct API
+    # caller gets the documented org_wipe_unsupported, not a misleading
+    # email_mismatch. (resolve_account_emails can't produce a matching email
+    # for an org id: clerk_admin.get_user 404s on org_... and there's no users
+    # row, so the match below would always fail first. preview_wipe already
+    # refuses orgs before anything else; mirror that here.)
+    if is_org_owner_id(owner_id):
+        raise HTTPException(status_code=400, detail="org_wipe_unsupported")
+
+    # Authoritative email(s) from Clerk (the users-row email is written by an
+    # unreliable webhook — see resolve_account_emails). The typed confirm must
+    # match one of them, case-insensitively; never trusted from the client alone.
+    account_emails = await resolve_account_emails(owner_id)
+    typed = body.confirm_email.strip().lower()
+    if not typed or not any(typed == e.strip().lower() for e in account_emails):
+        raise HTTPException(status_code=400, detail="email_mismatch")
+
+    started = time.monotonic()
+    try:
+        report = await wipe_account(owner_id, actor_admin_id=auth.user_id, account_emails=account_emails)
+    except OrgWipeUnsupportedError:
+        raise HTTPException(status_code=400, detail="org_wipe_unsupported")
+    except BootstrapAccountProtectedError:
+        raise HTTPException(status_code=400, detail="bootstrap_account_protected")
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+
+    report_dict = report.to_dict()
+    has_failures = any(step["status"] == "failed" for step in report_dict["steps"])
+
+    try:
+        await admin_actions_repo.create(
+            admin_user_id=auth.user_id,
+            target_user_id=owner_id,
+            action="account_wipe",
+            payload=report_dict,
+            result="partial_failure" if has_failures else "success",
+            audit_status="written",
+            http_status=200,
+            elapsed_ms=elapsed_ms,
+            error_message=None,
+            user_agent=request.headers.get("user-agent", "unknown"),
+            ip=request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+            or (request.client.host if request.client else "unknown"),
+        )
+    except Exception:  # noqa: BLE001 — fail-closed like @audit_admin_action (S1)
+        # The teardown already ran (irreversible side effects) -- an audit
+        # write failure must not mask that by 500ing an otherwise-successful
+        # response. Log loudly and still return the report; wipe_account is
+        # idempotent, so a re-run (which would also re-attempt the audit
+        # write) is safe if the operator wants to confirm it landed.
+        logger.critical(
+            "ADMIN_AUDIT_PANIC action=account_wipe admin=%s target=%s",
+            auth.user_id,
+            owner_id,
+            exc_info=True,
+        )
+
+    return report_dict

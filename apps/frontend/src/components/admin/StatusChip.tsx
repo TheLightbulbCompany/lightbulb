@@ -26,6 +26,8 @@ const CLASSES: Record<string, string> = {
   // provisioning / in-progress
   provisioning: TONE.sky,
   starting: TONE.sky,
+  // wipe preview — flags what a dry run would remove
+  would_delete: TONE.amber,
   // stopped / warn
   stopped: TONE.amber,
   scaled_to_zero: TONE.amber,

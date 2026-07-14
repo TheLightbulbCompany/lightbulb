@@ -1,13 +1,24 @@
 import Link from "next/link";
 import { auth } from "@clerk/nextjs/server";
 
-import { getActions } from "@/app/admin/_lib/api";
-import { asAuditEntry } from "@/app/admin/_lib/narrow";
+import { getActions, getOverview } from "@/app/admin/_lib/api";
+import { asAuditEntry, asRecord, asString } from "@/app/admin/_lib/narrow";
 import { AuditRow } from "@/components/admin/AuditRow";
+import { Card } from "@/components/admin/Card";
 import { EmptyState } from "@/components/admin/EmptyState";
 import { ErrorBanner } from "@/components/admin/ErrorBanner";
+import { WipeAccountDialog } from "@/components/admin/WipeAccountDialog";
 
 export const metadata = { title: "Actions \u00b7 Admin" };
+
+/** Mirrors billing/page.tsx's identity-email pick \u2014 kept local, same shape. */
+function pickIdentityEmail(raw: unknown): string | null {
+  const r = asRecord(raw);
+  const list = r.email_addresses;
+  if (!Array.isArray(list) || list.length === 0) return null;
+  const first = asRecord(list[0]);
+  return asString(first.email_address) ?? null;
+}
 
 interface ActionsPageProps {
   params: Promise<{ id: string }>;
@@ -38,13 +49,13 @@ export default async function ActionsPage({
     );
   }
 
-  const result = await getActions(token, {
-    target_user_id: id,
-    limit: 100,
-    cursor,
-  });
+  const [result, overview] = await Promise.all([
+    getActions(token, { target_user_id: id, limit: 100, cursor }),
+    getOverview(token, id),
+  ]);
 
   const entries = (result.items ?? []).map(asAuditEntry);
+  const email = overview ? pickIdentityEmail(overview.identity) : null;
 
   const nextCursorHref = result.cursor
     ? `/admin/users/${encodeURIComponent(id)}/actions?cursor=${encodeURIComponent(result.cursor)}`
@@ -53,6 +64,17 @@ export default async function ActionsPage({
   return (
     <div className="space-y-6">
       <h1 className="text-xl font-semibold text-zinc-100">Admin actions</h1>
+
+      <Card title="Danger zone">
+        <div className="space-y-2">
+          <p className="text-xs text-zinc-500">
+            Permanently deletes every resource for this owner — container,
+            EFS, Paperclip, Bedrock credits, billing, and the Clerk user.
+            Cannot be undone.
+          </p>
+          <WipeAccountDialog userId={id} email={email} />
+        </div>
+      </Card>
 
       {entries.length === 0 ? (
         <EmptyState

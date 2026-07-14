@@ -86,6 +86,25 @@ class MetronomeClient:
             raise MetronomeError(f"create_customer: no data.id in Metronome response (got keys {sorted(body)})")
         return customer_id
 
+    async def archive_customer(self, *, customer_id: str) -> None:
+        """POST /v1/customers/archive — Admin Account-Wipe teardown step 9
+        (docs/superpowers/specs/2026-07-14-admin-account-wipe-design.md).
+        Metronome has no hard customer-delete; archive is the terminal
+        state (see the design spec's "Out of scope: Metronome hard-delete").
+        Body shape mirrors create_customer's plain-REST posture: {"id":
+        customer_id}.
+
+        Treats a 404 (customer already gone — e.g. a re-run after a partial
+        wipe failure, or an owner who never had a Metronome customer) as
+        success. Any other HTTP error re-raises so the wipe orchestrator can
+        report the step as failed."""
+        try:
+            await self._post("/customers/archive", {"id": customer_id})
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                return
+            raise
+
     async def get_customer_id_by_ingest_alias(self, ingest_alias: str) -> str | None:
         """GET /v1/customers?ingest_alias=… — adoption lookup for when
         create_customer conflicts on an alias already claimed (e.g. a prior

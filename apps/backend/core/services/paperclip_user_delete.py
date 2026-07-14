@@ -1,0 +1,100 @@
+"""Paperclip Aurora (Better Auth) user delete — Admin Account-Wipe teardown
+step 2 (docs/superpowers/specs/2026-07-14-admin-account-wipe-design.md).
+
+Paperclip exposes no user-delete/reset API, so the only way to remove a
+member's Better Auth identity is a direct RDS Data API ``DELETE`` against the
+``"user"`` row (cascades ``account``/``session`` via FK). This is the exact
+RDS Data API wiring ``scripts/recover_orphan_paperclip_member.py`` uses for
+the same DELETE (cluster ARN shape, secret lookup via paginated
+``list_secrets``, ``database="paperclip"``), extracted here as a reusable
+async helper so the wipe orchestrator (Task 3) can call it directly instead
+of shelling out to a script.
+
+Matched by id, not email: the wipe orchestrator already knows
+``paperclip_user_id`` from the owner's ``paperclip-companies`` DDB row
+(``PaperclipCompanyRow.paperclip_user_id``), so unlike the recovery script —
+which starts from only an email and must disambiguate among possibly
+multiple Aurora rows — this deletes directly by primary key. ``email`` is
+still required as an argument so the bootstrap-admin refusal below can run
+without a second lookup.
+"""
+
+from __future__ import annotations
+
+import logging
+
+import boto3
+
+from core.config import settings
+
+logger = logging.getLogger(__name__)
+
+# Bootstrap admins that must NEVER be deleted — mirrors
+# scripts/recover_orphan_paperclip_member.py's BOOTSTRAP_EMAILS. Deleting
+# either one breaks the PaperclipAdminClient bootstrap-admin session every
+# provision call depends on.
+BOOTSTRAP_EMAILS: frozenset[str] = frozenset({"admin@isol8.co", "admin+paperclip@isol8.co"})
+
+# Same AWS account both envs share (see core.billing.bedrock_aip.OUR_ACCOUNT_ID
+# for the sibling constant on the Bedrock side).
+_ACCOUNT_ID = "877352799272"
+
+
+class BootstrapUserProtectedError(Exception):
+    """Raised when a wipe targets a bootstrap Paperclip admin identity."""
+
+
+def _rds_data_client():
+    return boto3.client("rds-data", region_name=settings.AWS_REGION)
+
+
+def _secretsmanager_client():
+    return boto3.client("secretsmanager", region_name=settings.AWS_REGION)
+
+
+def _cluster_arn(env: str) -> str:
+    return f"arn:aws:rds:{settings.AWS_REGION}:{_ACCOUNT_ID}:cluster:isol8-{env}-paperclip-db"
+
+
+def _find_secret_arn(sm_client, env: str) -> str:
+    """Paginated lookup — mirrors recover_orphan_paperclip_member._secret_arn:
+    with enough secrets in the account, the target can be on a later page,
+    so a single (unpaginated) call would falsely report "not found"."""
+    needle = f"isol8-{env}-paperclip-db-credentials"
+    for page in sm_client.get_paginator("list_secrets").paginate():
+        for s in page.get("SecretList", []):
+            if needle in s["Name"]:
+                return s["ARN"]
+    raise RuntimeError(f"Could not find paperclip-db-credentials secret for env={env}")
+
+
+async def delete_paperclip_user(*, paperclip_user_id: str, email: str, env: str) -> None:
+    """RDS Data API ``DELETE FROM "user" WHERE id = :id`` (cascades
+    account/session). Refuses — raises ``BootstrapUserProtectedError`` — for
+    either bootstrap Paperclip admin email; see ``BOOTSTRAP_EMAILS``.
+
+    Idempotent: deleting an already-gone row is a normal 0-row DELETE (RDS
+    Data API does not error on that), so this is safe to re-run after a
+    partial wipe failure. Any AWS/Data-API failure (throttling, bad
+    credentials, etc.) propagates so the wipe orchestrator's per-step
+    try/except can record it as failed.
+    """
+    if email.strip().lower() in BOOTSTRAP_EMAILS:
+        raise BootstrapUserProtectedError(
+            f"Refusing to delete Paperclip user {paperclip_user_id}: {email} is a bootstrap admin."
+        )
+
+    from core.dynamodb import run_in_thread
+
+    sm = _secretsmanager_client()
+    secret_arn = await run_in_thread(_find_secret_arn, sm, env)
+
+    rds = _rds_data_client()
+    await run_in_thread(
+        rds.execute_statement,
+        resourceArn=_cluster_arn(env),
+        secretArn=secret_arn,
+        database="paperclip",
+        sql='DELETE FROM "user" WHERE id = :id',
+        parameters=[{"name": "id", "value": {"stringValue": paperclip_user_id}}],
+    )

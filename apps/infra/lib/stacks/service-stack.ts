@@ -328,6 +328,12 @@ export class ServiceStack extends cdk.Stack {
             // Lets ensure_owner_bedrock_role converge a previously-minted role's
             // trust policy onto the SourceAccount/SourceArn-conditioned form.
             "iam:UpdateAssumeRolePolicy",
+            // Account-wipe tool (Task 5): lets bedrock_aip.delete_owner_bedrock_role
+            // remove the per-owner role once its inline policy is deleted and the
+            // base managed policy is detached (IAM refuses DeleteRole otherwise).
+            // Same owner-bedrock-* resource scope as the rest of this statement —
+            // never touches the shared base managed policy itself.
+            "iam:DeleteRole",
           ],
           resources: [
             `arn:aws:iam::${this.account}:role/isol8-${env}-owner-bedrock-*`,
@@ -430,6 +436,48 @@ export class ServiceStack extends cdk.Stack {
         resources: [
           `arn:aws:secretsmanager:${this.region}:${this.account}:secret:isol8/${env}/paperclip_admin_credentials-*`,
         ],
+      }),
+    );
+
+    // Account-wipe (Task 7 fix): the in-backend teardown deletes the owner's
+    // Paperclip Better Auth "user" row directly via the RDS Data API
+    // (core/services/paperclip_user_delete.py) because Paperclip exposes no
+    // user-delete API. Three grants the task role otherwise lacks:
+    //   - rds-data:ExecuteStatement on the paperclip Aurora cluster;
+    //   - secretsmanager:GetSecretValue on the DASH-named DB-credentials secret
+    //     (the wildcard SecretsAccess above only covers SLASH-named isol8/{env}/*
+    //     secrets, NOT isol8-{env}-paperclip-db-credentials);
+    //   - secretsmanager:ListSecrets (metadata only; the helper paginates to find
+    //     that secret's full ARN — ListSecrets has no resource-level scoping, so
+    //     it must be "*").
+    // Without these the Aurora-user step 403s on every real account and orphans
+    // the Better Auth identity (Teams 401 on re-signup with the same email).
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "AccountWipePaperclipAuroraExec",
+        effect: iam.Effect.ALLOW,
+        actions: ["rds-data:ExecuteStatement"],
+        resources: [
+          `arn:aws:rds:${this.region}:${this.account}:cluster:isol8-${env}-paperclip-db`,
+        ],
+      }),
+    );
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "AccountWipePaperclipDbSecretRead",
+        effect: iam.Effect.ALLOW,
+        actions: ["secretsmanager:GetSecretValue"],
+        resources: [
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:isol8-${env}-paperclip-db-credentials-*`,
+        ],
+      }),
+    );
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "AccountWipeListSecrets",
+        effect: iam.Effect.ALLOW,
+        actions: ["secretsmanager:ListSecrets"],
+        resources: ["*"],
       }),
     );
 

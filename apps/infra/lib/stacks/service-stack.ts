@@ -562,8 +562,7 @@ export class ServiceStack extends cdk.Stack {
     // export that another stack imports cannot be deleted, which permanently
     // blocks renaming or replacing the table. Granting by the table name avoids
     // the export entirely. The action set matches what integrations_repo and
-    // oauth_state_repo actually call. (The connections table is being retired —
-    // its grant is removed when the table is dropped.)
+    // oauth_state_repo actually call.
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
         sid: "DynamoDbIntegrations",
@@ -578,8 +577,6 @@ export class ServiceStack extends cdk.Stack {
         resources: [
           `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${env}-integrations`,
           `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${env}-integrations/index/*`,
-          `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${env}-connections`,
-          `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${env}-connections/index/*`,
           `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${env}-oauth-state`,
           `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${env}-oauth-state/index/*`,
           // Per-owner AIP reverse index (Plan 2). Folded into this by-name DDB

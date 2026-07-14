@@ -2,6 +2,8 @@ import { redirect } from "next/navigation";
 import { auth } from "@clerk/nextjs/server";
 import Link from "next/link";
 
+import { NotAuthorized } from "@/components/admin/NotAuthorized";
+
 import { getAdminMe } from "./_lib/api";
 
 /**
@@ -10,7 +12,8 @@ import { getAdminMe } from "./_lib/api";
  * Order of checks:
  *   1. Clerk auth — redirect to /sign-in if not signed in.
  *   2. Backend `/admin/me` — single source of truth for admin membership.
- *      Anything other than `is_admin: true` redirects to /admin/not-authorized.
+ *      Anything other than `is_admin: true` renders the NotAuthorized screen
+ *      IN PLACE (not a redirect — see the note at the check below).
  *
  * The whole admin route segment sits behind this layout, so individual pages
  * don't need their own gate. Pair with the host-based 404 in
@@ -33,7 +36,16 @@ export default async function AdminLayout({
 
   const me = await getAdminMe(token);
   if (!me?.is_admin) {
-    redirect("/admin/not-authorized");
+    // Render the not-authorized screen IN PLACE — do NOT redirect. The
+    // /admin/not-authorized route is itself behind this layout, so
+    // redirecting there re-runs this gate and redirects again forever
+    // (ERR_TOO_MANY_REDIRECTS). Rendering inline breaks the loop and gives
+    // the non-admin a sign-out / switch-account button.
+    return (
+      <div className="dark min-h-screen bg-background text-foreground">
+        <NotAuthorized />
+      </div>
+    );
   }
 
   return (

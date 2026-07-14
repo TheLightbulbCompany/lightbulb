@@ -103,6 +103,35 @@ async def revoke_sessions(user_id: str) -> dict:
     return await _post_no_body(f"/users/{user_id}/revoke_session")
 
 
+async def delete_user(user_id: str) -> None:
+    """Permanently delete a Clerk user — Admin Account-Wipe teardown step 12
+    (docs/superpowers/specs/2026-07-14-admin-account-wipe-design.md). This is
+    the LAST step of the wipe: leaving the Clerk user alive lets everything
+    else regrow on the next /container/status poll.
+
+    Unlike this module's other mutations (which swallow failures into an
+    {"error": ...} dict so read-side/UX callers degrade gracefully), this
+    RAISES on any unexpected failure. The wipe orchestrator wraps every
+    teardown step in its own try/except and records a per-step
+    ok/failed result — silently swallowing here would hide a failed delete
+    behind a fake "ok" step. Treats 404 (already deleted) as success, so a
+    re-run after a partial wipe failure is safe. No-ops when
+    CLERK_SECRET_KEY is unset, matching the module's local-dev stub
+    posture elsewhere.
+    """
+    if not settings.CLERK_SECRET_KEY:
+        return
+
+    headers = {"Authorization": f"Bearer {settings.CLERK_SECRET_KEY}"}
+    async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
+        response = await client.delete(f"{_CLERK_API_BASE}/users/{user_id}", headers=headers)
+
+    if response.status_code == 404:
+        return
+    if response.status_code >= 400:
+        raise RuntimeError(f"clerk_admin.delete_user failed: http_{response.status_code} body={response.text}")
+
+
 async def resend_verification(user_id: str) -> dict:
     """Resend the email-verification link to the user's primary email.
 

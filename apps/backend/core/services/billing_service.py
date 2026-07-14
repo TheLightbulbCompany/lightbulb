@@ -579,6 +579,68 @@ async def cancel_subscription_for_owner(user_id: str) -> dict:
     return {"status": "cancelled", "subscription_id": sub_id}
 
 
+def _is_stripe_missing(e: Exception) -> bool:
+    """True when a Stripe API error means "already gone" — an
+    InvalidRequestError with code="resource_missing", or a bare 404 status.
+
+    Checked via duck-typed attribute access rather than
+    `isinstance(e, stripe.InvalidRequestError)` on purpose: this module's
+    existing tests patch `core.services.billing_service.stripe` wholesale
+    with a MagicMock (see test_billing_service.py), which would turn
+    `stripe.InvalidRequestError` into a non-exception MagicMock attribute —
+    an `except stripe.InvalidRequestError` clause would then raise TypeError
+    the moment any exception is actually thrown. Duck-typing sidesteps that
+    regardless of how `stripe` is mocked in a given test.
+    """
+    if getattr(e, "code", None) == "resource_missing":
+        return True
+    return getattr(e, "http_status", None) == 404
+
+
+async def delete_stripe_customer(owner_id: str) -> bool:
+    """Admin Account-Wipe teardown step 10
+    (docs/superpowers/specs/2026-07-14-admin-account-wipe-design.md):
+    cancel the owner's Stripe subscription (if any) then delete their
+    Stripe customer.
+
+    No-ops (returns False) when the billing row is missing or carries no
+    stripe_customer_id — trial_local owners have neither, and this lets the
+    wipe orchestrator call it unconditionally. Returns True only when it
+    actually deleted a Stripe customer.
+
+    Treats "already gone" (Stripe resource_missing / 404) as success at
+    each step, so this is safe to re-run after a partial wipe failure.
+    Any other Stripe failure raises BillingServiceError, mirroring
+    cancel_subscription_for_owner / pause_subscription_for_owner above.
+    """
+    billing = await billing_repo.get_by_owner_id(owner_id)
+    if not billing or not billing.get("stripe_customer_id"):
+        return False
+
+    sub_id = billing.get("stripe_subscription_id")
+    if sub_id:
+        try:
+            stripe.Subscription.delete(
+                sub_id,
+                idempotency_key=f"wipe_sub_cancel:{sub_id}",
+            )
+        except Exception as e:  # noqa: BLE001
+            if not _is_stripe_missing(e):
+                raise BillingServiceError(f"stripe_wipe_cancel_failed: {e}")
+
+    customer_id = billing["stripe_customer_id"]
+    try:
+        stripe.Customer.delete(
+            customer_id,
+            idempotency_key=f"wipe_customer_delete:{customer_id}",
+        )
+    except Exception as e:  # noqa: BLE001
+        if not _is_stripe_missing(e):
+            raise BillingServiceError(f"stripe_wipe_delete_failed: {e}")
+
+    return True
+
+
 async def pause_subscription_for_owner(user_id: str) -> dict:
     """Admin: pause Stripe subscription billing (mark_uncollectible)."""
     billing = await billing_repo.get_by_owner_id(user_id)

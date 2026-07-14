@@ -238,7 +238,7 @@ class TestDeleteOwnerBedrockRole:
 
         await mod.delete_owner_bedrock_role("org_abc")
 
-        assert not hasattr(fake, "delete_policy") or not fake.delete_policy.called
+        assert not fake.delete_policy.called
 
     @pytest.mark.asyncio
     async def test_swallows_no_such_entity_at_every_step(self, aip_tables, monkeypatch):

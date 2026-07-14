@@ -6,7 +6,7 @@ DynamoDB (containers + bedrock-aip-owners reverse table), MagicMock for the
 boto3 bedrock/iam control-plane clients.
 """
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import boto3
 import pytest
@@ -131,6 +131,69 @@ class TestDeleteOwnerAips:
 
         with pytest.raises(ClientError):
             await mod.delete_owner_aips("org_abc")
+
+    @pytest.mark.asyncio
+    async def test_aip_arns_kwarg_deletes_without_reading_containers_row(self, aip_tables, monkeypatch):
+        """Regression test for the wipe-orchestrator ordering hazard: the
+        `ecs_service` step deletes the containers row as a side effect of
+        ecs_manager.delete_user_service, and the LATER `bedrock_aips` step
+        used to re-read that (now-gone) row via read_owner_aips, silently
+        no-op, and report "ok" while orphaning both the Bedrock AIP and the
+        bedrock-aip-owners reverse row.
+
+        When `aip_arns` is passed explicitly, delete_owner_aips must delete
+        every given ARN (+ its reverse row) WITHOUT ever calling
+        read_owner_aips or container_repo — i.e. it must not depend on the
+        containers row still existing."""
+        import core.billing.bedrock_aip as mod
+        from core.repositories import container_repo
+
+        arn1 = "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/o"
+        arn2 = "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/s"
+
+        # Seed only the reverse-table rows directly -- deliberately do NOT
+        # write a containers row, mirroring the post-ecs_service-deletion
+        # state the wipe orchestrator's bedrock_aips step actually runs in.
+        table = mod._aip_owners_table()
+        await mod._put_reverse_row(table, arn=arn1, owner_id="org_abc", tier="opus", plan="paid")
+        await mod._put_reverse_row(table, arn=arn2, owner_id="org_abc", tier="sonnet", plan="paid")
+
+        fake = MagicMock()
+        monkeypatch.setattr(mod, "_bedrock_client", lambda: fake)
+
+        read_owner_aips_spy = AsyncMock()
+        monkeypatch.setattr(mod, "read_owner_aips", read_owner_aips_spy)
+        container_repo_spy = AsyncMock()
+        monkeypatch.setattr(container_repo, "get_by_owner_id", container_repo_spy)
+
+        removed = await mod.delete_owner_aips("org_abc", aip_arns=[arn1, arn2])
+
+        assert sorted(removed) == sorted([arn1, arn2])
+        assert fake.delete_inference_profile.call_count == 2
+        called_arns = {c.kwargs["inferenceProfileIdentifier"] for c in fake.delete_inference_profile.call_args_list}
+        assert called_arns == {arn1, arn2}
+
+        read_owner_aips_spy.assert_not_called()
+        container_repo_spy.assert_not_called()
+
+        for arn in (arn1, arn2):
+            resp = aip_tables.get_item(TableName="test-aip-owners", Key={"aip_arn": {"S": arn}})
+            assert "Item" not in resp
+
+    @pytest.mark.asyncio
+    async def test_aip_arns_empty_list_returns_empty_without_bedrock_calls(self, aip_tables, monkeypatch):
+        """aip_arns=[] (explicitly empty, as opposed to None) is a no-op --
+        mirrors the None/absent-map short circuit but for the explicit-ARNs
+        path."""
+        import core.billing.bedrock_aip as mod
+
+        fake = MagicMock()
+        monkeypatch.setattr(mod, "_bedrock_client", lambda: fake)
+
+        removed = await mod.delete_owner_aips("org_abc", aip_arns=[])
+
+        assert removed == []
+        fake.delete_inference_profile.assert_not_called()
 
 
 class TestDeleteOwnerBedrockRole:

@@ -608,15 +608,27 @@ async def revoke_owner_bedrock(owner_id: str) -> None:
     await container_repo.update_fields(owner_id, {"bedrock_revoked": True})
 
 
-async def delete_owner_aips(owner_id: str) -> list[str]:
+async def delete_owner_aips(owner_id: str, *, aip_arns: list[str] | None = None) -> list[str]:
     """SHARED CONTRACT (Admin Account-Wipe, teardown step 6-7): delete every
     persisted AIP for `owner_id` from Bedrock, plus its bedrock-aip-owners
     reverse row, and return the list of ARNs removed.
 
-    Reads the same containers-row map read_owner_aips already reads (the
-    module's single source of truth for an owner's AIPs) — no separate lookup
-    path. Returns `[]` (no Bedrock/DDB calls) when the owner has no persisted
-    AIPs, so the wipe orchestrator can call this unconditionally.
+    ``aip_arns``, if provided (not None), is used DIRECTLY instead of
+    re-reading the containers row via read_owner_aips. This matters because
+    the wipe orchestrator's `ecs_service` step (which runs before this one)
+    deletes the containers row as a side effect of
+    ``ecs_manager.delete_user_service`` — a live re-read at this point would
+    see no row and silently no-op, orphaning both the Bedrock inference
+    profile and the reverse-table row while still reporting success. Callers
+    that already hold the ARNs (e.g. the wipe orchestrator's upfront
+    identifier snapshot) MUST pass them here instead of relying on the
+    containers row still existing.
+
+    When ``aip_arns`` is None (the default), falls back to the original
+    behavior: read the containers-row map via read_owner_aips (the module's
+    single source of truth for an owner's AIPs outside of a wipe). Returns
+    `[]` (no Bedrock/DDB calls) when there is nothing to delete, so callers
+    can invoke this unconditionally.
 
     Idempotent: a missing AIP (ResourceNotFoundException — already deleted by
     a prior partial wipe, or never actually minted) is treated as
@@ -625,14 +637,21 @@ async def delete_owner_aips(owner_id: str) -> list[str]:
     """
     from core.dynamodb import run_in_thread
 
-    arns = await read_owner_aips(owner_id)
-    if not arns:
+    if aip_arns is not None:
+        arns_to_delete = list(aip_arns)
+    else:
+        arns = await read_owner_aips(owner_id)
+        if not arns:
+            return []
+        arns_to_delete = list(arns.values())
+
+    if not arns_to_delete:
         return []
 
     client = _bedrock_client()
     table = _aip_owners_table()
     removed: list[str] = []
-    for arn in arns.values():
+    for arn in arns_to_delete:
         try:
             await run_in_thread(client.delete_inference_profile, inferenceProfileIdentifier=arn)
         except ClientError as e:

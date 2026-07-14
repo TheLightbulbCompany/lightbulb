@@ -43,6 +43,15 @@ for them (see the inline notes at those call sites):
               (containers row + channel-links already folded into
               "ecs_service" — see note below)
   spec #12 -> "clerk_user"            (clerk_admin.delete_user) -- ALWAYS LAST
+
+KNOWN GAP — NOT YET COVERED (honest, not "complete"): this orchestrator does
+NOT wipe the ``integrations`` DDB table, the ``oauth-tokens`` table, the
+``api-keys`` table, or the Secrets-Manager ``integration_secret_store``
+(BYOK API keys + ChatGPT OAuth token material). No collaborator exists yet
+for any of them. A trial_local account has none of these rows, so this does
+not block the trial-account dogfood use case, but it IS a real gap for paid
+Bedrock-managed, ChatGPT-OAuth, and BYOK accounts — those credentials
+survive a wipe today. Follow-up work, not yet built.
 """
 
 from __future__ import annotations
@@ -165,7 +174,7 @@ async def _delete_paperclip_company_call(company_id: str) -> None:
     http = httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0)
     try:
         admin = PaperclipAdminClient(http_client=http)
-        cookie = await get_admin_session_cookie(admin._http)
+        cookie = await get_admin_session_cookie(http)
         await admin.delete_company(session_cookie=cookie, company_id=company_id)
     finally:
         await http.aclose()
@@ -446,12 +455,18 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str) -> WipeReport:
 
     await _step(steps, system="efs_workspace_dir", action="delete_user_dir", fn=_s4)
 
-    # --- Steps 5-6 (spec #6-7 folded): Bedrock AIPs -----------------------
+    # --- Step 5 (spec #6-7 folded): Bedrock AIPs ---------------------------
+    # Pass the pre-fetched ARNs explicitly (from the identifier snapshot
+    # taken at the top of this function) rather than letting delete_owner_aips
+    # re-read the containers row: step 3 above (ecs_service) already deleted
+    # that row as a side effect of ecs_manager.delete_user_service, so a live
+    # re-read here would see nothing and silently no-op -- orphaning the
+    # Bedrock inference profile + reverse row while still reporting "ok".
     bedrock_aip_arns: dict = (ids.container or {}).get("bedrock_aip_arns") or {}
     if bedrock_aip_arns:
 
-        async def _s5() -> str:
-            removed = await delete_owner_aips(owner_id)
+        async def _s5(arns: list[str] = list(bedrock_aip_arns.values())) -> str:
+            removed = await delete_owner_aips(owner_id, aip_arns=arns)
             return f"removed {len(removed)} AIP(s): {', '.join(removed)}"
 
         await _step(steps, system="bedrock_aips", action="delete_owner_aips", fn=_s5)

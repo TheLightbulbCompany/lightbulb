@@ -203,7 +203,10 @@ async def test_wipe_account_runs_steps_in_spec_order(wipe_mocks):
     )
     wipe_mocks.ecs_manager_stub.delete_user_service.assert_awaited_once_with(OWNER_ID)
     wipe_mocks.workspace_stub.delete_user_dir.assert_called_once_with(OWNER_ID)
-    wipe_mocks.bedrock_aips_delete.assert_awaited_once_with(OWNER_ID)
+    wipe_mocks.bedrock_aips_delete.assert_awaited_once_with(
+        OWNER_ID,
+        aip_arns=["arn:aws:bedrock:us-east-1:877352799272:inference-profile/sonnet-aip"],
+    )
     wipe_mocks.bedrock_role_delete.assert_awaited_once_with(OWNER_ID)
     wipe_mocks.metronome_archive.assert_awaited_once_with("met_abc123")
     wipe_mocks.stripe_delete.assert_awaited_once_with(OWNER_ID)
@@ -212,6 +215,44 @@ async def test_wipe_account_runs_steps_in_spec_order(wipe_mocks):
     wipe_mocks.billing_delete.assert_awaited_once_with(OWNER_ID)
     wipe_mocks.user_delete.assert_awaited_once_with(OWNER_ID)
     wipe_mocks.clerk_delete.assert_awaited_once_with(OWNER_ID)
+
+
+@pytest.mark.asyncio
+async def test_bedrock_aips_step_passes_prefetched_arns_not_a_live_reread(wipe_mocks):
+    """Regression test for the containers-row-deletion ordering hazard: the
+    `ecs_service` step (step 3) deletes the containers row as a side effect
+    of ecs_manager.delete_user_service, and the LATER `bedrock_aips` step
+    (step 5) used to call bedrock_aip.delete_owner_aips(owner_id) with no
+    ARNs, which internally re-read the (by-then-deleted) containers row via
+    read_owner_aips, found nothing, and silently no-op'd while still
+    reporting status="ok" -- orphaning the Bedrock inference profile + the
+    bedrock-aip-owners reverse row on every real wipe.
+
+    The fix: pass the ARNs already captured in the upfront identifier
+    snapshot (`ids.container["bedrock_aip_arns"]`) explicitly via the
+    `aip_arns=` kwarg, so the bedrock_aips step is fully independent of
+    whether a prior step already deleted the containers row."""
+    report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
+
+    by_system = {s.system: s for s in report.steps}
+    assert by_system["bedrock_aips"].status == "ok"
+
+    # The call MUST carry aip_arns= populated from the pre-fetched snapshot
+    # -- not a bare owner_id call that would force delete_owner_aips to fall
+    # back to its own (now-stale-by-ordering) containers-row re-read.
+    wipe_mocks.bedrock_aips_delete.assert_awaited_once_with(
+        OWNER_ID,
+        aip_arns=["arn:aws:bedrock:us-east-1:877352799272:inference-profile/sonnet-aip"],
+    )
+    call = wipe_mocks.bedrock_aips_delete.await_args
+    assert "aip_arns" in call.kwargs, "delete_owner_aips must be called with the aip_arns kwarg, not rely on a re-read"
+    assert call.kwargs["aip_arns"], "aip_arns must be populated (non-empty) from the identifier snapshot"
+
+    # container_repo.get_by_owner_id is read exactly ONCE for the whole wipe
+    # (the upfront identifier snapshot in _read_identifiers) -- the
+    # bedrock_aips step does not trigger a second read of the containers row,
+    # proving it isn't depending on that row still being present.
+    wipe_mocks.container_get.assert_awaited_once_with(OWNER_ID)
 
 
 @pytest.mark.asyncio

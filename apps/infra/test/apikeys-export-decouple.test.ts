@@ -14,26 +14,13 @@ import { ServiceStack } from "../lib/stacks/service-stack";
  * the table, so the service stack no longer imports its ARN via
  * grantReadWriteData.
  *
- * These tests lock in the invariants that make dropping the import safe — the
- * same pattern proven for the connections/oauth-state retirement:
- *  1. The database stack still publishes BOTH auto-generated api-keys exports
- *     (Arn via GetAtt, and the table name via Ref) under their EXACT existing
- *     names. CloudFormation refuses to delete an export another stack still
- *     imports, so the export must outlive the import-removal deploy (Pass-1).
- *  2. The service stack grants the Paperclip agent keys via a scoped
- *     Secrets Manager statement (the api-keys replacement) and no longer
- *     imports the api-keys table ARN.
- *
- * The export names are the live names published by isol8-<env>-database,
- * verified against the exportValue calls pinned in database-stack.ts. The
- * database stack is named `isol8-<env>-database` here so `this.stackName`
- * resolves to those names.
+ * Pass-1 (this test file's original assertions) proved the export-pin +
+ * import-removal split was safe. Pass-2 (2026-07-14) deleted the table and
+ * its pinned exports outright — nothing imports them anymore. These tests
+ * now lock in that the table and its exports are GONE, alongside the
+ * still-live invariant that the service stack grants the Paperclip
+ * agent-keys Secrets Manager path instead.
  */
-
-const API_KEYS_ARN_EXPORT = (env: string) =>
-  `isol8-${env}-database:ExportsOutputFnGetAttApiKeysTable9F4DC7E7ArnE84F3BB0`;
-const API_KEYS_REF_EXPORT = (env: string) =>
-  `isol8-${env}-database:ExportsOutputRefApiKeysTable9F4DC7E79648F444`;
 
 function build(environment: "dev" | "prod"): {
   database: Template;
@@ -144,18 +131,19 @@ describe.each(["dev", "prod"] as const)(
       ({ database, service } = build(environment));
     });
 
-    test("database stack retains the api-keys ARN export under its exact live name", () => {
-      database.hasOutput("*", {
-        Export: { Name: API_KEYS_ARN_EXPORT(environment) },
-        Value: { "Fn::GetAtt": ["ApiKeysTable9F4DC7E7", "Arn"] },
-      });
+    test("database stack no longer publishes any api-keys export", () => {
+      const outputs = database.toJSON().Outputs ?? {};
+      const apiKeysOutputKeys = Object.keys(outputs).filter((key) =>
+        key.includes("ApiKeysTable"),
+      );
+      expect(apiKeysOutputKeys).toEqual([]);
     });
 
-    test("database stack retains the api-keys Ref (table-name) export under its exact live name", () => {
-      database.hasOutput("*", {
-        Export: { Name: API_KEYS_REF_EXPORT(environment) },
-        Value: { Ref: "ApiKeysTable9F4DC7E7" },
+    test("database stack no longer defines an api-keys table", () => {
+      const resources = database.findResources("AWS::DynamoDB::Table", {
+        Properties: { TableName: `isol8-${environment}-api-keys` },
       });
+      expect(Object.keys(resources)).toEqual([]);
     });
 
     test("service task role grants paperclip-agent-keys secrets (the api-keys replacement)", () => {

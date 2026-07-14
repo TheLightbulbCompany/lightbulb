@@ -14,20 +14,17 @@ import { ServiceStack } from "../lib/stacks/service-stack";
  * An export that another stack imports cannot be deleted, which is what blocked
  * renaming/replacing the table (the 2026-05-31 incident).
  *
- * These tests lock in the two invariants that make the export retirement safe:
- *  1. The database stack still publishes the two auto-generated ARN exports
- *     under their EXACT existing names (so the deploy that drops the import does
- *     not try to delete an in-use export — CloudFormation would refuse).
- *  2. The service stack grants the tables by name and no longer imports either
- *     ARN export.
+ * The `connections` (credential-vault) table itself was retired 2026-07-14 —
+ * it had no remaining consumers, so the table and its pinned ARN export were
+ * deleted outright. `oauth-state` is still live: this file continues to lock
+ * in that its ARN export is pinned under its exact existing name, and that the
+ * service stack grants it by name rather than importing the export.
  *
- * The export names are the live names published by isol8-<env>-database,
+ * The export name is the live name published by isol8-<env>-database,
  * verified against deployed CloudFormation. The database stack is named
- * `isol8-<env>-database` here so `this.stackName` resolves to those names.
+ * `isol8-<env>-database` here so `this.stackName` resolves to that name.
  */
 
-const CONNECTIONS_ARN_EXPORT = (env: string) =>
-  `isol8-${env}-database:ExportsOutputFnGetAttConnectionsTable8000B8A1Arn6FD6777C`;
 const OAUTH_STATE_ARN_EXPORT = (env: string) =>
   `isol8-${env}-database:ExportsOutputFnGetAttOauthStateTable1D8479B9Arn3B610B82`;
 
@@ -140,14 +137,18 @@ describe.each(["dev", "prod"] as const)(
       ({ database, service } = build(environment));
     });
 
-    test("database stack retains the connections ARN export under its exact live name (literal, not GetAtt — the table is gone)", () => {
-      // Pinned with a literal ARN (Fn::Join over region/account) rather than
-      // Fn::GetAtt, because the connections table was deleted out-of-band and a
-      // GetAtt would fail at deploy time. The literal must end in the table name.
-      database.hasOutput("*", {
-        Export: { Name: CONNECTIONS_ARN_EXPORT(environment) },
-        Value: `arn:aws:dynamodb:us-east-1:877352799272:table/isol8-${environment}-connections`,
-      });
+    test("database stack no longer publishes the connections (credential-vault) ARN export or table", () => {
+      const outputs = database.toJSON().Outputs ?? {};
+      const connectionsOutputKeys = Object.keys(outputs).filter((key) =>
+        key.includes("ConnectionsTable"),
+      );
+      expect(connectionsOutputKeys).toEqual([]);
+
+      const connectionsResources = database.findResources(
+        "AWS::DynamoDB::Table",
+        { Properties: { TableName: `isol8-${environment}-connections` } },
+      );
+      expect(Object.keys(connectionsResources)).toEqual([]);
     });
 
     test("database stack retains the oauth-state ARN export under its exact live name", () => {
@@ -157,7 +158,7 @@ describe.each(["dev", "prod"] as const)(
       });
     });
 
-    test("service task role grants connections + oauth-state by name", () => {
+    test("service task role grants oauth-state by name", () => {
       service.hasResourceProperties("AWS::IAM::Policy", {
         PolicyDocument: {
           Statement: Match.arrayWith([
@@ -166,7 +167,6 @@ describe.each(["dev", "prod"] as const)(
         },
       });
       const json = JSON.stringify(service.toJSON());
-      expect(json).toContain(`:table/isol8-${environment}-connections`);
       expect(json).toContain(`:table/isol8-${environment}-oauth-state`);
     });
 

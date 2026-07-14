@@ -25,7 +25,6 @@ export class DatabaseStack extends cdk.Stack {
   public readonly usersTable: dynamodb.Table;
   public readonly containersTable: dynamodb.Table;
   public readonly billingTable: dynamodb.Table;
-  public readonly apiKeysTable: dynamodb.Table;
   public readonly usageCountersTable: dynamodb.Table;
   public readonly pendingUpdatesTable: dynamodb.Table;
   public readonly channelLinksTable: dynamodb.Table;
@@ -34,7 +33,6 @@ export class DatabaseStack extends cdk.Stack {
   public readonly metronomeFastGateTable: dynamodb.Table;
   public readonly bedrockAipOwnersTable: dynamodb.Table;
   public readonly oauthTokensTable: dynamodb.Table;
-  public readonly connectionsTable: dynamodb.Table;
   public readonly oauthStateTable: dynamodb.Table;
   public readonly integrationsTable: dynamodb.Table;
   public readonly paperclipCompaniesTable: dynamodb.Table;
@@ -111,17 +109,6 @@ export class DatabaseStack extends cdk.Stack {
     this.billingTable.addGlobalSecondaryIndex({
       indexName: "stripe-customer-index",
       partitionKey: { name: "stripe_customer_id", type: dynamodb.AttributeType.STRING },
-    });
-
-    this.apiKeysTable = new dynamodb.Table(this, "ApiKeysTable", {
-      tableName: `isol8-${env}-api-keys`,
-      partitionKey: { name: "user_id", type: dynamodb.AttributeType.STRING },
-      sortKey: { name: "tool_id", type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: config.removalPolicy,
-      pointInTimeRecovery: true,
-      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
-      encryptionKey: props.kmsKey,
     });
 
     this.usageCountersTable = new dynamodb.Table(this, "UsageCountersTable", {
@@ -224,47 +211,9 @@ export class DatabaseStack extends cdk.Stack {
       exportName: `${this.stackName}-admin-actions-table`,
     });
 
-    // Pass-1 of the credits-ledger export retirement. The backend no longer
-    // uses these tables (Metronome is the only biller), but their
-    // auto-generated Arn + Ref exports are imported by the LIVE service
-    // stack, and CloudFormation refuses to delete an in-use export — the
-    // database stack deploys BEFORE the service stack drops the imports, so
-    // deleting table + import in one deploy rolls the database stack back.
-    // Keep the tables and pin all four exports under their existing names
-    // until the import-free service stack is deployed; the deferred Pass-2
-    // deploy removes the tables and these retentions together (prod tables
-    // are RETAIN and become manually-deleted orphans at that point).
-    const creditsTable = new dynamodb.Table(this, "CreditsTable", {
-      tableName: `isol8-${env}-credits`,
-      partitionKey: { name: "user_id", type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: config.removalPolicy,
-      pointInTimeRecovery: true,
-      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
-      encryptionKey: props.kmsKey,
-    });
-    const creditTransactionsTable = new dynamodb.Table(this, "CreditTransactionsTable", {
-      tableName: `isol8-${env}-credit-transactions`,
-      partitionKey: { name: "user_id", type: dynamodb.AttributeType.STRING },
-      sortKey: { name: "tx_id", type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: config.removalPolicy,
-      pointInTimeRecovery: true,
-      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
-      encryptionKey: props.kmsKey,
-    });
-    this.exportValue(creditsTable.tableArn, {
-      name: `${this.stackName}:ExportsOutputFnGetAttCreditsTable13AC5EA8ArnB299C72C`,
-    });
-    this.exportValue(creditsTable.tableName, {
-      name: `${this.stackName}:ExportsOutputRefCreditsTable13AC5EA80B87C786`,
-    });
-    this.exportValue(creditTransactionsTable.tableArn, {
-      name: `${this.stackName}:ExportsOutputFnGetAttCreditTransactionsTable72EF769AArn60F8FDA5`,
-    });
-    this.exportValue(creditTransactionsTable.tableName, {
-      name: `${this.stackName}:ExportsOutputRefCreditTransactionsTable72EF769A0289C51E`,
-    });
+    // The DDB credit ledger (credits + credit-transactions tables) was
+    // retired 2026-07-14 — Metronome is the sole biller and these tables
+    // had no remaining consumers.
 
     // Metronome local fast-gate flag. A disposable per-owner projection of
     // Metronome balance that the SYNCHRONOUS chat gate reads, since
@@ -308,19 +257,6 @@ export class DatabaseStack extends cdk.Stack {
       pointInTimeRecovery: true,
       encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
       encryptionKey: props.kmsKey,
-    });
-
-    // Credential vault — mirrors oauthTokensTable (CMK at rest) + a `provider` sort key.
-    // Stored payloads are ALSO Fernet-encrypted app-side; KMS-at-rest is the separate snapshot layer.
-    this.connectionsTable = new dynamodb.Table(this, "ConnectionsTable", {
-      tableName: `isol8-${env}-connections`,
-      partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
-      sortKey: { name: "provider", type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
-      encryptionKey: props.kmsKey,
-      pointInTimeRecovery: true,
-      removalPolicy: config.removalPolicy,
     });
 
     // Short-lived OAuth dance state (PKCE verifier + state nonce). TTL'd, CMK, DESTROY (mirrors the webhook-event-dedup table).
@@ -384,46 +320,19 @@ export class DatabaseStack extends cdk.Stack {
       value: this.oauthTokensTable.tableName,
       exportName: `${this.stackName}-oauth-tokens-table`,
     });
-    new cdk.CfnOutput(this, "ConnectionsTableName", {
-      value: this.connectionsTable.tableName,
-      exportName: `${this.stackName}-connections-table`,
-    });
     new cdk.CfnOutput(this, "OauthStateTableName", {
       value: this.oauthStateTable.tableName,
       exportName: `${this.stackName}-oauth-state-table`,
     });
-    // Retain the auto-generated ARN exports the backend service stack used to
-    // import via grantReadWriteData. The service stack now grants these tables
-    // by name, so it no longer imports the ARNs — but CloudFormation refuses to
-    // delete an export while the not-yet-updated consumer still imports it.
-    // Pinning the exports under their existing names keeps them this deploy (no
-    // delete attempted); a later deploy removes them once nothing imports them.
-    //
-    // connections is pinned with a LITERAL ARN, not Fn::GetAtt: the table was
-    // deleted out-of-band (the 2026-05-31 incident), so the resource is still in
-    // CFN state but GetAtt on it fails at deploy-time evaluation ("table does
-    // not exist") — which synth cannot catch. The literal equals the cached
-    // export value, so the service-import transition is unaffected. oauth-state
-    // still exists, so its ARN export is pinned the normal (GetAtt) way.
-    new cdk.CfnOutput(this, "ConnectionsArnExportPin", {
-      value: `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${env}-connections`,
-      exportName: `${this.stackName}:ExportsOutputFnGetAttConnectionsTable8000B8A1Arn6FD6777C`,
-    });
+    // Retain the auto-generated ARN export the backend service stack used to
+    // import via grantReadWriteData for oauth-state. The service stack now
+    // grants this table by name, so it no longer imports the ARN — but
+    // CloudFormation refuses to delete an export while the not-yet-updated
+    // consumer still imports it. Pinning the export under its existing name
+    // keeps it this deploy (no delete attempted); a later deploy removes it
+    // once nothing imports it.
     this.exportValue(this.oauthStateTable.tableArn, {
       name: `${this.stackName}:ExportsOutputFnGetAttOauthStateTable1D8479B9Arn3B610B82`,
-    });
-    // Pass-1 of the api-keys export retirement (credential-layer redesign
-    // Phase 3). The backend no longer uses this table — secrets moved to
-    // Secrets Manager. Two stacks imported it: the service stack (Arn, via
-    // grantReadWriteData) and the observability stack (Ref, the table name).
-    // Pin BOTH exports under their existing names so removing those imports
-    // does not try to delete an in-use export. Removed with the table in the
-    // deferred Pass-2 deploy.
-    this.exportValue(this.apiKeysTable.tableArn, {
-      name: `${this.stackName}:ExportsOutputFnGetAttApiKeysTable9F4DC7E7ArnE84F3BB0`,
-    });
-    this.exportValue(this.apiKeysTable.tableName, {
-      name: `${this.stackName}:ExportsOutputRefApiKeysTable9F4DC7E79648F444`,
     });
     new cdk.CfnOutput(this, "PaperclipCompaniesTableName", {
       value: this.paperclipCompaniesTable.tableName,

@@ -146,4 +146,50 @@ def test_submit_captures_analytics_event(client, monkeypatch):
     capture.assert_called_once()
     kwargs = capture.call_args.kwargs
     assert kwargs["event"] == "first_run_brief_submitted"
-    assert kwargs["properties"] == {"path": "grow"}
+    assert kwargs["properties"] == {"path": "grow", "no_idea": False}
+
+
+# --- "I don't know yet — you pick": submit with no input ---------------------
+
+
+def test_new_path_without_input_stages_a_pick_one_brief(client):
+    """The absent idea IS the signal — Friday is told to choose one."""
+    resp = client.post("/api/v1/onboarding/brief", json={"path": "new"})
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "staged"
+
+    brief = client.ws.write_file_if_missing.call_args.args[2]
+    assert "don't have an\n  idea yet" in brief
+    assert "job zero" in brief
+    # Her only lead is who they are — the brief must still carry it.
+    assert "max@acme.com" in brief
+
+
+def test_new_path_with_blank_input_is_treated_as_no_idea(client):
+    """A client posting "" must not produce a brief quoting an empty string."""
+    resp = client.post("/api/v1/onboarding/brief", json={"path": "new", "input": "   "})
+    assert resp.status_code == 200
+
+    brief = client.ws.write_file_if_missing.call_args.args[2]
+    assert "job zero" in brief
+
+
+def test_no_idea_submit_is_flagged_in_analytics(client, monkeypatch):
+    capture = MagicMock()
+    monkeypatch.setattr(onboarding_mod, "capture_product_event", capture)
+    resp = client.post("/api/v1/onboarding/brief", json={"path": "new"})
+    assert resp.status_code == 200
+    assert capture.call_args.kwargs["properties"] == {"path": "new", "no_idea": True}
+
+
+def test_grow_path_still_requires_input(client):
+    """Only `new` may omit the idea — a grow brief with no website is useless."""
+    resp = client.post("/api/v1/onboarding/brief", json={"path": "grow"})
+    assert resp.status_code == 422
+    client.ws.write_file_if_missing.assert_not_called()
+
+
+def test_too_short_input_still_rejected(client):
+    resp = client.post("/api/v1/onboarding/brief", json={"path": "new", "input": "ab"})
+    assert resp.status_code == 422
+    client.ws.write_file_if_missing.assert_not_called()

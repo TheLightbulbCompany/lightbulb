@@ -46,6 +46,32 @@ def test_render_brief_md_omits_detail_line_when_none():
     assert "Extra detail" not in md
 
 
+def test_render_brief_md_no_idea_tells_friday_to_pick_one():
+    """The "you pick" button sends no input; the absence is the instruction."""
+    md = render_brief_md(
+        path="new",
+        user_input=None,
+        detail=None,
+        display_name="Prabuddha",
+        email="prabuddha@gmail.com",
+    )
+    assert "job zero" in md
+    # She must know she has a lead (the email) and a way to follow it.
+    assert "prabuddha@gmail.com" in md
+    assert "web_search" in md
+    # Committing beats stalling — the run has to complete if they tab away.
+    assert "do not stall" in md
+    # Never render a Python None into the brief.
+    assert "None" not in md
+
+
+def test_render_first_run_bootstrap_tells_friday_to_pick_when_no_idea():
+    md = render_first_run_bootstrap(first_name="Max")
+    assert "no idea yet" in md
+    # The pick happens BEFORE the research step, not after.
+    assert md.index("picking one is your first job") < md.index("Understand the business")
+
+
 def test_render_first_run_bootstrap_researches_before_proposing_tasks():
     md = render_first_run_bootstrap(first_name="Max")
     assert "BRIEF.md" in md

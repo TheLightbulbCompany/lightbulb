@@ -18,12 +18,13 @@ distinct side-effect.
 """
 
 import logging
+import time
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from core.auth import AuthContext, require_platform_admin
+from core.auth import AuthContext, is_org_owner_id, require_platform_admin
 from core.containers import get_ecs_manager, get_gateway_pool
 from core.repositories import (  # noqa: F401 — admin_actions_repo is patch target for tests
     admin_actions_repo,
@@ -748,6 +749,15 @@ async def admin_wipe_execute(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
+    # Refuse org owners up front — before the email match — so a direct API
+    # caller gets the documented org_wipe_unsupported, not a misleading
+    # email_mismatch. (resolve_account_emails can't produce a matching email
+    # for an org id: clerk_admin.get_user 404s on org_... and there's no users
+    # row, so the match below would always fail first. preview_wipe already
+    # refuses orgs before anything else; mirror that here.)
+    if is_org_owner_id(owner_id):
+        raise HTTPException(status_code=400, detail="org_wipe_unsupported")
+
     # Authoritative email(s) from Clerk (the users-row email is written by an
     # unreliable webhook — see resolve_account_emails). The typed confirm must
     # match one of them, case-insensitively; never trusted from the client alone.
@@ -756,12 +766,14 @@ async def admin_wipe_execute(
     if not typed or not any(typed == e.strip().lower() for e in account_emails):
         raise HTTPException(status_code=400, detail="email_mismatch")
 
+    started = time.monotonic()
     try:
         report = await wipe_account(owner_id, actor_admin_id=auth.user_id, account_emails=account_emails)
     except OrgWipeUnsupportedError:
         raise HTTPException(status_code=400, detail="org_wipe_unsupported")
     except BootstrapAccountProtectedError:
         raise HTTPException(status_code=400, detail="bootstrap_account_protected")
+    elapsed_ms = int((time.monotonic() - started) * 1000)
 
     report_dict = report.to_dict()
     has_failures = any(step["status"] == "failed" for step in report_dict["steps"])
@@ -775,7 +787,7 @@ async def admin_wipe_execute(
             result="partial_failure" if has_failures else "success",
             audit_status="written",
             http_status=200,
-            elapsed_ms=0,
+            elapsed_ms=elapsed_ms,
             error_message=None,
             user_agent=request.headers.get("user-agent", "unknown"),
             ip=request.headers.get("x-forwarded-for", "").split(",")[0].strip()

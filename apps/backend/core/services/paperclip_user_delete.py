@@ -79,7 +79,7 @@ async def delete_paperclip_user(*, paperclip_user_id: str, email: str, env: str)
     credentials, etc.) propagates so the wipe orchestrator's per-step
     try/except can record it as failed.
     """
-    if email in BOOTSTRAP_EMAILS:
+    if email.strip().lower() in BOOTSTRAP_EMAILS:
         raise BootstrapUserProtectedError(
             f"Refusing to delete Paperclip user {paperclip_user_id}: {email} is a bootstrap admin."
         )

@@ -250,21 +250,26 @@ class TestWipeExecute:
         mock_audit_repo.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_org_owner_returns_400(self, async_client, admin_env, mock_audit_repo):
+    async def test_org_owner_returns_400_before_email_or_wipe(self, async_client, admin_env, mock_audit_repo):
+        """Org owners are refused up front by is_org_owner_id — before the email
+        match and before wipe_account. This exercises the REAL org_-prefix path
+        (no resolve_account_emails mock returning a matching email): Clerk has no
+        record for an org id, so resolve_account_emails would return [] and,
+        without the up-front check, the request would wrongly 400 email_mismatch
+        instead of the documented org_wipe_unsupported."""
         with (
-            patch("routers.admin.resolve_account_emails", new=AsyncMock(return_value=["owner@example.com"])),
-            patch(
-                "routers.admin.wipe_account",
-                new=AsyncMock(side_effect=OrgWipeUnsupportedError("org_target")),
-            ) as mock_wipe,
+            patch("routers.admin.resolve_account_emails", new=AsyncMock()) as mock_resolve,
+            patch("routers.admin.wipe_account", new=AsyncMock()) as mock_wipe,
         ):
             res = await async_client.post(
                 "/api/v1/admin/users/org_target/wipe",
-                json={"confirm_email": "owner@example.com"},
+                json={"confirm_email": "anything@example.com"},
             )
         assert res.status_code == 400
         assert res.json()["detail"] == "org_wipe_unsupported"
-        mock_wipe.assert_awaited_once()
+        # Refused before either the email resolution or the teardown ran.
+        mock_resolve.assert_not_awaited()
+        mock_wipe.assert_not_awaited()
         # No audit row for a rejected wipe -- nothing was actually executed.
         mock_audit_repo.assert_not_awaited()
 

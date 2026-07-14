@@ -62,7 +62,17 @@ class TestDeletePaperclipUser:
         assert kwargs["resourceArn"] == "arn:aws:rds:us-east-1:877352799272:cluster:isol8-prod-paperclip-db"
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("bootstrap_email", ["admin@isol8.co", "admin+paperclip@isol8.co"])
+    @pytest.mark.parametrize(
+        "bootstrap_email",
+        [
+            "admin@isol8.co",
+            "admin+paperclip@isol8.co",
+            # Case/whitespace variants — the guard normalizes (strip().lower())
+            # so a differently-cased bootstrap email can't slip past a direct call.
+            "Admin@Isol8.co",
+            "  admin@isol8.co  ",
+        ],
+    )
     async def test_refuses_bootstrap_emails(self, monkeypatch, bootstrap_email):
         rds = MagicMock()
         sm = MagicMock()

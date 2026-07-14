@@ -67,7 +67,9 @@ export function FirstRunFunnel() {
           const status = (resp as { status?: string } | null)?.status;
           if (status === "staged" || status === "already_submitted") {
             await writeFirstRun(user, { briefSubmitted: true, path: path ?? undefined });
-            capture("first_run_brief_submitted", { path, noIdea });
+            // snake_case to match both the repo's property convention and the
+            // backend's emission of this same event name.
+            capture("first_run_brief_submitted", { path, no_idea: noIdea });
             return;
           }
           if (attempt < MAX_RETRIES) {

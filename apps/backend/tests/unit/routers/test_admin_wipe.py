@@ -9,8 +9,9 @@ Endpoints under test:
 
 The orchestrator (core/services/account_wipe.py, Task 3) does NOT write the
 admin-actions audit row -- the router does, on the execute endpoint only.
-The email match is server-side (looked up from the owner's `users` row),
-never trusted from the client body.
+The email match is server-side (resolved Clerk-first via
+resolve_account_emails), matched case-insensitively, never trusted from the
+client body.
 """
 
 import os
@@ -19,7 +20,12 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from core.auth import AuthContext, get_current_user
-from core.services.account_wipe import OrgWipeUnsupportedError, WipeReport, WipeStep
+from core.services.account_wipe import (
+    BootstrapAccountProtectedError,
+    OrgWipeUnsupportedError,
+    WipeReport,
+    WipeStep,
+)
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
@@ -127,7 +133,7 @@ class TestWipeExecute:
     async def test_matching_email_executes_and_writes_audit_row(self, async_client, admin_env, mock_audit_repo):
         report = _sample_report(dry_run=False)
         with (
-            patch("routers.admin.user_repo.get", new=AsyncMock(return_value={"email": "owner@example.com"})),
+            patch("routers.admin.resolve_account_emails", new=AsyncMock(return_value=["owner@example.com"])),
             patch("routers.admin.wipe_account", new=AsyncMock(return_value=report)) as mock_wipe,
         ):
             res = await async_client.post(
@@ -136,7 +142,11 @@ class TestWipeExecute:
             )
         assert res.status_code == 200
         assert res.json() == report.to_dict()
-        mock_wipe.assert_awaited_once_with("user_target", actor_admin_id="admin_1")
+        # Router threads the pre-resolved emails into wipe_account so it doesn't
+        # re-call Clerk.
+        mock_wipe.assert_awaited_once_with(
+            "user_target", actor_admin_id="admin_1", account_emails=["owner@example.com"]
+        )
 
         mock_audit_repo.assert_awaited_once()
         kwargs = mock_audit_repo.await_args.kwargs
@@ -148,7 +158,7 @@ class TestWipeExecute:
     @pytest.mark.asyncio
     async def test_mismatched_email_400_and_no_wipe(self, async_client, admin_env, mock_audit_repo):
         with (
-            patch("routers.admin.user_repo.get", new=AsyncMock(return_value={"email": "owner@example.com"})),
+            patch("routers.admin.resolve_account_emails", new=AsyncMock(return_value=["owner@example.com"])),
             patch("routers.admin.wipe_account", new=AsyncMock()) as mock_wipe,
         ):
             res = await async_client.post(
@@ -161,11 +171,53 @@ class TestWipeExecute:
         mock_audit_repo.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_missing_account_email_400_and_no_wipe(self, async_client, admin_env, mock_audit_repo):
-        """No users row / no email on file -- can never match, so refuse rather
-        than silently allowing an empty confirm_email through."""
+    async def test_case_insensitive_email_match_executes(self, async_client, admin_env, mock_audit_repo):
+        """Typed confirm differs only in case from a stored address -> matches
+        and executes (the match is case-insensitive on both sides)."""
+        report = _sample_report(dry_run=False)
         with (
-            patch("routers.admin.user_repo.get", new=AsyncMock(return_value=None)),
+            patch("routers.admin.resolve_account_emails", new=AsyncMock(return_value=["owner@example.com"])),
+            patch("routers.admin.wipe_account", new=AsyncMock(return_value=report)) as mock_wipe,
+        ):
+            res = await async_client.post(
+                "/api/v1/admin/users/user_target/wipe",
+                json={"confirm_email": "Owner@Example.com"},
+            )
+        assert res.status_code == 200
+        mock_wipe.assert_awaited_once_with(
+            "user_target", actor_admin_id="admin_1", account_emails=["owner@example.com"]
+        )
+        mock_audit_repo.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_clerk_authoritative_email_executes_when_users_row_has_none(
+        self, async_client, admin_env, mock_audit_repo
+    ):
+        """resolve_account_emails is Clerk-first: even when the users DDB row
+        has no email, the Clerk-sourced address is authoritative for the match,
+        so a wipe that would 400 under the old users-row-only lookup executes."""
+        report = _sample_report(dry_run=False)
+        with (
+            patch("routers.admin.resolve_account_emails", new=AsyncMock(return_value=["clerk-only@example.com"])),
+            patch("routers.admin.wipe_account", new=AsyncMock(return_value=report)) as mock_wipe,
+        ):
+            res = await async_client.post(
+                "/api/v1/admin/users/user_target/wipe",
+                json={"confirm_email": "clerk-only@example.com"},
+            )
+        assert res.status_code == 200
+        mock_wipe.assert_awaited_once_with(
+            "user_target", actor_admin_id="admin_1", account_emails=["clerk-only@example.com"]
+        )
+        mock_audit_repo.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_missing_account_email_400_and_no_wipe(self, async_client, admin_env, mock_audit_repo):
+        """No email resolvable (Clerk stubbed + no users row) -- can never
+        match, so refuse rather than silently allowing an empty confirm_email
+        through."""
+        with (
+            patch("routers.admin.resolve_account_emails", new=AsyncMock(return_value=[])),
             patch("routers.admin.wipe_account", new=AsyncMock()) as mock_wipe,
         ):
             res = await async_client.post(
@@ -177,9 +229,30 @@ class TestWipeExecute:
         mock_audit_repo.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_bootstrap_account_refused_400_and_no_audit(self, async_client, admin_env, mock_audit_repo):
+        """A bootstrap Paperclip admin account -> wipe_account raises
+        BootstrapAccountProtectedError, which the router maps to 400
+        bootstrap_account_protected. No audit row for a refused wipe."""
+        with (
+            patch("routers.admin.resolve_account_emails", new=AsyncMock(return_value=["admin@isol8.co"])),
+            patch(
+                "routers.admin.wipe_account",
+                new=AsyncMock(side_effect=BootstrapAccountProtectedError("user_target")),
+            ) as mock_wipe,
+        ):
+            res = await async_client.post(
+                "/api/v1/admin/users/user_target/wipe",
+                json={"confirm_email": "admin@isol8.co"},
+            )
+        assert res.status_code == 400
+        assert res.json()["detail"] == "bootstrap_account_protected"
+        mock_wipe.assert_awaited_once()
+        mock_audit_repo.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_org_owner_returns_400(self, async_client, admin_env, mock_audit_repo):
         with (
-            patch("routers.admin.user_repo.get", new=AsyncMock(return_value={"email": "owner@example.com"})),
+            patch("routers.admin.resolve_account_emails", new=AsyncMock(return_value=["owner@example.com"])),
             patch(
                 "routers.admin.wipe_account",
                 new=AsyncMock(side_effect=OrgWipeUnsupportedError("org_target")),
@@ -215,7 +288,7 @@ class TestWipeExecute:
         failure, and still audits it."""
         report = _sample_report(dry_run=False, failed=True)
         with (
-            patch("routers.admin.user_repo.get", new=AsyncMock(return_value={"email": "owner@example.com"})),
+            patch("routers.admin.resolve_account_emails", new=AsyncMock(return_value=["owner@example.com"])),
             patch("routers.admin.wipe_account", new=AsyncMock(return_value=report)),
         ):
             res = await async_client.post(

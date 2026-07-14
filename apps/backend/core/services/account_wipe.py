@@ -73,11 +73,50 @@ from core.services import clerk_admin
 from core.services.billing_service import delete_stripe_customer
 from core.services.paperclip_admin_client import PaperclipAdminClient
 from core.services.paperclip_admin_session import get_admin_session_cookie
-from core.services.paperclip_user_delete import delete_paperclip_user
+from core.services.paperclip_user_delete import BOOTSTRAP_EMAILS, delete_paperclip_user
 
 logger = logging.getLogger(__name__)
 
 WipeStatus = Literal["ok", "skipped", "failed", "would_delete"]
+
+
+class BootstrapAccountProtectedError(Exception):
+    """Raised up front (before any teardown step) by preview_wipe/wipe_account when
+    the target account's email is a bootstrap Paperclip admin identity
+    (admin@isol8.co / admin+paperclip@isol8.co). Deleting either breaks the
+    PaperclipAdminClient bootstrap-admin session every provision depends on. The
+    router turns this into a 400."""
+
+    def __init__(self, owner_id: str):
+        super().__init__(f"Account wipe refuses bootstrap Paperclip admin account {owner_id!r}.")
+        self.owner_id = owner_id
+
+
+async def resolve_account_emails(owner_id: str) -> list[str]:
+    """Every email address known for the owner, Clerk first. Clerk is the source of
+    truth for the type-to-confirm match and the bootstrap refusal: the users DDB
+    row's email is written by an unreliable webhook and is frequently absent, so
+    matching against it alone can make a legitimate wipe impossible to confirm.
+    Falls back to the users-row email (deduped) when Clerk is unavailable
+    (e.g. CLERK_SECRET_KEY unset in local/test)."""
+    emails: list[str] = []
+    clerk_user = await clerk_admin.get_user(owner_id)
+    if clerk_user:
+        for e in clerk_user.get("email_addresses") or []:
+            addr = e.get("email_address")
+            if addr and addr not in emails:
+                emails.append(addr)
+    row = await user_repo.get(owner_id)
+    row_email = (row or {}).get("email")
+    if row_email and row_email not in emails:
+        emails.append(row_email)
+    return emails
+
+
+def _refuse_bootstrap_account(owner_id: str, emails: list[str]) -> None:
+    lowered = {e.lower() for e in emails}
+    if lowered & {b.lower() for b in BOOTSTRAP_EMAILS}:
+        raise BootstrapAccountProtectedError(owner_id)
 
 
 class OrgWipeUnsupportedError(Exception):
@@ -241,6 +280,7 @@ async def preview_wipe(owner_id: str) -> WipeReport:
     method — every read here is a GetItem/Query (or, for the EFS workspace
     directory, a filesystem existence check)."""
     _refuse_org_owners(owner_id)
+    _refuse_bootstrap_account(owner_id, await resolve_account_emails(owner_id))
 
     ids = await _read_identifiers(owner_id)
     steps: list[WipeStep] = []
@@ -374,7 +414,7 @@ async def preview_wipe(owner_id: str) -> WipeReport:
 # ---------------------------------------------------------------------------
 
 
-async def wipe_account(owner_id: str, *, actor_admin_id: str) -> WipeReport:
+async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: list[str] | None = None) -> WipeReport:
     """Execute the ordered teardown (design spec steps 1-12).
 
     ``actor_admin_id`` is not used for a delete decision here — it exists so
@@ -382,13 +422,21 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str) -> WipeReport:
     without threading it through every step. The router (Task 4) is the one
     that writes the admin-actions audit row with this id + the returned
     report.
+
+    ``account_emails`` may be pre-resolved by the caller (the router already
+    resolves them for the type-to-confirm match) to avoid a second Clerk call;
+    when None we resolve them here. Either way the bootstrap-admin refusal
+    fires up front, before any teardown step, off the Clerk-authoritative list.
     """
     _refuse_org_owners(owner_id)
+
+    emails = account_emails if account_emails is not None else await resolve_account_emails(owner_id)
+    _refuse_bootstrap_account(owner_id, emails)
 
     ids = await _read_identifiers(owner_id)
     steps: list[WipeStep] = []
 
-    email = (ids.user_row or {}).get("email", "")
+    email = emails[0] if emails else ""
     env = settings.ENVIRONMENT or "dev"
 
     logger.info(

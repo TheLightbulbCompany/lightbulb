@@ -19,10 +19,12 @@ import pytest
 
 from core.repositories.paperclip_repo import PaperclipCompany
 from core.services.account_wipe import (
+    BootstrapAccountProtectedError,
     OrgWipeUnsupportedError,
     WipeReport,
     WipeStep,
     preview_wipe,
+    resolve_account_emails,
     wipe_account,
 )
 from core.services.paperclip_user_delete import BootstrapUserProtectedError
@@ -106,6 +108,12 @@ def wipe_mocks():
     user_get = AsyncMock(return_value=_user_row())
     user_delete = AsyncMock(return_value=None)
 
+    # resolve_account_emails calls clerk_admin.get_user first. Default it to
+    # None (the CLERK_SECRET_KEY-unset / local-dev posture) so email resolution
+    # falls back to the users-row email -- a non-bootstrap address, so the
+    # up-front bootstrap guard is a no-op for every existing case.
+    clerk_get_user = AsyncMock(return_value=None)
+
     container_get = AsyncMock(return_value=_container_row())
 
     paperclip_get = AsyncMock(return_value=_paperclip_company())
@@ -142,6 +150,7 @@ def wipe_mocks():
     with (
         patch("core.services.account_wipe.user_repo.get", new=user_get),
         patch("core.services.account_wipe.user_repo.delete", new=user_delete),
+        patch("core.services.account_wipe.clerk_admin.get_user", new=clerk_get_user),
         patch("core.services.account_wipe.container_repo.get_by_owner_id", new=container_get),
         patch("core.services.account_wipe.PaperclipRepo", new=paperclip_repo_cls),
         patch("core.services.account_wipe.billing_repo.get_by_owner_id", new=billing_get),
@@ -160,6 +169,7 @@ def wipe_mocks():
         yield SimpleNamespace(
             user_get=user_get,
             user_delete=user_delete,
+            clerk_get_user=clerk_get_user,
             container_get=container_get,
             paperclip_get=paperclip_get,
             paperclip_row_delete=paperclip_row_delete,
@@ -488,6 +498,104 @@ async def test_preview_wipe_org_owner_raises(wipe_mocks):
     with pytest.raises(OrgWipeUnsupportedError):
         await preview_wipe("org_456")
     wipe_mocks.user_get.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# resolve_account_emails — Clerk-first, users-row fallback
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_account_emails_prefers_clerk_addresses(wipe_mocks):
+    """Clerk is authoritative: every Clerk email_address is returned first, in
+    order, and the users-row email is appended only if distinct."""
+    wipe_mocks.clerk_get_user.return_value = {
+        "email_addresses": [
+            {"email_address": "primary@clerk.com"},
+            {"email_address": "secondary@clerk.com"},
+        ]
+    }
+    wipe_mocks.user_get.return_value = _user_row(email="owner@example.com")
+
+    emails = await resolve_account_emails(OWNER_ID)
+
+    assert emails == ["primary@clerk.com", "secondary@clerk.com", "owner@example.com"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_account_emails_falls_back_to_users_row_when_clerk_unavailable(wipe_mocks):
+    """CLERK_SECRET_KEY-unset posture: get_user returns None, so resolution
+    falls back to the users-row email alone."""
+    wipe_mocks.clerk_get_user.return_value = None
+    wipe_mocks.user_get.return_value = _user_row(email="owner@example.com")
+
+    emails = await resolve_account_emails(OWNER_ID)
+
+    assert emails == ["owner@example.com"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_account_emails_dedupes_and_tolerates_no_email(wipe_mocks):
+    """A users-row email equal to a Clerk one is not duplicated; a fully empty
+    account (Clerk None + no users row) resolves to an empty list."""
+    wipe_mocks.clerk_get_user.return_value = {"email_addresses": [{"email_address": "dup@example.com"}]}
+    wipe_mocks.user_get.return_value = _user_row(email="dup@example.com")
+    assert await resolve_account_emails(OWNER_ID) == ["dup@example.com"]
+
+    wipe_mocks.clerk_get_user.return_value = None
+    wipe_mocks.user_get.return_value = None
+    assert await resolve_account_emails(OWNER_ID) == []
+
+
+# ---------------------------------------------------------------------------
+# Bootstrap-account refusal — fires up front, before any teardown
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_wipe_account_refuses_bootstrap_admin_before_any_teardown(wipe_mocks):
+    """The resolved email being a bootstrap Paperclip admin identity raises
+    BootstrapAccountProtectedError up front -- NO teardown collaborator runs
+    (in particular the Clerk delete, which would otherwise always run last)."""
+    wipe_mocks.user_get.return_value = _user_row(email="admin@isol8.co")
+
+    with pytest.raises(BootstrapAccountProtectedError):
+        await wipe_account(OWNER_ID, actor_admin_id="admin_1")
+
+    wipe_mocks.paperclip_company_delete.assert_not_awaited()
+    wipe_mocks.paperclip_user_delete_fn.assert_not_awaited()
+    wipe_mocks.ecs_manager_stub.delete_user_service.assert_not_awaited()
+    wipe_mocks.workspace_stub.delete_user_dir.assert_not_called()
+    wipe_mocks.bedrock_aips_delete.assert_not_awaited()
+    wipe_mocks.bedrock_role_delete.assert_not_awaited()
+    wipe_mocks.metronome_archive.assert_not_awaited()
+    wipe_mocks.stripe_delete.assert_not_awaited()
+    wipe_mocks.usage_delete.assert_not_awaited()
+    wipe_mocks.paperclip_row_delete.assert_not_awaited()
+    wipe_mocks.billing_delete.assert_not_awaited()
+    wipe_mocks.user_delete.assert_not_awaited()
+    wipe_mocks.clerk_delete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_wipe_account_refuses_bootstrap_admin_from_pre_resolved_emails(wipe_mocks):
+    """When the router passes pre-resolved emails, the guard still fires off
+    that list (case-insensitively) without re-resolving."""
+    with pytest.raises(BootstrapAccountProtectedError):
+        await wipe_account(OWNER_ID, actor_admin_id="admin_1", account_emails=["Admin+Paperclip@isol8.co"])
+
+    wipe_mocks.clerk_delete.assert_not_awaited()
+    wipe_mocks.paperclip_company_delete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_preview_wipe_refuses_bootstrap_admin(wipe_mocks):
+    """preview_wipe applies the same up-front refusal so an admin never even
+    sees a would-delete plan for a bootstrap account."""
+    wipe_mocks.clerk_get_user.return_value = {"email_addresses": [{"email_address": "admin@isol8.co"}]}
+
+    with pytest.raises(BootstrapAccountProtectedError):
+        await preview_wipe(OWNER_ID)
 
 
 # ---------------------------------------------------------------------------

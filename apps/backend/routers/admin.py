@@ -36,7 +36,13 @@ from core.services import (
     clerk_admin,
     system_health,
 )
-from core.services.account_wipe import OrgWipeUnsupportedError, preview_wipe, wipe_account
+from core.services.account_wipe import (
+    BootstrapAccountProtectedError,
+    OrgWipeUnsupportedError,
+    preview_wipe,
+    resolve_account_emails,
+    wipe_account,
+)
 from core.services.admin_access import require_admin_read_access
 from core.services.admin_audit import audit_admin_action
 from core.services.admin_service import resolve_admin_owner_id
@@ -717,6 +723,8 @@ async def admin_wipe_preview(
         report = await preview_wipe(owner_id)
     except OrgWipeUnsupportedError:
         raise HTTPException(status_code=400, detail="org_wipe_unsupported")
+    except BootstrapAccountProtectedError:
+        raise HTTPException(status_code=400, detail="bootstrap_account_protected")
     return report.to_dict()
 
 
@@ -724,9 +732,10 @@ async def admin_wipe_preview(
     "/users/{owner_id}/wipe",
     description=(
         "Execute the full, audited account teardown. Requires `confirm_email` "
-        "to match the account's email on file — looked up server-side from the "
-        "owner's `users` row, never trusted from the client — else 400 "
-        "email_mismatch and nothing is deleted. Partial-failure-tolerant: a "
+        "to match one of the account's email addresses — looked up server-side "
+        "from Clerk (the account's email addresses), matched case-insensitively, "
+        "never trusted from the client — else 400 email_mismatch and nothing is "
+        "deleted. Partial-failure-tolerant: a "
         "step failing does not abort the others or fail this request; the "
         "returned report is the source of truth for what remains and what to "
         "re-run. Writes an admin-actions audit row with the full report. "
@@ -739,17 +748,20 @@ async def admin_wipe_execute(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
-    # Server-side email lookup -- the client's claimed confirm_email is never
-    # trusted on its own; it must match what we have on file for the owner.
-    account = await user_repo.get(owner_id)
-    account_email = (account or {}).get("email") or ""
-    if not account_email or body.confirm_email != account_email:
+    # Authoritative email(s) from Clerk (the users-row email is written by an
+    # unreliable webhook — see resolve_account_emails). The typed confirm must
+    # match one of them, case-insensitively; never trusted from the client alone.
+    account_emails = await resolve_account_emails(owner_id)
+    typed = body.confirm_email.strip().lower()
+    if not typed or not any(typed == e.strip().lower() for e in account_emails):
         raise HTTPException(status_code=400, detail="email_mismatch")
 
     try:
-        report = await wipe_account(owner_id, actor_admin_id=auth.user_id)
+        report = await wipe_account(owner_id, actor_admin_id=auth.user_id, account_emails=account_emails)
     except OrgWipeUnsupportedError:
         raise HTTPException(status_code=400, detail="org_wipe_unsupported")
+    except BootstrapAccountProtectedError:
+        raise HTTPException(status_code=400, detail="bootstrap_account_protected")
 
     report_dict = report.to_dict()
     has_failures = any(step["status"] == "failed" for step in report_dict["steps"])

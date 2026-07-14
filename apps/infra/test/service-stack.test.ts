@@ -243,6 +243,57 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     });
   });
 
+  // Account-wipe (Task 7 fix): the in-backend teardown deletes the owner's
+  // Paperclip Better Auth "user" row via the RDS Data API, which needs three
+  // grants the task role otherwise lacks. These live in the inline default
+  // policy (AWS::IAM::Policy) via addToPolicy — unlike the bedrock-role-delete
+  // grant, which lives in the dedicated ManagedPolicy. Assertions are
+  // non-vacuous: each asserts the action IS present AND the resource is the
+  // expected scoped ARN (not a bare "*"), except ListSecrets which IS "*".
+  test("backend role can run the Paperclip Aurora-user delete (rds-data:ExecuteStatement scoped to the paperclip cluster)", () => {
+    SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Sid: "AccountWipePaperclipAuroraExec",
+            Action: "rds-data:ExecuteStatement",
+            Resource:
+              "arn:aws:rds:us-east-1:877352799272:cluster:isol8-dev-paperclip-db",
+          }),
+        ]),
+      }),
+    });
+  });
+
+  test("backend role can read the dash-named paperclip-db-credentials secret (GetSecretValue scoped, not the slash-named wildcard)", () => {
+    SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Sid: "AccountWipePaperclipDbSecretRead",
+            Action: "secretsmanager:GetSecretValue",
+            Resource:
+              "arn:aws:secretsmanager:us-east-1:877352799272:secret:isol8-dev-paperclip-db-credentials-*",
+          }),
+        ]),
+      }),
+    });
+  });
+
+  test("backend role can list secrets (metadata-only, resource '*' — the paginated ARN discovery)", () => {
+    SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Sid: "AccountWipeListSecrets",
+            Action: "secretsmanager:ListSecrets",
+            Resource: "*",
+          }),
+        ]),
+      }),
+    });
+  });
+
   test("backend container has the BEDROCK_OWNER_ROLE_PREFIX env var", () => {
     template.hasResourceProperties("AWS::ECS::TaskDefinition", {
       ContainerDefinitions: Match.arrayWith([

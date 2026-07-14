@@ -439,6 +439,48 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
+    // Account-wipe (Task 7 fix): the in-backend teardown deletes the owner's
+    // Paperclip Better Auth "user" row directly via the RDS Data API
+    // (core/services/paperclip_user_delete.py) because Paperclip exposes no
+    // user-delete API. Three grants the task role otherwise lacks:
+    //   - rds-data:ExecuteStatement on the paperclip Aurora cluster;
+    //   - secretsmanager:GetSecretValue on the DASH-named DB-credentials secret
+    //     (the wildcard SecretsAccess above only covers SLASH-named isol8/{env}/*
+    //     secrets, NOT isol8-{env}-paperclip-db-credentials);
+    //   - secretsmanager:ListSecrets (metadata only; the helper paginates to find
+    //     that secret's full ARN — ListSecrets has no resource-level scoping, so
+    //     it must be "*").
+    // Without these the Aurora-user step 403s on every real account and orphans
+    // the Better Auth identity (Teams 401 on re-signup with the same email).
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "AccountWipePaperclipAuroraExec",
+        effect: iam.Effect.ALLOW,
+        actions: ["rds-data:ExecuteStatement"],
+        resources: [
+          `arn:aws:rds:${this.region}:${this.account}:cluster:isol8-${env}-paperclip-db`,
+        ],
+      }),
+    );
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "AccountWipePaperclipDbSecretRead",
+        effect: iam.Effect.ALLOW,
+        actions: ["secretsmanager:GetSecretValue"],
+        resources: [
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:isol8-${env}-paperclip-db-credentials-*`,
+        ],
+      }),
+    );
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "AccountWipeListSecrets",
+        effect: iam.Effect.ALLOW,
+        actions: ["secretsmanager:ListSecrets"],
+        resources: ["*"],
+      }),
+    );
+
     // Per-user LLM-key secrets (Plan 2 Task 10): backend creates/updates/reads
     // a Secrets Manager secret per user under isol8/{env}/user-keys/*. Scoped
     // tightly to that prefix so the broad SecretsAccess policy above is not

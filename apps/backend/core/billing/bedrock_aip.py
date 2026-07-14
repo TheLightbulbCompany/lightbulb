@@ -608,6 +608,90 @@ async def revoke_owner_bedrock(owner_id: str) -> None:
     await container_repo.update_fields(owner_id, {"bedrock_revoked": True})
 
 
+async def delete_owner_aips(owner_id: str) -> list[str]:
+    """SHARED CONTRACT (Admin Account-Wipe, teardown step 6-7): delete every
+    persisted AIP for `owner_id` from Bedrock, plus its bedrock-aip-owners
+    reverse row, and return the list of ARNs removed.
+
+    Reads the same containers-row map read_owner_aips already reads (the
+    module's single source of truth for an owner's AIPs) — no separate lookup
+    path. Returns `[]` (no Bedrock/DDB calls) when the owner has no persisted
+    AIPs, so the wipe orchestrator can call this unconditionally.
+
+    Idempotent: a missing AIP (ResourceNotFoundException — already deleted by
+    a prior partial wipe, or never actually minted) is treated as
+    already-gone; the reverse row is still deleted (DynamoDB DeleteItem is a
+    no-op on a missing key) and the ARN still counts as removed.
+    """
+    from core.dynamodb import run_in_thread
+
+    arns = await read_owner_aips(owner_id)
+    if not arns:
+        return []
+
+    client = _bedrock_client()
+    table = _aip_owners_table()
+    removed: list[str] = []
+    for arn in arns.values():
+        try:
+            await run_in_thread(client.delete_inference_profile, inferenceProfileIdentifier=arn)
+        except ClientError as e:
+            # See revoke_owner_bedrock for why a single `except ClientError`
+            # covers both the real typed exception and the test's generic one.
+            if e.response["Error"]["Code"] != "ResourceNotFoundException":
+                raise
+        await run_in_thread(table.delete_item, Key={"aip_arn": arn})
+        removed.append(arn)
+    return removed
+
+
+async def delete_owner_bedrock_role(owner_id: str) -> None:
+    """SHARED CONTRACT (Admin Account-Wipe, teardown step 8): tear down the
+    per-owner IAM role in the same order it was built up — inline scoped
+    policy, then the (CDK-managed, shared) base policy attachment, then the
+    role itself.
+
+    Detaches the base managed policy (`settings.BEDROCK_OWNER_BASE_POLICY_ARN`
+    — the same constant ensure_owner_bedrock_role attaches) but NEVER deletes
+    it; it is a shared CDK-managed resource used by every owner's role.
+
+    Idempotent: each step swallows NoSuchEntity (role/policy/attachment
+    already gone), matching revoke_owner_bedrock's pattern — safe to re-run
+    after a partial wipe failure.
+    """
+    from core.dynamodb import run_in_thread
+
+    client = _iam_client()
+    role_name = _owner_role_name(owner_id)
+
+    try:
+        await run_in_thread(
+            client.delete_role_policy,
+            RoleName=role_name,
+            PolicyName="owner-bedrock",
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "NoSuchEntity":
+            raise
+
+    if settings.BEDROCK_OWNER_BASE_POLICY_ARN:
+        try:
+            await run_in_thread(
+                client.detach_role_policy,
+                RoleName=role_name,
+                PolicyArn=settings.BEDROCK_OWNER_BASE_POLICY_ARN,
+            )
+        except ClientError as e:
+            if e.response["Error"]["Code"] != "NoSuchEntity":
+                raise
+
+    try:
+        await run_in_thread(client.delete_role, RoleName=role_name)
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "NoSuchEntity":
+            raise
+
+
 async def restore_owner_bedrock(owner_id: str) -> None:
     """SHARED CONTRACT (Plan 4): re-attach the per-owner role's scoped Bedrock
     inline policy from the persisted AIP map, and clear bedrock_revoked.

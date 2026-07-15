@@ -207,7 +207,7 @@ async def monitor_check_now(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
     POST /api/issues/{id}/monitor/check-now.
 
     An immediate re-check dispatches a run right away server-side inside
-    Paperclip, so this is a Meta-spend front door. The free-tier $3/day
+    Paperclip, so this is a spend front door. The free-tier $3/day
     cap is checked here, BEFORE the proxy call reaches Paperclip.
     """
     await require_trial_runway(ctx.owner_id)
@@ -262,7 +262,7 @@ async def add_issue_comment(
     """Post a comment on an issue. Body is whitelisted to ``{body: str}``.
 
     A comment triggers Friday (or the assigned agent) to run server-side
-    inside Paperclip, so this is a Meta-spend front door. The free-tier
+    inside Paperclip, so this is a spend front door. The free-tier
     $3/day cap is checked here, BEFORE the proxy call reaches Paperclip --
     that's what actually stops the spend, since there is no enforcement
     point downstream of this proxy.

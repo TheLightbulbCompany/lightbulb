@@ -43,10 +43,10 @@ describe("ChatErrorCard", () => {
     expect(screen.getByText("Request refused")).toBeInTheDocument();
   });
 
-  it("renders the meta_daily_cap variant with the backend message and an Upgrade action", () => {
+  it("renders the trial_daily_cap variant with the backend message and an Upgrade action", () => {
     render(
       <ChatErrorCard
-        code="meta_daily_cap"
+        code="trial_daily_cap"
         message="You've used today's free allowance — resets tomorrow. Upgrade to keep going."
       />,
     );

@@ -362,3 +362,23 @@ async def test_deferred_persist_skipped_when_customer_id_already_stored(billing_
     fake.create_contract.assert_not_awaited()
     set_mock.assert_not_awaited()
     set_customer_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_trial_local_owner_is_never_provisioned_into_metronome(billing_repo_mock, monkeypatch):
+    """A free-tier (trial_local) owner has no Stripe customer and draws no
+    prepaid credits, so they must never get a Metronome customer. This is the
+    upstream half of the free-tier fix: a stray Metronome customer gives them a
+    balance of 0 that the low-balance enforcer reads as 'out of credits' and
+    revokes Bedrock on — which was killing every free trial ~30s after signup."""
+    get_mock, set_mock, set_customer_mock = billing_repo_mock
+    get_mock.return_value = _billing_row(subscription_status="trial_local", stripe_customer_id=None)
+
+    # No HTTP client must be constructed and nothing persisted — a pure no-op.
+    with patch("core.billing.metronome_provisioning.httpx.AsyncClient") as client_cls:
+        result = await ensure_metronome_customer(owner_id="user_trial")
+
+    assert result is None
+    client_cls.assert_not_called()
+    set_mock.assert_not_awaited()
+    set_customer_mock.assert_not_awaited()

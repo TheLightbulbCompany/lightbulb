@@ -903,7 +903,7 @@ class TestProcessAgentSteerBackground:
         """An over-cap trial owner steering must NOT forward a fresh chat.send.
         A steer is a raw chat.send that costs real model tokens, so an over-cap
         owner could otherwise keep steering straight past the $3/day cap with no
-        402 card. The owner gets a meta_daily_cap error frame and nothing
+        402 card. The owner gets a trial_daily_cap error frame and nothing
         dispatches."""
         mock_trial_block_reason.return_value = trial_cap.DAILY_CAP
         await _process_agent_steer_background(
@@ -918,7 +918,7 @@ class TestProcessAgentSteerBackground:
         mock_mgmt_api.send_message.assert_called_once()
         _, frame = mock_mgmt_api.send_message.call_args[0]
         assert frame["type"] == "error"
-        assert frame["code"] == "meta_daily_cap"
+        assert frame["code"] == "trial_daily_cap"
 
     @pytest.mark.asyncio
     async def test_under_cap_steer_dispatches_via_readonly_check(
@@ -932,7 +932,7 @@ class TestProcessAgentSteerBackground:
         """Under the cap, the steer dispatches — via the READ-ONLY
         trial_block_reason check, which writes nothing. The meter Lambda counts
         the steer's actual cost at the AWS layer like any other invocation."""
-        with patch("core.repositories.billing_repo.add_meta_daily_spend", new=AsyncMock()) as add_mock:
+        with patch("core.repositories.billing_repo.add_trial_daily_spend", new=AsyncMock()) as add_mock:
             await _process_agent_steer_background(
                 connection_id="conn-1",
                 user_id="user-1",

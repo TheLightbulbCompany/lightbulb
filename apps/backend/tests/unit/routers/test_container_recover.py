@@ -205,7 +205,7 @@ class TestContainerRecover:
             response = await async_client.post("/api/v1/container/recover")
 
         assert response.status_code == 402
-        assert response.json()["detail"]["blocked"]["code"] == "meta_daily_cap"
+        assert response.json()["detail"]["blocked"]["code"] == "trial_daily_cap"
         mock_ecs_manager.provision_user_container.assert_not_called()
 
     @pytest.mark.asyncio

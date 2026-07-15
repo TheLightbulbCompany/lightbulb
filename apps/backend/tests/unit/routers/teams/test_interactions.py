@@ -220,8 +220,8 @@ def test_reject_rejects_smuggled_field(client):
 
 
 def test_respond_blocked_over_cap(client, monkeypatch):
-    """A trial_local owner over the free-tier $3/day Meta cap gets a 402
-    with the structured meta_daily_cap payload -- BEFORE the request ever
+    """A trial_local owner over the free-tier $3/day $3/day trial cap gets a 402
+    with the structured trial_daily_cap payload -- BEFORE the request ever
     reaches Paperclip (responding to an ask_user_questions interaction
     triggers a fresh Friday run server-side, so the check must run ahead of
     the proxy call to actually stop the spend)."""
@@ -240,7 +240,7 @@ def test_respond_blocked_over_cap(client, monkeypatch):
     body = r.json()["detail"]
     assert body == {
         "blocked": True,
-        "code": "meta_daily_cap",
+        "code": "trial_daily_cap",
         "message": "You've used today's free allowance — resets tomorrow. Upgrade to keep going.",
     }
     admin.respond_interaction.assert_not_awaited()
@@ -289,7 +289,7 @@ _RESOLUTION_ROUTES = [
 @pytest.mark.parametrize("route,body", _RESOLUTION_ROUTES)
 @pytest.mark.parametrize(
     "reason,code",
-    [("meta_daily_cap", "meta_daily_cap"), ("trial_expired", "trial_expired")],
+    [("trial_daily_cap", "trial_daily_cap"), ("trial_expired", "trial_expired")],
 )
 def test_every_interaction_resolution_route_is_gated(client, monkeypatch, route, body, reason, code):
     admin = MagicMock()

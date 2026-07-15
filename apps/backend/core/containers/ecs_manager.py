@@ -211,13 +211,13 @@ class EcsManagerError(Exception):
 # refusals, not failures — see ContainerStartRefused.
 #
 # START_REFUSED_CAP / START_REFUSED_EXPIRED are deliberately the *same strings*
-# as the provision gate's ``meta_daily_cap`` / ``trial_expired`` codes, so a
+# as the provision gate's ``trial_daily_cap`` / ``trial_expired`` codes, so a
 # router can hand either straight to the matching gate's ``.to_payload()`` and
 # the owner sees the identical 402 card whichever door they knocked on.
 # (Literals, not imports of trial_cap.DAILY_CAP/TRIAL_EXPIRED: trial_cap is
 # imported lazily inside the guard to avoid a module cycle. A lockstep test
 # pins these to it so they cannot drift.)
-START_REFUSED_CAP = "meta_daily_cap"
+START_REFUSED_CAP = "trial_daily_cap"
 START_REFUSED_EXPIRED = "trial_expired"
 START_REFUSED_CONVERTING = "conversion_in_flight"
 
@@ -949,7 +949,7 @@ class EcsManager:
                     *after* the row is stamped — guarding it would deadlock the
                     conversion against its own marker. Its callers gate
                     themselves upstream (``evaluate_provision_gate``, which
-                    already returns the same ``meta_daily_cap`` gate).
+                    already returns the same ``trial_daily_cap`` gate).
                   - the audited admin start (``POST /admin/users/{id}
                     /container/start``) — the operator break-glass, and the only
                     manual lever to un-wedge a container carrying a stranded
@@ -2058,7 +2058,7 @@ class EcsManager:
         #     nothing running.
         #   - Every caller that reaches provision_user_container has already
         #     passed evaluate_provision_gate (which returns the same
-        #     meta_daily_cap gate for an over-cap trial owner) or is a
+        #     trial_daily_cap gate for an over-cap trial owner) or is a
         #     deliberate system/operator reprovision.
         try:
             await self.start_user_service(user_id, force=True)

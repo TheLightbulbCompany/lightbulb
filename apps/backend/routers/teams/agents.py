@@ -742,7 +742,7 @@ async def wake_agent(
     upstream change that echoes adapterConfig can never leak the service token.
 
     Waking an agent dispatches a run immediately server-side inside
-    Paperclip, so this is a Meta-spend front door. The free-tier $3/day
+    Paperclip, so this is a spend front door. The free-tier $3/day
     cap is checked here, BEFORE the proxy call reaches Paperclip.
     """
     await require_trial_runway(ctx.owner_id)

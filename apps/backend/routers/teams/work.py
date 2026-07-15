@@ -135,7 +135,7 @@ async def run_routine(
     truth for validation.
 
     Firing a routine dispatches a run immediately server-side inside
-    Paperclip, so this is a Meta-spend front door. The free-tier $3/day
+    Paperclip, so this is a spend front door. The free-tier $3/day
     cap is checked here, BEFORE the proxy call reaches Paperclip.
     """
     await require_trial_runway(ctx.owner_id)

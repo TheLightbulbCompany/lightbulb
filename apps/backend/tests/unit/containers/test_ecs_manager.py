@@ -798,7 +798,7 @@ class TestStartUserServiceGuards:
             AsyncMock(return_value=({"subscription_status": subscription_status} if subscription_status else None)),
         )
         monkeypatch.setattr(
-            "core.repositories.billing_repo.get_meta_daily_spend",
+            "core.repositories.billing_repo.get_trial_daily_spend",
             AsyncMock(return_value=spent_microcents),
         )
 

@@ -65,6 +65,17 @@ async def ensure_metronome_customer(
     if account is None:
         raise ProvisioningError(f"No billing row for owner_id={owner_id} — cannot provision Metronome customer")
 
+    # Free-tier owners have no business in Metronome. A ``trial_local`` owner has
+    # no Stripe customer and draws no prepaid credits — they run on the flat
+    # $3/day meter cap — so a Metronome customer for them is pure ledger
+    # pollution AND (worse) it gives them a balance of 0 that the low-balance
+    # enforcer reads as "out of credits" and revokes Bedrock on. On conversion to
+    # a paid bedrock_claude plan, subscription_status flips and this runs
+    # normally. This is the upstream half of the fix; enforce_on_low_balance's
+    # provider guard is the fence that holds even for a stray existing customer.
+    if account.get("subscription_status") == "trial_local":
+        return None
+
     existing = account.get("metronome_customer_id")
     if existing and account.get("metronome_contract_id"):
         return existing

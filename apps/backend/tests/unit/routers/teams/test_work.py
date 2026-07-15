@@ -172,8 +172,8 @@ def test_run_routine_proxies_upstream(client, monkeypatch):
 
 
 def test_run_routine_blocked_over_cap(client, monkeypatch):
-    """A trial_local owner over the free-tier $3/day Meta cap gets a 402
-    with the structured meta_daily_cap payload -- BEFORE the request ever
+    """A trial_local owner over the free-tier $3/day $3/day trial cap gets a 402
+    with the structured trial_daily_cap payload -- BEFORE the request ever
     reaches Paperclip (manually firing a routine dispatches a run
     immediately server-side, so the check must run ahead of the proxy
     call to actually stop the spend)."""
@@ -194,7 +194,7 @@ def test_run_routine_blocked_over_cap(client, monkeypatch):
     body = r.json()["detail"]
     assert body == {
         "blocked": True,
-        "code": "meta_daily_cap",
+        "code": "trial_daily_cap",
         "message": "You've used today's free allowance — resets tomorrow. Upgrade to keep going.",
     }
     admin.run_routine.assert_not_awaited()

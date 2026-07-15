@@ -214,7 +214,7 @@ export class BedrockMeterStack extends cdk.Stack {
           // Per-requestId replay guard for the trial counter.
           INVOCATION_DEDUP_TABLE: dedupTable.tableName,
           // The trial daily-spend counter lives on the billing row
-          // (meta_daily_spend_microcents.{YYYY-MM-DD}); the revoked flag the
+          // (trial_daily_spend_microcents.{YYYY-MM-DD}); the revoked flag the
           // backend's daily restore reads lives on the containers row.
           BILLING_TABLE: `isol8-${meterEnv}-billing-accounts`,
           CONTAINERS_TABLE: `isol8-${meterEnv}-containers`,
@@ -317,7 +317,7 @@ export class BedrockMeterStack extends cdk.Stack {
         }),
       );
 
-      // The trial counter (billing-accounts.meta_daily_spend_microcents) and
+      // The trial counter (billing-accounts.trial_daily_spend_microcents) and
       // the revoked flag the backend's daily restore reads
       // (containers.bedrock_revoked). UpdateItem only — the meter never creates
       // or deletes either row.

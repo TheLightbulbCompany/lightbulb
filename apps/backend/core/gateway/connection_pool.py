@@ -2187,7 +2187,7 @@ class GatewayConnectionPool:
                 capture_once_per_owner_per_day(owner_id=owner_id, event="trial_cap_reached")
                 return {
                     "blocked": True,
-                    "code": "meta_daily_cap",
+                    "code": "trial_daily_cap",
                     "message": ("You've used today's free allowance — resets tomorrow. Upgrade to keep going."),
                 }
 
@@ -2543,7 +2543,7 @@ class GatewayConnectionPool:
         Re-checks ``trial_local`` at fire time so an owner who converted to a
         paid plan during the grace is never stopped out from under their first
         paid session (the stop deliberately keys on ``subscription_status``,
-        not the still-meta container row the cap side keys on).
+        not a container-row stamp that could lag the conversion).
 
         Also called directly by Tasks 13/14 with a different *trigger* metric
         dimension. Those callers may invoke while a GatewayConnection still

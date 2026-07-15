@@ -315,10 +315,14 @@ def _redact_log_event(log_event):
         inp["inputBodyJson"] = "<redacted>"
         changed = True
     out = record.get("output")
-    if isinstance(out, dict) and isinstance(out.get("outputBodyJson"), dict):
-        usage = out["outputBodyJson"].get("usage")
-        # Keep ONLY the usage block: it is the documented fallback path for
-        # the token/cache counts (_extract), and it contains no content.
+    if isinstance(out, dict) and "outputBodyJson" in out:
+        # Redact by KEY PRESENCE, like the input side — a non-dict body (a
+        # string- or array-encoded response) is still a body and must not
+        # persist. Keep ONLY the usage block when there is one: it is the
+        # documented fallback path for the token/cache counts (_extract),
+        # and it contains no content.
+        body = out["outputBodyJson"]
+        usage = body.get("usage") if isinstance(body, dict) else None
         out["outputBodyJson"] = {"usage": usage} if isinstance(usage, dict) else "<redacted>"
         changed = True
     if not changed:

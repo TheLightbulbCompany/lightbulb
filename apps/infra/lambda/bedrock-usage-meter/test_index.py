@@ -435,6 +435,21 @@ def test_dlq_copy_is_redacted_but_still_meterable():
     assert "pcp_12345" in log_event["message"]
 
 
+def test_redact_covers_non_dict_output_bodies():
+    """outputBodyJson is redacted by KEY PRESENCE, like the input side: a
+    string- or array-encoded response body is still a body and must not
+    persist in the 14-day queue just because it isn't a dict."""
+    import index
+
+    for body in ("raw string response with pcp_67890", ["array", "of", "chunks"]):
+        record = _load("inline_record.json")
+        record["output"]["outputBodyJson"] = body
+        ev = {"id": "e3", "timestamp": 3, "message": json.dumps(record)}
+        stored = json.loads(index._redact_log_event(ev)["message"])
+        assert stored["output"]["outputBodyJson"] == "<redacted>"
+        assert "pcp_67890" not in json.dumps(stored)
+
+
 def test_redact_leaves_unparseable_messages_untouched():
     """A message that is not a JSON dict is not a Bedrock invocation record
     (CW control noise / garbage) — it carries no body, and mangling it would

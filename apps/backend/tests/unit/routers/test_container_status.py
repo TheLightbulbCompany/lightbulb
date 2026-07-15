@@ -505,7 +505,7 @@ class TestContainerStatusGate:
         matters — if the gate runs first it sees no billing row, returns
         signup_required, and /status 404s before the trial is ever created,
         trapping a brand-new personal signup on the ProviderPicker instead of
-        provisioning Meta. With the trial created first, the gate clears and
+        provisioning the trial container. With the trial created first, the gate clears and
         /status returns 200 provisioning."""
         from routers.container import container_status
 
@@ -1269,7 +1269,7 @@ class TestContainerStatusTrialBedrockRestore:
                 "core.services.provision_gate.billing_repo.get_by_owner_id",
                 new=AsyncMock(return_value={"subscription_status": "trial_local", "trial_end": None}),
             ),
-            patch("core.services.trial_cap.billing_repo.get_meta_daily_spend", new=AsyncMock(return_value=0)),
+            patch("core.services.trial_cap.billing_repo.get_trial_daily_spend", new=AsyncMock(return_value=0)),
             patch("core.billing.bedrock_aip.restore_owner_bedrock", new=restore),
             patch("routers.container.evaluate_provision_gate", new=AsyncMock(return_value=None)),
             patch("routers.container._safe_phase", return_value="provisioning"),
@@ -1326,7 +1326,7 @@ class TestContainerStatusTrialBedrockRestore:
                 "core.services.provision_gate.billing_repo.get_by_owner_id",
                 new=AsyncMock(return_value={"subscription_status": "trial_local", "trial_end": None}),
             ),
-            patch("core.services.trial_cap.billing_repo.get_meta_daily_spend", new=AsyncMock(return_value=0)),
+            patch("core.services.trial_cap.billing_repo.get_trial_daily_spend", new=AsyncMock(return_value=0)),
             patch(
                 "core.billing.bedrock_aip.restore_owner_bedrock",
                 new=AsyncMock(side_effect=RuntimeError("boom")),
@@ -1368,7 +1368,7 @@ class TestContainerProvisionStartGuards:
         directly gets the identical limit card GET /status returns — not a
         woken container."""
         from core.containers.ecs_manager import START_REFUSED_CAP, ContainerStartRefused
-        from core.services.provision_gate import meta_daily_cap_gate
+        from core.services.provision_gate import trial_daily_cap_gate
         from routers.container import container_provision
 
         ecs = self._ecs(refusal=ContainerStartRefused(START_REFUSED_CAP, "user_x", "over cap"))
@@ -1383,8 +1383,8 @@ class TestContainerProvisionStartGuards:
                 await container_provision(_personal_auth())
 
         assert exc.value.status_code == 402
-        assert exc.value.detail == meta_daily_cap_gate("admin").to_payload()
-        assert exc.value.detail["blocked"]["code"] == "meta_daily_cap"
+        assert exc.value.detail == trial_daily_cap_gate("admin").to_payload()
+        assert exc.value.detail["blocked"]["code"] == "trial_daily_cap"
 
     @pytest.mark.asyncio
     async def test_conversion_in_flight_returns_a_pollable_status_and_starts_nothing(self):

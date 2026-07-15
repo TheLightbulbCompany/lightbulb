@@ -14,7 +14,7 @@ import { handleShellLinkClick } from "@/lib/shellNav";
  * tailored copy + an action button so the user knows what to do next,
  * instead of seeing a generic "Failed to generate" block.
  *
- * `meta_daily_cap` is a separate, Isol8-side code (not an OpenClaw
+ * `trial_daily_cap` is a separate, Isol8-side code (not an OpenClaw
  * errorKind) — the gate_chat free-tier $3/day cost cap blocks the turn
  * before it ever reaches OpenClaw (core/gateway/connection_pool.py). It gets
  * its own branch below so a free-tier user sees a distinct "come back
@@ -89,7 +89,7 @@ function describeError(code: string | undefined, message: string): ErrorPresenta
           message ||
           "The model declined to respond, usually due to content policy. Try rephrasing your message.",
       };
-    case "meta_daily_cap":
+    case "trial_daily_cap":
       return {
         title: "Daily free limit reached",
         description:

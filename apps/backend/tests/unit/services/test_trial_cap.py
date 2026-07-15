@@ -25,11 +25,11 @@ async def test_trial_block_reason_true_for_trial_local_at_cap(monkeypatch):
     async def fake_get_by_owner_id(owner_id):
         return {"owner_id": owner_id, "subscription_status": "trial_local"}
 
-    async def fake_get_meta_daily_spend(owner_id, date):
+    async def fake_get_trial_daily_spend(owner_id, date):
         return CAP_MICROCENTS
 
     monkeypatch.setattr("core.services.trial_cap.billing_repo.get_by_owner_id", fake_get_by_owner_id)
-    monkeypatch.setattr("core.services.trial_cap.billing_repo.get_meta_daily_spend", fake_get_meta_daily_spend)
+    monkeypatch.setattr("core.services.trial_cap.billing_repo.get_trial_daily_spend", fake_get_trial_daily_spend)
 
     assert await trial_cap.trial_block_reason("owner1") == trial_cap.DAILY_CAP
 
@@ -39,11 +39,11 @@ async def test_trial_block_reason_true_for_trial_local_over_cap(monkeypatch):
     async def fake_get_by_owner_id(owner_id):
         return {"owner_id": owner_id, "subscription_status": "trial_local"}
 
-    async def fake_get_meta_daily_spend(owner_id, date):
+    async def fake_get_trial_daily_spend(owner_id, date):
         return CAP_MICROCENTS + 1
 
     monkeypatch.setattr("core.services.trial_cap.billing_repo.get_by_owner_id", fake_get_by_owner_id)
-    monkeypatch.setattr("core.services.trial_cap.billing_repo.get_meta_daily_spend", fake_get_meta_daily_spend)
+    monkeypatch.setattr("core.services.trial_cap.billing_repo.get_trial_daily_spend", fake_get_trial_daily_spend)
 
     assert await trial_cap.trial_block_reason("owner1") == trial_cap.DAILY_CAP
 
@@ -53,11 +53,11 @@ async def test_trial_block_reason_false_for_trial_local_under_cap(monkeypatch):
     async def fake_get_by_owner_id(owner_id):
         return {"owner_id": owner_id, "subscription_status": "trial_local"}
 
-    async def fake_get_meta_daily_spend(owner_id, date):
+    async def fake_get_trial_daily_spend(owner_id, date):
         return CAP_MICROCENTS - 1
 
     monkeypatch.setattr("core.services.trial_cap.billing_repo.get_by_owner_id", fake_get_by_owner_id)
-    monkeypatch.setattr("core.services.trial_cap.billing_repo.get_meta_daily_spend", fake_get_meta_daily_spend)
+    monkeypatch.setattr("core.services.trial_cap.billing_repo.get_trial_daily_spend", fake_get_trial_daily_spend)
 
     assert await trial_cap.trial_block_reason("owner1") is None
 
@@ -73,12 +73,12 @@ async def test_trial_block_reason_false_for_paid_owner_even_if_over_cap(monkeypa
 
     spend_calls = []
 
-    async def fake_get_meta_daily_spend(owner_id, date):
+    async def fake_get_trial_daily_spend(owner_id, date):
         spend_calls.append((owner_id, date))
         return CAP_MICROCENTS + 1_000_000
 
     monkeypatch.setattr("core.services.trial_cap.billing_repo.get_by_owner_id", fake_get_by_owner_id)
-    monkeypatch.setattr("core.services.trial_cap.billing_repo.get_meta_daily_spend", fake_get_meta_daily_spend)
+    monkeypatch.setattr("core.services.trial_cap.billing_repo.get_trial_daily_spend", fake_get_trial_daily_spend)
 
     assert await trial_cap.trial_block_reason("owner1") is None
     assert spend_calls == []  # short-circuits before the spend read
@@ -91,12 +91,12 @@ async def test_trial_block_reason_false_for_no_account(monkeypatch):
 
     spend_calls = []
 
-    async def fake_get_meta_daily_spend(owner_id, date):
+    async def fake_get_trial_daily_spend(owner_id, date):
         spend_calls.append((owner_id, date))
         return CAP_MICROCENTS + 1
 
     monkeypatch.setattr("core.services.trial_cap.billing_repo.get_by_owner_id", fake_get_by_owner_id)
-    monkeypatch.setattr("core.services.trial_cap.billing_repo.get_meta_daily_spend", fake_get_meta_daily_spend)
+    monkeypatch.setattr("core.services.trial_cap.billing_repo.get_trial_daily_spend", fake_get_trial_daily_spend)
 
     assert await trial_cap.trial_block_reason("owner1") is None
     assert spend_calls == []  # short-circuits before the spend read
@@ -112,7 +112,7 @@ async def test_no_backend_path_writes_the_counter(monkeypatch):
     async def fake_get_by_owner_id(owner_id):
         return {"owner_id": owner_id, "subscription_status": "trial_local"}
 
-    async def fake_get_meta_daily_spend(owner_id, date):
+    async def fake_get_trial_daily_spend(owner_id, date):
         return 0
 
     async def fake_add(owner_id, date, delta):
@@ -120,8 +120,8 @@ async def test_no_backend_path_writes_the_counter(monkeypatch):
         return delta
 
     monkeypatch.setattr("core.services.trial_cap.billing_repo.get_by_owner_id", fake_get_by_owner_id)
-    monkeypatch.setattr("core.services.trial_cap.billing_repo.get_meta_daily_spend", fake_get_meta_daily_spend)
-    monkeypatch.setattr("core.services.trial_cap.billing_repo.add_meta_daily_spend", fake_add)
+    monkeypatch.setattr("core.services.trial_cap.billing_repo.get_trial_daily_spend", fake_get_trial_daily_spend)
+    monkeypatch.setattr("core.services.trial_cap.billing_repo.add_trial_daily_spend", fake_add)
 
     await trial_cap.trial_block_reason("owner1")
 
@@ -146,7 +146,7 @@ async def test_trial_block_reason_catches_an_expired_trial(monkeypatch):
         return 0  # well under the cap — expiry must still block
 
     monkeypatch.setattr("core.services.trial_cap.billing_repo.get_by_owner_id", fake_account)
-    monkeypatch.setattr("core.services.trial_cap.billing_repo.get_meta_daily_spend", fake_spend)
+    monkeypatch.setattr("core.services.trial_cap.billing_repo.get_trial_daily_spend", fake_spend)
 
     # Expiry blocks even at zero spend. There is no longer a cap-only predicate
     # that could miss this: it was deleted precisely because four doors reached
@@ -159,7 +159,7 @@ async def test_trial_block_reason_none_for_a_healthy_trial_and_for_paid(monkeypa
     async def fake_spend(owner_id, date):
         return 0
 
-    monkeypatch.setattr("core.services.trial_cap.billing_repo.get_meta_daily_spend", fake_spend)
+    monkeypatch.setattr("core.services.trial_cap.billing_repo.get_trial_daily_spend", fake_spend)
 
     async def healthy_trial(owner_id):
         return {"subscription_status": "trial_local", "trial_end": 2**33}  # far future
@@ -188,5 +188,5 @@ def test_gate_for_trial_reason_maps_both_reasons_and_passes_none_through():
     assert expired.code == "trial_expired"
 
     capped = provision_gate.gate_for_trial_reason(trial_cap.DAILY_CAP, "member")
-    assert capped.code == "meta_daily_cap"
+    assert capped.code == "trial_daily_cap"
     assert capped.owner_role == "member"

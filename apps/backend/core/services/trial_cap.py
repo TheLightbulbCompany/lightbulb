@@ -35,7 +35,7 @@ CAP_MICROCENTS = 3_000_000  # $3.00/day
 # ``trial_block_reason`` and mapped to the matching blocked-gate payload by
 # ``provision_gate`` — the codes the frontend already renders limit cards for.
 TRIAL_EXPIRED = "trial_expired"
-DAILY_CAP = "meta_daily_cap"
+DAILY_CAP = "trial_daily_cap"
 
 
 def utc_today() -> str:
@@ -89,7 +89,7 @@ async def reason_for_account(owner_id: str, account: dict | None) -> str | None:
         return None
     if _is_expired(account):
         return TRIAL_EXPIRED
-    spent = await billing_repo.get_meta_daily_spend(owner_id, utc_today())
+    spent = await billing_repo.get_trial_daily_spend(owner_id, utc_today())
     if spent >= CAP_MICROCENTS:
         return DAILY_CAP
     return None

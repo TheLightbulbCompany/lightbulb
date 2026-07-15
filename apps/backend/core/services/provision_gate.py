@@ -273,12 +273,12 @@ async def _has_oauth_tokens(token_owner: str, owner_id: str) -> bool:
     return await oauth_service.has_active_oauth(user_id=token_owner, bound_to=owner_id)
 
 
-def meta_daily_cap_gate(owner_role: str) -> Gate:
+def trial_daily_cap_gate(owner_role: str) -> Gate:
     """The blocked-gate a trial_local owner sees once they cross the $3/day
-    Meta cap. Shared so the provision gate and the /container/status wake
+    $3/day trial cap. Shared so the provision gate and the /container/status wake
     path render an identical 'daily limit' card (not a spinner)."""
     return Gate(
-        code="meta_daily_cap",
+        code="trial_daily_cap",
         title="Daily free limit reached",
         message="You've used today's free allowance — resets tomorrow. Upgrade to keep going.",
         action_label="Upgrade",
@@ -302,14 +302,14 @@ def gate_for_trial_reason(reason: str | None, owner_role: str) -> Gate | None:
     if reason == trial_cap.TRIAL_EXPIRED:
         return trial_expired_gate(owner_role)
     if reason == trial_cap.DAILY_CAP:
-        return meta_daily_cap_gate(owner_role)
+        return trial_daily_cap_gate(owner_role)
     return None
 
 
 def trial_expired_gate(owner_role: str) -> Gate:
     """The blocked-gate a trial_local owner sees once their 3-day window
     (``trial_end``, stamped by ``billing_repo.create_trial_local_if_absent``
-    at signup) has passed. Mirrors ``meta_daily_cap_gate`` field-for-field
+    at signup) has passed. Mirrors ``trial_daily_cap_gate`` field-for-field
     so the provision gate and gate_chat's Layer 2 render an identical
     'trial ended' card instead of a spinner or a generic error."""
     return Gate(

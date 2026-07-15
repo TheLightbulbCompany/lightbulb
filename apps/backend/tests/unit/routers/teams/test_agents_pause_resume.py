@@ -67,8 +67,8 @@ async def test_wake_agent_route_calls_admin_wakeup_with_camel_body():
 
 @pytest.mark.asyncio
 async def test_wake_agent_blocked_over_cap():
-    """A trial_local owner over the free-tier $3/day Meta cap gets a 402
-    with the structured meta_daily_cap payload -- BEFORE the request ever
+    """A trial_local owner over the free-tier $3/day $3/day trial cap gets a 402
+    with the structured trial_daily_cap payload -- BEFORE the request ever
     reaches Paperclip (the failed-run Retry action dispatches a run
     immediately server-side, so the check must run ahead of the proxy
     call to actually stop the spend)."""
@@ -89,7 +89,7 @@ async def test_wake_agent_blocked_over_cap():
     assert exc_info.value.status_code == 402
     assert exc_info.value.detail == {
         "blocked": True,
-        "code": "meta_daily_cap",
+        "code": "trial_daily_cap",
         "message": "You've used today's free allowance — resets tomorrow. Upgrade to keep going.",
     }
     fake_admin.wake_agent.assert_not_awaited()

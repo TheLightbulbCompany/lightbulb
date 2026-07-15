@@ -258,8 +258,8 @@ def test_monitor_check_now(client, monkeypatch):
 
 
 def test_monitor_check_now_blocked_over_cap(client, monkeypatch):
-    """A trial_local owner over the free-tier $3/day Meta cap gets a 402
-    with the structured meta_daily_cap payload -- BEFORE the request ever
+    """A trial_local owner over the free-tier $3/day $3/day trial cap gets a 402
+    with the structured trial_daily_cap payload -- BEFORE the request ever
     reaches Paperclip (an immediate re-check dispatches a run right away
     server-side, so the check must run ahead of the proxy call to
     actually stop the spend)."""
@@ -278,7 +278,7 @@ def test_monitor_check_now_blocked_over_cap(client, monkeypatch):
     body = r.json()["detail"]
     assert body == {
         "blocked": True,
-        "code": "meta_daily_cap",
+        "code": "trial_daily_cap",
         "message": "You've used today's free allowance — resets tomorrow. Upgrade to keep going.",
     }
     admin.monitor_check_now.assert_not_awaited()
@@ -382,8 +382,8 @@ def test_add_issue_comment_requires_body_field(client):
 
 
 def test_add_issue_comment_blocked_over_cap(client, monkeypatch):
-    """A trial_local owner over the free-tier $3/day Meta cap gets a 402
-    with the structured meta_daily_cap payload -- BEFORE the request ever
+    """A trial_local owner over the free-tier $3/day $3/day trial cap gets a 402
+    with the structured trial_daily_cap payload -- BEFORE the request ever
     reaches Paperclip (a comment triggers Friday to run server-side, so the
     check must run ahead of the proxy call to actually stop the spend)."""
     admin = MagicMock()
@@ -402,7 +402,7 @@ def test_add_issue_comment_blocked_over_cap(client, monkeypatch):
     body = r.json()["detail"]
     assert body == {
         "blocked": True,
-        "code": "meta_daily_cap",
+        "code": "trial_daily_cap",
         "message": "You've used today's free allowance — resets tomorrow. Upgrade to keep going.",
     }
     admin.add_issue_comment.assert_not_awaited()

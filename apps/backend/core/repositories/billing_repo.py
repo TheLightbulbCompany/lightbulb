@@ -474,7 +474,7 @@ async def delete(owner_id: str) -> None:
     await run_in_thread(table.delete_item, Key={"owner_id": owner_id})
 
 
-async def add_meta_daily_spend(owner_id: str, date: str, delta_microcents: int) -> int:
+async def add_trial_daily_spend(owner_id: str, date: str, delta_microcents: int) -> int:
     """Atomically add ``delta_microcents`` to the free-tier daily-spend
     counter for ``date`` (a ``YYYY-MM-DD`` UTC date key) and return the NEW
     total for that date.
@@ -485,9 +485,9 @@ async def add_meta_daily_spend(owner_id: str, date: str, delta_microcents: int) 
     prices every model invocation at the AWS layer and ADDs it here. No
     in-band backend path writes it; two writers would double-count.
 
-    The attribute name (``meta_daily_spend_microcents``) is a historical
-    holdover from the Meta free tier and is kept deliberately — live rows
-    carry it. It is now simply the trial daily-spend counter.
+    The attribute is ``trial_daily_spend_microcents`` — a per-date map on the
+    billing row (``{"YYYY-MM-DD": microcents}``), keyed by UTC date so it resets
+    for free each midnight.
 
     The increment is a nested-path ``SET`` with ``if_not_exists`` rather than
     an ``ADD``. Both forms are accepted by a real DynamoDB engine on a nested
@@ -499,8 +499,8 @@ async def add_meta_daily_spend(owner_id: str, date: str, delta_microcents: int) 
     construct that needs no argument to defend.
 
     A nested ``SET`` still requires the parent map to already exist, and a
-    single combined expression (``SET meta_daily_spend_microcents =
-    if_not_exists(...), meta_daily_spend_microcents.#d = ...``) is REJECTED —
+    single combined expression (``SET trial_daily_spend_microcents =
+    if_not_exists(...), trial_daily_spend_microcents.#d = ...``) is REJECTED —
     ``ValidationException: Two document paths overlap with each other`` — so
     this stays a guarded two-step: (1) initialize the map to ``{}`` only if
     the row exists and the map is absent (a no-op, swallowed
@@ -514,9 +514,9 @@ async def add_meta_daily_spend(owner_id: str, date: str, delta_microcents: int) 
         await run_in_thread(
             table.update_item,
             Key={"owner_id": owner_id},
-            UpdateExpression="SET meta_daily_spend_microcents = :empty",
+            UpdateExpression="SET trial_daily_spend_microcents = :empty",
             ExpressionAttributeValues={":empty": {}},
-            ConditionExpression=("attribute_exists(owner_id) AND attribute_not_exists(meta_daily_spend_microcents)"),
+            ConditionExpression=("attribute_exists(owner_id) AND attribute_not_exists(trial_daily_spend_microcents)"),
         )
     except ClientError as e:
         if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
@@ -529,7 +529,7 @@ async def add_meta_daily_spend(owner_id: str, date: str, delta_microcents: int) 
         table.update_item,
         Key={"owner_id": owner_id},
         UpdateExpression=(
-            "SET meta_daily_spend_microcents.#d = if_not_exists(meta_daily_spend_microcents.#d, :zero) + :delta"
+            "SET trial_daily_spend_microcents.#d = if_not_exists(trial_daily_spend_microcents.#d, :zero) + :delta"
         ),
         ExpressionAttributeNames={"#d": date},
         ExpressionAttributeValues={
@@ -540,14 +540,14 @@ async def add_meta_daily_spend(owner_id: str, date: str, delta_microcents: int) 
         ReturnValues="ALL_NEW",
     )
     attrs = response.get("Attributes", {})
-    return int(attrs.get("meta_daily_spend_microcents", {}).get(date, 0))
+    return int(attrs.get("trial_daily_spend_microcents", {}).get(date, 0))
 
 
-async def get_meta_daily_spend(owner_id: str, date: str) -> int:
+async def get_trial_daily_spend(owner_id: str, date: str) -> int:
     """Read-only lookup of the free-tier daily-spend counter for ``date``.
     Returns 0 when the owner has no billing row, or the row exists but has no
     spend recorded for that date."""
     item = await get_by_owner_id(owner_id)
     if not item:
         return 0
-    return int(item.get("meta_daily_spend_microcents", {}).get(date, 0))
+    return int(item.get("trial_daily_spend_microcents", {}).get(date, 0))

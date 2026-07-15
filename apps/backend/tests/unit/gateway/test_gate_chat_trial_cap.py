@@ -25,7 +25,7 @@ from core.gateway.connection_pool import GatewayConnection, GatewayConnectionPoo
 @pytest.mark.asyncio
 async def test_gate_blocks_trial_owner_at_cap():
     """A trial_local owner at/over the daily cap is blocked with the
-    meta_daily_cap code — the turn must never reach OpenClaw.
+    trial_daily_cap code — the turn must never reach OpenClaw.
 
     Also the trial_cap_reached telemetry site: the block fires the
     once-per-owner-per-day PostHog capture."""
@@ -46,7 +46,7 @@ async def test_gate_blocks_trial_owner_at_cap():
         gate = await pool.gate_chat(user_id="u", owner_id="u", session_key="sk1")
 
     assert gate["blocked"] is True
-    assert gate["code"] == "meta_daily_cap"
+    assert gate["code"] == "trial_daily_cap"
     assert isinstance(gate["message"], str) and gate["message"]
     cap_mock.assert_awaited_once_with("u", {"subscription_status": "trial_local"})
     capture_mock.assert_called_once_with(owner_id="u", event="trial_cap_reached")
@@ -64,11 +64,11 @@ async def test_gate_allows_trial_owner_under_cap_and_writes_nothing():
             new=AsyncMock(return_value={"subscription_status": "trial_local"}),
         ),
         patch(
-            "core.repositories.billing_repo.get_meta_daily_spend",
+            "core.repositories.billing_repo.get_trial_daily_spend",
             new=AsyncMock(return_value=0),
         ),
         patch(
-            "core.repositories.billing_repo.add_meta_daily_spend",
+            "core.repositories.billing_repo.add_trial_daily_spend",
             new=AsyncMock(),
         ) as add_mock,
         patch(
@@ -178,7 +178,7 @@ async def test_gate_blocks_expired_trial_before_the_cap_check():
             ),
         ),
         patch(
-            "core.services.trial_cap.billing_repo.get_meta_daily_spend",
+            "core.services.trial_cap.billing_repo.get_trial_daily_spend",
             new=AsyncMock(return_value=0),
         ) as spend_mock,
     ):
@@ -254,7 +254,7 @@ async def test_usage_path_never_writes_the_cap_counter(session_key):
 
     with (
         patch("core.services.usage_service.record_usage", new=AsyncMock()) as record_mock,
-        patch("core.repositories.billing_repo.add_meta_daily_spend", new=AsyncMock()) as add_mock,
+        patch("core.repositories.billing_repo.add_trial_daily_spend", new=AsyncMock()) as add_mock,
     ):
         await conn._fetch_and_record_usage(session_key, member_user_id="member_1")
 

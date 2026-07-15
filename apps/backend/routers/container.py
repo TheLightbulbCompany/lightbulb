@@ -28,7 +28,7 @@ from core.services.container_provision import (
 from core.services.provision_gate import (
     evaluate_provision_gate,
     maybe_restore_trial_bedrock,
-    meta_daily_cap_gate,
+    trial_daily_cap_gate,
     trial_expired_gate,
 )
 from core.services.stripe_webhook_handlers import CONVERTING_SUBSTATUS, maybe_resume_stuck_conversion
@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 # straight to the gate that renders it. Keeping them in one map means a new
 # refusal reason cannot be added without deciding what the owner sees.
 _TRIAL_REFUSAL_GATES = {
-    START_REFUSED_CAP: meta_daily_cap_gate,
+    START_REFUSED_CAP: trial_daily_cap_gate,
     START_REFUSED_EXPIRED: trial_expired_gate,
 }
 
@@ -149,7 +149,7 @@ async def container_status(
         # gate. Otherwise the gate sees no billing row, returns signup_required,
         # and this endpoint 404s below — before ensure_user_ready (the
         # background trial-creator) is ever dispatched — trapping a fresh
-        # personal signup on the ProviderPicker instead of provisioning Meta.
+        # personal signup on the ProviderPicker instead of provisioning the trial container.
         # Idempotent conditional put; no-op for orgs and for owners who already
         # have a row.
         await ensure_personal_trial_default(auth, owner_id)

@@ -525,10 +525,10 @@ def _claim_request(request_id):
 
 
 def _add_daily_spend(owner_id, date_key, delta_microcents):
-    """ADD ``delta_microcents`` to billing-accounts.meta_daily_spend_microcents.{date}
+    """ADD ``delta_microcents`` to billing-accounts.trial_daily_spend_microcents.{date}
     and return the NEW total for that day.
 
-    Mirrors billing_repo.add_meta_daily_spend in raw boto3. It is a GUARDED
+    Mirrors billing_repo.add_trial_daily_spend in raw boto3. It is a GUARDED
     TWO-STEP because DynamoDB rejects a SET on a map and an ADD on a nested key
     of that same map in one UpdateExpression ("Two document paths overlap"):
       1. initialize the map to {} only if the row exists and the map is absent
@@ -547,9 +547,9 @@ def _add_daily_spend(owner_id, date_key, delta_microcents):
         _ddb().update_item(
             TableName=table,
             Key={"owner_id": {"S": owner_id}},
-            UpdateExpression="SET meta_daily_spend_microcents = :empty",
+            UpdateExpression="SET trial_daily_spend_microcents = :empty",
             ExpressionAttributeValues={":empty": {"M": {}}},
-            ConditionExpression=("attribute_exists(owner_id) AND attribute_not_exists(meta_daily_spend_microcents)"),
+            ConditionExpression=("attribute_exists(owner_id) AND attribute_not_exists(trial_daily_spend_microcents)"),
         )
     except ClientError as e:
         if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
@@ -560,12 +560,12 @@ def _add_daily_spend(owner_id, date_key, delta_microcents):
     # Nested-path SET + if_not_exists, not ADD. Both are legal on a nested
     # leaf against a real DynamoDB engine, but AWS recommends SET over ADD and
     # this write IS the spend fence — an increment that silently fails to
-    # apply is an unbounded bill. Mirrors billing_repo.add_meta_daily_spend.
+    # apply is an unbounded bill. Mirrors billing_repo.add_trial_daily_spend.
     resp = _ddb().update_item(
         TableName=table,
         Key={"owner_id": {"S": owner_id}},
         UpdateExpression=(
-            "SET meta_daily_spend_microcents.#d = if_not_exists(meta_daily_spend_microcents.#d, :zero) + :delta"
+            "SET trial_daily_spend_microcents.#d = if_not_exists(trial_daily_spend_microcents.#d, :zero) + :delta"
         ),
         ExpressionAttributeNames={"#d": date_key},
         ExpressionAttributeValues={
@@ -575,7 +575,7 @@ def _add_daily_spend(owner_id, date_key, delta_microcents):
         ConditionExpression="attribute_exists(owner_id)",
         ReturnValues="ALL_NEW",
     )
-    day = resp.get("Attributes", {}).get("meta_daily_spend_microcents", {}).get("M", {}).get(date_key, {})
+    day = resp.get("Attributes", {}).get("trial_daily_spend_microcents", {}).get("M", {}).get(date_key, {})
     return int(day.get("N", 0))
 
 

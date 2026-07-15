@@ -8,7 +8,7 @@ reverse table, then splits:
   paid  -> POST a single-event JSON array to Metronome /v1/ingest. Byte-
            identical to the pre-cap Lambda: no dedup row, no counter, no kill.
   trial -> price the record LOCALLY, ADD the microcents to
-           billing-accounts.meta_daily_spend_microcents.{UTC date}, and at
+           billing-accounts.trial_daily_spend_microcents.{UTC date}, and at
            $3/day revoke the owner's Bedrock IAM policy AND stop their ECS
            service. NEVER ingested (a trial owner has no Metronome contract).
 
@@ -144,7 +144,7 @@ def _aws_world(*, owner="org_abc", starting_spend=None, billing_row=True, contai
         if billing_row:
             item = {"owner_id": {"S": owner}, "subscription_status": {"S": "trial_local"}}
             if starting_spend is not None:
-                item["meta_daily_spend_microcents"] = {"M": {_utc_today(): {"N": str(starting_spend)}}}
+                item["trial_daily_spend_microcents"] = {"M": {_utc_today(): {"N": str(starting_spend)}}}
             ddb.put_item(TableName=BILLING_TABLE, Item=item)
         if container_row:
             ddb.put_item(TableName=CONTAINERS_TABLE, Item={"owner_id": {"S": owner}, "status": {"S": "running"}})
@@ -156,9 +156,9 @@ def _aws_world(*, owner="org_abc", starting_spend=None, billing_row=True, contai
 
 
 def _daily_spend(ddb, owner="org_abc"):
-    """The owner's whole meta_daily_spend_microcents map, as {date: int}."""
+    """The owner's whole trial_daily_spend_microcents map, as {date: int}."""
     item = ddb.get_item(TableName=BILLING_TABLE, Key={"owner_id": {"S": owner}}).get("Item", {})
-    day_map = item.get("meta_daily_spend_microcents", {}).get("M", {})
+    day_map = item.get("trial_daily_spend_microcents", {}).get("M", {})
     return {date: int(v["N"]) for date, v in day_map.items()}
 
 
@@ -742,7 +742,7 @@ def test_trial_counter_accumulates_across_records():
 
 
 def test_trial_counter_initializes_map_on_a_row_that_has_none():
-    """A fresh billing row has no meta_daily_spend_microcents map at all. The
+    """A fresh billing row has no trial_daily_spend_microcents map at all. The
     conditional map-init step is what makes the nested-path SET legal."""
     import index
 

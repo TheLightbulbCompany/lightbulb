@@ -224,7 +224,7 @@ async def test_trial_local_no_provider_choice_returns_none():
             },
         )
         # Under the daily cap → the cap-check does not fire, short-circuit to None.
-        repo.get_meta_daily_spend = AsyncMock(return_value=0)
+        repo.get_trial_daily_spend = AsyncMock(return_value=0)
         gate = await evaluate_provision_gate(
             owner_id="user_x",
         )
@@ -232,9 +232,9 @@ async def test_trial_local_no_provider_choice_returns_none():
 
 
 @pytest.mark.asyncio
-async def test_trial_local_over_cap_returns_meta_daily_cap():
-    """A trial_local owner who has crossed the $3/day Meta cap gets the
-    meta_daily_cap blocked gate (the daily-limit card) instead of a None
+async def test_trial_local_over_cap_returns_trial_daily_cap():
+    """A trial_local owner who has crossed the $3/day $3/day trial cap gets the
+    trial_daily_cap blocked gate (the daily-limit card) instead of a None
     (provision-eligible) result — so /container/status shows the limit and
     never (re)provisions the container."""
     from core.services.trial_cap import CAP_MICROCENTS
@@ -244,10 +244,10 @@ async def test_trial_local_over_cap_returns_meta_daily_cap():
         patch("core.services.trial_cap.billing_repo", repo),
     ):
         repo.get_by_owner_id = AsyncMock(return_value={"subscription_status": "trial_local"})
-        repo.get_meta_daily_spend = AsyncMock(return_value=CAP_MICROCENTS)  # at cap
+        repo.get_trial_daily_spend = AsyncMock(return_value=CAP_MICROCENTS)  # at cap
         gate = await evaluate_provision_gate(owner_id="user_x")
     assert gate is not None
-    assert gate.code == "meta_daily_cap"
+    assert gate.code == "trial_daily_cap"
     assert gate.action_admin_only is False
 
 
@@ -274,7 +274,7 @@ async def test_trial_local_expired_returns_trial_expired_gate():
     assert gate.title == "Your free trial has ended"
     assert gate.action_href == "/settings?panel=billing"
     # The expiry check must short-circuit before any cap spend lookup.
-    repo.get_meta_daily_spend.assert_not_called()
+    repo.get_trial_daily_spend.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -293,7 +293,7 @@ async def test_trial_local_future_trial_end_cap_logic_unchanged_under_cap():
                 "trial_end": int(time.time()) + 3600,  # 1 hour from now
             },
         )
-        repo.get_meta_daily_spend = AsyncMock(return_value=0)
+        repo.get_trial_daily_spend = AsyncMock(return_value=0)
         gate = await evaluate_provision_gate(owner_id="user_x")
     assert gate is None
 
@@ -301,7 +301,7 @@ async def test_trial_local_future_trial_end_cap_logic_unchanged_under_cap():
 @pytest.mark.asyncio
 async def test_trial_local_future_trial_end_cap_logic_unchanged_over_cap():
     """trial_end in the future + over-cap spend still returns
-    meta_daily_cap, not trial_expired."""
+    trial_daily_cap, not trial_expired."""
     import time
 
     from core.services.trial_cap import CAP_MICROCENTS
@@ -316,10 +316,10 @@ async def test_trial_local_future_trial_end_cap_logic_unchanged_over_cap():
                 "trial_end": int(time.time()) + 3600,
             },
         )
-        repo.get_meta_daily_spend = AsyncMock(return_value=CAP_MICROCENTS)
+        repo.get_trial_daily_spend = AsyncMock(return_value=CAP_MICROCENTS)
         gate = await evaluate_provision_gate(owner_id="user_x")
     assert gate is not None
-    assert gate.code == "meta_daily_cap"
+    assert gate.code == "trial_daily_cap"
 
 
 @pytest.mark.asyncio
@@ -337,7 +337,7 @@ async def test_trial_local_missing_trial_end_not_expired():
                 # No trial_end field.
             },
         )
-        repo.get_meta_daily_spend = AsyncMock(return_value=0)
+        repo.get_trial_daily_spend = AsyncMock(return_value=0)
         gate = await evaluate_provision_gate(owner_id="user_x")
     assert gate is None
 
@@ -913,7 +913,7 @@ class TestMaybeRestoreTrialBedrock:
                 new=AsyncMock(return_value=self._trial_account()),
             ),
             patch(
-                "core.services.trial_cap.billing_repo.get_meta_daily_spend",
+                "core.services.trial_cap.billing_repo.get_trial_daily_spend",
                 new=AsyncMock(return_value=0),  # fresh UTC day, nothing spent yet
             ),
             patch("core.billing.bedrock_aip.restore_owner_bedrock", new=restore),
@@ -938,7 +938,7 @@ class TestMaybeRestoreTrialBedrock:
                 new=AsyncMock(return_value=self._trial_account()),
             ),
             patch(
-                "core.services.trial_cap.billing_repo.get_meta_daily_spend",
+                "core.services.trial_cap.billing_repo.get_trial_daily_spend",
                 new=AsyncMock(return_value=CAP_MICROCENTS),  # still at/over the cap
             ),
             patch("core.billing.bedrock_aip.restore_owner_bedrock", new=restore),
@@ -966,7 +966,7 @@ class TestMaybeRestoreTrialBedrock:
                 new=AsyncMock(return_value=self._trial_account(trial_end=int(time.time()) - 60)),
             ),
             patch(
-                "core.services.trial_cap.billing_repo.get_meta_daily_spend",
+                "core.services.trial_cap.billing_repo.get_trial_daily_spend",
                 new=AsyncMock(return_value=0),
             ),
             patch("core.billing.bedrock_aip.restore_owner_bedrock", new=restore),
@@ -1012,7 +1012,7 @@ class TestMaybeRestoreTrialBedrock:
                 new=AsyncMock(return_value=self._trial_account()),
             ),
             patch(
-                "core.services.trial_cap.billing_repo.get_meta_daily_spend",
+                "core.services.trial_cap.billing_repo.get_trial_daily_spend",
                 new=AsyncMock(return_value=0),
             ),
             patch("core.billing.bedrock_aip.restore_owner_bedrock", new=restore),
@@ -1041,7 +1041,7 @@ class TestMaybeRestoreTrialBedrock:
                 "core.services.provision_gate.billing_repo.get_by_owner_id",
                 new=AsyncMock(return_value={"subscription_status": "active"}),
             ),
-            patch("core.services.trial_cap.billing_repo.get_meta_daily_spend", new=spend_read),
+            patch("core.services.trial_cap.billing_repo.get_trial_daily_spend", new=spend_read),
             patch("core.billing.bedrock_aip.restore_owner_bedrock", new=restore),
         ):
             await maybe_restore_trial_bedrock(owner_id="user_paid", container=container)

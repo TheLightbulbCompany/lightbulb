@@ -571,7 +571,7 @@ Trial containers scale to zero when idle and wake on the next `/container/status
 
 Three provider paths the user / org chooses between (stored on the per-owner `billing_accounts` record, not per-user):
 1. **Bedrock managed** — Isol8-billed Bedrock inference, draws from per-owner Bedrock credits.
-2. **ChatGPT OAuth** — personal owners only (org guard enforced server-side, see memory `project_chatgpt_oauth_personal_only`); user signs in to their own OpenAI account.
+2. **ChatGPT OAuth** — available to personal owners AND org workspaces (see `routers/oauth.py` module docstring; the org admin who completes the device-code flow is the recorded `oauth_connector_user_id`, and only they can manage/re-select it — one ChatGPT account ↔ one container); user signs in to their own OpenAI account.
 3. **BYO API key** — owner provides their own Anthropic / OpenAI key, encrypted via Fernet in `api_keys` table.
 
 The provision gate (`core/services/provision_gate.py`) blocks chat when subscription is not active, OAuth tokens are missing, or Bedrock credits are exhausted. The frontend renders a structured "blocked" state instead of an indefinite spinner — see `provision-gate-ui` plan/spec.

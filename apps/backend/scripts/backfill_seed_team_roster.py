@@ -212,7 +212,25 @@ if __name__ == "__main__":
         "--env",
         required=True,
         choices=["dev", "prod"],
-        help="Environment label (informational; doesn't change DDB targeting).",
+        help=(
+            "Target environment. Must match ENVIRONMENT when that is set; "
+            "exported as ENVIRONMENT otherwise (get_admin_session_cookie and "
+            "settings.PAPERCLIP_INTERNAL_URL resolve per-env from it)."
+        ),
     )
     args = parser.parse_args()
+
+    # The admin-session helper picks its Secrets Manager path from
+    # ENVIRONMENT, and settings resolve the Paperclip URL from it — an
+    # unset/conflicting value would sign in against the wrong stage (or
+    # `isol8//...`). Set it from --env BEFORE any core import runs, and
+    # refuse a mismatch rather than silently preferring either value.
+    import os
+
+    current_env = os.environ.get("ENVIRONMENT")
+    if current_env and current_env != args.env:
+        print(f"ENVIRONMENT={current_env} conflicts with --env {args.env}; refusing to run.")
+        sys.exit(1)
+    os.environ["ENVIRONMENT"] = args.env
+
     sys.exit(asyncio.run(main(apply=args.apply, env=args.env)))

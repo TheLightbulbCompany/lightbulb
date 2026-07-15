@@ -135,8 +135,10 @@ subscription** for seat-billed team workspaces. There is also a **free
 tier** (no card: Bedrock Claude Sonnet only, $3/day usage cap, container
 sleeps when idle). Inference runs on one of
 three provider paths chosen by the owner: **Bedrock managed** (Isol8-billed
-credits), **ChatGPT OAuth** (the owner's own OpenAI account; personal
-accounts only), or **BYO API key** (owner's Anthropic/OpenAI key).
+credits), **ChatGPT OAuth** (the owner's own OpenAI account — available to
+personal owners and to org workspaces, where the workspace owner/admin who
+completed the connection is the only one who can manage it; one ChatGPT
+account per container), or **BYO API key** (owner's Anthropic/OpenAI key).
 
 **Never state the owner's plan or provider from memory.** Read
 `~/.openclaw/isol8-facts.json` — Isol8 keeps it current:

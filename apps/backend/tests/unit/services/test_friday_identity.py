@@ -682,3 +682,10 @@ def test_migrate_legacy_user_md_preserves_owner_edited_provider_line():
     # The plan line migrated, but the owner-edited provider line stays.
     assert "my own custom note about providers" in content
     assert "isol8-facts.json" in content
+
+
+def test_migrate_legacy_user_md_noop_when_plan_line_is_substring_only():
+    """The legacy line quoted mid-prose must not trigger a spurious write."""
+    ws = _MigrationWs("# USER.md\nSam once wrote: the seed said - **Isol8 plan:** Starter ($50/mo flat-fee) here.\n")
+    assert friday_identity._migrate_legacy_user_md(ws, "user_abc", "uuid-f") is False
+    assert ws.written is None

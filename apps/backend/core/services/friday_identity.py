@@ -550,17 +550,25 @@ def _migrate_legacy_user_md(workspace: Workspace, owner_id: str, agent_uuid: str
     if _LEGACY_PLAN_LINE not in content:
         return False
     out: list[str] = []
+    changed = False
     for line in content.splitlines():
         stripped = line.rstrip()
         if stripped == _LEGACY_PLAN_LINE:
             out.append(_FACTS_POINTER_LINE_1)
             out.append(_FACTS_POINTER_LINE_2)
+            changed = True
             continue
         if stripped.startswith(_LEGACY_PROVIDER_PREFIX):
             label = stripped[len(_LEGACY_PROVIDER_PREFIX) :]
             if label in _LEGACY_PROVIDER_LABELS or label.startswith("unknown ("):
+                changed = True
                 continue
         out.append(line)
+    if not changed:
+        # The plan line appeared only as a substring of some other line (e.g.
+        # quoted inside owner-written prose) — nothing to migrate; skip the
+        # spurious write and the migrated metric.
+        return False
     new_content = "\n".join(out)
     if content.endswith("\n"):
         new_content += "\n"

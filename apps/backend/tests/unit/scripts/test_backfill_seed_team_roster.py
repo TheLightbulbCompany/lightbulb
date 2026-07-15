@@ -220,3 +220,25 @@ def test_markerless_friday_needs_name_and_role():
     assert "agent-user-ceo" not in patches
     assert patches["agent-friday"]["title"] == FRIDAY_TITLE
     assert patches["agent-atlas"]["reportsTo"] == "agent-friday"
+
+
+@pytest.mark.asyncio
+async def test_process_company_warns_on_partially_missing_seed_team(capsys):
+    """Friday patchable but the seeded Atlas gone from the roster: the WARN
+    must still fire so an --apply sweep surfaces owners needing attention."""
+    admin = MagicMock()
+    admin.list_agents = AsyncMock(return_value=[_bare_friday()])
+    admin.patch_agent = AsyncMock()
+
+    count = await process_company(
+        admin,
+        "cookie",
+        "user_1",
+        "co_1",
+        apply=False,
+        seeded_agent_ids=["agent-friday", "agent-atlas"],
+    )
+
+    out = capsys.readouterr().out
+    assert count == 1  # Friday still gets its would-patch line
+    assert "1 seeded agent(s) missing from roster" in out

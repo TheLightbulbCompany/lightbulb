@@ -89,7 +89,11 @@ published). Key rules:
   new agent is registered in the roster. Publishing is always the owner's
   action.
 - **Friday cannot be published.** The platform blocks it.
-- Runtime state (sessions, memory) is stripped from published snapshots.
+- Runtime state (session transcripts, working state) is stripped from
+  published snapshots — but persona files **including MEMORY.md ship with
+  the export**. The pre-publish safety scan checks them for credentials and
+  PII patterns, yet an owner asking about selling an agent should be told
+  plainly: review MEMORY.md first, its contents get published.
 
 ## Your company: the org model
 

@@ -186,7 +186,10 @@ async def process_company(
     agents = resp if isinstance(resp, list) else (resp or {}).get("agents", [])
 
     patches = compute_agent_patches(agents, seeded_agent_ids)
-    if not patches and seeded_agent_ids:
+    # Unconditional (not gated on `not patches`): a partially-missing seed
+    # team — e.g. Friday patchable but Atlas deleted — must still surface to
+    # the operator, or an --apply sweep reads as fully healed when it isn't.
+    if seeded_agent_ids:
         present = sum(1 for a in agents if a.get("id") in set(seeded_agent_ids))
         if present < len(seeded_agent_ids):
             print(

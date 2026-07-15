@@ -31,6 +31,17 @@ from core.containers.ecs_manager import EcsManager
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _provision_lease_stub(monkeypatch):
+    """Direct provision_user_container calls are lease-fenced now; stub the
+    lease primitives (own moto-backed suite: test_container_repo_provision_claim)."""
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr("core.repositories.container_repo.takeover_provision", AsyncMock(return_value="test-claim"))
+    monkeypatch.setattr("core.repositories.container_repo.update_container_leased", AsyncMock())
+    monkeypatch.setattr("core.repositories.container_repo.release_provision_to_error", AsyncMock())
+
+
 @pytest.fixture
 def mock_ecs_client():
     client = MagicMock()

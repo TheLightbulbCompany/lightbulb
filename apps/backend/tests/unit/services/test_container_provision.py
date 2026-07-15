@@ -112,6 +112,25 @@ async def test_resolve_provider_choice_no_row_defaults_to_bedrock():
     assert result == ("bedrock_claude", None)
 
 
+@pytest.fixture(autouse=True)
+def _claim_always_wins():
+    """background_provision's FIRST act is the single-flight lease claim.
+    Default it to a won claim so the pre-existing dispatch tests exercise the
+    provision path; the claim-semantics tests below override this patch with
+    their own (innermost patch wins)."""
+    with (
+        patch(
+            "core.services.container_provision.container_repo.try_claim_provision",
+            new=AsyncMock(return_value="claim-fixture"),
+        ),
+        patch(
+            "core.services.container_provision.container_repo.release_provision_to_error",
+            new=AsyncMock(),
+        ),
+    ):
+        yield
+
+
 @pytest.mark.asyncio
 async def test_background_provision_resolves_provider_and_dispatches():
     """background_provision reads provider_choice from billing_repo
@@ -135,6 +154,7 @@ async def test_background_provision_resolves_provider_and_dispatches():
         provider_choice="bedrock_claude",
         byo_provider=None,
         owner_type="personal",
+        claim_id="claim-fixture",
     )
 
 
@@ -161,6 +181,7 @@ async def test_background_provision_passes_org_owner_type():
         provider_choice="chatgpt_oauth",
         byo_provider=None,
         owner_type="org",
+        claim_id="claim-fixture",
     )
 
 
@@ -258,3 +279,102 @@ async def test_pre_stage_oauth_reads_connector_writes_owner():
     read.assert_awaited_once_with(user_id="user_a", bound_to="org_1")
     write.assert_awaited_once()
     assert write.call_args.kwargs["user_id"] == "org_1"
+
+
+# ---------------------------------------------------------------------------
+# background_provision — single-flight dispatch. The claim is the FIRST act;
+# concurrent dispatches (the refresh-driven poll storm) stand down, failures
+# release the lease to error (self-healing via the poll's auto-retry), and a
+# superseded run writes nothing over the superseding run's state.
+
+
+@pytest.mark.asyncio
+async def test_background_provision_loser_stands_down_without_provisioning():
+    from core.services.container_provision import background_provision
+
+    with (
+        patch(
+            "core.services.container_provision.container_repo.try_claim_provision",
+            new=AsyncMock(return_value=None),
+        ),
+        patch("core.services.container_provision.get_ecs_manager") as ecs_factory,
+        patch("core.services.container_provision.billing_repo") as repo,
+    ):
+        await background_provision("user_1", "user_1")
+
+    ecs_factory.assert_not_called()
+    repo.get_by_owner_id.assert_not_called()  # stands down before ANY side read
+
+
+@pytest.mark.asyncio
+async def test_background_provision_winner_threads_the_fencing_token():
+    from core.services.container_provision import background_provision
+
+    manager = MagicMock()
+    manager.provision_user_container = AsyncMock(return_value="svc-1")
+    with (
+        patch(
+            "core.services.container_provision.container_repo.try_claim_provision",
+            new=AsyncMock(return_value="claim-123"),
+        ),
+        patch("core.services.container_provision.get_ecs_manager", return_value=manager),
+        patch("core.services.container_provision.billing_repo") as repo,
+    ):
+        repo.get_by_owner_id = AsyncMock(return_value={"subscription_status": "trial_local"})
+        await background_provision("user_1", "user_1")
+
+    kwargs = manager.provision_user_container.await_args.kwargs
+    assert kwargs["claim_id"] == "claim-123"
+
+
+@pytest.mark.asyncio
+async def test_background_provision_failure_releases_the_lease_to_error():
+    from core.services.container_provision import background_provision
+
+    manager = MagicMock()
+    manager.provision_user_container = AsyncMock(side_effect=RuntimeError("mint blew up"))
+    release = AsyncMock()
+    with (
+        patch(
+            "core.services.container_provision.container_repo.try_claim_provision",
+            new=AsyncMock(return_value="claim-123"),
+        ),
+        patch(
+            "core.services.container_provision.container_repo.release_provision_to_error",
+            new=release,
+        ),
+        patch("core.services.container_provision.get_ecs_manager", return_value=manager),
+        patch("core.services.container_provision.billing_repo") as repo,
+    ):
+        repo.get_by_owner_id = AsyncMock(return_value={"subscription_status": "trial_local"})
+        await background_provision("user_1", "user_1")  # must not raise (create_task target)
+
+    release.assert_awaited_once_with("user_1", "claim-123")
+
+
+@pytest.mark.asyncio
+async def test_background_provision_superseded_writes_nothing():
+    """A deliberate reprovision took over mid-run: the poll run must stop
+    quietly — releasing to error here would clobber the superseding run."""
+    from core.repositories.container_repo import ProvisionSuperseded
+    from core.services.container_provision import background_provision
+
+    manager = MagicMock()
+    manager.provision_user_container = AsyncMock(side_effect=ProvisionSuperseded("taken over"))
+    release = AsyncMock()
+    with (
+        patch(
+            "core.services.container_provision.container_repo.try_claim_provision",
+            new=AsyncMock(return_value="claim-123"),
+        ),
+        patch(
+            "core.services.container_provision.container_repo.release_provision_to_error",
+            new=release,
+        ),
+        patch("core.services.container_provision.get_ecs_manager", return_value=manager),
+        patch("core.services.container_provision.billing_repo") as repo,
+    ):
+        repo.get_by_owner_id = AsyncMock(return_value={"subscription_status": "trial_local"})
+        await background_provision("user_1", "user_1")
+
+    release.assert_not_awaited()

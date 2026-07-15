@@ -33,6 +33,28 @@ _TEST_AIP_ARNS = {
 
 
 @pytest.fixture(autouse=True)
+def _provision_lease_stub(monkeypatch):
+    """provision_user_container is now lease-fenced: a direct call (the
+    deliberate-door path these tests exercise) takes the lease over and
+    checkpoints it, which are real DynamoDB conditional writes. Stub the lease
+    primitives so the tests keep exercising the provisioning logic itself;
+    the lease semantics have their own moto-backed suite
+    (test_container_repo_provision_claim.py)."""
+    monkeypatch.setattr(
+        "core.repositories.container_repo.takeover_provision",
+        AsyncMock(return_value="test-claim"),
+    )
+    monkeypatch.setattr(
+        "core.repositories.container_repo.update_container_leased",
+        AsyncMock(),
+    )
+    monkeypatch.setattr(
+        "core.repositories.container_repo.release_provision_to_error",
+        AsyncMock(),
+    )
+
+
+@pytest.fixture(autouse=True)
 def _mock_bedrock_mint(monkeypatch):
     """Stub the synchronous per-owner AIP + scoped-role mint that the
     bedrock_claude provision branch now runs (Task 9). These tests drive that
@@ -2928,3 +2950,86 @@ def test_start_refusal_codes_match_the_trial_cap_reasons():
 
     assert START_REFUSED_CAP == trial_cap.DAILY_CAP
     assert START_REFUSED_EXPIRED == trial_cap.TRIAL_EXPIRED
+
+
+class TestProvisionLeaseFencing:
+    """Codex P1/P2 on the lease PR: the fence must reach INSIDE
+    create_user_service, and ECS 'liveness' must mean live."""
+
+    @pytest.mark.asyncio
+    async def test_superseded_run_cannot_deposit_its_row_before_service_create(self, manager, monkeypatch):
+        """A run superseded during the mint window must raise at the pre-upsert
+        checkpoint — BEFORE writing its gateway_token/AIP map onto the row and
+        before any ECS artifact is registered."""
+        from core.repositories.container_repo import ProvisionSuperseded
+
+        monkeypatch.setattr(
+            "core.repositories.container_repo.update_container_leased",
+            AsyncMock(side_effect=ProvisionSuperseded("taken over")),
+        )
+        upsert = AsyncMock()
+        monkeypatch.setattr("core.repositories.container_repo.upsert", upsert)
+
+        with pytest.raises(ProvisionSuperseded):
+            await manager.create_user_service("user_z", "gw-token", claim_id="stale-claim")
+
+        upsert.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_claimless_create_user_service_is_unfenced(self, manager, monkeypatch):
+        """debug.py calls create_user_service directly with no lease — the
+        checkpoint must no-op, not blow up."""
+        leased = AsyncMock()
+        monkeypatch.setattr("core.repositories.container_repo.update_container_leased", leased)
+        monkeypatch.setattr("core.repositories.container_repo.upsert", AsyncMock())
+        # Fail fast inside the AWS steps — we only care that no checkpoint ran
+        # and the upsert was reached.
+        monkeypatch.setattr(manager, "_create_access_point", MagicMock(side_effect=RuntimeError("stop here")))
+        monkeypatch.setattr("core.repositories.container_repo.update_fields", AsyncMock())
+        monkeypatch.setattr("core.repositories.container_repo.update_status", AsyncMock())
+
+        with pytest.raises(Exception):
+            await manager.create_user_service("user_d", "gw-token")
+
+        leased.assert_not_awaited()
+
+    def _describe(self, *, desired=1, running=0, rollout=None, status="ACTIVE"):
+        svc = {"status": status, "desiredCount": desired, "runningCount": running}
+        if rollout is not None:
+            svc["deployments"] = [{"status": "PRIMARY", "rolloutState": rollout}]
+        return {"services": [svc]}
+
+    @pytest.mark.asyncio
+    async def test_has_live_service_liveness_matrix(self, manager, monkeypatch):
+        """desiredCount alone is not liveness: a crash-looping deployment
+        (ACTIVE, desired=1, running=0, rollout FAILED) must NOT count as live,
+        or stale-lease recovery is suppressed forever."""
+        monkeypatch.setattr(
+            "core.repositories.container_repo.get_by_owner_id",
+            AsyncMock(return_value={"owner_id": "u", "service_name": "svc-u"}),
+        )
+
+        cases = [
+            # (desired, running, rollout, expected)
+            (1, 1, "COMPLETED", True),  # healthy running task
+            (1, 0, "IN_PROGRESS", True),  # legitimate boot window
+            (1, 0, "FAILED", False),  # THE WEDGE: crash-loop must be reclaimable
+            (1, 0, "COMPLETED", False),  # settled with nothing running
+            (0, 0, "COMPLETED", False),  # scaled to zero
+        ]
+        for desired, running, rollout, expected in cases:
+            manager._ecs.describe_services = MagicMock(
+                return_value=self._describe(desired=desired, running=running, rollout=rollout)
+            )
+            assert await manager.has_live_service("u") is expected, (desired, running, rollout)
+
+    @pytest.mark.asyncio
+    async def test_has_live_service_fails_safe_on_blind_describe(self, manager, monkeypatch):
+        """A describe failure must assume LIVE (never re-provision on a blind
+        read) — the recovery can wait a poll; a wrong force-restart cannot."""
+        monkeypatch.setattr(
+            "core.repositories.container_repo.get_by_owner_id",
+            AsyncMock(return_value={"owner_id": "u", "service_name": "svc-u"}),
+        )
+        manager._ecs.describe_services = MagicMock(side_effect=RuntimeError("ecs down"))
+        assert await manager.has_live_service("u") is True

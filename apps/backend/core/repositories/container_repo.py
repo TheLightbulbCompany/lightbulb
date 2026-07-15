@@ -1,11 +1,32 @@
 """Container repository -- DynamoDB operations for the containers table."""
 
+import time
 import uuid
 
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
 from core.dynamodb import get_table, run_in_thread, utc_now_iso
+
+# How long a provision lease (provision_claim_id + provision_claimed_at) stays
+# exclusive with no checkpoint refresh before it is considered abandoned. Every
+# leased checkpoint write refreshes the stamp, so this measures the gap BETWEEN
+# steps of a live provision (seconds), not the total provision time — 300s only
+# elapses when the process died mid-provision. The post-start boot phase (up to
+# ~12 min) is deliberately NOT covered by the lease: the stale-recovery path in
+# routers/container.py checks ECS for a live service before re-claiming, so a
+# slow-but-healthy boot is never re-provisioned on top of.
+PROVISION_CLAIM_STALE_S = 300
+
+
+class ProvisionSuperseded(Exception):
+    """This run's provision lease was taken over by a newer run.
+
+    Raised by ``update_container_leased`` when the row's ``provision_claim_id``
+    no longer matches — a deliberate reprovision (conversion, /recover, admin)
+    has taken over, or a stale lease was re-claimed. The superseded run must
+    stop before its next side effect; it must NOT write an error status (the
+    row now belongs to the superseding run)."""
 
 
 def _get_table():
@@ -76,7 +97,15 @@ async def scan_all() -> list[dict]:
 
 
 async def upsert(owner_id: str, fields: dict) -> dict:
-    """Create or update a container record. Preserves id and created_at on existing items."""
+    """Create or update a container record. Preserves id and created_at on existing items.
+
+    Also preserves the provision lease (``provision_claim_id`` +
+    ``provision_claimed_at``): this put_item REPLACES the whole item, and
+    create_user_service upserts mid-provision — dropping the lease here would
+    make the in-flight provision look stale/unowned and re-claimable while it
+    is still running. (PR 2 replaces this whole-item write with a scoped
+    UpdateItem, which removes the need to preserve anything.)
+    """
     table = _get_table()
     existing = await get_by_owner_id(owner_id)
 
@@ -88,11 +117,209 @@ async def upsert(owner_id: str, fields: dict) -> dict:
         "updated_at": now,
         **fields,
     }
+    for lease_field in ("provision_claim_id", "provision_claimed_at"):
+        if existing and lease_field in existing and lease_field not in fields:
+            item[lease_field] = existing[lease_field]
     # Ensure owner_id is not overridden by fields
     item["owner_id"] = owner_id
 
     await run_in_thread(table.put_item, Item=item)
     return item
+
+
+async def try_claim_provision(owner_id: str) -> str | None:
+    """Atomically claim the right to provision this owner's container. Returns
+    the fencing token (``provision_claim_id``) iff THIS caller won; None when a
+    provision is already in flight.
+
+    THE RACE THIS CLOSES: a fresh owner's ``GET /container/status`` is polled
+    every ~3s, and the container row historically wasn't written until deep
+    inside the provision (create_user_service), AFTER the Bedrock AIP mint. So
+    two polls (a page refresh mid-provision) both saw "no row", both dispatched
+    ``background_provision``, and the two full provisions interleaved — each
+    minted its own inference profile (Bedrock does not enforce name-uniqueness)
+    and one's ARN landed in the container config while the other's landed in
+    the IAM policy: AccessDenied on every model call. Seen live on prod.
+
+    This makes the row's creation itself the gate: the dispatch's FIRST act is
+    an atomic conditional write that creates/updates the row to
+    ``status="provisioning"`` and stamps the lease. DynamoDB serializes it
+    across ALL backend tasks — which matters even at desiredCount=1, because
+    rolling deploys run at maximumPercent=200, so two backend tasks coexist
+    during every deploy. An in-process lock (the ``_org_provision_locks``
+    pattern) would reopen the race in that window.
+
+    The returned claim_id is a FENCING TOKEN: the provision threads it through
+    every subsequent row write (``update_container_leased``), so a run whose
+    lease was taken over aborts at its next checkpoint instead of poisoning the
+    winner's writes.
+
+    Claimable: no row, ``error``, ``stopped``, or a ``provisioning`` row whose
+    lease is stale (``provision_claimed_at`` absent — legacy/wedged rows — or
+    older than PROVISION_CLAIM_STALE_S with no checkpoint refresh). NOT
+    claimable: ``running``, or a fresh ``provisioning`` lease. Release is by
+    normal status transitions: failure paths flip the row to ``error``
+    (immediately re-claimable, and the status poll's existing error auto-retry
+    re-dispatches), success ends at ``running``.
+    """
+    table = _get_table()
+    claim_id = str(uuid.uuid4())
+    now_epoch = int(time.time())
+    now_iso = utc_now_iso()
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression=(
+                "SET #s = :prov, substatus = :sub, provision_claim_id = :cid, "
+                "provision_claimed_at = :now, updated_at = :iso, "
+                "id = if_not_exists(id, :newid), created_at = if_not_exists(created_at, :iso)"
+            ),
+            ConditionExpression=(
+                "attribute_not_exists(owner_id) OR #s = :error OR #s = :stopped "
+                "OR (#s = :prov AND (attribute_not_exists(provision_claimed_at) OR provision_claimed_at < :stale))"
+            ),
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={
+                ":prov": "provisioning",
+                ":sub": "claimed",
+                ":cid": claim_id,
+                ":now": now_epoch,
+                ":iso": now_iso,
+                ":newid": str(uuid.uuid4()),
+                ":error": "error",
+                ":stopped": "stopped",
+                ":stale": now_epoch - PROVISION_CLAIM_STALE_S,
+            },
+        )
+        return claim_id
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return None
+        raise
+
+
+async def takeover_provision(owner_id: str) -> str:
+    """Unconditionally take over the provision lease — deliberate doors only
+    (trial->paid conversion, /container/recover, admin force-apply, provider
+    change, debug). Returns the new fencing token.
+
+    Never blocked: a deliberate reprovision must always win. Any in-flight
+    poll-driven provision is fenced out at its next leased checkpoint (its
+    claim_id no longer matches). Only the LEASE fields are stamped — the row's
+    ``status`` is preserved (created as "provisioning" if the row is new), so a
+    takeover on a running container does not flip the UI into the provisioning
+    stepper before the reprovision itself decides what to write.
+    """
+    table = _get_table()
+    claim_id = str(uuid.uuid4())
+    now_iso = utc_now_iso()
+    await run_in_thread(
+        table.update_item,
+        Key={"owner_id": owner_id},
+        UpdateExpression=(
+            "SET provision_claim_id = :cid, provision_claimed_at = :now, "
+            "updated_at = :iso, #s = if_not_exists(#s, :prov), "
+            "id = if_not_exists(id, :newid), created_at = if_not_exists(created_at, :iso)"
+        ),
+        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues={
+            ":cid": claim_id,
+            ":now": int(time.time()),
+            ":iso": now_iso,
+            ":prov": "provisioning",
+            ":newid": str(uuid.uuid4()),
+        },
+    )
+    return claim_id
+
+
+async def update_container_leased(owner_id: str, claim_id: str, fields: dict | None = None) -> None:
+    """Scoped, fenced row write: applies ``fields`` (may be empty — a pure
+    lease-refresh checkpoint) and refreshes the lease stamp, conditioned on
+    this run still holding the lease. Raises ``ProvisionSuperseded`` when it
+    does not — the caller must stop before its next side effect. These are the
+    CHECKPOINTS that make the fencing token real: a zombie provision is stopped
+    here, before it can write config or IAM content over the superseding
+    run's."""
+    table = _get_table()
+    names: dict[str, str] = {}
+    set_parts: list[str] = []
+    values: dict = {}
+    for i, (key, value) in enumerate((fields or {}).items()):
+        alias = f"#f{i}"
+        names[alias] = key
+        set_parts.append(f"{alias} = :v{i}")
+        values[f":v{i}"] = value
+    set_parts.append("provision_claimed_at = :now")
+    set_parts.append("updated_at = :iso")
+    kwargs: dict = {
+        "Key": {"owner_id": owner_id},
+        "UpdateExpression": "SET " + ", ".join(set_parts),
+        "ConditionExpression": "provision_claim_id = :cid",
+        "ExpressionAttributeValues": {
+            **values,
+            ":cid": claim_id,
+            ":now": int(time.time()),
+            ":iso": utc_now_iso(),
+        },
+    }
+    if names:
+        kwargs["ExpressionAttributeNames"] = names
+    try:
+        await run_in_thread(table.update_item, **kwargs)
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            raise ProvisionSuperseded(f"provision lease for {owner_id} no longer held") from e
+        raise
+
+
+async def release_provision_to_error(owner_id: str, claim_id: str) -> None:
+    """Release a held lease by flipping the row to ``error`` — immediately
+    re-claimable, and the status poll's existing error auto-retry re-dispatches,
+    so a failed provision self-heals on the next ~3s poll.
+
+    Doubly conditioned, silent no-op on either miss:
+    - on the fencing token — if the lease was taken over, the row belongs to
+      the superseding run and must not be clobbered with error;
+    - on ``status = "provisioning"`` — a failed DELIBERATE reprovision of a
+      still-RUNNING container (e.g. a force-redeploy that raised) must leave
+      the row "running": the container is, in fact, still running, and an
+      error write would send the status poll into a needless reprovision loop.
+    """
+    table = _get_table()
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET #s = :err, substatus = :sub, updated_at = :iso",
+            ConditionExpression="provision_claim_id = :cid AND #s = :prov",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={
+                ":err": "error",
+                ":sub": "provision_failed",
+                ":cid": claim_id,
+                ":prov": "provisioning",
+                ":iso": utc_now_iso(),
+            },
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+
+
+def is_provision_claim_stale(container: dict | None) -> bool:
+    """True when a ``provisioning`` row's lease has had no checkpoint refresh
+    for PROVISION_CLAIM_STALE_S — the process running it is dead. Used by the
+    status poll's stale-recovery branch (which additionally checks ECS for a
+    live service before re-dispatching, so a slow-but-healthy post-start boot
+    is never re-provisioned on top of)."""
+    if not container or container.get("status") != "provisioning":
+        return False
+    claimed_at = container.get("provision_claimed_at")
+    if claimed_at is None:
+        return True  # legacy/wedged provisioning row from before the lease existed
+    return int(claimed_at) < int(time.time()) - PROVISION_CLAIM_STALE_S
 
 
 async def update_status(owner_id: str, status: str, substatus: str | None = None) -> dict | None:

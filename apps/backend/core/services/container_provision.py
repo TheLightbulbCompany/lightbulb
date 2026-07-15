@@ -12,7 +12,8 @@ import logging
 from core.containers import get_ecs_manager
 from core.containers.config import BEDROCK_TRIAL_CHOICE
 from core.observability.logging import bind_log_context
-from core.repositories import billing_repo
+from core.repositories import billing_repo, container_repo
+from core.repositories.container_repo import ProvisionSuperseded
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,19 @@ async def background_provision(owner_id: str, clerk_user_id: str) -> None:
 
     Catches and logs all exceptions — never raises. This function is an
     asyncio.create_task target.
+
+    SINGLE-FLIGHT: the FIRST act — before any side effect, before even the
+    provider-choice read — is an atomic lease claim on the container row
+    (``container_repo.try_claim_provision``). The frontend polls
+    /container/status every ~3s and each no-row/error/stopped poll dispatches
+    this task, so under a page refresh several instances run concurrently;
+    exactly one wins the claim and provisions, the rest stand down here. This
+    is what prevents two interleaved provisions from minting duplicate Bedrock
+    inference profiles and splitting them across the container config and the
+    IAM policy (the prod incident). Deliberate reprovision doors (conversion,
+    /recover, admin, provider change) do NOT come through here — they call
+    provision_user_container directly, which takes over the lease and fences
+    this path out at its next checkpoint.
     """
     from core.auth import is_org_owner_id
 
@@ -63,6 +77,12 @@ async def background_provision(owner_id: str, clerk_user_id: str) -> None:
     # owner_id as user_id so provisioning log lines are queryable by the same
     # field as the rest of the owner's flows. (See bind_log_context docstring.)
     bind_log_context(user_id=owner_id)
+
+    claim_id = await container_repo.try_claim_provision(owner_id)
+    if claim_id is None:
+        logger.info("Provision already in flight for owner %s — standing down", owner_id)
+        _emit_provision_metric("claim_lost")
+        return
 
     try:
         provider_choice, byo_provider = await resolve_provider_choice(owner_id)
@@ -76,9 +96,25 @@ async def background_provision(owner_id: str, clerk_user_id: str) -> None:
             provider_choice=provider_choice,
             byo_provider=byo_provider,
             owner_type=owner_type,
+            claim_id=claim_id,
         )
+    except ProvisionSuperseded:
+        # A deliberate reprovision took the lease over mid-run. The row belongs
+        # to it now — stop quietly, write nothing (an error write here would
+        # clobber the superseding run's state).
+        logger.info("Provision for owner %s superseded by a deliberate reprovision — standing down", owner_id)
+        _emit_provision_metric("superseded")
     except Exception:
         logger.exception("Background provisioning failed for owner %s", owner_id)
+        # Release the lease into "error": immediately re-claimable, and the
+        # status poll's existing error auto-retry re-dispatches — a failed
+        # provision self-heals on the next ~3s poll instead of wedging the
+        # owner behind a lease that only expires by staleness. Token-
+        # conditioned, so if the lease was meanwhile taken over this no-ops.
+        try:
+            await container_repo.release_provision_to_error(owner_id, claim_id)
+        except Exception:  # noqa: BLE001 — release is best-effort
+            logger.exception("Failed to release provision lease to error for owner %s", owner_id)
         # This fire-and-forget task swallows exceptions, so its failures are
         # otherwise invisible to alarms. Emit the SAME metric+dimension set the
         # synchronous ecs_manager path uses on failure — {status: "error"}, no
@@ -87,13 +123,17 @@ async def background_provision(owner_id: str, clerk_user_id: str) -> None:
         # dimension-key set, so a `phase` dim here would create a separate
         # stream that NO alarm watches — defeating the point. The dispatch-vs-
         # sync distinction lives in the logger.exception above instead.)
-        # Best-effort: a metrics outage must not turn this swallow into a raise.
-        try:
-            from core.observability.metrics import put_metric
+        _emit_provision_metric("error")
 
-            put_metric(
-                "container.provision",
-                dimensions={"status": "error"},
-            )
-        except Exception:  # noqa: BLE001 — telemetry must never break the task
-            logger.debug("container.provision dispatch-failure metric emission failed", exc_info=True)
+
+def _emit_provision_metric(status: str) -> None:
+    """Best-effort ``container.provision`` metric — a metrics outage must never
+    turn the swallow-all task into a raise. Same single dimension key (status)
+    as the synchronous ecs_manager emissions, so every value lands on the one
+    CloudWatch stream the provision alarms watch."""
+    try:
+        from core.observability.metrics import put_metric
+
+        put_metric("container.provision", dimensions={"status": status})
+    except Exception:  # noqa: BLE001 — telemetry must never break the task
+        logger.debug("container.provision metric emission failed", exc_info=True)

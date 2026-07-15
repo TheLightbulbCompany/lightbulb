@@ -245,7 +245,20 @@ async def container_status(
     # subscription-id existence wasn't enough; we need active/trialing
     # status, and bedrock_claude users need a positive credit balance.
     retryable_states = ("error", "stopped")
-    if container.get("status") in retryable_states and not conversion_active:
+    # Stale-lease recovery: a "provisioning" row whose lease has had no
+    # checkpoint refresh for PROVISION_CLAIM_STALE_S means the process running
+    # the provision died mid-flight (a raise releases the lease to "error"
+    # immediately — only hard process death leaves it to go stale). Fold it
+    # into the retryable branch so it inherits every gate below, then let
+    # try_claim_provision's stale clause decide ATOMICALLY who re-provisions —
+    # two polls can both enter here, exactly one wins the re-claim. The ECS
+    # liveness guard keeps this from firing during the legitimate post-start
+    # boot window (the provision has returned, the lease is no longer being
+    # refreshed, but the container is healthy and starting — up to ~12 min).
+    stale_provision = container_repo.is_provision_claim_stale(
+        container
+    ) and not await get_ecs_manager().has_live_service(owner_id)
+    if (container.get("status") in retryable_states or stale_provision) and not conversion_active:
         # A container the free tier scaled to zero must NOT auto-retry/wake.
         # Surface the limit card so the frontend shows the block (not a spinner)
         # and the container stays down until the counter resets (UTC midnight)
@@ -271,7 +284,13 @@ async def container_status(
         except HTTPException:
             pass
         else:
-            await container_repo.update_status(owner_id, "provisioning", "auto_retry")
+            # No status pre-write here: background_provision's atomic lease
+            # claim IS the transition to "provisioning". A pre-write would (a)
+            # race concurrent polls into double-dispatch (the exact incident
+            # this closes) and (b) flip the row to "provisioning" with a stale
+            # lease, which the claim's stale-clause could then mis-time. The
+            # local dict mutation below only shapes THIS response; the row
+            # flips ~ms later when the dispatched task wins its claim.
             asyncio.create_task(_background_provision(owner_id, auth.user_id))
             container["status"] = "provisioning"
             container["substatus"] = "auto_retry"

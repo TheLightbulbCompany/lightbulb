@@ -1046,6 +1046,7 @@ class TestContainerStatusTrialConversion:
         return MagicMock(
             resolve_running_container=AsyncMock(return_value=((row, "10.0.0.1") if running else (None, None))),
             get_service_status=AsyncMock(return_value=row),
+            has_live_service=AsyncMock(return_value=False),
         )
 
     @staticmethod
@@ -1061,6 +1062,14 @@ class TestContainerStatusTrialConversion:
                 captured.append(coro.__qualname__)
             coro.close()
             return MagicMock()
+
+        # The stale-lease recovery branch calls this PURE predicate on the
+        # container dict; a truthy MagicMock here would make every row look
+        # like a dead provision. Use the real function.
+        from core.repositories.container_repo import is_provision_claim_stale as _real_stale
+
+        if repo is not None:
+            repo.is_provision_claim_stale = _real_stale
 
         return (
             patch("routers.container.get_ecs_manager", return_value=TestContainerStatusTrialConversion._ecs(row)),
@@ -1161,7 +1170,10 @@ class TestContainerStatusTrialConversion:
                 stack.enter_context(p)
             result = await container_status(_personal_auth())
 
-        repo.update_status.assert_awaited_once_with("user_x", "provisioning", "auto_retry")
+        # The racy status pre-write is deliberately gone — background_provision's
+        # atomic lease claim IS the transition to "provisioning" now. The poll
+        # only dispatches and shapes its own response.
+        repo.update_status.assert_not_awaited()
         assert captured == ["background_provision"], f"expected the ordinary auto-retry, got {captured}"
         assert result["status"] == "provisioning"
         assert result["substatus"] == "auto_retry"
@@ -1234,6 +1246,7 @@ class TestContainerStatusTrialBedrockRestore:
         return MagicMock(
             resolve_running_container=AsyncMock(return_value=((row, "10.0.0.1") if running else (None, None))),
             get_service_status=AsyncMock(return_value=row),
+            has_live_service=AsyncMock(return_value=False),
         )
 
     @staticmethod

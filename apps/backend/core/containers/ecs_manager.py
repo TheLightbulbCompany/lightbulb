@@ -33,6 +33,7 @@ from core.containers.config import (
 )
 from core.containers.workspace import get_workspace
 from core.repositories import container_repo
+from core.repositories.container_repo import ProvisionSuperseded
 
 logger = logging.getLogger(__name__)
 
@@ -1623,6 +1624,96 @@ class EcsManager:
         provider_choice: str,
         byo_provider: str | None = None,
         owner_type: str = "personal",
+        claim_id: str | None = None,
+    ) -> str:
+        """Fenced entry point for every container provision.
+
+        ``claim_id`` is the provision lease's fencing token
+        (container_repo.try_claim_provision). The poll-driven path
+        (background_provision) claims before calling and passes its token here.
+        A DIRECT call with no token is, by definition, a DELIBERATE reprovision
+        (trial->paid conversion, /container/recover, admin force-apply, provider
+        change, debug) — it takes the lease over unconditionally, which fences
+        any in-flight poll provision out at that run's next checkpoint. So
+        deliberate doors are never blocked, and two provisions can never
+        interleave their writes: at most one holds the lease, and the loser
+        stops before its next side effect (ProvisionSuperseded).
+
+        On any failure the lease is released to ``error`` (token- and
+        status-conditioned, see release_provision_to_error), which the status
+        poll's existing auto-retry re-claims on the next ~3s tick — a failed
+        provision self-heals with no operator.
+        """
+        # Lazy module lookup for the LEASE primitives (only): several tests
+        # wholesale-replace this module's `container_repo` binding with a
+        # MagicMock to stub row I/O; the lease has its own moto-backed suite
+        # and is stubbed at the source module instead.
+        from core.repositories import container_repo as _lease_repo
+
+        if claim_id is None:
+            claim_id = await _lease_repo.takeover_provision(user_id)
+            logger.info("Provision lease takeover for owner %s (deliberate reprovision)", user_id)
+        try:
+            return await self._provision_user_container_inner(
+                user_id,
+                provider_choice=provider_choice,
+                byo_provider=byo_provider,
+                owner_type=owner_type,
+                claim_id=claim_id,
+            )
+        except ProvisionSuperseded:
+            # A newer run owns the row now; write nothing over its state.
+            put_metric("container.provision", dimensions={"status": "superseded"})
+            raise
+        except Exception:
+            try:
+                await _lease_repo.release_provision_to_error(user_id, claim_id)
+            except Exception:  # noqa: BLE001 — release is best-effort
+                logger.exception("Failed to release provision lease for owner %s", user_id)
+            raise
+
+    async def has_live_service(self, user_id: str) -> bool:
+        """True when the owner has an ACTIVE ECS service with desiredCount > 0.
+
+        The guard for the status poll's stale-lease recovery: a provision that
+        already reached start_user_service stops refreshing its lease when it
+        RETURNS, while the container boots for up to ~12 minutes — so a stale
+        lease alone does not mean the provision is dead. If ECS shows a live
+        service, the right move is to keep waiting for the running transition,
+        not to re-provision (which would force-restart a healthy boot)."""
+        container = await container_repo.get_by_owner_id(user_id)
+        service_name = (container or {}).get("service_name")
+        if not service_name:
+            return False
+        try:
+            resp = await asyncio.to_thread(
+                self._ecs.describe_services,
+                cluster=self._cluster,
+                services=[service_name],
+            )
+        except Exception:  # noqa: BLE001 — liveness probe must not 500 the poll
+            logger.warning("has_live_service: describe_services failed for %s", user_id, exc_info=True)
+            return True  # fail SAFE: assume live, do not re-provision on a blind read
+        services = [svc for svc in resp.get("services", []) if svc.get("status") == "ACTIVE"]
+        return bool(services and services[0].get("desiredCount", 0) > 0)
+
+    async def _provision_checkpoint(self, user_id: str, claim_id: str) -> None:
+        """Verify this run still holds the provision lease and refresh its
+        stamp. Placed immediately before non-idempotent writes (service create,
+        config write) so a superseded run stops BEFORE poisoning the winner's
+        artifacts — this is what makes the fencing token real."""
+        from core.repositories import container_repo as _lease_repo
+
+        await _lease_repo.update_container_leased(user_id, claim_id)
+
+    async def _provision_user_container_inner(
+        self,
+        user_id: str,
+        *,
+        provider_choice: str,
+        byo_provider: str | None = None,
+        owner_type: str = "personal",
+        claim_id: str,
     ) -> str:
         """Provision or recover a user's container.
 
@@ -1771,6 +1862,11 @@ class EcsManager:
         # Check current state (`existing` was read above, before the mint).
         svc = self._service_exists(service_name)
 
+        # CHECKPOINT: the AIP/role mint above is done. Verify the lease is
+        # still ours (and refresh it) before any ECS/EFS side effect — a run
+        # superseded during the mint stops here.
+        await self._provision_checkpoint(user_id, claim_id)
+
         # --- Scenario: Service exists (ACTIVE or DRAINING) ---
         if svc and svc.get("status") == "ACTIVE":
             desired = svc.get("desiredCount", 0)
@@ -1818,6 +1914,10 @@ class EcsManager:
                     )
 
                 try:
+                    # CHECKPOINT before the config write — the poison write in
+                    # the double-provision incident. A superseded run must not
+                    # overwrite the winner's openclaw.json.
+                    await self._provision_checkpoint(user_id, claim_id)
                     # Reuse the existing (or freshly-minted) hook_token so the
                     # rendered openclaw.json placeholder resolves at boot
                     # against the env var we layer back onto the new task-def
@@ -1831,6 +1931,8 @@ class EcsManager:
                         owner_type=owner_type,
                         aip_arns=bedrock_aip_arns,
                     )
+                except ProvisionSuperseded:
+                    raise
                 except Exception as e:
                     logger.warning("Config write failed during restart: %s (continuing anyway)", e)
 
@@ -2032,6 +2134,11 @@ class EcsManager:
 
         # Step 3: Write configs to EFS
         try:
+            # CHECKPOINT before the config write — the poison write in the
+            # double-provision incident: this is exactly where the losing run
+            # historically overwrote the winner's openclaw.json with an AIP ARN
+            # the IAM policy did not allow.
+            await self._provision_checkpoint(user_id, claim_id)
             await self.write_user_configs(
                 user_id,
                 gateway_token,
@@ -2041,6 +2148,8 @@ class EcsManager:
                 owner_type=owner_type,
                 aip_arns=bedrock_aip_arns,
             )
+        except ProvisionSuperseded:
+            raise
         except Exception as e:
             put_metric("container.provision", dimensions={"status": "error"})
             put_metric("container.error_state")

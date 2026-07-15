@@ -210,3 +210,13 @@ def test_lone_seed_with_conflicting_signals_is_skipped():
     renamed Friday — indistinguishable) is skipped, never classified."""
     conflicted = {"id": "agent-lone", "name": "Atlas", "role": "ceo"}
     assert compute_agent_patches([conflicted], seeded_agent_ids=["agent-lone"]) == {}
+
+
+def test_markerless_friday_needs_name_and_role():
+    """Legacy rows (no marker): a user-created CEO returned first must not
+    shadow the seeded Friday — both seeds match on name+role."""
+    impostor = {"id": "agent-user-ceo", "name": "Boss", "role": "ceo"}
+    patches = compute_agent_patches([impostor, _bare_friday(), _bare_atlas()], seeded_agent_ids=None)
+    assert "agent-user-ceo" not in patches
+    assert patches["agent-friday"]["title"] == FRIDAY_TITLE
+    assert patches["agent-atlas"]["reportsTo"] == "agent-friday"

@@ -93,9 +93,15 @@ def compute_agent_patches(agents: list[dict], seeded_agent_ids: list[str] | None
             # keeps their customization — no recruiter stamp, no reparenting.
             atlas = None
     else:
-        # No marker (row predates seeded_agent_ids): role/name matching is the
-        # only handle available for these legacy rows.
-        friday = next((a for a in agents if a.get("role") == "ceo" and a.get("id")), None)
+        # No marker (row predates seeded_agent_ids): name+role matching is
+        # the only handle available for these legacy rows — for BOTH seeds.
+        # Teams permits extra role="ceo" agents, so bare role would let a
+        # user-created CEO returned first shadow the real seeded Friday; a
+        # renamed legacy seed is skipped (consistent with the Atlas match).
+        friday = next(
+            (a for a in agents if a.get("name") == "Friday" and a.get("role") == "ceo" and a.get("id")),
+            None,
+        )
         friday_ref_id = friday["id"] if friday else None
         atlas = next(
             (a for a in agents if a.get("name") == "Atlas" and a.get("role") == "general" and a.get("id")),

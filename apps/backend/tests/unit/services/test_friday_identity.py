@@ -689,3 +689,15 @@ def test_migrate_legacy_user_md_noop_when_plan_line_is_substring_only():
     ws = _MigrationWs("# USER.md\nSam once wrote: the seed said - **Isol8 plan:** Starter ($50/mo flat-fee) here.\n")
     assert friday_identity._migrate_legacy_user_md(ws, "user_abc", "uuid-f") is False
     assert ws.written is None
+
+
+def test_migrate_legacy_user_md_provider_line_needs_plan_anchor():
+    """A provider-lookalike line with the plan line only in prose (never as a
+    standalone line) must not be dropped — no anchor, no migration."""
+    ws = _MigrationWs(
+        "# USER.md\n"
+        "Note: seed used to say - **Isol8 plan:** Starter ($50/mo flat-fee) inline.\n"
+        "- **Provider:** Bedrock (Claude, Isol8-managed credits)\n"
+    )
+    assert friday_identity._migrate_legacy_user_md(ws, "user_abc", "uuid-f") is False
+    assert ws.written is None

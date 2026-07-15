@@ -558,10 +558,12 @@ def _migrate_legacy_user_md(workspace: Workspace, owner_id: str, agent_uuid: str
             out.append(_FACTS_POINTER_LINE_2)
             changed = True
             continue
-        if stripped.startswith(_LEGACY_PROVIDER_PREFIX):
+        if changed and stripped.startswith(_LEGACY_PROVIDER_PREFIX):
+            # Only dropped once the plan line has anchored the migration —
+            # the seed always wrote the pair together, and gating here keeps
+            # a lone provider-lookalike line in owner prose untouched.
             label = stripped[len(_LEGACY_PROVIDER_PREFIX) :]
             if label in _LEGACY_PROVIDER_LABELS or label.startswith("unknown ("):
-                changed = True
                 continue
         out.append(line)
     if not changed:

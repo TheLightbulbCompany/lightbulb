@@ -17,9 +17,11 @@ Defaults to dry-run; pass ``--apply`` to actually PATCH agents.
 
 Idempotent and non-destructive: only EMPTY fields are filled — a title,
 capabilities text, or reportsTo the owner customized is never overwritten,
-and a fully-populated company produces no PATCH at all. Companies whose
-Atlas was renamed (name is the only handle — role "general" is shared with
-marketplace hires) are skipped with a warning.
+and a fully-populated company produces no PATCH at all. Seed identification
+prefers the persisted ``seeded_agent_ids`` marker (rename-proof, authoritative
+when present — a missing seeded agent is skipped, never substituted); only
+markerless legacy rows fall back to role/name matching, so a renamed Atlas on
+such a row is skipped.
 
 Scan + repo patterns mirror ``backfill_paperclip_for_legacy_users.py``;
 admin client construction mirrors ``paperclip_provisioning

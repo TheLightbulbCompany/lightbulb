@@ -1,0 +1,72 @@
+import type { Metadata } from "next";
+import Link from "next/link";
+
+import { Navbar } from "@/components/landing/Navbar";
+import { Footer } from "@/components/landing/Footer";
+import { getAllPosts } from "@/content/blog";
+
+const TITLE = "Blog — isol8";
+const DESCRIPTION =
+  "Practical writing on AI agents, persistent workspaces, and building an AI team you actually own.";
+
+export const metadata: Metadata = {
+  title: TITLE,
+  description: DESCRIPTION,
+  alternates: { canonical: "/blog" },
+  openGraph: {
+    title: TITLE,
+    description: DESCRIPTION,
+    url: "/blog",
+    type: "website",
+  },
+  twitter: { card: "summary_large_image", title: TITLE, description: DESCRIPTION },
+};
+
+function formatDate(iso: string): string {
+  return new Date(`${iso}T00:00:00Z`).toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+export default function BlogIndexPage() {
+  const posts = getAllPosts();
+
+  return (
+    <main className="ld-page min-h-screen">
+      <Navbar />
+
+      <section className="blog-wrap">
+        <header className="blog-header">
+          <p className="blog-eyebrow">field_notes</p>
+          <h1 className="blog-title">The isol8 blog</h1>
+          <p className="blog-lede">{DESCRIPTION}</p>
+        </header>
+
+        <ul className="blog-list">
+          {posts.map((post) => (
+            <li key={post.slug} className="blog-card">
+              <Link href={`/blog/${post.slug}`} className="blog-card-link">
+                <div className="blog-card-meta">
+                  <time dateTime={post.date}>{formatDate(post.date)}</time>
+                  <span aria-hidden="true">·</span>
+                  <span>{post.readingMinutes} min read</span>
+                </div>
+                <h2 className="blog-card-title">{post.title}</h2>
+                <p className="blog-card-desc">{post.description}</p>
+                <span className="blog-card-cta" aria-hidden="true">
+                  Read
+                  <span className="blog-card-arrow">→</span>
+                </span>
+              </Link>
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      <Footer />
+    </main>
+  );
+}

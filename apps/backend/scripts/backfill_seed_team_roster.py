@@ -84,6 +84,10 @@ def compute_agent_patches(agents: list[dict], seeded_agent_ids: list[str] | None
             # the backfill — don't stamp CEO metadata onto it. It still
             # anchors Atlas's reportsTo via friday_ref_id.
             friday = None
+        if atlas is not None and atlas.get("role") != "general":
+            # Symmetric guard: a seeded Atlas the owner promoted/re-roled
+            # keeps their customization — no recruiter stamp, no reparenting.
+            atlas = None
     else:
         # No marker (row predates seeded_agent_ids): role/name matching is the
         # only handle available for these legacy rows.

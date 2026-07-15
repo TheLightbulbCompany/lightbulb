@@ -191,3 +191,15 @@ def test_lone_ambiguous_seed_is_skipped():
     AND renamed) is ambiguous — skip rather than guess."""
     mystery = {"id": "agent-friday", "name": "Jarvis", "role": "engineer"}
     assert compute_agent_patches([mystery], seeded_agent_ids=["agent-friday"]) == {}
+
+
+def test_role_edited_atlas_keeps_owner_customization():
+    """Symmetric to the Friday guard: a seeded Atlas the owner re-roled
+    (e.g. promoted) is never stamped with recruiter metadata."""
+    promoted_atlas = _bare_atlas() | {"role": "engineer"}
+    patches = compute_agent_patches(
+        [_bare_friday(), promoted_atlas],
+        seeded_agent_ids=["agent-friday", "agent-atlas"],
+    )
+    assert "agent-atlas" not in patches
+    assert patches["agent-friday"]["title"] == FRIDAY_TITLE

@@ -612,3 +612,73 @@ async def test_stage_single_agent_write_failure_is_swallowed():
 
     # The single write was attempted (and its error swallowed).
     workspace.write_file_if_missing.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# _migrate_legacy_user_md
+# ---------------------------------------------------------------------------
+
+_LEGACY_USER_MD = """\
+# USER.md - About Your Human
+
+- **Name:** Sam Rivers
+- **What to call them:** Sam
+- **Email:** sam@example.com
+- **Isol8 plan:** Starter ($50/mo flat-fee)
+- **Provider:** Bedrock (Claude, Isol8-managed credits)
+
+## Context
+
+Sam is building a health-tech startup. Prefers direct answers.
+"""
+
+
+class _MigrationWs:
+    def __init__(self, content):
+        self.content = content
+        self.written = None
+
+    def read_file(self, user_id, path):
+        if self.content is None:
+            raise FileNotFoundError(path)
+        return self.content
+
+    def write_file(self, user_id, path, content):
+        self.written = (path, content)
+
+
+def test_migrate_legacy_user_md_swaps_lines_and_preserves_content():
+    ws = _MigrationWs(_LEGACY_USER_MD)
+    assert friday_identity._migrate_legacy_user_md(ws, "user_abc", "uuid-f") is True
+    path, content = ws.written
+    assert path == "workspaces/uuid-f/USER.md"
+    assert "isol8-facts.json" in content
+    assert "Isol8 plan" not in content
+    assert "- **Provider:**" not in content
+    # Friday's evolved content survives untouched.
+    assert "health-tech startup" in content
+    assert "- **Name:** Sam Rivers" in content
+
+
+def test_migrate_legacy_user_md_noop_on_new_template():
+    ws = _MigrationWs("# USER.md\n- **Plan & provider:** read `~/.openclaw/isol8-facts.json`\n")
+    assert friday_identity._migrate_legacy_user_md(ws, "user_abc", "uuid-f") is False
+    assert ws.written is None
+
+
+def test_migrate_legacy_user_md_noop_when_missing():
+    ws = _MigrationWs(None)
+    assert friday_identity._migrate_legacy_user_md(ws, "user_abc", "uuid-f") is False
+
+
+def test_migrate_legacy_user_md_preserves_owner_edited_provider_line():
+    edited = _LEGACY_USER_MD.replace(
+        "- **Provider:** Bedrock (Claude, Isol8-managed credits)",
+        "- **Provider:** my own custom note about providers",
+    )
+    ws = _MigrationWs(edited)
+    assert friday_identity._migrate_legacy_user_md(ws, "user_abc", "uuid-f") is True
+    _, content = ws.written
+    # The plan line migrated, but the owner-edited provider line stays.
+    assert "my own custom note about providers" in content
+    assert "isol8-facts.json" in content

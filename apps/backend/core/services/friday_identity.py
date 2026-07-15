@@ -509,6 +509,65 @@ def _is_org_owner_id(owner_id: str) -> bool:
     return is_org_owner_id(owner_id)
 
 
+# The exact seed lines the pre-facts USER.md templates wrote. The migration
+# below only ever touches these — anything else in USER.md is Friday's
+# evolved content and must be preserved.
+_LEGACY_PLAN_LINE = "- **Isol8 plan:** Starter ($50/mo flat-fee)"
+_LEGACY_PROVIDER_PREFIX = "- **Provider:** "
+_LEGACY_PROVIDER_LABELS = (
+    "ChatGPT (their own OpenAI account)",
+    "Bedrock (Claude, Isol8-managed credits)",
+    "Bedrock (Claude Sonnet, free trial — $3/day)",
+    "BYO Anthropic key",
+    "BYO OpenAI key",
+    "BYO API key (provider unspecified)",
+)
+_FACTS_POINTER_LINE_1 = "- **Plan & provider:** read `~/.openclaw/isol8-facts.json` — Isol8 keeps it"
+_FACTS_POINTER_LINE_2 = "  current; trust it over anything remembered."
+
+
+def _migrate_legacy_user_md(workspace: Workspace, owner_id: str, agent_uuid: str) -> bool:
+    """Swap the pre-facts hardcoded plan/provider lines in an EXISTING
+    USER.md for the facts-file pointer.
+
+    Seeds are write-if-missing, so already-provisioned owners would otherwise
+    keep the stale hardcoded plan/provider in Friday's boot context forever —
+    directly contradicting the facts file the isol8 skill points at. This
+    runs on every (re)provision/config-rewrite, so the fleet heals during the
+    same image-promotion apply that ships the skill.
+
+    Surgical + idempotent: the plan line must match the legacy seed exactly,
+    and the provider line is dropped only when it carries a label the old
+    seed could have written (or its "unknown (...)" fallback). Owner-edited
+    lines and everything else in the file are preserved. Returns True when a
+    rewrite happened.
+    """
+    rel_path = f"workspaces/{agent_uuid}/USER.md"
+    try:
+        content = workspace.read_file(owner_id, rel_path)
+    except Exception:  # noqa: BLE001 — no USER.md yet; the seed loop writes the new template
+        return False
+    if _LEGACY_PLAN_LINE not in content:
+        return False
+    out: list[str] = []
+    for line in content.splitlines():
+        stripped = line.rstrip()
+        if stripped == _LEGACY_PLAN_LINE:
+            out.append(_FACTS_POINTER_LINE_1)
+            out.append(_FACTS_POINTER_LINE_2)
+            continue
+        if stripped.startswith(_LEGACY_PROVIDER_PREFIX):
+            label = stripped[len(_LEGACY_PROVIDER_PREFIX) :]
+            if label in _LEGACY_PROVIDER_LABELS or label.startswith("unknown ("):
+                continue
+        out.append(line)
+    new_content = "\n".join(out)
+    if content.endswith("\n"):
+        new_content += "\n"
+    workspace.write_file(owner_id, rel_path, new_content)
+    return True
+
+
 def _render_templates(profile: dict) -> dict[str, str]:
     """Render the seed files from a resolved profile dict.
 
@@ -679,6 +738,24 @@ async def pre_stage_friday_identity(
         logger.warning(
             "friday_identity: workspace-state.json write failed for owner=%s: %s. "
             "BOOTSTRAP.md may be deleted by OpenClaw on boot.",
+            owner_id,
+            exc,
+        )
+
+    # Heal pre-facts workspaces before the write-if-missing loop (which
+    # no-ops on existing files): replace the legacy hardcoded plan/provider
+    # seed lines with the facts-file pointer. Best-effort.
+    try:
+        if _migrate_legacy_user_md(workspace, owner_id, friday_uuid):
+            put_metric("friday_identity.user_md_migrated")
+            logger.info(
+                "friday_identity: migrated legacy plan/provider lines in USER.md for owner=%s",
+                owner_id,
+            )
+    except Exception as exc:  # noqa: BLE001 — best-effort, log + continue
+        put_metric("friday_identity.user_md_migrate_error")
+        logger.warning(
+            "friday_identity: USER.md legacy-line migration failed for owner=%s: %s",
             owner_id,
             exc,
         )

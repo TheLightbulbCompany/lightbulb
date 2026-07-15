@@ -4,6 +4,6 @@
   "upstreamCreated": "2026-07-15T22:01:36Z",
   "extendedImage": "877352799272.dkr.ecr.us-east-1.amazonaws.com/isol8/paperclip-extended",
   "dev": { "tag": "ca3533da-36e9ae9" },
-  "prod": { "tag": "73e79957-f96ae24" },
+  "prod": { "tag": "ca3533da-36e9ae9" },
   "notes": "`upstream` is now the Isol8 PAPERCLIP FORK image (ghcr.io/isol8ai/paperclip, built by the fork's own CI from branch isol8/2026.6-circuit-breaker, tag v2026.6-isol8.5), pinned by DIGEST. The fork carries our patches in REAL SOURCE — the openclaw-gateway protocol-v4 fix (formerly a runtime sed-overlay in apps/infra/paperclip-extended/Dockerfile), the routine circuit breaker, the agent-delete routines-FK fix (delete assigned routines before the agent so DELETE /api/agents/{id} no longer 500s), and honest run-log workspace/session-reset lines for cloud-adapter runs (remote workspace named instead of local-fallback noise). The extended Dockerfile is now a thin passthrough that re-tags this image into ECR so per-tenant ECS tasks can pull it with execution-role creds (the fork GHCR package is private; the build authenticates with GITHUB_TOKEN and the package grants Isol8AI/isol8 read access). `extendedImage` + per-env `dev.tag`/`prod.tag` are the ECR-published extended image deployed to dev/prod. `upstreamCommit` is the FORK commit (drives the extended tag). Bump `upstream` here to the fork's new digest when shipping fork changes."
 }

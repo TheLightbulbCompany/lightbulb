@@ -132,3 +132,28 @@ def test_seeded_marker_present_but_atlas_gone_never_name_matches():
     )
     assert "agent-hire" not in patches
     assert set(patches) == {"agent-friday"}
+
+
+def test_seeded_marker_gates_friday_selection_too():
+    """Teams allows extra role=ceo agents; when the marker exists, a
+    non-seeded ceo ordered first must not be stamped as Friday, and Atlas's
+    reportsTo must point at the real seeded Friday."""
+    impostor = {"id": "agent-user-ceo", "name": "Boss", "role": "ceo"}
+    patches = compute_agent_patches(
+        [impostor, _bare_friday(), _bare_atlas()],
+        seeded_agent_ids={"agent-friday", "agent-atlas"},
+    )
+    assert "agent-user-ceo" not in patches
+    assert patches["agent-friday"]["title"] == FRIDAY_TITLE
+    assert patches["agent-atlas"]["reportsTo"] == "agent-friday"
+
+
+def test_seeded_marker_present_but_friday_gone_skips_friday():
+    impostor = {"id": "agent-user-ceo", "name": "Boss", "role": "ceo"}
+    patches = compute_agent_patches(
+        [impostor, _bare_atlas()],
+        seeded_agent_ids={"agent-friday", "agent-atlas"},  # friday id absent
+    )
+    assert "agent-user-ceo" not in patches
+    # Atlas still patched, but unparented — no impostor reportsTo.
+    assert "reportsTo" not in patches["agent-atlas"]

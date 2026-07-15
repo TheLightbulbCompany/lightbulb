@@ -61,7 +61,13 @@ def build_owner_facts(owner_id: str, billing_account: dict | None) -> dict:
     if status == "trial_local":
         plan = "Free tier (no card): Bedrock Claude Sonnet only, $3/day cap, container sleeps when idle"
     elif status in ("active", "trialing"):
-        plan = "Starter ($50/mo flat fee)"
+        if account.get("subscription_item_id"):
+            # Teams per-seat subscription (set_team_subscription stamps the
+            # item id + seat count) — a distinct pricing path, not the flat fee.
+            seats = account.get("seat_count")
+            plan = f"Teams (per-seat subscription, {seats} seats)" if seats else "Teams (per-seat subscription)"
+        else:
+            plan = "Starter ($50/mo flat fee)"
     elif status:
         # canceled / past_due / unpaid / incomplete — do NOT tell agents the
         # owner is on a paid plan when the subscription has lapsed.

@@ -55,20 +55,25 @@ def compute_agent_patches(agents: list[dict], seeded_agent_ids: set[str] | None 
         FRIDAY_TITLE,
     )
 
-    friday = next((a for a in agents if a.get("role") == "ceo" and a.get("id")), None)
     if seeded_agent_ids:
-        # A seeded marker exists, so it is authoritative: when the non-ceo
-        # seeded id is absent from the roster (deleted/disabled Atlas, partial
-        # response), do NOT fall through to name matching — that could stamp a
-        # user/marketplace hire that happens to be named "Atlas" with the
-        # recruiter metadata.
+        # A seeded marker exists, so it is authoritative for BOTH seeds —
+        # Teams lets owners create additional role="ceo" agents, so role (like
+        # name) is not a safe handle on marker-bearing rows. When a seeded id
+        # is absent from the roster (deleted/disabled seed, partial response),
+        # do NOT fall through to role/name matching — that could stamp a
+        # user/marketplace agent with the seed metadata.
+        friday = next(
+            (a for a in agents if a.get("id") in seeded_agent_ids and a.get("role") == "ceo"),
+            None,
+        )
         atlas = next(
             (a for a in agents if a.get("id") in seeded_agent_ids and a.get("role") != "ceo"),
             None,
         )
     else:
-        # No marker (row predates seeded_agent_ids): literal name match is the
+        # No marker (row predates seeded_agent_ids): role/name matching is the
         # only handle available for these legacy rows.
+        friday = next((a for a in agents if a.get("role") == "ceo" and a.get("id")), None)
         atlas = next(
             (a for a in agents if a.get("name") == "Atlas" and a.get("role") == "general" and a.get("id")),
             None,

@@ -132,3 +132,20 @@ def test_provider_label_for_each_choice(provider_choice, byo_provider, expected_
     """format_provider_label maps each provider tuple to a human label."""
     label = owner_facts.format_provider_label(provider_choice, byo_provider)
     assert expected_substring in label
+
+
+def test_build_owner_facts_team_seat_subscription_is_not_labeled_flat_fee():
+    # set_team_subscription stamps subscription_item_id + seat_count — a
+    # per-seat Teams plan must not be reported as the $50 flat fee.
+    facts = owner_facts.build_owner_facts(
+        "org_team",
+        {
+            "subscription_status": "active",
+            "subscription_item_id": "si_1",
+            "seat_count": 4,
+            "provider_choice": "bedrock_claude",
+        },
+    )
+    assert "per-seat" in facts["plan"]
+    assert "4 seats" in facts["plan"]
+    assert "flat fee" not in facts["plan"]

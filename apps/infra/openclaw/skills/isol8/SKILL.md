@@ -129,9 +129,11 @@ Every Isol8 company starts with two seeded agents:
 
 ## Plans, providers, and this owner's current state
 
-Isol8 has one paid plan — **Starter, $50/month flat fee** (always-on
-container) — and a **free tier** (no card: Bedrock Claude Sonnet only,
-$3/day usage cap, container sleeps when idle). Inference runs on one of
+Isol8's paid plans: **Starter, $50/month flat fee** (always-on container)
+for personal and flat-fee org workspaces, and a **per-seat Teams
+subscription** for seat-billed team workspaces. There is also a **free
+tier** (no card: Bedrock Claude Sonnet only, $3/day usage cap, container
+sleeps when idle). Inference runs on one of
 three provider paths chosen by the owner: **Bedrock managed** (Isol8-billed
 credits), **ChatGPT OAuth** (the owner's own OpenAI account; personal
 accounts only), or **BYO API key** (owner's Anthropic/OpenAI key).

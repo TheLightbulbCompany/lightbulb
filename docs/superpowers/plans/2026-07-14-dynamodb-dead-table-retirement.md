@@ -236,16 +236,38 @@ git commit -m "chore(infra): drop dead connections-table IAM grant from backend 
 
 - [ ] **Step 1: Pre-deploy guard — confirm the exports are still imported by nobody**
 
+Use the EXACT export names — the `Ref` (table-name) exports are `ExportsOutputRef…`, NOT `ExportsOutputFnGetAttRef…`, and the connections exports must be checked too. Do not prefix-construct the names in a loop (a wrong name makes `list-imports` error, and a naive `|| echo "not imported"` would then falsely pass). `list-imports` returns an `Imports` list if the export is imported, the error `Export … is not imported by any stack` if it exists with no importers, and `Export … does not exist` if already gone.
+
 ```bash
-for e in ApiKeysTable9F4DC7E7ArnE84F3BB0 RefApiKeysTable9F4DC7E79648F444 \
-         CreditsTable13AC5EA8ArnB299C72C RefCreditsTable13AC5EA80B87C786 \
-         CreditTransactionsTable72EF769AArn60F8FDA5 RefCreditTransactionsTable72EF769A0289C51E; do
-  echo -n "$e imported by: "
-  aws cloudformation list-imports --export-name "isol8-dev-database:ExportsOutputFnGetAtt$e" \
-    --region us-east-1 --profile isol8-admin 2>&1 | grep -o "not imported\|StackName" | head -1 || echo "not imported"
+ENV=dev                       # set ENV=prod for the prod gate (Task 5)
+STACK="isol8-${ENV}-database"
+EXPORTS=(
+  "${STACK}:ExportsOutputFnGetAttApiKeysTable9F4DC7E7ArnE84F3BB0"
+  "${STACK}:ExportsOutputRefApiKeysTable9F4DC7E79648F444"
+  "${STACK}:ExportsOutputFnGetAttCreditsTable13AC5EA8ArnB299C72C"
+  "${STACK}:ExportsOutputRefCreditsTable13AC5EA80B87C786"
+  "${STACK}:ExportsOutputFnGetAttCreditTransactionsTable72EF769AArn60F8FDA5"
+  "${STACK}:ExportsOutputRefCreditTransactionsTable72EF769A0289C51E"
+  "${STACK}:ExportsOutputFnGetAttConnectionsTable8000B8A1Arn6FD6777C"
+  "${STACK}-connections-table"
+)
+fail=0
+for name in "${EXPORTS[@]}"; do
+  out=$(aws cloudformation list-imports --export-name "$name" \
+    --region us-east-1 --profile isol8-admin 2>&1)
+  if printf '%s' "$out" | grep -q '"Imports"'; then
+    echo "STILL IMPORTED (STOP): $name -> $(printf '%s' "$out" | tr -d ' \n')"; fail=1
+  elif printf '%s' "$out" | grep -qi "is not imported by any stack"; then
+    echo "ok, no importers: $name"
+  elif printf '%s' "$out" | grep -qi "does not exist"; then
+    echo "already gone (ok): $name"
+  else
+    echo "UNEXPECTED (investigate): $name -> $out"; fail=1
+  fi
 done
+[ "$fail" -eq 0 ] && echo "GUARD PASS — safe to remove exports" || echo "GUARD FAIL — do NOT deploy"
 ```
-Expected: every export reports "not imported by any stack" (the API errors with that message when an export has no importers). If ANY returns an importing stack, STOP — a consumer import was reintroduced and this needs the two-deploy sequence instead.
+Expected: every export prints `ok, no importers` (or `already gone (ok)` for the connections exports, whose physical table was deleted 2026-05-31), and the final line is `GUARD PASS`. If ANY line is `STILL IMPORTED` or `UNEXPECTED`, STOP — a consumer import was reintroduced and this needs the two-deploy sequence instead.
 
 - [ ] **Step 2: Push the branch and open a PR**
 

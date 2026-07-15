@@ -49,9 +49,13 @@ def known_customer():
 
 
 @contextlib.contextmanager
-def _revoker(*, already_revoked: bool = False):
+def _revoker(*, already_revoked: bool = False, provider_choice: str = "bedrock_claude"):
     """Patch the enforcement path's lazy-imported collaborators; yields the
-    revoke mock. Enforcement is revoke-only — no container stop to mock."""
+    revoke mock. Enforcement is revoke-only — no container stop to mock.
+
+    The low-balance webhook only revokes credit-drawing (bedrock_claude) owners,
+    so ``enforce_on_low_balance`` reads the billing row's provider_choice; this
+    path is the paid credit case, so default the row to bedrock_claude."""
     revoke = AsyncMock()
     row = {"owner_id": OWNER_ID, "bedrock_revoked": already_revoked}
     with (
@@ -59,6 +63,10 @@ def _revoker(*, already_revoked: bool = False):
         patch(
             "core.repositories.container_repo.get_by_owner_id",
             new=AsyncMock(return_value=row),
+        ),
+        patch(
+            "core.services.bedrock_enforcement.billing_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"owner_id": OWNER_ID, "provider_choice": provider_choice}),
         ),
     ):
         yield revoke
@@ -154,6 +162,26 @@ def test_non_positive_balance_fires_revoke_when_enforcement_live(client, known_c
     revoke.assert_awaited_once_with(OWNER_ID)
     # Revoke-only enforcement: the container is never stopped on low balance.
     ecs_factory.assert_not_called()
+
+
+def test_trial_owner_low_balance_webhook_does_not_revoke(client, known_customer, monkeypatch):
+    """The prawahp regression at the webhook boundary. A trial_local owner draws
+    no prepaid credits, so even a balance-0 low-balance webhook with enforcement
+    armed must NOT revoke their Bedrock — this was killing every free trial."""
+    monkeypatch.setattr("core.config.settings.BEDROCK_ENFORCEMENT_LIVE", True)
+    body = _low_balance_body(remaining_balance=0)
+    with (
+        patch(
+            "routers.metronome_webhook.webhook_dedup.record_event_or_skip",
+            new=AsyncMock(return_value=WebhookDedupResult.RECORDED),
+        ),
+        patch("routers.metronome_webhook.MetronomeFastGate") as gate_cls,
+        _revoker(provider_choice="") as revoke,  # provider_choice != bedrock_claude
+    ):
+        gate_cls.return_value.set_balance = AsyncMock()
+        resp = _post(client, body)
+    assert resp.status_code == 200
+    revoke.assert_not_awaited()
 
 
 def test_non_positive_balance_no_revoke_when_enforcement_off(client, known_customer, monkeypatch):

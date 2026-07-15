@@ -617,8 +617,8 @@ async def handle_subscription_deleted(event: dict[str, Any], billing_service: Bi
 
     # Refresh the owner-facts file before teardown: teardown is best-effort
     # and may be delayed or fail, and a still-running container's agents must
-    # not keep reporting an active paid plan. Status rides as an override
-    # because the row re-read is eventually consistent. Internally best-effort.
+    # not keep reporting an active paid plan. Status rides as an override —
+    # same-process pinning that outranks any row read. Internally best-effort.
     from core.services.owner_facts import write_owner_facts
 
     await write_owner_facts(account["owner_id"], account_overrides={"subscription_status": "canceled"})

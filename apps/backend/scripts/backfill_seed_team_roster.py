@@ -39,6 +39,14 @@ from typing import Any
 logger = logging.getLogger("backfill_seed_team_roster")
 
 
+def lone_seed_is_ambiguous(agent: dict) -> bool:
+    """A lone seeded agent is classifiable only when exactly ONE identity
+    signal holds: ceo role (Friday) XOR the literal name "Atlas". Conflicting
+    or absent signals (re-roled/renamed seeds) are ambiguous — skip, and let
+    process_company surface them to the operator."""
+    return (agent.get("role") == "ceo") == (agent.get("name") == "Atlas")
+
+
 def compute_agent_patches(agents: list[dict], seeded_agent_ids: list[str] | None = None) -> dict[str, dict]:
     """Return ``{agent_id: patch_body}`` for the seed team, filling only empty fields.
 
@@ -73,16 +81,16 @@ def compute_agent_patches(agents: list[dict], seeded_agent_ids: list[str] | None
             friday_ref_id = seeded_agent_ids[0] if friday is not None else None
         else:
             lone = by_id.get(seeded_agent_ids[0])
-            is_ceo_role = lone is not None and lone.get("role") == "ceo"
-            is_atlas_name = lone is not None and lone.get("name") == "Atlas"
-            if is_ceo_role and not is_atlas_name:
-                friday = lone
-                friday_ref_id = lone["id"]
-            elif is_atlas_name and not is_ceo_role:
-                atlas = lone
+            if lone is not None and not lone_seed_is_ambiguous(lone):
+                if lone.get("role") == "ceo":
+                    friday = lone
+                    friday_ref_id = lone["id"]
+                else:
+                    atlas = lone
             # else: ambiguous lone seed — signals absent OR conflicting (a
             # ceo-roled agent still named "Atlas" could be a promoted Atlas
-            # or a renamed Friday) — skip rather than guess.
+            # or a renamed Friday) — skip rather than guess; process_company
+            # WARNs so the operator knows this owner needs manual attention.
         if friday is not None and friday.get("role") != "ceo":
             # Owner re-roled the seeded Friday; their customization outranks
             # the backfill — don't stamp CEO metadata onto it. It still
@@ -196,6 +204,14 @@ async def process_company(
                 f"  WARN {owner_id} ({company_id}): {len(seeded_agent_ids) - present} seeded "
                 "agent(s) missing from roster — needs manual attention"
             )
+        if len(seeded_agent_ids) == 1:
+            lone = next((a for a in agents if a.get("id") == seeded_agent_ids[0]), None)
+            if lone is not None and lone_seed_is_ambiguous(lone):
+                print(
+                    f"  WARN {owner_id} ({company_id}): lone seeded agent "
+                    f"{seeded_agent_ids[0]} has ambiguous role/name signals — skipped, "
+                    "needs manual attention"
+                )
     if not patches and not seeded_agent_ids and not any(a.get("role") == "ceo" for a in agents):
         print(f"  WARN {owner_id} ({company_id}): no ceo-role agent — nothing identifiable to patch")
     for agent_id, body in patches.items():

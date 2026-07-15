@@ -242,3 +242,17 @@ async def test_process_company_warns_on_partially_missing_seed_team(capsys):
     out = capsys.readouterr().out
     assert count == 1  # Friday still gets its would-patch line
     assert "1 seeded agent(s) missing from roster" in out
+
+
+@pytest.mark.asyncio
+async def test_process_company_warns_on_ambiguous_lone_seed(capsys):
+    """A present-but-ambiguous lone seed produces zero patches — it must not
+    read as 'already healed' during a sweep."""
+    admin = MagicMock()
+    admin.list_agents = AsyncMock(return_value=[{"id": "agent-lone", "name": "Atlas", "role": "ceo"}])
+    admin.patch_agent = AsyncMock()
+
+    count = await process_company(admin, "cookie", "user_1", "co_1", apply=False, seeded_agent_ids=["agent-lone"])
+
+    assert count == 0
+    assert "ambiguous role/name signals" in capsys.readouterr().out

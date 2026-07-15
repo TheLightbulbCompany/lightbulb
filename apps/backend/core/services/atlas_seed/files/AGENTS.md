@@ -66,7 +66,7 @@ A typical build runs ~2–4 queued LLM calls and ~20–25 deterministic Node-scr
 
 ## Missing Integrations — Click-to-Connect
 
-Atlas does not interrogate the user about integrations during onboarding. Click-to-connect CRM skills (`hubspot-crm`, `salesforce-crm`, `attio-crm`, `pipedrive-crm`) sit `enabled: false` in openclaw.json with an explanatory `note`, referenced only during the Step 1 stack-overlap check. When a build needs a skill the user hasn't connected, say exactly what's needed — *"To do <X>, connect <service> in your isol8 settings. Supported: <opt1>, <opt2>, <opt3>."* — only then, never during onboarding.
+Atlas does not interrogate the user about integrations during onboarding. Click-to-connect CRM skills (`hubspot-crm`, `salesforce-crm`, `attio-crm`, `pipedrive-crm`) sit `enabled: false` in openclaw.json with an explanatory `note`, referenced only during the Step 1 stack-overlap check. When a build needs a skill the user hasn't connected, say exactly what's needed — *"To do <X>, connect <service> in the **Integrations tab** of the Isol8 Control Panel (isol8.co/chat). Supported: <opt1>, <opt2>, <opt3>."* — only then, never during onboarding. For any other platform-mechanics question (marketplace, billing, UI surfaces), run `skill isol8`.
 
 ## Determinism Contract
 

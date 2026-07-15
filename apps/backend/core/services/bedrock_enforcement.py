@@ -61,13 +61,27 @@ async def enforce_on_low_balance(owner_id: str, remaining_microcents: int) -> No
         return
     # Read the billing row only when we are otherwise about to revoke, so the
     # common healthy case pays for no extra DDB read.
-    account = await billing_repo.get_by_owner_id(owner_id)
-    if (account or {}).get("provider_choice") != _CREDIT_DRAWING_PROVIDER:
+    account = await billing_repo.get_by_owner_id(owner_id) or {}
+
+    # A free-tier owner is NEVER credit-enforced — they run on the flat $3/day
+    # meter cap. Check subscription_status FIRST, because provider_choice alone
+    # is not equivalent to "paid credit owner" during the trial->paid upgrade:
+    # POST /billing/trial-checkout writes provider_choice ("bedrock_claude")
+    # SYNCHRONOUSLY (routers/billing.py:497), seconds-to-minutes BEFORE the
+    # Stripe webhook flips subscription_status off "trial_local"
+    # (stripe_webhook_handlers.py:483). In that window a still-trial_local owner
+    # already has provider_choice=="bedrock_claude"; a stray Metronome balance of
+    # 0 (from a row polluted by the old leak) would then pass a provider-only
+    # guard and revoke a free owner. Excluding trial_local outright closes it.
+    if account.get("subscription_status") == "trial_local":
+        logger.info("Skipping balance revoke for owner %s — trial_local (meter-cap tier, not credits)", owner_id)
+        return
+    if account.get("provider_choice") != _CREDIT_DRAWING_PROVIDER:
         logger.info(
             "Skipping balance revoke for owner %s — provider_choice=%s does not draw "
             "Bedrock credits (only %s is credit-gated)",
             owner_id,
-            (account or {}).get("provider_choice"),
+            account.get("provider_choice"),
             _CREDIT_DRAWING_PROVIDER,
         )
         return

@@ -12,15 +12,24 @@ from core.services.bedrock_enforcement import enforce_on_low_balance
 
 
 @contextlib.contextmanager
-def _enforcement(*, container_row: dict | None = None, provider_choice: str | None = "bedrock_claude"):
+def _enforcement(
+    *,
+    container_row: dict | None = None,
+    provider_choice: str | None = "bedrock_claude",
+    subscription_status: str = "active",
+):
     """Patch the lazy-imported collaborators; yields (revoke, ecs_factory).
 
-    Defaults the billing row to a ``bedrock_claude`` owner because that is the
-    only provider credit-balance enforcement acts on; the trial-exclusion tests
-    override ``provider_choice``.
+    Defaults the billing row to an active ``bedrock_claude`` owner because that
+    is the only population credit-balance enforcement acts on; the exclusion
+    tests override ``provider_choice`` / ``subscription_status``.
     """
     revoke = AsyncMock()
-    account = None if provider_choice is None else {"provider_choice": provider_choice}
+    account = (
+        None
+        if provider_choice is None and subscription_status is None
+        else {"provider_choice": provider_choice, "subscription_status": subscription_status}
+    )
     with (
         patch("core.billing.bedrock_aip.revoke_owner_bedrock", new=revoke),
         patch(
@@ -147,3 +156,20 @@ async def test_bedrock_claude_owner_is_still_revoked_on_zero_balance(monkeypatch
     ) as (revoke, _ecs):
         await enforce_on_low_balance("org_P", 0)
     revoke.assert_awaited_once_with("org_P")
+
+
+@pytest.mark.asyncio
+async def test_trial_local_with_bedrock_claude_provider_is_still_not_revoked(monkeypatch):
+    """THE UPGRADE-WINDOW regression (Codex #1249). /billing/trial-checkout writes
+    provider_choice='bedrock_claude' SYNCHRONOUSLY, seconds-to-minutes before the
+    Stripe webhook flips subscription_status off 'trial_local'. In that window a
+    still-free owner has provider_choice=='bedrock_claude'; a provider-only guard
+    would revoke them. subscription_status='trial_local' must win — no revoke."""
+    monkeypatch.setattr("core.config.settings.BEDROCK_ENFORCEMENT_LIVE", True)
+    with _enforcement(
+        container_row={"owner_id": "user_upgrading", "status": "running"},
+        provider_choice="bedrock_claude",
+        subscription_status="trial_local",
+    ) as (revoke, _ecs):
+        await enforce_on_low_balance("user_upgrading", 0)
+    revoke.assert_not_awaited()

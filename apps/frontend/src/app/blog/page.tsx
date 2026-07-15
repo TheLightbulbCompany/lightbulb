@@ -4,6 +4,7 @@ import Link from "next/link";
 import { Navbar } from "@/components/landing/Navbar";
 import { Footer } from "@/components/landing/Footer";
 import { getAllPosts } from "@/content/blog";
+import { formatPostDate } from "@/content/blog/format";
 
 const TITLE = "Blog — isol8";
 const DESCRIPTION =
@@ -21,15 +22,6 @@ export const metadata: Metadata = {
   },
   twitter: { card: "summary_large_image", title: TITLE, description: DESCRIPTION },
 };
-
-function formatDate(iso: string): string {
-  return new Date(`${iso}T00:00:00Z`).toLocaleDateString("en-US", {
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-    timeZone: "UTC",
-  });
-}
 
 export default function BlogIndexPage() {
   const posts = getAllPosts();
@@ -50,7 +42,7 @@ export default function BlogIndexPage() {
             <li key={post.slug} className="blog-card">
               <Link href={`/blog/${post.slug}`} className="blog-card-link">
                 <div className="blog-card-meta">
-                  <time dateTime={post.date}>{formatDate(post.date)}</time>
+                  <time dateTime={post.date}>{formatPostDate(post.date)}</time>
                   <span aria-hidden="true">·</span>
                   <span>{post.readingMinutes} min read</span>
                 </div>

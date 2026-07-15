@@ -6,6 +6,7 @@ import { Navbar } from "@/components/landing/Navbar";
 import { Footer } from "@/components/landing/Footer";
 import { BlogArticleBody } from "@/components/blog/BlogArticleBody";
 import { getAllPosts, getPostBySlug } from "@/content/blog";
+import { formatPostDate } from "@/content/blog/format";
 
 const SITE_URL = "https://isol8.co";
 
@@ -44,15 +45,6 @@ export async function generateMetadata({
   };
 }
 
-function formatDate(iso: string): string {
-  return new Date(`${iso}T00:00:00Z`).toLocaleDateString("en-US", {
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-    timeZone: "UTC",
-  });
-}
-
 export default async function BlogPostPage({
   params,
 }: {
@@ -86,7 +78,10 @@ export default async function BlogPostPage({
       <article className="blog-wrap blog-article">
         <script
           type="application/ld+json"
-          dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+          // Escape `<` so a value containing `</script>` can't break out of the tag.
+          dangerouslySetInnerHTML={{
+            __html: JSON.stringify(jsonLd).replace(/</g, "\\u003c"),
+          }}
         />
 
         <nav className="blog-back">
@@ -95,7 +90,7 @@ export default async function BlogPostPage({
 
         <header className="blog-article-header">
           <div className="blog-card-meta">
-            <time dateTime={post.date}>{formatDate(post.date)}</time>
+            <time dateTime={post.date}>{formatPostDate(post.date)}</time>
             <span aria-hidden="true">·</span>
             <span>{post.readingMinutes} min read</span>
           </div>

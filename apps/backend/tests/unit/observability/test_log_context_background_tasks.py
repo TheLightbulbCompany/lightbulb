@@ -178,6 +178,13 @@ async def test_provision_background_task_binds_owner_id_into_logs():
             patch.object(
                 container_provision, "resolve_provider_choice", new=AsyncMock(return_value=("bedrock_claude", None))
             ),
+            # background_provision's FIRST act is the single-flight lease claim
+            # (a real DynamoDB conditional write) and its failure path releases
+            # the lease — stub both so this stays a pure log-context test.
+            patch.object(
+                container_provision.container_repo, "try_claim_provision", new=AsyncMock(return_value="claim-1")
+            ),
+            patch.object(container_provision.container_repo, "release_provision_to_error", new=AsyncMock()),
             patch.object(container_provision, "get_ecs_manager") as mock_ecs_getter,
         ):
             ecs = MagicMock()

@@ -434,6 +434,7 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
     metadata = event_data.get("metadata") or {}
     metadata_provider = metadata.get("provider_choice")
     metadata_byo = metadata.get("byo_provider")
+    provider_persisted = False
     if metadata_provider in ("chatgpt_oauth", "byo_key", "bedrock_claude"):
         # provider_choice lives on billing_accounts (per-owner), not on
         # the user row. /trial-checkout writes synchronously before
@@ -453,6 +454,7 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
                 # untouched.
                 connector_user_id=(metadata.get("clerk_user_id") if metadata_provider == "chatgpt_oauth" else None),
             )
+            provider_persisted = True
         except Exception:
             logger.exception(
                 "Failed to persist provider_choice for owner %s",
@@ -541,7 +543,10 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
     from core.services.owner_facts import write_owner_facts
 
     facts_overrides: dict = {"subscription_status": new_status}
-    if metadata_provider in ("chatgpt_oauth", "byo_key", "bedrock_claude"):
+    if provider_persisted:
+        # Only claim the metadata provider when its billing-row write actually
+        # committed — a swallowed set_provider_choice failure above must not
+        # produce a facts file asserting a provider the row never got.
         facts_overrides["provider_choice"] = metadata_provider
         facts_overrides["byo_provider"] = metadata_byo if metadata_provider == "byo_key" else None
     await write_owner_facts(account["owner_id"], account_overrides=facts_overrides)

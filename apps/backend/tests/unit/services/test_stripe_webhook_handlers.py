@@ -752,3 +752,20 @@ async def test_subscription_state_facts_carry_backup_provider(mock_repo, facts_m
     overrides = facts_mock.await_args.kwargs["account_overrides"]
     assert overrides["provider_choice"] == "byo_key"
     assert overrides["byo_provider"] == "anthropic"
+
+
+@pytest.mark.asyncio
+async def test_facts_skip_provider_override_when_backup_write_fails(mock_repo, facts_mock):
+    """If the swallowed set_provider_choice backup write fails, the facts
+    refresh must NOT claim the metadata provider — the billing row never got
+    it. Status still rides along."""
+    mock_repo.set_provider_choice = AsyncMock(side_effect=RuntimeError("ddb down"))
+    event = _subscription_event(status="active")
+    event["data"]["object"]["metadata"]["provider_choice"] = "byo_key"
+    event["data"]["object"]["metadata"]["byo_provider"] = "anthropic"
+    with patch.object(handlers, "stripe") as mock_stripe:
+        mock_stripe.Customer.retrieve.return_value = {"invoice_settings": {"default_payment_method": "pm"}}
+        await handlers.handle_subscription_state(event, MagicMock())
+
+    overrides = facts_mock.await_args.kwargs["account_overrides"]
+    assert overrides == {"subscription_status": "active"}

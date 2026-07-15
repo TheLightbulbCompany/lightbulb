@@ -96,3 +96,26 @@ async def test_process_company_apply_patches_expected_bodies():
     assert by_id["agent-atlas"]["body"]["reportsTo"] == "agent-friday"
     assert by_id["agent-atlas"]["session_cookie"] == "cookie"
     assert by_id["agent-friday"]["body"]["title"] == FRIDAY_TITLE
+
+
+def test_seeded_ids_identify_renamed_atlas():
+    renamed = _bare_atlas() | {"name": "Scout"}
+    patches = compute_agent_patches([_bare_friday(), renamed], seeded_agent_ids={"agent-friday", "agent-atlas"})
+    assert patches["agent-atlas"]["title"] == ATLAS_TITLE
+    assert patches["agent-atlas"]["reportsTo"] == "agent-friday"
+
+
+def test_seeded_ids_protect_lookalike_marketplace_hire():
+    lookalike = {"id": "agent-hire", "name": "Atlas", "role": "general"}
+    renamed_real = _bare_atlas() | {"name": "Scout"}
+    patches = compute_agent_patches(
+        [_bare_friday(), lookalike, renamed_real],
+        seeded_agent_ids={"agent-friday", "agent-atlas"},
+    )
+    assert "agent-hire" not in patches
+    assert patches["agent-atlas"]["title"] == ATLAS_TITLE
+
+
+def test_empty_seeded_ids_falls_back_to_name_match():
+    patches = compute_agent_patches([_bare_friday(), _bare_atlas()], seeded_agent_ids=set())
+    assert patches["agent-atlas"]["title"] == ATLAS_TITLE

@@ -37,12 +37,16 @@ from typing import Any
 logger = logging.getLogger("backfill_seed_team_roster")
 
 
-def compute_agent_patches(agents: list[dict]) -> dict[str, dict]:
+def compute_agent_patches(agents: list[dict], seeded_agent_ids: set[str] | None = None) -> dict[str, dict]:
     """Return ``{agent_id: patch_body}`` for the seed team, filling only empty fields.
 
-    Friday = the ``role == "ceo"`` agent; Atlas = the agent literally named
-    ``"Atlas"`` with ``role == "general"``. Pure — no I/O — so it carries the
-    unit tests for the fill-only-empty contract.
+    Friday = the ``role == "ceo"`` agent (unique per company — default-agent
+    selection depends on it). Atlas is identified by the persisted
+    ``seeded_agent_ids`` marker when available (the non-ceo seeded id —
+    rename-proof, and immune to a marketplace hire the owner named "Atlas");
+    companies whose row predates that marker fall back to the literal
+    ``name == "Atlas"`` + ``role == "general"`` match. Pure — no I/O — so it
+    carries the unit tests for the fill-only-empty contract.
     """
     from core.services.paperclip_provisioning import (
         ATLAS_CAPABILITIES,
@@ -52,10 +56,17 @@ def compute_agent_patches(agents: list[dict]) -> dict[str, dict]:
     )
 
     friday = next((a for a in agents if a.get("role") == "ceo" and a.get("id")), None)
-    atlas = next(
-        (a for a in agents if a.get("name") == "Atlas" and a.get("role") == "general" and a.get("id")),
-        None,
-    )
+    atlas = None
+    if seeded_agent_ids:
+        atlas = next(
+            (a for a in agents if a.get("id") in seeded_agent_ids and a.get("role") != "ceo"),
+            None,
+        )
+    if atlas is None:
+        atlas = next(
+            (a for a in agents if a.get("name") == "Atlas" and a.get("role") == "general" and a.get("id")),
+            None,
+        )
 
     patches: dict[str, dict] = {}
     if friday:
@@ -101,16 +112,23 @@ async def _scan_owner_ids() -> list[str]:
     return sorted(owner_ids)
 
 
-async def process_company(admin, cookie: str, owner_id: str, company_id: str, *, apply: bool) -> int:
+async def process_company(
+    admin,
+    cookie: str,
+    owner_id: str,
+    company_id: str,
+    *,
+    apply: bool,
+    seeded_agent_ids: set[str] | None = None,
+) -> int:
     """Compute + (optionally) apply patches for one company. Returns patch count."""
     resp = await admin.list_agents(company_id=company_id, session_cookie=cookie)
     # The route returns a JSON array; the client annotation says dict — accept both.
     agents = resp if isinstance(resp, list) else (resp or {}).get("agents", [])
 
-    if not any(a.get("name") == "Atlas" and a.get("role") == "general" for a in agents):
-        print(f"  WARN {owner_id} ({company_id}): no agent named 'Atlas' — renamed or missing, skipping Atlas")
-
-    patches = compute_agent_patches(agents)
+    patches = compute_agent_patches(agents, seeded_agent_ids)
+    if not patches and not any(a.get("role") == "ceo" for a in agents):
+        print(f"  WARN {owner_id} ({company_id}): no ceo-role agent — nothing identifiable to patch")
     for agent_id, body in patches.items():
         name = next((a.get("name") for a in agents if a.get("id") == agent_id), "?")
         print(f"  {'PATCH' if apply else 'would-patch'} {owner_id} {name} ({agent_id}): {sorted(body)}")
@@ -126,6 +144,7 @@ async def main(*, apply: bool, env: str) -> int:
     from core.repositories.paperclip_repo import PaperclipRepo
     from core.services.paperclip_admin_client import PaperclipAdminClient
     from core.services.paperclip_admin_session import get_admin_session_cookie
+    from core.services.paperclip_openclaw_pairing import get_seeded_agent_ids
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
@@ -147,7 +166,12 @@ async def main(*, apply: bool, env: str) -> int:
         cookie = await get_admin_session_cookie(http)
         for owner_id, company_id in companies:
             try:
-                total += await process_company(admin, cookie, owner_id, company_id, apply=apply)
+                # Rename-proof Atlas identification; empty set for rows that
+                # predate the marker → compute falls back to name matching.
+                seeded = await get_seeded_agent_ids(owner_id=owner_id, repo=repo)
+                total += await process_company(
+                    admin, cookie, owner_id, company_id, apply=apply, seeded_agent_ids=seeded
+                )
             except Exception as e:  # noqa: BLE001 — keep sweeping on per-company failures
                 print(f"  ERR  {owner_id} ({company_id}): {e}")
     finally:

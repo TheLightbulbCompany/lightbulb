@@ -8,14 +8,35 @@ from core.services import owner_facts
 
 
 def test_build_owner_facts_trial_local():
-    facts = owner_facts.build_owner_facts(
-        "user_abc",
-        {"subscription_status": "trial_local", "provider_choice": "bedrock_claude"},
-    )
+    # A REAL trial_local row carries no provider_choice at all — the provider
+    # must short-circuit to the bedrock_trial config mode, not "unknown".
+    facts = owner_facts.build_owner_facts("user_abc", {"subscription_status": "trial_local"})
     assert facts["owner_kind"] == "personal"
     assert facts["subscription_status"] == "trial_local"
     assert "free" in facts["plan"].lower()
+    assert facts["provider_choice"] == "bedrock_trial"
+    assert "free trial" in facts["provider"]
     assert "generated_at" in facts
+
+
+def test_build_owner_facts_active_row_without_choice_defaults_to_bedrock():
+    facts = owner_facts.build_owner_facts("user_abc", {"subscription_status": "active"})
+    assert facts["provider_choice"] == "bedrock_claude"
+    assert "Bedrock" in facts["provider"]
+
+
+def test_build_owner_facts_lapsed_subscription_is_not_reported_as_paid():
+    facts = owner_facts.build_owner_facts("user_abc", {"subscription_status": "past_due"})
+    assert "not active" in facts["plan"]
+    assert "past_due" in facts["plan"]
+
+
+def test_build_owner_facts_legacy_row_without_status_counts_as_subscribed():
+    # Mirrors provision_gate.is_subscription_active's legacy fallback.
+    facts = owner_facts.build_owner_facts(
+        "user_abc", {"stripe_subscription_id": "sub_1", "provider_choice": "bedrock_claude"}
+    )
+    assert facts["plan"].startswith("Starter")
 
 
 def test_build_owner_facts_paid_byo_org():
@@ -61,6 +82,31 @@ async def test_write_owner_facts_writes_json(monkeypatch):
     facts = json.loads(written["content"])
     assert facts["provider_choice"] == "bedrock_claude"
     assert facts["plan"] == "Starter ($50/mo flat fee)"
+
+
+@pytest.mark.asyncio
+async def test_write_owner_facts_overrides_beat_stale_row(monkeypatch):
+    # The row re-read after an update_item is eventually consistent — the
+    # caller's just-committed values must win over whatever the read returns.
+    written = {}
+
+    class FakeWs:
+        def write_file(self, user_id, path, content):
+            written["content"] = content
+
+    async def stale_get(owner_id):
+        return {"subscription_status": "active", "provider_choice": "bedrock_claude"}
+
+    monkeypatch.setattr(owner_facts.billing_repo, "get_by_owner_id", stale_get)
+    monkeypatch.setattr(owner_facts, "get_workspace", lambda: FakeWs())
+
+    await owner_facts.write_owner_facts(
+        "user_abc", account_overrides={"provider_choice": "chatgpt_oauth", "byo_provider": None}
+    )
+
+    facts = json.loads(written["content"])
+    assert facts["provider_choice"] == "chatgpt_oauth"
+    assert "ChatGPT" in facts["provider"]
 
 
 @pytest.mark.asyncio

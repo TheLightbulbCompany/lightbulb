@@ -1,16 +1,18 @@
 """Owner-facts file: per-owner dynamic platform state on EFS.
 
 ``isol8-facts.json`` sits at the EFS user root (in-container:
-``~/.openclaw/isol8-facts.json``) so every agent — Friday, Atlas,
-scaffolded specialists, marketplace hires — can read the owner's
-CURRENT plan/provider state instead of trusting seed files rendered
-once at provision time. The backend is the sole writer; writes happen
-at provision (``ecs_manager.write_user_configs``) and on provider
-switches (``billing_service.change_provider``). Best-effort by design:
-a facts write must never block provisioning or a provider switch.
+``~/.openclaw/isol8-facts.json`` — the access point chroots
+``/users/{user_id}`` to ``/home/node/.openclaw``) so every agent — Friday,
+Atlas, scaffolded specialists, marketplace hires — can read the owner's
+CURRENT plan/provider state instead of trusting seed files rendered once at
+provision time. The backend is the sole writer; writes happen at provision
+(``ecs_manager.write_user_configs``), on provider switches
+(``billing_service.change_provider``), and on subscription-state webhooks
+(``stripe_webhook_handlers.handle_subscription_state``). Best-effort by
+design: a facts write must never block any of those callers.
 
-The bundled ``isol8`` platform skill tells agents to read this file
-for plan/provider questions.
+The bundled ``isol8`` platform skill tells agents to read this file for
+plan/provider questions.
 """
 
 from __future__ import annotations
@@ -48,28 +50,52 @@ def build_owner_facts(owner_id: str, billing_account: dict | None) -> dict:
     """Render the facts dict from a billing row. Pure — no I/O."""
     from core.auth import is_org_owner_id
 
+    # Single row-level mapping shared with the provision surface — handles
+    # the trial_local short-circuit (trial rows carry NO provider_choice)
+    # and the bedrock_claude legacy default. Lazy import: container_provision
+    # pulls in repos this module doesn't otherwise need.
+    from core.services.container_provision import provider_choice_from_row
+
     account = billing_account or {}
     status = account.get("subscription_status")
     if status == "trial_local":
         plan = "Free tier (no card): Bedrock Claude Sonnet only, $3/day cap, container sleeps when idle"
+    elif status in ("active", "trialing"):
+        plan = "Starter ($50/mo flat fee)"
     elif status:
+        # canceled / past_due / unpaid / incomplete — do NOT tell agents the
+        # owner is on a paid plan when the subscription has lapsed.
+        plan = f"Subscription not active (status: {status})"
+    elif account.get("stripe_subscription_id"):
+        # Legacy rows whose status hasn't been backfilled yet — treated as
+        # subscribed by provision_gate.is_subscription_active.
         plan = "Starter ($50/mo flat fee)"
     else:
         plan = "No billing account yet"
+
+    provider_choice, byo_provider = provider_choice_from_row(account)
     return {
         "plan": plan,
         "subscription_status": status,
-        "provider": format_provider_label(account.get("provider_choice"), account.get("byo_provider")),
-        "provider_choice": account.get("provider_choice"),
+        "provider": format_provider_label(provider_choice, byo_provider),
+        "provider_choice": provider_choice,
         "owner_kind": "org" if is_org_owner_id(owner_id) else "personal",
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 
 
-async def write_owner_facts(owner_id: str) -> None:
-    """Render + write the facts file. Best-effort: never raises."""
+async def write_owner_facts(owner_id: str, *, account_overrides: dict | None = None) -> None:
+    """Render + write the facts file. Best-effort: never raises.
+
+    ``account_overrides`` lets a caller that JUST committed billing fields
+    pass the written values, overlaying the (eventually-consistent) row
+    read — a get_item immediately after an update_item can return the
+    pre-update row, and the facts file must not capture that stale state.
+    """
     try:
-        account = await billing_repo.get_by_owner_id(owner_id)
+        account = await billing_repo.get_by_owner_id(owner_id) or {}
+        if account_overrides:
+            account = {**account, **account_overrides}
         facts = build_owner_facts(owner_id, account)
         get_workspace().write_file(owner_id, FACTS_FILENAME, json.dumps(facts, indent=2) + "\n")
     except Exception as e:  # noqa: BLE001 — facts must never block callers

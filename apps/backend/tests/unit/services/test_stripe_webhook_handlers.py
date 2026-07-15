@@ -18,6 +18,17 @@ import pytest  # noqa: E402
 from core.services import stripe_webhook_handlers as handlers  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def facts_mock(monkeypatch):
+    """handle_subscription_state refreshes the owner-facts file after the
+    status persist. Mock it for every test here (it would otherwise reach
+    for the real billing repo + EFS workspace) and expose it for the tests
+    that assert on the refresh."""
+    mock = AsyncMock()
+    monkeypatch.setattr("core.services.owner_facts.write_owner_facts", mock)
+    return mock
+
+
 def _subscription_event(**overrides) -> dict:
     event_data = {
         "id": "sub_x",
@@ -710,3 +721,34 @@ def test_conversion_guard_self_releases_when_the_conversion_dies():
     )
     # ...and the stop wiping the substatus does not release it early.
     assert conversion_guard_active({"conversion_started_at": fresh}) is True
+
+
+@pytest.mark.asyncio
+async def test_subscription_state_refreshes_owner_facts(mock_repo, facts_mock):
+    """A status flip (e.g. -> past_due) must rewrite the owner-facts file with
+    the just-persisted status as an override — the row re-read is eventually
+    consistent, and agents are told to trust the facts file."""
+    with patch.object(handlers, "stripe") as mock_stripe:
+        mock_stripe.Customer.retrieve.return_value = {"invoice_settings": {"default_payment_method": "pm"}}
+        await handlers.handle_subscription_state(_subscription_event(status="past_due"), MagicMock())
+
+    facts_mock.assert_awaited_once()
+    args, kwargs = facts_mock.await_args
+    assert args[0] == "org_x"
+    assert kwargs["account_overrides"]["subscription_status"] == "past_due"
+
+
+@pytest.mark.asyncio
+async def test_subscription_state_facts_carry_backup_provider(mock_repo, facts_mock):
+    """When the webhook backup path persists provider_choice from Stripe
+    metadata, the facts refresh must carry the same provider override."""
+    event = _subscription_event(status="active")
+    event["data"]["object"]["metadata"]["provider_choice"] = "byo_key"
+    event["data"]["object"]["metadata"]["byo_provider"] = "anthropic"
+    with patch.object(handlers, "stripe") as mock_stripe:
+        mock_stripe.Customer.retrieve.return_value = {"invoice_settings": {"default_payment_method": "pm"}}
+        await handlers.handle_subscription_state(event, MagicMock())
+
+    overrides = facts_mock.await_args.kwargs["account_overrides"]
+    assert overrides["provider_choice"] == "byo_key"
+    assert overrides["byo_provider"] == "anthropic"

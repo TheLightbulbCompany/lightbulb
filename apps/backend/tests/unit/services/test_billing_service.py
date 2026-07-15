@@ -720,6 +720,9 @@ async def test_change_provider_refreshes_owner_facts(monkeypatch):
         provider_choice="bedrock_claude",
     )
 
-    facts_mock.assert_awaited_once_with("user_x")
+    facts_mock.assert_awaited_once_with(
+        "user_x",
+        account_overrides={"provider_choice": "bedrock_claude", "byo_provider": None},
+    )
     for coro in created:
         coro.close()

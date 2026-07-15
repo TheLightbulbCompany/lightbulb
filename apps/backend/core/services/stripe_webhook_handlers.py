@@ -531,6 +531,21 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
                 account["owner_id"],
             )
 
+    # Refresh the owner-facts file (plan/provider snapshot the bundled isol8
+    # skill points agents at). Subscription-state flips land HERE — not via
+    # change_provider — so without this write a past_due/canceled transition
+    # would leave agents reporting an active paid plan. The just-persisted
+    # status (and the backup-path provider, when written) ride along as
+    # overrides because the row re-read is eventually consistent.
+    # write_owner_facts is internally best-effort.
+    from core.services.owner_facts import write_owner_facts
+
+    facts_overrides: dict = {"subscription_status": new_status}
+    if metadata_provider in ("chatgpt_oauth", "byo_key", "bedrock_claude"):
+        facts_overrides["provider_choice"] = metadata_provider
+        facts_overrides["byo_provider"] = metadata_byo if metadata_provider == "byo_key" else None
+    await write_owner_facts(account["owner_id"], account_overrides=facts_overrides)
+
     # Customer-analytics bridge (the EMF put_metric above is the operational
     # counterpart) — land the lifecycle transition on the person.
     _bridge_subscription_state(account, event_data, old_status, new_status, metadata_provider)

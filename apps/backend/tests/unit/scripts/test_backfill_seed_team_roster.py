@@ -203,3 +203,10 @@ def test_role_edited_atlas_keeps_owner_customization():
     )
     assert "agent-atlas" not in patches
     assert patches["agent-friday"]["title"] == FRIDAY_TITLE
+
+
+def test_lone_seed_with_conflicting_signals_is_skipped():
+    """A lone seed that is ceo-roled AND named Atlas (promoted Atlas or a
+    renamed Friday — indistinguishable) is skipped, never classified."""
+    conflicted = {"id": "agent-lone", "name": "Atlas", "role": "ceo"}
+    assert compute_agent_patches([conflicted], seeded_agent_ids=["agent-lone"]) == {}

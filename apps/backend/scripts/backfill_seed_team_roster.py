@@ -73,12 +73,16 @@ def compute_agent_patches(agents: list[dict], seeded_agent_ids: list[str] | None
             friday_ref_id = seeded_agent_ids[0] if friday is not None else None
         else:
             lone = by_id.get(seeded_agent_ids[0])
-            if lone is not None and lone.get("role") == "ceo":
+            is_ceo_role = lone is not None and lone.get("role") == "ceo"
+            is_atlas_name = lone is not None and lone.get("name") == "Atlas"
+            if is_ceo_role and not is_atlas_name:
                 friday = lone
                 friday_ref_id = lone["id"]
-            elif lone is not None and lone.get("name") == "Atlas":
+            elif is_atlas_name and not is_ceo_role:
                 atlas = lone
-            # else: ambiguous lone seed (re-roled/renamed) — skip it.
+            # else: ambiguous lone seed — signals absent OR conflicting (a
+            # ceo-roled agent still named "Atlas" could be a promoted Atlas
+            # or a renamed Friday) — skip rather than guess.
         if friday is not None and friday.get("role") != "ceo":
             # Owner re-roled the seeded Friday; their customization outranks
             # the backfill — don't stamp CEO metadata onto it. It still

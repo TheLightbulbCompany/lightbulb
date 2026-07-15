@@ -392,6 +392,15 @@ async def sync_team_seat_quantity(owner_id: str) -> int:
         status=account.get("subscription_status"),
         seat_count=member_count,
     )
+
+    # Keep the agent-facing facts file's seat count current on the
+    # membership-change path — without this, agents keep quoting the old
+    # count until an unrelated webhook/reprovision rewrites the file. The
+    # just-written count rides as an override. Internally best-effort.
+    from core.services.owner_facts import write_owner_facts
+
+    await write_owner_facts(owner_id, account_overrides={"seat_count": member_count})
+
     return member_count
 
 

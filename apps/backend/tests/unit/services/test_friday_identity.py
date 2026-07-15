@@ -701,3 +701,24 @@ def test_migrate_legacy_user_md_provider_line_needs_plan_anchor():
     )
     assert friday_identity._migrate_legacy_user_md(ws, "user_abc", "uuid-f") is False
     assert ws.written is None
+
+
+def test_migrate_legacy_user_md_only_drops_the_adjacent_provider_line():
+    """A legacy-label-shaped provider line in later prose (e.g. Friday's
+    Context notes) must survive — only the line immediately after the plan
+    line is the seed's, everything else is authored content."""
+    content = _LEGACY_USER_MD + (
+        "\n## Notes\n"
+        "Config history:\n"
+        "- **Provider:** Bedrock (Claude, Isol8-managed credits)\n"
+        "was what we started with.\n"
+    )
+    ws = _MigrationWs(content)
+    assert friday_identity._migrate_legacy_user_md(ws, "user_abc", "uuid-f") is True
+    _, migrated = ws.written
+    # The adjacent seed pair migrated...
+    assert "isol8-facts.json" in migrated
+    assert "Isol8 plan" not in migrated
+    # ...but the lookalike in the Notes section survives.
+    assert migrated.count("- **Provider:** Bedrock (Claude, Isol8-managed credits)") == 1
+    assert "Config history:" in migrated

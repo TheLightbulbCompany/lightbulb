@@ -551,20 +551,24 @@ def _migrate_legacy_user_md(workspace: Workspace, owner_id: str, agent_uuid: str
         return False
     out: list[str] = []
     changed = False
+    drop_adjacent_provider = False
     for line in content.splitlines():
         stripped = line.rstrip()
         if stripped == _LEGACY_PLAN_LINE:
             out.append(_FACTS_POINTER_LINE_1)
             out.append(_FACTS_POINTER_LINE_2)
             changed = True
+            # The seed wrote the provider line IMMEDIATELY after the plan
+            # line — only that adjacent line is a migration target. A
+            # lookalike anywhere else (owner/Friday prose) must survive.
+            drop_adjacent_provider = True
             continue
-        if changed and stripped.startswith(_LEGACY_PROVIDER_PREFIX):
-            # Only dropped once the plan line has anchored the migration —
-            # the seed always wrote the pair together, and gating here keeps
-            # a lone provider-lookalike line in owner prose untouched.
-            label = stripped[len(_LEGACY_PROVIDER_PREFIX) :]
-            if label in _LEGACY_PROVIDER_LABELS or label.startswith("unknown ("):
-                continue
+        if drop_adjacent_provider:
+            drop_adjacent_provider = False
+            if stripped.startswith(_LEGACY_PROVIDER_PREFIX):
+                label = stripped[len(_LEGACY_PROVIDER_PREFIX) :]
+                if label in _LEGACY_PROVIDER_LABELS or label.startswith("unknown ("):
+                    continue
         out.append(line)
     if not changed:
         # The plan line appeared only as a substring of some other line (e.g.

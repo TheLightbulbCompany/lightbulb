@@ -93,13 +93,16 @@ def build_owner_facts(owner_id: str, billing_account: dict | None) -> dict:
 async def write_owner_facts(owner_id: str, *, account_overrides: dict | None = None) -> None:
     """Render + write the facts file. Best-effort: never raises.
 
-    ``account_overrides`` lets a caller that JUST committed billing fields
-    pass the written values, overlaying the (eventually-consistent) row
-    read — a get_item immediately after an update_item can return the
-    pre-update row, and the facts file must not capture that stale state.
+    The row read is STRONGLY consistent: the facts file often gets written
+    right after a billing mutation (possibly from a different process — e.g.
+    the webhook commits, then the reprovision's config write re-reads), and
+    an eventually consistent read observing the pre-write row would roll the
+    file back to stale state (e.g. a just-converted owner back to the free
+    tier). ``account_overrides`` additionally lets a caller that JUST
+    committed billing fields pin the written values explicitly.
     """
     try:
-        account = await billing_repo.get_by_owner_id(owner_id) or {}
+        account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True) or {}
         if account_overrides:
             account = {**account, **account_overrides}
         facts = build_owner_facts(owner_id, account)

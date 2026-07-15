@@ -69,7 +69,7 @@ async def test_write_owner_facts_writes_json(monkeypatch):
             written["path"] = path
             written["content"] = content
 
-    async def fake_get(owner_id):
+    async def fake_get(owner_id, *, consistent_read=False):
         return {"subscription_status": "active", "provider_choice": "bedrock_claude"}
 
     monkeypatch.setattr(owner_facts.billing_repo, "get_by_owner_id", fake_get)
@@ -94,7 +94,7 @@ async def test_write_owner_facts_overrides_beat_stale_row(monkeypatch):
         def write_file(self, user_id, path, content):
             written["content"] = content
 
-    async def stale_get(owner_id):
+    async def stale_get(owner_id, *, consistent_read=False):
         return {"subscription_status": "active", "provider_choice": "bedrock_claude"}
 
     monkeypatch.setattr(owner_facts.billing_repo, "get_by_owner_id", stale_get)
@@ -111,7 +111,7 @@ async def test_write_owner_facts_overrides_beat_stale_row(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_write_owner_facts_never_raises(monkeypatch):
-    async def boom(owner_id):
+    async def boom(owner_id, *, consistent_read=False):
         raise RuntimeError("ddb down")
 
     monkeypatch.setattr(owner_facts.billing_repo, "get_by_owner_id", boom)

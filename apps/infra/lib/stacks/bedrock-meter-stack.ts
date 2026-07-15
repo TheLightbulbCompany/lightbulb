@@ -84,13 +84,23 @@ export class BedrockMeterStack extends cdk.Stack {
     this.invocationLogGroup.grantWrite(deliveryRole);
 
     // No L1 for PutModelInvocationLoggingConfiguration — use AwsCustomResource.
+    //
+    // ALL data delivery is OFF: the meter reads only the record's top-level
+    // metadata (requestId, modelId/AIP ARN, identity, token + cache counts —
+    // verified against live records: the top-level counts are present and
+    // equal to the body's usage block). Request/response BODIES carry whatever
+    // the agent had in context — observed live: a tenant's Paperclip API key
+    // and the gateway JWT from adapterConfig, in plaintext — which made the
+    // log group a credential-bearing surface for anyone with CloudWatch read.
+    // Disabling body delivery removes that class entirely (and shrinks the
+    // records the subscription filter ships to the Lambda).
     const loggingConfig = {
       cloudWatchConfig: {
         logGroupName: this.invocationLogGroup.logGroupName,
         roleArn: deliveryRole.roleArn,
       },
-      textDataDeliveryEnabled: true,
-      embeddingDataDeliveryEnabled: true,
+      textDataDeliveryEnabled: false,
+      embeddingDataDeliveryEnabled: false,
       imageDataDeliveryEnabled: false,
     };
     const loggingConfigCr = new cr.AwsCustomResource(this, "BedrockLoggingConfig", {

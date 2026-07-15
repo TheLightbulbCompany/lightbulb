@@ -157,6 +157,18 @@ async def container_recover(
         # 3. Container is running -> check gateway health
         token = container.get("gateway_token", "")
         if not ip:
+            # Same trial predicate the stopped/error wake enforces above: this
+            # branch reprovisions too (a force=True start), and the meter
+            # Lambda's cap kill transiently leaves exactly this shape — a
+            # "running" row whose task is gone — so without the gate this door
+            # is the one way a capped/expired trial owner can wake the box.
+            # (Bedrock stays denied for a revoked owner, so no spend — but the
+            # container-stays-down invariant must hold at every door.)
+            trial_gate = provision_gate.gate_for_trial_reason(
+                await trial_cap.trial_block_reason(owner_id), _owner_role(auth)
+            )
+            if trial_gate is not None:
+                raise HTTPException(status_code=402, detail=trial_gate.to_payload())
             logger.warning("Owner %s: running container but no IP, reprovisioning", owner_id)
             try:
                 # Read the owner's saved provider_choice so recovery rebuilds

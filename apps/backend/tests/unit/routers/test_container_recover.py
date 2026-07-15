@@ -234,6 +234,32 @@ class TestContainerRecover:
         mock_ecs_manager.provision_user_container.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_recover_refuses_a_capped_owners_zombie_running_row(
+        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc
+    ):
+        """The cap kill's ECS stop transiently leaves a "running" row whose
+        task is gone — exactly the running/no-IP shape. That branch
+        reprovisions (a force=True start), so without its own gate it was the
+        one door a capped trial owner could wake the box through."""
+        mock_ecs_manager.resolve_running_container = AsyncMock(
+            return_value=(
+                {"owner_id": "user_test_123", "status": "running", "bedrock_revoked": True},
+                None,
+            )
+        )
+        mock_ecs_manager.provision_user_container = AsyncMock(return_value="openclaw-new")
+
+        with patch(
+            "core.services.trial_cap.trial_block_reason",
+            new=AsyncMock(return_value=trial_cap.DAILY_CAP),
+        ):
+            response = await async_client.post("/api/v1/container/recover")
+
+        assert response.status_code == 402
+        assert response.json()["detail"]["blocked"]["code"] == "trial_daily_cap"
+        mock_ecs_manager.provision_user_container.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_recover_stands_down_while_a_conversion_is_draining(
         self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc
     ):

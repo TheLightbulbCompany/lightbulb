@@ -278,11 +278,11 @@ describe("BedrockMeterStack", () => {
     expect(policies).not.toContain("s3:GetObject");
   });
 
-  test("AwsCustomResource sets logging config with text+embedding modalities", () => {
+  test("AwsCustomResource sets logging config with every data modality named", () => {
     // The custom resource encodes the putModelInvocationLoggingConfiguration
-    // call (incl. both modalities) in its Create parameters. CDK serializes the
-    // SDK action with its lowercase initial (`put...`); the capital-P spelling
-    // only appears in the IAM policy (`bedrock:Put...`), not the CR body.
+    // call (incl. every modality flag) in its Create parameters. CDK serializes
+    // the SDK action with its lowercase initial (`put...`); the capital-P
+    // spelling only appears in the IAM policy (`bedrock:Put...`), not the CR body.
     const customResources = template.findResources("Custom::AWS");
     const bodies = JSON.stringify(customResources);
     expect(bodies).toContain("putModelInvocationLoggingConfiguration");
@@ -303,8 +303,8 @@ describe("BedrockMeterStack", () => {
     // escaping-agnostic.
     const body: string = JSON.stringify(cfg).replace(/\\/g, "");
     expect(body).toContain('"loggingConfig":{"cloudWatchConfig"');
-    expect(body).toContain('"textDataDeliveryEnabled":true');
-    expect(body).toContain('"embeddingDataDeliveryEnabled":true');
+    expect(body).toContain('"textDataDeliveryEnabled":false');
+    expect(body).toContain('"embeddingDataDeliveryEnabled":false');
     expect(body).toContain('"imageDataDeliveryEnabled":false');
     // CW-only: no S3 large-data offload and no S3 destination at all.
     expect(body).not.toContain("largeDataDeliveryS3Config");
@@ -323,7 +323,13 @@ describe("BedrockMeterStack", () => {
     expect(loggingConfigs.length).toBe(1);
   });
 
-  test("GUARD: text+embedding stay enabled, image stays disabled in the config", () => {
+  test("GUARD: every data-delivery modality stays DISABLED in the config", () => {
+    // Bodies carry whatever the agent had in context — live records were
+    // observed containing a tenant's Paperclip API key and gateway JWT in
+    // plaintext. The meter needs only top-level metadata (token + cache
+    // counts), so all three delivery flags must stay false; re-enabling any
+    // of them turns the invocation log group back into a credential-bearing
+    // surface.
     const customResources = template.findResources("Custom::AWS");
     const configs = Object.values(customResources).filter((r: any) =>
       JSON.stringify(r).includes("ModelInvocationLoggingConfiguration"),
@@ -331,8 +337,8 @@ describe("BedrockMeterStack", () => {
     expect(configs.length).toBeGreaterThanOrEqual(1);
     for (const cfg of configs) {
       const body = JSON.stringify(cfg).replace(/\\/g, "");
-      expect(body).toContain('"textDataDeliveryEnabled":true');
-      expect(body).toContain('"embeddingDataDeliveryEnabled":true');
+      expect(body).toContain('"textDataDeliveryEnabled":false');
+      expect(body).toContain('"embeddingDataDeliveryEnabled":false');
       expect(body).toContain('"imageDataDeliveryEnabled":false');
     }
   });

@@ -952,8 +952,16 @@ def test_crossing_the_cap_revokes_iam_and_stops_ecs_exactly_once():
         service=index._service_name("org_abc"),
         desiredCount=0,
     )
-    # The backend's daily-restore path reads this flag.
+    # The stamp is the whole downstream contract, not just the flag:
+    # bedrock_revoked drives the daily restore; status="stopped" is what the
+    # status poll's retryable branch keys the 402 limit card on AND what the
+    # rollover auto-restart fires on. A row left "running" shows an indefinite
+    # cold-start stepper instead of the limit card and never self-heals.
     assert container["bedrock_revoked"]["BOOL"] is True
+    assert container["status"]["S"] == "stopped"
+    assert container["substatus"]["S"] == "trial_daily_cap"
+    assert container["bedrock_revoked_at"]["S"]
+    assert container["updated_at"]["S"]
 
 
 def test_staying_under_the_cap_kills_nothing():

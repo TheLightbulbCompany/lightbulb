@@ -113,8 +113,15 @@ METRONOME_INGEST_URL_DEFAULT = "https://api.metronome.com/v1/ingest"
 # Free-tier daily cost cap. Lockstep with core/services/trial_cap.CAP_MICROCENTS
 # (the READ side — gates chat with a friendly message). This module is the
 # WRITE side and the only enforcement that actually stops spend.
-# 1 dollar = 100 cents = 1,000,000 microcents, so $3.00/day = 3,000,000.
-CAP_MICROCENTS = 3_000_000
+# 1 dollar = 100 cents = 1,000,000 microcents.
+#
+# Advertised cap: $3.00/day; enforced at $2.60. The invocation log this meter
+# rides is delivered ~30-90s behind the calls, and the IAM revoke cannot cancel
+# an already-admitted streaming response — at full agentic burn (~$0.30/min
+# measured) that lag overshoots whatever threshold fires the kill by
+# ~$0.30-0.40. Enforcing early lands the realized spend UNDER the advertised
+# $3 instead of past it.
+CAP_MICROCENTS = 2_600_000
 
 # Dedup rows MUST outlive the longest window in which a record can be
 # redelivered, which is the DLQ's own retention: bedrock-meter-stack sets
@@ -661,12 +668,33 @@ def _stop_owner_service(owner_id):
 
 def _stamp_bedrock_revoked(owner_id):
     """Mark the containers row so the backend can see the revoke — the daily
-    restore reads this flag to re-attach the policy when the day rolls over."""
+    restore reads this flag to re-attach the policy when the day rolls over.
+
+    Also flips the row to status="stopped" / substatus="trial_daily_cap",
+    mirroring what the backend's own stop path writes after an ECS stop.
+    Every downstream surface keys on status: the status poll's retryable
+    branch renders the 402 daily-limit card (with the Upgrade CTA) off
+    "stopped", and the day-rollover auto-restart fires only on "stopped". A
+    row left "running" after the kill shows the owner an indefinite
+    cold-start stepper instead of the limit card — hiding the upgrade path
+    from exactly the user most likely to convert — and stays wedged even
+    after the counter resets, because nothing restarts a "running" row.
+    """
+    now = datetime.now(timezone.utc).isoformat()
     _ddb().update_item(
         TableName=os.environ["CONTAINERS_TABLE"],
         Key={"owner_id": {"S": owner_id}},
-        UpdateExpression="SET bedrock_revoked = :t",
-        ExpressionAttributeValues={":t": {"BOOL": True}},
+        UpdateExpression=(
+            "SET bedrock_revoked = :t, #s = :stopped, substatus = :sub, "
+            "bedrock_revoked_at = :now, updated_at = :now"
+        ),
+        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues={
+            ":t": {"BOOL": True},
+            ":stopped": {"S": "stopped"},
+            ":sub": {"S": "trial_daily_cap"},
+            ":now": {"S": now},
+        },
         ConditionExpression="attribute_exists(owner_id)",
     )
 

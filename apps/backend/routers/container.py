@@ -220,6 +220,25 @@ async def container_status(
     # actually set. See provision_gate.maybe_restore_trial_bedrock docstring.
     await maybe_restore_trial_bedrock(owner_id=owner_id, container=container)
 
+    # If the row STILL carries the revoke after the restore pass (it declined:
+    # capped or expired), gate NOW — whatever the row's status says. The meter
+    # Lambda's kill stamps status="stopped", but that write is one non-atomic
+    # step of a best-effort kill: if it fails, or a racing backend writer
+    # clobbers it, the row stays "running" with no live task, every branch
+    # below falls through, and this endpoint returns phase="starting" — an
+    # indefinite cold-start stepper with no Upgrade path, hiding the limit
+    # card from exactly the owner most likely to convert. Paid owners also
+    # carry bedrock_revoked (Metronome low-balance enforcement) — their trial
+    # reason is None here, so they fall through unchanged.
+    if container.get("bedrock_revoked"):
+        from core.services import provision_gate, trial_cap
+
+        revoked_gate = provision_gate.gate_for_trial_reason(
+            await trial_cap.trial_block_reason(owner_id), _owner_role(auth)
+        )
+        if revoked_gate is not None:
+            raise HTTPException(status_code=402, detail=revoked_gate.to_payload())
+
     # Trial→paid conversion owns the container row while it stops + drains the
     # trial box (see core/services/stripe_webhook_handlers.py). Two things
     # happen here:

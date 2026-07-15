@@ -5,20 +5,15 @@ import { Template } from "aws-cdk-lib/assertions";
 import { DatabaseStack } from "../lib/stacks/database-stack";
 
 /**
- * Pass-1 of the credits-ledger export retirement. The credits +
- * credit-transactions tables are no longer used by the backend (Metronome is
- * the only biller), but their auto-generated Arn/Ref exports are imported by
- * the LIVE service stack — and CloudFormation refuses to delete an in-use
- * export. Because the database stack deploys BEFORE the service stack drops
- * its imports, deleting table and import in one deploy rolls the database
- * stack back (observed live on the cutover deploy).
+ * Pass-2 of the credits-ledger export retirement (2026-07-14). The credits +
+ * credit-transactions tables were unused by the backend (Metronome is the
+ * only biller) and, once Pass-1 proved no stack still imported their
+ * auto-generated Arn/Ref exports, both tables and all four pinned exports
+ * were deleted outright.
  *
- * These tests pin the Pass-1 invariants: the tables still exist and ALL FOUR
- * exports are published under their EXACT live names (verified against the
- * deployed isol8-{env}-database stacks). Pass-2 deletes tables + retentions
- * once no stack imports them.
+ * These tests lock in that the tables and their exports are GONE.
  */
-describe("credits export decouple (pass 1)", () => {
+describe("credits export decouple (pass 2 — retired)", () => {
   let template: Template;
 
   beforeAll(() => {
@@ -35,24 +30,25 @@ describe("credits export decouple (pass 1)", () => {
     template = Template.fromStack(stack);
   });
 
-  test("both ledger tables still exist (deletion deferred to pass 2)", () => {
-    template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "isol8-dev-credits",
+  test("both ledger tables are gone", () => {
+    const creditsResources = template.findResources("AWS::DynamoDB::Table", {
+      Properties: { TableName: "isol8-dev-credits" },
     });
-    template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "isol8-dev-credit-transactions",
-    });
+    expect(Object.keys(creditsResources)).toEqual([]);
+
+    const creditTransactionsResources = template.findResources(
+      "AWS::DynamoDB::Table",
+      { Properties: { TableName: "isol8-dev-credit-transactions" } },
+    );
+    expect(Object.keys(creditTransactionsResources)).toEqual([]);
   });
 
-  test("all four in-use exports are pinned under their exact live names", () => {
-    const outputs = JSON.stringify(template.toJSON().Outputs ?? {});
-    for (const name of [
-      "isol8-dev-database:ExportsOutputFnGetAttCreditsTable13AC5EA8ArnB299C72C",
-      "isol8-dev-database:ExportsOutputRefCreditsTable13AC5EA80B87C786",
-      "isol8-dev-database:ExportsOutputFnGetAttCreditTransactionsTable72EF769AArn60F8FDA5",
-      "isol8-dev-database:ExportsOutputRefCreditTransactionsTable72EF769A0289C51E",
-    ]) {
-      expect(outputs).toContain(name);
-    }
+  test("none of the four former exports are published anymore", () => {
+    const outputs = Object.keys(template.toJSON().Outputs ?? {});
+    const staleOutputs = outputs.filter(
+      (key) =>
+        key.includes("CreditsTable") || key.includes("CreditTransactionsTable"),
+    );
+    expect(staleOutputs).toEqual([]);
   });
 });

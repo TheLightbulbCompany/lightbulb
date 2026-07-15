@@ -869,6 +869,14 @@ async def change_provider(
         connector_user_id=clerk_user_id if provider_choice == "chatgpt_oauth" else None,
     )
 
+    # Keep the agents' view of plan/provider current — the owner-facts file
+    # is what the bundled isol8 skill points them at. Placed after the
+    # billing-row commit so the file reflects the NEW provider on both the
+    # hot-swap and cold (redeploy) paths below. Internally best-effort.
+    from core.services.owner_facts import write_owner_facts
+
+    await write_owner_facts(owner_id)
+
     # Side-effect cleanup: drop the OLD provider's credentials so a future
     # switch back doesn't reuse stale state. Each branch is best-effort —
     # a failure here is logged but does not roll back the billing-row

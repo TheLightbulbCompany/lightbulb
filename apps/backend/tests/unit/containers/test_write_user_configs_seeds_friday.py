@@ -299,3 +299,41 @@ async def test_passes_channel_accounts_to_write_openclaw_config(monkeypatch, tmp
 
     write_oc_mock.assert_awaited_once()
     assert write_oc_mock.call_args.kwargs["channel_accounts"] == carried
+
+
+@pytest.mark.asyncio
+async def test_writes_owner_facts(monkeypatch, tmp_path, manager):
+    """write_user_configs refreshes the owner-facts file for the owner."""
+    monkeypatch.setattr(settings, "EFS_MOUNT_PATH", str(tmp_path))
+
+    facts_mock = AsyncMock()
+
+    with (
+        patch(
+            "core.services.paperclip_openclaw_pairing.fetch_paperclip_agents_for_owner",
+            AsyncMock(return_value=[{"id": "uuid-friday", "role": "ceo"}]),
+        ),
+        patch("core.containers.ecs_manager.write_openclaw_config", AsyncMock()),
+        patch("core.services.friday_identity.pre_stage_friday_identity", AsyncMock()),
+        patch("core.services.atlas_seed.pre_stage_atlas", AsyncMock()),
+        patch(
+            "core.services.paperclip_api_key.ensure_paperclip_api_key",
+            AsyncMock(return_value=None),
+        ),
+        patch(
+            "core.services.paperclip_openclaw_pairing.resolve_company_id_for_owner",
+            AsyncMock(return_value=None),
+        ),
+        patch("core.services.owner_facts.write_owner_facts", facts_mock),
+        patch.object(manager, "ensure_device_identities", AsyncMock()),
+        patch("httpx.AsyncClient", _make_async_httpx_client_mock()),
+    ):
+        await manager.write_user_configs(
+            user_id="user_abc",
+            gateway_token="t" * 32,
+            provider_choice="bedrock_claude",
+            byo_provider=None,
+            aip_arns=_AIPS,
+        )
+
+    facts_mock.assert_awaited_once_with("user_abc")

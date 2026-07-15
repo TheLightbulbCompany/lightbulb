@@ -2660,6 +2660,13 @@ class EcsManager:
         # reprovision, so a seeded agent stays seeded with no provision-time
         # re-seed; an unassigned agent needs nothing.
 
+        # Refresh the owner-facts file (plan/provider snapshot the bundled
+        # isol8 skill points agents at). Internally best-effort — never blocks
+        # the config write.
+        from core.services.owner_facts import write_owner_facts
+
+        await write_owner_facts(owner_id)
+
         await self.ensure_device_identities(owner_id, gateway_token)
 
     async def ensure_device_identities(self, user_id: str, gateway_token: str) -> None:

@@ -303,8 +303,8 @@ describe("BedrockMeterStack", () => {
     // escaping-agnostic.
     const body: string = JSON.stringify(cfg).replace(/\\/g, "");
     expect(body).toContain('"loggingConfig":{"cloudWatchConfig"');
-    expect(body).toContain('"textDataDeliveryEnabled":false');
-    expect(body).toContain('"embeddingDataDeliveryEnabled":false');
+    expect(body).toContain('"textDataDeliveryEnabled":true');
+    expect(body).toContain('"embeddingDataDeliveryEnabled":true');
     expect(body).toContain('"imageDataDeliveryEnabled":false');
     // CW-only: no S3 large-data offload and no S3 destination at all.
     expect(body).not.toContain("largeDataDeliveryS3Config");
@@ -323,13 +323,14 @@ describe("BedrockMeterStack", () => {
     expect(loggingConfigs.length).toBe(1);
   });
 
-  test("GUARD: every data-delivery modality stays DISABLED in the config", () => {
-    // Bodies carry whatever the agent had in context — live records were
-    // observed containing a tenant's Paperclip API key and gateway JWT in
-    // plaintext. The meter needs only top-level metadata (token + cache
-    // counts), so all three delivery flags must stay false; re-enabling any
-    // of them turns the invocation log group back into a credential-bearing
-    // surface.
+  test("GUARD: text delivery stays ENABLED — disabling it blinds the meter", () => {
+    // The modality flags select WHICH MODELS get logged AT ALL, not whether
+    // bodies are included ("Data will be logged for all models that support
+    // the modalities ... that you choose" — Bedrock user guide). Deselecting
+    // Text stops logging Claude/Converse invocations entirely: the meter goes
+    // blind, the trial cap never fires, paid usage stops ingesting. The
+    // credential exposure from the bodies this forces into the log group is
+    // bounded by short retention (asserted below), NOT by disabling delivery.
     const customResources = template.findResources("Custom::AWS");
     const configs = Object.values(customResources).filter((r: any) =>
       JSON.stringify(r).includes("ModelInvocationLoggingConfiguration"),
@@ -337,10 +338,23 @@ describe("BedrockMeterStack", () => {
     expect(configs.length).toBeGreaterThanOrEqual(1);
     for (const cfg of configs) {
       const body = JSON.stringify(cfg).replace(/\\/g, "");
-      expect(body).toContain('"textDataDeliveryEnabled":false');
-      expect(body).toContain('"embeddingDataDeliveryEnabled":false');
+      expect(body).toContain('"textDataDeliveryEnabled":true');
+      expect(body).toContain('"embeddingDataDeliveryEnabled":true');
       expect(body).toContain('"imageDataDeliveryEnabled":false');
     }
+  });
+
+  test("GUARD: invocation log group keeps SHORT retention (credential-bearing bodies)", () => {
+    // Bodies carry whatever the agent had in context — live records were
+    // observed containing a tenant's Paperclip API key and gateway JWT in
+    // plaintext — and text delivery cannot be turned off (above). The meter
+    // consumes each record within seconds and DLQ messages embed their own
+    // copy, so retention is purely a debugging window. Keep it days, not
+    // months.
+    template.hasResourceProperties("AWS::Logs::LogGroup", {
+      LogGroupName: "/isol8/bedrock-invocation",
+      RetentionInDays: 3,
+    });
   });
 
   test("alarms per instance: DLQ depth + 9 skip/failure metrics + fn errors, env-scoped dimensions", () => {

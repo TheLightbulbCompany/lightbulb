@@ -7,17 +7,22 @@ Confirmed against real dev `ConverseStream` records (cache-heavy trial run,
 exactly. The body fallback paths in `index.py::_extract` are kept as
 defensive-only.
 
-## No bodies — metadata-only delivery
+## Bodies are unavoidable — text delivery MUST stay enabled
 
-As of 2026-07-15 the logging config disables ALL data delivery
-(`textDataDeliveryEnabled` / `embeddingDataDeliveryEnabled` /
-`imageDataDeliveryEnabled` = false in `bedrock-meter-stack.ts`), so
-`input.inputBodyJson` / `output.outputBodyJson` **no longer appear in
-records at all**. Rationale: bodies carry whatever the agent had in context —
-live records were observed containing a tenant's Paperclip API key and the
-gateway JWT in plaintext — and the meter never needed them (counts are
-top-level, above). The `outputBodyJson.usage` rows in the table below are the
-historical fallback shape, retained only because the parser still accepts it.
+`textDataDeliveryEnabled` cannot be turned off: the modality flags select
+WHICH MODELS get logged at all, not whether bodies are included — "Data will
+be logged for all models that support the modalities ... that you choose"
+(Bedrock user guide, model-invocation-logging). Deselecting Text stops
+logging Claude/Converse invocations entirely, blinding the meter and killing
+the trial cap. There is NO metadata-only mode.
+
+Consequence: every record carries the full request/response bodies, and live
+records were observed containing a tenant's Paperclip API key and gateway JWT
+in plaintext. Treat `/isol8/bedrock-invocation` as a credential-bearing
+surface. Mitigation is the log group's SHORT retention (3 days,
+`bedrock-meter-stack.ts`) — the meter consumes records within seconds and DLQ
+messages embed their own copy of the log event, so nothing re-reads the group
+after delivery.
 
 ## No S3 — CloudWatch-only
 

@@ -70,9 +70,17 @@ export class BedrockMeterStack extends cdk.Stack {
     // deploys). It is metering plumbing, not a system of record — the metering
     // happens in near-real-time via the subscription filters, and DESTROY only
     // acts on stack delete / CREATE-rollback (never on a steady-state UPDATE).
+    // THREE_DAYS retention, deliberately short: text data delivery cannot be
+    // disabled without blinding the meter (see the loggingConfig comment), so
+    // every record carries full request/response bodies — live records were
+    // observed containing a tenant's Paperclip API key and gateway JWT in
+    // plaintext. The meter consumes each record within seconds (subscription
+    // filter), and DLQ messages embed their own copy of the log event, so
+    // nothing ever re-reads this group after delivery. Retention is purely a
+    // debugging window; keep the credential-bearing history short.
     this.invocationLogGroup = new logs.LogGroup(this, "InvocationLogGroup", {
       logGroupName: "/isol8/bedrock-invocation",
-      retention: logs.RetentionDays.ONE_MONTH,
+      retention: logs.RetentionDays.THREE_DAYS,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
@@ -85,22 +93,28 @@ export class BedrockMeterStack extends cdk.Stack {
 
     // No L1 for PutModelInvocationLoggingConfiguration — use AwsCustomResource.
     //
-    // ALL data delivery is OFF: the meter reads only the record's top-level
-    // metadata (requestId, modelId/AIP ARN, identity, token + cache counts —
-    // verified against live records: the top-level counts are present and
-    // equal to the body's usage block). Request/response BODIES carry whatever
-    // the agent had in context — observed live: a tenant's Paperclip API key
-    // and the gateway JWT from adapterConfig, in plaintext — which made the
-    // log group a credential-bearing surface for anyone with CloudWatch read.
-    // Disabling body delivery removes that class entirely (and shrinks the
-    // records the subscription filter ships to the Lambda).
+    // textDataDeliveryEnabled MUST STAY TRUE. The modality flags select WHICH
+    // MODELS get logged at all, not whether bodies are included: "Data will be
+    // logged for all models that support the modalities ... that you choose"
+    // (Bedrock user guide, model-invocation-logging). Deselecting Text stops
+    // logging Claude/Converse invocations entirely — the meter goes blind, the
+    // trial cap never fires, and paid usage stops ingesting. There is NO
+    // metadata-only mode.
+    //
+    // The unavoidable consequence: records carry full request/response bodies
+    // — observed live: a tenant's Paperclip API key and gateway JWT in
+    // plaintext — so the log group is a credential-bearing surface. Exposure
+    // is bounded by the log group's SHORT retention (see InvocationLogGroup):
+    // the meter consumes each record within seconds via the subscription
+    // filter, and DLQ messages embed their own copy of the log event, so
+    // redrives never re-read the log group.
     const loggingConfig = {
       cloudWatchConfig: {
         logGroupName: this.invocationLogGroup.logGroupName,
         roleArn: deliveryRole.roleArn,
       },
-      textDataDeliveryEnabled: false,
-      embeddingDataDeliveryEnabled: false,
+      textDataDeliveryEnabled: true,
+      embeddingDataDeliveryEnabled: true,
       imageDataDeliveryEnabled: false,
     };
     const loggingConfigCr = new cr.AwsCustomResource(this, "BedrockLoggingConfig", {

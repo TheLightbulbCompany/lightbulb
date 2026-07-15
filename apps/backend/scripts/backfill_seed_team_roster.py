@@ -186,7 +186,14 @@ async def process_company(
     agents = resp if isinstance(resp, list) else (resp or {}).get("agents", [])
 
     patches = compute_agent_patches(agents, seeded_agent_ids)
-    if not patches and not any(a.get("role") == "ceo" for a in agents):
+    if not patches and seeded_agent_ids:
+        present = sum(1 for a in agents if a.get("id") in set(seeded_agent_ids))
+        if present < len(seeded_agent_ids):
+            print(
+                f"  WARN {owner_id} ({company_id}): {len(seeded_agent_ids) - present} seeded "
+                "agent(s) missing from roster — needs manual attention"
+            )
+    if not patches and not seeded_agent_ids and not any(a.get("role") == "ceo" for a in agents):
         print(f"  WARN {owner_id} ({company_id}): no ceo-role agent — nothing identifiable to patch")
     for agent_id, body in patches.items():
         name = next((a.get("name") for a in agents if a.get("id") == agent_id), "?")

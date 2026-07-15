@@ -883,9 +883,9 @@ async def change_provider(
     # reaches write_user_configs (which owns the write on the cold path), so
     # this explicit write is what keeps the file fresh there; on the cold
     # path it is a cheap redundant write that also covers a redeploy dying
-    # before write_user_configs. The just-committed values are passed as
-    # overrides because the row re-read is eventually consistent and can
-    # still return the OLD provider. Internally best-effort.
+    # before write_user_configs. The just-committed values ride as overrides
+    # — same-process pinning that outranks any row read. Internally
+    # best-effort.
     from core.services.owner_facts import write_owner_facts
 
     await write_owner_facts(

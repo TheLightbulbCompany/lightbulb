@@ -540,7 +540,7 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
     # change_provider — so without this write a past_due/canceled transition
     # would leave agents reporting an active paid plan. The just-persisted
     # status (and the backup-path provider, when written) ride along as
-    # overrides because the row re-read is eventually consistent.
+    # overrides — same-process pinning that outranks any row read.
     # write_owner_facts is internally best-effort.
     from core.services.owner_facts import write_owner_facts
 

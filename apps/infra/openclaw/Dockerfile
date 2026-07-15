@@ -406,6 +406,20 @@ RUN chown -R root:root /app/dist/extensions/aws-exec-profile
 # AGENT_ID from that file itself; they are NOT container-wide task env.
 COPY skills/paperclip /app/skills/paperclip
 
+# ---- Layer 16: bundled Isol8 platform skill ----
+# The `isol8` skill is every agent's authoritative reference for the
+# platform itself — UI surfaces (incl. the Integrations tab), marketplace
+# mechanics, plans/providers, the Paperclip org model, and hard boundaries.
+# Baked (not seeded) so the WHOLE fleet — Friday, Atlas, scaffolded
+# specialists, marketplace hires — gets identical, current platform
+# knowledge on every image promotion, with no per-agent seeding and no
+# reprovision. Dynamic per-owner state deliberately lives OUTSIDE the image
+# in ~/.openclaw/isol8-facts.json (written by the backend — see
+# core/services/owner_facts.py); the skill points agents at it.
+# Authored in-repo (not vendored). Keep in lockstep with the anchors listed
+# in the SKILL.md maintenance header.
+COPY skills/isol8 /app/skills/isol8
+
 
 # ---- Restore runtime context ----
 USER node

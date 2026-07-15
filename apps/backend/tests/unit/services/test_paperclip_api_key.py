@@ -48,6 +48,7 @@ class FakeSM:
         self.create_calls: list[tuple[str, str]] = []
         self.put_calls: list[tuple[str, str]] = []
         self.get_calls: list[str] = []
+        self.delete_calls: list[str] = []
 
     def get_secret_value(self, *, SecretId: str):
         self.get_calls.append(SecretId)
@@ -66,6 +67,31 @@ class FakeSM:
         self.put_calls.append((SecretId, SecretString))
         self.store[SecretId] = SecretString
         return {"SecretId": SecretId}
+
+    class _Paginator:
+        """Honors the ``name`` prefix filter like real Secrets Manager."""
+
+        def __init__(self, store: dict[str, str]):
+            self._store = store
+
+        def paginate(self, Filters=None):
+            prefix = ""
+            for f in Filters or []:
+                if f.get("Key") == "name" and f.get("Values"):
+                    prefix = f["Values"][0]
+            names = [n for n in self._store if n.startswith(prefix)]
+            yield {"SecretList": [{"Name": n} for n in names]}
+
+    def get_paginator(self, operation: str):
+        assert operation == "list_secrets"
+        return FakeSM._Paginator(self.store)
+
+    def delete_secret(self, *, SecretId: str, ForceDeleteWithoutRecovery: bool = False):
+        self.delete_calls.append(SecretId)
+        if SecretId not in self.store:
+            raise FakeSM.ResourceNotFoundException(SecretId)
+        del self.store[SecretId]
+        return {"Name": SecretId}
 
 
 @pytest.fixture
@@ -315,3 +341,50 @@ async def test_returns_none_when_sm_store_fails(admin_client, fake_sm):
     assert result is None
     # We did mint (Paperclip was called) but the store failed.
     admin_client.create_agent_api_key.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Per-owner agent-key sweep (Admin Account-Wipe support)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_owner_agent_key_secrets_scopes_to_owner_prefix(fake_sm):
+    """Lists ONLY the target owner's per-agent key secrets — never another
+    owner's, and never a different secret namespace."""
+    px = paperclip_api_key._owner_prefix("user_x")
+    other = paperclip_api_key._owner_prefix("user_OTHER")
+    fake_sm.store.update(
+        {
+            f"{px}a1": "k1",
+            f"{px}a2": "k2",
+            f"{other}a1": "decoy-other-owner",
+            "isol8/dev/user-keys/user_x/openai": "decoy-other-namespace",
+        }
+    )
+
+    names = await paperclip_api_key.list_owner_agent_key_secret_names("user_x")
+
+    assert sorted(names) == sorted([f"{px}a1", f"{px}a2"])
+
+
+@pytest.mark.asyncio
+async def test_delete_owner_agent_key_secrets_deletes_only_owner_and_counts(fake_sm):
+    px = paperclip_api_key._owner_prefix("user_x")
+    other = paperclip_api_key._owner_prefix("user_OTHER")
+    fake_sm.store.update({f"{px}a1": "k1", f"{px}a2": "k2", f"{other}a1": "survivor"})
+
+    count = await paperclip_api_key.delete_owner_agent_key_secrets("user_x")
+
+    assert count == 2
+    assert sorted(fake_sm.delete_calls) == sorted([f"{px}a1", f"{px}a2"])
+    # The other owner's key must survive the sweep.
+    assert f"{other}a1" in fake_sm.store
+    assert not any(n.startswith(px) for n in fake_sm.store)
+
+
+@pytest.mark.asyncio
+async def test_delete_owner_agent_key_secrets_noops_when_none(fake_sm):
+    count = await paperclip_api_key.delete_owner_agent_key_secrets("user_with_no_keys")
+    assert count == 0
+    assert fake_sm.delete_calls == []

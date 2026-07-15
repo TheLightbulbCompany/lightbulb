@@ -23,10 +23,14 @@ Two design points worth knowing:
 Storage: AWS Secrets Manager at
 ``isol8/<env>/paperclip-agent-keys/<owner>/<paperclip_agent_id>``. The owner_id
 is the container owner (Clerk user_id for personal, org_id for orgs). These keys
-are re-mintable, so a reprovision (or the clean-slate reset) recovers them; the
-debug teardown does not enumerate them — there is no per-agent index to sweep.
+are re-mintable, so a reprovision (or the clean-slate reset) recovers them.
+There is no per-agent index, so the Admin Account-Wipe teardown enumerates
+them by the Secrets Manager name prefix — see
+``list_owner_agent_key_secret_names`` / ``delete_owner_agent_key_secrets``.
 
-Single public function: ``ensure_paperclip_api_key``.
+Public functions: ``ensure_paperclip_api_key`` (mint/read),
+``list_owner_agent_key_secret_names`` + ``delete_owner_agent_key_secrets``
+(wipe support).
 """
 
 from __future__ import annotations
@@ -55,6 +59,62 @@ def _secret_name(owner_id: str, paperclip_agent_id: str) -> str:
     (``isol8/<env>/paperclip-agent-keys/*``)."""
     env = settings.ENVIRONMENT or "dev"
     return f"isol8/{env}/paperclip-agent-keys/{owner_id}/{paperclip_agent_id}"
+
+
+def _owner_prefix(owner_id: str) -> str:
+    """Secrets Manager name prefix covering ALL of an owner's per-agent keys."""
+    env = settings.ENVIRONMENT or "dev"
+    return f"isol8/{env}/paperclip-agent-keys/{owner_id}/"
+
+
+async def list_owner_agent_key_secret_names(owner_id: str) -> list[str]:
+    """Every per-agent Paperclip key secret name for an owner.
+
+    There is no per-agent index (see module docstring), so we enumerate by the
+    Secrets Manager name prefix ``isol8/<env>/paperclip-agent-keys/<owner>/``.
+    Read-only — drives the Admin Account-Wipe preview.
+    """
+    prefix = _owner_prefix(owner_id)
+
+    def _list() -> list[str]:
+        sm = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
+        names: list[str] = []
+        for page in sm.get_paginator("list_secrets").paginate(Filters=[{"Key": "name", "Values": [prefix]}]):
+            for s in page.get("SecretList", []):
+                # The `name` filter is a prefix match; guard with startswith
+                # anyway so a future filter-semantics change can't over-match
+                # (deleting another owner's keys would be catastrophic).
+                if s.get("Name", "").startswith(prefix):
+                    names.append(s["Name"])
+        return names
+
+    return await run_in_thread(_list)
+
+
+async def delete_owner_agent_key_secrets(owner_id: str) -> int:
+    """Delete every per-agent Paperclip key secret for an owner — Admin
+    Account-Wipe teardown. Returns the number deleted.
+
+    Force-deletes without a recovery window: the wipe permanently removes the
+    owning account ("cannot be undone") and these keys are re-mintable, so
+    there is nothing to recover them to. Idempotent — an already-gone secret
+    (ResourceNotFound) is treated as success, so a re-run after a partial wipe
+    is safe.
+    """
+    names = await list_owner_agent_key_secret_names(owner_id)
+    if not names:
+        return 0
+
+    def _delete() -> None:
+        sm = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
+        for name in names:
+            try:
+                sm.delete_secret(SecretId=name, ForceDeleteWithoutRecovery=True)
+            except sm.exceptions.ResourceNotFoundException:
+                pass
+
+    await run_in_thread(_delete)
+    return len(names)
 
 
 async def ensure_paperclip_api_key(

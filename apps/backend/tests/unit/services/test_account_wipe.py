@@ -47,6 +47,7 @@ EXPECTED_ORDER = [
     "paperclip_row",
     "billing_row",
     "user_row",
+    "paperclip_agent_keys",
     "clerk_user",
 ]
 
@@ -146,6 +147,8 @@ def wipe_mocks():
     stripe_delete = AsyncMock(return_value=True)
     usage_delete = AsyncMock(return_value=3)
     clerk_delete = AsyncMock(return_value=None)
+    agent_keys_list = AsyncMock(return_value=["isol8/dev/paperclip-agent-keys/user_abc123/agent-1"])
+    agent_keys_delete = AsyncMock(return_value=1)
 
     with (
         patch("core.services.account_wipe.user_repo.get", new=user_get),
@@ -165,6 +168,8 @@ def wipe_mocks():
         patch("core.services.account_wipe.delete_stripe_customer", new=stripe_delete),
         patch("core.services.account_wipe.usage_repo.delete_all_for_owner", new=usage_delete),
         patch("core.services.account_wipe.clerk_admin.delete_user", new=clerk_delete),
+        patch("core.services.account_wipe.list_owner_agent_key_secret_names", new=agent_keys_list),
+        patch("core.services.account_wipe.delete_owner_agent_key_secrets", new=agent_keys_delete),
     ):
         yield SimpleNamespace(
             user_get=user_get,
@@ -186,6 +191,8 @@ def wipe_mocks():
             stripe_delete=stripe_delete,
             usage_delete=usage_delete,
             clerk_delete=clerk_delete,
+            agent_keys_list=agent_keys_list,
+            agent_keys_delete=agent_keys_delete,
         )
 
 
@@ -224,7 +231,37 @@ async def test_wipe_account_runs_steps_in_spec_order(wipe_mocks):
     wipe_mocks.paperclip_row_delete.assert_awaited_once_with(OWNER_ID)
     wipe_mocks.billing_delete.assert_awaited_once_with(OWNER_ID)
     wipe_mocks.user_delete.assert_awaited_once_with(OWNER_ID)
+    wipe_mocks.agent_keys_delete.assert_awaited_once_with(OWNER_ID)
     wipe_mocks.clerk_delete.assert_awaited_once_with(OWNER_ID)
+
+
+@pytest.mark.asyncio
+async def test_sweeps_per_agent_paperclip_key_secrets_before_clerk(wipe_mocks):
+    """The per-agent Paperclip key-secret sweep runs (dogfood gap fix), records
+    the deleted count, and lands before the always-last Clerk delete."""
+    wipe_mocks.agent_keys_delete.return_value = 3
+    report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
+
+    step = next(s for s in report.steps if s.system == "paperclip_agent_keys")
+    assert step.status == "ok"
+    assert "3" in step.detail
+    systems = [s.system for s in report.steps]
+    assert systems.index("paperclip_agent_keys") < systems.index("clerk_user")
+
+
+@pytest.mark.asyncio
+async def test_preview_lists_per_agent_paperclip_key_secrets(wipe_mocks):
+    """preview_wipe surfaces the per-agent key secrets by name-prefix count."""
+    wipe_mocks.agent_keys_list.return_value = [
+        "isol8/dev/paperclip-agent-keys/user_123/a1",
+        "isol8/dev/paperclip-agent-keys/user_123/a2",
+    ]
+    report = await preview_wipe(OWNER_ID)
+
+    wipe_mocks.agent_keys_list.assert_awaited_once_with(OWNER_ID)
+    step = next(s for s in report.steps if s.system == "paperclip_agent_keys")
+    assert step.status == "would_delete"
+    assert "2 per-agent" in step.detail
 
 
 @pytest.mark.asyncio
@@ -416,6 +453,7 @@ async def test_clerk_delete_still_runs_when_every_other_step_fails(wipe_mocks):
     wipe_mocks.paperclip_row_delete.side_effect = RuntimeError("ddb down")
     wipe_mocks.billing_delete.side_effect = RuntimeError("ddb down")
     wipe_mocks.user_delete.side_effect = RuntimeError("ddb down")
+    wipe_mocks.agent_keys_delete.side_effect = RuntimeError("sm down")
 
     report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
 

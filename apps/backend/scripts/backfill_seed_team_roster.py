@@ -39,16 +39,19 @@ from typing import Any
 logger = logging.getLogger("backfill_seed_team_roster")
 
 
-def compute_agent_patches(agents: list[dict], seeded_agent_ids: set[str] | None = None) -> dict[str, dict]:
+def compute_agent_patches(agents: list[dict], seeded_agent_ids: list[str] | None = None) -> dict[str, dict]:
     """Return ``{agent_id: patch_body}`` for the seed team, filling only empty fields.
 
-    Friday = the ``role == "ceo"`` agent (unique per company — default-agent
-    selection depends on it). Atlas is identified by the persisted
-    ``seeded_agent_ids`` marker when available (the non-ceo seeded id —
-    rename-proof, and immune to a marketplace hire the owner named "Atlas");
-    companies whose row predates that marker fall back to the literal
-    ``name == "Atlas"`` + ``role == "general"`` match. Pure — no I/O — so it
-    carries the unit tests for the fill-only-empty contract.
+    ``seeded_agent_ids`` is the ORDERED persisted marker: ``provision_org``
+    appends Friday first, Atlas second, and neither current role nor name is
+    a safe handle on marker-bearing rows (Teams lets owners create extra
+    role="ceo" agents AND re-role/rename the seeds — a role-edited Friday
+    must never be stamped with Atlas metadata). A lone seeded id (the other
+    mint failed at provision time) is disambiguated by role/name and skipped
+    when ambiguous. When a seeded id is absent from the roster, do NOT fall
+    through to role/name matching. Companies whose row predates the marker
+    fall back to role/name matching. Pure — no I/O — so it carries the unit
+    tests for the fill-only-empty contract.
     """
     from core.services.paperclip_provisioning import (
         ATLAS_CAPABILITIES,
@@ -57,25 +60,35 @@ def compute_agent_patches(agents: list[dict], seeded_agent_ids: set[str] | None 
         FRIDAY_TITLE,
     )
 
+    friday: dict | None = None
+    atlas: dict | None = None
+    friday_ref_id: str | None = None  # reportsTo target — survives a role-edited Friday
     if seeded_agent_ids:
-        # A seeded marker exists, so it is authoritative for BOTH seeds —
-        # Teams lets owners create additional role="ceo" agents, so role (like
-        # name) is not a safe handle on marker-bearing rows. When a seeded id
-        # is absent from the roster (deleted/disabled seed, partial response),
-        # do NOT fall through to role/name matching — that could stamp a
-        # user/marketplace agent with the seed metadata.
-        friday = next(
-            (a for a in agents if a.get("id") in seeded_agent_ids and a.get("role") == "ceo"),
-            None,
-        )
-        atlas = next(
-            (a for a in agents if a.get("id") in seeded_agent_ids and a.get("role") != "ceo"),
-            None,
-        )
+        by_id = {a["id"]: a for a in agents if a.get("id")}
+        if len(seeded_agent_ids) >= 2:
+            friday = by_id.get(seeded_agent_ids[0])
+            atlas = by_id.get(seeded_agent_ids[1])
+            # reportsTo target only when the seeded Friday still exists in
+            # the roster — never point Atlas at a deleted/absent agent id.
+            friday_ref_id = seeded_agent_ids[0] if friday is not None else None
+        else:
+            lone = by_id.get(seeded_agent_ids[0])
+            if lone is not None and lone.get("role") == "ceo":
+                friday = lone
+                friday_ref_id = lone["id"]
+            elif lone is not None and lone.get("name") == "Atlas":
+                atlas = lone
+            # else: ambiguous lone seed (re-roled/renamed) — skip it.
+        if friday is not None and friday.get("role") != "ceo":
+            # Owner re-roled the seeded Friday; their customization outranks
+            # the backfill — don't stamp CEO metadata onto it. It still
+            # anchors Atlas's reportsTo via friday_ref_id.
+            friday = None
     else:
         # No marker (row predates seeded_agent_ids): role/name matching is the
         # only handle available for these legacy rows.
         friday = next((a for a in agents if a.get("role") == "ceo" and a.get("id")), None)
+        friday_ref_id = friday["id"] if friday else None
         atlas = next(
             (a for a in agents if a.get("name") == "Atlas" and a.get("role") == "general" and a.get("id")),
             None,
@@ -96,8 +109,8 @@ def compute_agent_patches(agents: list[dict], seeded_agent_ids: set[str] | None 
             body["title"] = ATLAS_TITLE
         if not atlas.get("capabilities"):
             body["capabilities"] = ATLAS_CAPABILITIES
-        if friday and not atlas.get("reportsTo"):
-            body["reportsTo"] = friday["id"]
+        if friday_ref_id and not atlas.get("reportsTo"):
+            body["reportsTo"] = friday_ref_id
         if body:
             patches[atlas["id"]] = body
     return patches
@@ -125,6 +138,25 @@ async def _scan_owner_ids() -> list[str]:
     return sorted(owner_ids)
 
 
+async def _resolve_seeded_agent_id_list(owner_id: str, repo) -> list[str]:
+    """ORDERED seeded ids (Friday first when both minted — provision_org
+    appends Friday, then Atlas; DynamoDB lists preserve order). Mirrors
+    ``paperclip_openclaw_pairing._resolve_seeded_agent_ids`` but keeps the
+    order that carries seed identity, and stays fail-CLOSED: raises on
+    lookup failure so the caller skips the owner instead of degrading to
+    role/name matching."""
+    from core.auth import is_org_owner_id
+
+    if is_org_owner_id(owner_id):
+        for row in await repo.list_by_org_id(owner_id):
+            ids = row.get("seeded_agent_ids")
+            if ids:
+                return list(ids)
+        return []
+    row = await repo.get(owner_id)
+    return list(row.seeded_agent_ids) if row and row.seeded_agent_ids else []
+
+
 async def process_company(
     admin,
     cookie: str,
@@ -132,7 +164,7 @@ async def process_company(
     company_id: str,
     *,
     apply: bool,
-    seeded_agent_ids: set[str] | None = None,
+    seeded_agent_ids: list[str] | None = None,
 ) -> int:
     """Compute + (optionally) apply patches for one company. Returns patch count."""
     resp = await admin.list_agents(company_id=company_id, session_cookie=cookie)
@@ -158,13 +190,6 @@ async def main(*, apply: bool, env: str) -> int:
     from core.services.paperclip_admin_client import PaperclipAdminClient
     from core.services.paperclip_admin_session import get_admin_session_cookie
 
-    # Deliberately the fail-CLOSED private resolver, not get_seeded_agent_ids
-    # (which swallows lookup failures into an empty set for cosmetic UI
-    # labeling): an empty set here would silently degrade a marker-bearing
-    # owner to the less-safe name-match fallback. A lookup blip must instead
-    # skip the owner (the per-company try/except below prints ERR + sweeps on).
-    from core.services.paperclip_openclaw_pairing import _resolve_seeded_agent_ids
-
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
     repo = PaperclipRepo(table_name="paperclip-companies")
@@ -185,10 +210,10 @@ async def main(*, apply: bool, env: str) -> int:
         cookie = await get_admin_session_cookie(http)
         for owner_id, company_id in companies:
             try:
-                # Rename-proof seed identification; empty set for rows that
-                # predate the marker → compute falls back to role/name
-                # matching. Raises on lookup failure → ERR + skip below.
-                seeded = await _resolve_seeded_agent_ids(owner_id=owner_id, repo=repo)
+                # Ordered, rename/role-proof seed identity; empty list for
+                # rows that predate the marker → compute falls back to
+                # role/name matching. Raises on lookup failure → ERR + skip.
+                seeded = await _resolve_seeded_agent_id_list(owner_id, repo)
                 total += await process_company(
                     admin, cookie, owner_id, company_id, apply=apply, seeded_agent_ids=seeded
                 )

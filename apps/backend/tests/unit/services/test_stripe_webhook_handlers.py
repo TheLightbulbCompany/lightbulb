@@ -798,3 +798,38 @@ async def test_subscription_deleted_refreshes_owner_facts(facts_mock):
         await handlers.handle_subscription_deleted(event, billing_service)
 
     facts_mock.assert_awaited_once_with("org_x", account_overrides={"subscription_status": "canceled"})
+
+
+@pytest.mark.asyncio
+async def test_facts_carry_team_seat_fields_when_persisted(mock_repo, facts_mock, monkeypatch):
+    """A fresh Teams seat sub must ride subscription_item_id/seat_count into
+    the facts overrides — the eventually-consistent row re-read can miss the
+    just-committed fields and mislabel the plan as flat-fee."""
+    monkeypatch.setattr("core.config.settings.STRIPE_TEAM_SEAT_PRICE_ID", "price_seat_test")
+    mock_repo.set_team_subscription = AsyncMock()
+    event = _subscription_event(status="active")
+    event["data"]["object"]["metadata"]["purpose"] = "team_seat"
+    event["data"]["object"]["items"] = {"data": [{"id": "si_9", "quantity": 3, "price": {"id": "price_seat_test"}}]}
+    with patch.object(handlers, "stripe") as mock_stripe:
+        mock_stripe.Customer.retrieve.return_value = {"invoice_settings": {"default_payment_method": "pm"}}
+        await handlers.handle_subscription_state(event, MagicMock())
+
+    overrides = facts_mock.await_args.kwargs["account_overrides"]
+    assert overrides["subscription_item_id"] == "si_9"
+    assert overrides["seat_count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_facts_skip_team_seat_fields_when_write_fails(mock_repo, facts_mock, monkeypatch):
+    monkeypatch.setattr("core.config.settings.STRIPE_TEAM_SEAT_PRICE_ID", "price_seat_test")
+    mock_repo.set_team_subscription = AsyncMock(side_effect=RuntimeError("ddb down"))
+    event = _subscription_event(status="active")
+    event["data"]["object"]["metadata"]["purpose"] = "team_seat"
+    event["data"]["object"]["items"] = {"data": [{"id": "si_9", "quantity": 3, "price": {"id": "price_seat_test"}}]}
+    with patch.object(handlers, "stripe") as mock_stripe:
+        mock_stripe.Customer.retrieve.return_value = {"invoice_settings": {"default_payment_method": "pm"}}
+        await handlers.handle_subscription_state(event, MagicMock())
+
+    overrides = facts_mock.await_args.kwargs["account_overrides"]
+    assert "subscription_item_id" not in overrides
+    assert "seat_count" not in overrides

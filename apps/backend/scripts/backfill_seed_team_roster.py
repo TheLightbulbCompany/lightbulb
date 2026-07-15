@@ -155,7 +155,13 @@ async def main(*, apply: bool, env: str) -> int:
     from core.repositories.paperclip_repo import PaperclipRepo
     from core.services.paperclip_admin_client import PaperclipAdminClient
     from core.services.paperclip_admin_session import get_admin_session_cookie
-    from core.services.paperclip_openclaw_pairing import get_seeded_agent_ids
+
+    # Deliberately the fail-CLOSED private resolver, not get_seeded_agent_ids
+    # (which swallows lookup failures into an empty set for cosmetic UI
+    # labeling): an empty set here would silently degrade a marker-bearing
+    # owner to the less-safe name-match fallback. A lookup blip must instead
+    # skip the owner (the per-company try/except below prints ERR + sweeps on).
+    from core.services.paperclip_openclaw_pairing import _resolve_seeded_agent_ids
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
@@ -177,9 +183,10 @@ async def main(*, apply: bool, env: str) -> int:
         cookie = await get_admin_session_cookie(http)
         for owner_id, company_id in companies:
             try:
-                # Rename-proof Atlas identification; empty set for rows that
-                # predate the marker → compute falls back to name matching.
-                seeded = await get_seeded_agent_ids(owner_id=owner_id, repo=repo)
+                # Rename-proof seed identification; empty set for rows that
+                # predate the marker → compute falls back to role/name
+                # matching. Raises on lookup failure → ERR + skip below.
+                seeded = await _resolve_seeded_agent_ids(owner_id=owner_id, repo=repo)
                 total += await process_company(
                     admin, cookie, owner_id, company_id, apply=apply, seeded_agent_ids=seeded
                 )

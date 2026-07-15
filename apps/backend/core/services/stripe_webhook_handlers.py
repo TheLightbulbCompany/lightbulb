@@ -470,6 +470,7 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
     is_team_seat = metadata.get("purpose") == "team_seat" or (
         bool(settings.STRIPE_TEAM_SEAT_PRICE_ID) and first_price_id == settings.STRIPE_TEAM_SEAT_PRICE_ID
     )
+    team_seat_persisted = False
     if is_team_seat and first_item:
         try:
             await billing_repo.set_team_subscription(
@@ -479,6 +480,7 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
                 status=new_status,
                 seat_count=int(first_item.get("quantity") or 0),
             )
+            team_seat_persisted = True
         except Exception:
             logger.exception("Failed to record team seat state for owner %s", account["owner_id"])
 
@@ -549,6 +551,12 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
         # produce a facts file asserting a provider the row never got.
         facts_overrides["provider_choice"] = metadata_provider
         facts_overrides["byo_provider"] = metadata_byo if metadata_provider == "byo_key" else None
+    if team_seat_persisted:
+        # Same shape for the seat fields: on a brand-new Teams seat sub the
+        # eventually-consistent row re-read can miss the just-committed
+        # subscription_item_id/seat_count and mislabel the plan as flat-fee.
+        facts_overrides["subscription_item_id"] = first_item.get("id")
+        facts_overrides["seat_count"] = int(first_item.get("quantity") or 0)
     await write_owner_facts(account["owner_id"], account_overrides=facts_overrides)
 
     # Customer-analytics bridge (the EMF put_metric above is the operational

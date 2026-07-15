@@ -56,13 +56,19 @@ def compute_agent_patches(agents: list[dict], seeded_agent_ids: set[str] | None 
     )
 
     friday = next((a for a in agents if a.get("role") == "ceo" and a.get("id")), None)
-    atlas = None
     if seeded_agent_ids:
+        # A seeded marker exists, so it is authoritative: when the non-ceo
+        # seeded id is absent from the roster (deleted/disabled Atlas, partial
+        # response), do NOT fall through to name matching — that could stamp a
+        # user/marketplace hire that happens to be named "Atlas" with the
+        # recruiter metadata.
         atlas = next(
             (a for a in agents if a.get("id") in seeded_agent_ids and a.get("role") != "ceo"),
             None,
         )
-    if atlas is None:
+    else:
+        # No marker (row predates seeded_agent_ids): literal name match is the
+        # only handle available for these legacy rows.
         atlas = next(
             (a for a in agents if a.get("name") == "Atlas" and a.get("role") == "general" and a.get("id")),
             None,

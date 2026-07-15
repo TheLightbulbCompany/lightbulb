@@ -336,4 +336,7 @@ async def test_writes_owner_facts(monkeypatch, tmp_path, manager):
             aip_arns=_AIPS,
         )
 
-    facts_mock.assert_awaited_once_with("user_abc")
+    facts_mock.assert_awaited_once_with(
+        "user_abc",
+        account_overrides={"provider_choice": "bedrock_claude", "byo_provider": None},
+    )

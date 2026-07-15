@@ -769,3 +769,32 @@ async def test_facts_skip_provider_override_when_backup_write_fails(mock_repo, f
 
     overrides = facts_mock.await_args.kwargs["account_overrides"]
     assert overrides == {"subscription_status": "active"}
+
+
+@pytest.mark.asyncio
+async def test_subscription_deleted_refreshes_owner_facts(facts_mock):
+    """Immediate cancellation must rewrite the facts file with the canceled
+    status BEFORE (best-effort) teardown — a surviving container's agents
+    must not keep reporting an active paid plan."""
+    billing_service = MagicMock()
+    billing_service.cancel_subscription = AsyncMock()
+    event = {
+        "id": "evt_del",
+        "type": "customer.subscription.deleted",
+        "data": {"object": {"id": "sub_x", "customer": "cus_x", "metadata": {"owner_id": "org_x"}}},
+    }
+    with (
+        patch.object(handlers, "billing_repo") as repo,
+        patch("core.containers.get_ecs_manager") as ecs,
+        patch(
+            "core.services.paperclip_provisioning.build_paperclip_provisioning",
+            AsyncMock(side_effect=RuntimeError("skip paperclip teardown")),
+        ),
+    ):
+        repo.get_by_owner_id = AsyncMock(
+            return_value={"owner_id": "org_x", "owner_type": "org", "stripe_customer_id": "cus_x"}
+        )
+        ecs.return_value.delete_user_service = AsyncMock()
+        await handlers.handle_subscription_deleted(event, billing_service)
+
+    facts_mock.assert_awaited_once_with("org_x", account_overrides={"subscription_status": "canceled"})

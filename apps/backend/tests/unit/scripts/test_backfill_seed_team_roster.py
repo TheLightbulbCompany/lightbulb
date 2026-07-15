@@ -119,3 +119,16 @@ def test_seeded_ids_protect_lookalike_marketplace_hire():
 def test_empty_seeded_ids_falls_back_to_name_match():
     patches = compute_agent_patches([_bare_friday(), _bare_atlas()], seeded_agent_ids=set())
     assert patches["agent-atlas"]["title"] == ATLAS_TITLE
+
+
+def test_seeded_marker_present_but_atlas_gone_never_name_matches():
+    """A row WITH a seeded marker whose non-ceo seeded agent is absent from
+    the roster must not fall back to name matching — a lookalike hire named
+    'Atlas' would get stamped with recruiter metadata."""
+    lookalike = {"id": "agent-hire", "name": "Atlas", "role": "general"}
+    patches = compute_agent_patches(
+        [_bare_friday(), lookalike],
+        seeded_agent_ids={"agent-friday", "agent-atlas"},  # atlas id not in roster
+    )
+    assert "agent-hire" not in patches
+    assert set(patches) == {"agent-friday"}

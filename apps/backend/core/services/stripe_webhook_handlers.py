@@ -607,6 +607,14 @@ async def handle_subscription_deleted(event: dict[str, Any], billing_service: Bi
     await billing_service.cancel_subscription(account)
     logger.info("Subscription cancelled for owner %s", account["owner_id"])
 
+    # Refresh the owner-facts file before teardown: teardown is best-effort
+    # and may be delayed or fail, and a still-running container's agents must
+    # not keep reporting an active paid plan. Status rides as an override
+    # because the row re-read is eventually consistent. Internally best-effort.
+    from core.services.owner_facts import write_owner_facts
+
+    await write_owner_facts(account["owner_id"], account_overrides={"subscription_status": "canceled"})
+
     # Tear down the user's container — they no longer have an active
     # subscription. Best-effort; log and continue on failure so we
     # don't 500 the webhook back to Stripe.

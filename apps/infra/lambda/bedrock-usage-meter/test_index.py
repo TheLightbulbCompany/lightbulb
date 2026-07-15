@@ -400,6 +400,52 @@ def test_ingest_url_env_override(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def test_dlq_copy_is_redacted_but_still_meterable():
+    """The DLQ retains messages for 14 days — far past the log group's 3-day
+    retention — so the stored copy must NOT carry the invocation bodies (live
+    records were observed containing a tenant's Paperclip API key + gateway
+    JWT in plaintext). It MUST still carry everything a redrive needs: the
+    top-level token/cache counts and the output usage block."""
+    import index
+
+    record = _load("inline_record.json")
+    record["input"]["inputBodyJson"] = {"messages": [{"content": "SECRET pcp_12345 TOKEN"}]}
+    log_event = {"id": "e1", "timestamp": 1, "message": json.dumps(record)}
+    sent = []
+    sqs = MagicMock()
+    sqs.send_message.side_effect = lambda **kw: sent.append(kw)
+
+    with patch.object(index, "_sqs", return_value=sqs), patch.dict(
+        os.environ, {"DLQ_URL": "https://sqs.test.local/dlq"}
+    ):
+        index._send_to_dlq(log_event, "counter_error: boom")
+
+    body = json.loads(sent[0]["MessageBody"])
+    stored = json.loads(body["log_event"]["message"])
+    # Bodies gone — no secret survives the DLQ write.
+    assert "pcp_12345" not in sent[0]["MessageBody"]
+    assert stored["input"]["inputBodyJson"] == "<redacted>"
+    assert set(stored["output"]["outputBodyJson"].keys()) == {"usage"}
+    # ...but the record still meters on redrive: counts + usage intact.
+    parsed = index._extract(stored)
+    original = index._extract(record)
+    for field in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"):
+        assert parsed[field] == original[field]
+    # The original event object was not mutated (callers may reuse it).
+    assert "pcp_12345" in log_event["message"]
+
+
+def test_redact_leaves_unparseable_messages_untouched():
+    """A message that is not a JSON dict is not a Bedrock invocation record
+    (CW control noise / garbage) — it carries no body, and mangling it would
+    destroy the only debugging artifact the DLQ holds for that failure."""
+    import index
+
+    for message in ("not json at all", json.dumps(["a", "list"]), json.dumps("str")):
+        ev = {"id": "e2", "timestamp": 2, "message": message}
+        assert index._redact_log_event(ev) is ev
+
+
 def test_handler_transport_error_dlqs_and_continues():
     """A Metronome ingest failure DLQs that record + emits
     meter.transport_error + continues the batch (does not raise / drop)."""

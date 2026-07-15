@@ -289,6 +289,45 @@ def _emit_metric(name, **properties):
         logger.exception("meter: failed to emit metric %s", name)
 
 
+def _redact_log_event(log_event):
+    """Copy of the CW log event with the Bedrock record's request/response
+    BODIES stripped from ``message``, keeping everything a redrive needs
+    (top-level token/cache counts + the output ``usage`` block).
+
+    Invocation bodies carry whatever the caller had in context — live records
+    were observed containing a tenant's Paperclip API key and gateway JWT in
+    plaintext — and the DLQ retains messages for 14 days, far past the log
+    group's own 3-day retention, so an unredacted DLQ copy would outlive the
+    mitigation. An unparseable ``message`` is returned untouched: it is not a
+    well-formed invocation record (CW control noise / truncated garbage), so
+    it carries no Bedrock body, and mangling it would destroy the only
+    debugging artifact the DLQ holds for that failure.
+    """
+    try:
+        record = json.loads(log_event.get("message", ""))
+    except (ValueError, TypeError, AttributeError):
+        return log_event
+    if not isinstance(record, dict):
+        return log_event
+    changed = False
+    inp = record.get("input")
+    if isinstance(inp, dict) and "inputBodyJson" in inp:
+        inp["inputBodyJson"] = "<redacted>"
+        changed = True
+    out = record.get("output")
+    if isinstance(out, dict) and isinstance(out.get("outputBodyJson"), dict):
+        usage = out["outputBodyJson"].get("usage")
+        # Keep ONLY the usage block: it is the documented fallback path for
+        # the token/cache counts (_extract), and it contains no content.
+        out["outputBodyJson"] = {"usage": usage} if isinstance(usage, dict) else "<redacted>"
+        changed = True
+    if not changed:
+        return log_event
+    redacted = dict(log_event)
+    redacted["message"] = json.dumps(record)
+    return redacted
+
+
 def _send_to_dlq(log_event, reason):
     """Push a failed raw log event to the SQS DLQ so it is never silently lost.
 
@@ -297,6 +336,10 @@ def _send_to_dlq(log_event, reason):
     explicitly. Best-effort: if the DLQ send itself fails we log + re-raise so
     the whole batch fails (CW Logs retries) rather than dropping the record.
     Redriving the queue is safe: Metronome dedups on transaction_id.
+
+    The stored copy is REDACTED (see _redact_log_event): bodies never sit in
+    the 14-day queue, and the redacted record still carries every field a
+    redrive needs to meter it.
     """
     queue_url = os.environ.get("DLQ_URL", "")
     if not queue_url:
@@ -304,7 +347,7 @@ def _send_to_dlq(log_event, reason):
         raise RuntimeError(f"meter transport failure with no DLQ: {reason}")
     _sqs().send_message(
         QueueUrl=queue_url,
-        MessageBody=json.dumps({"reason": reason, "log_event": log_event}),
+        MessageBody=json.dumps({"reason": reason, "log_event": _redact_log_event(log_event)}),
     )
 
 

@@ -298,17 +298,23 @@ def _redact_log_event(log_event):
     were observed containing a tenant's Paperclip API key and gateway JWT in
     plaintext — and the DLQ retains messages for 14 days, far past the log
     group's own 3-day retention, so an unredacted DLQ copy would outlive the
-    mitigation. An unparseable ``message`` is returned untouched: it is not a
-    well-formed invocation record (CW control noise / truncated garbage), so
-    it carries no Bedrock body, and mangling it would destroy the only
-    debugging artifact the DLQ holds for that failure.
+    mitigation. A ``message`` that does not parse to a dict is replaced with
+    a length+digest placeholder: a TRUNCATED invocation record fails parsing
+    while still carrying body fragments, so "unparseable" cannot be assumed
+    body-free. Nothing is lost that the DLQ could use — an unparseable record
+    re-fails parsing on any redrive, and the log group holds the original for
+    its 3-day debug window (the parse_failed alarm fires the same day).
     """
+    raw = log_event.get("message", "")
     try:
-        record = json.loads(log_event.get("message", ""))
-    except (ValueError, TypeError, AttributeError):
-        return log_event
+        record = json.loads(raw)
+    except (ValueError, TypeError):
+        record = None
     if not isinstance(record, dict):
-        return log_event
+        placeholder = dict(log_event)
+        digest = hashlib.sha256(str(raw).encode("utf-8", "replace")).hexdigest()[:16]
+        placeholder["message"] = f"<unparseable message redacted: {len(str(raw))} chars, sha256:{digest}>"
+        return placeholder
     changed = False
     inp = record.get("input")
     if isinstance(inp, dict) and "inputBodyJson" in inp:

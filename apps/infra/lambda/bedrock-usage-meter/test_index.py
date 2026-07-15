@@ -450,15 +450,24 @@ def test_redact_covers_non_dict_output_bodies():
         assert "pcp_67890" not in json.dumps(stored)
 
 
-def test_redact_leaves_unparseable_messages_untouched():
-    """A message that is not a JSON dict is not a Bedrock invocation record
-    (CW control noise / garbage) — it carries no body, and mangling it would
-    destroy the only debugging artifact the DLQ holds for that failure."""
+def test_redact_replaces_unparseable_messages_with_placeholder():
+    """A message that does not parse to a dict may be a TRUNCATED invocation
+    record still carrying body fragments — it must not persist in the 14-day
+    queue. The placeholder keeps length + digest for identification; the log
+    group holds the original for its 3-day debug window, and a redrive could
+    never process the raw copy anyway (it would just re-fail parsing)."""
     import index
 
-    for message in ("not json at all", json.dumps(["a", "list"]), json.dumps("str")):
+    secret_fragment = '{"input": {"inputBodyJson": {"content": "pcp_TRUNCATED_SECRET'
+    for message in (secret_fragment, "not json at all", json.dumps(["a", "list"]), json.dumps("str")):
         ev = {"id": "e2", "timestamp": 2, "message": message}
-        assert index._redact_log_event(ev) is ev
+        redacted = index._redact_log_event(ev)
+        assert "pcp_TRUNCATED_SECRET" not in redacted["message"]
+        assert redacted["message"].startswith("<unparseable message redacted:")
+        assert "sha256:" in redacted["message"]
+        # Event identity survives for correlation; the original is untouched.
+        assert redacted["id"] == "e2" and redacted["timestamp"] == 2
+        assert ev["message"] == message
 
 
 def test_handler_transport_error_dlqs_and_continues():

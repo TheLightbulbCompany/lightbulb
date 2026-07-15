@@ -617,6 +617,7 @@ class EcsManager:
         hook_token: str | None = None,
         task_role_arn: str | None = None,
         bedrock_aip_arns: dict[str, str] | None = None,
+        claim_id: str | None = None,
     ) -> str:
         """Create an ECS Service for a user with per-user EFS isolation.
 
@@ -701,6 +702,12 @@ class EcsManager:
             upsert_fields["bedrock_role_arn"] = task_role_arn
         if bedrock_aip_arns:
             upsert_fields["bedrock_aip_arns"] = bedrock_aip_arns
+        # CHECKPOINT before the row write: a run superseded during the mint must
+        # not deposit its gateway_token / AIP map / role onto the row — the
+        # upsert deliberately preserves the NEW owner's lease fields, so without
+        # this fence the zombie's write would sail straight through.
+        if claim_id is not None:
+            await self._provision_checkpoint(user_id, claim_id)
         await container_repo.upsert(user_id, upsert_fields)
 
         try:
@@ -754,8 +761,15 @@ class EcsManager:
             # health) without redeploying. Requires the task role to grant
             # ssmmessages:CreateControlChannel/CreateDataChannel/OpenControlChannel/OpenDataChannel.
             create_kwargs["enableExecuteCommand"] = True
+            # CHECKPOINT before the ECS service create — the last unfenced
+            # window where a superseded run could stand up a service built from
+            # its own task definition/role.
+            if claim_id is not None:
+                await self._provision_checkpoint(user_id, claim_id)
             self._ecs.create_service(**create_kwargs)
             await self._update_container(user_id, substatus="service_created")
+        except ProvisionSuperseded:
+            raise
         except EcsManagerError:
             put_metric("container.error_state")
             # Mark container as error in DB
@@ -1695,7 +1709,19 @@ class EcsManager:
             logger.warning("has_live_service: describe_services failed for %s", user_id, exc_info=True)
             return True  # fail SAFE: assume live, do not re-provision on a blind read
         services = [svc for svc in resp.get("services", []) if svc.get("status") == "ACTIVE"]
-        return bool(services and services[0].get("desiredCount", 0) > 0)
+        if not services or services[0].get("desiredCount", 0) == 0:
+            return False
+        svc = services[0]
+        # desiredCount alone is NOT liveness: a crash-looping deployment sits at
+        # ACTIVE + desired=1 + running=0 + rolloutState=FAILED forever, and
+        # treating that as live would suppress stale-lease recovery permanently
+        # (the in-process transition poller that would mark it failed is exactly
+        # what died). Live = a task actually running, or a rollout still making
+        # progress.
+        if svc.get("runningCount", 0) > 0:
+            return True
+        primary = next((d for d in svc.get("deployments", []) if d.get("status") == "PRIMARY"), None)
+        return bool(primary and primary.get("rolloutState") == "IN_PROGRESS")
 
     async def _provision_checkpoint(self, user_id: str, claim_id: str) -> None:
         """Verify this run still holds the provision lease and refresh its
@@ -2130,6 +2156,7 @@ class EcsManager:
             hook_token=hook_token,
             task_role_arn=bedrock_role_arn,
             bedrock_aip_arns=bedrock_aip_arns,
+            claim_id=claim_id,
         )
 
         # Step 3: Write configs to EFS

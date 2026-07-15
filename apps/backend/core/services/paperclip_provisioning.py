@@ -56,6 +56,27 @@ from core.services.paperclip_admin_client import PaperclipAdminClient, Paperclip
 
 logger = logging.getLogger(__name__)
 
+# Roster metadata for the seed team. The roster (GET /companies/{id}/agents)
+# is Friday's source of truth for delegation — these strings are what stops
+# her from assigning Atlas domain work. Also used by
+# scripts/backfill_seed_team_roster.py for pre-existing companies.
+FRIDAY_TITLE = "CEO"
+FRIDAY_CAPABILITIES = (
+    "Orchestrator and single point of contact for the owner. Decomposes "
+    "goals, delegates to specialist agents, triages what comes back, and "
+    "reports up. Does not execute specialist work itself; when no "
+    "specialist fits, it hires one via Atlas or recommends the marketplace."
+)
+ATLAS_TITLE = "Agent Recruiter"
+ATLAS_CAPABILITIES = (
+    "Builds new specialist agents on request: researches the role, "
+    "architects the agent, generates its workspace, and registers it into "
+    "the company roster. Assign Atlas a role spec (what the new hire must "
+    "do) — not domain work. Atlas does not do research tasks, prototypes, "
+    "or general work itself, and never publishes to the marketplace (the "
+    "owner publishes via the seller wizard)."
+)
+
 
 async def build_paperclip_provisioning() -> "PaperclipProvisioning":
     """Build a PaperclipProvisioning for this request.
@@ -381,11 +402,16 @@ class PaperclipProvisioning:
             #    — the company is still usable, the user can create
             #    agents from the UI manually. Acts AS the user (their
             #    session) so the agent ends up owned by them.
+            # Captured for Atlas's org placement below; stays None when the
+            # Friday mint fails so Atlas simply seeds unparented.
+            friday_agent_id: str | None = None
             try:
                 friday = await self._admin.create_agent(
                     company_id=company_id,
                     name="Friday",
                     role="ceo",
+                    title=FRIDAY_TITLE,
+                    capabilities=FRIDAY_CAPABILITIES,
                     adapter_type=OPENCLAW_GATEWAY_TYPE,
                     adapter_config=synthesize_openclaw_adapter(
                         gateway_url=_ws_gateway_url(self._env_name),
@@ -396,6 +422,7 @@ class PaperclipProvisioning:
                     idempotency_key=f"{owner_user_id}:main-agent",
                 )
                 if isinstance(friday, dict) and friday.get("id"):
+                    friday_agent_id = friday["id"]
                     seeded_agent_ids.append(friday["id"])
             except PaperclipApiError as e:
                 logger.warning(
@@ -420,8 +447,14 @@ class PaperclipProvisioning:
                     # constants.ts:44). The constraint here is just
                     # "must not be 'ceo'" because config.py:463 selects
                     # the ceo-role agent as the default. "general" is the
-                    # most semantically neutral fit.
+                    # most semantically neutral fit — which is exactly why
+                    # title + capabilities below must carry the real job:
+                    # the roster otherwise describes Atlas as a generalist
+                    # and Friday delegates domain work to it.
                     role="general",
+                    title=ATLAS_TITLE,
+                    capabilities=ATLAS_CAPABILITIES,
+                    reports_to=friday_agent_id,
                     adapter_type=OPENCLAW_GATEWAY_TYPE,
                     adapter_config=synthesize_openclaw_adapter(
                         gateway_url=_ws_gateway_url(self._env_name),

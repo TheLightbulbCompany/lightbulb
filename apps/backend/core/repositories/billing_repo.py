@@ -21,9 +21,12 @@ def _get_table():
     return get_table("billing-accounts")
 
 
-async def get_by_owner_id(owner_id: str) -> dict | None:
+async def get_by_owner_id(owner_id: str, *, consistent_read: bool = False) -> dict | None:
+    """``consistent_read=True`` forces a strongly consistent get_item — for
+    read-back-after-write callers (e.g. the owner-facts writer) where an
+    eventually consistent read could observe the pre-write row."""
     table = _get_table()
-    response = await run_in_thread(table.get_item, Key={"owner_id": owner_id})
+    response = await run_in_thread(table.get_item, Key={"owner_id": owner_id}, ConsistentRead=consistent_read)
     return response.get("Item")
 
 

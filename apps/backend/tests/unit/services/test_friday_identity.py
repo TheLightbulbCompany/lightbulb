@@ -54,7 +54,6 @@ async def test_personal_owner_writes_four_files(monkeypatch):
         "first_name_or_fallback": "Sam",
         "full_name": "Sam Rivers",
         "email": "sam@example.com",
-        "provider_label": "Bedrock (Claude, Isol8-managed credits)",
     }
 
     async def fake_resolve(owner_id):
@@ -163,7 +162,6 @@ async def test_org_owner_uses_org_template(monkeypatch):
         "first_name_or_fallback": "team",
         "org_name": "Acme Inc",
         "owner_email": "founder@acme.com",
-        "provider_label": "Bedrock (Claude, Isol8-managed credits)",
     }
 
     async def fake_resolve(owner_id):
@@ -203,7 +201,6 @@ async def test_skipped_existing_when_files_already_present(monkeypatch):
             "first_name_or_fallback": "Sam",
             "full_name": "Sam Rivers",
             "email": "sam@example.com",
-            "provider_label": "Bedrock (Claude, Isol8-managed credits)",
         }
 
     monkeypatch.setattr(friday_identity, "_resolve_owner_profile", fake_resolve)
@@ -240,7 +237,6 @@ async def test_state_file_written_first_with_setup_completed(monkeypatch):
             "first_name_or_fallback": "Sam",
             "full_name": "Sam Rivers",
             "email": "sam@example.com",
-            "provider_label": "Bedrock (Claude, Isol8-managed credits)",
         }
 
     monkeypatch.setattr(friday_identity, "_resolve_owner_profile", fake_resolve)
@@ -284,7 +280,6 @@ async def test_state_file_failure_does_not_block_template_writes(monkeypatch):
             "first_name_or_fallback": "Sam",
             "full_name": "Sam Rivers",
             "email": "sam@example.com",
-            "provider_label": "Bedrock (Claude, Isol8-managed credits)",
         }
 
     monkeypatch.setattr(friday_identity, "_resolve_owner_profile", fake_resolve)
@@ -302,29 +297,10 @@ async def test_state_file_failure_does_not_block_template_writes(monkeypatch):
     assert template_names == ["AGENTS.md", "BOOTSTRAP.md", "IDENTITY.md", "MEMORY.md", "SOUL.md", "USER.md"]
 
 
-@pytest.mark.parametrize(
-    "provider_choice,byo_provider,expected_substring",
-    [
-        ("bedrock_claude", None, "Bedrock"),
-        # A trial owner's seeded USER.md read "unknown (bedrock_trial)" — Friday
-        # was told her own inference path was unknown.
-        ("bedrock_trial", None, "free trial"),
-        ("chatgpt_oauth", None, "ChatGPT"),
-        ("byo_key", "anthropic", "BYO Anthropic"),
-        ("byo_key", "openai", "BYO OpenAI"),
-    ],
-)
-def test_provider_label_for_each_choice(provider_choice, byo_provider, expected_substring):
-    """_format_provider_label maps each provider tuple to a human label."""
-    label = friday_identity._format_provider_label(provider_choice, byo_provider)
-    assert expected_substring in label
-
-
 @pytest.mark.asyncio
 async def test_resolve_personal_owner_uses_clerk_get_user(monkeypatch):
     """Personal owner_id → reads first_name/last_name/email from clerk_admin."""
     from core.services import clerk_admin
-    from core.services import container_provision
 
     async def fake_get_user(user_id):
         assert user_id == "user_abc"
@@ -335,11 +311,7 @@ async def test_resolve_personal_owner_uses_clerk_get_user(monkeypatch):
             "primary_email_address_id": None,
         }
 
-    async def fake_resolve_provider(owner_id):
-        return ("bedrock_claude", None)
-
     monkeypatch.setattr(clerk_admin, "get_user", fake_get_user)
-    monkeypatch.setattr(container_provision, "resolve_provider_choice", fake_resolve_provider)
 
     profile = await friday_identity._resolve_owner_profile("user_abc")
     assert profile["kind"] == "personal"
@@ -347,7 +319,6 @@ async def test_resolve_personal_owner_uses_clerk_get_user(monkeypatch):
     assert profile["first_name_or_fallback"] == "Sam"
     assert profile["owner_display"] == "Sam"
     assert profile["email"] == "sam@example.com"
-    assert "Bedrock" in profile["provider_label"]
 
 
 @pytest.mark.asyncio
@@ -355,7 +326,6 @@ async def test_resolve_org_owner_uses_clerk_get_organization(monkeypatch):
     """Org owner_id → reads org name from clerk_admin.get_organization
     and owner email from paperclip_owner_email."""
     from core.services import clerk_admin
-    from core.services import container_provision
     from core.services import paperclip_owner_email
 
     async def fake_get_org(org_id):
@@ -367,12 +337,8 @@ async def test_resolve_org_owner_uses_clerk_get_organization(monkeypatch):
         assert fallback_user_id == "user_founder_123"
         return "founder@acme.com"
 
-    async def fake_resolve_provider(owner_id):
-        return ("bedrock_claude", None)
-
     monkeypatch.setattr(clerk_admin, "get_organization", fake_get_org)
     monkeypatch.setattr(paperclip_owner_email, "lookup_owner_email", fake_lookup_owner_email)
-    monkeypatch.setattr(container_provision, "resolve_provider_choice", fake_resolve_provider)
 
     profile = await friday_identity._resolve_owner_profile("org_xyz")
     assert profile["kind"] == "org"
@@ -386,30 +352,22 @@ async def test_resolve_falls_back_to_minimal_when_clerk_fails(monkeypatch):
     """clerk_admin.get_user returns None → resolver still returns a usable
     profile with email='(unknown)'."""
     from core.services import clerk_admin
-    from core.services import container_provision
 
     async def fake_get_user_returns_none(user_id):
         return None
 
-    async def fake_resolve_provider(owner_id):
-        return ("byo_key", "anthropic")
-
     monkeypatch.setattr(clerk_admin, "get_user", fake_get_user_returns_none)
-    monkeypatch.setattr(container_provision, "resolve_provider_choice", fake_resolve_provider)
 
     profile = await friday_identity._resolve_owner_profile("user_abc")
     assert profile["kind"] == "personal"
     assert profile["email"] == "(unknown)"
     assert profile["full_name"] == "(unknown)"
-    # Provider still resolves correctly via billing_repo.
-    assert "BYO Anthropic" in profile["provider_label"]
 
 
 @pytest.mark.asyncio
 async def test_resolve_personal_owner_falls_back_to_email_local_part(monkeypatch):
     """No first_name in Clerk → first_name_or_fallback derives from email local-part."""
     from core.services import clerk_admin
-    from core.services import container_provision
 
     async def fake_get_user(user_id):
         return {
@@ -419,11 +377,7 @@ async def test_resolve_personal_owner_falls_back_to_email_local_part(monkeypatch
             "primary_email_address_id": "ea_1",
         }
 
-    async def fake_resolve_provider(owner_id):
-        return ("bedrock_claude", None)
-
     monkeypatch.setattr(clerk_admin, "get_user", fake_get_user)
-    monkeypatch.setattr(container_provision, "resolve_provider_choice", fake_resolve_provider)
 
     profile = await friday_identity._resolve_owner_profile("user_abc")
     assert profile["first_name_or_fallback"] == "tao"
@@ -436,7 +390,6 @@ async def test_resolve_personal_owner_falls_back_to_email_local_part(monkeypatch
 async def test_resolve_org_owner_falls_back_when_clerk_returns_no_org(monkeypatch):
     """clerk_admin.get_organization returns None → org_name falls back to 'your team'."""
     from core.services import clerk_admin
-    from core.services import container_provision
     from core.services import paperclip_owner_email
 
     async def fake_get_org(org_id):
@@ -447,12 +400,8 @@ async def test_resolve_org_owner_falls_back_when_clerk_returns_no_org(monkeypatc
         assert fallback_user_id is None
         return None
 
-    async def fake_resolve_provider(owner_id):
-        return ("bedrock_claude", None)
-
     monkeypatch.setattr(clerk_admin, "get_organization", fake_get_org)
     monkeypatch.setattr(paperclip_owner_email, "lookup_owner_email", fake_lookup_owner_email)
-    monkeypatch.setattr(container_provision, "resolve_provider_choice", fake_resolve_provider)
 
     profile = await friday_identity._resolve_owner_profile("org_xyz")
     assert profile["kind"] == "org"
@@ -663,3 +612,113 @@ async def test_stage_single_agent_write_failure_is_swallowed():
 
     # The single write was attempted (and its error swallowed).
     workspace.write_file_if_missing.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# _migrate_legacy_user_md
+# ---------------------------------------------------------------------------
+
+_LEGACY_USER_MD = """\
+# USER.md - About Your Human
+
+- **Name:** Sam Rivers
+- **What to call them:** Sam
+- **Email:** sam@example.com
+- **Isol8 plan:** Starter ($50/mo flat-fee)
+- **Provider:** Bedrock (Claude, Isol8-managed credits)
+
+## Context
+
+Sam is building a health-tech startup. Prefers direct answers.
+"""
+
+
+class _MigrationWs:
+    def __init__(self, content):
+        self.content = content
+        self.written = None
+
+    def read_file(self, user_id, path):
+        if self.content is None:
+            raise FileNotFoundError(path)
+        return self.content
+
+    def write_file(self, user_id, path, content):
+        self.written = (path, content)
+
+
+def test_migrate_legacy_user_md_swaps_lines_and_preserves_content():
+    ws = _MigrationWs(_LEGACY_USER_MD)
+    assert friday_identity._migrate_legacy_user_md(ws, "user_abc", "uuid-f") is True
+    path, content = ws.written
+    assert path == "workspaces/uuid-f/USER.md"
+    assert "isol8-facts.json" in content
+    assert "Isol8 plan" not in content
+    assert "- **Provider:**" not in content
+    # Friday's evolved content survives untouched.
+    assert "health-tech startup" in content
+    assert "- **Name:** Sam Rivers" in content
+
+
+def test_migrate_legacy_user_md_noop_on_new_template():
+    ws = _MigrationWs("# USER.md\n- **Plan & provider:** read `~/.openclaw/isol8-facts.json`\n")
+    assert friday_identity._migrate_legacy_user_md(ws, "user_abc", "uuid-f") is False
+    assert ws.written is None
+
+
+def test_migrate_legacy_user_md_noop_when_missing():
+    ws = _MigrationWs(None)
+    assert friday_identity._migrate_legacy_user_md(ws, "user_abc", "uuid-f") is False
+
+
+def test_migrate_legacy_user_md_preserves_owner_edited_provider_line():
+    edited = _LEGACY_USER_MD.replace(
+        "- **Provider:** Bedrock (Claude, Isol8-managed credits)",
+        "- **Provider:** my own custom note about providers",
+    )
+    ws = _MigrationWs(edited)
+    assert friday_identity._migrate_legacy_user_md(ws, "user_abc", "uuid-f") is True
+    _, content = ws.written
+    # The plan line migrated, but the owner-edited provider line stays.
+    assert "my own custom note about providers" in content
+    assert "isol8-facts.json" in content
+
+
+def test_migrate_legacy_user_md_noop_when_plan_line_is_substring_only():
+    """The legacy line quoted mid-prose must not trigger a spurious write."""
+    ws = _MigrationWs("# USER.md\nSam once wrote: the seed said - **Isol8 plan:** Starter ($50/mo flat-fee) here.\n")
+    assert friday_identity._migrate_legacy_user_md(ws, "user_abc", "uuid-f") is False
+    assert ws.written is None
+
+
+def test_migrate_legacy_user_md_provider_line_needs_plan_anchor():
+    """A provider-lookalike line with the plan line only in prose (never as a
+    standalone line) must not be dropped — no anchor, no migration."""
+    ws = _MigrationWs(
+        "# USER.md\n"
+        "Note: seed used to say - **Isol8 plan:** Starter ($50/mo flat-fee) inline.\n"
+        "- **Provider:** Bedrock (Claude, Isol8-managed credits)\n"
+    )
+    assert friday_identity._migrate_legacy_user_md(ws, "user_abc", "uuid-f") is False
+    assert ws.written is None
+
+
+def test_migrate_legacy_user_md_only_drops_the_adjacent_provider_line():
+    """A legacy-label-shaped provider line in later prose (e.g. Friday's
+    Context notes) must survive — only the line immediately after the plan
+    line is the seed's, everything else is authored content."""
+    content = _LEGACY_USER_MD + (
+        "\n## Notes\n"
+        "Config history:\n"
+        "- **Provider:** Bedrock (Claude, Isol8-managed credits)\n"
+        "was what we started with.\n"
+    )
+    ws = _MigrationWs(content)
+    assert friday_identity._migrate_legacy_user_md(ws, "user_abc", "uuid-f") is True
+    _, migrated = ws.written
+    # The adjacent seed pair migrated...
+    assert "isol8-facts.json" in migrated
+    assert "Isol8 plan" not in migrated
+    # ...but the lookalike in the Notes section survives.
+    assert migrated.count("- **Provider:** Bedrock (Claude, Isol8-managed credits)") == 1
+    assert "Config history:" in migrated

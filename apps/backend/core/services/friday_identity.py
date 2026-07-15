@@ -89,6 +89,10 @@ lives on EFS at this workspace. Specifically, you have:
 If someone asks "can you do X?", and X is in this list, attempt it. Don't
 explain the theory; just do it.
 
+If {owner_display} asks how Isol8 itself works — connecting integrations,
+the marketplace, billing, what the UI can do — run `skill isol8` for the
+authoritative answers instead of improvising.
+
 ## Paperclip / Teams
 
 Beyond chat, you also live in **Paperclip** — Isol8's project management
@@ -152,8 +156,8 @@ _USER_TEMPLATE_PERSONAL = """\
 - **Name:** {full_name}
 - **What to call them:** {first_name_or_fallback}
 - **Email:** {email}
-- **Isol8 plan:** Starter ($50/mo flat-fee)
-- **Provider:** {provider_label}
+- **Plan & provider:** read `~/.openclaw/isol8-facts.json` — Isol8 keeps it
+  current; trust it over anything remembered.
 
 ## Context
 
@@ -177,8 +181,8 @@ you. Each member can chat with you, and Paperclip issues route per-member.
 
 - **Org:** {org_name}
 - **Owner email:** {owner_email}
-- **Isol8 plan:** Starter ($50/mo flat-fee)
-- **Provider:** {provider_label}
+- **Plan & provider:** read `~/.openclaw/isol8-facts.json` — Isol8 keeps it
+  current; trust it over anything remembered.
 
 ## Members You've Met
 
@@ -276,6 +280,9 @@ it with the bundled **`paperclip` skill** (curl-based against Paperclip's REST
 API). Run `skill paperclip` to see the full procedure; the workflow below is
 the orchestration layer on top of it.
 
+For platform mechanics — the Integrations tab, marketplace flows, billing
+surfaces, what agents can and cannot do on Isol8 — run `skill isol8`.
+
 ## Your Paperclip identity — load it before any Paperclip call
 
 Your Paperclip credentials live in `./paperclip-claimed-api-key.json` in your
@@ -341,9 +348,11 @@ When {owner_display} hands you a task, follow this loop:
    or scaffolded by Atlas — show up in the roster automatically.
 3. **Identify or hire.** For each piece, pick the right agent. If no agent
    is qualified:
-   - Recommend **Atlas** (in-house recruiter) to scaffold a new specialist,
-     or
-   - Recommend the **marketplace** for a pre-built one.
+   - Recommend **Atlas** (the agent recruiter) to scaffold a new
+     specialist. Hand Atlas a role spec — what the new hire must do —
+     never the work itself; Atlas builds agents, it does not do research
+     or prototypes.
+   - Or recommend the **marketplace** for a pre-built one.
    - Present both options to {owner_display} and let them choose.
 4. **Confirm.** Before creating any issues, summarize the plan to
    {owner_display} in plain English. "I'm going to create N issues: (1) X →
@@ -500,24 +509,77 @@ def _is_org_owner_id(owner_id: str) -> bool:
     return is_org_owner_id(owner_id)
 
 
-def _format_provider_label(provider_choice: str, byo_provider: str | None) -> str:
-    """Map (provider_choice, byo_provider) to a human-readable label.
+# The exact seed lines the pre-facts USER.md templates wrote. The migration
+# below only ever touches these — anything else in USER.md is Friday's
+# evolved content and must be preserved.
+_LEGACY_PLAN_LINE = "- **Isol8 plan:** Starter ($50/mo flat-fee)"
+_LEGACY_PROVIDER_PREFIX = "- **Provider:** "
+_LEGACY_PROVIDER_LABELS = (
+    "ChatGPT (their own OpenAI account)",
+    "Bedrock (Claude, Isol8-managed credits)",
+    "Bedrock (Claude Sonnet, free trial — $3/day)",
+    "BYO Anthropic key",
+    "BYO OpenAI key",
+    "BYO API key (provider unspecified)",
+)
+_FACTS_POINTER_LINE_1 = "- **Plan & provider:** read `~/.openclaw/isol8-facts.json` — Isol8 keeps it"
+_FACTS_POINTER_LINE_2 = "  current; trust it over anything remembered."
 
-    Used in USER.md so Friday knows which inference path she's running on.
+
+def _migrate_legacy_user_md(workspace: Workspace, owner_id: str, agent_uuid: str) -> bool:
+    """Swap the pre-facts hardcoded plan/provider lines in an EXISTING
+    USER.md for the facts-file pointer.
+
+    Seeds are write-if-missing, so already-provisioned owners would otherwise
+    keep the stale hardcoded plan/provider in Friday's boot context forever —
+    directly contradicting the facts file the isol8 skill points at. This
+    runs on every (re)provision/config-rewrite, so the fleet heals during the
+    same image-promotion apply that ships the skill.
+
+    Surgical + idempotent: the plan line must match the legacy seed exactly,
+    and the provider line is dropped only when it carries a label the old
+    seed could have written (or its "unknown (...)" fallback). Owner-edited
+    lines and everything else in the file are preserved. Returns True when a
+    rewrite happened.
     """
-    if provider_choice == "chatgpt_oauth":
-        return "ChatGPT (their own OpenAI account)"
-    if provider_choice == "bedrock_claude":
-        return "Bedrock (Claude, Isol8-managed credits)"
-    if provider_choice == "bedrock_trial":
-        return "Bedrock (Claude Sonnet, free trial — $3/day)"
-    if provider_choice == "byo_key":
-        if byo_provider == "anthropic":
-            return "BYO Anthropic key"
-        if byo_provider == "openai":
-            return "BYO OpenAI key"
-        return "BYO API key (provider unspecified)"
-    return f"unknown ({provider_choice})"
+    rel_path = f"workspaces/{agent_uuid}/USER.md"
+    try:
+        content = workspace.read_file(owner_id, rel_path)
+    except Exception:  # noqa: BLE001 — no USER.md yet; the seed loop writes the new template
+        return False
+    if _LEGACY_PLAN_LINE not in content:
+        return False
+    out: list[str] = []
+    changed = False
+    drop_adjacent_provider = False
+    for line in content.splitlines():
+        stripped = line.rstrip()
+        if stripped == _LEGACY_PLAN_LINE:
+            out.append(_FACTS_POINTER_LINE_1)
+            out.append(_FACTS_POINTER_LINE_2)
+            changed = True
+            # The seed wrote the provider line IMMEDIATELY after the plan
+            # line — only that adjacent line is a migration target. A
+            # lookalike anywhere else (owner/Friday prose) must survive.
+            drop_adjacent_provider = True
+            continue
+        if drop_adjacent_provider:
+            drop_adjacent_provider = False
+            if stripped.startswith(_LEGACY_PROVIDER_PREFIX):
+                label = stripped[len(_LEGACY_PROVIDER_PREFIX) :]
+                if label in _LEGACY_PROVIDER_LABELS or label.startswith("unknown ("):
+                    continue
+        out.append(line)
+    if not changed:
+        # The plan line appeared only as a substring of some other line (e.g.
+        # quoted inside owner-written prose) — nothing to migrate; skip the
+        # spurious write and the migrated metric.
+        return False
+    new_content = "\n".join(out)
+    if content.endswith("\n"):
+        new_content += "\n"
+    workspace.write_file(owner_id, rel_path, new_content)
+    return True
 
 
 def _render_templates(profile: dict) -> dict[str, str]:
@@ -541,14 +603,12 @@ def _render_templates(profile: dict) -> dict[str, str]:
         user_md = _USER_TEMPLATE_ORG.format(
             org_name=profile["org_name"],
             owner_email=profile["owner_email"],
-            provider_label=profile["provider_label"],
         )
     else:
         user_md = _USER_TEMPLATE_PERSONAL.format(
             full_name=profile["full_name"],
             first_name_or_fallback=profile["first_name_or_fallback"],
             email=profile["email"],
-            provider_label=profile["provider_label"],
         )
     return {
         "IDENTITY.md": identity,
@@ -568,21 +628,16 @@ async def _resolve_owner_profile(owner_id: str) -> dict:
       - Org: clerk_admin.get_organization → name; paperclip_owner_email
         → owner email.
 
-    Provider label: container_provision.resolve_provider_choice (reads
-    from billing_repo). Defaults to bedrock_claude if the row is missing
-    or the field is unset (matches resolve_provider_choice's own default).
+    Plan/provider deliberately do NOT land here — USER.md points Friday at
+    the owner-facts file (core/services/owner_facts.py), which stays current
+    across provider switches while seed files do not.
 
     Failures degrade to placeholder strings ("(unknown)" for missing
     Clerk fields, "your team" for missing org name). Friday will learn
     actual values through conversation.
     """
-    # Lazy imports keep module-load light and avoid import cycles between
-    # friday_identity and container_provision (which uses clerk_admin).
+    # Lazy import keeps module-load light and avoids import cycles.
     from core.services import clerk_admin
-    from core.services.container_provision import resolve_provider_choice
-
-    provider_choice, byo_provider = await resolve_provider_choice(owner_id)
-    provider_label = _format_provider_label(provider_choice, byo_provider)
 
     if _is_org_owner_id(owner_id):
         from core.services.paperclip_owner_email import lookup_owner_email
@@ -602,7 +657,6 @@ async def _resolve_owner_profile(owner_id: str) -> dict:
             "first_name_or_fallback": "team",
             "org_name": org_name,
             "owner_email": owner_email,
-            "provider_label": provider_label,
         }
 
     user = await clerk_admin.get_user(owner_id)
@@ -636,7 +690,6 @@ async def _resolve_owner_profile(owner_id: str) -> dict:
         "first_name_or_fallback": first_name_or_fallback,
         "full_name": full_name,
         "email": email,
-        "provider_label": provider_label,
     }
 
 
@@ -699,6 +752,24 @@ async def pre_stage_friday_identity(
         logger.warning(
             "friday_identity: workspace-state.json write failed for owner=%s: %s. "
             "BOOTSTRAP.md may be deleted by OpenClaw on boot.",
+            owner_id,
+            exc,
+        )
+
+    # Heal pre-facts workspaces before the write-if-missing loop (which
+    # no-ops on existing files): replace the legacy hardcoded plan/provider
+    # seed lines with the facts-file pointer. Best-effort.
+    try:
+        if _migrate_legacy_user_md(workspace, owner_id, friday_uuid):
+            put_metric("friday_identity.user_md_migrated")
+            logger.info(
+                "friday_identity: migrated legacy plan/provider lines in USER.md for owner=%s",
+                owner_id,
+            )
+    except Exception as exc:  # noqa: BLE001 — best-effort, log + continue
+        put_metric("friday_identity.user_md_migrate_error")
+        logger.warning(
+            "friday_identity: USER.md legacy-line migration failed for owner=%s: %s",
             owner_id,
             exc,
         )

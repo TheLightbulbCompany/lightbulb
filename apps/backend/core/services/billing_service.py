@@ -392,6 +392,15 @@ async def sync_team_seat_quantity(owner_id: str) -> int:
         status=account.get("subscription_status"),
         seat_count=member_count,
     )
+
+    # Keep the agent-facing facts file's seat count current on the
+    # membership-change path — without this, agents keep quoting the old
+    # count until an unrelated webhook/reprovision rewrites the file. The
+    # just-written count rides as an override. Internally best-effort.
+    from core.services.owner_facts import write_owner_facts
+
+    await write_owner_facts(owner_id, account_overrides={"seat_count": member_count})
+
     return member_count
 
 
@@ -867,6 +876,21 @@ async def change_provider(
         provider_choice=provider_choice,
         byo_provider=next_byo,
         connector_user_id=clerk_user_id if provider_choice == "chatgpt_oauth" else None,
+    )
+
+    # Keep the agents' view of plan/provider current — the owner-facts file
+    # is what the bundled isol8 skill points them at. The hot-swap path never
+    # reaches write_user_configs (which owns the write on the cold path), so
+    # this explicit write is what keeps the file fresh there; on the cold
+    # path it is a cheap redundant write that also covers a redeploy dying
+    # before write_user_configs. The just-committed values ride as overrides
+    # — same-process pinning that outranks any row read. Internally
+    # best-effort.
+    from core.services.owner_facts import write_owner_facts
+
+    await write_owner_facts(
+        owner_id,
+        account_overrides={"provider_choice": provider_choice, "byo_provider": next_byo},
     )
 
     # Side-effect cleanup: drop the OLD provider's credentials so a future

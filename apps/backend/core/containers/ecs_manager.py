@@ -2660,6 +2660,20 @@ class EcsManager:
         # reprovision, so a seeded agent stays seeded with no provision-time
         # re-seed; an unassigned agent needs nothing.
 
+        # Refresh the owner-facts file (plan/provider snapshot the bundled
+        # isol8 skill points agents at). The provider this config was JUST
+        # rendered with rides along as an override: on the provider-switch
+        # cold path this write can land right after the billing-row commit,
+        # and an eventually-consistent row re-read could otherwise roll the
+        # file back to the OLD provider. Internally best-effort — never
+        # blocks the config write.
+        from core.services.owner_facts import write_owner_facts
+
+        await write_owner_facts(
+            owner_id,
+            account_overrides={"provider_choice": provider_choice, "byo_provider": byo_provider},
+        )
+
         await self.ensure_device_identities(owner_id, gateway_token)
 
     async def ensure_device_identities(self, user_id: str, gateway_token: str) -> None:

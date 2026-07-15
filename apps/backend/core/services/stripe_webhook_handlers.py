@@ -434,6 +434,7 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
     metadata = event_data.get("metadata") or {}
     metadata_provider = metadata.get("provider_choice")
     metadata_byo = metadata.get("byo_provider")
+    provider_persisted = False
     if metadata_provider in ("chatgpt_oauth", "byo_key", "bedrock_claude"):
         # provider_choice lives on billing_accounts (per-owner), not on
         # the user row. /trial-checkout writes synchronously before
@@ -453,6 +454,7 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
                 # untouched.
                 connector_user_id=(metadata.get("clerk_user_id") if metadata_provider == "chatgpt_oauth" else None),
             )
+            provider_persisted = True
         except Exception:
             logger.exception(
                 "Failed to persist provider_choice for owner %s",
@@ -468,6 +470,7 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
     is_team_seat = metadata.get("purpose") == "team_seat" or (
         bool(settings.STRIPE_TEAM_SEAT_PRICE_ID) and first_price_id == settings.STRIPE_TEAM_SEAT_PRICE_ID
     )
+    team_seat_persisted = False
     if is_team_seat and first_item:
         try:
             await billing_repo.set_team_subscription(
@@ -477,6 +480,7 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
                 status=new_status,
                 seat_count=int(first_item.get("quantity") or 0),
             )
+            team_seat_persisted = True
         except Exception:
             logger.exception("Failed to record team seat state for owner %s", account["owner_id"])
 
@@ -530,6 +534,30 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
                 "Trial-conversion reprovision dispatch failed for owner %s",
                 account["owner_id"],
             )
+
+    # Refresh the owner-facts file (plan/provider snapshot the bundled isol8
+    # skill points agents at). Subscription-state flips land HERE — not via
+    # change_provider — so without this write a past_due/canceled transition
+    # would leave agents reporting an active paid plan. The just-persisted
+    # status (and the backup-path provider, when written) ride along as
+    # overrides — same-process pinning that outranks any row read.
+    # write_owner_facts is internally best-effort.
+    from core.services.owner_facts import write_owner_facts
+
+    facts_overrides: dict = {"subscription_status": new_status}
+    if provider_persisted:
+        # Only claim the metadata provider when its billing-row write actually
+        # committed — a swallowed set_provider_choice failure above must not
+        # produce a facts file asserting a provider the row never got.
+        facts_overrides["provider_choice"] = metadata_provider
+        facts_overrides["byo_provider"] = metadata_byo if metadata_provider == "byo_key" else None
+    if team_seat_persisted:
+        # Same shape for the seat fields: on a brand-new Teams seat sub the
+        # eventually-consistent row re-read can miss the just-committed
+        # subscription_item_id/seat_count and mislabel the plan as flat-fee.
+        facts_overrides["subscription_item_id"] = first_item.get("id")
+        facts_overrides["seat_count"] = int(first_item.get("quantity") or 0)
+    await write_owner_facts(account["owner_id"], account_overrides=facts_overrides)
 
     # Customer-analytics bridge (the EMF put_metric above is the operational
     # counterpart) — land the lifecycle transition on the person.
@@ -586,6 +614,14 @@ async def handle_subscription_deleted(event: dict[str, Any], billing_service: Bi
     )
     await billing_service.cancel_subscription(account)
     logger.info("Subscription cancelled for owner %s", account["owner_id"])
+
+    # Refresh the owner-facts file before teardown: teardown is best-effort
+    # and may be delayed or fail, and a still-running container's agents must
+    # not keep reporting an active paid plan. Status rides as an override —
+    # same-process pinning that outranks any row read. Internally best-effort.
+    from core.services.owner_facts import write_owner_facts
+
+    await write_owner_facts(account["owner_id"], account_overrides={"subscription_status": "canceled"})
 
     # Tear down the user's container — they no longer have an active
     # subscription. Best-effort; log and continue on failure so we

@@ -106,6 +106,9 @@ async def test_provision_org_seeds_friday_and_atlas(monkeypatch):
 
     admin, repo = _build_provision_org_doubles(monkeypatch)
 
+    # Return real dicts so the Friday id is captured for Atlas's reports_to.
+    admin.create_agent = AsyncMock(side_effect=[{"id": "agent-friday"}, {"id": "agent-atlas"}])
+
     svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
     await svc.provision_org(
         owner_id="org_xyz",
@@ -136,6 +139,15 @@ async def test_provision_org_seeds_friday_and_atlas(monkeypatch):
     assert by_name["Friday"]["idempotency_key"] == "user_owner:main-agent"
     assert by_name["Atlas"]["role"] == "general"
     assert by_name["Atlas"]["idempotency_key"] == "user_owner:atlas-agent"
+
+    # Roster metadata: the roster is Friday's delegation source of truth, so
+    # both seeds must carry real titles + capabilities, and Atlas must be
+    # parented under Friday (chainOfCommand walks reportsTo).
+    assert by_name["Friday"]["title"] == "CEO"
+    assert by_name["Friday"]["capabilities"]
+    assert by_name["Atlas"]["title"] == "Agent Recruiter"
+    assert "not" in by_name["Atlas"]["capabilities"].lower()  # the does-NOT clause
+    assert by_name["Atlas"]["reports_to"] == "agent-friday"
 
 
 @pytest.mark.asyncio
@@ -176,6 +188,34 @@ async def test_provision_org_atlas_failure_does_not_block_friday_seed(monkeypatc
     # early adoptable credential row + final active row.
     assert repo.put.await_count == 2
     assert repo.put.await_args.args[0].status == "active"
+
+
+@pytest.mark.asyncio
+async def test_provision_org_friday_failure_leaves_atlas_unparented(monkeypatch):
+    """When the Friday mint fails, Atlas is still seeded — with no
+    ``reports_to`` (there is no Friday id to parent under)."""
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    admin, repo = _build_provision_org_doubles(monkeypatch)
+
+    admin.create_agent = AsyncMock(
+        side_effect=[
+            PaperclipApiError("friday create failed", status_code=500, body="boom"),
+            {"id": "agent-atlas"},
+        ]
+    )
+
+    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    await svc.provision_org(
+        owner_id="org_xyz",
+        owner_user_id="user_owner",
+        owner_email="owner@example.com",
+    )
+
+    assert admin.create_agent.await_count == 2
+    atlas_kwargs = admin.create_agent.await_args_list[1].kwargs
+    assert atlas_kwargs["name"] == "Atlas"
+    assert atlas_kwargs["reports_to"] is None
 
 
 @pytest.mark.asyncio

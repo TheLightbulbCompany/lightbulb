@@ -18,6 +18,17 @@ import pytest  # noqa: E402
 from core.services import stripe_webhook_handlers as handlers  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def facts_mock(monkeypatch):
+    """handle_subscription_state refreshes the owner-facts file after the
+    status persist. Mock it for every test here (it would otherwise reach
+    for the real billing repo + EFS workspace) and expose it for the tests
+    that assert on the refresh."""
+    mock = AsyncMock()
+    monkeypatch.setattr("core.services.owner_facts.write_owner_facts", mock)
+    return mock
+
+
 def _subscription_event(**overrides) -> dict:
     event_data = {
         "id": "sub_x",
@@ -710,3 +721,115 @@ def test_conversion_guard_self_releases_when_the_conversion_dies():
     )
     # ...and the stop wiping the substatus does not release it early.
     assert conversion_guard_active({"conversion_started_at": fresh}) is True
+
+
+@pytest.mark.asyncio
+async def test_subscription_state_refreshes_owner_facts(mock_repo, facts_mock):
+    """A status flip (e.g. -> past_due) must rewrite the owner-facts file with
+    the just-persisted status as an override — the row re-read is eventually
+    consistent, and agents are told to trust the facts file."""
+    with patch.object(handlers, "stripe") as mock_stripe:
+        mock_stripe.Customer.retrieve.return_value = {"invoice_settings": {"default_payment_method": "pm"}}
+        await handlers.handle_subscription_state(_subscription_event(status="past_due"), MagicMock())
+
+    facts_mock.assert_awaited_once()
+    args, kwargs = facts_mock.await_args
+    assert args[0] == "org_x"
+    assert kwargs["account_overrides"]["subscription_status"] == "past_due"
+
+
+@pytest.mark.asyncio
+async def test_subscription_state_facts_carry_backup_provider(mock_repo, facts_mock):
+    """When the webhook backup path persists provider_choice from Stripe
+    metadata, the facts refresh must carry the same provider override."""
+    event = _subscription_event(status="active")
+    event["data"]["object"]["metadata"]["provider_choice"] = "byo_key"
+    event["data"]["object"]["metadata"]["byo_provider"] = "anthropic"
+    with patch.object(handlers, "stripe") as mock_stripe:
+        mock_stripe.Customer.retrieve.return_value = {"invoice_settings": {"default_payment_method": "pm"}}
+        await handlers.handle_subscription_state(event, MagicMock())
+
+    overrides = facts_mock.await_args.kwargs["account_overrides"]
+    assert overrides["provider_choice"] == "byo_key"
+    assert overrides["byo_provider"] == "anthropic"
+
+
+@pytest.mark.asyncio
+async def test_facts_skip_provider_override_when_backup_write_fails(mock_repo, facts_mock):
+    """If the swallowed set_provider_choice backup write fails, the facts
+    refresh must NOT claim the metadata provider — the billing row never got
+    it. Status still rides along."""
+    mock_repo.set_provider_choice = AsyncMock(side_effect=RuntimeError("ddb down"))
+    event = _subscription_event(status="active")
+    event["data"]["object"]["metadata"]["provider_choice"] = "byo_key"
+    event["data"]["object"]["metadata"]["byo_provider"] = "anthropic"
+    with patch.object(handlers, "stripe") as mock_stripe:
+        mock_stripe.Customer.retrieve.return_value = {"invoice_settings": {"default_payment_method": "pm"}}
+        await handlers.handle_subscription_state(event, MagicMock())
+
+    overrides = facts_mock.await_args.kwargs["account_overrides"]
+    assert overrides == {"subscription_status": "active"}
+
+
+@pytest.mark.asyncio
+async def test_subscription_deleted_refreshes_owner_facts(facts_mock):
+    """Immediate cancellation must rewrite the facts file with the canceled
+    status BEFORE (best-effort) teardown — a surviving container's agents
+    must not keep reporting an active paid plan."""
+    billing_service = MagicMock()
+    billing_service.cancel_subscription = AsyncMock()
+    event = {
+        "id": "evt_del",
+        "type": "customer.subscription.deleted",
+        "data": {"object": {"id": "sub_x", "customer": "cus_x", "metadata": {"owner_id": "org_x"}}},
+    }
+    with (
+        patch.object(handlers, "billing_repo") as repo,
+        patch("core.containers.get_ecs_manager") as ecs,
+        patch(
+            "core.services.paperclip_provisioning.build_paperclip_provisioning",
+            AsyncMock(side_effect=RuntimeError("skip paperclip teardown")),
+        ),
+    ):
+        repo.get_by_owner_id = AsyncMock(
+            return_value={"owner_id": "org_x", "owner_type": "org", "stripe_customer_id": "cus_x"}
+        )
+        ecs.return_value.delete_user_service = AsyncMock()
+        await handlers.handle_subscription_deleted(event, billing_service)
+
+    facts_mock.assert_awaited_once_with("org_x", account_overrides={"subscription_status": "canceled"})
+
+
+@pytest.mark.asyncio
+async def test_facts_carry_team_seat_fields_when_persisted(mock_repo, facts_mock, monkeypatch):
+    """A fresh Teams seat sub must ride subscription_item_id/seat_count into
+    the facts overrides — the eventually-consistent row re-read can miss the
+    just-committed fields and mislabel the plan as flat-fee."""
+    monkeypatch.setattr("core.config.settings.STRIPE_TEAM_SEAT_PRICE_ID", "price_seat_test")
+    mock_repo.set_team_subscription = AsyncMock()
+    event = _subscription_event(status="active")
+    event["data"]["object"]["metadata"]["purpose"] = "team_seat"
+    event["data"]["object"]["items"] = {"data": [{"id": "si_9", "quantity": 3, "price": {"id": "price_seat_test"}}]}
+    with patch.object(handlers, "stripe") as mock_stripe:
+        mock_stripe.Customer.retrieve.return_value = {"invoice_settings": {"default_payment_method": "pm"}}
+        await handlers.handle_subscription_state(event, MagicMock())
+
+    overrides = facts_mock.await_args.kwargs["account_overrides"]
+    assert overrides["subscription_item_id"] == "si_9"
+    assert overrides["seat_count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_facts_skip_team_seat_fields_when_write_fails(mock_repo, facts_mock, monkeypatch):
+    monkeypatch.setattr("core.config.settings.STRIPE_TEAM_SEAT_PRICE_ID", "price_seat_test")
+    mock_repo.set_team_subscription = AsyncMock(side_effect=RuntimeError("ddb down"))
+    event = _subscription_event(status="active")
+    event["data"]["object"]["metadata"]["purpose"] = "team_seat"
+    event["data"]["object"]["items"] = {"data": [{"id": "si_9", "quantity": 3, "price": {"id": "price_seat_test"}}]}
+    with patch.object(handlers, "stripe") as mock_stripe:
+        mock_stripe.Customer.retrieve.return_value = {"invoice_settings": {"default_payment_method": "pm"}}
+        await handlers.handle_subscription_state(event, MagicMock())
+
+    overrides = facts_mock.await_args.kwargs["account_overrides"]
+    assert "subscription_item_id" not in overrides
+    assert "seat_count" not in overrides

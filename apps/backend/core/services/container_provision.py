@@ -18,17 +18,15 @@ from core.repositories.container_repo import ProvisionSuperseded
 logger = logging.getLogger(__name__)
 
 
-async def resolve_provider_choice(owner_id: str) -> tuple[str, str | None]:
-    """Look up the owner's provider_choice (+ byo_provider) from billing_repo.
+def provider_choice_from_row(row: dict | None) -> tuple[str, str | None]:
+    """Map a raw billing row to (provider_choice, byo_provider). Pure — no I/O.
 
-    The single resolver for the whole provision surface — routers/container.py,
-    routers/container_recover.py, catalog_service and the reapply script all
-    import THIS function (there is no second copy to keep in sync). Falls back
-    to bedrock_claude when no row or no choice is persisted, matching the legacy
-    default and keeping recovery working for owners onboarded before per-owner
-    provider_choice storage.
+    The single row-level mapping (resolve_provider_choice and
+    owner_facts.build_owner_facts both call it — there is no second copy to
+    keep in sync). Falls back to bedrock_claude when no row or no choice is
+    persisted, matching the legacy default and keeping recovery working for
+    owners onboarded before per-owner provider_choice storage.
     """
-    row = await billing_repo.get_by_owner_id(owner_id)
     if (row or {}).get("subscription_status") == "trial_local":
         # No-card local trial. `trial_local` is a subscription_status, never a
         # stored provider_choice, so the provider must never be read off the
@@ -44,6 +42,17 @@ async def resolve_provider_choice(owner_id: str) -> tuple[str, str | None]:
     provider_choice = (row or {}).get("provider_choice") or "bedrock_claude"
     byo_provider = (row or {}).get("byo_provider") if provider_choice == "byo_key" else None
     return provider_choice, byo_provider
+
+
+async def resolve_provider_choice(owner_id: str) -> tuple[str, str | None]:
+    """Look up the owner's provider_choice (+ byo_provider) from billing_repo.
+
+    The single resolver for the whole provision surface — routers/container.py,
+    routers/container_recover.py, catalog_service and the reapply script all
+    import THIS function. Row-level semantics live in provider_choice_from_row.
+    """
+    row = await billing_repo.get_by_owner_id(owner_id)
+    return provider_choice_from_row(row)
 
 
 async def background_provision(owner_id: str, clerk_user_id: str) -> None:

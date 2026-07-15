@@ -685,3 +685,74 @@ async def test_hot_swap_pre_stages_under_owner_id(monkeypatch):
     get_tokens.assert_awaited_once_with(user_id="user_a", bound_to="org_1")
     # Auth file written under the container owner (org_1), not the connector.
     pre_stage.assert_awaited_once_with(user_id="org_1", oauth_tokens={"access_token": "tok", "account_id": "acc"})
+
+
+@pytest.mark.asyncio
+async def test_change_provider_refreshes_owner_facts(monkeypatch):
+    """A committed provider switch rewrites the owner-facts file, so agents
+    reading it via the isol8 skill see the NEW provider on both paths."""
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(
+            return_value={
+                "subscription_status": "active",
+                "stripe_subscription_id": "sub_1",
+            }
+        ),
+    )
+    monkeypatch.setattr("core.services.provision_gate.is_subscription_active", lambda a: True)
+    monkeypatch.setattr(billing_service.billing_repo, "set_provider_choice", AsyncMock())
+    facts_mock = AsyncMock()
+    monkeypatch.setattr("core.services.owner_facts.write_owner_facts", facts_mock)
+    monkeypatch.setattr("core.services.container_provision.background_provision", AsyncMock())
+    created = []
+    monkeypatch.setattr(
+        billing_service.asyncio,
+        "create_task",
+        lambda coro: created.append(coro) or MagicMock(),
+    )
+
+    await billing_service.change_provider(
+        owner_id="user_x",
+        clerk_user_id="user_x",
+        owner_type="personal",
+        provider_choice="bedrock_claude",
+    )
+
+    facts_mock.assert_awaited_once_with(
+        "user_x",
+        account_overrides={"provider_choice": "bedrock_claude", "byo_provider": None},
+    )
+    for coro in created:
+        coro.close()
+
+
+@pytest.mark.asyncio
+async def test_sync_team_seat_quantity_refreshes_owner_facts(monkeypatch):
+    """The membership-change path is the seat-count writer — it must refresh
+    the facts file with the new count as an override."""
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(
+            return_value={
+                "owner_id": "org_x",
+                "subscription_status": "active",
+                "stripe_subscription_id": "sub_1",
+                "subscription_item_id": "si_1",
+                "seat_count": 2,
+            }
+        ),
+    )
+    monkeypatch.setattr("core.services.provision_gate.is_subscription_active", lambda a: True)
+    monkeypatch.setattr("core.services.clerk_admin.get_organization_member_count", AsyncMock(return_value=5))
+    monkeypatch.setattr(billing_service.billing_repo, "set_team_subscription", AsyncMock())
+    monkeypatch.setattr(billing_service.stripe.SubscriptionItem, "modify", MagicMock())
+    facts_mock = AsyncMock()
+    monkeypatch.setattr("core.services.owner_facts.write_owner_facts", facts_mock)
+
+    count = await billing_service.sync_team_seat_quantity("org_x")
+
+    assert count == 5
+    facts_mock.assert_awaited_once_with("org_x", account_overrides={"seat_count": 5})

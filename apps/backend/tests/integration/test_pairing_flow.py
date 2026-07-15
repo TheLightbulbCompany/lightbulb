@@ -114,7 +114,6 @@ async def test_friday_identity_files_seeded_at_workspace_path(monkeypatch, tmp_p
             "first_name_or_fallback": "Sam",
             "full_name": "Sam Rivers",
             "email": "sam@example.com",
-            "provider_label": "Bedrock (Claude, Isol8-managed credits)",
         }
 
     monkeypatch.setattr(friday_identity, "_resolve_owner_profile", fake_resolve)
@@ -165,7 +164,6 @@ async def test_friday_identity_skipped_on_reprovision(monkeypatch, tmp_path):
             "first_name_or_fallback": "Sam",
             "full_name": "Sam Rivers",
             "email": "sam@example.com",
-            "provider_label": "Bedrock (Claude, Isol8-managed credits)",
         }
 
     monkeypatch.setattr(friday_identity, "_resolve_owner_profile", fake_resolve)

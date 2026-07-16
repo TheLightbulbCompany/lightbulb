@@ -21,6 +21,8 @@ interaction payload is rejected with 422 at the FastAPI boundary.
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends
 
 
@@ -36,20 +38,100 @@ from .schemas import (
 
 router = APIRouter()
 _ctx = _agents._ctx
+logger = logging.getLogger(__name__)
+
+
+def _suggested_tasks(row: dict) -> list[dict]:
+    """The suggest_tasks draft rows nested under ``payload.tasks``, if any."""
+    payload = row.get("payload")
+    if isinstance(payload, dict) and isinstance(payload.get("tasks"), list):
+        return [task for task in payload["tasks"] if isinstance(task, dict)]
+    return []
+
+
+async def _enrich_interaction_actors(ctx: TeamsContext, rows: list) -> None:
+    """Stamp ``*Email`` / ``*ClerkUserId`` onto human actor ids in place.
+
+    Interaction rows carry Paperclip principal ids (``createdByUserId``,
+    ``resolvedByUserId``, and suggest_tasks draft ``assigneeUserId``) that the
+    frontend can neither display nor join against the Clerk-keyed ``/members``
+    roster. Mirror the comments enrichment (``issues._enrich_comment_authors``):
+    principal → Clerk id → email, each unique principal resolved at most once.
+    Best-effort — an unmapped principal or failed Clerk lookup leaves that id
+    unstamped rather than failing the request.
+    """
+    principal_ids: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        for field in ("createdByUserId", "resolvedByUserId"):
+            value = row.get(field)
+            if isinstance(value, str) and value:
+                principal_ids.add(value)
+        for task in _suggested_tasks(row):
+            value = task.get("assigneeUserId")
+            if isinstance(value, str) and value:
+                principal_ids.add(value)
+    if not principal_ids:
+        return
+
+    principal_to_clerk = await _agents.build_principal_to_clerk(ctx)
+
+    identity_by_principal: dict[str, dict] = {}
+    for principal_id in principal_ids:
+        clerk_user_id = principal_to_clerk.get(principal_id)
+        if not clerk_user_id:
+            continue
+        try:
+            email = await _agents._resolve_user_email(clerk_user_id)
+        except Exception:
+            logger.exception(
+                "interactions.list: clerk email lookup failed for clerk_user_id=%s (paperclip principal=%s)",
+                clerk_user_id,
+                principal_id,
+            )
+            continue
+        if email:
+            identity_by_principal[principal_id] = {
+                "email": email,
+                "clerkUserId": clerk_user_id,
+            }
+
+    def _stamp(target: dict, source_field: str, prefix: str) -> None:
+        identity = identity_by_principal.get(target.get(source_field))
+        if identity:
+            target[f"{prefix}Email"] = identity["email"]
+            target[f"{prefix}ClerkUserId"] = identity["clerkUserId"]
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        _stamp(row, "createdByUserId", "createdBy")
+        _stamp(row, "resolvedByUserId", "resolvedBy")
+        for task in _suggested_tasks(row):
+            _stamp(task, "assigneeUserId", "assignee")
 
 
 @router.get("/issues/{issue_id}/interactions")
 async def list_issue_interactions(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
-    """List the thread interactions for an issue (the issue-detail thread).
+    """List the thread interactions for an issue (the issue-detail thread),
+    with human actor ids resolved to emails.
 
     Upstream ``GET /api/issues/{id}/interactions`` returns a bare JSON array;
-    wrapped ``{interactions: [...]}`` like the sibling list surfaces.
+    wrapped ``{interactions: [...]}`` like the sibling list surfaces. Rows pass
+    through verbatim except for the ``_enrich_interaction_actors`` stamp.
     """
     rows = await _agents._admin().list_issue_interactions(
         issue_id=issue_id,
         session_cookie=ctx.session_cookie,
     )
-    return envelope_list(rows, "interactions")
+    enveloped = envelope_list(rows, "interactions")
+    try:
+        await _enrich_interaction_actors(ctx, enveloped["interactions"])
+    except Exception:
+        # Enrichment must never take down the thread — return upstream verbatim.
+        logger.exception("interactions.list: actor enrichment failed; returning raw payload")
+    return enveloped
 
 
 @router.post("/issues/{issue_id}/interactions/{interaction_id}/accept")

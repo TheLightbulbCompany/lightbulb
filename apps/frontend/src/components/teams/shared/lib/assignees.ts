@@ -61,5 +61,7 @@ export function formatAssigneeUserLabel(
     if (typeof label === "string" && label.trim()) return label;
   }
   if (userId === "local-board") return "Board";
-  return userId.slice(0, 5);
+  // No slicing the raw id as a last resort — the first 5 chars of a Clerk id
+  // are literally "user_". Callers pick their own generic fallback on null.
+  return null;
 }

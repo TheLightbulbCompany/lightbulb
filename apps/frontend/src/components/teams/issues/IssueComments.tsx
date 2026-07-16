@@ -66,14 +66,28 @@ export interface IssueCommentsProps {
   ) => Promise<void> | void;
 }
 
-function authorLabel(c: IssueComment, agents: CompanyAgent[]): string {
+function authorLabel(
+  c: IssueComment,
+  agents: CompanyAgent[],
+  currentUserId?: string | null,
+): string {
   if (c.authorAgentId) return agents.find((a) => a.id === c.authorAgentId)?.name ?? "Agent";
   if (c.authorKind === "agent") return "Agent";
+  if (c.authorClerkUserId && currentUserId && c.authorClerkUserId === currentUserId) return "You";
+  if (c.authorName) return c.authorName;
   if (c.authorUserId || c.authorKind === "user") return "User";
   return "Comment";
 }
 
-function CommentRow({ comment, agents }: { comment: IssueComment; agents: CompanyAgent[] }) {
+function CommentRow({
+  comment,
+  agents,
+  currentUserId,
+}: {
+  comment: IssueComment;
+  agents: CompanyAgent[];
+  currentUserId?: string | null;
+}) {
   return (
     <li
       className="flex flex-col gap-1 pl-3"
@@ -83,7 +97,7 @@ function CommentRow({ comment, agents }: { comment: IssueComment; agents: Compan
         className="flex items-baseline gap-2 text-xs"
         style={{ color: "var(--mute)" }}
       >
-        <span>{authorLabel(comment, agents)}</span>
+        <span>{authorLabel(comment, agents, currentUserId)}</span>
         <span aria-hidden="true">·</span>
         <time dateTime={comment.createdAt} title={new Date(comment.createdAt).toLocaleString()}>
           {timeAgo(comment.createdAt)}
@@ -157,7 +171,12 @@ export function IssueComments({
         <ul className="flex flex-col gap-3">
           {items.map((item) =>
             item.kind === "comment" ? (
-              <CommentRow key={`comment-${item.id}`} comment={item.comment} agents={agents} />
+              <CommentRow
+                key={`comment-${item.id}`}
+                comment={item.comment}
+                agents={agents}
+                currentUserId={currentUserId}
+              />
             ) : (
               <li key={`interaction-${item.id}`}>
                 <IssueThreadInteractionCard

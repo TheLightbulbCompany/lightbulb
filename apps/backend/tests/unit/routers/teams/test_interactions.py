@@ -76,6 +76,73 @@ def test_list_interactions_envelopes_and_proxies_session(client, monkeypatch):
     )
 
 
+def test_list_interactions_enriches_human_actors(client, monkeypatch):
+    """Human ``createdByUserId`` / ``resolvedByUserId`` / suggest_tasks draft
+    ``assigneeUserId`` get ``*Email`` / ``*ClerkUserId`` stamped via the
+    principal→Clerk map; agent-actor rows are left untouched."""
+    admin = MagicMock()
+    admin.list_issue_interactions = AsyncMock(
+        return_value=[
+            {
+                "id": "int_1",
+                "kind": "request_confirmation",
+                "createdByAgentId": "agt_1",
+                "resolvedByUserId": "pcu_xyz",
+            },
+            {
+                "id": "int_2",
+                "kind": "suggest_tasks",
+                "createdByAgentId": "agt_1",
+                "payload": {"version": 1, "tasks": [{"clientKey": "k1", "assigneeUserId": "pcu_xyz"}]},
+            },
+        ]
+    )
+    _patch_admin(monkeypatch, admin)
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "build_principal_to_clerk", AsyncMock(return_value={"pcu_xyz": "u1"}))
+    monkeypatch.setattr(agents_mod, "_resolve_user_email", AsyncMock(return_value="ada@example.com"))
+
+    r = client.get(
+        "/api/v1/teams/issues/iss_1/interactions",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    rows = r.json()["interactions"]
+    assert rows[0]["resolvedByEmail"] == "ada@example.com"
+    assert rows[0]["resolvedByClerkUserId"] == "u1"
+    assert "createdByEmail" not in rows[0]
+    task = rows[1]["payload"]["tasks"][0]
+    assert task["assigneeEmail"] == "ada@example.com"
+    assert task["assigneeClerkUserId"] == "u1"
+
+
+def test_list_interactions_survives_enrichment_blowup(client, monkeypatch):
+    """Enrichment must never take down the thread — an unexpected failure
+    anywhere inside it returns the upstream rows verbatim."""
+    admin = MagicMock()
+    admin.list_issue_interactions = AsyncMock(
+        return_value=[{"id": "int_1", "kind": "request_confirmation", "resolvedByUserId": "pcu_xyz"}]
+    )
+    _patch_admin(monkeypatch, admin)
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(
+        agents_mod,
+        "build_principal_to_clerk",
+        AsyncMock(side_effect=RuntimeError("map blew up")),
+    )
+
+    r = client.get(
+        "/api/v1/teams/issues/iss_1/interactions",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    assert r.json() == {
+        "interactions": [{"id": "int_1", "kind": "request_confirmation", "resolvedByUserId": "pcu_xyz"}]
+    }
+
+
 def test_accept_forwards_selected_keys(client, monkeypatch):
     admin = MagicMock()
     admin.accept_interaction = AsyncMock(return_value={"status": "accepted"})

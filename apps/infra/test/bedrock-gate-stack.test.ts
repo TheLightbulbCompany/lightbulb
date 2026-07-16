@@ -102,6 +102,35 @@ describe("BedrockGateStack", () => {
     }
   });
 
+  test("GUARD: public URL invoke needs BOTH permission statements (Oct 2025 Lambda change)", () => {
+    // With only the InvokeFunctionUrl statement addFunctionUrl auto-creates,
+    // every request 403s at the front door (live-verified on first deploy).
+    // The second statement must be InvokedViaFunctionUrl-conditioned so the
+    // public grant stays URL-only — it must NOT open direct API invoke.
+    const perms = Object.values(
+      template.findResources("AWS::Lambda::Permission"),
+    ).map((p: any) => p.Properties);
+    const urlPerms = perms.filter(
+      (p: any) => p.Action === "lambda:InvokeFunctionUrl" && p.Principal === "*",
+    );
+    const invokePerms = perms.filter(
+      (p: any) =>
+        p.Action === "lambda:InvokeFunction" &&
+        p.Principal === "*" &&
+        p.InvokedViaFunctionUrl === true,
+    );
+    expect(urlPerms.length).toBe(2); // one per instance
+    expect(invokePerms.length).toBe(2); // one per instance
+    // No unconditioned public InvokeFunction grant may ever exist.
+    const unconditioned = perms.filter(
+      (p: any) =>
+        p.Action === "lambda:InvokeFunction" &&
+        p.Principal === "*" &&
+        p.InvokedViaFunctionUrl !== true,
+    );
+    expect(unconditioned.length).toBe(0);
+  });
+
   test("CfnOutputs the gate URL per env (GateUrlDev / GateUrlProd)", () => {
     const outputs = template.toJSON().Outputs ?? {};
     expect(Object.keys(outputs)).toEqual(

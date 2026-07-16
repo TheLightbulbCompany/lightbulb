@@ -261,16 +261,17 @@ export class BedrockGateStack extends cdk.Stack {
         new iam.PolicyStatement({
           sid: "GateTablesReadWrite",
           effect: iam.Effect.ALLOW,
+          // trialSettle's atomic claim+debit+release uses TransactWriteItems,
+          // but DynamoDB transactions carry NO distinct IAM action — they are
+          // authorized by the UNDERLYING item permissions (PutItem for the
+          // conditional dedup claim, UpdateItem for the billing write), both of
+          // which are granted here. (AWS: "Permissions for Put, Update, Delete
+          // ... are governed by the permissions used for the underlying
+          // PutItem, UpdateItem, DeleteItem ... operations." — transaction-apis-iam.)
           actions: [
             "dynamodb:GetItem",
             "dynamodb:PutItem",
             "dynamodb:UpdateItem",
-            // trialSettle claims the requestId + adds spend + releases the hold
-            // in ONE TransactWriteItems (atomicity — see ledger.mjs). Without
-            // this action every successful trial settle AccessDenies and the
-            // gateway silently falls back to async auditor reconciliation
-            // instead of enforcing the cap at request time.
-            "dynamodb:TransactWriteItems",
           ],
           resources: [
             tokensTable.tableArn,

@@ -1,0 +1,19 @@
+{
+  "name": "bedrock-gate",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Synchronous Bedrock metering gateway: bearer auth, pre-flight budget reservation, maxTokens ceiling clamp, verbatim eventstream passthrough, synchronous debit. Deployed as a Function-URL streaming Lambda.",
+  "main": "handler.mjs",
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@smithy/signature-v4": "^4.2.0",
+    "@smithy/protocol-http": "^4.1.0",
+    "@smithy/eventstream-codec": "^3.1.0",
+    "@smithy/util-utf8": "^3.0.0",
+    "@aws-sdk/credential-providers": "^3.716.0",
+    "@aws-sdk/client-dynamodb": "^3.716.0"
+  }
+}

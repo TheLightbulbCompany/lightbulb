@@ -3,7 +3,7 @@
 # Paperclip write-path CLI.
 #
 # Every Paperclip API call that *writes* (comments, status patches, checkout,
-# subtasks, issue-thread interactions) must go through this helper instead of a
+# issues, subtasks, issue-thread interactions) must go through this helper instead of a
 # hand-written `curl ... jq` / inline-JSON one-liner. The model only passes
 # plain arguments and stdin; this script builds the JSON body with
 # `jq -nc --arg` so strings (markdown bodies, prompts, reasons) are always
@@ -25,8 +25,11 @@ Global options:
   --help, -h    Show this help.
 
 Environment (required for live requests; not needed for --dry-run):
-  PAPERCLIP_API_URL, PAPERCLIP_API_KEY, PAPERCLIP_RUN_ID
+  PAPERCLIP_API_URL, PAPERCLIP_API_KEY
   PAPERCLIP_AGENT_ID is additionally required for `checkout`.
+  PAPERCLIP_RUN_ID is optional: it exists only on heartbeat-wake runs, and the
+  X-Paperclip-Run-Id header is sent only when it is set. Webchat/interactive
+  sessions have no run id — the header is omitted; never invent one.
 
 Subcommands (markdown / freeform text is read from stdin where noted):
 
@@ -58,6 +61,15 @@ Subcommands (markdown / freeform text is read from stdin where noted):
               inheritExecutionWorkspaceFromIssueId?, billingCode? }
       Reads an optional markdown description from stdin.
 
+  create <companyId> --title T [--goal <id>] [--status S]
+         [--priority P] [--assignee <agentId>] [--blocked-by "id1,id2"]
+         [--inherit-workspace <issueId>] [--billing-code CODE]
+      POST /api/companies/{companyId}/issues   (top-level issue; no parentId)
+      body: { title, goalId?, description?, status?, priority?,
+              assigneeAgentId?, blockedByIssueIds?,
+              inheritExecutionWorkspaceFromIssueId?, billingCode? }
+      Reads an optional markdown description from stdin.
+
   confirm <issueId> --prompt P [--title T] [--idempotency-key K]
           [--continuation none|wake_assignee|wake_assignee_on_accept]
           [--accept-label L] [--reject-label L] [--reject-requires-reason]
@@ -85,6 +97,14 @@ Subcommands (markdown / freeform text is read from stdin where noted):
       here instead of silently at the API. Pass either the answers array, e.g.
         [{"questionId":"q1","optionIds":["o1"]}]
       or a full object { "answers": [...], "summaryMarkdown": "..." }.
+
+  raw <METHOD> </api/...path>
+      Escape hatch for endpoints without a dedicated subcommand (board
+      approvals, checkbox/questions/suggest-tasks interaction creates, issue
+      documents, ...). METHOD: GET|POST|PATCH|PUT|DELETE. The path must start
+      with /api/. Reads an optional complete JSON body from stdin — build it
+      with jq -n (never hand-type inline JSON). The body is validated with jq
+      before sending and rejected loudly if it does not parse.
 
 Examples:
   scripts/paperclip-api.sh comment "$PAPERCLIP_TASK_ID" <<'MD'
@@ -125,8 +145,8 @@ read_stdin() {
 }
 
 require_live_env() {
-  if [[ -z "${PAPERCLIP_API_URL:-}" || -z "${PAPERCLIP_API_KEY:-}" || -z "${PAPERCLIP_RUN_ID:-}" ]]; then
-    die 'Missing PAPERCLIP_API_URL, PAPERCLIP_API_KEY, or PAPERCLIP_RUN_ID.'
+  if [[ -z "${PAPERCLIP_API_URL:-}" || -z "${PAPERCLIP_API_KEY:-}" ]]; then
+    die 'Missing PAPERCLIP_API_URL or PAPERCLIP_API_KEY.'
   fi
 }
 
@@ -160,6 +180,14 @@ send() {
   require_live_env
   require_command curl
 
+  # X-Paperclip-Run-Id attributes the write to the current heartbeat run. A
+  # run id exists only on heartbeat-wake runs; webchat/interactive sessions
+  # have none, so the header is omitted entirely (never fabricate one).
+  local run_id_header=()
+  if [[ -n "${PAPERCLIP_RUN_ID:-}" ]]; then
+    run_id_header=(-H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID")
+  fi
+
   local response_file status_code
   response_file="$(mktemp)"
   if [[ "$has_payload" == "1" ]]; then
@@ -167,7 +195,7 @@ send() {
       curl -sS -X "$method" -w '%{http_code}' -o "$response_file" \
         "$url" \
         -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-        -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
+        "${run_id_header[@]+"${run_id_header[@]}"}" \
         -H 'Content-Type: application/json' \
         --data-binary "$payload"
     )"
@@ -176,7 +204,7 @@ send() {
       curl -sS -X "$method" -w '%{http_code}' -o "$response_file" \
         "$url" \
         -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-        -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID"
+        "${run_id_header[@]+"${run_id_header[@]}"}"
     )"
   fi
 
@@ -355,6 +383,61 @@ cmd_subtask() {
   send POST "$(api_base)/companies/$company_id/issues" "$payload"
 }
 
+cmd_create() {
+  local company_id="${1:-}"
+  shift || true
+  [[ -n "$company_id" ]] || die 'create: missing <companyId>.'
+  local title="" goal="" status="" priority="" assignee="" blocked_by=""
+  local inherit_workspace="" billing_code=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --title) title="${2:-}"; shift 2 ;;
+      --goal) goal="${2:-}"; shift 2 ;;
+      --status) status="${2:-}"; shift 2 ;;
+      --priority) priority="${2:-}"; shift 2 ;;
+      --assignee) assignee="${2:-}"; shift 2 ;;
+      --blocked-by) blocked_by="${2:-}"; shift 2 ;;
+      --inherit-workspace) inherit_workspace="${2:-}"; shift 2 ;;
+      --billing-code) billing_code="${2:-}"; shift 2 ;;
+      --dry-run) dry_run=1; shift ;;
+      *) die "create: unknown argument: $1" ;;
+    esac
+  done
+
+  [[ -n "$title" ]] || die 'create: --title is required.'
+
+  local description
+  description="$(read_stdin)"
+
+  local payload
+  payload="$(
+    jq -nc \
+      --arg title "$title" \
+      --arg goalId "$goal" \
+      --arg description "$description" \
+      --arg status "$status" \
+      --arg priority "$priority" \
+      --arg assigneeAgentId "$assignee" \
+      --arg blockedBy "$blocked_by" \
+      --arg inheritWorkspace "$inherit_workspace" \
+      --arg billingCode "$billing_code" '
+      {title: $title}
+      + (if $goalId == "" then {} else {goalId: $goalId} end)
+      + (if $description == "" then {} else {description: $description} end)
+      + (if $status == "" then {} else {status: $status} end)
+      + (if $priority == "" then {} else {priority: $priority} end)
+      + (if $assigneeAgentId == "" then {} else {assigneeAgentId: $assigneeAgentId} end)
+      + (if $blockedBy == ""
+         then {}
+         else {blockedByIssueIds: ($blockedBy | split(",") | map(select(length > 0)))}
+         end)
+      + (if $inheritWorkspace == "" then {} else {inheritExecutionWorkspaceFromIssueId: $inheritWorkspace} end)
+      + (if $billingCode == "" then {} else {billingCode: $billingCode} end)
+    '
+  )"
+  send POST "$(api_base)/companies/$company_id/issues" "$payload"
+}
+
 cmd_confirm() {
   local issue_id="${1:-}"
   shift || true
@@ -498,6 +581,46 @@ cmd_respond() {
   send POST "$(api_base)/issues/$issue_id/interactions/$interaction_id/respond" "$payload"
 }
 
+cmd_raw() {
+  local method="${1:-}"
+  local path="${2:-}"
+  shift 2 2>/dev/null || true
+  [[ -n "$method" && -n "$path" ]] || die 'raw: missing <METHOD> </api/...path>.'
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --dry-run) dry_run=1; shift ;;
+      *) die "raw: unknown argument: $1" ;;
+    esac
+  done
+
+  method="$(printf '%s' "$method" | tr '[:lower:]' '[:upper:]')"
+  case "$method" in
+    GET|POST|PATCH|PUT|DELETE) ;;
+    *) die "raw: unsupported method: $method (use GET|POST|PATCH|PUT|DELETE)." ;;
+  esac
+  [[ "$path" == /api/* ]] || die 'raw: path must start with /api/ (e.g. /api/issues/{id}/documents/plan).'
+
+  local url="${PAPERCLIP_API_URL:-}"
+  url="${url%/}$path"
+
+  local body
+  body="$(read_stdin)"
+  if [[ -z "$body" ]]; then
+    send "$method" "$url"
+    return
+  fi
+
+  # jq parses + validates (and compacts) the stdin body; a hand-mangled JSON
+  # string fails here loudly instead of silently at the API.
+  local payload jq_err
+  if ! payload="$(printf '%s' "$body" | jq -c . 2>&1)"; then
+    jq_err="$payload"
+    printf 'raw: stdin is not valid JSON — build the body with jq -n, never by hand:\n%s\n' "$jq_err" >&2
+    exit 1
+  fi
+  send "$method" "$url" "$payload"
+}
+
 dry_run=0
 
 main() {
@@ -524,10 +647,12 @@ main() {
     checkout) cmd_checkout "$@" ;;
     release)  cmd_release "$@" ;;
     subtask)  cmd_subtask "$@" ;;
+    create)   cmd_create "$@" ;;
     confirm)  cmd_confirm "$@" ;;
     accept)   cmd_accept "$@" ;;
     reject)   cmd_reject "$@" ;;
     respond)  cmd_respond "$@" ;;
+    raw)      cmd_raw "$@" ;;
     *)
       printf 'Unknown subcommand: %s\n\n' "$subcommand" >&2
       usage >&2

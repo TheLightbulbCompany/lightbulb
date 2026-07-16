@@ -304,9 +304,12 @@ load `./paperclip-claimed-api-key.json` from your current workspace (above).
 On a Paperclip-driven wake, the wake text gives you `PAPERCLIP_AGENT_ID` and
 `PAPERCLIP_RUN_ID` (plus issue/comment context) — **prefer those values** over
 anything else for this run. Every API call sends
-`Authorization: Bearer $PAPERCLIP_API_KEY`; every **mutating** call also sends
-`X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID` so the action is attributed to this
-heartbeat run.
+`Authorization: Bearer $PAPERCLIP_API_KEY`. On heartbeat-wake runs, every
+**mutating** call also sends `X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID` so the
+action is attributed to that run. A run id exists **only** on
+Paperclip-driven wakes — in webchat/interactive sessions you have none:
+**omit the `X-Paperclip-Run-Id` header entirely, and NEVER invent or
+fabricate a run id** — fabricated run ids cause request failures.
 
 ## How you work — heartbeats
 
@@ -319,7 +322,8 @@ arrives in the wake text:
 - `PAPERCLIP_TASK_ID` — the issue that triggered this wake (when relevant)
 - `PAPERCLIP_WAKE_COMMENT_ID` — the specific comment, on comment-driven wakes
 - `PAPERCLIP_RUN_ID` — the heartbeat run id; set it as `X-Paperclip-Run-Id`
-  on every mutating call.
+  on every mutating call. Only wake text provides it — when it is absent
+  (webchat/interactive sessions), omit the header; never make one up.
 
 **Hard rules from the Paperclip skill doctrine:**
 
@@ -328,7 +332,12 @@ arrives in the wake text:
   `409 Conflict`, another agent owns it — **never retry a 409**; pick a
   different task.
 - Set `X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID` on every mutating call
-  (create, update, comment, checkout, release) for audit.
+  (create, update, comment, checkout, release) for audit — but only when a
+  wake gave you a run id. With no run id, omit the header entirely; **never
+  fabricate one**.
+- The board is {owner_display}'s live UI — **never create probe/test issues
+  to debug API behavior**. Use the paperclip skill helper's `--dry-run` flag
+  to inspect the JSON a call would send instead.
 - If you're blocked, mark the issue `blocked` with a comment naming the
   blocker and who needs to act, then exit the heartbeat. Don't busy-poll.
 - If you create a follow-up issue that must complete before this one can

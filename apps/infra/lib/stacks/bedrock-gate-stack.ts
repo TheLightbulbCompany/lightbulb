@@ -265,6 +265,12 @@ export class BedrockGateStack extends cdk.Stack {
             "dynamodb:GetItem",
             "dynamodb:PutItem",
             "dynamodb:UpdateItem",
+            // trialSettle claims the requestId + adds spend + releases the hold
+            // in ONE TransactWriteItems (atomicity — see ledger.mjs). Without
+            // this action every successful trial settle AccessDenies and the
+            // gateway silently falls back to async auditor reconciliation
+            // instead of enforcing the cap at request time.
+            "dynamodb:TransactWriteItems",
           ],
           resources: [
             tokensTable.tableArn,

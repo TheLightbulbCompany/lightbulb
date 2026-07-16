@@ -51,8 +51,13 @@ def test_classify_no_billing_is_none():
 # --------------------------------------------------------------------------- #
 
 
-def _patches(*, container=None, billing=None, scan_rows=None):
+def _patches(*, container=None, billing=None, scan_rows=None, gate_url="https://gate-test.isol8.co"):
     """Patch the collaborators the script lazy-imports inside main.
+
+    ``gate_url`` seeds settings.BEDROCK_GATE_URL — a FORWARD cutover refuses
+    when it is empty (otherwise the reprovision silently stays on direct
+    Bedrock). Non-empty by default so the pre-existing forward tests pass; the
+    guard test overrides it to "".
 
     Returns (update_fields_mock, reprovision_mock, list_of_context_managers).
     """
@@ -62,6 +67,7 @@ def _patches(*, container=None, billing=None, scan_rows=None):
     ecs_manager.reprovision_for_user = reprovision
 
     cms = [
+        patch("core.config.settings.BEDROCK_GATE_URL", gate_url),
         patch(
             "core.repositories.container_repo.get_by_owner_id",
             AsyncMock(return_value=container),
@@ -123,6 +129,34 @@ async def test_single_owner_apply_sets_flag_true_and_reprovisions():
     assert rc == 0
     update_fields.assert_awaited_once_with("org_x", {"bedrock_via_gateway": True})
     reprovision.assert_awaited_once_with("org_x")
+
+
+@pytest.mark.asyncio
+async def test_forward_cutover_refused_when_gate_url_unset():
+    # BEDROCK_GATE_URL empty → a cutover would silently leave traffic on direct
+    # Bedrock, so refuse (rc 2) and write nothing — before dry-run or apply.
+    update_fields, reprovision, cms = _patches(
+        container={"owner_id": "org_x"},
+        billing={"subscription_status": "trial_local"},
+        gate_url="",
+    )
+    rc = await _run(cms, apply=True, env="prod", owner="org_x")
+    assert rc == 2
+    update_fields.assert_not_called()
+    reprovision.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_rollback_allowed_even_with_gate_url_unset():
+    # Rollback reverts to direct Bedrock on purpose, so it does NOT need the URL.
+    update_fields, reprovision, cms = _patches(
+        container={"owner_id": "org_x"},
+        billing={"subscription_status": "trial_local"},
+        gate_url="",
+    )
+    rc = await _run(cms, apply=True, env="prod", owner="org_x", rollback=True)
+    assert rc == 0
+    update_fields.assert_awaited_once_with("org_x", {"bedrock_via_gateway": False})
 
 
 @pytest.mark.asyncio

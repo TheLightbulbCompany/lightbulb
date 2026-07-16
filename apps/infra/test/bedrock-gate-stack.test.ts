@@ -196,7 +196,7 @@ describe("BedrockGateStack", () => {
     expect(policies).toContain("bedrock:GetInferenceProfile");
   });
 
-  test("DDB GetItem/PutItem/UpdateItem on exactly the four gate tables per env", () => {
+  test("DDB Get/Put/Update + TransactWriteItems on exactly the four gate tables per env", () => {
     for (const gateEnv of ["dev", "prod"]) {
       template.hasResourceProperties("AWS::IAM::Policy", {
         PolicyDocument: {
@@ -207,6 +207,9 @@ describe("BedrockGateStack", () => {
                 "dynamodb:GetItem",
                 "dynamodb:PutItem",
                 "dynamodb:UpdateItem",
+                // trialSettle's atomic claim+debit+release (ledger.mjs) — without
+                // it every successful trial settle AccessDenies.
+                "dynamodb:TransactWriteItems",
               ],
               Resource: Match.arrayWith([
                 `arn:aws:dynamodb:us-east-1:877352799272:table/isol8-${gateEnv}-billing-accounts`,

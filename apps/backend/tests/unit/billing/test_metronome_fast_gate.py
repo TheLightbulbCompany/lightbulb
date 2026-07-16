@@ -89,6 +89,28 @@ class TestSetBalance:
         )["Item"]
         assert item["blocked"]["BOOL"] is True
 
+    @pytest.mark.asyncio
+    async def test_set_balance_preserves_bedrock_gate_reservation(self, fast_gate_table):
+        # The bedrock-gate Lambda keeps a live reserved_microcents hold on this
+        # SAME row. A balance refresh (webhook / lazy read) must UPDATE remaining
+        # without clobbering an outstanding hold — a whole-row put_item would
+        # drop it and later settlement would over-admit paid credits.
+        fast_gate_table.put_item(
+            TableName="test-metronome-fast-gate",
+            Item={
+                "owner_id": {"S": "org_abc"},
+                "remaining_microcents": {"N": "100000"},
+                "reserved_microcents": {"N": "30000"},
+            },
+        )
+        await MetronomeFastGate().set_balance("org_abc", remaining_microcents=90_000)
+        item = fast_gate_table.get_item(
+            TableName="test-metronome-fast-gate",
+            Key={"owner_id": {"S": "org_abc"}},
+        )["Item"]
+        assert item["remaining_microcents"]["N"] == "90000"
+        assert item["reserved_microcents"]["N"] == "30000"  # hold survived the refresh
+
 
 class TestGetRow:
     @pytest.mark.asyncio

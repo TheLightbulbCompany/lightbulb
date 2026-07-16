@@ -189,6 +189,23 @@ async def main(
         print(f"  PLAN owner={owner_id} plan={plan} set {FLAG_ATTR}={desired} + reprovision")
     print(f"Counts: trial={trial_n} paid={paid_n} total={len(targets)}")
 
+    # A FORWARD cutover is inert unless the backend actually knows the gate URL:
+    # config.py keeps the direct bedrock-runtime baseUrl and ecs_manager skips
+    # the bearer env whenever BEDROCK_GATE_URL is empty (default). Setting the
+    # flag + reprovisioning would then print OK while leaving traffic on direct
+    # Bedrock — a silent non-cutover. Refuse rather than mislead. (Rollback does
+    # not need the URL — it reverts to direct on purpose.)
+    from core.config import settings
+
+    if desired and not settings.BEDROCK_GATE_URL:
+        print(
+            "REFUSING: BEDROCK_GATE_URL is empty in this backend env, so a "
+            "cutover would silently leave traffic on direct Bedrock. Wire the "
+            "bedrock-gate Function URL into the backend env first (see "
+            "docs/runbooks/bedrock-gate-break-glass.md)."
+        )
+        return 2
+
     if not apply:
         print("DRY RUN — pass --apply to set the flag and reprovision")
         return 0

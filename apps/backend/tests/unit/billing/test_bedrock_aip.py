@@ -895,3 +895,67 @@ class TestKillSwitch:
         assert pk["PolicyName"] == "owner-bedrock"
         row = aip_tables.get_item(TableName="test-containers", Key={"owner_id": {"S": "org_abc"}})["Item"]
         assert row["bedrock_revoked"]["BOOL"] is False
+
+    @pytest.mark.asyncio
+    async def test_revoke_also_flips_gate_deny_flag(self, aip_tables, monkeypatch):
+        """bedrock-gate transition: revoke ALSO denies the gate token (the gateway
+        invokes under its own role, so the IAM revoke does not reach it). Both
+        fences held during transition."""
+        import core.billing.bedrock_aip as mod
+
+        await mod.persist_owner_aips(
+            "org_abc", {"sonnet": "s"}, role_arn="arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-org_abc"
+        )
+        monkeypatch.setattr(mod, "_iam_client", lambda: MagicMock())
+        monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
+        deny = AsyncMock()
+        monkeypatch.setattr("core.billing.bedrock_gate_tokens.deny_gate_token", deny)
+
+        await mod.revoke_owner_bedrock("org_abc")
+
+        deny.assert_awaited_once_with("org_abc", True)
+
+    @pytest.mark.asyncio
+    async def test_restore_also_clears_gate_deny_flag(self, aip_tables, monkeypatch):
+        import core.billing.bedrock_aip as mod
+
+        await mod.persist_owner_aips(
+            "org_abc",
+            {"opus": "o", "sonnet": "s", "haiku": "h"},
+            role_arn="arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-org_abc",
+        )
+        fake = MagicMock()
+        fake.get_role.return_value = {"Role": {"Arn": "arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-org_abc"}}
+        monkeypatch.setattr(mod, "_iam_client", lambda: fake)
+        monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
+        monkeypatch.setattr(mod.settings, "BEDROCK_AIP_FAN_OUT_REGIONS", "us-east-1,us-east-2,us-west-2", raising=False)
+        deny = AsyncMock()
+        monkeypatch.setattr("core.billing.bedrock_gate_tokens.deny_gate_token", deny)
+
+        await mod.restore_owner_bedrock("org_abc")
+
+        deny.assert_awaited_once_with("org_abc", False)
+
+    @pytest.mark.asyncio
+    async def test_revoke_survives_deny_token_failure(self, aip_tables, monkeypatch):
+        """A deny-token hiccup MUST NOT break the IAM revoke — the IAM half is the
+        primary fence; the deny is a best-effort backstop."""
+        import core.billing.bedrock_aip as mod
+
+        await mod.persist_owner_aips(
+            "org_abc", {"sonnet": "s"}, role_arn="arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-org_abc"
+        )
+        fake = MagicMock()
+        monkeypatch.setattr(mod, "_iam_client", lambda: fake)
+        monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
+        monkeypatch.setattr(
+            "core.billing.bedrock_gate_tokens.deny_gate_token",
+            AsyncMock(side_effect=RuntimeError("ddb down")),
+        )
+
+        await mod.revoke_owner_bedrock("org_abc")  # must not raise
+
+        # The IAM revoke + flag still happened.
+        fake.delete_role_policy.assert_called_once()
+        row = aip_tables.get_item(TableName="test-containers", Key={"owner_id": {"S": "org_abc"}})["Item"]
+        assert row["bedrock_revoked"]["BOOL"] is True

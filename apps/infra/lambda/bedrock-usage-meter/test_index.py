@@ -57,7 +57,12 @@ BACKEND = os.path.abspath(os.path.join(HERE, "..", "..", "..", "backend"))
 BILLING_TABLE = "isol8-dev-billing-accounts"
 CONTAINERS_TABLE = "isol8-dev-containers"
 DEDUP_TABLE = "isol8-dev-bedrock-invocation-dedup"
+GATE_TOKENS_TABLE = "isol8-dev-bedrock-gate-tokens"
 CLUSTER_ARN = "arn:aws:ecs:us-east-1:877352799272:cluster/isol8-dev-container-ClusterEB0386A7-L9MzqPCGDupk"
+
+# A record signed by the per-env GATEWAY role (isol8-dev-bedrock-gate) rather
+# than the per-owner role — the marker _is_gateway_identity keys on.
+GATEWAY_IDENTITY_ARN = "arn:aws:sts::877352799272:assumed-role/isol8-dev-bedrock-gate/gate-session"
 
 OWNER_ITEM = {
     "Item": {
@@ -99,6 +104,7 @@ def lambda_env(monkeypatch):
     monkeypatch.setenv("INVOCATION_DEDUP_TABLE", DEDUP_TABLE)
     monkeypatch.setenv("BILLING_TABLE", BILLING_TABLE)
     monkeypatch.setenv("CONTAINERS_TABLE", CONTAINERS_TABLE)
+    monkeypatch.setenv("GATE_TOKENS_TABLE", GATE_TOKENS_TABLE)
     monkeypatch.setenv("ECS_CLUSTER_PREFIX", "isol8-dev-container-")
     monkeypatch.setenv("DLQ_URL", "https://sqs.test.local/dlq")
     monkeypatch.setenv("METER_ENV", "dev")
@@ -122,19 +128,31 @@ def _stub_resolver(owner="org_abc", tier="opus", plan="paid"):
 
 
 @contextmanager
-def _aws_world(*, owner="org_abc", starting_spend=None, billing_row=True, container_row=True):
-    """A real (moto) DynamoDB with the three tables the counter path touches,
+def _aws_world(
+    *, owner="org_abc", starting_spend=None, billing_row=True, container_row=True, gate_token_hash=None
+):
+    """A real (moto) DynamoDB with the four tables the counter + kill path touch,
     plus stubbed IAM/ECS clients. Yields (ddb, iam, ecs).
 
     The counter is a nested-map ADD guarded by a conditional map init — a hand
     mock would accept the naive single-expression form DynamoDB rejects, so
     the money path is tested against the real engine.
+
+    ``gate_token_hash`` (when set) writes the rotation pointer
+    (bedrock_gate_token_hash) on the containers row AND seeds a gate-tokens row
+    keyed by that hash with denied=false, so the deny-flag kill step has
+    something to flip.
     """
     import index
 
     with mock_aws():
         ddb = boto3.client("dynamodb", region_name="us-east-1")
-        for table, key in ((BILLING_TABLE, "owner_id"), (CONTAINERS_TABLE, "owner_id"), (DEDUP_TABLE, "request_id")):
+        for table, key in (
+            (BILLING_TABLE, "owner_id"),
+            (CONTAINERS_TABLE, "owner_id"),
+            (DEDUP_TABLE, "request_id"),
+            (GATE_TOKENS_TABLE, "token_hash"),
+        ):
             ddb.create_table(
                 TableName=table,
                 KeySchema=[{"AttributeName": key, "KeyType": "HASH"}],
@@ -147,7 +165,19 @@ def _aws_world(*, owner="org_abc", starting_spend=None, billing_row=True, contai
                 item["trial_daily_spend_microcents"] = {"M": {_utc_today(): {"N": str(starting_spend)}}}
             ddb.put_item(TableName=BILLING_TABLE, Item=item)
         if container_row:
-            ddb.put_item(TableName=CONTAINERS_TABLE, Item={"owner_id": {"S": owner}, "status": {"S": "running"}})
+            container = {"owner_id": {"S": owner}, "status": {"S": "running"}}
+            if gate_token_hash is not None:
+                container["bedrock_gate_token_hash"] = {"S": gate_token_hash}
+            ddb.put_item(TableName=CONTAINERS_TABLE, Item=container)
+        if gate_token_hash is not None:
+            ddb.put_item(
+                TableName=GATE_TOKENS_TABLE,
+                Item={
+                    "token_hash": {"S": gate_token_hash},
+                    "owner_id": {"S": owner},
+                    "denied": {"BOOL": False},
+                },
+            )
 
         iam, ecs = MagicMock(), MagicMock()
         ecs.list_clusters.return_value = {"clusterArns": [CLUSTER_ARN]}
@@ -864,6 +894,9 @@ def test_claim_request_is_first_write_wins():
         row = ddb.get_item(TableName=DEDUP_TABLE, Key={"request_id": {"S": "req-1"}})["Item"]
         # 48h TTL — past CloudWatch's retry + redrive horizon.
         assert int(row["ttl"]["N"]) - int(time.time()) > 47 * 3600
+        # Claims are attributable: the meter stamps source="meter" so a
+        # gateway-vs-meter reconciliation can tell who counted a record.
+        assert row["source"]["S"] == "meter"
 
 
 # ---------------------------------------------------------------------------
@@ -1035,17 +1068,19 @@ def test_kill_is_independent_iam_failure_still_stops_ecs():
     transient IAM error leave a runaway container invoking Bedrock."""
     import index
 
-    stopped, stamped, metrics = [], [], []
+    stopped, stamped, denied, metrics = [], [], [], []
 
     with (
         patch.object(index, "_revoke_owner_iam", side_effect=RuntimeError("iam 503")),
         patch.object(index, "_stop_owner_service", side_effect=lambda o: stopped.append(o)),
+        patch.object(index, "_deny_gate_token", side_effect=lambda o: denied.append(o)),
         patch.object(index, "_stamp_bedrock_revoked", side_effect=lambda o: stamped.append(o)),
         patch.object(index, "_emit_metric", side_effect=lambda n, **k: metrics.append(n)),
     ):
         index._kill_owner_bedrock("org_abc")  # must not raise
 
     assert stopped == ["org_abc"]
+    assert denied == ["org_abc"]
     assert stamped == ["org_abc"]
     assert "meter.kill_iam_error" in metrics
 
@@ -1053,19 +1088,43 @@ def test_kill_is_independent_iam_failure_still_stops_ecs():
 def test_kill_is_independent_ecs_failure_still_revokes_and_stamps():
     import index
 
-    revoked, stamped, metrics = [], [], []
+    revoked, stamped, denied, metrics = [], [], [], []
 
     with (
         patch.object(index, "_revoke_owner_iam", side_effect=lambda o: revoked.append(o)),
         patch.object(index, "_stop_owner_service", side_effect=RuntimeError("ecs 503")),
+        patch.object(index, "_deny_gate_token", side_effect=lambda o: denied.append(o)),
         patch.object(index, "_stamp_bedrock_revoked", side_effect=lambda o: stamped.append(o)),
         patch.object(index, "_emit_metric", side_effect=lambda n, **k: metrics.append(n)),
     ):
         index._kill_owner_bedrock("org_abc")
 
     assert revoked == ["org_abc"]
+    assert denied == ["org_abc"]
     assert stamped == ["org_abc"]
     assert "meter.kill_ecs_error" in metrics
+
+
+def test_kill_is_independent_deny_token_failure_still_revokes_stops_stamps():
+    """A deny-flag failure must NOT skip the IAM/ECS/stamp steps — the deny step
+    is a THIRD independent kill action, not a precondition for the others."""
+    import index
+
+    revoked, stopped, stamped, metrics = [], [], [], []
+
+    with (
+        patch.object(index, "_revoke_owner_iam", side_effect=lambda o: revoked.append(o)),
+        patch.object(index, "_stop_owner_service", side_effect=lambda o: stopped.append(o)),
+        patch.object(index, "_deny_gate_token", side_effect=RuntimeError("ddb 503")),
+        patch.object(index, "_stamp_bedrock_revoked", side_effect=lambda o: stamped.append(o)),
+        patch.object(index, "_emit_metric", side_effect=lambda n, **k: metrics.append(n)),
+    ):
+        index._kill_owner_bedrock("org_abc")
+
+    assert revoked == ["org_abc"]
+    assert stopped == ["org_abc"]
+    assert stamped == ["org_abc"]
+    assert "meter.kill_deny_token_error" in metrics
 
 
 def test_kill_failure_never_fails_the_batch():
@@ -1172,3 +1231,158 @@ def test_service_name_matches_the_backend_derivation():
     owner = "org_2abcDEF"
     expected = f"openclaw-{owner}-{hashlib.sha256(owner.encode()).hexdigest()[:12]}"
     assert index._service_name(owner) == expected
+
+
+# ---------------------------------------------------------------------------
+# GATEWAY AUDITOR. Once an owner is cut over to the bedrock-gate, the gateway
+# claims + debits each invocation synchronously; the meter is the AUDITOR that
+# backstops anything the gateway missed (crash / client-abort / lost usage
+# event), deduped on the shared per-requestId claim. A trial record the meter
+# CLAIMS (gateway did NOT claim first) that was gateway-SIGNED is a reconciled
+# gateway miss — made visible via meter.reconciled_gateway_miss. A direct
+# owner-role record is a non-gatewayed owner the meter always counts — no miss.
+# ---------------------------------------------------------------------------
+
+
+def test_gateway_signed_trial_record_counts_and_emits_reconciled_gateway_miss():
+    """A gateway-signed record reaching the meter's claim means the gateway
+    missed its own synchronous debit — the meter backstops the count AND emits
+    meter.reconciled_gateway_miss so the miss is visible to the burn-in gate."""
+    import index
+
+    record = _load("inline_record.json")
+    record["identity"]["arn"] = GATEWAY_IDENTITY_ARN
+    metrics = []
+
+    with (
+        _aws_world() as (ddb, _iam, _ecs),
+        _stub_resolver(tier="sonnet", plan="trial"),
+        patch.object(index, "_emit_metric", side_effect=lambda n, **k: metrics.append(n)),
+    ):
+        result = index.handler(_awslogs_event(record), None)
+        spend = _daily_spend(ddb)
+
+    assert result == {"statusCode": 200}
+    # The meter still backstopped the count ...
+    assert spend == {_utc_today(): SONNET_PRICE_MICROCENTS}
+    # ... AND surfaced the gateway miss exactly once.
+    assert metrics.count("meter.reconciled_gateway_miss") == 1
+
+
+def test_gateway_signed_record_already_claimed_by_gateway_skips_without_reconcile():
+    """If the gateway already CLAIMED the record (source=gateway), the meter's
+    conditional claim FAILS → it skips: the gateway debited it, so there is no
+    miss to backstop and NO reconcile metric. Only the normal replay-skip fires,
+    and the counter is never double-applied."""
+    import index
+
+    record = _load("inline_record.json")
+    record["identity"]["arn"] = GATEWAY_IDENTITY_ARN
+    metrics = []
+
+    with (
+        _aws_world() as (ddb, _iam, _ecs),
+        _stub_resolver(tier="sonnet", plan="trial"),
+        patch.object(index, "_emit_metric", side_effect=lambda n, **k: metrics.append(n)),
+    ):
+        # The gateway got there first: a claim for this requestId already exists,
+        # stamped with its own source.
+        ddb.put_item(
+            TableName=DEDUP_TABLE,
+            Item={
+                "request_id": {"S": record["requestId"]},
+                "source": {"S": "gateway"},
+                "ttl": {"N": str(int(time.time()) + 15 * 24 * 3600)},
+            },
+        )
+        result = index.handler(_awslogs_event(record), None)
+        spend = _daily_spend(ddb)
+
+    assert result == {"statusCode": 200}
+    # No backstop count — the gateway already debited it.
+    assert spend == {}
+    # A gateway that DID claim is not a miss: no reconcile metric.
+    assert "meter.reconciled_gateway_miss" not in metrics
+    assert metrics.count("meter.replay_skipped") == 1
+
+
+def test_owner_role_trial_record_counts_without_reconcile_metric():
+    """The default fixture identity is the per-owner role (isol8-dev-owner-bedrock-*)
+    — a non-gatewayed owner the meter legitimately counts. It counts, and it
+    must NOT emit the reconcile metric (reserved for gateway misses)."""
+    import index
+
+    record = _load("inline_record.json")
+    # Guard: the fixture is genuinely an owner-role identity, not the gateway.
+    assert "isol8-dev-owner-bedrock" in record["identity"]["arn"]
+    assert "isol8-dev-bedrock-gate" not in record["identity"]["arn"]
+    metrics = []
+
+    with (
+        _aws_world() as (ddb, _iam, _ecs),
+        _stub_resolver(tier="sonnet", plan="trial"),
+        patch.object(index, "_emit_metric", side_effect=lambda n, **k: metrics.append(n)),
+    ):
+        index.handler(_awslogs_event(record), None)
+        spend = _daily_spend(ddb)
+
+    assert spend == {_utc_today(): SONNET_PRICE_MICROCENTS}
+    assert "meter.reconciled_gateway_miss" not in metrics
+
+
+def test_kill_denies_the_gate_token_row():
+    """The deny-flag kill step flips denied=true on the owner's gate-token row
+    (the gateway's kill switch), keyed by the containers row's rotation pointer
+    (bedrock_gate_token_hash)."""
+    import index
+
+    record = _load("inline_record.json")
+    token_hash = "hash-of-owners-bearer-token"
+
+    with (
+        _aws_world(starting_spend=index.CAP_MICROCENTS - 1_000, gate_token_hash=token_hash) as (ddb, _iam, _ecs),
+        _stub_resolver(tier="sonnet", plan="trial"),
+    ):
+        index.handler(_awslogs_event(record), None)
+        token_row = ddb.get_item(TableName=GATE_TOKENS_TABLE, Key={"token_hash": {"S": token_hash}})["Item"]
+
+    assert token_row["denied"]["BOOL"] is True
+
+
+def test_kill_without_gate_token_hash_is_a_noop_and_other_steps_still_run():
+    """An owner never cut over to the gateway has no bedrock_gate_token_hash on
+    the containers row — the deny step is a clean no-op (NOT an error), and the
+    IAM revoke / ECS stop / revoked stamp still complete."""
+    import index
+
+    record = _load("inline_record.json")
+    metrics = []
+
+    with (
+        _aws_world(starting_spend=index.CAP_MICROCENTS - 1_000) as (ddb, iam, ecs),
+        _stub_resolver(tier="sonnet", plan="trial"),
+        patch.object(index, "_emit_metric", side_effect=lambda n, **k: metrics.append(n)),
+    ):
+        index.handler(_awslogs_event(record), None)
+        container = ddb.get_item(TableName=CONTAINERS_TABLE, Key={"owner_id": {"S": "org_abc"}})["Item"]
+        gate_rows = ddb.scan(TableName=GATE_TOKENS_TABLE)["Count"]
+
+    # The other kill steps still ran.
+    iam.delete_role_policy.assert_called_once()
+    ecs.update_service.assert_called_once()
+    assert container["bedrock_revoked"]["BOOL"] is True
+    # The no-op deny neither errored nor wrote a phantom gate-token row.
+    assert "meter.kill_deny_token_error" not in metrics
+    assert gate_rows == 0
+
+
+def test_deny_gate_token_noop_when_containers_row_missing():
+    """No containers row at all (a provisioning gap) → the deny step reads no
+    hash and no-ops, never raising and never writing a gate-token row."""
+    import index
+
+    with _aws_world(container_row=False) as (ddb, _iam, _ecs):
+        index._deny_gate_token("org_abc")  # must not raise
+        gate_rows = ddb.scan(TableName=GATE_TOKENS_TABLE)["Count"]
+
+    assert gate_rows == 0

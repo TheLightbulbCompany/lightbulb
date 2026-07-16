@@ -58,6 +58,8 @@ instance. The instances differ ONLY in env vars (never code conditionals):
   - INVOCATION_DEDUP_TABLE       : isol8-{env}-bedrock-invocation-dedup
   - BILLING_TABLE                : isol8-{env}-billing-accounts
   - CONTAINERS_TABLE             : isol8-{env}-containers
+  - GATE_TOKENS_TABLE            : isol8-{env}-bedrock-gate-tokens (deny-flag
+                                   kill switch for gateway-path owners)
   - ECS_CLUSTER_PREFIX           : isol8-{env}-container-  (cluster discovery)
   - DLQ_URL                      : that instance's own SQS DLQ
   - METER_ENV                    : the env dimension on emitted metrics, AND
@@ -513,6 +515,12 @@ def _claim_request(request_id):
             TableName=os.environ["INVOCATION_DEDUP_TABLE"],
             Item={
                 "request_id": {"S": request_id},
+                # Attribute the claim to whoever won it. The bedrock-gate writes
+                # its own claims with source="gateway"; the meter stamps
+                # source="meter". This makes gateway-vs-meter reconciliation
+                # legible: a trial record the meter claims (i.e. the gateway did
+                # NOT claim first) is a gateway MISS the meter backstopped.
+                "source": {"S": "meter"},
                 "ttl": {"N": str(int(time.time()) + DEDUP_TTL_SECONDS)},
             },
             ConditionExpression="attribute_not_exists(request_id)",
@@ -671,16 +679,53 @@ def _stamp_bedrock_revoked(owner_id):
     )
 
 
+def _deny_gate_token(owner_id):
+    """Flip denied=true on the owner's bedrock-gate token row — the gateway's
+    kill switch. Idempotent; a re-set is harmless.
+
+    The gateway authenticates every request against its token row and 403s when
+    denied=true, so this is the gateway-path equivalent of the IAM revoke: it
+    cuts off a cut-over owner whose direct owner-role Invoke has been dropped,
+    which the iam_revoke step no longer covers. During the transition an owner
+    may still hold owner-role Invoke too, so this runs INDEPENDENTLY alongside
+    (never instead of) iam_revoke + ecs_stop.
+
+    The token_hash to key by is the rotation pointer the backend writes on the
+    containers row at provision (``bedrock_gate_token_hash``). An owner with no
+    such pointer was never cut over to the gateway — there is nothing to deny,
+    so this is a clean no-op (NOT an error).
+    """
+    resp = _ddb().get_item(
+        TableName=os.environ["CONTAINERS_TABLE"],
+        Key={"owner_id": {"S": owner_id}},
+    )
+    token_hash = (resp.get("Item", {}).get("bedrock_gate_token_hash") or {}).get("S")
+    if not token_hash:
+        return
+    _ddb().update_item(
+        TableName=os.environ["GATE_TOKENS_TABLE"],
+        Key={"token_hash": {"S": token_hash}},
+        # `denied` aliased defensively — kept off the reserved-word list either
+        # way, but the alias makes the write immune to it (this IS a kill step).
+        UpdateExpression="SET #denied = :t",
+        ExpressionAttributeNames={"#denied": "denied"},
+        ExpressionAttributeValues={":t": {"BOOL": True}},
+    )
+
+
 def _kill_owner_bedrock(owner_id, *, crossed=True):
     """Cut the owner off from Bedrock. Never raises.
 
-    The two kill actions are INDEPENDENT: a revoke failure must still attempt
-    the ECS stop, and vice versa — coupling them would let one transient IAM
-    error leave a runaway container invoking Bedrock indefinitely. Each is
-    idempotent, so a redundant call is harmless. Every failure emits its own
-    alarmed metric: an un-executed kill is real money, so it must page rather
-    than fail the batch (raising here would fail records that are already
-    counted, and CW Logs would retry them into the dedup guard for nothing).
+    The kill actions are INDEPENDENT: a failure of one must still attempt the
+    others — coupling them would let one transient error leave a runaway
+    container invoking Bedrock indefinitely. Each is idempotent, so a redundant
+    call is harmless. Every failure emits its own alarmed metric: an un-executed
+    kill is real money, so it must page rather than fail the batch (raising here
+    would fail records that are already counted, and CW Logs would retry them
+    into the dedup guard for nothing). The three enforcement steps cover both
+    invoke paths — iam_revoke + ecs_stop stop the direct owner-role path, and
+    deny_token stops the gateway path (a cut-over owner whose owner-role Invoke
+    was dropped) — so an owner on either path, or mid-transition on both, is cut.
 
     ``crossed`` is False when this is a RETRY on a later over-cap record rather
     than the threshold-crossing one (see _meter_trial_spend). The retry runs the
@@ -695,6 +740,7 @@ def _kill_owner_bedrock(owner_id, *, crossed=True):
     steps = (
         ("iam_revoke", _revoke_owner_iam, "meter.kill_iam_error"),
         ("ecs_stop", _stop_owner_service, "meter.kill_ecs_error"),
+        ("deny_token", _deny_gate_token, "meter.kill_deny_token_error"),
         ("revoked_stamp", _stamp_bedrock_revoked, "meter.kill_stamp_error"),
     )
     for label, step, metric in steps:
@@ -703,6 +749,26 @@ def _kill_owner_bedrock(owner_id, *, crossed=True):
         except Exception as exc:  # noqa: BLE001 - each kill step is independent
             _emit_metric(metric, owner_id=owner_id)
             logger.exception("meter: kill step %s failed for owner %s: %s", label, owner_id, exc)
+
+
+def _is_gateway_identity(identity_arn):
+    """True iff this record was signed by the per-env GATEWAY role.
+
+    Records reach this meter with identity.arn = one of two roles: the per-owner
+    role (``isol8-{env}-owner-bedrock-{owner}``, a direct-invoke owner) or the
+    gateway role (``isol8-{env}-bedrock-gate``, an owner cut over to the
+    bedrock-gate). The two markers are distinct substrings, so a direct-owner
+    record can never trip the gateway check.
+
+    A gateway-signed TRIAL record that reaches the meter's dedup CLAIM means the
+    gateway did NOT claim it first, i.e. the gateway missed its own synchronous
+    debit (crash / client-abort / lost usage event) and the meter is the
+    backstop — a reconciled gateway miss worth surfacing (spec §5.3). A
+    direct-owner-role record is a non-gatewayed owner the meter legitimately
+    counts every time and must NEVER emit the reconcile metric.
+    """
+    marker = f"isol8-{os.environ['METER_ENV']}-bedrock-gate"
+    return bool(identity_arn) and marker in identity_arn
 
 
 def _meter_trial_spend(parsed):
@@ -724,6 +790,15 @@ def _meter_trial_spend(parsed):
         logger.info("meter: replay of req=%s, counter already applied", parsed["request_id"])
         _emit_metric("meter.replay_skipped", owner_id=owner_id)
         return
+
+    # The claim just succeeded, so the meter is the FIRST to count this record.
+    # If it was gateway-signed, the gateway should have claimed + debited it
+    # synchronously and did not — it missed, and the meter is the auditor
+    # backstopping the count. Surface that so gateway accounting bugs are
+    # visible (the burn-in gate reads this metric). A direct-owner-role record
+    # is a non-gatewayed owner the meter always counts — no miss, no metric.
+    if _is_gateway_identity(parsed.get("identity_arn")):
+        _emit_metric("meter.reconciled_gateway_miss", owner_id=owner_id)
 
     total = _add_daily_spend(owner_id, _utc_today(), microcents)
     if total < CAP_MICROCENTS:

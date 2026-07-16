@@ -607,6 +607,19 @@ async def revoke_owner_bedrock(owner_id: str) -> None:
             raise
     await container_repo.update_fields(owner_id, {"bedrock_revoked": True})
 
+    # bedrock-gate transition: ALSO flip the deny flag on the owner's gate-token
+    # row so a gateway'd owner is stopped at the gate too (the gateway invokes
+    # under its OWN role, so the IAM revoke above does not reach it). Both fences
+    # are held during the transition phase. Best-effort — a deny-token failure
+    # must NOT break the IAM revoke, which is the primary fence; no token row
+    # (non-gateway owner) is a silent no-op inside deny_gate_token.
+    from core.billing.bedrock_gate_tokens import deny_gate_token
+
+    try:
+        await deny_gate_token(owner_id, True)
+    except Exception as e:  # noqa: BLE001 — deny is a backstop, not the fence
+        logger.warning("deny_gate_token(True) failed for %s: %s", owner_id, e)
+
 
 async def delete_owner_aips(owner_id: str, *, aip_arns: list[str] | None = None) -> list[str]:
     """SHARED CONTRACT (Admin Account-Wipe, teardown step 6-7): delete every
@@ -725,3 +738,13 @@ async def restore_owner_bedrock(owner_id: str) -> None:
         )
     await ensure_owner_bedrock_role(owner_id, arns)
     await container_repo.update_fields(owner_id, {"bedrock_revoked": False})
+
+    # Mirror revoke_owner_bedrock: clear the deny flag on the owner's gate-token
+    # row so a gateway'd owner is un-blocked at the gate alongside the IAM
+    # re-grant. Best-effort (no token row is a silent no-op).
+    from core.billing.bedrock_gate_tokens import deny_gate_token
+
+    try:
+        await deny_gate_token(owner_id, False)
+    except Exception as e:  # noqa: BLE001 — deny is a backstop, not the fence
+        logger.warning("deny_gate_token(False) failed for %s: %s", owner_id, e)

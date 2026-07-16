@@ -218,6 +218,13 @@ class TestBedrockProvisionMint:
         row = store["org_new"]
         assert row.get("bedrock_role_arn") == role_arn
         assert row.get("bedrock_aip_arns") == arns
+        # Same C-1 fold-in for the gate-token hash: mint's own update_fields
+        # no-opped on the absent row, so create_user_service's upsert must carry
+        # it (else deny_gate_token / rotation silently no-op until reprovision).
+        from core.billing.bedrock_gate_tokens import hash_token
+        from tests.unit.containers.conftest import STUB_GATE_TOKEN
+
+        assert row.get("bedrock_gate_token_hash") == hash_token(STUB_GATE_TOKEN)
         # And the per-owner role was passed to the task-def register (first boot
         # already correct in-memory; this guards the row-persist regression too).
         reg_kwargs = manager._register_task_definition.call_args.kwargs
@@ -473,6 +480,111 @@ class TestTrialProvisionMint:
         await manager.provision_user_container("user_capped", provider_choice="bedrock_trial", owner_type="personal")
 
         ensure_role.assert_awaited_once_with("user_capped", arns, skip_bedrock_grant=True)
+
+
+class TestBedrockGateTokenProvision:
+    """bedrock-gate cutover wiring: mint a per-owner gate token on EVERY Bedrock
+    provision, but inject the bearer/http1 task env ONLY when the owner is cut
+    over (bedrock_via_gateway) AND a gate URL is configured — injecting the
+    bearer token while baseUrl still targets real Bedrock would break the
+    non-cutover fleet (the amazon-bedrock plugin switches to httpBearerAuth on
+    the env var regardless of baseUrl)."""
+
+    _ARNS = {
+        "opus": "arn:aws:bedrock:us-east-1:123456789:application-inference-profile/o",
+        "sonnet": "arn:aws:bedrock:us-east-1:123456789:application-inference-profile/s",
+        "haiku": "arn:aws:bedrock:us-east-1:123456789:application-inference-profile/h",
+    }
+
+    def _wire_mint(self, manager, monkeypatch):
+        monkeypatch.setattr("core.billing.bedrock_aip.ensure_owner_aips", AsyncMock(return_value=self._ARNS))
+        monkeypatch.setattr(
+            "core.billing.bedrock_aip.ensure_owner_bedrock_role",
+            AsyncMock(return_value="arn:aws:iam::123456789:role/isol8-dev-owner-bedrock-x"),
+        )
+        monkeypatch.setattr("core.containers.ecs_manager.put_metric", MagicMock())
+        mint = AsyncMock(return_value="GATE_TOKEN_ABC")
+        monkeypatch.setattr("core.billing.bedrock_gate_tokens.mint_gate_token", mint)
+        manager._service_exists = MagicMock(return_value=None)
+        manager.create_user_service = AsyncMock(return_value="openclaw-x-hash")
+        manager.write_user_configs = AsyncMock()
+        manager.start_user_service = AsyncMock()
+        return mint
+
+    @pytest.mark.asyncio
+    async def test_token_minted_for_every_bedrock_owner_regardless_of_flag(self, manager, mock_settings, monkeypatch):
+        """Minted even with the flag OFF — so a later cutover flips a config flag,
+        not a secret rollout, and the deny fence is armed fleet-wide."""
+        mock_settings.BEDROCK_GATE_URL = "https://gate.dev.example/"
+        mock_settings.ACP_ENABLED = False
+        mint = self._wire_mint(manager, monkeypatch)
+        # No row -> flag absent -> via_gateway False.
+        monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))
+
+        await manager.provision_user_container("user_x", provider_choice="bedrock_claude", owner_type="personal")
+
+        mint.assert_awaited_once_with("user_x", self._ARNS)
+        # Flag OFF -> no bearer/http1 env (today's direct-Bedrock behavior).
+        env_names = {e["name"] for e in manager.create_user_service.call_args.kwargs["environment_for_task"]}
+        assert "AWS_BEARER_TOKEN_BEDROCK" not in env_names
+        assert "AWS_BEDROCK_FORCE_HTTP1" not in env_names
+        # The mint hash still rides onto the row-creating upsert.
+        assert manager.create_user_service.call_args.kwargs["bedrock_gate_token_hash"]
+        # ...and write_user_configs learns via_gateway is False.
+        assert manager.write_user_configs.call_args.kwargs["via_gateway"] is False
+
+    @pytest.mark.asyncio
+    async def test_bearer_env_injected_when_flag_on_and_url_set(self, manager, mock_settings, monkeypatch):
+        mock_settings.BEDROCK_GATE_URL = "https://gate.dev.example/"
+        mock_settings.ACP_ENABLED = False
+        self._wire_mint(manager, monkeypatch)
+        # Existing row cut over to the gateway.
+        monkeypatch.setattr(
+            "core.repositories.container_repo.get_by_owner_id",
+            AsyncMock(return_value={"owner_id": "user_x", "bedrock_via_gateway": True}),
+        )
+
+        await manager.provision_user_container("user_x", provider_choice="bedrock_claude", owner_type="personal")
+
+        env = {e["name"]: e["value"] for e in manager.create_user_service.call_args.kwargs["environment_for_task"]}
+        assert env["AWS_BEARER_TOKEN_BEDROCK"] == "GATE_TOKEN_ABC"
+        assert env["AWS_BEDROCK_FORCE_HTTP1"] == "1"
+        assert manager.write_user_configs.call_args.kwargs["via_gateway"] is True
+
+    @pytest.mark.asyncio
+    async def test_bearer_env_absent_when_flag_on_but_url_empty(self, manager, mock_settings, monkeypatch):
+        """Flag on but no gate URL configured -> baseUrl stays direct (config.py),
+        so the bearer token MUST NOT be injected (it would break direct auth)."""
+        mock_settings.BEDROCK_GATE_URL = ""
+        mock_settings.ACP_ENABLED = False
+        self._wire_mint(manager, monkeypatch)
+        monkeypatch.setattr(
+            "core.repositories.container_repo.get_by_owner_id",
+            AsyncMock(return_value={"owner_id": "user_x", "bedrock_via_gateway": True}),
+        )
+
+        await manager.provision_user_container("user_x", provider_choice="bedrock_claude", owner_type="personal")
+
+        env_names = {e["name"] for e in manager.create_user_service.call_args.kwargs["environment_for_task"]}
+        assert "AWS_BEARER_TOKEN_BEDROCK" not in env_names
+
+    @pytest.mark.asyncio
+    async def test_revoked_owner_gate_token_denied(self, manager, mock_settings, monkeypatch):
+        """A reprovision of a revoked owner re-asserts deny on the fresh token
+        row (mint wrote denied=False) — the kill switch holds across reprovision."""
+        mock_settings.BEDROCK_GATE_URL = "https://gate.dev.example/"
+        mock_settings.ACP_ENABLED = False
+        self._wire_mint(manager, monkeypatch)
+        deny = AsyncMock()
+        monkeypatch.setattr("core.billing.bedrock_gate_tokens.deny_gate_token", deny)
+        monkeypatch.setattr(
+            "core.repositories.container_repo.get_by_owner_id",
+            AsyncMock(return_value={"owner_id": "user_x", "bedrock_revoked": True}),
+        )
+
+        await manager.provision_user_container("user_x", provider_choice="bedrock_claude", owner_type="personal")
+
+        deny.assert_awaited_once_with("user_x", True)
 
 
 @pytest.fixture

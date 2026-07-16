@@ -211,6 +211,17 @@ class Settings(BaseSettings):
     """CDK-managed EFS/logs/ssm managed-policy ARN attached to every per-owner role."""
     BEDROCK_AIP_FAN_OUT_REGIONS: str = os.getenv("BEDROCK_AIP_FAN_OUT_REGIONS", "us-east-1,us-east-2,us-west-2")
     """Comma-separated regions the per-owner role permits the FM ARN in."""
+    BEDROCK_GATE_URL: str = os.getenv("BEDROCK_GATE_URL", "")
+    """Function URL of the per-env bedrock-gate Lambda — the ``GateUrl{Dev,Prod}``
+    CfnOutput of the bedrock-gate CDK stack (per-env value; set by CDK).
+
+    When set AND a container's row carries ``bedrock_via_gateway=true``, the
+    ``amazon-bedrock`` provider's ``baseUrl`` (and the ACP harness'
+    ``ANTHROPIC_BEDROCK_BASE_URL``) point HERE instead of the direct
+    ``bedrock-runtime.{region}.amazonaws.com`` endpoint, routing every inference
+    call through the synchronous per-request budget gate. Empty (the default)
+    disables gateway routing entirely — exactly today's direct-Bedrock behavior,
+    regardless of any per-owner ``bedrock_via_gateway`` flag."""
 
     # Billing / Stripe
     STRIPE_SECRET_KEY: str = os.getenv("STRIPE_SECRET_KEY", "")

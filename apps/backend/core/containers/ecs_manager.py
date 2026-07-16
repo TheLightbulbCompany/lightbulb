@@ -172,7 +172,13 @@ def _build_per_user_environment(
     return out
 
 
-def _build_bedrock_acp_harness_env(aip_arns: dict[str, str]) -> list[dict]:
+def _build_bedrock_acp_harness_env(
+    aip_arns: dict[str, str],
+    *,
+    via_gateway: bool = False,
+    gate_token: str | None = None,
+    gate_url: str | None = None,
+) -> list[dict]:
     """Env that points the ACP coding harness (Claude Code) at the owner's
     per-owner Bedrock Application Inference Profiles.
 
@@ -191,13 +197,31 @@ def _build_bedrock_acp_harness_env(aip_arns: dict[str, str]) -> list[dict]:
 
     Tier mapping mirrors Claude Code's own defaults: ``sonnet`` is the main
     coding model, ``haiku`` the small/fast background model.
+
+    When the owner is cut over to the bedrock-gate (``via_gateway`` with a
+    ``gate_url``/``gate_token``), the harness ALSO routes its own Bedrock client
+    through the gate with the SAME per-owner bearer token as the OpenClaw
+    provider. Claude Code binds to ``ANTHROPIC_BEDROCK_BASE_URL`` (verified
+    against the 2.1.156 binary — plain AWS-SDK endpoint vars do NOT work), skips
+    its own SigV4 signing (``CLAUDE_CODE_SKIP_BEDROCK_AUTH``), and presents the
+    token as ``ANTHROPIC_AUTH_TOKEN`` — so no ACP-specific IAM carve-out is
+    needed and the same gate enforces its spend.
     """
-    return [
+    env = [
         {"name": "CLAUDE_CODE_USE_BEDROCK", "value": "1"},
         {"name": "AWS_REGION", "value": settings.AWS_REGION},
         {"name": "ANTHROPIC_MODEL", "value": aip_arns["sonnet"]},
         {"name": "ANTHROPIC_SMALL_FAST_MODEL", "value": aip_arns["haiku"]},
     ]
+    if via_gateway and gate_url and gate_token:
+        env.extend(
+            [
+                {"name": "ANTHROPIC_BEDROCK_BASE_URL", "value": gate_url},
+                {"name": "CLAUDE_CODE_SKIP_BEDROCK_AUTH", "value": "1"},
+                {"name": "ANTHROPIC_AUTH_TOKEN", "value": gate_token},
+            ]
+        )
+    return env
 
 
 class EcsManagerError(Exception):
@@ -617,6 +641,7 @@ class EcsManager:
         hook_token: str | None = None,
         task_role_arn: str | None = None,
         bedrock_aip_arns: dict[str, str] | None = None,
+        bedrock_gate_token_hash: str | None = None,
         claim_id: str | None = None,
     ) -> str:
         """Create an ECS Service for a user with per-user EFS isolation.
@@ -702,6 +727,13 @@ class EcsManager:
             upsert_fields["bedrock_role_arn"] = task_role_arn
         if bedrock_aip_arns:
             upsert_fields["bedrock_aip_arns"] = bedrock_aip_arns
+        # Same fold-in for the bedrock-gate token hash: mint_gate_token ran before
+        # this row exists, so its own bedrock_gate_token_hash update_fields no-op'd
+        # (writes nothing on an absent row). Persist it here so the row carries the
+        # rotation pointer + deny-flag lookup key from first boot; without it,
+        # deny_gate_token/rotation would silently no-op until the next reprovision.
+        if bedrock_gate_token_hash:
+            upsert_fields["bedrock_gate_token_hash"] = bedrock_gate_token_hash
         # CHECKPOINT before the row write: a run superseded during the mint must
         # not deposit its gateway_token / AIP map / role onto the row — the
         # upsert deliberately preserves the NEW owner's lease fields, so without
@@ -1806,6 +1838,12 @@ class EcsManager:
         # stale `existing` here cannot drop it.
         existing = await container_repo.get_by_owner_id(user_id)
 
+        # Per-owner bedrock-gate cutover flag. Default absent/false == exactly
+        # today's direct-Bedrock behavior. Drives the openclaw.json baseUrl swap
+        # (threaded into write_user_configs -> build_provider_block) AND the
+        # bearer / ACP task-def env injected in the Bedrock branch below.
+        via_gateway = bool(existing and existing.get("bedrock_via_gateway"))
+
         # Every owner — regardless of provider_choice — runs under a UNIQUE
         # per-owner ECS task role (isol8-<env>-owner-bedrock-<owner_id>), minted
         # SYNCHRONOUSLY here before the service starts. The role NAME keeps the
@@ -1822,6 +1860,7 @@ class EcsManager:
 
         bedrock_aip_arns: dict[str, str] | None = None
         bedrock_role_arn: str | None = None
+        bedrock_gate_token_hash: str | None = None
         if provider_choice in BEDROCK_PROVIDER_CHOICES:
             # Bedrock owner: mint the per-owner AIPs + scoped IAM role. The
             # container's openclaw.json model ids become the AIP ARNs; if the
@@ -1854,6 +1893,45 @@ class EcsManager:
             is_revoked = bool(existing and existing.get("bedrock_revoked"))
             bedrock_role_arn = await ensure_owner_bedrock_role(user_id, bedrock_aip_arns, skip_bedrock_grant=is_revoked)
 
+            # Mint (rotate) the per-owner bedrock-gate bearer token for EVERY
+            # Bedrock owner — trial AND paid — REGARDLESS of bedrock_via_gateway.
+            # Minting fleet-wide arms the deny-flag kill switch
+            # (revoke_owner_bedrock) for every owner and means a later gateway
+            # cutover flips a config flag, never rolls a fresh secret.
+            # mint_gate_token rotates: it deletes any prior token row this owner
+            # pointed at. Lazy import keeps boto3 out of module load.
+            from core.billing.bedrock_gate_tokens import (
+                deny_gate_token,
+                hash_token,
+                mint_gate_token,
+            )
+
+            gate_token = await mint_gate_token(user_id, bedrock_aip_arns)
+            # First-provision persistence: mint_gate_token's own update_fields
+            # no-ops against a not-yet-created row, so carry the hash to
+            # create_user_service's row-creating upsert (same C-1 fold-in as
+            # bedrock_role_arn / bedrock_aip_arns).
+            bedrock_gate_token_hash = hash_token(gate_token)
+            # Keep a revoked owner DENIED across the reprovision: mint wrote a
+            # fresh row with denied=False, so re-assert the kill switch (mirrors
+            # skip_bedrock_grant on the IAM half). Best-effort — a deny hiccup
+            # must not break provisioning (IAM revoke is the primary fence).
+            if is_revoked:
+                try:
+                    await deny_gate_token(user_id, True)
+                except Exception:  # noqa: BLE001 — deny is a backstop, not the fence
+                    logger.warning("deny_gate_token(True) failed for revoked owner %s", user_id)
+
+            # Point the container at the gate ONLY when cut over AND a gate URL is
+            # configured — the SAME predicate build_provider_block uses for the
+            # baseUrl swap. The bearer token forces httpBearerAuth in the
+            # amazon-bedrock plugin regardless of baseUrl (stream.runtime.ts), so
+            # injecting it while baseUrl still targets real Bedrock would break
+            # direct invocation for the whole non-cutover fleet — hence the gate.
+            if via_gateway and settings.BEDROCK_GATE_URL:
+                environment_for_task.append({"name": "AWS_BEARER_TOKEN_BEDROCK", "value": gate_token})
+                environment_for_task.append({"name": "AWS_BEDROCK_FORCE_HTTP1", "value": "1"})
+
             # ACP coding-harness (Claude Code) Bedrock wiring. Gated by the
             # ACP_ENABLED feature flag (dark by default, same gate as the
             # openclaw.json acp block) and skipped for revoked owners — their
@@ -1866,7 +1944,14 @@ class EcsManager:
             # to drive — and the harness env could not be built for one anyway:
             # it needs a haiku AIP the trial owner deliberately does not have.
             if provider_choice == "bedrock_claude" and settings.ACP_ENABLED and not is_revoked and bedrock_aip_arns:
-                environment_for_task.extend(_build_bedrock_acp_harness_env(bedrock_aip_arns))
+                environment_for_task.extend(
+                    _build_bedrock_acp_harness_env(
+                        bedrock_aip_arns,
+                        via_gateway=via_gateway and bool(settings.BEDROCK_GATE_URL),
+                        gate_token=gate_token,
+                        gate_url=settings.BEDROCK_GATE_URL,
+                    )
+                )
         else:
             # Non-Bedrock owner (chatgpt_oauth / byo_key): mint/keep the
             # per-owner role SHELL — base EFS/logs/ssm policy + permissions
@@ -1956,6 +2041,7 @@ class EcsManager:
                         hook_token=existing_hook_token,
                         owner_type=owner_type,
                         aip_arns=bedrock_aip_arns,
+                        via_gateway=via_gateway,
                     )
                 except ProvisionSuperseded:
                     raise
@@ -2156,6 +2242,7 @@ class EcsManager:
             hook_token=hook_token,
             task_role_arn=bedrock_role_arn,
             bedrock_aip_arns=bedrock_aip_arns,
+            bedrock_gate_token_hash=bedrock_gate_token_hash,
             claim_id=claim_id,
         )
 
@@ -2174,6 +2261,7 @@ class EcsManager:
                 hook_token=hook_token,
                 owner_type=owner_type,
                 aip_arns=bedrock_aip_arns,
+                via_gateway=via_gateway,
             )
         except ProvisionSuperseded:
             raise
@@ -2390,6 +2478,7 @@ class EcsManager:
         hook_token: str | None = None,
         owner_type: str = "personal",
         aip_arns: dict[str, str] | None = None,
+        via_gateway: bool = False,
     ) -> None:
         """Write OpenClaw config files + pre-paired device trust store to EFS.
 
@@ -2560,6 +2649,7 @@ class EcsManager:
             integration_mcp_servers=integration_mcp_servers,
             aip_arns=aip_arns,
             channel_accounts=channel_accounts,
+            via_gateway=via_gateway,
         )
 
         # Seed Friday's IDENTITY/SOUL/USER/BOOTSTRAP files on EFS so they're

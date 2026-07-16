@@ -376,6 +376,7 @@ def build_provider_block(
     user_id: str,
     byo_provider: str | None,
     aip_arns: dict[str, str] | None = None,
+    via_gateway: bool = False,
 ) -> tuple[dict, dict, dict]:
     """Build (models.providers, agents.defaults.model, plugins.entries) for the
     user's signup choice.
@@ -533,10 +534,26 @@ def build_provider_block(
         # there is nothing else the owner's IAM role can invoke, and pointing at
         # a model it can't would turn any transient error into a hard failure.
         fallback_id = haiku_id or sonnet_id
+        # bedrock-gate cutover seam. When the owner is cut over
+        # (``via_gateway``) AND a gate URL is configured, point baseUrl at the
+        # bedrock-gate Function URL so every inference call flows through the
+        # synchronous per-request budget gate; otherwise the direct
+        # bedrock-runtime endpoint (today's behavior). ``auth: "aws-sdk"`` is
+        # unchanged either way — the per-owner ``AWS_BEARER_TOKEN_BEDROCK`` task
+        # env (injected only on the gateway path) overrides the scheme to
+        # httpBearerAuth inside the amazon-bedrock plugin, so the model ids
+        # (AIP ARNs), cost blocks, and defaults below are identical on both
+        # paths. Falling back to the direct endpoint when the URL is empty keeps
+        # a flag flip inert until CDK wires the gate.
+        base_url = (
+            settings.BEDROCK_GATE_URL
+            if via_gateway and settings.BEDROCK_GATE_URL
+            else f"https://bedrock-runtime.{settings.AWS_REGION}.amazonaws.com"
+        )
         return (
             {
                 "amazon-bedrock": {
-                    "baseUrl": f"https://bedrock-runtime.{settings.AWS_REGION}.amazonaws.com",
+                    "baseUrl": base_url,
                     "api": "bedrock-converse-stream",
                     "auth": "aws-sdk",
                     "models": bedrock_models,
@@ -965,6 +982,7 @@ def build_openclaw_config_dict(
     aip_arns: dict[str, str] | None = None,
     channel_accounts: dict[str, dict[str, dict]] | None = None,
     acp_enabled: bool = False,
+    via_gateway: bool = False,
 ) -> dict:
     """Build the openclaw.json config dict for a per-user container.
 
@@ -1009,6 +1027,7 @@ def build_openclaw_config_dict(
         user_id=user_id,
         byo_provider=byo_provider,
         aip_arns=aip_arns,
+        via_gateway=via_gateway,
     )
     # The default agent runs on the cheaper standard tier (above); the CEO
     # (Friday) is pinned to the premium tier via a per-agent override below.
@@ -1625,6 +1644,7 @@ async def write_openclaw_config(
     aip_arns: dict[str, str] | None = None,
     channel_accounts: dict[str, dict[str, dict]] | None = None,
     acp_enabled: bool | None = None,
+    via_gateway: bool = False,
 ) -> None:
     """Write the user's openclaw.json with the full container config.
 
@@ -1682,6 +1702,7 @@ async def write_openclaw_config(
         aip_arns=aip_arns,
         channel_accounts=channel_accounts,
         acp_enabled=acp_enabled,
+        via_gateway=via_gateway,
     )
 
     def _write() -> None:

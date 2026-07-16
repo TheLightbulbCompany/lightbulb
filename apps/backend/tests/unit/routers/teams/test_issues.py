@@ -439,6 +439,28 @@ def test_list_issue_comments_enrichment_is_best_effort(client, monkeypatch):
     assert all("authorName" not in row for row in rows)
 
 
+def test_list_issue_comments_survives_enrichment_blowup(client, monkeypatch):
+    """Enrichment must never take down the thread — an unexpected failure
+    anywhere inside it returns the upstream payload verbatim."""
+    admin = MagicMock()
+    admin.list_issue_comments = AsyncMock(return_value=[{"id": "cmt_1", "body": "hi", "authorUserId": "pcu_xyz"}])
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(
+        agents_mod,
+        "build_principal_to_clerk",
+        AsyncMock(side_effect=RuntimeError("map blew up")),
+    )
+
+    r = client.get(
+        "/api/v1/teams/issues/iss_1/comments",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    assert r.json() == [{"id": "cmt_1", "body": "hi", "authorUserId": "pcu_xyz"}]
+
+
 def test_add_issue_comment(client, monkeypatch):
     """POST `/teams/issues/{id}/comments` with whitelisted body."""
     admin = MagicMock()

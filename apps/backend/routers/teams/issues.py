@@ -311,7 +311,11 @@ async def list_issue_comments(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
         issue_id=issue_id,
         session_cookie=ctx.session_cookie,
     )
-    await _enrich_comment_authors(ctx, payload)
+    try:
+        await _enrich_comment_authors(ctx, payload)
+    except Exception:
+        # Enrichment must never take down the thread — return upstream verbatim.
+        logger.exception("issues.comments: author enrichment failed; returning raw payload")
     return payload
 
 

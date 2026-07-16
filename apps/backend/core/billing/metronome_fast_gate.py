@@ -131,17 +131,26 @@ class MetronomeFastGate:
     async def set_balance(self, owner_id: str, *, remaining_microcents: int) -> None:
         """Authoritative set (from a Metronome webhook or a fresh balance read).
 
-        This is the ONLY writer: top-ups are payment-gated Metronome commits
-        with no synchronous confirmation, so there is no optimistic local
-        credit bump — the gate's lazy balance refresh observes the released
-        credits and re-arms via this same authoritative set.
+        This is the ONLY writer of ``remaining_microcents``: top-ups are
+        payment-gated Metronome commits with no synchronous confirmation, so
+        there is no optimistic local credit bump — the gate's lazy balance
+        refresh observes the released credits and re-arms via this same
+        authoritative set.
+
+        UPDATE (not put_item): the bedrock-gate Lambda keeps a live
+        ``reserved_microcents`` hold field on this SAME row. A whole-row
+        put_item would delete an outstanding hold mid-request, so a later
+        settle would drive it negative and over-admit paid credits. SET only
+        the three fields this method owns and leave ``reserved_microcents``
+        untouched.
         """
         await run_in_thread(
-            _table().put_item,
-            Item={
-                "owner_id": owner_id,
-                "remaining_microcents": int(remaining_microcents),
-                "blocked": remaining_microcents <= 0,
-                "updated_at": _now_iso(),
+            _table().update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET remaining_microcents = :r, blocked = :b, updated_at = :u",
+            ExpressionAttributeValues={
+                ":r": int(remaining_microcents),
+                ":b": remaining_microcents <= 0,
+                ":u": _now_iso(),
             },
         )

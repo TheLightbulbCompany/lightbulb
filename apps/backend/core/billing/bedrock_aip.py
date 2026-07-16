@@ -95,9 +95,49 @@ def build_owner_bedrock_policy(
 ) -> dict:
     """Build the per-owner Bedrock inline IAM policy document (PURE — no boto3).
 
-    Invoking THROUGH an application inference profile authorizes TWO resources on
-    each call: the profile (AIP) ARN itself, and the underlying foundation-model
-    ARN. These need DIFFERENT treatment:
+    THE FENCE: the owner role carries NO ``bedrock:Invoke*`` — every inference
+    call goes through the bedrock-gate (the container authenticates to the gate
+    with its bearer token; the GATE's role invokes the owner's AIP). This is
+    what closes all three direct-spend routes at once: the OpenClaw provider
+    and the ACP harness are repointed at the gate by config/env, and the
+    ``exec: full`` shell path — which no proxy can see — simply AccessDenies.
+
+    What remains:
+    - ``Deny bedrock:CreateInferenceProfile`` — belt-and-suspenders against a
+      tenant minting a profile (nothing grants Bedrock anyway, but an explicit
+      Deny survives any future accidental Allow via base policy drift).
+
+    The PRE-GATEWAY direct-invoke shape lives on ONLY as
+    ``build_owner_bedrock_direct_policy`` for the break-glass script — an
+    emergency where the gate is down and the fleet must temporarily invoke
+    Bedrock directly (see docs/runbooks/bedrock-gate-break-glass.md).
+    """
+    del aip_arns, regions  # shape kept for call-site stability; unused now
+    return {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Sid": "DenyTenantProfileEscalation",
+                "Effect": "Deny",
+                "Action": "bedrock:CreateInferenceProfile",
+                "Resource": "*",
+            },
+        ],
+    }
+
+
+def build_owner_bedrock_direct_policy(
+    *,
+    owner_id: str,
+    aip_arns: dict[str, str],
+    regions: tuple[str, ...],
+) -> dict:
+    """BREAK-GLASS ONLY: the pre-gateway direct-invoke policy document.
+
+    Used exclusively by ``scripts/bedrock_gate_break_glass.py`` to restore
+    direct container→Bedrock invocation when the gate is down. Invoking THROUGH
+    an application inference profile authorizes TWO resources on each call: the
+    profile (AIP) ARN itself, and the underlying foundation-model ARN:
 
     - The AIP ARN is allowed UNCONDITIONALLY. AWS does NOT populate the
       ``bedrock:InferenceProfileArn`` condition key when authorizing the profile
@@ -108,9 +148,6 @@ def build_owner_bedrock_policy(
       ``bedrock:InferenceProfileArn == {this owner's AIPs}`` so the raw FMs can be
       reached ONLY via this owner's profile — no direct-FM invoke that would
       bypass the AIP and escape per-owner metering attribution.
-
-    An explicit ``Deny bedrock:CreateInferenceProfile`` stops the tenant from
-    minting a wider profile to escape the scope.
     """
     owner_aip_list = sorted(aip_arns.values())
     return {
@@ -576,6 +613,32 @@ async def _create_owner_role(client, role_name: str, owner_id: str) -> str:
     return resp["Role"]["Arn"]
 
 
+async def put_owner_bedrock_policy(owner_id: str, policy_doc: dict) -> None:
+    """BREAK-GLASS seam: put an EXPLICIT inline policy document on the owner
+    role. Used only by ``scripts/bedrock_gate_break_glass.py`` to swap between
+    the fence policy (``build_owner_bedrock_policy``, no invoke) and the
+    emergency direct-invoke policy (``build_owner_bedrock_direct_policy``).
+    Normal provisioning never calls this — ``ensure_owner_bedrock_role`` always
+    writes the fence policy.
+    """
+    import json as _json
+
+    from core.dynamodb import run_in_thread
+
+    client = _iam_client()
+    await run_in_thread(
+        client.put_role_policy,
+        RoleName=_owner_role_name(owner_id),
+        PolicyName="owner-bedrock",
+        PolicyDocument=_json.dumps(policy_doc),
+    )
+
+
+def aip_fan_out_regions() -> tuple[str, ...]:
+    """Public alias of the configured AIP fan-out regions (break-glass script)."""
+    return _fan_out_regions()
+
+
 async def revoke_owner_bedrock(owner_id: str) -> None:
     """SHARED CONTRACT (Plan 4 kill-switch): remove the per-owner role's scoped
     Bedrock inline policy so the container can no longer invoke any model, and
@@ -606,6 +669,19 @@ async def revoke_owner_bedrock(owner_id: str) -> None:
         if e.response["Error"]["Code"] != "NoSuchEntity":
             raise
     await container_repo.update_fields(owner_id, {"bedrock_revoked": True})
+
+    # bedrock-gate transition: ALSO flip the deny flag on the owner's gate-token
+    # row so a gateway'd owner is stopped at the gate too (the gateway invokes
+    # under its OWN role, so the IAM revoke above does not reach it). Both fences
+    # are held during the transition phase. Best-effort — a deny-token failure
+    # must NOT break the IAM revoke, which is the primary fence; no token row
+    # (non-gateway owner) is a silent no-op inside deny_gate_token.
+    from core.billing.bedrock_gate_tokens import deny_gate_token
+
+    try:
+        await deny_gate_token(owner_id, True)
+    except Exception as e:  # noqa: BLE001 — deny is a backstop, not the fence
+        logger.warning("deny_gate_token(True) failed for %s: %s", owner_id, e)
 
 
 async def delete_owner_aips(owner_id: str, *, aip_arns: list[str] | None = None) -> list[str]:
@@ -725,3 +801,13 @@ async def restore_owner_bedrock(owner_id: str) -> None:
         )
     await ensure_owner_bedrock_role(owner_id, arns)
     await container_repo.update_fields(owner_id, {"bedrock_revoked": False})
+
+    # Mirror revoke_owner_bedrock: clear the deny flag on the owner's gate-token
+    # row so a gateway'd owner is un-blocked at the gate alongside the IAM
+    # re-grant. Best-effort (no token row is a silent no-op).
+    from core.billing.bedrock_gate_tokens import deny_gate_token
+
+    try:
+        await deny_gate_token(owner_id, False)
+    except Exception as e:  # noqa: BLE001 — deny is a backstop, not the fence
+        logger.warning("deny_gate_token(False) failed for %s: %s", owner_id, e)

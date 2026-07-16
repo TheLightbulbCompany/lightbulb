@@ -598,6 +598,16 @@ export class ServiceStack extends cdk.Stack {
           // metronome_provisioning + metronome_funding.
           `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${env}-metronome-fast-gate`,
           `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${env}-metronome-fast-gate/index/*`,
+          // bedrock-gate bearer-token table. mint_gate_token / deny_gate_token
+          // (core/billing/bedrock_gate_tokens.py) PutItem/UpdateItem/DeleteItem
+          // here for EVERY Bedrock owner at provision time, so without this grant
+          // Bedrock provisioning AccessDenies fleet-wide. Folded into this
+          // by-name statement for the SAME 10 KB-inline-policy reason as the two
+          // tables above (a separate grantReadWriteData would tip CDK into an
+          // overflow ManagedPolicy). The table itself is defined in the
+          // bedrock-gate stack (gate-private), so only the ARN is referenced.
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${env}-bedrock-gate-tokens`,
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${env}-bedrock-gate-tokens/index/*`,
         ],
       }),
     );
@@ -658,6 +668,22 @@ export class ServiceStack extends cdk.Stack {
           "bedrock:ListInferenceProfiles",
         ],
         resources: ["*"],
+      }),
+    );
+
+    // bedrock-gate URL discovery: the gate stack publishes each env's Function
+    // URL to /isol8/{env}/bedrock-gate-url and the backend reads it at runtime
+    // (no cross-stack prop threading). The parameter doubles as the fleet
+    // break-glass lever — value "direct" routes new provisions straight to
+    // bedrock-runtime. Single-parameter read-only grant; kept as its own tiny
+    // statement (NOT folded into DynamoDbIntegrations).
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "BedrockGateUrlParamRead",
+        actions: ["ssm:GetParameter"],
+        resources: [
+          `arn:aws:ssm:${this.region}:${this.account}:parameter/isol8/${env}/bedrock-gate-url`,
+        ],
       }),
     );
 

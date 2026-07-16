@@ -48,6 +48,7 @@ describe("BedrockMeterStack", () => {
             AIP_OWNERS_TABLE: `isol8-${meterEnv}-bedrock-aip-owners`,
             BILLING_TABLE: `isol8-${meterEnv}-billing-accounts`,
             CONTAINERS_TABLE: `isol8-${meterEnv}-containers`,
+            GATE_TOKENS_TABLE: `isol8-${meterEnv}-bedrock-gate-tokens`,
             ECS_CLUSTER_PREFIX: `isol8-${meterEnv}-container-`,
             INVOCATION_DEDUP_TABLE: Match.anyValue(),
             DLQ_URL: Match.anyValue(),
@@ -236,6 +237,33 @@ describe("BedrockMeterStack", () => {
     expect(policies).not.toContain("ecs:StopTask");
   });
 
+  test("THE KILL: deny-flag half — GetItem/UpdateItem on containers + gate-tokens", () => {
+    // The third kill step flips denied=true on the owner's bedrock-gate token
+    // row (the gateway's kill switch). It reads the containers row for the
+    // rotation pointer (bedrock_gate_token_hash) then writes the gate-tokens
+    // row — GetItem + UpdateItem, scoped to the env's two tables. The
+    // gate-tokens table is owned by the bedrock-gate stack (ARN-by-convention).
+    for (const meterEnv of ["dev", "prod"]) {
+      template.hasResourceProperties("AWS::IAM::Policy", {
+        PolicyDocument: {
+          Statement: Match.arrayWith([
+            Match.objectLike({
+              Action: ["dynamodb:GetItem", "dynamodb:UpdateItem"],
+              Effect: "Allow",
+              Resource: [
+                `arn:aws:dynamodb:us-east-1:877352799272:table/isol8-${meterEnv}-containers`,
+                `arn:aws:dynamodb:us-east-1:877352799272:table/isol8-${meterEnv}-bedrock-gate-tokens`,
+              ],
+            }),
+          ]),
+        },
+      });
+    }
+    // The gate-tokens table lives in the gate stack — this stack only names it,
+    // never creates it (still exactly the two dedup tables).
+    template.resourceCountIs("AWS::DynamoDB::Table", 2);
+  });
+
   test("per-env Metronome secrets referenced by name; NO bedrock_meter_token anywhere", () => {
     const all = JSON.stringify(template.toJSON());
     expect(all).toContain("isol8/dev/metronome_api_key");
@@ -261,14 +289,19 @@ describe("BedrockMeterStack", () => {
   });
 
   test("TWO subscription filters split the envs by identity.arn role marker", () => {
+    // Each filter OR's the per-owner role AND the gateway role for its env
+    // (both carry the env segment, so the dev/prod split stays exact). The `?`
+    // prefixes make the terms optional (OR); the old required
+    // "application-inference-profile" term is dropped because CloudWatch
+    // ignores `?` whenever any required term is present in the same pattern.
     template.resourceCountIs("AWS::Logs::SubscriptionFilter", 2);
     template.hasResourceProperties("AWS::Logs::SubscriptionFilter", {
       FilterPattern:
-        '"application-inference-profile" "isol8-dev-owner-bedrock"',
+        '?"isol8-dev-owner-bedrock" ?"isol8-dev-bedrock-gate"',
     });
     template.hasResourceProperties("AWS::Logs::SubscriptionFilter", {
       FilterPattern:
-        '"application-inference-profile" "isol8-prod-owner-bedrock"',
+        '?"isol8-prod-owner-bedrock" ?"isol8-prod-bedrock-gate"',
     });
   });
 
@@ -357,8 +390,8 @@ describe("BedrockMeterStack", () => {
     });
   });
 
-  test("alarms per instance: DLQ depth + 9 skip/failure metrics + fn errors, env-scoped dimensions", () => {
-    // (1 DLQ + 9 skip/failure-metric + 1 fn-Errors) alarms x 2 instances = 22.
+  test("alarms per instance: DLQ depth + 10 skip/failure metrics + fn errors, env-scoped dimensions", () => {
+    // (1 DLQ + 10 skip/failure-metric + 1 fn-Errors) alarms x 2 instances = 24.
     // Each metric alarm scopes to its instance via the env dimension so dev
     // noise never pages prod (both Lambdas share namespace Isol8 + the
     // service name).
@@ -367,7 +400,7 @@ describe("BedrockMeterStack", () => {
     // the cap fired and the owner is STILL able to spend. meter.cap_kill and
     // meter.replay_skipped are deliberately NOT alarmed — a trial owner
     // hitting their cap and a CW-Logs batch retry are normal operation.
-    template.resourceCountIs("AWS::CloudWatch::Alarm", 22);
+    template.resourceCountIs("AWS::CloudWatch::Alarm", 24);
     for (const meterEnv of ["dev", "prod"]) {
       for (const metricName of [
         "meter.unattributed",
@@ -378,6 +411,7 @@ describe("BedrockMeterStack", () => {
         "meter.kill_iam_error",
         "meter.kill_ecs_error",
         "meter.kill_stamp_error",
+        "meter.kill_deny_token_error",
         "meter.malformed_record",
       ]) {
         template.hasResourceProperties("AWS::CloudWatch::Alarm", {
@@ -467,7 +501,7 @@ describe("BedrockMeterStack", () => {
     template.resourceCountIs("AWS::SNS::Topic", 0);
     // Alarm names replace only the DOTS in the metric name, so the underscores
     // survive: meter.kill_iam_error -> isol8-{env}-meter-kill_iam_error.
-    const PAGING = ["meter-kill_iam_error", "meter-kill_ecs_error"];
+    const PAGING = ["meter-kill_iam_error", "meter-kill_ecs_error", "meter-kill_deny_token_error"];
     const alarms = Object.values(
       template.findResources("AWS::CloudWatch::Alarm"),
     ) as any[];
@@ -483,8 +517,8 @@ describe("BedrockMeterStack", () => {
         `isol8-${expectedEnv}-alerts-${tier}`,
       );
     }
-    // Both kill-failure alarms, both envs. If this drops, a failed kill went
-    // silent again.
-    expect(paged).toBe(4);
+    // All three kill-failure alarms (iam, ecs, deny-token), both envs. If this
+    // drops, a failed kill went silent again.
+    expect(paged).toBe(6);
   });
 });

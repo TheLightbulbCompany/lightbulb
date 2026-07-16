@@ -242,6 +242,11 @@ export class BedrockMeterStack extends cdk.Stack {
           // backend's daily restore reads lives on the containers row.
           BILLING_TABLE: `isol8-${meterEnv}-billing-accounts`,
           CONTAINERS_TABLE: `isol8-${meterEnv}-containers`,
+          // The bedrock-gate's per-owner token table (owned by the gate stack;
+          // ARN-by-convention like every other table here). The deny-flag kill
+          // step flips denied=true on the owner's row so the gateway 403s the
+          // cut-over owner — the gateway-path half of the kill.
+          GATE_TOKENS_TABLE: `isol8-${meterEnv}-bedrock-gate-tokens`,
           // The per-user ECS services live in the env's container-stack cluster,
           // whose physical name is CFN-generated (renaming it would REPLACE the
           // cluster and destroy every per-user service) and, for dev, unknowable
@@ -399,12 +404,40 @@ export class BedrockMeterStack extends cdk.Stack {
         }),
       );
 
-      // Env-split subscription filter. identity.arn carries the per-owner
-      // role name (isol8-{env}-owner-bedrock-{owner}) — that role-name prefix
-      // IS the env marker, so a term filter cleanly routes each env's records
-      // to its own Lambda. The "application-inference-profile" term scopes to
-      // Isol8 AIP traffic so unrelated invocations (e.g. GooseTown) drop at
-      // the source.
+      // THE KILL, gateway half: flip denied=true on the owner's bedrock-gate
+      // token row so the gateway 403s the cut-over owner (the gateway-path
+      // equivalent of the IAM revoke). Reads the containers row for the
+      // rotation pointer (bedrock_gate_token_hash) then writes the gate-tokens
+      // row — GetItem + UpdateItem, scoped to the env's two tables. The
+      // gate-tokens table itself is owned by the bedrock-gate stack;
+      // ARN-by-convention keeps this stack free of a cross-stack ref.
+      fn.addToRolePolicy(
+        new iam.PolicyStatement({
+          sid: "DenyGateTokenOnKill",
+          effect: iam.Effect.ALLOW,
+          actions: ["dynamodb:GetItem", "dynamodb:UpdateItem"],
+          resources: [
+            `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${meterEnv}-containers`,
+            `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${meterEnv}-bedrock-gate-tokens`,
+          ],
+        }),
+      );
+
+      // Env-split subscription filter. identity.arn carries the signing role
+      // name, and TWO roles now sign Isol8 Bedrock traffic: the per-owner role
+      // (isol8-{env}-owner-bedrock-{owner}, direct invoke) and the gateway role
+      // (isol8-{env}-bedrock-gate, cut-over owners). Both markers carry the env
+      // segment, so an OR of the two role names both scopes to Isol8 traffic
+      // (unrelated invocations like GooseTown carry neither role → dropped at
+      // the source, so the old "application-inference-profile" required term is
+      // redundant) AND keeps the dev/prod split exact (a dev gateway record
+      // matches only the dev filter, a prod one only prod).
+      //
+      // The `?` prefixes make the two terms OR'd. CloudWatch IGNORES `?` if any
+      // non-`?` (required) term is present in the same pattern — which is why
+      // the application-inference-profile required term is dropped, not kept:
+      // keeping it would silently AND all three and match nothing.
+      //
       // CONSTRAINT: these two filters consume BOTH of CloudWatch's
       // subscription-filter slots on the group (hard limit 2/group). Any
       // third consumer must fan out behind one of the Lambdas, not add a
@@ -414,7 +447,7 @@ export class BedrockMeterStack extends cdk.Stack {
           logGroup: this.invocationLogGroup,
           destination: new logsDestinations.LambdaDestination(fn),
           filterPattern: logs.FilterPattern.literal(
-            `"application-inference-profile" "isol8-${meterEnv}-owner-bedrock"`,
+            `?"isol8-${meterEnv}-owner-bedrock" ?"isol8-${meterEnv}-bedrock-gate"`,
           ),
         }),
       );
@@ -454,6 +487,7 @@ export class BedrockMeterStack extends cdk.Stack {
       const PAGING_METRICS = new Set([
         "meter.kill_iam_error",
         "meter.kill_ecs_error",
+        "meter.kill_deny_token_error",
       ]);
 
       const dlqAlarm = new cloudwatch.Alarm(this, `MeterDlqNotEmptyAlarm${idSuffix}`, {
@@ -515,6 +549,12 @@ export class BedrockMeterStack extends cdk.Stack {
         ["meter.kill_iam_error", "MeterKillIamErrorAlarm"],
         ["meter.kill_ecs_error", "MeterKillEcsErrorAlarm"],
         ["meter.kill_stamp_error", "MeterKillStampErrorAlarm"],
+        // A failed deny-gate-token step: the owner crossed the cap but their
+        // gateway token stays valid. IAM revoke + ECS stop (the other two kill
+        // steps) still fired, so it is not an immediate leak during the
+        // transition — but once owner IAM is dropped (Phase 4) the deny flag IS
+        // the fence, so this must page like the other kill_* failures.
+        ["meter.kill_deny_token_error", "MeterKillDenyTokenErrorAlarm"],
         ["meter.malformed_record", "MeterMalformedRecordAlarm"],
       ];
       for (const [metricName, alarmId] of skipMetrics) {

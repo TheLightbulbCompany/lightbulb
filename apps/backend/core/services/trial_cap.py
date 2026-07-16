@@ -17,11 +17,15 @@ caller that already holds the billing row).
 There is deliberately NO cap-only primitive. One used to exist, and four
 separate doors reached for it and so checked only HALF the predicate — happily
 waking or dispatching work for a trial owner whose window had EXPIRED but who
-was under today's $3. Every door must answer the whole question. Blocking on any of these is UX — the authoritative stop is the
-meter's revoke-AIP + ``desiredCount=0`` pairing. The INVERSE — giving a
-capped-out trial owner their Bedrock access back once the day rolls over —
-lives one layer up, in ``core.services.provision_gate.maybe_restore_trial_bedrock``,
-which reads ``reason_for_account`` to decide whether it may fire.
+was under today's $3. Every door must answer the whole question. Blocking on
+any of these is UX. The PRIMARY enforcement is the bedrock-gate's synchronous
+pre-flight reservation (admission refused before a token is generated); the
+meter's kill (deny the gate token + ``desiredCount=0`` + the now-vestigial IAM
+revoke) is the ASYNC BACKSTOP if the counter ever crosses the cap anyway. The
+INVERSE — giving a capped-out trial owner their access back once the day rolls
+over — lives one layer up, in
+``core.services.provision_gate.maybe_restore_trial_bedrock``, which reads
+``reason_for_account`` to decide whether it may fire.
 """
 
 import time
@@ -29,16 +33,16 @@ from datetime import datetime, timezone
 
 from core.repositories import billing_repo
 
-# Advertised cap: $3.00/day. ENFORCED at $2.60: the meter counts from Bedrock
-# invocation-log delivery (~30-90s behind the calls) and an IAM revoke cannot
-# cancel an already-admitted streaming response, so a full-burn agent overshoots
-# whatever threshold fires the kill by ~$0.30-0.40 (measured: a $3.00 threshold
-# realized $3.39). Enforcing early puts the overshoot INSIDE the advertised $3
-# instead of past it. Lockstep with the WRITE side's copy in
-# apps/infra/lambda/bedrock-usage-meter/index.py — the kill and the restore
-# eligibility read the same number; moving only one of them makes the restore
-# path un-revoke a freshly killed owner on the next poll.
-CAP_MICROCENTS = 2_600_000
+# A TRUE $3.00/day. The bedrock-gate's synchronous pre-flight reservation is
+# the primary enforcement (admission refused before a token is generated;
+# overshoot bounded to in-flight requests), so the old $2.60 enforce-early
+# margin — which compensated for the async meter's 30-90s log lag — is
+# retired. Lockstep with the meter Lambda's copy in
+# apps/infra/lambda/bedrock-usage-meter/index.py AND the gate stack's
+# CAP_MICROCENTS env (bedrock-gate-stack.ts) — the gate's admission, the
+# meter's backstop kill, and the restore eligibility all read the same
+# number; moving one alone desynchronizes kill/restore/admission.
+CAP_MICROCENTS = 3_000_000
 
 # The two ways a free-tier owner runs out of runway. Returned by
 # ``trial_block_reason`` and mapped to the matching blocked-gate payload by

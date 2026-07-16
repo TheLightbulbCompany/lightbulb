@@ -24,16 +24,18 @@ Anything that is not exactly "trial" (including a legacy row written before
 the attribute existed) is treated as paid: the money path must fail towards
 "bill it", never towards "silently drop it".
 
-THE CAP IS THE ONLY REAL FENCE. The container holds its own AWS credentials
-and calls Bedrock directly — the backend is not on the inference path. So the
-only thing that provably stops a free owner's spend is removing the
-container's ability to invoke: delete the per-owner scoped inline IAM policy
-(every subsequent invoke is AccessDenied within ~5-15s of IAM propagation)
-AND set the owner's ECS service to desiredCount=0 (the instant stop for an
-already-admitted streaming call, which the IAM revoke does not kill). Those
-two actions are fired INDEPENDENTLY — a failure of one must still attempt the
-other — and both are idempotent (a missing policy is already-revoked; a
-stopped service is already-stopped). This mirrors ecs_manager.kill_owner_bedrock.
+THE ASYNC BACKSTOP. The bedrock-gate is the standard inference path: owner
+roles carry NO bedrock:Invoke (containers authenticate to the gate with bearer
+tokens; the GATE's role invokes), and the gate's pre-flight reservation is the
+PRIMARY per-request enforcement. This Lambda is the AWS-sourced auditor behind
+it — it sees EVERY invocation (gateway-signed AND any break-glass direct
+traffic), reconciles what the gate missed (aborted/crashed streams) via the
+shared requestId dedup, and fires the backstop kill if the counter crosses the
+cap anyway: deny the owner's gate token AND set desiredCount=0 (instant stop
+for already-admitted streams). The historical IAM-revoke step is retained —
+harmless/idempotent now that the fence policy carries no invoke, and it still
+bites during break-glass direct mode. All kill steps fire INDEPENDENTLY and
+are idempotent. This mirrors ecs_manager.kill_owner_bedrock.
 
 REPLAY SAFETY. Metronome's transaction_id dedup is what makes the paid path
 replay-safe; a DynamoDB counter increment has NO such dedup, so a CW-Logs batch
@@ -58,6 +60,8 @@ instance. The instances differ ONLY in env vars (never code conditionals):
   - INVOCATION_DEDUP_TABLE       : isol8-{env}-bedrock-invocation-dedup
   - BILLING_TABLE                : isol8-{env}-billing-accounts
   - CONTAINERS_TABLE             : isol8-{env}-containers
+  - GATE_TOKENS_TABLE            : isol8-{env}-bedrock-gate-tokens (deny-flag
+                                   kill switch for gateway-path owners)
   - ECS_CLUSTER_PREFIX           : isol8-{env}-container-  (cluster discovery)
   - DLQ_URL                      : that instance's own SQS DLQ
   - METER_ENV                    : the env dimension on emitted metrics, AND
@@ -110,18 +114,13 @@ logger.setLevel(logging.INFO)
 
 METRONOME_INGEST_URL_DEFAULT = "https://api.metronome.com/v1/ingest"
 
-# Free-tier daily cost cap. Lockstep with core/services/trial_cap.CAP_MICROCENTS
-# (the READ side — gates chat with a friendly message). This module is the
-# WRITE side and the only enforcement that actually stops spend.
-# 1 dollar = 100 cents = 1,000,000 microcents.
-#
-# Advertised cap: $3.00/day; enforced at $2.60. The invocation log this meter
-# rides is delivered ~30-90s behind the calls, and the IAM revoke cannot cancel
-# an already-admitted streaming response — at full agentic burn (~$0.30/min
-# measured) that lag overshoots whatever threshold fires the kill by
-# ~$0.30-0.40. Enforcing early lands the realized spend UNDER the advertised
-# $3 instead of past it.
-CAP_MICROCENTS = 2_600_000
+# Free-tier daily cost cap — the ASYNC BACKSTOP threshold. Lockstep with
+# core/services/trial_cap.CAP_MICROCENTS and the gate stack's CAP_MICROCENTS
+# env (the gate's synchronous admission is the primary enforcement; this
+# Lambda kills only if the counter crosses the cap anyway — aborted streams
+# the gate could not settle, or break-glass direct traffic).
+# 1 dollar = 100 cents = 1,000,000 microcents, so $3.00/day = 3,000,000.
+CAP_MICROCENTS = 3_000_000
 
 # Dedup rows MUST outlive the longest window in which a record can be
 # redelivered, which is the DLQ's own retention: bedrock-meter-stack sets
@@ -573,6 +572,12 @@ def _claim_request(request_id):
             TableName=os.environ["INVOCATION_DEDUP_TABLE"],
             Item={
                 "request_id": {"S": request_id},
+                # Attribute the claim to whoever won it. The bedrock-gate writes
+                # its own claims with source="gateway"; the meter stamps
+                # source="meter". This makes gateway-vs-meter reconciliation
+                # legible: a trial record the meter claims (i.e. the gateway did
+                # NOT claim first) is a gateway MISS the meter backstopped.
+                "source": {"S": "meter"},
                 "ttl": {"N": str(int(time.time()) + DEDUP_TTL_SECONDS)},
             },
             ConditionExpression="attribute_not_exists(request_id)",
@@ -752,16 +757,53 @@ def _stamp_bedrock_revoked(owner_id):
     )
 
 
+def _deny_gate_token(owner_id):
+    """Flip denied=true on the owner's bedrock-gate token row — the gateway's
+    kill switch. Idempotent; a re-set is harmless.
+
+    The gateway authenticates every request against its token row and 403s when
+    denied=true, so this is the gateway-path equivalent of the IAM revoke: it
+    cuts off a cut-over owner whose direct owner-role Invoke has been dropped,
+    which the iam_revoke step no longer covers. During the transition an owner
+    may still hold owner-role Invoke too, so this runs INDEPENDENTLY alongside
+    (never instead of) iam_revoke + ecs_stop.
+
+    The token_hash to key by is the rotation pointer the backend writes on the
+    containers row at provision (``bedrock_gate_token_hash``). An owner with no
+    such pointer was never cut over to the gateway — there is nothing to deny,
+    so this is a clean no-op (NOT an error).
+    """
+    resp = _ddb().get_item(
+        TableName=os.environ["CONTAINERS_TABLE"],
+        Key={"owner_id": {"S": owner_id}},
+    )
+    token_hash = (resp.get("Item", {}).get("bedrock_gate_token_hash") or {}).get("S")
+    if not token_hash:
+        return
+    _ddb().update_item(
+        TableName=os.environ["GATE_TOKENS_TABLE"],
+        Key={"token_hash": {"S": token_hash}},
+        # `denied` aliased defensively — kept off the reserved-word list either
+        # way, but the alias makes the write immune to it (this IS a kill step).
+        UpdateExpression="SET #denied = :t",
+        ExpressionAttributeNames={"#denied": "denied"},
+        ExpressionAttributeValues={":t": {"BOOL": True}},
+    )
+
+
 def _kill_owner_bedrock(owner_id, *, crossed=True):
     """Cut the owner off from Bedrock. Never raises.
 
-    The two kill actions are INDEPENDENT: a revoke failure must still attempt
-    the ECS stop, and vice versa — coupling them would let one transient IAM
-    error leave a runaway container invoking Bedrock indefinitely. Each is
-    idempotent, so a redundant call is harmless. Every failure emits its own
-    alarmed metric: an un-executed kill is real money, so it must page rather
-    than fail the batch (raising here would fail records that are already
-    counted, and CW Logs would retry them into the dedup guard for nothing).
+    The kill actions are INDEPENDENT: a failure of one must still attempt the
+    others — coupling them would let one transient error leave a runaway
+    container invoking Bedrock indefinitely. Each is idempotent, so a redundant
+    call is harmless. Every failure emits its own alarmed metric: an un-executed
+    kill is real money, so it must page rather than fail the batch (raising here
+    would fail records that are already counted, and CW Logs would retry them
+    into the dedup guard for nothing). The three enforcement steps cover both
+    invoke paths — iam_revoke + ecs_stop stop the direct owner-role path, and
+    deny_token stops the gateway path (a cut-over owner whose owner-role Invoke
+    was dropped) — so an owner on either path, or mid-transition on both, is cut.
 
     ``crossed`` is False when this is a RETRY on a later over-cap record rather
     than the threshold-crossing one (see _meter_trial_spend). The retry runs the
@@ -776,6 +818,7 @@ def _kill_owner_bedrock(owner_id, *, crossed=True):
     steps = (
         ("iam_revoke", _revoke_owner_iam, "meter.kill_iam_error"),
         ("ecs_stop", _stop_owner_service, "meter.kill_ecs_error"),
+        ("deny_token", _deny_gate_token, "meter.kill_deny_token_error"),
         ("revoked_stamp", _stamp_bedrock_revoked, "meter.kill_stamp_error"),
     )
     for label, step, metric in steps:
@@ -784,6 +827,26 @@ def _kill_owner_bedrock(owner_id, *, crossed=True):
         except Exception as exc:  # noqa: BLE001 - each kill step is independent
             _emit_metric(metric, owner_id=owner_id)
             logger.exception("meter: kill step %s failed for owner %s: %s", label, owner_id, exc)
+
+
+def _is_gateway_identity(identity_arn):
+    """True iff this record was signed by the per-env GATEWAY role.
+
+    Records reach this meter with identity.arn = one of two roles: the per-owner
+    role (``isol8-{env}-owner-bedrock-{owner}``, a direct-invoke owner) or the
+    gateway role (``isol8-{env}-bedrock-gate``, an owner cut over to the
+    bedrock-gate). The two markers are distinct substrings, so a direct-owner
+    record can never trip the gateway check.
+
+    A gateway-signed TRIAL record that reaches the meter's dedup CLAIM means the
+    gateway did NOT claim it first, i.e. the gateway missed its own synchronous
+    debit (crash / client-abort / lost usage event) and the meter is the
+    backstop — a reconciled gateway miss worth surfacing (spec §5.3). A
+    direct-owner-role record is a non-gatewayed owner the meter legitimately
+    counts every time and must NEVER emit the reconcile metric.
+    """
+    marker = f"isol8-{os.environ['METER_ENV']}-bedrock-gate"
+    return bool(identity_arn) and marker in identity_arn
 
 
 def _meter_trial_spend(parsed):
@@ -805,6 +868,15 @@ def _meter_trial_spend(parsed):
         logger.info("meter: replay of req=%s, counter already applied", parsed["request_id"])
         _emit_metric("meter.replay_skipped", owner_id=owner_id)
         return
+
+    # The claim just succeeded, so the meter is the FIRST to count this record.
+    # If it was gateway-signed, the gateway should have claimed + debited it
+    # synchronously and did not — it missed, and the meter is the auditor
+    # backstopping the count. Surface that so gateway accounting bugs are
+    # visible (the burn-in gate reads this metric). A direct-owner-role record
+    # is a non-gatewayed owner the meter always counts — no miss, no metric.
+    if _is_gateway_identity(parsed.get("identity_arn")):
+        _emit_metric("meter.reconciled_gateway_miss", owner_id=owner_id)
 
     total = _add_daily_spend(owner_id, _utc_today(), microcents)
     if total < CAP_MICROCENTS:

@@ -533,10 +533,25 @@ def build_provider_block(
         # there is nothing else the owner's IAM role can invoke, and pointing at
         # a model it can't would turn any transient error into a hard failure.
         fallback_id = haiku_id or sonnet_id
+        # The bedrock-gate is the STANDARD Bedrock path: baseUrl points at the
+        # gate's Function URL (discovered at runtime from SSM — see
+        # core/billing/bedrock_gate_url.py) so every inference call flows
+        # through the synchronous per-request budget gate. ``auth: "aws-sdk"``
+        # is unchanged — the per-owner ``AWS_BEARER_TOKEN_BEDROCK`` task env
+        # overrides the scheme to httpBearerAuth inside the amazon-bedrock
+        # plugin, so the model ids (AIP ARNs), cost blocks, and defaults below
+        # are identical either way. An empty resolver result (bootstrap before
+        # the gate stack exists, or the "direct" break-glass value) falls back
+        # to the direct bedrock-runtime endpoint — note post-cutover the owner
+        # role carries no bedrock:Invoke, so direct also needs the break-glass
+        # IAM re-grant (see the runbook).
+        from core.billing.bedrock_gate_url import gate_url
+
+        base_url = gate_url() or f"https://bedrock-runtime.{settings.AWS_REGION}.amazonaws.com"
         return (
             {
                 "amazon-bedrock": {
-                    "baseUrl": f"https://bedrock-runtime.{settings.AWS_REGION}.amazonaws.com",
+                    "baseUrl": base_url,
                     "api": "bedrock-converse-stream",
                     "auth": "aws-sdk",
                     "models": bedrock_models,

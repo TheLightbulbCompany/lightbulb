@@ -2,6 +2,7 @@ import * as cdk from "aws-cdk-lib";
 import { Construct } from "constructs";
 import { ApiStack } from "./stacks/api-stack";
 import { AuthStack } from "./stacks/auth-stack";
+import { BedrockGateStack } from "./stacks/bedrock-gate-stack";
 import { BedrockMeterStack } from "./stacks/bedrock-meter-stack";
 import { ContainerStack } from "./stacks/container-stack";
 import { DatabaseStack } from "./stacks/database-stack";
@@ -209,6 +210,18 @@ export class Isol8Stage extends cdk.Stage {
     if (env === "prod") {
       new BedrockMeterStack(this, `isol8-${env}-bedrock-meter`, {
         stackName: `isol8-${env}-bedrock-meter`,
+        envName: env,
+      });
+
+      // BedrockGateStack — account-scoped synchronous Bedrock metering gateway.
+      // Instantiated ONCE (prod stage only) for the SAME reason as the meter:
+      // both env instances (dev + prod) live in one account-scoped stack and
+      // the split is pure env-var config, so a per-env duplicate would collide
+      // on the fixed function/table names. No stack dependencies — the billing,
+      // fast-gate and dedup tables are referenced by NAME (ARN-by-convention),
+      // and the Lambdas have no VPC (a Function URL cannot live in one).
+      new BedrockGateStack(this, `isol8-${env}-bedrock-gate`, {
+        stackName: `isol8-${env}-bedrock-gate`,
         envName: env,
       });
     }

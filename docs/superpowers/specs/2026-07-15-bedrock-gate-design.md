@@ -83,12 +83,16 @@ meter Lambda (AUDITOR — unchanged pricing/ingest code):
 - **Auth**: `Authorization: Bearer <token>`; SHA-256(token) → GetItem on token table. Missing/unknown → 401. `denied=true` → 403 with Bedrock-shaped error body. No SigV4 verification (structurally impossible for us — SigV4 is symmetric HMAC verifiable only by AWS; bearer is the scheme AWS added for exactly this).
 - **Budget pre-flight** (after auth, before invoke): trial → `get_trial_daily_spend(owner, today) < CAP_MICROCENTS`; expiry (`trial_end`) also checked (whole predicate, mirroring `trial_cap.reason_for_account`). Paid → fast-gate `remaining_microcents > 0` (missing row = allow; Metronome webhook/refresh populates it — fail-open here is backstopped by the meter+enforcement path exactly as today).
 - **429 contract**: body shaped like a Bedrock `ThrottlingException` with a distinguishable message (`isol8: daily free limit reached` / `isol8: credit balance exhausted`) so OpenClaw's provider surfaces a retryable-looking, human-readable error; the existing UX gates (limit card, ChatErrorCard) remain the primary user-facing surface.
-- **maxTokens clamp**: trial requests get `inferenceConfig.maxTokens = min(requested, 16_384)`; paid passthrough. (Exposure math in §7.)
-- **Debit**: after the stream's final usage event — price with the same rate table (4th copy, lockstep-tested like the existing 3), then:
-  - trial: conditional-put claim `{request_id, source: "gateway"}` into the existing dedup table → on success, atomic ADD to the daily counter (same expression as the meter).
-  - paid: `ADD remaining_microcents -<estimate>` on the fast-gate row (estimate = local price × margin factor; Metronome refresh overwrites with truth).
-  - Client aborts / missing usage event → debit nothing; the meter auditor counts it from the invocation log within ~90s (dedup claim will be unclaimed).
-- **Concurrency guard**: reserved concurrency per instance (e.g. 100) so a runaway cannot exhaust account concurrency; alarm on throttles.
+- **maxTokens clamp — ceiling only, never a small cap.** Verified from fork source: OpenClaw's adaptive path (all Isol8 Sonnet/Opus traffic) sends **no `inferenceConfig.maxTokens` at all**, so Bedrock applies the model default = the model's FULL output ceiling (**128K Sonnet 4.6 / Opus 4.6, 64K Haiku 4.5**), and thinking tokens count against it. Injecting a *small* cap would silently truncate thinking-heavy turns (surfaces as `stopReason: length`). So the clamp only ever caps ABOVE the model max: absent or present-≤-model-max → pass through; present-above-model-max → clamp to model max (Bedrock would reject it anyway). Legitimate present values are exactly `8192`; **any present value > 16,384 is config-tampering** (agent rewrote its own `openclaw.json`) → clamp hard. Non-adaptive (paid Haiku) invariant: never clamp `maxTokens` at or below the request's `thinking.budget_tokens` (Bedrock rejects `budget ≥ max`). The clamp is an abuse ceiling, NOT the spend bound — the reservation below is the spend bound.
+- **Pre-flight admission with a reservation hold** (the actual spend bound):
+  - trial: admit iff `spent[today] + reserved[today] + RESERVE_ESTIMATE < CAP_MICROCENTS` AND not expired. On admit, atomically `ADD reserved_microcents.{today} += RESERVE_ESTIMATE` (a TTL-stamped hold). `RESERVE_ESTIMATE` is a **realistic per-turn estimate (~$0.30 / 300_000 microcents), NOT the 128K worst case** — worst-case reservations ($2.11) would serialize a trial container's own subagents even at $0 spent, breaking legitimate concurrency for everyone. Sizing = a fixed config constant, revisitable from observed p95 turn cost.
+  - paid: admit iff `fast_gate.remaining_microcents - reserved > 0` (same hold mechanic on the fast-gate row); missing row = allow (backstopped by meter+enforcement as today).
+- **Settle (debit)**: after the stream's final usage event — price with the same rate table (4th copy, lockstep-tested like the existing 3), then in one conditional transaction:
+  - trial: claim `{request_id, source: "gateway"}` in the dedup table → on success, `ADD spent_microcents.{today} += actual` AND `ADD reserved_microcents.{today} -= RESERVE_ESTIMATE` (release the hold). `spent` is the authoritative counter (same field + expression the meter writes); `reserved` is ephemeral holds only.
+  - paid: `ADD remaining_microcents -= actual` + release the hold; Metronome refresh overwrites `remaining` with truth periodically.
+  - Client abort / missing usage event / gateway crash → the hold is NOT released here; it **TTL-expires** (`RESERVE_TTL_S`, ~stream-max ≈ 20 min) so a crash can't leak a permanent hold, and the meter auditor counts the actual from the invocation log within ~90s (dedup claim unclaimed → it ADDs to `spent`). Holds never touch `spent`, so the auditor and the reservation ledger never double-count.
+  - **Overshoot bound**: because admission gates on `spent + reserved + estimate < cap`, the only way to exceed cap is in-flight requests whose *actual* exceeds their *estimate*; bound = Σ(actual − estimate) over concurrent in-flight (cents in practice, and can't run away — the next round is denied). A true mathematical-zero cap would require worst-case reserves; deliberately not taken (concurrency cost). See §7.
+- **Concurrency guard**: reserved Lambda concurrency per instance (e.g. 100) so a runaway cannot exhaust account concurrency; alarm on throttles.
 
 ### 5.2 Token service (backend)
 
@@ -111,7 +115,7 @@ meter Lambda (AUDITOR — unchanged pricing/ingest code):
 ### 5.5 Provision/config changes (backend)
 
 - `config.py` provider block: `baseUrl` becomes the per-env gate URL **when the owner's containers row has `bedrock_via_gateway=true`** (per-owner cutover flag; default false → flip per env cohort). `auth: "aws-sdk"` stays (the bearer env overrides scheme inside the plugin).
-- ACP harness env (`ecs_manager.py:175-200`): add `ANTHROPIC_BEDROCK_BASE_URL=<gate URL>` (verify exact var name against the Claude Code release in the image — **open item V1**) alongside the bearer var.
+- ACP harness env (`ecs_manager.py:175-200`): **V1 RESOLVED** (verified against the deployed Claude Code binary 2.1.156, grepped not just doc'd) — add `ANTHROPIC_BEDROCK_BASE_URL=<gate URL>` + `CLAUDE_CODE_SKIP_BEDROCK_AUTH=1` + `ANTHROPIC_AUTH_TOKEN=<same per-owner token>`. Claude Code uses its own Bedrock client (AWS-SDK endpoint vars like `AWS_ENDPOINT_URL_BEDROCK_RUNTIME` do NOT work — 0 hits in binary). So ACP routes through the gateway with the SAME token as the OpenClaw provider; NO narrow ACP IAM carve-out needed, owner invoke can be dropped fully. **Content-type fidelity is mandatory**: 2.1.156 predates the `CLAUDE_CODE_DISABLE_BEDROCK_CONTENT_TYPE_GUARD` escape hatch and hard-fails (`Truncated event message received`) if the proxy reframes or drops the `application/vnd.amazon.eventstream` content-type — the verbatim-passthrough decision is load-bearing for ACP, not just preferred. Caveat: the CLI version floats with acpx image bumps → re-verify the three env vars on each image bump (runbook line).
 - Restore/kill call sites migrate: `maybe_restore_trial_bedrock`, `metronome_gate._maybe_restore_bedrock`, `revoke_owner_bedrock`/`restore_owner_bedrock` gain deny-flag semantics behind the same function names (IAM half retained during transition).
 
 ## 6. Data model changes
@@ -121,14 +125,21 @@ meter Lambda (AUDITOR — unchanged pricing/ingest code):
 | `isol8-{env}-bedrock-gate-tokens` | **new**: `{token_hash PK, owner_id, denied, created_at}` |
 | `containers` | + `bedrock_via_gateway` (BOOL), + `bedrock_gate_token_hash` (rotation pointer) |
 | `bedrock-invocation-dedup` | + `source` attr on claims (`gateway` \| `meter`) — no key change |
-| `billing-accounts`, fast-gate | unchanged schemas; new writer (gateway) using existing expressions |
+| `billing-accounts` | + `reserved_microcents` (map `{date: N}`, ephemeral TTL-expiring holds) alongside the existing `trial_daily_spend_microcents` (renamed conceptually to the authoritative `spent`); gateway writes both, meter writes only `spent` |
+| fast-gate | + a `reserved` companion to `remaining_microcents` (holds); Metronome refresh overwrites `remaining` only |
 
 ## 7. Enforcement semantics & exposure math (honest)
 
-- Admission is denied **before** any token is generated once the budget line is crossed. Overshoot = cost of requests already in flight at crossing.
-- Trial worst case: `maxConcurrent` ≈ 2–3 effective streams (0.5 vCPU box saturates ~4) × (clamped 16k output ≈ $0.26 + typical ~90k cache-read input ≈ $0.03) ≈ **$0.6–0.9 absolute worst, cents typical** — vs. today's lag-window overshoot ($0.39 measured at moderate burn, unbounded in principle). Cap constant returns to `3_000_000` in the final phase (both lockstep copies, same PR).
-- Paid: exposure = in-flight requests at balance-zero, then 429s — versus minutes of unbounded burn today. A v2 **reservation** scheme (debit `maxTokens`-worth up front, settle on usage) can shrink overshoot to ~zero later; explicitly out of v1 (the deleted pre-send-reserve incident earns v1 simplicity).
-- Latency added: 1 DDB auth read + 1 budget read (~5–10ms) + Lambda hop; cold starts ~100–300ms occasional.
+**Real per-call numbers (verified from fork source, not assumed):** OpenClaw sends no `maxTokens` on the adaptive path, so a single Sonnet/Opus response can legitimately reach the **128K** output ceiling ≈ **$2.11 output** at the CRIS rate ($16.5/M); Haiku 64K. This is why a per-request *clamp alone* cannot bound trial spend under $3 — two concurrent max-output calls (~$4.22) already exceed the cap. The **reservation** is the bound, the clamp is only the tamper ceiling.
+
+**The reservation ledger (chosen: realistic estimate, not worst-case).**
+- Admission gates on `spent + reserved + RESERVE_ESTIMATE < cap`, so the sum of concurrent holds can never itself cross the cap. Once it would, the next request 429s → limit card.
+- `RESERVE_ESTIMATE` ≈ **$0.30** (realistic p95 turn), NOT the $2.11 worst case. Rationale: worst-case reserves would deny a *fresh* trial user's own 2nd subagent (2 × $2.11 > $3), serializing legitimate concurrency for everyone. Estimate-sized reserves preserve the ~3-way trial concurrency and still bound overshoot tightly.
+- **Overshoot bound** = Σ(actual − estimate) over in-flight requests at the moment the cap is crossed — cents in practice, and self-limiting (the next round is denied). It is NOT mathematically zero: a burst of simultaneous turns each burning far above the $0.30 estimate could nick slightly over before the holds deny the next round. Accepting this residual is the explicit trade for preserving concurrency. (Mathematical zero ⇒ worst-case reserves ⇒ serialized subagents — deliberately rejected.)
+- Distinct from the deleted backend pre-send reserve: that reserved from a place (the backend) that was NOT on the inference path, so it was both a guess and unenforceable (15-defect review). This reserve lives IN the gateway — the only path in/out — against its own atomic counter it also settles: a standard authorization-hold ledger, correct by construction.
+- Crash safety: holds TTL-expire (`RESERVE_TTL_S` ≈ 20 min ≥ max stream), and the meter auditor only ever writes `spent` (never `reserved`), so a leaked/expired hold self-heals and never double-counts against the auditor.
+- Cap constant returns to `3_000_000` in the final phase (both lockstep copies, same PR) — the $2.60 async margin is retired because the reservation, not the margin, now bounds overshoot.
+- Latency added: 1 DDB auth read + 1 budget read + 1 conditional hold write (~5–15ms) + Lambda hop; cold starts ~100–300ms occasional.
 
 ## 8. Failure modes & break-glass
 
@@ -150,12 +161,13 @@ meter Lambda (AUDITOR — unchanged pricing/ingest code):
 5. **Phase 4**: drop Invoke from owner policies (per cut-over owner), filter OR-term stays, boundary tightened after full fleet.
 6. **Phase 5**: `CAP_MICROCENTS` → `3_000_000` (both copies); margin retired. Meter kill demoted to deny-flag+scale-only. Burn-in report: 2 weeks of `reconciled_gateway_miss` ≈ 0 before phase 5.
 
-## 10. Open verification items
+## 10. Verification items
 
-- **V1**: exact Claude Code env for Bedrock endpoint override + bearer support in the pinned image (`ANTHROPIC_BEDROCK_BASE_URL`, `AWS_BEARER_TOKEN_BEDROCK` honored?) — verify before Phase 2; if unsupported, ACP falls back to direct-with-IAM until it is (its spend still metered by the auditor as today).
-- **V2**: enumerate non-Converse operations in real invocation logs (embeddings via `InvokeModel`?) — gateway must proxy whatever appears (routes exist; confirm coverage).
-- **V3**: Function URL + `streamifyResponse` passthrough of `vnd.amazon.eventstream` bytes verified in the spike (content-type + chunking fidelity, FORCE_HTTP1 client).
-- **V4**: OpenClaw `GetInferenceProfile` control-plane call — confirm task role keeps this read post-IAM-drop (fails soft regardless).
+- **V1 — RESOLVED** (Claude Code binary 2.1.156, grepped): ACP routes through the gateway via `ANTHROPIC_BEDROCK_BASE_URL` + `CLAUDE_CODE_SKIP_BEDROCK_AUTH=1` + `ANTHROPIC_AUTH_TOKEN` (same per-owner token). No IAM carve-out; content-type fidelity mandatory (see §5.5). Re-verify env vars on acpx image bumps.
+- **V2 — RESOLVED** (fork source + logs): the isol8 provider uses **ConverseStream exclusively** for chat (no non-stream `Converse`, no fallback); Claude Code/ACP uses the **Invoke** family. The `Converse` flood in the shared log group is a *different product* (GooseTown/Nova), which is why the meter filters on the `isol8-` role name. **Embeddings do NOT touch Bedrock** (`memorySearch.provider="none"` on every Bedrock path) — gateway routes = Converse/ConverseStream + Invoke only, and it explicitly `Deny`s `InvokeModel` for non-AIP model ids so a tampering agent can't route Titan through us.
+- **maxTokens — RESOLVED** (fork source): adaptive path sends no `maxTokens` → 128K Sonnet/64K Haiku default; thinking counts against it → clamp is ceiling-only (§5.1). Reservation, not clamp, is the spend bound (§7).
+- **V4 — RESOLVED** (checked live): `bedrock:GetInferenceProfile` is **not granted to owner roles today** — OpenClaw's trait lookup already runs fails-soft fleet-wide, so dropping owner invoke changes nothing there. No action needed.
+- **V3 — OPEN, is the spike (Task 1 / Phase 0)**: Function URL + `streamifyResponse` byte passthrough of `vnd.amazon.eventstream` **including content-type** verified against real dev Bedrock for BOTH the ConverseStream shape (OpenClaw) and the Invoke shape (ACP). This is the one item that requires running code, deliberately isolated as a throwaway spike; failure → stop → Anthropic-compatible-gateway fallback (§11).
 
 ## 11. Alternatives rejected
 

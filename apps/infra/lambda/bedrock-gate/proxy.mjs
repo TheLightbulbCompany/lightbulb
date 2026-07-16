@@ -56,6 +56,35 @@ class UsageTee {
 }
 
 /**
+ * Usage from a NON-STREAMING response (plain JSON — content-type is not
+ * eventstream). Converse JSON carries `usage.{inputTokens,...}`; Invoke
+ * (Anthropic Messages) carries snake_case `usage.{input_tokens,...}` in the
+ * body plus `x-amzn-bedrock-{input,output}-token-count` headers. Returns the
+ * raw usage-ish object (normalizeUsage in debit.mjs handles all key shapes)
+ * or null. Without this, non-streaming calls would release their hold with
+ * NO debit — an un-metered route a tampered client could deliberately pick.
+ */
+export function extractNonStreamUsage(bodyBuf, headers = {}) {
+  try {
+    const parsed = JSON.parse(bodyBuf.toString("utf8"));
+    if (parsed && typeof parsed === "object" && parsed.usage && typeof parsed.usage === "object") {
+      return parsed.usage;
+    }
+  } catch { /* fall through to headers */ }
+  const inTok = Number(headers["x-amzn-bedrock-input-token-count"]);
+  const outTok = Number(headers["x-amzn-bedrock-output-token-count"]);
+  if (Number.isFinite(inTok) || Number.isFinite(outTok)) {
+    return {
+      inputTokenCount: Number.isFinite(inTok) ? inTok : 0,
+      outputTokenCount: Number.isFinite(outTok) ? outTok : 0,
+    };
+  }
+  return null;
+}
+
+const NONSTREAM_BODY_CAP = 10 * 1024 * 1024; // Bedrock JSON bodies are ≤ ~6MB
+
+/**
  * Forward one request to Bedrock and pipe the response to `write`/`writeHead`
  * verbatim. Returns { status, requestId, usage } once the stream ends.
  * @param {(status:number, headers:object)=>void} writeHead
@@ -79,13 +108,30 @@ export function forward({ region, path, bodyBuf, writeHead, write, end, abortSig
 
     const req = https.request({ hostname: host, path, method: "POST", headers: signed.headers, signal: abortSignal }, (up) => {
       writeHead(up.statusCode, up.headers);
-      const tee = new UsageTee();
       const requestId = up.headers["x-amzn-requestid"] || up.headers["x-amzn-requestId"];
+      const isEventStream = String(up.headers["content-type"] || "").includes("vnd.amazon.eventstream");
+      const tee = isEventStream ? new UsageTee() : null;
+      const jsonChunks = isEventStream ? null : [];
+      let jsonLen = 0;
       up.on("data", (chunk) => {
         write(chunk); // verbatim FIRST, then tee a copy — never gate the pipe on decode
-        if (up.statusCode === 200) tee.feed(chunk);
+        if (up.statusCode !== 200) return;
+        if (tee) {
+          tee.feed(chunk);
+        } else if (jsonLen < NONSTREAM_BODY_CAP) {
+          jsonChunks.push(Buffer.from(chunk));
+          jsonLen += chunk.length;
+        }
       });
-      up.on("end", () => { end(); resolve({ status: up.statusCode, requestId, usage: tee.usage }); });
+      up.on("end", () => {
+        end();
+        const usage = tee
+          ? tee.usage
+          : up.statusCode === 200
+            ? extractNonStreamUsage(Buffer.concat(jsonChunks), up.headers)
+            : null;
+        resolve({ status: up.statusCode, requestId, usage });
+      });
       up.on("error", reject);
     });
     req.on("error", reject);

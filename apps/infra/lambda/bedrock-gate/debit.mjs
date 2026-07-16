@@ -17,10 +17,10 @@ export function normalizeUsage(usage) {
     return 0;
   };
   return {
-    inputTokens: pick("inputTokens", "inputTokenCount"),
-    outputTokens: pick("outputTokens", "outputTokenCount"),
-    cacheReadTokens: pick("cacheReadInputTokens", "cacheReadInputTokenCount"),
-    cacheWriteTokens: pick("cacheWriteInputTokens", "cacheWriteInputTokenCount"),
+    inputTokens: pick("inputTokens", "inputTokenCount", "input_tokens"),
+    outputTokens: pick("outputTokens", "outputTokenCount", "output_tokens"),
+    cacheReadTokens: pick("cacheReadInputTokens", "cacheReadInputTokenCount", "cache_read_input_tokens"),
+    cacheWriteTokens: pick("cacheWriteInputTokens", "cacheWriteInputTokenCount", "cache_creation_input_tokens"),
   };
 }
 

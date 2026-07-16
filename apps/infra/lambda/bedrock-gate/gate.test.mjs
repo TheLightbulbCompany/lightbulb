@@ -243,6 +243,28 @@ test("paid settle + release stamp reserved_updated_at", async () => {
   assert.ok(readN(ddb._store.fg.u.reserved_updated_at) >= stamped);
 });
 
+// ---- non-streaming usage extraction (Codex finding: JSON routes must debit) --
+test("extractNonStreamUsage: Converse JSON body usage", async () => {
+  const { extractNonStreamUsage } = await import("./proxy.mjs");
+  const body = Buffer.from(JSON.stringify({ output: {}, usage: { inputTokens: 10, outputTokens: 20, cacheReadInputTokens: 5 } }));
+  assert.deepEqual(extractNonStreamUsage(body, {}), { inputTokens: 10, outputTokens: 20, cacheReadInputTokens: 5 });
+});
+test("extractNonStreamUsage: Anthropic invoke body (snake_case) prices via normalizeUsage", async () => {
+  const { extractNonStreamUsage } = await import("./proxy.mjs");
+  const body = Buffer.from(JSON.stringify({ content: [], usage: { input_tokens: 7, output_tokens: 9, cache_read_input_tokens: 3, cache_creation_input_tokens: 2 } }));
+  const u = extractNonStreamUsage(body, {});
+  assert.deepEqual(normalizeUsage(u), { inputTokens: 7, outputTokens: 9, cacheReadTokens: 3, cacheWriteTokens: 2 });
+});
+test("extractNonStreamUsage: falls back to bedrock token-count headers", async () => {
+  const { extractNonStreamUsage } = await import("./proxy.mjs");
+  const u = extractNonStreamUsage(Buffer.from("not json"), { "x-amzn-bedrock-input-token-count": "11", "x-amzn-bedrock-output-token-count": "13" });
+  assert.deepEqual(normalizeUsage(u), { inputTokens: 11, outputTokens: 13, cacheReadTokens: 0, cacheWriteTokens: 0 });
+});
+test("extractNonStreamUsage: no usage anywhere -> null (hold released, meter backfills)", async () => {
+  const { extractNonStreamUsage } = await import("./proxy.mjs");
+  assert.equal(extractNonStreamUsage(Buffer.from("{}"), {}), null);
+});
+
 // ---- normalizeUsage: converse vs invoke shapes ---------------------------
 test("normalizeUsage handles both shapes", () => {
   assert.deepEqual(normalizeUsage({ inputTokens: 5, outputTokens: 7, cacheReadInputTokens: 2, cacheWriteInputTokens: 3 }),

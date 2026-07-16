@@ -29,8 +29,8 @@ describe("formatAssigneeUserLabel", () => {
     expect(formatAssigneeUserLabel("local-board", "u1")).toBe("Board");
   });
 
-  test("falls back to first 5 chars of userId", () => {
-    expect(formatAssigneeUserLabel("user_abcdef123", "u1")).toBe("user_");
+  test("returns null for an unresolvable userId (no id-prefix gibberish)", () => {
+    expect(formatAssigneeUserLabel("user_abcdef123", "u1")).toBeNull();
   });
 });
 

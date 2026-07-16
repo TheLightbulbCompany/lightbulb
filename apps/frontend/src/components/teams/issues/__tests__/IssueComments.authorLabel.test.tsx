@@ -1,7 +1,11 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { IssueComments } from "@/components/teams/issues/IssueComments";
-import type { CompanyAgent, IssueComment } from "@/components/teams/shared/types";
+import type {
+  CompanyAgent,
+  IssueComment,
+  RequestConfirmationInteraction,
+} from "@/components/teams/shared/types";
 
 // MarkdownView pulls in the full markdown pipeline; the author-label rows
 // under test only need the body rendered as text.
@@ -56,5 +60,75 @@ describe("IssueComments author labels", () => {
   it('falls back to "User" for a human author with no enrichment', () => {
     renderComments([comment({ authorUserId: "pcu_unknown" })]);
     expect(screen.getByText("User")).toBeInTheDocument();
+  });
+});
+
+describe("interaction card actor labels", () => {
+  function interaction(
+    overrides: Partial<RequestConfirmationInteraction>,
+  ): RequestConfirmationInteraction {
+    return {
+      id: "int_1",
+      companyId: "co_1",
+      issueId: "iss_1",
+      kind: "request_confirmation",
+      status: "accepted",
+      continuationPolicy: "none",
+      createdAt: "2026-07-15T00:00:00Z",
+      updatedAt: "2026-07-15T00:00:00Z",
+      createdByAgentId: "agt_friday",
+      payload: { version: 1, prompt: "Ship it?" },
+      ...overrides,
+    };
+  }
+
+  it("shows the enriched email for a human resolver", () => {
+    render(
+      <IssueComments
+        comments={[]}
+        agents={AGENTS}
+        onSubmit={async () => {}}
+        interactions={[
+          interaction({
+            resolvedByUserId: "pcu_1",
+            resolvedByEmail: "ada@example.com",
+            resolvedByClerkUserId: "u_ada",
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText("ada@example.com")).toBeInTheDocument();
+  });
+
+  it('shows "You" when the viewer resolved it', () => {
+    render(
+      <IssueComments
+        comments={[]}
+        agents={AGENTS}
+        onSubmit={async () => {}}
+        currentUserId="u_ada"
+        interactions={[
+          interaction({
+            resolvedByUserId: "pcu_1",
+            resolvedByEmail: "ada@example.com",
+            resolvedByClerkUserId: "u_ada",
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText("You")).toBeInTheDocument();
+  });
+
+  it('falls back to "User" (never an id prefix) for an unenriched resolver', () => {
+    render(
+      <IssueComments
+        comments={[]}
+        agents={AGENTS}
+        onSubmit={async () => {}}
+        interactions={[interaction({ resolvedByUserId: "user_abcdef123" })]}
+      />,
+    );
+    expect(screen.getByText("User")).toBeInTheDocument();
+    expect(screen.queryByText("user_")).not.toBeInTheDocument();
   });
 });

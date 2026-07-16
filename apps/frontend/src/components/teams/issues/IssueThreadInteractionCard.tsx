@@ -105,15 +105,21 @@ function formatShortDate(value: Date | string | null | undefined): string {
 function resolveActorLabel(args: {
   agentId?: string | null;
   userId?: string | null;
+  /** BFF-enriched email for the human actor (userId is a Paperclip principal id). */
+  email?: string | null;
+  /** BFF-enriched Clerk id twin — matches currentUserId for the viewer. */
+  clerkUserId?: string | null;
   agentMap?: Map<string, CompanyAgent>;
   currentUserId?: string | null;
 }) {
-  const { agentId, userId, agentMap, currentUserId } = args;
+  const { agentId, userId, email, clerkUserId, agentMap, currentUserId } = args;
   if (agentId) {
     return agentMap?.get(agentId)?.name ?? agentId.slice(0, 8);
   }
   if (userId) {
-    return formatAssigneeUserLabel(userId, currentUserId, null) ?? "Board";
+    if (clerkUserId && currentUserId && clerkUserId === currentUserId) return "You";
+    if (email) return email;
+    return formatAssigneeUserLabel(userId, currentUserId, null) ?? "User";
   }
   return "Unknown";
 }
@@ -275,6 +281,8 @@ function TaskTreeNode({
   const assigneeLabel = resolveActorLabel({
     agentId: node.task.assigneeAgentId,
     userId: node.task.assigneeUserId,
+    email: node.task.assigneeEmail,
+    clerkUserId: node.task.assigneeClerkUserId,
     agentMap,
     currentUserId,
   });
@@ -1847,6 +1855,8 @@ export function IssueThreadInteractionCard({
   const createdByLabel = resolveActorLabel({
     agentId: interaction.createdByAgentId,
     userId: interaction.createdByUserId,
+    email: interaction.createdByEmail,
+    clerkUserId: interaction.createdByClerkUserId,
     agentMap,
     currentUserId,
   });
@@ -1855,6 +1865,8 @@ export function IssueThreadInteractionCard({
       ? resolveActorLabel({
           agentId: interaction.resolvedByAgentId,
           userId: interaction.resolvedByUserId,
+          email: interaction.resolvedByEmail,
+          clerkUserId: interaction.resolvedByClerkUserId,
           agentMap,
           currentUserId,
         })

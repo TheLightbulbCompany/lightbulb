@@ -783,6 +783,12 @@ export interface IssueThreadInteractionActorFields {
   createdByUserId?: string | null;
   resolvedByAgentId?: string | null;
   resolvedByUserId?: string | null;
+  /** BFF-enriched — the user-id fields are Paperclip principal ids the
+   * frontend can't resolve itself; the ClerkUserId twins disambiguate "You". */
+  createdByEmail?: string | null;
+  createdByClerkUserId?: string | null;
+  resolvedByEmail?: string | null;
+  resolvedByClerkUserId?: string | null;
 }
 
 // --- suggest_tasks ---
@@ -797,6 +803,9 @@ export interface SuggestedTaskDraft {
   workMode?: IssueWorkMode | null;
   assigneeAgentId?: string | null;
   assigneeUserId?: string | null;
+  /** BFF-enriched — see IssueThreadInteractionActorFields. */
+  assigneeEmail?: string | null;
+  assigneeClerkUserId?: string | null;
   projectId?: string | null;
   goalId?: string | null;
   billingCode?: string | null;

@@ -430,6 +430,76 @@ def test_ingest_url_env_override(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def test_dlq_copy_is_redacted_but_still_meterable():
+    """The DLQ retains messages for 14 days — far past the log group's 3-day
+    retention — so the stored copy must NOT carry the invocation bodies (live
+    records were observed containing a tenant's Paperclip API key + gateway
+    JWT in plaintext). It MUST still carry everything a redrive needs: the
+    top-level token/cache counts and the output usage block."""
+    import index
+
+    record = _load("inline_record.json")
+    record["input"]["inputBodyJson"] = {"messages": [{"content": "SECRET pcp_12345 TOKEN"}]}
+    log_event = {"id": "e1", "timestamp": 1, "message": json.dumps(record)}
+    sent = []
+    sqs = MagicMock()
+    sqs.send_message.side_effect = lambda **kw: sent.append(kw)
+
+    with patch.object(index, "_sqs", return_value=sqs), patch.dict(
+        os.environ, {"DLQ_URL": "https://sqs.test.local/dlq"}
+    ):
+        index._send_to_dlq(log_event, "counter_error: boom")
+
+    body = json.loads(sent[0]["MessageBody"])
+    stored = json.loads(body["log_event"]["message"])
+    # Bodies gone — no secret survives the DLQ write.
+    assert "pcp_12345" not in sent[0]["MessageBody"]
+    assert stored["input"]["inputBodyJson"] == "<redacted>"
+    assert set(stored["output"]["outputBodyJson"].keys()) == {"usage"}
+    # ...but the record still meters on redrive: counts + usage intact.
+    parsed = index._extract(stored)
+    original = index._extract(record)
+    for field in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"):
+        assert parsed[field] == original[field]
+    # The original event object was not mutated (callers may reuse it).
+    assert "pcp_12345" in log_event["message"]
+
+
+def test_redact_covers_non_dict_output_bodies():
+    """outputBodyJson is redacted by KEY PRESENCE, like the input side: a
+    string- or array-encoded response body is still a body and must not
+    persist in the 14-day queue just because it isn't a dict."""
+    import index
+
+    for body in ("raw string response with pcp_67890", ["array", "of", "chunks"]):
+        record = _load("inline_record.json")
+        record["output"]["outputBodyJson"] = body
+        ev = {"id": "e3", "timestamp": 3, "message": json.dumps(record)}
+        stored = json.loads(index._redact_log_event(ev)["message"])
+        assert stored["output"]["outputBodyJson"] == "<redacted>"
+        assert "pcp_67890" not in json.dumps(stored)
+
+
+def test_redact_replaces_unparseable_messages_with_placeholder():
+    """A message that does not parse to a dict may be a TRUNCATED invocation
+    record still carrying body fragments — it must not persist in the 14-day
+    queue. The placeholder keeps length + digest for identification; the log
+    group holds the original for its 3-day debug window, and a redrive could
+    never process the raw copy anyway (it would just re-fail parsing)."""
+    import index
+
+    secret_fragment = '{"input": {"inputBodyJson": {"content": "pcp_TRUNCATED_SECRET'
+    for message in (secret_fragment, "not json at all", json.dumps(["a", "list"]), json.dumps("str")):
+        ev = {"id": "e2", "timestamp": 2, "message": message}
+        redacted = index._redact_log_event(ev)
+        assert "pcp_TRUNCATED_SECRET" not in redacted["message"]
+        assert redacted["message"].startswith("<unparseable message redacted:")
+        assert "sha256:" in redacted["message"]
+        # Event identity survives for correlation; the original is untouched.
+        assert redacted["id"] == "e2" and redacted["timestamp"] == 2
+        assert ev["message"] == message
+
+
 def test_handler_transport_error_dlqs_and_continues():
     """A Metronome ingest failure DLQs that record + emits
     meter.transport_error + continues the batch (does not raise / drop)."""
@@ -985,8 +1055,16 @@ def test_crossing_the_cap_revokes_iam_and_stops_ecs_exactly_once():
         service=index._service_name("org_abc"),
         desiredCount=0,
     )
-    # The backend's daily-restore path reads this flag.
+    # The stamp is the whole downstream contract, not just the flag:
+    # bedrock_revoked drives the daily restore; status="stopped" is what the
+    # status poll's retryable branch keys the 402 limit card on AND what the
+    # rollover auto-restart fires on. A row left "running" shows an indefinite
+    # cold-start stepper instead of the limit card and never self-heals.
     assert container["bedrock_revoked"]["BOOL"] is True
+    assert container["status"]["S"] == "stopped"
+    assert container["substatus"]["S"] == "trial_daily_cap"
+    assert container["bedrock_revoked_at"]["S"]
+    assert container["updated_at"]["S"]
 
 
 def test_staying_under_the_cap_kills_nothing():

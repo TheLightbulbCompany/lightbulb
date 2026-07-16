@@ -33,7 +33,16 @@ from datetime import datetime, timezone
 
 from core.repositories import billing_repo
 
-CAP_MICROCENTS = 3_000_000  # $3.00/day
+# A TRUE $3.00/day. The bedrock-gate's synchronous pre-flight reservation is
+# the primary enforcement (admission refused before a token is generated;
+# overshoot bounded to in-flight requests), so the old $2.60 enforce-early
+# margin — which compensated for the async meter's 30-90s log lag — is
+# retired. Lockstep with the meter Lambda's copy in
+# apps/infra/lambda/bedrock-usage-meter/index.py AND the gate stack's
+# CAP_MICROCENTS env (bedrock-gate-stack.ts) — the gate's admission, the
+# meter's backstop kill, and the restore eligibility all read the same
+# number; moving one alone desynchronizes kill/restore/admission.
+CAP_MICROCENTS = 3_000_000
 
 # The two ways a free-tier owner runs out of runway. Returned by
 # ``trial_block_reason`` and mapped to the matching blocked-gate payload by

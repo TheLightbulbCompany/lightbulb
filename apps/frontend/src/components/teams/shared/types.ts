@@ -109,6 +109,12 @@ export interface IssueComment {
   authorAgentId?: string | null;
   /** Display hint derived by callers from authorUserId/authorAgentId. */
   authorKind?: "user" | "agent" | null;
+  /** BFF-enriched display name for a human author (authorUserId is a
+   * Paperclip principal id the frontend can't resolve itself). */
+  authorName?: string | null;
+  /** BFF-enriched Clerk id of a human author — compare against the viewer's
+   * Clerk id to render "You". */
+  authorClerkUserId?: string | null;
 }
 
 /** Body for POST /teams/issues. Composer shape for NewIssueDialog.
@@ -777,6 +783,12 @@ export interface IssueThreadInteractionActorFields {
   createdByUserId?: string | null;
   resolvedByAgentId?: string | null;
   resolvedByUserId?: string | null;
+  /** BFF-enriched — the user-id fields are Paperclip principal ids the
+   * frontend can't resolve itself; the ClerkUserId twins disambiguate "You". */
+  createdByEmail?: string | null;
+  createdByClerkUserId?: string | null;
+  resolvedByEmail?: string | null;
+  resolvedByClerkUserId?: string | null;
 }
 
 // --- suggest_tasks ---
@@ -791,6 +803,9 @@ export interface SuggestedTaskDraft {
   workMode?: IssueWorkMode | null;
   assigneeAgentId?: string | null;
   assigneeUserId?: string | null;
+  /** BFF-enriched — see IssueThreadInteractionActorFields. */
+  assigneeEmail?: string | null;
+  assigneeClerkUserId?: string | null;
   projectId?: string | null;
   goalId?: string | null;
   billingCode?: string | null;

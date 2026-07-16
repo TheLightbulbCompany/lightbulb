@@ -311,11 +311,11 @@ describe("BedrockMeterStack", () => {
     expect(policies).not.toContain("s3:GetObject");
   });
 
-  test("AwsCustomResource sets logging config with text+embedding modalities", () => {
+  test("AwsCustomResource sets logging config with every data modality named", () => {
     // The custom resource encodes the putModelInvocationLoggingConfiguration
-    // call (incl. both modalities) in its Create parameters. CDK serializes the
-    // SDK action with its lowercase initial (`put...`); the capital-P spelling
-    // only appears in the IAM policy (`bedrock:Put...`), not the CR body.
+    // call (incl. every modality flag) in its Create parameters. CDK serializes
+    // the SDK action with its lowercase initial (`put...`); the capital-P
+    // spelling only appears in the IAM policy (`bedrock:Put...`), not the CR body.
     const customResources = template.findResources("Custom::AWS");
     const bodies = JSON.stringify(customResources);
     expect(bodies).toContain("putModelInvocationLoggingConfiguration");
@@ -356,7 +356,14 @@ describe("BedrockMeterStack", () => {
     expect(loggingConfigs.length).toBe(1);
   });
 
-  test("GUARD: text+embedding stay enabled, image stays disabled in the config", () => {
+  test("GUARD: text delivery stays ENABLED — disabling it blinds the meter", () => {
+    // The modality flags select WHICH MODELS get logged AT ALL, not whether
+    // bodies are included ("Data will be logged for all models that support
+    // the modalities ... that you choose" — Bedrock user guide). Deselecting
+    // Text stops logging Claude/Converse invocations entirely: the meter goes
+    // blind, the trial cap never fires, paid usage stops ingesting. The
+    // credential exposure from the bodies this forces into the log group is
+    // bounded by short retention (asserted below), NOT by disabling delivery.
     const customResources = template.findResources("Custom::AWS");
     const configs = Object.values(customResources).filter((r: any) =>
       JSON.stringify(r).includes("ModelInvocationLoggingConfiguration"),
@@ -368,6 +375,19 @@ describe("BedrockMeterStack", () => {
       expect(body).toContain('"embeddingDataDeliveryEnabled":true');
       expect(body).toContain('"imageDataDeliveryEnabled":false');
     }
+  });
+
+  test("GUARD: invocation log group keeps SHORT retention (credential-bearing bodies)", () => {
+    // Bodies carry whatever the agent had in context — live records were
+    // observed containing a tenant's Paperclip API key and gateway JWT in
+    // plaintext — and text delivery cannot be turned off (above). The meter
+    // consumes each record within seconds and DLQ messages embed their own
+    // copy, so retention is purely a debugging window. Keep it days, not
+    // months.
+    template.hasResourceProperties("AWS::Logs::LogGroup", {
+      LogGroupName: "/isol8/bedrock-invocation",
+      RetentionInDays: 3,
+    });
   });
 
   test("alarms per instance: DLQ depth + 10 skip/failure metrics + fn errors, env-scoped dimensions", () => {

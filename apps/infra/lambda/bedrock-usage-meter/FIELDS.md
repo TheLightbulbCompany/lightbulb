@@ -1,39 +1,28 @@
-# Bedrock invocation-log record — field paths (CloudWatch-only meter)
+# Bedrock invocation-log record — field paths (captured dev, 2026-07-15)
 
-> ## PRE-FLIP GATE — confirm against a REAL cached-Converse record before `METER_IS_LIVE=true`
->
-> The field paths below match the AWS-documented Bedrock model-invocation-logging
-> schema and the synthetic fixture in `fixtures/inline_record.json`, but the EXACT
-> shape MUST be confirmed against **one real dev record** before the meter goes
-> live. The cache-token path is the single highest-risk unknown (a wrong path
-> silently zeroes the ~30× cache undercount the meter exists to fix). The parser
-> in `index.py` is DEFENSIVE (multi-path `_first_int` extraction + a top-level →
-> output-body fallback) so a documented shape change degrades rather than silently
-> mis-bills — but do not flip the meter live on synthetic ground truth.
->
-> Before flipping `METER_IS_LIVE` to `true`, someone with dev AWS access MUST:
-> 1. `aws sso login --profile isol8-admin`; pick a live dev `$OWNER` + its AIP ARN.
-> 2. Temporarily enable model-invocation logging in DEV (manual, account+region-global —
->    NOT via the per-env stack; tear it down after).
-> 3. Generate ONE cached-Converse run (cache-heavy turn so the cache counts are
->    non-zero) and pull its record from CloudWatch Logs.
-> 4. ALSO confirm the rare edge: a run whose COMPLETION body exceeds 100KB. When
->    that happens the output body is offloaded to S3, `output.outputBodyJson` is
->    absent, and the cache counts can't be read — the Lambda DLQs the record +
->    emits `meter.output_body_truncated` rather than POSTing an under-billed
->    cache=0 row. Confirm this is rare in practice (the cached INPUT prompt is the
->    big thing, and we never need it; the output body is normally <100KB inline).
-> 5. Overwrite `fixtures/inline_record.json` with the REAL record (scrub prompt/
->    output TEXT to `"<redacted>"`, but **NEVER zero the token/cache numbers** —
->    the fixture MUST keep its real non-zero `cacheReadInputTokens` or the cache
->    test is vacuous).
-> 6. Reconcile the table below + the candidate-path tuples in
->    `index.py::_extract` / `_output_usage` against the captured shape — the
->    **FIXTURE wins** over any candidate guess.
-> 7. Tear down the temporary dev logging config (leave nothing account-global behind).
->
-> Then delete this warning block, change the title to "(captured dev, <date>)", and
-> re-run `python -m pytest test_index.py -v`.
+Confirmed against real dev `ConverseStream` records (cache-heavy trial run,
+2026-07-15): **all four token counts are TOP-LEVEL** — `input.inputTokenCount`,
+`input.cacheReadInputTokenCount`, `input.cacheWriteInputTokenCount`,
+`output.outputTokenCount` — and equal the response body's `usage` block
+exactly. The body fallback paths in `index.py::_extract` are kept as
+defensive-only.
+
+## Bodies are unavoidable — text delivery MUST stay enabled
+
+`textDataDeliveryEnabled` cannot be turned off: the modality flags select
+WHICH MODELS get logged at all, not whether bodies are included — "Data will
+be logged for all models that support the modalities ... that you choose"
+(Bedrock user guide, model-invocation-logging). Deselecting Text stops
+logging Claude/Converse invocations entirely, blinding the meter and killing
+the trial cap. There is NO metadata-only mode.
+
+Consequence: every record carries the full request/response bodies, and live
+records were observed containing a tenant's Paperclip API key and gateway JWT
+in plaintext. Treat `/isol8/bedrock-invocation` as a credential-bearing
+surface. Mitigation is the log group's SHORT retention (3 days,
+`bedrock-meter-stack.ts`) — the meter consumes records within seconds and DLQ
+messages embed their own copy of the log event, so nothing re-reads the group
+after delivery.
 
 ## No S3 — CloudWatch-only
 

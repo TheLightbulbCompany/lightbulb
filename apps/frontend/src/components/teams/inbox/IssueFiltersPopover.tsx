@@ -106,7 +106,7 @@ export function IssueFiltersPopover({
         const userId = creatorId.startsWith("user:") ? creatorId.slice("user:".length) : creatorId;
         return {
           id: creatorId,
-          label: formatAssigneeUserLabel(userId, currentUserId) ?? userId.slice(0, 5),
+          label: formatAssigneeUserLabel(userId, currentUserId) ?? "User",
           kind: "user" as const,
         };
       }),

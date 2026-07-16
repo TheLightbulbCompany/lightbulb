@@ -9,6 +9,7 @@ import * as logs from "aws-cdk-lib/aws-logs";
 import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as cloudwatchActions from "aws-cdk-lib/aws-cloudwatch-actions";
 import * as sns from "aws-cdk-lib/aws-sns";
+import * as ssm from "aws-cdk-lib/aws-ssm";
 import { Construct } from "constructs";
 
 // =============================================================================
@@ -163,14 +164,15 @@ export class BedrockGateStack extends cdk.Stack {
           // Shared per-requestId dedup with the meter (source attr distinguishes
           // gateway vs meter claims) — counts each invocation exactly once.
           INVOCATION_DEDUP_TABLE: `isol8-${gateEnv}-bedrock-invocation-dedup`,
-          // The gateway enforces the TRUE $3.00 cap: the reservation hold bounds
-          // overshoot, so it does NOT use the async $2.60 enforce-early margin.
-          // NOTE: trial_cap.py (and the meter's index.py) stay 2_600_000 until
-          // Phase 5 (Task 10) — do NOT move only one of the lockstep copies.
+          // The TRUE $3.00 cap — the reservation hold bounds overshoot, so no
+          // enforce-early margin is needed. Lockstep with trial_cap.py and the
+          // meter's index.py (all 3_000_000): move all copies together.
           CAP_MICROCENTS: "3000000",
           // Realistic p95 per-turn hold (~$0.30), NOT the 128K worst case:
           // worst-case reserves would serialize a trial owner's own subagents.
           RESERVE_ESTIMATE_MICROCENTS: "300000",
+          // Paid holds older than this are treated as leaked and reclaimed.
+          RESERVE_TTL_SECONDS: "1200",
           // Dedup claim TTL: 15 days, longer than any DLQ redrive window.
           DEDUP_TTL_SECONDS: "1296000",
           // AWS_REGION is auto-set by the Lambda runtime (reserved key).
@@ -189,6 +191,17 @@ export class BedrockGateStack extends cdk.Stack {
       new cdk.CfnOutput(this, `GateUrl${outSuffix}`, {
         value: fnUrl.url,
         description: `bedrock-gate Function URL (${gateEnv})`,
+      });
+
+      // The backend's RUNTIME discovery point for this env's gate URL (read via
+      // ssm:GetParameter at provision time — no cross-stack prop threading) AND
+      // the fleet break-glass lever: set the value to the literal string
+      // "direct" (SSM forbids empty strings) to route new provisions straight
+      // to bedrock-runtime, bypassing the gate.
+      new ssm.StringParameter(this, `GateUrlParam${idSuffix}`, {
+        parameterName: `/isol8/${gateEnv}/bedrock-gate-url`,
+        stringValue: fnUrl.url,
+        description: `bedrock-gate Function URL (${gateEnv}) — backend runtime discovery; "direct" = break-glass to bedrock-runtime`,
       });
 
       // --- Gateway IAM: invoke the owner's OWN AIP, nothing raw ----------------

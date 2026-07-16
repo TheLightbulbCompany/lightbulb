@@ -44,44 +44,37 @@ def test_premium_and_cheap_refs_use_aip_arns():
     assert cheap_model_ref("bedrock_claude", None, aip_arns=_AIPS) == f"amazon-bedrock/{_AIPS['haiku']}"
 
 
-def _bedrock_base_url(via_gateway: bool) -> str:
+def _bedrock_base_url() -> str:
     providers, _default, _plugins = build_provider_block(
         provider_choice="bedrock_claude",
         user_id="org_abc",
         byo_provider=None,
         aip_arns=_AIPS,
-        via_gateway=via_gateway,
     )
     return providers["amazon-bedrock"]["baseUrl"]
 
 
-def test_bedrock_baseurl_is_direct_endpoint_by_default():
-    # via_gateway defaults False -> direct bedrock-runtime endpoint (today).
-    assert _bedrock_base_url(via_gateway=False).startswith("https://bedrock-runtime.")
+def test_bedrock_baseurl_is_the_gate_url(monkeypatch):
+    # The gateway is the STANDARD Bedrock path: baseUrl == the resolver's URL.
+    monkeypatch.setattr("core.billing.bedrock_gate_url.gate_url", lambda: "https://gate.dev.example/")
+    assert _bedrock_base_url() == "https://gate.dev.example/"
 
 
-def test_bedrock_baseurl_swaps_to_gate_only_when_flag_and_url_set(monkeypatch):
-    monkeypatch.setattr("core.containers.config.settings.BEDROCK_GATE_URL", "https://gate.dev.example/")
-    # Flag on + URL set -> gate URL.
-    assert _bedrock_base_url(via_gateway=True) == "https://gate.dev.example/"
-    # Flag OFF (URL set) -> still direct.
-    assert _bedrock_base_url(via_gateway=False).startswith("https://bedrock-runtime.")
+def test_bedrock_baseurl_direct_only_in_break_glass_mode():
+    # The conftest autouse default patches the resolver to "" — the explicit
+    # break-glass "direct" mode. Only then does baseUrl fall back to the
+    # direct bedrock-runtime endpoint (a missing/unreadable parameter RAISES
+    # instead — see test_bedrock_gate_url.py).
+    assert _bedrock_base_url().startswith("https://bedrock-runtime.")
 
 
-def test_bedrock_baseurl_stays_direct_when_flag_on_but_url_empty(monkeypatch):
-    monkeypatch.setattr("core.containers.config.settings.BEDROCK_GATE_URL", "")
-    # Flag on but no gate URL configured -> direct (flag flip is inert).
-    assert _bedrock_base_url(via_gateway=True).startswith("https://bedrock-runtime.")
-
-
-def test_build_config_dict_threads_via_gateway_into_provider_baseurl(monkeypatch):
-    monkeypatch.setattr("core.containers.config.settings.BEDROCK_GATE_URL", "https://gate.dev.example/")
+def test_build_config_dict_gate_url_lands_in_provider_baseurl(monkeypatch):
+    monkeypatch.setattr("core.billing.bedrock_gate_url.gate_url", lambda: "https://gate.dev.example/")
     config = build_openclaw_config_dict(
         user_id="org_abc",
         gateway_token="gw",
         provider_choice="bedrock_claude",
         aip_arns=_AIPS,
-        via_gateway=True,
     )
     assert config["models"]["providers"]["amazon-bedrock"]["baseUrl"] == "https://gate.dev.example/"
     # auth is unchanged — the bearer env overrides the scheme in the plugin.

@@ -1,6 +1,6 @@
 # bedrock-gate: synchronous Bedrock metering gateway — design
 
-**Status:** approved-direction (2026-07-15 session with founder); spec for review before implementation plan executes.
+**Status:** BUILT + amended 2026-07-16. **Amendment (founder decision, zero-user simplification):** the gateway is the STANDARD Bedrock path from day one — the per-owner `bedrock_via_gateway` flag, cohort cutover script, and phased IAM removal are GONE. The backend discovers the gate URL at runtime from SSM (`/isol8/{env}/bedrock-gate-url`; literal `direct` = fleet break-glass); owner IAM loses `bedrock:Invoke` in this same PR (`build_owner_bedrock_policy` = deny-only fence; the old shape survives as `build_owner_bedrock_direct_policy` for `scripts/bedrock_gate_break_glass.py`); the cap is $3.00 everywhere immediately. §5.5/§9's flag/cutover/phases are superseded accordingly; fail-closed is chosen explicitly (see the runbook). Fast-follow noted: per-owner gate controls in the admin site.
 **Decided in dialogue:** gateway = ONE new Lambda (Node, response streaming, Function URL); meter Lambda RETAINED as auditor/backstop; bearer-token auth only; covers trial AND paid `bedrock_claude`; Metronome pipeline untouched.
 
 ## 1. Problem

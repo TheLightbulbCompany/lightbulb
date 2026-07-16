@@ -671,6 +671,22 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
+    // bedrock-gate URL discovery: the gate stack publishes each env's Function
+    // URL to /isol8/{env}/bedrock-gate-url and the backend reads it at runtime
+    // (no cross-stack prop threading). The parameter doubles as the fleet
+    // break-glass lever — value "direct" routes new provisions straight to
+    // bedrock-runtime. Single-parameter read-only grant; kept as its own tiny
+    // statement (NOT folded into DynamoDbIntegrations).
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "BedrockGateUrlParamRead",
+        actions: ["ssm:GetParameter"],
+        resources: [
+          `arn:aws:ssm:${this.region}:${this.account}:parameter/isol8/${env}/bedrock-gate-url`,
+        ],
+      }),
+    );
+
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
         sid: "Marketplace",

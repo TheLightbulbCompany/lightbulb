@@ -13,6 +13,7 @@ from core.billing.bedrock_aip import (
     FM_IDS,
     SYSTEM_PROFILE_ID,
     TIERS,
+    build_owner_bedrock_direct_policy,
     build_owner_bedrock_policy,
 )
 
@@ -38,9 +39,25 @@ def test_constants_shape():
     assert SYSTEM_PROFILE_ID["haiku"] == "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 
 
-def test_policy_has_invoke_allow_with_3_aips_and_9_fm_arns():
-    arns = _aip_arns()
+def test_fence_policy_carries_no_invoke_only_the_create_profile_deny():
+    """THE FENCE: the standard owner policy grants NO bedrock:Invoke — the
+    bedrock-gate is the only inference path (its own role invokes the owner's
+    AIP). Only the CreateInferenceProfile Deny remains, as belt-and-suspenders
+    against base-policy drift."""
     doc = build_owner_bedrock_policy(
+        owner_id="org_abc",
+        aip_arns=_aip_arns(),
+        regions=("us-east-1", "us-east-2", "us-west-2"),
+    )
+    allows = [s for s in doc["Statement"] if s["Effect"] == "Allow"]
+    assert allows == []
+    assert [s["Sid"] for s in doc["Statement"]] == ["DenyTenantProfileEscalation"]
+
+
+def test_direct_policy_has_invoke_allow_with_3_aips_and_9_fm_arns():
+    # BREAK-GLASS shape only (scripts/bedrock_gate_break_glass.py).
+    arns = _aip_arns()
+    doc = build_owner_bedrock_direct_policy(
         owner_id="org_abc",
         aip_arns=arns,
         regions=("us-east-1", "us-east-2", "us-west-2"),
@@ -67,15 +84,15 @@ def test_policy_has_invoke_allow_with_3_aips_and_9_fm_arns():
     assert len(expected_fm) == 9
 
 
-def test_aip_invoke_unconditional_fm_invoke_gated_to_owner_aips():
-    # REGRESSION GUARD: conditioning the AIP-resource Allow on
-    # bedrock:InferenceProfileArn denies the invoke — AWS does NOT set that key
-    # when authorizing the profile RESOURCE itself, so the invoke fails closed
-    # with AccessDeniedException (verified live + simulate-principal-policy). The
-    # AIP statement MUST be unconditional; only the FM statement carries the
-    # condition (so the raw FMs can be reached ONLY via this owner's profile).
+def test_direct_aip_invoke_unconditional_fm_invoke_gated_to_owner_aips():
+    # REGRESSION GUARD on the BREAK-GLASS builder: conditioning the
+    # AIP-resource Allow on bedrock:InferenceProfileArn denies the invoke —
+    # AWS does NOT set that key when authorizing the profile RESOURCE itself,
+    # so the invoke fails closed with AccessDeniedException (verified live +
+    # simulate-principal-policy). The AIP statement MUST be unconditional; only
+    # the FM statement carries the condition.
     arns = _aip_arns()
-    doc = build_owner_bedrock_policy(
+    doc = build_owner_bedrock_direct_policy(
         owner_id="org_abc",
         aip_arns=arns,
         regions=("us-east-1", "us-east-2", "us-west-2"),
@@ -572,8 +589,10 @@ class TestEnsureAips:
         """SECURITY PROPERTY: minting only the sonnet tier and feeding the
         result into build_owner_bedrock_policy produces a per-owner IAM policy
         whose unconditional AIP-invoke Allow lists ONLY that one AIP ARN, and
-        whose FM-invoke condition scopes to only that one AIP — a trial owner's
-        role has no path to opus/haiku, even via a raw foundation-model ARN."""
+        whose FM-invoke condition scopes to only that one AIP — so even in
+        BREAK-GLASS direct mode a trial owner's role has no path to opus/haiku,
+        even via a raw foundation-model ARN. (The STANDARD policy is the fence:
+        no invoke at all — see test_fence_policy_carries_no_invoke...)"""
         import core.billing.bedrock_aip as mod
 
         def _create(**kwargs):
@@ -588,7 +607,7 @@ class TestEnsureAips:
         monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
 
         arns = await mod.ensure_owner_aips("org_trial", tiers=["sonnet"])
-        doc = mod.build_owner_bedrock_policy(
+        doc = mod.build_owner_bedrock_direct_policy(
             owner_id="org_trial",
             aip_arns=arns,
             regions=mod.FAN_OUT_REGIONS,
@@ -647,16 +666,14 @@ class TestEnsureRole:
             RoleName="isol8-dev-owner-bedrock-org_abc",
             PolicyArn="arn:aws:iam::877352799272:policy/isol8-dev-owner-bedrock-base",
         )
-        # scoped inline policy put with the 3 AIPs + deny.
+        # scoped inline policy put with the FENCE shape: NO invoke Allow at all
+        # (the bedrock-gate is the only inference path), only the
+        # CreateInferenceProfile Deny.
         pk = fake.put_role_policy.call_args.kwargs
         assert pk["RoleName"] == "isol8-dev-owner-bedrock-org_abc"
         doc = json.loads(pk["PolicyDocument"])
-        # The AIP-invoke Allow is unconditional; the FM-invoke Allow carries the
-        # owner-scoped condition (split-statement fix for the AccessDenied bug).
-        aip_allow = next(s for s in doc["Statement"] if s.get("Sid") == "OwnerScopedProfileInvoke")
-        assert "Condition" not in aip_allow
-        fm_allow = next(s for s in doc["Statement"] if s.get("Sid") == "OwnerScopedFmViaProfile")
-        assert sorted(fm_allow["Condition"]["ArnEquals"]["bedrock:InferenceProfileArn"]) == sorted(arns.values())
+        assert [st["Effect"] for st in doc["Statement"]] == ["Deny"]
+        assert doc["Statement"][0]["Sid"] == "DenyTenantProfileEscalation"
         # role ARN persisted on the row.
         row = aip_tables.get_item(TableName="test-containers", Key={"owner_id": {"S": "org_abc"}})["Item"]
         assert row["bedrock_role_arn"]["S"] == role_arn

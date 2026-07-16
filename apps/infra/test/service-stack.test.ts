@@ -294,6 +294,24 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     });
   });
 
+  test("backend role can read the bedrock-gate URL SSM parameter (single-parameter GetParameter, not a wildcard)", () => {
+    // The gate stack publishes each env's Function URL to
+    // /isol8/{env}/bedrock-gate-url; the backend discovers it at runtime and
+    // the parameter doubles as the break-glass lever ("direct" = bypass gate).
+    SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Sid: "BedrockGateUrlParamRead",
+            Action: "ssm:GetParameter",
+            Resource:
+              "arn:aws:ssm:us-east-1:877352799272:parameter/isol8/dev/bedrock-gate-url",
+          }),
+        ]),
+      }),
+    });
+  });
+
   test("backend container has the BEDROCK_OWNER_ROLE_PREFIX env var", () => {
     template.hasResourceProperties("AWS::ECS::TaskDefinition", {
       ContainerDefinitions: Match.arrayWith([

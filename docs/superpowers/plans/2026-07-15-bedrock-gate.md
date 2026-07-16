@@ -1,5 +1,7 @@
 # bedrock-gate Implementation Plan
 
+> **AMENDED 2026-07-16 (founder decision):** the gateway is the STANDARD path — Task 7's `bedrock_via_gateway` flag and Task 8's cutover script were built then REMOVED; the gate URL is discovered at runtime from SSM (`bedrock_gate_url.py`); Task 9 (IAM drop) and Task 10 (cap→$3.00) landed in the SAME PR (zero users = no phased rollout). Break-glass = SSM `direct` + `scripts/bedrock_gate_break_glass.py`. Fast-follow: per-owner gate controls in the admin site. See the spec's Status amendment for the authoritative summary.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
 > **Read the spec first:** `docs/superpowers/specs/2026-07-15-bedrock-gate-design.md`. Every requirement here traces to it; where they disagree, the spec governs.

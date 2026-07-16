@@ -483,12 +483,12 @@ class TestTrialProvisionMint:
 
 
 class TestBedrockGateTokenProvision:
-    """bedrock-gate cutover wiring: mint a per-owner gate token on EVERY Bedrock
-    provision, but inject the bearer/http1 task env ONLY when the owner is cut
-    over (bedrock_via_gateway) AND a gate URL is configured — injecting the
-    bearer token while baseUrl still targets real Bedrock would break the
-    non-cutover fleet (the amazon-bedrock plugin switches to httpBearerAuth on
-    the env var regardless of baseUrl)."""
+    """bedrock-gate wiring: mint a per-owner gate token on EVERY Bedrock
+    provision; inject the bearer/http1 task env whenever the gate URL resolves
+    (the standard path). In break-glass 'direct' mode the bearer env is
+    withheld — injecting it while baseUrl targets real Bedrock would 403 direct
+    invocation (the amazon-bedrock plugin switches to httpBearerAuth on the env
+    var regardless of baseUrl)."""
 
     _ARNS = {
         "opus": "arn:aws:bedrock:us-east-1:123456789:application-inference-profile/o",
@@ -512,36 +512,36 @@ class TestBedrockGateTokenProvision:
         return mint
 
     @pytest.mark.asyncio
-    async def test_token_minted_for_every_bedrock_owner_regardless_of_flag(self, manager, mock_settings, monkeypatch):
-        """Minted even with the flag OFF — so a later cutover flips a config flag,
-        not a secret rollout, and the deny fence is armed fleet-wide."""
-        mock_settings.BEDROCK_GATE_URL = "https://gate.dev.example/"
+    async def test_token_minted_even_in_break_glass_direct_mode(self, manager, mock_settings, monkeypatch):
+        """Minted even when the resolver is in break-glass 'direct' mode — the
+        deny fence stays armed fleet-wide and returning to the gate never
+        requires a secret rollout. (The conftest autouse default patches the
+        resolver to "" = direct.)"""
         mock_settings.ACP_ENABLED = False
         mint = self._wire_mint(manager, monkeypatch)
-        # No row -> flag absent -> via_gateway False.
         monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))
 
         await manager.provision_user_container("user_x", provider_choice="bedrock_claude", owner_type="personal")
 
         mint.assert_awaited_once_with("user_x", self._ARNS)
-        # Flag OFF -> no bearer/http1 env (today's direct-Bedrock behavior).
+        # Direct mode -> no bearer/http1 env (injecting the bearer while
+        # baseUrl targets real Bedrock would 403 direct invocation).
         env_names = {e["name"] for e in manager.create_user_service.call_args.kwargs["environment_for_task"]}
         assert "AWS_BEARER_TOKEN_BEDROCK" not in env_names
         assert "AWS_BEDROCK_FORCE_HTTP1" not in env_names
         # The mint hash still rides onto the row-creating upsert.
         assert manager.create_user_service.call_args.kwargs["bedrock_gate_token_hash"]
-        # ...and write_user_configs learns via_gateway is False.
-        assert manager.write_user_configs.call_args.kwargs["via_gateway"] is False
 
     @pytest.mark.asyncio
-    async def test_bearer_env_injected_when_flag_on_and_url_set(self, manager, mock_settings, monkeypatch):
-        mock_settings.BEDROCK_GATE_URL = "https://gate.dev.example/"
+    async def test_bearer_env_injected_when_gate_url_resolves(self, manager, mock_settings, monkeypatch):
+        """The gateway is the standard path: a resolved gate URL means every
+        Bedrock owner gets the bearer + HTTP/1.1 env — no per-owner flag."""
         mock_settings.ACP_ENABLED = False
+        monkeypatch.setattr("core.billing.bedrock_gate_url.gate_url", lambda: "https://gate.dev.example/")
         self._wire_mint(manager, monkeypatch)
-        # Existing row cut over to the gateway.
         monkeypatch.setattr(
             "core.repositories.container_repo.get_by_owner_id",
-            AsyncMock(return_value={"owner_id": "user_x", "bedrock_via_gateway": True}),
+            AsyncMock(return_value={"owner_id": "user_x"}),
         )
 
         await manager.provision_user_container("user_x", provider_choice="bedrock_claude", owner_type="personal")
@@ -549,18 +549,17 @@ class TestBedrockGateTokenProvision:
         env = {e["name"]: e["value"] for e in manager.create_user_service.call_args.kwargs["environment_for_task"]}
         assert env["AWS_BEARER_TOKEN_BEDROCK"] == "GATE_TOKEN_ABC"
         assert env["AWS_BEDROCK_FORCE_HTTP1"] == "1"
-        assert manager.write_user_configs.call_args.kwargs["via_gateway"] is True
 
     @pytest.mark.asyncio
-    async def test_bearer_env_absent_when_flag_on_but_url_empty(self, manager, mock_settings, monkeypatch):
-        """Flag on but no gate URL configured -> baseUrl stays direct (config.py),
-        so the bearer token MUST NOT be injected (it would break direct auth)."""
-        mock_settings.BEDROCK_GATE_URL = ""
+    async def test_bearer_env_absent_in_direct_mode(self, manager, mock_settings, monkeypatch):
+        """Break-glass 'direct' mode (resolver returns "") -> baseUrl stays
+        direct (config.py), so the bearer token MUST NOT be injected (it would
+        break direct auth). Conftest default already patches the resolver to ""."""
         mock_settings.ACP_ENABLED = False
         self._wire_mint(manager, monkeypatch)
         monkeypatch.setattr(
             "core.repositories.container_repo.get_by_owner_id",
-            AsyncMock(return_value={"owner_id": "user_x", "bedrock_via_gateway": True}),
+            AsyncMock(return_value={"owner_id": "user_x"}),
         )
 
         await manager.provision_user_container("user_x", provider_choice="bedrock_claude", owner_type="personal")
@@ -660,11 +659,19 @@ class TestTrialProvisionPolicyPin:
         await manager.provision_user_container(owner_id, provider_choice=provider_choice, owner_type="personal")
 
     @pytest.mark.asyncio
-    async def test_trial_role_can_invoke_only_the_sonnet_profile(self, manager, wired_bedrock_aip, monkeypatch):
+    async def test_trial_role_carries_the_fence_no_invoke_at_all(self, manager, wired_bedrock_aip, monkeypatch):
+        """THE FENCE: the owner role gets NO bedrock:Invoke — inference flows
+        only through the bedrock-gate (the container authenticates with its
+        bearer token; the GATE's role invokes the owner's AIP). The exec-full
+        shell path — which no proxy can see — therefore AccessDenies. The AIP
+        is still minted (it remains the attribution + pricing unit the gate
+        invokes and the meter keys on)."""
         aws = wired_bedrock_aip
         await self._provision(manager, monkeypatch, "user_trial", "bedrock_trial")
 
-        # Exactly one AIP minted, and it is sonnet — no opus, no haiku.
+        # Exactly one AIP minted, and it is sonnet — no opus, no haiku. The
+        # single-tier mint is still the model-pinning boundary: the gate's
+        # cross-tenant check only authorizes AIPs in the owner's own token row.
         assert aws.bedrock.create_inference_profile.call_count == 1
         rows = _reverse_rows(aws.table)
         assert len(rows) == 1
@@ -673,29 +680,17 @@ class TestTrialProvisionPolicyPin:
         # plan="trial" is what tells the meter Lambda to count-and-kill instead
         # of ingesting to Metronome (a trial owner has no Stripe customer).
         assert rows[0]["plan"] == "trial"
-        sonnet_aip = rows[0]["aip_arn"]
 
         doc = _inline_policy_doc(aws.iam)
-        allows = _invoke_allows(doc)
-        assert allows, "the trial owner got NO Bedrock grant — they cannot chat at all"
-        for stmt in allows:
-            pinned = stmt.get("Condition", {}).get("ArnEquals", {}).get("bedrock:InferenceProfileArn")
-            if pinned is None:
-                # The unconditional (profile-resource) Allow: only this owner's
-                # own AIP. Anything else here would be an escape hatch.
-                assert stmt["Resource"] == [sonnet_aip]
-            else:
-                # The raw-foundation-model Allow is reachable ONLY through the
-                # owner's own profile — which is sonnet, and only sonnet. This is
-                # why the 9 FM ARNs listed as Resource cannot become an Opus call.
-                assert pinned == [sonnet_aip]
-        # ...and they cannot mint themselves a wider profile.
+        assert _invoke_allows(doc) == [], "owner roles must carry NO direct bedrock:Invoke (the gate is the only path)"
+        # ...and they cannot mint themselves a profile either.
         assert _denies_create_profile(doc)
 
     @pytest.mark.asyncio
-    async def test_paid_role_still_gets_all_three_profiles(self, manager, wired_bedrock_aip, monkeypatch):
-        """The paid path is byte-identical: three tiers, plan="paid", and an
-        unconditional Allow over all three AIPs."""
+    async def test_paid_role_carries_the_same_fence(self, manager, wired_bedrock_aip, monkeypatch):
+        """Paid mints three tiers (plan="paid") but the role is fenced exactly
+        like trial: NO direct invoke — the gate is the only inference path for
+        every Bedrock owner."""
         aws = wired_bedrock_aip
         await self._provision(manager, monkeypatch, "user_paid", "bedrock_claude")
 
@@ -703,14 +698,7 @@ class TestTrialProvisionPolicyPin:
         rows = _reverse_rows(aws.table)
         assert {r["tier"] for r in rows} == {"opus", "sonnet", "haiku"}
         assert {r["plan"] for r in rows} == {"paid"}
-        all_aips = sorted(r["aip_arn"] for r in rows)
 
         doc = _inline_policy_doc(aws.iam)
-        allows = _invoke_allows(doc)
-        unconditional = [s for s in allows if "Condition" not in s]
-        assert len(unconditional) == 1
-        assert sorted(unconditional[0]["Resource"]) == all_aips
-        gated = [s for s in allows if "Condition" in s]
-        assert len(gated) == 1
-        assert sorted(gated[0]["Condition"]["ArnEquals"]["bedrock:InferenceProfileArn"]) == all_aips
+        assert _invoke_allows(doc) == []
         assert _denies_create_profile(doc)

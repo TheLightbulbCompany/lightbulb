@@ -109,6 +109,20 @@ describe("BedrockGateStack", () => {
     );
   });
 
+  test("publishes each env's gate URL to SSM at /isol8/{env}/bedrock-gate-url (backend runtime discovery + break-glass lever)", () => {
+    // The backend reads this parameter at provision time — the exact name is
+    // the contract. It is also the fleet break-glass lever: value "direct"
+    // routes new provisions straight to bedrock-runtime.
+    template.resourceCountIs("AWS::SSM::Parameter", 2);
+    for (const gateEnv of ["dev", "prod"]) {
+      template.hasResourceProperties("AWS::SSM::Parameter", {
+        Name: `/isol8/${gateEnv}/bedrock-gate-url`,
+        Type: "String",
+        Value: Match.anyValue(),
+      });
+    }
+  });
+
   test("one gate-private token table per instance (PK token_hash, PITR, RETAIN)", () => {
     // Gate-private state — created here, NOT in the database stack. RETAIN +
     // PITR: a lost token row silently breaks an owner's inference.

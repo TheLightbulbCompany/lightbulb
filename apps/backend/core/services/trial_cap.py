@@ -17,11 +17,15 @@ caller that already holds the billing row).
 There is deliberately NO cap-only primitive. One used to exist, and four
 separate doors reached for it and so checked only HALF the predicate — happily
 waking or dispatching work for a trial owner whose window had EXPIRED but who
-was under today's $3. Every door must answer the whole question. Blocking on any of these is UX — the authoritative stop is the
-meter's revoke-AIP + ``desiredCount=0`` pairing. The INVERSE — giving a
-capped-out trial owner their Bedrock access back once the day rolls over —
-lives one layer up, in ``core.services.provision_gate.maybe_restore_trial_bedrock``,
-which reads ``reason_for_account`` to decide whether it may fire.
+was under today's $3. Every door must answer the whole question. Blocking on
+any of these is UX. The PRIMARY enforcement is the bedrock-gate's synchronous
+pre-flight reservation (admission refused before a token is generated); the
+meter's kill (deny the gate token + ``desiredCount=0`` + the now-vestigial IAM
+revoke) is the ASYNC BACKSTOP if the counter ever crosses the cap anyway. The
+INVERSE — giving a capped-out trial owner their access back once the day rolls
+over — lives one layer up, in
+``core.services.provision_gate.maybe_restore_trial_bedrock``, which reads
+``reason_for_account`` to decide whether it may fire.
 """
 
 import time

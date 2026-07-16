@@ -203,6 +203,45 @@ test("paid reserve: missing fast-gate row → allowed", async () => {
   const { hold } = await reserveOrThrow({ ddb, env: ENV, ownerId: "u", plan: "paid", billingRow: { subscription_status: { S: "active" } }, fastGateRow: null, today: TODAY, nowSec: 0 });
   assert.equal(hold.paid, true);
 });
+test("paid reserve: stale hold (reserved_updated_at past TTL) is reclaimed, not accumulated", async () => {
+  const ddb = makeFakeDdb();
+  // A hold leaked by a crashed settle: stamped far in the past (epoch 1000).
+  ddb._store.fg = { u: { owner_id: { S: "u" }, remaining_microcents: { N: "1000000" }, reserved_microcents: { N: "300000" }, reserved_updated_at: { N: "1000" } } };
+  const { hold } = await reserveOrThrow({ ddb, env: ENV, ownerId: "u", plan: "paid", billingRow: { subscription_status: { S: "active" } }, fastGateRow: ddb._store.fg.u, today: TODAY, nowSec: 0 });
+  assert.equal(hold.paid, true);
+  // RESET to the new estimate (300000), not ADDed to 600000.
+  assert.equal(readN(ddb._store.fg.u.reserved_microcents), 300000);
+  assert.ok(readN(ddb._store.fg.u.reserved_updated_at) > 1000); // re-stamped now
+});
+test("paid reserve: fresh hold → normal ADD behavior", async () => {
+  const ddb = makeFakeDdb();
+  const nowSec = Math.floor(Date.now() / 1000);
+  ddb._store.fg = { u: { owner_id: { S: "u" }, remaining_microcents: { N: "1000000" }, reserved_microcents: { N: "300000" }, reserved_updated_at: { N: String(nowSec) } } };
+  await reserveOrThrow({ ddb, env: ENV, ownerId: "u", plan: "paid", billingRow: { subscription_status: { S: "active" } }, fastGateRow: ddb._store.fg.u, today: TODAY, nowSec: 0 });
+  assert.equal(readN(ddb._store.fg.u.reserved_microcents), 600000); // accumulated, not reset
+});
+test("paid reserve: fresh hold still counts against balance → denial", async () => {
+  const ddb = makeFakeDdb();
+  const nowSec = Math.floor(Date.now() / 1000);
+  // 500k - 300k(fresh hold) - 300k(estimate) <= 0 → deny. (A STALE hold with
+  // these numbers would be reclaimed and admit.)
+  ddb._store.fg = { u: { owner_id: { S: "u" }, remaining_microcents: { N: "500000" }, reserved_microcents: { N: "300000" }, reserved_updated_at: { N: String(nowSec) } } };
+  await assert.rejects(
+    reserveOrThrow({ ddb, env: ENV, ownerId: "u", plan: "paid", billingRow: { subscription_status: { S: "active" } }, fastGateRow: ddb._store.fg.u, today: TODAY, nowSec: 0 }),
+    (e) => e.code === "credit_exhausted"
+  );
+});
+test("paid settle + release stamp reserved_updated_at", async () => {
+  const ddb = makeFakeDdb();
+  ddb._store.fg = { u: { owner_id: { S: "u" }, remaining_microcents: { N: "1000000" }, reserved_microcents: { N: "600000" } } };
+  const hold = { ownerId: "u", estimate: 300000, plan: "paid", paid: true };
+  await settle({ ddb, env: ENV, hold, tier: "sonnet", requestId: "r", usage: { inputTokens: 100000 } });
+  const stamped = readN(ddb._store.fg.u.reserved_updated_at);
+  assert.ok(stamped !== undefined && stamped > 0);
+  await release({ ddb, env: ENV, hold });
+  assert.equal(readN(ddb._store.fg.u.reserved_microcents), 0);
+  assert.ok(readN(ddb._store.fg.u.reserved_updated_at) >= stamped);
+});
 
 // ---- normalizeUsage: converse vs invoke shapes ---------------------------
 test("normalizeUsage handles both shapes", () => {

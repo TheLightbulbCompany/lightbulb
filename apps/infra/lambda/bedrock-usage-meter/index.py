@@ -24,16 +24,18 @@ Anything that is not exactly "trial" (including a legacy row written before
 the attribute existed) is treated as paid: the money path must fail towards
 "bill it", never towards "silently drop it".
 
-THE CAP IS THE ONLY REAL FENCE. The container holds its own AWS credentials
-and calls Bedrock directly — the backend is not on the inference path. So the
-only thing that provably stops a free owner's spend is removing the
-container's ability to invoke: delete the per-owner scoped inline IAM policy
-(every subsequent invoke is AccessDenied within ~5-15s of IAM propagation)
-AND set the owner's ECS service to desiredCount=0 (the instant stop for an
-already-admitted streaming call, which the IAM revoke does not kill). Those
-two actions are fired INDEPENDENTLY — a failure of one must still attempt the
-other — and both are idempotent (a missing policy is already-revoked; a
-stopped service is already-stopped). This mirrors ecs_manager.kill_owner_bedrock.
+THE ASYNC BACKSTOP. The bedrock-gate is the standard inference path: owner
+roles carry NO bedrock:Invoke (containers authenticate to the gate with bearer
+tokens; the GATE's role invokes), and the gate's pre-flight reservation is the
+PRIMARY per-request enforcement. This Lambda is the AWS-sourced auditor behind
+it — it sees EVERY invocation (gateway-signed AND any break-glass direct
+traffic), reconciles what the gate missed (aborted/crashed streams) via the
+shared requestId dedup, and fires the backstop kill if the counter crosses the
+cap anyway: deny the owner's gate token AND set desiredCount=0 (instant stop
+for already-admitted streams). The historical IAM-revoke step is retained —
+harmless/idempotent now that the fence policy carries no invoke, and it still
+bites during break-glass direct mode. All kill steps fire INDEPENDENTLY and
+are idempotent. This mirrors ecs_manager.kill_owner_bedrock.
 
 REPLAY SAFETY. Metronome's transaction_id dedup is what makes the paid path
 replay-safe; a DynamoDB counter increment has NO such dedup, so a CW-Logs batch

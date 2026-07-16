@@ -49,6 +49,8 @@ async function ensureTrialMaps(ddb, table, ownerId) {
  * @returns {{ok:true, hold:{ownerId,date,estimate}} | {ok:false}}
  */
 export async function trialReserve(ddb, env, ownerId, date, estimate, cap, billingRow) {
+  // No staleness TTL here (unlike paidReserve): the reserved map is date-keyed,
+  // so a leaked trial hold self-heals at the next UTC rollover.
   await ensureTrialMaps(ddb, env.BILLING_TABLE, ownerId);
   let spentMap = readMapN(billingRow?.trial_daily_spend_microcents);
   let reservedMap = readMapN(billingRow?.reserved_microcents);
@@ -159,24 +161,50 @@ export async function trialSettle(ddb, env, hold, requestId, actual, ttlSeconds)
 
 export async function paidReserve(ddb, env, ownerId, estimate, fastGateRow) {
   if (!fastGateRow) return { ok: true, hold: { ownerId, estimate, paid: true } }; // no row → allow (backstopped)
+  const ttlSec = Number(env.RESERVE_TTL_SECONDS || 1200);
   let remaining = readN(fastGateRow.remaining_microcents) ?? 0;
   let reserved = readN(fastGateRow.reserved_microcents) ?? 0;
+  let reservedAt = readN(fastGateRow.reserved_updated_at);
   for (let attempt = 0; attempt < MAX_RESERVE_ATTEMPTS; attempt++) {
-    if (remaining - reserved - estimate <= 0) return { ok: false };
+    const now = Math.floor(Date.now() / 1000);
+    // Unlike the trial map, the paid hold is a scalar with no date rollover to
+    // self-heal it: if a Lambda crashed between reserve and settle/release, the
+    // leaked hold would suppress admission FOREVER. Every hold-changing write
+    // stamps reserved_updated_at; a hold older than the TTL (or with no stamp)
+    // is treated as leaked and RECLAIMED — reset to this request's estimate
+    // instead of accumulated — so the TTL bounds how long a leak can shrink
+    // the admittable balance.
+    const stale = reserved > 0 && (reservedAt === undefined || now - reservedAt > ttlSec);
+    const effectiveReserved = stale ? 0 : reserved;
+    if (remaining - effectiveReserved - estimate <= 0) return { ok: false };
     try {
-      await ddb.updateItem({
-        TableName: env.FAST_GATE_TABLE,
-        Key: { owner_id: { S: ownerId } },
-        UpdateExpression: "SET reserved_microcents = if_not_exists(reserved_microcents, :zero) + :est",
-        ConditionExpression: "attribute_not_exists(reserved_microcents) OR reserved_microcents = :seen",
-        ExpressionAttributeValues: { ":est": N(estimate), ":zero": N(0), ":seen": N(reserved) },
-      });
+      if (stale) {
+        // Reclaim, guarded on the exact stale value so a concurrent
+        // reserve/settle (which changes reserved_microcents) is detected.
+        await ddb.updateItem({
+          TableName: env.FAST_GATE_TABLE,
+          Key: { owner_id: { S: ownerId } },
+          UpdateExpression: "SET reserved_microcents = :est, reserved_updated_at = :now",
+          ConditionExpression: "reserved_microcents = :seen",
+          ExpressionAttributeValues: { ":est": N(estimate), ":seen": N(reserved), ":now": N(now) },
+        });
+      } else {
+        await ddb.updateItem({
+          TableName: env.FAST_GATE_TABLE,
+          Key: { owner_id: { S: ownerId } },
+          UpdateExpression:
+            "SET reserved_microcents = if_not_exists(reserved_microcents, :zero) + :est, reserved_updated_at = :now",
+          ConditionExpression: "attribute_not_exists(reserved_microcents) OR reserved_microcents = :seen",
+          ExpressionAttributeValues: { ":est": N(estimate), ":zero": N(0), ":seen": N(reserved), ":now": N(now) },
+        });
+      }
       return { ok: true, hold: { ownerId, estimate, paid: true } };
     } catch (e) {
       if (!isConditionFail(e)) throw e;
       const fresh = await ddb.getItem({ TableName: env.FAST_GATE_TABLE, Key: { owner_id: { S: ownerId } } });
       remaining = readN(fresh?.Item?.remaining_microcents) ?? 0;
       reserved = readN(fresh?.Item?.reserved_microcents) ?? 0;
+      reservedAt = readN(fresh?.Item?.reserved_updated_at);
     }
   }
   return { ok: false };
@@ -187,9 +215,10 @@ export async function paidRelease(ddb, env, hold) {
     await ddb.updateItem({
       TableName: env.FAST_GATE_TABLE,
       Key: { owner_id: { S: hold.ownerId } },
-      UpdateExpression: "SET reserved_microcents = if_not_exists(reserved_microcents, :zero) - :est",
+      UpdateExpression:
+        "SET reserved_microcents = if_not_exists(reserved_microcents, :zero) - :est, reserved_updated_at = :now",
       ConditionExpression: "attribute_exists(owner_id)",
-      ExpressionAttributeValues: { ":est": N(hold.estimate), ":zero": N(0) },
+      ExpressionAttributeValues: { ":est": N(hold.estimate), ":zero": N(0), ":now": N(Math.floor(Date.now() / 1000)) },
     });
   } catch (e) {
     if (!isConditionFail(e)) throw e; // no row (never reserved) — nothing to release
@@ -203,9 +232,10 @@ export async function paidSettle(ddb, env, hold, actual) {
       Key: { owner_id: { S: hold.ownerId } },
       UpdateExpression:
         "SET remaining_microcents = if_not_exists(remaining_microcents, :zero) - :act, " +
-        "reserved_microcents = if_not_exists(reserved_microcents, :zero) - :est",
+        "reserved_microcents = if_not_exists(reserved_microcents, :zero) - :est, " +
+        "reserved_updated_at = :now",
       ConditionExpression: "attribute_exists(owner_id)",
-      ExpressionAttributeValues: { ":act": N(actual), ":est": N(hold.estimate), ":zero": N(0) },
+      ExpressionAttributeValues: { ":act": N(actual), ":est": N(hold.estimate), ":zero": N(0), ":now": N(Math.floor(Date.now() / 1000)) },
     });
   } catch (e) {
     if (!isConditionFail(e)) throw e; // no fast-gate row → nothing to debit (allowed path)

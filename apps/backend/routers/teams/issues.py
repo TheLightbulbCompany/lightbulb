@@ -7,6 +7,7 @@ boundary. No adapter synthesis here — issues are pure user data.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -24,6 +25,7 @@ from .schemas import AddIssueCommentBody, CreateIssueBody, PatchIssueBody
 
 router = APIRouter()
 _ctx = _agents._ctx
+logger = logging.getLogger(__name__)
 
 # Hard cap on attachment uploads at the BFF boundary. Upstream Paperclip
 # additionally enforces a per-company ``attachmentMaxBytes`` (default 10 MB,
@@ -241,16 +243,76 @@ async def mark_issue_unread(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
     )
 
 
+async def _enrich_comment_authors(ctx: TeamsContext, payload: Any) -> None:
+    """Stamp ``authorName`` / ``authorClerkUserId`` onto human-authored comment
+    rows in place.
+
+    Upstream comment rows carry only ``authorUserId`` — a Paperclip principal
+    id (Better Auth), which the frontend cannot join against the Clerk-keyed
+    ``/members`` roster. Mirror the activity feed's actor enrichment
+    (``feed._enrich_actor_names``): principal → Clerk id → Clerk identity,
+    each unique author resolved at most once. Best-effort — an unmapped
+    principal or failed Clerk lookup ships that row unstamped rather than
+    failing the request.
+    """
+    if isinstance(payload, list):
+        comments = payload
+    elif isinstance(payload, dict) and isinstance(payload.get("comments"), list):
+        comments = payload["comments"]
+    else:
+        return
+
+    author_ids: set[str] = set()
+    for row in comments:
+        if not isinstance(row, dict) or row.get("authorAgentId"):
+            continue
+        author_id = row.get("authorUserId")
+        if isinstance(author_id, str) and author_id:
+            author_ids.add(author_id)
+    if not author_ids:
+        return
+
+    principal_to_clerk = await _agents.build_principal_to_clerk(ctx)
+
+    identity_by_author: dict[str, dict] = {}
+    for author_id in author_ids:
+        clerk_user_id = principal_to_clerk.get(author_id)
+        if not clerk_user_id:
+            continue
+        try:
+            member = await _agents._resolve_member_identity(clerk_user_id)
+        except Exception:
+            logger.exception(
+                "issues.comments: clerk lookup failed for clerk_user_id=%s (paperclip principal=%s)",
+                clerk_user_id,
+                author_id,
+            )
+            continue
+        if member:
+            identity_by_author[author_id] = member
+
+    for row in comments:
+        if not isinstance(row, dict) or row.get("authorAgentId"):
+            continue
+        member = identity_by_author.get(row.get("authorUserId"))
+        if member:
+            row["authorName"] = member.get("name")
+            row["authorClerkUserId"] = member.get("userId")
+
+
 @router.get("/issues/{issue_id}/comments")
 async def list_issue_comments(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
-    """List comments on an issue.
+    """List comments on an issue, with human authors resolved to names.
 
-    Maps to upstream ``GET /api/issues/{id}/comments``.
+    Maps to upstream ``GET /api/issues/{id}/comments``; rows pass through
+    verbatim except for the ``_enrich_comment_authors`` stamp.
     """
-    return await _agents._admin().list_issue_comments(
+    payload = await _agents._admin().list_issue_comments(
         issue_id=issue_id,
         session_cookie=ctx.session_cookie,
     )
+    await _enrich_comment_authors(ctx, payload)
+    return payload
 
 
 @router.post("/issues/{issue_id}/comments")

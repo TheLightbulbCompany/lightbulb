@@ -109,6 +109,12 @@ export interface IssueComment {
   authorAgentId?: string | null;
   /** Display hint derived by callers from authorUserId/authorAgentId. */
   authorKind?: "user" | "agent" | null;
+  /** BFF-enriched display name for a human author (authorUserId is a
+   * Paperclip principal id the frontend can't resolve itself). */
+  authorName?: string | null;
+  /** BFF-enriched Clerk id of a human author — compare against the viewer's
+   * Clerk id to render "You". */
+  authorClerkUserId?: string | null;
 }
 
 /** Body for POST /teams/issues. Composer shape for NewIssueDialog.

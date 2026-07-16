@@ -339,6 +339,106 @@ def test_list_issue_comments(client, monkeypatch):
     )
 
 
+def test_list_issue_comments_enriches_human_authors(client, monkeypatch):
+    """Human-authored rows get ``authorName``/``authorClerkUserId`` stamped via
+    the principal→Clerk map; agent-authored rows are left untouched."""
+    admin = MagicMock()
+    admin.list_issue_comments = AsyncMock(
+        return_value=[
+            {"id": "cmt_1", "body": "hi", "authorUserId": "pcu_xyz"},
+            {"id": "cmt_2", "body": "yo", "authorAgentId": "agt_1", "authorUserId": None},
+        ]
+    )
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    principal_map = AsyncMock(return_value={"pcu_xyz": "u1"})
+    monkeypatch.setattr(agents_mod, "build_principal_to_clerk", principal_map)
+    monkeypatch.setattr(
+        agents_mod,
+        "_resolve_member_identity",
+        AsyncMock(
+            return_value={
+                "userId": "u1",
+                "name": "Ada Lovelace",
+                "email": "ada@example.com",
+                "imageUrl": None,
+            }
+        ),
+    )
+
+    r = client.get(
+        "/api/v1/teams/issues/iss_1/comments",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    rows = r.json()
+    assert rows[0]["authorName"] == "Ada Lovelace"
+    assert rows[0]["authorClerkUserId"] == "u1"
+    assert "authorName" not in rows[1]
+    assert "authorClerkUserId" not in rows[1]
+
+
+def test_list_issue_comments_enriches_envelope_shape(client, monkeypatch):
+    """Enrichment also reaches rows inside a ``{comments: [...]}`` envelope."""
+    admin = MagicMock()
+    admin.list_issue_comments = AsyncMock(
+        return_value={"comments": [{"id": "cmt_1", "body": "hi", "authorUserId": "pcu_xyz"}]}
+    )
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(agents_mod, "build_principal_to_clerk", AsyncMock(return_value={"pcu_xyz": "u1"}))
+    monkeypatch.setattr(
+        agents_mod,
+        "_resolve_member_identity",
+        AsyncMock(
+            return_value={
+                "userId": "u1",
+                "name": "Ada Lovelace",
+                "email": "ada@example.com",
+                "imageUrl": None,
+            }
+        ),
+    )
+
+    r = client.get(
+        "/api/v1/teams/issues/iss_1/comments",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    assert r.json()["comments"][0]["authorName"] == "Ada Lovelace"
+
+
+def test_list_issue_comments_enrichment_is_best_effort(client, monkeypatch):
+    """A failed Clerk lookup or unmapped principal ships the raw row rather
+    than failing the request."""
+    admin = MagicMock()
+    admin.list_issue_comments = AsyncMock(
+        return_value=[
+            {"id": "cmt_1", "body": "hi", "authorUserId": "pcu_xyz"},
+            {"id": "cmt_2", "body": "yo", "authorUserId": "pcu_unmapped"},
+        ]
+    )
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(agents_mod, "build_principal_to_clerk", AsyncMock(return_value={"pcu_xyz": "u1"}))
+    monkeypatch.setattr(
+        agents_mod,
+        "_resolve_member_identity",
+        AsyncMock(side_effect=RuntimeError("clerk down")),
+    )
+
+    r = client.get(
+        "/api/v1/teams/issues/iss_1/comments",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    rows = r.json()
+    assert all("authorName" not in row for row in rows)
+
+
 def test_add_issue_comment(client, monkeypatch):
     """POST `/teams/issues/{id}/comments` with whitelisted body."""
     admin = MagicMock()

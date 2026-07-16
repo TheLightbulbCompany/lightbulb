@@ -113,8 +113,15 @@ METRONOME_INGEST_URL_DEFAULT = "https://api.metronome.com/v1/ingest"
 # Free-tier daily cost cap. Lockstep with core/services/trial_cap.CAP_MICROCENTS
 # (the READ side — gates chat with a friendly message). This module is the
 # WRITE side and the only enforcement that actually stops spend.
-# 1 dollar = 100 cents = 1,000,000 microcents, so $3.00/day = 3,000,000.
-CAP_MICROCENTS = 3_000_000
+# 1 dollar = 100 cents = 1,000,000 microcents.
+#
+# Advertised cap: $3.00/day; enforced at $2.60. The invocation log this meter
+# rides is delivered ~30-90s behind the calls, and the IAM revoke cannot cancel
+# an already-admitted streaming response — at full agentic burn (~$0.30/min
+# measured) that lag overshoots whatever threshold fires the kill by
+# ~$0.30-0.40. Enforcing early lands the realized spend UNDER the advertised
+# $3 instead of past it.
+CAP_MICROCENTS = 2_600_000
 
 # Dedup rows MUST outlive the longest window in which a record can be
 # redelivered, which is the DLQ's own retention: bedrock-meter-stack sets
@@ -282,6 +289,55 @@ def _emit_metric(name, **properties):
         logger.exception("meter: failed to emit metric %s", name)
 
 
+def _redact_log_event(log_event):
+    """Copy of the CW log event with the Bedrock record's request/response
+    BODIES stripped from ``message``, keeping everything a redrive needs
+    (top-level token/cache counts + the output ``usage`` block).
+
+    Invocation bodies carry whatever the caller had in context — live records
+    were observed containing a tenant's Paperclip API key and gateway JWT in
+    plaintext — and the DLQ retains messages for 14 days, far past the log
+    group's own 3-day retention, so an unredacted DLQ copy would outlive the
+    mitigation. A ``message`` that does not parse to a dict is replaced with
+    a length+digest placeholder: a TRUNCATED invocation record fails parsing
+    while still carrying body fragments, so "unparseable" cannot be assumed
+    body-free. Nothing is lost that the DLQ could use — an unparseable record
+    re-fails parsing on any redrive, and the log group holds the original for
+    its 3-day debug window (the parse_failed alarm fires the same day).
+    """
+    raw = log_event.get("message", "")
+    try:
+        record = json.loads(raw)
+    except (ValueError, TypeError):
+        record = None
+    if not isinstance(record, dict):
+        placeholder = dict(log_event)
+        digest = hashlib.sha256(str(raw).encode("utf-8", "replace")).hexdigest()[:16]
+        placeholder["message"] = f"<unparseable message redacted: {len(str(raw))} chars, sha256:{digest}>"
+        return placeholder
+    changed = False
+    inp = record.get("input")
+    if isinstance(inp, dict) and "inputBodyJson" in inp:
+        inp["inputBodyJson"] = "<redacted>"
+        changed = True
+    out = record.get("output")
+    if isinstance(out, dict) and "outputBodyJson" in out:
+        # Redact by KEY PRESENCE, like the input side — a non-dict body (a
+        # string- or array-encoded response) is still a body and must not
+        # persist. Keep ONLY the usage block when there is one: it is the
+        # documented fallback path for the token/cache counts (_extract),
+        # and it contains no content.
+        body = out["outputBodyJson"]
+        usage = body.get("usage") if isinstance(body, dict) else None
+        out["outputBodyJson"] = {"usage": usage} if isinstance(usage, dict) else "<redacted>"
+        changed = True
+    if not changed:
+        return log_event
+    redacted = dict(log_event)
+    redacted["message"] = json.dumps(record)
+    return redacted
+
+
 def _send_to_dlq(log_event, reason):
     """Push a failed raw log event to the SQS DLQ so it is never silently lost.
 
@@ -290,6 +346,10 @@ def _send_to_dlq(log_event, reason):
     explicitly. Best-effort: if the DLQ send itself fails we log + re-raise so
     the whole batch fails (CW Logs retries) rather than dropping the record.
     Redriving the queue is safe: Metronome dedups on transaction_id.
+
+    The stored copy is REDACTED (see _redact_log_event): bodies never sit in
+    the 14-day queue, and the redacted record still carries every field a
+    redrive needs to meter it.
     """
     queue_url = os.environ.get("DLQ_URL", "")
     if not queue_url:
@@ -297,7 +357,7 @@ def _send_to_dlq(log_event, reason):
         raise RuntimeError(f"meter transport failure with no DLQ: {reason}")
     _sqs().send_message(
         QueueUrl=queue_url,
-        MessageBody=json.dumps({"reason": reason, "log_event": log_event}),
+        MessageBody=json.dumps({"reason": reason, "log_event": _redact_log_event(log_event)}),
     )
 
 
@@ -661,12 +721,33 @@ def _stop_owner_service(owner_id):
 
 def _stamp_bedrock_revoked(owner_id):
     """Mark the containers row so the backend can see the revoke — the daily
-    restore reads this flag to re-attach the policy when the day rolls over."""
+    restore reads this flag to re-attach the policy when the day rolls over.
+
+    Also flips the row to status="stopped" / substatus="trial_daily_cap",
+    mirroring what the backend's own stop path writes after an ECS stop.
+    Every downstream surface keys on status: the status poll's retryable
+    branch renders the 402 daily-limit card (with the Upgrade CTA) off
+    "stopped", and the day-rollover auto-restart fires only on "stopped". A
+    row left "running" after the kill shows the owner an indefinite
+    cold-start stepper instead of the limit card — hiding the upgrade path
+    from exactly the user most likely to convert — and stays wedged even
+    after the counter resets, because nothing restarts a "running" row.
+    """
+    now = datetime.now(timezone.utc).isoformat()
     _ddb().update_item(
         TableName=os.environ["CONTAINERS_TABLE"],
         Key={"owner_id": {"S": owner_id}},
-        UpdateExpression="SET bedrock_revoked = :t",
-        ExpressionAttributeValues={":t": {"BOOL": True}},
+        UpdateExpression=(
+            "SET bedrock_revoked = :t, #s = :stopped, substatus = :sub, "
+            "bedrock_revoked_at = :now, updated_at = :now"
+        ),
+        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues={
+            ":t": {"BOOL": True},
+            ":stopped": {"S": "stopped"},
+            ":sub": {"S": "trial_daily_cap"},
+            ":now": {"S": now},
+        },
         ConditionExpression="attribute_exists(owner_id)",
     )
 

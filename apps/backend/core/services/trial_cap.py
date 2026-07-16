@@ -29,7 +29,16 @@ from datetime import datetime, timezone
 
 from core.repositories import billing_repo
 
-CAP_MICROCENTS = 3_000_000  # $3.00/day
+# Advertised cap: $3.00/day. ENFORCED at $2.60: the meter counts from Bedrock
+# invocation-log delivery (~30-90s behind the calls) and an IAM revoke cannot
+# cancel an already-admitted streaming response, so a full-burn agent overshoots
+# whatever threshold fires the kill by ~$0.30-0.40 (measured: a $3.00 threshold
+# realized $3.39). Enforcing early puts the overshoot INSIDE the advertised $3
+# instead of past it. Lockstep with the WRITE side's copy in
+# apps/infra/lambda/bedrock-usage-meter/index.py — the kill and the restore
+# eligibility read the same number; moving only one of them makes the restore
+# path un-revoke a freshly killed owner on the next poll.
+CAP_MICROCENTS = 2_600_000
 
 # The two ways a free-tier owner runs out of runway. Returned by
 # ``trial_block_reason`` and mapped to the matching blocked-gate payload by

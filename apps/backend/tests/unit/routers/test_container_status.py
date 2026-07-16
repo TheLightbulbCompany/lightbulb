@@ -450,6 +450,87 @@ class TestContainerStatusGate:
         assert result["status"] == "running"
 
     @pytest.mark.asyncio
+    async def test_revoked_zombie_running_row_returns_the_limit_card_not_a_spinner(self):
+        """The meter Lambda's kill stamps status="stopped", but that write is
+        one non-atomic step of a best-effort kill. If it fails (or a racing
+        writer clobbers it) the row stays "running" with no live task — every
+        status-keyed branch below falls through and the poll returns
+        phase="starting" forever: an indefinite cold-start stepper with NO
+        Upgrade path, for exactly the owner most likely to convert. The
+        bedrock_revoked flag itself must therefore gate, whatever the row's
+        status says."""
+        from core.services import trial_cap
+        from routers.container import container_status
+
+        fake_ecs = AsyncMock()
+        fake_ecs.resolve_running_container = AsyncMock(
+            return_value=(
+                {
+                    "service_name": "openclaw-zombie",
+                    "status": "running",
+                    "substatus": "gateway_healthy",
+                    "bedrock_revoked": True,
+                },
+                None,
+            )
+        )
+
+        with (
+            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.resolve_owner_id", return_value="user_x"),
+            # Restore declines (still capped) and leaves the flag set.
+            patch("routers.container.maybe_restore_trial_bedrock", new=AsyncMock()),
+            patch(
+                "core.services.trial_cap.trial_block_reason",
+                new=AsyncMock(return_value=trial_cap.DAILY_CAP),
+            ),
+            pytest.raises(HTTPException) as exc,
+        ):
+            await container_status(auth=_personal_auth())
+
+        assert exc.value.status_code == 402
+        assert exc.value.detail["blocked"]["code"] == "trial_daily_cap"
+
+    @pytest.mark.asyncio
+    async def test_revoked_paid_owner_is_not_gated_by_the_trial_check(self):
+        """Paid owners carry the same bedrock_revoked flag (Metronome
+        low-balance enforcement) — their trial reason is None, so the revoked
+        gate must fall through and the response stay the normal row (their
+        restore path is metronome_gate's, not the trial one)."""
+        from routers.container import container_status
+
+        fake_ecs = AsyncMock()
+        fake_ecs.resolve_running_container = AsyncMock(
+            return_value=(
+                {
+                    "service_name": "openclaw-paid",
+                    "status": "running",
+                    "substatus": "gateway_healthy",
+                    "bedrock_revoked": True,
+                },
+                "10.0.1.5",
+            )
+        )
+
+        with (
+            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.resolve_owner_id", return_value="user_x"),
+            patch("routers.container.maybe_restore_trial_bedrock", new=AsyncMock()),
+            patch(
+                "core.services.trial_cap.trial_block_reason",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "routers.container.get_gateway_pool",
+                return_value=SimpleNamespace(is_user_connected=lambda _u: True),
+            ),
+        ):
+            result = await container_status(auth=_personal_auth())
+
+        assert result["service_name"] == "openclaw-paid"
+        assert result["status"] == "running"
+
+    @pytest.mark.asyncio
     async def test_admin_signup_required_returns_404_for_picker(self):
         """Router mapping: a signup_required gate for an admin owner → 404, so
         the frontend renders the ProviderPicker (the checkout entry point)

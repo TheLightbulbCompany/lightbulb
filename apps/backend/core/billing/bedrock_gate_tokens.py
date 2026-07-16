@@ -33,6 +33,7 @@ import hashlib
 import logging
 import os
 import secrets
+import time
 
 import boto3
 
@@ -41,6 +42,14 @@ from core.dynamodb import run_in_thread, utc_now_iso
 from core.repositories import container_repo
 
 logger = logging.getLogger(__name__)
+
+# On rotation the PRIOR token row is not deleted outright — the currently-running
+# ECS task still carries the old bearer token in its env and keeps serving during
+# the reprovision's deploy window. Deleting immediately would 401 that live task
+# until the replacement is up. Instead the old row gets a short TTL so it stays
+# valid through the roll, then DynamoDB auto-reaps it. One hour comfortably
+# outlives any task roll while bounding how long a superseded token lingers.
+_ROTATION_GRACE_SECONDS = 3600
 
 
 def _tokens_table_name() -> str:
@@ -78,8 +87,9 @@ async def mint_gate_token(owner_id: str, aip_arns: dict[str, str]) -> str:
       ``ecs_manager`` — mirroring how ``bedrock_role_arn`` / ``bedrock_aip_arns``
       are persisted.)
     - ROTATION: if the containers row already pointed at a prior hash, that old
-      token row is DELETED so exactly one live token exists per owner (precedent:
-      the ``gateway_token`` rotate-on-reprovision posture).
+      token row is given a short TTL (``_ROTATION_GRACE_SECONDS``) rather than
+      deleted outright — the still-running ECS task keeps its old token valid
+      through the reprovision's deploy window, then DynamoDB reaps the row.
 
     Only the hash is stored anywhere; the returned plaintext is the sole copy.
     """
@@ -106,7 +116,15 @@ async def mint_gate_token(owner_id: str, aip_arns: dict[str, str]) -> str:
     await container_repo.update_fields(owner_id, {"bedrock_gate_token_hash": token_hash})
 
     if prior_hash and prior_hash != token_hash:
-        await run_in_thread(table.delete_item, Key={"token_hash": prior_hash})
+        # Grace-expire the superseded token instead of deleting it now, so the
+        # still-running task it belongs to keeps working until the roll finishes.
+        await run_in_thread(
+            table.update_item,
+            Key={"token_hash": prior_hash},
+            UpdateExpression="SET #ttl = :exp",
+            ExpressionAttributeNames={"#ttl": "ttl"},
+            ExpressionAttributeValues={":exp": int(time.time()) + _ROTATION_GRACE_SECONDS},
+        )
 
     return token
 

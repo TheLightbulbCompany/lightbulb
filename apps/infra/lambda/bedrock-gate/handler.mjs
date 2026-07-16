@@ -2,16 +2,19 @@
 // (RESPONSE_STREAM Function URL) and the real DynamoDB client. All logic and
 // every seam is in core.mjs / the modules it imports, which unit-test without
 // the awslambda global.
-import { DynamoDBClient, GetItemCommand, PutItemCommand, UpdateItemCommand } from "@aws-sdk/client-dynamodb";
+import {
+  DynamoDBClient, GetItemCommand, PutItemCommand, UpdateItemCommand, TransactWriteItemsCommand,
+} from "@aws-sdk/client-dynamodb";
 import { handleRequest } from "./core.mjs";
 
 const client = new DynamoDBClient({});
 // Thin promise-returning facade so modules stay SDK-command-free and testable
-// (unit tests inject a fake with the same three methods).
+// (unit tests inject a fake with the same methods).
 const realDdb = {
   getItem: (p) => client.send(new GetItemCommand(p)),
   putItem: (p) => client.send(new PutItemCommand(p)),
   updateItem: (p) => client.send(new UpdateItemCommand(p)),
+  transactWriteItems: (p) => client.send(new TransactWriteItemsCommand(p)),
 };
 
 const ENV = {

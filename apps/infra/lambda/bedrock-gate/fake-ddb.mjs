@@ -110,5 +110,46 @@ export function makeFakeDdb(seed = {}) {
       store[TableName][k] = item;
       return {};
     },
+    // Atomic: evaluate ALL conditions first; if any fails, throw
+    // TransactionCanceledException with CancellationReasons and mutate nothing;
+    // otherwise apply every Put/Update. Mirrors DynamoDB TransactWriteItems for
+    // the shapes ledger.mjs emits (a conditional Put + a nested-map Update).
+    async transactWriteItems({ TransactItems }) {
+      const reasons = [];
+      let anyFail = false;
+      for (const ti of TransactItems) {
+        const op = ti.Put || ti.Update;
+        const table = op.TableName;
+        const key = ti.Put
+          ? (op.Item.request_id?.S ?? op.Item.token_hash?.S ?? op.Item.owner_id?.S)
+          : keyOf(op.Key);
+        const existing = store[table]?.[key];
+        const ok = !op.ConditionExpression || evalCondition(existing || {}, op.ConditionExpression, op.ExpressionAttributeNames, op.ExpressionAttributeValues);
+        reasons.push(ok ? { Code: "None" } : { Code: "ConditionalCheckFailed" });
+        if (!ok) anyFail = true;
+      }
+      if (anyFail) {
+        const e = new Error("Transaction cancelled");
+        e.name = "TransactionCanceledException";
+        e.CancellationReasons = reasons;
+        throw e;
+      }
+      for (const ti of TransactItems) {
+        if (ti.Put) {
+          const p = ti.Put;
+          store[p.TableName] ||= {};
+          const key = p.Item.request_id?.S ?? p.Item.token_hash?.S ?? p.Item.owner_id?.S;
+          store[p.TableName][key] = JSON.parse(JSON.stringify(p.Item));
+        } else {
+          const u = ti.Update;
+          store[u.TableName] ||= {};
+          const k = keyOf(u.Key);
+          const item = store[u.TableName][k] || { ...u.Key };
+          applyUpdate(item, u.UpdateExpression, u.ExpressionAttributeNames, u.ExpressionAttributeValues);
+          store[u.TableName][k] = item;
+        }
+      }
+      return {};
+    },
   };
 }

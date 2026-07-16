@@ -154,6 +154,22 @@ test("settle trial: duplicate requestId (meter already counted) releases hold, n
   assert.equal(readMapN(b.trial_daily_spend_microcents)[TODAY] || 0, 0); // NOT counted
   assert.equal(readMapN(b.reserved_microcents)[TODAY], 0); // but hold released
 });
+test("settle trial: transient transaction failure claims NOTHING (meter can still count it)", async () => {
+  // The atomicity guarantee: if the claim would land but the spend write fails,
+  // the meter would skip the record as already-claimed → permanent undercount.
+  // A TransactWriteItems makes it all-or-nothing: on a transient failure the
+  // requestId is NOT claimed, so the meter auditor will count it.
+  const ddb = makeFakeDdb();
+  trialBilling(ddb._store, "u", { reserved: { [TODAY]: 300000 } });
+  const realTx = ddb.transactWriteItems.bind(ddb);
+  ddb.transactWriteItems = async () => { throw new Error("ProvisionedThroughputExceededException"); };
+  const hold = { ownerId: "u", date: TODAY, estimate: 300000, plan: "trial" };
+  await assert.rejects(settle({ ddb, env: ENV, hold, tier: "sonnet", requestId: "req-x", usage: { inputTokens: 1_000_000 } }));
+  assert.equal(ddb._store.dd?.["req-x"], undefined); // NOT claimed → meter will count it
+  assert.equal(readMapN(billingRow(ddb, "u").trial_daily_spend_microcents)[TODAY] || 0, 0); // NOT counted
+  void realTx;
+});
+
 test("settle: no usage (abort) → hold released, nothing counted", async () => {
   const ddb = makeFakeDdb();
   trialBilling(ddb._store, "u", { reserved: { [TODAY]: 300000 } });

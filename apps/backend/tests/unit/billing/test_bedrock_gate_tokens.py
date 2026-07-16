@@ -6,6 +6,7 @@ on, rotation deleting the superseded token row, and the deny kill-switch toggle.
 """
 
 import hashlib
+import time
 
 import boto3
 import pytest
@@ -107,7 +108,7 @@ class TestMint:
         assert crow["bedrock_gate_token_hash"]["S"] == mod.hash_token(token)
 
     @pytest.mark.asyncio
-    async def test_rotation_deletes_the_prior_token_row(self, gate_tables):
+    async def test_rotation_grace_expires_the_prior_token_row(self, gate_tables):
         old_hash = "deadbeef" * 8
         _put_container_row(gate_tables, "org_abc", bedrock_gate_token_hash=old_hash)
         gate_tables.put_item(
@@ -117,10 +118,14 @@ class TestMint:
 
         token = await mod.mint_gate_token("org_abc", _AIPS)
 
-        hashes = {r["token_hash"]["S"] for r in _token_rows(gate_tables)}
-        # Old row gone, exactly the new one remains.
-        assert old_hash not in hashes
-        assert hashes == {mod.hash_token(token)}
+        rows = {r["token_hash"]["S"]: r for r in _token_rows(gate_tables)}
+        # Both rows still exist (the running task keeps its old token through the
+        # roll) — but the OLD row now carries a near-future ttl and the NEW one
+        # does not, so DynamoDB reaps only the superseded token.
+        assert old_hash in rows and mod.hash_token(token) in rows
+        assert "ttl" in rows[old_hash]
+        assert int(rows[old_hash]["ttl"]["N"]) > int(time.time())
+        assert "ttl" not in rows[mod.hash_token(token)]
 
     @pytest.mark.asyncio
     async def test_returned_tokens_are_unique_per_mint(self, gate_tables):
@@ -128,8 +133,11 @@ class TestMint:
         t1 = await mod.mint_gate_token("org_abc", _AIPS)
         t2 = await mod.mint_gate_token("org_abc", _AIPS)
         assert t1 != t2
-        # Rotation keeps exactly one live token per owner.
-        assert len(_token_rows(gate_tables)) == 1
+        # Rotation keeps exactly ONE non-expiring (current) token per owner; the
+        # prior one lingers with a ttl until DynamoDB reaps it.
+        live = [r for r in _token_rows(gate_tables) if "ttl" not in r]
+        assert len(live) == 1
+        assert live[0]["token_hash"]["S"] == mod.hash_token(t2)
 
 
 class TestDeny:

@@ -128,6 +128,10 @@ export class BedrockGateStack extends cdk.Stack {
         billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
         removalPolicy: cdk.RemovalPolicy.RETAIN,
         pointInTimeRecovery: true,
+        // On rotation the superseded token row is grace-expired (a short ttl)
+        // rather than deleted, so the still-running task keeps serving through a
+        // reprovision roll; DynamoDB reaps it after. Current tokens carry no ttl.
+        timeToLiveAttribute: "ttl",
       });
 
       // The function name is stable and env-specific: it also becomes the

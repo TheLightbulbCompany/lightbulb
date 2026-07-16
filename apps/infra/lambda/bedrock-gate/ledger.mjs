@@ -95,40 +95,60 @@ export async function trialRelease(ddb, env, hold) {
   });
 }
 
+function isTransactionConditionFail(e) {
+  if (e?.name === "TransactionCanceledException") {
+    const reasons = e.CancellationReasons || [];
+    return reasons.some((r) => r?.Code === "ConditionalCheckFailed");
+  }
+  return isConditionFail(e);
+}
+
 /**
- * Settle a trial invocation: claim the requestId (dedup, shared with the meter),
- * and on a fresh claim ADD `actual` to the authoritative spent counter AND
- * release the hold, in ONE UpdateItem. If the claim loses (meter counted it —
- * retries only), release the hold but do NOT add spend.
+ * Settle a trial invocation ATOMICALLY: claim the requestId (dedup, shared with
+ * the meter) AND add `actual` to the authoritative spent counter AND release the
+ * hold, in ONE TransactWriteItems. Atomicity is load-bearing: if the claim
+ * landed but the spend write didn't, the meter auditor would see the record as
+ * already-claimed and skip it — permanently undercounting the invocation. With
+ * the transaction, either the claim+spend both land ("counted"), or nothing
+ * does. A condition failure means the meter already claimed it (retries only) →
+ * release the hold, no double spend ("dup"). A transient transaction failure
+ * writes nothing → the caller's finally releases the hold and the meter counts
+ * it (its claim will succeed).
  * @returns {"counted"|"dup"}
  */
 export async function trialSettle(ddb, env, hold, requestId, actual, ttlSeconds) {
-  let claimed = false;
-  try {
-    await ddb.putItem({
-      TableName: env.INVOCATION_DEDUP_TABLE,
-      Item: { request_id: { S: requestId }, source: { S: "gateway" }, ttl: N(Math.floor(Date.now() / 1000) + ttlSeconds) },
-      ConditionExpression: "attribute_not_exists(request_id)",
-    });
-    claimed = true;
-  } catch (e) {
-    if (!isConditionFail(e)) throw e;
-  }
+  // Nested-map ADD needs the parent maps present; ensure them outside the
+  // transaction (idempotent, guarded — never clobbers existing values).
   await ensureTrialMaps(ddb, env.BILLING_TABLE, hold.ownerId);
-  if (claimed) {
-    await ddb.updateItem({
-      TableName: env.BILLING_TABLE,
-      Key: { owner_id: { S: hold.ownerId } },
-      UpdateExpression:
-        "SET trial_daily_spend_microcents.#d = if_not_exists(trial_daily_spend_microcents.#d, :zero) + :act, " +
-        "reserved_microcents.#d = if_not_exists(reserved_microcents.#d, :zero) - :est",
-      ExpressionAttributeNames: { "#d": hold.date },
-      ExpressionAttributeValues: { ":act": N(actual), ":est": N(hold.estimate), ":zero": N(0) },
+  try {
+    await ddb.transactWriteItems({
+      TransactItems: [
+        {
+          Put: {
+            TableName: env.INVOCATION_DEDUP_TABLE,
+            Item: { request_id: { S: requestId }, source: { S: "gateway" }, ttl: N(Math.floor(Date.now() / 1000) + ttlSeconds) },
+            ConditionExpression: "attribute_not_exists(request_id)",
+          },
+        },
+        {
+          Update: {
+            TableName: env.BILLING_TABLE,
+            Key: { owner_id: { S: hold.ownerId } },
+            UpdateExpression:
+              "SET trial_daily_spend_microcents.#d = if_not_exists(trial_daily_spend_microcents.#d, :zero) + :act, " +
+              "reserved_microcents.#d = if_not_exists(reserved_microcents.#d, :zero) - :est",
+            ExpressionAttributeNames: { "#d": hold.date },
+            ExpressionAttributeValues: { ":act": N(actual), ":est": N(hold.estimate), ":zero": N(0) },
+          },
+        },
+      ],
     });
     return "counted";
+  } catch (e) {
+    if (!isTransactionConditionFail(e)) throw e; // transient → nothing written; finally releases; meter counts
+    await trialRelease(ddb, env, hold); // meter already owns the spend; just free the hold
+    return "dup";
   }
-  await trialRelease(ddb, env, hold); // meter owns the spend; just free the hold
-  return "dup";
 }
 
 // ---- paid: scalar balance on the fast-gate row ---------------------------

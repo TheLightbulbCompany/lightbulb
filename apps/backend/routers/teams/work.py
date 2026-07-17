@@ -136,14 +136,16 @@ async def patch_routine(
     # it on re-activate. Billing survives a full reprovision (the container +
     # Paperclip company are wiped, the billing row is not), so this flag is what
     # keeps the owner's opt-out honored after a company wipe — the arm step
-    # reads it on the fresh company and declines to re-seed.
+    # reads it on the fresh company and declines to re-seed. A full reprovision
+    # DELETES the routine, so create_enabled_schedule_routine's title-skip
+    # backstop cannot fire on the fresh company; the durable flag is then the
+    # ONLY thing between the owner's opt-out and a silent re-arm. That is why the
+    # opt-OUT write below is durable (propagated), not best-effort.
     #
-    # Resolve the routine's identity BEFORE the mutation (its title is the
-    # identity; a combined status+rename PATCH would hide it afterward) but write
-    # the durable flag only AFTER the upstream PATCH is confirmed. Writing the
-    # flag first would leave the billing row disagreeing with Paperclip if
-    # patch_routine then failed — e.g. a cleared opt-out while the routine stayed
-    # paused, which a later reprovision would wrongly re-arm.
+    # Resolve identity BEFORE the mutation (the title is the identity; a combined
+    # status+rename PATCH would hide it afterward). The pause is attempted FIRST
+    # so it always takes effect upstream even if the billing write then fails —
+    # the owner can always stop the loop; only persisting the preference retries.
     is_nightly = False
     if body.status in {"paused", "archived", "active"}:
         is_nightly = await _is_nightly_ceo_routine(ctx, routine_id)
@@ -154,17 +156,22 @@ async def patch_routine(
         session_cookie=ctx.session_cookie,
     )
 
-    # Best-effort: a flag-write failure must not undo a succeeded PATCH (the
-    # title-skip in create_enabled_schedule_routine is the backstop — it never
-    # re-enables an existing paused trigger).
     if is_nightly:
-        try:
-            if body.status in {"paused", "archived"}:
-                await billing_repo.set_nightly_ceo_opted_out(ctx.owner_id, True)
-            elif body.status == "active":
+        if body.status in {"paused", "archived"}:
+            # Opt-OUT is durable, NOT best-effort. Swallowing a failure would
+            # return success with the flag unset and let a later reprovision
+            # re-arm the loop the owner just turned off. Propagating makes the
+            # caller retry; the pause already took effect upstream and the write
+            # is idempotent, so a retry only re-attempts the flag.
+            await billing_repo.set_nightly_ceo_opted_out(ctx.owner_id, True)
+        elif body.status == "active":
+            # Opt-IN clear stays best-effort: a failed clear leaves opt-out True,
+            # which only ever PREVENTS a re-arm (the safe direction), so it must
+            # never fail an otherwise-successful re-activate.
+            try:
                 await billing_repo.set_nightly_ceo_opted_out(ctx.owner_id, False)
-        except Exception:  # noqa: BLE001 — opt-out persistence is best-effort
-            logger.warning("nightly-CEO opt-out persistence failed for owner=%s", ctx.owner_id, exc_info=True)
+            except Exception:  # noqa: BLE001 — opt-in clear is best-effort
+                logger.warning("nightly-CEO opt-in clear failed for owner=%s", ctx.owner_id, exc_info=True)
 
     return result
 
@@ -178,20 +185,24 @@ async def delete_routine(routine_id: str, ctx: TeamsContext = Depends(_ctx)):
     alongside pause), so persist the durable ``nightly_ceo_opted_out`` flag.
     Without it, a later full reprovision — which changes the company_id and so
     invalidates the arm cache — would silently re-create the routine the owner
-    explicitly deleted. Identity is read BEFORE the delete (the routine is gone
-    afterward); the flag is written only AFTER the delete succeeds; best-effort
-    so a flag failure never breaks the DELETE.
+    explicitly deleted. Identity is read BEFORE the delete, and the durable flag
+    is written BEFORE the delete too: a delete is destructive, so a write-after
+    design could not heal on retry — ``_is_nightly_ceo_routine`` can no longer
+    identify the (now-gone) routine, so a swallowed billing failure would drop
+    the opt-out permanently. Writing first means a flag failure aborts before
+    the routine vanishes (retry stays possible), and a flag set for a routine
+    whose delete then fails only ever errs toward NOT re-arming.
     """
     is_nightly = await _is_nightly_ceo_routine(ctx, routine_id)
+    if is_nightly:
+        # Durable opt-out, written BEFORE the destructive delete and NOT
+        # best-effort (see docstring). A silent failure would let a later
+        # reprovision re-create the routine the owner deleted.
+        await billing_repo.set_nightly_ceo_opted_out(ctx.owner_id, True)
     result = await _agents._admin().delete_routine(
         routine_id=routine_id,
         session_cookie=ctx.session_cookie,
     )
-    if is_nightly:
-        try:
-            await billing_repo.set_nightly_ceo_opted_out(ctx.owner_id, True)
-        except Exception:  # noqa: BLE001 — opt-out persistence is best-effort
-            logger.warning("nightly-CEO opt-out set failed on delete for owner=%s", ctx.owner_id, exc_info=True)
     return result
 
 

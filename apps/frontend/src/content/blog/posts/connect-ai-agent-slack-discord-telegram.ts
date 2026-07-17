@@ -38,7 +38,7 @@ Do this by hand and you're maintaining webhook servers, token storage, and recon
 
 A few things reliably bite people wiring agents into channels:
 
-- **Token security.** Bot tokens are credentials. They belong encrypted at rest and out of source control. Treat a leaked bot token like a leaked password.
+- **Token security.** As a general rule, treat bot tokens like passwords: keep them out of source control and screenshots, and rotate immediately if one leaks.
 - **Over-broad permissions.** The most common mistake. Scope the bot to the channels and actions it actually needs.
 - **Message loops.** An agent that reacts to its own messages can spiral. The routing layer needs to ignore the bot's own output.
 - **Reprovision wipes.** If your platform rebuilds the agent's container, naive setups lose the channel wiring. You want channel bindings stored as durable state, not baked into an ephemeral runtime.

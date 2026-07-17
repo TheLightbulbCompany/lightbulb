@@ -23,6 +23,7 @@ export default function robots(): MetadataRoute.Robots {
         "/marketplace/dashboard",
         "/marketplace/payouts",
         "/marketplace/deploy-success",
+        "/marketplace/listing/*/manage",
       ],
     },
     sitemap: `${SITE_URL}/sitemap.xml`,

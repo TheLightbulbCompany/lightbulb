@@ -298,11 +298,31 @@ async def create_enabled_schedule_routine(
         )
         return None
 
-    await admin.create_routine_trigger(
-        session_cookie=session_cookie,
-        routine_id=routine_id,
-        body=build_enabled_trigger_body(cron, timezone=timezone),
-    )
+    try:
+        await admin.create_routine_trigger(
+            session_cookie=session_cookie,
+            routine_id=routine_id,
+            body=build_enabled_trigger_body(cron, timezone=timezone),
+        )
+    except Exception:
+        # The routine now exists but has NO trigger. If we left it, the next
+        # arm retry would title-skip onto this trigger-less routine (title-skip
+        # never reconciles triggers) and treat the skip as success — leaving the
+        # owner durably "armed" with a routine that can never fire. Compensate
+        # by deleting the trigger-less routine so a retry starts from a clean
+        # slate and recreates routine + trigger together. Best-effort cleanup;
+        # re-raise the original failure so the caller releases the arm claim.
+        try:
+            await admin.delete_routine(routine_id=routine_id, session_cookie=session_cookie)
+        except Exception:
+            logger.warning(
+                "agent_routine_provisioning: failed to clean up trigger-less routine id=%s title=%r agent=%s",
+                routine_id,
+                title,
+                agent_id,
+                exc_info=True,
+            )
+        raise
     logger.info(
         "agent_routine_provisioning: created ENABLED routine id=%s title=%r cron=%r agent=%s company=%s",
         routine_id,

@@ -408,3 +408,103 @@ async def test_set_stripe_customer_id_requires_existing_row(dynamodb_table):
     with pytest.raises(ClientError):
         await billing_repo.set_stripe_customer_id("ghost_owner", stripe_customer_id="cus_phantom")
     assert await billing_repo.get_by_owner_id("ghost_owner") is None
+
+
+# ---------------------------------------------------------------------------
+# Nightly CEO arm claim / opt-out conditional writes (issue #1273)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_try_claim_nightly_arm_first_claim_wins(dynamodb_table):
+    from core.repositories import billing_repo
+
+    await billing_repo.create_if_not_exists("arm_owner", "cus_arm")
+
+    won = await billing_repo.try_claim_nightly_arm("arm_owner", "co1")
+    assert won is True
+    row = await billing_repo.get_by_owner_id("arm_owner")
+    assert row["nightly_ceo_armed_company"] == "co1"
+
+
+@pytest.mark.asyncio
+async def test_try_claim_nightly_arm_same_company_is_rejected(dynamodb_table):
+    """The idempotency cache: a re-claim for the SAME company fails the
+    conditional write (``nightly_ceo_armed_company <> :c`` is false), so exactly
+    one caller ever seeds for a given company."""
+    from core.repositories import billing_repo
+
+    await billing_repo.create_if_not_exists("arm_same", "cus_same")
+    assert await billing_repo.try_claim_nightly_arm("arm_same", "co1") is True
+    assert await billing_repo.try_claim_nightly_arm("arm_same", "co1") is False
+
+
+@pytest.mark.asyncio
+async def test_try_claim_nightly_arm_different_company_reclaims(dynamodb_table):
+    """The reprovision re-arm branch: a DIFFERENT company_id satisfies the
+    ``<>`` clause, so a fresh company re-arms."""
+    from core.repositories import billing_repo
+
+    await billing_repo.create_if_not_exists("arm_diff", "cus_diff")
+    assert await billing_repo.try_claim_nightly_arm("arm_diff", "co1") is True
+    assert await billing_repo.try_claim_nightly_arm("arm_diff", "co2") is True
+    row = await billing_repo.get_by_owner_id("arm_diff")
+    assert row["nightly_ceo_armed_company"] == "co2"
+
+
+@pytest.mark.asyncio
+async def test_try_claim_nightly_arm_no_row_returns_false(dynamodb_table):
+    """No billing row (never a paid owner) → claim fails, no phantom row."""
+    from core.repositories import billing_repo
+
+    assert await billing_repo.try_claim_nightly_arm("no_row_owner", "co1") is False
+    assert await billing_repo.get_by_owner_id("no_row_owner") is None
+
+
+@pytest.mark.asyncio
+async def test_release_nightly_arm_removes_when_company_matches(dynamodb_table):
+    from core.repositories import billing_repo
+
+    await billing_repo.create_if_not_exists("rel_owner", "cus_rel")
+    await billing_repo.try_claim_nightly_arm("rel_owner", "co1")
+
+    await billing_repo.release_nightly_arm("rel_owner", "co1")
+    row = await billing_repo.get_by_owner_id("rel_owner")
+    assert "nightly_ceo_armed_company" not in row
+
+
+@pytest.mark.asyncio
+async def test_release_nightly_arm_noop_on_mismatched_company(dynamodb_table):
+    """Releasing a DIFFERENT company must not clobber a newer arm (a concurrent
+    successful arm for co2 survives a stale release for co1)."""
+    from core.repositories import billing_repo
+
+    await billing_repo.create_if_not_exists("rel_mismatch", "cus_relm")
+    await billing_repo.try_claim_nightly_arm("rel_mismatch", "co2")
+
+    await billing_repo.release_nightly_arm("rel_mismatch", "co1")
+    row = await billing_repo.get_by_owner_id("rel_mismatch")
+    assert row["nightly_ceo_armed_company"] == "co2"
+
+
+@pytest.mark.asyncio
+async def test_set_nightly_ceo_opted_out_sets_and_clears(dynamodb_table):
+    from core.repositories import billing_repo
+
+    await billing_repo.create_if_not_exists("opt_owner", "cus_opt")
+
+    await billing_repo.set_nightly_ceo_opted_out("opt_owner", True)
+    assert (await billing_repo.get_by_owner_id("opt_owner"))["nightly_ceo_opted_out"] is True
+
+    await billing_repo.set_nightly_ceo_opted_out("opt_owner", False)
+    assert (await billing_repo.get_by_owner_id("opt_owner"))["nightly_ceo_opted_out"] is False
+
+
+@pytest.mark.asyncio
+async def test_set_nightly_ceo_opted_out_no_row_is_silent_noop(dynamodb_table):
+    """A missing row (never a paid owner, so never armed) is a silent no-op —
+    no raise, no phantom row."""
+    from core.repositories import billing_repo
+
+    await billing_repo.set_nightly_ceo_opted_out("opt_ghost", True)
+    assert await billing_repo.get_by_owner_id("opt_ghost") is None

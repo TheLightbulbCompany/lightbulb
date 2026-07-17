@@ -34,6 +34,16 @@ describe("splitMarkdownBlocks", () => {
     expect(splitMarkdownBlocks("")).toEqual([""]);
   });
 
+  it("does NOT split when reference-style definitions are present", () => {
+    // [docs][d] and its definition resolve at document level — splitting
+    // them into separate ReactMarkdown parses would render literal text.
+    const refLink = "See [docs][d]\n\n[d]: https://example.com";
+    expect(splitMarkdownBlocks(refLink)).toEqual([refLink]);
+
+    const footnote = "A claim[^1]\n\n[^1]: the footnote";
+    expect(splitMarkdownBlocks(footnote)).toEqual([footnote]);
+  });
+
   it("is prefix-stable while streaming: earlier blocks never change as the tail grows", () => {
     const full = "para one\n\npara two\n\n```js\ncode()\n```\n\ntail text here";
     for (let cut = 1; cut < full.length; cut++) {

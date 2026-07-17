@@ -145,6 +145,16 @@ const MarkdownContent = React.memo(function MarkdownContent({
  * Exported for unit tests.
  */
 export function splitMarkdownBlocks(content: string): string[] {
+  // Reference-style definitions ([label]: url, [^1]: footnote) resolve at
+  // DOCUMENT level — a usage in one block with its definition in another
+  // would render as literal text. Rare in chat output (models emit inline
+  // links), so when any definition-shaped line exists, skip splitting
+  // entirely rather than track cross-block reference graphs. May false-
+  // positive on such a line inside a code fence — that only costs the
+  // optimization, never correctness.
+  if (/^ {0,3}\[[^\]\n]+\]:/m.test(content)) {
+    return [content];
+  }
   const blocks: string[] = [];
   let current: string[] = [];
   let inFence = false;

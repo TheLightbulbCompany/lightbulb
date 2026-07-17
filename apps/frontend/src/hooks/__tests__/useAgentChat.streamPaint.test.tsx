@@ -89,7 +89,7 @@ describe("useAgentChat — stream paint throttle + append deltas", () => {
   });
 
   it("paints the first chunk of a run immediately, throttles later chunks", () => {
-    const { result } = renderHook(() => useAgentChat(AGENT));
+    const { result } = renderHook(() => useAgentChat(AGENT, "main"));
 
     act(() => {
       emit({ type: "chunk", content: "He", agent_id: AGENT, runId: RUN } as ChatIncomingMessage);
@@ -110,7 +110,7 @@ describe("useAgentChat — stream paint throttle + append deltas", () => {
   });
 
   it("reconstructs append deltas into cumulative text", () => {
-    const { result } = renderHook(() => useAgentChat(AGENT));
+    const { result } = renderHook(() => useAgentChat(AGENT, "main"));
 
     act(() => {
       emit({ type: "chunk", content: "He", agent_id: AGENT, runId: RUN } as ChatIncomingMessage);
@@ -122,7 +122,7 @@ describe("useAgentChat — stream paint throttle + append deltas", () => {
   });
 
   it("a full-text (non-append) frame replaces the buffer — resync semantics", () => {
-    const { result } = renderHook(() => useAgentChat(AGENT));
+    const { result } = renderHook(() => useAgentChat(AGENT, "main"));
 
     act(() => {
       emit({ type: "chunk", content: "garbled", agent_id: AGENT, runId: RUN } as ChatIncomingMessage);
@@ -133,7 +133,7 @@ describe("useAgentChat — stream paint throttle + append deltas", () => {
   });
 
   it("done folds from refs — a pending unpainted delta is never lost", () => {
-    const { result } = renderHook(() => useAgentChat(AGENT));
+    const { result } = renderHook(() => useAgentChat(AGENT, "main"));
 
     act(() => {
       emit({ type: "chunk", content: "Answer", agent_id: AGENT, runId: RUN } as ChatIncomingMessage);
@@ -157,7 +157,7 @@ describe("useAgentChat — stream paint throttle + append deltas", () => {
   });
 
   it("accumulates thinking deltas into the live-thinking item", () => {
-    const { result } = renderHook(() => useAgentChat(AGENT));
+    const { result } = renderHook(() => useAgentChat(AGENT, "main"));
 
     act(() => {
       emit({ type: "thinking", content: "Let me ", agent_id: AGENT, runId: RUN } as ChatIncomingMessage);

@@ -834,6 +834,39 @@ def test_paid_bedrock_keeps_cron_heartbeat_channels_and_acp():
     assert cfg["acp"]["allowedAgents"] == ["claude"]
 
 
+def test_bedrock_trial_omits_skill_workshop_autocapture():
+    """Autonomous skill capture runs an extra model review over qualifying
+    turns — the $3 trial budget must fund the user's own messages, not
+    background self-improvement."""
+    assert "workshop" not in _trial_cfg()["skills"]
+
+
+@pytest.mark.parametrize(
+    "provider_choice,byo_provider",
+    [
+        ("chatgpt_oauth", None),
+        ("byo_key", "openai"),
+        ("byo_key", "anthropic"),
+        ("bedrock_claude", None),
+    ],
+)
+def test_paid_paths_enable_skill_workshop_autocapture(provider_choice, byo_provider):
+    """Every paid provider path gets autonomous Skill Workshop capture:
+    durable corrections and proven workflows become pending skill proposals
+    (reviewed in the Skill Proposals panel — the autonomous path never
+    self-applies)."""
+    kwargs = {
+        "user_id": "u_1",
+        "gateway_token": "test-token",
+        "provider_choice": provider_choice,
+        "aip_arns": _AIPS,
+    }
+    if byo_provider is not None:
+        kwargs["byo_provider"] = byo_provider
+    cfg = build_openclaw_config_dict(**kwargs)
+    assert cfg["skills"]["workshop"] == {"autonomous": {"enabled": True}}
+
+
 def test_paid_bedrock_three_tier_ladder_is_unchanged():
     """Byte-identical paid ladder: catalog order, primary/fallback, CEO premium
     pin, cheap-tier aux routing."""

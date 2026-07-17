@@ -1380,6 +1380,16 @@ def build_openclaw_config_dict(
             "install": {
                 "nodeManager": "npm",
             },
+            # Autonomous Skill Workshop capture: the agent turns durable
+            # corrections ("from now on...") and proven multi-step workflows
+            # into pending skill proposals, reviewed in the Skill Proposals
+            # panel. Never self-applies from the autonomous path; the
+            # in-chat path may apply under the upstream-default
+            # approvalPolicy "auto". Paid providers only — each capture is
+            # an extra model review over the turn, which a $3-cap trial
+            # budget must not fund. Schema-verified key on the pinned 7.1
+            # fork: skills.workshop.autonomous.enabled (zod-schema.ts).
+            **({} if is_bedrock_trial else {"workshop": {"autonomous": {"enabled": True}}}),
         },
         "hooks": {
             "internal": {

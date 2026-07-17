@@ -528,5 +528,12 @@ export class DatabaseStack extends cdk.Stack {
       value: this.paperclipDbCluster.clusterEndpoint.hostname,
       exportName: `isol8-${env}-paperclip-db-endpoint`,
     });
+
+    // Phase 1 of removing the dead OPS_CACHE_TABLE service-stack env var:
+    // CloudFormation cannot delete an export in the same deploy that drops
+    // its last import (producer stacks update before the service stack), so
+    // retain it for one deploy cycle. Delete this line after this has
+    // deployed to BOTH dev and prod.
+    this.exportValue(this.opsCacheTable.tableName);
   }
 }

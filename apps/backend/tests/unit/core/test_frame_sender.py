@@ -244,11 +244,15 @@ async def test_forget_connection_drops_queued_frames():
     api = BlockingApi()
     sender = FrameSender(api)
     sender.enqueue("c1", _chunk("a", "a"))
-    await _wait_for_calls(api, 1)
+    await _wait_for_calls(api, 1)  # worker is blocked mid-send of frame 1
     sender.enqueue("c1", _chunk("b", "ab"))
     sender.forget_connection("c1")
     api.gate.set()
     await sender.flush()
+    # flush() does not track the now-detached worker, so give it real time to
+    # (wrongly) drain the queued frame if forget_connection had left it in the
+    # deque — the worker must exit right after its in-flight send instead.
+    await asyncio.sleep(0.05)
     assert len(api.calls) == 1
 
 

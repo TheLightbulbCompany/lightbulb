@@ -241,7 +241,13 @@ class FrameSender:
 
     def forget_connection(self, conn_id: str) -> None:
         """Drop queued frames + continuity state for *conn_id* (external prune)."""
-        self._queues.pop(conn_id, None)
+        q = self._queues.pop(conn_id, None)
+        if q is not None:
+            # A worker blocked mid-send still holds this deque locally —
+            # popping the dict entry alone would let it keep draining every
+            # queued frame to a connection we already know is gone. Clearing
+            # the deque makes it exit right after its in-flight send.
+            q.frames.clear()
         self._stream_keys.pop(conn_id, None)
 
     async def flush(self) -> None:

@@ -73,3 +73,6 @@ apps/desktop/src-tauri/.sidecar-tmp/
 
 # Marketplace-agent source lives on the marketplace (S3 artifact + live EFS), not the repo.
 /agents/
+
+# Playwright MCP scratch
+.playwright-mcp/

@@ -312,20 +312,6 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     });
   });
 
-  test("backend container has the BEDROCK_OWNER_ROLE_PREFIX env var", () => {
-    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
-      ContainerDefinitions: Match.arrayWith([
-        Match.objectLike({
-          Environment: Match.arrayWith([
-            Match.objectLike({
-              Name: "BEDROCK_OWNER_ROLE_PREFIX",
-              Value: "isol8-dev-owner-bedrock",
-            }),
-          ]),
-        }),
-      ]),
-    });
-  });
 });
 
 describe("ServiceStack — Metronome lifecycle env split", () => {

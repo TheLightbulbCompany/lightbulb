@@ -245,9 +245,6 @@ def mock_settings():
     with patch("core.config.settings") as mock:
         mock.CLERK_ISSUER = "https://test.clerk.accounts.dev"
         mock.CLERK_AUDIENCE = None
-        mock.HUGGINGFACE_TOKEN = "hf_test_token"
-        mock.HF_API_URL = "https://router.huggingface.co/v1"
-        mock.PROJECT_NAME = "Isol8 Test"
         mock.API_V1_STR = "/api/v1"
         mock.ENCRYPTION_KEY = "dGVzdC1lbmNyeXB0aW9uLWtleS0xMjM0NTY3OA=="
         yield mock

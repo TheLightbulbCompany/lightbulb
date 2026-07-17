@@ -64,9 +64,6 @@ Notable deviations from the original plan template:
   - ``create_agent`` sends ``adapterType`` as a top-level field separate
     from ``adapterConfig`` — they are distinct fields per
     ``createAgentSchema``.
-  - There is no ``disable`` company endpoint; Paperclip only offers
-    ``POST /api/companies/{companyId}/archive``. ``disable_company`` is
-    therefore mapped onto the archive endpoint.
   - Paperclip does not honor ``Idempotency-Key`` headers today (no
     middleware/route handler reads it). The client still forwards the
     header when callers provide one so that future Paperclip-side
@@ -461,27 +458,6 @@ class PaperclipAdminClient:
             idempotency_key=idempotency_key,
         )
 
-    async def disable_company(
-        self,
-        *,
-        session_cookie: str,
-        company_id: str,
-        idempotency_key: Optional[str] = None,
-    ) -> dict:
-        """Soft-disable a company by archiving it.
-
-        Maps to ``POST /api/companies/{companyId}/archive`` (see
-        ``server/src/routes/companies.ts:380``). Paperclip has no
-        dedicated ``disable`` endpoint; archive is the documented
-        equivalent — hides from default listings, preserves data.
-        """
-        return await self._post(
-            f"/api/companies/{company_id}/archive",
-            json={},
-            session_cookie=session_cookie,
-            idempotency_key=idempotency_key,
-        )
-
     async def delete_company(
         self,
         *,
@@ -864,26 +840,6 @@ class PaperclipAdminClient:
     # ------------------------------------------------------------------
     # Inbox
     # ------------------------------------------------------------------
-
-    async def list_inbox_for_session_user(
-        self,
-        *,
-        session_cookie: str,
-        params: Optional[dict[str, Any]] = None,
-    ) -> list:
-        """List the signed-in agent's inbox-lite issue rows.
-
-        Maps to ``GET /api/agents/me/inbox-lite``. The optional ``params``
-        dict is forwarded as query string so the BFF can pass through
-        filter selections (tab, status, project, assignee, creator, search,
-        limit) verbatim. Empty/None params is allowed for back-compat with
-        the existing tier-1 caller.
-        """
-        return await self._get(
-            "/api/agents/me/inbox-lite",
-            session_cookie=session_cookie,
-            params=params,
-        )
 
     async def dismiss_inbox_item(
         self,

@@ -1706,43 +1706,6 @@ async def write_openclaw_config(
     await asyncio.to_thread(_write)
 
 
-def merge_openclaw_config(
-    existing_config: dict,
-    updates: dict,
-) -> dict:
-    """Merge partial updates into an existing openclaw.json config dict.
-
-    Performs a shallow merge at the top-level section keys (gateway, models,
-    agents, tools, browser, update). Nested dicts within each section are
-    deep-merged.
-
-    Args:
-        existing_config: Current openclaw.json as dict.
-        updates: Partial config dict with sections to update.
-
-    Returns:
-        Merged config dict.
-    """
-    merged = dict(existing_config)
-    for key, value in updates.items():
-        if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
-            merged[key] = _deep_merge(merged[key], value)
-        else:
-            merged[key] = value
-    return merged
-
-
-def _deep_merge(base: dict, override: dict) -> dict:
-    """Recursively merge override into base."""
-    result = dict(base)
-    for key, value in override.items():
-        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-            result[key] = _deep_merge(result[key], value)
-        else:
-            result[key] = value
-    return result
-
-
 async def read_openclaw_config_from_efs(owner_id: str) -> dict | None:
     """Read and parse openclaw.json directly from EFS.
 

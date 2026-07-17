@@ -131,7 +131,6 @@ def _make_admin_mock() -> MagicMock:
     # (toJoinRequestResponse spreads the row, so ``id`` is top-level).
     admin.accept_invite = AsyncMock(return_value={"id": "req_default"})
     admin.approve_join_request = AsyncMock(return_value={})
-    admin.disable_company = AsyncMock(return_value={})
     return admin
 
 
@@ -772,8 +771,6 @@ async def test_disable_marks_status_disabled_with_grace_window(repo):
     delta_max = (fetched.scheduled_purge_at - after).total_seconds()
     assert 6 * 86400 < delta
     assert delta_max < 8 * 86400
-    # disable_company is NEVER called from disable() — that's purge's job
-    admin.disable_company.assert_not_awaited()
 
 
 async def test_disable_idempotent_for_missing_row(repo):
@@ -794,7 +791,6 @@ async def test_purge_deletes_row_only_does_not_call_paperclip(repo):
     await prov.purge(user_id="user_lonely")
 
     assert await repo.get("user_lonely") is None
-    admin.disable_company.assert_not_awaited()
 
 
 async def test_purge_does_not_archive_when_other_members_remain(repo):
@@ -838,8 +834,8 @@ async def test_purge_does_not_archive_when_other_members_remain(repo):
     # Member row gone, owner row still there
     assert await repo.get("user_member") is None
     assert await repo.get("user_owner") is not None
-    # Company NOT archived because the owner is still around
-    admin.disable_company.assert_not_awaited()
+    # (Company is never archived by provisioning — orphan cleanup is an
+    # out-of-band ops concern.)
 
 
 async def test_purge_owner_purge_with_other_members_does_not_archive(repo):
@@ -891,15 +887,12 @@ async def test_purge_owner_purge_with_other_members_does_not_archive(repo):
 
     assert await repo.get("user_owner") is None
     assert await repo.get("user_member") is not None
-    # Company NOT archived: another member remains.
-    admin.disable_company.assert_not_awaited()
 
 
 async def test_purge_idempotent_for_missing_row(repo):
     admin = _make_admin_mock()
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
     await prov.purge(user_id="user_does_not_exist")
-    admin.disable_company.assert_not_awaited()
 
 
 # ----------------------------------------------------------------------
@@ -974,8 +967,3 @@ async def test_paperclip_api_error_annotated_on_provision_member(repo):
             owner_email="o@a.test",
         )
     assert getattr(ei.value, "retryable", None) is True
-
-
-# test_purge_swallows_disable_company_failure removed — purge no longer calls
-# disable_company in v1 (see purge() docstring; orphan-company cleanup is an
-# out-of-band ops concern, not a per-user purge step).

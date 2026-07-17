@@ -1898,10 +1898,6 @@ class GatewayConnection:
             len(self._active_runs),
         )
 
-    @property
-    def has_frontend_connections(self) -> bool:
-        return len(self._frontend_connections) > 0
-
     async def close(self) -> None:
         """Shut down: drain in-flight RPCs, cancel reader, close WebSocket."""
         self._emit_status_change("GATEWAY_DOWN_DEAD", "Gateway connection closed")
@@ -2597,12 +2593,6 @@ class GatewayConnectionPool:
         # signed out and back in on the same backend task) doesn't inherit
         # a stale throttle from the previous session.
         self._last_reconnect_at.pop(user_id, None)
-
-    async def broadcast_to_user(self, user_id: str, message: dict) -> None:
-        """Send a message to all frontend connections for a user."""
-        conn = self._connections.get(user_id)
-        if conn:
-            await conn._forward_to_frontends(message)
 
     async def broadcast_to_member(self, owner_id: str, member_user_id: str, message: dict) -> None:
         """Send a message to the owner's chat tabs, demuxed to one org member.

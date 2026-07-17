@@ -1,8 +1,8 @@
 // Ported from upstream Paperclip's inbox.ts (paperclip/ui/src/lib/inbox.ts)
-// (MIT, (c) 2025 Paperclip AI). Slim subset retained for IssueColumns: only
-// the column-key tuple/type and the default-visible-columns constant. The
-// full upstream module also contains localStorage column persistence,
-// availability helpers, and workspace-name resolution — those are not yet
+// (MIT, (c) 2025 Paperclip AI). Slim subset: only the column-key tuple/type
+// and the default-visible-columns constant (consumed via shared/lib/inbox.ts).
+// The full upstream module also contains localStorage column persistence,
+// availability helpers, and workspace-name resolution — those are not
 // ported.
 
 export const inboxIssueColumns = [

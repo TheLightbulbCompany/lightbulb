@@ -67,8 +67,9 @@ def test_new_provider_surfaces_with_no_skill_change(client, monkeypatch):
 
 
 def test_new_channel_surfaces_with_no_name_map(client, monkeypatch):
-    """A channel key derives its display name via ``key.title()`` — there is no
-    hardcoded name map to edit, so a new key never 500s on a KeyError."""
+    """A channel key derives its display name via ``key.replace("_", " ").title()``
+    — there is no hardcoded name map to edit, so a new key never 500s on a
+    KeyError."""
     monkeypatch.setattr(platform_info, "CHANNEL_PROVIDER_IDS", ("telegram", "whatsapp"))
     body = client.get(PREFIX).json()
     entry = next(c for c in body["channels"] if c["key"] == "whatsapp")

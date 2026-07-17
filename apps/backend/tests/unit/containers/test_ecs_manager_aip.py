@@ -551,6 +551,25 @@ class TestBedrockGateTokenProvision:
         assert env["AWS_BEDROCK_FORCE_HTTP1"] == "1"
 
     @pytest.mark.asyncio
+    async def test_isol8_api_url_env_injected(self, manager, mock_settings, monkeypatch):
+        """Every provisioned container gets ISOL8_API_URL so the isol8 skill can
+        live-read the connectable catalog from GET /api/v1/platform-info. It is
+        unconditional (added before any provider branch) and derived from the
+        single per-env URL builder — a refactor of provision_user_container must
+        not silently drop it. (mock_settings pins ENVIRONMENT="dev".)"""
+        mock_settings.ACP_ENABLED = False
+        self._wire_mint(manager, monkeypatch)
+        monkeypatch.setattr(
+            "core.repositories.container_repo.get_by_owner_id",
+            AsyncMock(return_value={"owner_id": "user_x"}),
+        )
+
+        await manager.provision_user_container("user_x", provider_choice="bedrock_claude", owner_type="personal")
+
+        env = {e["name"]: e["value"] for e in manager.create_user_service.call_args.kwargs["environment_for_task"]}
+        assert env["ISOL8_API_URL"] == "https://api-dev.isol8.co"
+
+    @pytest.mark.asyncio
     async def test_bearer_env_absent_in_direct_mode(self, manager, mock_settings, monkeypatch):
         """Break-glass 'direct' mode (resolver returns "") -> baseUrl stays
         direct (config.py), so the bearer token MUST NOT be injected (it would

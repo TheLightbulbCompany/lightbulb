@@ -443,6 +443,96 @@ async def claim_oauth_connector(owner_id: str, *, connector_user_id: str) -> Non
         raise
 
 
+async def try_claim_nightly_arm(owner_id: str, company_id: str) -> bool:
+    """Conditional-write claim for the paid nightly CEO routine (issue #1273).
+
+    SET ``nightly_ceo_armed_company = company_id`` on the billing row IF the
+    attribute is absent OR currently points at a DIFFERENT company. Returns
+    True to exactly ONE concurrent caller — the winner seeds the routine; the
+    losers short-circuit. Mirrors ``try_acquire_org_create_claim``: it closes
+    the list-then-create race so two simultaneous ``/container/status`` polls
+    can never create two firing nightly routines.
+
+    The stored ``nightly_ceo_armed_company`` doubles as a cheap idempotency
+    cache — a normal re-poll where it already equals the current company never
+    reaches this write (the caller checks equality first). On a full
+    reprovision the company_id changes, so the ``<>`` clause lets a
+    never-opted-out owner re-arm their fresh Friday.
+
+    No phantom rows: guarded on ``attribute_exists(owner_id)`` — a missing
+    billing row (never a paid owner) simply returns False.
+    """
+    table = _get_table()
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET nightly_ceo_armed_company = :c, updated_at = :t",
+            ExpressionAttributeValues={":c": company_id, ":t": utc_now_iso()},
+            ConditionExpression=(
+                "attribute_exists(owner_id) AND "
+                "(attribute_not_exists(nightly_ceo_armed_company) OR nightly_ceo_armed_company <> :c)"
+            ),
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise
+    return True
+
+
+async def release_nightly_arm(owner_id: str, company_id: str) -> None:
+    """Release the nightly-arm claim if it still points at ``company_id``.
+
+    Called when the seed itself failed after the claim was won, so the next
+    poll retries. REMOVEs ``nightly_ceo_armed_company`` only when it still
+    equals ``company_id`` (a concurrent successful arm for a newer company must
+    not be clobbered). Mirrors ``release_org_create_claim``; the no-match /
+    no-row cases are silent no-ops.
+    """
+    table = _get_table()
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="REMOVE nightly_ceo_armed_company SET updated_at = :t",
+            ExpressionAttributeValues={":t": utc_now_iso(), ":c": company_id},
+            ConditionExpression="attribute_exists(owner_id) AND nightly_ceo_armed_company = :c",
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return
+        raise
+
+
+async def set_nightly_ceo_opted_out(owner_id: str, opted_out: bool) -> None:
+    """Set/clear the durable nightly-CEO opt-out flag (issue #1273).
+
+    Written from the Teams routine PATCH hook when the owner pauses/archives
+    (opt-out True) or re-activates (opt-out False) the nightly CEO routine.
+    Because billing is PRESERVED across a full reprovision (the container +
+    Paperclip company are wiped, the billing row is not), this flag is what
+    makes the owner's opt-out survive a company wipe — the arm step reads it on
+    the fresh company and declines to re-seed.
+
+    Same existing-row condition as the other billing-row setters; a missing row
+    (never a paid owner, so never armed) is a silent no-op.
+    """
+    table = _get_table()
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET nightly_ceo_opted_out = :o, updated_at = :t",
+            ExpressionAttributeValues={":o": bool(opted_out), ":t": utc_now_iso()},
+            ConditionExpression="attribute_exists(owner_id)",
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return
+        raise
+
+
 async def clear_provider_choice(owner_id: str) -> None:
     """Remove provider_choice, byo_provider, and oauth_connector_user_id from
     a billing row.

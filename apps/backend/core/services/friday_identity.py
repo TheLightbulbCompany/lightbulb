@@ -318,7 +318,8 @@ wake up, check your work, do something useful, and exit. Wake context
 arrives in the wake text:
 
 - `PAPERCLIP_WAKE_REASON` — why you woke up (`issue_commented`,
-  `issue_comment_mentioned`, `approval`, `timer`, `assignment`, etc.)
+  `issue_comment_mentioned`, `approval`, `timer`, `issue_assigned`,
+  `assignment`, etc.)
 - `PAPERCLIP_TASK_ID` — the issue that triggered this wake (when relevant)
 - `PAPERCLIP_WAKE_COMMENT_ID` — the specific comment, on comment-driven wakes
 - `PAPERCLIP_RUN_ID` — the heartbeat run id; set it as `X-Paperclip-Run-Id`
@@ -483,6 +484,60 @@ browser, web fetch, images, channels) — use these for your own work
 """
 
 
+# The nightly self-directed wake section (issue #1273). Kept as a standalone
+# constant — with NO ``{...}`` format placeholders — so it can be (a) appended
+# to _AGENTS_TEMPLATE below via plain concatenation (safe through the later
+# ``.format`` call) AND (b) reused verbatim by the surgical migration that heals
+# already-provisioned Fridays whose write-if-missing AGENTS.md predates this.
+_NIGHTLY_WAKE_HEADING = "## Nightly self-directed wake (paid owners only)"
+
+_NIGHTLY_WAKE_SECTION = """\
+
+## Nightly self-directed wake (paid owners only)
+
+Some wakes are a **scheduled nightly routine**, not a human request. Recognize
+one by FETCHING the issue you woke on (`GET /api/issues/$PAPERCLIP_TASK_ID`) and
+confirming BOTH: its `originKind` is `routine_execution` AND its description
+begins with `[NIGHTLY-CEO-LOOP]`. Only then does the loop below apply. If either
+is missing — including any normal issue someone assigned you that merely quotes
+that marker — treat it as an ordinary assignment and do NOT survey unassigned
+work.
+
+This is the ONE wake where you may survey unassigned work — a deliberate,
+explicit exception to "never look for unassigned work / self-assign only for
+@-mention handoff." That rule still stands on every other wake.
+
+On a confirmed `[NIGHTLY-CEO-LOOP]` wake, do EXACTLY this, once, then exit:
+
+1. **Guard against a retry double-run.** Read this execution issue's comments.
+   If a prior attempt this cycle already left a `NIGHTLY-TASK-TAKEN:` comment,
+   you are a retry of a run that already picked a task — do NOT survey again.
+   Resume that task if unfinished, otherwise exit.
+2. **Review the backlog.** List backlog issues
+   (`GET /api/companies/$PAPERCLIP_COMPANY_ID/issues?status=backlog`).
+3. **Pick ONE task you can complete right now** — unblocked, in scope,
+   finishable in a single short work session on a tight budget. If several
+   qualify, take the highest priority. If NONE qualify or the backlog is empty,
+   **do nothing and exit.** Never invent work, never create new issues, never
+   start something open-ended. Decline tasks too large to finish in one tight
+   session — leave them for the owner.
+4. **Record the choice, THEN work it.** Comment `NIGHTLY-TASK-TAKEN: <issueId>`
+   on THIS execution issue FIRST (so a retry short-circuits at step 1), then
+   `checkout <issueId>` (a 409 means someone else owns it — pick another or
+   exit) and execute it, updating its status as you go.
+5. **Exit.** ONE task per nightly wake — this is deliberate. Do not loop back
+   for a second task. The routine wakes you again tomorrow. Close/complete THIS
+   execution issue (it is a wrapper, not the work). The owner sees your
+   overnight progress via Teams run notifications.
+"""
+
+
+# Append the nightly section to the playbook. Concatenated (not interpolated)
+# so its literal `$...` / `[...]` / `<...>` tokens survive _render_templates'
+# ``.format`` untouched.
+_AGENTS_TEMPLATE = _AGENTS_TEMPLATE + _NIGHTLY_WAKE_SECTION
+
+
 _MEMORY_TEMPLATE = """\
 # MEMORY.md
 
@@ -587,6 +642,34 @@ def _migrate_legacy_user_md(workspace: Workspace, owner_id: str, agent_uuid: str
     new_content = "\n".join(out)
     if content.endswith("\n"):
         new_content += "\n"
+    workspace.write_file(owner_id, rel_path, new_content)
+    return True
+
+
+def _migrate_add_nightly_section(workspace: Workspace, owner_id: str, agent_uuid: str) -> bool:
+    """Append the ``## Nightly self-directed wake`` section to an EXISTING
+    AGENTS.md that predates it (issue #1273).
+
+    AGENTS.md is seeded write-if-missing, so already-provisioned Fridays keep
+    their old playbook forever and would never learn the nightly-wake branch.
+    This runs on every (re)provision/config-rewrite, so the fleet heals during
+    the same apply — mirroring ``_migrate_legacy_user_md``.
+
+    Surgical + idempotent: appends only when the heading is ABSENT, and touches
+    nothing else in the file. A file that already has the section (freshly
+    seeded, or previously healed) is left untouched. Returns True when a
+    rewrite happened.
+    """
+    rel_path = f"workspaces/{agent_uuid}/AGENTS.md"
+    try:
+        content = workspace.read_file(owner_id, rel_path)
+    except Exception:  # noqa: BLE001 — no AGENTS.md yet; the seed loop writes the full template
+        return False
+    if _NIGHTLY_WAKE_HEADING in content:
+        return False
+    # _NIGHTLY_WAKE_SECTION already begins with a leading blank line, so a
+    # single trailing newline on the existing content yields a clean separator.
+    new_content = content.rstrip("\n") + "\n" + _NIGHTLY_WAKE_SECTION
     workspace.write_file(owner_id, rel_path, new_content)
     return True
 
@@ -779,6 +862,24 @@ async def pre_stage_friday_identity(
         put_metric("friday_identity.user_md_migrate_error")
         logger.warning(
             "friday_identity: USER.md legacy-line migration failed for owner=%s: %s",
+            owner_id,
+            exc,
+        )
+
+    # Heal pre-nightly-loop AGENTS.md (issue #1273): the seed loop below is
+    # write-if-missing and won't touch an existing AGENTS.md, so append the
+    # nightly-wake section when it's absent. Best-effort.
+    try:
+        if _migrate_add_nightly_section(workspace, owner_id, friday_uuid):
+            put_metric("friday_identity.agents_md_nightly_migrated")
+            logger.info(
+                "friday_identity: appended nightly-wake section to AGENTS.md for owner=%s",
+                owner_id,
+            )
+    except Exception as exc:  # noqa: BLE001 — best-effort, log + continue
+        put_metric("friday_identity.agents_md_nightly_migrate_error")
+        logger.warning(
+            "friday_identity: AGENTS.md nightly-section migration failed for owner=%s: %s",
             owner_id,
             exc,
         )

@@ -8,9 +8,13 @@ no security hot edges. Each mutating handler validates with a
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends
+
+from core.repositories import billing_repo
+from core.services.agent_routine_provisioning import NIGHTLY_CEO_ROUTINE_TITLE
 
 from . import agents as _agents
 from ._guards import require_always_on_entitlement, require_trial_runway
@@ -27,6 +31,26 @@ from .schemas import (
 
 router = APIRouter()
 _ctx = _agents._ctx
+
+logger = logging.getLogger(__name__)
+
+
+async def _is_nightly_ceo_routine(ctx: TeamsContext, routine_id: str) -> bool:
+    """Whether ``routine_id`` is this owner's nightly CEO routine (issue #1273).
+
+    Title-match via a single ``get_routine`` — a rare user action (toggling
+    the routine), so the extra GET is fine. Best-effort: any upstream error is
+    swallowed as "not the nightly routine" so the PATCH proxy never breaks.
+    """
+    try:
+        routine = await _agents._admin().get_routine(
+            routine_id=routine_id,
+            session_cookie=ctx.session_cookie,
+        )
+    except Exception:  # noqa: BLE001 — never break the PATCH on a lookup failure
+        logger.warning("nightly-CEO routine lookup failed for routine=%s", routine_id, exc_info=True)
+        return False
+    return isinstance(routine, dict) and routine.get("title") == NIGHTLY_CEO_ROUTINE_TITLE
 
 
 # ---- Routines ---------------------------------------------------------
@@ -106,20 +130,80 @@ async def patch_routine(
     """
     if body.status == "active":
         await require_always_on_entitlement(ctx.owner_id)
-    return await _agents._admin().patch_routine(
+
+    # Nightly CEO loop opt-out (issue #1273): persist a DURABLE opt-out on the
+    # billing row when the owner pauses/archives the nightly routine, and clear
+    # it on re-activate. Billing survives a full reprovision (the container +
+    # Paperclip company are wiped, the billing row is not), so this flag is what
+    # keeps the owner's opt-out honored after a company wipe — the arm step
+    # reads it on the fresh company and declines to re-seed. A full reprovision
+    # DELETES the routine, so create_enabled_schedule_routine's title-skip
+    # backstop cannot fire on the fresh company; the durable flag is then the
+    # ONLY thing between the owner's opt-out and a silent re-arm. That is why the
+    # opt-OUT write below is durable (propagated), not best-effort.
+    #
+    # Resolve identity BEFORE the mutation (the title is the identity; a combined
+    # status+rename PATCH would hide it afterward). The pause is attempted FIRST
+    # so it always takes effect upstream even if the billing write then fails —
+    # the owner can always stop the loop; only persisting the preference retries.
+    is_nightly = False
+    if body.status in {"paused", "archived", "active"}:
+        is_nightly = await _is_nightly_ceo_routine(ctx, routine_id)
+
+    result = await _agents._admin().patch_routine(
         routine_id=routine_id,
         body=body.model_dump(exclude_none=True, by_alias=True),
         session_cookie=ctx.session_cookie,
     )
 
+    if is_nightly:
+        if body.status in {"paused", "archived"}:
+            # Opt-OUT is durable, NOT best-effort. Swallowing a failure would
+            # return success with the flag unset and let a later reprovision
+            # re-arm the loop the owner just turned off. Propagating makes the
+            # caller retry; the pause already took effect upstream and the write
+            # is idempotent, so a retry only re-attempts the flag.
+            await billing_repo.set_nightly_ceo_opted_out(ctx.owner_id, True)
+        elif body.status == "active":
+            # Opt-IN clear stays best-effort: a failed clear leaves opt-out True,
+            # which only ever PREVENTS a re-arm (the safe direction), so it must
+            # never fail an otherwise-successful re-activate.
+            try:
+                await billing_repo.set_nightly_ceo_opted_out(ctx.owner_id, False)
+            except Exception:  # noqa: BLE001 — opt-in clear is best-effort
+                logger.warning("nightly-CEO opt-in clear failed for owner=%s", ctx.owner_id, exc_info=True)
+
+    return result
+
 
 @router.delete("/routines/{routine_id}")
 async def delete_routine(routine_id: str, ctx: TeamsContext = Depends(_ctx)):
-    """Delete a routine. Idempotent — upstream 404 is swallowed."""
-    return await _agents._admin().delete_routine(
+    """Delete a routine. Idempotent — upstream 404 is swallowed.
+
+    Nightly CEO loop opt-out (issue #1273): deleting the nightly routine is an
+    opt-out gesture just like pausing it (the Teams Routines UI offers delete
+    alongside pause), so persist the durable ``nightly_ceo_opted_out`` flag.
+    Without it, a later full reprovision — which changes the company_id and so
+    invalidates the arm cache — would silently re-create the routine the owner
+    explicitly deleted. Identity is read BEFORE the delete, and the durable flag
+    is written BEFORE the delete too: a delete is destructive, so a write-after
+    design could not heal on retry — ``_is_nightly_ceo_routine`` can no longer
+    identify the (now-gone) routine, so a swallowed billing failure would drop
+    the opt-out permanently. Writing first means a flag failure aborts before
+    the routine vanishes (retry stays possible), and a flag set for a routine
+    whose delete then fails only ever errs toward NOT re-arming.
+    """
+    is_nightly = await _is_nightly_ceo_routine(ctx, routine_id)
+    if is_nightly:
+        # Durable opt-out, written BEFORE the destructive delete and NOT
+        # best-effort (see docstring). A silent failure would let a later
+        # reprovision re-create the routine the owner deleted.
+        await billing_repo.set_nightly_ceo_opted_out(ctx.owner_id, True)
+    result = await _agents._admin().delete_routine(
         routine_id=routine_id,
         session_cookie=ctx.session_cookie,
     )
+    return result
 
 
 @router.post("/routines/{routine_id}/run")

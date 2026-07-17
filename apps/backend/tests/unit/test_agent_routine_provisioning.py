@@ -5,8 +5,13 @@ from unittest.mock import AsyncMock
 import pytest
 
 from core.services.agent_routine_provisioning import (
+    NIGHTLY_CEO_ROUTINE_CRON,
+    NIGHTLY_CEO_ROUTINE_DESCRIPTION,
+    NIGHTLY_CEO_ROUTINE_TITLE,
     build_dormant_trigger_body,
+    build_enabled_trigger_body,
     create_agent_routines,
+    create_enabled_schedule_routine,
 )
 
 
@@ -141,3 +146,90 @@ async def test_duplicate_spec_in_same_batch_creates_once():
     )
     assert created == ["rid-Morning sweep"]
     assert admin.create_routine.await_count == 1
+
+
+# ---------------------------------------------------------------------------
+# The single ENABLED path — paid nightly CEO routine (issue #1273).
+# ---------------------------------------------------------------------------
+
+
+def test_enabled_trigger_body_is_enabled():
+    body = build_enabled_trigger_body("0 8 * * *")
+    assert body == {
+        "kind": "schedule",
+        "cronExpression": "0 8 * * *",
+        "timezone": "UTC",
+        "enabled": True,
+    }
+
+
+def test_dormant_default_still_disabled_regression():
+    """The general dormant builder must stay enabled:False — the enabled
+    sibling is the ONLY exception and must not have leaked into it."""
+    assert build_dormant_trigger_body("0 8 * * *")["enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_create_enabled_schedule_routine_creates_routine_then_enabled_trigger():
+    admin = _admin_with_existing([])
+    routine_id = await create_enabled_schedule_routine(
+        admin=admin,
+        session_cookie="cookie",
+        company_id="co1",
+        agent_id="friday-uuid",
+        title=NIGHTLY_CEO_ROUTINE_TITLE,
+        description=NIGHTLY_CEO_ROUTINE_DESCRIPTION,
+        cron=NIGHTLY_CEO_ROUTINE_CRON,
+    )
+    assert routine_id == f"rid-{NIGHTLY_CEO_ROUTINE_TITLE}"
+
+    routine_body = admin.create_routine.await_args.kwargs["body"]
+    assert routine_body["title"] == NIGHTLY_CEO_ROUTINE_TITLE
+    assert routine_body["assigneeAgentId"] == "friday-uuid"
+    # Same cost-safe coalesce/skip posture as every other routine.
+    assert routine_body["concurrencyPolicy"] == "coalesce_if_active"
+    assert routine_body["catchUpPolicy"] == "skip_missed"
+    assert "cron" not in routine_body
+
+    trig = admin.create_routine_trigger.await_args.kwargs
+    assert trig["routine_id"] == f"rid-{NIGHTLY_CEO_ROUTINE_TITLE}"
+    assert trig["body"]["enabled"] is True
+    assert trig["body"]["cronExpression"] == "0 8 * * *"
+
+
+@pytest.mark.asyncio
+async def test_create_enabled_schedule_routine_title_skip_no_dup_no_reenable():
+    """Title already assigned to the agent → return None WITHOUT creating a
+    routine OR touching its trigger. This is what keeps a paused routine paused
+    across a reprovision (no dup, no re-enable)."""
+    existing = [
+        {"id": "old", "assigneeAgentId": "friday-uuid", "title": NIGHTLY_CEO_ROUTINE_TITLE},
+    ]
+    admin = _admin_with_existing(existing)
+    routine_id = await create_enabled_schedule_routine(
+        admin=admin,
+        session_cookie="cookie",
+        company_id="co1",
+        agent_id="friday-uuid",
+        title=NIGHTLY_CEO_ROUTINE_TITLE,
+        description=NIGHTLY_CEO_ROUTINE_DESCRIPTION,
+        cron=NIGHTLY_CEO_ROUTINE_CRON,
+    )
+    assert routine_id is None
+    admin.create_routine.assert_not_awaited()
+    admin.create_routine_trigger.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_create_agent_routines_never_emits_enabled_trigger():
+    """The general dormant path must never produce an enabled trigger, even
+    with the enabled sibling now present in the module."""
+    admin = _admin_with_existing([])
+    await create_agent_routines(
+        admin=admin,
+        session_cookie="cookie",
+        company_id="co1",
+        agent_id="agent-uuid",
+        routines=[{"title": "Weekly report", "description": "d", "cron": "0 8 * * 1"}],
+    )
+    assert admin.create_routine_trigger.await_args.kwargs["body"]["enabled"] is False

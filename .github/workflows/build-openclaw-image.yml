@@ -14,6 +14,9 @@ on:
       # aws-exec-profile plugin) into /app/dist/extensions, so a change there
       # must rebuild + republish too.
       - "apps/infra/openclaw/plugins/**"
+      # Fleet-wide Gen Sage policy (~/.sage/config.json) is baked by Layer 13c;
+      # tuning it (sensitivity, disabled_threats) only ships via a rebuild.
+      - "apps/infra/openclaw/sage/**"
       - "openclaw-version.json"
   workflow_dispatch: {}
 

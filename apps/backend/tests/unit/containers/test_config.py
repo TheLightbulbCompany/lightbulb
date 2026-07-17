@@ -139,16 +139,21 @@ class TestOpenclawConfigShape:
         assert "nodes" in config["tools"]["deny"]
 
     def test_workflow_plugins_enabled(self):
-        """lobster + llm-task + aws-exec-profile are bundled, provider-independent
-        OpenClaw extensions enabled on every provision. llm-task is left
-        unconfigured so it inherits the agent's default provider/model at call
-        time. aws-exec-profile injects the owner's read-only AWS profile into
-        the agent's exec env only (inert until that profile is materialized)."""
+        """lobster + llm-task + aws-exec-profile + tokenjuice + sage-openclaw
+        are bundled, provider-independent OpenClaw extensions enabled on every
+        provision. llm-task is left unconfigured so it inherits the agent's
+        default provider/model at call time. aws-exec-profile injects the
+        owner's read-only AWS profile into the agent's exec env only (inert
+        until that profile is materialized). tokenjuice and sage-openclaw both
+        have strict-empty configSchemas, so their entries must stay
+        enable-only — a config key bricks the container at boot."""
         config = _cfg()
         entries = config["plugins"]["entries"]
         assert entries["lobster"] == {"enabled": True}
         assert entries["llm-task"] == {"enabled": True}
         assert entries["aws-exec-profile"] == {"enabled": True}
+        assert entries["tokenjuice"] == {"enabled": True}
+        assert entries["sage-openclaw"] == {"enabled": True}
 
     def test_memory_core_dreaming_enabled_light_and_rem(self):
         """memory-core's dreaming subsystem is enabled at provision with the
@@ -377,6 +382,8 @@ class TestOpenclawConfigStaticSectionsAcrossProviders:
         assert entries["lobster"] == {"enabled": True}
         assert entries["llm-task"] == {"enabled": True}
         assert entries["aws-exec-profile"] == {"enabled": True}
+        assert entries["tokenjuice"] == {"enabled": True}
+        assert entries["sage-openclaw"] == {"enabled": True}
         # The provider block's own entry must survive the merge.
         if provider_choice in ("bedrock_claude", "bedrock_trial"):
             assert entries["amazon-bedrock"]["config"]["discovery"]["enabled"] is False

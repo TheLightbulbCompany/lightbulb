@@ -363,6 +363,91 @@ RUN set -eux; \
     rm -rf /opt/stage-acpx; \
     chown -R root:root /app/dist/extensions/acpx
 
+# ---- Layer 13b: tokenjuice exec-output compaction plugin ----
+# Official @openclaw plugin that registers agentToolResultMiddleware compacting
+# noisy `exec`/`bash` tool results AFTER the command runs, before the result
+# re-enters the agent session. Compaction is deterministic rule-driven
+# reducers (no LLM aux calls); exact file-content reads stay raw and unsafe
+# mixed command sequences pass through untouched, so commands, exit codes,
+# and semantics are never altered. Every compacted token is tokens we don't
+# pay for on the managed-Bedrock/trial paths (bedrock-gate meters input
+# tokens) and context-window pressure the size-based pruning patch doesn't
+# have to absorb. Enabled fleet-wide via plugins.entries.tokenjuice
+# (core/containers/config.py workflow_plugin_entries()); its configSchema is
+# strict-empty, so the entry is enable-only. Not bundled in the published
+# base image (the release build passes no OPENCLAW_EXTENSIONS), so bake it
+# root-owned like the layers above. Pin in lockstep with the FROM tag /
+# openclaw-version.json#upstream.
+RUN set -eux; \
+    mkdir -p /opt/stage-tokenjuice; \
+    npm install --prefix /opt/stage-tokenjuice "@openclaw/tokenjuice@2026.7.1"; \
+    mkdir -p /app/dist/extensions/tokenjuice; \
+    cp -R /opt/stage-tokenjuice/node_modules/@openclaw/tokenjuice/. /app/dist/extensions/tokenjuice/; \
+    mkdir -p /app/dist/extensions/tokenjuice/node_modules; \
+    cp -R /opt/stage-tokenjuice/node_modules/. /app/dist/extensions/tokenjuice/node_modules/; \
+    rm -rf /app/dist/extensions/tokenjuice/node_modules/@openclaw/tokenjuice; \
+    rm -rf /opt/stage-tokenjuice; \
+    chown -R root:root /app/dist/extensions/tokenjuice
+
+# ---- Layer 13c: Gen Sage ADR safety plugin + fleet ~/.sage config ----
+# Third-party (Gen Digital, github.com/gendigitalinc/sage) Agent Detection &
+# Response layer: intercepts exec/read/write/edit/web_fetch/apply_patch tool
+# calls BEFORE execution and allow/ask/denies against ~300 local YAML threat
+# rules (reverse shells, credential exfil, persistence, typosquats) plus
+# cloud URL/file/package reputation. Channel-exposed agents (Telegram/Slack/
+# Discord senders) are an untrusted-input surface; Sage is the only guard
+# between an injected "run this curl|bash" and the container's exec: full.
+# UNLIKE the @openclaw layers above this is versioned independently of the
+# host — bump deliberately, not on base bumps (compat: pluginApi >=2026.3.28).
+# Plugin id (and discovery dir) is `sage-openclaw`; configSchema is
+# strict-empty so the plugins.entries entry is enable-only, and ALL behavior
+# config lives in ~/.sage/config.json. /home/node/.sage is NOT under the
+# per-user EFS mount (only ~/.openclaw is), so the baked config below is the
+# fleet-wide policy. It is the product of a rule-by-rule audit of the v0.11.0
+# threat YAMLs against what our agents legitimately do (2026-07-17); the
+# levers are preset-only thresholds + per-rule disabled_threats:
+#   - sensitivity=relaxed: instant-deny only >=0.95-confidence rules — 13
+#     Linux-relevant, all attack-shaped (curl|bash, rm -rf /, mkfs,
+#     base64|sh, /etc/shadow, authorized_keys tampering, PEM-in-content,
+#     unicode smuggling). 0.70-0.95 verdicts return requireApproval with
+#     timeoutBehavior:"deny": they ride the host plugin-approval broker
+#     (exec-approval delivery rails; the agent's own LLM canNOT approve —
+#     older conversation-relay docs are stale) and FAIL CLOSED after the
+#     120s host default when nobody answers, the normal case for unattended
+#     Paperclip routine/heartbeat runs. That ask band is reverse shells /
+#     exfil chains / obfuscation — patterns legit agent work essentially
+#     never emits.
+#   - NEVER set balanced/paranoid fleet-wide: their 0.50-0.70 band includes
+#     "export of credential env var" + "reading credential file" (conf 0.60)
+#     — our seeded Paperclip flow exports PAPERCLIP_API_KEY from
+#     paperclip-claimed-api-key.json on EVERY write, so balanced would
+#     stall+deny the entire Teams surface fleet-wide.
+#   - disabled_threats CLT-CRED-001/006 (raw API-key-string patterns,
+#     match_on command+content, conf 0.80/0.92): they fire on a BYOK owner's
+#     own sk-/AKIA/ghp_/sk_live keys being written to .env or curl'd —
+#     routine, user-visible work. The exfil-SHAPED rules (dotfile-piped-to-
+#     curl, env-dump-and-send) stay active, so injection exfil is still
+#     covered without punishing legitimate key handling.
+#   - community_iq=false (never ship tenant detection metadata to Gen's
+#     cloud); pi_check left default-off (runtime ML model download — wrong
+#     for this box). URL/file/package cloud reputation stays ON (known-
+#     malicious URL/package blocking; sends URLs/package names — not file
+#     contents — to Gen's reputation API).
+# Runtime writes audit logs to ~/.sage/audit.jsonl, hence chown to node
+# (uid 1000); logs are ephemeral with the task, like the rest of overlay-fs.
+RUN set -eux; \
+    mkdir -p /opt/stage-sage; \
+    npm install --prefix /opt/stage-sage "@gendigital/sage-openclaw@0.11.0"; \
+    mkdir -p /app/dist/extensions/sage-openclaw; \
+    cp -R /opt/stage-sage/node_modules/@gendigital/sage-openclaw/. /app/dist/extensions/sage-openclaw/; \
+    mkdir -p /app/dist/extensions/sage-openclaw/node_modules; \
+    cp -R /opt/stage-sage/node_modules/. /app/dist/extensions/sage-openclaw/node_modules/; \
+    rm -rf /app/dist/extensions/sage-openclaw/node_modules/@gendigital/sage-openclaw; \
+    rm -rf /opt/stage-sage; \
+    chown -R root:root /app/dist/extensions/sage-openclaw
+COPY sage/config.json /home/node/.sage/config.json
+RUN chown -R 1000:1000 /home/node/.sage
+
 # ---- Layer 14: baked aws-exec-profile plugin ----
 # Hand-written, dependency-free OpenClaw plugin (lives in-repo, NOT an npm
 # package). Registers a `resolve_exec_env` hook that injects

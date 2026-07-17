@@ -1,0 +1,5 @@
+{
+  "sensitivity": "relaxed",
+  "community_iq": false,
+  "disabled_threats": ["CLT-CRED-001", "CLT-CRED-006"]
+}

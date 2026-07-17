@@ -187,6 +187,17 @@ export interface UseAgentChatReturn {
 
 const _messageCache = new Map<string, HistoryMessage[]>();
 const _needsBootstrap = new Set<string>();
+
+// Bounded backoff (ms) for re-reading chat.history when the FIRST read comes
+// back empty AND there is no cached transcript to fall back on. A scaled-to-
+// zero (trial) container still waking, a container mid-restart/update, or a
+// session store that has not finished loading all return an empty-but-200 read
+// that is NOT authoritatively empty — so a post-refresh fetch that races the
+// container wake would otherwise blank the screen and offer the "start a
+// conversation" bootstrap for a conversation that actually exists. Retrying a
+// few times lets the store come up before we conclude the session is empty.
+// One entry per retry; the array length caps the number of attempts.
+const HISTORY_EMPTY_RETRY_DELAYS_MS = [500, 1250, 3000];
 // Sessions whose last chat.history response was trimmed by the backend to fit
 // the WS frame limit (payload carried `truncated: true`) — the transcript
 // starts mid-conversation and the UI says so.
@@ -741,6 +752,9 @@ export function useAgentChat(
 
   // ---- Fetch history on mount / agent change ----
   const historyLoadedRef = useRef<Set<string>>(new Set());
+  // Pending empty-history retry timer (see the history-fetch effect). Held in a
+  // ref so the effect cleanup can cancel it on unmount / session switch.
+  const historyRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Monotonic counter of LOCAL transcript mutations that must survive the
   // mount-time history revalidation: optimistic user appends, folded run
@@ -770,62 +784,111 @@ export function useAgentChat(
     // would each pass the has()-guard above and fire a duplicate chat.history.
     // The `.catch` un-latches so a failed fetch still retries on the next run.
     historyLoadedRef.current.add(cacheKey);
-    sendReq("chat.history", { sessionKey, limit: 200 })
-      .then((result: unknown) => {
-        const historyResult = result as { messages?: HistoryMessage[]; truncated?: boolean };
-        // A local transcript mutation while this fetch was in flight (a sent
-        // message, a folded run, a clear) means the snapshot is stale —
-        // applying it would silently drop that mutation from BOTH the live
-        // view and the cache. On cached mounts this fetch is invisible (no
-        // loading state, input enabled), so a send racing it is routine.
-        // Keep local state; the next mount's revalidation self-heals any
-        // divergence. The truncated flag follows the same skip: it describes
-        // the discarded snapshot, and flipping it while keeping the local
-        // transcript would show a banner that doesn't match the screen.
-        const staleSnapshot = transcriptMutationSeqRef.current !== mutationSeqAtIssue;
-        if (!staleSnapshot) {
-          if (historyResult?.truncated === true) {
-            _truncatedHistory.add(cacheKey);
-          } else {
-            _truncatedHistory.delete(cacheKey);
+
+    // Set true in cleanup, so a late-resolving fetch cannot schedule an
+    // empty-read retry that outlives this effect instance (the retry timer ref
+    // is shared with the next instance). Read ONLY when deciding to retry — the
+    // apply path below keeps its original session-scoped guards untouched.
+    let disposed = false;
+    // Stable Set (the ref is never reassigned); captured for the cleanup so it
+    // doesn't read ref.current there (react-hooks/exhaustive-deps).
+    const loadedKeys = historyLoadedRef.current;
+
+    const runFetch = (attempt: number): void => {
+      sendReq("chat.history", { sessionKey, limit: 200 })
+        .then((result: unknown) => {
+          const historyResult = result as { messages?: HistoryMessage[]; truncated?: boolean };
+          // A local transcript mutation while this fetch was in flight (a sent
+          // message, a folded run, a clear) means the snapshot is stale —
+          // applying it would silently drop that mutation from BOTH the live
+          // view and the cache. On cached mounts this fetch is invisible (no
+          // loading state, input enabled), so a send racing it is routine.
+          // Keep local state; the next mount's revalidation self-heals any
+          // divergence. The truncated flag follows the same skip: it describes
+          // the discarded snapshot, and flipping it while keeping the local
+          // transcript would show a banner that doesn't match the screen.
+          const staleSnapshot = transcriptMutationSeqRef.current !== mutationSeqAtIssue;
+          if (!staleSnapshot) {
+            if (historyResult?.truncated === true) {
+              _truncatedHistory.add(cacheKey);
+            } else {
+              _truncatedHistory.delete(cacheKey);
+            }
           }
-        }
-        setHistoryLoadState("done");
-        const raw = Array.isArray(historyResult?.messages) ? historyResult.messages : [];
-        const projected = projectChatHistoryMessages(raw);
-        if (projected.length === 0) {
-          // Server has nothing: only flag bootstrap when we ALSO have no
-          // cache — an existing cached transcript must not regress to the
-          // bootstrap suggestion because of an empty/partial server read.
-          // An empty-but-200 read is NOT a reliable "authoritatively empty"
-          // signal (container mid-restart/update, session store not yet
-          // loaded, session-key casing mismatch all return it), so a cached
-          // transcript is deliberately kept as-is until the server exposes a
-          // true authoritative-empty marker.
-          if (!hasCache) {
-            _needsBootstrap.add(cacheKey);
+          const raw = Array.isArray(historyResult?.messages) ? historyResult.messages : [];
+          const projected = projectChatHistoryMessages(raw);
+          if (projected.length === 0) {
+            // Server has nothing: only decide bootstrap when we ALSO have no
+            // cache — an existing cached transcript must not regress to the
+            // bootstrap suggestion because of an empty/partial server read.
+            if (!hasCache) {
+              // An empty-but-200 read is NOT a reliable "authoritatively empty"
+              // signal (container mid-restart/update, session store not yet
+              // loaded, session-key casing mismatch, or a trial container still
+              // waking from scale-to-zero all return it). While we're still on
+              // this session and have retries left, re-read after a short
+              // backoff (the store loads shortly after the WS connects) and stay
+              // on the loading skeleton — never flash the bootstrap suggestion
+              // for a conversation that exists (it "comes back" once the
+              // container is up). Only after the retries exhaust — or if the
+              // user already switched away — do we conclude it is empty. (The
+              // cleanest long-term fix is a backend authoritative-empty marker
+              // on chat.history; until then this bounded retry is the frontend
+              // guard.)
+              const stillCurrent =
+                !disposed &&
+                agentIdRef.current === agentId &&
+                activeSessionIdRef.current === (activeSessionId ?? null);
+              if (stillCurrent && attempt < HISTORY_EMPTY_RETRY_DELAYS_MS.length) {
+                historyRetryTimerRef.current = setTimeout(() => {
+                  historyRetryTimerRef.current = null;
+                  runFetch(attempt + 1);
+                }, HISTORY_EMPTY_RETRY_DELAYS_MS[attempt]);
+                return; // keep isLoadingHistory true (skeleton); decide later
+              }
+              _needsBootstrap.add(cacheKey);
+            }
+            setHistoryLoadState("done");
+            return;
           }
-          return;
-        }
-        if (staleSnapshot) return;
-        if (agentIdRef.current !== agentId) return;
-        // Always cache under the key this fetch was issued for; only touch
-        // the live transcript if the user is still ON that session. A fetch
-        // that resolves after a session switch must not stomp the new view.
-        _messageCache.set(cacheKey, projected);
-        if (activeSessionIdRef.current === (activeSessionId ?? null)) {
-          setChatMessages(projected);
-        }
-      })
-      .catch((err: unknown) => {
-        console.warn("Failed to fetch chat history:", err);
-        // Un-latch (the marker was set BEFORE the fetch for in-flight dedupe):
-        // a failed fetch (gateway drop, container restart) must retry on the
-        // next visit or reconnect instead of leaving this session blank until
-        // page reload.
-        historyLoadedRef.current.delete(cacheKey);
-        setHistoryLoadState("done");
-      });
+          setHistoryLoadState("done");
+          if (staleSnapshot) return;
+          if (agentIdRef.current !== agentId) return;
+          // Always cache under the key this fetch was issued for; only touch
+          // the live transcript if the user is still ON that session. A fetch
+          // that resolves after a session switch must not stomp the new view.
+          _messageCache.set(cacheKey, projected);
+          if (activeSessionIdRef.current === (activeSessionId ?? null)) {
+            setChatMessages(projected);
+          }
+        })
+        .catch((err: unknown) => {
+          console.warn("Failed to fetch chat history:", err);
+          // Un-latch (the marker was set BEFORE the fetch for in-flight dedupe):
+          // a failed fetch (gateway drop, container restart) must retry on the
+          // next visit or reconnect instead of leaving this session blank until
+          // page reload.
+          historyLoadedRef.current.delete(cacheKey);
+          setHistoryLoadState("done");
+        });
+    };
+
+    runFetch(0);
+
+    return () => {
+      // Cancel a pending empty-read retry so it can't fire for a session the
+      // user switched away from (or an unmounted hook). If a retry WAS pending
+      // — i.e. we're between retries — un-latch so a later effect run (reconnect,
+      // revisit) re-fetches instead of early-returning on the latch and
+      // stranding the session on the loading skeleton. A first fetch still in
+      // flight (no timer pending) keeps its latch, preserving in-flight dedupe.
+      disposed = true;
+      if (historyRetryTimerRef.current !== null) {
+        clearTimeout(historyRetryTimerRef.current);
+        historyRetryTimerRef.current = null;
+        loadedKeys.delete(cacheKey);
+      }
+    };
   }, [agentId, cacheKey, sessionName, activeSessionId, isConnected, sendReq, setChatMessages, historyRefetchNonce]);
 
   // ---- Reset live-run state when the active session switches ----

@@ -22,7 +22,8 @@ import { SkillsTab } from "@/components/control/panels/SkillsTab";
 import { SkillProposalsPanel } from "@/components/control/panels/SkillProposalsPanel";
 import { DreamsPanel } from "@/components/control/panels/DreamsPanel";
 import { ChannelsStatusPanel } from "@/components/control/panels/ChannelsStatusPanel";
-import { ADMIN_ONLY_PANELS, useIsControlAdmin } from "@/components/control/ControlSidebar";
+import { ADMIN_ONLY_PANELS } from "@/components/control/ControlSidebar";
+import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 import { SettingsNav } from "@/components/settings/SettingsNav";
 import {
   SETTINGS_NAV_SECTIONS,
@@ -422,7 +423,7 @@ function SettingsPageInner() {
   // Personal owners are admins; org members are admins only with org:admin.
   // Reused (not re-derived) from ControlSidebar so the Settings gate matches
   // the Control surface exactly.
-  const isAdmin = useIsControlAdmin();
+  const isAdmin = useIsWorkspaceAdmin();
 
   // ?panel=<key> preselects the tab. Used by deep links from the chat banners
   // (TrialBanner "Manage" CTA, etc.) so they land on the right pane. Validated

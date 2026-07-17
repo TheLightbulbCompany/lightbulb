@@ -2,7 +2,8 @@
 // container's live models.authStatus snapshot. Extracted from LLMPanel so the
 // provider-id resolution + status→color rules are testable without React.
 
-export type ProviderChoice = "chatgpt_oauth" | "byo_key" | "bedrock_claude";
+import type { ProviderChoiceId as ProviderChoice } from "@/lib/providerCards";
+export type { ProviderChoice };
 export type ByoProvider = "openai" | "anthropic";
 
 // Upstream enum: src/agents/auth-health.ts — "ok"|"expiring"|"expired"|"missing"|"static".

@@ -4,7 +4,7 @@ import { useCallback } from "react";
 import useSWR from "swr";
 import Link from "next/link";
 import { Loader2, RefreshCw, AlertCircle } from "lucide-react";
-import { useOrganization } from "@clerk/nextjs";
+import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 import { useBilling } from "@/hooks/useBilling";
 import type { UsageSummary } from "@/hooks/useBilling";
 import { useSpend } from "@/hooks/useSpend";
@@ -30,8 +30,7 @@ function formatCents(cents: number): string {
 
 export function UsagePanel() {
   const { account, isLoading: accountLoading, fetchUsage, refresh } = useBilling();
-  const { membership } = useOrganization();
-  const isOrgAdmin = !membership || membership.role === "org:admin";
+  const isOrgAdmin = useIsWorkspaceAdmin();
   const { spend } = useSpend();
 
   // SWR-cached rather than fetched into local state on mount: panels

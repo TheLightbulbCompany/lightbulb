@@ -65,24 +65,49 @@ export class DatabaseStack extends cdk.Stack {
     const config = ENV_CONFIG[props.environment] ?? ENV_CONFIG.dev;
     const env = props.environment;
 
-    this.usersTable = new dynamodb.Table(this, "UsersTable", {
-      tableName: `isol8-${env}-users`,
+    // Every DynamoDB table in this stack shares the same invariants:
+    // `isol8-{env}-` name prefix, on-demand billing, customer-managed KMS
+    // encryption, and point-in-time recovery. The factory pins them so a
+    // future table can't silently regress durability by forgetting
+    // pointInTimeRecovery or the CMK. `ephemeral: true` is the deliberate
+    // opt-out for TTL'd cache/dedup tables: DESTROY + no PITR.
+    //
+    // The construct `id` is the CloudFormation logical ID — renaming an
+    // existing one REPLACES the table (data loss). Never change ids here.
+    const createTable = (
+      id: string,
+      suffix: string,
+      schema: {
+        partitionKey: dynamodb.Attribute;
+        sortKey?: dynamodb.Attribute;
+        timeToLiveAttribute?: string;
+        stream?: dynamodb.StreamViewType;
+        ephemeral?: boolean;
+      },
+    ): dynamodb.Table =>
+      new dynamodb.Table(this, id, {
+        tableName: `isol8-${env}-${suffix}`,
+        partitionKey: schema.partitionKey,
+        ...(schema.sortKey ? { sortKey: schema.sortKey } : {}),
+        billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+        removalPolicy: schema.ephemeral
+          ? cdk.RemovalPolicy.DESTROY
+          : config.removalPolicy,
+        ...(schema.ephemeral ? {} : { pointInTimeRecovery: true }),
+        encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+        encryptionKey: props.kmsKey,
+        ...(schema.timeToLiveAttribute
+          ? { timeToLiveAttribute: schema.timeToLiveAttribute }
+          : {}),
+        ...(schema.stream ? { stream: schema.stream } : {}),
+      });
+
+    this.usersTable = createTable("UsersTable", "users", {
       partitionKey: { name: "user_id", type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: config.removalPolicy,
-      pointInTimeRecovery: true,
-      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
-      encryptionKey: props.kmsKey,
     });
 
-    this.containersTable = new dynamodb.Table(this, "ContainersTable", {
-      tableName: `isol8-${env}-containers`,
+    this.containersTable = createTable("ContainersTable", "containers", {
       partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: config.removalPolicy,
-      pointInTimeRecovery: true,
-      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
-      encryptionKey: props.kmsKey,
     });
     this.containersTable.addGlobalSecondaryIndex({
       indexName: "gateway-token-index",
@@ -97,40 +122,22 @@ export class DatabaseStack extends cdk.Stack {
       partitionKey: { name: "owner_type", type: dynamodb.AttributeType.STRING },
     });
 
-    this.billingTable = new dynamodb.Table(this, "BillingTable", {
-      tableName: `isol8-${env}-billing-accounts`,
+    this.billingTable = createTable("BillingTable", "billing-accounts", {
       partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: config.removalPolicy,
-      pointInTimeRecovery: true,
-      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
-      encryptionKey: props.kmsKey,
     });
     this.billingTable.addGlobalSecondaryIndex({
       indexName: "stripe-customer-index",
       partitionKey: { name: "stripe_customer_id", type: dynamodb.AttributeType.STRING },
     });
 
-    this.usageCountersTable = new dynamodb.Table(this, "UsageCountersTable", {
-      tableName: `isol8-${env}-usage-counters`,
+    this.usageCountersTable = createTable("UsageCountersTable", "usage-counters", {
       partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "period", type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: config.removalPolicy,
-      pointInTimeRecovery: true,
-      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
-      encryptionKey: props.kmsKey,
     });
 
-    this.pendingUpdatesTable = new dynamodb.Table(this, "PendingUpdatesTable", {
-      tableName: `isol8-${env}-pending-updates`,
+    this.pendingUpdatesTable = createTable("PendingUpdatesTable", "pending-updates", {
       partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "update_id", type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: config.removalPolicy,
-      pointInTimeRecovery: true,
-      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
-      encryptionKey: props.kmsKey,
       timeToLiveAttribute: "ttl",
     });
     this.pendingUpdatesTable.addGlobalSecondaryIndex({
@@ -139,26 +146,14 @@ export class DatabaseStack extends cdk.Stack {
       sortKey: { name: "scheduled_at", type: dynamodb.AttributeType.STRING },
     });
 
-    this.opsCacheTable = new dynamodb.Table(this, "OpsCacheTable", {
-      tableName: `isol8-${env}-ops-cache`,
+    this.opsCacheTable = createTable("OpsCacheTable", "ops-cache", {
       partitionKey: { name: "cache_key", type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: config.removalPolicy,
-      pointInTimeRecovery: true,
-      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
-      encryptionKey: props.kmsKey,
       timeToLiveAttribute: "ttl",
     });
 
-    this.channelLinksTable = new dynamodb.Table(this, "ChannelLinksTable", {
-      tableName: `isol8-${env}-channel-links`,
+    this.channelLinksTable = createTable("ChannelLinksTable", "channel-links", {
       partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "sk", type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: config.removalPolicy,
-      pointInTimeRecovery: true,
-      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
-      encryptionKey: props.kmsKey,
     });
     this.channelLinksTable.addGlobalSecondaryIndex({
       indexName: "by-member",
@@ -169,14 +164,10 @@ export class DatabaseStack extends cdk.Stack {
     // Webhook event dedup table — shared by Stripe and Clerk webhooks
     // PK: event_id (prefixed: "stripe:{id}" or "clerk:{id}")
     // TTL: 30-day auto-expiry via "ttl" attribute
-    this.webhookDedupTable = new dynamodb.Table(this, "WebhookEventDedup", {
-      tableName: `isol8-${env}-webhook-event-dedup`,
+    this.webhookDedupTable = createTable("WebhookEventDedup", "webhook-event-dedup", {
       partitionKey: { name: "event_id", type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       timeToLiveAttribute: "ttl",
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
-      encryptionKey: props.kmsKey,
+      ephemeral: true,
     });
 
     new cdk.CfnOutput(this, "WebhookDedupTableName", {
@@ -190,15 +181,9 @@ export class DatabaseStack extends cdk.Stack {
     // "show me all actions taken against this user" view. No TTL — audit rows
     // kept forever. Customer-managed KMS encryption like every other table in
     // this stack.
-    this.adminActionsTable = new dynamodb.Table(this, "AdminActionsTable", {
-      tableName: `isol8-${env}-admin-actions`,
+    this.adminActionsTable = createTable("AdminActionsTable", "admin-actions", {
       partitionKey: { name: "admin_user_id", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "timestamp_action_id", type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: config.removalPolicy,
-      pointInTimeRecovery: true,
-      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
-      encryptionKey: props.kmsKey,
     });
     this.adminActionsTable.addGlobalSecondaryIndex({
       indexName: "target-timestamp-index",
@@ -223,51 +208,29 @@ export class DatabaseStack extends cdk.Stack {
     // money-correctness burden (Metronome is the SoR). The per-owner
     // metronome_customer_id lives on the billing row, not here — this
     // projection is wipeable cache state. PK owner_id.
-    this.metronomeFastGateTable = new dynamodb.Table(this, "MetronomeFastGateTable", {
-      tableName: `isol8-${env}-metronome-fast-gate`,
+    this.metronomeFastGateTable = createTable("MetronomeFastGateTable", "metronome-fast-gate", {
       partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: config.removalPolicy,
-      pointInTimeRecovery: true,
-      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
-      encryptionKey: props.kmsKey,
     });
 
     // Per-owner Bedrock AIP -> owner reverse index (Plan 2). PK aip_arn.
     // Written by ensure_owner_aips; read by resolve_owner_from_aip_arn on the
     // Plan-3 meter hot path (a single bounded GetItem per invocation record).
-    this.bedrockAipOwnersTable = new dynamodb.Table(this, "BedrockAipOwnersTable", {
-      tableName: `isol8-${env}-bedrock-aip-owners`,
+    this.bedrockAipOwnersTable = createTable("BedrockAipOwnersTable", "bedrock-aip-owners", {
       partitionKey: { name: "aip_arn", type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: config.removalPolicy,
-      pointInTimeRecovery: true,
-      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
-      encryptionKey: props.kmsKey,
     });
 
     // ChatGPT OAuth bootstrap tokens — Fernet-encrypted access + refresh
     // tokens captured during signup, used once when staging the user's EFS
     // codex/auth.json file at container provision. Per spec §5.1.
-    this.oauthTokensTable = new dynamodb.Table(this, "OAuthTokensTable", {
-      tableName: `isol8-${env}-oauth-tokens`,
+    this.oauthTokensTable = createTable("OAuthTokensTable", "oauth-tokens", {
       partitionKey: { name: "user_id", type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: config.removalPolicy,
-      pointInTimeRecovery: true,
-      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
-      encryptionKey: props.kmsKey,
     });
 
     // Short-lived OAuth dance state (PKCE verifier + state nonce). TTL'd, CMK, DESTROY (mirrors the webhook-event-dedup table).
-    this.oauthStateTable = new dynamodb.Table(this, "OauthStateTable", {
-      tableName: `isol8-${env}-oauth-state`,
+    this.oauthStateTable = createTable("OauthStateTable", "oauth-state", {
       partitionKey: { name: "state", type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       timeToLiveAttribute: "ttl",
-      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
-      encryptionKey: props.kmsKey,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      ephemeral: true,
     });
 
     // Secret-free integration STATUS index (credential-layer redesign). Holds
@@ -275,15 +238,9 @@ export class DatabaseStack extends cdk.Stack {
     // Secrets Manager (backend-custodian providers) or the container EFS
     // keyring (actor-refresh providers), never here. Same shape as the old
     // connections vault (owner_id PK + provider SK) minus any credential payload.
-    this.integrationsTable = new dynamodb.Table(this, "IntegrationsTable", {
-      tableName: `isol8-${env}-integrations`,
+    this.integrationsTable = createTable("IntegrationsTable", "integrations", {
       partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "provider", type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
-      encryptionKey: props.kmsKey,
-      pointInTimeRecovery: true,
-      removalPolicy: config.removalPolicy,
     });
 
     // Paperclip companies — maps Isol8 user_id → their Paperclip company
@@ -291,14 +248,8 @@ export class DatabaseStack extends cdk.Stack {
     // cleanup cron find disabled rows past their grace window. Per the
     // paperclip-rebuild plan (Task 2). Customer-managed KMS to match the
     // rest of this stack (deviates from the plan template's AWS_MANAGED).
-    this.paperclipCompaniesTable = new dynamodb.Table(this, "PaperclipCompaniesTable", {
-      tableName: `isol8-${env}-paperclip-companies`,
+    this.paperclipCompaniesTable = createTable("PaperclipCompaniesTable", "paperclip-companies", {
       partitionKey: { name: "user_id", type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: config.removalPolicy,
-      pointInTimeRecovery: true,
-      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
-      encryptionKey: props.kmsKey,
     });
     this.paperclipCompaniesTable.addGlobalSecondaryIndex({
       indexName: "by-status-purge-at",
@@ -343,15 +294,9 @@ export class DatabaseStack extends cdk.Stack {
       exportName: `${this.stackName}-integrations-table`,
     });
 
-    this.marketplaceListingsTable = new dynamodb.Table(this, "MarketplaceListingsTable", {
-      tableName: `isol8-${env}-marketplace-listings`,
+    this.marketplaceListingsTable = createTable("MarketplaceListingsTable", "marketplace-listings", {
       partitionKey: { name: "listing_id", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "version", type: dynamodb.AttributeType.NUMBER },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: config.removalPolicy,
-      pointInTimeRecovery: true,
-      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
-      encryptionKey: props.kmsKey,
       stream: dynamodb.StreamViewType.NEW_AND_OLD_IMAGES,
     });
     this.marketplaceListingsTable.addGlobalSecondaryIndex({
@@ -375,15 +320,9 @@ export class DatabaseStack extends cdk.Stack {
       sortKey: { name: "published_at", type: dynamodb.AttributeType.STRING },
     });
 
-    this.marketplacePurchasesTable = new dynamodb.Table(this, "MarketplacePurchasesTable", {
-      tableName: `isol8-${env}-marketplace-purchases`,
+    this.marketplacePurchasesTable = createTable("MarketplacePurchasesTable", "marketplace-purchases", {
       partitionKey: { name: "buyer_id", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "purchase_id", type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: config.removalPolicy,
-      pointInTimeRecovery: true,
-      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
-      encryptionKey: props.kmsKey,
     });
     this.marketplacePurchasesTable.addGlobalSecondaryIndex({
       indexName: "listing-created-index",
@@ -406,39 +345,21 @@ export class DatabaseStack extends cdk.Stack {
       },
     });
 
-    this.marketplacePayoutAccountsTable = new dynamodb.Table(this, "MarketplacePayoutAccountsTable", {
-      tableName: `isol8-${env}-marketplace-payout-accounts`,
+    this.marketplacePayoutAccountsTable = createTable("MarketplacePayoutAccountsTable", "marketplace-payout-accounts", {
       partitionKey: { name: "seller_id", type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: config.removalPolicy,
-      pointInTimeRecovery: true,
-      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
-      encryptionKey: props.kmsKey,
     });
 
-    this.marketplaceTakedownsTable = new dynamodb.Table(this, "MarketplaceTakedownsTable", {
-      tableName: `isol8-${env}-marketplace-takedowns`,
+    this.marketplaceTakedownsTable = createTable("MarketplaceTakedownsTable", "marketplace-takedowns", {
       partitionKey: { name: "listing_id", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "takedown_id", type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: config.removalPolicy,
-      pointInTimeRecovery: true,
-      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
-      encryptionKey: props.kmsKey,
     });
 
     // Marketplace seller profiles — per-seller chosen handle / display name.
     // The seller_id is the Clerk user_id; the handle is the public marketplace
     // identity surfaced on listing bylines and (future) star / credibility
     // surfaces. `handle-index` enforces uniqueness via conditional writes.
-    this.marketplaceSellersTable = new dynamodb.Table(this, "MarketplaceSellersTable", {
-      tableName: `isol8-${env}-marketplace-sellers`,
+    this.marketplaceSellersTable = createTable("MarketplaceSellersTable", "marketplace-sellers", {
       partitionKey: { name: "seller_id", type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: config.removalPolicy,
-      pointInTimeRecovery: true,
-      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
-      encryptionKey: props.kmsKey,
     });
     this.marketplaceSellersTable.addGlobalSecondaryIndex({
       indexName: "handle-index",
@@ -451,15 +372,9 @@ export class DatabaseStack extends cdk.Stack {
     // the hook router to ~30d) drops rows automatically. PITR + customer-
     // managed KMS to match the rest of this stack. T4 of
     // openclaw-hook-token-provisioning; consumed by T5 repo + T6 proxy.
-    this.hookEventsTable = new dynamodb.Table(this, "HookEventsTable", {
-      tableName: `isol8-${env}-hook-events`,
+    this.hookEventsTable = createTable("HookEventsTable", "hook-events", {
       partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "event_id", type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: config.removalPolicy,
-      pointInTimeRecovery: true,
-      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
-      encryptionKey: props.kmsKey,
       timeToLiveAttribute: "expires_at",
     });
 

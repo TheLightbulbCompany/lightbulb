@@ -4,14 +4,14 @@ import "../settings.css";
 import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { useOrganization, UserButton } from "@clerk/nextjs";
+import { UserButton } from "@clerk/nextjs";
 
 import { Logo } from "@/components/Logo";
 import { ConnectionsList } from "@/components/settings/ConnectionsList";
 import { useConnections } from "@/hooks/useConnections";
 import { SettingsNav } from "@/components/settings/SettingsNav";
 import { SETTINGS_NAV_SECTIONS } from "@/components/settings/settings-nav-config";
-import { useIsControlAdmin } from "@/components/control/ControlSidebar";
+import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 
 /**
  * /settings/connections — manage third-party integrations.
@@ -55,16 +55,12 @@ function oauthReturnBanner(connected: string | null, error: string | null): Bann
 function ConnectionsPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { membership } = useOrganization();
-
   // Same shared nav as /settings (the 6 intent-ordered groups). Connections is
   // highlighted via activeHref.
   const navSections = SETTINGS_NAV_SECTIONS;
-  const isAdmin = useIsControlAdmin();
+  const isAdmin = useIsWorkspaceAdmin();
 
-  // A personal owner has no org membership and is implicitly the admin of
-  // their own resources; only restrict non-admin members of a real org.
-  const canManage = !membership || membership.role === "org:admin";
+  const canManage = isAdmin;
 
   const { mutate } = useConnections();
   const [banner, setBanner] = useState<Banner>(null);

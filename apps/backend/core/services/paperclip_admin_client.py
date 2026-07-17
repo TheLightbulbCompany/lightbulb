@@ -2076,3 +2076,32 @@ class PaperclipAdminClient:
             json=body,
             session_cookie=session_cookie,
         )
+
+
+# Module-level shared httpx client. Created lazily on first use, reused for
+# the lifetime of the process. Not closed explicitly — the OS reclaims socket
+# FDs at process exit and the connection pool releases idle connections via
+# httpx's own keepalive logic. A per-request ``httpx.AsyncClient`` leaks a
+# file descriptor + connection-pool task on every call.
+_shared_http_client: httpx.AsyncClient | None = None
+_shared_admin: PaperclipAdminClient | None = None
+
+
+def shared_admin_client() -> PaperclipAdminClient:
+    """Return the process-wide shared admin client.
+
+    The Teams routers reach this through ``routers.teams.agents._admin`` (the
+    monkeypatchable indirection the unit suite patches); non-router callers
+    (``main.py`` startup wiring) import it from here directly so no service
+    or startup code has to import from ``routers/``.
+    """
+    global _shared_http_client, _shared_admin
+    if _shared_admin is None:
+        from core.config import settings
+
+        _shared_http_client = httpx.AsyncClient(
+            base_url=settings.PAPERCLIP_INTERNAL_URL,
+            timeout=15.0,
+        )
+        _shared_admin = PaperclipAdminClient(http_client=_shared_http_client)
+    return _shared_admin

@@ -39,7 +39,7 @@ import { Button } from "@/components/ui/button";
  * future per-code UI affordance can be wired up if useful.
  */
 
-type ProviderChoice = "chatgpt_oauth" | "byo_key" | "bedrock_claude";
+import type { ProviderChoiceId as ProviderChoice } from "@/lib/providerCards";
 type ByoProvider = "openai" | "anthropic";
 
 type Stage =

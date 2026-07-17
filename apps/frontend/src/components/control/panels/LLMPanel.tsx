@@ -19,7 +19,7 @@ import {
   type DotColor,
 } from "./llm-auth-status";
 
-type ProviderChoice = "chatgpt_oauth" | "byo_key" | "bedrock_claude";
+import type { ProviderChoiceId as ProviderChoice } from "@/lib/providerCards";
 type ByoProvider = "openai" | "anthropic";
 
 type UserData = {

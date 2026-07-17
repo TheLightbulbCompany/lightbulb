@@ -12,10 +12,10 @@ import {
   Moon,
   FileCheck,
 } from "lucide-react";
-import { useOrganization } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
+import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 
 interface ControlSidebarProps {
   activePanel?: string;
@@ -24,7 +24,7 @@ interface ControlSidebarProps {
 
 // The global control-panel list, labels, icons, and admin gating. Plain keys
 // route through ControlPanelRouter. Exported alongside ADMIN_ONLY_PANELS /
-// useIsControlAdmin for any other surface that needs the same panel set.
+// useIsWorkspaceAdmin for any other surface that needs the same panel set.
 export const NAV_ITEMS = [
   { key: "overview", label: "Overview", icon: LayoutDashboard },
   { key: "agents", label: "Agents", icon: Bot },
@@ -41,15 +41,8 @@ export const NAV_ITEMS = [
 // Panels hidden from non-admin org members
 export const ADMIN_ONLY_PANELS = new Set(["usage"]);
 
-// Personal owners (no org membership) are treated as admins; org members are
-// admins only with the org:admin role. Gates ADMIN_ONLY_PANELS.
-export function useIsControlAdmin(): boolean {
-  const { membership } = useOrganization();
-  return !membership || membership.role === "org:admin";
-}
-
 export function ControlSidebar({ activePanel, onPanelChange }: ControlSidebarProps) {
-  const isOrgAdmin = useIsControlAdmin();
+  const isOrgAdmin = useIsWorkspaceAdmin();
 
   return (
     <ScrollArea className="flex-1 px-3 py-2">

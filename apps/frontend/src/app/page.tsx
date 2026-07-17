@@ -6,7 +6,7 @@ import { Features } from "@/components/landing/Features";
 import { Isolation } from "@/components/landing/Isolation";
 import { Team } from "@/components/landing/Team";
 import { MarketplaceSection } from "@/components/landing/MarketplaceSection";
-import { Pricing } from "@/components/landing/Pricing";
+import { PricingThreeCard as Pricing } from "@/components/landing/PricingThreeCard";
 import { FAQ } from "@/components/landing/FAQ";
 import { GooseTownTransition, GooseTown } from "@/components/landing/GooseTown";
 import { Footer } from "@/components/landing/Footer";

@@ -54,7 +54,7 @@ export function resolvePostAgentPhase(): "ready" {
   return "ready";
 }
 
-type ProviderChoice = "chatgpt_oauth" | "byo_key" | "bedrock_claude";
+import type { ProviderChoiceId as ProviderChoice } from "@/lib/providerCards";
 
 function isProviderChoice(v: string | null): v is ProviderChoice {
   return v === "chatgpt_oauth" || v === "byo_key" || v === "bedrock_claude";

@@ -12,17 +12,13 @@
 
 import { useMemo } from "react";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
-import { parseLogLines } from "@/components/teams/dashboard/hooks/useRunLog";
+import { parseLogLines, type RunLogResponse } from "@/components/teams/dashboard/hooks/useRunLog";
 
 /** Matches the BFF's RUN_LOG_MAX_LIMIT_BYTES ceiling. */
 export const RUN_TRANSCRIPT_LIMIT_BYTES = 262_144;
 
 /** Poll cadence while the run is active — same beat as the live-runs feed. */
 const REFRESH_MS = 15_000;
-
-interface RunLogResponse {
-  content?: string | null;
-}
 
 export function useRunTranscript(
   runId: string,

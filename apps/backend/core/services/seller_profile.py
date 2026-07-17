@@ -2,7 +2,8 @@
 
 The marketplace lets a seller pick a public handle (``@example``) that
 identifies them across listings and (future) star / credibility surfaces.
-This module owns the DynamoDB table behind that identity:
+This module owns validation + uniqueness policy for that identity; the
+DynamoDB access lives in ``core.repositories.marketplace_repo``:
 
   * PK ``seller_id`` (Clerk user_id) -> profile row.
   * GSI ``handle-index`` PK ``handle`` -> uniqueness probe + future
@@ -27,11 +28,8 @@ from __future__ import annotations
 import re
 from typing import Final
 
-import boto3
-from botocore.exceptions import ClientError
-
-from core.config import settings
-from core.dynamodb import run_in_thread, utc_now_iso
+from core.dynamodb import utc_now_iso
+from core.repositories import marketplace_repo
 
 
 HANDLE_RE: Final[re.Pattern[str]] = re.compile(r"^[a-z0-9_-]{3,32}$")
@@ -80,10 +78,6 @@ class HandleTakenError(SellerProfileError):
     """Handle is already in use by a different seller."""
 
 
-def _sellers_table():
-    return boto3.resource("dynamodb").Table(settings.MARKETPLACE_SELLERS_TABLE)
-
-
 def normalize_handle(raw: str | None) -> str:
     """Strip + lowercase. Empty string if input is None/whitespace."""
     return (raw or "").strip().lower()
@@ -127,16 +121,7 @@ async def get_profile(seller_id: str) -> dict | None:
     """Return the profile row keyed by seller_id, or None if absent."""
     if not seller_id:
         return None
-    table = _sellers_table()
-    try:
-        resp = await run_in_thread(table.get_item, Key={"seller_id": seller_id})
-    except ClientError as exc:
-        # Table missing (e.g. early after CDK deploy) is benign — surface
-        # as "no profile" so the rest of the app keeps working.
-        if exc.response.get("Error", {}).get("Code") == "ResourceNotFoundException":
-            return None
-        raise
-    return resp.get("Item")
+    return await marketplace_repo.get_seller_profile(seller_id)
 
 
 async def get_profile_by_handle(handle: str) -> dict | None:
@@ -144,21 +129,7 @@ async def get_profile_by_handle(handle: str) -> dict | None:
     normalised = normalize_handle(handle)
     if not normalised:
         return None
-    table = _sellers_table()
-    try:
-        resp = await run_in_thread(
-            table.query,
-            IndexName="handle-index",
-            KeyConditionExpression="handle = :h",
-            ExpressionAttributeValues={":h": normalised},
-            Limit=1,
-        )
-    except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") == "ResourceNotFoundException":
-            return None
-        raise
-    items = resp.get("Items") or []
-    return items[0] if items else None
+    return await marketplace_repo.find_seller_by_handle(normalised)
 
 
 async def check_handle_available(handle: str, *, for_seller_id: str | None = None) -> bool:
@@ -206,7 +177,6 @@ async def upsert_profile(
     if existing_by_handle and existing_by_handle.get("seller_id") != seller_id:
         raise HandleTakenError(f"handle {normalised!r} is already taken")
 
-    table = _sellers_table()
     now = utc_now_iso()
     existing = await get_profile(seller_id)
     item: dict = {
@@ -220,7 +190,7 @@ async def upsert_profile(
     if biography:
         item["bio"] = biography
 
-    await run_in_thread(table.put_item, Item=item)
+    await marketplace_repo.put_seller_profile(item)
 
     # Resolver caches the previous handle (or fallback) for this seller
     # — invalidate so the new value is visible immediately.

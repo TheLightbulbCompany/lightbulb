@@ -8,13 +8,12 @@ in marketplace_listings. There is no CLI installer.
 import time
 from typing import Annotated
 
-import boto3
 import stripe
-from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
 from core.auth import AuthContext, get_current_user, require_org_admin
 from core.config import settings
+from core.repositories import marketplace_repo
 from core.services import license_service, payout_service
 from core.services import webhook_dedup
 from core.services.webhook_dedup import WebhookDedupResult
@@ -22,14 +21,6 @@ from schemas import marketplace as schemas
 
 
 router = APIRouter(prefix="/api/v1/marketplace", tags=["marketplace-purchases"])
-
-
-def _purchases_table():
-    return boto3.resource("dynamodb").Table(settings.MARKETPLACE_PURCHASES_TABLE)
-
-
-def _payout_accounts_table():
-    return boto3.resource("dynamodb").Table(settings.MARKETPLACE_PAYOUT_ACCOUNTS_TABLE)
 
 
 @router.post("/checkout")
@@ -177,73 +168,30 @@ async def _handle_checkout_completed(session: dict) -> None:
         pi = stripe.PaymentIntent.retrieve(payment_intent_id)
         transfer_group = pi.get("transfer_group") or ""
 
-    # Atomic fulfillment via TransactWriteItems: the purchase row write
-    # AND the seller balance credit happen in a single ACID transaction,
-    # so partial-failure replay can never leave the system in a state
-    # where the buyer has a license but the seller's accounting is missing
-    # the credit (or vice versa).
-    #
-    # Idempotency: purchase_id is deterministic from the Stripe checkout
-    # session_id (one buy = one session), and the Put is conditional on
-    # attribute_not_exists. A Stripe retry (after webhook_dedup rollback)
-    # re-runs the whole transaction; the conditional fails, the entire
-    # transaction is canceled, and NEITHER the purchase nor the balance
-    # are written a second time. Net: exactly one purchase row + exactly
-    # one balance credit per checkout session.
+    # Atomic fulfillment: the purchase row write AND the seller balance
+    # credit happen in a single ACID transaction (see the repo function).
+    # A Stripe retry (after webhook_dedup rollback) re-runs the whole
+    # transaction; the conditional fails and the repo returns False —
+    # already fulfilled on a prior delivery, idempotent no-op.
     session_id = session.get("id")
     if not session_id:
         return  # Stripe always sends id on completed sessions; defensive.
     purchase_id = f"cs_{session_id}"
     license_key = license_service.generate()
     now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    client = boto3.client("dynamodb")
-    try:
-        client.transact_write_items(
-            TransactItems=[
-                {
-                    "Put": {
-                        "TableName": settings.MARKETPLACE_PURCHASES_TABLE,
-                        "Item": {
-                            "buyer_id": {"S": buyer_id},
-                            "purchase_id": {"S": purchase_id},
-                            "listing_id": {"S": listing_id},
-                            "seller_id": {"S": seller_id},
-                            "listing_version_at_purchase": {"N": str(version)},
-                            "entitlement_version_floor": {"N": str(version)},
-                            "price_paid_cents": {"N": str(amount)},
-                            "stripe_payment_intent_id": {"S": payment_intent_id or ""},
-                            "stripe_checkout_session_id": {"S": session_id},
-                            "stripe_transfer_group": {"S": transfer_group},
-                            "license_key": {"S": license_key},
-                            "license_key_revoked": {"BOOL": False},
-                            "status": {"S": "paid"},
-                            "install_count": {"N": "0"},
-                            "created_at": {"S": now_iso},
-                        },
-                        "ConditionExpression": "attribute_not_exists(purchase_id)",
-                    },
-                },
-                {
-                    "Update": {
-                        "TableName": settings.MARKETPLACE_PAYOUT_ACCOUNTS_TABLE,
-                        "Key": {"seller_id": {"S": seller_id}},
-                        "UpdateExpression": (
-                            "SET balance_held_cents = if_not_exists(balance_held_cents, :zero) + :amt, "
-                            "    last_balance_update_at = :now"
-                        ),
-                        "ExpressionAttributeValues": {
-                            ":zero": {"N": "0"},
-                            ":amt": {"N": str(amount)},
-                            ":now": {"S": now_iso},
-                        },
-                    },
-                },
-            ]
-        )
-    except ClientError as e:
-        if e.response["Error"]["Code"] in ("TransactionCanceledException", "ConditionalCheckFailedException"):
-            return  # Already fulfilled on a prior delivery; idempotent no-op.
-        raise
+    await marketplace_repo.transact_record_purchase_and_credit_seller(
+        purchase_id=purchase_id,
+        buyer_id=buyer_id,
+        seller_id=seller_id,
+        listing_id=listing_id,
+        version=version,
+        amount_cents=amount,
+        payment_intent_id=payment_intent_id or "",
+        session_id=session_id,
+        transfer_group=transfer_group,
+        license_key=license_key,
+        now_iso=now_iso,
+    )
 
 
 async def _handle_charge_refunded(charge: dict) -> None:
@@ -253,17 +201,9 @@ async def _handle_charge_refunded(charge: dict) -> None:
     payment_intent_id = charge.get("payment_intent")
     if not payment_intent_id:
         return
-    table = _purchases_table()
-    resp = table.query(
-        IndexName="payment-intent-index",
-        KeyConditionExpression="stripe_payment_intent_id = :pi",
-        ExpressionAttributeValues={":pi": payment_intent_id},
-        Limit=1,
-    )
-    items = resp.get("Items", [])
-    if not items:
+    purchase = await marketplace_repo.find_purchase_by_payment_intent(payment_intent_id)
+    if purchase is None:
         return
-    purchase = items[0]
     await license_service.revoke(
         purchase_id=purchase["purchase_id"],
         buyer_id=purchase["buyer_id"],
@@ -284,26 +224,16 @@ async def _handle_charge_refunded(charge: dict) -> None:
         # directly (post-R10 atomic write).
         listing_id = purchase.get("listing_id")
         if listing_id:
-            listings_table = boto3.resource("dynamodb").Table(settings.MARKETPLACE_LISTINGS_TABLE)
             v_at_purchase = int(purchase.get("listing_version_at_purchase", 1)) or 1
-            li = listings_table.get_item(Key={"listing_id": listing_id, "version": v_at_purchase}).get("Item")
+            li = await marketplace_repo.get_listing(listing_id, v_at_purchase)
             seller_id = (li or {}).get("seller_id")
     if not purchase.get("seller_transfer_id") and seller_id:
         amount = int(purchase.get("price_paid_cents", 0))
         if amount > 0:
-            try:
-                _payout_accounts_table().update_item(
-                    Key={"seller_id": seller_id},
-                    UpdateExpression="SET balance_held_cents = balance_held_cents - :amt",
-                    ConditionExpression="balance_held_cents >= :amt",
-                    ExpressionAttributeValues={":amt": amount},
-                )
-            except ClientError as e:
-                if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
-                    raise
-                # Held balance is already short of this amount — likely a
-                # concurrent flush+refund race or a manual ops correction.
-                # Leave the row alone rather than going negative.
+            # A False return (balance already short of this amount — likely
+            # a concurrent flush+refund race or a manual ops correction)
+            # leaves the row alone rather than going negative.
+            await marketplace_repo.decrement_held_balance(seller_id=seller_id, amount_cents=amount)
 
 
 async def _handle_account_updated(account: dict) -> None:
@@ -333,106 +263,67 @@ async def _handle_account_updated(account: dict) -> None:
     seller_id = (account.get("metadata") or {}).get("seller_id")
     if not seller_id:
         return
-    pa_table = _payout_accounts_table()
-    resp = pa_table.get_item(Key={"seller_id": seller_id})
-    pa = resp.get("Item", {})
+    pa = await marketplace_repo.get_payout_account(seller_id) or {}
     held = pa.get("balance_held_cents", 0)
     connect_account_id = pa.get("stripe_connect_account_id") or account.get("id")
     if held <= 0 or not connect_account_id:
         return
 
-    listings_table = boto3.resource("dynamodb").Table(settings.MARKETPLACE_LISTINGS_TABLE)
-    purchases_table = _purchases_table()
-    # Page through all of the seller's listings — DynamoDB Query caps each
-    # page at 1MB, so a prolific seller could otherwise have purchases on
-    # later listings silently skipped during payout flush.
-    seller_listings: list[dict] = []
-    listings_kwargs: dict = {
-        "IndexName": "seller-created-index",
-        "KeyConditionExpression": "seller_id = :s",
-        "ExpressionAttributeValues": {":s": seller_id},
-    }
-    while True:
-        page = listings_table.query(**listings_kwargs)
-        seller_listings.extend(page.get("Items", []))
-        last = page.get("LastEvaluatedKey")
-        if not last:
-            break
-        listings_kwargs["ExclusiveStartKey"] = last
+    # The repo pages through all of the seller's listings — a prolific
+    # seller could otherwise have purchases on later listings silently
+    # skipped during payout flush.
+    seller_listings = await marketplace_repo.list_listings_by_seller(seller_id)
 
     transferred_total = 0
     now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     for listing in seller_listings:
         listing_id = listing["listing_id"]
-        kwargs: dict = {
-            "IndexName": "listing-created-index",
-            "KeyConditionExpression": "listing_id = :l",
-            "ExpressionAttributeValues": {":l": listing_id},
-        }
-        while True:
-            page = purchases_table.query(**kwargs)
-            for purchase in page.get("Items", []):
-                if purchase.get("seller_transfer_id"):
-                    continue  # already transferred on a prior flush
-                # Skip refunded purchases — license_service.revoke leaves
-                # price_paid_cents intact (so the buyer's history still
-                # shows what they paid), so without an explicit refund
-                # check the flush would Transfer to the seller for a
-                # purchase the buyer was already refunded for. That's a
-                # direct accounting loss: buyer refunded AND seller paid.
-                if purchase.get("license_key_revoked") or purchase.get("status") == "refunded":
-                    continue
-                amount = int(purchase.get("price_paid_cents", 0))
-                tg = purchase.get("stripe_transfer_group")
-                if amount <= 0 or not tg:
-                    continue  # legacy / malformed row
-                # listing-created-index is eventually consistent: a replayed
-                # account.updated (or a concurrent run) can re-read the same
-                # purchase before the previous run's seller_transfer_id is
-                # visible. Stripe's idempotency_key on transfer_held_balance
-                # catches the duplicate transfer (returns the existing
-                # transfer_id), but without an atomic guard here we'd
-                # double-count the amount in transferred_total and the held
-                # balance would be decremented twice for one transfer.
-                # The conditional update on attribute_not_exists is the
-                # source of truth for "this run wrote the seller_transfer_id"
-                # — only successful update_item calls increment the running
-                # total.
-                transfer_id = await payout_service.transfer_held_balance(
-                    connect_account_id=connect_account_id,
-                    amount_cents=amount,
-                    transfer_group=tg,
-                )
-                try:
-                    purchases_table.update_item(
-                        Key={"buyer_id": purchase["buyer_id"], "purchase_id": purchase["purchase_id"]},
-                        UpdateExpression="SET seller_transfer_id = :t, transferred_at = :now",
-                        ConditionExpression="attribute_not_exists(seller_transfer_id)",
-                        ExpressionAttributeValues={":t": transfer_id, ":now": now_iso},
-                    )
-                except ClientError as e:
-                    if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-                        # Another run got there first — Stripe Transfer was
-                        # idempotent so no money moved twice; just don't
-                        # count this amount toward our held-balance decrement.
-                        continue
-                    raise
-                transferred_total += amount
-            last = page.get("LastEvaluatedKey")
-            if not last:
-                break
-            kwargs["ExclusiveStartKey"] = last
+        for purchase in await marketplace_repo.list_purchases_by_listing(listing_id):
+            if purchase.get("seller_transfer_id"):
+                continue  # already transferred on a prior flush
+            # Skip refunded purchases — license_service.revoke leaves
+            # price_paid_cents intact (so the buyer's history still
+            # shows what they paid), so without an explicit refund
+            # check the flush would Transfer to the seller for a
+            # purchase the buyer was already refunded for. That's a
+            # direct accounting loss: buyer refunded AND seller paid.
+            if purchase.get("license_key_revoked") or purchase.get("status") == "refunded":
+                continue
+            amount = int(purchase.get("price_paid_cents", 0))
+            tg = purchase.get("stripe_transfer_group")
+            if amount <= 0 or not tg:
+                continue  # legacy / malformed row
+            # listing-created-index is eventually consistent: a replayed
+            # account.updated (or a concurrent run) can re-read the same
+            # purchase before the previous run's seller_transfer_id is
+            # visible. Stripe's idempotency_key on transfer_held_balance
+            # catches the duplicate transfer (returns the existing
+            # transfer_id), but without an atomic guard we'd double-count
+            # the amount in transferred_total and the held balance would
+            # be decremented twice for one transfer. The repo's set-once
+            # conditional write is the source of truth for "this run wrote
+            # the seller_transfer_id" — only successful stamps increment
+            # the running total.
+            transfer_id = await payout_service.transfer_held_balance(
+                connect_account_id=connect_account_id,
+                amount_cents=amount,
+                transfer_group=tg,
+            )
+            stamped = await marketplace_repo.set_seller_transfer_if_absent(
+                buyer_id=purchase["buyer_id"],
+                purchase_id=purchase["purchase_id"],
+                transfer_id=transfer_id,
+                now_iso=now_iso,
+            )
+            if not stamped:
+                # Another run got there first — Stripe Transfer was
+                # idempotent so no money moved twice; just don't count
+                # this amount toward our held-balance decrement.
+                continue
+            transferred_total += amount
 
     if transferred_total > 0:
-        pa_table.update_item(
-            Key={"seller_id": seller_id},
-            UpdateExpression=(
-                "SET balance_held_cents = balance_held_cents - :t, "
-                "    onboarding_status = :done, "
-                "    lifetime_earned_cents = if_not_exists(lifetime_earned_cents, :zero) + :t"
-            ),
-            ExpressionAttributeValues={":zero": 0, ":done": "completed", ":t": transferred_total},
-        )
+        await marketplace_repo.apply_flush_totals(seller_id=seller_id, transferred_cents=transferred_total)
 
 
 @router.post("/refund")
@@ -442,9 +333,7 @@ async def refund(
 ):
     """7-day refund window for buyers."""
     require_org_admin(auth)
-    table = _purchases_table()
-    resp = table.get_item(Key={"buyer_id": auth.user_id, "purchase_id": purchase_id})
-    purchase = resp.get("Item")
+    purchase = await marketplace_repo.get_purchase(auth.user_id, purchase_id)
     if not purchase:
         raise HTTPException(status_code=404, detail="purchase not found")
     created_iso = purchase["created_at"]
@@ -480,24 +369,11 @@ async def my_purchases(auth: Annotated[AuthContext, Depends(get_current_user)]):
     # created_at in Python. Limit-then-cap-at-100 after sorting so a buyer
     # with >100 purchases sees the genuinely-newest 100, not an arbitrary
     # subset.
-    table = _purchases_table()
-    raws: list[dict] = []
-    kwargs: dict = {
-        "KeyConditionExpression": "buyer_id = :b",
-        "ExpressionAttributeValues": {":b": auth.user_id},
-    }
-    while True:
-        page = table.query(**kwargs)
-        raws.extend(page.get("Items", []))
-        last = page.get("LastEvaluatedKey")
-        if not last:
-            break
-        kwargs["ExclusiveStartKey"] = last
+    raws = await marketplace_repo.list_purchases_by_buyer(auth.user_id)
     raws.sort(key=lambda r: r.get("created_at") or "", reverse=True)
     raws = raws[:100]
 
     items: list[schemas.PurchaseSummary] = []
-    listings_table = boto3.resource("dynamodb").Table(settings.MARKETPLACE_LISTINGS_TABLE)
     slug_cache: dict[str, str] = {}
     for raw in raws:
         listing_id = raw.get("listing_id", "")
@@ -506,9 +382,9 @@ async def my_purchases(auth: Annotated[AuthContext, Depends(get_current_user)]):
             # fall back to v=1. Avoids 404s on multi-version listings where
             # v=1 was retired before the buyer reads their history.
             v_at_purchase = int(raw.get("listing_version_at_purchase", 1)) or 1
-            li = listings_table.get_item(Key={"listing_id": listing_id, "version": v_at_purchase}).get("Item")
+            li = await marketplace_repo.get_listing(listing_id, v_at_purchase)
             if not li:
-                li = listings_table.get_item(Key={"listing_id": listing_id, "version": 1}).get("Item")
+                li = await marketplace_repo.get_listing(listing_id, 1)
             slug_cache[listing_id] = (li or {}).get("slug", "") if li else ""
         items.append(
             schemas.PurchaseSummary(

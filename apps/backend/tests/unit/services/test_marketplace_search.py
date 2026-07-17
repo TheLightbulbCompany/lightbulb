@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch  # noqa: E402
 
 import pytest  # noqa: E402
 
+from core.repositories import marketplace_repo  # noqa: E402
 from core.services import marketplace_search  # noqa: E402
 
 
@@ -79,7 +80,7 @@ def _reset_cache():
 def mock_table():
     table = MagicMock()
     table.scan.return_value = {"Items": list(LISTINGS)}
-    with patch("core.services.marketplace_search._listings_table", return_value=table):
+    with patch("core.repositories.marketplace_repo._listings_table", return_value=table):
         yield table
 
 
@@ -245,7 +246,7 @@ async def test_cache_refresh_paginates_through_last_evaluated_key():
         {"Items": [page_two]},  # no LastEvaluatedKey -> pagination ends
     ]
 
-    with patch("core.services.marketplace_search._listings_table", return_value=table):
+    with patch("core.repositories.marketplace_repo._listings_table", return_value=table):
         results = await marketplace_search.search(query=None)
 
     # Two scan calls — one for each page.
@@ -322,7 +323,7 @@ async def test_search_includes_unpublished_when_flag_set():
     # we deliberately return them all here so the in-Python branch under test
     # is exercised end-to-end.
     table.scan.return_value = {"Items": list(snapshot)}
-    with patch("core.services.marketplace_search._listings_table", return_value=table):
+    with patch("core.repositories.marketplace_repo._listings_table", return_value=table):
         items = await marketplace_search.search(query=None, seller_id="u_seller", include_unpublished=True, limit=10)
 
     statuses = {item["status"] for item in items}
@@ -370,7 +371,7 @@ async def test_search_default_filters_to_published():
     ]
     table = MagicMock()
     table.scan.return_value = {"Items": list(snapshot)}
-    with patch("core.services.marketplace_search._listings_table", return_value=table):
+    with patch("core.repositories.marketplace_repo._listings_table", return_value=table):
         items = await marketplace_search.search(query=None, seller_id="u_seller", limit=10)
 
     statuses = {item["status"] for item in items}
@@ -448,7 +449,7 @@ async def test_draft_row_surfaces_to_seller_via_include_unpublished(monkeypatch)
         ],
     }
 
-    monkeypatch.setattr(marketplace_search, "_listings_table", lambda: table)
+    monkeypatch.setattr(marketplace_repo, "_listings_table", lambda: table)
 
     items = await marketplace_search.search(query=None, seller_id="u_seller", include_unpublished=True)
     slugs = {item["slug"] for item in items}
@@ -513,7 +514,7 @@ async def test_default_search_still_excludes_drafts_after_cache_change(monkeypat
         ],
     }
 
-    monkeypatch.setattr(marketplace_search, "_listings_table", lambda: table)
+    monkeypatch.setattr(marketplace_repo, "_listings_table", lambda: table)
 
     items = await marketplace_search.search(query=None)  # default — no flag
     statuses = {item["status"] for item in items}
@@ -567,7 +568,7 @@ async def test_search_filters_by_category(monkeypatch):
         ],
     }
 
-    monkeypatch.setattr(marketplace_search, "_listings_table", lambda: table)
+    monkeypatch.setattr(marketplace_repo, "_listings_table", lambda: table)
 
     items = await marketplace_search.search(category="engineering")
     slugs = {item["slug"] for item in items}
@@ -624,7 +625,7 @@ async def test_status_in_filter_runs_before_limit(monkeypatch):
 
     table = MagicMock()
     table.scan.return_value = {"Items": items}
-    monkeypatch.setattr(marketplace_search, "_listings_table", lambda: table)
+    monkeypatch.setattr(marketplace_repo, "_listings_table", lambda: table)
 
     results = await marketplace_search.search(
         query=None,
@@ -704,7 +705,7 @@ async def test_seller_scoped_bypasses_cache(monkeypatch):
         {"Items": list(initial)},
         {"Items": list(after_write)},
     ]
-    monkeypatch.setattr(marketplace_search, "_listings_table", lambda: table)
+    monkeypatch.setattr(marketplace_repo, "_listings_table", lambda: table)
 
     # Warm the public cache via a default search (no seller_id, no flag).
     public = await marketplace_search.search()

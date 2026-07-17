@@ -16,9 +16,9 @@ from tests.unit.services.conftest import _create_and_publish, _upload_dummy_arti
 
 
 @pytest.mark.asyncio
-@patch("core.services.takedown_service._purchases_table")
-@patch("core.services.takedown_service._listings_table")
-@patch("core.services.takedown_service._takedowns_table")
+@patch("core.repositories.marketplace_repo._purchases_table")
+@patch("core.repositories.marketplace_repo._listings_table")
+@patch("core.repositories.marketplace_repo._takedowns_table")
 @patch("core.services.takedown_service.license_service.revoke", new=AsyncMock())
 async def test_execute_full_takedown_revokes_all_licenses(mock_takedowns, mock_listings, mock_purchases):
     mock_purchases.return_value.query.return_value = {
@@ -40,9 +40,9 @@ async def test_execute_full_takedown_revokes_all_licenses(mock_takedowns, mock_l
 
 
 @pytest.mark.asyncio
-@patch("core.services.takedown_service._purchases_table")
-@patch("core.services.takedown_service._listings_table")
-@patch("core.services.takedown_service._takedowns_table")
+@patch("core.repositories.marketplace_repo._purchases_table")
+@patch("core.repositories.marketplace_repo._listings_table")
+@patch("core.repositories.marketplace_repo._takedowns_table")
 @patch("core.services.takedown_service.license_service.revoke", new=AsyncMock())
 async def test_execute_full_takedown_pages_through_all_purchases(mock_takedowns, mock_listings, mock_purchases):
     """Regression: takedown cascade must page through every purchase row.
@@ -71,9 +71,9 @@ async def test_execute_full_takedown_pages_through_all_purchases(mock_takedowns,
 
 
 @pytest.mark.asyncio
-@patch("core.services.takedown_service._purchases_table")
-@patch("core.services.takedown_service._listings_table")
-@patch("core.services.takedown_service._takedowns_table")
+@patch("core.repositories.marketplace_repo._purchases_table")
+@patch("core.repositories.marketplace_repo._listings_table")
+@patch("core.repositories.marketplace_repo._takedowns_table")
 @patch("core.services.takedown_service.license_service.revoke", new=AsyncMock())
 async def test_execute_full_takedown_flips_currently_published_version(mock_takedowns, mock_listings, mock_purchases):
     """Regression: takedown must flip the currently-published row, not
@@ -101,9 +101,9 @@ async def test_execute_full_takedown_flips_currently_published_version(mock_take
 
 
 @pytest.mark.asyncio
-@patch("core.services.takedown_service._purchases_table")
-@patch("core.services.takedown_service._listings_table")
-@patch("core.services.takedown_service._takedowns_table")
+@patch("core.repositories.marketplace_repo._purchases_table")
+@patch("core.repositories.marketplace_repo._listings_table")
+@patch("core.repositories.marketplace_repo._takedowns_table")
 @patch("core.services.takedown_service.license_service.revoke", new=AsyncMock())
 async def test_takedowns_grant_update_guards_with_attribute_exists(mock_takedowns, mock_listings, mock_purchases):
     """Pre-emptive: the takedown-row 'grant' update must guard with
@@ -126,9 +126,9 @@ async def test_takedowns_grant_update_guards_with_attribute_exists(mock_takedown
 
 
 @pytest.mark.asyncio
-@patch("core.services.takedown_service._purchases_table")
-@patch("core.services.takedown_service._listings_table")
-@patch("core.services.takedown_service._takedowns_table")
+@patch("core.repositories.marketplace_repo._purchases_table")
+@patch("core.repositories.marketplace_repo._listings_table")
+@patch("core.repositories.marketplace_repo._takedowns_table")
 @patch("core.services.takedown_service.license_service.revoke", new=AsyncMock())
 async def test_admin_initiated_takedown_404s_before_writing_pending_row(mock_takedowns, mock_listings, mock_purchases):
     """Regression: validate listing exists BEFORE writing the pending
@@ -153,7 +153,7 @@ async def test_admin_initiated_takedown_404s_before_writing_pending_row(mock_tak
 
 
 @pytest.mark.asyncio
-@patch("core.services.takedown_service._takedowns_table")
+@patch("core.repositories.marketplace_repo._takedowns_table")
 async def test_file_takedown_creates_row(mock_table):
     mock_table.return_value.put_item = MagicMock()
     tid = await takedown_service.file_takedown(
@@ -168,9 +168,9 @@ async def test_file_takedown_creates_row(mock_table):
 
 
 @pytest.mark.asyncio
-@patch("core.services.takedown_service._purchases_table")
-@patch("core.services.takedown_service._listings_table")
-@patch("core.services.takedown_service._takedowns_table")
+@patch("core.repositories.marketplace_repo._purchases_table")
+@patch("core.repositories.marketplace_repo._listings_table")
+@patch("core.repositories.marketplace_repo._takedowns_table")
 @patch("core.services.takedown_service.license_service.revoke", new=AsyncMock())
 async def test_execute_admin_initiated_takedown(mock_takedowns, mock_listings, mock_purchases):
     """Admin-initiated takedown writes the row + cascades all four side effects."""

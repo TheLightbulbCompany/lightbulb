@@ -58,7 +58,7 @@ def org_member_client():
 
 
 @patch("routers.marketplace_payouts.payout_service.create_connect_account")
-@patch("routers.marketplace_payouts._payout_accounts_table")
+@patch("core.repositories.marketplace_repo._payout_accounts_table")
 def test_onboard_non_admin_org_member_403(mock_table, mock_create_acct, org_member_client):
     resp = org_member_client.post("/api/v1/marketplace/payouts/onboard")
     assert resp.status_code == 403
@@ -67,7 +67,7 @@ def test_onboard_non_admin_org_member_403(mock_table, mock_create_acct, org_memb
 
 
 @patch("routers.marketplace_payouts.stripe.Account.create_login_link")
-@patch("routers.marketplace_payouts._payout_accounts_table")
+@patch("core.repositories.marketplace_repo._payout_accounts_table")
 def test_dashboard_non_admin_org_member_403(mock_table, mock_login_link, org_member_client):
     resp = org_member_client.get("/api/v1/marketplace/payouts/dashboard")
     assert resp.status_code == 403
@@ -94,7 +94,7 @@ def seller_client():
 
 
 @patch("routers.marketplace_payouts.stripe.Account.create_login_link")
-@patch("routers.marketplace_payouts._payout_accounts_table")
+@patch("core.repositories.marketplace_repo._payout_accounts_table")
 def test_dashboard_no_payout_row_returns_balance_fields(mock_table, mock_login_link, seller_client):
     """No payout row → dashboard_url None + both balance fields present (no Stripe call)."""
     mock_table.return_value.get_item.return_value = {}
@@ -111,7 +111,7 @@ def test_dashboard_no_payout_row_returns_balance_fields(mock_table, mock_login_l
 
 
 @patch("routers.marketplace_payouts.stripe.Account.create_login_link")
-@patch("routers.marketplace_payouts._payout_accounts_table")
+@patch("core.repositories.marketplace_repo._payout_accounts_table")
 def test_dashboard_stripe_error_degrades_gracefully(mock_table, mock_login_link, seller_client):
     """Connect account present but Stripe raises → null dashboard_url, NOT a 500."""
     mock_table.return_value.get_item.return_value = {
@@ -135,7 +135,7 @@ def test_dashboard_stripe_error_degrades_gracefully(mock_table, mock_login_link,
 
 
 @patch("routers.marketplace_payouts.stripe.Account.create_login_link")
-@patch("routers.marketplace_payouts._payout_accounts_table")
+@patch("core.repositories.marketplace_repo._payout_accounts_table")
 def test_dashboard_success_returns_login_link(mock_table, mock_login_link, seller_client):
     """Onboarded account → dashboard_url from Stripe + balance fields."""
     mock_table.return_value.get_item.return_value = {

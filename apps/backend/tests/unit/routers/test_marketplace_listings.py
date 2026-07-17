@@ -486,7 +486,7 @@ def test_deploy_legacy_listing_without_slice_falls_back(
     assert resp.json()["config_registered"] is False
 
 
-@patch("routers.marketplace_listings._purchases_table")
+@patch("core.repositories.marketplace_repo._purchases_table")
 @patch("routers.marketplace_listings.boto3.client")
 @patch("routers.marketplace_listings.get_catalog_service")
 @patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
@@ -505,7 +505,7 @@ def test_deploy_paid_listing_without_purchase_403(
 
 @patch("routers.marketplace_listings.get_ecs_manager")
 @patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
-@patch("routers.marketplace_listings._purchases_table")
+@patch("core.repositories.marketplace_repo._purchases_table")
 @patch("routers.marketplace_listings.boto3.client")
 @patch("routers.marketplace_listings.get_catalog_service")
 @patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
@@ -550,7 +550,7 @@ def test_deploy_paid_listing_seller_bypass_succeeds(
     mock_purchases.return_value.query.assert_not_called()
 
 
-@patch("routers.marketplace_listings._purchases_table")
+@patch("core.repositories.marketplace_repo._purchases_table")
 @patch("routers.marketplace_listings.boto3.client")
 @patch("routers.marketplace_listings.get_catalog_service")
 @patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
@@ -577,7 +577,7 @@ def test_deploy_paid_listing_with_revoked_license_403(
 
 @patch("routers.marketplace_listings.get_ecs_manager")
 @patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
-@patch("routers.marketplace_listings._purchases_table")
+@patch("core.repositories.marketplace_repo._purchases_table")
 @patch("routers.marketplace_listings.boto3.client")
 @patch("routers.marketplace_listings.get_catalog_service")
 @patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
@@ -1043,7 +1043,7 @@ def test_deploy_requires_auth(unauth_client):
     assert resp.status_code in (401, 403)
 
 
-@patch("routers.marketplace_listings._purchases_table")
+@patch("core.repositories.marketplace_repo._purchases_table")
 @patch("routers.marketplace_listings.boto3.client")
 @patch("routers.marketplace_listings.get_catalog_service")
 @patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)

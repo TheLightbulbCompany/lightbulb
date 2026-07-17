@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, require_platform_admin
 from core.config import settings
+from core.repositories import marketplace_repo
 from core.services import marketplace_safety, marketplace_search, marketplace_service, takedown_service
 from core.services.admin_audit import audit_admin_action
 from schemas import marketplace as schemas
@@ -97,15 +98,7 @@ async def list_listings(
     # page working without a code change and avoids paying the search-service
     # scan cost on the default load.
     if status is None and not q:
-        table = boto3.resource("dynamodb").Table(settings.MARKETPLACE_LISTINGS_TABLE)
-        resp = table.query(
-            IndexName="status-published-index",
-            KeyConditionExpression="#s = :review",
-            ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues={":review": "review"},
-            Limit=50,
-        )
-        return {"items": resp.get("Items", [])}
+        return {"items": await marketplace_repo.get_review_queue_page()}
 
     # Browse / search path. include_unpublished=True bypasses the helper's
     # public-vs-seller gate so admins see every status; status_in narrows
@@ -161,8 +154,7 @@ async def approve(
     # a high compression ratio — or an outright gzip bomb — can be small
     # on disk but trip the unpacked cap inside the preview. Without the
     # unpacked check this gate would only catch the easier case.
-    table = boto3.resource("dynamodb").Table(settings.MARKETPLACE_LISTINGS_TABLE)
-    row = table.get_item(Key={"listing_id": listing_id, "version": version}).get("Item") or {}
+    row = await marketplace_repo.get_listing(listing_id, version) or {}
     s3_prefix = row.get("s3_prefix")
     # ``artifact_uploaded`` is the canonical signal that an artifact is on
     # S3. submit_for_review enforces this before flipping draft → review,
@@ -235,11 +227,7 @@ async def approve(
     try:
         if version > 1 and prev_version is None:
             # Derive prev_version: the currently-published row of this listing.
-            table = boto3.resource("dynamodb").Table(settings.MARKETPLACE_LISTINGS_TABLE)
-            rows = table.query(
-                KeyConditionExpression="listing_id = :l",
-                ExpressionAttributeValues={":l": listing_id},
-            ).get("Items", [])
+            rows = await marketplace_repo.get_versions_page(listing_id)
             published = next((r for r in rows if r.get("status") == "published"), None)
             if published is not None and int(published["version"]) != version:
                 prev_version = int(published["version"])
@@ -324,20 +312,15 @@ async def listing_preview(
     the moderation-queue link (which doesn't know about versions)
     still resolves to the actionable row.
     """
-    table = boto3.resource("dynamodb").Table(settings.MARKETPLACE_LISTINGS_TABLE)
     if version is not None:
         # Caller selected an exact version (browse-view link). Honor it.
-        item = table.get_item(Key={"listing_id": listing_id, "version": version}).get("Item")
+        item = await marketplace_repo.get_listing(listing_id, version)
         if not item:
             raise HTTPException(status_code=404, detail="listing not found")
         listing = item
     else:
         # Review-queue link path: pick the most-actionable row across versions.
-        rows = table.query(
-            KeyConditionExpression="listing_id = :l",
-            ExpressionAttributeValues={":l": listing_id},
-            ScanIndexForward=False,  # newest version first
-        ).get("Items", [])
+        rows = await marketplace_repo.get_versions_page(listing_id, newest_first=True)
         if not rows:
             raise HTTPException(status_code=404, detail="listing not found")
         listing = (
@@ -590,16 +573,7 @@ async def list_takedowns(
     against a GSI partitioned on `decision` and sorted by `decided_at`
     (e.g. `decision-decided_at-index`), and drop this Python-side sort.
     """
-    table = boto3.resource("dynamodb").Table(settings.MARKETPLACE_TAKEDOWNS_TABLE)
-    items: list[dict] = []
-    scan_kwargs: dict = {}
-    while True:
-        resp = table.scan(**scan_kwargs)
-        items.extend(resp.get("Items", []))
-        last = resp.get("LastEvaluatedKey")
-        if not last:
-            break
-        scan_kwargs["ExclusiveStartKey"] = last
+    items = await marketplace_repo.scan_all_takedowns()
     # Sort by decided_at desc; rows that somehow lack decided_at sink to the
     # bottom (shouldn't happen for admin-initiated rows, but be defensive).
     items.sort(key=lambda r: r.get("decided_at") or "", reverse=True)

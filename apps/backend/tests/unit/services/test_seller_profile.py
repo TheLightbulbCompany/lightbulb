@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch  # noqa: E402
 
 import pytest  # noqa: E402
 
+from core.repositories import marketplace_repo  # noqa: E402
 from core.services import seller_profile  # noqa: E402
 
 
@@ -68,7 +69,7 @@ def _stub_table_with_existing(item: dict | None):
 @pytest.mark.asyncio
 async def test_get_profile_returns_none_for_unknown():
     table = _stub_table_with_existing(None)
-    with patch.object(seller_profile, "_sellers_table", return_value=table):
+    with patch.object(marketplace_repo, "_sellers_table", return_value=table):
         result = await seller_profile.get_profile(SELLER_ID)
     assert result is None
     table.get_item.assert_called_once_with(Key={"seller_id": SELLER_ID})
@@ -78,7 +79,7 @@ async def test_get_profile_returns_none_for_unknown():
 async def test_get_profile_by_handle_uses_gsi():
     profile = {"seller_id": SELLER_ID, "handle": "aden"}
     table = _stub_table_with_existing(profile)
-    with patch.object(seller_profile, "_sellers_table", return_value=table):
+    with patch.object(marketplace_repo, "_sellers_table", return_value=table):
         result = await seller_profile.get_profile_by_handle(" ADEN ")
     assert result == profile
     args = table.query.call_args
@@ -89,7 +90,7 @@ async def test_get_profile_by_handle_uses_gsi():
 @pytest.mark.asyncio
 async def test_check_handle_available_true_when_free():
     table = _stub_table_with_existing(None)
-    with patch.object(seller_profile, "_sellers_table", return_value=table):
+    with patch.object(marketplace_repo, "_sellers_table", return_value=table):
         assert await seller_profile.check_handle_available("aden")
 
 
@@ -97,7 +98,7 @@ async def test_check_handle_available_true_when_free():
 async def test_check_handle_available_false_for_other_owner():
     other = {"seller_id": "user_other", "handle": "aden"}
     table = _stub_table_with_existing(other)
-    with patch.object(seller_profile, "_sellers_table", return_value=table):
+    with patch.object(marketplace_repo, "_sellers_table", return_value=table):
         assert not await seller_profile.check_handle_available("aden", for_seller_id=SELLER_ID)
 
 
@@ -105,14 +106,14 @@ async def test_check_handle_available_false_for_other_owner():
 async def test_check_handle_available_true_for_same_owner():
     mine = {"seller_id": SELLER_ID, "handle": "aden"}
     table = _stub_table_with_existing(mine)
-    with patch.object(seller_profile, "_sellers_table", return_value=table):
+    with patch.object(marketplace_repo, "_sellers_table", return_value=table):
         assert await seller_profile.check_handle_available("aden", for_seller_id=SELLER_ID)
 
 
 @pytest.mark.asyncio
 async def test_check_handle_available_false_for_reserved():
     table = _stub_table_with_existing(None)
-    with patch.object(seller_profile, "_sellers_table", return_value=table):
+    with patch.object(marketplace_repo, "_sellers_table", return_value=table):
         assert not await seller_profile.check_handle_available("isol8")
 
 
@@ -120,7 +121,7 @@ async def test_check_handle_available_false_for_reserved():
 async def test_upsert_profile_creates_when_handle_free():
     table = _stub_table_with_existing(None)
     with (
-        patch.object(seller_profile, "_sellers_table", return_value=table),
+        patch.object(marketplace_repo, "_sellers_table", return_value=table),
         patch("core.services.seller_display.invalidate_seller") as invalidate,
     ):
         result = await seller_profile.upsert_profile(
@@ -142,7 +143,7 @@ async def test_upsert_profile_creates_when_handle_free():
 async def test_upsert_profile_rejects_taken_handle():
     other = {"seller_id": "user_other", "handle": "aden"}
     table = _stub_table_with_existing(other)
-    with patch.object(seller_profile, "_sellers_table", return_value=table):
+    with patch.object(marketplace_repo, "_sellers_table", return_value=table):
         with pytest.raises(seller_profile.HandleTakenError):
             await seller_profile.upsert_profile(seller_id=SELLER_ID, handle="aden")
 
@@ -156,7 +157,7 @@ async def test_upsert_profile_allows_same_handle_for_owner():
     }
     table = _stub_table_with_existing(mine)
     with (
-        patch.object(seller_profile, "_sellers_table", return_value=table),
+        patch.object(marketplace_repo, "_sellers_table", return_value=table),
         patch("core.services.seller_display.invalidate_seller"),
     ):
         result = await seller_profile.upsert_profile(
@@ -173,7 +174,7 @@ async def test_upsert_profile_allows_same_handle_for_owner():
 @pytest.mark.asyncio
 async def test_upsert_profile_validates_handle():
     table = _stub_table_with_existing(None)
-    with patch.object(seller_profile, "_sellers_table", return_value=table):
+    with patch.object(marketplace_repo, "_sellers_table", return_value=table):
         with pytest.raises(seller_profile.HandleFormatError):
             await seller_profile.upsert_profile(seller_id=SELLER_ID, handle="bad space")
         with pytest.raises(seller_profile.HandleReservedError):
@@ -187,7 +188,7 @@ async def test_get_profile_missing_table_returns_none():
 
     err = ClientError({"Error": {"Code": "ResourceNotFoundException"}}, "GetItem")
     table.get_item.side_effect = err
-    with patch.object(seller_profile, "_sellers_table", return_value=table):
+    with patch.object(marketplace_repo, "_sellers_table", return_value=table):
         assert await seller_profile.get_profile(SELLER_ID) is None
 
 
@@ -196,10 +197,11 @@ async def test_upsert_profile_uses_async_thread_for_put():
     """Ensures put_item is awaited via run_in_thread so we don't block the event loop."""
     table = _stub_table_with_existing(None)
     with (
-        patch.object(seller_profile, "_sellers_table", return_value=table),
+        patch.object(marketplace_repo, "_sellers_table", return_value=table),
         patch("core.services.seller_display.invalidate_seller"),
         patch(
-            "core.services.seller_profile.run_in_thread", new=AsyncMock(side_effect=lambda fn, *a, **kw: fn(*a, **kw))
+            "core.repositories.marketplace_repo.run_in_thread",
+            new=AsyncMock(side_effect=lambda fn, *a, **kw: fn(*a, **kw)),
         ) as wrapped,
     ):
         await seller_profile.upsert_profile(seller_id=SELLER_ID, handle="aden")

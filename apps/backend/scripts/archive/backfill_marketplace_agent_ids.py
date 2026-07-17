@@ -41,9 +41,9 @@ from core.services import agent_export
 def _all_listings() -> list[dict]:
     """Every listing row, across all statuses/versions. A stale slug fails
     republish regardless of status, so backfill is not scoped to ``published``."""
-    from core.services import marketplace_service
+    from core.repositories import marketplace_repo
 
-    table = marketplace_service._listings_table()
+    table = marketplace_repo._listings_table()
     items: list[dict] = []
     kwargs: dict = {}
     while True:
@@ -60,7 +60,7 @@ def main() -> None:
     parser.add_argument("--apply", action="store_true", help="write changes (default: dry-run)")
     args = parser.parse_args()
 
-    from core.services import marketplace_service
+    from core.repositories import marketplace_repo
 
     workspace = get_workspace()
     updated = skipped_uuid = skipped_unresolved = errors = 0
@@ -103,7 +103,7 @@ def main() -> None:
             continue
 
         try:
-            marketplace_service._listings_table().update_item(
+            marketplace_repo._listings_table().update_item(
                 Key={"listing_id": listing_id, "version": version},
                 UpdateExpression="SET agent_id = :u",
                 ConditionExpression="agent_id = :old",

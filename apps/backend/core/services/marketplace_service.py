@@ -22,6 +22,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 from core.config import settings
+from core.repositories import marketplace_repo
 
 
 def summarize_requirements(manifest: dict) -> dict:
@@ -46,14 +47,6 @@ def summarize_requirements(manifest: dict) -> dict:
         "requires_providers": sorted({p for p in providers if p}),
         "has_blocking": counts["unavailable"] > 0,
     }
-
-
-def _listings_table():
-    return boto3.resource("dynamodb").Table(settings.MARKETPLACE_LISTINGS_TABLE)
-
-
-def _dynamodb_client():
-    return boto3.client("dynamodb")
 
 
 class InvalidStateError(Exception):
@@ -152,30 +145,20 @@ async def create_draft(
         openclaw_slice=openclaw_slice,
     )
 
-    client = _dynamodb_client()
-    client.put_item(
-        TableName=settings.MARKETPLACE_LISTINGS_TABLE,
-        Item={
-            "listing_id": {"S": listing_id},
-            "version": {"N": "1"},
-            "slug": {"S": slug},
-            "name": {"S": name},
-            "description_md": {"S": description_md},
-            "format": {"S": format},
-            "price_cents": {"N": str(price_cents)},
-            "tags": {"L": [{"S": t} for t in tags]},
-            **({"category": {"S": category}} if category else {}),
-            "seller_id": {"S": seller_id},
-            "status": {"S": "draft"},
-            "s3_prefix": {"S": s3_prefix},
-            "manifest_sha256": {"S": sha},
-            "manifest_json": {"S": json.dumps(manifest)},
-            "artifact_format_version": {"S": "v1"},
-            "entitlement_policy": {"S": "perpetual"},
-            "artifact_uploaded": {"BOOL": False},
-            "created_at": {"S": now_iso},
-            "updated_at": {"S": now_iso},
-        },
+    await marketplace_repo.put_draft_v1(
+        listing_id=listing_id,
+        slug=slug,
+        name=name,
+        description_md=description_md,
+        format=format,
+        price_cents=price_cents,
+        tags=tags,
+        category=category,
+        seller_id=seller_id,
+        s3_prefix=s3_prefix,
+        manifest_sha256=sha,
+        manifest_json_str=json.dumps(manifest),
+        now_iso=now_iso,
     )
 
     # Return the listing item shape the caller expects (matching the
@@ -243,12 +226,12 @@ async def replace_artifact(
         InvalidStateError: Listing is not in draft state, or caller is
         not the seller.
     """
-    table = _listings_table()
     # Read first to verify ownership + state. We can't use a conditional
     # update for the upload because the S3 write happens before the DDB
     # update; verifying ownership upfront keeps the failure mode tight.
-    resp = table.get_item(Key={"listing_id": listing_id, "version": version})
-    item = resp.get("Item")
+    # (The repo write re-checks seller match + draft state via condition
+    # in case state changed between the get and update.)
+    item = await marketplace_repo.get_listing(listing_id, version)
     if not item:
         raise InvalidStateError("listing not found")
     if item.get("seller_id") != seller_id:
@@ -265,45 +248,23 @@ async def replace_artifact(
     )
     now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
-    # agent_id is persisted as a top-level column so the publish-wizard's
-    # edit mode can lock the agent picker without parsing manifest_json.
-    set_clause = (
-        "SET manifest_sha256 = :sha, manifest_json = :mj,"
-        "    s3_prefix = :prefix, artifact_uploaded = :uploaded,"
-        "    updated_at = :now"
-    )
-    values: dict = {
-        ":sha": sha,
-        ":mj": manifest,
-        ":prefix": s3_prefix,
-        ":uploaded": True,
-        ":sid": seller_id,
-        ":draft": "draft",
-        ":now": now_iso,
-    }
-    if agent_id is not None:
-        set_clause += ", agent_id = :aid"
-        values[":aid"] = agent_id
-    # Persist the bundle selection so edit mode can prefill the BundleStep
+    # Persisting the bundle selection lets edit mode prefill the BundleStep
     # checkboxes instead of falsely defaulting to "ship nothing" — without
     # this, a seller revising metadata silently strips integrations buyers
     # would have received. Stored as `bundle_mcps` / `bundle_skills` to
     # match the request-body shape; surfaced through marketplace_search's
     # raw-row response so the frontend has them on hand.
-    if bundle_mcps is not None:
-        set_clause += ", bundle_mcps = :bmcps"
-        values[":bmcps"] = bundle_mcps
-    if bundle_skills is not None:
-        set_clause += ", bundle_skills = :bskills"
-        values[":bskills"] = bundle_skills
-    table.update_item(
-        Key={"listing_id": listing_id, "version": version},
-        UpdateExpression=set_clause,
-        # Defense-in-depth: re-check seller match + draft state via condition
-        # in case state changed between the get and update.
-        ConditionExpression="seller_id = :sid AND #s = :draft",
-        ExpressionAttributeNames={"#s": "status"},
-        ExpressionAttributeValues=values,
+    await marketplace_repo.update_artifact_fields(
+        listing_id=listing_id,
+        version=version,
+        seller_id=seller_id,
+        sha=sha,
+        manifest=manifest,
+        s3_prefix=s3_prefix,
+        now_iso=now_iso,
+        agent_id=agent_id,
+        bundle_mcps=bundle_mcps,
+        bundle_skills=bundle_skills,
     )
 
     return {
@@ -358,44 +319,18 @@ async def update_draft(
         raise InvalidStateError("no fields to update")
 
     now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    # name is a DDB reserved word; route every column through #-aliases so
-    # the SET clause is uniform and immune to future reserved-word additions.
-    set_clauses: list[str] = []
-    expr_names: dict[str, str] = {"#s": "status"}
-    expr_values: dict[str, object] = {
-        ":sid": seller_id,
-        ":draft": "draft",
-        ":review": "review",
-        ":now": now_iso,
-    }
-    for i, (col, val) in enumerate(updates.items()):
-        name_placeholder = f"#c{i}"
-        value_placeholder = f":c{i}"
-        expr_names[name_placeholder] = col
-        expr_values[value_placeholder] = val
-        set_clauses.append(f"{name_placeholder} = {value_placeholder}")
-    # Always SET status=draft. No-op on a draft row; demotes a review row
-    # out of the moderation queue.
-    set_clauses.append("#s = :draft")
-    set_clauses.append("updated_at = :now")
-
-    table = _listings_table()
     try:
-        resp = table.update_item(
-            Key={"listing_id": listing_id, "version": version},
-            UpdateExpression="SET " + ", ".join(set_clauses),
-            # IN-list keeps the gate tight: published / retired /
-            # taken_down rows can't be mutated via this path.
-            ConditionExpression="seller_id = :sid AND #s IN (:draft, :review)",
-            ExpressionAttributeNames=expr_names,
-            ExpressionAttributeValues=expr_values,
-            ReturnValues="ALL_NEW",
+        return await marketplace_repo.patch_draft_metadata(
+            listing_id=listing_id,
+            version=version,
+            seller_id=seller_id,
+            updates=updates,
+            now_iso=now_iso,
         )
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
             raise InvalidStateError("listing is not in 'draft' or 'review' state, or you are not the seller")
         raise
-    return resp.get("Attributes", {})
 
 
 async def find_active_listing_for_agent(*, seller_id: str, agent_id: str) -> dict | None:
@@ -411,28 +346,7 @@ async def find_active_listing_for_agent(*, seller_id: str, agent_id: str) -> dic
     """
     if not agent_id:
         return None
-    table = _listings_table()
-    rows: list[dict] = []
-    last_key: dict | None = None
-    while True:
-        kwargs = {
-            "IndexName": "seller-created-index",
-            "KeyConditionExpression": "seller_id = :sid",
-            "FilterExpression": "agent_id = :aid AND #s = :pub",
-            "ExpressionAttributeNames": {"#s": "status"},
-            "ExpressionAttributeValues": {
-                ":sid": seller_id,
-                ":aid": agent_id,
-                ":pub": "published",
-            },
-        }
-        if last_key is not None:
-            kwargs["ExclusiveStartKey"] = last_key
-        resp = table.query(**kwargs)
-        rows.extend(resp.get("Items", []))
-        last_key = resp.get("LastEvaluatedKey")
-        if last_key is None:
-            break
+    rows = await marketplace_repo.list_published_listings_by_seller_agent(seller_id, agent_id)
     if not rows:
         return None
     rows.sort(key=lambda r: r.get("published_at") or "", reverse=True)
@@ -479,28 +393,11 @@ async def create_new_version(*, listing_id: str, seller_id: str) -> dict:
     put covers the "version+1 not taken" check — collectively they
     close the read-then-write race without needing a transaction.
     """
-    table = _listings_table()
-
-    # Read every row for this listing. Filter out the v=0 slug-reservation
-    # sentinel — that row carries no status/seller_id and would noise up
-    # every check below. We pull all versions in one paginated query so
-    # the max(version)+1 calculation has a complete view; DDB caps a
-    # single query response at 1MB, and a listing with enough history
-    # could span pages.
-    rows: list[dict] = []
-    last_key: dict | None = None
-    while True:
-        kwargs = {
-            "KeyConditionExpression": "listing_id = :l AND version > :z",
-            "ExpressionAttributeValues": {":l": listing_id, ":z": 0},
-        }
-        if last_key is not None:
-            kwargs["ExclusiveStartKey"] = last_key
-        resp = table.query(**kwargs)
-        rows.extend(resp.get("Items", []))
-        last_key = resp.get("LastEvaluatedKey")
-        if last_key is None:
-            break
+    # Read every row for this listing. list_all_versions filters out the
+    # v=0 slug-reservation sentinel — that row carries no status/seller_id
+    # and would noise up every check below — and paginates so the
+    # max(version)+1 calculation has a complete view.
+    rows = await marketplace_repo.list_all_versions(listing_id)
     if not rows:
         raise NoPublishedVersionError(f"listing {listing_id} has no versions")
 
@@ -572,13 +469,10 @@ async def create_new_version(*, listing_id: str, seller_id: str) -> dict:
         new_row["bundle_skills"] = list(published["bundle_skills"])
 
     try:
-        table.put_item(
-            Item=new_row,
-            # Closes the read-then-write race: if two callers both scan
-            # the same row set and both compute the same new_version,
-            # only the first put_item succeeds.
-            ConditionExpression="attribute_not_exists(listing_id)",
-        )
+        # The conditional put closes the read-then-write race: if two
+        # callers both scan the same row set and both compute the same
+        # new_version, only the first insert succeeds.
+        await marketplace_repo.put_version_row_if_absent(new_row)
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
             raise RepublishAlreadyInProgressError(f"race detected creating v{new_version}; refetch and retry")
@@ -602,9 +496,7 @@ async def discard_draft(*, listing_id: str, seller_id: str, version: int) -> Non
     if version <= 1:
         raise InvalidStateError("cannot discard v1; full listing retraction is a separate flow")
 
-    table = _listings_table()
-    resp = table.get_item(Key={"listing_id": listing_id, "version": version})
-    row = resp.get("Item")
+    row = await marketplace_repo.get_listing(listing_id, version)
     if row is None:
         raise InvalidStateError(f"v{version} not found for listing {listing_id}")
     if row.get("seller_id") != seller_id:
@@ -613,12 +505,7 @@ async def discard_draft(*, listing_id: str, seller_id: str, version: int) -> Non
         raise InvalidStateError(f"v{version} is in status '{row.get('status')}', not draft")
 
     try:
-        table.delete_item(
-            Key={"listing_id": listing_id, "version": version},
-            ConditionExpression="#s = :draft",
-            ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues={":draft": "draft"},
-        )
+        await marketplace_repo.delete_draft_row(listing_id=listing_id, version=version)
     except ClientError as e:
         # Race: the row transitioned out of 'draft' between the read and the
         # conditional delete (e.g. parallel submit_for_review or another
@@ -650,10 +537,7 @@ async def submit_for_review(*, listing_id: str, seller_id: str, version: int = 1
     metadata-only draft with an empty workspace.tar.gz and buyers would
     get an empty install.
     """
-    table = _listings_table()
-
-    pre = table.get_item(Key={"listing_id": listing_id, "version": version})
-    pre_item = pre.get("Item") or {}
+    pre_item = await marketplace_repo.get_listing(listing_id, version) or {}
 
     # Ownership pre-check FIRST. The artifact_uploaded branch below returns a
     # state-specific error, so without this a non-owner could tell "listing
@@ -672,42 +556,16 @@ async def submit_for_review(*, listing_id: str, seller_id: str, version: int = 1
         raise ArtifactNotUploadedError("upload artifact before submitting for review")
 
     try:
-        # Populate published_at at submit time even though the listing isn't
-        # yet "published". status-published-index has published_at as its
-        # sort key; DynamoDB's sparse-GSI semantics exclude items whose sort
-        # key is missing. Without a value here the moderation queue
-        # (status="review") is structurally empty regardless of how many
-        # listings are awaiting review. The approve flow overwrites this on
-        # the actual publish transition, so the field still tells you when
-        # the listing went live (or when it last entered the review pipeline,
-        # if rejected).
-        # REMOVE every moderation field so a resubmitted listing doesn't
-        # carry "rejected because X (by admin_xyz)" into review (and from
-        # there, if approved, onto the public storefront — marketplace_search
-        # returns raw listing rows, so anything left on the item leaks to
-        # buyers). The audit trail of who rejected what lives in the
-        # admin_actions table, not on the listing row.
-        resp = table.update_item(
-            Key={"listing_id": listing_id, "version": version},
-            UpdateExpression=(
-                "SET #s = :review, updated_at = :now, published_at = :now "
-                "REMOVE rejection_notes, rejected_at, rejected_by"
-            ),
-            ConditionExpression="seller_id = :sid AND #s = :draft",
-            ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues={
-                ":sid": seller_id,
-                ":draft": "draft",
-                ":review": "review",
-                ":now": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            },
-            ReturnValues="ALL_NEW",
+        return await marketplace_repo.mark_review(
+            listing_id=listing_id,
+            version=version,
+            seller_id=seller_id,
+            now_iso=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         )
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
             raise InvalidStateError("listing is not in 'draft' state or you are not the seller")
         raise
-    return resp.get("Attributes", {})
 
 
 async def approve(*, listing_id: str, version: int, approved_by: str) -> dict:
@@ -717,27 +575,18 @@ async def approve(*, listing_id: str, version: int, approved_by: str) -> dict:
     that need to atomically retire the previous published version, callers
     use publish_new_version instead.
     """
-    table = _listings_table()
     now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     try:
-        resp = table.update_item(
-            Key={"listing_id": listing_id, "version": version},
-            UpdateExpression=("SET #s = :pub, published_at = :now, published_by = :by, updated_at = :now"),
-            ConditionExpression="#s = :review",
-            ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues={
-                ":review": "review",
-                ":pub": "published",
-                ":now": now_iso,
-                ":by": approved_by,
-            },
-            ReturnValues="ALL_NEW",
+        return await marketplace_repo.mark_published(
+            listing_id=listing_id,
+            version=version,
+            approved_by=approved_by,
+            now_iso=now_iso,
         )
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
             raise InvalidStateError(f"listing v{version} is not in 'review' state")
         raise
-    return resp.get("Attributes", {})
 
 
 async def reject(*, listing_id: str, version: int, notes: str, rejected_by: str) -> dict:
@@ -747,23 +596,14 @@ async def reject(*, listing_id: str, version: int, notes: str, rejected_by: str)
     listing (DDB UpdateItem upserts by default), nor flip a published or
     taken_down row back to draft via a malformed admin request.
     """
-    table = _listings_table()
     now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     try:
-        table.update_item(
-            Key={"listing_id": listing_id, "version": version},
-            UpdateExpression=(
-                "SET #s = :draft, rejection_notes = :notes, rejected_by = :by,    rejected_at = :now, updated_at = :now"
-            ),
-            ConditionExpression="#s = :review",
-            ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues={
-                ":draft": "draft",
-                ":review": "review",
-                ":notes": notes,
-                ":by": rejected_by,
-                ":now": now_iso,
-            },
+        await marketplace_repo.mark_rejected(
+            listing_id=listing_id,
+            version=version,
+            notes=notes,
+            rejected_by=rejected_by,
+            now_iso=now_iso,
         )
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
@@ -792,50 +632,14 @@ async def publish_new_version(
 
     Conditional checks fail loudly if either precondition is violated.
     """
-    client = _dynamodb_client()
     now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    listings_tbl = settings.MARKETPLACE_LISTINGS_TABLE
     try:
-        client.transact_write_items(
-            TransactItems=[
-                {
-                    "Update": {
-                        "TableName": listings_tbl,
-                        "Key": {
-                            "listing_id": {"S": listing_id},
-                            "version": {"N": str(prev_version)},
-                        },
-                        "ConditionExpression": "#s = :pub",
-                        "UpdateExpression": "SET #s = :retired, updated_at = :now",
-                        "ExpressionAttributeNames": {"#s": "status"},
-                        "ExpressionAttributeValues": {
-                            ":pub": {"S": "published"},
-                            ":retired": {"S": "retired"},
-                            ":now": {"S": now_iso},
-                        },
-                    },
-                },
-                {
-                    "Update": {
-                        "TableName": listings_tbl,
-                        "Key": {
-                            "listing_id": {"S": listing_id},
-                            "version": {"N": str(new_version)},
-                        },
-                        "ConditionExpression": "#s = :review",
-                        "UpdateExpression": (
-                            "SET #s = :pub, published_at = :now, published_by = :by, updated_at = :now"
-                        ),
-                        "ExpressionAttributeNames": {"#s": "status"},
-                        "ExpressionAttributeValues": {
-                            ":review": {"S": "review"},
-                            ":pub": {"S": "published"},
-                            ":now": {"S": now_iso},
-                            ":by": {"S": approved_by},
-                        },
-                    },
-                },
-            ]
+        await marketplace_repo.transact_publish_flip(
+            listing_id=listing_id,
+            prev_version=prev_version,
+            new_version=new_version,
+            approved_by=approved_by,
+            now_iso=now_iso,
         )
     except ClientError as e:
         # TransactionCanceledException fires when either ConditionExpression
@@ -861,13 +665,7 @@ async def get_published_by_id(*, listing_id: str) -> dict | None:
     would 404 the still-live v_prev for the duration of moderation. Keyed on
     the UUID, which is the canonical identity now that slugs are non-unique.
     """
-    table = _listings_table()
-    resp = table.query(
-        KeyConditionExpression="listing_id = :l",
-        ExpressionAttributeValues={":l": listing_id},
-        ScanIndexForward=False,  # newest version first
-    )
-    items = resp.get("Items", [])
+    items = await marketplace_repo.get_versions_page(listing_id, newest_first=True)
     if not items:
         return None
     for item in items:
@@ -878,6 +676,4 @@ async def get_published_by_id(*, listing_id: str) -> dict | None:
 
 async def get_by_id(*, listing_id: str, version: int) -> dict | None:
     """Look up listing by id + version."""
-    table = _listings_table()
-    resp = table.get_item(Key={"listing_id": listing_id, "version": version})
-    return resp.get("Item")
+    return await marketplace_repo.get_listing(listing_id, version)

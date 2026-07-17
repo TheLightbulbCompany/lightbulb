@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch  # noqa: E402
 
 import pytest  # noqa: E402
 
+from core.repositories import marketplace_repo  # noqa: E402
 from core.services import marketplace_service  # noqa: E402
 
 # Shared moto-backed fixtures live in conftest.py so test_takedown_service
@@ -16,7 +17,7 @@ from tests.unit.services.conftest import _create_and_publish, _upload_dummy_arti
 
 
 @pytest.mark.asyncio
-@patch("core.services.marketplace_service._dynamodb_client")
+@patch("core.repositories.marketplace_repo._ddb_client")
 @patch(
     "core.services.marketplace_service._upload_artifact_to_s3",
     new=AsyncMock(return_value=("listings/abc/v1/", "sha-1")),
@@ -70,13 +71,13 @@ async def test_create_draft_allows_duplicate_slug(mock_listings, monkeypatch):
     b = await marketplace_service.create_draft(**common)
 
     assert a["listing_id"] != b["listing_id"]
-    table = marketplace_service._listings_table()
+    table = marketplace_repo._listings_table()
     sentinel = table.get_item(Key={"listing_id": "slug:dup", "version": 0}).get("Item")
     assert sentinel is None, "no slug-reservation sentinel should be written"
 
 
 @pytest.mark.asyncio
-@patch("core.services.marketplace_service._listings_table")
+@patch("core.repositories.marketplace_repo._listings_table")
 async def test_submit_listing_transitions_draft_to_review(mock_listings):
     mock_listings.return_value.get_item = MagicMock(
         return_value={"Item": {"seller_id": "user_abc", "artifact_uploaded": True}}
@@ -101,7 +102,7 @@ def _row_with_manifest(reqs):
     }
 
 
-@patch("core.services.marketplace_service._listings_table")
+@patch("core.repositories.marketplace_repo._listings_table")
 async def test_submit_publishes_even_with_unavailable_requirement(mock_listings):
     """Requirements are DISCLOSED, not gated: an agent with a gated/phantom
     (`unavailable`) requirement still transitions draft->review. The publisher
@@ -117,7 +118,7 @@ async def test_submit_publishes_even_with_unavailable_requirement(mock_listings)
     mock_listings.return_value.update_item.assert_called_once()
 
 
-@patch("core.services.marketplace_service._listings_table")
+@patch("core.repositories.marketplace_repo._listings_table")
 async def test_submit_blocks_only_on_missing_artifact(mock_listings):
     """The one remaining precondition: a draft with no uploaded artifact can't
     submit (that's a 'nothing to publish' guard, not a requirements gate)."""
@@ -129,7 +130,7 @@ async def test_submit_blocks_only_on_missing_artifact(mock_listings):
 
 
 @pytest.mark.asyncio
-@patch("core.services.marketplace_service._listings_table")
+@patch("core.repositories.marketplace_repo._listings_table")
 async def test_find_active_listing_for_agent_returns_published_match(mock_listings):
     """Returns the seller's published listing for the agent (publish-dedupe lookup)."""
     mock_listings.return_value.query = MagicMock(
@@ -154,7 +155,7 @@ async def test_find_active_listing_for_agent_returns_published_match(mock_listin
 
 
 @pytest.mark.asyncio
-@patch("core.services.marketplace_service._listings_table")
+@patch("core.repositories.marketplace_repo._listings_table")
 async def test_find_active_listing_for_agent_returns_none_when_no_match(mock_listings):
     mock_listings.return_value.query = MagicMock(return_value={"Items": []})
     found = await marketplace_service.find_active_listing_for_agent(seller_id="user_abc", agent_id="agent_x")
@@ -169,7 +170,7 @@ async def test_find_active_listing_for_agent_none_agent_short_circuits():
 
 
 @pytest.mark.asyncio
-@patch("core.services.marketplace_service._listings_table")
+@patch("core.repositories.marketplace_repo._listings_table")
 async def test_find_active_listing_for_agent_picks_most_recent(mock_listings):
     """Defensive: if two published listings exist for one agent, the most
     recently published wins so the caller redirects to the live one."""
@@ -196,7 +197,7 @@ async def test_find_active_listing_for_agent_picks_most_recent(mock_listings):
 
 
 @pytest.mark.asyncio
-@patch("core.services.marketplace_service._listings_table")
+@patch("core.repositories.marketplace_repo._listings_table")
 async def test_submit_for_review_populates_published_at_for_moderation_gsi(mock_listings):
     """Regression: status-published-index has published_at as its sort key.
     DynamoDB sparse-GSI semantics exclude items whose sort key is None, so
@@ -212,7 +213,7 @@ async def test_submit_for_review_populates_published_at_for_moderation_gsi(mock_
 
 
 @pytest.mark.asyncio
-@patch("core.services.marketplace_service._listings_table")
+@patch("core.repositories.marketplace_repo._listings_table")
 async def test_submit_rejects_when_not_in_draft(mock_listings):
     from botocore.exceptions import ClientError
 
@@ -232,7 +233,7 @@ async def test_submit_rejects_when_not_in_draft(mock_listings):
 
 
 @pytest.mark.asyncio
-@patch("core.services.marketplace_service._listings_table")
+@patch("core.repositories.marketplace_repo._listings_table")
 async def test_submit_non_owner_gets_generic_error_not_artifact_oracle(mock_listings):
     """IDOR oracle fix: a non-owner submitting another seller's draft (artifact
     NOT uploaded) must get the generic InvalidStateError — NOT the
@@ -250,7 +251,7 @@ async def test_submit_non_owner_gets_generic_error_not_artifact_oracle(mock_list
 
 
 @pytest.mark.asyncio
-@patch("core.services.marketplace_service._listings_table")
+@patch("core.repositories.marketplace_repo._listings_table")
 async def test_submit_non_owner_uploaded_artifact_also_generic(mock_listings):
     """Same generic error whether or not the target's artifact is uploaded, so a
     non-owner can't distinguish listing states (full oracle collapse)."""
@@ -264,7 +265,7 @@ async def test_submit_non_owner_uploaded_artifact_also_generic(mock_listings):
 
 
 @pytest.mark.asyncio
-@patch("core.services.marketplace_service._listings_table")
+@patch("core.repositories.marketplace_repo._listings_table")
 async def test_submit_unknown_listing_gets_generic_error(mock_listings):
     """A non-existent listing yields the same generic error as a non-owned one,
     so submit can't be used to probe which listing_ids exist."""
@@ -276,7 +277,7 @@ async def test_submit_unknown_listing_gets_generic_error(mock_listings):
 
 
 @pytest.mark.asyncio
-@patch("core.services.marketplace_service._listings_table")
+@patch("core.repositories.marketplace_repo._listings_table")
 async def test_reject_uses_conditional_status_check(mock_listings):
     """Regression: reject must guard with ConditionExpression so a malformed
     admin request can't upsert a fabricated listing (DDB UpdateItem upserts
@@ -290,7 +291,7 @@ async def test_reject_uses_conditional_status_check(mock_listings):
 
 
 @pytest.mark.asyncio
-@patch("core.services.marketplace_service._listings_table")
+@patch("core.repositories.marketplace_repo._listings_table")
 async def test_reject_rejects_non_review_state(mock_listings):
     from botocore.exceptions import ClientError
 
@@ -306,7 +307,7 @@ async def test_reject_rejects_non_review_state(mock_listings):
 
 @pytest.mark.asyncio
 async def test_get_published_by_id_prefers_published(mock_listings):
-    table = marketplace_service._listings_table()
+    table = marketplace_repo._listings_table()
     lid = "11111111-1111-1111-1111-111111111111"
     table.put_item(Item={"listing_id": lid, "version": 1, "slug": "demo", "status": "published"})
     table.put_item(Item={"listing_id": lid, "version": 2, "slug": "demo", "status": "review"})
@@ -316,7 +317,7 @@ async def test_get_published_by_id_prefers_published(mock_listings):
 
 @pytest.mark.asyncio
 async def test_get_published_by_id_falls_back_to_highest(mock_listings):
-    table = marketplace_service._listings_table()
+    table = marketplace_repo._listings_table()
     lid = "22222222-2222-2222-2222-222222222222"
     table.put_item(Item={"listing_id": lid, "version": 1, "slug": "demo", "status": "taken_down"})
     table.put_item(Item={"listing_id": lid, "version": 2, "slug": "demo", "status": "draft"})
@@ -325,7 +326,7 @@ async def test_get_published_by_id_falls_back_to_highest(mock_listings):
 
 
 @pytest.mark.asyncio
-@patch("core.services.marketplace_service._dynamodb_client")
+@patch("core.repositories.marketplace_repo._ddb_client")
 async def test_publish_new_version_translates_transaction_cancel_to_invalid_state(mock_client):
     """Regression: publish_new_version raises ClientError(TransactionCanceledException)
     when either ConditionExpression fails (prev not 'published' or new not
@@ -349,7 +350,7 @@ async def test_publish_new_version_translates_transaction_cancel_to_invalid_stat
 
 
 @pytest.mark.asyncio
-@patch("core.services.marketplace_service._dynamodb_client")
+@patch("core.repositories.marketplace_repo._ddb_client")
 async def test_publish_new_version_atomically_retires_prev_and_publishes_new(mock_client):
     """Publishing v_new atomically flips prev_version -> retired AND
     new_version -> published in a single TransactWriteItems on the
@@ -387,7 +388,7 @@ async def test_publish_new_version_atomically_retires_prev_and_publishes_new(moc
 
 
 @pytest.mark.asyncio
-@patch("core.services.marketplace_service._listings_table")
+@patch("core.repositories.marketplace_repo._listings_table")
 async def test_submit_for_review_clears_prior_rejection_fields(mock_listings):
     """Regression: once a seller resubmits a rejected draft, EVERY
     moderation field must come off the row — rejection_notes,
@@ -409,7 +410,7 @@ async def test_submit_for_review_clears_prior_rejection_fields(mock_listings):
 
 
 @pytest.mark.asyncio
-@patch("core.services.marketplace_service._listings_table")
+@patch("core.repositories.marketplace_repo._listings_table")
 async def test_reject_writes_rejected_at_timestamp(mock_listings):
     """Seller UI surfaces 'Rejected · MM-DD' on the listing row; without
     rejected_at we'd have to fall back to updated_at, which mutates on
@@ -424,7 +425,7 @@ async def test_reject_writes_rejected_at_timestamp(mock_listings):
 
 
 @pytest.mark.asyncio
-@patch("core.services.marketplace_service._listings_table")
+@patch("core.repositories.marketplace_repo._listings_table")
 async def test_update_draft_writes_only_provided_fields(mock_listings):
     mock_listings.return_value.update_item = MagicMock(return_value={"Attributes": {"name": "New Name"}})
     result = await marketplace_service.update_draft(
@@ -456,7 +457,7 @@ async def test_update_draft_rejects_empty_patch():
 
 
 @pytest.mark.asyncio
-@patch("core.services.marketplace_service._listings_table")
+@patch("core.repositories.marketplace_repo._listings_table")
 async def test_update_draft_targets_specified_version(mock_listings):
     """Regression: hardcoding version=1 means a rejected v_new=2 row
     (future republish flow) gets 409'd or mutates the wrong row. The
@@ -469,7 +470,7 @@ async def test_update_draft_targets_specified_version(mock_listings):
 
 
 @pytest.mark.asyncio
-@patch("core.services.marketplace_service._listings_table")
+@patch("core.repositories.marketplace_repo._listings_table")
 async def test_submit_for_review_targets_specified_version(mock_listings):
     """Same regression as update_draft: a v_new=2 resubmit must target v=2."""
     mock_listings.return_value.get_item = MagicMock(
@@ -484,7 +485,7 @@ async def test_submit_for_review_targets_specified_version(mock_listings):
 
 
 @pytest.mark.asyncio
-@patch("core.services.marketplace_service._listings_table")
+@patch("core.repositories.marketplace_repo._listings_table")
 async def test_update_draft_rejects_non_draft_or_wrong_seller(mock_listings):
     """ConditionExpression check failure surfaces as InvalidStateError so
     the route translates to 409 — same shape as submit_for_review."""
@@ -501,7 +502,7 @@ async def test_update_draft_rejects_non_draft_or_wrong_seller(mock_listings):
 
 
 @pytest.mark.asyncio
-@patch("core.services.marketplace_service._listings_table")
+@patch("core.repositories.marketplace_repo._listings_table")
 async def test_update_draft_allows_review_state_and_demotes_to_draft(mock_listings):
     """Edit-during-review: a seller editing a listing currently in
     moderation review pulls it back to draft. Without that demotion, the
@@ -520,7 +521,7 @@ async def test_update_draft_allows_review_state_and_demotes_to_draft(mock_listin
 
 
 @pytest.mark.asyncio
-@patch("core.services.marketplace_service._listings_table")
+@patch("core.repositories.marketplace_repo._listings_table")
 @patch(
     "core.services.marketplace_service._upload_artifact_to_s3",
     new=AsyncMock(return_value=("listings/abc/v1/", "sha-1")),
@@ -549,7 +550,7 @@ async def test_replace_artifact_persists_bundle_selection(mock_listings):
 
 
 @pytest.mark.asyncio
-@patch("core.services.marketplace_service._listings_table")
+@patch("core.repositories.marketplace_repo._listings_table")
 @patch(
     "core.services.marketplace_service._upload_artifact_to_s3",
     new=AsyncMock(return_value=("listings/abc/v1/", "sha-1")),
@@ -741,7 +742,7 @@ class TestCreateNewVersion:
                 )
 
         monkeypatch.setattr(
-            marketplace_service,
+            marketplace_repo,
             "_listings_table",
             lambda: _FailingPutTable(dynamodb_table),
         )
@@ -862,7 +863,7 @@ class TestDiscardDraft:
                 )
 
         monkeypatch.setattr(
-            marketplace_service,
+            marketplace_repo,
             "_listings_table",
             lambda: _FailingDeleteTable(dynamodb_table),
         )

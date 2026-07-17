@@ -12,17 +12,11 @@ import time
 from dataclasses import dataclass
 from typing import Literal
 
-import boto3
-
-from core.config import settings
+from core.repositories import marketplace_repo
 
 
 # 20 bytes = 160 bits, base32-encoded → 32 chars (drop padding).
 _KEY_BODY_LEN = 20
-
-
-def _purchases_table():
-    return boto3.resource("dynamodb").Table(settings.MARKETPLACE_PURCHASES_TABLE)
 
 
 def generate() -> str:
@@ -50,17 +44,9 @@ async def validate(*, license_key: str, source_ip: str) -> ValidationResult:
     if not license_key.startswith("iml_"):
         return ValidationResult(status="not_found")
 
-    table = _purchases_table()
-    resp = table.query(
-        IndexName="license-key-index",
-        KeyConditionExpression="license_key = :k",
-        ExpressionAttributeValues={":k": license_key},
-        Limit=1,
-    )
-    items = resp.get("Items", [])
-    if not items:
+    purchase = await marketplace_repo.find_purchase_by_license_key(license_key)
+    if purchase is None:
         return ValidationResult(status="not_found")
-    purchase = items[0]
 
     if purchase.get("license_key_revoked"):
         return ValidationResult(
@@ -98,37 +84,9 @@ async def validate(*, license_key: str, source_ip: str) -> ValidationResult:
 
 async def revoke(*, purchase_id: str, buyer_id: str, reason: str) -> None:
     """Mark license_key_revoked + reason on a purchase row."""
-    table = _purchases_table()
-    table.update_item(
-        Key={"buyer_id": buyer_id, "purchase_id": purchase_id},
-        UpdateExpression=(
-            "SET license_key_revoked = :true,     license_key_revoked_reason = :r,     license_key_revoked_at = :now"
-        ),
-        ExpressionAttributeValues={
-            ":true": True,
-            ":r": reason,
-            ":now": int(time.time()),
-        },
-    )
+    await marketplace_repo.set_license_revoked(buyer_id=buyer_id, purchase_id=purchase_id, reason=reason)
 
 
 async def record_install(*, purchase_id: str, buyer_id: str, source_ip: str) -> None:
     """Append the install IP+timestamp to purchase's install_log."""
-    table = _purchases_table()
-    table.update_item(
-        Key={"buyer_id": buyer_id, "purchase_id": purchase_id},
-        UpdateExpression=(
-            "SET install_log = list_append("
-            "      if_not_exists(install_log, :empty), :entry"
-            "    ), "
-            "    install_count = if_not_exists(install_count, :zero) + :one, "
-            "    last_install_at = :now"
-        ),
-        ExpressionAttributeValues={
-            ":empty": [],
-            ":entry": [{"ip": source_ip, "ts": int(time.time())}],
-            ":zero": 0,
-            ":one": 1,
-            ":now": int(time.time()),
-        },
-    )
+    await marketplace_repo.append_install(buyer_id=buyer_id, purchase_id=purchase_id, source_ip=source_ip)

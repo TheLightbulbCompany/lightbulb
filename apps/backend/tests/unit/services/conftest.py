@@ -109,35 +109,29 @@ def dynamodb_table():
             BillingMode="PAY_PER_REQUEST",
         ).meta.client.get_waiter("table_exists").wait(TableName="test-marketplace-takedowns")
 
-        # Wire the marketplace_service module to point at the moto tables.
-        # The takedown service reads its table names from the same
-        # settings object, so a single patch covers both. We patch the
-        # imported settings reference each service holds.
-        from core.services import takedown_service
+        # Wire the moto tables in via the settings singleton — the
+        # marketplace repo reads its table names from settings lazily, so
+        # one patch covers every service composed on top of it.
+        from core.config import settings
 
         with (
             patch.object(
-                marketplace_service.settings,
+                settings,
                 "MARKETPLACE_LISTINGS_TABLE",
                 "test-marketplace-listings",
             ),
             patch.object(
-                marketplace_service.settings,
+                settings,
                 "MARKETPLACE_ARTIFACTS_BUCKET",
                 "test-bucket",
             ),
             patch.object(
-                takedown_service.settings,
-                "MARKETPLACE_LISTINGS_TABLE",
-                "test-marketplace-listings",
-            ),
-            patch.object(
-                takedown_service.settings,
+                settings,
                 "MARKETPLACE_PURCHASES_TABLE",
                 "test-marketplace-purchases",
             ),
             patch.object(
-                takedown_service.settings,
+                settings,
                 "MARKETPLACE_TAKEDOWNS_TABLE",
                 "test-marketplace-takedowns",
             ),

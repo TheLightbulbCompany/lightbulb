@@ -164,11 +164,9 @@ def test_approve_v2_derives_prev_version_from_history(client):
     # short-circuits the gate so this test only exercises the prev_version
     # derivation logic it cares about.
     fake_table.get_item.return_value = {"Item": {"listing_id": "l1", "version": 2, "status": "review"}}
-    fake_resource = MagicMock()
-    fake_resource.Table.return_value = fake_table
 
     with (
-        patch("routers.marketplace_admin.boto3.resource", return_value=fake_resource),
+        patch("core.repositories.marketplace_repo._listings_table", return_value=fake_table),
         patch(
             "routers.marketplace_admin.marketplace_service.publish_new_version",
             new=AsyncMock(return_value=None),
@@ -222,10 +220,7 @@ def test_admin_takedowns_list_returns_recent_first(client):
             {"takedown_id": "no-decided-at"},  # defensive: missing field sinks
         ]
     }
-    fake_resource = MagicMock()
-    fake_resource.Table.return_value = fake_table
-
-    with patch("routers.marketplace_admin.boto3.resource", return_value=fake_resource):
+    with patch("core.repositories.marketplace_repo._takedowns_table", return_value=fake_table):
         resp = client.get("/api/v1/admin/marketplace/takedowns")
 
     app.dependency_overrides.clear()
@@ -264,10 +259,7 @@ def test_admin_takedowns_list_paginates_full_scan(client):
         # No LastEvaluatedKey → end of pagination.
     }
     fake_table.scan.side_effect = [page1, page2]
-    fake_resource = MagicMock()
-    fake_resource.Table.return_value = fake_table
-
-    with patch("routers.marketplace_admin.boto3.resource", return_value=fake_resource):
+    with patch("core.repositories.marketplace_repo._takedowns_table", return_value=fake_table):
         resp = client.get("/api/v1/admin/marketplace/takedowns")
 
     app.dependency_overrides.clear()
@@ -317,7 +309,7 @@ def _make_tarball(files: list[tuple[str, bytes]]) -> bytes:
 
 
 def _stub_preview_s3_and_ddb(tarball_bytes: bytes, listing_overrides: dict | None = None):
-    """Build (boto3.resource, boto3.client) stubs the preview endpoint expects.
+    """Build (listings-table, s3-client) stubs the preview endpoint expects.
 
     Returns the patches as a tuple of context managers — caller composes them
     in a `with` block.
@@ -339,8 +331,6 @@ def _stub_preview_s3_and_ddb(tarball_bytes: bytes, listing_overrides: dict | Non
 
     fake_table = MagicMock()
     fake_table.query.return_value = {"Items": [listing]}
-    fake_resource = MagicMock()
-    fake_resource.Table.return_value = fake_table
 
     body_stream = MagicMock()
     body_stream.read.return_value = tarball_bytes
@@ -348,7 +338,7 @@ def _stub_preview_s3_and_ddb(tarball_bytes: bytes, listing_overrides: dict | Non
     s3_client.head_object.return_value = {"ContentLength": len(tarball_bytes)}
     s3_client.get_object.return_value = {"Body": body_stream}
 
-    return fake_resource, s3_client
+    return fake_table, s3_client
 
 
 def test_preview_returns_partial_when_unpacked_exceeds_cap(client):
@@ -369,10 +359,10 @@ def test_preview_returns_partial_when_unpacked_exceeds_cap(client):
     huge = b"x" * (cap + 1)  # one byte past cap forces the check to fire
 
     tar_bytes = _make_tarball([("openclaw.json", small), ("bloat.bin", huge)])
-    fake_resource, s3_client = _stub_preview_s3_and_ddb(tar_bytes)
+    fake_table, s3_client = _stub_preview_s3_and_ddb(tar_bytes)
 
     with (
-        patch("routers.marketplace_admin.boto3.resource", return_value=fake_resource),
+        patch("core.repositories.marketplace_repo._listings_table", return_value=fake_table),
         patch("routers.marketplace_admin.boto3.client", return_value=s3_client),
     ):
         resp = client.get("/api/v1/admin/marketplace/listings/lst_preview/preview")
@@ -418,13 +408,11 @@ def test_preview_returns_partial_when_compressed_exceeds_cap(client):
             }
         ]
     }
-    fake_resource = MagicMock()
-    fake_resource.Table.return_value = fake_table
     s3_client = MagicMock()
     s3_client.head_object.return_value = {"ContentLength": 80 * 1024 * 1024}
 
     with (
-        patch("routers.marketplace_admin.boto3.resource", return_value=fake_resource),
+        patch("core.repositories.marketplace_repo._listings_table", return_value=fake_table),
         patch("routers.marketplace_admin.boto3.client", return_value=s3_client),
     ):
         resp = client.get("/api/v1/admin/marketplace/listings/lst_huge/preview")
@@ -478,8 +466,6 @@ def test_preview_with_version_returns_exact_row_not_review_priority(client):
     fake_table.get_item.return_value = {"Item": published_v1}
     # Defensive: if the handler took the query path by mistake, it'd see v2.
     fake_table.query.return_value = {"Items": [review_v2, published_v1]}
-    fake_resource = MagicMock()
-    fake_resource.Table.return_value = fake_table
 
     tar_bytes = _make_tarball([("openclaw.json", b'{"name":"demo"}')])
     body_stream = MagicMock()
@@ -489,7 +475,7 @@ def test_preview_with_version_returns_exact_row_not_review_priority(client):
     s3_client.get_object.return_value = {"Body": body_stream}
 
     with (
-        patch("routers.marketplace_admin.boto3.resource", return_value=fake_resource),
+        patch("core.repositories.marketplace_repo._listings_table", return_value=fake_table),
         patch("routers.marketplace_admin.boto3.client", return_value=s3_client),
     ):
         resp = client.get("/api/v1/admin/marketplace/listings/lst_multi/preview?version=1")
@@ -538,8 +524,6 @@ def test_preview_without_version_falls_back_to_review_priority(client):
 
     fake_table = MagicMock()
     fake_table.query.return_value = {"Items": [review_v2, published_v1]}
-    fake_resource = MagicMock()
-    fake_resource.Table.return_value = fake_table
 
     tar_bytes = _make_tarball([("openclaw.json", b'{"name":"demo"}')])
     body_stream = MagicMock()
@@ -549,7 +533,7 @@ def test_preview_without_version_falls_back_to_review_priority(client):
     s3_client.get_object.return_value = {"Body": body_stream}
 
     with (
-        patch("routers.marketplace_admin.boto3.resource", return_value=fake_resource),
+        patch("core.repositories.marketplace_repo._listings_table", return_value=fake_table),
         patch("routers.marketplace_admin.boto3.client", return_value=s3_client),
     ):
         resp = client.get("/api/v1/admin/marketplace/listings/lst_multi/preview")
@@ -575,13 +559,11 @@ def test_approve_refuses_when_artifact_exceeds_cap(client):
     fake_table.get_item.return_value = {
         "Item": {"listing_id": "l1", "version": 1, "s3_prefix": "listings/l1/v1/", "artifact_uploaded": True}
     }
-    fake_resource = MagicMock()
-    fake_resource.Table.return_value = fake_table
     s3_client = MagicMock()
     s3_client.head_object.return_value = {"ContentLength": 100 * 1024 * 1024}
 
     with (
-        patch("routers.marketplace_admin.boto3.resource", return_value=fake_resource),
+        patch("core.repositories.marketplace_repo._listings_table", return_value=fake_table),
         patch("routers.marketplace_admin.boto3.client", return_value=s3_client),
         patch("routers.marketplace_admin.marketplace_service.approve", new=AsyncMock()) as mock_approve,
     ):
@@ -619,8 +601,6 @@ def test_approve_refuses_when_unpacked_exceeds_cap(client):
     fake_table.get_item.return_value = {
         "Item": {"listing_id": "l1", "version": 1, "s3_prefix": "listings/l1/v1/", "artifact_uploaded": True}
     }
-    fake_resource = MagicMock()
-    fake_resource.Table.return_value = fake_table
 
     body_stream = MagicMock()
     body_stream.read.return_value = tar_bytes
@@ -629,7 +609,7 @@ def test_approve_refuses_when_unpacked_exceeds_cap(client):
     s3_client.get_object.return_value = {"Body": body_stream}
 
     with (
-        patch("routers.marketplace_admin.boto3.resource", return_value=fake_resource),
+        patch("core.repositories.marketplace_repo._listings_table", return_value=fake_table),
         patch("routers.marketplace_admin.boto3.client", return_value=s3_client),
         patch("routers.marketplace_admin.marketplace_service.approve", new=AsyncMock()) as mock_approve,
     ):
@@ -656,13 +636,11 @@ def test_approve_fails_closed_when_head_object_fails(client):
     fake_table.get_item.return_value = {
         "Item": {"listing_id": "l1", "version": 1, "s3_prefix": "listings/l1/v1/", "artifact_uploaded": True}
     }
-    fake_resource = MagicMock()
-    fake_resource.Table.return_value = fake_table
     s3_client = MagicMock()
     s3_client.head_object.side_effect = RuntimeError("S3 timeout")
 
     with (
-        patch("routers.marketplace_admin.boto3.resource", return_value=fake_resource),
+        patch("core.repositories.marketplace_repo._listings_table", return_value=fake_table),
         patch("routers.marketplace_admin.boto3.client", return_value=s3_client),
         patch("routers.marketplace_admin.marketplace_service.approve", new=AsyncMock()) as mock_approve,
     ):
@@ -697,11 +675,9 @@ def test_list_listings_no_params_returns_review_queue_via_gsi(client):
             {"listing_id": "l2", "version": 1, "status": "review", "name": "Bar"},
         ]
     }
-    fake_resource = MagicMock()
-    fake_resource.Table.return_value = fake_table
 
     with (
-        patch("routers.marketplace_admin.boto3.resource", return_value=fake_resource),
+        patch("core.repositories.marketplace_repo._listings_table", return_value=fake_table),
         patch(
             "routers.marketplace_admin.marketplace_search.search",
             new=AsyncMock(),
@@ -876,8 +852,6 @@ def test_approve_fails_closed_when_artifact_download_fails(client):
     fake_table.get_item.return_value = {
         "Item": {"listing_id": "l1", "version": 1, "s3_prefix": "listings/l1/v1/", "artifact_uploaded": True}
     }
-    fake_resource = MagicMock()
-    fake_resource.Table.return_value = fake_table
     s3_client = MagicMock()
     # head_object succeeds — artifact is present and under the compressed cap.
     s3_client.head_object.return_value = {"ContentLength": 1024}
@@ -885,7 +859,7 @@ def test_approve_fails_closed_when_artifact_download_fails(client):
     s3_client.get_object.side_effect = RuntimeError("S3 AccessDenied")
 
     with (
-        patch("routers.marketplace_admin.boto3.resource", return_value=fake_resource),
+        patch("core.repositories.marketplace_repo._listings_table", return_value=fake_table),
         patch("routers.marketplace_admin.boto3.client", return_value=s3_client),
         patch("routers.marketplace_admin.marketplace_service.approve", new=AsyncMock()) as mock_approve,
     ):

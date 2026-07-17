@@ -755,6 +755,15 @@ export function useAgentChat(
   // Pending empty-history retry timer (see the history-fetch effect). Held in a
   // ref so the effect cleanup can cancel it on unmount / session switch.
   const historyRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // "Is this hook's history-fetch effect currently mounted?" Re-affirmed true at
+  // the top of every effect run (BEFORE the latch early-return) and set false
+  // only in the effect cleanup. Unlike a per-effect-instance boolean, this
+  // survives React StrictMode's dev double-invoke (mount → cleanup → re-mount):
+  // the phantom cleanup sets it false, but the real re-mount sets it true again
+  // — so a first fetch still owned by the phantom instance's closure keeps
+  // retrying an empty read instead of collapsing to an immediate bootstrap. A
+  // GENUINE unmount leaves it false (no re-mount follows), stopping the retry.
+  const historyEffectMountedRef = useRef(false);
 
   // Monotonic counter of LOCAL transcript mutations that must survive the
   // mount-time history revalidation: optimistic user appends, folded run
@@ -769,6 +778,11 @@ export function useAgentChat(
 
   useEffect(() => {
     if (!agentId || !cacheKey || !isConnected) return;
+    // Affirm mounted BEFORE the latch early-return: under StrictMode the phantom
+    // re-mount early-returns here (cacheKey already latched by the first mount),
+    // so this must run first to re-mark the hook mounted and keep the first
+    // fetch's retry loop alive.
+    historyEffectMountedRef.current = true;
     if (historyLoadedRef.current.has(cacheKey)) return;
     // Cached transcript paints instantly, but a run that completed while
     // this hook was unmounted only exists server-side — so always fetch
@@ -785,11 +799,6 @@ export function useAgentChat(
     // The `.catch` un-latches so a failed fetch still retries on the next run.
     historyLoadedRef.current.add(cacheKey);
 
-    // Set true in cleanup, so a late-resolving fetch cannot schedule an
-    // empty-read retry that outlives this effect instance (the retry timer ref
-    // is shared with the next instance). Read ONLY when deciding to retry — the
-    // apply path below keeps its original session-scoped guards untouched.
-    let disposed = false;
     // Stable Set (the ref is never reassigned); captured for the cleanup so it
     // doesn't read ref.current there (react-hooks/exhaustive-deps).
     const loadedKeys = historyLoadedRef.current;
@@ -836,7 +845,7 @@ export function useAgentChat(
               // on chat.history; until then this bounded retry is the frontend
               // guard.)
               const stillCurrent =
-                !disposed &&
+                historyEffectMountedRef.current &&
                 agentIdRef.current === agentId &&
                 activeSessionIdRef.current === (activeSessionId ?? null);
               if (stillCurrent && attempt < HISTORY_EMPTY_RETRY_DELAYS_MS.length) {
@@ -876,13 +885,20 @@ export function useAgentChat(
     runFetch(0);
 
     return () => {
-      // Cancel a pending empty-read retry so it can't fire for a session the
-      // user switched away from (or an unmounted hook). If a retry WAS pending
-      // — i.e. we're between retries — un-latch so a later effect run (reconnect,
-      // revisit) re-fetches instead of early-returning on the latch and
-      // stranding the session on the loading skeleton. A first fetch still in
-      // flight (no timer pending) keeps its latch, preserving in-flight dedupe.
-      disposed = true;
+      // Mark this hook's history effect unmounted. A StrictMode phantom cleanup
+      // sets this false but the immediately-following real re-mount sets it true
+      // again (see the top-of-effect affirm), so the in-flight retry loop only
+      // stops on a GENUINE unmount. Navigating to a different agent/session is
+      // caught separately by the agentIdRef/activeSessionIdRef checks in the
+      // retry decision — this flag is only the "hook is gone" guard.
+      //
+      // Also cancel a pending empty-read retry so it can't fire for a session
+      // the user switched away from. If a retry WAS pending — i.e. we're between
+      // retries — un-latch so a later effect run (reconnect, revisit) re-fetches
+      // instead of early-returning on the latch and stranding the session on the
+      // loading skeleton. A first fetch still in flight (no timer pending) keeps
+      // its latch, preserving in-flight dedupe.
+      historyEffectMountedRef.current = false;
       if (historyRetryTimerRef.current !== null) {
         clearTimeout(historyRetryTimerRef.current);
         historyRetryTimerRef.current = null;

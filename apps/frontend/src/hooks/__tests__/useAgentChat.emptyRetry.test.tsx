@@ -30,10 +30,13 @@ let chatHandlers: Array<(msg: ChatIncomingMessage) => void> = [];
 const sendReq = vi.fn();
 const sendChat = vi.fn();
 const send = vi.fn();
+// Mutable so a test can simulate an isConnected flicker (WS drop/reconnect)
+// mid-fetch by flipping this and re-rendering.
+let mockConnected = true;
 
 vi.mock("@/hooks/useGateway", () => ({
   useGateway: () => ({
-    isConnected: true,
+    isConnected: mockConnected,
     nodeConnected: false,
     error: null,
     reconnectAttempt: 0,
@@ -78,6 +81,7 @@ async function advance(ms: number): Promise<void> {
 describe("useAgentChat — empty chat.history read is retried, not treated as authoritative", () => {
   beforeEach(() => {
     chatHandlers = [];
+    mockConnected = true;
     sendChat.mockReset();
     send.mockReset().mockReturnValue(true);
     sendReq.mockReset();
@@ -125,6 +129,74 @@ describe("useAgentChat — empty chat.history read is retried, not treated as au
     // And it does not keep retrying forever.
     await advance(10000);
     expect(historyCalls()).toBe(4);
+  });
+
+  it("an isConnected flicker (or StrictMode re-mount) mid-fetch does NOT defeat the retry — no bootstrap on attempt 0", async () => {
+    // Regression guard for the effect re-running while the FIRST read is still
+    // in flight — the common post-refresh case: the WS has only just connected,
+    // so an isConnected drop/reconnect (or, in dev, StrictMode's mount → cleanup
+    // → re-mount) fires the effect's cleanup before the first empty read
+    // resolves. The latch keeps the re-mount from issuing a duplicate fetch, so
+    // the original in-flight fetch still owns the retry chain. A per-effect-
+    // instance `disposed` boolean would be flipped true by that cleanup and
+    // collapse the first empty read straight to bootstrap (the exact bug this PR
+    // fixes). The mounted-ref, re-affirmed by the re-mount, keeps the loop alive.
+    let resolveFirst: (() => void) | null = null;
+    let reads = 0;
+    sendReq.mockImplementation((method: string, params?: Record<string, unknown>) => {
+      if (method === "chat.history" && params?.sessionKey === GENERAL_KEY) {
+        reads += 1;
+        if (reads === 1) {
+          // Hold the first read pending so the flicker lands mid-fetch.
+          return new Promise((res) => {
+            resolveFirst = () => res({ messages: [] });
+          });
+        }
+        return Promise.resolve({ messages: [] });
+      }
+      return Promise.resolve({ messages: [] });
+    });
+
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    const { result, rerender } = renderHook(() => useAgentChat("agent-X", "user-1"));
+
+    await advance(0);
+    expect(historyCalls()).toBe(1); // first read issued, still pending
+    expect(result.current.needsBootstrap).toBe(false);
+
+    // WS drops then reconnects while that first read is in flight — this fires
+    // the effect's cleanup and a re-mount.
+    await act(async () => {
+      mockConnected = false;
+      rerender();
+    });
+    await act(async () => {
+      mockConnected = true;
+      rerender();
+    });
+    // The re-mount must not have issued a duplicate fetch (latch holds).
+    expect(historyCalls()).toBe(1);
+
+    // Now the first read resolves empty. With the bug it bootstraps immediately
+    // (disposed was set by the flicker cleanup); fixed, it schedules a retry.
+    await act(async () => {
+      resolveFirst?.();
+    });
+    await advance(0);
+    expect(result.current.needsBootstrap).toBe(false);
+    expect(result.current.isLoadingHistory).toBe(true);
+
+    // The retry loop is alive: the backoff fires the next read.
+    await advance(500);
+    expect(historyCalls()).toBe(2);
+    expect(result.current.needsBootstrap).toBe(false);
+
+    // And it still eventually concludes empty after the bounded retries.
+    await advance(1250);
+    await advance(3000);
+    expect(historyCalls()).toBe(4);
+    expect(result.current.needsBootstrap).toBe(true);
+    expect(result.current.isLoadingHistory).toBe(false);
   });
 
   it("recovers the transcript when a retry returns it (container finished waking) — no bootstrap", async () => {

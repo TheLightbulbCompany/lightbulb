@@ -106,6 +106,9 @@ describe("TeamsEventsProvider", () => {
     gatewayState.isConnected = true;
     render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
     expect(eventHandler).not.toBeNull();
+    // Isolate the event's invalidation from the first-subscribe reconcile
+    // (which invalidates ALL keys on mount-while-connected).
+    mutateMock.mockClear();
 
     act(() => {
       eventHandler!("teams.activity.logged", { actor: "u1" });
@@ -168,6 +171,7 @@ describe("TeamsEventsProvider", () => {
   it("invalidates dashboard + agents on teams.agent.status", () => {
     gatewayState.isConnected = true;
     render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
+    mutateMock.mockClear(); // drop the first-subscribe reconcile
     act(() => {
       eventHandler!("teams.agent.status", {});
     });
@@ -192,6 +196,7 @@ describe("TeamsEventsProvider", () => {
   it("ignores teams.plugin.* events (no UI bound in v1)", () => {
     gatewayState.isConnected = true;
     render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
+    mutateMock.mockClear(); // drop the first-subscribe reconcile
     act(() => {
       eventHandler!("teams.plugin.ui.updated", {});
       eventHandler!("teams.plugin.worker.crashed", {});
@@ -211,6 +216,27 @@ describe("TeamsEventsProvider", () => {
       "/teams/dashboard", "/teams/activity", "/teams/inbox", "/teams/issues", "/teams/agents",
       "/teams/inbox?tab=mine", "/teams/inbox?tab=recent", "/teams/inbox?tab=all",
     ]));
+  });
+
+  it("reconciles (invalidates all mapped keys) on FIRST subscribe when already connected", () => {
+    // The gateway connection persists across navigation while this provider
+    // mounts/unmounts with the Teams layout. Mounting already-connected means
+    // any activity.logged emitted while the user was outside Teams was missed
+    // (Paperclip WS has no replay) and the read layer's 15s dedup blocks the
+    // mount-refetch — so first-subscribe MUST reconcile, not just reconnect.
+    gatewayState.isConnected = true;
+    render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
+    expect(sendMock).toHaveBeenCalledWith({ type: "teams.subscribe" });
+    const keys = invalidatedKeys();
+    expect(keys).toEqual(
+      expect.arrayContaining([
+        "/teams/dashboard",
+        "/teams/activity",
+        "/teams/inbox",
+        "/teams/issues",
+        "/teams/agents",
+      ]),
+    );
   });
 
   it("re-subscribes and invalidates on isConnected false→true transition", () => {
@@ -249,6 +275,7 @@ describe("TeamsEventsProvider", () => {
   it("ignores non-teams events (e.g. an OpenClaw event leaking through)", () => {
     gatewayState.isConnected = true;
     render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
+    mutateMock.mockClear(); // drop the first-subscribe reconcile
     act(() => {
       eventHandler!("agent_chat", {});
       eventHandler!("openclaw.something", {});

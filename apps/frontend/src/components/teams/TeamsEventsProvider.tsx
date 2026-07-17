@@ -55,8 +55,10 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
   const { mutate } = useSWRConfig();
   const { user } = useUser();
   // null = never observed; false = observed disconnected; true = observed connected.
-  // Full invalidation only fires on a tracked false→true transition (true reconnect),
-  // NOT on the first mount when we were already connected.
+  // Full invalidation fires on any transition INTO connected — both the first
+  // subscribe (null→true) and a reconnect (false→true) — but never on a
+  // redundant effect re-run while already connected (true→true). See the
+  // resubscribe effect for why first-subscribe must reconcile too.
   const wasConnectedRef = useRef<boolean | null>(null);
 
   // Invalidate every SWR key that matches `prefix` exactly OR starts with
@@ -86,16 +88,28 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
     return () => releaseTeamsEvents(send);
   }, [send]);
 
-  // (re)subscribe + full invalidation on connect / reconnect.
+  // (re)subscribe + full invalidation on every entry into a connected+subscribed
+  // state (first subscribe AND reconnect).
   useEffect(() => {
     if (!isConnected) {
       wasConnectedRef.current = false;
       return;
     }
     resubscribeTeamsEvents(send);
-    if (wasConnectedRef.current === false) {
-      // Reconnect path: refetch everything because Paperclip's WS has no
-      // replay cursor and we may have missed events while disconnected.
+    if (wasConnectedRef.current !== true) {
+      // Reconcile whenever we (re)subscribe from a not-yet-subscribed state —
+      // first subscribe (null) OR reconnect (false). Paperclip's WS has no
+      // replay cursor, and the Teams read layer's 15s dedup window
+      // (useTeamsApi) suppresses refetch-on-navigation by design, delegating
+      // freshness to these event-driven mutations. That trust only holds while
+      // continuously subscribed: any activity.logged emitted before this
+      // subscription — e.g. while the user was outside Teams, since this
+      // provider mounts/unmounts with the Teams layout while the gateway
+      // connection persists — is lost, and the dedup blocks the mount-refetch
+      // that would recover it. Refetching everything on (re)subscribe closes
+      // that missed-event window. Fires once per Teams entry (the provider is
+      // layout-scoped, not per-panel), so intra-Teams panel switches stay
+      // deduped.
       for (const key of ALL_KEYS) mutateKeyPrefix(key);
     }
     wasConnectedRef.current = true;

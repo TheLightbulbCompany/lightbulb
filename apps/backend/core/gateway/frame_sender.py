@@ -39,6 +39,14 @@ stream frame for the same ``(runId, type)`` is still queued, the two merge
 Under backpressure the queue holds at most one pending stream frame per
 ``(runId, type)``, so a slow consumer converges instead of falling ever
 further behind.
+
+Scope of the ordering guarantee: FrameSender-routed frames only. The
+router's fire-and-forget sends (``send_message_async``) bypass these
+queues and may interleave arbitrarily with queued frames on the same
+connection — acceptable because those frames (RPC responses matched by
+req id, pong, gate errors) are order-independent by design. A new send
+that DOES need ordering relative to the chat stream must go through
+``enqueue``, not ``send_message_async``.
 """
 
 import asyncio

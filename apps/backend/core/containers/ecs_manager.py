@@ -1809,6 +1809,14 @@ class EcsManager:
         # so the first task starts with auth/keys already in place). ---
         secrets_for_task: list[dict] = []
         environment_for_task: list[dict] = []
+        # Give the container a base URL to curl the public platform-info catalog
+        # ($ISOL8_API_URL/api/v1/platform-info). The isol8 skill reads the live
+        # connectable integrations/channels from there instead of a stale baked
+        # list. Reuse atlas_seed._api_base_url so the per-env host convention has
+        # exactly one definition. Public route -> no auth, no owner_id.
+        from core.services import atlas_seed
+
+        environment_for_task.append({"name": "ISOL8_API_URL", "value": atlas_seed._api_base_url(settings.ENVIRONMENT)})
         if provider_choice == "chatgpt_oauth":
             from core.services.oauth_service import resolve_token_owner
 

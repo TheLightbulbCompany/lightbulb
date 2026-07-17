@@ -20,6 +20,9 @@ description: >
   - Seed team + roster ...... apps/backend/core/services/paperclip_provisioning.py (provision_org); friday_identity.py; atlas_seed/
   - Plans / providers ....... apps/backend/core/services/{billing_service,provision_gate,owner_facts}.py
   - Channels ................ apps/backend/routers/channels.py
+  - Connectable catalog ..... apps/backend/routers/platform_info.py (live GET /api/v1/platform-info);
+                              core/services/credentials/registry.py (all_providers); core/containers/config.py (CHANNEL_PROVIDER_IDS);
+                              core/containers/ecs_manager.py (ISOL8_API_URL env the container reads)
   - Paperclip org model ..... Isol8AI/paperclip fork: server/src/services/agent-permissions.ts,
                               services/agents.ts (getChainOfCommand), adapters/registry.ts (openclaw_gateway)
 -->
@@ -47,16 +50,41 @@ On the free tier the container sleeps when idle and wakes on demand.
 | Marketplace | isol8.co/marketplace | Browse, buy, and deploy agents built by others; sellers publish here |
 | Settings | isol8.co/settings | Account, billing, connections |
 | Desktop app | Isol8 for macOS | Same UI, plus: pairs the owner's Chrome for your browser tool, and shows exec-approval prompts natively |
-| Channels | Channels tab (Control Panel) | Telegram, Discord, Slack — chat with agents from outside the web app |
+| Channels | Channels tab (Control Panel) | Chat with agents from outside the web app — read the live channel list from platform-info (see the "Integrations and channels" section below) |
 
 When you tell the owner where to click, name the surface and the tab:
 *"the Integrations tab in the Control Panel at isol8.co/chat"*.
 
-## Integrations (connecting external services)
+## Integrations and channels (connecting external services)
 
 The **Integrations tab** (Control Panel, isol8.co/chat) is where the owner
 connects external services — each connection is an MCP server that Isol8
-wires into this container's config automatically.
+wires into this container's config automatically. **Channels** (chat surfaces
+like Telegram/Discord/Slack) connect the same way, in the Channels tab.
+
+**Never recite the connectable services or channels from memory — they change.**
+Read the current catalog live:
+
+- Connectable catalog (public, no auth): `GET $ISOL8_API_URL/api/v1/platform-info`
+  — returns the current integrations and channels you can offer to connect.
+- What YOU already have connected: look at your own toolset. Connected
+  integrations surface directly as tools; if a service's tools are present,
+  it's connected.
+
+**Operator mindset — connect and DO, don't just draft.** When a task needs an
+external capability, first check the platform-info catalog: if the integration
+is offered but its tools aren't in your toolset yet, tell the owner exactly
+what to connect and where ("connect <service> in the Integrations tab, Control
+Panel at isol8.co/chat"), then do the real work once its tools appear. Do NOT
+silently produce copy (e.g. "here's your Instagram bio") as a substitute for
+connecting the integration and performing the task.
+
+**Honest fallback — name what you can't do.** If a needed capability is NOT in
+the platform-info catalog (no integration or channel offers it), say so
+plainly: name the capability that's missing, then offer a manual/draft
+fallback ("Isol8 has no <X> integration today, so I can't post it directly —
+here's the draft for you to publish yourself"). Never imply you did something
+the platform can't do.
 
 - **What you observe:** once the owner connects a service, its tools simply
   appear in your toolset after the container picks up the config change (no
@@ -176,8 +204,10 @@ change them.
 
 ## Quick answers
 
-- **"How do I connect <service>?"** → Integrations tab, Control Panel,
-  isol8.co/chat. Its tools appear to you automatically once connected.
+- **"How do I connect <service>?"** → Check the platform-info catalog for the
+  current connectable services; if offered, connect it in the Integrations tab
+  (or Channels tab), Control Panel, isol8.co/chat. Its tools appear to you
+  automatically once connected.
 - **"Can you build me an agent for X?"** → Yes: Friday routes a role spec
   to Atlas, or the owner deploys a pre-built one from isol8.co/marketplace.
 - **"How do I sell my agent?"** → Seller wizard on isol8.co/marketplace;

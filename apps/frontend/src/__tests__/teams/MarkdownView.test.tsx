@@ -26,4 +26,22 @@ describe("MarkdownView", () => {
     const { container } = render(<MarkdownView>{"line one\nline two"}</MarkdownView>);
     expect(container.querySelector("br")).not.toBeNull();
   });
+
+  it("wraps in an overflow-safe container so long unbreakable tokens can't overflow", () => {
+    // Agent output routinely contains long unbreakable tokens (URLs, error
+    // strings). Without min-w-0 + overflow-wrap:anywhere they bleed off the
+    // right edge into adjacent columns (observed in the Teams task view).
+    const { container } = render(
+      <MarkdownView>{"getaddrinfoENOTFOUND https://company.isol8.co/very/long/path"}</MarkdownView>,
+    );
+    const root = container.firstElementChild as HTMLElement;
+    expect(root.className).toContain("min-w-0");
+    expect(root.className).toContain("[overflow-wrap:anywhere]");
+  });
+
+  it("lets long inline code wrap instead of overflowing", () => {
+    const { container } = render(<MarkdownView>{"`getaddrinfoENOTFOUND`"}</MarkdownView>);
+    const code = container.querySelector("code");
+    expect(code?.className).toContain("[overflow-wrap:anywhere]");
+  });
 });

@@ -8,13 +8,20 @@ A Paperclip *schedule* is two objects:
 The cron lives on the TRIGGER, not the routine, so provisioning a recurring
 schedule is always a two-call sequence: ``create_routine`` → ``create_routine_trigger``.
 
-COST-SAFE INVARIANT — every trigger this module creates is ``enabled: False``
-(dormant). It exists and proves the plumbing but fires zero runs and costs
-nothing until a human flips it on later. There is NO code path here that
-creates an ``enabled: True`` trigger. Every routine is created with
-``concurrencyPolicy="coalesce_if_active"`` and ``catchUpPolicy="skip_missed"``
-so that — even once a trigger IS flipped on — a slow run never stacks
-overlapping executions and a missed tick is dropped rather than back-filled.
+COST-SAFE INVARIANT — every trigger the GENERAL path
+(``create_agent_routines`` / ``build_dormant_trigger_body``) creates is
+``enabled: False`` (dormant). It exists and proves the plumbing but fires zero
+runs and costs nothing until a human flips it on later. Every routine is
+created with ``concurrencyPolicy="coalesce_if_active"`` and
+``catchUpPolicy="skip_missed"`` so that — even once a trigger IS flipped on — a
+slow run never stacks overlapping executions and a missed tick is dropped
+rather than back-filled.
+
+There is exactly ONE narrowly-scoped exception —
+``build_enabled_trigger_body`` / ``create_enabled_schedule_routine``, used only
+for the paid nightly CEO routine armed by ``user_provision``. Every OTHER path
+here stays dormant. ``create_agent_routines`` (marketplace deploy, bootstrap,
+its unit tests) is unchanged and never emits an enabled trigger.
 
 Idempotent: before creating, we list the company's existing routines and skip
 any whose ``assigneeAgentId`` already matches the target agent AND whose title
@@ -39,6 +46,38 @@ _ROUTINE_CATCH_UP_POLICY = "skip_missed"
 # Default timezone for schedule triggers. UTC keeps cron expressions
 # unambiguous across the fleet (no DST surprises).
 _DEFAULT_TIMEZONE = "UTC"
+
+
+# ---------------------------------------------------------------------------
+# Nightly CEO routine — the single paid, ENABLED exception (issue #1273).
+# ---------------------------------------------------------------------------
+#
+# Identity of the one enabled routine we seed for PAID owners so Friday wakes
+# nightly and makes unattended progress. Armed by ``user_provision`` gated on
+# ``has_always_on_entitlement`` (paid-only); a trial owner is NEVER armed.
+
+# Title is the idempotency key — STABLE FOREVER. Changing it breaks the
+# title-skip guard (``create_enabled_schedule_routine``) and duplicates the
+# routine on the next reprovision. Frozen.
+NIGHTLY_CEO_ROUTINE_TITLE = "Nightly CEO progress"
+
+# Cron: once daily at 08:00 UTC — off-peak for the US-weighted base (~00:00–03:00
+# US). No IANA-tz field exists on the billing/user rows, so we commit to UTC
+# unconditionally (the per-owner-local branch would be dead code). See the plan.
+NIGHTLY_CEO_ROUTINE_CRON = "0 8 * * *"
+
+# Description is server-authored and self-authorizing: the dispatched execution
+# issue's body carries a COMPLETE, bounded instruction, so even a Friday whose
+# AGENTS.md predates this feature reads a full self-contained loop from the
+# issue. The ``[NIGHTLY-CEO-LOOP]`` sentinel is the first line — Friday's
+# AGENTS.md keys the self-agenda branch on it AND on the server-controlled
+# ``originKind == "routine_execution"`` (which a teammate cannot forge).
+NIGHTLY_CEO_ROUTINE_DESCRIPTION = (
+    "[NIGHTLY-CEO-LOOP] Scheduled nightly wake — you are explicitly authorized "
+    "ON THIS ISSUE to review the company backlog and self-assign ONE task you "
+    "can complete now, execute it, then exit. ONE task per wake — do not invent "
+    "new work. If nothing is doable, do nothing and exit."
+)
 
 
 def build_dormant_trigger_body(cron: str, *, timezone: str = _DEFAULT_TIMEZONE) -> dict[str, Any]:
@@ -184,3 +223,92 @@ async def create_agent_routines(
         existing_titles.add(title)
 
     return created_ids
+
+
+# ---------------------------------------------------------------------------
+# The single ENABLED path — paid nightly CEO routine ONLY (issue #1273).
+# ---------------------------------------------------------------------------
+
+
+def build_enabled_trigger_body(cron: str, *, timezone: str = _DEFAULT_TIMEZONE) -> dict[str, Any]:
+    """Enabled schedule-trigger body. Same shape as ``build_dormant_trigger_body``
+    but ``enabled: True``.
+
+    Reserved for the single paid nightly CEO routine — the ONE deliberate
+    exception to this module's dormant-only invariant. Do NOT call this from
+    ``create_agent_routines`` or any marketplace/bootstrap path.
+    """
+    return {
+        "kind": "schedule",
+        "cronExpression": cron,
+        "timezone": timezone,
+        "enabled": True,
+    }
+
+
+async def create_enabled_schedule_routine(
+    *,
+    admin: Any,
+    session_cookie: str,
+    company_id: str,
+    agent_id: str,
+    title: str,
+    description: str,
+    cron: str,
+    timezone: str = _DEFAULT_TIMEZONE,
+) -> str | None:
+    """Create ONE enabled schedule routine for ``agent_id``, idempotently.
+
+    Title-idempotent exactly like ``create_agent_routines``: list existing
+    routines; if one with ``title`` is already assigned to ``agent_id``, return
+    ``None`` WITHOUT creating and WITHOUT touching its trigger. Skipping purely
+    on title-match is what makes a paused routine STAY paused — we never
+    reconcile an existing routine's trigger, so an owner who disabled this
+    routine is never silently re-enabled. Only when the title is ABSENT do we
+    create (routine + enabled trigger).
+
+    Reuses ``_build_routine_body`` so the ``coalesce_if_active`` /
+    ``skip_missed`` posture is identical to every other routine — those bounds
+    cap a single wake's blast radius and must stay intact.
+
+    Returns the new routine id on create, or ``None`` on a title-skip (the
+    routine is present either way).
+    """
+    existing = await admin.list_routines(session_cookie=session_cookie, company_id=company_id)
+    if title in _existing_titles_for_agent(existing, agent_id):
+        logger.info(
+            "agent_routine_provisioning: skip existing ENABLED routine title=%r agent=%s company=%s",
+            title,
+            agent_id,
+            company_id,
+        )
+        return None
+
+    routine = await admin.create_routine(
+        session_cookie=session_cookie,
+        company_id=company_id,
+        body=_build_routine_body(title=title, description=description, agent_id=agent_id),
+    )
+    routine_id = routine.get("id") if isinstance(routine, dict) else None
+    if not routine_id:
+        logger.warning(
+            "agent_routine_provisioning: create_routine returned no id for ENABLED routine title=%r agent=%s",
+            title,
+            agent_id,
+        )
+        return None
+
+    await admin.create_routine_trigger(
+        session_cookie=session_cookie,
+        routine_id=routine_id,
+        body=build_enabled_trigger_body(cron, timezone=timezone),
+    )
+    logger.info(
+        "agent_routine_provisioning: created ENABLED routine id=%s title=%r cron=%r agent=%s company=%s",
+        routine_id,
+        title,
+        cron,
+        agent_id,
+        company_id,
+    )
+    return routine_id

@@ -550,3 +550,72 @@ def test_paid_owner_can_still_reactivate(client, admin, monkeypatch):
 
     assert r.status_code == 200, r.text
     admin.patch_routine.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Nightly CEO loop opt-out (issue #1273)
+# ---------------------------------------------------------------------------
+
+
+def test_patch_nightly_routine_paused_sets_opt_out(client, admin, monkeypatch):
+    """Pausing the nightly CEO routine persists the durable opt-out flag."""
+    admin.get_routine = AsyncMock(return_value={"id": "r1", "title": "Nightly CEO progress"})
+    set_opt = AsyncMock()
+    monkeypatch.setattr("routers.teams.work.billing_repo.set_nightly_ceo_opted_out", set_opt)
+
+    r = client.patch(
+        "/api/v1/teams/routines/r1",
+        json={"status": "paused"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    set_opt.assert_awaited_once_with("o1", True)
+    admin.patch_routine.assert_awaited_once()
+
+
+def test_patch_nightly_routine_active_clears_opt_out(client, admin, monkeypatch):
+    """Re-activating the nightly CEO routine clears the durable opt-out flag."""
+    admin.get_routine = AsyncMock(return_value={"id": "r1", "title": "Nightly CEO progress"})
+    set_opt = AsyncMock()
+    monkeypatch.setattr("routers.teams.work.billing_repo.set_nightly_ceo_opted_out", set_opt)
+
+    r = client.patch(
+        "/api/v1/teams/routines/r1",
+        json={"status": "active"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    set_opt.assert_awaited_once_with("o1", False)
+
+
+def test_patch_non_nightly_routine_does_not_touch_opt_out(client, admin, monkeypatch):
+    """A PATCH on a routine that is NOT the nightly CEO routine never writes the
+    opt-out flag."""
+    admin.get_routine = AsyncMock(return_value={"id": "r1", "title": "Some other routine"})
+    set_opt = AsyncMock()
+    monkeypatch.setattr("routers.teams.work.billing_repo.set_nightly_ceo_opted_out", set_opt)
+
+    r = client.patch(
+        "/api/v1/teams/routines/r1",
+        json={"status": "paused"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    set_opt.assert_not_awaited()
+
+
+def test_patch_routine_rename_only_never_checks_nightly(client, admin, monkeypatch):
+    """A pure rename/reassign (no status transition) skips the opt-out logic
+    entirely — no get_routine lookup, no flag write."""
+    admin.get_routine = AsyncMock(return_value={"id": "r1", "title": "Nightly CEO progress"})
+    set_opt = AsyncMock()
+    monkeypatch.setattr("routers.teams.work.billing_repo.set_nightly_ceo_opted_out", set_opt)
+
+    r = client.patch(
+        "/api/v1/teams/routines/r1",
+        json={"title": "Renamed"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    admin.get_routine.assert_not_awaited()
+    set_opt.assert_not_awaited()

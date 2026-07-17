@@ -28,14 +28,21 @@ from core.observability.metrics import put_metric
 from core.observability.product_analytics import capture_product_event
 from core.repositories import billing_repo
 from core.services import clerk_admin
+from core.services.agent_routine_provisioning import (
+    NIGHTLY_CEO_ROUTINE_CRON,
+    NIGHTLY_CEO_ROUTINE_DESCRIPTION,
+    NIGHTLY_CEO_ROUTINE_TITLE,
+    create_enabled_schedule_routine,
+)
 from core.services.container_provision import background_provision
 from core.services.paperclip_admin_client import PaperclipApiError
+from core.services.paperclip_admin_session import get_admin_session_cookie
 from core.services.paperclip_owner_email import lookup_owner_email
 from core.services.paperclip_provisioning import (
     build_paperclip_provisioning,
     close_paperclip_provisioning,
 )
-from core.services.provision_gate import evaluate_provision_gate
+from core.services.provision_gate import evaluate_provision_gate, has_always_on_entitlement
 
 logger = logging.getLogger(__name__)
 
@@ -202,6 +209,90 @@ async def ensure_user_ready(auth: AuthContext, *, provision_container: bool = Tr
     # repeated owner polls on a not-yet-running container are safe.
     if provision_container and (not auth.is_org_context or auth.is_org_admin):
         asyncio.create_task(background_provision(owner_id, auth.user_id))
+
+    # Nightly CEO loop (issue #1273): arm the paid, ENABLED nightly routine on
+    # Friday for the container OWNER (personal owner or org admin) — never an
+    # org member, never a trial owner (gated on has_always_on_entitlement
+    # inside). Deliberately NOT gated on provision_container: it must also run
+    # on the running-container poll (org path, provision_container=False) so
+    # pre-existing paid owners and free→paid upgrades get armed on their next
+    # /container/status poll — not only brand-new provisions. Idempotent +
+    # best-effort (never raises).
+    if not auth.is_org_context or auth.is_org_admin:
+        await _maybe_arm_nightly_ceo(auth, owner_id)
+
+
+async def _maybe_arm_nightly_ceo(auth: AuthContext, owner_id: str) -> None:
+    """Idempotently arm the paid nightly CEO routine on Friday (issue #1273).
+
+    Paid-only: ``has_always_on_entitlement`` returns True only for Stripe
+    ``active``/``trialing`` (or the legacy None+stripe_sub row) and fail-closes
+    on no account — a ``trial_local`` owner is NEVER armed. Best-effort: any
+    failure is logged and swallowed so ``ensure_user_ready`` keeps answering the
+    poll; the next poll retries.
+
+    Idempotency, three race classes closed:
+      - Normal re-poll: the ``nightly_ceo_armed_company`` cache on the billing
+        row short-circuits before any Paperclip call once it equals the current
+        company.
+      - Concurrency: ``try_claim_nightly_arm`` is a conditional write that
+        elects exactly one winner to seed (plus ``create_enabled_schedule_routine``'s
+        title-skip as a backstop).
+      - Owner opt-out: ``nightly_ceo_opted_out`` (durable — survives a full
+        reprovision because billing is preserved) blocks re-seeding, and the
+        title-skip never reconciles an existing paused trigger.
+    """
+    try:
+        account = await billing_repo.get_by_owner_id(owner_id)
+        if not has_always_on_entitlement(account):
+            return
+        if account.get("nightly_ceo_opted_out"):
+            return
+
+        provisioning = await build_paperclip_provisioning()
+        try:
+            # Confirm a COMMITTED active company before seeding. This is why
+            # there is no orphan/failed-company cost leak: we only ever arm a
+            # company provision_org actually finished (status="active").
+            row = (
+                await provisioning.find_org_owner(owner_id)
+                if auth.is_org_context
+                else await provisioning.get_company_row(auth.user_id)
+            )
+            if row is None or row.status != "active":
+                return
+            company_id = row.company_id
+            if account.get("nightly_ceo_armed_company") == company_id:
+                return  # cheap cache hit — already armed for this company
+            # Friday is seeded FIRST (seed order == identity), so it's element 0.
+            friday_id = (row.seeded_agent_ids or [None])[0]
+            if not friday_id:
+                return  # Friday not seeded yet — retry on a later poll
+            if not await billing_repo.try_claim_nightly_arm(owner_id, company_id):
+                return  # a concurrent poll won the claim
+            try:
+                admin_cookie = await get_admin_session_cookie(provisioning._admin._http)
+                await create_enabled_schedule_routine(
+                    admin=provisioning._admin,
+                    session_cookie=admin_cookie,
+                    company_id=company_id,
+                    agent_id=friday_id,
+                    title=NIGHTLY_CEO_ROUTINE_TITLE,
+                    description=NIGHTLY_CEO_ROUTINE_DESCRIPTION,
+                    cron=NIGHTLY_CEO_ROUTINE_CRON,
+                    timezone="UTC",
+                )
+                # Success (created OR title-skip: the routine is present either
+                # way) — leave the claim as the armed cache.
+            except Exception:
+                # Seed failed after we won the claim — release it so the next
+                # poll retries, then let the outer handler log.
+                await billing_repo.release_nightly_arm(owner_id, company_id)
+                raise
+        finally:
+            await close_paperclip_provisioning(provisioning)
+    except Exception:
+        logger.exception("nightly CEO arm failed (non-fatal) owner=%s", owner_id)
 
 
 async def _ensure_paperclip_for_org(

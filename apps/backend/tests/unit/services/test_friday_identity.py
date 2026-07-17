@@ -722,3 +722,90 @@ def test_migrate_legacy_user_md_only_drops_the_adjacent_provider_line():
     # ...but the lookalike in the Notes section survives.
     assert migrated.count("- **Provider:** Bedrock (Claude, Isol8-managed credits)") == 1
     assert "Config history:" in migrated
+
+
+# ---------------------------------------------------------------------------
+# Nightly self-directed wake section (issue #1273)
+# ---------------------------------------------------------------------------
+
+
+def _personal_profile():
+    return {
+        "kind": "personal",
+        "owner_display": "Sam",
+        "first_name_or_fallback": "Sam",
+        "full_name": "Sam Rivers",
+        "email": "sam@example.com",
+    }
+
+
+def test_agents_md_contains_nightly_section_and_dual_condition():
+    agents_md = friday_identity._render_templates(_personal_profile())["AGENTS.md"]
+    assert "## Nightly self-directed wake" in agents_md
+    # BOTH server-verified conditions must be present (originKind + marker).
+    assert "routine_execution" in agents_md
+    assert "[NIGHTLY-CEO-LOOP]" in agents_md
+    # The one-task cost bound, stated in the loop.
+    assert "ONE task per" in agents_md
+    assert "do not invent new work" in agents_md.lower() or "never invent work" in agents_md.lower()
+
+
+def test_agents_md_wake_reason_list_includes_issue_assigned():
+    agents_md = friday_identity._render_templates(_personal_profile())["AGENTS.md"]
+    assert "issue_assigned" in agents_md
+
+
+def test_agents_md_nightly_overrides_never_look_for_unassigned_work():
+    agents_md = friday_identity._render_templates(_personal_profile())["AGENTS.md"]
+    # The section explicitly frames itself as the exception to the no-unassigned
+    # rule that stands on every other wake.
+    assert "never look for unassigned work" in agents_md
+    assert "This is the ONE wake where you may survey unassigned work" in agents_md
+
+
+def test_soul_md_has_no_nightly_logic():
+    """The nightly wake branch must live in AGENTS.md, not SOUL.md — reactive
+    behavior in SOUL is unchanged."""
+    soul_md = friday_identity._render_templates(_personal_profile())["SOUL.md"]
+    assert "NIGHTLY-CEO-LOOP" not in soul_md
+    assert "Nightly self-directed wake" not in soul_md
+
+
+def test_migrate_add_nightly_section_appends_when_absent():
+    """An existing AGENTS.md without the section gets it appended; idempotent on
+    a second run."""
+    store = {"workspaces/friday-uuid/AGENTS.md": "# AGENTS.md — Friday's Playbook\n\nold content\n"}
+
+    def read_file(owner_id, rel_path):
+        return store[rel_path]
+
+    def write_file(owner_id, rel_path, content):
+        store[rel_path] = content
+
+    workspace = MagicMock()
+    workspace.read_file = read_file
+    workspace.write_file = write_file
+
+    changed = friday_identity._migrate_add_nightly_section(workspace, "user_abc", "friday-uuid")
+    assert changed is True
+    assert "## Nightly self-directed wake" in store["workspaces/friday-uuid/AGENTS.md"]
+    assert "old content" in store["workspaces/friday-uuid/AGENTS.md"]
+
+    # Second run is a no-op (heading already present).
+    changed_again = friday_identity._migrate_add_nightly_section(workspace, "user_abc", "friday-uuid")
+    assert changed_again is False
+
+
+def test_migrate_add_nightly_section_noop_when_no_file():
+    """No AGENTS.md yet → migration returns False (the seed loop writes the full
+    template)."""
+
+    def read_file(owner_id, rel_path):
+        raise FileNotFoundError(rel_path)
+
+    workspace = MagicMock()
+    workspace.read_file = read_file
+    workspace.write_file = MagicMock()
+
+    assert friday_identity._migrate_add_nightly_section(workspace, "user_abc", "friday-uuid") is False
+    workspace.write_file.assert_not_called()

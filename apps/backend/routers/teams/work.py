@@ -8,9 +8,13 @@ no security hot edges. Each mutating handler validates with a
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends
+
+from core.repositories import billing_repo
+from core.services.agent_routine_provisioning import NIGHTLY_CEO_ROUTINE_TITLE
 
 from . import agents as _agents
 from ._guards import require_always_on_entitlement, require_trial_runway
@@ -27,6 +31,26 @@ from .schemas import (
 
 router = APIRouter()
 _ctx = _agents._ctx
+
+logger = logging.getLogger(__name__)
+
+
+async def _is_nightly_ceo_routine(ctx: TeamsContext, routine_id: str) -> bool:
+    """Whether ``routine_id`` is this owner's nightly CEO routine (issue #1273).
+
+    Title-match via a single ``get_routine`` — a rare user action (toggling
+    the routine), so the extra GET is fine. Best-effort: any upstream error is
+    swallowed as "not the nightly routine" so the PATCH proxy never breaks.
+    """
+    try:
+        routine = await _agents._admin().get_routine(
+            routine_id=routine_id,
+            session_cookie=ctx.session_cookie,
+        )
+    except Exception:  # noqa: BLE001 — never break the PATCH on a lookup failure
+        logger.warning("nightly-CEO routine lookup failed for routine=%s", routine_id, exc_info=True)
+        return False
+    return isinstance(routine, dict) and routine.get("title") == NIGHTLY_CEO_ROUTINE_TITLE
 
 
 # ---- Routines ---------------------------------------------------------
@@ -106,6 +130,29 @@ async def patch_routine(
     """
     if body.status == "active":
         await require_always_on_entitlement(ctx.owner_id)
+
+    # Nightly CEO loop opt-out (issue #1273): persist a DURABLE opt-out on the
+    # billing row when the owner pauses/archives the nightly routine, and clear
+    # it on re-activate. Billing survives a full reprovision (the container +
+    # Paperclip company are wiped, the billing row is not), so this flag is what
+    # keeps the owner's opt-out honored after a company wipe — the arm step
+    # reads it on the fresh company and declines to re-seed. Best-effort: a
+    # flag-write failure must not break the PATCH (the title-skip in
+    # create_enabled_schedule_routine is the backstop — it never re-enables an
+    # existing paused trigger).
+    if body.status in {"paused", "archived"}:
+        try:
+            if await _is_nightly_ceo_routine(ctx, routine_id):
+                await billing_repo.set_nightly_ceo_opted_out(ctx.owner_id, True)
+        except Exception:  # noqa: BLE001 — opt-out persistence is best-effort
+            logger.warning("nightly-CEO opt-out set failed for owner=%s", ctx.owner_id, exc_info=True)
+    elif body.status == "active":
+        try:
+            if await _is_nightly_ceo_routine(ctx, routine_id):
+                await billing_repo.set_nightly_ceo_opted_out(ctx.owner_id, False)
+        except Exception:  # noqa: BLE001 — opt-out persistence is best-effort
+            logger.warning("nightly-CEO opt-out clear failed for owner=%s", ctx.owner_id, exc_info=True)
+
     return await _agents._admin().patch_routine(
         routine_id=routine_id,
         body=body.model_dump(exclude_none=True, by_alias=True),

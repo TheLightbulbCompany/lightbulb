@@ -136,37 +136,63 @@ async def patch_routine(
     # it on re-activate. Billing survives a full reprovision (the container +
     # Paperclip company are wiped, the billing row is not), so this flag is what
     # keeps the owner's opt-out honored after a company wipe — the arm step
-    # reads it on the fresh company and declines to re-seed. Best-effort: a
-    # flag-write failure must not break the PATCH (the title-skip in
-    # create_enabled_schedule_routine is the backstop — it never re-enables an
-    # existing paused trigger).
-    if body.status in {"paused", "archived"}:
-        try:
-            if await _is_nightly_ceo_routine(ctx, routine_id):
-                await billing_repo.set_nightly_ceo_opted_out(ctx.owner_id, True)
-        except Exception:  # noqa: BLE001 — opt-out persistence is best-effort
-            logger.warning("nightly-CEO opt-out set failed for owner=%s", ctx.owner_id, exc_info=True)
-    elif body.status == "active":
-        try:
-            if await _is_nightly_ceo_routine(ctx, routine_id):
-                await billing_repo.set_nightly_ceo_opted_out(ctx.owner_id, False)
-        except Exception:  # noqa: BLE001 — opt-out persistence is best-effort
-            logger.warning("nightly-CEO opt-out clear failed for owner=%s", ctx.owner_id, exc_info=True)
+    # reads it on the fresh company and declines to re-seed.
+    #
+    # Resolve the routine's identity BEFORE the mutation (its title is the
+    # identity; a combined status+rename PATCH would hide it afterward) but write
+    # the durable flag only AFTER the upstream PATCH is confirmed. Writing the
+    # flag first would leave the billing row disagreeing with Paperclip if
+    # patch_routine then failed — e.g. a cleared opt-out while the routine stayed
+    # paused, which a later reprovision would wrongly re-arm.
+    is_nightly = False
+    if body.status in {"paused", "archived", "active"}:
+        is_nightly = await _is_nightly_ceo_routine(ctx, routine_id)
 
-    return await _agents._admin().patch_routine(
+    result = await _agents._admin().patch_routine(
         routine_id=routine_id,
         body=body.model_dump(exclude_none=True, by_alias=True),
         session_cookie=ctx.session_cookie,
     )
 
+    # Best-effort: a flag-write failure must not undo a succeeded PATCH (the
+    # title-skip in create_enabled_schedule_routine is the backstop — it never
+    # re-enables an existing paused trigger).
+    if is_nightly:
+        try:
+            if body.status in {"paused", "archived"}:
+                await billing_repo.set_nightly_ceo_opted_out(ctx.owner_id, True)
+            elif body.status == "active":
+                await billing_repo.set_nightly_ceo_opted_out(ctx.owner_id, False)
+        except Exception:  # noqa: BLE001 — opt-out persistence is best-effort
+            logger.warning("nightly-CEO opt-out persistence failed for owner=%s", ctx.owner_id, exc_info=True)
+
+    return result
+
 
 @router.delete("/routines/{routine_id}")
 async def delete_routine(routine_id: str, ctx: TeamsContext = Depends(_ctx)):
-    """Delete a routine. Idempotent — upstream 404 is swallowed."""
-    return await _agents._admin().delete_routine(
+    """Delete a routine. Idempotent — upstream 404 is swallowed.
+
+    Nightly CEO loop opt-out (issue #1273): deleting the nightly routine is an
+    opt-out gesture just like pausing it (the Teams Routines UI offers delete
+    alongside pause), so persist the durable ``nightly_ceo_opted_out`` flag.
+    Without it, a later full reprovision — which changes the company_id and so
+    invalidates the arm cache — would silently re-create the routine the owner
+    explicitly deleted. Identity is read BEFORE the delete (the routine is gone
+    afterward); the flag is written only AFTER the delete succeeds; best-effort
+    so a flag failure never breaks the DELETE.
+    """
+    is_nightly = await _is_nightly_ceo_routine(ctx, routine_id)
+    result = await _agents._admin().delete_routine(
         routine_id=routine_id,
         session_cookie=ctx.session_cookie,
     )
+    if is_nightly:
+        try:
+            await billing_repo.set_nightly_ceo_opted_out(ctx.owner_id, True)
+        except Exception:  # noqa: BLE001 — opt-out persistence is best-effort
+            logger.warning("nightly-CEO opt-out set failed on delete for owner=%s", ctx.owner_id, exc_info=True)
+    return result
 
 
 @router.post("/routines/{routine_id}/run")

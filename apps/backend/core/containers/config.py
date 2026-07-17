@@ -788,6 +788,12 @@ def workflow_plugin_entries() -> dict:
       commands only when the owner's connector AWS profile is materialized.
       Inert (returns ``{}``) until that profile exists, so it is safe to enable
       fleet-wide regardless of provider.
+    - ``tokenjuice`` — deterministic exec/bash tool-result compaction
+      (baked, Dockerfile Layer 13b). Strict-empty configSchema: enable-only,
+      never add a ``config`` key or the container crash-loops at boot.
+    - ``sage-openclaw`` — Gen Sage ADR tool-call guard (baked, Dockerfile
+      Layer 13c). Also strict-empty configSchema — behavior config is the
+      image-baked ``/home/node/.sage/config.json``, NOT this entry.
 
     Returned fresh each call so callers may merge/mutate without corrupting
     shared module state.
@@ -796,6 +802,8 @@ def workflow_plugin_entries() -> dict:
         "lobster": {"enabled": True},
         "llm-task": {"enabled": True},
         "aws-exec-profile": {"enabled": True},
+        "tokenjuice": {"enabled": True},
+        "sage-openclaw": {"enabled": True},
     }
 
 

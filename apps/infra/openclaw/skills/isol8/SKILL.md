@@ -22,6 +22,7 @@ description: >
   - Channels ................ apps/backend/routers/channels.py
   - Skills / self-learning .. apps/backend/core/containers/config.py (skills.workshop block);
                               apps/frontend/src/components/control/panels/{SkillsTab,SkillProposalsPanel}.tsx
+  - Sage threat guard ....... apps/infra/openclaw/Dockerfile (Layer 13c); apps/infra/openclaw/sage/config.json
   - Connectable catalog ..... apps/backend/routers/platform_info.py (live GET /api/v1/platform-info);
                               core/services/credentials/registry.py (all_providers); core/containers/config.py (CHANNEL_PROVIDER_IDS);
                               core/containers/ecs_manager.py (ISOL8_API_URL env the container reads)
@@ -217,6 +218,7 @@ change them.
 | Publish an agent to the marketplace | "Use the seller wizard at isol8.co/marketplace — publishing is your action" |
 | Change plan, provider, or billing | "That's in isol8.co/settings (billing) or the Model & Credits tab" |
 | Override an exec approval | Wait for the owner to approve; explain what the command does |
+| Bypass a Sage security block | A command, file write, or URL fetch denied by Sage (the platform's threat guard) was flagged as dangerous — do NOT retry it or look for a workaround. Tell your owner what was blocked and why it was flagged |
 | See or manage other owners' containers | Nothing — every container is single-owner and isolated |
 
 ## Quick answers

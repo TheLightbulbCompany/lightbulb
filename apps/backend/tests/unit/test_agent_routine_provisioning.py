@@ -233,3 +233,29 @@ async def test_create_agent_routines_never_emits_enabled_trigger():
         routines=[{"title": "Weekly report", "description": "d", "cron": "0 8 * * 1"}],
     )
     assert admin.create_routine_trigger.await_args.kwargs["body"]["enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_create_enabled_schedule_routine_deletes_routine_when_trigger_fails():
+    """If the trigger creation fails after the routine was created, the
+    trigger-less routine is deleted (so a retry doesn't title-skip onto a
+    routine that can never fire) and the original error propagates so the caller
+    releases the arm claim."""
+    admin = _admin_with_existing([])
+    admin.create_routine_trigger = AsyncMock(side_effect=RuntimeError("trigger 5xx"))
+
+    with pytest.raises(RuntimeError):
+        await create_enabled_schedule_routine(
+            admin=admin,
+            session_cookie="cookie",
+            company_id="co1",
+            agent_id="friday-uuid",
+            title=NIGHTLY_CEO_ROUTINE_TITLE,
+            description=NIGHTLY_CEO_ROUTINE_DESCRIPTION,
+            cron=NIGHTLY_CEO_ROUTINE_CRON,
+        )
+
+    admin.delete_routine.assert_awaited_once_with(
+        routine_id=f"rid-{NIGHTLY_CEO_ROUTINE_TITLE}",
+        session_cookie="cookie",
+    )

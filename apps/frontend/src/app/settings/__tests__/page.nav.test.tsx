@@ -38,7 +38,7 @@ vi.mock("@/components/control/panels/ChannelsStatusPanel", () => ({
 }));
 
 // Mutable membership holder so individual tests can flip admin ↔ non-admin.
-// `null` = personal owner = admin (the `useIsControlAdmin` personal branch);
+// `null` = personal owner = admin (the `useIsWorkspaceAdmin` personal branch);
 // `{ role: "org:member" }` = a non-admin org member (Usage must hide).
 const clerk = vi.hoisted(() => ({
   membership: null as { role: string } | null,

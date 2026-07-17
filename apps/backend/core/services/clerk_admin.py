@@ -171,6 +171,28 @@ async def get_user(user_id: str) -> dict | None:
     return response.json()
 
 
+async def get_primary_email(user_id: str) -> str:
+    """The user's primary email address, falling back to their first one.
+
+    Raises ``RuntimeError`` when the user or any email is missing — callers
+    (per-user Paperclip sign-in) need a hard failure, not a None.
+    """
+    user = await get_user(user_id)
+    if not user:
+        raise RuntimeError(f"clerk has no user with id {user_id}")
+    primary_id = user.get("primary_email_address_id")
+    for entry in user.get("email_addresses") or []:
+        if entry.get("id") == primary_id:
+            email = entry.get("email_address")
+            if email:
+                return email
+    # Fall back to the first email if the primary id pointer is unset.
+    addrs = user.get("email_addresses") or []
+    if addrs and addrs[0].get("email_address"):
+        return addrs[0]["email_address"]
+    raise RuntimeError(f"clerk user {user_id} has no email address")
+
+
 async def get_organization(org_id: str) -> dict | None:
     """Single Clerk organization by org_id. Returns None on 404 / no key.
 

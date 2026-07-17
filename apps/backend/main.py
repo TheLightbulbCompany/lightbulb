@@ -357,8 +357,8 @@ async def _build_teams_event_broker():
         conn_svc = ConnectionService()
         mgmt_api = ManagementApiClient()
 
-        # Per-user dependencies share the existing helpers from agents.py.
-        from routers.teams.agents import _admin, _resolve_user_email
+        from core.services.clerk_admin import get_primary_email
+        from core.services.paperclip_admin_client import shared_admin_client
 
         async def resolve_company_id(user_id: str) -> str:
             company = await repo.get(user_id)
@@ -370,8 +370,8 @@ async def _build_teams_event_broker():
             return await get_user_session_cookie(
                 user_id=user_id,
                 repo=repo,
-                admin_client=_admin(),
-                clerk_email_resolver=_resolve_user_email,
+                admin_client=shared_admin_client(),
+                clerk_email_resolver=get_primary_email,
             )
 
         def client_factory(*, user_id: str, company_id: str, cookie: str, on_event):

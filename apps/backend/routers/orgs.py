@@ -8,6 +8,7 @@ from core.auth import AuthContext, get_current_user, require_org_admin
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo
 from core.services import clerk_admin
+from core.services.provision_gate import has_always_on_entitlement
 from core.tenancy_codes import PERSONAL_USER_EXISTS
 from schemas.orgs import CreateInvitationRequest, CreateInvitationResponse
 
@@ -17,24 +18,16 @@ router = APIRouter()
 
 
 def _has_active_personal_tenancy(account: dict) -> bool:
-    """A `billing_accounts` row counts as an active personal tenancy when:
-
-    1. ``subscription_status`` is ``active`` or ``trialing`` — the canonical
-       case for rows written after the per-owner subscription_status backfill.
-    2. ``stripe_subscription_id`` is set AND ``subscription_status`` is
-       missing/null — pre-cutover legacy row that was created before the
-       backfill landed. We do NOT call Stripe here to verify the live status:
-       conservatively block the invite and let the user cancel cleanly via
-       the Stripe customer portal before joining an org. Mirrors the legacy-
-       row handling in ``/billing/trial-checkout`` (which DOES call Stripe,
-       but that path needs to allow re-checkout for genuinely-canceled subs;
-       we don't).
+    """A `billing_accounts` row counts as an active personal tenancy when it
+    carries the PAID entitlement (``active``/``trialing``, or the pre-backfill
+    legacy row: ``stripe_subscription_id`` set with no status). Deliberately
+    excludes ``trial_local`` — a no-card trial isn't a paid tenancy that
+    should block joining an org. We do NOT call Stripe to verify the live
+    status: conservatively block the invite and let the user cancel via the
+    Stripe portal first. Same status set as always-on entitlement, so it
+    delegates to the canonical predicate.
     """
-    if account.get("subscription_status") in ("active", "trialing"):
-        return True
-    if account.get("stripe_subscription_id") and not account.get("subscription_status"):
-        return True
-    return False
+    return has_always_on_entitlement(account)
 
 
 @router.post(

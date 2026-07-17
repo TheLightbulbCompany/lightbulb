@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useOrganization } from "@clerk/nextjs";
+import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 import { Loader2, RefreshCw, Package } from "lucide-react";
 import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 import { capture } from "@/lib/analytics";
@@ -41,8 +41,7 @@ function inferKind(id: string): PluginKind {
 }
 
 export function PluginsTab() {
-  const { membership } = useOrganization();
-  const canManage = !membership || membership.role === "org:admin";
+  const canManage = useIsWorkspaceAdmin();
 
   const { data: snapshot, error, isLoading, mutate } = useGatewayRpc<ConfigSnapshot>("config.get");
   const callRpc = useGatewayRpcMutation();

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useOrganization } from "@clerk/nextjs";
+import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 import { ChevronDown } from "lucide-react";
 
 import { ConnectionsList } from "@/components/settings/ConnectionsList";
@@ -37,14 +37,11 @@ interface IntegrationsPanelProps {
 }
 
 export function IntegrationsPanel({ variant = "control" }: IntegrationsPanelProps) {
-  const { membership } = useOrganization();
   const isSettings = variant === "settings";
 
-  // A personal owner has no org membership and is implicitly the admin of
-  // their own resources; only non-admin members of a real org are gated.
-  // This is a UX hint only — the connect/disconnect endpoints enforce the
-  // same rule server-side (403), which ConnectButton surfaces inline.
-  const canManage = !membership || membership.role === "org:admin";
+  // UX hint only — the connect/disconnect endpoints enforce the same rule
+  // server-side (403), which ConnectButton surfaces inline.
+  const canManage = useIsWorkspaceAdmin();
 
   const [advancedOpen, setAdvancedOpen] = useState(false);
 

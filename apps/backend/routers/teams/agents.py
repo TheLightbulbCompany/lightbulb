@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import logging
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
@@ -30,7 +29,7 @@ from core.services.paperclip_adapter_config import (
     OPENCLAW_GATEWAY_TYPE,
     synthesize_openclaw_adapter,
 )
-from core.services.paperclip_admin_client import PaperclipAdminClient
+from core.services.paperclip_admin_client import PaperclipAdminClient, shared_admin_client
 from core.services.agent_redaction import strip_agent_secrets
 from core.services.paperclip_openclaw_pairing import (
     ensure_operator_device_paired,
@@ -99,37 +98,15 @@ def _redact_agent(agent):
 # (adapter synthesis) easy to mock in isolation.
 
 
-# Module-level shared httpx client. Created lazily on first use, reused
-# for the lifetime of the process. Not closed explicitly — the OS reclaims
-# socket FDs at process exit and the connection pool releases idle
-# connections via httpx's own internal keepalive logic. The previous
-# implementation built a fresh ``httpx.AsyncClient`` per request without
-# closing it, which leaks a file descriptor + connection-pool task on
-# every call. Tasks 7-12 reuse this helper, so fixing once here applies
-# fleet-wide.
-_shared_http_client: httpx.AsyncClient | None = None
-_shared_admin: PaperclipAdminClient | None = None
-
-
 def _admin() -> PaperclipAdminClient:
-    """Return a process-wide shared admin client.
+    """Return the process-wide shared admin client.
 
-    Lazily constructs a single ``httpx.AsyncClient`` + ``PaperclipAdminClient``
-    on first call and reuses them for every subsequent request. This
-    avoids the FD/connection-pool leak the per-request construction had.
-
-    Tests monkeypatch this function (``monkeypatch.setattr(agents_mod,
-    "_admin", lambda: admin)``) so the singleton state never gets touched
-    in the unit suite.
+    Thin indirection over ``paperclip_admin_client.shared_admin_client`` —
+    kept because tests monkeypatch this function
+    (``monkeypatch.setattr(agents_mod, "_admin", lambda: admin)``) and the
+    sibling Teams routers route through it.
     """
-    global _shared_http_client, _shared_admin
-    if _shared_admin is None:
-        _shared_http_client = httpx.AsyncClient(
-            base_url=settings.PAPERCLIP_INTERNAL_URL,
-            timeout=15.0,
-        )
-        _shared_admin = PaperclipAdminClient(http_client=_shared_http_client)
-    return _shared_admin
+    return shared_admin_client()
 
 
 def _repo() -> PaperclipRepo:
@@ -257,27 +234,12 @@ async def _container_is_reachable(
 async def _resolve_user_email(user_id: str) -> str:
     """Fetch the user's primary email from Clerk.
 
-    Used as the ``clerk_email_resolver`` callback for the user-session
-    sign-in. Inline rather than living in ``clerk_admin`` because the
-    "primary-email-from-id" idiom is only used here; if a third caller
-    wants it we can promote it.
+    Thin indirection over ``clerk_admin.get_primary_email`` — kept because
+    tests monkeypatch this name and the sibling Teams routers call it.
     """
-    from core.services.clerk_admin import get_user
+    from core.services.clerk_admin import get_primary_email
 
-    user = await get_user(user_id)
-    if not user:
-        raise RuntimeError(f"clerk has no user with id {user_id}")
-    primary_id = user.get("primary_email_address_id")
-    for entry in user.get("email_addresses") or []:
-        if entry.get("id") == primary_id:
-            email = entry.get("email_address")
-            if email:
-                return email
-    # Fall back to the first email if the primary id pointer is unset.
-    addrs = user.get("email_addresses") or []
-    if addrs and addrs[0].get("email_address"):
-        return addrs[0]["email_address"]
-    raise RuntimeError(f"clerk user {user_id} has no email address")
+    return await get_primary_email(user_id)
 
 
 async def build_principal_to_clerk(ctx: TeamsContext) -> dict[str, str]:

@@ -1,6 +1,6 @@
 "use client";
 
-import { useOrganization } from "@clerk/nextjs";
+import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 
 /**
  * Mirrors the backend's `require_org_admin` gate for marketplace WRITE
@@ -16,13 +16,6 @@ import { useOrganization } from "@clerk/nextjs";
  * boundary.
  */
 export function useMarketplaceWriteGate(): { restricted: boolean } {
-  const { membership } = useOrganization();
-  // `membership` is undefined while Clerk is still resolving the active
-  // org, null for personal users (no active org), or an object with
-  // `.role` for org members. Treat undefined as "still loading" → not
-  // restricted (the backend will 403 if the user actually tries to
-  // write before Clerk loads, but in practice Clerk's hooks are eager
-  // and this race is invisible).
-  const restricted = !!membership && membership.role !== "org:admin";
+  const restricted = !useIsWorkspaceAdmin();
   return { restricted };
 }

@@ -28,7 +28,7 @@ const RUN_LOG_REFRESH_MS = 15_000;
 export const RUN_LOG_TAIL_LINES = 12;
 
 /** Upstream log-read envelope (we only consume `content`). */
-interface RunLogResponse {
+export interface RunLogResponse {
   content?: string | null;
 }
 

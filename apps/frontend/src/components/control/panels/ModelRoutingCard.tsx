@@ -12,7 +12,7 @@ import {
   readOverheadModel,
 } from "@/lib/modelRouting";
 
-type ProviderChoice = "chatgpt_oauth" | "byo_key" | "bedrock_claude";
+import type { ProviderChoiceId as ProviderChoice } from "@/lib/providerCards";
 
 const CARD = "rounded-lg border border-[#e0dbd0] bg-white p-4 space-y-3";
 const EYEBROW = "text-[10px] uppercase tracking-wider text-[#8a8578]/60";

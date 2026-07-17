@@ -48,18 +48,53 @@
   display: flex;
   flex-direction: column;
   gap: 28px;
+  counter-reset: post;
 }
 
 .blog-card {
+  position: relative;
   border: 1px solid var(--edge);
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.5);
+  overflow: hidden;
   transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+/* Editorial index numeral (01, 02 …) — decorative, drawn from CSS counter. */
+.blog-card::before {
+  counter-increment: post;
+  content: counter(post, decimal-leading-zero);
+  position: absolute;
+  top: 22px;
+  right: 26px;
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  color: var(--mute-soft);
+  transition: color 0.2s ease;
+}
+/* Forest hairline that wipes in from the left edge on hover. */
+.blog-card::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 2px;
+  width: 100%;
+  background: var(--forest);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 0.4s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .blog-card:hover {
   border-color: var(--edge-forest);
   box-shadow: 0 12px 32px rgba(6, 64, 43, 0.06);
   transform: translateY(-2px);
+}
+.blog-card:hover::before {
+  color: var(--forest-soft);
+}
+.blog-card:hover::after {
+  transform: scaleX(1);
 }
 
 .blog-card-link {
@@ -168,6 +203,16 @@
 .blog-prose p {
   color: var(--ink-soft);
 }
+/* Editorial drop cap on the opening paragraph. */
+.blog-prose > p:first-of-type::first-letter {
+  float: left;
+  font-family: var(--font-lora), Georgia, serif;
+  font-size: 3.4em;
+  line-height: 0.82;
+  font-weight: 700;
+  color: var(--forest);
+  margin: 6px 12px 0 0;
+}
 .blog-prose strong {
   color: var(--ink);
   font-weight: 650;
@@ -259,4 +304,72 @@
   font-size: 15.5px;
   line-height: 1.6;
   color: var(--ink-soft);
+}
+
+/* ---- load choreography ----
+   Staggered fade-up reveal on first paint, matching the landing page's
+   motion language. Pure CSS (pages are static/server-rendered). */
+@keyframes blog-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.blog-header,
+.blog-card,
+.blog-back,
+.blog-article-header,
+.blog-prose,
+.blog-article-footer {
+  animation: blog-fade-up 0.6s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Index: header first, then each card in sequence. */
+.blog-header {
+  animation-delay: 0.02s;
+}
+.blog-card:nth-child(1) {
+  animation-delay: 0.1s;
+}
+.blog-card:nth-child(2) {
+  animation-delay: 0.18s;
+}
+.blog-card:nth-child(3) {
+  animation-delay: 0.26s;
+}
+.blog-card:nth-child(n + 4) {
+  animation-delay: 0.34s;
+}
+
+/* Article: back link, header, body, CTA in sequence. */
+.blog-back {
+  animation-delay: 0.02s;
+}
+.blog-article-header {
+  animation-delay: 0.1s;
+}
+.blog-prose {
+  animation-delay: 0.18s;
+}
+.blog-article-footer {
+  animation-delay: 0.26s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .blog-header,
+  .blog-card,
+  .blog-back,
+  .blog-article-header,
+  .blog-prose,
+  .blog-article-footer {
+    animation: none;
+  }
+  .blog-card::after {
+    transition: none;
+  }
 }

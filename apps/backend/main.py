@@ -52,6 +52,7 @@ from routers import (
     ops,
     orgs,
     paperclip_proxy,
+    platform_info,
     settings_keys,
     support_tickets,
     updates,
@@ -810,6 +811,11 @@ app.include_router(ops.router, prefix="/api/v1/ops", tags=["ops"])
 # Agent-callable bridge (hook_token auth, no Clerk) — Atlas registers built
 # agents into the owner's container. See routers/agent_builder.py.
 app.include_router(agent_builder.router, prefix="/api/v1/agent-builder", tags=["agent-builder"])
+
+# Public connectable catalog (integrations + channels) read live by the baked
+# isol8 skill from inside per-owner containers. No auth — non-sensitive catalog
+# data. See routers/platform_info.py.
+app.include_router(platform_info.router, prefix="/api/v1/platform-info", tags=["platform-info"])
 
 # Clerk-authed read of the calling user's hook credentials. Backs the
 # Settings → Webhooks panel; the user's own browser fetches their own

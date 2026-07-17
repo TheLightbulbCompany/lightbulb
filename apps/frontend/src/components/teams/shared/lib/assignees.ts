@@ -1,7 +1,7 @@
 // apps/frontend/src/components/teams/shared/lib/assignees.ts
 
 // Ported from upstream Paperclip's assignees.ts (paperclip/ui/src/lib/assignees.ts)
-// (MIT, (c) 2025 Paperclip AI). Subset retained for IssueRow / IssueColumns /
+// (MIT, (c) 2025 Paperclip AI). Subset retained for IssueRow /
 // IssueFiltersPopover. Upstream's User parameter was already a bare userId
 // string, so no Isol8 CompanyMember swap is required.
 

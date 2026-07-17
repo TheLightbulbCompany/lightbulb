@@ -122,22 +122,3 @@ async def test_get_approval_detail(admin_client_with_fake_http):
     await client.get_approval(approval_id="apv_1", session_cookie="c=1")
     http.get.assert_awaited_once()
     assert http.get.call_args.args[0] == "/api/approvals/apv_1"
-
-
-@pytest.mark.asyncio
-async def test_list_inbox_with_filters(admin_client_with_fake_http):
-    """The expanded inbox listing accepts filter params and forwards them
-    on the inbox-lite endpoint."""
-    client, http = admin_client_with_fake_http
-    await client.list_inbox_for_session_user(
-        session_cookie="c=1",
-        params={"tab": "mine", "status": "todo", "search": "fix"},
-    )
-    http.get.assert_awaited_once()
-    call = http.get.call_args
-    assert call.args[0] == "/api/agents/me/inbox-lite"
-    assert call.kwargs.get("params") == {
-        "tab": "mine",
-        "status": "todo",
-        "search": "fix",
-    }

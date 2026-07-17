@@ -234,24 +234,6 @@ async def test_delete_company_swallows_404(client_factory):
     await client.delete_company(session_cookie="sess_owner", company_id="co_gone")
 
 
-async def test_disable_company_sends_archive_post(client_factory):
-    """``disable_company`` is mapped onto Paperclip's
-    ``POST /api/companies/{companyId}/archive`` since there is no
-    dedicated ``disable`` endpoint upstream.
-    """
-    captured: dict = {}
-
-    def handler(req: httpx.Request) -> httpx.Response:
-        captured["method"] = req.method
-        captured["url"] = str(req.url)
-        return httpx.Response(200, json={"id": "co_abc", "status": "archived"})
-
-    client = client_factory(handler)
-    await client.disable_company(session_cookie="sess_owner", company_id="co_abc")
-    assert captured["method"] == "POST"
-    assert "/archive" in captured["url"]
-
-
 # ---------------------------------------------------------------------
 # Better Auth (per-user accounts)
 # ---------------------------------------------------------------------

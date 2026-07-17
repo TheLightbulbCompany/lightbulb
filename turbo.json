@@ -17,10 +17,6 @@
     },
     "typecheck": {
       "cache": true
-    },
-    "deploy": {
-      "dependsOn": ["build", "test"],
-      "cache": false
     }
   }
 }

@@ -10,8 +10,6 @@ from core.containers.config import (
     DEPLOYED_UPSTREAM_VERSION,
     build_openclaw_config_dict,
     write_openclaw_config,
-    merge_openclaw_config,
-    _deep_merge,
 )
 
 
@@ -418,66 +416,6 @@ class TestWriteOpenclawConfigAsync:
             aip_arns=_AIPS,
         )
         assert nested.exists()
-
-
-class TestPatchOpenclawConfig:
-    """Test config patching/merging."""
-
-    def test_shallow_override(self):
-        base = {"gateway": {"mode": "local"}, "browser": {"enabled": False}}
-        patch = {"browser": {"enabled": True}}
-        result = merge_openclaw_config(base, patch)
-        assert result["browser"]["enabled"] is True
-        assert result["gateway"]["mode"] == "local"
-
-    def test_deep_merge_nested(self):
-        base = {
-            "tools": {
-                "web": {"fetch": {"enabled": False, "timeout": 30}},
-                "media": {"image": {"enabled": False}},
-            }
-        }
-        patch = {
-            "tools": {
-                "web": {"fetch": {"enabled": True}},
-            }
-        }
-        result = merge_openclaw_config(base, patch)
-        assert result["tools"]["web"]["fetch"]["enabled"] is True
-        assert result["tools"]["web"]["fetch"]["timeout"] == 30
-        assert result["tools"]["media"]["image"]["enabled"] is False
-
-    def test_new_key_added(self):
-        base = {"gateway": {"mode": "local"}}
-        patch = {"newSection": {"key": "value"}}
-        result = merge_openclaw_config(base, patch)
-        assert result["newSection"]["key"] == "value"
-
-    def test_original_not_mutated(self):
-        base = {"gateway": {"mode": "local"}}
-        patch = {"gateway": {"mode": "remote"}}
-        result = merge_openclaw_config(base, patch)
-        assert result["gateway"]["mode"] == "remote"
-        assert base["gateway"]["mode"] == "local"
-
-
-class TestDeepMerge:
-    """Test _deep_merge helper."""
-
-    def test_flat_merge(self):
-        assert _deep_merge({"a": 1}, {"b": 2}) == {"a": 1, "b": 2}
-
-    def test_override_value(self):
-        assert _deep_merge({"a": 1}, {"a": 2}) == {"a": 2}
-
-    def test_nested_merge(self):
-        base = {"a": {"b": 1, "c": 2}}
-        override = {"a": {"c": 3, "d": 4}}
-        result = _deep_merge(base, override)
-        assert result == {"a": {"b": 1, "c": 3, "d": 4}}
-
-    def test_non_dict_override(self):
-        assert _deep_merge({"a": {"b": 1}}, {"a": "string"}) == {"a": "string"}
 
 
 # Deterministic Ed25519 public key in PEM form — same fixture used in

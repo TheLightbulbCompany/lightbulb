@@ -2,7 +2,7 @@
 
 // Ported from upstream Paperclip
 // (https://github.com/Paperclip-AI/paperclip/tree/main/packages/shared/src/types)
-// (MIT, © 2025 Paperclip AI). Subset retained for IssueRow / IssueColumns /
+// (MIT, © 2025 Paperclip AI). Subset retained for IssueRow /
 // IssueFiltersPopover. Full type lives in upstream packages/shared/src/types/.
 
 import type { RunOutputSilence } from "@/components/teams/shared/lib/liveRuns";

@@ -14,8 +14,6 @@ export type { EditorialSelectOption, EditorialSelectProps } from "./EditorialSel
 export { EditorialDialog } from "./EditorialDialog";
 export type { EditorialDialogProps } from "./EditorialDialog";
 
-export { EditorialCard } from "./EditorialCard";
-export type { EditorialCardProps } from "./EditorialCard";
 
 export { PanelMasthead } from "./PanelMasthead";
 export type { PanelMastheadProps } from "./PanelMasthead";

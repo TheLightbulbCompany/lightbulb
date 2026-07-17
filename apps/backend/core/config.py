@@ -5,11 +5,9 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    PROJECT_NAME: str = "Isol8"
     API_V1_STR: str = "/api/v1"
 
     # Environment mode
-    DEBUG: bool = os.getenv("DEBUG", "false").lower() == "true"
     ENVIRONMENT: str = os.getenv("ENVIRONMENT", "")
 
     # Clerk Auth
@@ -28,7 +26,6 @@ class Settings(BaseSettings):
 
     # AWS Configuration
     AWS_REGION: str = os.getenv("AWS_REGION", "us-east-1")
-    BEDROCK_ENABLED: bool = os.getenv("BEDROCK_ENABLED", "true").lower() == "true"
 
     # CORS Configuration (comma-separated origins; deployed values set by Terraform)
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:5173"
@@ -55,8 +52,6 @@ class Settings(BaseSettings):
     ECS_SECURITY_GROUP_ID: str = os.getenv("ECS_SECURITY_GROUP_ID", "")
 
     # --- Cloud Map ---
-    CLOUD_MAP_NAMESPACE_ID: str = os.getenv("CLOUD_MAP_NAMESPACE_ID", "")
-    CLOUD_MAP_SERVICE_ID: str = os.getenv("CLOUD_MAP_SERVICE_ID", "")
     CLOUD_MAP_SERVICE_ARN: str = os.getenv("CLOUD_MAP_SERVICE_ARN", "")
     CLOUD_MAP_NAMESPACE_NAME: str = os.getenv("CLOUD_MAP_NAMESPACE_NAME", "")
     CLOUD_MAP_SERVICE_NAME: str = os.getenv("CLOUD_MAP_SERVICE_NAME", "")
@@ -64,9 +59,6 @@ class Settings(BaseSettings):
     # --- EFS ---
     EFS_MOUNT_PATH: str = os.getenv("EFS_MOUNT_PATH", "/mnt/efs/users")
     EFS_FILE_SYSTEM_ID: str = os.getenv("EFS_FILE_SYSTEM_ID", "")
-
-    # --- S3 Config ---
-    S3_CONFIG_BUCKET: str = os.getenv("S3_CONFIG_BUCKET", "")
 
     # Public S3 URL of the hosted AWS read-only connector CloudFormation
     # template (the public-read isol8-{env}-cfn-templates bucket, wired by CDK
@@ -91,9 +83,6 @@ class Settings(BaseSettings):
     core/observability/product_analytics.py to land billing-lifecycle events
     onto the person. This is the SAME public key the frontend ships as
     NEXT_PUBLIC_POSTHOG_KEY. Empty disables the bridge (events stay EMF-only)."""
-
-    # --- IAM ---
-    CONTAINER_EXECUTION_ROLE_ARN: str = os.getenv("CONTAINER_EXECUTION_ROLE_ARN", "")
 
     # --- OpenClaw ---
     # The container image is pinned in openclaw-version.json at the repo root
@@ -202,9 +191,6 @@ class Settings(BaseSettings):
     # keep the backend booting in non-AWS unit-test contexts.
     BEDROCK_AIP_OWNERS_TABLE: str = os.getenv("BEDROCK_AIP_OWNERS_TABLE", "")
     """Reverse index PK aip_arn -> owner_id. Read by resolve_owner_from_aip_arn."""
-    BEDROCK_OWNER_ROLE_PREFIX: str = os.getenv("BEDROCK_OWNER_ROLE_PREFIX", "")
-    """IAM role-name prefix for backend-minted per-owner roles, e.g.
-    'isol8-dev-owner-bedrock'. Set by CDK; matches the PassRole/CreateRole scope."""
     BEDROCK_OWNER_BOUNDARY_ARN: str = os.getenv("BEDROCK_OWNER_BOUNDARY_ARN", "")
     """Permissions-boundary policy ARN every backend-minted role must carry."""
     BEDROCK_OWNER_BASE_POLICY_ARN: str = os.getenv("BEDROCK_OWNER_BASE_POLICY_ARN", "")
@@ -292,9 +278,6 @@ class Settings(BaseSettings):
     # from PAPERCLIP_SERVICE_TOKEN_KEY so ops tokens are independently
     # revocable. Populated from Secrets Manager + KMS by the CDK service stack.
     PLATFORM_OPS_TOKEN_KEY: str = os.getenv("PLATFORM_OPS_TOKEN_KEY", "")
-    # DynamoDB table for the shared ops cache (fleet/cost/metrics snapshots),
-    # set by CDK. Empty in local tests.
-    OPS_CACHE_TABLE: str = os.getenv("OPS_CACHE_TABLE", "")
     # Clerk publishable key (the same value the frontend uses as
     # NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY). The paperclip-proxy bootstrap page
     # renders inline JS that loads the Clerk SDK and handshakes a session

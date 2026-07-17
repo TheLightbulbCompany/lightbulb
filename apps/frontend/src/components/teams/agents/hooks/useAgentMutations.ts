@@ -9,7 +9,7 @@ import type { CompanyAgent } from "@/components/teams/shared/types";
 
 // All /teams reads use keys prefixed "/teams". The agents LIST key is
 // "/teams/agents" (org chart + agents list); the per-agent DETAIL key is
-// "/teams/agents/{id}" (AgentDetailPanel/AgentManageSection's status +
+// "/teams/agents/{id}" (AgentManageSection's status +
 // reportsTo). Every mutation invalidates BOTH so the detail view doesn't show
 // stale state after a change (status dots also update via events).
 const AGENTS_KEY = "/teams/agents";

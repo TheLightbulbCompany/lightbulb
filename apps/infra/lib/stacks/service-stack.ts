@@ -640,8 +640,8 @@ export class ServiceStack extends cdk.Stack {
     // Platform-ops fleet cache. The merged ops layer reads AND writes this
     // table: ops_cache_repo.get()/put() are called from ecs_ops.fleet_grid()
     // with no try/except, so without this grant the first get() raises
-    // AccessDeniedException and 500s the ops fleet endpoint. Its name is wired
-    // into OPS_CACHE_TABLE just below.
+    // AccessDeniedException and 500s the ops fleet endpoint. The backend
+    // resolves the table by name via get_table("ops-cache") + prefix.
     props.database.opsCacheTable.grantReadWriteData(this.taskRole);
 
     // Bedrock
@@ -1167,14 +1167,10 @@ export class ServiceStack extends cdk.Stack {
             ? (process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_PROD ?? "")
             : (process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_DEV ??
                 "pk_test_dXAtbW90aC01NS5jbGVyay5hY2NvdW50cy5kZXYk"),
-        DEBUG: env === "local" ? "true" : "false",
         // LocalStack needs this to redirect boto3 calls inside the ECS container
         ...(env === "local" ? { AWS_ENDPOINT_URL: "http://localhost.localstack.cloud:4566" } : {}),
-        BEDROCK_ENABLED: env === "local" ? "false" : "true",
         EFS_MOUNT_PATH: "/mnt/efs/users",
         EFS_FILE_SYSTEM_ID: props.container.efsFileSystem.fileSystemId,
-        CONTAINER_EXECUTION_ROLE_ARN:
-          props.container.taskExecutionRole.roleArn,
         ECS_CLUSTER_ARN: props.container.cluster.clusterArn,
         // ECS_TASK_DEFINITION is intentionally not set. Backend reads the
         // latest CDK base revision live via describe_task_definition(family)
@@ -1183,9 +1179,6 @@ export class ServiceStack extends cdk.Stack {
         ECS_SUBNETS: privateSubnetIds,
         ECS_SECURITY_GROUP_ID:
           props.container.containerSecurityGroup.securityGroupId,
-        CLOUD_MAP_NAMESPACE_ID:
-          props.container.cloudMapNamespace.namespaceId,
-        CLOUD_MAP_SERVICE_ID: props.container.cloudMapService.serviceId,
         CLOUD_MAP_SERVICE_ARN: props.container.cloudMapService.serviceArn,
         CLOUD_MAP_NAMESPACE_NAME: props.container.cloudMapNamespace.namespaceName,
         CLOUD_MAP_SERVICE_NAME: props.container.cloudMapService.serviceName,
@@ -1239,7 +1232,6 @@ export class ServiceStack extends cdk.Stack {
         // (not a cross-stack tableName ref). The boundary + base-policy ARNs
         // come from the container stack's live members.
         BEDROCK_AIP_OWNERS_TABLE: `isol8-${env}-bedrock-aip-owners`,
-        BEDROCK_OWNER_ROLE_PREFIX: `isol8-${env}-owner-bedrock`,
         BEDROCK_OWNER_BOUNDARY_ARN:
           props.container.ownerBedrockBoundary.managedPolicyArn,
         BEDROCK_OWNER_BASE_POLICY_ARN:
@@ -1269,7 +1261,6 @@ export class ServiceStack extends cdk.Stack {
           props.database.marketplaceTakedownsTable.tableName,
         MARKETPLACE_SELLERS_TABLE:
           props.database.marketplaceSellersTable.tableName,
-        OPS_CACHE_TABLE: props.database.opsCacheTable.tableName,
         // Per-env owner the platform_ops agent token binds to (the founder's
         // own owner_id). Read from the runner's secrets at synth time like the
         // Stripe/Clerk per-env values above; the dev and prod Clerk instances

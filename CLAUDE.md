@@ -37,6 +37,15 @@ This includes environment variables -- use AWS CDK, GitHub secrets, and AWS Secr
 - Instead of `sleep`: use `gh run watch` for CI/CD, or tool-based polling
 - Instead of `tail`: use the Read tool to read files, or run commands without piping through tail
 
+**Planning docs are disposable.** Plans/specs under `docs/superpowers/` are working
+documents for in-flight work. When the feature ships (or the approach is abandoned),
+DELETE the doc in the same PR or shortly after — git history preserves it, and the
+PR description is the durable record. The only plans/specs that stay are ones living
+code or CLAUDE.md explicitly references. Never let shipped plans accumulate: a
+2026-07 purge deleted 250 of 260 such files (196k lines) — don't rebuild that pile.
+The same applies to one-shot backend scripts: after they run, move them to
+`apps/backend/scripts/archive/` (and delete their tests).
+
 ### Monorepo Setup
 
 This is a **Turborepo monorepo** using **pnpm** for JS and **uv** for Python.
@@ -327,10 +336,10 @@ DynamoDB-backed data access. One repo per table.
 
 The services directory has grown past per-file annotation. Run `ls apps/backend/core/services/` for the current list. Notable groups:
 
-- **Billing / usage**: `billing_service.py` (Stripe customers, checkout, portal, subscription lifecycle), `usage_service.py` (per-owner + per-member atomic counters → Stripe Meters), `credit_ledger.py`.
+- **Billing / usage**: `billing_service.py` (Stripe customers, checkout, portal, subscription lifecycle), `usage_service.py` (per-owner + per-member atomic counters → Stripe Meters).
 - **Container lifecycle**: `update_service.py` (Track 1 silent config patches + Track 2 queued updates; `run_scheduled_worker`), `config_patcher.py` (EFS-safe JSON deep-merge under NFS-compatible `fcntl.lockf`), `config_policy.py` / `config_reconciler.py` (tier-based config protection), `provision_gate.py` (subscription / credits / OAuth gate evaluation).
 - **Gateway / WebSocket**: `connection_service.py` (DDB connectionId↔user_id state), `management_api_client.py`, `node_proxy.py` (per-user node-host tracking — relocated from routers/ in May 2026).
-- **Catalog**: `catalog_service.py` plus `catalog_s3_client.py` / `catalog_slice.py` / `catalog_package.py` helpers. `catalog_service.deploy_from_artifact` is the consumption-side entry point for marketplace deploys.
+- **Catalog**: `catalog_service.py` plus `catalog_slice.py` / `catalog_package.py` helpers. `catalog_service.deploy_from_artifact` is the consumption-side entry point for marketplace deploys.
 - **Marketplace**: `marketplace_service.py` (DDB rows + S3 artifact uploads + status state machine: draft → review → published; published-version transitions are atomic via TransactWriteItems), `marketplace_search.py` (60s in-process cache of published listings, Python-side tokenized scoring), `marketplace_safety.py` (scan tarballs for credential/PII patterns), `agent_export.py` (seller-agent → tarball snapshotter; explicitly filters `sessions/`, `agent/`, dotfiles, junk dirs — see `_OPENCLAW_RUNTIME_STATE_DIRS` docstring for why).
 - **Provisioning**: `user_provision.py` (`ensure_user_ready` — the SINGLE canonical readiness entry point, called only from `GET /container/status`; owner path seeds Paperclip synchronously then dispatches container provision as background task), `container_provision.py` (`background_provision`), `friday_identity.py` (IDENTITY/SOUL/USER seeding for Friday + Atlas roster prompt copy).
 - **Admin surface**: `admin_service.py`, `admin_audit.py`, `admin_redact.py`, `clerk_admin.py` (Clerk REST wrapper — every Clerk API call should go through here), `cloudwatch_logs.py` / `cloudwatch_url.py`, `posthog_admin.py`.
@@ -364,89 +373,42 @@ React 19, Tailwind CSS v4, Clerk auth, Framer Motion, SWR, lucide-react icons.
 
 | Path | Purpose |
 |------|---------|
-| `/` | Landing page (Navbar, Hero, Features, Pricing, FAQ, Footer, GooseTown promo block) |
-| `/chat` | Main app: chat + control panel (Clerk-protected) |
-| `/teams` | Teams Inbox surface — agents, threads, messages, channels (Clerk-protected; consumes `routers/teams/` BFF) |
-| `/onboarding` | Post-signup provisioning flow (Clerk-protected) |
-| `/settings` | Settings layout (Clerk-protected) |
+| `/` | Landing page (`components/landing/`) |
+| `/chat` | The app. Desktop renders the **dockable workspace shell** (`components/workspace/` — chat, teams, control, file-viewer panels in a dockable layout); mobile renders `ChatLayout` via `MobileChatShell`. Teams and control are in-shell panels, not standalone routes — the legacy `/teams/*` URL tree was removed and now 404s. |
+| `/marketplace` | Marketplace browse/detail + seller surfaces |
+| `/onboarding` | Post-signup provisioning flow |
+| `/settings` | Settings layout |
 | `/admin` | Admin surface — accessible only via allowed admin hosts (`admin.isol8.co`, `admin.dev.isol8.co`, `admin.localhost:3000`); 404s on non-admin hosts. Allowlist lives in `apps/frontend/src/middleware.ts`. |
 | `/sign-in`, `/sign-up` | Clerk auth pages |
 | `/auth/desktop-callback` | Desktop app OAuth callback |
-| `/privacy`, `/terms`, `/support` | Static marketing pages |
+| `/privacy`, `/terms`, `/support`, … | Static marketing/legal pages |
 
-### Components (`src/components/`)
+### Source map (`src/`)
 
-**Chat (`chat/`):**
-| Component | Purpose |
-|-----------|---------|
-| `ChatLayout.tsx` (+ `.css`) | Main layout: sidebar + chat/control tabs + header with UserButton |
-| `AgentChatWindow.tsx` | Chat UI: connection bar, messages, input, file upload, bootstrap suggestion |
-| `AgentDetailPanel.tsx`, `AgentDialogs.tsx` | Agent inspector + create/edit/delete dialogs |
-| `ChatInput.tsx` | Text input + file upload + stop button + suggested message (Tab to accept) |
-| `MessageList.tsx` | Message rendering: markdown, syntax highlighting, thinking blocks, tool-use indicators |
-| `ApprovalCard.tsx` | Inline card for desktop exec-approval prompts |
-| `FileTree.tsx`, `FileViewer.tsx`, `FileContentViewer.tsx` | Workspace file browser |
-| `GallerySection.tsx`, `GalleryItemRow.tsx` | Image/asset gallery surface |
-| `HealthIndicator.tsx` | Container/gateway health dot |
-| `ProvisioningStepper.tsx` | Onboarding flow: billing -> container -> gateway -> channels -> ready |
-| `ModelSelector.tsx` | Model dropdown |
-| `ProviderIcons.tsx` | Brand marks for model providers |
+Per-file tables drift too fast to keep here — run `ls` on the directory you're
+touching. The load-bearing structure:
 
-**Control Panel (`control/`):**
-| Component | Purpose |
-|-----------|---------|
-| `ControlPanelRouter.tsx` | Routes to active panel |
-| `ControlSidebar.tsx` | Navigation for control panels (`NAV_ITEMS` is the live, sidebar-visible set) |
-| `panels/OverviewPanel.tsx` | Dashboard: health, uptime, agents, sessions, billing, usage |
-| `panels/AgentsPanel.tsx` + `AgentOverviewTab.tsx` + `AgentToolsTab.tsx` + `AgentCreateForm.tsx` + `AgentChannelsSection.tsx` | Agent CRUD + per-agent inspector |
-| `panels/SessionsPanel.tsx` | Session management |
-| `panels/UsagePanel.tsx` | Usage analytics |
-| `panels/SkillsPanel.tsx` | Skill/tool management |
-| `panels/McpServersTab.tsx` | MCP server list |
-| `panels/CronPanel.tsx` (+ `cron/` subdir) | Cron job view / edit / vet |
-| `panels/LLMPanel.tsx`, `panels/CreditsPanel.tsx` | Provider / model + Bedrock-credit surfaces |
-
-> **Dark panels:** `ConfigPanel`, `LogsPanel`, `InstancesPanel`, `NodesPanel`, `DebugPanel` are wired into `ControlPanelRouter` but not linked from `ControlSidebar.NAV_ITEMS`. They are reachable only via `?panel=<name>` URL surgery and have not been actively maintained — see `docs/audit-2026-05-04/SUMMARY.md` for the keep-or-delete decision.
-
-**Admin (`admin/`):** `AuditRow.tsx`, `CodeBlock.tsx`, `ConfirmActionDialog.tsx`, `EmptyState.tsx`, `ErrorBanner.tsx`, `LogRow.tsx`, `UserSearchInput.tsx`
-
-**Channels (`channels/`):** `BotSetupWizard.tsx`
-
-**Settings (`settings/`):** `MyChannelsSection.tsx`
-
-**Landing (`landing/`):** Navbar, Hero, Features, OurAgents, Skills, Pricing, GooseTown, FAQ, Footer, ScrollManager
-
-**Providers (`providers/`):** Global SWR/Clerk/PostHog providers. Root-level: `DesktopAuthListener.tsx`, `ErrorBoundary.tsx`, `PostHogProvider.tsx`.
-
-**UI (`ui/`):** shadcn/ui (button, alert-dialog, dropdown-menu, checkbox, input, popover, scroll-area)
-
-### Hooks (`src/hooks/`)
-
-| Hook | Purpose |
-|------|---------|
-| `useGateway.tsx` | WebSocket provider for gateway RPC + chat. Reconnection, ping/pong, event pub-sub, RPC request/response matching. |
-| `useAgentChat.ts` | Agent chat via useGateway. Message cache, bootstrap flag, tool-use tracking, cancel via `chat.abort`, thinking blocks. |
-| `useGatewayRpc.ts` | SWR-wrapped RPC calls via WebSocket. `useGatewayRpc<T>()` (read) + `useGatewayRpcMutation()` (write). |
-| `useAgents.ts` | Agent CRUD via RPC: `agents.list/create/delete/update`. |
-| `useBilling.ts` | Billing account + checkout via REST API. |
-| `useContainerStatus.ts` | Container status polling via REST. |
-| `useProvisioningState.ts` | Provisioning state machine consumer for `ProvisioningStepper` / blocked-state UI. |
-| `useCatalog.ts` | Catalog data fetching. |
-| `useWorkspaceFiles.ts` | Workspace file tree / content. |
-| `useDesktopAuth.ts` | Desktop app OAuth flow. |
-| `useSystemHealth.ts` | System health surface (admin). |
-| `useScrollToBottom.ts` | Auto-scroll hook. |
-
-### Utilities (`src/lib/`)
-
-| File | Purpose |
-|------|---------|
-| `api.ts` | `useApi()` hook: authenticated REST methods (`get`, `post`, `put`, `del`, `syncUser`, `uploadFiles`). |
-| `utils.ts` | Tailwind `cn()` class merging. |
-| `channels.ts` | Channel helpers. |
-| `filePathDetection.ts` | Detect file paths in chat output for linkification. |
-| `snooze.ts` | Snooze helper. |
-| `tar.ts` | Tar utilities. |
+- `components/workspace/` — the dockable desktop shell: `panelRegistry.ts` /
+  `panelComponents.ts` map panel keys → components; `workspaceController.ts` +
+  `layoutStorage.ts` own layout state. Start here for anything "where does X
+  render on desktop".
+- `components/chat/` — chat surface + onboarding (`AgentChatWindow`,
+  `MessageList`, `ChatInput`, `ProvisioningStepper`, provider-setup steps).
+  `ChatLayout.tsx` is the **mobile-only** shell.
+- `components/teams/` — Teams Inbox (panels routed by `TeamsPanelRouter.tsx`
+  via `PANEL_LOADERS`/`DETAIL_LOADERS`; shared types in `shared/types.ts`;
+  ported-from-upstream-Paperclip modules carry a header saying so).
+- `components/control/` — control panels (`ControlPanelRouter.tsx` routes;
+  `ControlSidebar.NAV_ITEMS` is the live, sidebar-visible set).
+- `components/{admin,channels,settings,landing,marketplace,providers,ui}/` —
+  what their names say; `ui/` is shadcn/ui.
+- `hooks/` — `useGateway.tsx` (WebSocket provider: reconnection, ping/pong,
+  event pub-sub, RPC matching), `useAgentChat.ts` (chat state machine),
+  `useGatewayRpc.ts` (SWR-wrapped RPC), `useTeamsApi.ts` (Teams BFF fetch),
+  `useProvisioningState.ts` (stepper/blocked-state machine), plus ~25 more.
+- `lib/api.ts` — `useApi()`: authenticated REST methods (`get`, `post`, `put`,
+  `del`, `uploadFiles`). New data-fetching should go through this (or
+  `useGatewayRpc` for WS RPC), not hand-rolled `fetch`.
 
 ### Middleware
 
@@ -542,7 +504,7 @@ Owners whose container was provisioned **before** Paperclip integration shipped 
 Two fixes:
 
 1. **Full reprovision** — `DELETE /api/v1/debug/provision` then `POST /api/v1/debug/provision`. The new poll cycle invokes `ensure_user_ready` against an empty slate.
-2. **Backfill script** — `apps/backend/scripts/backfill_paperclip_for_legacy_users.py` paginates the `containers` table, finds owners with no Paperclip row, and calls `provision_org` for each. Idempotent. Defaults to dry-run; pass `--apply` to actually run. Required when the container itself should be preserved (e.g. existing EFS workspace state).
+2. **Backfill script** — `apps/backend/scripts/archive/backfill_paperclip_for_legacy_users.py` (archived one-shot; already run against prod) paginated the `containers` table, found owners with no Paperclip row, and called `provision_org` for each. Resurrect from the archive only if a new legacy cohort appears.
 
 **`PATCH /debug/provision` cannot wire Paperclip.** It only deep-merges `openclaw.json`. It cannot create a Paperclip company, cannot sign up a Paperclip user, cannot seed Friday/Atlas. The `config_patcher` is for config drift, not for provisioning gaps.
 
@@ -683,7 +645,6 @@ POST /marketplace/listings/{slug}/deploy
 | `CLOUD_MAP_SERVICE_ID` | Cloud Map service | Required |
 | `EFS_MOUNT_PATH` | EFS mount root | `/mnt/efs/users` |
 | `EFS_FILE_SYSTEM_ID` | EFS filesystem | Required |
-| `S3_CONFIG_BUCKET` | Config bucket | Required |
 | `WS_MANAGEMENT_API_URL` | Management API endpoint | Set by CDK |
 | `WS_CONNECTIONS_TABLE` | DynamoDB table | `isol8-websocket-connections` |
 | `STRIPE_SECRET_KEY` | Stripe API key | Empty |

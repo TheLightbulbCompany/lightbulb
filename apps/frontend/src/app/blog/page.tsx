@@ -19,8 +19,14 @@ export const metadata: Metadata = {
     description: DESCRIPTION,
     url: "/blog",
     type: "website",
+    images: [{ url: "/og-image.png", width: 1200, height: 630, alt: "isol8" }],
   },
-  twitter: { card: "summary_large_image", title: TITLE, description: DESCRIPTION },
+  twitter: {
+    card: "summary_large_image",
+    title: TITLE,
+    description: DESCRIPTION,
+    images: ["/og-image.png"],
+  },
 };
 
 export default function BlogIndexPage() {

@@ -36,11 +36,13 @@ export async function generateMetadata({
       publishedTime: post.date,
       authors: [post.author],
       tags: post.tags,
+      images: [{ url: "/og-image.png", width: 1200, height: 630, alt: "isol8" }],
     },
     twitter: {
       card: "summary_large_image",
       title: post.title,
       description: post.description,
+      images: ["/og-image.png"],
     },
   };
 }

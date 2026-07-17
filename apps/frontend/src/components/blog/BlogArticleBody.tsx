@@ -1,16 +1,7 @@
 import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
-
-// Allow the anchor attributes we set on external links through the sanitizer.
-const schema = {
-  ...defaultSchema,
-  attributes: {
-    ...defaultSchema.attributes,
-    a: [...(defaultSchema.attributes?.a ?? []), ["target"], ["rel"]],
-  },
-};
+import rehypeSanitize from "rehype-sanitize";
 
 /**
  * Renders a blog post's markdown body inside the `.blog-prose` typographic
@@ -24,7 +15,7 @@ export function BlogArticleBody({ source }: { source: string }) {
     <div className="blog-prose">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        rehypePlugins={[[rehypeSanitize, schema]]}
+        rehypePlugins={[rehypeSanitize]}
         components={{
           a: ({ href, children }) => {
             const target = href ?? "#";

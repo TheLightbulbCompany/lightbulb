@@ -34,19 +34,13 @@ amplification protection.
 import time
 from typing import Any
 
-import boto3
-
-from core.config import settings
+from core.repositories import marketplace_repo
 
 
 # Module-level cache state. Reset between tests via _reset_cache().
 _CACHE: list[dict[str, Any]] | None = None
 _CACHE_TIMESTAMP: float = 0.0
 _CACHE_TTL_SECONDS: float = 60.0
-
-
-def _listings_table():
-    return boto3.resource("dynamodb").Table(settings.MARKETPLACE_LISTINGS_TABLE)
 
 
 def _reset_cache() -> None:
@@ -56,44 +50,22 @@ def _reset_cache() -> None:
     _CACHE_TIMESTAMP = 0.0
 
 
-def _scan_listings_table() -> list[dict[str, Any]]:
-    """Unfiltered paginated scan of the listings table.
-
-    Used by both ``_refresh_cache()`` (which stores the result in the
-    module-level cache) and the cache-bypass branch in ``search()`` for
-    seller-scoped reads. No FilterExpression is applied — the in-Python
-    `status == "published"` gate inside search() is what enforces the
-    public-vs-seller split. Filtering at the DDB layer would silently drop
-    draft/review/retired/taken_down rows before include_unpublished=True
-    could ever surface them.
-    """
-    table = _listings_table()
-    items: list[dict[str, Any]] = []
-    scan_kwargs: dict[str, Any] = {}
-    while True:
-        resp = table.scan(**scan_kwargs)
-        items.extend(resp.get("Items", []))
-        last = resp.get("LastEvaluatedKey")
-        if not last:
-            break
-        scan_kwargs["ExclusiveStartKey"] = last
-    return items
-
-
-def _refresh_cache() -> list[dict[str, Any]]:
+async def _refresh_cache() -> list[dict[str, Any]]:
     """Scan all listings (every status) into the module-level cache.
 
-    Delegates the scan to ``_scan_listings_table()`` so the same paginated
-    read path is shared with the cache-bypass branch in ``search()``.
+    The repo scan is unfiltered — the in-Python `status == "published"` gate
+    inside search() is what enforces the public-vs-seller split. Filtering
+    at the DDB layer would silently drop draft/review/retired/taken_down
+    rows before include_unpublished=True could ever surface them.
     """
     global _CACHE, _CACHE_TIMESTAMP
-    items = _scan_listings_table()
+    items = await marketplace_repo.scan_all_listings()
     _CACHE = items
     _CACHE_TIMESTAMP = time.time()
     return items
 
 
-def _get_snapshot() -> list[dict[str, Any]]:
+async def _get_snapshot() -> list[dict[str, Any]]:
     """Return the cached snapshot, refreshing when expired or empty.
 
     Cache refresh is single-flight-NOT-implemented: if multiple concurrent
@@ -103,7 +75,7 @@ def _get_snapshot() -> list[dict[str, Any]]:
     amplification ever matters at scale.
     """
     if _CACHE is None or (time.time() - _CACHE_TIMESTAMP) > _CACHE_TTL_SECONDS:
-        return _refresh_cache()
+        return await _refresh_cache()
     return _CACHE
 
 
@@ -186,9 +158,9 @@ async def search(
         # _refresh_cache() but the result is NOT written into _CACHE,
         # so a subsequent public request still sees the cached snapshot
         # (drift bounded by TTL as documented at module level).
-        snapshot = _scan_listings_table()
+        snapshot = await marketplace_repo.scan_all_listings()
     else:
-        snapshot = _get_snapshot()
+        snapshot = await _get_snapshot()
 
     if include_unpublished:
         # Caller has opted into seeing all statuses (seller-scoped reads).

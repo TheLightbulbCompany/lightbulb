@@ -20,7 +20,7 @@ def test_generate_returns_iml_prefix_plus_32_base32():
 
 
 @pytest.mark.asyncio
-@patch("core.services.license_service._purchases_table")
+@patch("core.repositories.marketplace_repo._purchases_table")
 async def test_validate_revoked_key_returns_revoked(mock_table):
     mock_table.return_value.query.return_value = {
         "Items": [
@@ -42,7 +42,7 @@ async def test_validate_revoked_key_returns_revoked(mock_table):
 
 
 @pytest.mark.asyncio
-@patch("core.services.license_service._purchases_table")
+@patch("core.repositories.marketplace_repo._purchases_table")
 async def test_validate_rate_limit_unique_ips(mock_table):
     """11th unique IP in 24h is rejected; same IP repeated is fine."""
     install_log = []
@@ -76,7 +76,7 @@ async def test_validate_rate_limit_unique_ips(mock_table):
 
 
 @pytest.mark.asyncio
-@patch("core.services.license_service._purchases_table")
+@patch("core.repositories.marketplace_repo._purchases_table")
 async def test_revoke_sets_flags(mock_table):
     mock_table.return_value.update_item = MagicMock(return_value={})
     await license_service.revoke(purchase_id="p1", buyer_id="b1", reason="takedown")
@@ -87,7 +87,7 @@ async def test_revoke_sets_flags(mock_table):
 
 
 @pytest.mark.asyncio
-@patch("core.services.license_service._purchases_table")
+@patch("core.repositories.marketplace_repo._purchases_table")
 async def test_validate_returns_not_found_for_unknown_key(mock_table):
     mock_table.return_value.query.return_value = {"Items": []}
     result = await license_service.validate(license_key="iml_unknown", source_ip="1.2.3.4")

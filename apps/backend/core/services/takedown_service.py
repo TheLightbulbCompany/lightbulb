@@ -16,10 +16,9 @@ import time
 import uuid
 from typing import Literal
 
-import boto3
 from botocore.exceptions import ClientError
 
-from core.config import settings
+from core.repositories import marketplace_repo
 from core.services import license_service
 
 
@@ -40,18 +39,6 @@ class TakedownNotFoundError(Exception):
 ADMIN_FILED_BY_EMAIL = "admin@isol8.internal"
 
 
-def _takedowns_table():
-    return boto3.resource("dynamodb").Table(settings.MARKETPLACE_TAKEDOWNS_TABLE)
-
-
-def _purchases_table():
-    return boto3.resource("dynamodb").Table(settings.MARKETPLACE_PURCHASES_TABLE)
-
-
-def _listings_table():
-    return boto3.resource("dynamodb").Table(settings.MARKETPLACE_LISTINGS_TABLE)
-
-
 async def file_takedown(
     *,
     listing_id: str,
@@ -67,17 +54,14 @@ async def file_takedown(
     """
     tid = str(uuid.uuid4())
     now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    _takedowns_table().put_item(
-        Item={
-            "listing_id": listing_id,
-            "takedown_id": tid,
-            "reason": reason,
-            "filed_by_name": claimant_name,
-            "filed_by_email": claimant_email,
-            "basis_md": basis_md,
-            "filed_at": now_iso,
-            "decision": "pending",
-        }
+    await marketplace_repo.put_takedown(
+        listing_id=listing_id,
+        takedown_id=tid,
+        reason=reason,
+        filed_by_name=claimant_name,
+        filed_by_email=claimant_email,
+        basis_md=basis_md,
+        now_iso=now_iso,
     )
     return tid
 
@@ -95,24 +79,10 @@ async def _cascade_takedown(
     `taken_down`, and stamps the takedown row with the granted decision +
     affected-purchases count. Returns the number of revoked purchases.
     """
-    # Page through every purchase row — DynamoDB Query caps each page at 1MB
-    # (or the explicit Limit), so a single .query() call leaves later buyers
-    # with still-valid licenses on a high-volume listing. Loop on
-    # LastEvaluatedKey so the cascade revokes ALL purchases.
-    items: list[dict] = []
-    purchases_table = _purchases_table()
-    query_kwargs: dict = {
-        "IndexName": "listing-created-index",
-        "KeyConditionExpression": "listing_id = :l",
-        "ExpressionAttributeValues": {":l": listing_id},
-    }
-    while True:
-        page = purchases_table.query(**query_kwargs)
-        items.extend(page.get("Items", []))
-        last = page.get("LastEvaluatedKey")
-        if not last:
-            break
-        query_kwargs["ExclusiveStartKey"] = last
+    # The repo pages through every purchase row so the cascade revokes ALL
+    # purchases — a single 1MB page would leave later buyers with
+    # still-valid licenses on a high-volume listing.
+    items = await marketplace_repo.list_purchases_by_listing(listing_id)
     for purchase in items:
         await license_service.revoke(
             purchase_id=purchase["purchase_id"],
@@ -125,24 +95,17 @@ async def _cascade_takedown(
     # and publishes v2; admin "success" but listing remains purchasable).
     # Falls back to the highest-version row if nothing is currently
     # published, so a takedown on a draft/review listing still flips state.
-    listings_table = _listings_table()
-    rows = listings_table.query(
-        KeyConditionExpression="listing_id = :l",
-        ExpressionAttributeValues={":l": listing_id},
-        ScanIndexForward=False,  # newest version first
-    ).get("Items", [])
+    rows = await marketplace_repo.get_versions_page(listing_id, newest_first=True)
     if not rows:
         raise ListingNotFoundError(f"listing {listing_id} does not exist")
     target = next((r for r in rows if r.get("status") == "published"), rows[0])
     target_version = int(target["version"])
 
     try:
-        listings_table.update_item(
-            Key={"listing_id": listing_id, "version": target_version},
-            UpdateExpression="SET #s = :taken, updated_at = :now",
-            ConditionExpression="attribute_exists(listing_id)",
-            ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues={":taken": "taken_down", ":now": now_iso},
+        await marketplace_repo.mark_taken_down(
+            listing_id=listing_id,
+            version=target_version,
+            now_iso=now_iso,
         )
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
@@ -159,7 +122,9 @@ async def _cascade_takedown(
     #
     # Each flip is conditional on the row STILL being in draft/review to
     # avoid clobbering a race (e.g. seller racing a discard_draft against
-    # the admin's takedown). target_version is excluded so we don't
+    # the admin's takedown) — the repo returns False (ignored here) when the
+    # seller transitioned the row between our query and the update, which is
+    # already the desired end state. target_version is excluded so we don't
     # double-write the v(N) row when the fallback above already targeted
     # a non-terminal highest row.
     for row in rows:
@@ -168,47 +133,23 @@ async def _cascade_takedown(
             continue
         if row.get("status") not in ("draft", "review"):
             continue
-        try:
-            listings_table.update_item(
-                Key={"listing_id": listing_id, "version": v},
-                UpdateExpression="SET #s = :taken, updated_at = :now",
-                ConditionExpression="#s IN (:draft, :review)",
-                ExpressionAttributeNames={"#s": "status"},
-                ExpressionAttributeValues={
-                    ":taken": "taken_down",
-                    ":draft": "draft",
-                    ":review": "review",
-                    ":now": now_iso,
-                },
-            )
-        except ClientError as e:
-            # Race: the seller transitioned the row (e.g. discarded the
-            # draft, or it was already taken_down via a second admin
-            # action) between our query and this update. Swallow — the
-            # row is no longer in a non-terminal state, which is the
-            # desired end state.
-            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-                continue
-            raise
+        await marketplace_repo.mark_taken_down_if_nonterminal(
+            listing_id=listing_id,
+            version=v,
+            now_iso=now_iso,
+        )
 
-    # Guard against upsert: a malformed grant request with a fabricated
-    # takedown_id would otherwise create a partial row {listing_id,
-    # takedown_id, decision:'granted', decided_by, decided_at,
-    # affected_purchases} with no claimant fields. The takedown row is
-    # written by the caller (file_takedown / execute_admin_initiated_
-    # takedown) before this cascade runs, so attribute_exists is the
-    # correct invariant.
+    # The takedown row is written by the caller (file_takedown /
+    # execute_admin_initiated_takedown) before this cascade runs, so the
+    # repo's attribute_exists guard is the correct invariant — a malformed
+    # grant with a fabricated takedown_id must not upsert a partial row.
     try:
-        _takedowns_table().update_item(
-            Key={"listing_id": listing_id, "takedown_id": takedown_id},
-            UpdateExpression=("SET decision = :granted, decided_by = :by, decided_at = :now, affected_purchases = :n"),
-            ConditionExpression="attribute_exists(takedown_id)",
-            ExpressionAttributeValues={
-                ":granted": "granted",
-                ":by": decided_by,
-                ":now": now_iso,
-                ":n": len(items),
-            },
+        await marketplace_repo.mark_takedown_granted(
+            listing_id=listing_id,
+            takedown_id=takedown_id,
+            decided_by=decided_by,
+            affected_purchases=len(items),
+            now_iso=now_iso,
         )
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
@@ -256,15 +197,7 @@ async def execute_admin_initiated_takedown(
     # a malformed admin grant on a phantom listing_id leaves the cascade
     # raising ListingNotFoundError but the orphan "pending" row stays in
     # DDB forever, polluting the takedown audit view.
-    rows = (
-        _listings_table()
-        .query(
-            KeyConditionExpression="listing_id = :l",
-            ExpressionAttributeValues={":l": listing_id},
-            Limit=1,
-        )
-        .get("Items", [])
-    )
+    rows = await marketplace_repo.get_versions_page(listing_id, limit=1)
     if not rows:
         raise ListingNotFoundError(f"listing {listing_id} does not exist")
 
@@ -273,17 +206,14 @@ async def execute_admin_initiated_takedown(
     # granted-stamp + affected-purchases count. Avoids a transient state
     # where the row carries `granted` but no `affected_purchases`, and keeps
     # the cascade path the only place that ever flips decision → granted.
-    _takedowns_table().put_item(
-        Item={
-            "listing_id": listing_id,
-            "takedown_id": tid,
-            "reason": reason,
-            "filed_by_name": "admin",
-            "filed_by_email": ADMIN_FILED_BY_EMAIL,
-            "basis_md": basis_md,
-            "filed_at": now_iso,
-            "decision": "pending",
-        }
+    await marketplace_repo.put_takedown(
+        listing_id=listing_id,
+        takedown_id=tid,
+        reason=reason,
+        filed_by_name="admin",
+        filed_by_email=ADMIN_FILED_BY_EMAIL,
+        basis_md=basis_md,
+        now_iso=now_iso,
     )
 
     affected = await _cascade_takedown(

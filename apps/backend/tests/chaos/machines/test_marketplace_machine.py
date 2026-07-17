@@ -60,6 +60,7 @@ class _Model:
 @given(actions=st.lists(st.sampled_from(_ACTIONS), min_size=0, max_size=12))
 @pytest.mark.asyncio
 async def test_marketplace_transitions_match_reference(chaos_ddb, actions):
+    from core.repositories import marketplace_repo
     from core.services import marketplace_service as mp
 
     seller = "user_chaos_seller"
@@ -109,7 +110,7 @@ async def test_marketplace_transitions_match_reference(chaos_ddb, actions):
         # at-most-one-published invariant: count published rows across ALL
         # versions of this listing_id (get_published_by_id is the wrong probe —
         # it falls back to the highest version when nothing is published).
-        resp = mp._listings_table().query(
+        resp = marketplace_repo._listings_table().query(
             KeyConditionExpression="listing_id = :l",
             ExpressionAttributeValues={":l": lid},
         )

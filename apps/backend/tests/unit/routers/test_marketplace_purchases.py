@@ -17,9 +17,9 @@ def client():
     return TestClient(app)
 
 
-@patch("routers.marketplace_purchases.boto3.resource")
-@patch("routers.marketplace_purchases._purchases_table")
-def test_my_purchases_sorts_by_created_at_not_uuid(mock_purchases_table, mock_boto, client):
+@patch("core.repositories.marketplace_repo._listings_table")
+@patch("core.repositories.marketplace_repo._purchases_table")
+def test_my_purchases_sorts_by_created_at_not_uuid(mock_purchases_table, mock_listings_table, client):
     """Regression: /my-purchases must sort by created_at, not by purchase_id
     (UUID, the table's sort key). ScanIndexForward=False on the base table
     returns reverse-lexical UUID order, not newest-first.
@@ -57,9 +57,7 @@ def test_my_purchases_sorts_by_created_at_not_uuid(mock_purchases_table, mock_bo
     )
     listings_table = MagicMock()
     listings_table.get_item.return_value = {"Item": {"slug": "demo"}}
-    fake_resource = MagicMock()
-    fake_resource.Table.return_value = listings_table
-    mock_boto.return_value = fake_resource
+    mock_listings_table.return_value = listings_table
 
     resp = client.get("/api/v1/marketplace/my-purchases")
     app.dependency_overrides.clear()
@@ -73,7 +71,7 @@ def test_my_purchases_sorts_by_created_at_not_uuid(mock_purchases_table, mock_bo
     assert items[1]["created_at"] == "2026-01-01T00:00:00Z"
 
 
-@patch("routers.marketplace_purchases.boto3.client")
+@patch("core.repositories.marketplace_repo._ddb_client")
 @patch("routers.marketplace_purchases.stripe.PaymentIntent.retrieve")
 @patch("routers.marketplace_purchases.stripe.Webhook.construct_event")
 @patch("routers.marketplace_purchases.webhook_dedup.record_event_or_skip")
@@ -141,8 +139,8 @@ def test_webhook_idempotent_on_replay(mock_construct, mock_dedup, client):
 @patch("routers.marketplace_purchases.stripe.Webhook.construct_event")
 @patch("routers.marketplace_purchases.webhook_dedup.record_event_or_skip")
 @patch("routers.marketplace_purchases.license_service.generate", return_value="iml_test")
-@patch("routers.marketplace_purchases._purchases_table")
-@patch("routers.marketplace_purchases._payout_accounts_table")
+@patch("core.repositories.marketplace_repo._purchases_table")
+@patch("core.repositories.marketplace_repo._payout_accounts_table")
 def test_webhook_skips_fulfillment_for_unpaid_delayed_payment(
     mock_pa_table, mock_purchases_table, mock_gen, mock_dedup, mock_construct, client
 ):
@@ -187,7 +185,7 @@ def test_webhook_skips_fulfillment_for_unpaid_delayed_payment(
     mock_pa_table.return_value.update_item.assert_not_called()
 
 
-@patch("routers.marketplace_purchases.boto3.client")
+@patch("core.repositories.marketplace_repo._ddb_client")
 @patch("routers.marketplace_purchases.stripe.PaymentIntent.retrieve")
 @patch("routers.marketplace_purchases.stripe.Webhook.construct_event")
 @patch("routers.marketplace_purchases.webhook_dedup.record_event_or_skip")
@@ -235,8 +233,8 @@ def test_webhook_async_payment_succeeded_grants_license(
 @patch("routers.marketplace_purchases.stripe.Webhook.construct_event")
 @patch("routers.marketplace_purchases.webhook_dedup.record_event_or_skip")
 @patch("routers.marketplace_purchases.license_service.revoke")
-@patch("routers.marketplace_purchases._purchases_table")
-@patch("routers.marketplace_purchases._payout_accounts_table")
+@patch("core.repositories.marketplace_repo._purchases_table")
+@patch("core.repositories.marketplace_repo._payout_accounts_table")
 def test_charge_refunded_debits_held_balance_when_pre_payout(
     mock_pa_table, mock_purchases_table, mock_revoke, mock_dedup, mock_construct, client
 ):
@@ -294,8 +292,8 @@ def test_charge_refunded_debits_held_balance_when_pre_payout(
 @patch("routers.marketplace_purchases.stripe.Webhook.construct_event")
 @patch("routers.marketplace_purchases.webhook_dedup.record_event_or_skip")
 @patch("routers.marketplace_purchases.license_service.revoke")
-@patch("routers.marketplace_purchases._purchases_table")
-@patch("routers.marketplace_purchases._payout_accounts_table")
+@patch("core.repositories.marketplace_repo._purchases_table")
+@patch("core.repositories.marketplace_repo._payout_accounts_table")
 def test_charge_refunded_skips_held_balance_debit_when_already_transferred(
     mock_pa_table, mock_purchases_table, mock_revoke, mock_dedup, mock_construct, client
 ):
@@ -345,14 +343,14 @@ def test_charge_refunded_skips_held_balance_debit_when_already_transferred(
     mock_pa_table.return_value.update_item.assert_not_called()
 
 
-@patch("routers.marketplace_purchases.boto3.resource")
+@patch("core.repositories.marketplace_repo._listings_table")
 @patch("routers.marketplace_purchases.payout_service.transfer_held_balance")
 @patch("routers.marketplace_purchases.stripe.Webhook.construct_event")
 @patch("routers.marketplace_purchases.webhook_dedup.record_event_or_skip")
-@patch("routers.marketplace_purchases._purchases_table")
-@patch("routers.marketplace_purchases._payout_accounts_table")
+@patch("core.repositories.marketplace_repo._purchases_table")
+@patch("core.repositories.marketplace_repo._payout_accounts_table")
 def test_account_updated_skips_refunded_purchases(
-    mock_pa_table, mock_purchases_table, mock_dedup, mock_construct, mock_transfer, mock_boto, client
+    mock_pa_table, mock_purchases_table, mock_dedup, mock_construct, mock_transfer, mock_listings_table, client
 ):
     """Regression: payout flush must skip refunded purchases. license_service
     .revoke leaves price_paid_cents intact (preserves buyer history), so
@@ -386,9 +384,7 @@ def test_account_updated_skips_refunded_purchases(
     mock_pa_table.return_value.update_item = MagicMock()
     listings_table = MagicMock()
     listings_table.query = MagicMock(return_value={"Items": [{"listing_id": "l1", "seller_id": "s1"}]})
-    fake_resource = MagicMock()
-    fake_resource.Table.return_value = listings_table
-    mock_boto.return_value = fake_resource
+    mock_listings_table.return_value = listings_table
     # Two purchases: one paid, one refunded. The refunded one should be skipped.
     mock_purchases_table.return_value.query = MagicMock(
         return_value={
@@ -435,14 +431,14 @@ def test_account_updated_skips_refunded_purchases(
     assert pa_update["ExpressionAttributeValues"][":t"] == 2000
 
 
-@patch("routers.marketplace_purchases.boto3.resource")
+@patch("core.repositories.marketplace_repo._listings_table")
 @patch("routers.marketplace_purchases.payout_service.transfer_held_balance")
 @patch("routers.marketplace_purchases.stripe.Webhook.construct_event")
 @patch("routers.marketplace_purchases.webhook_dedup.record_event_or_skip")
-@patch("routers.marketplace_purchases._purchases_table")
-@patch("routers.marketplace_purchases._payout_accounts_table")
+@patch("core.repositories.marketplace_repo._purchases_table")
+@patch("core.repositories.marketplace_repo._payout_accounts_table")
 def test_account_updated_skips_already_transferred_purchases_idempotently(
-    mock_pa_table, mock_purchases_table, mock_dedup, mock_construct, mock_transfer, mock_boto, client
+    mock_pa_table, mock_purchases_table, mock_dedup, mock_construct, mock_transfer, mock_listings_table, client
 ):
     """Regression: payout flush must skip purchases that another run already
     flagged. listing-created-index is eventually consistent — a replayed
@@ -480,9 +476,7 @@ def test_account_updated_skips_already_transferred_purchases_idempotently(
     mock_pa_table.return_value.update_item = MagicMock()
     listings_table = MagicMock()
     listings_table.query = MagicMock(return_value={"Items": [{"listing_id": "l1", "seller_id": "s1"}]})
-    fake_resource = MagicMock()
-    fake_resource.Table.return_value = listings_table
-    mock_boto.return_value = fake_resource
+    mock_listings_table.return_value = listings_table
     # Two purchases. update_item succeeds for the first, raises
     # ConditionalCheckFailedException for the second (race-loser).
     mock_purchases_table.return_value.query = MagicMock(
@@ -532,14 +526,14 @@ def test_account_updated_skips_already_transferred_purchases_idempotently(
     assert pa_update["ExpressionAttributeValues"][":t"] == 2000
 
 
-@patch("routers.marketplace_purchases.boto3.resource")
+@patch("core.repositories.marketplace_repo._listings_table")
 @patch("routers.marketplace_purchases.payout_service.transfer_held_balance")
 @patch("routers.marketplace_purchases.stripe.Webhook.construct_event")
 @patch("routers.marketplace_purchases.webhook_dedup.record_event_or_skip")
-@patch("routers.marketplace_purchases._purchases_table")
-@patch("routers.marketplace_purchases._payout_accounts_table")
+@patch("core.repositories.marketplace_repo._purchases_table")
+@patch("core.repositories.marketplace_repo._payout_accounts_table")
 def test_account_updated_flushes_per_purchase_using_purchase_transfer_group(
-    mock_pa_table, mock_purchases_table, mock_dedup, mock_construct, mock_transfer, mock_boto, client
+    mock_pa_table, mock_purchases_table, mock_dedup, mock_construct, mock_transfer, mock_listings_table, client
 ):
     """Regression: payout flush must create one Transfer per purchase using
     each purchase's stored stripe_transfer_group. A single batched
@@ -575,9 +569,7 @@ def test_account_updated_flushes_per_purchase_using_purchase_transfer_group(
     # Listings table query (seller-created-index) returns one listing.
     listings_table = MagicMock()
     listings_table.query = MagicMock(return_value={"Items": [{"listing_id": "l1", "seller_id": "s1"}]})
-    mock_resource = MagicMock()
-    mock_resource.Table.return_value = listings_table
-    mock_boto.return_value = mock_resource
+    mock_listings_table.return_value = listings_table
     # Purchases table query (listing-created-index) returns two purchases.
     mock_purchases_table.return_value.query = MagicMock(
         return_value={
@@ -715,7 +707,7 @@ def test_checkout_non_admin_org_member_403(mock_stripe_create, org_member_client
 
 
 @patch("routers.marketplace_purchases.payout_service.refund_purchase")
-@patch("routers.marketplace_purchases._purchases_table")
+@patch("core.repositories.marketplace_repo._purchases_table")
 def test_refund_non_admin_org_member_403(mock_table, mock_refund, org_member_client):
     """Non-admin org members can't initiate refunds. Gate fires before any
     DDB lookup or payout-service call.

@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from core.auth import AuthContext, get_current_user, get_optional_user, require_org_admin, resolve_owner_id
 from core.config import settings
 from core.containers import get_ecs_manager, get_workspace
+from core.repositories import marketplace_repo
 from core.services import (
     agent_export,
     curator,
@@ -42,10 +43,6 @@ from schemas import marketplace as schemas
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/marketplace", tags=["marketplace"])
-
-
-def _purchases_table():
-    return boto3.resource("dynamodb").Table(settings.MARKETPLACE_PURCHASES_TABLE)
 
 
 def _count_field(field) -> int:
@@ -125,43 +122,6 @@ async def _recreate_routines_for_buyer(
         )
     finally:
         await http.aclose()
-
-
-def _has_valid_entitlement(*, buyer_id: str, listing_id: str) -> bool:
-    """True iff caller has a non-revoked marketplace-purchases row for this listing.
-
-    Uses the ``listing-created-index`` GSI (pk=listing_id, sk=created_at) so
-    we scope by listing first. Per-listing buyer count is much smaller than
-    per-buyer purchase count for power buyers (and is pre-sorted by
-    created_at, newest first), so the matching row for *this* buyer is
-    reached fast. Pages until we find a match or exhaust — bounded by
-    num-buyers-of-this-listing × license_key_revoked-False, which stays
-    small in practice.
-
-    The previous implementation queried the buyer_id partition with
-    Limit=200, which silently failed open at scale: a buyer with more than
-    200 purchases ahead of the matching one (purchase_id is UUID-shaped, so
-    effectively random sort order) would be told they had no entitlement.
-    """
-    table = _purchases_table()
-    kwargs: dict = {
-        "IndexName": "listing-created-index",
-        "KeyConditionExpression": "listing_id = :l",
-        "ExpressionAttributeValues": {":l": listing_id},
-        "ScanIndexForward": False,  # newest first
-    }
-    while True:
-        resp = table.query(**kwargs)
-        for item in resp.get("Items", []):
-            if item.get("buyer_id") != buyer_id:
-                continue
-            if item.get("license_key_revoked"):
-                continue
-            return True
-        last = resp.get("LastEvaluatedKey")
-        if not last:
-            return False
-        kwargs["ExclusiveStartKey"] = last
 
 
 @router.get("/listings/search")
@@ -394,7 +354,7 @@ async def deploy_listing(
     if (
         price_cents > 0
         and not is_seller
-        and not _has_valid_entitlement(
+        and not await marketplace_repo.has_unrevoked_purchase(
             buyer_id=auth.user_id,
             listing_id=listing["listing_id"],
         )

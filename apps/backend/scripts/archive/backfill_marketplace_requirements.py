@@ -98,9 +98,9 @@ def _normalize_manifest(raw) -> dict:
 
 
 def _published_listings() -> list[dict]:
-    from core.services import marketplace_service
+    from core.repositories import marketplace_repo
 
-    table = marketplace_service._listings_table()
+    table = marketplace_repo._listings_table()
     items: list[dict] = []
     kwargs: dict = {}
     while True:
@@ -120,6 +120,7 @@ def main() -> None:
     import boto3
 
     from core.config import settings
+    from core.repositories import marketplace_repo
     from core.services import marketplace_service
 
     s3 = boto3.client("s3")
@@ -185,7 +186,7 @@ def main() -> None:
             Body=manifest_bytes,
             ContentType="application/json",
         )
-        marketplace_service._listings_table().update_item(
+        marketplace_repo._listings_table().update_item(
             Key={"listing_id": listing_id, "version": version},
             UpdateExpression="SET manifest_json = :mj, manifest_sha256 = :sha",
             ExpressionAttributeValues={":mj": ddb_manifest, ":sha": sha},

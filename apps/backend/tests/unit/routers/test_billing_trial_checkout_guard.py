@@ -1,12 +1,13 @@
-"""Tests for the trial-checkout 409 guard (audit C3).
+"""Tests for the checkout 409 guard on ``POST /billing/trial-checkout``.
 
-The original guard only blocked re-checkout when status was in
-``{"active", "trialing", "past_due"}``. That left the door open for
-trial gaming via cancel + restart: a user could complete a 14-day
-trial, cancel before day 15 (no $50 charge), then immediately call
-``POST /billing/trial-checkout`` again to start a fresh trial. Net
-effect: unlimited free trials => unlimited always-on ECS Fargate cost
-to us.
+The guard blocks a second checkout for any subscription state that has
+ever billed or might still bill (``TRIAL_BLOCKED_STATUSES``) — Stripe
+Checkout in subscription mode creates a NEW subscription on every
+successful return, and checkout now bills immediately, so an unguarded
+retry double-charges. The expanded blocklist (beyond
+``{"active", "trialing", "past_due"}``) dates from audit C3, when
+checkout still carried a 14-day Stripe trial and cancel-before-conversion
+could mint unlimited free trials (= unlimited always-on ECS Fargate cost).
 
 These tests pin down the expanded blocklist.
 """

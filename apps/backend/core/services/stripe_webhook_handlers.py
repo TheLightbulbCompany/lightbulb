@@ -425,6 +425,24 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
     # trial->paid moment).
     old_status = account.get("subscription_status")
     new_status = event_data.get("status", "active")
+    if old_status == "trial_local" and new_status in ("incomplete", "incomplete_expired"):
+        # Checkout bills immediately (no Stripe trial), so a Checkout-born
+        # subscription can surface here as `incomplete` (.created fires before
+        # the first invoice settles) or `incomplete_expired` (checkout
+        # abandoned). Neither is a real subscription yet, and persisting it
+        # over trial_local would (a) make the follow-on active event see
+        # old_status != "trial_local" and silently skip the trial→paid
+        # conversion reprovision below, leaving a paying customer on the
+        # locked-down trial box, and (b) strip a still-valid free-tier owner's
+        # platform access (`incomplete*` is not in _ACTIVE_STATUSES). Skip ALL
+        # writes: the active event carries the same metadata and performs them;
+        # an abandoned checkout leaves the free tier untouched.
+        logger.info(
+            "Skipping %s persist for trial_local owner %s — checkout not yet paid",
+            new_status,
+            account["owner_id"],
+        )
+        return None
     await billing_repo.set_subscription(
         owner_id=account["owner_id"],
         subscription_id=event_data["id"],

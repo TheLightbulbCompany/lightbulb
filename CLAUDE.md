@@ -514,7 +514,7 @@ Two fixes:
 
 ### Plan model
 
-Post-2026-04-26 flat-fee cutover: a single $50/mo subscription per owner (personal user OR org). Every container is the same 0.5 vCPU / 2 GB box; there is no longer a tier-based size ladder. Paid containers stay always-on while the subscription is active. A 14-day trial is provisioned by Stripe; trial-clock state is owned by Stripe (do not compute trial-days-left from `trial_end` locally — see memory `feedback_stripe_owns_trial_clock`).
+Post-2026-04-26 flat-fee cutover: a single $50/mo subscription per owner (personal user OR org). Every container is the same 0.5 vCPU / 2 GB box; there is no longer a tier-based size ladder. Paid containers stay always-on while the subscription is active. Checkout bills the first month immediately — the 14-day Stripe trial was removed 2026-07-17 (evaluation happens on the no-card free tier below; the `/billing/trial-checkout` route path and `is_trial_blocked` names were kept for compatibility). Legacy `trialing` rows created before the cutover remain valid until they convert; for those, trial-clock state is owned by Stripe (do not compute trial-days-left from `trial_end` locally).
 
 ### Free tier (no card) — `trial_local`
 

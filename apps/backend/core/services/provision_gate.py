@@ -29,18 +29,20 @@ from core.services import trial_cap
 logger = logging.getLogger(__name__)
 
 
-# Stripe statuses that grant platform use right now. Trialing is included
-# because the trial itself is a valid subscription state on Stripe — billing
-# kicks in at trial_end without any state transition the caller can see.
+# Stripe statuses that grant platform use right now. "trialing" is legacy:
+# checkout no longer creates Stripe trials (billed immediately since
+# 2026-07-17), but in-flight trialing rows from before the cutover remain
+# valid until they convert or cancel.
 # "trial_local" is the no-card local trial — a Stripe-less state, but it
-# grants platform use exactly like "trialing" does.
+# grants platform use exactly like "active" does.
 _ACTIVE_STATUSES = frozenset({"active", "trialing", "trial_local"})
 
 # Stripe statuses that indicate this account has *ever* been on a paid
-# subscription (or is currently mid-attempt). Used to block fresh
-# trial-creation so a churned customer can't loop POST /trial-checkout
-# forever; Stripe charges us for ECS Fargate either way and the trial
-# itself never bills. A user who legitimately wants to re-subscribe after
+# subscription (or is currently mid-attempt). Used to block a second
+# POST /trial-checkout — Stripe Checkout in subscription mode creates a
+# NEW subscription on every successful return, so an unguarded retry
+# double-subscribes (and, now that checkout bills immediately,
+# double-charges). A user who legitimately wants to re-subscribe after
 # cancel must go through customer support.
 #
 # Exported so the legacy-row recovery path in ``routers.billing`` can
@@ -123,10 +125,10 @@ def has_always_on_entitlement(account: Mapping[str, Any] | None) -> bool:
 
 def is_trial_blocked(account: Mapping[str, Any] | None) -> bool:
     """Whether this account has a subscription state that should block
-    creating a fresh 14-day trial. See ``TRIAL_BLOCKED_STATUSES``.
+    creating a fresh subscription checkout. See ``TRIAL_BLOCKED_STATUSES``.
 
     Returns False for missing accounts (a brand-new owner with no row
-    is the canonical "trial-allowed" state).
+    is the canonical "checkout-allowed" state).
     """
     if not account:
         return False

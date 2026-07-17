@@ -466,6 +466,9 @@ class TestCreateFlatFeeCheckout:
         # resolve owner unambiguously when one Stripe customer is shared
         # across multiple billing rows.
         assert kwargs["subscription_data"]["metadata"]["owner_id"] == "u_1"
+        # Billed immediately — no Stripe trial. No-card evaluation happens
+        # on the trial_local free tier, never at checkout.
+        assert "trial_period_days" not in kwargs["subscription_data"]
 
     @pytest.mark.asyncio
     async def test_create_flat_fee_checkout_raises_without_flat_price_id(self, monkeypatch):
@@ -510,13 +513,12 @@ class TestBuildSubscriptionCheckoutSharedSpine:
         assert result.url == "https://checkout/flat"
         assert seen["price_id"] == "price_flat_test"
         assert seen["quantity"] == 1
-        assert seen["trial_days"] == 14
         assert seen["metadata"]["owner_id"] == "u_1"
         assert seen["metadata"]["provider_choice"] == "bedrock_claude"
         assert seen["idempotency_key"].startswith("flat_checkout:u_1:")
 
     @pytest.mark.asyncio
-    async def test_team_checkout_uses_seat_price_quantity_and_no_trial(self, monkeypatch):
+    async def test_team_checkout_uses_seat_price_and_quantity(self, monkeypatch):
         monkeypatch.setattr(billing_service.settings, "STRIPE_TEAM_SEAT_PRICE_ID", "price_seat_test")
         seen = {}
 
@@ -530,7 +532,6 @@ class TestBuildSubscriptionCheckoutSharedSpine:
         assert result.url == "https://checkout/team"
         assert seen["price_id"] == "price_seat_test"
         assert seen["quantity"] == 4
-        assert seen["trial_days"] is None
         # provider_choice threaded in so the webhook backup persists teams as
         # Bedrock-managed (there is no provider picker in the team flow).
         assert seen["metadata"] == {

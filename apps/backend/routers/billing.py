@@ -347,13 +347,15 @@ class TrialCheckoutRequest(BaseModel):
 
 @router.post(
     "/trial-checkout",
-    summary="Start a 14-day trial via Stripe Checkout",
+    summary="Subscribe via Stripe Checkout (billed immediately)",
     description=(
-        "Creates a Stripe Checkout session in subscription mode with a 14-day trial. "
-        "Charges $0 today; user enters card details, the Subscription is born trialing, "
-        "and Stripe converts it on day 15. The chosen provider_choice is threaded into "
+        "Creates a Stripe Checkout session in subscription mode on the flat "
+        "monthly price. The card is charged for the first month at checkout — "
+        "there is no Stripe trial; no-card evaluation happens on the trial_local "
+        "free tier before this flow. The chosen provider_choice is threaded into "
         "subscription metadata so the webhook handler can persist it on the user row. "
-        "Returns the Checkout URL — frontend redirects the browser to it."
+        "Returns the Checkout URL — frontend redirects the browser to it. "
+        "(Route path kept as /trial-checkout for frontend compatibility.)"
     ),
     operation_id="create_trial_checkout",
 )
@@ -423,7 +425,7 @@ async def create_trial_checkout(
             email=auth.email,
         )
 
-    # Refuse a second trial-checkout for any subscription that exists,
+    # Refuse a second checkout for any subscription that exists,
     # regardless of state. Stripe Checkout in mode="subscription"
     # creates a NEW subscription on every successful return, so a retry
     # past the 5-minute idempotency-bucket window would charge the
@@ -432,10 +434,10 @@ async def create_trial_checkout(
     # ``is_trial_blocked`` (canonical set in ``provision_gate.py``) blocks
     # any state that has ever billed or might still bill —
     # {active, trialing, past_due, canceled, incomplete, incomplete_expired,
-    # unpaid, paused}. The {canceled, …} entries close the trial-gaming
-    # hole from audit C3 (a user could otherwise complete a 14-day trial,
-    # cancel before day 15, and immediately POST /trial-checkout again to
-    # mint a new trial — ECS Fargate is recurring on us either way).
+    # unpaid, paused}. The {canceled, …} entries date from audit C3, when
+    # checkout carried a 14-day Stripe trial and cancel-before-conversion
+    # could mint unlimited free trials; checkout now bills immediately, but
+    # blocking canceled rows still prevents accidental double-subscribe.
     # Legitimate re-subscribe-after-cancel goes through customer support.
     existing_status = account.get("subscription_status")
     has_legacy_sub = bool(account.get("stripe_subscription_id"))
@@ -458,14 +460,14 @@ async def create_trial_checkout(
             if getattr(e, "code", None) != "resource_missing":
                 raise
             logger.info(
-                "Stored sub %s not found in Stripe for owner %s — allowing fresh trial",
+                "Stored sub %s not found in Stripe for owner %s — allowing fresh checkout",
                 sub_id,
                 owner_id,
             )
         else:
             # Same expanded blocklist as the local-row path — a stale
             # canceled/incomplete subscription in Stripe is still a
-            # "this account already trialed" signal (audit C3).
+            # "this account already subscribed" signal (audit C3).
             if live_sub.get("status") in TRIAL_BLOCKED_STATUSES:
                 raise HTTPException(
                     status_code=409,
@@ -515,7 +517,6 @@ async def create_trial_checkout(
             # through subscription_data.metadata so the webhook can persist
             # provider_choice on the right per-Clerk-user row.
             clerk_user_id=auth.user_id,
-            trial_days=14,
         )
     except BillingServiceError as e:
         raise HTTPException(status_code=400, detail=str(e))

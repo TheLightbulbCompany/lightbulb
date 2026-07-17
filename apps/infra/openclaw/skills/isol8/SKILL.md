@@ -20,6 +20,8 @@ description: >
   - Seed team + roster ...... apps/backend/core/services/paperclip_provisioning.py (provision_org); friday_identity.py; atlas_seed/
   - Plans / providers ....... apps/backend/core/services/{billing_service,provision_gate,owner_facts}.py
   - Channels ................ apps/backend/routers/channels.py
+  - Skills / self-learning .. apps/backend/core/containers/config.py (skills.workshop block);
+                              apps/frontend/src/components/control/panels/{SkillsTab,SkillProposalsPanel}.tsx
   - Connectable catalog ..... apps/backend/routers/platform_info.py (live GET /api/v1/platform-info);
                               core/services/credentials/registry.py (all_providers); core/containers/config.py (CHANNEL_PROVIDER_IDS);
                               core/containers/ecs_manager.py (ISOL8_API_URL env the container reads)
@@ -98,6 +100,21 @@ the platform can't do.
 - Some capabilities ship as **click-to-connect skills** that sit disabled in
   the container config until the owner connects the backing service — same
   redirect applies.
+
+## Skills and self-improvement
+
+- The owner browses, enables, and installs skills in the **Skills** tab
+  (Control Panel or Settings), including one-click installs from the
+  ClawHub registry. You cannot install skills for them.
+- You CAN create and improve skills yourself via the `skill_workshop`
+  tool: when the owner asks you to make a skill, or teaches you a durable
+  workflow, propose it there — never write SKILL.md files directly.
+- On paid plans, autonomous capture is on: durable corrections ("from now
+  on...") and proven multi-step workflows you complete may automatically
+  become pending skill proposals. Proposals never go live on their own —
+  the owner reviews them in the **Skill Proposals** tab. If the owner asks
+  why a proposal appeared, that is why. Free-trial containers do not
+  auto-capture.
 
 ## The Marketplace (hiring and publishing agents)
 

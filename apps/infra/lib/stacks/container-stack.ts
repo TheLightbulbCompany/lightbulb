@@ -756,14 +756,5 @@ export class ContainerStack extends cdk.Stack {
       targets: [new targets.CloudWatchLogGroup(ecsTaskEventsLogGroup)],
     });
 
-    // Phase 1 of removing the dead CONTAINER_EXECUTION_ROLE_ARN /
-    // CLOUD_MAP_NAMESPACE_ID / CLOUD_MAP_SERVICE_ID service-stack env vars:
-    // CloudFormation cannot delete an export in the same deploy that drops
-    // its last import (producer stacks update before the service stack), so
-    // retain the exports for one deploy cycle. Delete these three lines
-    // after this has deployed to BOTH dev and prod.
-    this.exportValue(this.taskExecutionRole.roleArn);
-    this.exportValue(this.cloudMapNamespace.namespaceId);
-    this.exportValue(this.cloudMapService.serviceId);
   }
 }

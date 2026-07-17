@@ -275,16 +275,6 @@ export class DatabaseStack extends cdk.Stack {
       value: this.oauthStateTable.tableName,
       exportName: `${this.stackName}-oauth-state-table`,
     });
-    // Retain the auto-generated ARN export the backend service stack used to
-    // import via grantReadWriteData for oauth-state. The service stack now
-    // grants this table by name, so it no longer imports the ARN — but
-    // CloudFormation refuses to delete an export while the not-yet-updated
-    // consumer still imports it. Pinning the export under its existing name
-    // keeps it this deploy (no delete attempted); a later deploy removes it
-    // once nothing imports it.
-    this.exportValue(this.oauthStateTable.tableArn, {
-      name: `${this.stackName}:ExportsOutputFnGetAttOauthStateTable1D8479B9Arn3B610B82`,
-    });
     new cdk.CfnOutput(this, "PaperclipCompaniesTableName", {
       value: this.paperclipCompaniesTable.tableName,
       exportName: `${this.stackName}-paperclip-companies-table`,
@@ -444,11 +434,5 @@ export class DatabaseStack extends cdk.Stack {
       exportName: `isol8-${env}-paperclip-db-endpoint`,
     });
 
-    // Phase 1 of removing the dead OPS_CACHE_TABLE service-stack env var:
-    // CloudFormation cannot delete an export in the same deploy that drops
-    // its last import (producer stacks update before the service stack), so
-    // retain it for one deploy cycle. Delete this line after this has
-    // deployed to BOTH dev and prod.
-    this.exportValue(this.opsCacheTable.tableName);
   }
 }

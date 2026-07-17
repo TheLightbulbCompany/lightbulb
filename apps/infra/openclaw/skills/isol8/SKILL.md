@@ -50,7 +50,7 @@ On the free tier the container sleeps when idle and wakes on demand.
 | Marketplace | isol8.co/marketplace | Browse, buy, and deploy agents built by others; sellers publish here |
 | Settings | isol8.co/settings | Account, billing, connections |
 | Desktop app | Isol8 for macOS | Same UI, plus: pairs the owner's Chrome for your browser tool, and shows exec-approval prompts natively |
-| Channels | Channels tab (Control Panel) | Chat with agents from outside the web app — read the live channel list from platform-info (see "Connectable services" below) |
+| Channels | Channels tab (Control Panel) | Chat with agents from outside the web app — read the live channel list from platform-info (see the "Integrations and channels" section below) |
 
 When you tell the owner where to click, name the surface and the tab:
 *"the Integrations tab in the Control Panel at isol8.co/chat"*.

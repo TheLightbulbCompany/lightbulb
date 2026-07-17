@@ -20,6 +20,9 @@ description: >
   - Seed team + roster ...... apps/backend/core/services/paperclip_provisioning.py (provision_org); friday_identity.py; atlas_seed/
   - Plans / providers ....... apps/backend/core/services/{billing_service,provision_gate,owner_facts}.py
   - Channels ................ apps/backend/routers/channels.py
+  - Connectable catalog ..... apps/backend/routers/platform_info.py (live GET /api/v1/platform-info);
+                              core/services/credentials/registry.py (all_providers); core/containers/config.py (CHANNEL_PROVIDER_IDS);
+                              core/containers/ecs_manager.py (ISOL8_API_URL env the container reads)
   - Paperclip org model ..... Isol8AI/paperclip fork: server/src/services/agent-permissions.ts,
                               services/agents.ts (getChainOfCommand), adapters/registry.ts (openclaw_gateway)
 -->

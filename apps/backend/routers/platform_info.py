@@ -37,5 +37,5 @@ async def get_platform_info() -> dict:
         }
         for provider in registry.all_providers().values()
     ]
-    channels = [{"key": key, "display_name": key.title()} for key in CHANNEL_PROVIDER_IDS]
+    channels = [{"key": key, "display_name": key.replace("_", " ").title()} for key in CHANNEL_PROVIDER_IDS]
     return {"integrations": integrations, "channels": channels}

@@ -38,7 +38,7 @@ const markdownComponents: Components = {
     return isBlock ? (
       <code className="font-mono">{children}</code>
     ) : (
-      <code className="rounded px-1 py-0.5 text-xs font-mono"
+      <code className="rounded px-1 py-0.5 text-xs font-mono [overflow-wrap:anywhere]"
             style={{ background: "var(--edge)" }}>{children}</code>
     );
   },
@@ -52,11 +52,20 @@ const markdownComponents: Components = {
   ),
 };
 
-/** Shared read-only markdown renderer (gfm, no raw HTML, link-guarded, CSS-var themed). */
+/** Shared read-only markdown renderer (gfm, no raw HTML, link-guarded, CSS-var themed).
+ *
+ * `min-w-0` + `[overflow-wrap:anywhere]` are load-bearing: agent output routinely
+ * contains long unbreakable tokens (URLs, error strings like `getaddrinfoENOTFOUND`,
+ * hashes) with no whitespace to break on. Without these, such a token can't wrap and
+ * overflows its column — in the Teams task view it bled off the right edge into the
+ * metadata panel. `min-w-0` lets this shrink below its content's intrinsic width inside
+ * a flex/grid parent; `overflow-wrap:anywhere` forces a break inside the long token. */
 export function MarkdownView({ children }: { children: string }) {
   return (
-    <ReactMarkdown remarkPlugins={[remarkGfm, remarkSoftBreaks]} components={markdownComponents}>
-      {children}
-    </ReactMarkdown>
+    <div className="min-w-0 [overflow-wrap:anywhere]">
+      <ReactMarkdown remarkPlugins={[remarkGfm, remarkSoftBreaks]} components={markdownComponents}>
+        {children}
+      </ReactMarkdown>
+    </div>
   );
 }

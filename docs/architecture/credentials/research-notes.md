@@ -1,7 +1,7 @@
 # Credential-Linking Research Notes
 
 **Date:** 2026-05-21
-**Status:** Research notes — additive to `problem-discovery.md` (the rubric) and `solution-brief-stale.md` (the prior attempt). Updates the runtime-delivery analysis with verified facts from OpenClaw HEAD `510628ca6f`.
+**Status:** Research notes — additive to `problem-discovery.md` (the rubric) and the deleted `solution-brief-stale.md` (the prior attempt; in git history). Updates the runtime-delivery analysis with verified facts from OpenClaw HEAD `510628ca6f`.
 **Scope:** "Easy linking" — how third-party credentials (Slack, Greenhouse, etc.) actually reach an MCP server, CLI, plugin, or skill running inside a per-user OpenClaw container. Provisioning side (OAuth broker choice) is touched but not re-evaluated here.
 
 ---

@@ -21,7 +21,7 @@ You (Claude) are picking up an in-progress design workstream. This file is the e
    - 10 open questions in §11
    - **Vendor selection is deliberately deferred** to the next doc
 
-2. **`solution-brief-stale.md`** — earlier, ~5,500-word solution brief that picked **Nango (self-hosted)** + an env-baseline pattern with per-MCP wrapper scripts. **This doc is stale**: it was written before the discovery report and only solves part of the problem (tier 3 / end-customer SaaS OAuth). It does NOT address Jarvis bootstrap or agent identity. Its mechanics (the `isol8-tool` wrapper, the providers.yaml catalog, the CDK stack) are reusable; its scope is wrong. The filename's `-stale` suffix is intentional — do not treat as current.
+2. **`solution-brief-stale.md`** (deleted; recover via `git log -- docs/architecture/credentials/solution-brief-stale.md`) — earlier, ~5,500-word solution brief that picked **Nango (self-hosted)** + an env-baseline pattern with per-MCP wrapper scripts. It was superseded by the discovery report and only solved part of the problem (tier 3 / end-customer SaaS OAuth).
 
 ## Core verified facts (don't re-investigate)
 

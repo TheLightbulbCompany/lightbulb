@@ -141,16 +141,17 @@ class TestOpenclawConfigShape:
     def test_workflow_plugins_enabled(self):
         """lobster + llm-task + aws-exec-profile + tokenjuice + sage-openclaw
         are bundled, provider-independent OpenClaw extensions enabled on every
-        provision. llm-task is left unconfigured so it inherits the agent's
-        default provider/model at call time. aws-exec-profile injects the
-        owner's read-only AWS profile into the agent's exec env only (inert
-        until that profile is materialized). tokenjuice and sage-openclaw both
-        have strict-empty configSchemas, so their entries must stay
-        enable-only — a config key bricks the container at boot."""
+        provision. llm-task is routed to the cheap tier where one exists
+        (shape pinned per-path in test_config_cost_tuning) — its configSchema
+        explicitly allows defaultProvider/defaultModel. aws-exec-profile
+        injects the owner's read-only AWS profile into the agent's exec env
+        only (inert until that profile is materialized). tokenjuice and
+        sage-openclaw both have strict-EMPTY configSchemas, so their entries
+        must stay enable-only — a config key bricks the container at boot."""
         config = _cfg()
         entries = config["plugins"]["entries"]
         assert entries["lobster"] == {"enabled": True}
-        assert entries["llm-task"] == {"enabled": True}
+        assert entries["llm-task"]["enabled"] is True
         assert entries["aws-exec-profile"] == {"enabled": True}
         assert entries["tokenjuice"] == {"enabled": True}
         assert entries["sage-openclaw"] == {"enabled": True}
@@ -380,7 +381,9 @@ class TestOpenclawConfigStaticSectionsAcrossProviders:
         config = _cfg(provider_choice=provider_choice, **kwargs)
         entries = config["plugins"]["entries"]
         assert entries["lobster"] == {"enabled": True}
-        assert entries["llm-task"] == {"enabled": True}
+        # llm-task's per-path cheap-tier config is pinned in
+        # test_config_cost_tuning; here only that the entry survives the merge.
+        assert entries["llm-task"]["enabled"] is True
         assert entries["aws-exec-profile"] == {"enabled": True}
         assert entries["tokenjuice"] == {"enabled": True}
         assert entries["sage-openclaw"] == {"enabled": True}

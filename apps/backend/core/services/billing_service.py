@@ -1058,7 +1058,12 @@ async def _hot_swap_provider(
     on EFS yet (legacy / un-provisioned), signaling the caller to fall
     back to the cold path.
     """
-    from core.containers.config import build_provider_block, cheap_model_ref, premium_model_ref
+    from core.containers.config import (
+        build_provider_block,
+        cheap_model_ref,
+        heartbeat_model_ref,
+        premium_model_ref,
+    )
     from core.services.config_patcher import ConfigPatchError, replace_provider_block
 
     if new_provider == "chatgpt_oauth":
@@ -1111,11 +1116,21 @@ async def _hot_swap_provider(
     # hot swap must re-pin (or clear) it so it tracks the new provider. None on
     # flat-rate paths (chatgpt_oauth), which drops any stale override.
     ceo_model = premium_model_ref(new_provider, None)
-    # Aux ops (compaction / memory-flush / heartbeat) are routed to the cheap
-    # tier via overrides under agents.defaults; the hot swap must re-pin (or
-    # clear) those too so they track the new provider — same hazard as the CEO
-    # override. chatgpt_oauth has a cheap tier (mini), so this is non-None there.
+    # Compaction/memory-flush aux overrides track cheap_model_ref, which is
+    # deliberately None on chatgpt_oauth (Codex native compaction rejects an
+    # OpenClaw-side summarizer override — a pinned mini would make compaction
+    # fail and the session overflow), so the swap CLEARS those slots there.
     cheap_model = cheap_model_ref(new_provider, None)
+    # The heartbeat/utility lane is different in kind: both are ordinary
+    # completions the OAuth token CAN serve on the mini tier, so they re-pin
+    # via heartbeat_model_ref (mini on chatgpt_oauth) instead of being cleared
+    # with the compaction slots. Subagent spawns re-pin to the new standard
+    # tier so children never inherit a stale ref (or Friday's premium pin);
+    # llm-task follows cheap_model (enable-only when None). All four mirror
+    # what build_openclaw_config_dict writes at provision time.
+    heartbeat_model = heartbeat_model_ref(new_provider, None)
+    utility_model = heartbeat_model
+    subagent_model = default_model["primary"]
 
     try:
         await replace_provider_block(
@@ -1125,6 +1140,10 @@ async def _hot_swap_provider(
             plugin_entries=plugin_entries,
             ceo_model=ceo_model,
             cheap_model=cheap_model,
+            heartbeat_model=heartbeat_model,
+            utility_model=utility_model,
+            subagent_model=subagent_model,
+            llm_task_model=cheap_model,
         )
     except ConfigPatchError as e:
         logger.info(

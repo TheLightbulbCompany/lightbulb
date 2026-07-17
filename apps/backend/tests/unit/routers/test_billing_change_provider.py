@@ -159,7 +159,19 @@ async def test_org_owner_can_switch_to_chatgpt_oauth_and_is_recorded(
         # No oauth_connector_user_id — never been on chatgpt_oauth.
     }
 
-    async def _replace(owner_id, *, providers, default_model, plugin_entries, ceo_model, cheap_model):
+    async def _replace(
+        owner_id,
+        *,
+        providers,
+        default_model,
+        plugin_entries,
+        ceo_model,
+        cheap_model,
+        heartbeat_model,
+        utility_model,
+        subagent_model,
+        llm_task_model,
+    ):
         # Hot swap into chatgpt_oauth — shape pinned by the personal hot-path
         # test; here we only care that the org claim + connector write happen.
         pass
@@ -556,7 +568,19 @@ async def test_change_provider_bedrock_to_chatgpt_hot_path_no_restart(async_clie
         call_order.append("clear")
         return True
 
-    async def _replace(owner_id, *, providers, default_model, plugin_entries, ceo_model, cheap_model):
+    async def _replace(
+        owner_id,
+        *,
+        providers,
+        default_model,
+        plugin_entries,
+        ceo_model,
+        cheap_model,
+        heartbeat_model,
+        utility_model,
+        subagent_model,
+        llm_task_model,
+    ):
         call_order.append("replace")
         # The chatgpt_oauth branch sets ``models.providers`` to {} and the
         # default model to the openai pair. Pin the contract so a
@@ -579,6 +603,16 @@ async def test_change_provider_bedrock_to_chatgpt_hot_path_no_restart(async_clie
         # a bedrock owner switching to chatgpt would otherwise inherit the stale
         # bedrock-haiku compaction override and hit the overflow bug.
         assert cheap_model is None
+        # The heartbeat is an ordinary agent turn the Codex OAuth token CAN
+        # serve on the mini tier (unlike compaction) — so the hot swap re-pins
+        # it rather than clearing it with the compaction slots. Same for the
+        # utility model (titles etc.). Subagents re-pin to the standard tier
+        # so children never inherit a stale bedrock ref; llm-task has no cheap
+        # tier on this path (cheap_model is None) and goes enable-only.
+        assert heartbeat_model == "openai/gpt-5.4-mini"
+        assert utility_model == "openai/gpt-5.4-mini"
+        assert subagent_model == "openai/gpt-5.5"
+        assert llm_task_model is None
 
     with (
         patch(

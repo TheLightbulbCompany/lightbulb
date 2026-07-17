@@ -769,7 +769,7 @@ def _build_agents_list(paperclip_agents: list[dict], ceo_model: str | None = Non
     return entries
 
 
-def workflow_plugin_entries() -> dict:
+def workflow_plugin_entries(llm_task_model: str | None = None) -> dict:
     """Bundled, provider-independent OpenClaw extensions enabled on every
     container.
 
@@ -781,8 +781,14 @@ def workflow_plugin_entries() -> dict:
 
     Entries:
     - ``lobster`` — typed-pipeline workflow engine.
-    - ``llm-task`` — left unconfigured so it inherits the agent's default
-      provider/model at call time across every provider path.
+    - ``llm-task`` — routed to the cheap tier via ``llm_task_model`` (a
+      ``<provider>/<model>`` ref, split into the plugin's ``defaultProvider``
+      / ``defaultModel`` fields): llm-task calls are workflow-glue JSON steps
+      that don't need the premium default. ``None`` (no cheap tier on this
+      path — chatgpt_oauth, bedrock_trial) leaves the entry enable-only so
+      calls inherit the agent's default model. The plugin's configSchema is
+      strict (``additionalProperties: false``); only schema-listed keys may
+      ever be added here or the container crash-loops at boot.
     - ``aws-exec-profile`` — baked in-repo plugin whose ``resolve_exec_env``
       hook injects ``AWS_PROFILE=isol8-connector`` into the agent's exec'd
       commands only when the owner's connector AWS profile is materialized.
@@ -798,9 +804,18 @@ def workflow_plugin_entries() -> dict:
     Returned fresh each call so callers may merge/mutate without corrupting
     shared module state.
     """
+    llm_task_entry: dict = {"enabled": True}
+    if llm_task_model:
+        # partition on the FIRST "/" only: Bedrock model ids are AIP ARNs
+        # that themselves contain "/" (…application-inference-profile/xyz).
+        provider, _, model = llm_task_model.partition("/")
+        llm_task_entry["config"] = {
+            "defaultProvider": provider,
+            "defaultModel": model,
+        }
     return {
         "lobster": {"enabled": True},
-        "llm-task": {"enabled": True},
+        "llm-task": llm_task_entry,
         "aws-exec-profile": {"enabled": True},
         "tokenjuice": {"enabled": True},
         "sage-openclaw": {"enabled": True},
@@ -1129,10 +1144,24 @@ def build_openclaw_config_dict(
         },
         "models": {
             "providers": providers_config,
+            # Upstream defaults pricing.enabled=true: a background OpenRouter
+            # + LiteLLM pricing-catalog fetch after every gateway boot. Our
+            # catalogs are static with explicit cost blocks (Bedrock) or
+            # flat-rate (OAuth/BYO), and billing truth lives in the
+            # bedrock-gate/meter — the fetch is pure waste and an egress
+            # surface. Configured cost values keep working with it off.
+            "pricing": {"enabled": False},
         },
         "agents": {
             "defaults": {
                 "model": default_model,
+                # Isol8 pre-seeds every agent workspace (IDENTITY/SOUL/USER via
+                # friday_identity) — skip OpenClaw's first-run bootstrap so an
+                # under-seeded workspace (Atlas-recruited agent, partial
+                # marketplace deploy) never autonomously runs the BOOTSTRAP.md
+                # "pick your name" identity ritual headless. Upstream's own
+                # docstring names pre-configured deployments as the use case.
+                "skipBootstrap": True,
                 # --- runaway bounds (see the module constants) -----------------
                 # The agentic loop is a literal `while (true)`: no step,
                 # tool-call or token cap exists in the strict 7.1 schema, so
@@ -1191,6 +1220,10 @@ def build_openclaw_config_dict(
                 # (compaction.midTurnPrecheck.enabled, compaction.model,
                 # compaction.memoryFlush.model).
                 "compaction": {
+                    # Pinned explicitly: upstream's default flipped to
+                    # "safeguard" for NEW configs only, so an unset mode is
+                    # version-dependent drift across image bumps.
+                    "mode": "safeguard",
                     "midTurnPrecheck": {"enabled": True},
                     **({"model": cheap_model, "memoryFlush": {"model": cheap_model}} if cheap_model else {}),
                 },
@@ -1211,7 +1244,17 @@ def build_openclaw_config_dict(
                 # it fires correctly even when a model reports a far larger window
                 # than it actually serves. Provider-agnostic (guards the context
                 # window, not cost), so set unconditionally like midTurnPrecheck.
-                "contextPruning": {"mode": "cache-ttl"},
+                #
+                # `ttl` moves in lockstep with params.cacheRetention above:
+                # retention "long" buys 1h-TTL cache writes, while the pruning
+                # manual-mode ttl default is 5m — leaving it unset prunes tool
+                # results (mutating the prompt and invalidating the cache) up
+                # to 55 minutes before the retention we paid for expires. The
+                # 1h smart default doesn't fire on our paths (it requires the
+                # bundled Anthropic plugin resolving an Anthropic auth profile,
+                # and backs off when mode is set explicitly). Change the two
+                # together or not at all.
+                "contextPruning": {"mode": "cache-ttl", "ttl": "1h"},
                 # heartbeat is NOT a no-op: upstream treats a present
                 # `agents.defaults.heartbeat` as truthy and falls back to a
                 # 30m interval with `target: none`. That is OpenClaw's
@@ -1237,11 +1280,38 @@ def build_openclaw_config_dict(
                 # with `target: none`), so this is the only way to stop it. The
                 # heartbeat is a recurring self-run per agent — a trial
                 # container must not burn credits with no human in the loop.
+                # `isolatedSession` + `lightContext` are the heartbeat cost
+                # collapse: without them each 30m heartbeat replays the full
+                # conversation context (~100K tokens on a busy session, 48×
+                # /day/owner); isolated sessions rebuild only the workspace
+                # bootstrap, and lightContext narrows that to HEARTBEAT.md —
+                # upstream documents ~2-5K tokens per poll. The heartbeat is
+                # a maintenance turn (read HEARTBEAT.md, reply HEARTBEAT_OK),
+                # not a conversation, so continuity loss is the point, not a
+                # cost. Both keys schema-verified on the deployed fork tag.
                 **(
                     {}
                     if is_bedrock_trial
-                    else {"heartbeat": {"every": "30m", **({"model": heartbeat_model} if heartbeat_model else {})}}
+                    else {
+                        "heartbeat": {
+                            "every": "30m",
+                            "isolatedSession": True,
+                            "lightContext": True,
+                            **({"model": heartbeat_model} if heartbeat_model else {}),
+                        }
+                    }
                 ),
+                # utilityModel routes titles/summaries and other one-shot
+                # utility completions to the cheap tier. Unset does NOT mean
+                # "cheap by default": the upstream resolution chain
+                # (simple-completion-runtime.ts) is utilityModel?.trim() ||
+                # effective PRIMARY — so an unset (or empty-string) value runs
+                # utility calls on the premium default. Reuses the heartbeat
+                # cheap-tier resolution (haiku AIP on paid Bedrock, mini on
+                # OAuth/BYO-openai, haiku on BYO-anthropic). Omitted on trial:
+                # the single-AIP IAM policy means the primary IS the only
+                # invocable model, and "" would fall through to it anyway.
+                **({"utilityModel": heartbeat_model} if heartbeat_model else {}),
                 "workspace": "/home/node/.openclaw/workspaces",
                 # Memory recall stays ON for every owner (memory-core registers
                 # memory_search/memory_get, and the "Memory Recall" prompt
@@ -1280,6 +1350,20 @@ def build_openclaw_config_dict(
                 # can't multiply itself out of the cap.
                 "subagents": {
                     "allowAgents": ["*"],
+                    # Children inherit the CALLER's model when unset — and the
+                    # CEO (Friday) is pinned to the premium tier, so every
+                    # Friday fan-out would be N× premium-priced parallel spend.
+                    # Pin spawns to the standard tier (the defaults primary);
+                    # an explicit sessions_spawn model override still wins when
+                    # a child genuinely needs the premium tier.
+                    "model": default_model["primary"],
+                    # Spawn-level wall clock. Upstream default is 0 = NO
+                    # timeout (verified in the deployed schema): the child's
+                    # own agent-loop deadline re-arms per retry, so a wedged
+                    # child can hold a lane and bill for hours before the 2h
+                    # stale valve merely stops counting it. Align with the
+                    # run fence above.
+                    "runTimeoutSeconds": AGENT_RUN_TIMEOUT_SECONDS,
                     **(
                         {"maxConcurrent": AGENT_SUBAGENT_MAX_CONCURRENT_TRIAL}
                         if provider_choice == BEDROCK_TRIAL_CHOICE
@@ -1445,8 +1529,10 @@ def build_openclaw_config_dict(
                 # onStartup once enabled; their tools are optional:true and
                 # are surfaced via the explicit tools.allow wildcard above.
                 # Kept in sync with the provider hot-swap path via the shared
-                # workflow_plugin_entries() seam.
-                **workflow_plugin_entries(),
+                # workflow_plugin_entries() seam. llm-task rides the cheap
+                # tier where one exists (None on chatgpt_oauth/trial —
+                # enable-only, inherits the agent default).
+                **workflow_plugin_entries(llm_task_model=cheap_model),
                 # memory-core's dreaming subsystem (light phase only; REM + deep
                 # OFF). Shared with the provider hot-swap path via the
                 # memory_plugin_entries() seam so a Bedrock <-> ChatGPT switch

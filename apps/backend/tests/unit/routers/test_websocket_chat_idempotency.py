@@ -31,6 +31,7 @@ async def test_client_run_id_is_forwarded_as_idempotency_key():
 
     fake_mgmt = MagicMock()
     fake_mgmt.send_message = MagicMock()
+    fake_mgmt.send_message_async = AsyncMock(side_effect=fake_mgmt.send_message)
 
     with (
         patch("routers.websocket_chat.get_gateway_pool", return_value=fake_pool),
@@ -82,6 +83,7 @@ async def test_missing_client_run_id_falls_back_to_backend_minted_uuid():
 
     fake_mgmt = MagicMock()
     fake_mgmt.send_message = MagicMock()
+    fake_mgmt.send_message_async = AsyncMock(side_effect=fake_mgmt.send_message)
 
     with (
         patch("routers.websocket_chat.get_gateway_pool", return_value=fake_pool),

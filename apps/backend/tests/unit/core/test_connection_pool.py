@@ -10,6 +10,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from core.gateway.connection_pool import GatewayConnection, GatewayConnectionPool
 
 
+async def _handle_and_flush(conn, msg):
+    """Route *msg* then drain the FrameSender so send_message assertions see
+    delivered frames (delivery runs on per-connection drainer tasks now)."""
+    await conn._handle_message(msg)
+    await conn._sender.flush()
+
+
 class TestGatewayConnection:
     @pytest.fixture
     def mock_management_api(self):
@@ -41,7 +48,7 @@ class TestGatewayConnection:
         """_handle_message with type=res should resolve the matching Future."""
         future = asyncio.get_event_loop().create_future()
         connection._pending_rpcs["req-456"] = future
-        await connection._handle_message({"type": "res", "id": "req-456", "ok": True, "payload": {"uptime": 3600}})
+        await _handle_and_flush(connection, {"type": "res", "id": "req-456", "ok": True, "payload": {"uptime": 3600}})
         result = await asyncio.wait_for(future, timeout=1)
         assert result == {"uptime": 3600}
 
@@ -50,8 +57,8 @@ class TestGatewayConnection:
         """_handle_message with type=res ok=false should reject the Future."""
         future = asyncio.get_event_loop().create_future()
         connection._pending_rpcs["req-789"] = future
-        await connection._handle_message(
-            {"type": "res", "id": "req-789", "ok": False, "error": {"message": "not found"}}
+        await _handle_and_flush(
+            connection, {"type": "res", "id": "req-789", "ok": False, "error": {"message": "not found"}}
         )
         with pytest.raises(RuntimeError, match="not found"):
             await asyncio.wait_for(future, timeout=1)
@@ -64,7 +71,7 @@ class TestGatewayConnection:
             return_value=[("conn-abc", None, "chat"), ("conn-def", None, "chat")]
         )
         # Use sessions.updated — health/tick events are now intentionally dropped.
-        await connection._handle_message({"type": "event", "event": "sessions.updated", "payload": {"status": "ok"}})
+        await _handle_and_flush(connection, {"type": "event", "event": "sessions.updated", "payload": {"status": "ok"}})
         assert mock_management_api.send_message.call_count == 2
 
     def test_shared_frontend_connections(self, connection):
@@ -599,12 +606,13 @@ class TestHandleMessageChatEvents:
     async def test_chat_final_sends_done(self, connection):
         """chat state=final forwards a done message to frontends."""
         conn, mgmt = connection
-        await conn._handle_message(
+        await _handle_and_flush(
+            conn,
             {
                 "type": "event",
                 "event": "chat",
                 "payload": {"state": "final", "runId": "run-1", "message": {"content": []}},
-            }
+            },
         )
         calls = [c.args[1] for c in mgmt.send_message.call_args_list]
         assert {"type": "done", "runId": "run-1"} in calls
@@ -618,7 +626,8 @@ class TestHandleMessageChatEvents:
         response text to the frontend — without it, slash-command replies
         are silently dropped."""
         conn, mgmt = connection
-        await conn._handle_message(
+        await _handle_and_flush(
+            conn,
             {
                 "type": "event",
                 "event": "chat",
@@ -627,7 +636,7 @@ class TestHandleMessageChatEvents:
                     "runId": "run-1",
                     "message": {"content": [{"type": "text", "text": "complete answer"}]},
                 },
-            }
+            },
         )
         calls = [c.args[1] for c in mgmt.send_message.call_args_list]
         assert {"type": "chunk", "content": "complete answer", "runId": "run-1"} in calls
@@ -641,12 +650,13 @@ class TestHandleMessageChatEvents:
     async def test_chat_error_sends_error_message(self, connection):
         """chat state=error forwards an error type message."""
         conn, mgmt = connection
-        await conn._handle_message(
+        await _handle_and_flush(
+            conn,
             {
                 "type": "event",
                 "event": "chat",
                 "payload": {"state": "error", "runId": "run-e", "error": {"message": "timeout"}},
-            }
+            },
         )
         calls = [c.args[1] for c in mgmt.send_message.call_args_list]
         assert any(c.get("type") == "error" for c in calls)
@@ -656,12 +666,13 @@ class TestHandleMessageChatEvents:
     async def test_chat_aborted_sends_error_message(self, connection):
         """chat state=aborted forwards a cancellation error."""
         conn, mgmt = connection
-        await conn._handle_message(
+        await _handle_and_flush(
+            conn,
             {
                 "type": "event",
                 "event": "chat",
                 "payload": {"state": "aborted", "runId": "run-a"},
-            }
+            },
         )
         calls = [c.args[1] for c in mgmt.send_message.call_args_list]
         assert any(c.get("type") == "error" for c in calls)
@@ -670,12 +681,13 @@ class TestHandleMessageChatEvents:
     async def test_chat_delta_is_ignored(self, connection):
         """chat state=delta is silently ignored (agent events handle streaming)."""
         conn, mgmt = connection
-        await conn._handle_message(
+        await _handle_and_flush(
+            conn,
             {
                 "type": "event",
                 "event": "chat",
                 "payload": {"state": "delta"},
-            }
+            },
         )
         mgmt.send_message.assert_not_called()
 
@@ -684,7 +696,7 @@ class TestHandleMessageChatEvents:
         """Non-chat, non-agent events are forwarded unchanged for SWR revalidation."""
         conn, mgmt = connection
         msg = {"type": "event", "event": "sessions.updated", "payload": {}}
-        await conn._handle_message(msg)
+        await _handle_and_flush(conn, msg)
         mgmt.send_message.assert_called_once_with("frontend-1", msg)
 
 
@@ -719,7 +731,8 @@ class TestPaperclipSessionFanoutLeak:
     @pytest.mark.asyncio
     async def test_paperclip_issue_chat_final_not_forwarded(self, connection):
         conn, mgmt = connection
-        await conn._handle_message(
+        await _handle_and_flush(
+            conn,
             {
                 "type": "event",
                 "event": "chat",
@@ -729,14 +742,15 @@ class TestPaperclipSessionFanoutLeak:
                     "sessionKey": "agent:friday:paperclip:issue:ADM-455",
                     "message": {"content": [{"type": "text", "text": "sweep done"}]},
                 },
-            }
+            },
         )
         mgmt.send_message.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_paperclip_issue_agent_chunk_not_forwarded(self, connection):
         conn, mgmt = connection
-        await conn._handle_message(
+        await _handle_and_flush(
+            conn,
             {
                 "type": "event",
                 "event": "agent",
@@ -746,7 +760,7 @@ class TestPaperclipSessionFanoutLeak:
                     "sessionKey": "agent:friday:paperclip:issue:ADM-455",
                     "data": {"text": "internal routine output"},
                 },
-            }
+            },
         )
         mgmt.send_message.assert_not_called()
 
@@ -755,7 +769,8 @@ class TestPaperclipSessionFanoutLeak:
         """An error in the issue run (e.g. context overflow on a retry loop)
         must not bleed into members' chat windows."""
         conn, mgmt = connection
-        await conn._handle_message(
+        await _handle_and_flush(
+            conn,
             {
                 "type": "event",
                 "event": "chat",
@@ -765,7 +780,7 @@ class TestPaperclipSessionFanoutLeak:
                     "sessionKey": "agent:friday:paperclip:issue:ADM-455",
                     "error": {"message": "Context overflow"},
                 },
-            }
+            },
         )
         mgmt.send_message.assert_not_called()
 
@@ -774,7 +789,8 @@ class TestPaperclipSessionFanoutLeak:
         """Positive control: a real web-chat session (agent:<id>:main) still
         forwards — the fix must not over-drop legitimate chat."""
         conn, mgmt = connection
-        await conn._handle_message(
+        await _handle_and_flush(
+            conn,
             {
                 "type": "event",
                 "event": "chat",
@@ -784,7 +800,7 @@ class TestPaperclipSessionFanoutLeak:
                     "sessionKey": "agent:friday:main",
                     "message": {"content": [{"type": "text", "text": "hi"}]},
                 },
-            }
+            },
         )
         # source=webchat, no member_id -> broadcast to both org tabs.
         assert mgmt.send_message.call_count >= 1
@@ -877,6 +893,8 @@ class TestStatusChangeEvents:
 
         conn._emit_status_change("HEALTHY", "Gateway connected")
 
+        await conn._sender.flush()
+
         mock_mgmt.send_message.assert_called_once()
         call_args = mock_mgmt.send_message.call_args
         assert call_args[0][0] == "conn_abc"
@@ -903,6 +921,8 @@ class TestStatusChangeEvents:
 
         conn._emit_status_change("GATEWAY_DOWN_DEAD", "Gateway connection lost")
 
+        await conn._sender.flush()
+
         assert mock_mgmt.send_message.call_count == 2
 
     @pytest.mark.asyncio
@@ -922,6 +942,7 @@ class TestStatusChangeEvents:
 
         # Should not raise
         conn._emit_status_change("GATEWAY_DOWN_DEAD", "Gateway connection lost")
+        await conn._sender.flush()
 
     @pytest.mark.asyncio
     async def test_emit_status_change_no_frontends(self):
@@ -937,6 +958,8 @@ class TestStatusChangeEvents:
         )
 
         conn._emit_status_change("HEALTHY", "Gateway connected")
+
+        await conn._sender.flush()
 
         mock_mgmt.send_message.assert_not_called()
 
@@ -967,7 +990,8 @@ class TestChatEventForwarding:
 
     @pytest.mark.asyncio
     async def test_done_event_carries_run_id(self, connection, mock_management_api):
-        await connection._handle_message(
+        await _handle_and_flush(
+            connection,
             {
                 "type": "event",
                 "event": "chat",
@@ -976,7 +1000,7 @@ class TestChatEventForwarding:
                     "sessionKey": "agent:main:user-1",
                     "runId": "run-done-1",
                 },
-            }
+            },
         )
         done_msgs = [
             c.args[1] for c in mock_management_api.send_message.call_args_list if c.args[1].get("type") == "done"
@@ -986,7 +1010,8 @@ class TestChatEventForwarding:
 
     @pytest.mark.asyncio
     async def test_error_event_carries_run_id(self, connection, mock_management_api):
-        await connection._handle_message(
+        await _handle_and_flush(
+            connection,
             {
                 "type": "event",
                 "event": "chat",
@@ -996,7 +1021,7 @@ class TestChatEventForwarding:
                     "runId": "run-err-1",
                     "error": {"message": "model unavailable"},
                 },
-            }
+            },
         )
         error_msgs = [
             c.args[1] for c in mock_management_api.send_message.call_args_list if c.args[1].get("type") == "error"
@@ -1007,7 +1032,8 @@ class TestChatEventForwarding:
 
     @pytest.mark.asyncio
     async def test_aborted_event_carries_run_id(self, connection, mock_management_api):
-        await connection._handle_message(
+        await _handle_and_flush(
+            connection,
             {
                 "type": "event",
                 "event": "chat",
@@ -1016,7 +1042,7 @@ class TestChatEventForwarding:
                     "sessionKey": "agent:main:user-1",
                     "runId": "run-abort-1",
                 },
-            }
+            },
         )
         error_msgs = [
             c.args[1] for c in mock_management_api.send_message.call_args_list if c.args[1].get("type") == "error"
@@ -1030,7 +1056,8 @@ class TestChatEventForwarding:
         protocol violation — fail loudly rather than silently forwarding
         without it (frontend multi-bubble routing would break)."""
         with pytest.raises(KeyError):
-            await connection._handle_message(
+            await _handle_and_flush(
+                connection,
                 {
                     "type": "event",
                     "event": "chat",
@@ -1038,7 +1065,7 @@ class TestChatEventForwarding:
                         "state": "final",
                         "sessionKey": "agent:main:user-1",
                     },
-                }
+                },
             )
 
     @staticmethod
@@ -1052,7 +1079,8 @@ class TestChatEventForwarding:
         """A true terminal final forwards an authoritative run_ended frame
         (outcome=done) IN ADDITION TO the existing done frame, carrying the
         run's runId so the frontend can drain its queue for that run."""
-        await connection._handle_message(
+        await _handle_and_flush(
+            connection,
             {
                 "type": "event",
                 "event": "chat",
@@ -1061,7 +1089,7 @@ class TestChatEventForwarding:
                     "sessionKey": "agent:main:user-1",
                     "runId": "run-done-1",
                 },
-            }
+            },
         )
         # Existing done frame is unchanged.
         done_msgs = [
@@ -1077,7 +1105,8 @@ class TestChatEventForwarding:
 
     @pytest.mark.asyncio
     async def test_error_emits_run_ended_error(self, connection, mock_management_api):
-        await connection._handle_message(
+        await _handle_and_flush(
+            connection,
             {
                 "type": "event",
                 "event": "chat",
@@ -1087,7 +1116,7 @@ class TestChatEventForwarding:
                     "runId": "run-err-1",
                     "errorMessage": "boom",
                 },
-            }
+            },
         )
         run_ended = self._run_ended_frames(mock_management_api)
         assert len(run_ended) == 1
@@ -1096,7 +1125,8 @@ class TestChatEventForwarding:
 
     @pytest.mark.asyncio
     async def test_aborted_emits_run_ended_aborted(self, connection, mock_management_api):
-        await connection._handle_message(
+        await _handle_and_flush(
+            connection,
             {
                 "type": "event",
                 "event": "chat",
@@ -1105,7 +1135,7 @@ class TestChatEventForwarding:
                     "sessionKey": "agent:main:user-1",
                     "runId": "run-abort-1",
                 },
-            }
+            },
         )
         run_ended = self._run_ended_frames(mock_management_api)
         assert len(run_ended) == 1
@@ -1121,7 +1151,8 @@ class TestChatEventForwarding:
         connection.mark_run_active(session_key, agent_id="main")
 
         # 1. Approval requested — pauses the run.
-        await connection._handle_message(
+        await _handle_and_flush(
+            connection,
             {
                 "type": "event",
                 "event": "agent",
@@ -1136,10 +1167,11 @@ class TestChatEventForwarding:
                         "approvalId": "appr-1",
                     },
                 },
-            }
+            },
         )
         # 2. Interim final closing the approval bracket — NO run_ended.
-        await connection._handle_message(
+        await _handle_and_flush(
+            connection,
             {
                 "type": "event",
                 "event": "chat",
@@ -1149,12 +1181,13 @@ class TestChatEventForwarding:
                     "runId": "run-1",
                     "message": {"content": []},
                 },
-            }
+            },
         )
         assert self._run_ended_frames(mock_management_api) == []
 
         # 3. True terminal final after the continuation — run_ended fires once.
-        await connection._handle_message(
+        await _handle_and_flush(
+            connection,
             {
                 "type": "event",
                 "event": "chat",
@@ -1164,7 +1197,7 @@ class TestChatEventForwarding:
                     "runId": "run-2",
                     "message": {"content": [{"type": "text", "text": "done"}]},
                 },
-            }
+            },
         )
         run_ended = self._run_ended_frames(mock_management_api)
         assert len(run_ended) == 1
@@ -1214,7 +1247,8 @@ class TestActiveRunTracking:
         session_key = "agent:main:user-active-run"
         connection.mark_run_active(session_key, agent_id="main")
 
-        await connection._handle_message(
+        await _handle_and_flush(
+            connection,
             {
                 "type": "event",
                 "event": "chat",
@@ -1224,7 +1258,7 @@ class TestActiveRunTracking:
                     "runId": "run-1",
                     "message": {"content": [{"type": "text", "text": "hi"}]},
                 },
-            }
+            },
         )
 
         assert connection.has_active_runs is False
@@ -1235,7 +1269,8 @@ class TestActiveRunTracking:
         session_key = "agent:main:user-active-run"
         connection.mark_run_active(session_key, agent_id="main")
 
-        await connection._handle_message(
+        await _handle_and_flush(
+            connection,
             {
                 "type": "event",
                 "event": "chat",
@@ -1246,7 +1281,7 @@ class TestActiveRunTracking:
                     "errorMessage": "rate limited",
                     "errorKind": "rate_limit",
                 },
-            }
+            },
         )
 
         assert connection.has_active_runs is False
@@ -1256,7 +1291,8 @@ class TestActiveRunTracking:
         session_key = "agent:main:user-active-run"
         connection.mark_run_active(session_key, agent_id="main")
 
-        await connection._handle_message(
+        await _handle_and_flush(
+            connection,
             {
                 "type": "event",
                 "event": "chat",
@@ -1265,7 +1301,7 @@ class TestActiveRunTracking:
                     "sessionKey": session_key,
                     "runId": "run-abort",
                 },
-            }
+            },
         )
 
         assert connection.has_active_runs is False
@@ -1284,7 +1320,8 @@ class TestActiveRunTracking:
         connection.mark_side_run("side-run-9")  # concurrent /btw run
 
         # The side run finishes first, on the SAME sessionKey but its own runId.
-        await connection._handle_message(
+        await _handle_and_flush(
+            connection,
             {
                 "type": "event",
                 "event": "chat",
@@ -1294,14 +1331,15 @@ class TestActiveRunTracking:
                     "runId": "side-run-9",
                     "message": {"content": [{"type": "text", "text": "aside"}]},
                 },
-            }
+            },
         )
         # Primary window survives; the side id self-cleaned.
         assert session_key in connection._active_runs
         assert connection._is_side_run("side-run-9") is False
 
         # The PRIMARY run's own terminal clears it normally.
-        await connection._handle_message(
+        await _handle_and_flush(
+            connection,
             {
                 "type": "event",
                 "event": "chat",
@@ -1311,7 +1349,7 @@ class TestActiveRunTracking:
                     "runId": "run-primary",
                     "message": {"content": [{"type": "text", "text": "done"}]},
                 },
-            }
+            },
         )
         assert session_key not in connection._active_runs
 
@@ -1324,7 +1362,8 @@ class TestActiveRunTracking:
         connection.mark_run_active(session_key, "main")
         connection.mark_side_run("side-run-9")
 
-        await connection._handle_message(
+        await _handle_and_flush(
+            connection,
             {
                 "type": "event",
                 "event": "agent",
@@ -1334,7 +1373,7 @@ class TestActiveRunTracking:
                     "runId": "side-run-9",
                     "data": {"phase": "requested", "kind": "exec", "status": "pending"},
                 },
-            }
+            },
         )
         assert connection._active_runs[session_key]["awaiting_approval"] is False
 
@@ -1360,7 +1399,8 @@ class TestActiveRunTracking:
         connection.mark_run_active(session_key, "a")
 
         # 1. Approval requested — the run pauses, not ends.
-        await connection._handle_message(
+        await _handle_and_flush(
+            connection,
             {
                 "type": "event",
                 "event": "agent",
@@ -1376,12 +1416,13 @@ class TestActiveRunTracking:
                         "approvalId": "appr-1",
                     },
                 },
-            }
+            },
         )
         assert session_key in connection._active_runs
 
         # 2. Interim chat final for the approval bracket — run must stay active.
-        await connection._handle_message(
+        await _handle_and_flush(
+            connection,
             {
                 "type": "event",
                 "event": "chat",
@@ -1391,12 +1432,13 @@ class TestActiveRunTracking:
                     "runId": "run-1",
                     "message": {"content": []},
                 },
-            }
+            },
         )
         assert session_key in connection._active_runs  # still active across approval
 
         # 3. True terminal final after the continuation — run clears.
-        await connection._handle_message(
+        await _handle_and_flush(
+            connection,
             {
                 "type": "event",
                 "event": "chat",
@@ -1406,7 +1448,7 @@ class TestActiveRunTracking:
                     "runId": "run-2",
                     "message": {"content": [{"type": "text", "text": "done"}]},
                 },
-            }
+            },
         )
         assert session_key not in connection._active_runs
 
@@ -1425,7 +1467,8 @@ class TestActiveRunTracking:
         connection.mark_run_active(session_key, "a")
 
         # Pause on an approval.
-        await connection._handle_message(
+        await _handle_and_flush(
+            connection,
             {
                 "type": "event",
                 "event": "agent",
@@ -1440,13 +1483,14 @@ class TestActiveRunTracking:
                         "approvalId": "appr-1",
                     },
                 },
-            }
+            },
         )
         assert session_key in connection._active_runs
         assert connection._active_runs[session_key]["awaiting_approval"] is True
 
         # The run errors out WHILE awaiting the approval — still a true terminal.
-        await connection._handle_message(
+        await _handle_and_flush(
+            connection,
             {
                 "type": "event",
                 "event": "chat",
@@ -1457,7 +1501,7 @@ class TestActiveRunTracking:
                     "errorMessage": "boom",
                     "errorKind": "unknown",
                 },
-            }
+            },
         )
         assert session_key not in connection._active_runs
         assert session_key not in connection._active_runs
@@ -1473,7 +1517,8 @@ class TestActiveRunTracking:
         connection.mark_run_active(session_key, "a")
 
         # Pause on an approval.
-        await connection._handle_message(
+        await _handle_and_flush(
+            connection,
             {
                 "type": "event",
                 "event": "agent",
@@ -1488,12 +1533,13 @@ class TestActiveRunTracking:
                         "approvalId": "appr-1",
                     },
                 },
-            }
+            },
         )
         assert connection._active_runs[session_key]["awaiting_approval"] is True
 
         # The run is aborted WHILE awaiting the approval — still a true terminal.
-        await connection._handle_message(
+        await _handle_and_flush(
+            connection,
             {
                 "type": "event",
                 "event": "chat",
@@ -1502,7 +1548,7 @@ class TestActiveRunTracking:
                     "sessionKey": session_key,
                     "runId": "run-1",
                 },
-            }
+            },
         )
         assert session_key not in connection._active_runs
         assert session_key not in connection._active_runs
@@ -1522,7 +1568,8 @@ class TestActiveRunTracking:
         _t.sleep(0.01)
 
         # Agent stream event for the same session
-        await connection._handle_message(
+        await _handle_and_flush(
+            connection,
             {
                 "type": "event",
                 "event": "agent",
@@ -1532,7 +1579,7 @@ class TestActiveRunTracking:
                     "runId": "run-1",
                     "data": {"text": "tok"},
                 },
-            }
+            },
         )
 
         bumped = connection._active_runs[session_key]["last_event_at"]
@@ -1541,7 +1588,8 @@ class TestActiveRunTracking:
     @pytest.mark.asyncio
     async def test_touch_run_noop_for_unknown_session(self, connection):
         """Untracked sessionKeys (cron / channel) must not create entries."""
-        await connection._handle_message(
+        await _handle_and_flush(
+            connection,
             {
                 "type": "event",
                 "event": "agent",
@@ -1551,7 +1599,7 @@ class TestActiveRunTracking:
                     "runId": "run-cron",
                     "data": {"text": "tok"},
                 },
-            }
+            },
         )
         assert connection.has_active_runs is False
 
@@ -1591,6 +1639,7 @@ class TestReaderLoopExitBranches:
 
         try:
             conn._on_reader_loop_exit(RuntimeError("ping timeout"))
+            await conn._sender.flush()
 
             # _pending_rpcs preserved — the chat.send ack already returned,
             # but a concurrent sessions.list still wants to resolve when the
@@ -1638,6 +1687,7 @@ class TestReaderLoopExitBranches:
         conn._pending_rpcs["agents-list-1"] = pending
 
         conn._on_reader_loop_exit(RuntimeError("connection refused"))
+        await conn._sender.flush()
 
         assert pending.done()
         with pytest.raises(RuntimeError, match="Gateway connection lost"):

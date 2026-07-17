@@ -39,6 +39,7 @@ export type {
 } from "./api/client";
 
 export { useGatewayConnection } from "./gateway/useGatewayConnection";
+export { accumulateStreamText } from "./gateway/streamText";
 export type {
   GatewayConnectionOptions,
   GatewayConnectionValue,

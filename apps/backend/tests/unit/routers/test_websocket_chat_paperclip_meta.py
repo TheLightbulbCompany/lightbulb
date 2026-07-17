@@ -16,6 +16,15 @@ from routers.websocket_chat import (  # noqa: E402
 )
 
 
+def _mock_mgmt():
+    """Management-api mock whose async send delegates to the sync mock so
+    assertions on send_message keep working."""
+    m = MagicMock()
+    m.send_message = MagicMock()
+    m.send_message_async = AsyncMock(side_effect=m.send_message)
+    return m
+
+
 @pytest.mark.asyncio
 async def test_intercept_create_reads_paperclip_meta_from_params():
     """When the chat client sends params={"name": "Ray", "params":
@@ -27,6 +36,7 @@ async def test_intercept_create_reads_paperclip_meta_from_params():
     mock_pool.send_rpc = AsyncMock()
     mock_mgmt = MagicMock()
     mock_mgmt.send_message = MagicMock()
+    mock_mgmt.send_message_async = AsyncMock(side_effect=mock_mgmt.send_message)
 
     with (
         patch("routers.websocket_chat.create_paperclip_for_chat", new=create_call),
@@ -76,7 +86,7 @@ async def test_intercept_create_with_no_meta_works_as_before():
         patch("routers.websocket_chat.get_gateway_pool", return_value=MagicMock()),
         patch(
             "routers.websocket_chat.get_management_api_client",
-            new=AsyncMock(return_value=MagicMock()),
+            new=AsyncMock(return_value=_mock_mgmt()),
         ),
     ):
         await _intercept_agents_create(
@@ -321,7 +331,7 @@ async def test_intercept_create_persists_paperclip_meta_to_openclaw_json():
         patch("routers.websocket_chat.create_paperclip_for_chat", new=create_call),
         patch("routers.websocket_chat.pair_with_openclaw", new=mock_pair),
         patch("routers.websocket_chat.get_gateway_pool", return_value=MagicMock()),
-        patch("routers.websocket_chat.get_management_api_client", new=AsyncMock(return_value=MagicMock())),
+        patch("routers.websocket_chat.get_management_api_client", new=AsyncMock(return_value=_mock_mgmt())),
         patch("core.services.config_patcher.apply_paperclip_meta", new=apply_meta),
     ):
         await _intercept_agents_create(
@@ -361,7 +371,7 @@ async def test_intercept_create_skips_efs_write_when_no_meta():
         patch("routers.websocket_chat.create_paperclip_for_chat", new=create_call),
         patch("routers.websocket_chat.pair_with_openclaw", new=AsyncMock()),
         patch("routers.websocket_chat.get_gateway_pool", return_value=MagicMock()),
-        patch("routers.websocket_chat.get_management_api_client", new=AsyncMock(return_value=MagicMock())),
+        patch("routers.websocket_chat.get_management_api_client", new=AsyncMock(return_value=_mock_mgmt())),
         patch("core.services.config_patcher.apply_paperclip_meta", new=apply_meta),
     ):
         await _intercept_agents_create(

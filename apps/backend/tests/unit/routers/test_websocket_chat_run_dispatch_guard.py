@@ -89,6 +89,7 @@ def _harness(monkeypatch, *, rpc_result=None, seeded=False, create_consumed=Fals
 
     mgmt = MagicMock()
     mgmt.send_message = MagicMock(side_effect=lambda _cid, payload: sent.append(payload))
+    mgmt.send_message_async = AsyncMock(side_effect=mgmt.send_message)
     monkeypatch.setattr(wc, "management_api", None)
     monkeypatch.setattr(wc, "get_management_api_client", AsyncMock(return_value=mgmt))
 

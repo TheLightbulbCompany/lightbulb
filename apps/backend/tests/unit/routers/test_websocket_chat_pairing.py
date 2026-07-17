@@ -41,6 +41,7 @@ async def test_chat_agents_create_calls_paperclip_first_then_pairs(monkeypatch):
     # response itself, so the dispatcher doesn't need to.
     mgmt_mock = MagicMock()
     mgmt_mock.send_message = MagicMock(return_value=True)
+    mgmt_mock.send_message_async = AsyncMock(side_effect=mgmt_mock.send_message)
     monkeypatch.setattr(
         "routers.websocket_chat.get_management_api_client",
         AsyncMock(return_value=mgmt_mock),
@@ -182,6 +183,7 @@ async def test_chat_agents_create_with_no_name_falls_through_to_gateway(monkeypa
 
     mgmt_mock = MagicMock()
     mgmt_mock.send_message = MagicMock(return_value=True)
+    mgmt_mock.send_message_async = AsyncMock(side_effect=mgmt_mock.send_message)
     monkeypatch.setattr(
         "routers.websocket_chat.get_management_api_client",
         AsyncMock(return_value=mgmt_mock),
@@ -249,6 +251,7 @@ async def test_chat_agents_create_paperclip_failure_responds_ok_false(monkeypatc
 
     mgmt_mock = MagicMock()
     mgmt_mock.send_message = MagicMock(return_value=True)
+    mgmt_mock.send_message_async = AsyncMock(side_effect=mgmt_mock.send_message)
     monkeypatch.setattr(
         "routers.websocket_chat.get_management_api_client",
         AsyncMock(return_value=mgmt_mock),
@@ -323,6 +326,7 @@ async def test_chat_agents_create_pair_failure_responds_ok_false(monkeypatch):
 
     mgmt_mock = MagicMock()
     mgmt_mock.send_message = MagicMock(return_value=True)
+    mgmt_mock.send_message_async = AsyncMock(side_effect=mgmt_mock.send_message)
     monkeypatch.setattr(
         "routers.websocket_chat.get_management_api_client",
         AsyncMock(return_value=mgmt_mock),
@@ -398,6 +402,7 @@ async def test_chat_create_redacts_paperclip_agent_before_ws_send(monkeypatch):
 
     mgmt_mock = MagicMock()
     mgmt_mock.send_message = MagicMock(return_value=True)
+    mgmt_mock.send_message_async = AsyncMock(side_effect=mgmt_mock.send_message)
     monkeypatch.setattr(
         "routers.websocket_chat.get_management_api_client",
         AsyncMock(return_value=mgmt_mock),
@@ -491,6 +496,7 @@ async def test_chat_delete_cascades_to_paperclip(monkeypatch):
 
     mgmt_mock = MagicMock()
     mgmt_mock.send_message = MagicMock(return_value=True)
+    mgmt_mock.send_message_async = AsyncMock(side_effect=mgmt_mock.send_message)
     monkeypatch.setattr(
         "routers.websocket_chat.get_management_api_client",
         AsyncMock(return_value=mgmt_mock),
@@ -564,6 +570,7 @@ async def test_chat_delete_paperclip_failure_is_non_fatal(monkeypatch):
 
     mgmt_mock = MagicMock()
     mgmt_mock.send_message = MagicMock(return_value=True)
+    mgmt_mock.send_message_async = AsyncMock(side_effect=mgmt_mock.send_message)
     monkeypatch.setattr(
         "routers.websocket_chat.get_management_api_client",
         AsyncMock(return_value=mgmt_mock),

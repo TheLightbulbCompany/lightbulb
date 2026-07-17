@@ -105,6 +105,7 @@ async def test_existing_chat_message_types_still_routed():
     fake_conn_svc.get_connection = MagicMock(return_value=_conn_record())
     fake_mgmt = MagicMock()
     fake_mgmt.send_message = MagicMock()
+    fake_mgmt.send_message_async = AsyncMock(side_effect=fake_mgmt.send_message)
 
     with (
         patch("routers.websocket_chat.get_connection_service", AsyncMock(return_value=fake_conn_svc)),

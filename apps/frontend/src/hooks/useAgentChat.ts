@@ -37,6 +37,7 @@ import type {
   ChatRenderItem,
   RenderGroup,
 } from "./internal/types";
+import { accumulateStreamText } from "@isol8/shared";
 import { projectChatHistoryMessages } from "./internal/chatHistoryFilters";
 import { buildChatItems } from "./internal/buildChatItems";
 import { groupBySide } from "./internal/groupBySide";
@@ -422,16 +423,21 @@ export function useAgentChat(
   const chatStreamRef = useRef<string | null>(null);
   const chatStreamRunIdRef = useRef<string | null>(null);
   const chatStreamStartedAtRef = useRef<number | null>(null);
-  // Cumulative-replacement guard: OpenClaw chunks deliver the FULL assistant
-  // text from the start of the run on every event (see
-  // backend/core/gateway/connection_pool.py:1080 "chunks use cumulative
-  // replacement"). When a tool interrupts streaming we commit the in-progress
-  // chatStream into chatStreamSegments; subsequent chunks for the same run
-  // still arrive cumulative (pre-tool + post-tool text), so we must slice
-  // off the already-committed prefix before storing the new chatStream.
-  // Otherwise the segment + tail would both contain the pre-tool text and
-  // the synthesized assistant message at `done` would duplicate it.
+  // Committed-prefix guard: streamCumulativeRef reconstructs the run's FULL
+  // assistant text from the wire frames (append deltas or full-text resyncs —
+  // see accumulateStreamText). When a tool interrupts streaming we commit the
+  // in-progress chatStream into chatStreamSegments; the reconstruction keeps
+  // accumulating (pre-tool + post-tool text), so we must slice off the
+  // already-committed prefix before storing the new chatStream. Otherwise the
+  // segment + tail would both contain the pre-tool text and the synthesized
+  // assistant message at `done` would duplicate it.
   const streamCommittedOffsetRef = useRef<number>(0);
+  // Accumulated full text of the live run's assistant / thinking streams.
+  // Reset at run boundaries and every live-state clear; a full-text
+  // (non-append) frame replaces the buffer outright, which is how a client
+  // that missed deltas self-corrects.
+  const streamCumulativeRef = useRef<string | null>(null);
+  const thinkingCumulativeRef = useRef<string | null>(null);
   const setChatStream = useCallback((value: string | null) => {
     chatStreamRef.current = value;
     _setChatStreamRaw(value);
@@ -444,6 +450,42 @@ export function useAgentChat(
   const setChatStreamThinking = useCallback((value: string | null) => {
     chatStreamThinkingRef.current = value;
     _setChatStreamThinkingRaw(value);
+  }, []);
+
+  // ---- Stream paint throttle ----
+  //
+  // Chunk/thinking frames arrive every ~150ms (OpenClaw's gateway coalescer),
+  // but painting cost grows with message length (the live bubble re-parses
+  // its whole markdown). Mirror the tool-stream throttle: the refs above are
+  // updated synchronously per frame (fold/segment logic reads refs), while
+  // the React paint is coalesced at 80ms. The flush paints FROM the refs, so
+  // a timer that fires after a clear/commit converges to the cleared value —
+  // it can never resurrect stale text.
+  const STREAM_PAINT_THROTTLE_MS = 80;
+  const streamPaintTimerRef = useRef<number | null>(null);
+  const paintStreamNow = useCallback(() => {
+    if (streamPaintTimerRef.current !== null) {
+      window.clearTimeout(streamPaintTimerRef.current);
+      streamPaintTimerRef.current = null;
+    }
+    _setChatStreamRaw(chatStreamRef.current);
+    _setChatStreamThinkingRaw(chatStreamThinkingRef.current);
+  }, []);
+  const scheduleStreamPaint = useCallback(() => {
+    if (streamPaintTimerRef.current !== null) return;
+    streamPaintTimerRef.current = window.setTimeout(() => {
+      streamPaintTimerRef.current = null;
+      _setChatStreamRaw(chatStreamRef.current);
+      _setChatStreamThinkingRaw(chatStreamThinkingRef.current);
+    }, STREAM_PAINT_THROTTLE_MS);
+  }, []);
+  useEffect(() => {
+    return () => {
+      if (streamPaintTimerRef.current !== null) {
+        window.clearTimeout(streamPaintTimerRef.current);
+        streamPaintTimerRef.current = null;
+      }
+    };
   }, []);
 
   // Stream segments (text fragments committed when a tool interrupts streaming).
@@ -920,7 +962,9 @@ export function useAgentChat(
     setChatStream(null);
     chatStreamRunIdRef.current = null;
     streamCommittedOffsetRef.current = 0;
+    streamCumulativeRef.current = null;
     setChatStreamThinking(null);
+    thinkingCumulativeRef.current = null;
     chatStreamThinkingRunIdRef.current = null;
     setChatStreamSegments([]);
     setChatToolMessages([]);
@@ -1181,22 +1225,34 @@ export function useAgentChat(
         const runId = msg.runId;
         // Run boundary: either first event of a fresh turn (current === null)
         // or a new sub-run (current !== runId). Commit any in-progress stream
-        // as a segment and reset the cumulative-replacement offset so the
-        // new run's chunks start at slice(0).
-        if (chatStreamRunIdRef.current === null || chatStreamRunIdRef.current !== runId) {
+        // as a segment and reset the committed offset + cumulative buffer so
+        // the new run's reconstruction starts from scratch.
+        const isRunBoundary = chatStreamRunIdRef.current === null || chatStreamRunIdRef.current !== runId;
+        if (isRunBoundary) {
           const prior = chatStreamRef.current;
           if (prior && prior.length > 0) {
             setChatStreamSegments((segs) => [...segs, { text: prior, ts: Date.now() }]);
           }
           streamCommittedOffsetRef.current = 0;
+          streamCumulativeRef.current = null;
         }
-        // Slice off the already-committed prefix; msg.content is cumulative
-        // from the start of the run.
-        const tail = msg.content.slice(streamCommittedOffsetRef.current);
-        setChatStream(tail.length > 0 ? tail : null);
+        // Reconstruct the run's cumulative text (frames arrive as append
+        // deltas or full-text resyncs), then slice off the already-committed
+        // prefix. Refs update synchronously; the paint is throttled.
+        const cumulative = accumulateStreamText(streamCumulativeRef.current, msg);
+        streamCumulativeRef.current = cumulative;
+        const tail = cumulative.slice(streamCommittedOffsetRef.current);
+        chatStreamRef.current = tail.length > 0 ? tail : null;
         chatStreamRunIdRef.current = runId;
         if (chatStreamStartedAtRef.current === null) {
           chatStreamStartedAtRef.current = Date.now();
+        }
+        // Paint immediately at a run boundary (the prior tail just moved into
+        // segments state — a throttled paint would briefly render it twice).
+        if (isRunBoundary) {
+          paintStreamNow();
+        } else {
+          scheduleStreamPaint();
         }
         if (!isStreamingRef.current) setIsStreaming(true);
         return;
@@ -1205,12 +1261,16 @@ export function useAgentChat(
       if (msg.type === "thinking") {
         const runId = msg.runId;
         if (chatStreamThinkingRunIdRef.current !== null && chatStreamThinkingRunIdRef.current !== runId) {
-          // No need to commit prior thinking to segments — thinking is rendered
-          // inside its bubble live; final assistant message will carry the
-          // finalized thinking content if any.
+          // New run's live thinking replaces the previous run's block (the
+          // final assistant message carries finalized thinking if any) —
+          // restart the reconstruction buffer.
+          thinkingCumulativeRef.current = null;
         }
-        setChatStreamThinking(msg.content);
+        const cumulative = accumulateStreamText(thinkingCumulativeRef.current, msg);
+        thinkingCumulativeRef.current = cumulative;
+        chatStreamThinkingRef.current = cumulative;
         chatStreamThinkingRunIdRef.current = runId;
+        scheduleStreamPaint();
         if (!isStreamingRef.current) setIsStreaming(true);
         return;
       }
@@ -1466,7 +1526,9 @@ export function useAgentChat(
         chatStreamRunIdRef.current = null;
         chatStreamStartedAtRef.current = null;
         streamCommittedOffsetRef.current = 0;
+        streamCumulativeRef.current = null;
         setChatStreamThinking(null);
+        thinkingCumulativeRef.current = null;
         chatStreamThinkingRunIdRef.current = null;
         setChatStreamSegments([]);
         toolStreamByIdRef.current.clear();
@@ -1604,7 +1666,9 @@ export function useAgentChat(
         setChatStream(null);
         chatStreamRunIdRef.current = null;
         streamCommittedOffsetRef.current = 0;
+        streamCumulativeRef.current = null;
         setChatStreamThinking(null);
+        thinkingCumulativeRef.current = null;
         chatStreamThinkingRunIdRef.current = null;
         setChatStreamSegments([]);
         toolStreamByIdRef.current.clear();
@@ -2177,7 +2241,9 @@ export function useAgentChat(
     setChatStream(null);
     chatStreamRunIdRef.current = null;
     streamCommittedOffsetRef.current = 0;
+    streamCumulativeRef.current = null;
     setChatStreamThinking(null);
+    thinkingCumulativeRef.current = null;
     chatStreamThinkingRunIdRef.current = null;
     setChatStreamSegments([]);
     setChatToolMessages([]);

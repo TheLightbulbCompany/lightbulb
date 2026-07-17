@@ -352,7 +352,7 @@ async def _send_connect_challenge(connection_id: str) -> None:
     """
     try:
         management_api = await get_management_api_client()
-        management_api.send_message(
+        await management_api.send_message_async(
             connection_id,
             {
                 "type": "event",
@@ -662,7 +662,7 @@ async def ws_message(
 
     if msg_type == "ping":
         management_api = await get_management_api_client()
-        management_api.send_message(x_connection_id, {"type": "pong"})
+        await management_api.send_message_async(x_connection_id, {"type": "pong"})
 
         async def _touch_liveness() -> None:
             # Fire-and-forget liveness stamp -- never awaited by the caller
@@ -768,7 +768,7 @@ async def ws_message(
                 body.get("method") if msg_type == "req" else msg_type,
             )
             management_api = await get_management_api_client()
-            management_api.send_message(
+            await management_api.send_message_async(
                 x_connection_id,
                 {
                     "type": "res",
@@ -823,7 +823,7 @@ async def ws_message(
 
         if not req_id or not method:
             management_api = await get_management_api_client()
-            management_api.send_message(
+            await management_api.send_message_async(
                 x_connection_id,
                 {
                     "type": "res",
@@ -876,7 +876,7 @@ async def ws_message(
             # Operator connect — respond with hello-ok locally.
             # Auth is already handled by the Lambda authorizer.
             management_api = await get_management_api_client()
-            management_api.send_message(
+            await management_api.send_message_async(
                 x_connection_id,
                 {
                     "type": "res",
@@ -950,7 +950,7 @@ async def ws_message(
             # No agent_id to tag — this is a client-validation error,
             # untagged by necessity. Frontend treats untagged errors as
             # broadcast so they still clear the streaming state.
-            management_api.send_message(
+            await management_api.send_message_async(
                 x_connection_id,
                 {"type": "error", "message": "Missing agent_id or message"},
             )
@@ -965,7 +965,7 @@ async def ws_message(
                 build_chat_session_key(agent_id, user_id, session_id)
             except ValueError:
                 management_api = await get_management_api_client()
-                management_api.send_message(
+                await management_api.send_message_async(
                     x_connection_id,
                     {"type": "error", "agent_id": agent_id, "message": "Invalid session_id"},
                 )
@@ -999,7 +999,7 @@ async def ws_message(
         run_id = body.get("runId")
         if not agent_id:
             management_api = await get_management_api_client()
-            management_api.send_message(
+            await management_api.send_message_async(
                 x_connection_id,
                 {"type": "error", "message": "Missing agent_id"},
             )
@@ -1014,7 +1014,7 @@ async def ws_message(
                 build_chat_session_key(agent_id, user_id, session_id)
             except ValueError:
                 management_api = await get_management_api_client()
-                management_api.send_message(
+                await management_api.send_message_async(
                     x_connection_id,
                     {"type": "error", "agent_id": agent_id, "message": "Invalid session_id"},
                 )
@@ -1043,7 +1043,7 @@ async def ws_message(
         text = body.get("text")
         if not agent_id or not text:
             management_api = await get_management_api_client()
-            management_api.send_message(
+            await management_api.send_message_async(
                 x_connection_id,
                 {"type": "error", "message": "Missing agent_id or text"},
             )
@@ -1058,7 +1058,7 @@ async def ws_message(
                 build_chat_session_key(agent_id, user_id, session_id)
             except ValueError:
                 management_api = await get_management_api_client()
-                management_api.send_message(
+                await management_api.send_message_async(
                     x_connection_id,
                     {"type": "error", "agent_id": agent_id, "message": "Invalid session_id"},
                 )
@@ -1077,7 +1077,7 @@ async def ws_message(
 
     # Unknown message type
     management_api = await get_management_api_client()
-    management_api.send_message(
+    await management_api.send_message_async(
         x_connection_id,
         {"type": "error", "message": f"Unknown message type: {msg_type}"},
     )
@@ -1316,7 +1316,7 @@ async def _intercept_agents_create(
 
     redacted_agent = _redact_agent(paperclip_agent)
     management_api = await get_management_api_client()
-    management_api.send_message(
+    await management_api.send_message_async(
         connection_id,
         {
             "type": "res",
@@ -1562,7 +1562,7 @@ async def _process_rpc_background(
             connection_id[:12],
         )
         put_metric("rpc.refused", dimensions={"method": method, "reason": "run_dispatch"})
-        management_api.send_message(
+        await management_api.send_message_async(
             connection_id,
             {
                 "type": "res",
@@ -1586,7 +1586,7 @@ async def _process_rpc_background(
         container, ip = await ecs_manager.resolve_running_container(owner_id)
 
         if not container:
-            management_api.send_message(
+            await management_api.send_message_async(
                 connection_id,
                 {
                     "type": "res",
@@ -1598,7 +1598,7 @@ async def _process_rpc_background(
             return
 
         if not ip:
-            management_api.send_message(
+            await management_api.send_message_async(
                 connection_id,
                 {
                     "type": "res",
@@ -1636,7 +1636,7 @@ async def _process_rpc_background(
                     exc,
                 )
                 try:
-                    management_api.send_message(
+                    await management_api.send_message_async(
                         connection_id,
                         {
                             "type": "res",
@@ -1707,7 +1707,7 @@ async def _process_rpc_background(
             result = _filter_sessions_for_user(result, user_id)
         # Keep every res frame deliverable — see _fit_rpc_result_for_frame.
         result = _fit_rpc_result_for_frame(method, result)
-        management_api.send_message(
+        await management_api.send_message_async(
             connection_id,
             {
                 "type": "res",
@@ -1775,7 +1775,7 @@ async def _process_rpc_background(
                 error_obj = json.loads(str(e))
             except (ValueError, TypeError):
                 error_obj = {"message": str(e)}
-            management_api.send_message(
+            await management_api.send_message_async(
                 connection_id,
                 {
                     "type": "res",
@@ -1810,7 +1810,7 @@ async def _process_rpc_background(
             e,
         )
         try:
-            management_api.send_message(
+            await management_api.send_message_async(
                 connection_id,
                 {
                     "type": "res",
@@ -1924,7 +1924,7 @@ async def _process_agent_chat_background(
                     user_id,
                     owner_id,
                 )
-                management_api.send_message(
+                await management_api.send_message_async(
                     connection_id,
                     {
                         "type": "error",
@@ -1938,7 +1938,7 @@ async def _process_agent_chat_background(
 
             put_metric("chat.error", dimensions={"reason": "container_unreachable"})
             logger.warning("[%s] chat.send FAIL: no container for owner=%s", user_id, owner_id)
-            management_api.send_message(
+            await management_api.send_message_async(
                 connection_id,
                 {
                     "type": "error",
@@ -1952,7 +1952,7 @@ async def _process_agent_chat_background(
         if not ip:
             put_metric("chat.error", dimensions={"reason": "container_unreachable"})
             logger.warning("[%s] chat.send FAIL: no IP for owner=%s (container starting)", user_id, owner_id)
-            management_api.send_message(
+            await management_api.send_message_async(
                 connection_id,
                 {
                     "type": "error",
@@ -2061,7 +2061,7 @@ async def _process_agent_chat_background(
                 gate.get("code"),
             )
             try:
-                management_api.send_message(
+                await management_api.send_message_async(
                     connection_id,
                     {
                         "type": "error",
@@ -2193,7 +2193,7 @@ async def _process_agent_chat_background(
         pool.clear_active_run(owner_id, session_key)
 
     try:
-        management_api.send_message(
+        await management_api.send_message_async(
             connection_id,
             {
                 "type": "error",
@@ -2350,7 +2350,7 @@ async def _process_agent_steer_background(
         ecs_manager = get_ecs_manager()
         container, ip = await ecs_manager.resolve_running_container(owner_id)
         if not container:
-            management_api.send_message(
+            await management_api.send_message_async(
                 connection_id,
                 {
                     "type": "error",
@@ -2360,7 +2360,7 @@ async def _process_agent_steer_background(
             )
             return
         if not ip:
-            management_api.send_message(
+            await management_api.send_message_async(
                 connection_id,
                 {
                     "type": "error",
@@ -2392,7 +2392,7 @@ async def _process_agent_steer_background(
             gate = provision_gate.gate_for_trial_reason(steer_reason, owner_role="admin")
             put_metric("chat.error", dimensions={"reason": steer_reason})
             logger.info("[%s] chat.steer BLOCKED (%s) agent=%s", user_id, steer_reason, agent_id)
-            management_api.send_message(
+            await management_api.send_message_async(
                 connection_id,
                 {
                     "type": "error",
@@ -2425,7 +2425,7 @@ async def _process_agent_steer_background(
         put_metric("chat.error", dimensions={"reason": "steer_failed"})
         logger.warning("[%s] chat.steer FAIL agent=%s: %s", user_id, agent_id, e)
         try:
-            management_api.send_message(
+            await management_api.send_message_async(
                 connection_id,
                 {
                     "type": "error",

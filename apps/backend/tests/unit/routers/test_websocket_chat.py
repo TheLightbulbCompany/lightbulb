@@ -11,7 +11,7 @@ Services are mocked to isolate route logic.
 """
 
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
@@ -41,6 +41,7 @@ def mock_management_api():
     with patch("routers.websocket_chat.get_management_api_client") as mock_getter:
         mock_client = MagicMock()
         mock_client.send_message = MagicMock(return_value=True)
+        mock_client.send_message_async = AsyncMock(side_effect=mock_client.send_message)
         mock_getter.return_value = mock_client
         yield mock_client
 

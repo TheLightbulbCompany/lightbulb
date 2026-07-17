@@ -546,9 +546,12 @@ async def test_aux_operations_routed_to_cheap_tier(tmp_path, provider_choice, by
     assert defaults["heartbeat"]["model"] == expected_cheap
 
     # Aux routing sets ONLY .model — it must not enable a feature that wasn't
-    # already on (don't flip memoryFlush.enabled or any compaction toggle).
+    # already on (don't flip memoryFlush.enabled). compaction.mode is pinned
+    # to "safeguard" independently of the aux routing (an explicit pin of the
+    # upstream new-config default, not a behavior toggle — see
+    # test_config_cost_tuning).
     assert "enabled" not in defaults["compaction"].get("memoryFlush", {})
-    assert "mode" not in defaults["compaction"]
+    assert defaults["compaction"]["mode"] == "safeguard"
     # The pre-existing heartbeat cadence is preserved alongside the new model.
     assert defaults["heartbeat"]["every"] == "30m"
 
@@ -824,6 +827,8 @@ def test_paid_bedrock_keeps_cron_heartbeat_channels_and_acp():
     assert "cron" not in cfg
     assert cfg["agents"]["defaults"]["heartbeat"] == {
         "every": "30m",
+        "isolatedSession": True,
+        "lightContext": True,
         "model": f"amazon-bedrock/{_AIPS['haiku']}",
     }
     assert cfg["channels"]["telegram"]["enabled"] is True

@@ -198,6 +198,10 @@ async def replace_provider_block(
     plugin_entries: dict,
     ceo_model: str | None,
     cheap_model: str | None = None,
+    heartbeat_model: str | None = None,
+    utility_model: str | None = None,
+    subagent_model: str | None = None,
+    llm_task_model: str | None = None,
 ) -> None:
     """Atomically swap the three openclaw.json subtrees that define the LLM
     provider: ``models.providers``, ``agents.defaults.model``, and
@@ -238,17 +242,35 @@ async def replace_provider_block(
     a provider no longer in ``models.providers``. No-op when ``agents.list`` is
     absent/empty or has no default entry.
 
-    ``cheap_model`` does the same for the aux-model overrides provisioning
-    writes under ``agents.defaults`` — ``compaction.model``,
-    ``compaction.memoryFlush.model``, and ``heartbeat.model`` (pure-overhead
-    operations routed to the cheapest tier). When ``cheap_model`` is set, each
-    of the three slots' ``model`` is (re)written to it; when it is ``None`` (a
-    flat-rate provider with no cheaper tier) the ``model`` key is *deleted* from
-    each slot so the aux op inherits the new default — same stale-ref hazard as
-    the CEO override. Only the ``model`` key is touched; sibling keys
-    (``heartbeat.every``, ``compaction.memoryFlush.enabled``) are preserved, and
-    a slot's intermediate dict is created on demand when setting but left absent
-    when clearing.
+    ``cheap_model`` does the same for the compaction aux-model overrides
+    provisioning writes under ``agents.defaults`` — ``compaction.model`` and
+    ``compaction.memoryFlush.model``. When ``cheap_model`` is set, each slot's
+    ``model`` is (re)written to it; when it is ``None`` (the Codex path, whose
+    native compaction rejects an OpenClaw-side summarizer override) the
+    ``model`` key is *deleted* from each slot so the aux op inherits the new
+    default — same stale-ref hazard as the CEO override. Only the ``model``
+    key is touched; sibling keys (``compaction.mode``, ``memoryFlush.enabled``)
+    are preserved, and a slot's intermediate dict is created on demand when
+    setting but left absent when clearing.
+
+    ``heartbeat_model`` governs ``heartbeat.model`` SEPARATELY from
+    ``cheap_model``: the heartbeat is an ordinary agent turn the Codex OAuth
+    token CAN serve on the mini tier (unlike compaction), so on the Bedrock →
+    ChatGPT swap it re-pins to ``openai/gpt-5.4-mini`` while the compaction
+    slots clear. Folding it into ``cheap_model`` (the old behavior) silently
+    dropped the heartbeat's cheap-tier routing on that swap. Sibling keys
+    (``every``, ``isolatedSession``, ``lightContext``) are preserved.
+
+    ``utility_model`` and ``subagent_model`` keep ``agents.defaults
+    .utilityModel`` and ``agents.defaults.subagents.model`` in sync with the
+    new provider — both are provider-specific refs provisioning writes (see
+    ``build_openclaw_config_dict``), so a swap must re-pin or delete them like
+    the CEO override. ``subagents`` sibling keys (``allowAgents``,
+    ``runTimeoutSeconds``) are preserved.
+
+    ``llm_task_model`` is forwarded to ``workflow_plugin_entries`` so the
+    rebuilt ``plugins.entries['llm-task']`` carries the new provider's
+    cheap-tier config (or drops back to enable-only when ``None``).
 
     Raises ``ConfigPatchError`` (via ``_locked_rmw``) if the owner has
     no ``openclaw.json`` on EFS yet. Callers should fall back to a full
@@ -272,14 +294,15 @@ async def replace_provider_block(
             agents["defaults"] = defaults
         defaults["model"] = copy.deepcopy(default_model)
 
-        # Keep the aux-model overrides (compaction / memory-flush / heartbeat)
-        # in sync with the new provider — same hazard as the CEO override below,
-        # just for the cheap-tier aux slots. When cheap_model is set, pin each
-        # slot's `model`; when None (flat-rate provider with no cheaper tier),
-        # drop any stale override so the aux op inherits the new default. Only
-        # the `model` key is touched so sibling keys (heartbeat.every,
-        # memoryFlush.enabled) survive. Slot dicts are created on demand when
-        # setting but left absent when clearing (no empty stubs).
+        # Keep the compaction aux-model overrides in sync with the new
+        # provider — same hazard as the CEO override below, just for the
+        # cheap-tier aux slots. When cheap_model is set, pin each slot's
+        # `model`; when None (the Codex path — its native compaction rejects
+        # an OpenClaw-side summarizer override), drop any stale override so
+        # the aux op inherits the new default. Only the `model` key is touched
+        # so sibling keys (compaction.mode, memoryFlush.enabled) survive. Slot
+        # dicts are created on demand when setting but left absent when
+        # clearing (no empty stubs).
         if cheap_model is not None:
             compaction = defaults.get("compaction")
             if not isinstance(compaction, dict):
@@ -291,11 +314,6 @@ async def replace_provider_block(
                 memory_flush = {}
                 compaction["memoryFlush"] = memory_flush
             memory_flush["model"] = cheap_model
-            heartbeat = defaults.get("heartbeat")
-            if not isinstance(heartbeat, dict):
-                heartbeat = {}
-                defaults["heartbeat"] = heartbeat
-            heartbeat["model"] = cheap_model
         else:
             compaction = defaults.get("compaction")
             if isinstance(compaction, dict):
@@ -303,9 +321,42 @@ async def replace_provider_block(
                 memory_flush = compaction.get("memoryFlush")
                 if isinstance(memory_flush, dict):
                     memory_flush.pop("model", None)
+
+        # heartbeat.model rides its OWN parameter, not cheap_model: the
+        # heartbeat is an ordinary turn the Codex OAuth token can serve on
+        # the mini tier, so a Bedrock -> ChatGPT swap re-pins it while the
+        # compaction slots clear. Siblings (every / isolatedSession /
+        # lightContext) are provider-independent and survive untouched.
+        if heartbeat_model is not None:
+            heartbeat = defaults.get("heartbeat")
+            if not isinstance(heartbeat, dict):
+                heartbeat = {}
+                defaults["heartbeat"] = heartbeat
+            heartbeat["model"] = heartbeat_model
+        else:
             heartbeat = defaults.get("heartbeat")
             if isinstance(heartbeat, dict):
                 heartbeat.pop("model", None)
+
+        # utilityModel and subagents.model are provider-specific refs written
+        # at provision time (titles/utility routing + the spawn-tier pin) —
+        # re-pin or delete them so no stale ref survives the swap. subagents
+        # siblings (allowAgents, runTimeoutSeconds) are provider-independent
+        # and preserved.
+        if utility_model is not None:
+            defaults["utilityModel"] = utility_model
+        else:
+            defaults.pop("utilityModel", None)
+        if subagent_model is not None:
+            subagents = defaults.get("subagents")
+            if not isinstance(subagents, dict):
+                subagents = {}
+                defaults["subagents"] = subagents
+            subagents["model"] = subagent_model
+        else:
+            subagents = defaults.get("subagents")
+            if isinstance(subagents, dict):
+                subagents.pop("model", None)
 
         # Keep the CEO (Friday) per-agent model override in sync with the new
         # provider. The CEO is the agents.list entry with default: true. When
@@ -337,7 +388,7 @@ async def replace_provider_block(
         # provision builder uses. Distinct keys, so the provider entries
         # below never collide with them.
         plugins["entries"] = {
-            **workflow_plugin_entries(),
+            **workflow_plugin_entries(llm_task_model=llm_task_model),
             **memory_plugin_entries(),
             **copy.deepcopy(plugin_entries),
         }

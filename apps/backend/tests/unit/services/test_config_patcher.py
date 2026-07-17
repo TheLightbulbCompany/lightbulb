@@ -1378,9 +1378,12 @@ async def test_replace_provider_block_strips_aux_models_when_cheap_model_none(
 async def test_replace_provider_block_sets_aux_models_when_cheap_model_provided(
     tmp_efs_with_bedrock_provider,
 ):
-    """ChatGPT OAuth → Bedrock (cheap_model=<bedrock Haiku>): the three aux slots
-    must be (re)pinned to the cheap tier. The fixture starts with no aux model
-    overrides at all, so they must be created."""
+    """ChatGPT OAuth → Bedrock (cheap_model=<bedrock Haiku>): the compaction
+    slots must be (re)pinned to the cheap tier, and heartbeat.model rides its
+    own heartbeat_model parameter (the heartbeat is an ordinary turn, split
+    from the compaction lane — see replace_provider_block docstring). The
+    fixture starts with no aux model overrides at all, so the slot dicts must
+    be created."""
     cheap_model = "amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"
     await replace_provider_block(
         "user_p",
@@ -1392,6 +1395,7 @@ async def test_replace_provider_block_sets_aux_models_when_cheap_model_provided(
         plugin_entries={"amazon-bedrock": {"config": {"discovery": {"enabled": False}}}},
         ceo_model="amazon-bedrock/us.anthropic.claude-opus-4-6-v1",
         cheap_model=cheap_model,
+        heartbeat_model=cheap_model,
     )
     with open(os.path.join(tmp_efs_with_bedrock_provider, "user_p", "openclaw.json")) as f:
         defaults = json.load(f)["agents"]["defaults"]
@@ -1766,3 +1770,154 @@ def test_assert_safe_patch_keys_recurses_into_inserted_and_list_values():
         _assert_safe_patch_keys({"list": [{"clean": 1}, {"prototype": 2}]})
     # Clean nested structure (incl. list of dicts) passes.
     _assert_safe_patch_keys({"a": {"b": [{"id": "x", "model": "y"}]}, "mcp": {"servers": {"s.v2": {}}}})
+
+
+# ---------------------------------------------------------------------------
+# replace_provider_block — provider hot-swap (Bedrock ↔ ChatGPT OAuth)
+# ---------------------------------------------------------------------------
+
+_HAIKU_ARN = "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-haiku"
+_SONNET_ARN = "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-sonnet"
+_OPUS_ARN = "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-opus"
+
+
+@pytest.fixture
+def bedrock_efs_dir():
+    """An owner provisioned on paid Bedrock: premium CEO pin, cheap-tier aux
+    routing, pinned subagents/utility models, llm-task config — the full
+    shape build_openclaw_config_dict writes, so the swap tests exercise every
+    provider-dependent key the hot path must re-pin or clear."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        user_dir = os.path.join(tmpdir, "user_1")
+        os.makedirs(user_dir)
+        config = {
+            "gateway": {"mode": "local", "bind": "lan"},
+            "models": {
+                "providers": {"amazon-bedrock": {"models": []}},
+                "pricing": {"enabled": False},
+            },
+            "agents": {
+                "defaults": {
+                    "model": {
+                        "primary": f"amazon-bedrock/{_SONNET_ARN}",
+                        "fallbacks": [f"amazon-bedrock/{_HAIKU_ARN}"],
+                    },
+                    "utilityModel": f"amazon-bedrock/{_HAIKU_ARN}",
+                    "compaction": {
+                        "mode": "safeguard",
+                        "midTurnPrecheck": {"enabled": True},
+                        "model": f"amazon-bedrock/{_HAIKU_ARN}",
+                        "memoryFlush": {"model": f"amazon-bedrock/{_HAIKU_ARN}"},
+                    },
+                    "heartbeat": {
+                        "every": "30m",
+                        "isolatedSession": True,
+                        "lightContext": True,
+                        "model": f"amazon-bedrock/{_HAIKU_ARN}",
+                    },
+                    "subagents": {
+                        "allowAgents": ["*"],
+                        "model": f"amazon-bedrock/{_SONNET_ARN}",
+                        "runTimeoutSeconds": 1800,
+                    },
+                },
+                "list": [
+                    {"id": "agent_friday", "default": True, "model": f"amazon-bedrock/{_OPUS_ARN}"},
+                ],
+            },
+            "plugins": {
+                "entries": {
+                    "amazon-bedrock": {"config": {"discovery": {"enabled": False}}},
+                    "lobster": {"enabled": True},
+                    "llm-task": {
+                        "enabled": True,
+                        "config": {"defaultProvider": "amazon-bedrock", "defaultModel": _HAIKU_ARN},
+                    },
+                    "aws-exec-profile": {"enabled": True},
+                    "memory-core": {"enabled": True},
+                },
+            },
+            "tools": {"profile": "full"},
+        }
+        with open(os.path.join(user_dir, "openclaw.json"), "w") as f:
+            json.dump(config, f)
+
+        with patch("core.services.config_patcher._efs_mount_path", tmpdir):
+            yield tmpdir
+
+
+def _read_config(tmpdir):
+    with open(os.path.join(tmpdir, "user_1", "openclaw.json")) as f:
+        return json.load(f)
+
+
+@pytest.mark.asyncio
+async def test_replace_provider_block_to_oauth_repins_all_provider_keys(bedrock_efs_dir):
+    """Bedrock → ChatGPT OAuth: every provider-dependent ref must be re-pinned
+    or cleared — a stale amazon-bedrock/… ref points at a provider no longer
+    in models.providers and fails every call it governs."""
+    await replace_provider_block(
+        "user_1",
+        providers={},
+        default_model={"primary": "openai/gpt-5.5", "fallbacks": ["openai/gpt-5.5"]},
+        plugin_entries={},
+        ceo_model=None,
+        cheap_model=None,
+        heartbeat_model="openai/gpt-5.4-mini",
+        utility_model="openai/gpt-5.4-mini",
+        subagent_model="openai/gpt-5.5",
+        llm_task_model=None,
+    )
+    config = _read_config(bedrock_efs_dir)
+    defaults = config["agents"]["defaults"]
+
+    # Aux compaction slots cleared (Codex owns compaction — a pinned override
+    # makes compaction fail and the session overflow), midTurnPrecheck kept.
+    assert "model" not in defaults["compaction"]
+    assert "model" not in defaults["compaction"]["memoryFlush"]
+    assert defaults["compaction"]["midTurnPrecheck"] == {"enabled": True}
+
+    # Heartbeat is an ordinary turn the OAuth token CAN serve on mini — it is
+    # re-pinned, NOT deleted with the compaction slots. Siblings survive.
+    assert defaults["heartbeat"]["model"] == "openai/gpt-5.4-mini"
+    assert defaults["heartbeat"]["every"] == "30m"
+    assert defaults["heartbeat"]["isolatedSession"] is True
+
+    assert defaults["utilityModel"] == "openai/gpt-5.4-mini"
+    assert defaults["subagents"]["model"] == "openai/gpt-5.5"
+    assert defaults["subagents"]["allowAgents"] == ["*"]
+    assert defaults["subagents"]["runTimeoutSeconds"] == 1800
+
+    # CEO premium override cleared on the flat-rate path.
+    assert "model" not in config["agents"]["list"][0]
+
+    # llm-task drops its bedrock config but stays enabled; the other bundled
+    # entries persist; the old provider entry is gone.
+    entries = config["plugins"]["entries"]
+    assert entries["llm-task"] == {"enabled": True}
+    assert entries["lobster"] == {"enabled": True}
+    assert entries["aws-exec-profile"] == {"enabled": True}
+    assert "amazon-bedrock" not in entries
+
+
+@pytest.mark.asyncio
+async def test_replace_provider_block_none_clears_utility_and_subagent_model(bedrock_efs_dir):
+    """None for the new params must DELETE the keys (stale-ref hazard), never
+    leave the old provider's refs behind."""
+    await replace_provider_block(
+        "user_1",
+        providers={},
+        default_model={"primary": "openai/gpt-5.5", "fallbacks": ["openai/gpt-5.5"]},
+        plugin_entries={},
+        ceo_model=None,
+        cheap_model=None,
+        heartbeat_model=None,
+        utility_model=None,
+        subagent_model=None,
+        llm_task_model=None,
+    )
+    defaults = _read_config(bedrock_efs_dir)["agents"]["defaults"]
+    assert "utilityModel" not in defaults
+    assert "model" not in defaults["subagents"]
+    assert defaults["subagents"]["allowAgents"] == ["*"]  # siblings preserved
+    assert "model" not in defaults["heartbeat"]

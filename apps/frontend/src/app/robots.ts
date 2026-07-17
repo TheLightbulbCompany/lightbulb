@@ -11,7 +11,19 @@ export default function robots(): MetadataRoute.Robots {
     rules: {
       userAgent: "*",
       allow: "/",
-      disallow: ["/chat", "/settings", "/onboarding", "/admin", "/api"],
+      disallow: [
+        "/chat",
+        "/settings",
+        "/onboarding",
+        "/admin",
+        "/api",
+        // Authenticated / per-user marketplace surfaces (public storefront
+        // at /marketplace and /marketplace/listing stays crawlable).
+        "/marketplace/buyer",
+        "/marketplace/dashboard",
+        "/marketplace/payouts",
+        "/marketplace/deploy-success",
+      ],
     },
     sitemap: `${SITE_URL}/sitemap.xml`,
     host: SITE_URL,

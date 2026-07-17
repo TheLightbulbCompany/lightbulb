@@ -38,18 +38,18 @@ Do this by hand and you're maintaining webhook servers, token storage, and recon
 
 A few things reliably bite people wiring agents into channels:
 
-- **Token security.** Bot tokens are credentials. They belong encrypted at rest, never in a config file in a repo. Treat a leaked bot token like a leaked password.
+- **Token security.** Bot tokens are credentials. They belong encrypted at rest and out of source control. Treat a leaked bot token like a leaked password.
 - **Over-broad permissions.** The most common mistake. Scope the bot to the channels and actions it actually needs.
 - **Message loops.** An agent that reacts to its own messages can spiral. The routing layer needs to ignore the bot's own output.
 - **Reprovision wipes.** If your platform rebuilds the agent's container, naive setups lose the channel wiring. You want channel bindings stored as durable state, not baked into an ephemeral runtime.
 
 ## How isol8 handles it
 
-[isol8](/) treats channels as first-class. Each agent in your pod can be bound to **Slack, Discord, Telegram, or WhatsApp**, and the platform manages the parts that are tedious and easy to get wrong:
+[isol8](/) treats channels as first-class. Each agent in your pod can be bound to **Slack, Discord, or Telegram**, and the platform manages the parts that are tedious and easy to get wrong:
 
-- **Encrypted credential storage** — bot tokens are encrypted at rest, not sitting in a config file.
-- **One agent, one channel binding** — messages route to the specific agent you chose, and its replies route back, with threading handled for you.
-- **Durable bindings** — channel links are stored as first-class state, so your agent keeps its presence.
+- **Guided setup** — a setup wizard walks you through connecting the bot, instead of hand-wiring webhooks and tokens for each platform separately.
+- **One agent per channel** — a bot token binds to a single agent, and the platform refuses to assign the same token to two agents, so routing is never ambiguous.
+- **Server-side bindings** — your channel links live in the platform, not baked into an ephemeral runtime, so an agent keeps its presence across restarts.
 
 You pick the agent, connect the channel, and your agent is now reachable from the tools your team already uses.
 

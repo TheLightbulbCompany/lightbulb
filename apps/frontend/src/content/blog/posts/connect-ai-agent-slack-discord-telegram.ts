@@ -55,7 +55,7 @@ You pick the agent, connect the channel, and your agent is now reachable from th
 
 ## Try it
 
-isol8 has a **free tier, no credit card required**. Sign up, get your own private pod, and connect your first agent to a channel.
+Start a private pod for **free, no credit card required** — you can chat with your agents right away. Connecting an agent to a Slack, Discord, or Telegram channel is a paid feature (a bound bot keeps your agent working around the clock), so channel binding unlocks once you're on a subscription.
 
 [Start your pod →](/chat)
 

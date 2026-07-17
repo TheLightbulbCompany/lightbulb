@@ -14,9 +14,15 @@ export default function sitemap(): MetadataRoute.Sitemap {
     { url: `${SITE_URL}/`, changeFrequency: "weekly", priority: 1 },
     { url: `${SITE_URL}/blog`, changeFrequency: "weekly", priority: 0.8 },
     { url: `${SITE_URL}/marketplace`, changeFrequency: "weekly", priority: 0.7 },
+    { url: `${SITE_URL}/marketplace/agents`, changeFrequency: "weekly", priority: 0.6 },
     { url: `${SITE_URL}/support`, changeFrequency: "monthly", priority: 0.4 },
     { url: `${SITE_URL}/privacy`, changeFrequency: "yearly", priority: 0.2 },
     { url: `${SITE_URL}/terms`, changeFrequency: "yearly", priority: 0.2 },
+    { url: `${SITE_URL}/cookies`, changeFrequency: "yearly", priority: 0.1 },
+    { url: `${SITE_URL}/disclaimer`, changeFrequency: "yearly", priority: 0.1 },
+    { url: `${SITE_URL}/eula`, changeFrequency: "yearly", priority: 0.1 },
+    { url: `${SITE_URL}/acceptable-use`, changeFrequency: "yearly", priority: 0.1 },
+    { url: `${SITE_URL}/accessibility`, changeFrequency: "yearly", priority: 0.1 },
   ];
 
   const blogRoutes: MetadataRoute.Sitemap = getAllPosts().map((post) => ({

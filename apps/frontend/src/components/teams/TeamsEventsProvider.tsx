@@ -22,19 +22,11 @@ import {
  * realtime concerns.
  */
 
-// Each entry below is a path PREFIX. `mutateKeyPrefix` invalidates any SWR
+// Each value below is a path PREFIX. `mutateKeyPrefix` invalidates any SWR
 // cache key that exactly matches `${prefix}` OR starts with `${prefix}?` so
 // query-stringed variants (e.g. `/teams/inbox?tab=mine`) get caught alongside
 // the bare `/teams/inbox` key. The `?` boundary keeps `/teams/inbox-foo` from
 // accidentally matching `/teams/inbox`.
-const ALL_KEYS = [
-  "/teams/dashboard",
-  "/teams/activity",
-  "/teams/inbox",
-  "/teams/issues",
-  "/teams/agents",
-];
-
 export const EVENT_KEY_MAP: Record<string, string[]> = {
   "teams.activity.logged": [
     "/teams/dashboard", "/teams/activity", "/teams/inbox", "/teams/issues",
@@ -49,6 +41,15 @@ export const EVENT_KEY_MAP: Record<string, string[]> = {
   "teams.heartbeat.run.event": [],
   "teams.heartbeat.run.log": [],
 };
+
+// The reconcile set for the "refetch everything, we may have missed events"
+// paths (first subscribe, reconnect, and teams.stream.resumed). Derived as the
+// deduped union of every key any event can invalidate — NOT a second literal
+// list — so the catch-all can never drift out of sync with EVENT_KEY_MAP and
+// silently skip a live key. That drift is exactly what would strand
+// /teams/approvals and /teams/inbox/runs (both feed NeedsAttentionBand via
+// useInboxTriage) behind the read layer's 15s dedup window on Teams re-entry.
+const ALL_KEYS = [...new Set(Object.values(EVENT_KEY_MAP).flat())];
 
 export function TeamsEventsProvider({ children }: { children: React.ReactNode }) {
   const { isConnected, send, onEvent } = useGateway();

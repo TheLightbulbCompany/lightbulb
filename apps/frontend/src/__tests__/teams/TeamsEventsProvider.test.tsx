@@ -61,8 +61,10 @@ const FIXTURE_KEYS = [
   "/teams/inbox?tab=mine",
   "/teams/inbox?tab=recent",
   "/teams/inbox?tab=all",
+  "/teams/inbox/runs", // distinct key (NOT matched by the `/teams/inbox` prefix)
   "/teams/issues",
   "/teams/issues?status=open",
+  "/teams/approvals",
   "/teams/agents",
   "/teams/inbox-foo", // boundary check: must NOT match `/teams/inbox`
 ] as const;
@@ -183,6 +185,7 @@ describe("TeamsEventsProvider", () => {
   it("invalidates dashboard + inbox on teams.heartbeat.run.queued", () => {
     gatewayState.isConnected = true;
     render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
+    mutateMock.mockClear(); // drop the first-subscribe reconcile
     act(() => {
       eventHandler!("teams.heartbeat.run.queued", {});
     });
@@ -207,14 +210,18 @@ describe("TeamsEventsProvider", () => {
   it("invalidates every distinct mapped key on teams.stream.resumed", () => {
     gatewayState.isConnected = true;
     render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
+    mutateMock.mockClear(); // drop the first-subscribe reconcile
     act(() => {
       eventHandler!("teams.stream.resumed", {});
     });
     const keys = invalidatedKeys();
-    // Must include each unique key from the event map (bare + qs variants).
+    // Must include each unique key from the event map (bare + qs variants),
+    // including the NeedsAttentionBand sources — stream.resumed reconciles
+    // over the same derived ALL_KEYS as first-subscribe.
     expect(keys).toEqual(expect.arrayContaining([
       "/teams/dashboard", "/teams/activity", "/teams/inbox", "/teams/issues", "/teams/agents",
       "/teams/inbox?tab=mine", "/teams/inbox?tab=recent", "/teams/inbox?tab=all",
+      "/teams/approvals", "/teams/inbox/runs",
     ]));
   });
 
@@ -235,6 +242,11 @@ describe("TeamsEventsProvider", () => {
         "/teams/inbox",
         "/teams/issues",
         "/teams/agents",
+        // The reconcile MUST cover every key any event maps to — including the
+        // NeedsAttentionBand sources — or a missed approval/failed-run stays
+        // stale on Teams re-entry. Regression guard for the ALL_KEYS drift.
+        "/teams/approvals",
+        "/teams/inbox/runs",
       ]),
     );
   });
@@ -286,6 +298,7 @@ describe("TeamsEventsProvider", () => {
   it("invalidates query-stringed inbox keys (#3c useInboxData fan-out) on inbox events", () => {
     gatewayState.isConnected = true;
     render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
+    mutateMock.mockClear(); // drop the first-subscribe reconcile
 
     // Drive the two events that are mapped to /teams/inbox.
     act(() => {

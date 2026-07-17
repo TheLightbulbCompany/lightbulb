@@ -18,6 +18,7 @@ from typing import Any, Dict, Optional, Set
 
 from websockets import connect as ws_connect
 
+from core.gateway.frame_sender import FrameSender
 from core.gateway.operator_rpc import GATEWAY_PORT, perform_signed_connect
 from core.observability.logging import bind_log_context
 from core.observability.metrics import put_metric, gauge
@@ -109,11 +110,12 @@ def _deliver_to_recipients(
     recipients: list[tuple[str, str, str]],
     message: dict,
     target_member_id: Optional[str],
-    management_api: Any,
-) -> tuple[int, int, list[str]]:
-    """Send *message* to the chat connections among *recipients* (the
+    sender: "FrameSender",
+    on_gone: Optional[Any] = None,
+) -> tuple[int, int]:
+    """Enqueue *message* to the chat connections among *recipients* (the
     ``(connectionId, member_userId, connectionType)`` rows from the by-owner-id
-    GSI), returning ``(delivered, skipped, gone)``.
+    GSI), returning ``(enqueued, skipped)``.
 
     - Filters to ``connectionType == "chat"`` so node/operator transparent pipes
       never receive chat frames.
@@ -121,17 +123,20 @@ def _deliver_to_recipients(
       lowercases sessionKeys, so the parsed member id is lowercase while DDB
       stores the original Clerk user_id); broadcasts to every chat connection
       when it is ``None``.
-    - ``gone`` holds ids whose ``send_message`` returned ``False`` (GoneException
-      → safe to prune). A transient send *exception* is logged and skipped, never
-      treated as gone — a blip must not delete a live socket's row.
 
-    Pure (no I/O beyond the injected ``management_api``) so both the cached chat
-    path (``GatewayConnection._forward_to_frontends``) and the connection-less
-    pool broadcast (``GatewayConnectionPool._fanout_to_owner``) share one
-    chat-filter/demux/send definition.
+    Delivery is asynchronous: the ``FrameSender`` drains each connection's
+    queue off the event loop, preserving per-connection order. A recipient
+    that turns out to be Gone is pruned via *on_gone* (an async callable
+    taking the connection id); transient failures are logged and skipped by
+    the sender, never treated as gone — a blip must not delete a live
+    socket's row.
+
+    Shared by the cached chat path (``GatewayConnection._forward_to_frontends``)
+    and the connection-less pool broadcast
+    (``GatewayConnectionPool._fanout_to_owner``) so both keep one
+    chat-filter/demux definition.
     """
-    gone: list[str] = []
-    delivered = 0
+    enqueued = 0
     skipped = 0
     for conn_id, member_id, conn_type in recipients:
         if conn_type != "chat":
@@ -140,14 +145,9 @@ def _deliver_to_recipients(
         if target_member_id is not None and (member_id or "").lower() != target_member_id.lower():
             skipped += 1
             continue
-        try:
-            if not management_api.send_message(conn_id, message):
-                gone.append(conn_id)
-            else:
-                delivered += 1
-        except Exception:
-            logger.warning("Transient forward failure to %s (not pruning)", conn_id)
-    return delivered, skipped, gone
+        sender.enqueue(conn_id, message, on_gone=on_gone)
+        enqueued += 1
+    return enqueued, skipped
 
 
 class GatewayConnection:
@@ -163,6 +163,7 @@ class GatewayConnection:
         on_activity: Any = None,
         owner_id: Optional[str] = None,
         conn_svc: Optional[ConnectionService] = None,
+        sender: Optional[FrameSender] = None,
     ) -> None:
         self.user_id = user_id
         # The owner key (org_id for org members, else user_id) this connection
@@ -174,6 +175,11 @@ class GatewayConnection:
         self.ip = ip
         self.token = token
         self._management_api = management_api
+        # Ordered non-blocking frame delivery. The pool passes its shared
+        # instance so append-delta continuity state is per-connectionId across
+        # every GatewayConnection; the default covers direct constructions
+        # (tests) only.
+        self._sender = sender or FrameSender(management_api)
         # Owner-keyed fan-out reads recipients from the ws-connections
         # by-owner-id GSI via this service — so any backend instance can deliver
         # to all of an owner's tabs/devices. Defaults to the module singleton.
@@ -255,17 +261,14 @@ class GatewayConnection:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             },
         }
-        gone: list[str] = []
-        for conn_id in list(self._frontend_connections):
-            try:
-                if not self._management_api.send_message(conn_id, message):
-                    gone.append(conn_id)
-            except Exception:
-                gone.append(conn_id)
-        for conn_id in gone:
+
+        async def _on_gone(conn_id: str) -> None:
             self._frontend_connections.discard(conn_id)
             put_metric("gateway.frontend.prune")
             logger.info("Pruned gone frontend connection %s for user %s", conn_id, self.user_id)
+
+        for conn_id in list(self._frontend_connections):
+            self._sender.enqueue(conn_id, message, on_gone=_on_gone)
 
     @property
     def is_connected(self) -> bool:
@@ -708,7 +711,21 @@ class GatewayConnection:
     def _transform_agent_event(payload: dict) -> dict | None:
         """Extract streaming text, thinking, tool, and activity events from an OpenClaw agent event.
 
-        Agent events fire for every LLM token (no 150ms throttle).
+        OpenClaw's gateway coalesces the assistant/thinking streams at a
+        hardcoded 150ms per run (fork src/gateway/server-chat.ts:1147,
+        ``sendOrBufferAgentTextEvent``), so events arrive as ~150ms lumps
+        carrying BOTH the accumulated ``text`` and the incremental ``delta``
+        (coalesced events concatenate their deltas — see
+        ``mergeBufferedAgentPayload``). We forward the delta plus the full
+        text: ``content`` holds the delta with ``append: True``, and
+        ``_full_content`` (internal, stripped by ``FrameSender``) holds the
+        accumulated text so the sender can ship a full-text frame to a
+        connection that has not yet seen this run (mid-run reconnect) or
+        that dropped a frame. When the event carries no usable delta — or
+        sets ``replace: true`` (the new text is not a prefix-extension of
+        what was streamed) — we fall back to the legacy full-text
+        cumulative-replacement frame.
+
         - ``stream: "assistant"`` events with text are forwarded as chunks.
         - ``stream: "reasoning"`` / ``"thinking"`` events are forwarded for real-time thinking.
         - ``stream: "tool"`` events are forwarded as tool_start/tool_end/tool_error,
@@ -735,14 +752,10 @@ class GatewayConnection:
         transformed: dict | None = None
 
         if stream == "assistant":
-            text = data.get("text", "")
-            if text:
-                transformed = {"type": "chunk", "content": text}
+            transformed = GatewayConnection._build_text_frame("chunk", data)
 
         elif stream in ("reasoning", "thinking"):
-            text = data.get("text", "")
-            if text:
-                transformed = {"type": "thinking", "content": text}
+            transformed = GatewayConnection._build_text_frame("thinking", data)
 
         elif stream == "tool":
             phase = data.get("phase", "")
@@ -825,6 +838,36 @@ class GatewayConnection:
         return transformed
 
     @staticmethod
+    def _build_text_frame(frame_type: str, data: dict) -> dict | None:
+        """Build a ``chunk``/``thinking`` frame from an assistant/thinking event.
+
+        Append-delta form when the event carries a usable delta (the common
+        case): ``content`` is the delta, ``append: True``, and
+        ``_full_content`` carries the accumulated text for the sender's
+        per-connection full-text resync (see ``FrameSender``). Legacy
+        cumulative full-text form when the delta is absent/empty or the event
+        sets ``replace: true`` — the client replaces its buffer with
+        ``content`` exactly as it always has.
+
+        Returns ``None`` for events with no text at all (e.g. media-only).
+        """
+        text = data.get("text", "")
+        delta = data.get("delta")
+        if data.get("replace") is not True and isinstance(delta, str) and delta:
+            return {
+                "type": frame_type,
+                "content": delta,
+                "append": True,
+                # `text` should always superset `delta`; the `or delta` guard
+                # covers a hypothetical delta-only event so the resync form
+                # can never ship an empty message.
+                "_full_content": text or delta,
+            }
+        if text:
+            return {"type": frame_type, "content": text}
+        return None
+
+    @staticmethod
     def _extract_thinking_text(payload: dict) -> str | None:
         """Extract thinking/reasoning text from a chat event's message.content field."""
         msg = payload.get("message")
@@ -882,29 +925,28 @@ class GatewayConnection:
           (status changes, SWR revalidation, etc.).
 
         On a recipient-query failure we log and drop the event — there is no
-        in-process fallback (DynamoDB is the single source of truth). On a
-        send failure we prune the dead row (best-effort) so the GSI stops
-        returning it.
+        in-process fallback (DynamoDB is the single source of truth). A
+        recipient that turns out to be Gone at send time is pruned by the
+        sender via ``_prune_dead_conn`` so the GSI stops returning it.
         """
         recipients = await self._cached_owner_recipients()
         if recipients is None:
             # query failed; logged in the helper. No in-process fallback.
             return
 
-        delivered, skipped, gone = _deliver_to_recipients(recipients, message, target_member_id, self._management_api)
-        for conn_id in gone:
-            await self._prune_dead_conn(conn_id)
+        enqueued, skipped = _deliver_to_recipients(
+            recipients, message, target_member_id, self._sender, on_gone=self._prune_dead_conn
+        )
         # Log delivery summary for non-chunk messages (chunks are too frequent)
         msg_type = message.get("type", "?")
         if msg_type not in ("chunk",):
             logger.info(
-                "[%s] forward type=%s target=%s delivered=%d skipped=%d gone=%d total=%d",
+                "[%s] forward type=%s target=%s enqueued=%d skipped=%d total=%d",
                 self.user_id,
                 msg_type,
                 target_member_id or "broadcast",
-                delivered,
+                enqueued,
                 skipped,
-                len(gone),
                 len(recipients),
             )
 
@@ -951,6 +993,10 @@ class GatewayConnection:
 
     async def _prune_dead_conn(self, conn_id: str) -> None:
         """Best-effort prune of a dead connection row + recipient-cache bust."""
+        # Drop any frames still queued for the dead connection (and its
+        # append-continuity state) so the sender doesn't keep POSTing at a
+        # Gone endpoint.
+        self._sender.forget_connection(conn_id)
         try:
             # delete_connection is a blocking boto3 call; offload it so it doesn't
             # stall the event loop (and all concurrent chat streaming) during
@@ -1248,11 +1294,12 @@ class GatewayConnection:
         """Route an incoming gateway message.
 
         Event routing:
-        - ``agent`` events (unthrottled): token-by-token streaming via
-          ``_transform_agent_event``.
+        - ``agent`` events: streaming text via ``_transform_agent_event``.
+          OpenClaw coalesces these at a hardcoded 150ms per stream per run
+          (fork server-chat.ts:1147) — they are NOT per-token.
         - ``chat`` events: only terminal states (final/error/aborted). Delta
-          states are ignored because agent events provide the same data without
-          the 150ms throttle.
+          states are ignored because agent events already carry the same
+          text (the ``chat`` stream has its own, separate 150ms throttle).
         - Other events: forwarded as-is for SWR revalidation.
         """
         msg_type = data.get("type")
@@ -1342,11 +1389,10 @@ class GatewayConnection:
                 )
 
             if event_name == "agent":
-                # Unthrottled agent events -- smooth token-by-token streaming
                 stream = payload.get("stream", "")
-                # Exclude token-level streams (assistant, reasoning, thinking)
-                # from INFO logs — each fires per LLM token, so logging would
-                # blow up CloudWatch volume on long responses.
+                # Exclude text streams (assistant, reasoning, thinking) from
+                # INFO logs — they fire every ~150ms for the whole run, so
+                # logging would blow up CloudWatch volume on long responses.
                 if stream not in ("assistant", "reasoning", "thinking", ""):
                     data = payload.get("data", {})
                     logger.info(
@@ -1503,12 +1549,14 @@ class GatewayConnection:
                         if session_id is not None:
                             fwd["session_id"] = session_id
                         await self._forward_to_frontends(fwd, target_member)
-                    # Forward the assistant text from chat.final. For agent
-                    # runs the streamed chunks already painted the same text
-                    # (chunks use cumulative replacement), so this is a visual
-                    # no-op. For slash commands (/help, /approve, etc.) there
-                    # is no agent stream — this is the only path that delivers
-                    # the response text to the frontend.
+                    # Forward the assistant text from chat.final as a NON-append
+                    # full-text chunk. For agent runs the streamed chunks already
+                    # painted the same text, so this is a visual no-op — and it
+                    # doubles as the authoritative replace that corrects any
+                    # delta a client may have missed mid-run (dropped frame,
+                    # transient send failure). For slash commands (/help,
+                    # /approve, etc.) there is no agent stream — this is the
+                    # only path that delivers the response text at all.
                     text_content = self._extract_assistant_text(payload)
                     if text_content:
                         fwd = {"type": "chunk", "content": text_content}
@@ -1970,6 +2018,10 @@ class GatewayConnectionPool:
         conn_svc: Optional[ConnectionService] = None,
     ) -> None:
         self._management_api = management_api
+        # One FrameSender for the whole pool: per-connectionId queues +
+        # append-delta continuity must be global (a browser connection can
+        # receive frames from a GatewayConnection AND the pool-level fan-out).
+        self._sender = FrameSender(management_api)
         # Shared ConnectionService used by every GatewayConnection's owner-keyed
         # fan-out (query_by_owner on the by-owner-id GSI). Defaults to a fresh
         # instance — the same wiring as the module singleton elsewhere.
@@ -2221,6 +2273,7 @@ class GatewayConnectionPool:
             # pass it explicitly as owner_id so the fan-out is unambiguous.
             owner_id=user_id,
             conn_svc=self._conn_svc,
+            sender=self._sender,
         )
         await conn.connect()
         self._connections[user_id] = conn
@@ -2630,9 +2683,11 @@ class GatewayConnectionPool:
                 owner_id,
             )
             return
-        _delivered, _skipped, gone = _deliver_to_recipients(recipients, message, target_member_id, self._management_api)
-        for conn_id in gone:
+
+        async def _on_gone(conn_id: str) -> None:
             await self._prune_owner_connection(owner_id, conn_id)
+
+        _deliver_to_recipients(recipients, message, target_member_id, self._sender, on_gone=_on_gone)
 
     async def _prune_owner_connection(self, owner_id: str, conn_id: str) -> None:
         """Best-effort prune of a gone connection seen during a pool-level
@@ -2655,11 +2710,17 @@ class GatewayConnectionPool:
         logger.info("Pruned gone frontend connection %s for owner %s", conn_id, owner_id)
 
     async def close_all(self) -> None:
-        """Shutdown: close all connections concurrently."""
+        """Shutdown: close all connections concurrently, then drain delivery."""
         await asyncio.gather(
             *(self.close_user(uid) for uid in list(self._connections.keys())),
             return_exceptions=True,
         )
+        # Flush queued frontend frames (close() above enqueues final
+        # status_change frames) so shutdown doesn't cancel deliveries mid-send.
+        try:
+            await asyncio.wait_for(self._sender.flush(), timeout=5.0)
+        except Exception:
+            logger.warning("Frame sender flush timed out during shutdown", exc_info=True)
 
     async def emit_running_gauges(self) -> None:
         """Emit gateway-running-count gauges. Called by the lifespan loop.

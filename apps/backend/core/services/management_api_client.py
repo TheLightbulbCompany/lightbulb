@@ -21,6 +21,7 @@ Usage:
     client.close_connection(connection_id)
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -142,6 +143,18 @@ class ManagementApiClient:
                 f"code={error_code or '<unknown>'} status={http_status} "
                 f"payload_bytes={len(data)} msg={error_message}"
             ) from e
+
+    async def send_message_async(self, connection_id: str, payload: Dict[str, Any]) -> bool:
+        """``send_message`` off the event loop.
+
+        ``send_message`` is a blocking boto3 HTTPS round trip; calling it
+        inline from an async handler stalls every coroutine on the loop for
+        the duration of the POST. Use this from async code unless per-
+        connection ordering with the streaming path matters — ordered
+        streaming frames go through ``core.gateway.frame_sender.FrameSender``
+        instead.
+        """
+        return await asyncio.to_thread(self.send_message, connection_id, payload)
 
     def close_connection(self, connection_id: str) -> None:
         """

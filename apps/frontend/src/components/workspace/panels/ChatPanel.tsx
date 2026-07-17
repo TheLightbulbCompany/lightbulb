@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { IDockviewPanelProps } from "dockview-react";
 import { SlidersHorizontal, ListTodo, Pause, Play, X } from "lucide-react";
 import { AgentChatWindow } from "@/components/chat/AgentChatWindow";
@@ -43,6 +43,20 @@ export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.Re
     const agent = agents.find((a) => a.id === resolvedId);
     return agent ? agentDisplayName(agent) : raw === DEFAULT_AGENT_SENTINEL ? "Chat" : raw;
   }, [agents, resolvedId, raw]);
+
+  // Stable identity: MessageList's memoized bubble tree compares onOpenFile
+  // by reference — an inline arrow here would defeat the bail-outs whenever
+  // this panel re-renders. Bind the viewer to THIS chat's agent: dockview
+  // activates the freshly opened viewer, so the focused-chat fallback
+  // resolves to null (→ default agent) at exactly the moment the file opens.
+  const handleOpenFile = useCallback(
+    (path: string) =>
+      openPanel("file-viewer", {
+        ...(path ? { path } : {}),
+        ...(resolvedId ? { agent: resolvedId } : {}),
+      }),
+    [resolvedId],
+  );
 
   // Keep the dockview tab title in sync with the resolved agent name. An
   // effect, not a render-phase write: setTitle fires dockview's
@@ -98,18 +112,7 @@ export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.Re
         )}
       </div>
       <div className="min-h-0 flex-1">
-        <AgentChatWindow
-          agentId={resolvedId}
-          // Bind the viewer to THIS chat's agent: dockview activates the
-          // freshly opened viewer, so the focused-chat fallback resolves to
-          // null (→ default agent) at exactly the moment the file opens.
-          onOpenFile={(path) =>
-            openPanel("file-viewer", {
-              ...(path ? { path } : {}),
-              ...(resolvedId ? { agent: resolvedId } : {}),
-            })
-          }
-        />
+        <AgentChatWindow agentId={resolvedId} onOpenFile={handleOpenFile} />
       </div>
     </div>
   );

@@ -1,5 +1,6 @@
 import { useUser } from "@clerk/clerk-expo";
 import Feather from "@expo/vector-icons/Feather";
+import { accumulateStreamText } from "@isol8/shared";
 import { randomUUID } from "expo-crypto";
 import { router, Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -49,11 +50,11 @@ function ReconnectingBanner() {
  * (General or a named UUID session — see .superpowers/sdd/
  * w1-sessions-contract.md). Protocol handling follows the web contract:
  *
- * - `chunk.content` is CUMULATIVE — the full assistant text from the start
- *   of the run on every frame, not a delta (see backend connection_pool
- *   "cumulative replacement" and web useAgentChat's segment model). Bubbles
- *   REPLACE their text, and a per-run committed offset splits the cumulative
- *   stream into per-segment bubbles when tool calls interleave.
+ * - `chunk` frames arrive as append deltas (`append: true`) or full-text
+ *   resyncs; accumulateStreamText reconstructs the run's CUMULATIVE text
+ *   (matching the web useAgentChat segment model). Bubbles REPLACE their
+ *   text from that buffer, and a per-run committed offset splits the
+ *   cumulative stream into per-segment bubbles when tool calls interleave.
  * - `run_ended` (not `done`) releases the busy gate — `done` also fires on
  *   interim tool-approval brackets.
  *
@@ -107,6 +108,10 @@ export default function AgentChat() {
   const committedOffsetRef = useRef(0);
   const segmentRef = useRef(0);
   const lastCumulativeLenRef = useRef(0);
+  // Reconstructed cumulative text of the run — chunk frames arrive as append
+  // deltas or full-text resyncs (see accumulateStreamText); this buffer
+  // always holds the full text the legacy cumulative protocol delivered.
+  const cumulativeTextRef = useRef<string | null>(null);
   const listRef = useRef<FlatList<ChatItem>>(null);
   const inputRef = useRef<TextInput>(null);
 
@@ -138,8 +143,10 @@ export default function AgentChat() {
 
       if (msg.type === "chunk") {
         const segmentId = `${runId}-s${segmentRef.current}`;
-        const segmentText = msg.content.slice(committedOffsetRef.current);
-        lastCumulativeLenRef.current = msg.content.length;
+        const cumulative = accumulateStreamText(cumulativeTextRef.current, msg);
+        cumulativeTextRef.current = cumulative;
+        const segmentText = cumulative.slice(committedOffsetRef.current);
+        lastCumulativeLenRef.current = cumulative.length;
         setItems((prev) => {
           const idx = prev.findIndex((it) => it.id === segmentId);
           if (idx >= 0) {
@@ -294,6 +301,7 @@ export default function AgentChat() {
       committedOffsetRef.current = 0;
       segmentRef.current = 0;
       lastCumulativeLenRef.current = 0;
+      cumulativeTextRef.current = null;
       setBusy(false);
       setItems([]);
       setHistoryItems([]);
@@ -357,6 +365,7 @@ export default function AgentChat() {
     committedOffsetRef.current = 0;
     segmentRef.current = 0;
     lastCumulativeLenRef.current = 0;
+    cumulativeTextRef.current = null;
     // First send on a minted session materializes it server-side — it now
     // has a transcript, so later reconnect refetches must hit the server.
     if (activeSessionId) freshSessionIdsRef.current.delete(activeSessionId);

@@ -137,13 +137,103 @@ const MarkdownContent = React.memo(function MarkdownContent({
   );
 });
 
-function ThinkingBlock({ content }: { content: string }) {
-  const [isExpanded, setIsExpanded] = React.useState(false);
+/**
+ * Split markdown into stable top-level blocks: double-newline boundaries
+ * outside code fences (fences stay intact as single blocks, including an
+ * unterminated fence still streaming in). Used by StreamingMarkdownContent
+ * so a growing live message only re-parses its tail block per paint.
+ * Exported for unit tests.
+ */
+export function splitMarkdownBlocks(content: string): string[] {
+  // Reference-style definitions ([label]: url, [^1]: footnote) resolve at
+  // DOCUMENT level — a usage in one block with its definition in another
+  // would render as literal text. Rare in chat output (models emit inline
+  // links), so when any definition-shaped line exists, skip splitting
+  // entirely rather than track cross-block reference graphs. May false-
+  // positive on such a line inside a code fence — that only costs the
+  // optimization, never correctness.
+  if (/^ {0,3}\[[^\]\n]+\]:/m.test(content)) {
+    return [content];
+  }
+  const blocks: string[] = [];
+  let current: string[] = [];
+  let inFence = false;
+  let fenceMarker = "";
+  for (const line of content.split("\n")) {
+    const trimmed = line.trimStart();
+    if (inFence) {
+      current.push(line);
+      if (trimmed.startsWith(fenceMarker)) inFence = false;
+      continue;
+    }
+    if (trimmed.startsWith("```") || trimmed.startsWith("~~~")) {
+      inFence = true;
+      fenceMarker = trimmed.startsWith("```") ? "```" : "~~~";
+      current.push(line);
+      continue;
+    }
+    if (line.trim() === "") {
+      // Block boundary. The blank line itself is dropped — separation is
+      // re-established by rendering each block as its own component.
+      if (current.length > 0) {
+        blocks.push(current.join("\n"));
+        current = [];
+      }
+      continue;
+    }
+    current.push(line);
+  }
+  if (current.length > 0) blocks.push(current.join("\n"));
+  return blocks.length > 0 ? blocks : [content];
+}
+
+/**
+ * Markdown for the LIVE streaming item. Splits the accumulated text into
+ * fence-aware blocks and renders each through the memoized MarkdownContent:
+ * every block except the growing tail is a frozen string, so per paint only
+ * the tail re-runs ReactMarkdown/Prism instead of the whole message — the
+ * cost that used to grow with message length. History messages keep the
+ * plain whole-message MarkdownContent (their memo already never re-parses,
+ * and one piece avoids block-split artifacts in the durable render).
+ */
+const StreamingMarkdownContent = React.memo(function StreamingMarkdownContent({
+  content,
+  onOpenFile,
+}: {
+  content: string;
+  onOpenFile?: (path: string) => void;
+}) {
+  const blocks = React.useMemo(() => splitMarkdownBlocks(content), [content]);
+  return (
+    <>
+      {blocks.map((block, i) => (
+        <MarkdownContent key={i} content={block} onOpenFile={onOpenFile} />
+      ))}
+    </>
+  );
+});
+
+function ThinkingBlock({ content, streaming }: { content: string; streaming?: boolean }) {
+  // Live (streaming) thinking mounts EXPANDED so reasoning is visible as it
+  // flows — a collapsed "Thinking..." pill reads as dead air during long
+  // thinking phases. The folded history block mounts collapsed as before.
+  const [isExpanded, setIsExpanded] = React.useState(!!streaming);
+  const userToggledRef = React.useRef(false);
+  // Auto-collapse when the live stream ends, unless the user chose a state
+  // themselves. (Usually the live item simply unmounts at `done` and the
+  // history block mounts collapsed; this covers a block whose `streaming`
+  // prop flips false while it stays mounted.)
+  React.useEffect(() => {
+    if (!streaming && !userToggledRef.current) setIsExpanded(false);
+  }, [streaming]);
 
   return (
     <div className="mb-4 border border-[#e0dbd0] rounded-lg overflow-hidden">
       <button
-        onClick={() => setIsExpanded(!isExpanded)}
+        onClick={() => {
+          userToggledRef.current = true;
+          setIsExpanded(!isExpanded);
+        }}
         className="w-full flex items-center gap-2 px-3 py-2 bg-[#f3efe6] hover:bg-[#ece7dc] transition-colors text-left"
       >
         {isExpanded ? (
@@ -155,7 +245,11 @@ function ThinkingBlock({ content }: { content: string }) {
       </button>
       {isExpanded && (
         <div className="px-3 py-2 text-sm text-[#8a8578] border-t border-[#e0dbd0]">
-          <MarkdownContent content={content} />
+          {streaming ? (
+            <StreamingMarkdownContent content={content} />
+          ) : (
+            <MarkdownContent content={content} />
+          )}
         </div>
       )}
     </div>
@@ -475,37 +569,72 @@ function UserMessageRow({ message }: { message: HistoryMessage }) {
 }
 
 /**
+ * Value-equality for render items. buildChatItems rebuilds the item ARRAY
+ * (fresh wrapper objects) on every streaming paint, so referential memo on
+ * the wrappers never hits — compare the cheap identity fields instead:
+ * `key` + kind-specific payload (string identity for text, object identity
+ * for messages — history message objects are stable across paints).
+ */
+function itemEquals(a: ChatRenderItem, b: ChatRenderItem): boolean {
+  if (a === b) return true;
+  if (a.kind !== b.kind || a.key !== b.key) return false;
+  switch (a.kind) {
+    case "message":
+      return a.message === (b as typeof a).message;
+    case "stream":
+    case "stream-segment":
+    case "live-thinking":
+      return a.text === (b as typeof a).text;
+    case "divider":
+      return a.label === (b as typeof a).label;
+    case "btw": {
+      const bb = b as typeof a;
+      return a.text === bb.text && a.question === bb.question && a.isError === bb.isError;
+    }
+    default:
+      return false;
+  }
+}
+
+/**
  * Renders one item from a RenderGroup. Stream / live-thinking / divider
  * items map directly to existing block primitives; {kind:"message"} items
  * defer to MessageBlocks which walks the message's content[] array.
+ *
+ * Memoized on item VALUE (itemEquals): during streaming only the growing
+ * tail item re-renders — history messages and settled segments skip
+ * reconciliation entirely instead of re-walking their block trees per paint.
  */
-function ItemRenderer({
-  item,
-  onOpenFile,
-}: {
-  item: ChatRenderItem;
-  onOpenFile?: (path: string) => void;
-}) {
-  if (item.kind === "divider") {
-    return (
-      <div className="my-3 flex items-center gap-2 text-[11px] text-[#8a8578]">
-        <span className="flex-1 h-px bg-[#e0dbd0]" />
-        <span className="uppercase tracking-wide">{item.label}</span>
-        <span className="flex-1 h-px bg-[#e0dbd0]" />
-      </div>
-    );
-  }
-  if (item.kind === "stream" || item.kind === "stream-segment") {
-    return <MarkdownContent content={item.text} onOpenFile={onOpenFile} />;
-  }
-  if (item.kind === "live-thinking") {
-    return <ThinkingBlock content={item.text} />;
-  }
-  if (item.kind === "message") {
-    return <MessageBlocks message={item.message} onOpenFile={onOpenFile} />;
-  }
-  return null;
-}
+const ItemRenderer = React.memo(
+  function ItemRenderer({
+    item,
+    onOpenFile,
+  }: {
+    item: ChatRenderItem;
+    onOpenFile?: (path: string) => void;
+  }) {
+    if (item.kind === "divider") {
+      return (
+        <div className="my-3 flex items-center gap-2 text-[11px] text-[#8a8578]">
+          <span className="flex-1 h-px bg-[#e0dbd0]" />
+          <span className="uppercase tracking-wide">{item.label}</span>
+          <span className="flex-1 h-px bg-[#e0dbd0]" />
+        </div>
+      );
+    }
+    if (item.kind === "stream" || item.kind === "stream-segment") {
+      return <StreamingMarkdownContent content={item.text} onOpenFile={onOpenFile} />;
+    }
+    if (item.kind === "live-thinking") {
+      return <ThinkingBlock content={item.text} streaming />;
+    }
+    if (item.kind === "message") {
+      return <MessageBlocks message={item.message} onOpenFile={onOpenFile} />;
+    }
+    return null;
+  },
+  (prev, next) => prev.onOpenFile === next.onOpenFile && itemEquals(prev.item, next.item),
+);
 
 /**
  * A `/btw` (detached side-channel) answer rendered as a distinct, non-thread
@@ -552,12 +681,35 @@ function BtwSideCard({
   );
 }
 
+/** Value-equality for groups: same key/side and element-wise equal items. */
+function groupEquals(a: RenderGroup, b: RenderGroup): boolean {
+  if (a === b) return true;
+  if (a.key !== b.key || a.side !== b.side || a.items.length !== b.items.length) return false;
+  for (let i = 0; i < a.items.length; i++) {
+    if (!itemEquals(a.items[i], b.items[i])) return false;
+  }
+  return true;
+}
+
 /**
  * One visual bubble group. User-side groups expand to one bubble per item
  * (each user message stands alone). Assistant-side groups render a single
  * rounded container with all items flowing inside it.
+ *
+ * Memoized on group VALUE (groupEquals) — groupBySide rebuilds the group
+ * array per streaming paint, so referential memo would never hit. With the
+ * comparator, every group except the one containing the growing tail bails
+ * out per paint.
  */
-function BubbleGroup({
+const BubbleGroup = React.memo(BubbleGroupImpl, (prev, next) =>
+  prev.agentName === next.agentName &&
+  prev.isStreaming === next.isStreaming &&
+  prev.isLastAssistantGroup === next.isLastAssistantGroup &&
+  prev.onOpenFile === next.onOpenFile &&
+  groupEquals(prev.group, next.group),
+);
+
+function BubbleGroupImpl({
   group,
   agentName,
   isStreaming,

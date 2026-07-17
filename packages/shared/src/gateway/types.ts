@@ -12,8 +12,14 @@
 export type ToolResultBlock = { type: string; text?: string; bytes?: number; omitted?: boolean };
 
 export type ChatIncomingMessage =
-  | { type: "chunk"; content: string; agent_id?: string; runId: string; session_id?: string }
-  | { type: "thinking"; content: string; agent_id?: string; runId: string; session_id?: string }
+  // Streaming text. `append: true` means `content` is an incremental delta to
+  // append to the run's accumulated text; absent means `content` is the FULL
+  // accumulated text (cumulative replacement — the legacy contract, still used
+  // for the first frame the backend sends a connection per run, for OpenClaw
+  // `replace: true` events, and for the chat.final backstop). Reconstruct via
+  // accumulateStreamText() so both shapes collapse to one cumulative buffer.
+  | { type: "chunk"; content: string; append?: boolean; agent_id?: string; runId: string; session_id?: string }
+  | { type: "thinking"; content: string; append?: boolean; agent_id?: string; runId: string; session_id?: string }
   | { type: "done"; agent_id?: string; runId: string; session_id?: string }
   | { type: "error"; message: string; code?: string; agent_id?: string; runId?: string; session_id?: string }
   // Authoritative "run truly ended" frame. ADDITIONAL to done/error/aborted —

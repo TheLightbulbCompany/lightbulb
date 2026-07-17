@@ -49,6 +49,7 @@ def mock_mgmt():
     with patch("routers.websocket_chat.get_management_api_client") as g:
         c = MagicMock()
         c.send_message = MagicMock(return_value=True)
+        c.send_message_async = AsyncMock(side_effect=c.send_message)
         g.return_value = c
         yield c
 

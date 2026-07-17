@@ -133,6 +133,7 @@ async def test_ws_message_ping_returns_200(ws_client):
     }
     mock_mgmt_instance = MagicMock()
     mock_mgmt_instance.post_to_connection = AsyncMock()
+    mock_mgmt_instance.send_message_async = AsyncMock(side_effect=mock_mgmt_instance.send_message)
     with (
         patch("routers.websocket_chat.get_connection_service", new_callable=AsyncMock, return_value=mock_service),
         patch(

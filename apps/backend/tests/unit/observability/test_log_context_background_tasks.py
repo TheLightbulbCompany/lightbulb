@@ -133,6 +133,7 @@ async def test_chat_background_task_binds_user_id_and_run_id_into_logs():
 
             mgmt = MagicMock()
             mgmt.send_message = MagicMock(return_value=True)
+            mgmt.send_message_async = AsyncMock(side_effect=mgmt.send_message)
             mock_mgmt_getter.return_value = mgmt
 
             await _process_agent_chat_background(

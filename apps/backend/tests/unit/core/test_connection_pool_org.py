@@ -47,6 +47,13 @@ class TestOrgFanOut:
 # ------------------------------------------------------------------
 
 
+async def _forward_and_flush(conn, message, target_member_id=None):
+    """Forward then drain the FrameSender so send_message assertions see the
+    delivered frames (delivery runs on per-connection drainer tasks now)."""
+    await conn._forward_to_frontends(message, target_member_id)
+    await conn._sender.flush()
+
+
 @pytest.fixture
 def make_conn():
     def _make(owner_id="org_1"):
@@ -78,7 +85,7 @@ async def test_forward_filters_to_chat_connections(make_conn):
             ("c_op", "m1", "operator"),
         ]
     )
-    await conn._forward_to_frontends({"type": "chunk", "content": "x"})
+    await _forward_and_flush(conn, {"type": "chunk", "content": "x"})
 
     sent = {c.args[0] for c in conn._management_api.send_message.call_args_list}
     assert sent == {"c_chat1", "c_chat2"}
@@ -96,7 +103,7 @@ async def test_forward_per_member_demux_case_insensitive(make_conn):
             ("c_m2", "m2", "chat"),
         ]
     )
-    await conn._forward_to_frontends({"type": "done"}, target_member_id="m1")
+    await _forward_and_flush(conn, {"type": "done"}, target_member_id="m1")
 
     sent = [c.args[0] for c in conn._management_api.send_message.call_args_list]
     assert sent == ["c_m1"]
@@ -111,7 +118,7 @@ async def test_forward_query_error_drops_without_raising(make_conn):
     # In-process set is non-empty — it must NOT be used as a fallback.
     conn._frontend_connections.add("c_inprocess")
 
-    await conn._forward_to_frontends({"type": "chunk", "content": "x"})
+    await _forward_and_flush(conn, {"type": "chunk", "content": "x"})
 
     conn._management_api.send_message.assert_not_called()
 
@@ -123,8 +130,8 @@ async def test_forward_caches_recipients_within_ttl(make_conn):
     conn = make_conn(owner_id="org_1")
     conn._conn_svc.query_by_owner = AsyncMock(return_value=[("c_chat", "m1", "chat")])
 
-    await conn._forward_to_frontends({"type": "chunk"})
-    await conn._forward_to_frontends({"type": "chunk"})
+    await _forward_and_flush(conn, {"type": "chunk"})
+    await _forward_and_flush(conn, {"type": "chunk"})
 
     assert conn._conn_svc.query_by_owner.call_count == 1
 
@@ -139,8 +146,8 @@ async def test_forward_caches_recipients_and_busts_on_register(make_conn):
     conn = make_conn(owner_id="org_1")
     # First forward: GSI returns empty → cached for the TTL (no per-chunk re-query).
     conn._conn_svc.query_by_owner = AsyncMock(return_value=[])
-    await conn._forward_to_frontends({"type": "chunk"})
-    await conn._forward_to_frontends({"type": "chunk"})
+    await _forward_and_flush(conn, {"type": "chunk"})
+    await _forward_and_flush(conn, {"type": "chunk"})
     assert conn._conn_svc.query_by_owner.call_count == 1
 
     # A connect/disconnect busts the cache; the next event re-queries and
@@ -148,7 +155,7 @@ async def test_forward_caches_recipients_and_busts_on_register(make_conn):
     conn._conn_svc.query_by_owner = AsyncMock(return_value=[("c_chat", "m1", "chat")])
     conn._management_api.send_message = MagicMock(return_value=True)
     conn.invalidate_recipients_cache()
-    await conn._forward_to_frontends({"type": "chunk", "content": "hi"})
+    await _forward_and_flush(conn, {"type": "chunk", "content": "hi"})
     conn._conn_svc.query_by_owner.assert_awaited_once_with("org_1")
     conn._management_api.send_message.assert_called_once()
 
@@ -163,7 +170,7 @@ async def test_forward_does_not_prune_on_transient_exception(make_conn):
     conn._conn_svc.query_by_owner = AsyncMock(return_value=[("c_live", "m1", "chat")])
     conn._management_api.send_message = MagicMock(side_effect=Exception("throttled"))
 
-    await conn._forward_to_frontends({"type": "chunk"})
+    await _forward_and_flush(conn, {"type": "chunk"})
     conn._conn_svc.delete_connection.assert_not_called()
 
 
@@ -176,7 +183,7 @@ async def test_forward_prunes_on_gone_false(make_conn):
     conn._conn_svc.query_by_owner = AsyncMock(return_value=[("c_dead", "m1", "chat")])
     conn._management_api.send_message = MagicMock(return_value=False)
 
-    await conn._forward_to_frontends({"type": "chunk"})
+    await _forward_and_flush(conn, {"type": "chunk"})
     conn._conn_svc.delete_connection.assert_called_once_with("c_dead")
 
 
@@ -191,7 +198,7 @@ async def test_prune_discards_from_in_process_set(make_conn):
     conn._conn_svc.delete_connection = MagicMock()
     conn._management_api.send_message = MagicMock(return_value=False)
 
-    await conn._forward_to_frontends({"type": "chunk"})
+    await _forward_and_flush(conn, {"type": "chunk"})
     assert "c_dead" not in conn._frontend_connections
 
 
@@ -204,13 +211,13 @@ async def test_forward_prunes_dead_conn_and_invalidates_cache(make_conn):
     conn._conn_svc.delete_connection = MagicMock()
     conn._management_api.send_message = MagicMock(return_value=False)
 
-    await conn._forward_to_frontends({"type": "chunk"})
+    await _forward_and_flush(conn, {"type": "chunk"})
     conn._conn_svc.delete_connection.assert_called_once_with("c_dead")
 
     # Cache invalidated → next forward re-queries instead of re-hitting the
     # dead conn.
     conn._management_api.send_message = MagicMock(return_value=True)
-    await conn._forward_to_frontends({"type": "chunk"})
+    await _forward_and_flush(conn, {"type": "chunk"})
     assert conn._conn_svc.query_by_owner.call_count == 2
 
 
@@ -242,6 +249,7 @@ async def test_broadcast_to_member_org_demuxes_via_owner_keyed_query():
     sent = _capture_sends(pool)
 
     await pool.broadcast_to_member("org_1", "m_target", {"type": "event", "event": "node_status"})
+    await pool._sender.flush()
 
     pool._conn_svc.query_by_owner.assert_awaited_once_with("org_1")
     assert sent == ["c_target"]  # only the target member's chat tab
@@ -258,6 +266,7 @@ async def test_broadcast_to_member_works_without_gateway_connection():
     sent = _capture_sends(pool)
 
     await pool.broadcast_to_member("org_1", "m_target", {"type": "event"})
+    await pool._sender.flush()
     assert sent == ["c_target"]
 
 
@@ -276,6 +285,7 @@ async def test_broadcast_to_member_personal_broadcasts_all_chat():
 
     # Personal (owner == member) → no demux, all chat conns; node pipe excluded.
     await pool.broadcast_to_member("user_1", "user_1", {"type": "event"})
+    await pool._sender.flush()
     assert set(sent) == {"c_1", "c_2"}
 
 
@@ -287,4 +297,5 @@ async def test_broadcast_to_member_query_failure_drops_silently():
     pool._management_api.send_message = MagicMock(return_value=True)
 
     await pool.broadcast_to_member("org_1", "m1", {"type": "event"})  # must not raise
+    await pool._sender.flush()
     pool._management_api.send_message.assert_not_called()

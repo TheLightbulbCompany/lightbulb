@@ -49,6 +49,7 @@ def mock_management_api():
     with patch("routers.websocket_chat.get_management_api_client") as mock_getter:
         mock_client = MagicMock()
         mock_client.send_message = MagicMock(return_value=True)
+        mock_client.send_message_async = AsyncMock(side_effect=mock_client.send_message)
         mock_getter.return_value = mock_client
         yield mock_client
 
@@ -255,6 +256,7 @@ class TestProcessAgentChatBackground:
         with patch("routers.websocket_chat.get_management_api_client") as mock_getter:
             client = MagicMock()
             client.send_message = MagicMock(return_value=True)
+            client.send_message_async = AsyncMock(side_effect=client.send_message)
             mock_getter.return_value = client
             yield client
 
@@ -578,6 +580,7 @@ class TestProcessAgentAbortBackground:
         with patch("routers.websocket_chat.get_management_api_client") as mock_getter:
             client = MagicMock()
             client.send_message = MagicMock(return_value=True)
+            client.send_message_async = AsyncMock(side_effect=client.send_message)
             mock_getter.return_value = client
             yield client
 
@@ -814,6 +817,7 @@ class TestProcessAgentSteerBackground:
         with patch("routers.websocket_chat.get_management_api_client") as mock_getter:
             client = MagicMock()
             client.send_message = MagicMock(return_value=True)
+            client.send_message_async = AsyncMock(side_effect=client.send_message)
             mock_getter.return_value = client
             yield client
 
@@ -983,6 +987,7 @@ class TestAgentChatSideChannel:
         with patch("routers.websocket_chat.get_management_api_client") as mock_getter:
             client = MagicMock()
             client.send_message = MagicMock(return_value=True)
+            client.send_message_async = AsyncMock(side_effect=client.send_message)
             mock_getter.return_value = client
             yield client
 
@@ -1102,6 +1107,7 @@ class TestNoFreeTierCommandLockdown:
         with patch("routers.websocket_chat.get_management_api_client") as mock_getter:
             client = MagicMock()
             client.send_message = MagicMock(return_value=True)
+            client.send_message_async = AsyncMock(side_effect=client.send_message)
             mock_getter.return_value = client
             yield client
 

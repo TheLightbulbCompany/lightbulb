@@ -1,5 +1,8 @@
 // Issue work-products data layer: list (SWR) + review-state PATCH, all through
-// the Teams BFF (`/teams/issues/{id}/work-products` + `/teams/work-products/{id}`).
+// the Teams BFF (`/teams/issues/{id}/work-products` for both list and the
+// per-product review PATCH). The PATCH is issue-scoped so the BFF can verify
+// the product belongs to this issue AND is awaiting board review before
+// forwarding — see routers/teams/issues.py:patch_work_product.
 // Mirrors useIssueAttachments' shape so the Output section stays declarative.
 
 import { useCallback } from "react";
@@ -49,10 +52,10 @@ export function useIssueWorkProducts(issueId: string): UseIssueWorkProductsResul
       workProductId: string,
       reviewState: IssueWorkProductReviewState,
     ): Promise<void> => {
-      await patch(`/work-products/${workProductId}`, { reviewState });
+      await patch(`/issues/${issueId}/work-products/${workProductId}`, { reviewState });
       void mutate(swrKey(listPath));
     },
-    [patch, mutate, listPath],
+    [patch, mutate, listPath, issueId],
   );
 
   return {

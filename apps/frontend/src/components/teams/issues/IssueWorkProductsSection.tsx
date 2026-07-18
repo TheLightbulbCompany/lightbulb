@@ -57,7 +57,7 @@ function Pill({
 }) {
   const color =
     tone === "attention"
-      ? "var(--forest)"
+      ? "var(--warn)"
       : tone === "positive"
         ? "var(--forest)"
         : tone === "danger"

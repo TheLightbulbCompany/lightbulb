@@ -368,16 +368,14 @@ class CreateWorkProductBody(_Strict):
 
 
 class PatchWorkProductBody(_Strict):
-    """Body for ``PATCH /teams/work-products/{id}``.
+    """Body for ``PATCH /teams/issues/{id}/work-products/{wpid}``.
 
-    Partial of the create body — the board Approve / Request-changes actions
-    send ``{review_state}`` (alias ``reviewState``). ``status`` is exposed for
-    the ready-for-review → approved/changes_requested progression.
+    Narrowed to the board review DECISION only. The board UI makes exactly two
+    decisions — Approve / Request-changes — so ``review_state`` (alias
+    ``reviewState``) is REQUIRED and constrained to ``approved`` |
+    ``changes_requested``. The descriptive/mutable fields the UI never sets
+    (status / title / url / summary / isPrimary) are intentionally dropped:
+    this route can only record a review verdict, never rewrite a deliverable.
     """
 
-    review_state: Optional[str] = Field(default=None, pattern=_WORK_PRODUCT_REVIEW_STATE)
-    status: Optional[str] = Field(default=None, pattern=_WORK_PRODUCT_STATUS)
-    title: Optional[str] = Field(default=None, min_length=1, max_length=200)
-    url: Optional[str] = Field(default=None, max_length=2000)
-    summary: Optional[str] = Field(default=None, max_length=20000)
-    is_primary: Optional[bool] = None
+    review_state: str = Field(pattern=r"^(approved|changes_requested)$")

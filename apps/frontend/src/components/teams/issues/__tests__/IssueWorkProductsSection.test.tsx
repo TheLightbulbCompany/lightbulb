@@ -104,7 +104,7 @@ describe("IssueWorkProductsSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Approve" }));
 
     await waitFor(() => {
-      expect(patch).toHaveBeenCalledWith("/work-products/wp2", {
+      expect(patch).toHaveBeenCalledWith("/issues/iss1/work-products/wp2", {
         reviewState: "approved",
       });
     });
@@ -136,7 +136,7 @@ describe("IssueWorkProductsSection", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Request changes" }));
     await waitFor(() => {
-      expect(patch).toHaveBeenCalledWith("/work-products/wp3", {
+      expect(patch).toHaveBeenCalledWith("/issues/iss1/work-products/wp3", {
         reviewState: "changes_requested",
       });
     });

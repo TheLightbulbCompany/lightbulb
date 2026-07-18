@@ -459,23 +459,62 @@ async def create_issue_work_product(
     )
 
 
-@router.patch("/work-products/{work_product_id}")
+def _find_work_product(rows: Any, work_product_id: str) -> Optional[dict]:
+    """Locate a work-product row by id in an upstream issue-scoped list payload.
+
+    ``list_issue_work_products`` returns upstream's bare array; tolerate a
+    ``{workProducts: [...]}`` envelope too so the lookup is robust to shape.
+    """
+    if isinstance(rows, dict):
+        rows = rows.get("workProducts")
+    if not isinstance(rows, list):
+        return None
+    for row in rows:
+        if isinstance(row, dict) and row.get("id") == work_product_id:
+            return row
+    return None
+
+
+@router.patch("/issues/{issue_id}/work-products/{work_product_id}")
 async def patch_work_product(
+    issue_id: str,
     work_product_id: str,
     body: PatchWorkProductBody,
     ctx: TeamsContext = Depends(_ctx),
 ):
-    """Patch a work-product — the board Approve / Request-changes transition.
+    """Record a board review verdict on a work-product — Approve / Request-changes.
 
-    Maps to upstream ``PATCH /api/work-products/{id}``. Uses ``exclude_unset``
-    so only the keys the caller explicitly set are forwarded (the common case
-    is a bare ``{reviewState}``). Company scope is asserted upstream against
-    the session cookie's actor, so a cross-tenant id is rejected upstream.
+    Maps to upstream ``PATCH /api/work-products/{id}``, but GUARDED at the BFF:
+
+    - The body (``PatchWorkProductBody``) is narrowed to the review decision
+      only, so this route can never rewrite a deliverable's status/title/url.
+    - The transition is forwarded ONLY when the target work-product (a) belongs
+      to the ``issue_id`` in the path and (b) is currently ``needs_board_review``.
+      Otherwise 404 / 409 — never forwarded.
+
+    Upstream exposes no GET-by-id for a single work-product, so the current row
+    is read from the issue-scoped list (``GET /api/issues/{id}/work-products``);
+    the path ``issue_id`` both scopes that read and asserts the product is part
+    of the viewed issue. Upstream only company-scopes the raw id, so without
+    this guard a same-company caller who learned any work_product_id could
+    approve / request-changes an unrelated or already-decided deliverable.
     """
+    rows = await _agents._admin().list_issue_work_products(
+        session_cookie=ctx.session_cookie,
+        issue_id=issue_id,
+    )
+    wp = _find_work_product(rows, work_product_id)
+    if wp is None:
+        raise HTTPException(status_code=404, detail="Work product not found on this issue")
+    if wp.get("reviewState") != "needs_board_review":
+        raise HTTPException(
+            status_code=409,
+            detail="Work product is not awaiting board review",
+        )
     return await _agents._admin().update_work_product(
         session_cookie=ctx.session_cookie,
         work_product_id=work_product_id,
-        body=body.model_dump(exclude_unset=True, by_alias=True),
+        body=body.model_dump(by_alias=True),
     )
 
 

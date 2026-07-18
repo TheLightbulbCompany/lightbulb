@@ -419,13 +419,16 @@ export interface RunEvent {
  */
 export type RoutineVariableValue = string | number | boolean;
 
-/** The variable types a routine can declare (upstream ROUTINE_VARIABLE_TYPES). */
+/** The variable types a routine can declare (upstream ROUTINE_VARIABLE_TYPES).
+ * ``date`` was added upstream in #8655 (b3c0fadd6) — a structured YYYY-MM-DD
+ * calendar value collected via a date picker in the run + edit dialogs. */
 export type RoutineVariableType =
   | "text"
   | "textarea"
   | "number"
   | "boolean"
-  | "select";
+  | "select"
+  | "date";
 
 /**
  * One variable a routine DEFINES (upstream `RoutineVariable`). The run-now
@@ -459,6 +462,23 @@ export interface RoutineTriggerSummary {
   cronExpression?: string | null;
   timezone?: string | null;
   nextRunAt?: string | null;
+  // Webhook triggers carry a public id + signing mode; the detail panel uses
+  // these to decide whether a "Rotate secret" affordance applies (only a
+  // signed webhook trigger has a secret to rotate).
+  signingMode?: string | null;
+  publicId?: string | null;
+}
+
+/**
+ * One entry in a routine's revision history (upstream RoutineRevision subset).
+ * Surfaced by the detail panel's Revisions view; a Restore reverts the routine
+ * to the snapshot captured at that revision.
+ */
+export interface RoutineRevision {
+  id: string;
+  revisionNumber?: number | null;
+  changeSummary?: string | null;
+  createdAt?: string | null;
 }
 
 /** Single routine from GET /routines/{id} (upstream RoutineDetail subset). */
@@ -466,6 +486,8 @@ export interface RoutineDetail {
   id: string;
   title: string;
   status?: string | null;
+  // Upstream ISSUE_PRIORITIES; editable from the detail page's edit dialog.
+  priority?: string | null;
   description?: string | null;
   assigneeAgentId?: string | null;
   assignee?: RoutineAgentSummary | null;

@@ -27,6 +27,7 @@ from .schemas import (
     PatchGoalBody,
     PatchProjectBody,
     PatchRoutineBody,
+    UpdateRoutineTriggerBody,
 )
 
 router = APIRouter()
@@ -248,6 +249,117 @@ async def get_routine(routine_id: str, ctx: TeamsContext = Depends(_ctx)):
     """Fetch a single routine by id (the routine detail page)."""
     return await _agents._admin().get_routine(
         routine_id=routine_id,
+        session_cookie=ctx.session_cookie,
+    )
+
+
+# ---- Routine triggers + revisions (A2 — editable routines) ------------
+#
+# These make RoutineDetailPanel editable beyond delete+recreate: edit/delete
+# a schedule trigger, rotate a webhook trigger's signing secret, and
+# view/restore the routine's revision history.
+#
+# Trigger mutations upstream are keyed by the globally-unique trigger id
+# (``/api/routine-triggers/{id}``); the BFF nests them under the routine for a
+# RESTful UI shape and forwards only the trigger id to the admin client.
+#
+# Trial-gate posture (preserving ``require_always_on_entitlement`` — see
+# patch_routine + create_routine_trigger above):
+#   - ENABLING a trigger (``enabled=true``) arms the schedule → gated, same as
+#     flipping a routine to ``status="active"``.
+#   - RESTORING a revision can revert a routine to an active snapshot with
+#     enabled triggers → gated (a restore is an activation-adjacent lever).
+#   - Disabling/deleting a trigger and rotating a secret are NOT activation and
+#     stay open — refusing them would trap a trial owner with automation they
+#     can't turn off, matching the pause/rename/delete escape hatch on routines.
+
+
+@router.patch("/routines/{routine_id}/triggers/{trigger_id}")
+async def patch_routine_trigger(
+    routine_id: str,
+    trigger_id: str,
+    body: UpdateRoutineTriggerBody,
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """Edit a routine trigger (cron / timezone / label / enable / webhook signing).
+
+    Gated ONLY on ENABLING (``enabled=true``): arming a schedule is the same
+    autonomy lever as ``patch_routine(status="active")``. Disabling, retiming,
+    and relabeling stay open to trial owners (the escape hatch).
+    """
+    if body.enabled is True:
+        await require_always_on_entitlement(ctx.owner_id)
+    return await _agents._admin().patch_routine_trigger(
+        trigger_id=trigger_id,
+        body=body.model_dump(exclude_none=True, by_alias=True),
+        session_cookie=ctx.session_cookie,
+    )
+
+
+@router.delete("/routines/{routine_id}/triggers/{trigger_id}")
+async def delete_routine_trigger(
+    routine_id: str,
+    trigger_id: str,
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """Delete a routine trigger. Idempotent — upstream 404 is swallowed.
+
+    Ungated: removing a schedule can only REDUCE autonomy, never grant it.
+    """
+    return await _agents._admin().delete_routine_trigger(
+        trigger_id=trigger_id,
+        session_cookie=ctx.session_cookie,
+    )
+
+
+@router.post("/routines/{routine_id}/triggers/{trigger_id}/rotate-secret")
+async def rotate_routine_trigger_secret(
+    routine_id: str,
+    trigger_id: str,
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """Rotate a webhook trigger's signing secret.
+
+    Returns upstream's ``{trigger, secretMaterial, ...}`` — the new secret is
+    shown once. Ungated: rotating the secret of an existing trigger is a
+    management action, not an activation lever (it does not create autonomy).
+    """
+    return await _agents._admin().rotate_routine_trigger_secret(
+        trigger_id=trigger_id,
+        session_cookie=ctx.session_cookie,
+    )
+
+
+@router.get("/routines/{routine_id}/revisions")
+async def list_routine_revisions(
+    routine_id: str,
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """List a routine's revision history (for the detail page's Revisions view)."""
+    upstream = await _agents._admin().list_routine_revisions(
+        routine_id=routine_id,
+        session_cookie=ctx.session_cookie,
+    )
+    return envelope_list(upstream, "revisions")
+
+
+@router.post("/routines/{routine_id}/revisions/{revision_id}/restore")
+async def restore_routine_revision(
+    routine_id: str,
+    revision_id: str,
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """Restore a routine to a prior revision snapshot.
+
+    Gated on ``require_always_on_entitlement``: a restore can revert the routine
+    to an ``active`` snapshot with enabled triggers, which is activation-adjacent
+    — the same reason ``patch_routine(status="active")`` is gated. A trial owner
+    who can't run scheduled automation shouldn't be able to re-arm it via restore.
+    """
+    await require_always_on_entitlement(ctx.owner_id)
+    return await _agents._admin().restore_routine_revision(
+        routine_id=routine_id,
+        revision_id=revision_id,
         session_cookie=ctx.session_cookie,
     )
 

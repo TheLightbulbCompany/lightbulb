@@ -561,3 +561,99 @@ async def test_create_routine_trigger_posts_to_triggers_endpoint(client_factory)
     assert captured["body"]["kind"] == "schedule"
     assert captured["body"]["cronExpression"] == "0 9 * * *"
     assert out["trigger"]["id"] == "tr_1"
+
+
+# ---------------------------------------------------------------------------
+# A2 — editable routines: trigger patch/delete/rotate + revisions list/restore
+# ---------------------------------------------------------------------------
+
+
+async def test_patch_routine_trigger_maps_to_routine_triggers_endpoint(client_factory):
+    """Trigger edit is keyed by the global trigger id upstream, NOT nested."""
+    captured: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured["url"] = str(req.url)
+        captured["method"] = req.method
+        captured["body"] = _json.loads(req.read().decode())
+        return httpx.Response(200, json={"id": "tr_1", "cronExpression": "0 6 * * *"})
+
+    client = client_factory(handler)
+    out = await client.patch_routine_trigger(
+        session_cookie="sess",
+        trigger_id="tr_1",
+        body={"cronExpression": "0 6 * * *", "enabled": True},
+    )
+    assert captured["method"] == "PATCH"
+    assert "/api/routine-triggers/tr_1" in captured["url"]
+    assert captured["body"] == {"cronExpression": "0 6 * * *", "enabled": True}
+    assert out["cronExpression"] == "0 6 * * *"
+
+
+async def test_delete_routine_trigger_swallows_404(client_factory):
+    """A double-delete of a trigger is a no-op, not an error (idempotent)."""
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        assert req.method == "DELETE"
+        assert "/api/routine-triggers/tr_1" in str(req.url)
+        return httpx.Response(404, json={"error": "Routine trigger not found"})
+
+    client = client_factory(handler)
+    out = await client.delete_routine_trigger(session_cookie="sess", trigger_id="tr_1")
+    assert out == {}
+
+
+async def test_rotate_routine_trigger_secret_posts_empty_body(client_factory):
+    """Rotate posts an empty object and returns the fresh secret material."""
+    captured: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured["url"] = str(req.url)
+        captured["method"] = req.method
+        captured["body"] = req.read().decode()
+        return httpx.Response(200, json={"trigger": {"id": "tr_1"}, "secretMaterial": "whsec_new"})
+
+    client = client_factory(handler)
+    out = await client.rotate_routine_trigger_secret(session_cookie="sess", trigger_id="tr_1")
+    assert captured["method"] == "POST"
+    assert "/api/routine-triggers/tr_1/rotate-secret" in captured["url"]
+    assert captured["body"] == "{}"
+    assert out["secretMaterial"] == "whsec_new"
+
+
+async def test_list_routine_revisions_returns_list(client_factory):
+    """Revisions come back as a bare upstream array."""
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        assert "/api/routines/r1/revisions" in str(req.url)
+        return httpx.Response(200, json=[{"id": "rev_2"}, {"id": "rev_1"}])
+
+    client = client_factory(handler)
+    out = await client.list_routine_revisions(session_cookie="sess", routine_id="r1")
+    assert [r["id"] for r in out] == ["rev_2", "rev_1"]
+
+
+async def test_list_routine_revisions_tolerates_non_list(client_factory):
+    """A non-list upstream body degrades to [] instead of raising."""
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"unexpected": True})
+
+    client = client_factory(handler)
+    out = await client.list_routine_revisions(session_cookie="sess", routine_id="r1")
+    assert out == []
+
+
+async def test_restore_routine_revision_posts_to_restore_endpoint(client_factory):
+    captured: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured["url"] = str(req.url)
+        captured["method"] = req.method
+        return httpx.Response(200, json={"revision": {"id": "rev_1", "revisionNumber": 1}})
+
+    client = client_factory(handler)
+    out = await client.restore_routine_revision(session_cookie="sess", routine_id="r1", revision_id="rev_1")
+    assert captured["method"] == "POST"
+    assert "/api/routines/r1/revisions/rev_1/restore" in captured["url"]
+    assert out["revision"]["id"] == "rev_1"

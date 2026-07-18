@@ -1940,6 +1940,105 @@ class PaperclipAdminClient:
         )
 
     # ------------------------------------------------------------------
+    # Routine triggers + revisions (A2 — editable routines)
+    #
+    # Trigger mutations are keyed by the GLOBALLY-unique trigger id upstream
+    # (``/api/routine-triggers/{id}``), NOT nested under the routine — the BFF
+    # nests them under ``/routines/{id}/triggers/{tid}`` only for a RESTful UI
+    # shape and passes just the trigger id here.
+    # ------------------------------------------------------------------
+
+    async def patch_routine_trigger(
+        self,
+        *,
+        session_cookie: str,
+        trigger_id: str,
+        body: dict,
+    ) -> dict:
+        """Edit a routine trigger (schedule cron / webhook signing). Body is
+        whitelisted by the BFF (``UpdateRoutineTriggerBody``).
+
+        Maps to ``PATCH /api/routine-triggers/{triggerId}`` upstream
+        (paperclip/server/src/routes/routines.ts:500).
+        """
+        return await self._patch(
+            f"/api/routine-triggers/{trigger_id}",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
+    async def delete_routine_trigger(
+        self,
+        *,
+        session_cookie: str,
+        trigger_id: str,
+    ) -> dict:
+        """Delete a routine trigger. 404 is swallowed as already-gone.
+
+        Maps to ``DELETE /api/routine-triggers/{triggerId}`` upstream
+        (paperclip/server/src/routes/routines.ts:543).
+        """
+        return await self._delete(
+            f"/api/routine-triggers/{trigger_id}",
+            session_cookie=session_cookie,
+        )
+
+    async def rotate_routine_trigger_secret(
+        self,
+        *,
+        session_cookie: str,
+        trigger_id: str,
+    ) -> dict:
+        """Rotate a webhook trigger's signing secret. Returns the fresh
+        ``{trigger, secretMaterial, ...}`` — the secret is shown to the
+        operator exactly once.
+
+        Maps to ``POST /api/routine-triggers/{triggerId}/rotate-secret``
+        upstream (paperclip/server/src/routes/routines.ts:585). The upstream
+        body is an empty object (``rotateRoutineTriggerSecretSchema``).
+        """
+        return await self._post(
+            f"/api/routine-triggers/{trigger_id}/rotate-secret",
+            json={},
+            session_cookie=session_cookie,
+        )
+
+    async def list_routine_revisions(
+        self,
+        *,
+        session_cookie: str,
+        routine_id: str,
+    ) -> list[dict]:
+        """List a routine's revision history (title/trigger snapshots).
+
+        Maps to ``GET /api/routines/{routineId}/revisions`` upstream
+        (paperclip/server/src/routes/routines.ts:200). Returns a bare list.
+        """
+        result = await self._get(
+            f"/api/routines/{routine_id}/revisions",
+            session_cookie=session_cookie,
+        )
+        return result if isinstance(result, list) else []
+
+    async def restore_routine_revision(
+        self,
+        *,
+        session_cookie: str,
+        routine_id: str,
+        revision_id: str,
+    ) -> dict:
+        """Restore a routine to a prior revision snapshot.
+
+        Maps to ``POST /api/routines/{routineId}/revisions/{revisionId}/restore``
+        upstream (paperclip/server/src/routes/routines.ts:421). No body.
+        """
+        return await self._post(
+            f"/api/routines/{routine_id}/revisions/{revision_id}/restore",
+            json={},
+            session_cookie=session_cookie,
+        )
+
+    # ------------------------------------------------------------------
     # Goals
     # ------------------------------------------------------------------
 

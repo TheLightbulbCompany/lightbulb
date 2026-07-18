@@ -49,6 +49,12 @@ def admin(monkeypatch):
         "get_routine",
         "run_routine",
         "list_routine_runs",
+        # A2 — editable routines
+        "patch_routine_trigger",
+        "delete_routine_trigger",
+        "rotate_routine_trigger_secret",
+        "list_routine_revisions",
+        "restore_routine_revision",
         "list_goals",
         "get_goal",
         "create_goal",
@@ -720,3 +726,178 @@ def test_patch_nightly_routine_reactivate_flag_clear_is_best_effort(client, admi
     assert r.status_code == 200
     admin.patch_routine.assert_awaited_once()
     set_opt.assert_awaited_once_with("o1", False)
+
+
+# ---------------------------------------------------------------------------
+# A2 — editable routines: trigger edit/delete/rotate + revisions list/restore
+#
+# These make RoutineDetailPanel editable. The trial-gate posture mirrors the
+# routine-level gates: ENABLING a trigger and RESTORING a revision are gated
+# (activation-adjacent); disable/delete/rotate stay open (the escape hatch).
+# ---------------------------------------------------------------------------
+
+
+def test_patch_routine_trigger_forwards_camelcase(client, admin):
+    """PATCH /routines/{id}/triggers/{tid} maps to the admin client with the
+    trigger id and camelCase body; the routine id is UI nesting only."""
+    r = client.patch(
+        "/api/v1/teams/routines/r1/triggers/tr_1",
+        json={"cron_expression": "0 6 * * *", "timezone": "America/New_York"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200, r.text
+    kwargs = admin.patch_routine_trigger.await_args.kwargs
+    assert kwargs["trigger_id"] == "tr_1"
+    body = kwargs["body"]
+    assert body["cronExpression"] == "0 6 * * *"
+    assert body["timezone"] == "America/New_York"
+
+
+def test_patch_routine_trigger_disable_is_open_to_trial(client, admin, monkeypatch):
+    """Disabling a trigger (enabled=false) is the escape hatch — never gated."""
+    _trial(monkeypatch)
+    r = client.patch(
+        "/api/v1/teams/routines/r1/triggers/tr_1",
+        json={"enabled": False},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200, r.text
+    admin.patch_routine_trigger.assert_awaited_once()
+
+
+def test_patch_routine_trigger_enable_is_gated_for_trial(client, admin, monkeypatch):
+    """Enabling a trigger (enabled=true) arms the schedule → gated like
+    reactivating a routine."""
+    _trial(monkeypatch)
+    r = client.patch(
+        "/api/v1/teams/routines/r1/triggers/tr_1",
+        json={"enabled": True},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 402
+    assert r.json()["detail"]["code"] == "routines_require_subscription"
+    admin.patch_routine_trigger.assert_not_awaited()
+
+
+def test_patch_routine_trigger_enable_allowed_for_paid(client, admin):
+    """The paid owner the gate protects can still arm a trigger."""
+    r = client.patch(
+        "/api/v1/teams/routines/r1/triggers/tr_1",
+        json={"enabled": True},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200, r.text
+    admin.patch_routine_trigger.assert_awaited_once()
+
+
+def test_patch_routine_trigger_rejects_extra(client):
+    """``UpdateRoutineTriggerBody`` is extra="forbid" — smuggled fields 422."""
+    r = client.patch(
+        "/api/v1/teams/routines/r1/triggers/tr_1",
+        json={"adapterType": "openclaw_gateway"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 422
+
+
+def test_delete_routine_trigger_is_open_to_trial(client, admin, monkeypatch):
+    """Deleting a trigger is ungated (escape hatch)."""
+    _trial(monkeypatch)
+    r = client.delete(
+        "/api/v1/teams/routines/r1/triggers/tr_1",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200, r.text
+    admin.delete_routine_trigger.assert_awaited_once_with(
+        trigger_id="tr_1",
+        session_cookie="cookie",
+    )
+
+
+def test_rotate_routine_trigger_secret_is_open_and_returns_material(client, admin):
+    """Rotate is a management action, ungated, and passes the fresh secret back."""
+    admin.rotate_routine_trigger_secret = AsyncMock(
+        return_value={"trigger": {"id": "tr_1"}, "secretMaterial": "whsec_new"}
+    )
+    r = client.post(
+        "/api/v1/teams/routines/r1/triggers/tr_1/rotate-secret",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["secretMaterial"] == "whsec_new"
+    admin.rotate_routine_trigger_secret.assert_awaited_once_with(
+        trigger_id="tr_1",
+        session_cookie="cookie",
+    )
+
+
+def test_list_routine_revisions_returns_envelope(client, monkeypatch):
+    """GET /routines/{id}/revisions wraps the bare upstream array in {revisions}."""
+    from routers.teams import agents as agents_mod
+
+    a = MagicMock()
+    a.list_routine_revisions = AsyncMock(return_value=[{"id": "rev_2"}, {"id": "rev_1"}])
+    monkeypatch.setattr(agents_mod, "_admin", lambda: a)
+
+    r = client.get(
+        "/api/v1/teams/routines/r1/revisions",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert list(body.keys()) == ["revisions"]
+    assert [rev["id"] for rev in body["revisions"]] == ["rev_2", "rev_1"]
+    a.list_routine_revisions.assert_awaited_once_with(
+        routine_id="r1",
+        session_cookie="cookie",
+    )
+
+
+def test_restore_revision_gated_for_trial(client, admin, monkeypatch):
+    """Restore can re-arm an active routine → gated for trial owners."""
+    _trial(monkeypatch)
+    r = client.post(
+        "/api/v1/teams/routines/r1/revisions/rev_1/restore",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 402
+    assert r.json()["detail"]["code"] == "routines_require_subscription"
+    admin.restore_routine_revision.assert_not_awaited()
+
+
+def test_restore_revision_allowed_for_paid(client, admin):
+    r = client.post(
+        "/api/v1/teams/routines/r1/revisions/rev_1/restore",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200, r.text
+    admin.restore_routine_revision.assert_awaited_once_with(
+        routine_id="r1",
+        revision_id="rev_1",
+        session_cookie="cookie",
+    )
+
+
+def test_patch_routine_accepts_widened_fields(client, admin):
+    """The widened routine body carries policies + variables (incl. date type)
+    + env through to upstream in camelCase."""
+    r = client.patch(
+        "/api/v1/teams/routines/r1",
+        json={
+            "concurrency_policy": "skip_if_active",
+            "catch_up_policy": "enqueue_missed_with_cap",
+            "auto_pause_enabled": True,
+            "auto_pause_threshold": 5,
+            "variables": [{"name": "asOf", "type": "date", "required": True}],
+            "env": {"secrets": []},
+        },
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200, r.text
+    body = admin.patch_routine.await_args.kwargs["body"]
+    assert body["concurrencyPolicy"] == "skip_if_active"
+    assert body["catchUpPolicy"] == "enqueue_missed_with_cap"
+    assert body["autoPauseEnabled"] is True
+    assert body["autoPauseThreshold"] == 5
+    assert body["variables"][0] == {"name": "asOf", "type": "date", "required": True}
+    assert body["env"] == {"secrets": []}

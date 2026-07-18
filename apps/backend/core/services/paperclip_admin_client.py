@@ -1175,6 +1175,96 @@ class PaperclipAdminClient:
         )
 
     # ------------------------------------------------------------------
+    # Issue work-products (typed deliverables + review lifecycle)
+    #
+    # Work-products are an agent's first-class deliverables — preview_url /
+    # pull_request / artifact / document / … — each carrying a reviewState
+    # (none | needs_board_review | approved | changes_requested). Distinct
+    # from raw attachments: an attachment is a file, a work-product is the
+    # reviewable thing the agent produced. Surfaced on the issue-detail
+    # "Output" section + the company Artifacts gallery.
+    # ------------------------------------------------------------------
+
+    async def list_issue_work_products(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+    ) -> list | dict:
+        """List the work-products produced for an issue.
+
+        Maps to ``GET /api/issues/{issueId}/work-products`` (issue-scoped;
+        ``paperclip/server/src/routes/issues.ts``). Upstream returns a bare
+        array of ``IssueWorkProduct`` rows.
+        """
+        return await self._get(
+            f"/api/issues/{issue_id}/work-products",
+            session_cookie=session_cookie,
+        )
+
+    async def create_issue_work_product(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+        body: dict,
+    ) -> dict:
+        """Create a work-product on an issue. Body is whitelisted by the BFF.
+
+        Maps to ``POST /api/issues/{issueId}/work-products`` (validated
+        upstream against ``createIssueWorkProductSchema``).
+        """
+        return await self._post(
+            f"/api/issues/{issue_id}/work-products",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
+    async def update_work_product(
+        self,
+        *,
+        session_cookie: str,
+        work_product_id: str,
+        body: dict,
+    ) -> dict:
+        """Patch a work-product (the review-lifecycle transition).
+
+        Maps to ``PATCH /api/work-products/{id}`` (validated upstream against
+        ``updateIssueWorkProductSchema``, a partial). The board Approve /
+        Request-changes actions send ``{reviewState}``. Company scope is
+        asserted upstream against the session cookie's actor, so a
+        cross-tenant work-product id is rejected upstream (404/403).
+        """
+        return await self._patch(
+            f"/api/work-products/{work_product_id}",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
+    async def list_company_artifacts(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+        params: Optional[dict[str, Any]] = None,
+    ) -> dict:
+        """List the company Artifacts gallery (documents + attachments +
+        work-products, optionally grouped by task).
+
+        Maps to ``GET /api/companies/{companyId}/artifacts`` — upstream
+        ``assertCompanyAccess`` scopes it to the session cookie's company, so
+        ``company_id`` MUST be the server-derived company of the caller (the
+        BFF passes ``ctx.company_id``, never a client param). Returns the
+        upstream ``{artifacts, groups?, selectedGroup?, nextCursor}`` object
+        verbatim.
+        """
+        return await self._get(
+            f"/api/companies/{company_id}/artifacts",
+            session_cookie=session_cookie,
+            params=params,
+        )
+
+    # ------------------------------------------------------------------
     # Issue-thread interactions
     #
     # The resolution routes (accept / reject / respond / cancel) are

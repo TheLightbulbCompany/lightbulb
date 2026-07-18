@@ -46,6 +46,7 @@ const TEAMS_LIST_KEYS: Readonly<Record<string, string>> = {
   goals: "Goals",
   projects: "Projects",
   activity: "Activity",
+  artifacts: "Artifacts",
   settings: "Team Settings",
 };
 

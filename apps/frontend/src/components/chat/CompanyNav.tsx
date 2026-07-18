@@ -9,6 +9,7 @@ import {
   FolderKanban,
   Network,
   History,
+  Images,
 } from "lucide-react";
 import { TEAMS_PANEL_PREFIX } from "./InlineTeamsPanel";
 
@@ -43,6 +44,7 @@ const COMPANY_SECTIONS: { label: string | null; items: Item[] }[] = [
     label: "Company",
     items: [
       { panel: `${TEAMS_PANEL_PREFIX}org-chart`, label: "Org chart", Icon: Network },
+      { panel: `${TEAMS_PANEL_PREFIX}artifacts`, label: "Artifacts", Icon: Images },
       { panel: `${TEAMS_PANEL_PREFIX}activity`, label: "Activity", Icon: History },
     ],
   },

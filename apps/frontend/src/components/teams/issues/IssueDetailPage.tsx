@@ -379,6 +379,10 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
                 await castVote(commentId, vote, options);
               } catch (e) {
                 notifyApiError(e, "Failed to save feedback");
+                // Re-throw so OutputFeedbackButtons can revert its optimistic
+                // vote state — swallowing here leaves the button stuck showing a
+                // vote that never persisted.
+                throw e;
               }
             }}
           />

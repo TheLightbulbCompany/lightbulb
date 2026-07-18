@@ -88,7 +88,9 @@ def test_cast_feedback_vote_forwards_whitelisted_body(client, monkeypatch):
 
 
 def test_cast_feedback_vote_with_reason_and_sharing(client, monkeypatch):
+    # Consent ENABLED -> allowSharing:true is forwarded through unchanged.
     admin = MagicMock()
+    admin.get_company = AsyncMock(return_value={"id": "co_abc", "feedbackDataSharingEnabled": True})
     admin.upsert_issue_feedback_vote = AsyncMock(return_value={"id": "v1", "vote": "down"})
     _mock_admin(monkeypatch, admin)
 
@@ -104,9 +106,73 @@ def test_cast_feedback_vote_with_reason_and_sharing(client, monkeypatch):
         headers={"Authorization": "Bearer x"},
     )
     assert r.status_code == 200
+    admin.get_company.assert_awaited_once_with(company_id="co_abc", session_cookie="cookie")
     body = admin.upsert_issue_feedback_vote.await_args.kwargs["body"]
     assert body["reason"] == "missed the ask"
     assert body["allowSharing"] is True
+
+
+def test_cast_feedback_vote_forces_sharing_false_when_consent_disabled(client, monkeypatch):
+    # Consent DISABLED -> a direct POST with allowSharing:true must not share.
+    admin = MagicMock()
+    admin.get_company = AsyncMock(return_value={"id": "co_abc", "feedbackDataSharingEnabled": False})
+    admin.upsert_issue_feedback_vote = AsyncMock(return_value={"id": "v1", "vote": "up"})
+    _mock_admin(monkeypatch, admin)
+
+    r = client.post(
+        "/api/v1/teams/issues/iss1/feedback-votes",
+        json={
+            "targetType": "issue_comment",
+            "targetId": "cmt1",
+            "vote": "up",
+            "allowSharing": True,
+        },
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    admin.get_company.assert_awaited_once_with(company_id="co_abc", session_cookie="cookie")
+    body = admin.upsert_issue_feedback_vote.await_args.kwargs["body"]
+    assert body["allowSharing"] is False
+
+
+def test_cast_feedback_vote_fails_closed_when_company_missing(client, monkeypatch):
+    # Fail closed: a non-dict/missing company is treated as sharing-disabled.
+    admin = MagicMock()
+    admin.get_company = AsyncMock(return_value=None)
+    admin.upsert_issue_feedback_vote = AsyncMock(return_value={"id": "v1", "vote": "up"})
+    _mock_admin(monkeypatch, admin)
+
+    r = client.post(
+        "/api/v1/teams/issues/iss1/feedback-votes",
+        json={
+            "targetType": "issue_comment",
+            "targetId": "cmt1",
+            "vote": "up",
+            "allowSharing": True,
+        },
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    body = admin.upsert_issue_feedback_vote.await_args.kwargs["body"]
+    assert body["allowSharing"] is False
+
+
+def test_cast_feedback_vote_skips_consent_check_when_not_sharing(client, monkeypatch):
+    # No allowSharing requested -> no consent lookup on the common path.
+    admin = MagicMock()
+    admin.get_company = AsyncMock(return_value={"feedbackDataSharingEnabled": True})
+    admin.upsert_issue_feedback_vote = AsyncMock(return_value={"id": "v1", "vote": "up"})
+    _mock_admin(monkeypatch, admin)
+
+    r = client.post(
+        "/api/v1/teams/issues/iss1/feedback-votes",
+        json={"targetType": "issue_comment", "targetId": "cmt1", "vote": "up"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    admin.get_company.assert_not_awaited()
+    body = admin.upsert_issue_feedback_vote.await_args.kwargs["body"]
+    assert "allowSharing" not in body
 
 
 def test_cast_feedback_vote_rejects_bad_vote_value(client, monkeypatch):

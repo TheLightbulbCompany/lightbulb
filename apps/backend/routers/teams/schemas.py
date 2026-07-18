@@ -69,6 +69,16 @@ class WakeAgentBody(_Strict):
     payload: Optional[dict] = None
 
 
+class ResetAgentSessionBody(_Strict):
+    # Recovery op for a wedged agent — mirrors upstream ``resetAgentSessionSchema``
+    # (paperclip/packages/shared/src/validators/agent.ts): the single optional
+    # ``taskKey`` (``z.string().min(1).optional().nullable()``) scopes the reset to
+    # one task's runtime session; omitting it resets ALL sessions. ``extra="forbid"``
+    # (via ``_Strict``) rejects any smuggled adapter field with 422 at the BFF
+    # boundary; ``task_key`` aliases to the camelCase ``taskKey`` Paperclip reads.
+    task_key: Optional[str] = Field(default=None, min_length=1, max_length=200)
+
+
 class CreateIssueBody(_Strict):
     title: str = Field(min_length=1, max_length=200)
     description: Optional[str] = Field(default=None, max_length=20000)

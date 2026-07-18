@@ -740,6 +740,42 @@ class PaperclipAdminClient:
             session_cookie=session_cookie,
         )
 
+    async def reset_agent_session(
+        self,
+        *,
+        session_cookie: str,
+        agent_id: str,
+        body: Optional[dict] = None,
+    ) -> dict:
+        """Reset a wedged agent's runtime session state (recovery op).
+
+        Maps to ``POST /api/agents/{agentId}/runtime-state/reset-session``
+        (upstream ``resetAgentSessionSchema``). ``body`` carries an optional
+        ``taskKey`` to scope the reset to a single task's session; an empty
+        body resets all of the agent's runtime sessions. Board-gated upstream —
+        the BFF's per-user session cookie is a board actor.
+        """
+        return await self._post(
+            f"/api/agents/{agent_id}/runtime-state/reset-session",
+            json=body or {},
+            session_cookie=session_cookie,
+        )
+
+    async def clear_agent_error(self, *, session_cookie: str, agent_id: str) -> dict:
+        """Clear an agent's error status (recovery op).
+
+        Maps to ``POST /api/agents/{agentId}/clear-error``. Upstream flips an
+        ``error``-status agent back to ``idle`` and clears its ``errorReason``;
+        it 409s if the agent is not in ``error`` status (or is terminated /
+        pending_approval), which ``_post`` surfaces as a ``PaperclipApiError``.
+        Returns the updated agent record.
+        """
+        return await self._post(
+            f"/api/agents/{agent_id}/clear-error",
+            json={},
+            session_cookie=session_cookie,
+        )
+
     async def wake_agent(
         self,
         *,

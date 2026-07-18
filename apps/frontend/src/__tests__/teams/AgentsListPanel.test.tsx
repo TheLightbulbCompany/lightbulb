@@ -94,6 +94,66 @@ describe("AgentsListPanel", () => {
     expect(body).not.toHaveProperty("headers");
   });
 
+  it("rich hire: includes title + reportsTo when the operator fills them", async () => {
+    mockPost.mockClear();
+    mockPost.mockResolvedValue({ id: "a2" });
+    // A roster so the manager picker has a candidate to select. Persistent
+    // (not `...Once`) because typing/clicking re-renders the panel, and each
+    // re-render re-reads /agents — a one-shot value would revert to empty and
+    // drop the "mgr1" <option> before we can select it.
+    const emptyResp = { data: { agents: [] }, isLoading: false, error: null, mutate: mockMutate };
+    mockRead.mockReturnValue({
+      data: { agents: [{ id: "mgr1", name: "Manager Mo", role: "manager" }] },
+      isLoading: false,
+      error: null,
+      mutate: mockMutate,
+    });
+    try {
+      render(<AgentsListPanel />);
+
+      fireEvent.click(screen.getByRole("button", { name: /new agent/i }));
+      fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Helper" } });
+      fireEvent.change(screen.getByLabelText("Title"), {
+        target: { value: "Senior engineer" },
+      });
+      fireEvent.change(screen.getByLabelText("Reports to"), {
+        target: { value: "mgr1" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: /^create$/i }));
+
+      await waitFor(() => expect(mockPost).toHaveBeenCalledTimes(1));
+      expect(mockPost).toHaveBeenCalledWith("/agents", {
+        name: "Helper",
+        role: "engineer",
+        title: "Senior engineer",
+        reportsTo: "mgr1",
+      });
+      // Still no smuggled adapter fields.
+      const [, body] = mockPost.mock.calls[0];
+      expect(body).not.toHaveProperty("adapterType");
+      expect(body).not.toHaveProperty("adapterConfig");
+      expect(body).not.toHaveProperty("url");
+    } finally {
+      // Restore the module default so later tests' one-shot overrides + re-renders
+      // fall back to the empty roster, not this test's persistent one.
+      mockRead.mockReturnValue(emptyResp);
+    }
+  });
+
+  it("rich hire: omits an empty title and 'top level' manager (sends only {name, role})", async () => {
+    mockPost.mockClear();
+    mockPost.mockResolvedValue({ id: "a3" });
+    render(<AgentsListPanel />);
+    const buttons = screen.getAllByRole("button", { name: /new agent/i });
+    fireEvent.click(buttons[0]);
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Solo" } });
+    // Leave Title blank, leave Reports to on "No manager".
+    fireEvent.click(screen.getByRole("button", { name: /^create$/i }));
+    await waitFor(() => expect(mockPost).toHaveBeenCalledTimes(1));
+    const [, body] = mockPost.mock.calls[0];
+    expect(Object.keys(body as Record<string, unknown>).sort()).toEqual(["name", "role"]);
+  });
+
   it("renders agent rows with link to /teams/agents/{id}", () => {
     mockRead.mockReturnValueOnce({
       data: { agents: [{ id: "a1", name: "Alice", role: "ceo" }] },

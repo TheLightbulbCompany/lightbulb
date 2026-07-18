@@ -39,11 +39,14 @@ export function AgentOrgControls({
    *  remove() clears the agent's detail cache. */
   onDeleted?: () => void;
 }) {
-  const { setReportsTo, pause, resume, remove } = useAgentMutations();
+  const { setReportsTo, pause, resume, resetSession, clearError, remove } =
+    useAgentMutations();
   const [busy, setBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmReset, setConfirmReset] = useState(false);
   const seeded = isSeededAgent(agent);
   const paused = agent.status === "paused";
+  const errored = agent.status === "error";
 
   const run = useCallback(async (fn: () => Promise<void>) => {
     setBusy(true);
@@ -124,6 +127,66 @@ export function AgentOrgControls({
             </EditorialButton>
           </>
         ) : null}
+      </section>
+
+      {/* Recovery — get a wedged agent unstuck. Available for seeded agents
+          too (Friday/Atlas can wedge). "Clear error" only shows on an
+          error-status agent (upstream 409s otherwise); "Reset session" clears
+          runtime session state, so it's two-step to avoid an accidental wipe.
+          Neither dispatches an inference run, so no spend gate applies. */}
+      <section className="editorial-card p-4 flex flex-col gap-2">
+        <h3 className="font-editorial-serif text-lg">Recovery</h3>
+        <p className="text-xs text-[var(--mute)]">
+          Get a stuck agent unstuck without deleting it.
+        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          {errored ? (
+            <EditorialButton
+              variant="secondary"
+              size="sm"
+              disabled={busy}
+              onClick={() => run(() => clearError(agent.id))}
+            >
+              Clear error
+            </EditorialButton>
+          ) : null}
+          {!confirmReset ? (
+            <EditorialButton
+              variant="secondary"
+              size="sm"
+              disabled={busy}
+              onClick={() => setConfirmReset(true)}
+            >
+              Reset session
+            </EditorialButton>
+          ) : (
+            <>
+              <span className="text-sm text-[var(--ink-soft)]">
+                Reset {agent.name}&apos;s session?
+              </span>
+              <EditorialButton
+                size="sm"
+                disabled={busy}
+                onClick={() =>
+                  run(async () => {
+                    await resetSession(agent.id);
+                    setConfirmReset(false);
+                  })
+                }
+              >
+                Confirm
+              </EditorialButton>
+              <EditorialButton
+                variant="secondary"
+                size="sm"
+                disabled={busy}
+                onClick={() => setConfirmReset(false)}
+              >
+                Cancel
+              </EditorialButton>
+            </>
+          )}
+        </div>
       </section>
     </div>
   );

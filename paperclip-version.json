@@ -4,7 +4,7 @@
   "upstreamCreated": "2026-07-18T08:19:22Z",
   "extendedImage": "877352799272.dkr.ecr.us-east-1.amazonaws.com/isol8/paperclip-extended",
   "dev": {
-    "tag": "549a3c62-5defcab"
+    "tag": "81de03fa-5ed9df4"
   },
   "prod": {
     "tag": "549a3c62-5defcab"

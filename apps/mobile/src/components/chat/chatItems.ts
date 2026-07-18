@@ -10,6 +10,12 @@ export interface ChatItem {
   role: "user" | "assistant" | "tool" | "error";
   text: string;
   streaming?: boolean;
+  /**
+   * Error items only: typed code from the backend error frame (gate codes
+   * like `trial_daily_cap` / `trial_expired`, or OpenClaw errorKinds).
+   * Drives the structured ChatErrorCard; absent → plain error card.
+   */
+  code?: string;
   /** Tool items only: tool name + input args from the tool_start frame. */
   tool?: string;
   args?: Record<string, unknown>;

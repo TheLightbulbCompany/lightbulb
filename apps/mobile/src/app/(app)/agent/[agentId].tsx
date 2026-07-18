@@ -17,6 +17,7 @@ import {
 } from "react-native";
 
 import { AgentHead } from "../../../components/chat/AgentHead";
+import { ChatErrorCard } from "../../../components/chat/ChatErrorCard";
 import type { ChatItem } from "../../../components/chat/chatItems";
 import { EmptyState } from "../../../components/chat/EmptyState";
 import { MessageMarkdown } from "../../../components/chat/MessageMarkdown";
@@ -200,7 +201,7 @@ export default function AgentChat() {
       } else if (msg.type === "error") {
         setItems((prev) => [
           ...prev,
-          { id: randomUUID(), role: "error", text: msg.message },
+          { id: randomUUID(), role: "error", text: msg.message, code: msg.code },
         ]);
         // Additive gate release: gate-level errors are terminal but never
         // followed by a run_ended, so the error frame itself must release
@@ -574,10 +575,11 @@ export default function AgentChat() {
               </View>
             );
           }
-          // Error frame: full-width card, not a bubble (spec §4).
+          // Error frame: full-width card, not a bubble (spec §4). Coded
+          // free-tier gate errors render the structured upgrade card.
           return (
-            <View style={[styles.errorCard, index > 0 && styles.groupGap]}>
-              <Text style={styles.errorText}>{item.text}</Text>
+            <View style={index > 0 ? styles.groupGap : undefined}>
+              <ChatErrorCard code={item.code} message={item.text} />
             </View>
           );
         }}

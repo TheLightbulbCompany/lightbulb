@@ -153,7 +153,7 @@ function trialEndLabel(trialEndSec: number): string {
   });
 }
 
-function statusChipLabel(account: BillingAccount): string | null {
+export function statusChipLabel(account: BillingAccount): string | null {
   const status = account.subscription_status;
   // 200 with no Stripe status yet = pre-subscribe account (contract §3).
   if (!status) return "No active subscription";
@@ -163,14 +163,23 @@ function statusChipLabel(account: BillingAccount): string | null {
     return `Trial · ${days} ${days === 1 ? "day" : "days"} left`;
   }
   if (status === "active") return "Active";
+  // Card-less free tier: the plan row itself says "Free plan" — no chip
+  // (and never the raw "trial_local" string).
+  if (status === "trial_local") return null;
   return status; // render verbatim (chip style uppercases it)
 }
 
 /** Provider label mapping (contract §3, LLMPanel labels). */
-function providerLabel(
+export function providerLabel(
   account: BillingAccount,
   chatgpt: ChatGPTStatus | null,
 ): { title: string; detail: string | null } {
+  // Free tier stores no provider_choice (`bedrock_trial` is a config-path
+  // mode) but runs Claude Sonnet via Bedrock — "No provider selected"
+  // would wrongly tell a free user to go pick one.
+  if (account.subscription_status === "trial_local" && account.provider_choice == null) {
+    return { title: "Claude Sonnet", detail: "Included with the free plan" };
+  }
   switch (account.provider_choice) {
     case "chatgpt_oauth": {
       let detail = "Inference via your ChatGPT account";
@@ -286,14 +295,15 @@ export default function Settings() {
     ]);
   }, [signOut, api]);
 
-  const manageBillingRow = (
+  const renderBillingRow = (label: string) => (
     <Pressable
       style={({ pressed }) => [styles.linkRow, pressed && styles.linkRowPressed]}
       onPress={() => void Linking.openURL(MANAGE_BILLING_URL)}
     >
-      <Text style={styles.linkText}>Manage billing on isol8.co</Text>
+      <Text style={styles.linkText}>{label}</Text>
     </Pressable>
   );
+  const manageBillingRow = renderBillingRow("Manage billing on isol8.co");
 
   let billingCards: ReactNode;
   if (restricted) {
@@ -337,6 +347,7 @@ export default function Settings() {
   } else {
     const { account, credits, chatgpt } = state;
     const chip = statusChipLabel(account);
+    const isTrialLocal = account.subscription_status === "trial_local";
     const trialing =
       account.subscription_status === "trialing" && account.trial_end != null;
     const showCredits =
@@ -349,19 +360,29 @@ export default function Settings() {
         <Card>
           <Text style={styles.overline}>PLAN</Text>
           <View style={styles.planRow}>
-            <Text style={styles.bodyText}>Isol8 — $50 / month</Text>
+            <Text style={styles.bodyText}>
+              {isTrialLocal ? "Isol8 Free plan" : "Isol8 — $50 / month"}
+            </Text>
             {chip != null && (
               <View style={styles.planBadge}>
                 <Text style={styles.planBadgeText}>{chip}</Text>
               </View>
             )}
           </View>
+          {isTrialLocal && (
+            <Text style={styles.captionText}>
+              Includes a daily free usage allowance. Upgrade for the full plan
+              — $50 / month.
+            </Text>
+          )}
           {trialing && account.trial_end != null && (
             <Text style={styles.captionText}>
               Trial ends {trialEndLabel(account.trial_end)}
             </Text>
           )}
-          {manageBillingRow}
+          {isTrialLocal
+            ? renderBillingRow("Upgrade on isol8.co")
+            : manageBillingRow}
         </Card>
 
         {showCredits && (

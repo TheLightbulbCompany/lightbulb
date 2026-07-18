@@ -87,6 +87,7 @@ function formatUptime(ms: number): string {
 function planLabel(status: string | null): string {
   if (!status) return "None";
   if (status === "trialing") return "Trial";
+  if (status === "trial_local") return "Free";
   if (status === "active") return "Active";
   return status;
 }

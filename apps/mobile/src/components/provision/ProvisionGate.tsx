@@ -155,13 +155,16 @@ function Interstitial({
   );
 }
 
-/** Outbound "Manage on isol8.co" CTA / admin-only note for the gate states. */
+/** Outbound gate CTA / admin-only note for the gate states. */
 function ManageAction({
   adminOnly,
   manageUrl,
+  actionLabel,
 }: {
   adminOnly: boolean;
   manageUrl: string;
+  /** Gate's own verb ("Upgrade", "Set up billing") — falls back to "Manage". */
+  actionLabel?: string | null;
 }) {
   if (adminOnly) {
     return (
@@ -172,14 +175,17 @@ function ManageAction({
       </View>
     );
   }
+  // Keep the "on isol8.co" cue: the button leaves the app (D1 — billing /
+  // checkout / OAuth never happen in-app).
+  const label = `${actionLabel || "Manage"} on isol8.co`;
   return (
     <Pressable
       style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}
       onPress={() => void Linking.openURL(manageUrl)}
       accessibilityRole="button"
-      accessibilityLabel="Manage on isol8.co"
+      accessibilityLabel={label}
     >
-      <Text style={styles.primaryButtonText}>Manage on isol8.co</Text>
+      <Text style={styles.primaryButtonText}>{label}</Text>
     </Pressable>
   );
 }
@@ -239,6 +245,7 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
           <ManageAction
             adminOnly={status.adminOnly}
             manageUrl={resolveManageUrl(status.href)}
+            actionLabel={status.actionLabel}
           />
         }
       />

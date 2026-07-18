@@ -1283,31 +1283,32 @@ def build_openclaw_config_dict(
                 # and backs off when mode is set explicitly). Change the two
                 # together or not at all.
                 "contextPruning": {"mode": "cache-ttl", "ttl": "1h"},
-                # heartbeat is NOT a no-op: upstream treats a present
-                # `agents.defaults.heartbeat` as truthy and falls back to a
-                # 30m interval with `target: none`. That is OpenClaw's
-                # intended default — a periodic internal-maintenance turn per
-                # agent (review HEARTBEAT.md, update memory) that does NOT
-                # send any outbound message. We set `every` explicitly so the
-                # cadence is visible in our config rather than inherited from
-                # an upstream default. Event-driven waking (Paperclip issue
+                # The heartbeat key is ALWAYS written, because an absent key
+                # does not mean off: upstream runs a 30m heartbeat per agent
+                # when `agents.defaults.heartbeat` is missing (interval default
+                # in src/auto-reply/heartbeat.ts; docs/gateway/heartbeat.md —
+                # `every: "0m"` is the documented disable). The heartbeat is a
+                # periodic internal-maintenance turn per agent (review
+                # HEARTBEAT.md, update memory) that does NOT send any outbound
+                # message. Event-driven waking (Paperclip issue
                 # assignment/comment) is independent of this.
                 #
-                # `model` routes the heartbeat to the cheap tier — it's pure
-                # overhead and doesn't need the premium default. The heartbeat
-                # is an ordinary turn (unlike compaction), so it uses
-                # `heartbeat_model` (cheap tier for EVERY provider, including
-                # chatgpt_oauth → gpt-5.4-mini) rather than `cheap_model`
-                # (which stays None on OAuth for the Codex native-compaction
-                # constraint). `None` only when a provider has no cheaper tier,
-                # in which case the heartbeat inherits the default model.
+                # The BEDROCK TRIAL pins `every: "0m"`: the heartbeat is a
+                # recurring self-run per agent, and a trial container must not
+                # burn credits with no human in the loop. "0m" also drops
+                # HEARTBEAT.md from bootstrap context, so trial agents never
+                # see heartbeat-only instructions.
                 #
-                # The BEDROCK TRIAL omits the key entirely rather than disabling
-                # it in place: a present `heartbeat` key is truthy to OpenClaw
-                # regardless of its contents (it falls back to a 30m interval
-                # with `target: none`), so this is the only way to stop it. The
-                # heartbeat is a recurring self-run per agent — a trial
-                # container must not burn credits with no human in the loop.
+                # On paid paths, `model` routes the heartbeat to the cheap
+                # tier — it's pure overhead and doesn't need the premium
+                # default. The heartbeat is an ordinary turn (unlike
+                # compaction), so it uses `heartbeat_model` (cheap tier for
+                # EVERY provider, including chatgpt_oauth → gpt-5.4-mini)
+                # rather than `cheap_model` (which stays None on OAuth for the
+                # Codex native-compaction constraint). `None` only when a
+                # provider has no cheaper tier, in which case the heartbeat
+                # inherits the default model.
+                #
                 # `isolatedSession` + `lightContext` are the heartbeat cost
                 # collapse: without them each 30m heartbeat replays the full
                 # conversation context (~100K tokens on a busy session, 48×
@@ -1317,16 +1318,14 @@ def build_openclaw_config_dict(
                 # a maintenance turn (read HEARTBEAT.md, reply HEARTBEAT_OK),
                 # not a conversation, so continuity loss is the point, not a
                 # cost. Both keys schema-verified on the deployed fork tag.
-                **(
-                    {}
+                "heartbeat": (
+                    {"every": "0m"}
                     if is_bedrock_trial
                     else {
-                        "heartbeat": {
-                            "every": "30m",
-                            "isolatedSession": True,
-                            "lightContext": True,
-                            **({"model": heartbeat_model} if heartbeat_model else {}),
-                        }
+                        "every": "30m",
+                        "isolatedSession": True,
+                        "lightContext": True,
+                        **({"model": heartbeat_model} if heartbeat_model else {}),
                     }
                 ),
                 # utilityModel routes titles/summaries and other one-shot

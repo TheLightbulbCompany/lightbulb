@@ -801,10 +801,11 @@ def test_bedrock_trial_disables_cron_service():
     assert _trial_cfg()["cron"] == {"enabled": False}
 
 
-def test_bedrock_trial_omits_heartbeat():
-    """A present `heartbeat` key is truthy to OpenClaw regardless of contents,
-    so the only way to stop the recurring self-run is to omit it."""
-    assert "heartbeat" not in _trial_cfg()["agents"]["defaults"]
+def test_bedrock_trial_disables_heartbeat():
+    """`every: "0m"` is the documented upstream disable. Omitting the key does
+    NOT stop the recurring self-run — upstream falls back to a 30m default —
+    so the trial must pin the zero cadence explicitly."""
+    assert _trial_cfg()["agents"]["defaults"]["heartbeat"] == {"every": "0m"}
 
 
 def test_bedrock_trial_skips_channel_account_reinjection():

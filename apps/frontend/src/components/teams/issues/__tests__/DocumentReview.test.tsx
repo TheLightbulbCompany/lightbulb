@@ -93,6 +93,57 @@ describe("computeAnchor", () => {
       computeAnchor({ markdown: "a b c", containerText: "a b c", startOffset: 1, endOffset: 2 }),
     ).toBeNull();
   });
+
+  describe("repeated selected text", () => {
+    // "foo bar" appears at raw offsets 0 and 12 in this document.
+    const markdown = "foo bar baz foo bar qux";
+    const containerText = markdown;
+
+    it("pins the markdown span to the SECOND occurrence when the user selects it", () => {
+      const start = 12;
+      const anchor = computeAnchor({
+        markdown,
+        containerText,
+        startOffset: start,
+        endOffset: start + "foo bar".length,
+      });
+      expect(anchor).not.toBeNull();
+      const pos = anchor!.selector.position;
+      // Not the first occurrence (0) — the actual, later selection.
+      expect(pos.markdownStart).toBe(12);
+      expect(pos.markdownEnd).toBe(19);
+      expect(pos.normalizedStart).toBe(12);
+      expect(markdown.slice(pos.markdownStart, pos.markdownEnd)).toBe("foo bar");
+    });
+
+    it("still pins the FIRST occurrence when the user selects it", () => {
+      const start = 0;
+      const anchor = computeAnchor({
+        markdown,
+        containerText,
+        startOffset: start,
+        endOffset: start + "foo bar".length,
+      });
+      expect(anchor).not.toBeNull();
+      const pos = anchor!.selector.position;
+      expect(pos.markdownStart).toBe(0);
+      expect(pos.markdownEnd).toBe(7);
+      expect(pos.normalizedStart).toBe(0);
+    });
+
+    it("leaves a single-occurrence selection at its only match", () => {
+      const single = "the quick brown fox";
+      const start = single.indexOf("brown");
+      const anchor = computeAnchor({
+        markdown: single,
+        containerText: single,
+        startOffset: start,
+        endOffset: start + "brown".length,
+      });
+      expect(anchor).not.toBeNull();
+      expect(anchor!.selector.position.markdownStart).toBe(start);
+    });
+  });
 });
 
 describe("getRequestConfirmationTargetHref", () => {

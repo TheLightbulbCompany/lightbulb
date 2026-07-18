@@ -74,6 +74,32 @@ function pickClosest(occurrences: number[], expected: number): number | null {
 }
 
 /**
+ * Locate `needle` inside `target` (the raw or normalized markdown body) at the
+ * occurrence that best corresponds to `normalizedOffset` — a position in
+ * normalized-container space. When the phrase REPEATS we must not blindly take
+ * the first match: `normalizedOffset` was already disambiguated to the user's
+ * actual selection, so we scale it into `target`'s coordinate space and pick the
+ * closest occurrence. This mirrors how the read path ({@link rangesForText})
+ * resolves a repeated span against its own stored offset, so write and read
+ * agree on which occurrence a thread anchors to. Returns -1 when absent; a
+ * single occurrence resolves exactly like `target.indexOf(needle)`.
+ */
+function occurrenceClosestToNormalized(
+  target: string,
+  needle: string,
+  normalizedOffset: number,
+  normalizedContainerLength: number,
+): number {
+  const occurrences = findAllOccurrences(target, needle);
+  if (occurrences.length === 0) return -1;
+  const expected =
+    normalizedContainerLength <= 0
+      ? normalizedOffset
+      : Math.round((normalizedOffset / normalizedContainerLength) * target.length);
+  return pickClosest(occurrences, expected) ?? occurrences[0];
+}
+
+/**
  * Pure anchor computation — testable without a DOM. Builds a valid
  * `AnnotationAnchorSelector` from a raw text selection inside `containerText`,
  * pinned against the raw `markdown` body. Returns null when the selection is
@@ -106,16 +132,30 @@ export function computeAnchor(input: {
 
   // Position into the raw markdown body: prefer an exact substring match, then
   // a normalized match, else fall back to the normalized-container offsets so
-  // the (end > start) invariant always holds.
+  // the (end > start) invariant always holds. When the selected text REPEATS in
+  // the document, resolve to the occurrence closest to the user's actual
+  // selection (`normalizedStart`) rather than the first — otherwise the selector
+  // would describe an earlier duplicate and the backend could re-anchor the new
+  // thread onto the wrong span.
   let markdownStart = normalizedStart;
   let markdownEnd = normalizedEnd;
-  const rawIdx = input.markdown.indexOf(rawSelected);
+  const rawIdx = occurrenceClosestToNormalized(
+    input.markdown,
+    rawSelected,
+    normalizedStart,
+    normalizedContainer.length,
+  );
   if (rawIdx !== -1) {
     markdownStart = rawIdx;
     markdownEnd = rawIdx + rawSelected.length;
   } else {
     const normalizedMarkdown = normalizeAnchorText(input.markdown);
-    const normIdx = normalizedMarkdown.indexOf(needle);
+    const normIdx = occurrenceClosestToNormalized(
+      normalizedMarkdown,
+      needle,
+      normalizedStart,
+      normalizedContainer.length,
+    );
     if (normIdx !== -1) {
       markdownStart = normIdx;
       markdownEnd = normIdx + needle.length;

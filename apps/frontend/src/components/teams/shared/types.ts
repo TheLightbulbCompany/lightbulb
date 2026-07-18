@@ -117,6 +117,22 @@ export interface IssueComment {
   authorClerkUserId?: string | null;
 }
 
+/** Thumbs up/down value for a feedback vote on an agent output. */
+export type FeedbackVoteValue = "up" | "down";
+
+/** A single feedback vote cast on an agent output (comment / doc revision).
+ * Returned from GET /teams/issues/{id}/feedback-votes. The UI keys these by
+ * targetId to render the active vote state per agent comment. */
+export interface FeedbackVote {
+  id: string;
+  /** "issue_comment" | "issue_document_revision" — the kind of output voted on. */
+  targetType: string;
+  /** Id of the voted output (e.g. the comment id). */
+  targetId: string;
+  vote: FeedbackVoteValue;
+  reason?: string | null;
+}
+
 /** Body for POST /teams/issues. Composer shape for NewIssueDialog.
  *
  * The Teams BFF `CreateIssueBody` schema (apps/backend/routers/teams/schemas.py)

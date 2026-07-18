@@ -44,6 +44,7 @@ export const teamsQueryKeys = {
     detail: (id: string) => `/issues/${id}`,
     comments: (id: string) => `/issues/${id}/comments`,
     interactions: (id: string) => `/issues/${id}/interactions`,
+    feedbackVotes: (id: string) => `/issues/${id}/feedback-votes`,
   },
   goals: {
     list: () => `/goals`,

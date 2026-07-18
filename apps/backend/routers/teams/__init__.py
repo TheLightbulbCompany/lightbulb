@@ -4,6 +4,7 @@ from fastapi import APIRouter
 
 from . import agents as _agents
 from . import approvals as _approvals
+from . import feedback as _feedback
 from . import feed as _feed
 from . import inbox as _inbox
 from . import interactions as _interactions
@@ -21,4 +22,5 @@ router.include_router(_interactions.router)
 router.include_router(_runs.router)
 router.include_router(_work.router)
 router.include_router(_feed.router)
+router.include_router(_feedback.router)
 router.include_router(_settings_r.router)

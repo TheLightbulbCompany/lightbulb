@@ -138,6 +138,13 @@ async def test_personal_owner_writes_four_files(monkeypatch):
     assert "PAPERCLIP_WAKE_REASON" in agents_md
     assert "PAPERCLIP_RUN_ID" in agents_md
     assert "409" in agents_md  # 'never retry a 409' rule
+    # Plan-document / work-product doctrine: a plan is a plan document (not a
+    # file), a deliverable is a work product, and every issue gets a real
+    # disposition rather than a lingering in_progress + comment.
+    assert "documents/plan" in agents_md
+    assert "work product" in agents_md
+    assert "request_confirmation" in agents_md
+    assert "in_progress" in agents_md
     # Only Atlas (recruiter) and Friday (CEO) ship in the container, so the
     # playbook may name Atlas as the hire path. Every other specialist must
     # come from paperclipListAgents at runtime — no hardcoded roster.

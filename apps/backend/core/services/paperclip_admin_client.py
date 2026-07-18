@@ -1478,6 +1478,72 @@ class PaperclipAdminClient:
         )
 
     # ------------------------------------------------------------------
+    # Issue feedback votes (thumbs up/down on agent output)
+    #
+    # The only reinforcement signal Paperclip feeds back into agents. Votes
+    # are board-only upstream; the BFF's session cookie is a board session so
+    # these succeed. Trace listings are consent-gated by the caller
+    # (feedbackDataSharingEnabled on the company) — see routers/teams/feedback.py.
+    # ------------------------------------------------------------------
+
+    async def list_issue_feedback_votes(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+    ) -> list | dict:
+        """List the caller's feedback votes on an issue.
+
+        Maps to ``GET /api/issues/{id}/feedback-votes`` — upstream returns a
+        bare array of the current board user's votes on the issue's targets.
+        """
+        return await self._get(
+            f"/api/issues/{issue_id}/feedback-votes",
+            session_cookie=session_cookie,
+        )
+
+    async def upsert_issue_feedback_vote(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+        body: dict,
+    ) -> dict:
+        """Cast (upsert) a feedback vote on an agent output. Body whitelisted
+        by the BFF (``UpsertFeedbackVoteBody``).
+
+        Maps to ``POST /api/issues/{id}/feedback-votes`` → 201 with the vote.
+        """
+        return await self._post(
+            f"/api/issues/{issue_id}/feedback-votes",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
+    async def list_issue_feedback_traces(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+        params: Optional[dict[str, Any]] = None,
+    ) -> list | dict:
+        """List feedback traces for an issue (shared-with-Labs export records).
+
+        Maps to ``GET /api/issues/{id}/feedback-traces``. The BFF gates this on
+        the company's ``feedbackDataSharingEnabled`` consent flag BEFORE
+        calling — traces are not exposed when sharing is disabled.
+        """
+        return await self._get(
+            f"/api/issues/{issue_id}/feedback-traces",
+            session_cookie=session_cookie,
+            params=params,
+        )
+
+    # (The feedback-traces consent gate reads ``feedbackDataSharingEnabled``
+    # via the existing ``get_company`` method defined in the Company settings
+    # section below.)
+
+    # ------------------------------------------------------------------
     # Issue attachments
     # ------------------------------------------------------------------
 

@@ -25,6 +25,8 @@ import { useIssueDetail } from "./hooks/useIssueDetail";
 import { useIssueMutations } from "./hooks/useIssueMutations";
 import { useIssueInteractions } from "./hooks/useIssueInteractions";
 import { useInteractionMutations } from "./hooks/useInteractionMutations";
+import { useIssueFeedback } from "./hooks/useIssueFeedback";
+import { notifyApiError } from "@/lib/notify";
 import { patchExecutionPolicy } from "./executionPolicy";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
@@ -164,6 +166,7 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
   const { interactions } = useIssueInteractions(issueId);
   const mutations = useIssueMutations();
   const interactionMutations = useInteractionMutations();
+  const { votesByTarget, castVote } = useIssueFeedback(issueId);
   const { user } = useUser();
   const { read } = useTeamsApi();
   const { data: agentsResp } = read<{ agents: CompanyAgent[] }>("/agents");
@@ -369,6 +372,14 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
             }}
             onCancelInteraction={async (interaction) => {
               await interactionMutations.cancel(issueId, interaction.id);
+            }}
+            feedbackVotes={votesByTarget}
+            onVoteComment={async (commentId, vote, options) => {
+              try {
+                await castVote(commentId, vote, options);
+              } catch (e) {
+                notifyApiError(e, "Failed to save feedback");
+              }
             }}
           />
         </div>

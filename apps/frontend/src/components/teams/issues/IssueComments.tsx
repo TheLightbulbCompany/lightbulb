@@ -21,11 +21,14 @@ import { Textarea } from "@/components/ui/textarea";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
 import { IssueThreadInteractionCard } from "./IssueThreadInteractionCard";
+import { OutputFeedbackButtons } from "./OutputFeedbackButtons";
 import { buildTeamsThreadItems } from "./lib/teams-thread-items";
 import type {
   AskUserQuestionsAnswer,
   AskUserQuestionsInteraction,
   CompanyAgent,
+  FeedbackVote,
+  FeedbackVoteValue,
   IssueComment,
   IssueThreadInteraction,
   RequestCheckboxConfirmationInteraction,
@@ -64,6 +67,20 @@ export interface IssueCommentsProps {
   onCancelInteraction?: (
     interaction: AskUserQuestionsInteraction,
   ) => Promise<void> | void;
+  /** Active feedback votes keyed by comment id — highlights the thumbs
+   * up/down on agent-authored comments. Omit to hide the vote controls. */
+  feedbackVotes?: Map<string, FeedbackVote>;
+  /** Cast a feedback vote on an agent comment. Omit to hide the controls. */
+  onVoteComment?: (
+    commentId: string,
+    vote: FeedbackVoteValue,
+    options?: { reason?: string },
+  ) => Promise<void>;
+}
+
+/** Agent-authored comments are the reinforcement-signal targets. */
+function isAgentComment(c: IssueComment): boolean {
+  return Boolean(c.authorAgentId) || c.authorKind === "agent";
 }
 
 function authorLabel(
@@ -83,11 +100,22 @@ function CommentRow({
   comment,
   agents,
   currentUserId,
+  feedbackVotes,
+  onVoteComment,
 }: {
   comment: IssueComment;
   agents: CompanyAgent[];
   currentUserId?: string | null;
+  feedbackVotes?: Map<string, FeedbackVote>;
+  onVoteComment?: (
+    commentId: string,
+    vote: FeedbackVoteValue,
+    options?: { reason?: string },
+  ) => Promise<void>;
 }) {
+  // Feedback votes attach only to agent output, and only when the caller wired
+  // the vote handler (the reinforcement signal back into agents).
+  const showFeedback = Boolean(onVoteComment) && isAgentComment(comment);
   return (
     <li
       className="flex flex-col gap-1 pl-3"
@@ -106,6 +134,12 @@ function CommentRow({
       <div className="text-sm" style={{ color: "var(--ink-soft)" }}>
         <MarkdownView>{comment.body}</MarkdownView>
       </div>
+      {showFeedback ? (
+        <OutputFeedbackButtons
+          activeVote={feedbackVotes?.get(comment.id)?.vote ?? null}
+          onVote={(vote, options) => onVoteComment!(comment.id, vote, options)}
+        />
+      ) : null}
     </li>
   );
 }
@@ -121,6 +155,8 @@ export function IssueComments({
   onRejectInteraction,
   onSubmitInteractionAnswers,
   onCancelInteraction,
+  feedbackVotes,
+  onVoteComment,
 }: IssueCommentsProps) {
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -176,6 +212,8 @@ export function IssueComments({
                 comment={item.comment}
                 agents={agents}
                 currentUserId={currentUserId}
+                feedbackVotes={feedbackVotes}
+                onVoteComment={onVoteComment}
               />
             ) : (
               <li key={`interaction-${item.id}`}>

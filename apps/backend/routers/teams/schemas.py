@@ -135,6 +135,28 @@ class AddIssueCommentBody(_Strict):
     body: str = Field(min_length=1, max_length=20000)
 
 
+class UpsertFeedbackVoteBody(_Strict):
+    """Body for ``POST /teams/issues/{id}/feedback-votes``.
+
+    Mirrors upstream ``upsertIssueFeedbackVoteSchema``
+    (paperclip/packages/shared/src/validators/feedback.ts): thumbs up/down on
+    an agent output (a comment or a document revision). ``extra="forbid"``
+    (via ``_Strict``) rejects any smuggled adapter field with 422 at the BFF
+    boundary. The enums are constrained here so junk 422s locally instead of
+    being forwarded for upstream to reject opaquely.
+
+    ``allow_sharing`` defaults to omitted (local-only): sharing the voted
+    output with Paperclip Labs is opt-in, and the Isol8 UI casts votes
+    local-only. ``target_type`` aliases to ``targetType`` etc. via ``_Strict``.
+    """
+
+    target_type: str = Field(pattern=r"^(issue_comment|issue_document_revision)$")
+    target_id: str = Field(min_length=1, max_length=200)
+    vote: str = Field(pattern=r"^(up|down)$")
+    reason: Optional[str] = Field(default=None, max_length=1000)
+    allow_sharing: Optional[bool] = None
+
+
 class CreateRoutineBody(_Strict):
     """Body for ``POST /teams/routines``.
 

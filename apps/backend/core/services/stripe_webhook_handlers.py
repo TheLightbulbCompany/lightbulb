@@ -571,7 +571,10 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
                 properties={
                     "from_status": old_status,
                     "to_status": new_status,
-                    "provider_choice": metadata_provider or account.get("provider_choice"),
+                    # Same persisted-only rule as the bridge below: claim the
+                    # metadata provider only when its row write committed.
+                    "provider_choice": (metadata_provider if provider_persisted else None)
+                    or account.get("provider_choice"),
                 },
             )
         except Exception:
@@ -605,8 +608,14 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
     await write_owner_facts(account["owner_id"], account_overrides=facts_overrides)
 
     # Customer-analytics bridge (the EMF put_metric above is the operational
-    # counterpart) — land the lifecycle transition on the person.
-    _bridge_subscription_state(account, event_data, old_status, new_status, metadata_provider)
+    # counterpart) — land the lifecycle transition on the person. Metadata
+    # only rides along when its billing-row write committed; otherwise the
+    # bridge falls back to the row's provider, so a skipped backup (live→live
+    # recovery) or a swallowed write failure never stamps the person profile
+    # with a provider the row doesn't have.
+    _bridge_subscription_state(
+        account, event_data, old_status, new_status, metadata_provider if provider_persisted else None
+    )
     return None
 
 

@@ -259,6 +259,38 @@ async def test_past_due_recovery_does_not_rewrite_provider_choice(mock_repo):
 
 
 @pytest.mark.asyncio
+async def test_unpersisted_metadata_never_reaches_analytics(mock_repo):
+    """When the provider backup write is skipped, the PostHog bridge must
+    report the row's provider — not the stale checkout-time metadata.
+
+    Otherwise a past_due → active recovery after a provider switch keeps the
+    billing row intact but still stamps the person profile / lifecycle event
+    with the checkout-time provider, corrupting provider segmentation for
+    exactly the case the row guard protects.
+    """
+    mock_repo.get_by_owner_id.return_value = {
+        "owner_id": "org_x",
+        "owner_type": "org",
+        "stripe_customer_id": "cus_x",
+        "subscription_status": "past_due",
+        "provider_choice": "byo_key",
+    }
+    event = _subscription_event(
+        default_payment_method=None,
+        status="active",
+        metadata={"owner_id": "org_x", "provider_choice": "bedrock_claude"},
+    )
+    event["type"] = "customer.subscription.updated"
+    with patch.object(handlers, "capture_product_event") as capture:
+        await handlers.handle_subscription_state(event, MagicMock())
+
+    assert capture.call_count == 1
+    kwargs = capture.call_args.kwargs
+    assert kwargs["properties"]["provider_choice"] == "byo_key"
+    assert kwargs["set_person"]["provider_choice"] == "byo_key"
+
+
+@pytest.mark.asyncio
 async def test_webhook_backup_write_bedrock_passes_no_connector(mock_repo):
     """A bedrock subscription event passes connector_user_id=None — bedrock is
     not connector-backed, and None leaves any existing connector untouched."""

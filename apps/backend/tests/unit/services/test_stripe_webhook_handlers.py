@@ -377,15 +377,18 @@ async def test_trialing_to_active_does_not_dispatch_reprovision(mock_repo):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("prior_status", ["trial_local", "active", "trialing"])
 @pytest.mark.parametrize("pending_status", ["incomplete", "incomplete_expired"])
-async def test_incomplete_does_not_clobber_trial_local(mock_repo, pending_status):
+async def test_incomplete_never_clobbers_access_granting_status(mock_repo, prior_status, pending_status):
     """A Checkout-born subscription surfaces as `incomplete` before its first
     invoice settles (and `incomplete_expired` when checkout is abandoned).
-    Neither may be persisted over trial_local: the status write would make the
-    follow-on active event skip the trial→paid conversion reprovision, and it
-    would strip a still-valid free-tier owner's platform access. The handler
-    must skip ALL writes and let the active event do them."""
-    reprovision, created = await _run_state_capturing_reprovision(mock_repo, "trial_local", pending_status)
+    Neither may overwrite an access-granting status: over trial_local the
+    write would make the follow-on active event skip the trial→paid
+    conversion reprovision and strip a still-valid free-tier owner's access;
+    over active/trialing it is a stale out-of-order event (Stripe webhook
+    delivery is unordered) that would block a customer who already paid. The
+    handler must skip ALL writes."""
+    reprovision, created = await _run_state_capturing_reprovision(mock_repo, prior_status, pending_status)
 
     mock_repo.set_subscription.assert_not_called()
     mock_repo.set_provider_choice.assert_not_called()

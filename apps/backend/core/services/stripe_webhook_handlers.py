@@ -425,22 +425,35 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
     # trial->paid moment).
     old_status = account.get("subscription_status")
     new_status = event_data.get("status", "active")
-    if old_status == "trial_local" and new_status in ("incomplete", "incomplete_expired"):
+    if new_status in ("incomplete", "incomplete_expired") and old_status in ("trial_local", "active", "trialing"):
         # Checkout bills immediately (no Stripe trial), so a Checkout-born
         # subscription can surface here as `incomplete` (.created fires before
         # the first invoice settles) or `incomplete_expired` (checkout
-        # abandoned). Neither is a real subscription yet, and persisting it
-        # over trial_local would (a) make the follow-on active event see
-        # old_status != "trial_local" and silently skip the trial→paid
-        # conversion reprovision below, leaving a paying customer on the
-        # locked-down trial box, and (b) strip a still-valid free-tier owner's
-        # platform access (`incomplete*` is not in _ACTIVE_STATUSES). Skip ALL
-        # writes: the active event carries the same metadata and performs them;
-        # an abandoned checkout leaves the free tier untouched.
+        # abandoned). Neither may ever overwrite an access-granting status:
+        #
+        #   - over "trial_local": the write would (a) make the follow-on
+        #     active event see old_status != "trial_local" and silently skip
+        #     the trial→paid conversion reprovision below, leaving a paying
+        #     customer on the locked-down trial box, and (b) strip a
+        #     still-valid free-tier owner's platform access (`incomplete*` is
+        #     not in _ACTIVE_STATUSES).
+        #   - over "active"/"trialing": webhook delivery is UNORDERED
+        #     (https://docs.stripe.com/webhooks#event-ordering) — the stale
+        #     .created(incomplete) can land after .updated(active) already
+        #     persisted, and writing it would block a customer who paid.
+        #     Stripe's state machine never re-enters incomplete from a live
+        #     state, so an incomplete event against a live row is always
+        #     stale or out of order.
+        #
+        # Skip ALL writes: for a fresh checkout the active event carries the
+        # same metadata and performs them; for a stale event the row is
+        # already correct; an abandoned checkout leaves the free tier
+        # untouched.
         logger.info(
-            "Skipping %s persist for trial_local owner %s — checkout not yet paid",
+            "Skipping stale %s persist for owner %s (stored status %s)",
             new_status,
             account["owner_id"],
+            old_status,
         )
         return None
     await billing_repo.set_subscription(

@@ -1478,18 +1478,18 @@ def build_openclaw_config_dict(
                 **({} if provider_choice == "chatgpt_oauth" else {"search": {"provider": "parallel-free"}}),
             },
             # Tool Search: hide the full tool catalog behind
-            # tool_search/tool_describe/tool_call. Worth the extra bridge
-            # round-trips ONLY when merged integration MCP servers inflate
-            # the per-turn schema payload (Stripe MCP alone is dozens of
-            # tools); a bare catalog would pay latency for no byte savings,
-            # so plain owners stay direct-exposure. Embedded runtime only —
-            # the Codex runtime ignores this key (native tool search) — and
-            # never on trial (minimal surface). "code" mode falls back to
+            # tool_search/tool_describe/tool_call. Enabled for EVERY paid
+            # embedded-runtime owner (owner decision 2026-07-18, after the
+            # founders container ran 99 cataloged tools cleanly on prod —
+            # originally gated to MCP-heavy owners). The two exclusions are
+            # technical, not judgment: the Codex runtime ignores this key
+            # (native tool search), and trial keeps the minimal surface
+            # (onboarding latency + the $3 cap). "code" mode falls back to
             # plain tools mode if the Node child can't spawn; policy
             # (allow/deny) still applies to bridged calls, fail-closed.
             **(
                 {"toolSearch": {"mode": "code"}}
-                if (integration_mcp_servers and provider_choice != "chatgpt_oauth" and not is_bedrock_trial)
+                if (provider_choice != "chatgpt_oauth" and not is_bedrock_trial)
                 else {}
             ),
             "media": {

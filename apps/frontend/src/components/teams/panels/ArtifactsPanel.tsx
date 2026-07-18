@@ -223,35 +223,42 @@ export function ArtifactsPanel() {
   const [viewing, setViewing] = useState<CompanyArtifact | null>(null);
   const [pendingDelete, setPendingDelete] = useState<CompanyArtifact | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const sortedGroups = sortGroupsByUpdated(groups, sort);
 
   async function confirmDelete() {
     if (!pendingDelete) return;
-    const path = deletePathForArtifact(pendingDelete);
+    const artifact = pendingDelete;
+    const path = deletePathForArtifact(artifact);
     if (!path) {
       setPendingDelete(null);
       return;
     }
     setDeleting(true);
+    setDeleteError(null);
     try {
       await del(path);
-      // If the viewer is showing the artifact we just deleted, close it.
-      setViewing((cur) => (cur && cur.id === pendingDelete.id ? null : cur));
-      // Refresh the gallery AND the issue-scoped list that also holds this
-      // artifact (routed by the deleted artifact's kind) — separate SWR caches,
-      // so both must be revalidated or the task detail keeps showing it.
-      const issueListPath = issueListPathForArtifact(pendingDelete);
-      await Promise.all([
-        mutate(),
-        issueListPath
-          ? mutateCache(`/teams${issueListPath}`)
-          : Promise.resolve(undefined),
-      ]);
-    } finally {
+    } catch {
+      // The destructive op failed (offline / 403 / 5xx). Keep the dialog open
+      // with its retry context and surface the failure, rather than silently
+      // closing as if the delete had succeeded.
+      setDeleteError("Couldn’t delete this artifact. Please try again.");
       setDeleting(false);
-      setPendingDelete(null);
+      return;
     }
+    // Deleted. Close the confirm + the viewer if it was showing this artifact,
+    // then best-effort revalidate the gallery AND the issue-scoped list that
+    // also holds it (separate SWR caches) so the task detail stops showing it.
+    // A revalidation hiccup must not reopen the dialog — the delete succeeded.
+    setViewing((cur) => (cur && cur.id === artifact.id ? null : cur));
+    setPendingDelete(null);
+    setDeleting(false);
+    const issueListPath = issueListPathForArtifact(artifact);
+    void Promise.all([
+      mutate(),
+      issueListPath ? mutateCache(`/teams${issueListPath}`) : Promise.resolve(undefined),
+    ]).catch(() => {});
   }
 
   return (
@@ -309,7 +316,10 @@ export function ArtifactsPanel() {
       <EditorialDialog
         open={pendingDelete !== null}
         onOpenChange={(next) => {
-          if (!next && !deleting) setPendingDelete(null);
+          if (!next && !deleting) {
+            setPendingDelete(null);
+            setDeleteError(null);
+          }
         }}
         title="Delete this artifact?"
         description="This can’t be undone."
@@ -317,7 +327,10 @@ export function ArtifactsPanel() {
           <>
             <button
               type="button"
-              onClick={() => setPendingDelete(null)}
+              onClick={() => {
+                setPendingDelete(null);
+                setDeleteError(null);
+              }}
               disabled={deleting}
               className="rounded px-3 py-1.5 text-sm disabled:opacity-50"
               style={{ background: "var(--edge)", color: "var(--ink)" }}
@@ -335,7 +348,13 @@ export function ArtifactsPanel() {
             </button>
           </>
         }
-      />
+      >
+        {deleteError ? (
+          <p role="alert" className="text-sm" style={{ color: "var(--warn)" }}>
+            {deleteError}
+          </p>
+        ) : null}
+      </EditorialDialog>
     </div>
   );
 }

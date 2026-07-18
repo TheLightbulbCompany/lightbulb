@@ -259,6 +259,29 @@ async def test_past_due_recovery_does_not_rewrite_provider_choice(mock_repo):
 
 
 @pytest.mark.asyncio
+async def test_unpaid_recovery_does_not_rewrite_provider_choice(mock_repo):
+    """unpaid → active is an existing subscription reactivated by paying the
+    invoice, not a fresh checkout — the backup must not run. Prior states are
+    an allowlist so unknown/future Stripe statuses also default to skip."""
+    mock_repo.get_by_owner_id.return_value = {
+        "owner_id": "org_x",
+        "owner_type": "org",
+        "stripe_customer_id": "cus_x",
+        "subscription_status": "unpaid",
+        "provider_choice": "chatgpt_oauth",
+    }
+    event = _subscription_event(
+        default_payment_method=None,
+        status="active",
+        metadata={"owner_id": "org_x", "provider_choice": "bedrock_claude"},
+    )
+    event["type"] = "customer.subscription.updated"
+    await handlers.handle_subscription_state(event, MagicMock())
+
+    mock_repo.set_provider_choice.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_unpersisted_metadata_never_reaches_analytics(mock_repo):
     """When the provider backup write is skipped, the PostHog bridge must
     report the row's provider — not the stale checkout-time metadata.

@@ -472,14 +472,21 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
     # surfaced as `incomplete` (skipped entirely by the guard above), it is
     # the follow-up .updated(active) that performs the deferred writes.
     #
-    # Live→live events (renewals, seat syncs, payment-method changes — and
-    # past_due→active payment recovery) must NEVER persist it: subscription
-    # metadata is a snapshot of the provider chosen at checkout and is never
-    # updated by change_provider, so on those events it can be stale history.
-    # Persisting it there clobbers a post-onboarding provider switch back to
-    # the checkout-time value — and set_provider_choice's REMOVE strips
-    # oauth_connector_user_id with it.
-    entering_live = new_status in ("active", "trialing") and old_status not in ("active", "trialing", "past_due")
+    # Events on an already-established subscription (renewals, seat syncs,
+    # payment-method changes, and past_due/unpaid/paused recoveries) must
+    # NEVER persist it: subscription metadata is a snapshot of the provider
+    # chosen at checkout and is never updated by change_provider, so on those
+    # events it can be stale history. Persisting it there clobbers a
+    # post-onboarding provider switch back to the checkout-time value — and
+    # set_provider_choice's REMOVE strips oauth_connector_user_id with it.
+    #
+    # Prior states are an ALLOWLIST of "no live subscription behind this row"
+    # (fresh signup, local free tier, unsettled/dead checkout, terminal
+    # cancel — a canceled owner can only come back via a new checkout with
+    # fresh metadata). Anything else, including Stripe statuses that don't
+    # exist yet, defaults to "existing subscription — skip".
+    pre_live_statuses = (None, "trial_local", "incomplete", "incomplete_expired", "canceled")
+    entering_live = new_status in ("active", "trialing") and old_status in pre_live_statuses
     if entering_live and metadata_provider in ("chatgpt_oauth", "byo_key", "bedrock_claude"):
         # provider_choice lives on billing_accounts (per-owner), not on
         # the user row. /trial-checkout writes synchronously before

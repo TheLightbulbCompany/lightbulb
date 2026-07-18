@@ -484,9 +484,14 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
     # (fresh signup, local free tier, unsettled/dead checkout, terminal
     # cancel — a canceled owner can only come back via a new checkout with
     # fresh metadata). Anything else, including Stripe statuses that don't
-    # exist yet, defaults to "existing subscription — skip".
-    pre_live_statuses = (None, "trial_local", "incomplete", "incomplete_expired", "canceled")
-    entering_live = new_status in ("active", "trialing") and old_status in pre_live_statuses
+    # exist yet, defaults to "existing subscription — skip". A None status
+    # counts only when the row also carries no subscription id: with one, a
+    # None-status row is a LEGACY PAID subscription (is_subscription_active
+    # treats it as live, so it can have switched providers already).
+    pre_live_statuses = ("trial_local", "incomplete", "incomplete_expired", "canceled")
+    entering_live = new_status in ("active", "trialing") and (
+        old_status in pre_live_statuses or (old_status is None and not account.get("stripe_subscription_id"))
+    )
     if entering_live and metadata_provider in ("chatgpt_oauth", "byo_key", "bedrock_claude"):
         # provider_choice lives on billing_accounts (per-owner), not on
         # the user row. /trial-checkout writes synchronously before

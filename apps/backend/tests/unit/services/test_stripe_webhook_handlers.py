@@ -282,6 +282,31 @@ async def test_unpaid_recovery_does_not_rewrite_provider_choice(mock_repo):
 
 
 @pytest.mark.asyncio
+async def test_legacy_paid_row_does_not_rewrite_provider_choice(mock_repo):
+    """A legacy paid row (subscription_status None but stripe_subscription_id
+    set — is_subscription_active treats it as live) is NOT pre-live: it can
+    have switched providers via /billing/provider, so an .updated(active)
+    carrying checkout-time metadata must not re-apply it. Only a row with no
+    subscription id at all counts as a fresh signup."""
+    mock_repo.get_by_owner_id.return_value = {
+        "owner_id": "org_x",
+        "owner_type": "org",
+        "stripe_customer_id": "cus_x",
+        "stripe_subscription_id": "sub_legacy",
+        "provider_choice": "byo_key",
+    }
+    event = _subscription_event(
+        default_payment_method=None,
+        status="active",
+        metadata={"owner_id": "org_x", "provider_choice": "bedrock_claude"},
+    )
+    event["type"] = "customer.subscription.updated"
+    await handlers.handle_subscription_state(event, MagicMock())
+
+    mock_repo.set_provider_choice.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_unpersisted_metadata_never_reaches_analytics(mock_repo):
     """When the provider backup write is skipped, the PostHog bridge must
     report the row's provider — not the stale checkout-time metadata.

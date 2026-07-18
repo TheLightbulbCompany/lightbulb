@@ -835,7 +835,8 @@ function variablesEqual(a: RoutineVariable[], b: RoutineVariable[]): boolean {
       (x.required !== false) !== (y.required !== false) ||
       (x.label ?? "") !== (y.label ?? "") ||
       x.defaultValue !== y.defaultValue ||
-      (x.options ?? []).join(" ") !== (y.options ?? []).join(" ")
+      (x.options ?? []).length !== (y.options ?? []).length ||
+      (x.options ?? []).some((opt, k) => opt !== (y.options ?? [])[k])
     ) {
       return false;
     }
@@ -867,6 +868,16 @@ function EditRoutineDialog({
   const [status, setStatus] = useState<string>(routine.status ?? "active");
   const [vars, setVars] = useState<VarDraft[]>(() =>
     (routine.variables ?? []).map(toDraft),
+  );
+  // Immutable snapshot of the variables as they loaded when the dialog opened.
+  // Comparing the draft against the LIVE routine.variables prop is unsafe: SWR can
+  // revalidate that prop (window focus / reconnect) to a concurrent edit while this
+  // dialog stays open, which would mark an untouched list dirty and clobber the edit.
+  const [loadedVarsSnapshot] = useState<Array<ReturnType<typeof fromDraft>>>(() =>
+    (routine.variables ?? [])
+      .map(toDraft)
+      .filter((v) => v.name.trim() !== "")
+      .map(fromDraft),
   );
 
   function setVar(i: number, patch: Partial<VarDraft>) {
@@ -906,11 +917,7 @@ function EditRoutineDialog({
     if (priority !== (routine.priority ?? "medium")) body.priority = priority;
     if (status !== (routine.status ?? "active")) body.status = status;
     const nextVars = namedVars.map(fromDraft);
-    const loadedVars = (routine.variables ?? [])
-      .map(toDraft)
-      .filter((v) => v.name.trim() !== "")
-      .map(fromDraft);
-    if (!variablesEqual(nextVars, loadedVars)) body.variables = nextVars;
+    if (!variablesEqual(nextVars, loadedVarsSnapshot)) body.variables = nextVars;
     await onSave(body);
   }
 

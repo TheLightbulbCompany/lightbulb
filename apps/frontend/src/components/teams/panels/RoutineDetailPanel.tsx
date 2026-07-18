@@ -118,11 +118,15 @@ function browserTz(): string {
 const SCHEDULE_DEFAULT_TZ = "UTC";
 
 // A signed webhook trigger is the only kind that owns a rotatable secret.
+// An unsigned webhook (signingMode "none") still has a publicId so it can be
+// fired externally, but there is no secret to rotate — showing the button just
+// calls the rotate endpoint and surfaces an avoidable error.
 function triggerHasSecret(t: RoutineTriggerSummary): boolean {
-  return (
-    t.kind === "webhook" &&
-    (t.publicId != null || (t.signingMode != null && t.signingMode !== "none"))
-  );
+  if (t.kind !== "webhook") return false;
+  if (t.signingMode === "none") return false;
+  // Known signing mode (bearer/hmac) → rotatable. If signingMode wasn't
+  // projected, fall back to publicId so a signed webhook is never hidden.
+  return t.signingMode != null || t.publicId != null;
 }
 
 const INPUT_CLASS =

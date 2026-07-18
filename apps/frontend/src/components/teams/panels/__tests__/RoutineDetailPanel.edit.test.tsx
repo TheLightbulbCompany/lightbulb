@@ -130,6 +130,26 @@ describe("RoutineDetailPanel — editable (A2)", () => {
     expect(await screen.findByText("whsec_new_123")).toBeInTheDocument();
   });
 
+  it("hides the rotate button for an unsigned webhook (signingMode none)", async () => {
+    seedReads({
+      "/routines/r1": {
+        data: {
+          id: "r1",
+          title: "Hook routine",
+          status: "active",
+          triggers: [
+            { id: "wh1", kind: "webhook", signingMode: "none", publicId: "pub_1", enabled: true },
+          ],
+        },
+        isLoading: false,
+        error: undefined,
+        mutate,
+      },
+    });
+    render(<RoutineDetailPanel routineId="r1" />);
+    expect(screen.queryByRole("button", { name: /rotate secret/i })).not.toBeInTheDocument();
+  });
+
   it("renders revisions and restores one via POST", async () => {
     const user = userEvent.setup();
     render(<RoutineDetailPanel routineId="r1" />);

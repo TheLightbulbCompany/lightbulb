@@ -13,13 +13,13 @@ SECURITY — company scoping (IDOR): the ``companyId`` path segment is ALWAYS
 session cookie's actor, so even a forged id would be rejected upstream — but
 the id never reaches the wire from the client here.
 
-Every query param is validated at THIS boundary before the upstream call:
-``projectId`` / ``labelId`` are Postgres ``uuid`` columns upstream, so a
-malformed value would 500 and leak the internal company path (same failure
-mode guarded in ``issues.py``); ``scope`` / ``sort`` / ``status`` / ``priority``
-are checked against the supported enums so a bad value is a local 422 instead
-of an opaque upstream 400. The upstream response object is returned verbatim
-(it is already an envelope: ``{results, countsByType, …}``).
+Every query param is shape-checked at THIS boundary before the upstream call so
+a malformed value surfaces as a clean local 422 rather than an opaque upstream
+error: ``projectId`` / ``labelId`` / ``assigneeAgentId`` are matched against the
+uuid / sentinel forms upstream expects, and ``scope`` / ``sort`` / ``status`` /
+``priority`` are checked against the supported enums. The upstream response
+object is returned verbatim (it is already an envelope:
+``{results, countsByType, …}``).
 """
 
 from __future__ import annotations
@@ -45,12 +45,14 @@ _ISSUE_PRIORITIES = frozenset({"critical", "high", "medium", "low"})
 _EXTRACT_SCOPES = frozenset({"all", "issues", "comments", "documents"})
 _EXTRACT_KINDS = frozenset({"literal", "url"})
 
-# Same uuid-cast leak guard as ``issues.py`` — a malformed uuid filter makes
-# upstream throw a cast error → 500 whose body leaks the internal company path.
+# Boundary shape check for the uuid filter params — upstream expects a uuid
+# here, so validating locally yields a cleaner 422 than the opaque upstream
+# error a malformed value would return.
 _UUID_RE = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
-# ``assigneeAgentId`` also casts to uuid upstream; ``"null"`` filters unassigned
-# and ``"me"`` is resolved upstream to the board actor's own id.
-_ASSIGNEE_AGENT_RE = r"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|null|me)$"
+# ``assigneeAgentId`` also casts to uuid upstream; ``"null"`` filters unassigned.
+# (Upstream accepts only uuid/null here — the search parser resolves ``me`` to a
+# concrete agent id or an ``assigneeUserId`` before it reaches this param.)
+_ASSIGNEE_AGENT_RE = r"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|null)$"
 # Duration filter (``24h`` / ``7d`` / ``4w`` / ``3m``), mirrors the upstream
 # ``UPDATED_WITHIN_RE``.
 _UPDATED_WITHIN_RE = r"^[1-9]\d{0,2}(h|d|w|m)$"

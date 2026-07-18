@@ -5,20 +5,35 @@
 // full-text query and (b) structured filters, driven by inline operator tokens
 // (`status:todo`, `assignee:me`, `project:"Acme"`, `is:open`, `updated:>7d`).
 //
-// Isol8 adaptations: constants are inlined (ISSUE_STATUSES from shared/types;
-// the priority + updated-within lists local) and the upstream
+// Isol8 adaptations: `status:` is validated against SEARCH_ISSUE_STATUSES — the
+// exact set the `/teams/search` BFF (routers/teams/search.py `_ISSUE_STATUSES`)
+// forwards to upstream, NOT the board-column `ISSUE_STATUSES` from shared/types.
+// The priority + updated-within lists are inlined local, and the upstream
 // `normalizeAgentUrlKey` dependency is dropped — entity lookup falls back to a
 // plain lowercased name/id/urlKey compare. The URL-sync helpers (react-router
 // `URLSearchParams` apply/read) are NOT ported; the SearchPanel owns query
 // state in React and calls `buildSearchQueryString` for the BFF request.
 
-import {
-  ISSUE_STATUSES,
-  type IssuePriority,
-  type IssueStatus,
-} from "@/components/teams/shared/types";
+import { type IssuePriority, type IssueStatus } from "@/components/teams/shared/types";
 
 const ISSUE_PRIORITIES: readonly IssuePriority[] = ["critical", "high", "medium", "low"];
+
+// The status values the `/teams/search` BFF accepts. MUST stay in lockstep with
+// `_ISSUE_STATUSES` in apps/backend/routers/teams/search.py — the search index
+// accepts backlog/cancelled and rejects pending/review/won_t_do/duplicate, so
+// this deliberately differs from the board-column `ISSUE_STATUSES`. Validating
+// `status:` against the board set instead would drop `status:backlog` /
+// `status:cancelled` to literal text and emit `status:pending` (and friends) as
+// filters the BFF 422s on ("Search failed").
+const SEARCH_ISSUE_STATUSES: readonly IssueStatus[] = [
+  "backlog",
+  "todo",
+  "in_progress",
+  "in_review",
+  "done",
+  "blocked",
+  "cancelled",
+];
 
 const OPEN_STATUSES: IssueStatus[] = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const CLOSED_STATUSES: IssueStatus[] = ["done", "cancelled"];
@@ -183,7 +198,7 @@ function appendText(parts: string[], raw: string): void {
 }
 
 function parseStatus(value: string): IssueStatus | null {
-  return (ISSUE_STATUSES as readonly string[]).includes(value) ? (value as IssueStatus) : null;
+  return (SEARCH_ISSUE_STATUSES as readonly string[]).includes(value) ? (value as IssueStatus) : null;
 }
 
 function parsePriority(value: string): IssuePriority | null {

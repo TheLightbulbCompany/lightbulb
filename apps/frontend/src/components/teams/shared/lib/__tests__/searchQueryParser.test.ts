@@ -89,6 +89,25 @@ describe("parseSearchQuery", () => {
     expect(parsed.filters.priority).toBeUndefined();
     expect(parsed.query).toBe("status:banana priority:urgent");
   });
+
+  it("parses BFF-only statuses (backlog, cancelled) as real filters", () => {
+    expect(parseSearchQuery("status:backlog").filters.status).toEqual(["backlog"]);
+    const parsed = parseSearchQuery("status:cancelled report");
+    expect(parsed.filters.status).toEqual(["cancelled"]);
+    expect(parsed.query).toBe("report");
+  });
+
+  it("drops board-only statuses the search BFF rejects to literal text", () => {
+    // pending / review / won_t_do / duplicate are valid board columns but are
+    // NOT in the /teams/search allow-list (_ISSUE_STATUSES) — serializing them
+    // as a status filter would 422 ("Search failed"), so they must remain
+    // residual free text instead of an invalid filter.
+    for (const status of ["pending", "review", "won_t_do", "duplicate"]) {
+      const parsed = parseSearchQuery(`status:${status}`);
+      expect(parsed.filters.status).toBeUndefined();
+      expect(parsed.query).toBe(`status:${status}`);
+    }
+  });
 });
 
 describe("buildSearchQueryString", () => {

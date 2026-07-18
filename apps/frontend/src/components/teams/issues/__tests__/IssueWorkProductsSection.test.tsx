@@ -76,6 +76,38 @@ describe("IssueWorkProductsSection", () => {
     expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
   });
 
+  it.each([
+    ["data:", "data:text/html,<script>alert(1)</script>"],
+    ["javascript:", "javascript:alert(1)"],
+  ])("does not render a live Open link for an unsafe %s url", (_label, url) => {
+    reads["/issues/iss1/work-products"] = {
+      data: {
+        workProducts: [
+          {
+            id: "wp-unsafe",
+            issueId: "iss1",
+            type: "preview_url",
+            provider: "paperclip",
+            title: "Sketchy preview",
+            url,
+            status: "ready_for_review",
+            reviewState: "none",
+            createdAt: "2026-01-01T00:00:00Z",
+          },
+        ],
+      },
+      isLoading: false,
+      error: undefined,
+    };
+    render(<IssueWorkProductsSection issueId="iss1" />);
+
+    // The row still surfaces (title, type pill) — only the Open affordance drops.
+    expect(screen.getByText("Sketchy preview")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /open sketchy preview/i })).not.toBeInTheDocument();
+    // Nothing renders the raw unsafe url as a live href.
+    expect(document.querySelector(`a[href="${url}"]`)).toBeNull();
+  });
+
   it("Approve PATCHes reviewState=approved and revalidates the list", async () => {
     patch.mockResolvedValue({});
     reads["/issues/iss1/work-products"] = {

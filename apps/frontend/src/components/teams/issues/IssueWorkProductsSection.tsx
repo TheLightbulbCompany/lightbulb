@@ -12,6 +12,7 @@ import {
   Server,
 } from "lucide-react";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
+import { safeHref } from "@/components/teams/shared/lib/safeHref";
 import { useIssueWorkProducts } from "./hooks/useIssueWorkProducts";
 import type {
   IssueWorkProduct,
@@ -96,6 +97,10 @@ function WorkProductRow({
   const [busy, setBusy] = useState<IssueWorkProductReviewState | null>(null);
   const when = wp.createdAt ?? wp.updatedAt;
   const needsReview = wp.reviewState === "needs_board_review";
+  // The BFF only length-checks a work-product url, so a compromised/buggy agent
+  // could emit a non-web scheme (data:/javascript:). Gate it through the same
+  // whitelist Teams links use before rendering a live Open affordance.
+  const openUrl = safeHref(wp.url);
 
   const act = async (state: IssueWorkProductReviewState) => {
     setBusy(state);
@@ -116,9 +121,9 @@ function WorkProductRow({
         <span className="flex-1 truncate text-sm text-[var(--ink)]" title={wp.title}>
           {wp.title}
         </span>
-        {wp.url ? (
+        {openUrl ? (
           <a
-            href={wp.url}
+            href={openUrl}
             target="_blank"
             rel="noreferrer"
             aria-label={`Open ${wp.title}`}

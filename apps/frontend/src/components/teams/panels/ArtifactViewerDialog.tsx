@@ -180,12 +180,29 @@ function WorkProductBody({
   issueId: string;
 }) {
   const { read } = useTeamsApi();
-  const { data, error, isLoading } = read<{ workProducts?: IssueWorkProduct[] }>(
-    issueId ? `/issues/${issueId}/work-products` : null,
-  );
+  const { data, error, isLoading, isValidating, mutate } = read<{
+    workProducts?: IssueWorkProduct[];
+  }>(issueId ? `/issues/${issueId}/work-products` : null, {
+    // This list SWR key is SHARED with the issue-detail Output section, and the
+    // read layer applies a 15s dedupe window. If the task was opened BEFORE this
+    // deliverable existed, the cache holds a miss for it — SWR's default
+    // "revalidateIfStale" is the safety net, but on its own it can still be
+    // swallowed by the dedupe window.
+    revalidateOnMount: true,
+  });
   const wp = data?.workProducts?.find((w) => w.id === artifactRawId(artifact.id));
 
-  if (isLoading && !data) {
+  // Force a fresh fetch when the viewer opens (an explicit mutate bypasses the
+  // read layer's dedupe window, unlike a mount-time auto-revalidation). Without
+  // this, a cached miss would render a false "Could not load" for a valid
+  // artifact — so "not found" is treated as final only once the refetch settles.
+  useEffect(() => {
+    void mutate();
+  }, [mutate]);
+
+  // Still fetching (initial load OR the on-open revalidation) and no match yet:
+  // a cached miss is not confirmation the output is gone. Keep showing loading.
+  if (!wp && (isLoading || isValidating)) {
     return (
       <p className="text-sm italic" style={{ color: "var(--mute)" }}>
         Loading output…

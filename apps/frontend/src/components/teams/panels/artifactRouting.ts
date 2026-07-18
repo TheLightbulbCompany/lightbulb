@@ -77,6 +77,27 @@ export function deletePathForArtifact(a: CompanyArtifact): string | null {
   return null;
 }
 
+/**
+ * The issue-detail LIST path (relative to `/teams`) whose SWR cache also holds
+ * this artifact, routed by its typed prefix:
+ *   - `document:`     → `/issues/{issueId}/documents`
+ *   - `work_product:` → `/issues/{issueId}/work-products`
+ *   - `attachment:`   → `/issues/{issueId}/attachments`
+ * The gallery and the issue-detail sections keep SEPARATE SWR caches, so after
+ * a delete the matching issue-scoped list must be revalidated too or the removed
+ * artifact lingers in the task detail within the read layer's dedupe window.
+ * Returns null when the issue can't be resolved or the prefix is unrecognized.
+ */
+export function issueListPathForArtifact(a: CompanyArtifact): string | null {
+  const kind = artifactKind(a.id);
+  const issueId = a.issue?.id;
+  if (!issueId) return null;
+  if (kind === "document") return `/issues/${issueId}/documents`;
+  if (kind === "work_product") return `/issues/${issueId}/work-products`;
+  if (kind === "attachment") return `/issues/${issueId}/attachments`;
+  return null;
+}
+
 export type ArtifactSort = "newest" | "oldest";
 
 /** Client-side sort of the grouped gallery by each group's `updatedAt`. Returns

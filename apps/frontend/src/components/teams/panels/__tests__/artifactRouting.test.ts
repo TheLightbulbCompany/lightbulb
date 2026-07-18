@@ -4,6 +4,7 @@ import {
   artifactRawId,
   documentKeyFromArtifact,
   deletePathForArtifact,
+  issueListPathForArtifact,
   sortGroupsByUpdated,
 } from "../artifactRouting";
 import type {
@@ -65,6 +66,25 @@ describe("artifactRouting", () => {
   it("returns null when a document delete can't be resolved (no key)", () => {
     expect(deletePathForArtifact(artifact({ id: "document:d1", href: "" }))).toBeNull();
     expect(deletePathForArtifact(artifact({ id: "bogus:x" }))).toBeNull();
+  });
+
+  it("routes each prefix to the issue-scoped LIST path for cache invalidation", () => {
+    // A document delete only needs the issue (not the key) to invalidate the
+    // issue-detail documents list.
+    expect(
+      issueListPathForArtifact(artifact({ id: "document:d1", href: "" })),
+    ).toBe("/issues/iss_1/documents");
+    expect(issueListPathForArtifact(artifact({ id: "work_product:wp1" }))).toBe(
+      "/issues/iss_1/work-products",
+    );
+    expect(issueListPathForArtifact(artifact({ id: "attachment:att1" }))).toBe(
+      "/issues/iss_1/attachments",
+    );
+    // No issue → nothing to invalidate; unrecognized prefix → null.
+    expect(
+      issueListPathForArtifact(artifact({ id: "work_product:wp1", issue: undefined })),
+    ).toBeNull();
+    expect(issueListPathForArtifact(artifact({ id: "bogus:x" }))).toBeNull();
   });
 
   it("sorts groups newest/oldest by updatedAt without mutating the input", () => {

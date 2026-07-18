@@ -25,6 +25,14 @@ vi.mock("@/hooks/useTeamsApi", () => ({
   }),
 }));
 
+// The panel invalidates issue-scoped SWR caches via useSWRConfig().mutate on
+// delete; spy on it so tests can assert the kind-appropriate key is refreshed.
+const globalMutate = vi.fn().mockResolvedValue(undefined);
+vi.mock("swr", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("swr")>();
+  return { ...actual, useSWRConfig: () => ({ mutate: globalMutate }) };
+});
+
 // Keep react-markdown out of the unit test — assert the raw body string reached
 // the renderer.
 vi.mock("@/components/teams/shared/components/MarkdownView", () => ({
@@ -88,6 +96,7 @@ function stubGallery(groups: unknown[]) {
 beforeEach(() => {
   reads = {};
   mutate.mockClear();
+  globalMutate.mockClear();
   del.mockClear();
   download.mockReset();
   // jsdom has no object-URL impl — stub it for the attachment viewer.
@@ -120,6 +129,25 @@ describe("ArtifactsPanel — view on click", () => {
     fireEvent.click(screen.getByText(/Deploy preview/));
 
     expect(await screen.findByText("Shipped to staging")).toBeInTheDocument();
+  });
+
+  it("revalidates the work-products key instead of rendering a stale cached miss", async () => {
+    stubGallery([group()]);
+    // The issue-detail Output list was cached BEFORE this deliverable existed:
+    // a miss for wp1, with a fresh fetch still in flight (isValidating).
+    reads["/issues/iss_1/work-products"] = {
+      data: { workProducts: [] },
+      isValidating: true,
+    };
+    render(<ArtifactsPanel />);
+
+    fireEvent.click(screen.getByText(/Deploy preview/));
+
+    // A cached miss must NOT be treated as final: no error, still "loading",
+    // and the viewer kicks a fresh revalidation of the shared key.
+    expect(screen.queryByText("Could not load this output.")).not.toBeInTheDocument();
+    expect(screen.getByText("Loading output…")).toBeInTheDocument();
+    await waitFor(() => expect(mutate).toHaveBeenCalled());
   });
 
   it("opens an image attachment inline via the BFF content route", async () => {
@@ -163,7 +191,12 @@ describe("ArtifactsPanel — delete", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
     await waitFor(() => expect(del).toHaveBeenCalledWith("/issues/iss_1/documents/plan"));
+    // Invalidates BOTH the gallery key (bound mutate) and the issue-scoped
+    // documents list so the task detail drops the deleted artifact too.
     expect(mutate).toHaveBeenCalled();
+    await waitFor(() =>
+      expect(globalMutate).toHaveBeenCalledWith("/teams/issues/iss_1/documents"),
+    );
   });
 
   it("routes a work-product delete to the work-products DELETE endpoint", async () => {
@@ -173,6 +206,9 @@ describe("ArtifactsPanel — delete", () => {
     fireEvent.click(screen.getByRole("button", { name: "Delete Deploy preview" }));
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
     await waitFor(() => expect(del).toHaveBeenCalledWith("/work-products/wp1"));
+    await waitFor(() =>
+      expect(globalMutate).toHaveBeenCalledWith("/teams/issues/iss_1/work-products"),
+    );
   });
 
   it("routes an attachment delete to the issue-scoped attachment DELETE endpoint", async () => {
@@ -182,6 +218,9 @@ describe("ArtifactsPanel — delete", () => {
     fireEvent.click(screen.getByRole("button", { name: "Delete Screenshot.png" }));
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
     await waitFor(() => expect(del).toHaveBeenCalledWith("/issues/iss_1/attachments/att1"));
+    await waitFor(() =>
+      expect(globalMutate).toHaveBeenCalledWith("/teams/issues/iss_1/attachments"),
+    );
   });
 
   it("cancels without deleting", () => {

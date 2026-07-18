@@ -24,6 +24,7 @@
 // already forwards all those params.
 
 import { useState } from "react";
+import { useSWRConfig } from "swr";
 import { Images, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { PanelMasthead } from "@/components/teams/shell";
@@ -35,6 +36,7 @@ import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { ArtifactViewerDialog } from "./ArtifactViewerDialog";
 import {
   deletePathForArtifact,
+  issueListPathForArtifact,
   sortGroupsByUpdated,
   type ArtifactSort,
 } from "./artifactRouting";
@@ -206,6 +208,11 @@ function SortControl({
 
 export function ArtifactsPanel() {
   const { read, del } = useTeamsApi();
+  // The gallery and the issue-detail sections keep SEPARATE SWR caches; deleting
+  // here must also invalidate the issue-scoped list (documents/attachments/
+  // work-products) or the removed artifact lingers in the task detail. The
+  // gallery's own key is refreshed via the bound `mutate` below.
+  const { mutate: mutateCache } = useSWRConfig();
   // groupBy=task clusters deliverables under the issue that produced them —
   // the ported grouped shape, not a flat firehose.
   const { data, error, isLoading, mutate } =
@@ -231,7 +238,16 @@ export function ArtifactsPanel() {
       await del(path);
       // If the viewer is showing the artifact we just deleted, close it.
       setViewing((cur) => (cur && cur.id === pendingDelete.id ? null : cur));
-      await mutate();
+      // Refresh the gallery AND the issue-scoped list that also holds this
+      // artifact (routed by the deleted artifact's kind) — separate SWR caches,
+      // so both must be revalidated or the task detail keeps showing it.
+      const issueListPath = issueListPathForArtifact(pendingDelete);
+      await Promise.all([
+        mutate(),
+        issueListPath
+          ? mutateCache(`/teams${issueListPath}`)
+          : Promise.resolve(undefined),
+      ]);
     } finally {
       setDeleting(false);
       setPendingDelete(null);

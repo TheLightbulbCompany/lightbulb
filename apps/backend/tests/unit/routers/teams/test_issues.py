@@ -735,3 +735,128 @@ def test_delete_issue_proxies_with_session(client, monkeypatch):
         issue_id="iss_1",
         session_cookie="cookie",
     )
+
+
+# ----------------------------------------------------------------------
+# Artifacts gallery — view (single-document GET) + delete (document /
+# work-product) proxies. These back the company Artifacts gallery's
+# click-to-view + per-artifact delete. Every route is company-scoped via the
+# session cookie (never a client param), and validates its path params locally
+# before forwarding so a malformed key/id is rejected here rather than leaking
+# the upstream company path on a cast-error 500.
+# ----------------------------------------------------------------------
+
+
+def test_get_document_content_proxies_with_session(client, monkeypatch):
+    """`GET /teams/issues/{id}/documents/{key}` forwards the (normalized) key
+    to the admin client with the caller's session cookie and returns the
+    upstream document body — no company_id (issue-scoped upstream)."""
+    admin = MagicMock()
+    admin.get_issue_document = AsyncMock(return_value={"id": "doc_1", "key": "plan", "body": "# Plan"})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.get(
+        "/api/v1/teams/issues/iss_1/documents/plan",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"id": "doc_1", "key": "plan", "body": "# Plan"}
+    admin.get_issue_document.assert_awaited_once_with(
+        session_cookie="cookie",
+        issue_id="iss_1",
+        key="plan",
+    )
+
+
+def test_get_document_content_rejects_bad_key(client, monkeypatch):
+    """A malformed document key is a local 400 — never forwarded upstream."""
+    admin = MagicMock()
+    admin.get_issue_document = AsyncMock(return_value={})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.get(
+        "/api/v1/teams/issues/iss_1/documents/bad!key",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 400
+    admin.get_issue_document.assert_not_awaited()
+
+
+def test_delete_document_proxies_with_session(client, monkeypatch):
+    """`DELETE /teams/issues/{id}/documents/{key}` forwards to the admin client
+    with the caller's session cookie (company-scoped upstream, no company_id)."""
+    admin = MagicMock()
+    admin.delete_issue_document = AsyncMock(return_value={})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.delete(
+        "/api/v1/teams/issues/iss_1/documents/plan",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    admin.delete_issue_document.assert_awaited_once_with(
+        session_cookie="cookie",
+        issue_id="iss_1",
+        key="plan",
+    )
+
+
+def test_delete_document_rejects_bad_key(client, monkeypatch):
+    """A malformed document key is a local 400 — the delete never reaches
+    upstream."""
+    admin = MagicMock()
+    admin.delete_issue_document = AsyncMock(return_value={})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.delete(
+        "/api/v1/teams/issues/iss_1/documents/bad!key",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 400
+    admin.delete_issue_document.assert_not_awaited()
+
+
+def test_delete_work_product_proxies_with_session(client, monkeypatch):
+    """`DELETE /teams/work-products/{id}` forwards the uuid to the admin client
+    with the caller's session cookie — company scope is the cookie's company
+    asserted upstream, never a client param."""
+    admin = MagicMock()
+    admin.delete_work_product = AsyncMock(return_value={})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    wp_id = "11111111-1111-1111-1111-111111111111"
+    r = client.delete(
+        f"/api/v1/teams/work-products/{wp_id}",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    admin.delete_work_product.assert_awaited_once_with(
+        session_cookie="cookie",
+        work_product_id=wp_id,
+    )
+
+
+def test_delete_work_product_rejects_bad_uuid(client, monkeypatch):
+    """A malformed work-product id is a local 422 — never forwarded upstream."""
+    admin = MagicMock()
+    admin.delete_work_product = AsyncMock(return_value={})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.delete(
+        "/api/v1/teams/work-products/not-a-uuid",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 422
+    admin.delete_work_product.assert_not_awaited()

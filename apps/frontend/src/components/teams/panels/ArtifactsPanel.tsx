@@ -6,28 +6,38 @@
 // the whole company, GROUPED BY TASK (ported shape from upstream Paperclip's
 // pages/Artifacts.tsx + components/artifacts/ArtifactGroupCard.tsx, MIT (c)
 // 2025 Paperclip AI). Each card is one issue's bundle of artifacts (documents +
-// attachments + work-products); clicking opens that issue's detail panel, where
-// the per-issue "Output" section (IssueWorkProductsSection) lives.
+// attachments + work-products).
 //
-// v1 renders the grouped cards + preview artifacts, each of which is now an
-// OPENABLE link into the owning issue's detail (at the artifact's own section
-// anchor when present), with the group header kept as the overall issue-nav
-// fallback.
-// Deferred (follow-up): opening an artifact's CONTENT in place (image/video/
-// attachment) needs the BFF `/teams/attachments/{id}/content` rewrite + CSP
-// handling — the artifact's `openPath`/`href` are upstream-relative, so today
-// we route to the issue detail (where IssueAttachments/Documents/Output already
-// render the file) rather than to a raw path that 404s on our origin. Also
-// deferred: inline media thumbnails, the flat/ungrouped view, kind facets, and
-// cursor pagination — the BFF route already forwards all those params.
+// Three capabilities live here:
+//   1. VIEW — clicking an artifact row opens ArtifactViewerDialog, which fetches
+//      and renders the artifact's CONTENT in place (routed by its typed id
+//      prefix; see artifactRouting.ts). The group header stays a secondary
+//      "open task" affordance into the issue detail.
+//   2. DELETE — each row has a trash button that runs a confirm-then-delete
+//      flow against the correct BFF DELETE endpoint, then revalidates the
+//      gallery via SWR mutate.
+//   3. SORT — a Newest/Oldest control at the top, sorting groups client-side by
+//      each group's `updatedAt` (default Newest).
+//
+// Deferred (follow-up): inline media thumbnails on the cards themselves, the
+// flat/ungrouped view, kind facets, and cursor pagination — the BFF route
+// already forwards all those params.
 
-import { Images } from "lucide-react";
+import { useState } from "react";
+import { Images, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { PanelMasthead } from "@/components/teams/shell";
+import { EditorialDialog } from "@/components/teams/shell/EditorialDialog";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { teamsDetailUrl } from "@/lib/shellNav";
 import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
+import { ArtifactViewerDialog } from "./ArtifactViewerDialog";
+import {
+  deletePathForArtifact,
+  sortGroupsByUpdated,
+  type ArtifactSort,
+} from "./artifactRouting";
 import type {
   CompanyArtifact,
   CompanyArtifactGroup,
@@ -35,8 +45,7 @@ import type {
 } from "@/components/teams/shared/types";
 
 // A plain left-click routes in-shell when a nav provider is present; modified
-// clicks / non-left buttons fall through to the anchor's native behavior. Shared
-// by the group header and each preview artifact.
+// clicks / non-left buttons fall through to the anchor's native behavior.
 function inShellClick(
   nav: ReturnType<typeof useInlineTeamsNav>,
   issueId: string,
@@ -58,48 +67,52 @@ function inShellClick(
   };
 }
 
-// The BFF-provided artifact `href` is upstream-relative (wrong origin/prefix for
-// our shell), but its hash fragment names the artifact's own section anchor
-// (`#document-<key>` / `#work-product-<id>` / `#attachment-<id>`). Reuse ONLY the
-// fragment so a native new-tab open of our issue-detail URL scrolls to that
-// section once the issue-detail anchors exist (A1/A3). Returns "" when absent.
-function artifactAnchor(a: CompanyArtifact): string {
-  const hash = a.href?.split("#")[1];
-  return hash ? `#${hash}` : "";
-}
-
-// One preview artifact, individually openable. Deep-links into the owning
-// issue's detail (carrying the artifact's own anchor); an artifact with no
-// owning issue renders as inert text rather than a dead link.
-function ArtifactPreviewItem({ artifact }: { artifact: CompanyArtifact }) {
-  const nav = useInlineTeamsNav();
+// One artifact row: the title opens the content viewer; the trash button starts
+// the confirm-then-delete flow. An artifact with no title renders nothing.
+function ArtifactRow({
+  artifact,
+  onOpen,
+  onRequestDelete,
+}: {
+  artifact: CompanyArtifact;
+  onOpen: (a: CompanyArtifact) => void;
+  onRequestDelete: (a: CompanyArtifact) => void;
+}) {
   const title = artifact.title?.trim();
   if (!title) return null;
-  const issueId = artifact.issue?.id;
-  if (!issueId) {
-    return (
-      <li className="truncate text-xs" style={{ color: "var(--ink-soft)" }}>
-        · {title}
-      </li>
-    );
-  }
-  const url = `${teamsDetailUrl("issue", issueId)}${artifactAnchor(artifact)}`;
   return (
-    <li>
-      <Link
-        href={url}
-        onClick={inShellClick(nav, issueId)}
-        className="block truncate rounded px-1 py-0.5 text-xs transition-colors hover:bg-[var(--cream-deeper)]"
+    <li className="flex items-center gap-1">
+      <button
+        type="button"
+        onClick={() => onOpen(artifact)}
+        className="min-w-0 flex-1 truncate rounded px-1 py-0.5 text-left text-xs transition-colors hover:bg-[var(--cream-deeper)]"
         style={{ color: "var(--ink-soft)" }}
         title={title}
       >
         · {title}
-      </Link>
+      </button>
+      <button
+        type="button"
+        onClick={() => onRequestDelete(artifact)}
+        aria-label={`Delete ${title}`}
+        className="flex-shrink-0 rounded p-1 transition-colors hover:bg-[var(--cream-deeper)]"
+        style={{ color: "var(--mute)" }}
+      >
+        <Trash2 className="h-3.5 w-3.5" />
+      </button>
     </li>
   );
 }
 
-function GroupCard({ group }: { group: CompanyArtifactGroup }) {
+function GroupCard({
+  group,
+  onOpen,
+  onRequestDelete,
+}: {
+  group: CompanyArtifactGroup;
+  onOpen: (a: CompanyArtifact) => void;
+  onRequestDelete: (a: CompanyArtifact) => void;
+}) {
   const nav = useInlineTeamsNav();
   const url = teamsDetailUrl("issue", group.issue.id);
 
@@ -112,7 +125,7 @@ function GroupCard({ group }: { group: CompanyArtifactGroup }) {
       className="editorial-card flex flex-col gap-2 p-4"
       style={{ borderColor: "var(--edge)" }}
     >
-      {/* Group header — the overall issue-nav fallback. */}
+      {/* Group header — the secondary "open task" affordance into the issue. */}
       <Link
         href={url}
         onClick={inShellClick(nav, group.issue.id)}
@@ -134,7 +147,12 @@ function GroupCard({ group }: { group: CompanyArtifactGroup }) {
       {previewArtifacts.length > 0 ? (
         <ul className="flex flex-col gap-0.5 pl-1">
           {previewArtifacts.slice(0, 4).map((a) => (
-            <ArtifactPreviewItem key={a.id} artifact={a} />
+            <ArtifactRow
+              key={a.id}
+              artifact={a}
+              onOpen={onOpen}
+              onRequestDelete={onRequestDelete}
+            />
           ))}
         </ul>
       ) : null}
@@ -145,16 +163,87 @@ function GroupCard({ group }: { group: CompanyArtifactGroup }) {
   );
 }
 
+function SortControl({
+  sort,
+  onChange,
+}: {
+  sort: ArtifactSort;
+  onChange: (s: ArtifactSort) => void;
+}) {
+  const opts: { value: ArtifactSort; label: string }[] = [
+    { value: "newest", label: "Newest" },
+    { value: "oldest", label: "Oldest" },
+  ];
+  return (
+    <div
+      className="flex items-center gap-1 rounded-md border p-0.5 text-xs"
+      style={{ borderColor: "var(--edge)" }}
+      role="group"
+      aria-label="Sort artifacts"
+    >
+      {opts.map((o) => {
+        const active = sort === o.value;
+        return (
+          <button
+            key={o.value}
+            type="button"
+            aria-pressed={active}
+            onClick={() => onChange(o.value)}
+            className="rounded px-2 py-1 transition-colors"
+            style={
+              active
+                ? { background: "var(--ink)", color: "var(--cream)" }
+                : { color: "var(--mute)" }
+            }
+          >
+            {o.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export function ArtifactsPanel() {
-  const { read } = useTeamsApi();
+  const { read, del } = useTeamsApi();
   // groupBy=task clusters deliverables under the issue that produced them —
   // the ported grouped shape, not a flat firehose.
-  const { data, error, isLoading } = read<CompanyArtifactsResponse>("/artifacts?groupBy=task");
+  const { data, error, isLoading, mutate } =
+    read<CompanyArtifactsResponse>("/artifacts?groupBy=task");
   const groups = data?.groups ?? [];
+
+  const [sort, setSort] = useState<ArtifactSort>("newest");
+  const [viewing, setViewing] = useState<CompanyArtifact | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<CompanyArtifact | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  const sortedGroups = sortGroupsByUpdated(groups, sort);
+
+  async function confirmDelete() {
+    if (!pendingDelete) return;
+    const path = deletePathForArtifact(pendingDelete);
+    if (!path) {
+      setPendingDelete(null);
+      return;
+    }
+    setDeleting(true);
+    try {
+      await del(path);
+      // If the viewer is showing the artifact we just deleted, close it.
+      setViewing((cur) => (cur && cur.id === pendingDelete.id ? null : cur));
+      await mutate();
+    } finally {
+      setDeleting(false);
+      setPendingDelete(null);
+    }
+  }
 
   return (
     <div className="editorial-page p-4 sm:p-6 lg:p-8 flex flex-col gap-6 max-w-4xl mx-auto w-full">
-      <PanelMasthead overline="Company" title="Artifacts" />
+      <div className="flex items-center justify-between gap-3">
+        <PanelMasthead overline="Company" title="Artifacts" />
+        {groups.length > 0 ? <SortControl sort={sort} onChange={setSort} /> : null}
+      </div>
 
       <section aria-label="Artifacts gallery" className="min-w-0">
         {isLoading && groups.length === 0 ? (
@@ -181,12 +270,56 @@ export function ArtifactsPanel() {
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            {groups.map((group) => (
-              <GroupCard key={group.id} group={group} />
+            {sortedGroups.map((group) => (
+              <GroupCard
+                key={group.id}
+                group={group}
+                onOpen={setViewing}
+                onRequestDelete={setPendingDelete}
+              />
             ))}
           </div>
         )}
       </section>
+
+      {viewing ? (
+        <ArtifactViewerDialog
+          artifact={viewing}
+          onClose={() => setViewing(null)}
+          onRequestDelete={setPendingDelete}
+        />
+      ) : null}
+
+      <EditorialDialog
+        open={pendingDelete !== null}
+        onOpenChange={(next) => {
+          if (!next && !deleting) setPendingDelete(null);
+        }}
+        title="Delete this artifact?"
+        description="This can’t be undone."
+        footer={
+          <>
+            <button
+              type="button"
+              onClick={() => setPendingDelete(null)}
+              disabled={deleting}
+              className="rounded px-3 py-1.5 text-sm disabled:opacity-50"
+              style={{ background: "var(--edge)", color: "var(--ink)" }}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={confirmDelete}
+              disabled={deleting}
+              className="rounded px-3 py-1.5 text-sm disabled:opacity-50"
+              style={{ background: "var(--warn)", color: "var(--warn-ink, #fff)" }}
+            >
+              {deleting ? "Deleting…" : "Delete"}
+            </button>
+          </>
+        }
+      />
     </div>
   );
 }

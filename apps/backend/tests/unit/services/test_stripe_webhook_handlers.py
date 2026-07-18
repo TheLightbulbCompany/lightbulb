@@ -167,6 +167,178 @@ async def test_webhook_backup_write_threads_connector(mock_repo):
 
 
 @pytest.mark.asyncio
+async def test_live_renewal_never_rewrites_provider_choice(mock_repo):
+    """A live→live event must NOT persist metadata.provider_choice.
+
+    Subscription metadata is a snapshot of the provider chosen at checkout
+    time and is never updated by change_provider. Renewal invoices, seat
+    syncs, and payment-method changes all fire .updated with that stale
+    snapshot against an already-active row — persisting it clobbers a
+    post-onboarding provider switch (and, via set_provider_choice's REMOVE,
+    strips oauth_connector_user_id). The state sync itself still runs.
+    """
+    mock_repo.get_by_owner_id.return_value = {
+        "owner_id": "org_x",
+        "owner_type": "org",
+        "stripe_customer_id": "cus_x",
+        "subscription_status": "active",
+        "provider_choice": "chatgpt_oauth",
+    }
+    event = _subscription_event(
+        default_payment_method=None,
+        status="active",
+        metadata={"owner_id": "org_x", "provider_choice": "bedrock_claude"},
+    )
+    event["type"] = "customer.subscription.updated"
+    await handlers.handle_subscription_state(event, MagicMock())
+
+    mock_repo.set_provider_choice.assert_not_called()
+    mock_repo.set_subscription.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_deferred_activation_still_persists_provider_backup(mock_repo):
+    """The .updated(active) that follows a skipped .created(incomplete) must
+    still perform the provider backup write.
+
+    For a trial_local owner, a checkout-born sub can surface first as
+    .created(incomplete), which the stale-status guard skips entirely on the
+    promise that the follow-up active event performs the deferred writes.
+    That follow-up is an .updated — so the backup must key on the transition
+    into a live status, not on the event type.
+    """
+    mock_repo.get_by_owner_id.return_value = {
+        "owner_id": "org_x",
+        "owner_type": "org",
+        "stripe_customer_id": "cus_x",
+        "subscription_status": "trial_local",
+    }
+    event = _subscription_event(
+        default_payment_method=None,
+        status="active",
+        metadata={"owner_id": "org_x", "provider_choice": "bedrock_claude"},
+    )
+    event["type"] = "customer.subscription.updated"
+    # trial_local → active also dispatches the conversion reprovision; capture
+    # and close the coroutine so this test stays scoped to the backup write.
+    with patch.object(
+        handlers.asyncio,
+        "create_task",
+        side_effect=lambda coro: coro.close() or MagicMock(),
+    ):
+        await handlers.handle_subscription_state(event, MagicMock())
+
+    mock_repo.set_provider_choice.assert_awaited_once_with(
+        "org_x",
+        provider_choice="bedrock_claude",
+        byo_provider=None,
+        connector_user_id=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_past_due_recovery_does_not_rewrite_provider_choice(mock_repo):
+    """past_due → active payment recovery is not a fresh checkout — the row's
+    provider (possibly switched while past_due) must survive it."""
+    mock_repo.get_by_owner_id.return_value = {
+        "owner_id": "org_x",
+        "owner_type": "org",
+        "stripe_customer_id": "cus_x",
+        "subscription_status": "past_due",
+        "provider_choice": "byo_key",
+    }
+    event = _subscription_event(
+        default_payment_method=None,
+        status="active",
+        metadata={"owner_id": "org_x", "provider_choice": "bedrock_claude"},
+    )
+    event["type"] = "customer.subscription.updated"
+    await handlers.handle_subscription_state(event, MagicMock())
+
+    mock_repo.set_provider_choice.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_unpaid_recovery_does_not_rewrite_provider_choice(mock_repo):
+    """unpaid → active is an existing subscription reactivated by paying the
+    invoice, not a fresh checkout — the backup must not run. Prior states are
+    an allowlist so unknown/future Stripe statuses also default to skip."""
+    mock_repo.get_by_owner_id.return_value = {
+        "owner_id": "org_x",
+        "owner_type": "org",
+        "stripe_customer_id": "cus_x",
+        "subscription_status": "unpaid",
+        "provider_choice": "chatgpt_oauth",
+    }
+    event = _subscription_event(
+        default_payment_method=None,
+        status="active",
+        metadata={"owner_id": "org_x", "provider_choice": "bedrock_claude"},
+    )
+    event["type"] = "customer.subscription.updated"
+    await handlers.handle_subscription_state(event, MagicMock())
+
+    mock_repo.set_provider_choice.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_legacy_paid_row_does_not_rewrite_provider_choice(mock_repo):
+    """A legacy paid row (subscription_status None but stripe_subscription_id
+    set — is_subscription_active treats it as live) is NOT pre-live: it can
+    have switched providers via /billing/provider, so an .updated(active)
+    carrying checkout-time metadata must not re-apply it. Only a row with no
+    subscription id at all counts as a fresh signup."""
+    mock_repo.get_by_owner_id.return_value = {
+        "owner_id": "org_x",
+        "owner_type": "org",
+        "stripe_customer_id": "cus_x",
+        "stripe_subscription_id": "sub_legacy",
+        "provider_choice": "byo_key",
+    }
+    event = _subscription_event(
+        default_payment_method=None,
+        status="active",
+        metadata={"owner_id": "org_x", "provider_choice": "bedrock_claude"},
+    )
+    event["type"] = "customer.subscription.updated"
+    await handlers.handle_subscription_state(event, MagicMock())
+
+    mock_repo.set_provider_choice.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_unpersisted_metadata_never_reaches_analytics(mock_repo):
+    """When the provider backup write is skipped, the PostHog bridge must
+    report the row's provider — not the stale checkout-time metadata.
+
+    Otherwise a past_due → active recovery after a provider switch keeps the
+    billing row intact but still stamps the person profile / lifecycle event
+    with the checkout-time provider, corrupting provider segmentation for
+    exactly the case the row guard protects.
+    """
+    mock_repo.get_by_owner_id.return_value = {
+        "owner_id": "org_x",
+        "owner_type": "org",
+        "stripe_customer_id": "cus_x",
+        "subscription_status": "past_due",
+        "provider_choice": "byo_key",
+    }
+    event = _subscription_event(
+        default_payment_method=None,
+        status="active",
+        metadata={"owner_id": "org_x", "provider_choice": "bedrock_claude"},
+    )
+    event["type"] = "customer.subscription.updated"
+    with patch.object(handlers, "capture_product_event") as capture:
+        await handlers.handle_subscription_state(event, MagicMock())
+
+    assert capture.call_count == 1
+    kwargs = capture.call_args.kwargs
+    assert kwargs["properties"]["provider_choice"] == "byo_key"
+    assert kwargs["set_person"]["provider_choice"] == "byo_key"
+
+
+@pytest.mark.asyncio
 async def test_webhook_backup_write_bedrock_passes_no_connector(mock_repo):
     """A bedrock subscription event passes connector_user_id=None — bedrock is
     not connector-backed, and None leaves any existing connector untouched."""

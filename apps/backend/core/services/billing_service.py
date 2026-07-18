@@ -366,10 +366,12 @@ async def create_team_seat_checkout(*, owner_id: str, member_count: int) -> stri
         # Teams are Bedrock-managed automatically — there is no provider picker
         # in the team flow. Thread provider_choice into the subscription
         # metadata so the customer.subscription.* webhook persists it as the
-        # idempotent backup (handle_subscription_state accepts "bedrock_claude"),
-        # mirroring how /trial-checkout threads the personal picker's choice.
-        # The router also writes it synchronously before this call so a poll
-        # returning from Checkout never flashes provider_required.
+        # idempotent backup when the subscription first goes live (the
+        # metadata is a checkout-time snapshot, so live→live events never
+        # re-apply it over a later change_provider switch), mirroring how
+        # /trial-checkout threads the personal picker's choice. The router
+        # also writes it synchronously before this call so a poll returning
+        # from Checkout never flashes provider_required.
         metadata={"owner_id": owner_id, "purpose": "team_seat", "provider_choice": "bedrock_claude"},
         success_url=f"{FRONTEND_URL}/chat?checkout=success",
         cancel_url=f"{FRONTEND_URL}/?checkout=cancel",

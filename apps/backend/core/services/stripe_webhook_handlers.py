@@ -466,7 +466,33 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
     metadata_provider = metadata.get("provider_choice")
     metadata_byo = metadata.get("byo_provider")
     provider_persisted = False
-    if metadata_provider in ("chatgpt_oauth", "byo_key", "bedrock_claude"):
+    # The provider backup below runs only on the transition INTO a live paid
+    # status — the first usable event of a new subscription. That is usually
+    # .created(active|trialing), but for a checkout-born sub whose .created
+    # surfaced as `incomplete` (skipped entirely by the guard above), it is
+    # the follow-up .updated(active) that performs the deferred writes.
+    #
+    # Events on an already-established subscription (renewals, seat syncs,
+    # payment-method changes, and past_due/unpaid/paused recoveries) must
+    # NEVER persist it: subscription metadata is a snapshot of the provider
+    # chosen at checkout and is never updated by change_provider, so on those
+    # events it can be stale history. Persisting it there clobbers a
+    # post-onboarding provider switch back to the checkout-time value — and
+    # set_provider_choice's REMOVE strips oauth_connector_user_id with it.
+    #
+    # Prior states are an ALLOWLIST of "no live subscription behind this row"
+    # (fresh signup, local free tier, unsettled/dead checkout, terminal
+    # cancel — a canceled owner can only come back via a new checkout with
+    # fresh metadata). Anything else, including Stripe statuses that don't
+    # exist yet, defaults to "existing subscription — skip". A None status
+    # counts only when the row also carries no subscription id: with one, a
+    # None-status row is a LEGACY PAID subscription (is_subscription_active
+    # treats it as live, so it can have switched providers already).
+    pre_live_statuses = ("trial_local", "incomplete", "incomplete_expired", "canceled")
+    entering_live = new_status in ("active", "trialing") and (
+        old_status in pre_live_statuses or (old_status is None and not account.get("stripe_subscription_id"))
+    )
+    if entering_live and metadata_provider in ("chatgpt_oauth", "byo_key", "bedrock_claude"):
         # provider_choice lives on billing_accounts (per-owner), not on
         # the user row. /trial-checkout writes synchronously before
         # creating the Stripe Checkout session; this webhook write is
@@ -557,7 +583,10 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
                 properties={
                     "from_status": old_status,
                     "to_status": new_status,
-                    "provider_choice": metadata_provider or account.get("provider_choice"),
+                    # Same persisted-only rule as the bridge below: claim the
+                    # metadata provider only when its row write committed.
+                    "provider_choice": (metadata_provider if provider_persisted else None)
+                    or account.get("provider_choice"),
                 },
             )
         except Exception:
@@ -591,8 +620,14 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
     await write_owner_facts(account["owner_id"], account_overrides=facts_overrides)
 
     # Customer-analytics bridge (the EMF put_metric above is the operational
-    # counterpart) — land the lifecycle transition on the person.
-    _bridge_subscription_state(account, event_data, old_status, new_status, metadata_provider)
+    # counterpart) — land the lifecycle transition on the person. Metadata
+    # only rides along when its billing-row write committed; otherwise the
+    # bridge falls back to the row's provider, so a skipped backup (live→live
+    # recovery) or a swallowed write failure never stamps the person profile
+    # with a provider the row doesn't have.
+    _bridge_subscription_state(
+        account, event_data, old_status, new_status, metadata_provider if provider_persisted else None
+    )
     return None
 
 

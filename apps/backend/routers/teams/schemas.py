@@ -185,6 +185,25 @@ class CreateRoutineBody(_Strict):
     status: Optional[str] = Field(default=None, pattern=r"^(active|paused|draft|archived)$")
     priority: Optional[str] = Field(default=None, pattern=r"^(critical|high|medium|low)$")
     project_id: Optional[str] = None
+    # --- A2 (editable routines): full-shape create fields --------------------
+    # Scheduling policies + variables + env + circuit-breaker (autoPause) —
+    # upstream ``createRoutineSchema`` accepts all of these
+    # (paperclip/packages/shared/src/validators/routine.ts:52-67, deployed fork
+    # 2026.7 = vanilla 936215693 + circuit-breaker patch). ``variables`` carries
+    # the routine's typed variable definitions INCLUDING the ``date`` type added
+    # by upstream #8655; forwarded verbatim (upstream validates each entry via
+    # ``routineVariableSchema``). ``env`` is upstream ``envConfigSchema`` (a
+    # free-form secret/env map). Non-strict upstream schemas strip anything they
+    # don't know, so the passthrough is safe.
+    goal_id: Optional[str] = None
+    concurrency_policy: Optional[str] = Field(
+        default=None, pattern=r"^(coalesce_if_active|always_enqueue|skip_if_active)$"
+    )
+    catch_up_policy: Optional[str] = Field(default=None, pattern=r"^(skip_missed|enqueue_missed_with_cap)$")
+    auto_pause_enabled: Optional[bool] = None
+    auto_pause_threshold: Optional[int] = Field(default=None, ge=1, le=100)
+    variables: Optional[list[dict]] = None
+    env: Optional[dict] = None
 
 
 class PatchRoutineBody(_Strict):
@@ -202,6 +221,22 @@ class PatchRoutineBody(_Strict):
     status: Optional[str] = Field(default=None, pattern=r"^(active|paused|draft|archived)$")
     priority: Optional[str] = Field(default=None, pattern=r"^(critical|high|medium|low)$")
     project_id: Optional[str] = None
+    # --- A2 (editable routines): full-shape update fields --------------------
+    # Same superset as ``CreateRoutineBody`` plus ``base_revision_id`` (upstream
+    # ``updateRoutineSchema`` = createRoutineSchema.partial().extend({baseRevisionId})),
+    # so the routine-detail edit form can change policies / variables (incl. the
+    # ``date`` type from #8655) / env, and optimistic-concurrency against a base
+    # revision. Activation stays gated in the router (status="active").
+    goal_id: Optional[str] = None
+    concurrency_policy: Optional[str] = Field(
+        default=None, pattern=r"^(coalesce_if_active|always_enqueue|skip_if_active)$"
+    )
+    catch_up_policy: Optional[str] = Field(default=None, pattern=r"^(skip_missed|enqueue_missed_with_cap)$")
+    auto_pause_enabled: Optional[bool] = None
+    auto_pause_threshold: Optional[int] = Field(default=None, ge=1, le=100)
+    variables: Optional[list[dict]] = None
+    env: Optional[dict] = None
+    base_revision_id: Optional[str] = None
 
 
 class CreateRoutineTriggerBody(_Strict):
@@ -218,6 +253,29 @@ class CreateRoutineTriggerBody(_Strict):
     cron_expression: str = Field(min_length=1, max_length=200)
     timezone: str = Field(default="UTC", min_length=1, max_length=64)
     label: Optional[str] = Field(default=None, max_length=120)
+    # A2: schedule triggers may be created already disabled (upstream
+    # ``baseTriggerSchema.enabled`` defaults true) — lets the detail UI stage a
+    # trigger without arming it. Still schedule-only: a webhook kind 422s here.
+    enabled: Optional[bool] = None
+
+
+class UpdateRoutineTriggerBody(_Strict):
+    """Body for ``PATCH /teams/routines/{id}/triggers/{trigger_id}`` (A2).
+
+    Mirrors upstream's ``updateRoutineTriggerSchema``
+    (paperclip/packages/shared/src/validators/routine.ts) — every field
+    optional. ``cron_expression`` / ``timezone`` edit a schedule trigger;
+    ``signing_mode`` / ``replay_window_sec`` edit a webhook trigger that
+    already exists (created upstream / via CLI). ``enabled`` toggles a
+    trigger on/off — enabling is gated in the router (it arms the schedule).
+    """
+
+    label: Optional[str] = Field(default=None, max_length=120)
+    enabled: Optional[bool] = None
+    cron_expression: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    timezone: Optional[str] = Field(default=None, min_length=1, max_length=64)
+    signing_mode: Optional[str] = Field(default=None, pattern=r"^(bearer|hmac_sha256|github_hmac|none)$")
+    replay_window_sec: Optional[int] = Field(default=None, ge=30, le=86_400)
 
 
 class CreateGoalBody(_Strict):

@@ -27,6 +27,7 @@ from .schemas import (
     PatchGoalBody,
     PatchProjectBody,
     PatchRoutineBody,
+    UpdateRoutineTriggerBody,
 )
 
 router = APIRouter()
@@ -117,18 +118,33 @@ async def patch_routine(
 ):
     """Patch a routine.
 
-    Gated ONLY on activation. Flipping ``status`` to ``active`` is the same lever
-    as creating a routine — it is what makes the schedule fire — and the enable
-    toggle PATCHes exactly ``{status: "active"}``. Without this, a trial owner
-    could re-enable any pre-existing routine (one seeded before this gate, or
-    created through the Paperclip pass-through) and walk straight around the
-    create-side check.
+    Gated on any fireability-INCREASING edit. Flipping ``status`` to ``active`` is
+    the same lever as creating a routine — it is what makes the schedule fire — and
+    the enable toggle PATCHes exactly ``{status: "active"}``. But activation is not
+    the only lever: switching ``concurrency_policy`` to ``always_enqueue`` (never
+    coalesce/skip an overlapping run) or ``catch_up_policy`` to
+    ``enqueue_missed_with_cap`` (replay missed runs after downtime) raises scheduled
+    dispatch VOLUME on an already-active routine without ever touching ``status``.
+    Gating only ``status=="active"`` left that walk-around open — a trial owner
+    could retime dispatch just as trigger-retiming let them retime cadence.
+
+    Ranked on the TARGET value (the more-dispatching enum), so the gate fires only
+    when the edit moves TOWARD more autonomy: narrowing a policy back to
+    ``skip_if_active`` / ``coalesce_if_active`` / ``skip_missed`` is never blocked,
+    matching the pause/rename/delete escape hatch. This needs no read of the current
+    value — the frontend sends only changed fields, so the field's presence with a
+    more-dispatching target IS the increase.
 
     Pause, rename, reassign and delete stay OPEN to trial owners on purpose:
     refusing those would trap someone with automation they cannot turn off, and
-    only activation reaches for autonomy.
+    only activation / more-dispatch reaches for autonomy.
     """
-    if body.status == "active":
+    increases_fireability = (
+        body.status == "active"
+        or body.concurrency_policy == "always_enqueue"
+        or body.catch_up_policy == "enqueue_missed_with_cap"
+    )
+    if increases_fireability:
         await require_always_on_entitlement(ctx.owner_id)
 
     # Nightly CEO loop opt-out (issue #1273): persist a DURABLE opt-out on the
@@ -150,9 +166,17 @@ async def patch_routine(
     if body.status in {"paused", "archived", "active"}:
         is_nightly = await _is_nightly_ceo_routine(ctx, routine_id)
 
+    # Forward with exclude_UNSET (not exclude_none): the edit dialog sends only the
+    # fields the user actually changed, and a CLEARED field arrives as an explicit
+    # null (e.g. `description: null`). exclude_none would drop that null before
+    # Paperclip saw it, so the clear was silently ignored and the dialog snapped back
+    # to the old value. exclude_unset keeps client-sent fields — including explicit
+    # nulls — while omitting fields the client never sent, so a partial PATCH stays
+    # partial. The fireability gate above reads `body.status` (the model attribute),
+    # not this dict, so it is unaffected; `extra="forbid"` still bars stray fields.
     result = await _agents._admin().patch_routine(
         routine_id=routine_id,
-        body=body.model_dump(exclude_none=True, by_alias=True),
+        body=body.model_dump(exclude_unset=True, by_alias=True),
         session_cookie=ctx.session_cookie,
     )
 
@@ -248,6 +272,173 @@ async def get_routine(routine_id: str, ctx: TeamsContext = Depends(_ctx)):
     """Fetch a single routine by id (the routine detail page)."""
     return await _agents._admin().get_routine(
         routine_id=routine_id,
+        session_cookie=ctx.session_cookie,
+    )
+
+
+# ---- Routine triggers + revisions (A2 — editable routines) ------------
+#
+# These make RoutineDetailPanel editable beyond delete+recreate: edit/delete
+# a schedule trigger, rotate a webhook trigger's signing secret, and
+# view/restore the routine's revision history.
+#
+# Trigger mutations upstream are keyed by the globally-unique trigger id
+# (``/api/routine-triggers/{id}``); the BFF nests them under the routine for a
+# RESTful UI shape and forwards only the trigger id to the admin client.
+#
+# Trial-gate posture (preserving ``require_always_on_entitlement`` — see
+# patch_routine + create_routine_trigger above):
+#   - Any trigger edit that could INCREASE fireability is gated: enabling
+#     (``enabled=true``, arms the schedule like ``status="active"``), retiming
+#     (``cron_expression`` / ``timezone``), or loosening webhook auth
+#     (``signing_mode`` / ``replay_window_sec``). Gating only ``enabled=true``
+#     left a walk-around: a trial owner could retime an ALREADY-enabled schedule
+#     to fire far more often, or drop signing to ``none``, and increase
+#     autonomous/externally-triggered runs without ever setting ``enabled``.
+#   - RESTORING a revision can revert a routine to an active snapshot with
+#     enabled triggers → gated (a restore is an activation-adjacent lever).
+#   - A PURE disable (``enabled=false``), a relabel, deleting a trigger, and
+#     rotating a secret do NOT increase fireability and stay open — refusing them
+#     would trap a trial owner with automation they can't turn off, matching the
+#     pause/rename/delete escape hatch on routines.
+
+
+@router.patch("/routines/{routine_id}/triggers/{trigger_id}")
+async def patch_routine_trigger(
+    routine_id: str,
+    trigger_id: str,
+    body: UpdateRoutineTriggerBody,
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """Edit a routine trigger (cron / timezone / label / enable / webhook signing).
+
+    Gated on any edit that could INCREASE fireability — enabling the trigger
+    (``enabled=true``, the same autonomy lever as ``patch_routine(status="active")``),
+    retiming its schedule (``cron_expression`` / ``timezone``), or loosening its
+    webhook auth (``signing_mode`` / ``replay_window_sec``). Gating only
+    ``enabled=true`` was a hole: a trial owner with an ALREADY-enabled trigger
+    could PATCH a tighter cron or ``signing_mode="none"`` WITHOUT ``enabled`` and
+    drive more autonomous/externally-triggered runs around the gate. Only a pure
+    disable (``enabled=false``) or a relabel stays open — the escape hatch, which
+    can never grant autonomy.
+    """
+    increases_fireability = (
+        body.enabled is True
+        or body.cron_expression is not None
+        or body.timezone is not None
+        or body.signing_mode is not None
+        or body.replay_window_sec is not None
+    )
+    if increases_fireability:
+        await require_always_on_entitlement(ctx.owner_id)
+
+    # Nightly CEO loop opt-out (issue #1273): disabling the nightly routine's
+    # trigger stops its schedule just like pausing the routine, so persist the
+    # durable opt-out — else a later reprovision would silently re-arm the loop.
+    # The routine row survives a trigger edit, so identity stays resolvable and
+    # the flag is written AFTER the disable succeeds (unlike delete_routine,
+    # whose routine identity vanishes). Durable on this stop direction: a failed
+    # flag write PROPAGATES (the disable already took effect upstream; a retry
+    # only re-attempts the idempotent flag).
+    is_nightly = False
+    if body.enabled is False:
+        is_nightly = await _is_nightly_ceo_routine(ctx, routine_id)
+
+    # Forward with exclude_UNSET (not exclude_none): the edit dialog sends only the
+    # fields the user changed, and CLEARING a label arrives as an explicit null
+    # (``label: null``). exclude_none would drop that null before Paperclip saw it,
+    # so the clear was silently ignored and the label snapped back on refresh.
+    # exclude_unset keeps client-sent fields — including explicit nulls — while
+    # omitting fields the client never sent, so a partial PATCH stays partial. The
+    # fireability gate above reads model attributes (``body.enabled`` etc.), not this
+    # dict, so it is unaffected; ``extra="forbid"`` still bars stray fields.
+    result = await _agents._admin().patch_routine_trigger(
+        trigger_id=trigger_id,
+        body=body.model_dump(exclude_unset=True, by_alias=True),
+        session_cookie=ctx.session_cookie,
+    )
+
+    if is_nightly:
+        await billing_repo.set_nightly_ceo_opted_out(ctx.owner_id, True)
+
+    return result
+
+
+@router.delete("/routines/{routine_id}/triggers/{trigger_id}")
+async def delete_routine_trigger(
+    routine_id: str,
+    trigger_id: str,
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """Delete a routine trigger. Idempotent — upstream 404 is swallowed.
+
+    Ungated: removing a schedule can only REDUCE autonomy, never grant it.
+
+    Nightly CEO loop opt-out (issue #1273): deleting the nightly routine's
+    trigger stops its schedule just like deleting or pausing the routine, so
+    persist the durable ``nightly_ceo_opted_out`` flag — else a later reprovision
+    would silently re-arm the loop. The routine row survives a trigger delete, so
+    identity stays resolvable and the flag is written AFTER the delete succeeds
+    (durable / propagated on this stop direction).
+    """
+    is_nightly = await _is_nightly_ceo_routine(ctx, routine_id)
+    result = await _agents._admin().delete_routine_trigger(
+        trigger_id=trigger_id,
+        session_cookie=ctx.session_cookie,
+    )
+    if is_nightly:
+        await billing_repo.set_nightly_ceo_opted_out(ctx.owner_id, True)
+    return result
+
+
+@router.post("/routines/{routine_id}/triggers/{trigger_id}/rotate-secret")
+async def rotate_routine_trigger_secret(
+    routine_id: str,
+    trigger_id: str,
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """Rotate a webhook trigger's signing secret.
+
+    Returns upstream's ``{trigger, secretMaterial, ...}`` — the new secret is
+    shown once. Ungated: rotating the secret of an existing trigger is a
+    management action, not an activation lever (it does not create autonomy).
+    """
+    return await _agents._admin().rotate_routine_trigger_secret(
+        trigger_id=trigger_id,
+        session_cookie=ctx.session_cookie,
+    )
+
+
+@router.get("/routines/{routine_id}/revisions")
+async def list_routine_revisions(
+    routine_id: str,
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """List a routine's revision history (for the detail page's Revisions view)."""
+    upstream = await _agents._admin().list_routine_revisions(
+        routine_id=routine_id,
+        session_cookie=ctx.session_cookie,
+    )
+    return envelope_list(upstream, "revisions")
+
+
+@router.post("/routines/{routine_id}/revisions/{revision_id}/restore")
+async def restore_routine_revision(
+    routine_id: str,
+    revision_id: str,
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """Restore a routine to a prior revision snapshot.
+
+    Gated on ``require_always_on_entitlement``: a restore can revert the routine
+    to an ``active`` snapshot with enabled triggers, which is activation-adjacent
+    — the same reason ``patch_routine(status="active")`` is gated. A trial owner
+    who can't run scheduled automation shouldn't be able to re-arm it via restore.
+    """
+    await require_always_on_entitlement(ctx.owner_id)
+    return await _agents._admin().restore_routine_revision(
+        routine_id=routine_id,
+        revision_id=revision_id,
         session_cookie=ctx.session_cookie,
     )
 

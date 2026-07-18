@@ -237,7 +237,7 @@ async def create_flat_fee_checkout(
     if clerk_user_id:
         metadata["clerk_user_id"] = clerk_user_id
 
-    return await _build_subscription_checkout(
+    session = await _build_subscription_checkout(
         owner_id=owner_id,
         price_id=settings.STRIPE_FLAT_PRICE_ID,
         quantity=1,
@@ -248,6 +248,16 @@ async def create_flat_fee_checkout(
         cancel_url=f"{FRONTEND_URL}/?checkout=cancel",
         idempotency_key=_checkout_idempotency_key("flat_checkout", owner_id, provider_choice or "_"),
     )
+    # Best-effort: the marker is the single-open-session guard, not a
+    # correctness dependency — an unrecorded session just floats until its
+    # ~31-minute expiry and the live-subscription check still covers anything
+    # that completes. Failing the request here would strand the user with a
+    # session they were never shown.
+    try:
+        await billing_repo.set_pending_checkout(owner_id, session_id=session.id, provider_choice=provider_choice)
+    except Exception:
+        logger.exception("Failed to record pending checkout session for owner %s", owner_id)
+    return session
 
 
 def _checkout_idempotency_key(flow: str, owner_id: str, extra: str | None = None) -> str:
@@ -298,6 +308,10 @@ async def _build_subscription_checkout(
         customer_update={"address": "auto"},
         subscription_data=subscription_data,
         idempotency_key=idempotency_key,
+        # Stripe's minimum is 30 minutes; the default is 24 hours. A short
+        # expiry bounds how long an abandoned session can linger completable
+        # — load-bearing for the single-open-session guard in /trial-checkout.
+        expires_at=int(time.time()) + 31 * 60,
     )
     with timing("stripe.api.latency", {"op": "checkout.session.create"}):
         session = stripe.checkout.Session.create(**kwargs)

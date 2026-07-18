@@ -335,3 +335,140 @@ async def test_non_blocking_live_subs_allow_checkout(
 
     assert resp.status_code == 200, resp.json()
     mock_create_checkout.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Single-open-session guard: completing two open Checkout sessions creates two
+# charged subscriptions, and no subscription exists at session-open time for
+# the row/live-list guards to see. The pending marker + live session status
+# keep it to at most one completable session per owner.
+# ---------------------------------------------------------------------------
+
+_PENDING_ROW = {
+    **_TRIAL_LOCAL_ROW,
+    "pending_checkout_session_id": "cs_pending",
+    "pending_checkout_provider": "bedrock_claude",
+}
+
+
+def _open_session(url="https://checkout.stripe.com/cs_pending"):
+    from unittest.mock import MagicMock
+
+    m = MagicMock(url=url)
+    m.get.side_effect = lambda k, d=None: {"status": "open"}.get(k, d)
+    return m
+
+
+@pytest.mark.asyncio
+@patch("core.services.billing_service.create_flat_fee_checkout")
+@patch("routers.billing.stripe.checkout.Session.retrieve")
+@patch("routers.billing.stripe.Subscription.list")
+@patch("routers.billing.clerk_admin")
+@patch("routers.billing.billing_repo")
+async def test_same_provider_reuses_open_pending_session(
+    mock_repo, mock_clerk, mock_sub_list, mock_retrieve, mock_create_checkout, async_client
+):
+    """Re-clicking Upgrade with the same provider returns the SAME hosted
+    session URL — no second completable session is ever minted."""
+    mock_repo.get_by_owner_id = AsyncMock(return_value=dict(_PENDING_ROW))
+    mock_clerk.list_pending_invitations_for_user = AsyncMock(return_value=[])
+    mock_sub_list.return_value = _sub_list([])
+    mock_retrieve.return_value = _open_session()
+
+    resp = await async_client.post(
+        "/api/v1/billing/trial-checkout",
+        json={"provider_choice": "bedrock_claude"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["checkout_url"] == "https://checkout.stripe.com/cs_pending"
+    mock_create_checkout.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch("core.services.billing_service.create_flat_fee_checkout")
+@patch("routers.billing.stripe.checkout.Session.expire")
+@patch("routers.billing.stripe.checkout.Session.retrieve")
+@patch("routers.billing.stripe.Subscription.list")
+@patch("routers.billing.clerk_admin")
+@patch("routers.billing.billing_repo")
+async def test_provider_switch_expires_old_session_and_mints_fresh(
+    mock_repo, mock_clerk, mock_sub_list, mock_retrieve, mock_expire, mock_create_checkout, async_client
+):
+    """Picking a DIFFERENT provider must kill the old open session (its
+    subscription metadata carries the old provider, and leaving it open would
+    allow completing both) and mint a fresh one."""
+    mock_repo.get_by_owner_id = AsyncMock(return_value=dict(_PENDING_ROW))
+    mock_repo.set_provider_choice = AsyncMock(return_value=None)
+    mock_clerk.list_pending_invitations_for_user = AsyncMock(return_value=[])
+    mock_sub_list.return_value = _sub_list([])
+    mock_retrieve.return_value = _open_session()
+    mock_create_checkout.return_value = type("Session", (), {"url": "https://checkout.stripe.com/fresh"})()
+
+    resp = await async_client.post(
+        "/api/v1/billing/trial-checkout",
+        json={"provider_choice": "chatgpt_oauth"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["checkout_url"] == "https://checkout.stripe.com/fresh"
+    mock_expire.assert_called_once_with("cs_pending")
+    mock_create_checkout.assert_called_once()
+
+
+@pytest.mark.asyncio
+@patch("core.services.billing_service.create_flat_fee_checkout")
+@patch("routers.billing.stripe.checkout.Session.retrieve")
+@patch("routers.billing.stripe.Subscription.list")
+@patch("routers.billing.clerk_admin")
+@patch("routers.billing.billing_repo")
+async def test_completed_pending_session_409s_until_webhook_lands(
+    mock_repo, mock_clerk, mock_sub_list, mock_retrieve, mock_create_checkout, async_client
+):
+    """A completed session whose webhook hasn't flipped the row yet must 409
+    rather than mint a parallel session for a customer who already paid."""
+    mock_repo.get_by_owner_id = AsyncMock(return_value=dict(_PENDING_ROW))
+    mock_clerk.list_pending_invitations_for_user = AsyncMock(return_value=[])
+    mock_sub_list.return_value = _sub_list([])
+    completed = _open_session()
+    completed.get.side_effect = lambda k, d=None: {"status": "complete"}.get(k, d)
+    mock_retrieve.return_value = completed
+
+    resp = await async_client.post(
+        "/api/v1/billing/trial-checkout",
+        json={"provider_choice": "bedrock_claude"},
+    )
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "already_subscribed:checkout_completed"
+    mock_create_checkout.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch("core.services.billing_service.create_flat_fee_checkout")
+@patch("routers.billing.stripe.checkout.Session.retrieve")
+@patch("routers.billing.stripe.Subscription.list")
+@patch("routers.billing.clerk_admin")
+@patch("routers.billing.billing_repo")
+async def test_expired_or_missing_pending_session_mints_fresh(
+    mock_repo, mock_clerk, mock_sub_list, mock_retrieve, mock_create_checkout, async_client
+):
+    """A marker pointing at an expired/unretrievable session self-heals — a
+    fresh session is minted."""
+    import stripe as stripe_mod
+
+    mock_repo.get_by_owner_id = AsyncMock(return_value=dict(_PENDING_ROW))
+    mock_repo.set_provider_choice = AsyncMock(return_value=None)
+    mock_clerk.list_pending_invitations_for_user = AsyncMock(return_value=[])
+    mock_sub_list.return_value = _sub_list([])
+    mock_retrieve.side_effect = stripe_mod.error.InvalidRequestError("gone", param=None)
+    mock_create_checkout.return_value = type("Session", (), {"url": "https://checkout.stripe.com/fresh"})()
+
+    resp = await async_client.post(
+        "/api/v1/billing/trial-checkout",
+        json={"provider_choice": "bedrock_claude"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["checkout_url"] == "https://checkout.stripe.com/fresh"
+    mock_create_checkout.assert_called_once()

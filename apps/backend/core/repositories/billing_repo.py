@@ -169,6 +169,39 @@ async def set_stripe_customer_id(
     )
 
 
+async def set_pending_checkout(
+    owner_id: str,
+    *,
+    session_id: str,
+    provider_choice: str | None,
+) -> None:
+    """Record the owner's OPEN Stripe Checkout session (at most one).
+
+    Written by ``create_flat_fee_checkout`` right after session creation and
+    read by the ``/trial-checkout`` router so a second upgrade click returns
+    the SAME hosted session instead of minting a parallel one — completing
+    two open sessions would create two charged subscriptions. Never cleared:
+    a stale marker self-heals because the router re-checks the session's live
+    status with Stripe (open → reuse, complete → 409 until the webhook flips
+    the row, expired → mint fresh; sessions are created with a ~31-minute
+    ``expires_at``). ``provider_choice`` is stored so a provider SWITCH can
+    expire the old session rather than reuse it with the wrong metadata.
+    Same existing-row condition as the other billing-row setters.
+    """
+    table = _get_table()
+    await run_in_thread(
+        table.update_item,
+        Key={"owner_id": owner_id},
+        UpdateExpression=("SET pending_checkout_session_id = :s, pending_checkout_provider = :p, updated_at = :t"),
+        ExpressionAttributeValues={
+            ":s": session_id,
+            ":p": provider_choice,
+            ":t": utc_now_iso(),
+        },
+        ConditionExpression="attribute_exists(owner_id)",
+    )
+
+
 async def set_credits_auto_charge(owner_id: str, *, enabled: bool) -> None:
     """Persist the owner's one-click top-up consent.
 

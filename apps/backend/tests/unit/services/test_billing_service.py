@@ -469,6 +469,35 @@ class TestCreateFlatFeeCheckout:
         # Billed immediately — no Stripe trial. No-card evaluation happens
         # on the trial_local free tier, never at checkout.
         assert "trial_period_days" not in kwargs["subscription_data"]
+        # Short session expiry (Stripe minimum is 30 min) bounds how long an
+        # abandoned session stays completable — load-bearing for the
+        # single-open-session guard in /trial-checkout.
+        import time as _time
+
+        assert 30 * 60 <= kwargs["expires_at"] - int(_time.time()) <= 32 * 60
+
+    @pytest.mark.asyncio
+    async def test_create_flat_fee_checkout_records_pending_session(self, monkeypatch):
+        """The pending-checkout marker is the single-open-session guard's
+        data source — every session create must record it."""
+        monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat_test")
+        fake_session = MagicMock(url="https://checkout/x", id="cs_recorded")
+        with (
+            patch.object(billing_service.stripe.checkout.Session, "create", return_value=fake_session),
+            patch.object(
+                billing_service.billing_repo,
+                "get_by_owner_id",
+                new=AsyncMock(return_value={"stripe_customer_id": "cus_test"}),
+            ),
+            patch.object(
+                billing_service.billing_repo,
+                "set_pending_checkout",
+                new=AsyncMock(),
+            ) as mock_mark,
+        ):
+            await billing_service.create_flat_fee_checkout(owner_id="u_1", provider_choice="chatgpt_oauth")
+
+        mock_mark.assert_awaited_once_with("u_1", session_id="cs_recorded", provider_choice="chatgpt_oauth")
 
     @pytest.mark.asyncio
     async def test_create_flat_fee_checkout_raises_without_flat_price_id(self, monkeypatch):

@@ -498,6 +498,42 @@ async def create_trial_checkout(
                     detail=f"already_subscribed:{sub.get('status')}",
                 )
 
+    # Single-open-session guard: at most one live Checkout session per owner.
+    # A user who clicks Upgrade twice (two tabs, browser back, a different
+    # provider card) must never hold two completable sessions — completing
+    # both creates two charged subscriptions, and no subscription exists at
+    # session-open time for the guards above to see. The marker is written by
+    # create_flat_fee_checkout after every session create; the session's LIVE
+    # status decides what it means, so a stale marker self-heals.
+    pending_id = account.get("pending_checkout_session_id")
+    if pending_id:
+        pending = None
+        try:
+            with timing("stripe.api.latency", {"op": "checkout.session.retrieve"}):
+                pending = stripe.checkout.Session.retrieve(pending_id)
+        except stripe.error.InvalidRequestError:
+            logger.info("Pending checkout session %s not retrievable — minting fresh", pending_id)
+        if pending is not None and pending.get("status") == "open":
+            if account.get("pending_checkout_provider") == body.provider_choice:
+                # Same intent — send them back to the SAME hosted session.
+                return {"checkout_url": pending.url}
+            # Provider switch: the open session carries the OLD provider in
+            # its subscription metadata (the webhook would clobber the new
+            # choice), and leaving it open would allow completing both.
+            # Expire it, then mint fresh below.
+            try:
+                with timing("stripe.api.latency", {"op": "checkout.session.expire"}):
+                    stripe.checkout.Session.expire(pending_id)
+            except stripe.error.InvalidRequestError:
+                # Lost a thin race (completed between retrieve and expire).
+                # The subscription webhooks + live-subscription guard own
+                # that world; proceed and let them arbitrate.
+                logger.info("Pending checkout session %s no longer expirable", pending_id)
+        elif pending is not None and pending.get("status") == "complete":
+            # Paid, webhook in flight. Do not mint a parallel session; the
+            # row flips active momentarily and the normal guard takes over.
+            raise HTTPException(status_code=409, detail="already_subscribed:checkout_completed")
+
     # A trial_local row EXISTS but carries no stripe_customer_id — the trial row
     # is written with no stripe_* fields so a brand-new signup can chat before
     # any Stripe object exists. The `if not account` branch above therefore

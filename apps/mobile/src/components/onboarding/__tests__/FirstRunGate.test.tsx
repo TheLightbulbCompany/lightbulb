@@ -3,6 +3,10 @@ import { Text } from "react-native";
 
 const mockGet = jest.fn();
 
+// The loading frame's pulse animation schedules its own timers, which can
+// interfere with the fake-timer advance below — pin it to a static value.
+jest.mock("../../chat/usePulse", () => ({ usePulse: () => 1 }));
+
 jest.mock("@clerk/clerk-expo", () => ({
   useAuth: () => ({ getToken: jest.fn(async () => "tok") }),
   useUser: () => ({

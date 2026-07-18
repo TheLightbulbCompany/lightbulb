@@ -60,8 +60,8 @@ export function FirstRunGate({ children }: { children: ReactNode }) {
   const briefSubmitted = readFirstRun(user).briefSubmitted === true;
   const skip = !user || briefSubmitted;
 
-  // null = unknown (probe not resolved) → render children, never a flash of
-  // the funnel for paid/org users.
+  // null = unknown (probe not resolved) → block on the neutral loading
+  // frame below: no funnel bypass, no funnel flash for eligible users.
   const [trialLocal, setTrialLocal] = useState<boolean | null>(null);
   const probesRef = useRef(0);
 

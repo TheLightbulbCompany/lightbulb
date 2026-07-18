@@ -11,6 +11,7 @@ from . import interactions as _interactions
 from . import issues as _issues
 from . import runs as _runs
 from . import settings as _settings_r
+from . import tree_control as _tree_control
 from . import work as _work
 
 router = APIRouter(prefix="/teams", tags=["teams"])
@@ -18,6 +19,7 @@ router.include_router(_agents.router)
 router.include_router(_inbox.router)
 router.include_router(_approvals.router)
 router.include_router(_issues.router)
+router.include_router(_tree_control.router)
 router.include_router(_interactions.router)
 router.include_router(_runs.router)
 router.include_router(_work.router)

@@ -401,3 +401,67 @@ class PatchWorkProductBody(_Strict):
     """
 
     review_state: str = Field(pattern=r"^(approved|changes_requested)$")
+
+
+# ---------------------------------------------------------------------------
+# Issue tree-control (pause / resume / cancel a runaway subtree)
+#
+# Whitelisted bodies for the operator safety lever. Mirror the upstream Zod
+# ``.strict()`` schemas (paperclip/packages/shared/src/validators/
+# issue-tree-control.ts): a smuggled field (e.g. ``adapterType``) is 422'd at
+# the FastAPI boundary. ``_Strict``'s ``to_camel`` generator emits the
+# camelCase shape upstream expects — routers forward with
+# ``model_dump(by_alias=True, exclude_none=True)``.
+# ---------------------------------------------------------------------------
+
+# ISSUE_TREE_CONTROL_MODES + ISSUE_TREE_HOLD_RELEASE_POLICY_STRATEGIES upstream.
+_TREE_CONTROL_MODE = r"^(pause|resume|cancel|restore)$"
+
+
+class TreeHoldReleasePolicyBody(_Strict):
+    """Nested release policy — mirrors ``issueTreeHoldReleasePolicySchema``.
+
+    ``strategy`` defaults to ``manual`` upstream; both fields optional here so a
+    bare hold is valid. ``note`` aliases straight through (single word).
+    """
+
+    strategy: Optional[str] = Field(default=None, pattern=r"^(manual|after_active_runs_finish)$")
+    note: Optional[str] = Field(default=None, min_length=1, max_length=500)
+
+
+class PreviewTreeControlBody(_Strict):
+    """Body for ``POST /teams/issues/{id}/tree-control/preview``.
+
+    Mirrors upstream ``previewIssueTreeControlSchema``: ``mode`` required,
+    ``release_policy`` optional.
+    """
+
+    mode: str = Field(pattern=_TREE_CONTROL_MODE)
+    release_policy: Optional[TreeHoldReleasePolicyBody] = None
+
+
+class CreateTreeHoldBody(_Strict):
+    """Body for ``POST /teams/issues/{id}/tree-holds``.
+
+    Mirrors upstream ``createIssueTreeHoldSchema``: ``mode`` required;
+    ``reason`` / ``release_policy`` / ``metadata`` optional. ``metadata`` is
+    upstream's free-form ``record(string, unknown)`` (the restore path reads
+    ``wakeAgents`` from it) — forwarded verbatim, so inner keys must already be
+    camelCase (the alias generator only renames model fields, not dict contents).
+    """
+
+    mode: str = Field(pattern=_TREE_CONTROL_MODE)
+    reason: Optional[str] = Field(default=None, min_length=1, max_length=1000)
+    release_policy: Optional[TreeHoldReleasePolicyBody] = None
+    metadata: Optional[dict] = None
+
+
+class ReleaseTreeHoldBody(_Strict):
+    """Body for ``POST /teams/issues/{id}/tree-holds/{holdId}/release``.
+
+    Mirrors upstream ``releaseIssueTreeHoldSchema``: every field optional.
+    """
+
+    reason: Optional[str] = Field(default=None, min_length=1, max_length=1000)
+    release_policy: Optional[TreeHoldReleasePolicyBody] = None
+    metadata: Optional[dict] = None

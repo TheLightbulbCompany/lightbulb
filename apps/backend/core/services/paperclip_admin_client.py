@@ -1241,6 +1241,46 @@ class PaperclipAdminClient:
             session_cookie=session_cookie,
         )
 
+    async def get_issue_document(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+        key: str,
+    ) -> dict:
+        """Fetch a single issue document (with its body) by key.
+
+        Maps to ``GET /api/issues/{issueId}/documents/{key}`` (issue-scoped;
+        company asserted upstream via the session cookie). Returns the document
+        object — ``{id, key, title, format, body, updatedAt, ...}`` — so the
+        Artifacts viewer can render the markdown body in place instead of
+        deep-linking into the issue detail.
+        """
+        return await self._get(
+            f"/api/issues/{issue_id}/documents/{key}",
+            session_cookie=session_cookie,
+        )
+
+    async def delete_issue_document(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+        key: str,
+    ) -> dict:
+        """Delete an issue document by key.
+
+        Maps to ``DELETE /api/issues/{issueId}/documents/{key}``. Upstream
+        requires board authentication (the admin session is a board actor) and
+        scopes the delete to the session cookie's company, so a cross-tenant
+        issue id is rejected upstream. ``_delete`` treats 404 as already-gone,
+        keeping a double-delete idempotent.
+        """
+        return await self._delete(
+            f"/api/issues/{issue_id}/documents/{key}",
+            session_cookie=session_cookie,
+        )
+
     # ------------------------------------------------------------------
     # Plan-document review — upsert / revisions / restore / annotations.
     #
@@ -1466,6 +1506,25 @@ class PaperclipAdminClient:
         return await self._patch(
             f"/api/work-products/{work_product_id}",
             json=body,
+            session_cookie=session_cookie,
+        )
+
+    async def delete_work_product(
+        self,
+        *,
+        session_cookie: str,
+        work_product_id: str,
+    ) -> dict:
+        """Delete a work-product.
+
+        Maps to ``DELETE /api/work-products/{id}``. Upstream resolves the
+        work-product, then asserts the session cookie's company owns the parent
+        issue — so a cross-tenant id is rejected upstream (404/403) rather than
+        relying on a BFF-side ownership check. ``_delete`` treats 404 as
+        already-gone, keeping a double-delete idempotent.
+        """
+        return await self._delete(
+            f"/api/work-products/{work_product_id}",
             session_cookie=session_cookie,
         )
 

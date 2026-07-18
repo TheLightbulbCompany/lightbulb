@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import StreamingResponse
 
 # ``request.form()`` yields Starlette's ``UploadFile`` (the base class FastAPI's
@@ -518,6 +518,28 @@ async def patch_work_product(
     )
 
 
+@router.delete("/work-products/{work_product_id}")
+async def delete_work_product(
+    work_product_id: str = Path(..., pattern=_UUID_RE),
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """Delete a work-product — the Artifacts gallery's per-artifact delete for
+    a ``work_product:<id>`` row.
+
+    Maps to upstream ``DELETE /api/work-products/{id}``. The id is validated as
+    a uuid at the boundary (a malformed value is a local 422, never forwarded
+    for upstream to cast-error + leak the company path). Company scope is the
+    session cookie's company — NEVER a client param: upstream resolves the
+    work-product, then asserts the cookie's company owns the parent issue, so a
+    cross-tenant id is rejected upstream (404/403). 404 is treated as
+    already-gone (idempotent) by the admin client's ``_delete``.
+    """
+    return await _agents._admin().delete_work_product(
+        session_cookie=ctx.session_cookie,
+        work_product_id=work_product_id,
+    )
+
+
 @router.get("/artifacts")
 async def list_company_artifacts(
     ctx: TeamsContext = Depends(_ctx),
@@ -804,6 +826,54 @@ async def upsert_issue_document(
         body=body.model_dump(exclude_none=True, by_alias=True),
     )
     return JSONResponse(status_code=status_code, content=document)
+
+
+@router.get("/issues/{issue_id}/documents/{key}")
+async def get_issue_document(
+    issue_id: str,
+    key: str,
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """Fetch a single issue document (with its body) — the Artifacts viewer.
+
+    Maps to upstream ``GET /api/issues/{issueId}/documents/{key}``. Upstream
+    returns the document object (``{id, key, title, format, body, ...}``) so the
+    gallery's viewer can render the markdown body in place rather than
+    deep-linking into the issue detail. The ``key`` is normalized + validated at
+    the boundary (bad key → local 400, never forwarded for upstream to
+    cast-error + leak the company path); company scope is the session cookie's
+    company (``assertIssueReadAllowed`` upstream), never a client param.
+    """
+    doc_key = _norm_document_key(key)
+    return await _agents._admin().get_issue_document(
+        session_cookie=ctx.session_cookie,
+        issue_id=issue_id,
+        key=doc_key,
+    )
+
+
+@router.delete("/issues/{issue_id}/documents/{key}")
+async def delete_issue_document(
+    issue_id: str,
+    key: str,
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """Delete an issue document by key — the Artifacts gallery's per-artifact
+    delete for a ``document:<id>`` row.
+
+    Maps to upstream ``DELETE /api/issues/{issueId}/documents/{key}``. The
+    ``key`` is normalized + validated at the boundary (bad key → local 400).
+    Upstream requires board authentication (the admin session is a board actor)
+    and scopes the delete to the session cookie's company, so a cross-tenant
+    issue id is rejected upstream rather than relying on a BFF-side check. 404
+    is treated as already-gone (idempotent) by the admin client's ``_delete``.
+    """
+    doc_key = _norm_document_key(key)
+    return await _agents._admin().delete_issue_document(
+        session_cookie=ctx.session_cookie,
+        issue_id=issue_id,
+        key=doc_key,
+    )
 
 
 @router.get("/issues/{issue_id}/documents/{key}/revisions")

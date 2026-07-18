@@ -25,6 +25,7 @@ from core.services.billing_service import BillingService
 from core.services.container_provision import resolve_provider_choice
 from core.services.stripe_webhook_handlers import STRIPE_WEBHOOK_HANDLERS
 from core.services.provision_gate import (
+    LIVE_SUBSCRIPTION_STATUSES,
     TRIAL_BLOCKED_STATUSES,
     is_subscription_active,
     is_trial_blocked,
@@ -472,6 +473,26 @@ async def create_trial_checkout(
                 raise HTTPException(
                     status_code=409,
                     detail=f"already_subscribed:{live_sub.get('status')}",
+                )
+    elif account.get("stripe_customer_id"):
+        # No stored subscription id — but the Stripe customer may still carry
+        # a live subscription this row hasn't heard about: a checkout that
+        # completed seconds ago with its webhook in flight, or a transient
+        # `incomplete` that handle_subscription_state deliberately does not
+        # persist over trial_local. Trusting the local row alone would mint a
+        # second Checkout session and double-subscribe, so ask Stripe
+        # directly. Match on subscription metadata owner_id — the customer is
+        # shared across personal/org billing rows for the same email, and
+        # another owner's subscription must not block this one.
+        with timing("stripe.api.latency", {"op": "subscription.list"}):
+            live_subs = stripe.Subscription.list(customer=account["stripe_customer_id"], status="all", limit=10)
+        for sub in live_subs.get("data", []):
+            if (sub.get("metadata") or {}).get("owner_id") != owner_id:
+                continue
+            if sub.get("status") in LIVE_SUBSCRIPTION_STATUSES:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"already_subscribed:{sub.get('status')}",
                 )
 
     # A trial_local row EXISTS but carries no stripe_customer_id — the trial row

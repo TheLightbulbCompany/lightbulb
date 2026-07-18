@@ -480,6 +480,14 @@ class TestTrialCheckoutProviderRules:
     or bedrock_claude.
     """
 
+    @pytest.fixture(autouse=True)
+    def _no_live_subs(self):
+        """The live-subscription guard lists subs on the Stripe customer before
+        creating a Checkout session — empty here, these tests are about
+        provider rules."""
+        with patch("routers.billing.stripe.Subscription.list", return_value={"data": []}):
+            yield
+
     @pytest.fixture
     def override_org_admin_auth(self, app, mock_org_admin_user):
         """Swap get_current_user with an org-admin AuthContext for one test."""

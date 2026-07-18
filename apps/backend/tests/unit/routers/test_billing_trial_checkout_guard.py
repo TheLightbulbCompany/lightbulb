@@ -134,11 +134,12 @@ async def test_trial_checkout_with_pending_invite_no_org_name_falls_back(mock_re
 
 @pytest.mark.asyncio
 @patch("core.services.billing_service.create_flat_fee_checkout")
+@patch("routers.billing.stripe.Subscription.list")
 @patch("core.services.billing_service.BillingService.create_customer_for_owner")
 @patch("routers.billing.clerk_admin")
 @patch("routers.billing.billing_repo")
 async def test_trial_checkout_with_no_pending_invitations_passes_gate_b(
-    mock_repo, mock_clerk, mock_create_customer, mock_create_checkout, async_client
+    mock_repo, mock_clerk, mock_create_customer, mock_sub_list, mock_create_checkout, async_client
 ):
     """Empty pending-invitations list lets the request through Gate B. The
     downstream BillingService is mocked so the test verifies ONLY that Gate
@@ -146,6 +147,9 @@ async def test_trial_checkout_with_no_pending_invitations_passes_gate_b(
     mock_repo.get_by_owner_id = AsyncMock(return_value=None)
     mock_repo.set_provider_choice = AsyncMock(return_value=None)
     mock_clerk.list_pending_invitations_for_user = AsyncMock(return_value=[])
+    # The live-subscription guard lists subs on the (possibly email-reused)
+    # Stripe customer — empty here, this test is about Gate B only.
+    mock_sub_list.return_value = {"data": []}
     # Mock the downstream Stripe customer + checkout creation so the test
     # doesn't reach real DDB / Stripe.
     mock_create_customer.return_value = {
@@ -241,4 +245,85 @@ async def test_trial_local_owner_gets_a_stripe_customer_backfilled(
     # The backfill ran for the trial row (this is the fix)...
     mock_create_customer.assert_awaited_once()
     # ...and checkout reached Stripe instead of raising "No Stripe customer".
+    mock_create_checkout.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Live-subscription check: the local row alone can't be trusted for owners
+# with no stored subscription id. A checkout that completed seconds ago (its
+# webhook still in flight) or a transient `incomplete` (deliberately not
+# persisted over trial_local by handle_subscription_state) both leave the row
+# checkout-eligible while a billable subscription already exists on the
+# Stripe customer — a second Checkout session would double-subscribe.
+# ---------------------------------------------------------------------------
+
+_TRIAL_LOCAL_ROW = {
+    "owner_id": "user_test_123",
+    "owner_type": "personal",
+    "subscription_status": "trial_local",
+    "stripe_customer_id": "cus_X",
+    # no stripe_subscription_id — the legacy-sub retrieve path must not run
+}
+
+
+def _live_sub(status, owner_id="user_test_123"):
+    return {"id": "sub_live", "status": status, "metadata": {"owner_id": owner_id}}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("live_status", ["incomplete", "active", "trialing", "past_due"])
+@patch("core.services.billing_service.create_flat_fee_checkout")
+@patch("routers.billing.stripe.Subscription.list")
+@patch("routers.billing.clerk_admin")
+@patch("routers.billing.billing_repo")
+async def test_live_billable_sub_on_customer_409s(
+    mock_repo, mock_clerk, mock_sub_list, mock_create_checkout, live_status, async_client
+):
+    """A billable subscription already on the Stripe customer (matching this
+    owner's metadata) blocks a new checkout even though the local row still
+    reads trial_local with no stored subscription id."""
+    mock_repo.get_by_owner_id = AsyncMock(return_value=dict(_TRIAL_LOCAL_ROW))
+    mock_clerk.list_pending_invitations_for_user = AsyncMock(return_value=[])
+    mock_sub_list.return_value = {"data": [_live_sub(live_status)]}
+
+    resp = await async_client.post(
+        "/api/v1/billing/trial-checkout",
+        json={"provider_choice": "bedrock_claude"},
+    )
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == f"already_subscribed:{live_status}"
+    mock_create_checkout.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "sub",
+    [
+        _live_sub("active", owner_id="org_someone_else"),  # shared email-keyed customer
+        _live_sub("incomplete_expired"),  # terminal, can never bill
+        _live_sub("canceled"),  # terminal, local-row policy governs instead
+    ],
+)
+@patch("core.services.billing_service.create_flat_fee_checkout")
+@patch("routers.billing.stripe.Subscription.list")
+@patch("routers.billing.clerk_admin")
+@patch("routers.billing.billing_repo")
+async def test_non_blocking_live_subs_allow_checkout(
+    mock_repo, mock_clerk, mock_sub_list, mock_create_checkout, sub, async_client
+):
+    """Another owner's subscription on the shared email-keyed customer, and
+    terminal states for this owner, must NOT block the checkout."""
+    mock_repo.get_by_owner_id = AsyncMock(return_value=dict(_TRIAL_LOCAL_ROW))
+    mock_repo.set_provider_choice = AsyncMock(return_value=None)
+    mock_clerk.list_pending_invitations_for_user = AsyncMock(return_value=[])
+    mock_sub_list.return_value = {"data": [sub]}
+    mock_create_checkout.return_value = type("Session", (), {"url": "https://checkout.stripe.com/ok"})()
+
+    resp = await async_client.post(
+        "/api/v1/billing/trial-checkout",
+        json={"provider_choice": "bedrock_claude"},
+    )
+
+    assert resp.status_code == 200, resp.json()
     mock_create_checkout.assert_called_once()

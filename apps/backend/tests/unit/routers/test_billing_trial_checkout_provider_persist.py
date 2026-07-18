@@ -20,6 +20,15 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _no_live_subs():
+    """The live-subscription guard lists subs on the Stripe customer before
+    creating a Checkout session. These tests are about provider persistence —
+    an empty customer keeps the guard out of the way."""
+    with patch("routers.billing.stripe.Subscription.list", return_value={"data": []}):
+        yield
+
+
 @pytest.mark.asyncio
 async def test_trial_checkout_persists_provider_choice_synchronously(async_client):
     """/trial-checkout must write provider_choice to billing_accounts

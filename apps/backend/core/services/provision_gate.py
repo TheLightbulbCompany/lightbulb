@@ -63,6 +63,14 @@ TRIAL_BLOCKED_STATUSES = frozenset(
     }
 )
 
+# The subset of the above that can still bill going forward. A subscription in
+# one of these states existing on the Stripe CUSTOMER (found by live list, not
+# the local row) means a new Checkout would double-subscribe the same owner.
+# Terminal states (canceled, incomplete_expired) are excluded: they can never
+# bill again, and whether a canceled owner may re-subscribe is a local-row
+# policy question (`is_trial_blocked`), not a double-charge risk.
+LIVE_SUBSCRIPTION_STATUSES = TRIAL_BLOCKED_STATUSES - {"canceled", "incomplete_expired"}
+
 
 def is_subscription_active(account: Mapping[str, Any] | None) -> bool:
     """Whether this billing-account row currently allows platform use.

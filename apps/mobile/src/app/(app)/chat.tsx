@@ -1,6 +1,7 @@
+import { useUser } from "@clerk/clerk-expo";
 import Feather from "@expo/vector-icons/Feather";
 import { router } from "expo-router";
-import { type ReactElement, useState } from "react";
+import { type ReactElement, useEffect, useRef, useState } from "react";
 import {
   Animated,
   FlatList,
@@ -18,6 +19,7 @@ import {
 import { colors, fonts, radii, spacing, type } from "../../config/theme";
 import { AgentPickerSheet } from "../../components/chat/AgentPickerSheet";
 import { usePulse } from "../../components/chat/usePulse";
+import { readFirstRun } from "../../lib/firstRun";
 import { useGateway } from "../../providers/gateway";
 
 // Slim connection-state row above the roster (web HealthIndicator, spec §5).
@@ -111,6 +113,26 @@ export default function Chat() {
   const connectionDown = !gateway.isConnected && gateway.error != null;
   const showEmpty = agents.length === 0 && !isLoading && data != null;
   const [pickerOpen, setPickerOpen] = useState(false);
+
+  // First-run aha: right after the funnel brief is submitted (and until the
+  // kickoff fires — `started` stays false), walk the user straight into the
+  // default agent's (Friday's) chat, where useFirstRunKickoff sends the
+  // visible kickoff prompt. Web needs no redirect (its main surface IS the
+  // default-agent chat); the roster is the mobile equivalent's front door.
+  const { user } = useUser();
+  const redirectedRef = useRef(false);
+  useEffect(() => {
+    if (redirectedRef.current || !user || !data?.defaultId) return;
+    const fr = readFirstRun(user);
+    if (!fr.briefSubmitted || fr.started) return;
+    const agent = data.agents?.find((a) => a.id === data.defaultId);
+    if (!agent) return;
+    redirectedRef.current = true;
+    router.push({
+      pathname: "/(app)/agent/[agentId]",
+      params: { agentId: agent.id, name: agentDisplayName(agent) },
+    });
+  }, [user, data]);
 
   let body: ReactElement;
   if (error) {

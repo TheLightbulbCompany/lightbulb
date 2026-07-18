@@ -1,6 +1,10 @@
 import { useUser } from "@clerk/clerk-expo";
 import Feather from "@expo/vector-icons/Feather";
-import { accumulateStreamText } from "@isol8/shared";
+import {
+  accumulateStreamText,
+  useGatewayRpc,
+  type AgentsListResponse,
+} from "@isol8/shared";
 import { randomUUID } from "expo-crypto";
 import { router, Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -17,6 +21,7 @@ import {
 } from "react-native";
 
 import { AgentHead } from "../../../components/chat/AgentHead";
+import { ChatErrorCard } from "../../../components/chat/ChatErrorCard";
 import type { ChatItem } from "../../../components/chat/chatItems";
 import { EmptyState } from "../../../components/chat/EmptyState";
 import { MessageMarkdown } from "../../../components/chat/MessageMarkdown";
@@ -24,9 +29,11 @@ import { SessionsSheet } from "../../../components/chat/SessionsSheet";
 import { TimelineSkeleton } from "../../../components/chat/TimelineSkeleton";
 import { ToolPill, type ToolPillStatus } from "../../../components/chat/ToolPill";
 import { usePulse } from "../../../components/chat/usePulse";
+import { useFirstRunKickoff } from "../../../components/onboarding/useFirstRunKickoff";
 import { colors, fonts, radii, spacing } from "../../../config/theme";
 import { setCurrentAgentId } from "../../../lib/activeAgent";
 import { projectHistoryToChatItems } from "../../../lib/chatHistory";
+import { readFirstRun, writeFirstRun } from "../../../lib/firstRun";
 import { buildChatSessionKey } from "../../../lib/sessionKey";
 import { useGateway } from "../../../providers/gateway";
 
@@ -78,6 +85,11 @@ export default function AgentChat() {
   // fetches wait for Clerk to load it.
   const { user } = useUser();
   const userId = user?.id ?? null;
+  // Ref twin for the frame handler's run_ended branch — the subscription
+  // effect's deps stay [gateway, agentId], so it must read the CURRENT user
+  // (Clerk hands out a new object per render) to see fresh firstRun flags.
+  const userRef = useRef(user);
+  userRef.current = user;
   const [items, setItems] = useState<ChatItem[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -200,7 +212,7 @@ export default function AgentChat() {
       } else if (msg.type === "error") {
         setItems((prev) => [
           ...prev,
-          { id: randomUUID(), role: "error", text: msg.message },
+          { id: randomUUID(), role: "error", text: msg.message, code: msg.code },
         ]);
         // Additive gate release: gate-level errors are terminal but never
         // followed by a run_ended, so the error frame itself must release
@@ -214,6 +226,18 @@ export default function AgentChat() {
         );
         activeRunIdRef.current = null;
         setBusy(false);
+        // First-run show completion (web AgentChatWindow parity): `started`
+        // is only ever true when the kickoff hook fired it, so any completed
+        // run here closes out the first-run show.
+        const currentUser = userRef.current;
+        if (currentUser) {
+          const fr = readFirstRun(currentUser);
+          if (fr.started && !fr.completed) {
+            void writeFirstRun(currentUser, { completed: true }).catch((err) =>
+              console.error("first-run completion write failed", err),
+            );
+          }
+        }
       }
     });
   }, [gateway, agentId]);
@@ -342,37 +366,62 @@ export default function AgentChat() {
     }
   }, [newSessionParam, newSession]);
 
+  // Full local send pipeline (bubble + busy + dispatch), shared by the
+  // composer and the first-run kickoff. Returns false when nothing was sent
+  // (empty text, active run, or a dead socket).
+  const dispatchText = useCallback(
+    (text: string): boolean => {
+      if (!text || busy || !agentId) return false;
+      const runId = randomUUID();
+      try {
+        // session_id rides only for a named session — omitted for General so
+        // the backend builds the legacy 3-part key (contract §4).
+        gateway.sendChat(agentId, text, runId, activeSessionId ?? undefined);
+      } catch (e) {
+        setItems((prev) => [
+          ...prev,
+          {
+            id: randomUUID(),
+            role: "error",
+            text: e instanceof Error ? e.message : "Send failed",
+          },
+        ]);
+        return false;
+      }
+      activeRunIdRef.current = runId;
+      committedOffsetRef.current = 0;
+      segmentRef.current = 0;
+      lastCumulativeLenRef.current = 0;
+      cumulativeTextRef.current = null;
+      // First send on a minted session materializes it server-side — it now
+      // has a transcript, so later reconnect refetches must hit the server.
+      if (activeSessionId) freshSessionIdsRef.current.delete(activeSessionId);
+      setBusy(true);
+      setItems((prev) => [...prev, { id: `u-${runId}`, role: "user", text, runId }]);
+      return true;
+    },
+    [busy, agentId, gateway, activeSessionId],
+  );
+
   const send = useCallback(() => {
-    const text = input.trim();
-    if (!text || busy || !agentId) return;
-    const runId = randomUUID();
-    try {
-      // session_id rides only for a named session — omitted for General so
-      // the backend builds the legacy 3-part key (contract §4).
-      gateway.sendChat(agentId, text, runId, activeSessionId ?? undefined);
-    } catch (e) {
-      setItems((prev) => [
-        ...prev,
-        {
-          id: randomUUID(),
-          role: "error",
-          text: e instanceof Error ? e.message : "Send failed",
-        },
-      ]);
-      return;
-    }
-    activeRunIdRef.current = runId;
-    committedOffsetRef.current = 0;
-    segmentRef.current = 0;
-    lastCumulativeLenRef.current = 0;
-    cumulativeTextRef.current = null;
-    // First send on a minted session materializes it server-side — it now
-    // has a transcript, so later reconnect refetches must hit the server.
-    if (activeSessionId) freshSessionIdsRef.current.delete(activeSessionId);
-    setBusy(true);
-    setInput("");
-    setItems((prev) => [...prev, { id: `u-${runId}`, role: "user", text, runId }]);
-  }, [input, busy, agentId, gateway, activeSessionId]);
+    if (dispatchText(input.trim())) setInput("");
+  }, [dispatchText, input]);
+
+  // First-run kickoff (web useFirstRunKickoff parity): once the funnel brief
+  // is submitted and this screen shows the DEFAULT agent (Friday) over a live
+  // socket, auto-send the visible kickoff prompt exactly once. agents.list is
+  // SWR-cached, so this shares the roster screen's fetch.
+  const { data: rosterData } = useGatewayRpc<AgentsListResponse>(
+    gateway,
+    "agents.list",
+  );
+  useFirstRunKickoff({
+    user,
+    agentId: agentId ?? null,
+    defaultId: rosterData?.defaultId ?? null,
+    isConnected: gateway.isConnected,
+    send: dispatchText,
+  });
 
   const agentName = name || agentId || "Agent";
 
@@ -574,10 +623,11 @@ export default function AgentChat() {
               </View>
             );
           }
-          // Error frame: full-width card, not a bubble (spec §4).
+          // Error frame: full-width card, not a bubble (spec §4). Coded
+          // free-tier gate errors render the structured upgrade card.
           return (
-            <View style={[styles.errorCard, index > 0 && styles.groupGap]}>
-              <Text style={styles.errorText}>{item.text}</Text>
+            <View style={index > 0 ? styles.groupGap : undefined}>
+              <ChatErrorCard code={item.code} message={item.text} />
             </View>
           );
         }}

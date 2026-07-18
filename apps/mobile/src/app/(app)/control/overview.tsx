@@ -84,9 +84,10 @@ function formatUptime(ms: number): string {
   return `${days}d ${totalHours % 24}h`;
 }
 
-function planLabel(status: string | null): string {
+export function planLabel(status: string | null): string {
   if (!status) return "None";
   if (status === "trialing") return "Trial";
+  if (status === "trial_local") return "Free";
   if (status === "active") return "Active";
   return status;
 }

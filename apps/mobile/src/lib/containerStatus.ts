@@ -36,6 +36,8 @@ export type ContainerStatus =
       title: string;
       message: string | null;
       href: string | null;
+      /** Gate action label (e.g. "Upgrade", "Set up billing") — null when absent. */
+      actionLabel: string | null;
       adminOnly: boolean;
     }
   | { kind: "needsSignup" }
@@ -45,7 +47,7 @@ interface BlockedPayload {
   code?: string;
   title?: string;
   message?: string;
-  action?: { href?: string; admin_only?: boolean };
+  action?: { label?: string; href?: string; admin_only?: boolean };
 }
 
 interface StatusBody {
@@ -99,6 +101,7 @@ export function useContainerStatus() {
           title: blocked.title ?? "Action needed",
           message: blocked.message ?? null,
           href: blocked.action?.href ?? null,
+          actionLabel: blocked.action?.label ?? null,
           adminOnly: Boolean(blocked.action?.admin_only),
         };
       } else if (err instanceof ApiError && err.status === 404) {

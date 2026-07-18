@@ -6,7 +6,7 @@
 // reply, and resolve/reopen.
 
 import { useMemo, useState } from "react";
-import { Check, RotateCcw, X } from "lucide-react";
+import { Check, RotateCcw, Unlink, X } from "lucide-react";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
@@ -71,7 +71,14 @@ export function DocumentAnnotationPanel({
   const visibleThreads = useMemo(
     () =>
       [...threads]
-        .filter((thread) => thread.anchorState !== "orphaned")
+        // An orphaned thread (its anchored text was removed / couldn't re-anchor)
+        // has no in-document highlight, but an UNRESOLVED one is still a live
+        // review discussion the user must be able to read + resolve. Dropping it
+        // here silently hid real comments ("No comments yet" over live threads),
+        // so keep orphaned-open threads in the list — the layer skips drawing
+        // their (absent) highlight. Only orphaned+resolved threads, which are
+        // fully handled, stay hidden.
+        .filter((thread) => thread.anchorState !== "orphaned" || thread.status !== "resolved")
         .sort(
           (a, b) =>
             (a.normalizedStart ?? 0) - (b.normalizedStart ?? 0)
@@ -195,6 +202,16 @@ export function DocumentAnnotationPanel({
                 }}
                 onClick={() => onFocusThread(expanded ? null : thread.id)}
               >
+                {thread.anchorState === "orphaned" ? (
+                  <span
+                    data-testid={`document-annotation-orphaned-${thread.id}`}
+                    title="The text this comment was anchored to was edited or removed, so it can't be highlighted in the document."
+                    className="mx-3 mt-2 inline-flex w-fit items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide"
+                    style={{ border: "1px solid var(--edge)", color: "var(--mute)" }}
+                  >
+                    <Unlink className="h-2.5 w-2.5" /> Anchor lost
+                  </span>
+                ) : null}
                 <blockquote
                   className="mx-3 mt-2 rounded px-2 py-1 text-xs italic [overflow-wrap:anywhere]"
                   style={{ background: "var(--edge)", color: "var(--mute)" }}

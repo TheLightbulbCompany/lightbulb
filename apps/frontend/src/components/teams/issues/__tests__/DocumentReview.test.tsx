@@ -8,7 +8,7 @@ vi.mock("@/hooks/useTeamsApi", () => ({
   useTeamsApi: () => ({ post, patch }),
 }));
 
-import { buildLineDiff } from "../lib/lineDiff";
+import { buildLineDiff, isLineDiffTooLarge, LINE_DIFF_MAX_LINES } from "../lib/lineDiff";
 import { computeAnchor, rangesForText } from "../lib/documentAnnotationSelection";
 import { getRequestConfirmationTargetHref } from "../lib/issue-thread-interactions";
 import { DocumentAnnotationPanel } from "../DocumentAnnotationPanel";
@@ -36,6 +36,27 @@ describe("buildLineDiff", () => {
   it("returns all-context for identical text", () => {
     const rows = buildLineDiff("x\ny", "x\ny");
     expect(rows.every((r) => r.kind === "context")).toBe(true);
+  });
+
+  it("keeps the fine LCS diff for normal-sized docs", () => {
+    expect(isLineDiffTooLarge(3, 3)).toBe(false);
+  });
+
+  it("falls back to a linear presence diff for over-threshold docs (no O(n*m) matrix)", () => {
+    const lineCount = LINE_DIFF_MAX_LINES + 1;
+    expect(isLineDiffTooLarge(lineCount, lineCount)).toBe(true);
+
+    // Feed IDENTICAL over-threshold text. The LCS path would return all-context
+    // rows for identical input (see the test above), and building its
+    // (lineCount+1)^2 DP matrix is exactly the freeze we're guarding against.
+    // A fallback result — zero context, every old line removed + every new line
+    // added — proves the guard skipped the matrix and took the fast path.
+    const big = Array.from({ length: lineCount }, (_, i) => `line ${i}`).join("\n");
+    const rows = buildLineDiff(big, big);
+    expect(rows.some((r) => r.kind === "context")).toBe(false);
+    expect(rows).toHaveLength(lineCount * 2);
+    expect(rows.filter((r) => r.kind === "removed")).toHaveLength(lineCount);
+    expect(rows.filter((r) => r.kind === "added")).toHaveLength(lineCount);
   });
 });
 
@@ -239,6 +260,50 @@ describe("DocumentAnnotationPanel", () => {
         body: "here is my review comment",
       });
     });
+  });
+
+  it("keeps an orphaned unresolved thread visible and resolvable", async () => {
+    patch.mockResolvedValue({});
+    const orphanThread: DocumentAnnotationThread = {
+      ...thread,
+      id: "orphan1",
+      anchorState: "orphaned",
+      status: "open",
+      selectedText: "text that was later deleted",
+    };
+    render(
+      <DocumentAnnotationPanel
+        {...baseProps}
+        threads={[orphanThread]}
+        pendingAnchor={null}
+        focusedThreadId="orphan1"
+      />,
+    );
+    // Not filtered out: the quote renders, flagged with an "anchor lost" badge.
+    expect(screen.getByText("text that was later deleted")).toBeInTheDocument();
+    expect(screen.getByTestId("document-annotation-orphaned-orphan1")).toBeInTheDocument();
+    // Resolve still works for an orphaned thread.
+    fireEvent.click(screen.getByRole("button", { name: /resolve/i }));
+    await waitFor(() => {
+      expect(patch).toHaveBeenCalledWith("/issues/iss1/documents/plan/annotations/orphan1", {
+        status: "resolved",
+      });
+    });
+  });
+
+  it("still hides an orphaned thread once it is resolved", () => {
+    const orphanResolved: DocumentAnnotationThread = {
+      ...thread,
+      id: "orphan2",
+      anchorState: "orphaned",
+      status: "resolved",
+      selectedText: "resolved and orphaned",
+    };
+    render(
+      <DocumentAnnotationPanel {...baseProps} threads={[orphanResolved]} pendingAnchor={null} />,
+    );
+    expect(screen.queryByText("resolved and orphaned")).not.toBeInTheDocument();
+    expect(screen.getByText(/No comments yet/)).toBeInTheDocument();
   });
 
   it("disables the composer while previewing a historical revision", () => {

@@ -10,11 +10,48 @@ export type DiffRow = {
   text: string;
 };
 
+// Quadratic-cost guard. The LCS diff below allocates + fills an
+// (oldLines+1) × (newLines+1) DP matrix. Under the new plan doctrine a plan doc
+// can be hundreds of KiB / tens of thousands of lines, and that matrix will
+// freeze or crash the tab. Above either bound we skip the DP entirely and fall
+// back to a linear presence diff (every old line removed, every new line added),
+// which is coarse but keeps "Compare revisions" responsive.
+export const LINE_DIFF_MAX_LINES = 5000;
+export const LINE_DIFF_MAX_CELLS = 4_000_000;
+
+/** True when the LCS DP matrix for these docs would exceed the cost budget. */
+export function isLineDiffTooLarge(oldCount: number, newCount: number): boolean {
+  return (
+    oldCount > LINE_DIFF_MAX_LINES
+    || newCount > LINE_DIFF_MAX_LINES
+    || oldCount * newCount > LINE_DIFF_MAX_CELLS
+  );
+}
+
+/** O(n+m) fallback used when the docs are too large for the LCS diff: show the
+ * full text of both sides (old lines removed, new lines added) without pairing
+ * unchanged lines. Never allocates the DP matrix. */
+function buildPresenceDiff(oldLines: string[], newLines: string[]): DiffRow[] {
+  const rows: DiffRow[] = [];
+  for (let i = 0; i < oldLines.length; i += 1) {
+    rows.push({ kind: "removed", oldLineNumber: i + 1, newLineNumber: null, text: oldLines[i] });
+  }
+  for (let j = 0; j < newLines.length; j += 1) {
+    rows.push({ kind: "added", oldLineNumber: null, newLineNumber: j + 1, text: newLines[j] });
+  }
+  return rows;
+}
+
 export function buildLineDiff(oldText: string, newText: string): DiffRow[] {
   const oldLines = oldText.split("\n");
   const newLines = newText.split("\n");
   const oldCount = oldLines.length;
   const newCount = newLines.length;
+
+  if (isLineDiffTooLarge(oldCount, newCount)) {
+    return buildPresenceDiff(oldLines, newLines);
+  }
+
   const dp = Array.from({ length: oldCount + 1 }, () => Array<number>(newCount + 1).fill(0));
 
   for (let i = oldCount - 1; i >= 0; i -= 1) {

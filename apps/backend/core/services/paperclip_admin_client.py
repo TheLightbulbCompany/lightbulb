@@ -2240,11 +2240,15 @@ class PaperclipAdminClient:
     # Issue tree-control (operator safety lever)
     #
     # Freeze / resume / cancel an entire issue subtree, plus the read-only
-    # subtree/blocker diagnostics that complement it. All routes are
-    # board-only + company-scoped against the SESSION ACTOR upstream
-    # (server/src/routes/issue-tree-control.ts mounts these under ``/api``),
-    # so they MUST be called with the caller's per-user Paperclip session
-    # cookie (``ctx.session_cookie``), never an instance-admin cookie.
+    # subtree/blocker diagnostics that complement it. The tree-hold /
+    # tree-control routes are board-only (``assertBoard`` in
+    # server/src/routes/issue-tree-control.ts); the two diagnostics routes
+    # (subtree / blockers) instead use issue-read authz
+    # (``assertIssueReadAllowed`` in server/src/routes/issues.ts) — still
+    # company-scoped + read-only, just not board-only. Either way these are
+    # scoped against the SESSION ACTOR, so they MUST be called with the
+    # caller's per-user Paperclip session cookie (``ctx.session_cookie``),
+    # never an instance-admin cookie.
     # ------------------------------------------------------------------
 
     async def preview_issue_tree_control(

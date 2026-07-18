@@ -112,6 +112,47 @@ def test_create_hold_forwards_and_returns_verbatim(client, monkeypatch):
     )
 
 
+def test_create_hold_rejects_restore_mode_422(client, monkeypatch):
+    # ``restore`` + ``metadata.wakeAgents`` spawns heartbeat.wakeup agent runs
+    # (inference spend) that the BFF forwards ungated. The mode whitelist drops
+    # ``restore`` so it 422s at the FastAPI boundary before reaching upstream.
+    admin = _mock_admin(monkeypatch)
+    admin.create_issue_tree_hold = AsyncMock(return_value={})
+    r = client.post(
+        "/api/v1/teams/issues/iss1/tree-holds",
+        json={"mode": "restore"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 422
+    admin.create_issue_tree_hold.assert_not_awaited()
+
+
+def test_create_hold_rejects_metadata_wakeagents_422(client, monkeypatch):
+    # ``metadata`` is a forbidden extra field on CreateTreeHoldBody — no
+    # ``wakeAgents`` can reach upstream even paired with an accepted mode.
+    admin = _mock_admin(monkeypatch)
+    admin.create_issue_tree_hold = AsyncMock(return_value={})
+    r = client.post(
+        "/api/v1/teams/issues/iss1/tree-holds",
+        json={"mode": "pause", "metadata": {"wakeAgents": True}},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 422
+    admin.create_issue_tree_hold.assert_not_awaited()
+
+
+def test_preview_rejects_restore_mode_422(client, monkeypatch):
+    admin = _mock_admin(monkeypatch)
+    admin.preview_issue_tree_control = AsyncMock(return_value={})
+    r = client.post(
+        "/api/v1/teams/issues/iss1/tree-control/preview",
+        json={"mode": "restore"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 422
+    admin.preview_issue_tree_control.assert_not_awaited()
+
+
 def test_list_holds_forwards_query_and_envelopes(client, monkeypatch):
     admin = _mock_admin(monkeypatch)
     admin.list_issue_tree_holds = AsyncMock(return_value=[{"id": _HOLD_ID, "mode": "pause"}])

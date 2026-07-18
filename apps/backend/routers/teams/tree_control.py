@@ -5,12 +5,21 @@ issue subtree, plus the read-only subtree/blocker diagnostics that complement
 pause/resume. Mirrors the ``issues.py`` proxy pattern — ``TeamsContext`` auth,
 whitelisted ``_Strict`` bodies, ``envelope_list`` for the bare-array list.
 
+Upstream authz: the tree-hold / tree-control routes are board-only
+(``assertBoard``); the two diagnostics routes (subtree / blockers) instead use
+issue-read authz (``assertIssueReadAllowed``, in upstream ``issues.ts``) —
+still company-scoped and read-only, just not board-only.
+
 Spend note: these are STOP levers (pause/cancel interrupt active runs and
 defer wakeups upstream), so they are deliberately NOT gated by
 ``require_trial_runway`` — gating a "stop the runaway" button behind the
 free-tier cap would be perverse (you could not stop spend precisely when you
-are over budget). Any inference the resume/restore paths might trigger is
-still bounded per-request by the bedrock-gate.
+are over budget). The one upstream mode that SPAWNS spend — ``restore`` with
+``metadata.wakeAgents`` (``heartbeat.wakeup`` agent runs, forwarded ungated) —
+is deliberately not exposed: the BFF ``mode`` whitelist omits ``restore`` and
+``CreateTreeHoldBody`` drops the free-form ``metadata`` field (see
+``schemas.py``). Any residual inference stays bounded per-request by the
+bedrock-gate.
 """
 
 from __future__ import annotations
@@ -59,7 +68,7 @@ async def create_tree_hold(
     body: CreateTreeHoldBody,
     ctx: TeamsContext = Depends(_ctx),
 ):
-    """Create a subtree hold (pause / resume / cancel / restore).
+    """Create a subtree hold (pause / resume / cancel).
 
     Maps to upstream ``POST /api/issues/{id}/tree-holds``. For pause/cancel,
     upstream interrupts the subtree's active runs and defers unclaimed wakeups;

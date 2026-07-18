@@ -414,8 +414,12 @@ class PatchWorkProductBody(_Strict):
 # ``model_dump(by_alias=True, exclude_none=True)``.
 # ---------------------------------------------------------------------------
 
-# ISSUE_TREE_CONTROL_MODES + ISSUE_TREE_HOLD_RELEASE_POLICY_STRATEGIES upstream.
-_TREE_CONTROL_MODE = r"^(pause|resume|cancel|restore)$"
+# Upstream ISSUE_TREE_CONTROL_MODES also includes ``restore``, which — with
+# ``metadata.wakeAgents === true`` — spawns ``heartbeat.wakeup`` agent runs
+# (inference spend) that the BFF forwards ungated (no ``require_trial_runway``).
+# The UI defers restore, so the BFF whitelist deliberately omits it: pause /
+# resume / cancel only. (ISSUE_TREE_HOLD_RELEASE_POLICY_STRATEGIES also upstream.)
+_TREE_CONTROL_MODE = r"^(pause|resume|cancel)$"
 
 
 class TreeHoldReleasePolicyBody(_Strict):
@@ -444,16 +448,18 @@ class CreateTreeHoldBody(_Strict):
     """Body for ``POST /teams/issues/{id}/tree-holds``.
 
     Mirrors upstream ``createIssueTreeHoldSchema``: ``mode`` required;
-    ``reason`` / ``release_policy`` / ``metadata`` optional. ``metadata`` is
-    upstream's free-form ``record(string, unknown)`` (the restore path reads
-    ``wakeAgents`` from it) — forwarded verbatim, so inner keys must already be
-    camelCase (the alias generator only renames model fields, not dict contents).
+    ``reason`` / ``release_policy`` optional. Upstream's free-form ``metadata``
+    (``record(string, unknown)``) is deliberately NOT accepted here: the restore
+    path reads ``metadata.wakeAgents`` to spawn ``heartbeat.wakeup`` agent runs
+    (inference spend) that the BFF forwards ungated, and the UI never sends it.
+    Dropping the field means ``extra="forbid"`` 422s any smuggled ``wakeAgents``
+    at the FastAPI boundary (defense-in-depth alongside the narrowed ``mode``
+    whitelist, which already rejects ``restore``).
     """
 
     mode: str = Field(pattern=_TREE_CONTROL_MODE)
     reason: Optional[str] = Field(default=None, min_length=1, max_length=1000)
     release_policy: Optional[TreeHoldReleasePolicyBody] = None
-    metadata: Optional[dict] = None
 
 
 class ReleaseTreeHoldBody(_Strict):

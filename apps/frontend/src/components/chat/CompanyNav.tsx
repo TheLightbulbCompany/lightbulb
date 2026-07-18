@@ -10,6 +10,7 @@ import {
   Network,
   History,
   Images,
+  Search,
 } from "lucide-react";
 import { TEAMS_PANEL_PREFIX } from "./InlineTeamsPanel";
 
@@ -28,6 +29,7 @@ const COMPANY_SECTIONS: { label: string | null; items: Item[] }[] = [
     label: null,
     items: [
       { panel: `${TEAMS_PANEL_PREFIX}dashboard`, label: "Dashboard", Icon: LayoutDashboard },
+      { panel: `${TEAMS_PANEL_PREFIX}search`, label: "Search", Icon: Search },
       { panel: `${TEAMS_PANEL_PREFIX}inbox`, label: "Inbox", Icon: Inbox },
     ],
   },

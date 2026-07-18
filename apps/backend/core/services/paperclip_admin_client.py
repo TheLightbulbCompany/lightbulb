@@ -1265,6 +1265,61 @@ class PaperclipAdminClient:
         )
 
     # ------------------------------------------------------------------
+    # Company search (cross-entity: issues / comments / documents /
+    # artifacts / agents / projects)
+    # ------------------------------------------------------------------
+
+    async def search_company(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+        params: Optional[dict[str, Any]] = None,
+    ) -> dict:
+        """Ranked cross-entity company search.
+
+        Maps to ``GET /api/companies/{companyId}/search`` — upstream
+        ``assertCompanyAccess`` + a ``company_scope:read`` decision scope it
+        to the session cookie's company, so ``company_id`` MUST be the
+        server-derived company of the caller (the BFF passes ``ctx.company_id``,
+        never a client param). ``params`` carries the query/scope/sort/filter
+        pass-through (``q``, ``scope``, ``sort``, ``status``/``priority`` may
+        repeat). Returns the upstream ``CompanySearchResponse`` object verbatim
+        (``{results, countsByType, filterOptionCounts, zeroResults, hasMore, …}``).
+        Upstream 429s the caller when the per-actor search rate limit is
+        exceeded — that status is surfaced faithfully by the global
+        ``PaperclipApiError`` handler.
+        """
+        return await self._get(
+            f"/api/companies/{company_id}/search",
+            session_cookie=session_cookie,
+            params=params,
+        )
+
+    async def search_company_extract(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+        params: Optional[dict[str, Any]] = None,
+    ) -> dict:
+        """Bulk literal/URL match extraction across company issues.
+
+        Maps to ``GET /api/companies/{companyId}/search/extract`` — same
+        company-scoping posture as :meth:`search_company` (``company_id`` is the
+        server-derived caller company, never a client param). ``params`` carries
+        ``contains`` (required, >=2 chars) plus ``kind``/``scope``/``limit``/
+        ``offset``/``matchesPerIssue``/``status``/``updatedWithin``/
+        ``updatedAfter``. Returns the upstream ``CompanySearchExtractResponse``
+        verbatim.
+        """
+        return await self._get(
+            f"/api/companies/{company_id}/search/extract",
+            session_cookie=session_cookie,
+            params=params,
+        )
+
+    # ------------------------------------------------------------------
     # Issue-thread interactions
     #
     # The resolution routes (accept / reject / respond / cancel) are

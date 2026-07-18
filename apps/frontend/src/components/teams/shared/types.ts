@@ -1142,3 +1142,109 @@ export type IssueThreadInteractionResult =
   | AskUserQuestionsResult
   | RequestConfirmationResult
   | RequestCheckboxConfirmationResult;
+
+// ---------------------------------------------------------------------------
+// Company search (cross-entity ranked search)
+//
+// Ported from upstream Paperclip (packages/shared/src/types/search.ts,
+// MIT © 2025 Paperclip AI). Mirrors the `CompanySearchResponse` object the
+// Teams BFF `/teams/search` route returns verbatim. Kept as a subset — the
+// SearchPanel renders results + counts + zero-results; the exhaustive
+// filterOptionCounts shape is typed loosely since v1 does not surface facets.
+// ---------------------------------------------------------------------------
+
+export const COMPANY_SEARCH_SCOPES = [
+  "all",
+  "issues",
+  "comments",
+  "documents",
+  "artifacts",
+  "agents",
+  "projects",
+] as const;
+export type CompanySearchScope = (typeof COMPANY_SEARCH_SCOPES)[number];
+
+export const COMPANY_SEARCH_SORTS = ["relevance", "updated", "created", "priority"] as const;
+export type CompanySearchSort = (typeof COMPANY_SEARCH_SORTS)[number];
+
+export const COMPANY_SEARCH_UPDATED_WITHIN_OPTIONS = ["24h", "7d", "30d", "90d"] as const;
+export type CompanySearchUpdatedWithinOption = (typeof COMPANY_SEARCH_UPDATED_WITHIN_OPTIONS)[number];
+
+export type CompanySearchResultType = "issue" | "artifact" | "agent" | "project";
+export type CompanySearchCountType = CompanySearchResultType | "comment" | "document";
+
+export interface CompanySearchHighlight {
+  start: number;
+  end: number;
+}
+
+export interface CompanySearchSnippet {
+  field: string;
+  label: string;
+  text: string;
+  highlights: CompanySearchHighlight[];
+}
+
+export interface CompanySearchIssueSummary {
+  id: string;
+  identifier: string | null;
+  title: string;
+  status: IssueStatus;
+  priority: IssuePriority;
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+  projectId: string | null;
+  updatedAt: string;
+}
+
+export interface CompanySearchArtifactSummary {
+  id: string;
+  source: "document" | "attachment" | "work_product";
+  mediaKind: "image" | "video" | "text" | "document" | "file" | "empty";
+  issueId: string;
+  issueIdentifier: string;
+  issueTitle: string;
+  projectId: string | null;
+  projectName: string | null;
+  updatedAt: string;
+}
+
+export interface CompanySearchResult {
+  id: string;
+  type: CompanySearchResultType;
+  score: number;
+  title: string;
+  href: string;
+  matchedFields: string[];
+  sourceLabel: string | null;
+  snippet: string | null;
+  snippets: CompanySearchSnippet[];
+  issue?: CompanySearchIssueSummary;
+  artifact?: CompanySearchArtifactSummary;
+  updatedAt: string | null;
+  previewImageUrl: string | null;
+}
+
+export interface CompanySearchZeroResults {
+  unfilteredTotal: number;
+  loosenSuggestions: {
+    filter: string;
+    values: string[];
+    resultCount: number;
+    additionalCount: number;
+  }[];
+}
+
+export interface CompanySearchResponse {
+  query: string;
+  normalizedQuery: string;
+  scope: CompanySearchScope;
+  sort: CompanySearchSort;
+  limit: number;
+  offset: number;
+  results: CompanySearchResult[];
+  countsByType: Partial<Record<CompanySearchCountType, number>>;
+  filterOptionCounts?: Record<string, unknown>;
+  zeroResults: CompanySearchZeroResults | null;
+  hasMore: boolean;
+}

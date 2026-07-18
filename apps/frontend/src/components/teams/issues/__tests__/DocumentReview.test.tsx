@@ -10,14 +10,20 @@ vi.mock("@/hooks/useTeamsApi", () => ({
   useTeamsApi: () => ({ post, patch, read }),
 }));
 
-import { buildLineDiff, isLineDiffTooLarge, LINE_DIFF_MAX_LINES } from "../lib/lineDiff";
+import {
+  buildLineDiff,
+  isLineDiffTooLarge,
+  LINE_DIFF_MAX_LINES,
+  LINE_DIFF_FALLBACK_MAX_ROWS,
+} from "../lib/lineDiff";
 import { computeAnchor, rangesForText } from "../lib/documentAnnotationSelection";
 import { getRequestConfirmationTargetHref } from "../lib/issue-thread-interactions";
 import { DocumentAnnotationPanel } from "../DocumentAnnotationPanel";
+import { DocumentDiffModal } from "../DocumentDiffModal";
 import { DocumentRow } from "../DocumentRow";
 import type { CompanyAgent, IssueDocument } from "@/components/teams/shared/types";
 import type { RequestConfirmationIssueDocumentTarget } from "@/components/teams/shared/types";
-import type { DocumentAnnotationThread } from "../lib/documentReviewTypes";
+import type { DocumentAnnotationThread, DocumentRevision } from "../lib/documentReviewTypes";
 
 beforeEach(() => {
   post.mockReset();
@@ -47,21 +53,30 @@ describe("buildLineDiff", () => {
     expect(isLineDiffTooLarge(3, 3)).toBe(false);
   });
 
-  it("falls back to a linear presence diff for over-threshold docs (no O(n*m) matrix)", () => {
+  it("caps the oversized fallback instead of materializing a row per line", () => {
     const lineCount = LINE_DIFF_MAX_LINES + 1;
     expect(isLineDiffTooLarge(lineCount, lineCount)).toBe(true);
 
     // Feed IDENTICAL over-threshold text. The LCS path would return all-context
     // rows for identical input (see the test above), and building its
     // (lineCount+1)^2 DP matrix is exactly the freeze we're guarding against.
-    // A fallback result — zero context, every old line removed + every new line
-    // added — proves the guard skipped the matrix and took the fast path.
+    // Zero context rows prove the guard skipped the matrix; a bounded row count
+    // proves the fallback no longer emits one row per line (which for a >1M-line
+    // body would freeze the tab just as badly as the matrix).
     const big = Array.from({ length: lineCount }, (_, i) => `line ${i}`).join("\n");
     const rows = buildLineDiff(big, big);
     expect(rows.some((r) => r.kind === "context")).toBe(false);
-    expect(rows).toHaveLength(lineCount * 2);
-    expect(rows.filter((r) => r.kind === "removed")).toHaveLength(lineCount);
-    expect(rows.filter((r) => r.kind === "added")).toHaveLength(lineCount);
+    // Bounded: at most the cap of content rows + one truncation summary row.
+    expect(rows.length).toBeLessThanOrEqual(LINE_DIFF_FALLBACK_MAX_ROWS + 1);
+    expect(rows.filter((r) => r.kind !== "truncated")).toHaveLength(LINE_DIFF_FALLBACK_MAX_ROWS);
+    // Both sides are represented within the cap.
+    expect(rows.some((r) => r.kind === "removed")).toBe(true);
+    expect(rows.some((r) => r.kind === "added")).toBe(true);
+    // A single, clear truncation indicator replaces the dropped lines.
+    const truncated = rows.filter((r) => r.kind === "truncated");
+    expect(truncated).toHaveLength(1);
+    expect(truncated[0].text).toMatch(/truncated/i);
+    expect(truncated[0].text).toMatch(new RegExp(`${lineCount} lines removed`));
   });
 });
 
@@ -142,6 +157,50 @@ describe("computeAnchor", () => {
       });
       expect(anchor).not.toBeNull();
       expect(anchor!.selector.position.markdownStart).toBe(start);
+    });
+  });
+
+  describe("hidden markdown-syntax collisions", () => {
+    // The selected word also appears inside a link's URL, which is NOT rendered.
+    // The rendered container only shows the link label + trailing word.
+    const markdown = "[click](https://here.example) here";
+    const containerText = "click here"; // what the reader actually sees
+
+    it("anchors to the rendered word, not the same word buried in the URL", () => {
+      // "here" is at container offset 6 (the visible trailing word). In the raw
+      // markdown it also appears at offset 16 (inside the URL). The old raw
+      // indexOf scan could pick offset 16; the projection must pick the rendered
+      // occurrence at offset 30.
+      const start = containerText.indexOf("here");
+      const anchor = computeAnchor({
+        markdown,
+        containerText,
+        startOffset: start,
+        endOffset: start + "here".length,
+      });
+      expect(anchor).not.toBeNull();
+      const pos = anchor!.selector.position;
+      // The URL "here" starts at 16 — the selector must NOT point there.
+      expect(pos.markdownStart).not.toBe(markdown.indexOf("here"));
+      expect(pos.markdownStart).toBe(markdown.lastIndexOf("here"));
+      expect(markdown.slice(pos.markdownStart, pos.markdownEnd)).toBe("here");
+      expect(pos.markdownEnd).toBeGreaterThan(pos.markdownStart);
+    });
+
+    it("anchors the link LABEL to the rendered label text", () => {
+      // Selecting "click" (the rendered label) resolves inside the `[click]`
+      // markup, i.e. to the label text that actually renders.
+      const start = containerText.indexOf("click");
+      const anchor = computeAnchor({
+        markdown,
+        containerText,
+        startOffset: start,
+        endOffset: start + "click".length,
+      });
+      expect(anchor).not.toBeNull();
+      const pos = anchor!.selector.position;
+      expect(markdown.slice(pos.markdownStart, pos.markdownEnd)).toBe("click");
+      expect(pos.markdownStart).toBe(markdown.indexOf("click"));
     });
   });
 });
@@ -435,5 +494,53 @@ describe("DocumentRow unresolved badge", () => {
     const toggle = screen.getByTestId("document-comments-toggle-plan");
     expect(toggle).toHaveAttribute("aria-label", "Comments on plan");
     expect(toggle).toHaveTextContent("0");
+  });
+});
+
+describe("DocumentDiffModal oversized diff", () => {
+  function revision(id: string, revisionNumber: number, body: string): DocumentRevision {
+    return {
+      id,
+      key: "plan",
+      revisionNumber,
+      title: null,
+      body,
+      changeSummary: null,
+      createdByAgentId: null,
+      createdByUserId: "u1",
+      createdAt: `2026-01-0${revisionNumber}T00:00:00Z`,
+    };
+  }
+
+  it("renders a bounded, truncated diff instead of one row per line", async () => {
+    // Two over-threshold bodies (mostly-short-lines) — the exact shape that used
+    // to freeze the tab: the presence fallback would otherwise materialize a row
+    // per old + per new line, and the modal would render them all.
+    const lineCount = LINE_DIFF_MAX_LINES + 1;
+    const leftBody = Array.from({ length: lineCount }, (_, i) => `old ${i}`).join("\n");
+    const rightBody = Array.from({ length: lineCount }, (_, i) => `new ${i}`).join("\n");
+
+    read.mockImplementation((key: string | null) => {
+      if (key && key.includes("/revisions")) {
+        return { data: { revisions: [revision("r1", 1, leftBody), revision("r2", 2, rightBody)] } };
+      }
+      return { data: undefined };
+    });
+
+    render(
+      <DocumentDiffModal
+        issueId="iss1"
+        documentKey="plan"
+        latestRevisionNumber={2}
+        open
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    // The truncation notice is shown to the reader...
+    expect(await screen.findByTestId("document-diff-truncated")).toBeInTheDocument();
+    // ...and the modal renders at most the cap of line rows — never one per line.
+    const renderedRows = screen.getAllByTestId("document-diff-row");
+    expect(renderedRows.length).toBeLessThanOrEqual(LINE_DIFF_FALLBACK_MAX_ROWS);
   });
 });

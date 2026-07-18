@@ -1,7 +1,10 @@
 // Ported from upstream Paperclip `ui/src/lib/line-diff.ts` (A3).
 // LCS-based line diff used by the document revision diff modal.
 
-export type DiffRowKind = "context" | "removed" | "added";
+// "truncated" is a single summary/notice row the oversized fallback appends in
+// place of the lines it dropped; it carries no line numbers and renders as a
+// full-width notice in the modal.
+export type DiffRowKind = "context" | "removed" | "added" | "truncated";
 
 export type DiffRow = {
   kind: DiffRowKind;
@@ -14,10 +17,18 @@ export type DiffRow = {
 // (oldLines+1) × (newLines+1) DP matrix. Under the new plan doctrine a plan doc
 // can be hundreds of KiB / tens of thousands of lines, and that matrix will
 // freeze or crash the tab. Above either bound we skip the DP entirely and fall
-// back to a linear presence diff (every old line removed, every new line added),
-// which is coarse but keeps "Compare revisions" responsive.
+// back to a capped presence diff, which is coarse but keeps "Compare revisions"
+// responsive.
 export const LINE_DIFF_MAX_LINES = 5000;
 export const LINE_DIFF_MAX_CELLS = 4_000_000;
+
+// Row cap for the oversized (presence) fallback. Skipping the DP matrix is not
+// enough on its own: a ~512 KiB body that is mostly blank lines is >1,000,000
+// lines, and materializing one row per old + per new line still yields millions
+// of rows that freeze the tab and the modal that renders them. So the fallback
+// shows at most this many content rows (split across the two sides) and appends
+// a single "truncated" summary row instead of every line.
+export const LINE_DIFF_FALLBACK_MAX_ROWS = 2000;
 
 /** True when the LCS DP matrix for these docs would exceed the cost budget. */
 export function isLineDiffTooLarge(oldCount: number, newCount: number): boolean {
@@ -28,16 +39,37 @@ export function isLineDiffTooLarge(oldCount: number, newCount: number): boolean 
   );
 }
 
-/** O(n+m) fallback used when the docs are too large for the LCS diff: show the
- * full text of both sides (old lines removed, new lines added) without pairing
- * unchanged lines. Never allocates the DP matrix. */
+/** O(n+m) fallback used when the docs are too large for the LCS diff: show a
+ * bounded window of both sides (old lines removed, new lines added) without
+ * pairing unchanged lines, capped at {@link LINE_DIFF_FALLBACK_MAX_ROWS} so it
+ * never materializes a row per line. Any dropped lines are summarized in a
+ * single trailing "truncated" row. Never allocates the DP matrix. */
 function buildPresenceDiff(oldLines: string[], newLines: string[]): DiffRow[] {
   const rows: DiffRow[] = [];
-  for (let i = 0; i < oldLines.length; i += 1) {
+  const budget = LINE_DIFF_FALLBACK_MAX_ROWS;
+  // Split the budget across both sides so neither side is entirely hidden; if
+  // one side is short, the other reclaims the remainder.
+  const removedShown = Math.min(oldLines.length, Math.ceil(budget / 2));
+  const addedShown = Math.min(newLines.length, budget - removedShown);
+
+  for (let i = 0; i < removedShown; i += 1) {
     rows.push({ kind: "removed", oldLineNumber: i + 1, newLineNumber: null, text: oldLines[i] });
   }
-  for (let j = 0; j < newLines.length; j += 1) {
+  for (let j = 0; j < addedShown; j += 1) {
     rows.push({ kind: "added", oldLineNumber: null, newLineNumber: j + 1, text: newLines[j] });
+  }
+
+  const omitted = (oldLines.length - removedShown) + (newLines.length - addedShown);
+  if (omitted > 0) {
+    rows.push({
+      kind: "truncated",
+      oldLineNumber: null,
+      newLineNumber: null,
+      text:
+        `Diff truncated — document too large to show a full comparison. `
+        + `${oldLines.length} lines removed, ${newLines.length} added; `
+        + `showing the first ${removedShown + addedShown}.`,
+    });
   }
   return rows;
 }

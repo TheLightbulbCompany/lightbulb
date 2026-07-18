@@ -75,8 +75,14 @@ export function DocumentDiffModal({
     context: "",
     removed: "bg-rose-500/10 text-rose-800 dark:text-rose-200",
     added: "bg-emerald-500/10 text-emerald-800 dark:text-emerald-200",
+    truncated: "",
   };
-  const marker: Record<DiffRow["kind"], string> = { context: " ", removed: "-", added: "+" };
+  const marker: Record<DiffRow["kind"], string> = {
+    context: " ",
+    removed: "-",
+    added: "+",
+    truncated: " ",
+  };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -138,25 +144,37 @@ export function DocumentDiffModal({
             </div>
           ) : (
             <div className="font-mono leading-6">
-              {diffRows.map((row, index) => (
-                <div
-                  key={`${row.kind}-${index}-${row.oldLineNumber ?? "x"}-${row.newLineNumber ?? "x"}`}
-                  className={`grid grid-cols-[3rem_3rem_1rem_1fr] px-2 ${rowClass[row.kind]}`}
-                >
-                  <span className="select-none pr-2 text-right" style={{ color: "var(--mute)" }}>
-                    {row.oldLineNumber ?? ""}
-                  </span>
-                  <span className="select-none pr-2 text-right" style={{ color: "var(--mute)" }}>
-                    {row.newLineNumber ?? ""}
-                  </span>
-                  <span className="select-none text-center" style={{ color: "var(--mute)" }}>
-                    {marker[row.kind]}
-                  </span>
-                  <pre className="overflow-x-auto whitespace-pre-wrap break-words px-2 text-inherit">
-                    {row.text.length > 0 ? row.text : " "}
-                  </pre>
-                </div>
-              ))}
+              {diffRows.map((row, index) =>
+                row.kind === "truncated" ? (
+                  <div
+                    key={`truncated-${index}`}
+                    data-testid="document-diff-truncated"
+                    className="px-4 py-3 text-center text-xs"
+                    style={{ color: "var(--mute)", borderTop: "1px solid var(--edge)" }}
+                  >
+                    {row.text}
+                  </div>
+                ) : (
+                  <div
+                    key={`${row.kind}-${index}-${row.oldLineNumber ?? "x"}-${row.newLineNumber ?? "x"}`}
+                    data-testid="document-diff-row"
+                    className={`grid grid-cols-[3rem_3rem_1rem_1fr] px-2 ${rowClass[row.kind]}`}
+                  >
+                    <span className="select-none pr-2 text-right" style={{ color: "var(--mute)" }}>
+                      {row.oldLineNumber ?? ""}
+                    </span>
+                    <span className="select-none pr-2 text-right" style={{ color: "var(--mute)" }}>
+                      {row.newLineNumber ?? ""}
+                    </span>
+                    <span className="select-none text-center" style={{ color: "var(--mute)" }}>
+                      {marker[row.kind]}
+                    </span>
+                    <pre className="overflow-x-auto whitespace-pre-wrap break-words px-2 text-inherit">
+                      {row.text.length > 0 ? row.text : " "}
+                    </pre>
+                  </div>
+                ),
+              )}
             </div>
           )}
         </div>

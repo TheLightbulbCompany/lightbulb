@@ -151,9 +151,17 @@ async def patch_routine(
     if body.status in {"paused", "archived", "active"}:
         is_nightly = await _is_nightly_ceo_routine(ctx, routine_id)
 
+    # Forward with exclude_UNSET (not exclude_none): the edit dialog sends only the
+    # fields the user actually changed, and a CLEARED field arrives as an explicit
+    # null (e.g. `description: null`). exclude_none would drop that null before
+    # Paperclip saw it, so the clear was silently ignored and the dialog snapped back
+    # to the old value. exclude_unset keeps client-sent fields — including explicit
+    # nulls — while omitting fields the client never sent, so a partial PATCH stays
+    # partial. The fireability gate above reads `body.status` (the model attribute),
+    # not this dict, so it is unaffected; `extra="forbid"` still bars stray fields.
     result = await _agents._admin().patch_routine(
         routine_id=routine_id,
-        body=body.model_dump(exclude_none=True, by_alias=True),
+        body=body.model_dump(exclude_unset=True, by_alias=True),
         session_cookie=ctx.session_cookie,
     )
 

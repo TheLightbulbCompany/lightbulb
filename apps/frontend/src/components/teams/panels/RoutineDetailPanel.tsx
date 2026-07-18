@@ -111,6 +111,12 @@ function browserTz(): string {
   }
 }
 
+// The backend's schedule-trigger default when `timezone` is omitted is UTC — not
+// the browser zone (see CreateRoutineTriggerBody.timezone default + upstream's
+// schedule default). Used as the seed + dirty-compare baseline when editing an
+// existing trigger that stored no timezone.
+const SCHEDULE_DEFAULT_TZ = "UTC";
+
 // A signed webhook trigger is the only kind that owns a rotatable secret.
 function triggerHasSecret(t: RoutineTriggerSummary): boolean {
   return (
@@ -1095,8 +1101,16 @@ function TriggerDialog({
   onClose: () => void;
   onSubmit: (body: TriggerSubmitBody) => void | Promise<void>;
 }) {
+  // For a NEW trigger we suggest the user's browser zone; for an EXISTING trigger
+  // that stored no timezone we seed AND dirty-compare against the backend's real
+  // default (UTC), so the field shows what actually fires. Seeding the browser zone
+  // in edit mode would let a user outside UTC edit only the cron, have the field
+  // silently match the browser-tz baseline, and omit `timezone` from the patch —
+  // leaving the schedule on UTC while the UI implied local time. Using `initialTz`
+  // for both the seed and the comparison makes the dirty-check honest by construction.
+  const initialTz = trigger?.timezone ?? (mode === "add" ? browserTz() : SCHEDULE_DEFAULT_TZ);
   const [cron, setCron] = useState(trigger?.cronExpression ?? "0 9 * * *");
-  const [timezone, setTimezone] = useState(trigger?.timezone ?? browserTz());
+  const [timezone, setTimezone] = useState(initialTz);
   const [label, setLabel] = useState(trigger?.label ?? "");
   const [enabled, setEnabled] = useState(trigger?.enabled !== false);
 
@@ -1121,7 +1135,7 @@ function TriggerDialog({
     const nextCron = cron.trim();
     if (nextCron !== (trigger?.cronExpression ?? "").trim()) body.cron_expression = nextCron;
     const nextTz = timezone.trim();
-    if (nextTz !== (trigger?.timezone ?? browserTz()).trim()) body.timezone = nextTz;
+    if (nextTz !== initialTz.trim()) body.timezone = nextTz;
     const nextLabel = label.trim() || undefined;
     if (nextLabel !== ((trigger?.label ?? "").trim() || undefined)) body.label = nextLabel;
     if (enabled !== (trigger?.enabled !== false)) body.enabled = enabled;

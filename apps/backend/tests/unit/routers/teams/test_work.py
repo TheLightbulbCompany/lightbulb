@@ -1035,3 +1035,34 @@ def test_patch_routine_accepts_widened_fields(client, admin):
     assert body["autoPauseThreshold"] == 5
     assert body["variables"][0] == {"name": "asOf", "type": "date", "required": True}
     assert body["env"] == {"secrets": []}
+
+
+def test_patch_routine_forwards_explicit_null_description_clear(client, admin):
+    """Clearing a routine's description sends ``description: null``. The forward must
+    carry the explicit null through to Paperclip (exclude_UNSET, not exclude_none) —
+    exclude_none would drop the null before Paperclip saw it, silently ignoring the
+    clear so the field snapped back to the old text on refresh."""
+    r = client.patch(
+        "/api/v1/teams/routines/r1",
+        json={"description": None},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200, r.text
+    body = admin.patch_routine.await_args.kwargs["body"]
+    assert "description" in body
+    assert body["description"] is None
+
+
+def test_patch_routine_omits_description_when_not_sent(client, admin):
+    """A partial PATCH that never mentions description must NOT forward it — a field
+    the client left untouched stays untouched upstream. exclude_unset distinguishes
+    "client sent null" (forward it) from "client omitted it" (drop it)."""
+    r = client.patch(
+        "/api/v1/teams/routines/r1",
+        json={"title": "Just a rename"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200, r.text
+    body = admin.patch_routine.await_args.kwargs["body"]
+    assert body == {"title": "Just a rename"}
+    assert "description" not in body

@@ -208,6 +208,41 @@ describe("RoutineDetailPanel — editable (A2)", () => {
     expect(body).not.toHaveProperty("timezone");
   });
 
+  it("seeds UTC (not the browser zone) when editing a trigger with no stored timezone, and omits it when only cron changes", async () => {
+    // Force a non-UTC browser zone. The stored trigger (t1) has no timezone, so the
+    // field must seed the backend's real default (UTC) — NOT the browser zone. If it
+    // seeded the browser zone, a user outside UTC editing only the cron would see
+    // local time in the field, have it match the (browser-tz) baseline, and silently
+    // omit `timezone` from the patch, leaving the schedule on UTC while the UI implied
+    // local time — firing at the wrong local hour.
+    const tzSpy = vi
+      .spyOn(Intl.DateTimeFormat.prototype, "resolvedOptions")
+      .mockReturnValue({ timeZone: "America/New_York" } as Intl.ResolvedDateTimeFormatOptions);
+    try {
+      const user = userEvent.setup();
+      render(<RoutineDetailPanel routineId="r1" />);
+      await user.click(screen.getByRole("button", { name: /edit schedule/i }));
+      const dialog = await screen.findByRole("dialog");
+      // Honest field: shows what actually fires (UTC), not the browser zone.
+      expect(within(dialog).getByDisplayValue("UTC")).toBeInTheDocument();
+      expect(within(dialog).queryByDisplayValue("America/New_York")).toBeNull();
+
+      // Editing only the cron leaves timezone unchanged (UTC) → it must NOT be sent,
+      // so the schedule stays on the UTC the field displayed (no silent tz drift).
+      fireEvent.change(within(dialog).getByPlaceholderText("0 9 * * *"), {
+        target: { value: "30 8 * * 1" },
+      });
+      await user.click(within(dialog).getByRole("button", { name: /^Save$/ }));
+      await waitFor(() => expect(patch).toHaveBeenCalled());
+      const [path, body] = patch.mock.calls[0];
+      expect(path).toBe("/routines/r1/triggers/t1");
+      expect(body.cron_expression).toBe("30 8 * * 1");
+      expect(body).not.toHaveProperty("timezone");
+    } finally {
+      tzSpy.mockRestore();
+    }
+  });
+
   it("surfaces a 402 gate message inline and keeps the dialog open", async () => {
     patch.mockRejectedValue({
       body: { detail: { message: "Scheduled routines are part of a paid plan." } },

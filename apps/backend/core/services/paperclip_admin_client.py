@@ -2236,6 +2236,159 @@ class PaperclipAdminClient:
             session_cookie=session_cookie,
         )
 
+    # ------------------------------------------------------------------
+    # Issue tree-control (operator safety lever)
+    #
+    # Freeze / resume / cancel an entire issue subtree, plus the read-only
+    # subtree/blocker diagnostics that complement it. The tree-hold /
+    # tree-control routes are board-only (``assertBoard`` in
+    # server/src/routes/issue-tree-control.ts); the two diagnostics routes
+    # (subtree / blockers) instead use issue-read authz
+    # (``assertIssueReadAllowed`` in server/src/routes/issues.ts) — still
+    # company-scoped + read-only, just not board-only. Either way these are
+    # scoped against the SESSION ACTOR, so they MUST be called with the
+    # caller's per-user Paperclip session cookie (``ctx.session_cookie``),
+    # never an instance-admin cookie.
+    # ------------------------------------------------------------------
+
+    async def preview_issue_tree_control(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+        body: dict,
+    ) -> dict:
+        """Preview the blast radius of a subtree control action.
+
+        Maps to ``POST /api/issues/{id}/tree-control/preview``. Returns the
+        affected-issue/active-run totals + warnings without applying anything.
+        """
+        return await self._post(
+            f"/api/issues/{issue_id}/tree-control/preview",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
+    async def create_issue_tree_hold(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+        body: dict,
+    ) -> dict:
+        """Create a subtree hold (pause / resume / cancel / restore).
+
+        Maps to ``POST /api/issues/{id}/tree-holds``. Upstream interrupts
+        active runs + defers wakeups for pause/cancel, and returns
+        ``{hold, preview}``.
+        """
+        return await self._post(
+            f"/api/issues/{issue_id}/tree-holds",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
+    async def list_issue_tree_holds(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+        params: Optional[dict[str, Any]] = None,
+    ) -> list | dict:
+        """List the subtree holds rooted at an issue.
+
+        Maps to ``GET /api/issues/{id}/tree-holds`` (optional ``status`` /
+        ``mode`` / ``includeMembers`` query filters).
+        """
+        return await self._get(
+            f"/api/issues/{issue_id}/tree-holds",
+            session_cookie=session_cookie,
+            params=params,
+        )
+
+    async def get_issue_tree_hold(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+        hold_id: str,
+    ) -> dict:
+        """Fetch a single subtree hold by id.
+
+        Maps to ``GET /api/issues/{id}/tree-holds/{holdId}``.
+        """
+        return await self._get(
+            f"/api/issues/{issue_id}/tree-holds/{hold_id}",
+            session_cookie=session_cookie,
+        )
+
+    async def release_issue_tree_hold(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+        hold_id: str,
+        body: dict,
+    ) -> dict:
+        """Release an active subtree hold.
+
+        Maps to ``POST /api/issues/{id}/tree-holds/{holdId}/release``.
+        """
+        return await self._post(
+            f"/api/issues/{issue_id}/tree-holds/{hold_id}/release",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
+    async def get_issue_tree_control_state(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+    ) -> dict:
+        """Fetch the active-pause-hold gate for an issue.
+
+        Maps to ``GET /api/issues/{id}/tree-control/state``. Returns
+        ``{activePauseHold: {...}|null}`` — non-null (with ``isRoot``) when
+        this issue is under an active subtree pause hold.
+        """
+        return await self._get(
+            f"/api/issues/{issue_id}/tree-control/state",
+            session_cookie=session_cookie,
+        )
+
+    async def get_issue_subtree_diagnostics(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+    ) -> dict:
+        """Read the subtree diagnostics for an issue.
+
+        Maps to ``GET /api/issues/{id}/diagnostics/subtree`` — the read-only
+        node/edge/readiness view that complements the pause/resume lever.
+        """
+        return await self._get(
+            f"/api/issues/{issue_id}/diagnostics/subtree",
+            session_cookie=session_cookie,
+        )
+
+    async def get_issue_blocker_diagnostics(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+    ) -> dict:
+        """Read the blocker diagnostics for an issue.
+
+        Maps to ``GET /api/issues/{id}/diagnostics/blockers`` — why an issue
+        is (or is not) blocked, complementing the subtree control view.
+        """
+        return await self._get(
+            f"/api/issues/{issue_id}/diagnostics/blockers",
+            session_cookie=session_cookie,
+        )
+
 
 # Module-level shared httpx client. Created lazily on first use, reused for
 # the lifetime of the process. Not closed explicitly — the OS reclaims socket

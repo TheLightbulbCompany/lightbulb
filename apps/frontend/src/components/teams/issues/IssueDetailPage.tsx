@@ -18,6 +18,7 @@ import { IssueProperties } from "./IssueProperties";
 import { SubIssuesSection } from "./SubIssuesSection";
 import { IssueApprovalsSection } from "./IssueApprovalsSection";
 import { IssueRunsSection } from "./IssueRunsSection";
+import { IssueTreeControlSection } from "./IssueTreeControlSection";
 import { IssueDocumentsSection } from "./IssueDocumentsSection";
 import { IssueWorkProductsSection } from "./IssueWorkProductsSection";
 import { IssueAttachmentsSection } from "./IssueAttachmentsSection";
@@ -344,6 +345,7 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
         />
         <IssueApprovalsSection issueId={issueId} />
         <IssueRunsSection issueId={issueId} agents={agents} />
+        <IssueTreeControlSection issueId={issueId} />
         <IssueDocumentsSection issueId={issueId} agents={agents} />
         <IssueWorkProductsSection issueId={issueId} />
         <IssueAttachmentsSection issueId={issueId} />

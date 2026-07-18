@@ -102,6 +102,58 @@ def test_runtime_only_delta_does_not_descend_into_lists():
     assert delta == {"bindings": [{"type": "route"}]}
 
 
+def test_runtime_only_delta_does_not_resurrect_stale_generator_fields():
+    """A nested field the CURRENT generator deliberately no longer emits must
+    NOT be classified as runtime-only. The canonical case: the pre-#1118
+    ``memorySearch`` block pinned ``model`` to Bedrock Titan; the per-provider
+    generator emits ``{enabled, provider: "none"}`` with NO ``model`` key.
+    Recursing into generator-owned subtrees would merge the stale Titan model
+    back over the fresh block — the exact stale state a regen exists to
+    clear."""
+    existing = {
+        "agents": {
+            "defaults": {
+                "memorySearch": {
+                    "enabled": True,
+                    "provider": "amazon-bedrock",
+                    "model": "amazon.titan-embed-text-v2:0",
+                }
+            }
+        }
+    }
+    fresh = {"agents": {"defaults": {"memorySearch": {"enabled": True, "provider": "none"}}}}
+    assert mod._runtime_only_delta(existing, fresh) == {}
+
+
+def test_runtime_only_delta_recurses_only_into_co_owned_subtrees():
+    """Runtime additions nested inside co-owned subtrees (marketplace
+    ``skills.entries``/``allowBundled``, deployed-agent ``mcp.servers``)
+    survive the regen; nested keys under any other generator-owned subtree
+    (e.g. ``gateway``) do not."""
+    existing = {
+        "skills": {
+            "install": {"nodeManager": "npm"},
+            "entries": {"market-skill": {"enabled": True}},
+            "allowBundled": ["market-skill"],
+        },
+        "mcp": {"servers": {"deployed-agent-mcp": {"command": "npx"}}},
+        "gateway": {"mode": "token", "staleRuntimeKey": "drop-me"},
+    }
+    fresh = {
+        "skills": {"install": {"nodeManager": "npm"}, "workshop": {"autonomous": {"enabled": True}}},
+        "mcp": {"servers": {}},
+        "gateway": {"mode": "token"},
+    }
+    delta = mod._runtime_only_delta(existing, fresh)
+    assert delta == {
+        "skills": {
+            "entries": {"market-skill": {"enabled": True}},
+            "allowBundled": ["market-skill"],
+        },
+        "mcp": {"servers": {"deployed-agent-mcp": {"command": "npx"}}},
+    }
+
+
 # --------------------------------------------------------------------------- #
 # main() — dry-run vs apply, with the write seam mocked
 # --------------------------------------------------------------------------- #
@@ -225,6 +277,38 @@ async def test_apply_calls_write_path_with_resolved_inputs():
 
 
 @pytest.mark.asyncio
+async def test_apply_threads_bedrock_aip_arns_from_container_row():
+    """The generator hard-requires aip_arns on BOTH Bedrock paths
+    (build_openclaw_config_dict raises without a 'sonnet' entry), and the
+    per-owner AIP map is persisted on the containers row at provision time.
+    The regen must read it off the row and thread it through — otherwise
+    every bedrock_claude/bedrock_trial owner fails the reapply."""
+    aips = {"sonnet": "arn:aws:bedrock:us-east-1:1:application-inference-profile/aip-s"}
+    write_mock, cms = _patches(
+        container={
+            "gateway_token": "gw-tok",
+            "hook_token": "hk-tok",
+            "owner_type": "personal",
+            "bedrock_aip_arns": aips,
+        },
+        provider=("bedrock_claude", None),
+        existing_config={},
+        fresh_config={},
+    )
+    for cm in cms:
+        cm.start()
+    try:
+        rc = await mod.main(apply=True, env="prod", owner_id="user_bedrock")
+    finally:
+        for cm in cms:
+            cm.stop()
+
+    assert rc == 0
+    _, kwargs = write_mock.call_args
+    assert kwargs["aip_arns"] == aips
+
+
+@pytest.mark.asyncio
 async def test_missing_container_aborts_without_write():
     write_mock, cms = _patches(container=None)
     for cm in cms:
@@ -326,6 +410,44 @@ async def test_apply_preserves_runtime_state_and_keeps_regen_values():
     # The generator-owned model must NOT be in the restore patch — the regen
     # is authoritative for it; restoring would revert the new cheaper tier.
     assert "agents" not in restored
+
+
+@pytest.mark.asyncio
+async def test_apply_on_trial_owner_does_not_restore_channels_or_bindings():
+    """The trial generator DELIBERATELY omits carried-forward channel
+    accounts and route bindings (trial containers must not re-arm channel
+    bots). The restore must mirror that lockdown instead of undoing it —
+    while still restoring trial-safe runtime state like identity."""
+    existing = {
+        "channels": {"slack": {"accounts": {"agent_friday": {"allowFrom": ["U123"]}}}},
+        "bindings": [{"type": "route", "agentId": "agent_friday"}],
+        "identity": {"runtimeOnly": "preserve-me"},
+    }
+    fresh = {"channels": {}}
+    restore_patch = AsyncMock()
+    write_mock, cms = _patches(
+        container={"gateway_token": "gw", "hook_token": "hk", "owner_type": "personal"},
+        provider=("bedrock_trial", None),
+        existing_config=existing,
+        fresh_config=fresh,
+        patch_mock=restore_patch,
+    )
+    for cm in cms:
+        cm.start()
+    try:
+        rc = await mod.main(apply=True, env="prod", owner_id="user_trial")
+    finally:
+        for cm in cms:
+            cm.stop()
+
+    assert rc == 0
+    write_mock.assert_awaited_once()
+    restore_patch.assert_awaited_once()
+    p_args, _ = restore_patch.call_args
+    restored = p_args[1]
+    assert "channels" not in restored
+    assert "bindings" not in restored
+    assert restored["identity"] == {"runtimeOnly": "preserve-me"}
 
 
 @pytest.mark.asyncio

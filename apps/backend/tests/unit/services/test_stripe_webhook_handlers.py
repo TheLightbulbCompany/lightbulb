@@ -377,6 +377,38 @@ async def test_trialing_to_active_does_not_dispatch_reprovision(mock_repo):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("prior_status", ["trial_local", "active", "trialing"])
+@pytest.mark.parametrize("pending_status", ["incomplete", "incomplete_expired"])
+async def test_incomplete_never_clobbers_access_granting_status(mock_repo, prior_status, pending_status):
+    """A Checkout-born subscription surfaces as `incomplete` before its first
+    invoice settles (and `incomplete_expired` when checkout is abandoned).
+    Neither may overwrite an access-granting status: over trial_local the
+    write would make the follow-on active event skip the trial→paid
+    conversion reprovision and strip a still-valid free-tier owner's access;
+    over active/trialing it is a stale out-of-order event (Stripe webhook
+    delivery is unordered) that would block a customer who already paid. The
+    handler must skip ALL writes."""
+    reprovision, created = await _run_state_capturing_reprovision(mock_repo, prior_status, pending_status)
+
+    mock_repo.set_subscription.assert_not_called()
+    mock_repo.set_provider_choice.assert_not_called()
+    reprovision.assert_not_called()
+    assert created == []
+
+
+@pytest.mark.asyncio
+async def test_incomplete_persists_normally_for_non_trial_owners(mock_repo):
+    """The trial_local guard is narrow: an incomplete event for an owner who
+    was never on the free tier (e.g. a canceled account re-subscribing)
+    persists exactly as before."""
+    reprovision, created = await _run_state_capturing_reprovision(mock_repo, "canceled", "incomplete")
+
+    mock_repo.set_subscription.assert_called_once()
+    assert mock_repo.set_subscription.call_args.kwargs["status"] == "incomplete"
+    reprovision.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_trial_local_to_canceled_does_not_dispatch_reprovision(mock_repo):
     """Prior row trial_local + event canceled → NO reprovision. Only a
     transition into a paid-usable status (trialing/active) is a conversion."""

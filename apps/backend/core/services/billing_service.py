@@ -194,14 +194,14 @@ async def create_flat_fee_checkout(
     provider_choice: str | None = None,
     byo_provider: str | None = None,
     clerk_user_id: str | None = None,
-    trial_days: int | None = 14,
 ) -> stripe.checkout.Session:
     """Create a Stripe Checkout session on the single flat-fee price.
 
     Used by the flat-fee onboarding wizard (frontend cards 1, 2, 3 — all three
-    pay the same monthly fee against ``STRIPE_FLAT_PRICE_ID``). When
-    ``trial_days`` is set, the resulting subscription has a trial of that
-    length and Stripe charges nothing until the trial converts.
+    pay the same monthly fee against ``STRIPE_FLAT_PRICE_ID``). The card is
+    charged for the first month at checkout — there is no Stripe trial;
+    no-card evaluation happens on the ``trial_local`` free tier before the
+    user ever reaches this flow.
 
     ``provider_choice``, ``clerk_user_id`` and ``owner_id`` are threaded into
     ``subscription_data.metadata`` so the ``customer.subscription.*`` webhook
@@ -229,6 +229,15 @@ async def create_flat_fee_checkout(
     if not settings.STRIPE_FLAT_PRICE_ID:
         raise BillingServiceError("STRIPE_FLAT_PRICE_ID not configured")
 
+    # Serialize session creation per owner. Concurrent requests with
+    # different provider choices carry different idempotency keys, so
+    # without the claim both would mint distinct completable sessions
+    # before either pending-checkout marker lands. Self-expires (90s) so a
+    # crashed request can't wedge the owner; the router maps this error to
+    # a 409.
+    if not await billing_repo.try_claim_checkout_slot(owner_id):
+        raise BillingServiceError("checkout_in_progress")
+
     metadata: dict = {"owner_id": owner_id}
     if provider_choice:
         metadata["provider_choice"] = provider_choice
@@ -237,18 +246,47 @@ async def create_flat_fee_checkout(
     if clerk_user_id:
         metadata["clerk_user_id"] = clerk_user_id
 
-    return await _build_subscription_checkout(
-        owner_id=owner_id,
-        price_id=settings.STRIPE_FLAT_PRICE_ID,
-        quantity=1,
-        trial_days=trial_days,
-        metadata=metadata,
-        success_url=(
-            f"{FRONTEND_URL}/chat?checkout=success" + (f"&provider={provider_choice}" if provider_choice else "")
-        ),
-        cancel_url=f"{FRONTEND_URL}/?checkout=cancel",
-        idempotency_key=_checkout_idempotency_key("flat_checkout", owner_id, provider_choice or "_"),
-    )
+    try:
+        session = await _build_subscription_checkout(
+            owner_id=owner_id,
+            price_id=settings.STRIPE_FLAT_PRICE_ID,
+            quantity=1,
+            metadata=metadata,
+            success_url=(
+                f"{FRONTEND_URL}/chat?checkout=success" + (f"&provider={provider_choice}" if provider_choice else "")
+            ),
+            cancel_url=f"{FRONTEND_URL}/?checkout=cancel",
+            idempotency_key=_checkout_idempotency_key("flat_checkout", owner_id, provider_choice or "_"),
+        )
+    except Exception:
+        # No session exists — free the slot so the user's immediate retry
+        # doesn't wait out the claim TTL.
+        await billing_repo.release_checkout_slot(owner_id)
+        raise
+    # The marker is load-bearing: after the 90s claim TTL lapses, an
+    # UNRECORDED open session is invisible to every guard while staying
+    # completable until its ~31-minute expiry — a retry could mint a second
+    # session and both could be completed. Fail CLOSED: the user has not
+    # seen this session's URL yet, so expire it, free the slot, and let the
+    # retry mint fresh.
+    try:
+        await billing_repo.set_pending_checkout(owner_id, session_id=session.id, provider_choice=provider_choice)
+    except Exception:
+        logger.exception("Failed to record pending checkout session for owner %s", owner_id)
+        try:
+            with timing("stripe.api.latency", {"op": "checkout.session.expire"}):
+                stripe.checkout.Session.expire(session.id)
+        except Exception:
+            # Session floats until expires_at — bounded, and nobody holds
+            # its URL.
+            logger.exception("Failed to expire unrecorded checkout session %s", session.id)
+        try:
+            await billing_repo.release_checkout_slot(owner_id)
+        except Exception:
+            # Claim self-expires in 90s; the retry just waits it out.
+            logger.exception("Failed to release checkout slot for owner %s", owner_id)
+        raise BillingServiceError("checkout_unavailable")
+    return session
 
 
 def _checkout_idempotency_key(flow: str, owner_id: str, extra: str | None = None) -> str:
@@ -270,7 +308,6 @@ async def _build_subscription_checkout(
     owner_id: str,
     price_id: str,
     quantity: int,
-    trial_days: int | None,
     metadata: dict,
     success_url: str,
     cancel_url: str,
@@ -279,18 +316,15 @@ async def _build_subscription_checkout(
     """Single builder for subscription-mode Stripe Checkout sessions.
 
     Owns the session kwargs, the automatic_tax / customer_update block, and
-    the subscription_data (trial + metadata) assembly so neither the flat
-    (personal) nor the team path copies them. The price-id existence guard
-    stays in each caller because the config key differs.
+    the subscription_data metadata assembly so neither the flat (personal)
+    nor the team path copies them. The price-id existence guard stays in
+    each caller because the config key differs.
     """
     account = await billing_repo.get_by_owner_id(owner_id)
     if not account or not account.get("stripe_customer_id"):
         raise BillingServiceError(f"No Stripe customer for owner_id={owner_id}")
 
-    subscription_data: dict = {}
-    if trial_days is not None and trial_days > 0:
-        subscription_data["trial_period_days"] = trial_days
-    subscription_data["metadata"] = metadata
+    subscription_data: dict = {"metadata": metadata}
 
     kwargs: dict = dict(
         customer=account["stripe_customer_id"],
@@ -303,6 +337,10 @@ async def _build_subscription_checkout(
         customer_update={"address": "auto"},
         subscription_data=subscription_data,
         idempotency_key=idempotency_key,
+        # Stripe's minimum is 30 minutes; the default is 24 hours. A short
+        # expiry bounds how long an abandoned session can linger completable
+        # — load-bearing for the single-open-session guard in /trial-checkout.
+        expires_at=int(time.time()) + 31 * 60,
     )
     with timing("stripe.api.latency", {"op": "checkout.session.create"}):
         session = stripe.checkout.Session.create(**kwargs)
@@ -310,7 +348,7 @@ async def _build_subscription_checkout(
 
 
 async def create_team_seat_checkout(*, owner_id: str, member_count: int) -> stripe.checkout.Session:
-    """Per-seat Teams Checkout: quantity = org member count, NO trial.
+    """Per-seat Teams Checkout: quantity = org member count.
 
     Threads ``purpose="team_seat"`` into subscription metadata so the
     customer.subscription.* webhook records the subscription item id + seat
@@ -325,7 +363,6 @@ async def create_team_seat_checkout(*, owner_id: str, member_count: int) -> stri
         owner_id=owner_id,
         price_id=settings.STRIPE_TEAM_SEAT_PRICE_ID,
         quantity=quantity,
-        trial_days=None,
         # Teams are Bedrock-managed automatically — there is no provider picker
         # in the team flow. Thread provider_choice into the subscription
         # metadata so the customer.subscription.* webhook persists it as the
@@ -503,61 +540,6 @@ async def create_credit_top_up_checkout(
             idempotency_key=f"credit_checkout:{owner_id}:{nonce}",
         )
     return session
-
-
-async def create_trial_subscription(*, owner_id: str, payment_method_id: str) -> stripe.Subscription:
-    """Create a Stripe Subscription with a 14-day trial.
-
-    Backend creates the Subscription immediately at signup against the
-    saved payment method. Stripe handles conversion on day 15 (Smart
-    Retries on failure). Backend just listens to the resulting webhooks.
-
-    The subscription is born in ``status: trialing`` with ``trial_end`` 14
-    days out. Subscription id + initial status are persisted via
-    :func:`billing_repo.set_subscription` so the rest of the system can
-    read trial state without re-querying Stripe.
-
-    Conventions:
-      - ``automatic_tax={"enabled": True}`` — same Stripe Tax setup as
-        :func:`create_flat_fee_checkout`.
-      - ``payment_behavior="default_incomplete"`` — surfaces 3DS challenges
-        to the frontend instead of auto-failing the create call.
-      - ``payment_settings.save_default_payment_method=on_subscription``
-        means a successful first charge persists the PM as the default
-        for future invoices (no re-prompt at trial conversion).
-      - ``idempotency_key=f"trial_signup:{owner_id}"`` — deterministic per
-        user. A retry of the same trial-create call returns the same
-        Stripe subscription, never duplicates.
-    """
-    if not settings.STRIPE_FLAT_PRICE_ID:
-        raise BillingServiceError("STRIPE_FLAT_PRICE_ID not configured")
-
-    account = await billing_repo.get_by_owner_id(owner_id)
-    if not account or not account.get("stripe_customer_id"):
-        raise BillingServiceError(f"No Stripe customer for owner_id={owner_id}")
-
-    with timing("stripe.api.latency", {"op": "subscription.create"}):
-        sub = stripe.Subscription.create(
-            customer=account["stripe_customer_id"],
-            items=[{"price": settings.STRIPE_FLAT_PRICE_ID}],
-            trial_period_days=14,
-            default_payment_method=payment_method_id,
-            automatic_tax={"enabled": True},
-            payment_behavior="default_incomplete",
-            payment_settings={
-                "save_default_payment_method": "on_subscription",
-                "payment_method_types": ["card"],
-            },
-            idempotency_key=f"trial_signup:{owner_id}",
-        )
-
-    await billing_repo.set_subscription(
-        owner_id=owner_id,
-        subscription_id=sub.id,
-        status=sub.status,
-        trial_end=getattr(sub, "trial_end", None),
-    )
-    return sub
 
 
 # ---------------------------------------------------------------------------

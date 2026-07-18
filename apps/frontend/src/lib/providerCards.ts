@@ -1,18 +1,18 @@
 /**
- * Shared provider-card metadata for the three trial paths.
+ * Shared provider-card metadata for the three provider paths.
  *
  * Used by:
  *   - `components/landing/PricingThreeCard.tsx` — renders cards with
  *     anchor links to /sign-up?provider=…
  *   - `components/chat/ProvisioningStepper.tsx#ProviderPicker` — renders
  *     cards with click handlers that POST /billing/trial-checkout and
- *     redirect to Stripe Checkout. All three cards show for personal and
- *     org owners alike; for orgs the subscribing admin's ChatGPT account
- *     backs the whole workspace.
+ *     redirect to Stripe Checkout (billed immediately — no Stripe trial).
+ *     All three cards show for personal and org owners alike; for orgs
+ *     the subscribing admin's ChatGPT account backs the whole workspace.
  *
  * Previously: three near-identical card arrays lived inline across these
  * two surfaces. The landing copy is the canonical version; the
- * provisioning surface uses the same wording so trial intent → checkout
+ * provisioning surface uses the same wording so pricing intent → checkout
  * doesn't read like a different product.
  */
 
@@ -35,26 +35,26 @@ export const PROVIDER_CARDS: ProviderCard[] = [
     id: "chatgpt_oauth",
     title: "Sign in with ChatGPT",
     subtitle: "$50 / month + your ChatGPT subscription",
-    trialNote: "14-day trial, card required",
+    trialNote: "Billed monthly, starts today",
     bullets: [
       "GPT-5.5 included via your ChatGPT account",
       "All channels (Telegram, Discord, WhatsApp)",
       "Always-on container",
     ],
-    cta: "Start trial",
+    cta: "Get started",
     href: "/sign-up?provider=chatgpt_oauth",
   },
   {
     id: "byo_key",
     title: "Bring your own API key",
     subtitle: "$50 / month + your provider bill",
-    trialNote: "14-day trial, card required",
+    trialNote: "Billed monthly, starts today",
     bullets: [
       "OpenAI or Anthropic — your key, your billing",
       "All channels",
       "Always-on container",
     ],
-    cta: "Start trial",
+    cta: "Get started",
     href: "/sign-up?provider=byo_key",
   },
   {

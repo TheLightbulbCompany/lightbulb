@@ -166,7 +166,7 @@ export function Hero() {
               </Link>
             </div>
             <p className="ld-hero-fine">
-              14-day trial, card required ·{" "}
+              3-day free trial, no card required ·{" "}
               <a
                 href={`/api/download/desktop?arch=${arch}`}
                 onClick={() => capture("landing_download_clicked", { arch })}

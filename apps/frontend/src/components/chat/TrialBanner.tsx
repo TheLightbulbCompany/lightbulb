@@ -30,12 +30,14 @@ type BillingAccount = {
   trial_end?: number; // Unix seconds
 };
 
-// Only surface the in-app banner in the FINAL stretch of the trial. A
-// card-up-front trial already disclosed the terms at signup, and Stripe sends a
-// pre-charge reminder email — so a 14-day persistent countdown is a needless
-// cancel-prompt. A quiet heads-up in the last few days is the protective part
-// (avoids surprise-charge disputes) without nagging for two weeks. Calm trial
-// status lives on the Settings → Billing page year-round.
+// LEGACY: checkout no longer creates Stripe trials (billed immediately since
+// 2026-07-17), so `subscription_status === "trialing"` can only come from a
+// pre-cutover subscription still mid-trial. This component renders nothing
+// once the last such row converts or cancels — safe to delete after that.
+//
+// Only surface the in-app banner in the FINAL stretch of the trial: a quiet
+// heads-up in the last few days avoids surprise-charge disputes without
+// nagging. Calm trial status lives on the Settings → Billing page.
 const TRIAL_REMINDER_DAYS = 3;
 
 export function TrialBanner() {

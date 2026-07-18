@@ -169,6 +169,98 @@ async def set_stripe_customer_id(
     )
 
 
+async def set_pending_checkout(
+    owner_id: str,
+    *,
+    session_id: str,
+    provider_choice: str | None,
+) -> None:
+    """Record the owner's OPEN Stripe Checkout session (at most one).
+
+    Written by ``create_flat_fee_checkout`` right after session creation and
+    read by the ``/trial-checkout`` router so a second upgrade click returns
+    the SAME hosted session instead of minting a parallel one — completing
+    two open sessions would create two charged subscriptions. Never cleared:
+    a stale marker self-heals because the router re-checks the session's live
+    status with Stripe (open → reuse, complete → 409 until the webhook flips
+    the row, expired → mint fresh; sessions are created with a ~31-minute
+    ``expires_at``). ``provider_choice`` is stored so a provider SWITCH can
+    expire the old session rather than reuse it with the wrong metadata.
+    Same existing-row condition as the other billing-row setters.
+    """
+    table = _get_table()
+    await run_in_thread(
+        table.update_item,
+        Key={"owner_id": owner_id},
+        UpdateExpression=("SET pending_checkout_session_id = :s, pending_checkout_provider = :p, updated_at = :t"),
+        ExpressionAttributeValues={
+            ":s": session_id,
+            ":p": provider_choice,
+            ":t": utc_now_iso(),
+        },
+        ConditionExpression="attribute_exists(owner_id)",
+    )
+
+
+async def try_claim_checkout_slot(owner_id: str, *, ttl_seconds: int = 90) -> bool:
+    """Conditional-write claim serializing Checkout session creation per owner.
+
+    Two concurrent ``/trial-checkout`` requests with DIFFERENT provider
+    choices carry different Stripe idempotency keys, so without this claim
+    both would mint distinct completable sessions before either post-create
+    ``set_pending_checkout`` write lands — completing both double-charges.
+    Returns True to exactly ONE caller inside the TTL window; mirrors
+    ``try_claim_nightly_arm``. The claim is a timestamp, not a flag: a
+    request that dies between claim and session create self-heals after
+    ``ttl_seconds`` (session creation takes ~1s, so 90s is generous).
+    No phantom rows: guarded on ``attribute_exists(owner_id)``.
+    """
+    table = _get_table()
+    now = int(time.time())
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET checkout_claim_at = :now, updated_at = :t",
+            ExpressionAttributeValues={
+                ":now": now,
+                ":cutoff": now - ttl_seconds,
+                ":t": utc_now_iso(),
+            },
+            ConditionExpression=(
+                "attribute_exists(owner_id) AND "
+                "(attribute_not_exists(checkout_claim_at) OR checkout_claim_at < :cutoff)"
+            ),
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise
+    return True
+
+
+async def release_checkout_slot(owner_id: str) -> None:
+    """Release the checkout-slot claim after a FAILED session create, so the
+    user's retry doesn't wait out the TTL. Only the claim holder calls this
+    inside its window (the claim condition blocks concurrent claimants), so
+    an unconditional REMOVE cannot clobber someone else's claim. No-row is a
+    silent no-op.
+    """
+    table = _get_table()
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="REMOVE checkout_claim_at SET updated_at = :t",
+            ExpressionAttributeValues={":t": utc_now_iso()},
+            ConditionExpression="attribute_exists(owner_id)",
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return
+        raise
+
+
 async def set_credits_auto_charge(owner_id: str, *, enabled: bool) -> None:
     """Persist the owner's one-click top-up consent.
 

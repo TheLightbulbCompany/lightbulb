@@ -508,3 +508,52 @@ async def test_set_nightly_ceo_opted_out_no_row_is_silent_noop(dynamodb_table):
 
     await billing_repo.set_nightly_ceo_opted_out("opt_ghost", True)
     assert await billing_repo.get_by_owner_id("opt_ghost") is None
+
+
+@pytest.mark.asyncio
+async def test_try_claim_checkout_slot_first_claim_wins(dynamodb_table):
+    from core.repositories import billing_repo
+
+    await billing_repo.create_if_not_exists(owner_id="slot_owner", stripe_customer_id="cus_s", owner_type="personal")
+    assert await billing_repo.try_claim_checkout_slot("slot_owner") is True
+
+
+@pytest.mark.asyncio
+async def test_try_claim_checkout_slot_blocks_within_ttl(dynamodb_table):
+    from core.repositories import billing_repo
+
+    await billing_repo.create_if_not_exists(owner_id="slot_owner", stripe_customer_id="cus_s", owner_type="personal")
+    assert await billing_repo.try_claim_checkout_slot("slot_owner") is True
+    assert await billing_repo.try_claim_checkout_slot("slot_owner") is False
+
+
+@pytest.mark.asyncio
+async def test_try_claim_checkout_slot_self_heals_after_ttl(dynamodb_table, monkeypatch):
+    """A crashed request must not wedge the owner — an expired claim is
+    reclaimable. Advance the repo's clock past the TTL instead of sleeping."""
+    from types import SimpleNamespace
+
+    from core.repositories import billing_repo
+
+    await billing_repo.create_if_not_exists(owner_id="slot_owner", stripe_customer_id="cus_s", owner_type="personal")
+    assert await billing_repo.try_claim_checkout_slot("slot_owner") is True
+    real_now = time.time()
+    monkeypatch.setattr(billing_repo, "time", SimpleNamespace(time=lambda: real_now + 91))
+    assert await billing_repo.try_claim_checkout_slot("slot_owner") is True
+
+
+@pytest.mark.asyncio
+async def test_release_checkout_slot_allows_immediate_reclaim(dynamodb_table):
+    from core.repositories import billing_repo
+
+    await billing_repo.create_if_not_exists(owner_id="slot_owner", stripe_customer_id="cus_s", owner_type="personal")
+    assert await billing_repo.try_claim_checkout_slot("slot_owner") is True
+    await billing_repo.release_checkout_slot("slot_owner")
+    assert await billing_repo.try_claim_checkout_slot("slot_owner") is True
+
+
+@pytest.mark.asyncio
+async def test_try_claim_checkout_slot_no_row_returns_false(dynamodb_table):
+    from core.repositories import billing_repo
+
+    assert await billing_repo.try_claim_checkout_slot("ghost_owner") is False

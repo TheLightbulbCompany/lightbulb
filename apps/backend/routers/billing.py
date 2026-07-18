@@ -25,6 +25,7 @@ from core.services.billing_service import BillingService
 from core.services.container_provision import resolve_provider_choice
 from core.services.stripe_webhook_handlers import STRIPE_WEBHOOK_HANDLERS
 from core.services.provision_gate import (
+    LIVE_SUBSCRIPTION_STATUSES,
     TRIAL_BLOCKED_STATUSES,
     is_subscription_active,
     is_trial_blocked,
@@ -347,13 +348,15 @@ class TrialCheckoutRequest(BaseModel):
 
 @router.post(
     "/trial-checkout",
-    summary="Start a 14-day trial via Stripe Checkout",
+    summary="Subscribe via Stripe Checkout (billed immediately)",
     description=(
-        "Creates a Stripe Checkout session in subscription mode with a 14-day trial. "
-        "Charges $0 today; user enters card details, the Subscription is born trialing, "
-        "and Stripe converts it on day 15. The chosen provider_choice is threaded into "
+        "Creates a Stripe Checkout session in subscription mode on the flat "
+        "monthly price. The card is charged for the first month at checkout — "
+        "there is no Stripe trial; no-card evaluation happens on the trial_local "
+        "free tier before this flow. The chosen provider_choice is threaded into "
         "subscription metadata so the webhook handler can persist it on the user row. "
-        "Returns the Checkout URL — frontend redirects the browser to it."
+        "Returns the Checkout URL — frontend redirects the browser to it. "
+        "(Route path kept as /trial-checkout for frontend compatibility.)"
     ),
     operation_id="create_trial_checkout",
 )
@@ -423,7 +426,7 @@ async def create_trial_checkout(
             email=auth.email,
         )
 
-    # Refuse a second trial-checkout for any subscription that exists,
+    # Refuse a second checkout for any subscription that exists,
     # regardless of state. Stripe Checkout in mode="subscription"
     # creates a NEW subscription on every successful return, so a retry
     # past the 5-minute idempotency-bucket window would charge the
@@ -432,10 +435,10 @@ async def create_trial_checkout(
     # ``is_trial_blocked`` (canonical set in ``provision_gate.py``) blocks
     # any state that has ever billed or might still bill —
     # {active, trialing, past_due, canceled, incomplete, incomplete_expired,
-    # unpaid, paused}. The {canceled, …} entries close the trial-gaming
-    # hole from audit C3 (a user could otherwise complete a 14-day trial,
-    # cancel before day 15, and immediately POST /trial-checkout again to
-    # mint a new trial — ECS Fargate is recurring on us either way).
+    # unpaid, paused}. The {canceled, …} entries date from audit C3, when
+    # checkout carried a 14-day Stripe trial and cancel-before-conversion
+    # could mint unlimited free trials; checkout now bills immediately, but
+    # blocking canceled rows still prevents accidental double-subscribe.
     # Legitimate re-subscribe-after-cancel goes through customer support.
     existing_status = account.get("subscription_status")
     has_legacy_sub = bool(account.get("stripe_subscription_id"))
@@ -458,19 +461,98 @@ async def create_trial_checkout(
             if getattr(e, "code", None) != "resource_missing":
                 raise
             logger.info(
-                "Stored sub %s not found in Stripe for owner %s — allowing fresh trial",
+                "Stored sub %s not found in Stripe for owner %s — allowing fresh checkout",
                 sub_id,
                 owner_id,
             )
         else:
             # Same expanded blocklist as the local-row path — a stale
             # canceled/incomplete subscription in Stripe is still a
-            # "this account already trialed" signal (audit C3).
+            # "this account already subscribed" signal (audit C3).
             if live_sub.get("status") in TRIAL_BLOCKED_STATUSES:
                 raise HTTPException(
                     status_code=409,
                     detail=f"already_subscribed:{live_sub.get('status')}",
                 )
+    elif account.get("stripe_customer_id"):
+        # No stored subscription id — but the Stripe customer may still carry
+        # a live subscription this row hasn't heard about: a checkout that
+        # completed seconds ago with its webhook in flight, or a transient
+        # `incomplete` that handle_subscription_state deliberately does not
+        # persist over trial_local. Trusting the local row alone would mint a
+        # second Checkout session and double-subscribe, so ask Stripe
+        # directly. Match on subscription metadata owner_id — the customer is
+        # shared across personal/org billing rows for the same email, and
+        # another owner's subscription must not block this one.
+        with timing("stripe.api.latency", {"op": "subscription.list"}):
+            live_subs = stripe.Subscription.list(customer=account["stripe_customer_id"], status="all", limit=100)
+        # auto_paging_iter walks has_more pages — a matching billable sub must
+        # not escape the guard by sitting behind newer subs on the shared
+        # customer.
+        for sub in live_subs.auto_paging_iter():
+            if (sub.get("metadata") or {}).get("owner_id") != owner_id:
+                continue
+            if sub.get("status") in LIVE_SUBSCRIPTION_STATUSES:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"already_subscribed:{sub.get('status')}",
+                )
+
+    # Single-open-session guard: at most one live Checkout session per owner.
+    # A user who clicks Upgrade twice (two tabs, browser back, a different
+    # provider card) must never hold two completable sessions — completing
+    # both creates two charged subscriptions, and no subscription exists at
+    # session-open time for the guards above to see. The marker is written by
+    # create_flat_fee_checkout after every session create; the session's LIVE
+    # status decides what it means, so a stale marker self-heals.
+    pending_id = account.get("pending_checkout_session_id")
+    if pending_id:
+        pending = None
+        try:
+            with timing("stripe.api.latency", {"op": "checkout.session.retrieve"}):
+                pending = stripe.checkout.Session.retrieve(pending_id)
+        except stripe.error.InvalidRequestError:
+            logger.info("Pending checkout session %s not retrievable — minting fresh", pending_id)
+        if pending is not None and pending.get("status") == "open":
+            if account.get("pending_checkout_provider") == body.provider_choice:
+                # Same intent — send them back to the SAME hosted session.
+                return {"checkout_url": pending.url}
+            # Provider switch: the open session carries the OLD provider in
+            # its subscription metadata (the webhook would clobber the new
+            # choice), and leaving it open would allow completing both.
+            # Expire it, then mint fresh below.
+            try:
+                with timing("stripe.api.latency", {"op": "checkout.session.expire"}):
+                    stripe.checkout.Session.expire(pending_id)
+            except stripe.error.InvalidRequestError:
+                # Thin race: the session can complete between retrieve and
+                # expire (checkout finishing in another tab). Minting a
+                # fresh session here would leave BOTH chargeable — re-check
+                # and stop unless it genuinely expired.
+                with timing("stripe.api.latency", {"op": "checkout.session.retrieve"}):
+                    recheck = stripe.checkout.Session.retrieve(pending_id)
+                if recheck.get("status") != "expired":
+                    raise HTTPException(
+                        status_code=409,
+                        detail="already_subscribed:checkout_completed",
+                    )
+                logger.info("Pending checkout session %s expired concurrently — minting fresh", pending_id)
+        elif pending is not None and pending.get("status") == "complete":
+            # Paid, webhook in flight. Do not mint a parallel session; the
+            # row flips active momentarily and the normal guard takes over.
+            raise HTTPException(status_code=409, detail="already_subscribed:checkout_completed")
+        # Falling through means the pending session is dead (switch-expired
+        # just above, naturally expired, or unretrievable) and we are about
+        # to mint a replacement. The claim from that session's create may
+        # still be inside its 90s TTL — release it, or the mint below 409s
+        # `checkout_in_progress` and a provider switch is stuck for up to
+        # 90s. Safe under concurrency: releasing only re-opens the claim,
+        # and create_flat_fee_checkout re-acquires it, so exactly one
+        # concurrent minter still wins.
+        try:
+            await billing_repo.release_checkout_slot(owner_id)
+        except Exception:
+            logger.exception("Failed to release checkout slot for owner %s", owner_id)
 
     # A trial_local row EXISTS but carries no stripe_customer_id — the trial row
     # is written with no stripe_* fields so a brand-new signup can chat before
@@ -515,9 +597,13 @@ async def create_trial_checkout(
             # through subscription_data.metadata so the webhook can persist
             # provider_choice on the right per-Clerk-user row.
             clerk_user_id=auth.user_id,
-            trial_days=14,
         )
     except BillingServiceError as e:
+        if str(e) == "checkout_in_progress":
+            # Lost the per-owner checkout-slot claim to a concurrent request
+            # — that request's session is (or is about to be) the one open
+            # session. 409, not 400: retrying in a moment reuses it.
+            raise HTTPException(status_code=409, detail="checkout_in_progress")
         raise HTTPException(status_code=400, detail=str(e))
     return {"checkout_url": session.url}
 

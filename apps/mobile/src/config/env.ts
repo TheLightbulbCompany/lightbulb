@@ -14,3 +14,10 @@ export const WS_URL = deriveWebSocketUrl(
   API_URL,
   process.env.EXPO_PUBLIC_WS_URL,
 );
+
+/**
+ * Web billing panel — the outbound target for every billing/upgrade CTA.
+ * Billing, checkout, and OAuth never happen in-app (D1); always prod web,
+ * regardless of which API this build points at.
+ */
+export const WEB_BILLING_URL = "https://isol8.co/settings?panel=billing";

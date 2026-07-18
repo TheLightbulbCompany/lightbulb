@@ -1,5 +1,6 @@
 import { Linking, Pressable, StyleSheet, Text, View } from "react-native";
 
+import { WEB_BILLING_URL } from "../../config/env";
 import { colors, fonts, radii, spacing } from "../../config/theme";
 
 /**
@@ -13,8 +14,6 @@ import { colors, fonts, radii, spacing } from "../../config/theme";
  * checkout (D1), so the action deep-links to the web billing panel.
  * Any other (or no) code keeps the plain full-width error card.
  */
-const UPGRADE_URL = "https://isol8.co/settings?panel=billing";
-
 export interface ChatErrorPresentation {
   title: string;
   description: string;
@@ -36,14 +35,14 @@ export function describeChatError(
         description:
           message ||
           "You've used today's free allowance — resets tomorrow. Upgrade to keep going.",
-        action: { label: "Upgrade on isol8.co", url: UPGRADE_URL },
+        action: { label: "Upgrade on isol8.co", url: WEB_BILLING_URL },
       };
     case "trial_expired":
       return {
         title: "Your free trial has ended",
         description:
           message || "Your free trial has ended. Pick a plan to keep your agent.",
-        action: { label: "Upgrade on isol8.co", url: UPGRADE_URL },
+        action: { label: "Upgrade on isol8.co", url: WEB_BILLING_URL },
       };
     default:
       return null;

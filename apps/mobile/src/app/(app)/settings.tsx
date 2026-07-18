@@ -14,13 +14,14 @@ import {
 import { ApiError, createApiClient } from "@isol8/shared";
 
 import { usePulse } from "../../components/chat/usePulse";
+import { WEB_BILLING_URL } from "../../config/env";
 import { colors, fonts, radii, spacing, type } from "../../config/theme";
 import { makeAdapter } from "../../lib/adapter";
 import { unregisterDevice } from "../../lib/pushDevice";
 
 // Web-managed billing surface (W2 contract §5): mobile never calls
 // POST /billing/portal — it deep-links out to the web settings page instead.
-const MANAGE_BILLING_URL = "https://isol8.co/settings?panel=billing";
+const MANAGE_BILLING_URL = WEB_BILLING_URL;
 
 // ---------------------------------------------------------------------------
 // Contract shapes (W2 billing contract §2)

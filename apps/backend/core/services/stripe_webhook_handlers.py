@@ -466,26 +466,27 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
     metadata_provider = metadata.get("provider_choice")
     metadata_byo = metadata.get("byo_provider")
     provider_persisted = False
-    if event_type == "customer.subscription.created" and metadata_provider in (
-        "chatgpt_oauth",
-        "byo_key",
-        "bedrock_claude",
-    ):
+    # The provider backup below runs only on the transition INTO a live paid
+    # status — the first usable event of a new subscription. That is usually
+    # .created(active|trialing), but for a checkout-born sub whose .created
+    # surfaced as `incomplete` (skipped entirely by the guard above), it is
+    # the follow-up .updated(active) that performs the deferred writes.
+    #
+    # Live→live events (renewals, seat syncs, payment-method changes — and
+    # past_due→active payment recovery) must NEVER persist it: subscription
+    # metadata is a snapshot of the provider chosen at checkout and is never
+    # updated by change_provider, so on those events it can be stale history.
+    # Persisting it there clobbers a post-onboarding provider switch back to
+    # the checkout-time value — and set_provider_choice's REMOVE strips
+    # oauth_connector_user_id with it.
+    entering_live = new_status in ("active", "trialing") and old_status not in ("active", "trialing", "past_due")
+    if entering_live and metadata_provider in ("chatgpt_oauth", "byo_key", "bedrock_claude"):
         # provider_choice lives on billing_accounts (per-owner), not on
         # the user row. /trial-checkout writes synchronously before
         # creating the Stripe Checkout session; this webhook write is
         # the idempotent backup for any legacy Stripe sessions that
         # predate the synchronous write, or for direct-API callers who
         # skipped the /trial-checkout entry point.
-        #
-        # CREATION-ONLY: subscription metadata is a snapshot of the provider
-        # chosen at checkout and is never updated by change_provider, so on
-        # .updated events (renewals, seat syncs, payment-method changes) it
-        # can be stale history. Persisting it there clobbers a
-        # post-onboarding provider switch back to the checkout-time value —
-        # and set_provider_choice's REMOVE strips oauth_connector_user_id
-        # with it. Only at .created does the metadata reflect a choice the
-        # owner just made.
         try:
             await billing_repo.set_provider_choice(
                 account["owner_id"],

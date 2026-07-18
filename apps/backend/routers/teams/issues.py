@@ -21,7 +21,13 @@ from starlette.datastructures import UploadFile
 from . import agents as _agents
 from ._guards import require_trial_runway
 from .deps import TeamsContext, envelope_list
-from .schemas import AddIssueCommentBody, CreateIssueBody, PatchIssueBody
+from .schemas import (
+    AddIssueCommentBody,
+    CreateIssueBody,
+    CreateWorkProductBody,
+    PatchIssueBody,
+    PatchWorkProductBody,
+)
 
 router = APIRouter()
 _ctx = _agents._ctx
@@ -404,6 +410,159 @@ async def list_issue_documents(issue_id: str, ctx: TeamsContext = Depends(_ctx))
         issue_id=issue_id,
     )
     return envelope_list(rows, "documents")
+
+
+# ----------------------------------------------------------------------
+# Issue work-products (typed deliverables + review lifecycle)
+#
+# Work-products are an agent's first-class deliverables (preview_url /
+# pull_request / artifact / document / …), each with a reviewState the board
+# can drive (needs_board_review → approved | changes_requested). They power
+# the issue-detail "Output" section + the company Artifacts gallery. Distinct
+# from raw attachments (a file) — a work-product is the reviewable thing.
+# ----------------------------------------------------------------------
+
+
+@router.get("/issues/{issue_id}/work-products")
+async def list_issue_work_products(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
+    """List the work-products produced for an issue (the issue-detail Output section).
+
+    Maps to upstream ``GET /api/issues/{id}/work-products`` (issue-scoped;
+    company asserted upstream via the session cookie). Upstream returns a bare
+    array, so it is wrapped ``{workProducts: [...]}`` like the sibling list
+    surfaces.
+    """
+    rows = await _agents._admin().list_issue_work_products(
+        session_cookie=ctx.session_cookie,
+        issue_id=issue_id,
+    )
+    return envelope_list(rows, "workProducts")
+
+
+@router.post("/issues/{issue_id}/work-products")
+async def create_issue_work_product(
+    issue_id: str,
+    body: CreateWorkProductBody,
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """Create a work-product on an issue. Body whitelisted by ``CreateWorkProductBody``.
+
+    Maps to upstream ``POST /api/issues/{id}/work-products``. ``exclude_none``
+    drops unset optionals so upstream applies its own defaults;
+    ``by_alias`` emits the camelCase wire shape (``reviewState`` / ``isPrimary``
+    / ``projectId``).
+    """
+    return await _agents._admin().create_issue_work_product(
+        session_cookie=ctx.session_cookie,
+        issue_id=issue_id,
+        body=body.model_dump(exclude_none=True, by_alias=True),
+    )
+
+
+def _find_work_product(rows: Any, work_product_id: str) -> Optional[dict]:
+    """Locate a work-product row by id in an upstream issue-scoped list payload.
+
+    ``list_issue_work_products`` returns upstream's bare array; tolerate a
+    ``{workProducts: [...]}`` envelope too so the lookup is robust to shape.
+    """
+    if isinstance(rows, dict):
+        rows = rows.get("workProducts")
+    if not isinstance(rows, list):
+        return None
+    for row in rows:
+        if isinstance(row, dict) and row.get("id") == work_product_id:
+            return row
+    return None
+
+
+@router.patch("/issues/{issue_id}/work-products/{work_product_id}")
+async def patch_work_product(
+    issue_id: str,
+    work_product_id: str,
+    body: PatchWorkProductBody,
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """Record a board review verdict on a work-product — Approve / Request-changes.
+
+    Maps to upstream ``PATCH /api/work-products/{id}``, but GUARDED at the BFF:
+
+    - The body (``PatchWorkProductBody``) is narrowed to the review decision
+      only, so this route can never rewrite a deliverable's status/title/url.
+    - The transition is forwarded ONLY when the target work-product (a) belongs
+      to the ``issue_id`` in the path and (b) is currently ``needs_board_review``.
+      Otherwise 404 / 409 — never forwarded.
+
+    Upstream exposes no GET-by-id for a single work-product, so the current row
+    is read from the issue-scoped list (``GET /api/issues/{id}/work-products``);
+    the path ``issue_id`` both scopes that read and asserts the product is part
+    of the viewed issue. Upstream only company-scopes the raw id, so without
+    this guard a same-company caller who learned any work_product_id could
+    approve / request-changes an unrelated or already-decided deliverable.
+    """
+    rows = await _agents._admin().list_issue_work_products(
+        session_cookie=ctx.session_cookie,
+        issue_id=issue_id,
+    )
+    wp = _find_work_product(rows, work_product_id)
+    if wp is None:
+        raise HTTPException(status_code=404, detail="Work product not found on this issue")
+    if wp.get("reviewState") != "needs_board_review":
+        raise HTTPException(
+            status_code=409,
+            detail="Work product is not awaiting board review",
+        )
+    return await _agents._admin().update_work_product(
+        session_cookie=ctx.session_cookie,
+        work_product_id=work_product_id,
+        body=body.model_dump(by_alias=True),
+    )
+
+
+@router.get("/artifacts")
+async def list_company_artifacts(
+    ctx: TeamsContext = Depends(_ctx),
+    kind: Optional[str] = Query(default=None, pattern=r"^(image|video|text|document|file|all)$"),
+    # Same uuid-cast guard as the issues-list ``project`` filter — upstream
+    # casts these to a Postgres ``uuid``, so a malformed value 500s and leaks
+    # the internal company path. Validate the shape here (local 422) first.
+    project: Optional[str] = Query(default=None, pattern=_UUID_RE),
+    group_issue_id: Optional[str] = Query(default=None, alias="groupIssueId", pattern=_UUID_RE),
+    q: Optional[str] = Query(default=None, max_length=160),
+    group_by: Optional[str] = Query(default=None, alias="groupBy", pattern=r"^(none|task|parent_task)$"),
+    limit: Optional[int] = Query(default=None, ge=1, le=100),
+    cursor: Optional[str] = Query(default=None, max_length=2000),
+):
+    """The company Artifacts gallery — deliverables across the whole company.
+
+    Maps to upstream ``GET /api/companies/{companyId}/artifacts``. The company
+    segment is the server-derived ``ctx.company_id`` (never a client param);
+    upstream ``assertCompanyAccess`` scopes it to the session cookie's company.
+    Query params are validated at the boundary then forwarded so the gallery
+    can drive kind/project filtering, search, task grouping, and pagination.
+    Returns the upstream ``{artifacts, groups?, selectedGroup?, nextCursor}``
+    object verbatim.
+    """
+    upstream_params: dict[str, str] = {}
+    if kind is not None:
+        upstream_params["kind"] = kind
+    if project is not None:
+        upstream_params["projectId"] = project
+    if group_issue_id is not None:
+        upstream_params["groupIssueId"] = group_issue_id
+    if q is not None:
+        upstream_params["q"] = q
+    if group_by is not None:
+        upstream_params["groupBy"] = group_by
+    if limit is not None:
+        upstream_params["limit"] = str(limit)
+    if cursor is not None:
+        upstream_params["cursor"] = cursor
+
+    return await _agents._admin().list_company_artifacts(
+        session_cookie=ctx.session_cookie,
+        company_id=ctx.company_id,
+        params=upstream_params or None,
+    )
 
 
 # ----------------------------------------------------------------------

@@ -4,13 +4,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
 import { remarkSoftBreaks } from "@/components/teams/shared/lib/remark-soft-breaks";
-
-function safeHref(href?: string): string | undefined {
-  if (!href) return undefined;
-  const v = href.trim().toLowerCase();
-  if (v.startsWith("javascript:") || v.startsWith("data:")) return undefined;
-  return href;
-}
+import { safeHref } from "@/components/teams/shared/lib/safeHref";
 
 // react-markdown does NOT render raw HTML (no rehype-raw), so the body is
 // inert apart from link hrefs, which we guard. Themed with the teams CSS vars.

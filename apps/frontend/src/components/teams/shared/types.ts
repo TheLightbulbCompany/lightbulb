@@ -512,6 +512,118 @@ export interface IssueAttachment {
   createdAt?: string | null;
 }
 
+/** A work-product's type (upstream IssueWorkProductType). */
+export type IssueWorkProductType =
+  | "preview_url"
+  | "runtime_service"
+  | "pull_request"
+  | "branch"
+  | "commit"
+  | "artifact"
+  | "document";
+
+/** A work-product's lifecycle status (upstream IssueWorkProductStatus). */
+export type IssueWorkProductStatus =
+  | "active"
+  | "ready_for_review"
+  | "approved"
+  | "changes_requested"
+  | "merged"
+  | "closed"
+  | "failed"
+  | "archived"
+  | "draft";
+
+/** A work-product's board-review state (upstream IssueWorkProductReviewState). */
+export type IssueWorkProductReviewState =
+  | "none"
+  | "needs_board_review"
+  | "approved"
+  | "changes_requested";
+
+/**
+ * A typed deliverable an agent produced for an issue (upstream IssueWorkProduct
+ * subset; `paperclip/packages/shared/src/types/work-product.ts`). Distinct from
+ * a raw attachment: a work-product is the reviewable *thing* (a preview URL, a
+ * PR, a generated artifact), carrying a `reviewState` the board can approve or
+ * request changes on. Surfaced on the issue-detail "Output" section.
+ */
+export interface IssueWorkProduct {
+  id: string;
+  issueId: string;
+  type: IssueWorkProductType | string;
+  provider: string;
+  title: string;
+  url?: string | null;
+  status: IssueWorkProductStatus | string;
+  reviewState: IssueWorkProductReviewState | string;
+  isPrimary?: boolean;
+  summary?: string | null;
+  createdByRunId?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+}
+
+/** Media classification for a company artifact (upstream companyArtifactMediaKind). */
+export type CompanyArtifactMediaKind =
+  | "image"
+  | "video"
+  | "text"
+  | "document"
+  | "file"
+  | "empty";
+
+/** Underlying source of a company artifact (upstream companyArtifactSource). */
+export type CompanyArtifactSource = "document" | "attachment" | "work_product";
+
+/**
+ * A single row in the company Artifacts gallery (upstream companyArtifactSchema).
+ * The `*Path` fields are upstream-relative (`/api/attachments/{id}/content`);
+ * the gallery links back into the owning issue's detail panel rather than
+ * rendering the raw path.
+ */
+export interface CompanyArtifact {
+  id: string;
+  source: CompanyArtifactSource | string;
+  mediaKind: CompanyArtifactMediaKind | string;
+  title: string;
+  previewText?: string | null;
+  contentType?: string | null;
+  contentPath?: string | null;
+  openPath?: string | null;
+  downloadPath?: string | null;
+  issue: { id: string; identifier: string; title: string };
+  project?: { id: string; name: string } | null;
+  createdByAgent?: { id: string; name: string } | null;
+  updatedAt: string;
+  href: string;
+}
+
+/**
+ * A task-grouped bundle of company artifacts (upstream companyArtifactGroupSchema).
+ * The gallery ports the GROUPED shape (`groupBy=task`) so deliverables cluster
+ * under the issue that produced them rather than showing as a flat firehose.
+ */
+export interface CompanyArtifactGroup {
+  id: string;
+  groupBy: "task" | "parent_task" | string;
+  issue: { id: string; identifier: string; title: string };
+  title: string;
+  count: number;
+  mediaKinds: (CompanyArtifactMediaKind | string)[];
+  previewArtifacts: CompanyArtifact[];
+  updatedAt: string;
+  href: string;
+}
+
+/** Response shape of `GET /teams/artifacts` (upstream companyArtifactsResponseSchema). */
+export interface CompanyArtifactsResponse {
+  artifacts: CompanyArtifact[];
+  groups?: CompanyArtifactGroup[];
+  selectedGroup?: CompanyArtifactGroup | null;
+  nextCursor: string | null;
+}
+
 export interface CompanyMember {
   userId: string;
   name?: string | null;

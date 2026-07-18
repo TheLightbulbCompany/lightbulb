@@ -27,6 +27,7 @@ const PANEL_LOADERS: Record<string, () => Promise<React.ComponentType>> = {
   goals: () => import("./panels/GoalsPanel").then((m) => m.GoalsPanel),
   projects: () => import("./panels/ProjectsListPanel").then((m) => m.ProjectsListPanel),
   activity: () => import("./panels/ActivityPanel").then((m) => m.ActivityPanel),
+  artifacts: () => import("./panels/ArtifactsPanel").then((m) => m.ArtifactsPanel),
   settings: () => import("./panels/SettingsPanel").then((m) => m.SettingsPanel),
 };
 

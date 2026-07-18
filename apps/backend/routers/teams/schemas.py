@@ -325,3 +325,57 @@ class WatchdogDecisionBody(_Strict):
     evaluation_issue_id: Optional[str] = None
     reason: Optional[str] = Field(default=None, max_length=4000)
     snoozed_until: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Issue work-products (typed deliverables + review lifecycle)
+#
+# Whitelisted bodies for creating a work-product and driving its review
+# transition. As with every mutating Teams body, ``extra="forbid"`` (from
+# ``_Strict``) rejects a smuggled ``adapterType``/``adapterConfig`` with 422
+# at the FastAPI boundary. The enums mirror upstream
+# ``createIssueWorkProductSchema`` / ``updateIssueWorkProductSchema``
+# (paperclip/packages/shared/src/validators/work-product.ts) so junk 422s
+# here rather than being forwarded for upstream to reject opaquely. Routers
+# forward with ``model_dump(by_alias=True, ...)`` so the camelCase aliases
+# (``reviewState``, ``isPrimary``, ``projectId``) land on the wire.
+# ---------------------------------------------------------------------------
+
+_WORK_PRODUCT_TYPE = r"^(preview_url|runtime_service|pull_request|branch|commit|artifact|document)$"
+_WORK_PRODUCT_STATUS = r"^(active|ready_for_review|approved|changes_requested|merged|closed|failed|archived|draft)$"
+_WORK_PRODUCT_REVIEW_STATE = r"^(none|needs_board_review|approved|changes_requested)$"
+
+
+class CreateWorkProductBody(_Strict):
+    """Body for ``POST /teams/issues/{id}/work-products``.
+
+    Subset of upstream ``createIssueWorkProductSchema``. ``type`` / ``provider``
+    / ``title`` are required; the rest default upstream. ``metadata`` is a
+    free-form passthrough dict (upstream validates the nested shape per type).
+    """
+
+    type: str = Field(pattern=_WORK_PRODUCT_TYPE)
+    provider: str = Field(min_length=1, max_length=40)
+    title: str = Field(min_length=1, max_length=200)
+    url: Optional[str] = Field(default=None, max_length=2000)
+    summary: Optional[str] = Field(default=None, max_length=20000)
+    status: Optional[str] = Field(default=None, pattern=_WORK_PRODUCT_STATUS)
+    review_state: Optional[str] = Field(default=None, pattern=_WORK_PRODUCT_REVIEW_STATE)
+    is_primary: Optional[bool] = None
+    project_id: Optional[str] = None
+    external_id: Optional[str] = Field(default=None, max_length=200)
+    metadata: Optional[dict] = None
+
+
+class PatchWorkProductBody(_Strict):
+    """Body for ``PATCH /teams/issues/{id}/work-products/{wpid}``.
+
+    Narrowed to the board review DECISION only. The board UI makes exactly two
+    decisions — Approve / Request-changes — so ``review_state`` (alias
+    ``reviewState``) is REQUIRED and constrained to ``approved`` |
+    ``changes_requested``. The descriptive/mutable fields the UI never sets
+    (status / title / url / summary / isPrimary) are intentionally dropped:
+    this route can only record a review verdict, never rewrite a deliverable.
+    """
+
+    review_state: str = Field(pattern=r"^(approved|changes_requested)$")

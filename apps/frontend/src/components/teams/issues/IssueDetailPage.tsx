@@ -19,6 +19,7 @@ import { SubIssuesSection } from "./SubIssuesSection";
 import { IssueApprovalsSection } from "./IssueApprovalsSection";
 import { IssueRunsSection } from "./IssueRunsSection";
 import { IssueDocumentsSection } from "./IssueDocumentsSection";
+import { IssueWorkProductsSection } from "./IssueWorkProductsSection";
 import { IssueAttachmentsSection } from "./IssueAttachmentsSection";
 import { IssueParentBreadcrumb } from "./IssueParentBreadcrumb";
 import { useIssueDetail } from "./hooks/useIssueDetail";
@@ -341,6 +342,7 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
         <IssueApprovalsSection issueId={issueId} />
         <IssueRunsSection issueId={issueId} agents={agents} />
         <IssueDocumentsSection issueId={issueId} agents={agents} />
+        <IssueWorkProductsSection issueId={issueId} />
         <IssueAttachmentsSection issueId={issueId} />
         <div className="pt-4" style={{ borderTop: "1px solid var(--edge)" }}>
           <h2 className="section-label mb-3">

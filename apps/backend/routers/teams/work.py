@@ -265,13 +265,19 @@ async def get_routine(routine_id: str, ctx: TeamsContext = Depends(_ctx)):
 #
 # Trial-gate posture (preserving ``require_always_on_entitlement`` — see
 # patch_routine + create_routine_trigger above):
-#   - ENABLING a trigger (``enabled=true``) arms the schedule → gated, same as
-#     flipping a routine to ``status="active"``.
+#   - Any trigger edit that could INCREASE fireability is gated: enabling
+#     (``enabled=true``, arms the schedule like ``status="active"``), retiming
+#     (``cron_expression`` / ``timezone``), or loosening webhook auth
+#     (``signing_mode`` / ``replay_window_sec``). Gating only ``enabled=true``
+#     left a walk-around: a trial owner could retime an ALREADY-enabled schedule
+#     to fire far more often, or drop signing to ``none``, and increase
+#     autonomous/externally-triggered runs without ever setting ``enabled``.
 #   - RESTORING a revision can revert a routine to an active snapshot with
 #     enabled triggers → gated (a restore is an activation-adjacent lever).
-#   - Disabling/deleting a trigger and rotating a secret are NOT activation and
-#     stay open — refusing them would trap a trial owner with automation they
-#     can't turn off, matching the pause/rename/delete escape hatch on routines.
+#   - A PURE disable (``enabled=false``), a relabel, deleting a trigger, and
+#     rotating a secret do NOT increase fireability and stay open — refusing them
+#     would trap a trial owner with automation they can't turn off, matching the
+#     pause/rename/delete escape hatch on routines.
 
 
 @router.patch("/routines/{routine_id}/triggers/{trigger_id}")
@@ -283,17 +289,48 @@ async def patch_routine_trigger(
 ):
     """Edit a routine trigger (cron / timezone / label / enable / webhook signing).
 
-    Gated ONLY on ENABLING (``enabled=true``): arming a schedule is the same
-    autonomy lever as ``patch_routine(status="active")``. Disabling, retiming,
-    and relabeling stay open to trial owners (the escape hatch).
+    Gated on any edit that could INCREASE fireability — enabling the trigger
+    (``enabled=true``, the same autonomy lever as ``patch_routine(status="active")``),
+    retiming its schedule (``cron_expression`` / ``timezone``), or loosening its
+    webhook auth (``signing_mode`` / ``replay_window_sec``). Gating only
+    ``enabled=true`` was a hole: a trial owner with an ALREADY-enabled trigger
+    could PATCH a tighter cron or ``signing_mode="none"`` WITHOUT ``enabled`` and
+    drive more autonomous/externally-triggered runs around the gate. Only a pure
+    disable (``enabled=false``) or a relabel stays open — the escape hatch, which
+    can never grant autonomy.
     """
-    if body.enabled is True:
+    increases_fireability = (
+        body.enabled is True
+        or body.cron_expression is not None
+        or body.timezone is not None
+        or body.signing_mode is not None
+        or body.replay_window_sec is not None
+    )
+    if increases_fireability:
         await require_always_on_entitlement(ctx.owner_id)
-    return await _agents._admin().patch_routine_trigger(
+
+    # Nightly CEO loop opt-out (issue #1273): disabling the nightly routine's
+    # trigger stops its schedule just like pausing the routine, so persist the
+    # durable opt-out — else a later reprovision would silently re-arm the loop.
+    # The routine row survives a trigger edit, so identity stays resolvable and
+    # the flag is written AFTER the disable succeeds (unlike delete_routine,
+    # whose routine identity vanishes). Durable on this stop direction: a failed
+    # flag write PROPAGATES (the disable already took effect upstream; a retry
+    # only re-attempts the idempotent flag).
+    is_nightly = False
+    if body.enabled is False:
+        is_nightly = await _is_nightly_ceo_routine(ctx, routine_id)
+
+    result = await _agents._admin().patch_routine_trigger(
         trigger_id=trigger_id,
         body=body.model_dump(exclude_none=True, by_alias=True),
         session_cookie=ctx.session_cookie,
     )
+
+    if is_nightly:
+        await billing_repo.set_nightly_ceo_opted_out(ctx.owner_id, True)
+
+    return result
 
 
 @router.delete("/routines/{routine_id}/triggers/{trigger_id}")
@@ -305,11 +342,22 @@ async def delete_routine_trigger(
     """Delete a routine trigger. Idempotent — upstream 404 is swallowed.
 
     Ungated: removing a schedule can only REDUCE autonomy, never grant it.
+
+    Nightly CEO loop opt-out (issue #1273): deleting the nightly routine's
+    trigger stops its schedule just like deleting or pausing the routine, so
+    persist the durable ``nightly_ceo_opted_out`` flag — else a later reprovision
+    would silently re-arm the loop. The routine row survives a trigger delete, so
+    identity stays resolvable and the flag is written AFTER the delete succeeds
+    (durable / propagated on this stop direction).
     """
-    return await _agents._admin().delete_routine_trigger(
+    is_nightly = await _is_nightly_ceo_routine(ctx, routine_id)
+    result = await _agents._admin().delete_routine_trigger(
         trigger_id=trigger_id,
         session_cookie=ctx.session_cookie,
     )
+    if is_nightly:
+        await billing_repo.set_nightly_ceo_opted_out(ctx.owner_id, True)
+    return result
 
 
 @router.post("/routines/{routine_id}/triggers/{trigger_id}/rotate-secret")

@@ -800,6 +800,140 @@ def test_patch_routine_trigger_rejects_extra(client):
     assert r.status_code == 422
 
 
+# ---------------------------------------------------------------------------
+# P1 — any fireability-INCREASING trigger edit is gated, not just enabled=true.
+#
+# The old gate checked only ``enabled is True``. A trial owner with an
+# ALREADY-enabled trigger could PATCH WITHOUT ``enabled`` — retime the cron to
+# fire far more often, or set ``signing_mode="none"`` — and drive more
+# autonomous / externally-triggered runs straight around the gate. Retiming
+# (cron/timezone) and auth-loosening (signing_mode/replay_window) are now gated
+# too; only a pure disable / relabel stays open.
+# ---------------------------------------------------------------------------
+
+
+def test_trial_owner_cannot_retime_an_enabled_trigger_cron(client, admin, monkeypatch):
+    """Retiming the schedule of an already-enabled trigger (cron, no ``enabled``)
+    is fireability-increasing → gated for trial owners."""
+    _trial(monkeypatch)
+    r = client.patch(
+        "/api/v1/teams/routines/r1/triggers/tr_1",
+        json={"cron_expression": "*/5 * * * *"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 402
+    assert r.json()["detail"]["code"] == "routines_require_subscription"
+    admin.patch_routine_trigger.assert_not_awaited()
+
+
+def test_trial_owner_cannot_change_signing_mode(client, admin, monkeypatch):
+    """Loosening webhook auth (signing_mode="none") is fireability-increasing →
+    gated for trial owners even without ``enabled``."""
+    _trial(monkeypatch)
+    r = client.patch(
+        "/api/v1/teams/routines/r1/triggers/tr_1",
+        json={"signing_mode": "none"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 402
+    assert r.json()["detail"]["code"] == "routines_require_subscription"
+    admin.patch_routine_trigger.assert_not_awaited()
+
+
+def test_paid_owner_can_retime_an_enabled_trigger(client, admin):
+    """The paid owner the gate protects can still retime a schedule."""
+    r = client.patch(
+        "/api/v1/teams/routines/r1/triggers/tr_1",
+        json={"cron_expression": "*/5 * * * *", "timezone": "America/New_York"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200, r.text
+    admin.patch_routine_trigger.assert_awaited_once()
+
+
+def test_trial_owner_relabel_only_is_open(client, admin, monkeypatch):
+    """A pure relabel does not increase fireability → stays open (escape hatch)."""
+    _trial(monkeypatch)
+    r = client.patch(
+        "/api/v1/teams/routines/r1/triggers/tr_1",
+        json={"label": "renamed trigger"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200, r.text
+    admin.patch_routine_trigger.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Nightly CEO loop opt-out (issue #1273) — trigger stop paths.
+#
+# Stopping the nightly loop by DELETING or DISABLING its trigger must set the
+# same durable opt-out flag as pausing/deleting the routine, else a reprovision
+# re-arms it. Durable on the stop direction (written after the stop succeeds).
+# ---------------------------------------------------------------------------
+
+
+def test_delete_nightly_trigger_sets_opt_out(client, admin, monkeypatch):
+    """Deleting the nightly routine's trigger persists the durable opt-out."""
+    admin.get_routine = AsyncMock(return_value={"id": "r1", "title": "Nightly CEO progress"})
+    set_opt = AsyncMock()
+    monkeypatch.setattr("routers.teams.work.billing_repo.set_nightly_ceo_opted_out", set_opt)
+
+    r = client.delete(
+        "/api/v1/teams/routines/r1/triggers/tr_1",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    set_opt.assert_awaited_once_with("o1", True)
+    admin.delete_routine_trigger.assert_awaited_once()
+
+
+def test_disable_nightly_trigger_sets_opt_out(client, admin, monkeypatch):
+    """Disabling the nightly routine's trigger (enabled=false) persists opt-out."""
+    admin.get_routine = AsyncMock(return_value={"id": "r1", "title": "Nightly CEO progress"})
+    set_opt = AsyncMock()
+    monkeypatch.setattr("routers.teams.work.billing_repo.set_nightly_ceo_opted_out", set_opt)
+
+    r = client.patch(
+        "/api/v1/teams/routines/r1/triggers/tr_1",
+        json={"enabled": False},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    set_opt.assert_awaited_once_with("o1", True)
+    admin.patch_routine_trigger.assert_awaited_once()
+
+
+def test_disable_non_nightly_trigger_does_not_touch_opt_out(client, admin, monkeypatch):
+    """Disabling a trigger that is NOT the nightly routine's never writes opt-out."""
+    admin.get_routine = AsyncMock(return_value={"id": "r1", "title": "Some other routine"})
+    set_opt = AsyncMock()
+    monkeypatch.setattr("routers.teams.work.billing_repo.set_nightly_ceo_opted_out", set_opt)
+
+    r = client.patch(
+        "/api/v1/teams/routines/r1/triggers/tr_1",
+        json={"enabled": False},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    set_opt.assert_not_awaited()
+
+
+def test_enable_nightly_trigger_does_not_write_opt_out(client, admin, monkeypatch):
+    """Enabling a trigger is the arm direction, not a stop — it must NOT write the
+    opt-out flag (and the paid owner here is entitled, so the gate passes)."""
+    admin.get_routine = AsyncMock(return_value={"id": "r1", "title": "Nightly CEO progress"})
+    set_opt = AsyncMock()
+    monkeypatch.setattr("routers.teams.work.billing_repo.set_nightly_ceo_opted_out", set_opt)
+
+    r = client.patch(
+        "/api/v1/teams/routines/r1/triggers/tr_1",
+        json={"enabled": True},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200, r.text
+    set_opt.assert_not_awaited()
+
+
 def test_delete_routine_trigger_is_open_to_trial(client, admin, monkeypatch):
     """Deleting a trigger is ungated (escape hatch)."""
     _trial(monkeypatch)

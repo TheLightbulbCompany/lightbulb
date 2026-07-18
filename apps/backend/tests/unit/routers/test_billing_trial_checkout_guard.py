@@ -400,6 +400,7 @@ async def test_provider_switch_expires_old_session_and_mints_fresh(
     allow completing both) and mint a fresh one."""
     mock_repo.get_by_owner_id = AsyncMock(return_value=dict(_PENDING_ROW))
     mock_repo.set_provider_choice = AsyncMock(return_value=None)
+    mock_repo.release_checkout_slot = AsyncMock(return_value=None)
     mock_clerk.list_pending_invitations_for_user = AsyncMock(return_value=[])
     mock_sub_list.return_value = _sub_list([])
     mock_retrieve.return_value = _open_session()
@@ -413,6 +414,9 @@ async def test_provider_switch_expires_old_session_and_mints_fresh(
     assert resp.status_code == 200
     assert resp.json()["checkout_url"] == "https://checkout.stripe.com/fresh"
     mock_expire.assert_called_once_with("cs_pending")
+    # The dead session's still-live claim must be released, or the fresh
+    # mint 409s checkout_in_progress until the TTL lapses.
+    mock_repo.release_checkout_slot.assert_awaited_once()
     mock_create_checkout.assert_called_once()
 
 
@@ -459,6 +463,7 @@ async def test_expired_or_missing_pending_session_mints_fresh(
 
     mock_repo.get_by_owner_id = AsyncMock(return_value=dict(_PENDING_ROW))
     mock_repo.set_provider_choice = AsyncMock(return_value=None)
+    mock_repo.release_checkout_slot = AsyncMock(return_value=None)
     mock_clerk.list_pending_invitations_for_user = AsyncMock(return_value=[])
     mock_sub_list.return_value = _sub_list([])
     mock_retrieve.side_effect = stripe_mod.error.InvalidRequestError("gone", param=None)
@@ -523,6 +528,7 @@ async def test_unexpirable_but_expired_session_mints_fresh(
 
     mock_repo.get_by_owner_id = AsyncMock(return_value=dict(_PENDING_ROW))
     mock_repo.set_provider_choice = AsyncMock(return_value=None)
+    mock_repo.release_checkout_slot = AsyncMock(return_value=None)
     mock_clerk.list_pending_invitations_for_user = AsyncMock(return_value=[])
     mock_sub_list.return_value = _sub_list([])
     expired = _open_session()

@@ -30,6 +30,11 @@ def _checkout_slot_claim_granted():
             "release_checkout_slot",
             new=AsyncMock(),
         ),
+        patch.object(
+            billing_service.billing_repo,
+            "set_pending_checkout",
+            new=AsyncMock(),
+        ),
     ):
         yield
 
@@ -829,6 +834,39 @@ class TestCheckoutSlotClaim:
         ):
             await billing_service.create_flat_fee_checkout(owner_id="u_1")
         mock_build.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_marker_write_failure_fails_closed(self, monkeypatch):
+        """An unrecorded open session is invisible to every guard once the
+        claim TTL lapses, yet stays completable for ~31 minutes. On marker
+        failure the session (whose URL the user never saw) must be expired,
+        the slot released, and the request failed."""
+        monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat_test")
+        fake_session = MagicMock(url="https://checkout/x", id="cs_unrecorded")
+        with (
+            patch.object(billing_service.stripe.checkout.Session, "create", return_value=fake_session),
+            patch.object(billing_service.stripe.checkout.Session, "expire") as mock_expire,
+            patch.object(
+                billing_service.billing_repo,
+                "get_by_owner_id",
+                new=AsyncMock(return_value={"stripe_customer_id": "cus_test"}),
+            ),
+            patch.object(
+                billing_service.billing_repo,
+                "set_pending_checkout",
+                new=AsyncMock(side_effect=RuntimeError("ddb down")),
+            ),
+            patch.object(
+                billing_service.billing_repo,
+                "release_checkout_slot",
+                new=AsyncMock(),
+            ) as mock_release,
+            pytest.raises(BillingServiceError, match="checkout_unavailable"),
+        ):
+            await billing_service.create_flat_fee_checkout(owner_id="u_1")
+
+        mock_expire.assert_called_once_with("cs_unrecorded")
+        mock_release.assert_awaited_once_with("u_1")
 
     @pytest.mark.asyncio
     async def test_build_failure_releases_slot(self, monkeypatch):

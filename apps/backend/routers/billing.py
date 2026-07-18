@@ -541,6 +541,18 @@ async def create_trial_checkout(
             # Paid, webhook in flight. Do not mint a parallel session; the
             # row flips active momentarily and the normal guard takes over.
             raise HTTPException(status_code=409, detail="already_subscribed:checkout_completed")
+        # Falling through means the pending session is dead (switch-expired
+        # just above, naturally expired, or unretrievable) and we are about
+        # to mint a replacement. The claim from that session's create may
+        # still be inside its 90s TTL — release it, or the mint below 409s
+        # `checkout_in_progress` and a provider switch is stuck for up to
+        # 90s. Safe under concurrency: releasing only re-opens the claim,
+        # and create_flat_fee_checkout re-acquires it, so exactly one
+        # concurrent minter still wins.
+        try:
+            await billing_repo.release_checkout_slot(owner_id)
+        except Exception:
+            logger.exception("Failed to release checkout slot for owner %s", owner_id)
 
     # A trial_local row EXISTS but carries no stripe_customer_id — the trial row
     # is written with no stripe_* fields so a brand-new signup can chat before

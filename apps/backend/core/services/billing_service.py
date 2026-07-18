@@ -263,15 +263,29 @@ async def create_flat_fee_checkout(
         # doesn't wait out the claim TTL.
         await billing_repo.release_checkout_slot(owner_id)
         raise
-    # Best-effort: the marker is the single-open-session guard, not a
-    # correctness dependency — an unrecorded session just floats until its
-    # ~31-minute expiry and the live-subscription check still covers anything
-    # that completes. Failing the request here would strand the user with a
-    # session they were never shown.
+    # The marker is load-bearing: after the 90s claim TTL lapses, an
+    # UNRECORDED open session is invisible to every guard while staying
+    # completable until its ~31-minute expiry — a retry could mint a second
+    # session and both could be completed. Fail CLOSED: the user has not
+    # seen this session's URL yet, so expire it, free the slot, and let the
+    # retry mint fresh.
     try:
         await billing_repo.set_pending_checkout(owner_id, session_id=session.id, provider_choice=provider_choice)
     except Exception:
         logger.exception("Failed to record pending checkout session for owner %s", owner_id)
+        try:
+            with timing("stripe.api.latency", {"op": "checkout.session.expire"}):
+                stripe.checkout.Session.expire(session.id)
+        except Exception:
+            # Session floats until expires_at — bounded, and nobody holds
+            # its URL.
+            logger.exception("Failed to expire unrecorded checkout session %s", session.id)
+        try:
+            await billing_repo.release_checkout_slot(owner_id)
+        except Exception:
+            # Claim self-expires in 90s; the retry just waits it out.
+            logger.exception("Failed to release checkout slot for owner %s", owner_id)
+        raise BillingServiceError("checkout_unavailable")
     return session
 
 

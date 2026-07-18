@@ -264,6 +264,38 @@ def test_search_no_params_forwards_none(client, monkeypatch):
     admin.search_company.assert_awaited_once_with(session_cookie="cookie", company_id="co_abc", params=None)
 
 
+def test_search_rejects_unparseable_updated_after(client, monkeypatch):
+    """A malformed ``updatedAfter`` 4xxs upstream and the error handler leaks the
+    internal ``/api/companies/{id}/search`` path — so reject it locally with a
+    clean 422 and never proxy."""
+    admin = MagicMock()
+    admin.search_company = AsyncMock(return_value={})
+    _install_admin(monkeypatch, admin)
+
+    r = client.get(
+        "/api/v1/teams/search?updatedAfter=not-a-date",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 422
+    # Local error body — no company-scoped upstream path leaked.
+    assert "companies" not in r.text
+    admin.search_company.assert_not_awaited()
+
+
+def test_search_accepts_valid_updated_after(client, monkeypatch):
+    admin = MagicMock()
+    admin.search_company = AsyncMock(return_value={"results": []})
+    _install_admin(monkeypatch, admin)
+
+    r = client.get(
+        "/api/v1/teams/search?updatedAfter=2026-01-02T03:04:05Z",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    _, kwargs = admin.search_company.call_args
+    assert kwargs["params"]["updatedAfter"] == "2026-01-02T03:04:05Z"
+
+
 # --------------------------------------------------------------------------
 # GET /search/extract
 # --------------------------------------------------------------------------
@@ -331,3 +363,33 @@ def test_search_extract_rejects_bad_kind(client, monkeypatch):
     )
     assert r.status_code == 422
     admin.search_company_extract.assert_not_awaited()
+
+
+def test_search_extract_rejects_unparseable_updated_after(client, monkeypatch):
+    """Same leak as ``/search`` — a malformed ``updatedAfter`` must 422 locally
+    and never reach the upstream proxy."""
+    admin = MagicMock()
+    admin.search_company_extract = AsyncMock(return_value={})
+    _install_admin(monkeypatch, admin)
+
+    r = client.get(
+        "/api/v1/teams/search/extract?contains=hello&updatedAfter=not-a-date",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 422
+    assert "companies" not in r.text
+    admin.search_company_extract.assert_not_awaited()
+
+
+def test_search_extract_accepts_valid_updated_after(client, monkeypatch):
+    admin = MagicMock()
+    admin.search_company_extract = AsyncMock(return_value={"results": []})
+    _install_admin(monkeypatch, admin)
+
+    r = client.get(
+        "/api/v1/teams/search/extract?contains=hello&updatedAfter=2026-01-02T03:04:05Z",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    _, kwargs = admin.search_company_extract.call_args
+    assert kwargs["params"]["updatedAfter"] == "2026-01-02T03:04:05Z"

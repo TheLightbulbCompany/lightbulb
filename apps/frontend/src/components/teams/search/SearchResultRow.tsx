@@ -102,6 +102,14 @@ export function SearchResultRow({ result, agentsById }: SearchResultRowProps) {
 
   const titleHighlights = result.snippets.find((s) => s.field === "title")?.highlights;
   const bodySnippets = result.snippets.filter((s) => s.field !== "title").slice(0, 2);
+  // For issue rows `result.title` is the display string that already prefixes
+  // the identifier (e.g. "PAP-80 Design auth"), and that identifier is rendered
+  // separately above. The `title`-field highlight ranges, however, are measured
+  // upstream against the RAW issue title (`issue.title`) — so highlight that,
+  // not `result.title`, which would both duplicate the identifier AND shift the
+  // ranges onto the wrong characters. Non-issue rows carry no identifier prefix,
+  // so their `result.title` already matches the string the ranges were cut from.
+  const titleText = result.type === "issue" && issue ? issue.title : result.title;
 
   return (
     <Link
@@ -127,7 +135,7 @@ export function SearchResultRow({ result, agentsById }: SearchResultRowProps) {
             </span>
           ) : null}
           <HighlightedText
-            text={result.title}
+            text={titleText}
             highlights={titleHighlights}
             className="min-w-0 flex-1 text-sm font-medium leading-snug"
           />

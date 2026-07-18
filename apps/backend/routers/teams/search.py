@@ -24,6 +24,7 @@ object is returned verbatim (it is already an envelope:
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -56,6 +57,29 @@ _ASSIGNEE_AGENT_RE = r"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F
 # Duration filter (``24h`` / ``7d`` / ``4w`` / ``3m``), mirrors the upstream
 # ``UPDATED_WITHIN_RE``.
 _UPDATED_WITHIN_RE = r"^[1-9]\d{0,2}(h|d|w|m)$"
+
+
+def _validate_updated_after(value: Optional[str]) -> Optional[str]:
+    """Return ``value`` unchanged, or 422 unless it parses as ISO-8601.
+
+    Upstream casts ``updatedAfter`` with ``new Date(...)`` and its validator
+    4xxs on an unparseable value. The global ``PaperclipApiError`` handler
+    surfaces ``str(exc)`` for an upstream 4xx, which embeds the internal
+    ``/api/companies/{company_id}/search`` path — so a malformed value would
+    leak the company-scoped upstream path. Rejecting it at THIS boundary yields
+    a clean local 422 and never reaches the proxy, mirroring the other filter
+    checks in this file.
+    """
+    if value is None:
+        return None
+    try:
+        datetime.fromisoformat(value)
+    except ValueError:
+        raise HTTPException(
+            status_code=422,
+            detail="updatedAfter must be a valid ISO-8601 datetime",
+        )
+    return value
 
 
 def _validate_enum_list(
@@ -148,7 +172,7 @@ async def company_search(
     if updated_within is not None:
         upstream_params["updatedWithin"] = updated_within
     if updated_after is not None:
-        upstream_params["updatedAfter"] = updated_after
+        upstream_params["updatedAfter"] = _validate_updated_after(updated_after)
 
     return await _agents._admin().search_company(
         session_cookie=ctx.session_cookie,
@@ -203,7 +227,7 @@ async def company_search_extract(
     if updated_within is not None:
         upstream_params["updatedWithin"] = updated_within
     if updated_after is not None:
-        upstream_params["updatedAfter"] = updated_after
+        upstream_params["updatedAfter"] = _validate_updated_after(updated_after)
 
     return await _agents._admin().search_company_extract(
         session_cookie=ctx.session_cookie,

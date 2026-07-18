@@ -1524,19 +1524,22 @@ class PaperclipAdminClient:
         self,
         *,
         session_cookie: str,
+        company_id: str,
         issue_id: str,
-        params: Optional[dict[str, Any]] = None,
     ) -> list | dict:
         """List feedback traces for an issue (shared-with-Labs export records).
 
-        Maps to ``GET /api/issues/{id}/feedback-traces``. The BFF gates this on
-        the company's ``feedbackDataSharingEnabled`` consent flag BEFORE
-        calling — traces are not exposed when sharing is disabled.
+        Upstream exposes traces ONLY on the COMPANY-scoped route
+        ``GET /api/companies/{companyId}/feedback-traces`` with ``issueId`` as a
+        query filter — there is no ``/api/issues/{id}/feedback-traces`` route
+        (that path 404s). The BFF gates this on the company's
+        ``feedbackDataSharingEnabled`` consent flag BEFORE calling — traces are
+        not exposed when sharing is disabled.
         """
         return await self._get(
-            f"/api/issues/{issue_id}/feedback-traces",
+            f"/api/companies/{company_id}/feedback-traces",
             session_cookie=session_cookie,
-            params=params,
+            params={"issueId": issue_id},
         )
 
     # (The feedback-traces consent gate reads ``feedbackDataSharingEnabled``

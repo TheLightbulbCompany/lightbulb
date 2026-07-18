@@ -233,4 +233,10 @@ def test_feedback_traces_proxied_when_sharing_enabled(client, monkeypatch):
     assert r.status_code == 200
     assert r.json() == {"traces": [{"id": "t1", "vote": "up"}, {"id": "t2", "vote": "down"}]}
     admin.get_company.assert_awaited_once_with(company_id="co_abc", session_cookie="cookie")
-    admin.list_issue_feedback_traces.assert_awaited_once()
+    # Traces live on the COMPANY-scoped upstream route with issueId as a query
+    # filter — the handler must forward company_id (from ctx) + issue_id so the
+    # admin client hits /api/companies/{id}/feedback-traces?issueId=..., NOT the
+    # non-existent /api/issues/{id}/feedback-traces route.
+    admin.list_issue_feedback_traces.assert_awaited_once_with(
+        company_id="co_abc", issue_id="iss1", session_cookie="cookie"
+    )

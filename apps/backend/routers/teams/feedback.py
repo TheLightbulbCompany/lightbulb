@@ -96,8 +96,10 @@ async def list_feedback_traces(issue_id: str, ctx: TeamsContext = Depends(_ctx))
     The company's ``feedbackDataSharingEnabled`` flag is the consent gate: if
     sharing is disabled we return an empty ``{traces: []}`` WITHOUT calling
     upstream, so a disabled-sharing company never leaks trace payloads. When
-    sharing is enabled we proxy ``GET /api/issues/{id}/feedback-traces`` and
-    envelope the bare array.
+    sharing is enabled we proxy the COMPANY-scoped
+    ``GET /api/companies/{companyId}/feedback-traces`` (with ``issueId`` as a
+    query filter — there is no issue-scoped traces route upstream) and envelope
+    the bare array.
     """
     admin = _agents._admin()
     company = await admin.get_company(
@@ -109,6 +111,7 @@ async def list_feedback_traces(issue_id: str, ctx: TeamsContext = Depends(_ctx))
         return {"traces": []}
 
     rows = await admin.list_issue_feedback_traces(
+        company_id=ctx.company_id,
         issue_id=issue_id,
         session_cookie=ctx.session_cookie,
     )

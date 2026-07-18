@@ -184,7 +184,7 @@ async def company_search(
 @router.get("/search/extract")
 async def company_search_extract(
     ctx: TeamsContext = Depends(_ctx),
-    contains: str = Query(min_length=2, max_length=200),
+    contains: str = Query(max_length=200),
     kind: Optional[str] = Query(default=None, max_length=16),
     scope: Optional[str] = Query(default=None, max_length=32),
     limit: Optional[int] = Query(default=None, ge=1, le=200),
@@ -200,6 +200,17 @@ async def company_search_extract(
     (company from ``ctx``, IDOR-safe). ``updatedWithin`` and ``updatedAfter``
     are mutually exclusive upstream, so reject the combination locally.
     """
+    # Enforce the two-character minimum against the TRIMMED value. Upstream's
+    # extract validator trims ``contains`` before applying its own min-length
+    # check, so an untrimmed local floor (e.g. ``"  "`` or ``" a"``) would slip
+    # through here, 4xx upstream, and the global ``PaperclipApiError`` handler
+    # would surface ``str(exc)`` — leaking the internal company-scoped path.
+    if len(contains.strip()) < 2:
+        raise HTTPException(
+            status_code=422,
+            detail="contains must be at least 2 characters",
+        )
+
     if updated_within is not None and updated_after is not None:
         raise HTTPException(
             status_code=422,

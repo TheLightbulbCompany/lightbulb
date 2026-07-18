@@ -339,6 +339,57 @@ def test_search_extract_requires_min_length_contains(client, monkeypatch):
     admin.search_company_extract.assert_not_awaited()
 
 
+def test_search_extract_rejects_all_whitespace_contains(client, monkeypatch):
+    """``contains`` is length-checked AFTER trimming — an all-whitespace value
+    would pass a raw-length floor, 4xx upstream, and leak the company-scoped
+    path via the global error handler. Reject it locally, never proxy."""
+    admin = MagicMock()
+    admin.search_company_extract = AsyncMock(return_value={})
+    _install_admin(monkeypatch, admin)
+
+    # Two spaces: 2 chars raw, 0 after trim.
+    r = client.get(
+        "/api/v1/teams/search/extract?contains=%20%20",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 422
+    assert "companies" not in r.text
+    admin.search_company_extract.assert_not_awaited()
+
+
+def test_search_extract_rejects_single_char_after_trim(client, monkeypatch):
+    """A value that trims to a single char is below the min and must 422
+    locally without reaching the upstream proxy."""
+    admin = MagicMock()
+    admin.search_company_extract = AsyncMock(return_value={})
+    _install_admin(monkeypatch, admin)
+
+    # Space + single char: 2 chars raw, 1 after trim.
+    r = client.get(
+        "/api/v1/teams/search/extract?contains=%20a",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 422
+    assert "companies" not in r.text
+    admin.search_company_extract.assert_not_awaited()
+
+
+def test_search_extract_accepts_padded_contains_with_enough_chars(client, monkeypatch):
+    """Surrounding whitespace that still leaves >=2 chars after trim passes
+    through to the upstream proxy."""
+    admin = MagicMock()
+    admin.search_company_extract = AsyncMock(return_value={"results": []})
+    _install_admin(monkeypatch, admin)
+
+    # "  ab " -> 5 chars raw, 2 after trim.
+    r = client.get(
+        "/api/v1/teams/search/extract?contains=%20%20ab%20",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    admin.search_company_extract.assert_awaited_once()
+
+
 def test_search_extract_rejects_both_updated_filters(client, monkeypatch):
     admin = MagicMock()
     admin.search_company_extract = AsyncMock(return_value={})

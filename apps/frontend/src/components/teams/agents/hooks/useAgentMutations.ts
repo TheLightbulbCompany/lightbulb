@@ -54,6 +54,27 @@ export function useAgentMutations() {
     [post, revalidate],
   );
 
+  // Recovery ops for a wedged agent (A7). Neither dispatches an inference run
+  // (unlike wakeup/Retry), so they're safe to fire without a spend gate.
+  // `resetSession` clears the agent's runtime session state; `clearError`
+  // flips an error-status agent back to idle. Both revalidate so the status
+  // dot + detail view reflect the recovery immediately.
+  const resetSession = useCallback(
+    async (agentId: string) => {
+      await post(`/agents/${agentId}/reset-session`, {});
+      revalidate(agentId);
+    },
+    [post, revalidate],
+  );
+
+  const clearError = useCallback(
+    async (agentId: string) => {
+      await post(`/agents/${agentId}/clear-error`, {});
+      revalidate(agentId);
+    },
+    [post, revalidate],
+  );
+
   // Delete goes through the OpenClaw gateway (removes the container entry +
   // cascades to Paperclip via the websocket_chat interceptor). The Teams BFF
   // DELETE would only remove the Paperclip row, which a reprovision resurrects.
@@ -78,5 +99,5 @@ export function useAgentMutations() {
     [callRpc, mutate],
   );
 
-  return { setReportsTo, pause, resume, remove };
+  return { setReportsTo, pause, resume, resetSession, clearError, remove };
 }

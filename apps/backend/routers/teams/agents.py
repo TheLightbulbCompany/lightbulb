@@ -45,7 +45,12 @@ from core.services.user_provision import ensure_user_ready
 from . import deps as deps_mod
 from ._guards import require_trial_runway
 from .deps import TeamsContext, envelope_list
-from .schemas import CreateAgentBody, PatchAgentBody, WakeAgentBody
+from .schemas import (
+    CreateAgentBody,
+    PatchAgentBody,
+    ResetAgentSessionBody,
+    WakeAgentBody,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -685,6 +690,48 @@ async def resume_agent(agent_id: str, ctx: TeamsContext = Depends(_ctx)):
     """Resume a paused agent."""
     return _redact_agent(
         await _admin().resume_agent(
+            agent_id=agent_id,
+            session_cookie=ctx.session_cookie,
+        )
+    )
+
+
+@router.post("/agents/{agent_id}/reset-session")
+async def reset_agent_session(
+    agent_id: str,
+    body: ResetAgentSessionBody,
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """Reset a wedged agent's runtime session state — recovery lever.
+
+    Maps to upstream ``POST /api/agents/{id}/runtime-state/reset-session``. An
+    empty body resets all of the agent's sessions; an optional ``taskKey``
+    scopes it to one task. Unlike ``wakeup`` this does NOT dispatch an
+    inference run, so there's no trial-runway gate. Redact defensively — a
+    future upstream change that echoes adapterConfig must never leak the
+    service token to the browser.
+    """
+    return _redact_agent(
+        await _admin().reset_agent_session(
+            agent_id=agent_id,
+            body=body.model_dump(exclude_none=True, by_alias=True),
+            session_cookie=ctx.session_cookie,
+        )
+    )
+
+
+@router.post("/agents/{agent_id}/clear-error")
+async def clear_agent_error(agent_id: str, ctx: TeamsContext = Depends(_ctx)):
+    """Clear an agent's error status — recovery lever.
+
+    Maps to upstream ``POST /api/agents/{id}/clear-error``. Upstream flips an
+    ``error``-status agent back to ``idle`` (409 if it isn't in error). No run
+    is dispatched, so no trial-runway gate. Paperclip echoes the updated agent
+    record, which can include adapterConfig/adapterType (the OpenClaw service
+    token) — redact like the pause/resume handlers before returning.
+    """
+    return _redact_agent(
+        await _admin().clear_agent_error(
             agent_id=agent_id,
             session_cookie=ctx.session_cookie,
         )

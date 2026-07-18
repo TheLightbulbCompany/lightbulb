@@ -48,6 +48,18 @@ describe("useAgentMutations", () => {
     expect(post).toHaveBeenCalledWith("/agents/a1/resume", {});
   });
 
+  it("resetSession/clearError POST to the recovery routes and revalidate", async () => {
+    post.mockResolvedValue({});
+    const { result } = renderHook(() => useAgentMutations());
+    await act(async () => { await result.current.resetSession("a1"); });
+    expect(post).toHaveBeenCalledWith("/agents/a1/reset-session", {});
+    await act(async () => { await result.current.clearError("a1"); });
+    expect(post).toHaveBeenCalledWith("/agents/a1/clear-error", {});
+    // Both revalidate the list + detail keys so the status dot heals immediately.
+    expect(swrMutate).toHaveBeenCalledWith("/teams/agents");
+    expect(swrMutate).toHaveBeenCalledWith("/teams/agents/a1");
+  });
+
   it("remove deletes via gateway RPC and optimistically drops the agent without refetching", async () => {
     callRpc.mockResolvedValue({});
     const { result } = renderHook(() => useAgentMutations());

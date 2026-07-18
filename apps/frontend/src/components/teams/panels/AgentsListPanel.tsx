@@ -160,6 +160,7 @@ export function AgentsListPanel() {
 
       {creating && (
         <CreateAgentDialog
+          agents={agents ?? []}
           onClose={() => setCreating(false)}
           onCreated={() => {
             setCreating(false);
@@ -172,15 +173,21 @@ export function AgentsListPanel() {
 }
 
 function CreateAgentDialog({
+  agents,
   onClose,
   onCreated,
 }: {
+  /** Existing roster — the manager picker's candidates. A brand-new agent
+   *  has no descendants, so every existing agent is an eligible manager. */
+  agents: Agent[];
   onClose: () => void;
   onCreated: () => void;
 }) {
   const { post } = useTeamsApi();
   const [name, setName] = useState("");
   const [role, setRole] = useState("engineer");
+  const [title, setTitle] = useState("");
+  const [reportsTo, setReportsTo] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -193,7 +200,22 @@ function CreateAgentDialog({
       // server-side via core.services.paperclip_adapter_config and rejects any
       // smuggled fields with 422 (Pydantic extra="forbid"). Defense in depth:
       // the UI doesn't even render those inputs.
-      await post("/agents", { name, role });
+      //
+      // Rich hire (A7): title + reportsTo are already accepted by CreateAgentBody
+      // end-to-end. Include them ONLY when set — an empty title would write a
+      // blank field and an empty reportsTo means "top level" (omit, don't send "").
+      // Budget is deliberately NOT surfaced: per-agent budget is gated on a
+      // separate cost_events bridge, not the owner's provider path.
+      const body: {
+        name: string;
+        role: string;
+        title?: string;
+        reportsTo?: string;
+      } = { name, role };
+      const trimmedTitle = title.trim();
+      if (trimmedTitle) body.title = trimmedTitle;
+      if (reportsTo) body.reportsTo = reportsTo;
+      await post("/agents", body);
       onCreated();
     } catch (e) {
       setErr(String(e));
@@ -217,6 +239,15 @@ function CreateAgentDialog({
           />
         </label>
         <label className="block">
+          <span className="text-sm text-[var(--ink-soft)]">Title</span>
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="e.g. Senior backend engineer"
+            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
+          />
+        </label>
+        <label className="block">
           <span className="text-sm text-[var(--ink-soft)]">Role</span>
           <select
             value={role}
@@ -226,6 +257,22 @@ function CreateAgentDialog({
             <option value="engineer">Engineer</option>
             <option value="ceo">CEO</option>
             <option value="manager">Manager</option>
+          </select>
+        </label>
+        <label className="block">
+          <span className="text-sm text-[var(--ink-soft)]">Reports to</span>
+          <select
+            aria-label="Reports to"
+            value={reportsTo}
+            onChange={(e) => setReportsTo(e.target.value)}
+            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
+          >
+            <option value="">No manager (top level)</option>
+            {agents.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
+            ))}
           </select>
         </label>
         {err && (

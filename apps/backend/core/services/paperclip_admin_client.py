@@ -344,6 +344,37 @@ class PaperclipAdminClient:
             )
         return resp.json() if resp.content else {}
 
+    async def _put(
+        self,
+        path: str,
+        json: dict,
+        session_cookie: str,
+        idempotency_key: Optional[str] = None,
+    ) -> tuple[int, dict]:
+        """PUT verb helper. Returns ``(status_code, body)``.
+
+        Unlike the other verbs, the caller needs the upstream status code: the
+        document-upsert route answers ``201`` on create vs ``200`` on update,
+        and the BFF forwards that distinction to the client. So this returns
+        the code alongside the parsed body rather than the body alone.
+        """
+        resp = await self._send(
+            lambda: self._http.put(
+                path,
+                json=json,
+                headers=self._headers(session_cookie, idempotency_key=idempotency_key),
+            )
+        )
+        if resp.status_code >= 500:
+            _emit_upstream_error("5xx")
+        if resp.status_code >= 400:
+            raise PaperclipApiError(
+                f"PUT {path} -> {resp.status_code}",
+                status_code=resp.status_code,
+                body=resp.text,
+            )
+        return resp.status_code, (resp.json() if resp.content else {})
+
     # ------------------------------------------------------------------
     # Better Auth (per-user accounts)
     # ------------------------------------------------------------------
@@ -1207,6 +1238,167 @@ class PaperclipAdminClient:
         """
         return await self._get(
             f"/api/issues/{issue_id}/documents",
+            session_cookie=session_cookie,
+        )
+
+    # ------------------------------------------------------------------
+    # Plan-document review — upsert / revisions / restore / annotations.
+    #
+    # These map to the issue-document review surface upstream exposes
+    # (``paperclip/server/src/routes/issues.ts``): board edits create new
+    # revisions, historical revisions can be restored, and inline annotation
+    # THREADS (with comments + a resolve/reopen lifecycle) anchor to a text
+    # selection in a specific revision. Every call is issue-scoped; upstream
+    # asserts the session cookie's company owns the issue, so a cross-tenant
+    # issue id is rejected upstream — the BFF adds a boundary doc-key check on
+    # top (see ``routers/teams/issues.py``).
+    # ------------------------------------------------------------------
+
+    async def upsert_issue_document(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+        key: str,
+        body: dict,
+    ) -> tuple[int, dict]:
+        """Create or replace an issue document body, minting a new revision.
+
+        Maps to ``PUT /api/issues/{issueId}/documents/{key}`` (validated
+        upstream against ``upsertIssueDocumentSchema``). Returns
+        ``(status_code, document)`` — upstream answers 201 on create, 200 on
+        update — so the BFF can forward that distinction.
+        """
+        return await self._put(
+            f"/api/issues/{issue_id}/documents/{key}",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
+    async def list_issue_document_revisions(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+        key: str,
+    ) -> list | dict:
+        """List a document's revision history.
+
+        Maps to ``GET /api/issues/{issueId}/documents/{key}/revisions``.
+        Upstream returns a bare array of ``DocumentRevision`` rows (each with
+        the full ``body`` so the diff modal can compare any two client-side).
+        """
+        return await self._get(
+            f"/api/issues/{issue_id}/documents/{key}/revisions",
+            session_cookie=session_cookie,
+        )
+
+    async def restore_issue_document_revision(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+        key: str,
+        revision_id: str,
+    ) -> dict:
+        """Restore a historical revision as a new latest revision.
+
+        Maps to ``POST /api/issues/{issueId}/documents/{key}/revisions/
+        {revisionId}/restore`` (empty body upstream). Returns the updated
+        document.
+        """
+        return await self._post(
+            f"/api/issues/{issue_id}/documents/{key}/revisions/{revision_id}/restore",
+            json={},
+            session_cookie=session_cookie,
+        )
+
+    async def list_document_annotations(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+        key: str,
+        status: Optional[str] = None,
+        include_comments: bool = True,
+    ) -> list | dict:
+        """List annotation threads for a document.
+
+        Maps to ``GET /api/issues/{issueId}/documents/{key}/annotations``.
+        ``status`` filters open | resolved | all (upstream defaults to open);
+        ``include_comments`` hydrates each thread's comment list. Upstream
+        returns a bare array of ``DocumentAnnotationThreadWithComments``.
+        """
+        params: dict[str, Any] = {}
+        if status is not None:
+            params["status"] = status
+        if include_comments:
+            params["includeComments"] = "true"
+        return await self._get(
+            f"/api/issues/{issue_id}/documents/{key}/annotations",
+            session_cookie=session_cookie,
+            params=params or None,
+        )
+
+    async def create_document_annotation(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+        key: str,
+        body: dict,
+    ) -> dict:
+        """Create an annotation thread anchored to a text selection.
+
+        Maps to ``POST /api/issues/{issueId}/documents/{key}/annotations``
+        (validated upstream against ``createDocumentAnnotationThreadSchema``).
+        Returns the created thread (with its first comment).
+        """
+        return await self._post(
+            f"/api/issues/{issue_id}/documents/{key}/annotations",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
+    async def add_document_annotation_comment(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+        key: str,
+        thread_id: str,
+        body: dict,
+    ) -> dict:
+        """Append a reply comment to an annotation thread.
+
+        Maps to ``POST /api/issues/{issueId}/documents/{key}/annotations/
+        {threadId}/comments`` (validated upstream against
+        ``createDocumentAnnotationCommentSchema``).
+        """
+        return await self._post(
+            f"/api/issues/{issue_id}/documents/{key}/annotations/{thread_id}/comments",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
+    async def update_document_annotation_thread(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+        key: str,
+        thread_id: str,
+        body: dict,
+    ) -> dict:
+        """Update an annotation thread's status (resolve / reopen).
+
+        Maps to ``PATCH /api/issues/{issueId}/documents/{key}/annotations/
+        {threadId}`` (validated upstream against
+        ``updateDocumentAnnotationThreadSchema``).
+        """
+        return await self._patch(
+            f"/api/issues/{issue_id}/documents/{key}/annotations/{thread_id}",
+            json=body,
             session_cookie=session_cookie,
         )
 

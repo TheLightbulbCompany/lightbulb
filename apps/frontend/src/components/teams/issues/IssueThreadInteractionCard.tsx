@@ -1070,12 +1070,17 @@ function RequestConfirmationTargetChip({
   if (!target) return null;
 
   const href = getRequestConfirmationTargetHref({ issueId, target });
+  const isExternal = Boolean(href && /^https?:\/\//i.test(href));
+  // Same-issue document targets resolve to a bare `#document-<key>` anchor — an
+  // in-page link that scrolls to (and expands) the document row, which now
+  // renders `id="document-<key>"`. This is what fixes the previously dead chip.
+  const isInPageAnchor = Boolean(href && href.startsWith("#"));
   const className = cn(
     "inline-flex max-w-full items-center gap-1.5 rounded-sm border px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.16em]",
     tone === "default"
       ? "border-[var(--edge)] bg-transparent text-[var(--ink)]"
       : "border-[var(--edge)] bg-transparent text-[var(--mute)]",
-    href && /^https?:\/\//i.test(href)
+    (isExternal || isInPageAnchor)
       && "transition-colors hover:border-[var(--forest)] hover:bg-[var(--forest-tint)]",
   );
   const content = (
@@ -1085,11 +1090,19 @@ function RequestConfirmationTargetChip({
     </>
   );
 
-  // Only external https targets get a real link — in-issue document anchors
-  // (e.g. `/issues/…#document-plan`) have no Teams route, so render them bare.
-  if (href && /^https?:\/\//i.test(href)) {
+  // External https targets open in a new tab; same-issue document anchors are
+  // in-page links. Cross-issue document targets (a full `/issues/…` path with
+  // no Teams route) still render bare.
+  if (isExternal) {
     return (
-      <a href={href} target="_blank" rel="noreferrer" className={className}>
+      <a href={href!} target="_blank" rel="noreferrer" className={className}>
+        {content}
+      </a>
+    );
+  }
+  if (isInPageAnchor) {
+    return (
+      <a href={href!} className={className}>
         {content}
       </a>
     );

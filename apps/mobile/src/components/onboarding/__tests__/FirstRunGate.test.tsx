@@ -31,7 +31,7 @@ describe("FirstRunGate", () => {
     jest.useRealTimers();
   });
 
-  it("re-probes a null status (200, pre-signup) until trial_local lands, then shows the funnel", async () => {
+  it("blocks on the loading frame, re-probes a null status, then shows the funnel", async () => {
     jest.useFakeTimers();
     // /billing/account never 404s — a row-less signup gets 200 with a null
     // status while the first /container/status call mints the trial row.
@@ -44,13 +44,16 @@ describe("FirstRunGate", () => {
         <Text>APP</Text>
       </FirstRunGate>,
     );
-    expect(screen.getByText("APP")).toBeTruthy();
+    // Unresolved probe blocks the shell — no funnel bypass window.
+    expect(screen.queryByText("APP")).toBeNull();
+    expect(screen.getByText("Getting things ready…")).toBeTruthy();
 
     await act(async () => {
       await jest.advanceTimersByTimeAsync(5_000);
     });
     expect(mockGet).toHaveBeenCalledTimes(2);
     expect(screen.getByText("Let’s get started.")).toBeTruthy();
+    expect(screen.queryByText("APP")).toBeNull();
   });
 
   it("resolves a paid account permanently to the normal shell", async () => {
@@ -60,8 +63,19 @@ describe("FirstRunGate", () => {
         <Text>APP</Text>
       </FirstRunGate>,
     );
-    await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(1));
-    expect(screen.getByText("APP")).toBeTruthy();
+    await waitFor(() => expect(screen.getByText("APP")).toBeTruthy());
+    expect(mockGet).toHaveBeenCalledTimes(1);
     expect(screen.queryByText("Let’s get started.")).toBeNull();
+  });
+
+  it("fails open to the shell when the probe errors (offline launch)", async () => {
+    mockGet.mockRejectedValue(new Error("network down"));
+    await render(
+      <FirstRunGate>
+        <Text>APP</Text>
+      </FirstRunGate>,
+    );
+    await waitFor(() => expect(screen.getByText("APP")).toBeTruthy());
+    expect(mockGet).toHaveBeenCalledTimes(1);
   });
 });

@@ -189,7 +189,56 @@ def test_search_allows_assignee_sentinels(client, monkeypatch):
     assert r.status_code == 200
     _, kwargs = admin.search_company.call_args
     assert kwargs["params"]["assigneeAgentId"] == "null"
-    assert kwargs["params"]["assigneeUserId"] == "me"
+    # The ``me`` sentinel is resolved to the caller's real Paperclip user id
+    # (ctx.paperclip_user_id) — upstream compares this as a literal id.
+    assert kwargs["params"]["assigneeUserId"] == "pcu"
+
+
+def test_search_resolves_assignee_me_to_caller_paperclip_user_id(client, monkeypatch):
+    """``assigneeUserId=me`` forwards the caller's real id, not the sentinel."""
+    admin = MagicMock()
+    admin.search_company = AsyncMock(return_value={"results": []})
+    _install_admin(monkeypatch, admin)
+
+    r = client.get(
+        "/api/v1/teams/search?assigneeUserId=me",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    _, kwargs = admin.search_company.call_args
+    # Sentinel translated to ctx.paperclip_user_id ("pcu"), NOT the literal "me".
+    assert kwargs["params"]["assigneeUserId"] == "pcu"
+
+
+def test_search_case_insensitive_assignee_me_sentinel(client, monkeypatch):
+    """A mixed-case ``ME`` sentinel is still resolved to the caller id."""
+    admin = MagicMock()
+    admin.search_company = AsyncMock(return_value={"results": []})
+    _install_admin(monkeypatch, admin)
+
+    r = client.get(
+        "/api/v1/teams/search?assigneeUserId=Me",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    _, kwargs = admin.search_company.call_args
+    assert kwargs["params"]["assigneeUserId"] == "pcu"
+
+
+def test_search_real_assignee_user_id_passes_through(client, monkeypatch):
+    """A concrete user id is forwarded verbatim (only ``me`` is translated)."""
+    admin = MagicMock()
+    admin.search_company = AsyncMock(return_value={"results": []})
+    _install_admin(monkeypatch, admin)
+
+    uid = "11111111-2222-3333-4444-555555555555"
+    r = client.get(
+        f"/api/v1/teams/search?assigneeUserId={uid}",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    _, kwargs = admin.search_company.call_args
+    assert kwargs["params"]["assigneeUserId"] == uid
 
 
 def test_search_rejects_bad_limit(client, monkeypatch):

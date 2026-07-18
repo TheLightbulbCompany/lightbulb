@@ -134,7 +134,13 @@ async def company_search(
     if assignee_agent_id is not None:
         upstream_params["assigneeAgentId"] = assignee_agent_id
     if assignee_user_id is not None:
-        upstream_params["assigneeUserId"] = assignee_user_id
+        # The search parser emits the ``me`` sentinel for the "Assigned to me"
+        # filter. Upstream compares ``assigneeUserId`` as a LITERAL user id, so
+        # forwarding ``me`` matches nothing — resolve it to the caller's real
+        # Paperclip user id (server-derived, IDOR-safe) before forwarding.
+        upstream_params["assigneeUserId"] = (
+            ctx.paperclip_user_id if assignee_user_id.lower() == "me" else assignee_user_id
+        )
     if project_id is not None:
         upstream_params["projectId"] = project_id
     if label_id is not None:

@@ -202,6 +202,8 @@ async def replace_provider_block(
     utility_model: str | None = None,
     subagent_model: str | None = None,
     llm_task_model: str | None = None,
+    web_search_provider: str | None = None,
+    tool_search_mode: str | None = None,
 ) -> None:
     """Atomically swap the three openclaw.json subtrees that define the LLM
     provider: ``models.providers``, ``agents.defaults.model``, and
@@ -271,6 +273,13 @@ async def replace_provider_block(
     ``llm_task_model`` is forwarded to ``workflow_plugin_entries`` so the
     rebuilt ``plugins.entries['llm-task']`` carries the new provider's
     cheap-tier config (or drops back to enable-only when ``None``).
+
+    ``web_search_provider`` keeps ``tools.web.search.provider`` in sync:
+    provisioning pins ``parallel-free`` on embedded-runtime paths but OMITS
+    the key on chatgpt_oauth (a pinned managed provider suppresses
+    Codex-native hosted search). ``None`` deletes the pin so the swap
+    target's native search engages; a value (re)pins it. ``tools.web.fetch``
+    is never touched.
 
     Raises ``ConfigPatchError`` (via ``_locked_rmw``) if the owner has
     no ``openclaw.json`` on EFS yet. Callers should fall back to a full
@@ -357,6 +366,51 @@ async def replace_provider_block(
             subagents = defaults.get("subagents")
             if isinstance(subagents, dict):
                 subagents.pop("model", None)
+
+        # tools.web.search.provider is provider-derived (parallel-free on
+        # embedded runtimes, ABSENT on chatgpt_oauth so Codex-native hosted
+        # search engages) — re-pin or delete like the model overrides above.
+        # Only the search subtree is touched; fetch config survives.
+        tools = current.get("tools")
+        if web_search_provider is not None:
+            # Create the path when absent (parity with the heartbeat/subagents
+            # handling above) — a hand-edited or ancient config missing `tools`
+            # must still come out of the swap with a working web_search.
+            if not isinstance(tools, dict):
+                tools = {}
+                current["tools"] = tools
+            web = tools.get("web")
+            if not isinstance(web, dict):
+                web = {}
+                tools["web"] = web
+            search = web.get("search")
+            if not isinstance(search, dict):
+                search = {}
+                web["search"] = search
+            search["provider"] = web_search_provider
+        elif isinstance(tools, dict):
+            web = tools.get("web")
+            if isinstance(web, dict):
+                search = web.get("search")
+                if isinstance(search, dict):
+                    search.pop("provider", None)
+                    if not search:
+                        web.pop("search", None)
+
+        # tools.toolSearch is provision-time gated (embedded runtimes with
+        # merged MCP servers only; NEVER written for chatgpt_oauth) — the swap
+        # must mirror that: None deletes any stale key so a Codex-bound config
+        # matches a fresh provision (the Codex runtime ignores it today, but a
+        # swap back — or a runtime that stops ignoring it — would hide the
+        # entire catalog behind the bridge); a value (re)pins the mode.
+        tools = current.get("tools")
+        if tool_search_mode is not None:
+            if not isinstance(tools, dict):
+                tools = {}
+                current["tools"] = tools
+            tools["toolSearch"] = {"mode": tool_search_mode}
+        elif isinstance(tools, dict):
+            tools.pop("toolSearch", None)
 
         # Keep the CEO (Friday) per-agent model override in sync with the new
         # provider. The CEO is the agents.list entry with default: true. When

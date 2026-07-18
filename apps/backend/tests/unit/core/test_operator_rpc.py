@@ -168,6 +168,78 @@ class TestPerformSignedConnect:
             await operator_rpc.perform_signed_connect(ws, owner_id="test-user", token="t")
 
     @pytest.mark.asyncio
+    async def test_auth_shaped_rejection_raises_typed_error(self, mock_device_auth_deps):
+        """An error code containing AUTH (AUTH_FAILED / AUTH_RATE_LIMITED)
+        must surface as GatewayConnectAuthError so the pool can hold off
+        reconnects — the gateway locks a client scope out for 5 minutes after
+        10 failed auths in 60s, and a plain RuntimeError is indistinguishable
+        from a transient handshake failure."""
+        ws = AsyncMock()
+        ws.recv = AsyncMock(
+            side_effect=[
+                json.dumps({"event": "connect.challenge", "payload": {"nonce": "n"}}),
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error": {"message": "rate limited", "code": "AUTH_RATE_LIMITED", "retryAfterMs": 30000},
+                    }
+                ),
+            ]
+        )
+        with pytest.raises(operator_rpc.GatewayConnectAuthError, match="rate limited") as ei:
+            await operator_rpc.perform_signed_connect(ws, owner_id="test-user", token="t")
+        assert ei.value.code == "AUTH_RATE_LIMITED"
+        assert ei.value.retry_after_ms == 30000
+        # Still a RuntimeError so pre-existing broad handlers keep catching it.
+        assert isinstance(ei.value, RuntimeError)
+
+    @pytest.mark.asyncio
+    async def test_auth_error_retry_after_nested_under_data(self, mock_device_auth_deps):
+        ws = AsyncMock()
+        ws.recv = AsyncMock(
+            side_effect=[
+                json.dumps({"event": "connect.challenge", "payload": {"nonce": "n"}}),
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error": {"message": "bad token", "code": "AUTH_FAILED", "data": {"retryAfterMs": 1500}},
+                    }
+                ),
+            ]
+        )
+        with pytest.raises(operator_rpc.GatewayConnectAuthError) as ei:
+            await operator_rpc.perform_signed_connect(ws, owner_id="test-user", token="t")
+        assert ei.value.code == "AUTH_FAILED"
+        assert ei.value.retry_after_ms == 1500
+
+    @pytest.mark.asyncio
+    async def test_auth_error_without_retry_after(self, mock_device_auth_deps):
+        ws = AsyncMock()
+        ws.recv = AsyncMock(
+            side_effect=[
+                json.dumps({"event": "connect.challenge", "payload": {"nonce": "n"}}),
+                json.dumps({"ok": False, "error": {"message": "bad token", "code": "AUTH_FAILED"}}),
+            ]
+        )
+        with pytest.raises(operator_rpc.GatewayConnectAuthError) as ei:
+            await operator_rpc.perform_signed_connect(ws, owner_id="test-user", token="t")
+        assert ei.value.code == "AUTH_FAILED"
+        assert ei.value.retry_after_ms is None
+
+    @pytest.mark.asyncio
+    async def test_non_auth_rejection_stays_plain_runtime_error(self, mock_device_auth_deps):
+        ws = AsyncMock()
+        ws.recv = AsyncMock(
+            side_effect=[
+                json.dumps({"event": "connect.challenge", "payload": {"nonce": "n"}}),
+                json.dumps({"ok": False, "error": {"message": "unsupported", "code": "PROTOCOL_MISMATCH"}}),
+            ]
+        )
+        with pytest.raises(RuntimeError, match="Gateway connect failed: unsupported") as ei:
+            await operator_rpc.perform_signed_connect(ws, owner_id="test-user", token="t")
+        assert not isinstance(ei.value, operator_rpc.GatewayConnectAuthError)
+
+    @pytest.mark.asyncio
     async def test_raises_when_no_operator_seed(self):
         ws = AsyncMock()
         ws.recv = AsyncMock(return_value=json.dumps({"event": "connect.challenge", "payload": {"nonce": "n"}}))

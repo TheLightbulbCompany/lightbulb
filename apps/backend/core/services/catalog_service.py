@@ -34,11 +34,14 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import io
 import logging
+import tarfile
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
+from core.services import agent_export
 from core.services.catalog_slice import strip_removed_agent_entry_keys
 from core.services.credentials.mcp_server import reconcile_integrations
 
@@ -143,6 +146,63 @@ def warn_rows(manifest: dict) -> list[dict]:
         for r in (manifest or {}).get("requirements", []) or []
         if isinstance(r, dict) and r.get("disposition") in ("byo", "unavailable")
     ]
+
+
+# Seller-authored files that become code or an autonomous run the moment
+# they land on the buyer's EFS: OpenClaw discovers a workspace
+# ``openclaw.plugin.json`` (or a package.json carrying an
+# ``openclaw.extensions`` key) as a loadable in-process plugin, and a
+# workspace ``BOOT.md`` triggers an LLM run on every gateway restart
+# (internal hooks are enabled fleet-wide). The export side no longer ships
+# these, but published artifacts are immutable — so the deploy strips them
+# too. Stripped and logged, never hard-failed: old listings may carry them.
+_BLOCKED_TAR_BASENAMES = frozenset({"BOOT.md", "openclaw.plugin.json"})
+
+
+def _strip_plugin_boot_vectors(tar_bytes: bytes, *, slug: str) -> bytes:
+    """Drop workspace-plugin / boot-run members from an artifact tarball.
+
+    Basename match at any depth. Bytes that don't parse as a tar.gz are
+    returned unchanged — ``untar_to_directory`` is the parser of record and
+    surfaces the real error on the extract path. When nothing is stripped the
+    ORIGINAL bytes are returned, preserving the artifact's deterministic byte
+    identity.
+    """
+    try:
+        src = tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:gz")
+    except (tarfile.TarError, OSError, EOFError):
+        return tar_bytes
+
+    stripped: list[str] = []
+    out_buf = io.BytesIO()
+    with src, tarfile.open(fileobj=out_buf, mode="w:gz") as out:
+        for member in src.getmembers():
+            basename = member.name.rsplit("/", 1)[-1]
+            if basename in _BLOCKED_TAR_BASENAMES:
+                stripped.append(member.name)
+                continue
+            data = src.extractfile(member) if member.isfile() else None
+            if basename == "package.json" and data is not None:
+                raw = data.read()
+                if agent_export.package_json_declares_openclaw_extensions(raw):
+                    stripped.append(member.name)
+                    continue
+                out.addfile(member, io.BytesIO(raw))
+                continue
+            if data is not None:
+                out.addfile(member, data)
+            else:
+                out.addfile(member)
+
+    if not stripped:
+        return tar_bytes
+    for name in stripped:
+        logger.warning(
+            "deploy: stripped untrusted artifact member %r for listing %s",
+            name,
+            slug,
+        )
+    return out_buf.getvalue()
 
 
 def _substitute_agent_dir_sentinel(mcp_patch: dict | None, new_agent_id: str) -> dict | None:
@@ -306,7 +366,7 @@ class CatalogService:
         self._workspace.extract_tarball_to_workspace(
             user_id=owner_id,
             agent_id=new_agent_id,
-            tar_bytes=tar_bytes,
+            tar_bytes=_strip_plugin_boot_vectors(tar_bytes, slug=slug),
         )
 
         slice_ = slice_ or {}
@@ -320,6 +380,28 @@ class CatalogService:
             agent_entry = strip_removed_agent_entry_keys(slice_.get("agent") or {})
             agent_entry["id"] = new_agent_id
             agent_entry["workspace"] = f".openclaw/workspaces/{new_agent_id}"
+
+            # Per-agent containment: marketplace agents carry third-party-
+            # authored instructions. Without allowAgents pinned to the agent's
+            # own id, a deployed agent can sessions_spawn under ANY sibling id
+            # — including the premium-pinned CEO — and the ``gateway`` tool
+            # allows limited config self-modification. Deny, never a narrowing
+            # allow: an explicit allow-list that resolves to zero callable
+            # tools kills runs. These can't ride the pair RPC (agents.update's
+            # strict schema only accepts agentId/name/workspace/model/emoji/
+            # avatar), so they land via the on-disk agents.list merge below.
+            # Seller-authored values are clamped, not trusted: allowAgents is
+            # overwritten, deny entries are unioned with ours.
+            subagents = agent_entry.get("subagents")
+            if not isinstance(subagents, dict):
+                subagents = {}
+            agent_entry["subagents"] = {**subagents, "allowAgents": [new_agent_id]}
+            tools = agent_entry.get("tools")
+            if not isinstance(tools, dict):
+                tools = {}
+            deny = [t for t in tools.get("deny") or [] if isinstance(t, str)]
+            deny.extend(t for t in ("gateway", "sessions_send") if t not in deny)
+            agent_entry["tools"] = {**tools, "deny": deny}
 
             # OpenClaw's ``agents.update`` AJV schema is strict
             # (additionalProperties: false) and only accepts

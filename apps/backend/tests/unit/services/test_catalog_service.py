@@ -14,6 +14,9 @@ import os
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
+import io  # noqa: E402
+import json  # noqa: E402
+import tarfile  # noqa: E402
 from decimal import Decimal  # noqa: E402
 from unittest.mock import AsyncMock, MagicMock  # noqa: E402
 
@@ -292,6 +295,155 @@ async def test_deploy_legacy_slice_with_no_agent_skips_pair_and_aux():
     # Sidecar is written either way so the buyer can still see it in the
     # installed-templates list.
     ws.write_template_sidecar.assert_called_once()
+
+
+def _make_tar_gz(files: dict[str, bytes]) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        for name, data in files.items():
+            info = tarfile.TarInfo(name=name)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def _tar_names(tar_bytes: bytes) -> list[str]:
+    with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:gz") as tf:
+        return [m.name for m in tf.getmembers()]
+
+
+def _extracted_tar_bytes(workspace) -> bytes:
+    return workspace.extract_tarball_to_workspace.call_args.kwargs["tar_bytes"]
+
+
+async def _deploy_minimal(svc, tar_bytes: bytes) -> dict:
+    return await svc.deploy_from_artifact(
+        owner_id="user_buyer",
+        slug="demo",
+        manifest={"name": "Demo", "version": 1},
+        slice_={},
+        tar_bytes=tar_bytes,
+        container_ip="10.0.0.1",
+        container_token="tok",
+        new_agent_id="agent_abc",
+    )
+
+
+@pytest.mark.asyncio
+async def test_deploy_strips_boot_and_plugin_manifest_members():
+    """Already-published artifacts predate the export-side filter, so the
+    buyer-side deploy must ALSO strip BOOT.md (autonomous LLM run on every
+    gateway restart) and openclaw.plugin.json (loads workspace code
+    in-process) — at any depth — without failing the deploy.
+    """
+    svc, ws, _aux, _pair, _gw = _make_service()
+    tar = _make_tar_gz(
+        {
+            "./README.md": b"# hi",
+            "./BOOT.md": b"do things on boot",
+            "./openclaw.plugin.json": b"{}",
+            "./nested/BOOT.md": b"nested boot",
+            "./nested/openclaw.plugin.json": b"{}",
+        }
+    )
+    await _deploy_minimal(svc, tar)
+    names = _tar_names(_extracted_tar_bytes(ws))
+    assert "./README.md" in names
+    assert not any(n.rsplit("/", 1)[-1] == "BOOT.md" for n in names), names
+    assert not any(n.rsplit("/", 1)[-1] == "openclaw.plugin.json" for n in names), names
+
+
+@pytest.mark.asyncio
+async def test_deploy_strips_package_json_only_when_it_declares_extensions():
+    """package.json is a legitimate workspace file UNLESS it carries an
+    ``openclaw.extensions`` key (workspace-plugin discovery). Malformed JSON
+    is stripped too — fail-closed, since we can't prove it's inert."""
+    svc, ws, _aux, _pair, _gw = _make_service()
+    tar = _make_tar_gz(
+        {
+            "./package.json": json.dumps({"name": "benign", "version": "1.0.0"}).encode(),
+            "./evil/package.json": json.dumps({"openclaw": {"extensions": ["./dist/index.js"]}}).encode(),
+            "./dotted/package.json": json.dumps({"openclaw.extensions": ["./x.js"]}).encode(),
+            "./broken/package.json": b"{not json",
+        }
+    )
+    await _deploy_minimal(svc, tar)
+    names = _tar_names(_extracted_tar_bytes(ws))
+    assert "./package.json" in names
+    assert "./evil/package.json" not in names, names
+    assert "./dotted/package.json" not in names, names
+    assert "./broken/package.json" not in names, names
+
+
+@pytest.mark.asyncio
+async def test_deploy_clean_tarball_passes_through_unchanged():
+    """No banned members → the exact original bytes reach the workspace
+    (no re-encode; preserves the artifact's deterministic byte identity)."""
+    svc, ws, _aux, _pair, _gw = _make_service()
+    tar = _make_tar_gz({"./README.md": b"# hi", "./skills/foo.md": b"skill"})
+    await _deploy_minimal(svc, tar)
+    assert _extracted_tar_bytes(ws) == tar
+
+
+@pytest.mark.asyncio
+async def test_deploy_unparseable_tar_bytes_pass_through():
+    """The strip filter is defense-in-depth, not a validity gate — bytes the
+    stdlib can't parse go through unchanged so untar_to_directory stays the
+    parser of record (and its error surfaces, not ours)."""
+    svc, ws, _aux, _pair, _gw = _make_service()
+    await _deploy_minimal(svc, b"<gz>")
+    assert _extracted_tar_bytes(ws) == b"<gz>"
+
+
+@pytest.mark.asyncio
+async def test_deploy_pins_containment_on_agent_entry():
+    """Marketplace agents carry third-party-authored instructions; the
+    on-disk agents.list entry must pin subagents.allowAgents to the agent's
+    own id (else it can sessions_spawn under ANY sibling id, including the
+    premium-pinned CEO) and deny the gateway + sessions_send tools."""
+    svc, _ws, apply_aux, _pair, _gw = _make_service()
+    await svc.deploy_from_artifact(
+        owner_id="user_buyer",
+        slug="demo",
+        manifest={"name": "Demo", "version": 1},
+        slice_=_slice_with_agent(),
+        tar_bytes=b"<gz>",
+        container_ip="10.0.0.1",
+        container_token="tok",
+        new_agent_id="agent_new",
+    )
+    entry = apply_aux.await_args.kwargs["agent_entry"]
+    assert entry["subagents"] == {"allowAgents": ["agent_new"]}
+    assert set(entry["tools"]["deny"]) >= {"gateway", "sessions_send"}
+    # Deny, never a narrowing allow — an allow-list resolving to zero
+    # callable tools kills runs.
+    assert "allow" not in entry["tools"]
+
+
+@pytest.mark.asyncio
+async def test_deploy_containment_overrides_seller_authored_values():
+    """A seller-authored subagents.allowAgents (e.g. ["*"]) must be
+    overwritten, and seller deny entries survive alongside ours; unrelated
+    sibling keys on both blocks are preserved."""
+    svc, _ws, apply_aux, _pair, _gw = _make_service()
+    slice_ = _slice_with_agent()
+    slice_["agent"]["subagents"] = {"allowAgents": ["*"], "maxConcurrent": 3}
+    slice_["agent"]["tools"] = {"deny": ["browser"], "profile": "default"}
+    await svc.deploy_from_artifact(
+        owner_id="user_buyer",
+        slug="demo",
+        manifest={"name": "Demo", "version": 1},
+        slice_=slice_,
+        tar_bytes=b"<gz>",
+        container_ip="10.0.0.1",
+        container_token="tok",
+        new_agent_id="agent_new",
+    )
+    entry = apply_aux.await_args.kwargs["agent_entry"]
+    assert entry["subagents"]["allowAgents"] == ["agent_new"]
+    assert entry["subagents"]["maxConcurrent"] == 3
+    assert set(entry["tools"]["deny"]) >= {"browser", "gateway", "sessions_send"}
+    assert entry["tools"]["profile"] == "default"
 
 
 @pytest.mark.asyncio

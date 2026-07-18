@@ -19,7 +19,7 @@ from typing import Any, Dict, Optional, Set
 from websockets import connect as ws_connect
 
 from core.gateway.frame_sender import FrameSender
-from core.gateway.operator_rpc import GATEWAY_PORT, perform_signed_connect
+from core.gateway.operator_rpc import GATEWAY_PORT, GatewayConnectAuthError, perform_signed_connect
 from core.observability.logging import bind_log_context
 from core.observability.metrics import put_metric, gauge
 from core.repositories import channel_link_repo
@@ -80,6 +80,16 @@ _PING_TIMEOUT = 300
 # triggered a fresh ws_connect upgrade. A 10s OpenClaw wedge therefore
 # burned ~5 simultaneous handshake attempts.
 _RECONNECT_FLOOR_S = 5
+
+# Auth-failure backoff, per user, alongside the reconnect floor. The gateway
+# locks a client IP+credential scope out for 5 minutes after 10 failed auth
+# attempts in 60s (AUTH_RATE_LIMITED); the 5s floor alone allows 12
+# attempts/min, so retrying a stale token at floor cadence trips the lockout
+# and bricks the owner's connectivity. Exponential per-user hold
+# (base × 2^(n-1), capped), with the gateway's own retryAfterMs dominant
+# when longer. Cleared by the next successful connect.
+_AUTH_BACKOFF_BASE_S = 60
+_AUTH_BACKOFF_CAP_S = 300
 
 # How stale `last_event_at` on an active run must be before the parked
 # connection counts as "agent appears stuck" for observability. Set by spec
@@ -2042,6 +2052,12 @@ class GatewayConnectionPool:
         # success / failure) so a single bad container can't burn the
         # backend's open-handshake budget at 1s cadence.
         self._last_reconnect_at: Dict[str, float] = {}
+        # Per-user auth-failure backoff (see `_AUTH_BACKOFF_BASE_S`).
+        # `_auth_backoff_until` is a monotonic deadline; `_auth_failures`
+        # counts consecutive auth-shaped connect failures driving the
+        # exponential hold. A successful connect clears both.
+        self._auth_backoff_until: Dict[str, float] = {}
+        self._auth_failures: Dict[str, int] = {}
 
     def is_user_connected(self, user_id: str) -> bool:
         """Whether the pool has a live, healthy gateway connection for this user.
@@ -2338,14 +2354,26 @@ class GatewayConnectionPool:
                 )
                 conn.ip = ip
             if conn is not None and conn._parked:
+                self._respect_auth_backoff(user_id)
                 self._respect_reconnect_floor(user_id)
-                await conn.reopen()
+                try:
+                    await conn.reopen()
+                except GatewayConnectAuthError as exc:
+                    self._record_auth_failure(user_id, exc.retry_after_ms)
+                    raise
+                self._clear_auth_backoff(user_id)
             elif conn is not None and not conn.is_connected:
                 self._respect_reconnect_floor(user_id)
                 await conn.close()
                 conn = None
             if conn is None:
-                conn = await self._create_connection(user_id, ip, token)
+                self._respect_auth_backoff(user_id)
+                try:
+                    conn = await self._create_connection(user_id, ip, token)
+                except GatewayConnectAuthError as exc:
+                    self._record_auth_failure(user_id, exc.retry_after_ms)
+                    raise
+                self._clear_auth_backoff(user_id)
             return conn
 
     def _respect_reconnect_floor(self, user_id: str) -> None:
@@ -2366,6 +2394,48 @@ class GatewayConnectionPool:
                 f"last attempt {now - last:.1f}s ago, floor {_RECONNECT_FLOOR_S}s"
             )
         self._last_reconnect_at[user_id] = now
+
+    def _respect_auth_backoff(self, user_id: str) -> None:
+        """Raise if *user_id* is inside an auth-failure hold.
+
+        Mirrors `_respect_reconnect_floor`, but for auth-shaped connect
+        rejections: retrying those with the same credentials cannot succeed
+        and each attempt counts toward the gateway's 10-in-60s lockout, so
+        the hold is minutes, not seconds.
+        """
+        until = self._auth_backoff_until.get(user_id, 0.0)
+        if not until:
+            return
+        remaining = until - time.monotonic()
+        if remaining > 0:
+            put_metric("gateway.connection", dimensions={"event": "auth_backoff"})
+            raise RuntimeError(
+                f"Gateway reconnect suppressed for user {user_id} — auth backoff active for another {remaining:.1f}s"
+            )
+
+    def _record_auth_failure(self, user_id: str, retry_after_ms: int | None) -> None:
+        """Arm/extend the auth hold after a ``GatewayConnectAuthError``.
+
+        Exponential in consecutive failures (`_AUTH_BACKOFF_BASE_S` doubling,
+        capped at `_AUTH_BACKOFF_CAP_S`); the gateway's own retryAfterMs (the
+        remaining lockout window on AUTH_RATE_LIMITED) dominates when longer.
+        """
+        n = self._auth_failures.get(user_id, 0) + 1
+        self._auth_failures[user_id] = n
+        hold_s = float(min(_AUTH_BACKOFF_BASE_S * (2 ** (n - 1)), _AUTH_BACKOFF_CAP_S))
+        if retry_after_ms:
+            hold_s = max(retry_after_ms / 1000.0, hold_s)
+        self._auth_backoff_until[user_id] = time.monotonic() + hold_s
+        logger.warning(
+            "Gateway auth failure for user %s (consecutive=%d) — holding reconnects %.0fs",
+            user_id,
+            n,
+            hold_s,
+        )
+
+    def _clear_auth_backoff(self, user_id: str) -> None:
+        self._auth_backoff_until.pop(user_id, None)
+        self._auth_failures.pop(user_id, None)
 
     def add_frontend_connection(self, user_id: str, connection_id: str) -> None:
         """Register a frontend WS connection so its owner's recipient cache is
@@ -2646,6 +2716,12 @@ class GatewayConnectionPool:
         # signed out and back in on the same backend task) doesn't inherit
         # a stale throttle from the previous session.
         self._last_reconnect_at.pop(user_id, None)
+        # Same rationale as the reconnect-floor pop above: a torn-down user
+        # must not leave auth-backoff state behind for a future incarnation
+        # (a reprovision mints a fresh token, so a stale hold would suppress
+        # its first legitimate connect).
+        self._auth_backoff_until.pop(user_id, None)
+        self._auth_failures.pop(user_id, None)
 
     async def broadcast_to_member(self, owner_id: str, member_user_id: str, message: dict) -> None:
         """Send a message to the owner's chat tabs, demuxed to one org member.

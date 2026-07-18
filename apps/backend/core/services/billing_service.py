@@ -1113,6 +1113,10 @@ async def _hot_swap_provider(
     heartbeat_model = heartbeat_model_ref(new_provider, None)
     utility_model = heartbeat_model
     subagent_model = default_model["primary"]
+    # chatgpt_oauth must run UNPINNED web search (a managed-provider pin
+    # suppresses Codex-native hosted search); embedded runtimes re-pin the
+    # keyless default. Mirrors build_openclaw_config_dict.
+    web_search_provider = None if new_provider == "chatgpt_oauth" else "parallel-free"
 
     try:
         await replace_provider_block(
@@ -1126,6 +1130,10 @@ async def _hot_swap_provider(
             utility_model=utility_model,
             subagent_model=subagent_model,
             llm_task_model=cheap_model,
+            web_search_provider=web_search_provider,
+            # Provision-time never writes toolSearch for chatgpt_oauth (the
+            # hot path's only target) — delete any stale embedded-runtime key.
+            tool_search_mode=None,
         )
     except ConfigPatchError as e:
         logger.info(

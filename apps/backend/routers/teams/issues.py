@@ -722,3 +722,230 @@ async def delete_issue_attachment(
         session_cookie=ctx.session_cookie,
         attachment_id=attachment_id,
     )
+
+
+# ----------------------------------------------------------------------
+# Plan-document review — upsert / revisions / restore / annotation threads.
+#
+# These enrich the issue-detail Documents section into a review surface:
+# board edits mint new revisions, historical revisions can be restored, and
+# inline annotation THREADS (with comments + a resolve/reopen lifecycle)
+# anchor to a text selection in a specific revision.
+#
+# SECURITY — every route runs ``TeamsContext`` auth (``_ctx``) and forwards the
+# session cookie; upstream ``assertIssueReadAllowed`` / mutation guards scope
+# the issue to the cookie's company, so a cross-tenant issue id is rejected
+# upstream (IDOR-safe). On TOP of that, the document ``key`` is a Postgres
+# path segment upstream casts / matches on, so a malformed key is validated
+# HERE (local 400) before any upstream call — mirroring the ``project`` /
+# ``assignee`` uuid guards above. The mutating bodies are ``extra="forbid"``
+# ``_Strict`` schemas, so a smuggled field 422s at the FastAPI boundary.
+# ----------------------------------------------------------------------
+
+import re as _re  # noqa: E402 — imported locally to keep this an additive block.
+
+from fastapi.responses import JSONResponse  # noqa: E402
+
+from .schemas import (  # noqa: E402
+    AddDocumentAnnotationCommentBody,
+    CreateDocumentAnnotationThreadBody,
+    UpdateDocumentAnnotationThreadBody,
+    UpsertDocumentBody,
+)
+
+# Upstream ``issueDocumentKeySchema``: lowercase letters/digits then
+# ``[a-z0-9_-]``, max 64. Validate the shape at the boundary so a bad key is a
+# local 400 (never forwarded for upstream to cast-error + leak the company path).
+_DOCUMENT_KEY_RE = _re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+# Thread ids are Postgres uuids upstream — guard them like ``project``.
+_THREAD_ID_RE = _re.compile(_UUID_RE)
+
+
+def _norm_document_key(key: str) -> str:
+    """Normalize + validate a document key or raise a local 400.
+
+    Upstream lowercases + trims the key before matching, so we do the same and
+    then validate against ``issueDocumentKeySchema``. Returning the normalized
+    value keeps the forwarded path byte-identical to what upstream expects.
+    """
+    normalized = (key or "").strip().lower()
+    if not _DOCUMENT_KEY_RE.match(normalized):
+        raise HTTPException(status_code=400, detail="Invalid document key")
+    return normalized
+
+
+def _require_thread_id(thread_id: str) -> str:
+    """Validate an annotation thread id (uuid) or raise a local 400."""
+    if not _THREAD_ID_RE.match(thread_id or ""):
+        raise HTTPException(status_code=400, detail="Invalid thread id")
+    return thread_id
+
+
+@router.put("/issues/{issue_id}/documents/{key}")
+async def upsert_issue_document(
+    issue_id: str,
+    key: str,
+    body: UpsertDocumentBody,
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """Create or replace an issue document body (board edit → new revision).
+
+    Maps to upstream ``PUT /api/issues/{id}/documents/{key}``. Upstream answers
+    201 on create vs 200 on update; that status is forwarded verbatim so the UI
+    can tell "created" from "updated". ``exclude_none`` drops unset optionals so
+    upstream applies its own defaults; ``by_alias`` emits the camelCase wire
+    shape (``changeSummary`` / ``baseRevisionId``).
+    """
+    doc_key = _norm_document_key(key)
+    status_code, document = await _agents._admin().upsert_issue_document(
+        session_cookie=ctx.session_cookie,
+        issue_id=issue_id,
+        key=doc_key,
+        body=body.model_dump(exclude_none=True, by_alias=True),
+    )
+    return JSONResponse(status_code=status_code, content=document)
+
+
+@router.get("/issues/{issue_id}/documents/{key}/revisions")
+async def list_issue_document_revisions(
+    issue_id: str,
+    key: str,
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """List a document's revision history (the rev dropdown + diff modal).
+
+    Maps to upstream ``GET /api/issues/{id}/documents/{key}/revisions``.
+    Upstream returns a bare array of ``DocumentRevision`` rows, so it is
+    wrapped ``{revisions: [...]}`` like the sibling list surfaces.
+    """
+    doc_key = _norm_document_key(key)
+    rows = await _agents._admin().list_issue_document_revisions(
+        session_cookie=ctx.session_cookie,
+        issue_id=issue_id,
+        key=doc_key,
+    )
+    return envelope_list(rows, "revisions")
+
+
+@router.post("/issues/{issue_id}/documents/{key}/revisions/{revision_id}/restore")
+async def restore_issue_document_revision(
+    issue_id: str,
+    key: str,
+    revision_id: str,
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """Restore a historical revision as the new latest revision.
+
+    Maps to upstream ``POST /api/issues/{id}/documents/{key}/revisions/
+    {revisionId}/restore``. ``revision_id`` is validated as a uuid at the
+    boundary before forwarding.
+    """
+    doc_key = _norm_document_key(key)
+    _require_thread_id(revision_id)  # revision ids are uuids too — reuse the guard.
+    return await _agents._admin().restore_issue_document_revision(
+        session_cookie=ctx.session_cookie,
+        issue_id=issue_id,
+        key=doc_key,
+        revision_id=revision_id,
+    )
+
+
+@router.get("/issues/{issue_id}/documents/{key}/annotations")
+async def list_document_annotations(
+    issue_id: str,
+    key: str,
+    ctx: TeamsContext = Depends(_ctx),
+    status: Optional[str] = Query(default=None, pattern=r"^(open|resolved|all)$"),
+    include_comments: bool = Query(default=True, alias="includeComments"),
+):
+    """List annotation threads for a document (the thread panel + count chip).
+
+    Maps to upstream ``GET /api/issues/{id}/documents/{key}/annotations``.
+    ``status`` filters open | resolved | all (upstream defaults to open);
+    ``includeComments`` hydrates each thread's comment list. Wrapped
+    ``{threads: [...]}`` like the sibling list surfaces.
+    """
+    doc_key = _norm_document_key(key)
+    rows = await _agents._admin().list_document_annotations(
+        session_cookie=ctx.session_cookie,
+        issue_id=issue_id,
+        key=doc_key,
+        status=status,
+        include_comments=include_comments,
+    )
+    return envelope_list(rows, "threads")
+
+
+@router.post("/issues/{issue_id}/documents/{key}/annotations")
+async def create_document_annotation(
+    issue_id: str,
+    key: str,
+    body: CreateDocumentAnnotationThreadBody,
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """Create an annotation thread anchored to a text selection.
+
+    Maps to upstream ``POST /api/issues/{id}/documents/{key}/annotations``.
+    A new thread pings the assigned agent server-side (a review comment is a
+    spend front door), so the free-tier $3/day cap is checked HERE, BEFORE the
+    proxy call reaches Paperclip — mirroring ``add_issue_comment``.
+    """
+    doc_key = _norm_document_key(key)
+    await require_trial_runway(ctx.owner_id)
+    return await _agents._admin().create_document_annotation(
+        session_cookie=ctx.session_cookie,
+        issue_id=issue_id,
+        key=doc_key,
+        body=body.model_dump(exclude_none=True, by_alias=True),
+    )
+
+
+@router.post("/issues/{issue_id}/documents/{key}/annotations/{thread_id}/comments")
+async def add_document_annotation_comment(
+    issue_id: str,
+    key: str,
+    thread_id: str,
+    body: AddDocumentAnnotationCommentBody,
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """Append a reply comment to an annotation thread.
+
+    Maps to upstream ``POST /api/issues/{id}/documents/{key}/annotations/
+    {threadId}/comments``. Like a new thread, a reply pings the assigned agent,
+    so the free-tier cap is checked HERE before forwarding.
+    """
+    doc_key = _norm_document_key(key)
+    _require_thread_id(thread_id)
+    await require_trial_runway(ctx.owner_id)
+    return await _agents._admin().add_document_annotation_comment(
+        session_cookie=ctx.session_cookie,
+        issue_id=issue_id,
+        key=doc_key,
+        thread_id=thread_id,
+        body=body.model_dump(exclude_none=True, by_alias=True),
+    )
+
+
+@router.patch("/issues/{issue_id}/documents/{key}/annotations/{thread_id}")
+async def update_document_annotation_thread(
+    issue_id: str,
+    key: str,
+    thread_id: str,
+    body: UpdateDocumentAnnotationThreadBody,
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """Resolve or reopen an annotation thread.
+
+    Maps to upstream ``PATCH /api/issues/{id}/documents/{key}/annotations/
+    {threadId}``. A status flip does NOT dispatch an agent run, so (unlike
+    create/reply) it is not cap-gated.
+    """
+    doc_key = _norm_document_key(key)
+    _require_thread_id(thread_id)
+    return await _agents._admin().update_document_annotation_thread(
+        session_cookie=ctx.session_cookie,
+        issue_id=issue_id,
+        key=doc_key,
+        thread_id=thread_id,
+        body=body.model_dump(by_alias=True),
+    )

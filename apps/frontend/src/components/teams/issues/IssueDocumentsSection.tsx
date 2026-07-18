@@ -43,7 +43,7 @@ export function IssueDocumentsSection({
       )}
       <ul className="flex flex-col gap-2">
         {documents.map((d) => (
-          <DocumentRow key={d.id} doc={d} agents={agents} />
+          <DocumentRow key={d.id} doc={d} agents={agents} issueId={issueId} />
         ))}
       </ul>
     </section>

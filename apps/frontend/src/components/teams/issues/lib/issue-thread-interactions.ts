@@ -98,6 +98,15 @@ export function getRequestConfirmationTargetHref({
   }
   if (target.type === "issue_document") {
     const targetIssueId = target.issueId ?? issueId;
+    // A target on the CURRENTLY-viewed issue is an in-page anchor: the Teams
+    // shell has no `/issues/:id` route (the legacy URL tree was removed), but
+    // the document row now renders `id="document-<key>"`, so a bare hash
+    // scrolls to it. Cross-issue targets keep the (non-linkified) full path —
+    // there's no route to open another issue's document in place. This is what
+    // makes the confirmation-target chip a live link instead of a dead span.
+    if (targetIssueId === issueId) {
+      return `#document-${encodeURIComponent(target.key)}`;
+    }
     return `/issues/${targetIssueId}#document-${encodeURIComponent(target.key)}`;
   }
   return null;

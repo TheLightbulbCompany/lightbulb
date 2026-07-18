@@ -471,3 +471,105 @@ class ReleaseTreeHoldBody(_Strict):
     reason: Optional[str] = Field(default=None, min_length=1, max_length=1000)
     release_policy: Optional[TreeHoldReleasePolicyBody] = None
     metadata: Optional[dict] = None
+
+
+# ---------------------------------------------------------------------------
+# Plan-document review — upsert + inline annotation threads.
+#
+# Whitelisted bodies for the issue-document review surface. As with every
+# mutating Teams body, ``extra="forbid"`` (from ``_Strict``) rejects a smuggled
+# field with 422 at the FastAPI boundary. Enums / limits mirror upstream
+# ``upsertIssueDocumentSchema`` (paperclip/packages/shared/src/validators/
+# issue.ts) and ``createDocumentAnnotationThreadSchema`` /
+# ``createDocumentAnnotationCommentSchema`` /
+# ``updateDocumentAnnotationThreadSchema``
+# (paperclip/packages/shared/src/validators/document-annotation.ts) so junk
+# 422s here rather than being forwarded for upstream to reject opaquely.
+# Routers forward with ``model_dump(by_alias=True, ...)`` so the camelCase
+# aliases (``changeSummary``, ``baseRevisionId``, ``baseRevisionNumber``,
+# ``issueCommentId``) land on the wire.
+# ---------------------------------------------------------------------------
+
+_DOCUMENT_FORMAT = r"^(markdown)$"
+_ANNOTATION_THREAD_STATUS = r"^(open|resolved)$"
+
+
+class UpsertDocumentBody(_Strict):
+    """Body for ``PUT /teams/issues/{id}/documents/{key}``.
+
+    Subset of upstream ``upsertIssueDocumentSchema``. ``format`` + ``body`` are
+    required; ``title`` / ``change_summary`` / ``base_revision_id`` are optional.
+    Board edits go through this route and mint a new revision upstream.
+    """
+
+    format: str = Field(pattern=_DOCUMENT_FORMAT)
+    body: str = Field(max_length=524288)
+    title: Optional[str] = Field(default=None, max_length=200)
+    change_summary: Optional[str] = Field(default=None, max_length=500)
+    base_revision_id: Optional[str] = Field(default=None, max_length=64)
+
+
+class AnnotationTextQuoteSelector(_Strict):
+    """The text-quote half of an annotation anchor (exact + surrounding context)."""
+
+    exact: str = Field(min_length=1, max_length=10000)
+    prefix: str = Field(default="", max_length=1000)
+    suffix: str = Field(default="", max_length=1000)
+
+
+class AnnotationTextPositionSelector(_Strict):
+    """The character-offset half of an annotation anchor.
+
+    Mirrors upstream ``documentAnnotationTextPositionSelectorSchema`` — both the
+    normalized (whitespace-collapsed) and raw-markdown spans must have
+    ``end > start`` (enforced upstream; the non-negativity is enforced here via
+    ``ge=0``).
+    """
+
+    normalized_start: int = Field(ge=0)
+    normalized_end: int = Field(ge=0)
+    markdown_start: int = Field(ge=0)
+    markdown_end: int = Field(ge=0)
+
+
+class AnnotationAnchorSelector(_Strict):
+    """The full annotation anchor: a text-quote selector + a position selector."""
+
+    quote: AnnotationTextQuoteSelector
+    position: AnnotationTextPositionSelector
+
+
+class CreateDocumentAnnotationThreadBody(_Strict):
+    """Body for ``POST /teams/issues/{id}/documents/{key}/annotations``.
+
+    Mirrors upstream ``createDocumentAnnotationThreadSchema``: the anchor is
+    pinned to a specific base revision (id + number), the ``selector`` carries
+    the text-quote + position anchor, and ``body`` is the first comment.
+    """
+
+    base_revision_id: str = Field(min_length=1, max_length=64)
+    base_revision_number: int = Field(gt=0)
+    selector: AnnotationAnchorSelector
+    body: str = Field(min_length=1, max_length=20000)
+    issue_comment_id: Optional[str] = Field(default=None, max_length=64)
+
+
+class AddDocumentAnnotationCommentBody(_Strict):
+    """Body for ``POST /teams/issues/{id}/documents/{key}/annotations/{threadId}/comments``.
+
+    Mirrors upstream ``createDocumentAnnotationCommentSchema``.
+    """
+
+    body: str = Field(min_length=1, max_length=20000)
+    issue_comment_id: Optional[str] = Field(default=None, max_length=64)
+
+
+class UpdateDocumentAnnotationThreadBody(_Strict):
+    """Body for ``PATCH /teams/issues/{id}/documents/{key}/annotations/{threadId}``.
+
+    Mirrors upstream ``updateDocumentAnnotationThreadSchema``: the board UI
+    makes exactly one change here — resolve or reopen — so ``status`` is
+    REQUIRED and constrained to ``open`` | ``resolved``.
+    """
+
+    status: str = Field(pattern=_ANNOTATION_THREAD_STATUS)

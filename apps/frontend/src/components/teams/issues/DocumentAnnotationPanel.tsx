@@ -1,0 +1,321 @@
+"use client";
+
+// Ported/adapted from upstream Paperclip `ui/src/components/DocumentAnnotationPanel.tsx`
+// (A3), rewired onto useTeamsApi (post/patch + SWR mutate) instead of react-query.
+// The inline thread panel: list annotated spans, comment on a fresh selection,
+// reply, and resolve/reopen.
+
+import { useMemo, useState } from "react";
+import { Check, RotateCcw, X } from "lucide-react";
+import { useTeamsApi } from "@/hooks/useTeamsApi";
+import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
+import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
+import type { CompanyAgent } from "@/components/teams/shared/types";
+import type {
+  DocumentAnnotationThread,
+  DocumentAnnotationComment,
+  PendingAnchor,
+} from "./lib/documentReviewTypes";
+
+function truncate(value: string, limit: number) {
+  return value.length <= limit ? value : `${value.slice(0, limit - 1)}…`;
+}
+
+function commentAuthor(comment: DocumentAnnotationComment, agents: CompanyAgent[]): string {
+  if (comment.authorAgentId) {
+    return agents.find((a) => a.id === comment.authorAgentId)?.name ?? "Agent";
+  }
+  if (comment.authorName) return comment.authorName;
+  if (comment.authorUserId) return "Board";
+  return comment.authorType === "agent" ? "Agent" : "Board";
+}
+
+export function DocumentAnnotationPanel({
+  issueId,
+  documentKey,
+  baseRevisionId,
+  baseRevisionNumber,
+  threads,
+  agents,
+  pendingAnchor,
+  onClearPendingAnchor,
+  onClose,
+  focusedThreadId,
+  onFocusThread,
+  refetch,
+  newCommentDisabled = false,
+  newCommentDisabledReason,
+}: {
+  issueId: string;
+  documentKey: string;
+  baseRevisionId: string | null;
+  baseRevisionNumber: number;
+  threads: DocumentAnnotationThread[];
+  agents: CompanyAgent[];
+  pendingAnchor: PendingAnchor | null;
+  onClearPendingAnchor: () => void;
+  onClose: () => void;
+  focusedThreadId: string | null;
+  onFocusThread: (id: string | null) => void;
+  refetch: () => void;
+  newCommentDisabled?: boolean;
+  newCommentDisabledReason?: string | null;
+}) {
+  const { post, patch } = useTeamsApi();
+  const base = `/issues/${issueId}/documents/${documentKey}/annotations`;
+  const [composer, setComposer] = useState("");
+  const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const visibleThreads = useMemo(
+    () =>
+      [...threads]
+        .filter((thread) => thread.anchorState !== "orphaned")
+        .sort(
+          (a, b) =>
+            (a.normalizedStart ?? 0) - (b.normalizedStart ?? 0)
+            || new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+        ),
+    [threads],
+  );
+
+  async function createThread() {
+    const body = composer.trim();
+    if (!body || !pendingAnchor || !baseRevisionId) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await post(base, {
+        baseRevisionId,
+        baseRevisionNumber,
+        selector: pendingAnchor.selector,
+        body,
+      });
+      setComposer("");
+      onClearPendingAnchor();
+      refetch();
+    } catch {
+      setError("Failed to post comment.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submitReply(threadId: string) {
+    const body = (replyDrafts[threadId] ?? "").trim();
+    if (!body) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await post(`${base}/${threadId}/comments`, { body });
+      setReplyDrafts((current) => ({ ...current, [threadId]: "" }));
+      refetch();
+    } catch {
+      setError("Failed to add reply.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function toggleResolve(thread: DocumentAnnotationThread) {
+    setBusy(true);
+    setError(null);
+    try {
+      await patch(`${base}/${thread.id}`, {
+        status: thread.status === "resolved" ? "open" : "resolved",
+      });
+      refetch();
+    } catch {
+      setError("Failed to update comment status.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <aside
+      role="complementary"
+      aria-label={`Comments on ${documentKey}`}
+      data-testid="document-annotation-panel"
+      className="flex w-full flex-col rounded-md"
+      style={{ border: "1px solid var(--edge)", background: "var(--panel)" }}
+    >
+      <div
+        className="flex items-center justify-between px-3 py-1.5"
+        style={{ borderBottom: "1px solid var(--edge)" }}
+      >
+        <span className="text-xs font-medium" style={{ color: "var(--ink)" }}>
+          Comments {visibleThreads.length > 0 ? `(${visibleThreads.length})` : ""}
+        </span>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close comments panel"
+          className="rounded p-1"
+          style={{ color: "var(--mute)" }}
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+
+      {newCommentDisabled && newCommentDisabledReason ? (
+        <p className="px-3 py-1.5 text-[11px]" style={{ color: "var(--mute)" }}>
+          {newCommentDisabledReason}
+        </p>
+      ) : null}
+      {error ? (
+        <p
+          data-testid="document-annotation-error"
+          className="px-3 py-1.5 text-[11px]"
+          style={{ color: "var(--danger)" }}
+        >
+          {error}
+        </p>
+      ) : null}
+
+      <div className="flex max-h-96 flex-col gap-2 overflow-y-auto px-3 py-2">
+        {visibleThreads.length === 0 ? (
+          <p className="text-xs italic" style={{ color: "var(--mute)" }}>
+            No comments yet. Select text in the document to add one.
+          </p>
+        ) : (
+          visibleThreads.map((thread) => {
+            const expanded = thread.id === focusedThreadId;
+            const latest = thread.comments[thread.comments.length - 1];
+            return (
+              <article
+                key={thread.id}
+                data-thread-id={thread.id}
+                data-status={thread.status}
+                className="rounded-md"
+                style={{
+                  border: "1px solid var(--edge)",
+                  background: thread.status === "resolved" ? "var(--edge)" : "transparent",
+                }}
+                onClick={() => onFocusThread(expanded ? null : thread.id)}
+              >
+                <blockquote
+                  className="mx-3 mt-2 rounded px-2 py-1 text-xs italic [overflow-wrap:anywhere]"
+                  style={{ background: "var(--edge)", color: "var(--mute)" }}
+                >
+                  {truncate(thread.selectedText, 120)}
+                </blockquote>
+                {expanded ? (
+                  <div className="flex flex-col gap-2 px-3 py-2" onClick={(e) => e.stopPropagation()}>
+                    {thread.comments.map((comment) => (
+                      <div
+                        key={comment.id}
+                        className="rounded px-2 py-1.5"
+                        style={{ border: "1px solid var(--edge)" }}
+                      >
+                        <div className="mb-0.5 flex items-center justify-between gap-2 text-[11px]">
+                          <span className="font-medium" style={{ color: "var(--ink)" }}>
+                            {commentAuthor(comment, agents)}
+                          </span>
+                          <span style={{ color: "var(--mute)" }}>{timeAgo(comment.createdAt)}</span>
+                        </div>
+                        <div className="text-sm">
+                          <MarkdownView>{comment.body}</MarkdownView>
+                        </div>
+                      </div>
+                    ))}
+                    <textarea
+                      data-testid={`document-annotation-reply-${thread.id}`}
+                      rows={2}
+                      value={replyDrafts[thread.id] ?? ""}
+                      onChange={(e) =>
+                        setReplyDrafts((current) => ({ ...current, [thread.id]: e.target.value }))
+                      }
+                      placeholder="Reply…"
+                      className="w-full resize-y rounded px-2 py-1 text-sm"
+                      style={{ border: "1px solid var(--edge)", background: "var(--bg)" }}
+                    />
+                    <div className="flex items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => toggleResolve(thread)}
+                        disabled={busy}
+                        className="flex items-center gap-1 rounded px-2 py-1 text-xs disabled:opacity-50"
+                        style={{ border: "1px solid var(--edge)", color: "var(--ink)" }}
+                      >
+                        {thread.status === "resolved" ? (
+                          <>
+                            <RotateCcw className="h-3 w-3" /> Reopen
+                          </>
+                        ) : (
+                          <>
+                            <Check className="h-3 w-3" /> Resolve
+                          </>
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => submitReply(thread.id)}
+                        disabled={busy || !(replyDrafts[thread.id] ?? "").trim()}
+                        className="rounded px-2 py-1 text-xs disabled:opacity-50"
+                        style={{ background: "var(--forest)", color: "var(--forest-ink, #fff)" }}
+                      >
+                        Reply
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="px-3 py-2 text-xs" style={{ color: "var(--mute)" }}>
+                    <span style={{ color: "var(--ink)" }}>
+                      {thread.comments.length} comment{thread.comments.length === 1 ? "" : "s"}
+                    </span>
+                    {latest ? ` · ${truncate(latest.body, 100)}` : ""}
+                  </p>
+                )}
+              </article>
+            );
+          })
+        )}
+      </div>
+
+      {pendingAnchor ? (
+        <div className="flex flex-col gap-2 px-3 py-2" style={{ borderTop: "1px solid var(--edge)" }}>
+          <blockquote
+            className="rounded px-2 py-1 text-xs italic [overflow-wrap:anywhere]"
+            style={{ background: "var(--edge)", color: "var(--mute)" }}
+          >
+            {truncate(pendingAnchor.selectedText, 160)}
+          </blockquote>
+          <textarea
+            data-testid="document-annotation-composer"
+            rows={3}
+            value={composer}
+            onChange={(e) => setComposer(e.target.value)}
+            placeholder="Write a comment…"
+            disabled={newCommentDisabled}
+            className="w-full resize-y rounded px-2 py-1 text-sm"
+            style={{ border: "1px solid var(--edge)", background: "var(--bg)" }}
+          />
+          <div className="flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                onClearPendingAnchor();
+                setComposer("");
+              }}
+              className="rounded px-2 py-1 text-xs"
+              style={{ color: "var(--mute)" }}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={createThread}
+              disabled={busy || !composer.trim() || newCommentDisabled || !baseRevisionId}
+              className="rounded px-2 py-1 text-xs disabled:opacity-50"
+              style={{ background: "var(--forest)", color: "var(--forest-ink, #fff)" }}
+            >
+              {busy ? "Posting…" : "Comment"}
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </aside>
+  );
+}

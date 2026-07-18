@@ -9,10 +9,17 @@
 // attachments + work-products); clicking opens that issue's detail panel, where
 // the per-issue "Output" section (IssueWorkProductsSection) lives.
 //
-// v1 renders the grouped cards + preview titles and links back into the issue.
-// Deferred (follow-up): inline media thumbnails (needs the /teams/attachments
-// content-path rewrite + CSP handling), the flat/ungrouped view, kind facets,
-// and cursor pagination — the BFF route already forwards all those params.
+// v1 renders the grouped cards + preview artifacts, each of which is now an
+// OPENABLE link into the owning issue's detail (at the artifact's own section
+// anchor when present), with the group header kept as the overall issue-nav
+// fallback.
+// Deferred (follow-up): opening an artifact's CONTENT in place (image/video/
+// attachment) needs the BFF `/teams/attachments/{id}/content` rewrite + CSP
+// handling — the artifact's `openPath`/`href` are upstream-relative, so today
+// we route to the issue detail (where IssueAttachments/Documents/Output already
+// render the file) rather than to a raw path that 404s on our origin. Also
+// deferred: inline media thumbnails, the flat/ungrouped view, kind facets, and
+// cursor pagination — the BFF route already forwards all those params.
 
 import { Images } from "lucide-react";
 import Link from "next/link";
@@ -22,15 +29,19 @@ import { teamsDetailUrl } from "@/lib/shellNav";
 import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type {
+  CompanyArtifact,
   CompanyArtifactGroup,
   CompanyArtifactsResponse,
 } from "@/components/teams/shared/types";
 
-function GroupCard({ group }: { group: CompanyArtifactGroup }) {
-  const nav = useInlineTeamsNav();
-  const url = teamsDetailUrl("issue", group.issue.id);
-
-  const handleClick = (e: React.MouseEvent) => {
+// A plain left-click routes in-shell when a nav provider is present; modified
+// clicks / non-left buttons fall through to the anchor's native behavior. Shared
+// by the group header and each preview artifact.
+function inShellClick(
+  nav: ReturnType<typeof useInlineTeamsNav>,
+  issueId: string,
+): (e: React.MouseEvent) => void {
+  return (e: React.MouseEvent) => {
     if (!nav) return;
     if (
       e.defaultPrevented ||
@@ -43,21 +54,70 @@ function GroupCard({ group }: { group: CompanyArtifactGroup }) {
       return;
     }
     e.preventDefault();
-    nav.openDetail("issue-detail", group.issue.id);
+    nav.openDetail("issue-detail", issueId);
   };
+}
 
-  const previewTitles = group.previewArtifacts
-    .map((a) => a.title)
-    .filter((t): t is string => !!t && t.trim().length > 0);
+// The BFF-provided artifact `href` is upstream-relative (wrong origin/prefix for
+// our shell), but its hash fragment names the artifact's own section anchor
+// (`#document-<key>` / `#work-product-<id>` / `#attachment-<id>`). Reuse ONLY the
+// fragment so a native new-tab open of our issue-detail URL scrolls to that
+// section once the issue-detail anchors exist (A1/A3). Returns "" when absent.
+function artifactAnchor(a: CompanyArtifact): string {
+  const hash = a.href?.split("#")[1];
+  return hash ? `#${hash}` : "";
+}
+
+// One preview artifact, individually openable. Deep-links into the owning
+// issue's detail (carrying the artifact's own anchor); an artifact with no
+// owning issue renders as inert text rather than a dead link.
+function ArtifactPreviewItem({ artifact }: { artifact: CompanyArtifact }) {
+  const nav = useInlineTeamsNav();
+  const title = artifact.title?.trim();
+  if (!title) return null;
+  const issueId = artifact.issue?.id;
+  if (!issueId) {
+    return (
+      <li className="truncate text-xs" style={{ color: "var(--ink-soft)" }}>
+        · {title}
+      </li>
+    );
+  }
+  const url = `${teamsDetailUrl("issue", issueId)}${artifactAnchor(artifact)}`;
+  return (
+    <li>
+      <Link
+        href={url}
+        onClick={inShellClick(nav, issueId)}
+        className="block truncate rounded px-1 py-0.5 text-xs transition-colors hover:bg-[var(--cream-deeper)]"
+        style={{ color: "var(--ink-soft)" }}
+        title={title}
+      >
+        · {title}
+      </Link>
+    </li>
+  );
+}
+
+function GroupCard({ group }: { group: CompanyArtifactGroup }) {
+  const nav = useInlineTeamsNav();
+  const url = teamsDetailUrl("issue", group.issue.id);
+
+  const previewArtifacts = (group.previewArtifacts ?? []).filter(
+    (a) => !!a.title && a.title.trim().length > 0,
+  );
 
   return (
-    <Link
-      href={url}
-      onClick={handleClick}
-      className="editorial-card flex flex-col gap-2 p-4 transition-colors hover:bg-[var(--cream-deeper)]"
+    <div
+      className="editorial-card flex flex-col gap-2 p-4"
       style={{ borderColor: "var(--edge)" }}
     >
-      <div className="flex items-center gap-2">
+      {/* Group header — the overall issue-nav fallback. */}
+      <Link
+        href={url}
+        onClick={inShellClick(nav, group.issue.id)}
+        className="-mx-1 flex items-center gap-2 rounded px-1 py-0.5 transition-colors hover:bg-[var(--cream-deeper)]"
+      >
         <span
           className="text-[10px] uppercase tracking-wide font-mono px-1.5 py-0.5 rounded flex-shrink-0"
           style={{ background: "var(--edge)", color: "var(--ink)" }}
@@ -70,20 +130,18 @@ function GroupCard({ group }: { group: CompanyArtifactGroup }) {
         <span className="text-xs flex-shrink-0" style={{ color: "var(--mute)" }}>
           {group.count} {group.count === 1 ? "item" : "items"}
         </span>
-      </div>
-      {previewTitles.length > 0 ? (
-        <ul className="flex flex-col gap-1 pl-1">
-          {previewTitles.slice(0, 4).map((title, i) => (
-            <li key={i} className="truncate text-xs" style={{ color: "var(--ink-soft)" }}>
-              · {title}
-            </li>
+      </Link>
+      {previewArtifacts.length > 0 ? (
+        <ul className="flex flex-col gap-0.5 pl-1">
+          {previewArtifacts.slice(0, 4).map((a) => (
+            <ArtifactPreviewItem key={a.id} artifact={a} />
           ))}
         </ul>
       ) : null}
       <span className="text-xs" style={{ color: "var(--mute)" }}>
         Updated {timeAgo(group.updatedAt)}
       </span>
-    </Link>
+    </div>
   );
 }
 

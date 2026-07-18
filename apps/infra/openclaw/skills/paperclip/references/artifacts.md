@@ -12,13 +12,59 @@ scripts/paperclip-upload-artifact.sh path/to/output.webm \
 
 The helper uses `PAPERCLIP_API_URL`, `PAPERCLIP_API_KEY`, `PAPERCLIP_COMPANY_ID`, `PAPERCLIP_TASK_ID`, and `PAPERCLIP_RUN_ID`. It uploads the file as an issue attachment, creates an attachment-backed artifact work product by default, and prints issue-safe markdown links for your final comment.
 
-## Workspace-Only File References
+## Plans and deliverables live in Paperclip, not files
 
-Use a workspace-only reference only when the file should stay in the project or
-execution workspace, such as a source file, committed report, generated index,
-or other file whose value is tied to the checkout. This is not a substitute for
-uploading a deliverable file that a board user should be able to inspect outside
-the workspace.
+**A plan is never a workspace file.** Do not write a plan — a design, an
+approach, a regression-test plan, a rollout plan — as a local markdown file and
+reference its path. A plan belongs in the issue's **plan document**, so the
+board can read, comment on, and version it without workspace access:
+
+```bash
+curl -sS -X PUT \
+  "$PAPERCLIP_API_URL/api/issues/$PAPERCLIP_TASK_ID/documents/plan" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
+  -H "Content-Type: application/json" \
+  --data-binary '{
+    "title": "Implementation plan",
+    "format": "markdown",
+    "body": "## Approach\n…",
+    "changeSummary": "Initial plan",
+    "baseRevisionId": null
+  }'
+```
+
+If the `plan` document already exists, fetch it first
+(`GET /api/issues/$PAPERCLIP_TASK_ID/documents/plan`) and pass its latest
+revision id as `baseRevisionId` so you build on the current version instead of
+forking it.
+
+**To get a plan approved before implementing**, bind the decision to the plan
+revision. Create a `request_confirmation` issue-thread interaction whose
+`target` names the latest plan revision:
+
+```json
+{ "type": "issue_document", "key": "plan", "revisionId": "<latest-plan-revision-id>" }
+```
+
+Then move the source issue to `in_review` with a comment that names the pending
+decision. This is a deliberate waiting path — **wait for acceptance before
+creating implementation subtasks.** The bundled helper builds the common case:
+`scripts/paperclip-api.sh confirm <issueId> --prompt "Accept this plan?"`
+(details markdown on stdin). See `SKILL.md` and `references/api-reference.md`
+for the full interaction payload and the stale-target/rebuild rules.
+
+**A finished deliverable is a work product, not a loose file** — upload it with
+the helper above (an attachment-backed artifact). Plans, documents, and any
+board-facing output never belong in a `workspace_file` reference.
+
+## Workspace-Only File References — real source files only
+
+Use a workspace-only reference **only** for a genuine source file — code, a
+committed report, or a generated index — whose value is tied to the project or
+execution checkout. This is NOT a substitute for the plan document (above) or
+for uploading a board-facing deliverable, and a **plan must never be modeled
+this way**.
 
 Annotate the work product with `metadata.resourceRef`:
 
@@ -26,19 +72,19 @@ Annotate the work product with `metadata.resourceRef`:
 {
   "type": "document",
   "provider": "workspace",
-  "title": "Regression test plan",
+  "title": "Generated symbol index",
   "status": "ready_for_review",
   "reviewState": "needs_board_review",
-  "summary": "Markdown plan committed in the execution workspace.",
+  "summary": "Symbol index generated from the source tree and committed in the execution workspace.",
   "metadata": {
     "resourceRef": {
       "kind": "workspace_file",
       "issueId": "<issue-id>",
       "workspaceKind": "execution_workspace",
       "workspaceId": "<execution-workspace-id>",
-      "relativePath": "doc/plans/regression-test-plan.md",
+      "relativePath": "src/generated/symbol-index.md",
       "line": 1,
-      "displayPath": "doc/plans/regression-test-plan.md"
+      "displayPath": "src/generated/symbol-index.md"
     }
   }
 }
@@ -60,7 +106,7 @@ curl -sS -X POST \
   --data-binary @workspace-file-work-product.json
 ```
 
-If the helper is unavailable, use the Paperclip API directly:
+If the helper is unavailable, upload a deliverable file through the Paperclip API directly:
 
 ```bash
 curl -sS -X POST \
@@ -89,10 +135,20 @@ curl -sS -X POST \
   }'
 ```
 
+## Give every issue a real disposition
+
 In your final issue comment, link the uploaded attachment or work product and
-describe what it contains. If the output is workspace-only, name the work
-product and the relative path that was recorded in `metadata.resourceRef`.
+describe what it contains. If the output is a genuine workspace source file,
+name the work product and the relative path recorded in `metadata.resourceRef`.
 Browse/search is the fallback for recovering a workspace file when the issue
-chip or link cannot open it; it is not the preferred deliverable path. Do not
-leave artifact-producing work `in_progress` with only a local path or a
-`Remaining` note.
+chip or link cannot open it; it is not the preferred deliverable path.
+
+**Never leave an issue `in_progress` with only a comment or a local path.** Give
+it a real disposition:
+
+- `done` — the deliverable is uploaded (plan document or work product) and the
+  work is complete.
+- `in_review` — it needs sign-off; pair it with a `request_confirmation` (or
+  another explicit reviewer path) so the wait is real, not a self-assigned
+  "please review" comment.
+- `blocked` — it cannot proceed; name the blocker and who must act.

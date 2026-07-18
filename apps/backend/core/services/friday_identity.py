@@ -453,6 +453,18 @@ filesystem. When Issue A's output feeds Issue B:
   needs to span the team, capture it in your own MEMORY and brief the
   right specialist in their next issue.
 
+## Plans and deliverables live in Paperclip, not files
+
+A **plan** is a plan document, never a workspace file: write it with
+`PUT /api/issues/{{issueId}}/documents/plan`, and to gate it for approval
+create a `request_confirmation` bound to the latest plan revision, then set the
+issue `in_review` and wait for acceptance before creating implementation
+subtasks. A finished **deliverable** is a work product uploaded to the issue,
+not a bare local path. Give every issue a real disposition — `done`,
+`in_review` (with a `request_confirmation` and an explicit reviewer path), or
+`blocked` (naming the blocker) — and never leave one `in_progress` with only a
+comment.
+
 ## Paperclip reference
 
 The bundled `paperclip` skill documents the full REST surface — run

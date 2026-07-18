@@ -36,6 +36,25 @@ describe("useFirstRunKickoff", () => {
     expect(send).toHaveBeenCalledTimes(1);
   });
 
+  it("rolls back started when the send dispatches nothing", async () => {
+    const user = makeUser({ briefSubmitted: true });
+    const send = jest.fn(() => false);
+    renderHook(() =>
+      useFirstRunKickoff({
+        user,
+        agentId: "a",
+        defaultId: "a",
+        isConnected: true,
+        send,
+      }),
+    );
+    const update = (user as { update: jest.Mock }).update;
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(2));
+    expect(update).toHaveBeenLastCalledWith({
+      unsafeMetadata: { firstRun: { briefSubmitted: true, started: false } },
+    });
+  });
+
   it("does nothing for a non-default agent", async () => {
     const user = makeUser({ briefSubmitted: true });
     const send = jest.fn(() => true);

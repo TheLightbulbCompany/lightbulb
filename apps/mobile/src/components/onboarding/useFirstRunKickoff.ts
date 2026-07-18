@@ -8,9 +8,13 @@
  * read-modify-write, so racing writers could drop `started` and cause a
  * duplicate kickoff on the next launch.
  *
- * On write/send failure we log and reset the `fired` guard so a later
- * re-render can retry — better no kickoff than one that can never fire
- * again. A write rejection must NOT fall through to send.
+ * On failure we log and reset the `fired` guard so a later re-render can
+ * retry — better no kickoff than one that can never fire again. A write
+ * rejection must NOT fall through to send. A send that dispatches nothing
+ * additionally rolls the `started` write back: it already persisted, and
+ * without the rollback every later guard (this hook AND the roster
+ * redirect) reads `started: true` and the kickoff is lost forever. A false
+ * send means NOTHING went out, so the retry cannot double-send.
  *
  * The kickoff waits for a live gateway connection before it marks `started`
  * and sends: a send queued behind a dead socket resolves locally but may
@@ -44,7 +48,10 @@ export function useFirstRunKickoff(opts: {
     void (async () => {
       try {
         await writeFirstRun(user, { started: true });
-        if (!send(FIRST_RUN_PROMPT)) throw new Error("kickoff send failed");
+        if (!send(FIRST_RUN_PROMPT)) {
+          await writeFirstRun(user, { started: false });
+          throw new Error("kickoff send failed");
+        }
       } catch (err) {
         console.error("first-run kickoff failed", err);
         fired.current = false;

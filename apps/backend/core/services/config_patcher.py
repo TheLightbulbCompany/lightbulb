@@ -371,18 +371,25 @@ async def replace_provider_block(
         # search engages) — re-pin or delete like the model overrides above.
         # Only the search subtree is touched; fetch config survives.
         tools = current.get("tools")
-        if isinstance(tools, dict):
+        if web_search_provider is not None:
+            # Create the path when absent (parity with the heartbeat/subagents
+            # handling above) — a hand-edited or ancient config missing `tools`
+            # must still come out of the swap with a working web_search.
+            if not isinstance(tools, dict):
+                tools = {}
+                current["tools"] = tools
             web = tools.get("web")
-            if web_search_provider is not None:
-                if not isinstance(web, dict):
-                    web = {}
-                    tools["web"] = web
-                search = web.get("search")
-                if not isinstance(search, dict):
-                    search = {}
-                    web["search"] = search
-                search["provider"] = web_search_provider
-            elif isinstance(web, dict):
+            if not isinstance(web, dict):
+                web = {}
+                tools["web"] = web
+            search = web.get("search")
+            if not isinstance(search, dict):
+                search = {}
+                web["search"] = search
+            search["provider"] = web_search_provider
+        elif isinstance(tools, dict):
+            web = tools.get("web")
+            if isinstance(web, dict):
                 search = web.get("search")
                 if isinstance(search, dict):
                     search.pop("provider", None)

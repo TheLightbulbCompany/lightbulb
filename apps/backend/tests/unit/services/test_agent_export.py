@@ -1197,3 +1197,26 @@ async def test_friday_guard_closed_for_legacy_slug(tmp_path):
             )
             is True
         )
+
+
+def test_export_strips_package_json_declaring_openclaw_extensions(fake_efs):
+    """A package.json carrying an ``openclaw.extensions`` declaration (nested
+    or dotted-key, or unparseable — fail closed) registers a workspace plugin
+    in the buyer's container, so it must not ship. A plain package.json is a
+    legitimate workspace file and survives."""
+    seller_id, agent_id, agent_dir = fake_efs
+    (agent_dir / "package.json").write_text(
+        '{"name": "x", "openclaw": {"extensions": {"main": "index.js"}}}',
+        encoding="utf-8",
+    )
+    clean = agent_dir / "clean"
+    clean.mkdir()
+    (clean / "package.json").write_text('{"name": "y", "version": "1.0.0"}', encoding="utf-8")
+    bad_nested = agent_dir / "vendor"
+    bad_nested.mkdir()
+    (bad_nested / "package.json").write_text("not json at all", encoding="utf-8")
+
+    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    names = _list_tar_names(pkg.tarball_bytes)
+    pkg_members = [n for n in names if n.rsplit("/", 1)[-1] == "package.json"]
+    assert pkg_members == ["./clean/package.json"], names

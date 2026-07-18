@@ -123,6 +123,29 @@ _SKIP_DIR_NAMES = frozenset(
 _SKIP_FILE_BASENAMES = frozenset({"BOOT.md", "openclaw.plugin.json"})
 
 
+def package_json_declares_openclaw_extensions(raw: bytes) -> bool:
+    """True when *raw* is a package.json that would register a workspace
+    plugin — an ``openclaw.extensions`` declaration, nested
+    (``{"openclaw": {"extensions": …}}``) or as the literal dotted key — or
+    cannot be proven safe (malformed / non-object JSON → fail closed, since
+    OpenClaw's own more forgiving parser might still read it).
+
+    Shared by the export tar filter below and the deploy-side artifact strip
+    (``catalog_service._strip_plugin_boot_vectors``) so the two sides can
+    never disagree on what counts as a plugin manifest.
+    """
+    try:
+        parsed = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return True
+    if not isinstance(parsed, dict):
+        return True
+    if "openclaw.extensions" in parsed:
+        return True
+    openclaw = parsed.get("openclaw")
+    return isinstance(openclaw, dict) and "extensions" in openclaw
+
+
 # Filename-based credential-leak guard. Defense in depth on top of
 # marketplace_safety's content scan — if a file looks like credential
 # material by SHAPE, we skip it at tar time regardless of contents.
@@ -429,6 +452,17 @@ def _build_tarball(agent_dir: Path) -> tuple[bytes, list[str]]:
             basename = parts[-1]
             if basename in _SKIP_FILE_BASENAMES:
                 return None
+            # Content check, not name check: package.json is a legitimate
+            # workspace file unless it declares openclaw.extensions (which
+            # registers a workspace plugin in the buyer's container).
+            # Unreadable files fail closed like unparseable ones.
+            if basename == "package.json":
+                try:
+                    raw = (agent_dir / tarinfo.name).read_bytes()
+                except OSError:
+                    return None
+                if package_json_declares_openclaw_extensions(raw):
+                    return None
             # Skip editing backups / temp leftovers. Any name containing ".bak"
             # is a backup (.bak, .bak.<ts>, .bak-<ts>); plus .tmp/.orig/editor ~
             # files. These ride along from in-place edits of workspace files

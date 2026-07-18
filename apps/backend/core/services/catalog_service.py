@@ -35,13 +35,13 @@ from __future__ import annotations
 import asyncio
 import copy
 import io
-import json
 import logging
 import tarfile
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
+from core.services import agent_export
 from core.services.catalog_slice import strip_removed_agent_entry_keys
 from core.services.credentials.mcp_server import reconcile_integrations
 
@@ -159,24 +159,6 @@ def warn_rows(manifest: dict) -> list[dict]:
 _BLOCKED_TAR_BASENAMES = frozenset({"BOOT.md", "openclaw.plugin.json"})
 
 
-def _package_json_is_safe(raw: bytes) -> bool:
-    """True iff *raw* parses as a JSON object with no ``openclaw.extensions``
-    declaration (nested ``{"openclaw": {"extensions": …}}`` or the literal
-    dotted key). Anything unparseable is unsafe — fail closed, since we can't
-    prove what OpenClaw's own (more forgiving) parser would see in it.
-    """
-    try:
-        parsed = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
-        return False
-    if not isinstance(parsed, dict):
-        return False
-    if "openclaw.extensions" in parsed:
-        return False
-    openclaw = parsed.get("openclaw")
-    return not (isinstance(openclaw, dict) and "extensions" in openclaw)
-
-
 def _strip_plugin_boot_vectors(tar_bytes: bytes, *, slug: str) -> bytes:
     """Drop workspace-plugin / boot-run members from an artifact tarball.
 
@@ -202,7 +184,7 @@ def _strip_plugin_boot_vectors(tar_bytes: bytes, *, slug: str) -> bytes:
             data = src.extractfile(member) if member.isfile() else None
             if basename == "package.json" and data is not None:
                 raw = data.read()
-                if not _package_json_is_safe(raw):
+                if agent_export.package_json_declares_openclaw_extensions(raw):
                     stripped.append(member.name)
                     continue
                 out.addfile(member, io.BytesIO(raw))

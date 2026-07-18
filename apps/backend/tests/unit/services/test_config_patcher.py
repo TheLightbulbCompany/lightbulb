@@ -1935,3 +1935,22 @@ async def test_replace_provider_block_none_clears_utility_and_subagent_model(bed
     assert "model" not in defaults["subagents"]
     assert defaults["subagents"]["allowAgents"] == ["*"]  # siblings preserved
     assert "model" not in defaults["heartbeat"]
+
+
+@pytest.mark.asyncio
+async def test_replace_provider_block_creates_web_search_path_when_missing(efs_dir):
+    """A config missing `tools` entirely (ancient/hand-edited EFS state) must
+    still come out of an embedded-runtime swap with the search pin created —
+    parity with the heartbeat/subagents slot creation."""
+    await replace_provider_block(
+        "user_1",
+        providers={"amazon-bedrock": {"api": "bedrock-converse-stream"}},
+        default_model={"primary": "amazon-bedrock/x", "fallbacks": []},
+        plugin_entries={},
+        ceo_model=None,
+        cheap_model=None,
+        web_search_provider="parallel-free",
+    )
+    with open(os.path.join(efs_dir, "user_1", "openclaw.json")) as f:
+        cfg = json.load(f)
+    assert cfg["tools"]["web"]["search"] == {"provider": "parallel-free"}

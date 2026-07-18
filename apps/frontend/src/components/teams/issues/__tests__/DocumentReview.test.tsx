@@ -1,23 +1,28 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 
-// The annotation panel writes through useTeamsApi (post/patch).
+// The annotation panel writes through useTeamsApi (post/patch); DocumentRow also
+// reads annotations via `read`, so the mock exposes all three.
 const post = vi.fn();
 const patch = vi.fn();
+const read = vi.fn();
 vi.mock("@/hooks/useTeamsApi", () => ({
-  useTeamsApi: () => ({ post, patch }),
+  useTeamsApi: () => ({ post, patch, read }),
 }));
 
 import { buildLineDiff, isLineDiffTooLarge, LINE_DIFF_MAX_LINES } from "../lib/lineDiff";
 import { computeAnchor, rangesForText } from "../lib/documentAnnotationSelection";
 import { getRequestConfirmationTargetHref } from "../lib/issue-thread-interactions";
 import { DocumentAnnotationPanel } from "../DocumentAnnotationPanel";
+import { DocumentRow } from "../DocumentRow";
+import type { CompanyAgent, IssueDocument } from "@/components/teams/shared/types";
 import type { RequestConfirmationIssueDocumentTarget } from "@/components/teams/shared/types";
 import type { DocumentAnnotationThread } from "../lib/documentReviewTypes";
 
 beforeEach(() => {
   post.mockReset();
   patch.mockReset();
+  read.mockReset();
 });
 
 describe("buildLineDiff", () => {
@@ -326,5 +331,58 @@ describe("DocumentAnnotationPanel", () => {
       screen.getByText("Comments are disabled while previewing a historical revision."),
     ).toBeInTheDocument();
     expect(screen.getByTestId("document-annotation-composer")).toBeDisabled();
+  });
+});
+
+describe("DocumentRow unresolved badge", () => {
+  const agents = [{ id: "ag1", name: "Friday" }] as CompanyAgent[];
+
+  function baseDoc(): IssueDocument {
+    // The trimmed local IssueDocument type omits the latest-revision fields the
+    // wire payload carries; DocumentRow reads them via a cast, so supply them.
+    return {
+      key: "plan",
+      title: "Plan",
+      body: "hello world",
+      latestRevisionId: "rev-1",
+      latestRevisionNumber: 2,
+    } as unknown as IssueDocument;
+  }
+
+  function mountWithThreads(threads: DocumentAnnotationThread[]) {
+    read.mockImplementation((path: string | null) => {
+      if (path && path.includes("/annotations")) {
+        return { data: { threads }, mutate: vi.fn() };
+      }
+      // The revisions read is null (row collapsed) — irrelevant to the badge.
+      return { data: undefined, mutate: vi.fn() };
+    });
+    return render(<DocumentRow doc={baseDoc()} agents={agents} issueId="iss1" />);
+  }
+
+  const orphanOpen: DocumentAnnotationThread = {
+    id: "orphan-open",
+    documentKey: "plan",
+    status: "open",
+    anchorState: "orphaned",
+    selectedText: "text that was later deleted",
+    createdAt: "2026-01-01T00:00:00Z",
+    comments: [],
+  };
+
+  it("counts an orphaned-open thread in the unresolved badge + aria-label", () => {
+    // The overlay skips this thread (no anchor to draw), but the header badge
+    // must still advertise it so a live review comment isn't missed.
+    mountWithThreads([orphanOpen]);
+    const toggle = screen.getByTestId("document-comments-toggle-plan");
+    expect(toggle).toHaveAttribute("aria-label", "1 unresolved comments on plan");
+    expect(toggle).toHaveTextContent("1");
+  });
+
+  it("shows 0 when the only orphaned thread is resolved", () => {
+    mountWithThreads([{ ...orphanOpen, id: "orphan-resolved", status: "resolved" }]);
+    const toggle = screen.getByTestId("document-comments-toggle-plan");
+    expect(toggle).toHaveAttribute("aria-label", "Comments on plan");
+    expect(toggle).toHaveTextContent("0");
   });
 });

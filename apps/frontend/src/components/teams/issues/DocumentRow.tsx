@@ -73,8 +73,14 @@ export function DocumentRow({
     annotationsPath,
   );
   const threads = useMemo(() => annData?.threads ?? [], [annData]);
+  // The unresolved badge counts EVERY open thread, including orphaned-open ones:
+  // the panel keeps those visible and resolvable, so the header must advertise
+  // them too or a live review comment goes unnoticed until the panel is opened.
+  // Only the in-document highlight overlay skips orphaned anchors (it has no
+  // span to draw) — see DocumentAnnotationLayer's `anchorState === "orphaned"`
+  // guard. Resolved threads (orphaned or not) stay excluded from the count.
   const openCount = useMemo(
-    () => threads.filter((t) => t.status === "open" && t.anchorState !== "orphaned").length,
+    () => threads.filter((t) => t.status === "open").length,
     [threads],
   );
   const overlayThreads = useMemo<OverlayThread[]>(

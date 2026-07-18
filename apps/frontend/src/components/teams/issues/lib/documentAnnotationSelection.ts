@@ -151,17 +151,29 @@ export function buildAnchorFromSelection(input: {
 }
 
 /**
- * Walk the container's text nodes and return `Range`s covering the first
- * occurrence of `exact` (normalized match). Each Range can be
+ * Walk the container's text nodes and return `Range`s covering an occurrence of
+ * `exact` (normalized match). When `expectedNormalizedStart` is provided (the
+ * thread's stored normalized offset), resolve to the occurrence CLOSEST to it —
+ * otherwise a comment on a phrase that REPEATS in the document would always
+ * highlight the first match, drawing the wrong span. Falls back to the first
+ * occurrence when no stored offset is available. Each Range can be
  * rectangle-projected via `getClientRects()` to draw a highlight overlay.
  */
-export function rangesForText(container: HTMLElement, exact: string): Range[] {
+export function rangesForText(
+  container: HTMLElement,
+  exact: string,
+  expectedNormalizedStart?: number | null,
+): Range[] {
   const needle = normalizeAnchorText(exact);
   if (!needle) return [];
   const containerText = container.textContent ?? "";
   const normalizedContainer = normalizeAnchorText(containerText);
-  const normIndex = normalizedContainer.indexOf(needle);
-  if (normIndex === -1) return [];
+  const occurrences = findAllOccurrences(normalizedContainer, needle);
+  if (occurrences.length === 0) return [];
+  const normIndex =
+    expectedNormalizedStart == null
+      ? occurrences[0]
+      : pickClosest(occurrences, expectedNormalizedStart) ?? occurrences[0];
 
   const rawStart = mapNormalizedOffsetToRaw(containerText, normIndex);
   if (rawStart < 0) return [];

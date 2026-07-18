@@ -9,7 +9,7 @@ vi.mock("@/hooks/useTeamsApi", () => ({
 }));
 
 import { buildLineDiff } from "../lib/lineDiff";
-import { computeAnchor } from "../lib/documentAnnotationSelection";
+import { computeAnchor, rangesForText } from "../lib/documentAnnotationSelection";
 import { getRequestConfirmationTargetHref } from "../lib/issue-thread-interactions";
 import { DocumentAnnotationPanel } from "../DocumentAnnotationPanel";
 import type { RequestConfirmationIssueDocumentTarget } from "@/components/teams/shared/types";
@@ -85,6 +85,57 @@ describe("getRequestConfirmationTargetHref", () => {
     expect(getRequestConfirmationTargetHref({ issueId: "other", target })).toBe(
       "/issues/iss1#document-plan",
     );
+  });
+
+  it("prefers the in-page anchor over an internal href for a same-issue document target", () => {
+    // A same-issue target that ALSO carries an internal href must resolve to the
+    // bare `#document-<key>` anchor (a live in-page link), not the raw href
+    // which the chip would render as a dead span (no `/issues/:id` route).
+    const withHref: RequestConfirmationIssueDocumentTarget = {
+      ...target,
+      href: "/issues/iss1#document-plan",
+    };
+    expect(getRequestConfirmationTargetHref({ issueId: "iss1", target: withHref })).toBe(
+      "#document-plan",
+    );
+  });
+
+  it("keeps a cross-issue document target's internal href as-is", () => {
+    const withHref: RequestConfirmationIssueDocumentTarget = {
+      ...target,
+      href: "/issues/iss1/documents/plan",
+    };
+    expect(getRequestConfirmationTargetHref({ issueId: "other", target: withHref })).toBe(
+      "/issues/iss1/documents/plan",
+    );
+  });
+});
+
+describe("rangesForText occurrence resolution", () => {
+  function makeContainer(text: string): HTMLElement {
+    const el = document.createElement("div");
+    el.textContent = text;
+    // Attach to the document so TreeWalker / Range operate on a live tree.
+    document.body.appendChild(el);
+    return el;
+  }
+
+  it("highlights the first occurrence when no stored offset is supplied", () => {
+    // "foo bar" repeats at raw offsets 0 and 12.
+    const container = makeContainer("foo bar baz foo bar qux");
+    const ranges = rangesForText(container, "foo bar");
+    expect(ranges).toHaveLength(1);
+    expect(ranges[0].startOffset).toBe(0);
+    expect(ranges[0].toString()).toBe("foo bar");
+  });
+
+  it("resolves a repeated phrase to the stored offset's occurrence, not the first", () => {
+    const container = makeContainer("foo bar baz foo bar qux");
+    // Stored normalized offset points at the SECOND occurrence (offset 12).
+    const ranges = rangesForText(container, "foo bar", 12);
+    expect(ranges).toHaveLength(1);
+    expect(ranges[0].startOffset).toBe(12);
+    expect(ranges[0].toString()).toBe("foo bar");
   });
 });
 

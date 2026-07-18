@@ -92,21 +92,27 @@ export function getRequestConfirmationTargetHref({
   issueId: string;
   target: RequestConfirmationTarget;
 }) {
+  // A target on the CURRENTLY-viewed issue is an in-page anchor: the Teams
+  // shell has no `/issues/:id` route (the legacy URL tree was removed), but the
+  // document row now renders `id="document-<key>"`, so a bare hash scrolls to
+  // it. This MUST win over the raw-`href` early return below — a same-issue
+  // target may also carry an internal href like `/issues/<current>#document-…`,
+  // which normalizes to a non-external, non-hash path the chip renders as a
+  // dead span. Cross-issue targets keep their raw href / full path (there's no
+  // route to open another issue's document in place). This is what makes the
+  // confirmation-target chip a live link instead of a dead span.
+  if (target.type === "issue_document") {
+    const targetIssueId = target.issueId ?? issueId;
+    if (targetIssueId === issueId) {
+      return `#document-${encodeURIComponent(target.key)}`;
+    }
+  }
   if (target.href) {
     const safeHref = normalizeRequestConfirmationTargetHref(target.href);
     if (safeHref) return safeHref;
   }
   if (target.type === "issue_document") {
     const targetIssueId = target.issueId ?? issueId;
-    // A target on the CURRENTLY-viewed issue is an in-page anchor: the Teams
-    // shell has no `/issues/:id` route (the legacy URL tree was removed), but
-    // the document row now renders `id="document-<key>"`, so a bare hash
-    // scrolls to it. Cross-issue targets keep the (non-linkified) full path —
-    // there's no route to open another issue's document in place. This is what
-    // makes the confirmation-target chip a live link instead of a dead span.
-    if (targetIssueId === issueId) {
-      return `#document-${encodeURIComponent(target.key)}`;
-    }
     return `/issues/${targetIssueId}#document-${encodeURIComponent(target.key)}`;
   }
   return null;

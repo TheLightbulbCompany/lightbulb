@@ -84,6 +84,7 @@ export function DocumentRow({
         selectedText: t.selectedText,
         status: t.status,
         anchorState: t.anchorState,
+        normalizedStart: t.normalizedStart ?? null,
       })),
     [threads],
   );

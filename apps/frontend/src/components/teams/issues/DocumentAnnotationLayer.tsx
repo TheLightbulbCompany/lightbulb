@@ -23,6 +23,9 @@ export interface OverlayThread {
   selectedText: string;
   status: AnnotationThreadStatus;
   anchorState: AnnotationAnchorState;
+  // Stored normalized offset from the thread payload. Disambiguates which
+  // occurrence to highlight when `selectedText` repeats in the document body.
+  normalizedStart?: number | null;
 }
 
 interface HighlightRect {
@@ -72,7 +75,7 @@ export function DocumentAnnotationLayer({
       if (thread.anchorState === "orphaned") continue;
       const resolved = thread.status === "resolved";
       if (resolved && thread.id !== focusedThreadId) continue;
-      for (const range of rangesForText(container, thread.selectedText)) {
+      for (const range of rangesForText(container, thread.selectedText, thread.normalizedStart)) {
         for (const rect of Array.from(range.getClientRects())) {
           if (rect.width === 0 || rect.height === 0) continue;
           next.push({

@@ -38,65 +38,65 @@ export default function AppLayout() {
             replaces the whole tab shell with the funnel for an eligible
             first-run trial owner (no skip — the committed front door). */}
         <FirstRunGate>
-        <Tabs
-        screenOptions={{
-          headerShown: true,
-          sceneStyle: { backgroundColor: colors.cream },
-          headerStyle: {
-            backgroundColor: colors.cream,
-            borderBottomWidth: StyleSheet.hairlineWidth,
-            borderBottomColor: colors.border,
-          },
-          headerShadowVisible: false,
-          headerTitleStyle: {
-            fontFamily: fonts.dmSansBold,
-            fontSize: 17,
-            color: colors.ink,
-          },
-          headerTintColor: colors.forest,
-          tabBarStyle: {
-            backgroundColor: colors.cream,
-            borderTopWidth: StyleSheet.hairlineWidth,
-            borderTopColor: colors.border,
-          },
-          tabBarActiveTintColor: colors.forest,
-          tabBarInactiveTintColor: colors.muted,
-          tabBarLabelStyle: { fontFamily: fonts.dmSansMedium, fontSize: 11 },
-        }}
-      >
-        <Tabs.Screen
-          name="chat"
-          options={{ title: "Chat", tabBarIcon: tabIcon("message-circle") }}
-        />
-        <Tabs.Screen
-          name="teams"
-          // The teams tab is a nested Stack (teams/_layout.tsx); it owns its
-          // own inbox + pushed issue-detail headers, so suppress the Tabs
-          // header to avoid stacking two.
-          options={{
-            title: "Teams",
-            tabBarIcon: tabIcon("inbox"),
-            headerShown: false,
-          }}
-        />
-        <Tabs.Screen
-          name="control"
-          // The control tab is a nested Stack (control/_layout.tsx); it owns
-          // its own per-panel headers, so suppress the Tabs header to avoid
-          // stacking two.
-          options={{
-            title: "Control",
-            tabBarIcon: tabIcon("sliders"),
-            headerShown: false,
-          }}
-        />
-        <Tabs.Screen
-          name="settings"
-          options={{ title: "Settings", tabBarIcon: tabIcon("settings") }}
-        />
-        {/* Chat detail — reachable by navigation only, not a tab. */}
-        <Tabs.Screen name="agent/[agentId]" options={{ href: null, title: "Chat" }} />
-        </Tabs>
+          <Tabs
+            screenOptions={{
+              headerShown: true,
+              sceneStyle: { backgroundColor: colors.cream },
+              headerStyle: {
+                backgroundColor: colors.cream,
+                borderBottomWidth: StyleSheet.hairlineWidth,
+                borderBottomColor: colors.border,
+              },
+              headerShadowVisible: false,
+              headerTitleStyle: {
+                fontFamily: fonts.dmSansBold,
+                fontSize: 17,
+                color: colors.ink,
+              },
+              headerTintColor: colors.forest,
+              tabBarStyle: {
+                backgroundColor: colors.cream,
+                borderTopWidth: StyleSheet.hairlineWidth,
+                borderTopColor: colors.border,
+              },
+              tabBarActiveTintColor: colors.forest,
+              tabBarInactiveTintColor: colors.muted,
+              tabBarLabelStyle: { fontFamily: fonts.dmSansMedium, fontSize: 11 },
+            }}
+          >
+            <Tabs.Screen
+              name="chat"
+              options={{ title: "Chat", tabBarIcon: tabIcon("message-circle") }}
+            />
+            <Tabs.Screen
+              name="teams"
+              // The teams tab is a nested Stack (teams/_layout.tsx); it owns its
+              // own inbox + pushed issue-detail headers, so suppress the Tabs
+              // header to avoid stacking two.
+              options={{
+                title: "Teams",
+                tabBarIcon: tabIcon("inbox"),
+                headerShown: false,
+              }}
+            />
+            <Tabs.Screen
+              name="control"
+              // The control tab is a nested Stack (control/_layout.tsx); it owns
+              // its own per-panel headers, so suppress the Tabs header to avoid
+              // stacking two.
+              options={{
+                title: "Control",
+                tabBarIcon: tabIcon("sliders"),
+                headerShown: false,
+              }}
+            />
+            <Tabs.Screen
+              name="settings"
+              options={{ title: "Settings", tabBarIcon: tabIcon("settings") }}
+            />
+            {/* Chat detail — reachable by navigation only, not a tab. */}
+            <Tabs.Screen name="agent/[agentId]" options={{ href: null, title: "Chat" }} />
+          </Tabs>
         </FirstRunGate>
       </ProvisionGate>
     </GatewayProvider>

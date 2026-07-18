@@ -15,7 +15,7 @@ These tests pin down:
      BYO wizard fills in byo_provider later)
 """
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -25,7 +25,10 @@ def _no_live_subs():
     """The live-subscription guard lists subs on the Stripe customer before
     creating a Checkout session. These tests are about provider persistence —
     an empty customer keeps the guard out of the way."""
-    with patch("routers.billing.stripe.Subscription.list", return_value={"data": []}):
+    with patch(
+        "routers.billing.stripe.Subscription.list",
+        return_value=MagicMock(auto_paging_iter=lambda: iter([])),
+    ):
         yield
 
 

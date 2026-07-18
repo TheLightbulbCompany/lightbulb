@@ -1,6 +1,6 @@
 """Tests for billing API endpoints — flat-fee model."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import boto3
 import pytest
@@ -485,7 +485,10 @@ class TestTrialCheckoutProviderRules:
         """The live-subscription guard lists subs on the Stripe customer before
         creating a Checkout session — empty here, these tests are about
         provider rules."""
-        with patch("routers.billing.stripe.Subscription.list", return_value={"data": []}):
+        with patch(
+            "routers.billing.stripe.Subscription.list",
+            return_value=MagicMock(auto_paging_iter=lambda: iter([])),
+        ):
             yield
 
     @pytest.fixture

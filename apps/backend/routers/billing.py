@@ -485,8 +485,11 @@ async def create_trial_checkout(
         # shared across personal/org billing rows for the same email, and
         # another owner's subscription must not block this one.
         with timing("stripe.api.latency", {"op": "subscription.list"}):
-            live_subs = stripe.Subscription.list(customer=account["stripe_customer_id"], status="all", limit=10)
-        for sub in live_subs.get("data", []):
+            live_subs = stripe.Subscription.list(customer=account["stripe_customer_id"], status="all", limit=100)
+        # auto_paging_iter walks has_more pages — a matching billable sub must
+        # not escape the guard by sitting behind newer subs on the shared
+        # customer.
+        for sub in live_subs.auto_paging_iter():
             if (sub.get("metadata") or {}).get("owner_id") != owner_id:
                 continue
             if sub.get("status") in LIVE_SUBSCRIPTION_STATUSES:

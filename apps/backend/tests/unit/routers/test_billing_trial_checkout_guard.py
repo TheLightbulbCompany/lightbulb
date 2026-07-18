@@ -149,7 +149,7 @@ async def test_trial_checkout_with_no_pending_invitations_passes_gate_b(
     mock_clerk.list_pending_invitations_for_user = AsyncMock(return_value=[])
     # The live-subscription guard lists subs on the (possibly email-reused)
     # Stripe customer — empty here, this test is about Gate B only.
-    mock_sub_list.return_value = {"data": []}
+    mock_sub_list.return_value = _sub_list([])
     # Mock the downstream Stripe customer + checkout creation so the test
     # doesn't reach real DDB / Stripe.
     mock_create_customer.return_value = {
@@ -270,6 +270,14 @@ def _live_sub(status, owner_id="user_test_123"):
     return {"id": "sub_live", "status": status, "metadata": {"owner_id": owner_id}}
 
 
+def _sub_list(subs):
+    """Mimic stripe's ListObject: the router walks auto_paging_iter() so a
+    matching sub can't hide behind pagination."""
+    from unittest.mock import MagicMock
+
+    return MagicMock(auto_paging_iter=lambda: iter(subs))
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("live_status", ["incomplete", "active", "trialing", "past_due"])
 @patch("core.services.billing_service.create_flat_fee_checkout")
@@ -284,7 +292,7 @@ async def test_live_billable_sub_on_customer_409s(
     reads trial_local with no stored subscription id."""
     mock_repo.get_by_owner_id = AsyncMock(return_value=dict(_TRIAL_LOCAL_ROW))
     mock_clerk.list_pending_invitations_for_user = AsyncMock(return_value=[])
-    mock_sub_list.return_value = {"data": [_live_sub(live_status)]}
+    mock_sub_list.return_value = _sub_list([_live_sub(live_status)])
 
     resp = await async_client.post(
         "/api/v1/billing/trial-checkout",
@@ -317,7 +325,7 @@ async def test_non_blocking_live_subs_allow_checkout(
     mock_repo.get_by_owner_id = AsyncMock(return_value=dict(_TRIAL_LOCAL_ROW))
     mock_repo.set_provider_choice = AsyncMock(return_value=None)
     mock_clerk.list_pending_invitations_for_user = AsyncMock(return_value=[])
-    mock_sub_list.return_value = {"data": [sub]}
+    mock_sub_list.return_value = _sub_list([sub])
     mock_create_checkout.return_value = type("Session", (), {"url": "https://checkout.stripe.com/ok"})()
 
     resp = await async_client.post(

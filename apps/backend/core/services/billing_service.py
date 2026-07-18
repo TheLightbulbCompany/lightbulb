@@ -1149,6 +1149,9 @@ async def _hot_swap_provider(
             subagent_model=subagent_model,
             llm_task_model=cheap_model,
             web_search_provider=web_search_provider,
+            # Provision-time never writes toolSearch for chatgpt_oauth (the
+            # hot path's only target) — delete any stale embedded-runtime key.
+            tool_search_mode=None,
         )
     except ConfigPatchError as e:
         logger.info(

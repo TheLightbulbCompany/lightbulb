@@ -57,6 +57,16 @@ class TestToolSearchGated:
     def test_absent_without_mcp_servers(self):
         assert "toolSearch" not in _cfg("bedrock_claude")["tools"]
 
+    def test_manual_mcp_servers_also_trigger_the_gate(self):
+        """DELIBERATE (Codex P2 follow-up): the gate keys on ANY merged MCP
+        server — registry integration or user-added custom server — because
+        every server contributes schemas of unknowable size at config-write
+        time and churns the cached prompt prefix. Erring toward enablement
+        for MCP users is the chosen posture; plain owners stay direct."""
+        custom = {"my-internal-api": {"command": "node", "args": ["server.js"], "env": {}}}
+        cfg = _cfg("bedrock_claude", integration_mcp_servers=custom)
+        assert cfg["tools"]["toolSearch"] == {"mode": "code"}
+
     def test_absent_on_codex_and_trial(self):
         """Codex runtime ignores tools.toolSearch (native tool search); trial
         keeps the minimal surface."""

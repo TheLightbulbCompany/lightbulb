@@ -1843,6 +1843,7 @@ def bedrock_efs_dir():
                     "fetch": {"enabled": True, "provider": "firecrawl"},
                     "search": {"provider": "parallel-free"},
                 },
+                "toolSearch": {"mode": "code"},
             },
         }
         with open(os.path.join(user_dir, "openclaw.json"), "w") as f:
@@ -1874,6 +1875,7 @@ async def test_replace_provider_block_to_oauth_repins_all_provider_keys(bedrock_
         subagent_model="openai/gpt-5.5",
         llm_task_model=None,
         web_search_provider=None,
+        tool_search_mode=None,
     )
     config = _read_config(bedrock_efs_dir)
     defaults = config["agents"]["defaults"]
@@ -1911,6 +1913,12 @@ async def test_replace_provider_block_to_oauth_repins_all_provider_keys(bedrock_
     web = config["tools"]["web"]
     assert "search" not in web
     assert web["fetch"] == {"enabled": True, "provider": "firecrawl"}
+
+    # Stale toolSearch from the Bedrock provision must not survive onto the
+    # Codex path: provision-time never writes it for chatgpt_oauth, and a
+    # future swap back (or a runtime that stops ignoring the key) would hide
+    # the entire catalog behind the bridge.
+    assert "toolSearch" not in config["tools"]
 
 
 @pytest.mark.asyncio

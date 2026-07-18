@@ -203,6 +203,7 @@ async def replace_provider_block(
     subagent_model: str | None = None,
     llm_task_model: str | None = None,
     web_search_provider: str | None = None,
+    tool_search_mode: str | None = None,
 ) -> None:
     """Atomically swap the three openclaw.json subtrees that define the LLM
     provider: ``models.providers``, ``agents.defaults.model``, and
@@ -395,6 +396,21 @@ async def replace_provider_block(
                     search.pop("provider", None)
                     if not search:
                         web.pop("search", None)
+
+        # tools.toolSearch is provision-time gated (embedded runtimes with
+        # merged MCP servers only; NEVER written for chatgpt_oauth) — the swap
+        # must mirror that: None deletes any stale key so a Codex-bound config
+        # matches a fresh provision (the Codex runtime ignores it today, but a
+        # swap back — or a runtime that stops ignoring it — would hide the
+        # entire catalog behind the bridge); a value (re)pins the mode.
+        tools = current.get("tools")
+        if tool_search_mode is not None:
+            if not isinstance(tools, dict):
+                tools = {}
+                current["tools"] = tools
+            tools["toolSearch"] = {"mode": tool_search_mode}
+        elif isinstance(tools, dict):
+            tools.pop("toolSearch", None)
 
         # Keep the CEO (Friday) per-agent model override in sync with the new
         # provider. The CEO is the agents.list entry with default: true. When

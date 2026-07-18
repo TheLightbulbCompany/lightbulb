@@ -2716,6 +2716,12 @@ class GatewayConnectionPool:
         # signed out and back in on the same backend task) doesn't inherit
         # a stale throttle from the previous session.
         self._last_reconnect_at.pop(user_id, None)
+        # Same rationale as the reconnect-floor pop above: a torn-down user
+        # must not leave auth-backoff state behind for a future incarnation
+        # (a reprovision mints a fresh token, so a stale hold would suppress
+        # its first legitimate connect).
+        self._auth_backoff_until.pop(user_id, None)
+        self._auth_failures.pop(user_id, None)
 
     async def broadcast_to_member(self, owner_id: str, member_user_id: str, message: dict) -> None:
         """Send a message to the owner's chat tabs, demuxed to one org member.

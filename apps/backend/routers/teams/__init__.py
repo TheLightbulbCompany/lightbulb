@@ -10,6 +10,7 @@ from . import inbox as _inbox
 from . import interactions as _interactions
 from . import issues as _issues
 from . import runs as _runs
+from . import search as _search
 from . import settings as _settings_r
 from . import tree_control as _tree_control
 from . import work as _work
@@ -22,6 +23,7 @@ router.include_router(_issues.router)
 router.include_router(_tree_control.router)
 router.include_router(_interactions.router)
 router.include_router(_runs.router)
+router.include_router(_search.router)
 router.include_router(_work.router)
 router.include_router(_feed.router)
 router.include_router(_feedback.router)

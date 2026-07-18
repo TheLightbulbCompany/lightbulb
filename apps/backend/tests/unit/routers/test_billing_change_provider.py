@@ -171,6 +171,7 @@ async def test_org_owner_can_switch_to_chatgpt_oauth_and_is_recorded(
         utility_model,
         subagent_model,
         llm_task_model,
+        web_search_provider,
     ):
         # Hot swap into chatgpt_oauth — shape pinned by the personal hot-path
         # test; here we only care that the org claim + connector write happen.
@@ -580,6 +581,7 @@ async def test_change_provider_bedrock_to_chatgpt_hot_path_no_restart(async_clie
         utility_model,
         subagent_model,
         llm_task_model,
+        web_search_provider,
     ):
         call_order.append("replace")
         # The chatgpt_oauth branch sets ``models.providers`` to {} and the
@@ -613,6 +615,9 @@ async def test_change_provider_bedrock_to_chatgpt_hot_path_no_restart(async_clie
         assert utility_model == "openai/gpt-5.4-mini"
         assert subagent_model == "openai/gpt-5.5"
         assert llm_task_model is None
+        # The search pin must be DROPPED on the Codex path so hosted search
+        # engages (mirrors provision-time omission).
+        assert web_search_provider is None
 
     with (
         patch(

@@ -1714,6 +1714,116 @@ class TestReaderLoopExitBranches:
         assert conn.is_alive is False
 
 
+class _FakeTime:
+    """Stands in for connection_pool's module-level ``time`` import so the
+    backoff arithmetic is driven by a settable clock. Scoped to the module
+    namespace (never patches the stdlib) — asyncio's event loop keeps its
+    real clock."""
+
+    def __init__(self, now: float = 1000.0):
+        self.now = now
+
+    def monotonic(self) -> float:
+        return self.now
+
+
+class TestPoolAuthBackoff:
+    """Auth-shaped connect failures must hold reconnects far longer than the
+    5s floor: the gateway locks out a client IP+credential scope for 5
+    minutes after 10 failed auths in 60s, and the floor alone allows 12
+    attempts/min — enough for a stale token to convert into a full
+    AUTH_RATE_LIMITED lockout that bricks the owner's connectivity."""
+
+    def _pool_with_clock(self, monkeypatch, now: float = 1000.0):
+        from core.gateway import connection_pool as cp_module
+
+        fake = _FakeTime(now)
+        monkeypatch.setattr(cp_module, "time", fake)
+        return GatewayConnectionPool(management_api=MagicMock()), fake
+
+    def test_first_auth_failure_holds_base_60s(self, monkeypatch):
+        pool, fake = self._pool_with_clock(monkeypatch)
+        pool._record_auth_failure("user-1", None)
+        assert pool._auth_backoff_until["user-1"] == pytest.approx(fake.now + 60)
+
+    def test_exponential_doubling_caps_at_300s(self, monkeypatch):
+        pool, fake = self._pool_with_clock(monkeypatch)
+        for expected in (60, 120, 240, 300, 300):
+            pool._record_auth_failure("user-1", None)
+            assert pool._auth_backoff_until["user-1"] == pytest.approx(fake.now + expected)
+
+    def test_retry_after_ms_dominates_exponential(self, monkeypatch):
+        """The gateway's own retryAfterMs (AUTH_RATE_LIMITED carries the
+        remaining lockout) must win over a shorter exponential hold."""
+        pool, fake = self._pool_with_clock(monkeypatch)
+        pool._record_auth_failure("user-1", 600_000)
+        assert pool._auth_backoff_until["user-1"] == pytest.approx(fake.now + 600)
+
+    def test_short_retry_after_ms_does_not_undercut_exponential(self, monkeypatch):
+        pool, fake = self._pool_with_clock(monkeypatch)
+        pool._record_auth_failure("user-1", 1_000)
+        assert pool._auth_backoff_until["user-1"] == pytest.approx(fake.now + 60)
+
+    def test_respect_raises_while_hold_active(self, monkeypatch):
+        pool, _fake = self._pool_with_clock(monkeypatch)
+        pool._record_auth_failure("user-1", None)
+        with pytest.raises(RuntimeError, match="auth backoff"):
+            pool._respect_auth_backoff("user-1")
+
+    def test_respect_passes_after_hold_expires(self, monkeypatch):
+        pool, fake = self._pool_with_clock(monkeypatch)
+        pool._record_auth_failure("user-1", None)
+        fake.now += 61
+        pool._respect_auth_backoff("user-1")  # must not raise
+
+    def test_respect_noop_for_unknown_user(self, monkeypatch):
+        pool, _fake = self._pool_with_clock(monkeypatch)
+        pool._respect_auth_backoff("user-1")  # must not raise
+
+    def test_clear_resets_hold_and_escalation(self, monkeypatch):
+        pool, fake = self._pool_with_clock(monkeypatch)
+        pool._record_auth_failure("user-1", None)
+        pool._record_auth_failure("user-1", None)
+        pool._clear_auth_backoff("user-1")
+        pool._respect_auth_backoff("user-1")  # must not raise
+        # Escalation restarts from the base hold, not 240s.
+        pool._record_auth_failure("user-1", None)
+        assert pool._auth_backoff_until["user-1"] == pytest.approx(fake.now + 60)
+
+    @pytest.mark.asyncio
+    async def test_ensure_connection_records_auth_failure_and_backs_off(self, monkeypatch):
+        from core.gateway.operator_rpc import GatewayConnectAuthError
+
+        pool, _fake = self._pool_with_clock(monkeypatch)
+        pool._create_connection = AsyncMock(
+            side_effect=GatewayConnectAuthError(
+                "Gateway connect failed: rate limited",
+                code="AUTH_RATE_LIMITED",
+                retry_after_ms=None,
+            )
+        )
+        with pytest.raises(GatewayConnectAuthError):
+            await pool.ensure_connection("user-1", "10.0.0.1", "tok")
+        assert pool._auth_failures["user-1"] == 1
+
+        # While the hold is active, the connect is suppressed BEFORE dialing.
+        with pytest.raises(RuntimeError, match="auth backoff"):
+            await pool.ensure_connection("user-1", "10.0.0.1", "tok")
+        assert pool._create_connection.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_ensure_connection_success_clears_backoff(self, monkeypatch):
+        pool, fake = self._pool_with_clock(monkeypatch)
+        pool._record_auth_failure("user-1", None)
+        fake.now += 61  # hold expired — attempt allowed again
+        conn = MagicMock()
+        pool._create_connection = AsyncMock(return_value=conn)
+        got = await pool.ensure_connection("user-1", "10.0.0.1", "tok")
+        assert got is conn
+        assert "user-1" not in pool._auth_backoff_until
+        assert "user-1" not in pool._auth_failures
+
+
 class TestPoolReconnectFloor:
     """The pool's _respect_reconnect_floor blocks repeat reopen / recreate
     within `_RECONNECT_FLOOR_S` of the last attempt. Protects the backend

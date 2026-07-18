@@ -36,6 +36,24 @@ GATEWAY_PORT = 18789  # OpenClaw gateway port (avoid circular import with contai
 _DEFAULT_TIMEOUT = 10
 
 
+class GatewayConnectAuthError(RuntimeError):
+    """Connect rejected with an auth-shaped error code (AUTH_FAILED,
+    AUTH_RATE_LIMITED, …).
+
+    Retrying these with the same credentials cannot succeed, and each retry
+    counts toward the gateway's lockout (10 failed auths in 60s → 5-minute
+    IP+credential-scope lockout), so the connection pool needs to tell them
+    apart from transient handshake failures. ``retry_after_ms`` carries the
+    gateway's own hint (the remaining lockout window) when it sends one.
+    Subclasses RuntimeError so pre-existing broad handlers keep working.
+    """
+
+    def __init__(self, message: str, *, code: str | None = None, retry_after_ms: int | None = None):
+        super().__init__(message)
+        self.code = code
+        self.retry_after_ms = retry_after_ms
+
+
 async def perform_signed_connect(
     ws,
     *,
@@ -127,8 +145,25 @@ async def perform_signed_connect(
     # Step 4: verify hello-ok.
     resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=recv_timeout))
     if not resp.get("ok"):
-        err = resp.get("error", {}).get("message", "unknown error")
-        raise RuntimeError(f"Gateway connect failed: {err}")
+        error = resp.get("error")
+        if not isinstance(error, dict):
+            error = {}
+        message = error.get("message", "unknown error")
+        code = error.get("code")
+        if isinstance(code, str) and "AUTH" in code.upper():
+            # retryAfterMs sits directly on the error object or nested under
+            # error.data, depending on the gateway version.
+            retry_after = error.get("retryAfterMs")
+            if retry_after is None:
+                data = error.get("data")
+                if isinstance(data, dict):
+                    retry_after = data.get("retryAfterMs")
+            raise GatewayConnectAuthError(
+                f"Gateway connect failed: {message}",
+                code=code,
+                retry_after_ms=int(retry_after) if isinstance(retry_after, (int, float)) else None,
+            )
+        raise RuntimeError(f"Gateway connect failed: {message}")
     return resp
 
 

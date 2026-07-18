@@ -105,6 +105,29 @@ AGENT_SUBAGENT_MAX_CONCURRENT_TRIAL = 2
 # path serves ~272k and must keep inheriting its own budget.
 BEDROCK_CONTEXT_TOKENS = 200_000
 
+# ---------------------------------------------------------------------------
+# Tool deny lists — SINGLE SOURCE. node_proxy.py REPLACES tools.deny wholesale
+# when a desktop node pairs/unpairs, so it derives both variants from these;
+# a hand-written list anywhere else silently re-enables an entry on the next
+# pair event.
+#
+# - canvas: no product surface (Control UI disabled).
+# - cron: Paperclip routines are the single scheduling authority.
+# - tts: the key-less Microsoft Edge provider registers the tts tool with NO
+#   config at all (tools.media.audio gates *understanding*, not TTS), so
+#   reply text would egress to a public no-SLA Microsoft endpoint and none of
+#   our surfaces can play the audio anyway.
+# - music_generate / video_generate: generation tools that auto-register off
+#   the owner's own credentials (e.g. sora video on BYO-openai). Owner-billed,
+#   but no product surface renders the output and autonomous runs should not
+#   discover a surprise-spend tool. image_generate deliberately stays: chat
+#   renders images and the spend is equally the owner's.
+# ---------------------------------------------------------------------------
+TOOL_DENY_BASE = ("canvas", "cron", "tts", "music_generate", "video_generate")
+# The provision-time variant: node tools stay denied until node_proxy flips
+# them on for a paired desktop.
+TOOL_DENY_WITH_NODES = TOOL_DENY_BASE + ("nodes",)
+
 
 # =============================================================================
 # Node device identity helpers
@@ -819,6 +842,11 @@ def workflow_plugin_entries(llm_task_model: str | None = None) -> dict:
         "aws-exec-profile": {"enabled": True},
         "tokenjuice": {"enabled": True},
         "sage-openclaw": {"enabled": True},
+        # Bundled key-less Firecrawl fetch provider — the Readability-failure
+        # fallback that tools.web.fetch.provider selects. Enable-only; adding
+        # an apiKey would move it to the owner's paid tier (BYOK surface,
+        # not configured here).
+        "firecrawl": {"enabled": True},
     }
 
 
@@ -1415,20 +1443,11 @@ def build_openclaw_config_dict(
             # surfaces them. ``deny`` still wins over the wildcard, so the
             # canvas/nodes denials below are unaffected.
             "allow": ["*"],
-            # Default-deny canvas, nodes, and cron. node_proxy.py toggles
-            # "nodes" back to enabled dynamically when a desktop node
-            # pairs, and back to denied when the last one disconnects.
-            # Leaving nodes always-allowed here would expose the tool
-            # even to users without the desktop app.
-            #
-            # "cron" is denied because recurring/scheduled agent work is
-            # governed by Paperclip routines — the single scheduling
-            # authority — not the in-container OpenClaw cron tool. Agent
-            # self-created cron jobs are invisible to Paperclip's
-            # autopause / concurrency / budget controls (an ungoverned
-            # scheduling surface). Recurring work goes through the Paperclip
-            # routines API, which the bundled `paperclip` skill teaches.
-            "deny": ["canvas", "nodes", "cron"],
+            # Default denies — see the TOOL_DENY_* module constants for the
+            # per-entry rationale. node_proxy.py toggles "nodes" to enabled
+            # dynamically when a desktop node pairs (and back on disconnect)
+            # by rewriting this list from the same constants.
+            "deny": list(TOOL_DENY_WITH_NODES),
             # Upstream's own tool-loop circuit breaker — genericRepeat /
             # knownPollNoProgress / pingPong detectors that trip when an agent
             # calls the same tool with the same args over and over. It defaults
@@ -1438,19 +1457,41 @@ def build_openclaw_config_dict(
             "loopDetection": {"enabled": True},
             **_build_exec_policy(),
             "web": {
-                "fetch": {"enabled": True},
+                # `provider: "firecrawl"` is the FALLBACK-only enrichment path:
+                # it fires solely when Readability extraction fails (bot-walled
+                # pages), hitting Firecrawl's hosted key-less starter tier at
+                # $0 — far cheaper than escalating to in-container Chromium
+                # (RAM on a 2 GB task + many more tokens). Normal fetches never
+                # leave the container.
+                "fetch": {"enabled": True, "provider": "firecrawl"},
                 # Route native web_search through Parallel's free, keyless Search
-                # MCP (search.parallel.ai/mcp) for every agent. OpenClaw stopped
-                # auto-selecting a keyless provider, so agents that call native
-                # web_search now throw "disabled or no provider" unless one is
-                # set. parallel-free needs no API key and is reliable from
-                # Fargate (unlike the rate-limited DuckDuckGo fallback); the
-                # @openclaw/parallel-plugin that provides it is baked into the
-                # extended image. Per-agent parallel-search.js scripts (the
-                # verticals) are unaffected — this fixes conversational agents
-                # like Atlas that reach for the native tool.
-                "search": {"provider": "parallel-free"},
+                # MCP (search.parallel.ai/mcp). OpenClaw stopped auto-selecting
+                # a keyless provider, so agents that call native web_search
+                # throw "disabled or no provider" unless one is set;
+                # parallel-free needs no API key and is reliable from Fargate.
+                #
+                # EXCEPT chatgpt_oauth: a pinned managed provider SUPPRESSES
+                # Codex-native hosted search (they're mutually exclusive), so
+                # pinning here would downgrade search the owner's ChatGPT
+                # subscription already includes. Omitting the key lets the
+                # Codex runtime engage its own hosted search automatically.
+                **({} if provider_choice == "chatgpt_oauth" else {"search": {"provider": "parallel-free"}}),
             },
+            # Tool Search: hide the full tool catalog behind
+            # tool_search/tool_describe/tool_call. Worth the extra bridge
+            # round-trips ONLY when merged integration MCP servers inflate
+            # the per-turn schema payload (Stripe MCP alone is dozens of
+            # tools); a bare catalog would pay latency for no byte savings,
+            # so plain owners stay direct-exposure. Embedded runtime only —
+            # the Codex runtime ignores this key (native tool search) — and
+            # never on trial (minimal surface). "code" mode falls back to
+            # plain tools mode if the Node child can't spawn; policy
+            # (allow/deny) still applies to bridged calls, fail-closed.
+            **(
+                {"toolSearch": {"mode": "code"}}
+                if (integration_mcp_servers and provider_choice != "chatgpt_oauth" and not is_bedrock_trial)
+                else {}
+            ),
             "media": {
                 "image": {"enabled": True},
                 "audio": {"enabled": False},
@@ -1488,6 +1529,10 @@ def build_openclaw_config_dict(
                 "entries": {
                     "command-logger": {"enabled": True},
                     "session-memory": {"enabled": True},
+                    # Bundled hook emitting a visible "compacting context…"
+                    # notice during long turns — pure UX for chat/Teams, zero
+                    # model cost.
+                    "compaction-notifier": {"enabled": True},
                 },
             },
             # Hook ingress (OpenClaw v2026.5.7 gateway/hooks.ts). Lets
@@ -1517,6 +1562,13 @@ def build_openclaw_config_dict(
             # untrusted callers don't get to claim arbitrary session
             # ownership via a header.
             "allowRequestSessionKey": False,
+            # Bound which agents a hook call may target: the seeded roster at
+            # write time ("main" for the legacy fallback shape). Nothing in
+            # the backend drives /hooks today, so this is pure hardening of
+            # an internet-adjacent ingress — a leaked/replayed hook token
+            # cannot aim at an arbitrary agent id. Reprovision rewrites the
+            # list with the then-current roster.
+            "allowedAgentIds": [a["id"] for a in (paperclip_agents or [])] or ["main"],
         },
         "plugins": {
             "slots": {},
@@ -1565,12 +1617,28 @@ def build_openclaw_config_dict(
         "channels": {},
         "session": {
             "dmScope": "per-account-channel-peer",
-            # OpenClaw's session-store maintenance defaults to "enforce" (evict
-            # past 500 entries / 30 days). Heavy Paperclip owners blow past 500
-            # sessions on the shared per-owner container, which would silently
-            # reap users' oldest /chat conversations now that one agent has many
-            # sessions. "warn" logs pressure but never deletes.
-            "maintenance": {"mode": "warn"},
+            # "warn" (the old value) never deletes ANYTHING — unbounded
+            # session-store + archive growth on EFS, and giant session files
+            # are upstream's documented pre-OOM signature on small tasks. The
+            # eviction fear that motivated warn is obsolete: enforce preserves
+            # durable human conversations (main/group/thread), reaps only
+            # SYNTHETIC rows (cron/hook/heartbeat/ACP/subagent — exactly what
+            # our autonomous fleet mass-produces), and zstd-archives before
+            # any deletion. Bounds are generous multiples of upstream's
+            # defaults (500 rows / 30d) to protect heavy owners.
+            # resetArchiveRetention defaults to keep-forever — set explicitly.
+            "maintenance": {
+                "mode": "enforce",
+                "maxEntries": 2000,
+                "pruneAfter": "90d",
+                "maxDiskBytes": "500mb",
+                "resetArchiveRetention": "90d",
+            },
+            # Unconfigured, sessions reset daily at 04:00 gateway-local =
+            # 04:00 UTC = 23:00 ET — rolling a US owner's live evening chat
+            # on their next message. Idle-based reset needs no owner-timezone
+            # knowledge: a session resets only after 24h of silence.
+            "reset": {"mode": "idle", "idleMinutes": 1440},
         },
         "web": {
             "enabled": True,
@@ -1584,6 +1652,15 @@ def build_openclaw_config_dict(
             # container Chromium — bundled in the extended image.
             "enabled": True,
             "defaultProfile": "openclaw",
+            # Compact role snapshots by default — the agent can still request
+            # a full AI snapshot per-call. Direct token reduction on every
+            # autonomous browser turn (matters against the trial cap and on
+            # gated Bedrock margins).
+            "snapshotDefaults": {"mode": "efficient"},
+            # Upstream tab defaults (8 tabs / 120m idle) are desktop-sized;
+            # on a 0.5 vCPU / 2 GB Fargate task live Chromium tabs are the
+            # OOM budget, so close idle ones aggressively.
+            "tabCleanup": {"idleMinutes": 30, "maxTabsPerSession": 4},
             # Required because the gateway runs as root inside the
             # per-user ECS container (for oom-score-adj and EFS perms),
             # and Chromium refuses to start as root with the security
@@ -1636,7 +1713,13 @@ def build_openclaw_config_dict(
         # must not be mutable from chat; host-shell (/bash) and gateway
         # /restart widen the trust boundary too far for chat.
         "commands": {
-            "debug": True,  # /debug — runtime-only overrides for diagnostics (not persisted)
+            # /debug applies runtime-only overrides to ANY config path —
+            # including tools.deny (re-arming the fleet-denied cron tool) and
+            # the runaway bounds — and on an always-on container "runtime
+            # only" effectively persists. Owner-gated chat is not a
+            # sufficient boundary for that in prod; admin config-patch levers
+            # cover prod diagnostics. Kept on in dev/staging for debugging.
+            "debug": settings.ENVIRONMENT != "prod",
             "restart": False,  # /restart — gateway restart is operator-only, never from chat
         },
     }
@@ -1702,6 +1785,15 @@ def build_openclaw_config_dict(
             channel = channels.setdefault(provider, {"enabled": True, "dmPolicy": "pairing"})
             channel["enabled"] = True
             channel["accounts"] = accounts
+            # Progress drafts: one channel message edited live with tool/status
+            # lines during long autonomous turns, replaced by the final answer —
+            # instead of minutes of silence. Telegram and Slack default to
+            # plain block streaming upstream; Discord already defaults to
+            # progress, so it needs no key. Zero extra LLM calls (edits only).
+            # (streaming.progress.commandText is NOT in the deployed schema —
+            # do not add it before the next image bump.)
+            if provider in ("telegram", "slack"):
+                channel.setdefault("streaming", {"mode": "progress"})
             for account_id in accounts:
                 binding = {
                     "type": "route",

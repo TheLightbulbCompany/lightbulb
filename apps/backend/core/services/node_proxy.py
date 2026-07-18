@@ -244,12 +244,14 @@ async def handle_node_connect(
     prev_count = _node_count.get(owner_id, 0)
     _node_count[owner_id] = prev_count + 1
     if prev_count == 0:
-        # Enable node tools by dropping "nodes" from the deny list. "cron" stays
-        # denied across node toggles — recurring work is governed by Paperclip
-        # routines, not the in-container cron tool. The config patch deep-merge
-        # REPLACES the deny list, so every tool that must stay denied is re-listed
-        # here (keep in sync with the base deny list in containers/config.py).
-        await patch_openclaw_config(owner_id, {"tools": {"deny": ["canvas", "cron"]}})
+        # Enable node tools by dropping "nodes" from the deny list. The config
+        # patch deep-merge REPLACES the deny list wholesale, so the write must
+        # carry every tool that stays denied — sourced from the shared
+        # TOOL_DENY_BASE constant so a new base-deny entry can never be
+        # silently re-enabled by a node pairing.
+        from core.containers.config import TOOL_DENY_BASE
+
+        await patch_openclaw_config(owner_id, {"tools": {"deny": list(TOOL_DENY_BASE)}})
 
     # Per-user broadcast
     pool = get_gateway_pool()
@@ -371,10 +373,12 @@ async def handle_node_disconnect(
     _node_count[owner_id] = new_count
     if new_count == 0:
         try:
-            # Re-disable node tools; "cron" stays denied (governed via Paperclip
-            # routines). The deep-merge replaces the deny list wholesale, so the
-            # full base deny set is re-listed (keep in sync with containers/config.py).
-            await patch_openclaw_config(owner_id, {"tools": {"deny": ["canvas", "nodes", "cron"]}})
+            # Re-disable node tools. The deep-merge replaces the deny list
+            # wholesale — write the full provision-time set from the shared
+            # constant (TOOL_DENY_WITH_NODES = base + "nodes").
+            from core.containers.config import TOOL_DENY_WITH_NODES
+
+            await patch_openclaw_config(owner_id, {"tools": {"deny": list(TOOL_DENY_WITH_NODES)}})
         except Exception:
             logger.debug("Failed to re-disable node tools for %s (container may be down)", owner_id)
         _node_count.pop(owner_id, None)

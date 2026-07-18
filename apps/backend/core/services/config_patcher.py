@@ -202,6 +202,7 @@ async def replace_provider_block(
     utility_model: str | None = None,
     subagent_model: str | None = None,
     llm_task_model: str | None = None,
+    web_search_provider: str | None = None,
 ) -> None:
     """Atomically swap the three openclaw.json subtrees that define the LLM
     provider: ``models.providers``, ``agents.defaults.model``, and
@@ -271,6 +272,13 @@ async def replace_provider_block(
     ``llm_task_model`` is forwarded to ``workflow_plugin_entries`` so the
     rebuilt ``plugins.entries['llm-task']`` carries the new provider's
     cheap-tier config (or drops back to enable-only when ``None``).
+
+    ``web_search_provider`` keeps ``tools.web.search.provider`` in sync:
+    provisioning pins ``parallel-free`` on embedded-runtime paths but OMITS
+    the key on chatgpt_oauth (a pinned managed provider suppresses
+    Codex-native hosted search). ``None`` deletes the pin so the swap
+    target's native search engages; a value (re)pins it. ``tools.web.fetch``
+    is never touched.
 
     Raises ``ConfigPatchError`` (via ``_locked_rmw``) if the owner has
     no ``openclaw.json`` on EFS yet. Callers should fall back to a full
@@ -357,6 +365,29 @@ async def replace_provider_block(
             subagents = defaults.get("subagents")
             if isinstance(subagents, dict):
                 subagents.pop("model", None)
+
+        # tools.web.search.provider is provider-derived (parallel-free on
+        # embedded runtimes, ABSENT on chatgpt_oauth so Codex-native hosted
+        # search engages) — re-pin or delete like the model overrides above.
+        # Only the search subtree is touched; fetch config survives.
+        tools = current.get("tools")
+        if isinstance(tools, dict):
+            web = tools.get("web")
+            if web_search_provider is not None:
+                if not isinstance(web, dict):
+                    web = {}
+                    tools["web"] = web
+                search = web.get("search")
+                if not isinstance(search, dict):
+                    search = {}
+                    web["search"] = search
+                search["provider"] = web_search_provider
+            elif isinstance(web, dict):
+                search = web.get("search")
+                if isinstance(search, dict):
+                    search.pop("provider", None)
+                    if not search:
+                        web.pop("search", None)
 
         # Keep the CEO (Friday) per-agent model override in sync with the new
         # provider. The CEO is the agents.list entry with default: true. When

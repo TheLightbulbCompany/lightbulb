@@ -113,6 +113,16 @@ _SKIP_DIR_NAMES = frozenset(
 )
 
 
+# File basenames we never ship, at any depth. Both are OpenClaw ingestion
+# vectors on the buyer's side: a workspace ``openclaw.plugin.json`` makes the
+# directory discoverable as loadable in-process plugin code, and a workspace
+# ``BOOT.md`` triggers an autonomous LLM run on every gateway restart
+# (internal hooks are enabled fleet-wide). Neither is part of an agent's
+# portable definition. The deploy side (``catalog_service``) strips the same
+# names from already-published artifacts, which predate this filter.
+_SKIP_FILE_BASENAMES = frozenset({"BOOT.md", "openclaw.plugin.json"})
+
+
 # Filename-based credential-leak guard. Defense in depth on top of
 # marketplace_safety's content scan — if a file looks like credential
 # material by SHAPE, we skip it at tar time regardless of contents.
@@ -417,6 +427,8 @@ def _build_tarball(agent_dir: Path) -> tuple[bytes, list[str]]:
             # defense in depth — if the file matches a credential shape,
             # we never tar it in the first place.
             basename = parts[-1]
+            if basename in _SKIP_FILE_BASENAMES:
+                return None
             # Skip editing backups / temp leftovers. Any name containing ".bak"
             # is a backup (.bak, .bak.<ts>, .bak-<ts>); plus .tmp/.orig/editor ~
             # files. These ride along from in-place edits of workspace files

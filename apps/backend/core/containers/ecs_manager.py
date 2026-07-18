@@ -436,6 +436,12 @@ class EcsManager:
             cd_copy = dict(cd)
             if new_image:
                 cd_copy["image"] = new_image
+            # SIGTERM→SIGKILL grace. The ECS default (30s) truncates
+            # OpenClaw's up-to-5-minute graceful drain on every Track-2
+            # update, scale-to-zero stop, and deploy — killing in-flight
+            # autonomous runs that restart-recovery then re-spends tokens
+            # replaying. 120s is the Fargate maximum.
+            cd_copy["stopTimeout"] = 120
             if idx == 0 and secrets_for_task:
                 # Merge with any baseline `secrets` list the CDK base may have
                 # set so we don't drop platform secrets while injecting per-user

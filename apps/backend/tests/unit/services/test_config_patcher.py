@@ -1837,7 +1837,13 @@ def bedrock_efs_dir():
                     "memory-core": {"enabled": True},
                 },
             },
-            "tools": {"profile": "full"},
+            "tools": {
+                "profile": "full",
+                "web": {
+                    "fetch": {"enabled": True, "provider": "firecrawl"},
+                    "search": {"provider": "parallel-free"},
+                },
+            },
         }
         with open(os.path.join(user_dir, "openclaw.json"), "w") as f:
             json.dump(config, f)
@@ -1867,6 +1873,7 @@ async def test_replace_provider_block_to_oauth_repins_all_provider_keys(bedrock_
         utility_model="openai/gpt-5.4-mini",
         subagent_model="openai/gpt-5.5",
         llm_task_model=None,
+        web_search_provider=None,
     )
     config = _read_config(bedrock_efs_dir)
     defaults = config["agents"]["defaults"]
@@ -1899,6 +1906,12 @@ async def test_replace_provider_block_to_oauth_repins_all_provider_keys(bedrock_
     assert entries["aws-exec-profile"] == {"enabled": True}
     assert "amazon-bedrock" not in entries
 
+    # The parallel-free search pin is DELETED on the Codex path (a managed
+    # pin suppresses Codex-native hosted search); fetch config survives.
+    web = config["tools"]["web"]
+    assert "search" not in web
+    assert web["fetch"] == {"enabled": True, "provider": "firecrawl"}
+
 
 @pytest.mark.asyncio
 async def test_replace_provider_block_none_clears_utility_and_subagent_model(bedrock_efs_dir):
@@ -1915,6 +1928,7 @@ async def test_replace_provider_block_none_clears_utility_and_subagent_model(bed
         utility_model=None,
         subagent_model=None,
         llm_task_model=None,
+        web_search_provider=None,
     )
     defaults = _read_config(bedrock_efs_dir)["agents"]["defaults"]
     assert "utilityModel" not in defaults

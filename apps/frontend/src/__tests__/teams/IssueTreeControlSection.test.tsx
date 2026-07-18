@@ -110,4 +110,63 @@ describe("IssueTreeControlSection", () => {
     // A best-effort preview is also fetched when the dialog opens.
     expect(post).toHaveBeenCalledWith("/issues/iss1/tree-control/preview", { mode: "pause" });
   });
+
+  it("releases the active pause hold on resume confirm (not a create-hold)", async () => {
+    const mutate = vi.fn().mockResolvedValue(undefined);
+    read.mockReturnValue({
+      data: {
+        activePauseHold: {
+          holdId: "hold-123",
+          isRoot: true,
+          issueId: "iss1",
+          rootIssueId: "iss1",
+          reason: null,
+        },
+      },
+      error: null,
+      mutate,
+    });
+    render(<IssueTreeControlSection issueId="iss1" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Resume subtree" }));
+
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Resume subtree" }));
+
+    // Resume must RELEASE the active pause hold by id, not create a resume-hold.
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith("/issues/iss1/tree-holds/hold-123/release", {}),
+    );
+    await waitFor(() => expect(mutate).toHaveBeenCalled());
+    expect(post).not.toHaveBeenCalledWith("/issues/iss1/tree-holds", { mode: "resume" });
+  });
+
+  it("errors instead of posting a resume-hold when the active hold id is missing", async () => {
+    const mutate = vi.fn().mockResolvedValue(undefined);
+    read.mockReturnValue({
+      data: {
+        activePauseHold: {
+          holdId: "",
+          isRoot: true,
+          issueId: "iss1",
+          rootIssueId: "iss1",
+          reason: null,
+        },
+      },
+      error: null,
+      mutate,
+    });
+    render(<IssueTreeControlSection issueId="iss1" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Resume subtree" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Resume subtree" }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/no active pause hold to release/i)).toBeInTheDocument(),
+    );
+    // Neither a release nor a create-hold should be posted.
+    expect(post).not.toHaveBeenCalledWith("/issues/iss1/tree-holds", { mode: "resume" });
+    expect(mutate).not.toHaveBeenCalled();
+  });
 });

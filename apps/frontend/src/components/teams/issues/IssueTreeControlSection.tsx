@@ -96,11 +96,25 @@ export function IssueTreeControlSection({ issueId }: { issueId: string }) {
     if (!action) return;
     setBusy(true);
     setActionError(null);
+    const trimmed = reason.trim();
     try {
-      const body: { mode: TreeControlAction; reason?: string } = { mode: action };
-      const trimmed = reason.trim();
-      if (trimmed) body.reason = trimmed;
-      await post(`/issues/${issueId}/tree-holds`, body);
+      if (action === "resume") {
+        // Resume RELEASES the active pause hold. The paused state is gated by
+        // that hold — creating a separate resume-hold would leave the pause in
+        // place, so the subtree would stay frozen and the UI stuck "paused".
+        const holdId = activePauseHold?.holdId;
+        if (!holdId) {
+          setActionError("No active pause hold to release. Refresh and try again.");
+          return;
+        }
+        const body: { reason?: string } = {};
+        if (trimmed) body.reason = trimmed;
+        await post(`/issues/${issueId}/tree-holds/${holdId}/release`, body);
+      } else {
+        const body: { mode: TreeControlAction; reason?: string } = { mode: action };
+        if (trimmed) body.reason = trimmed;
+        await post(`/issues/${issueId}/tree-holds`, body);
+      }
       await mutate();
       setAction(null);
     } catch {

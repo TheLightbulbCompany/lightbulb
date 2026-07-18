@@ -161,7 +161,34 @@ describe("RoutineDetailPanel — editable (A2)", () => {
     );
   });
 
-  it("saves an edit via PATCH, preserving the date-typed variable", async () => {
+  it("sends edited variables via PATCH, preserving the date type", async () => {
+    const user = userEvent.setup();
+    render(<RoutineDetailPanel routineId="r1" />);
+    await user.click(screen.getByRole("button", { name: /edit routine/i }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("Title"), {
+      target: { value: "Nightly digest v2" },
+    });
+    // Actually edit the variable (give it a label) so the array is dirty and
+    // must be sent. Its `date` type must survive the round-trip (upstream #8655).
+    fireEvent.change(within(dialog).getByPlaceholderText("label (optional)"), {
+      target: { value: "As of date" },
+    });
+    await user.click(within(dialog).getByRole("button", { name: /^Save$/ }));
+    await waitFor(() => expect(patch).toHaveBeenCalled());
+    const [path, body] = patch.mock.calls[0];
+    expect(path).toBe("/routines/r1");
+    expect(body.title).toBe("Nightly digest v2");
+    // The date variable round-trips with its type + new label preserved.
+    expect(body.variables).toEqual([
+      { name: "asOf", type: "date", required: true, label: "As of date" },
+    ]);
+  });
+
+  it("omits variables on a title-only save when the variables are unchanged", async () => {
+    // A stale loaded detail must NOT clobber newer variable definitions: if the
+    // user only renames the routine, the (possibly stale) variables array must
+    // not be re-sent — the backend would otherwise replace the newer defs.
     const user = userEvent.setup();
     render(<RoutineDetailPanel routineId="r1" />);
     await user.click(screen.getByRole("button", { name: /edit routine/i }));
@@ -174,10 +201,8 @@ describe("RoutineDetailPanel — editable (A2)", () => {
     const [path, body] = patch.mock.calls[0];
     expect(path).toBe("/routines/r1");
     expect(body.title).toBe("Nightly digest v2");
-    // The date variable round-trips unchanged (upstream #8655 type preserved).
-    expect(body.variables).toEqual([
-      { name: "asOf", type: "date", required: true },
-    ]);
+    // Variables were never touched → omitted entirely.
+    expect(body).not.toHaveProperty("variables");
   });
 
   it("omits unchanged status on a title-only routine save", async () => {

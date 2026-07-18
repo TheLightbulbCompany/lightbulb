@@ -819,6 +819,31 @@ function fromDraft(d: VarDraft): RoutineVariable {
   return out;
 }
 
+// Structural, order-sensitive equality for two typed-variable arrays. Both sides
+// are built by the SAME `fromDraft`, so a field-by-field compare on the canonical
+// output cleanly answers "did the user actually edit the variables?" — used to
+// dirty-diff the array and avoid re-sending (and thereby clobbering) definitions
+// the loaded detail may have captured before a concurrent edit.
+function variablesEqual(a: RoutineVariable[], b: RoutineVariable[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    const x = a[i];
+    const y = b[i];
+    if (
+      x.name !== y.name ||
+      (x.type ?? "text") !== (y.type ?? "text") ||
+      (x.required !== false) !== (y.required !== false) ||
+      (x.label ?? "") !== (y.label ?? "") ||
+      x.defaultValue !== y.defaultValue ||
+      (x.options ?? []).length !== (y.options ?? []).length ||
+      (x.options ?? []).some((opt, k) => opt !== (y.options ?? [])[k])
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function EditRoutineDialog({
   routine,
   agents,
@@ -844,6 +869,16 @@ function EditRoutineDialog({
   const [vars, setVars] = useState<VarDraft[]>(() =>
     (routine.variables ?? []).map(toDraft),
   );
+  // Immutable snapshot of the variables as they loaded when the dialog opened.
+  // Comparing the draft against the LIVE routine.variables prop is unsafe: SWR can
+  // revalidate that prop (window focus / reconnect) to a concurrent edit while this
+  // dialog stays open, which would mark an untouched list dirty and clobber the edit.
+  const [loadedVarsSnapshot] = useState<Array<ReturnType<typeof fromDraft>>>(() =>
+    (routine.variables ?? [])
+      .map(toDraft)
+      .filter((v) => v.name.trim() !== "")
+      .map(fromDraft),
+  );
 
   function setVar(i: number, patch: Partial<VarDraft>) {
     setVars((prev) => prev.map((v, idx) => (idx === i ? { ...v, ...patch } : v)));
@@ -864,8 +899,10 @@ function EditRoutineDialog({
   // Send only fields the user actually changed. The backend gates any body that
   // (re-)asserts status:"active" as a fireability-increasing edit, so a benign
   // rename / reassign by a trial owner must NOT carry an unchanged status.
-  // Variables are always sent — deep-diffing the typed-variable array is not
-  // cheap and it is not a fireability-increasing field.
+  // Variables are likewise dirty-diffed: a PATCH replaces the whole definition
+  // set, so re-sending an untouched array would clobber newer definitions if the
+  // loaded detail was stale (a concurrent edit, or a GET that omitted them). Only
+  // include `variables` when the current array differs from what loaded.
   async function submit() {
     if (!canSave) return;
     const body: RoutineEditBody = {};
@@ -879,7 +916,8 @@ function EditRoutineDialog({
       body.assignee_agent_id = nextAssignee;
     if (priority !== (routine.priority ?? "medium")) body.priority = priority;
     if (status !== (routine.status ?? "active")) body.status = status;
-    body.variables = namedVars.map(fromDraft);
+    const nextVars = namedVars.map(fromDraft);
+    if (!variablesEqual(nextVars, loadedVarsSnapshot)) body.variables = nextVars;
     await onSave(body);
   }
 

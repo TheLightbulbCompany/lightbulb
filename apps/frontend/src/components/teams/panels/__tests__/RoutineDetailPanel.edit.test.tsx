@@ -243,6 +243,49 @@ describe("RoutineDetailPanel — editable (A2)", () => {
     }
   });
 
+  it("sends label: null (not a dropped field) when a previously-set trigger label is cleared", async () => {
+    // Blanking a label that was set must reach the backend as an explicit null.
+    // If it went as `undefined`, JSON.stringify would drop it and the clear would
+    // be silently lost — the old label would persist after refresh.
+    seedReads({
+      "/routines/r1": {
+        data: {
+          id: "r1",
+          title: "Nightly digest",
+          status: "active",
+          triggers: [
+            {
+              id: "t1",
+              kind: "schedule",
+              cronExpression: "0 9 * * *",
+              timezone: "UTC",
+              label: "Morning digest",
+              enabled: true,
+            },
+          ],
+        },
+        isLoading: false,
+        error: undefined,
+        mutate,
+      },
+    });
+    const user = userEvent.setup();
+    render(<RoutineDetailPanel routineId="r1" />);
+    await user.click(screen.getByRole("button", { name: /edit morning digest/i }));
+    const dialog = await screen.findByRole("dialog");
+    await user.clear(within(dialog).getByLabelText(/label \(optional\)/i));
+    await user.click(within(dialog).getByRole("button", { name: /^Save$/ }));
+    await waitFor(() => expect(patch).toHaveBeenCalled());
+    const [path, body] = patch.mock.calls[0];
+    expect(path).toBe("/routines/r1/triggers/t1");
+    // Explicit null survives JSON.stringify; a dropped/undefined field would not.
+    expect(Object.prototype.hasOwnProperty.call(body, "label")).toBe(true);
+    expect(body.label).toBeNull();
+    // Untouched fields are still omitted (partial PATCH stays partial).
+    expect(body).not.toHaveProperty("cron_expression");
+    expect(body).not.toHaveProperty("enabled");
+  });
+
   it("surfaces a 402 gate message inline and keeps the dialog open", async () => {
     patch.mockRejectedValue({
       body: { detail: { message: "Scheduled routines are part of a paid plan." } },

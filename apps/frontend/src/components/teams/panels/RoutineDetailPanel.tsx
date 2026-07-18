@@ -1082,7 +1082,10 @@ interface TriggerSubmitBody {
   kind?: string;
   cron_expression?: string;
   timezone?: string;
-  label?: string;
+  // `null` is the explicit CLEAR signal (blanking a previously-set label).
+  // `undefined` is dropped by JSON.stringify, so a clear must send `null` to
+  // survive serialization and reach the backend.
+  label?: string | null;
   enabled?: boolean;
 }
 
@@ -1136,8 +1139,13 @@ function TriggerDialog({
     if (nextCron !== (trigger?.cronExpression ?? "").trim()) body.cron_expression = nextCron;
     const nextTz = timezone.trim();
     if (nextTz !== initialTz.trim()) body.timezone = nextTz;
-    const nextLabel = label.trim() || undefined;
-    if (nextLabel !== ((trigger?.label ?? "").trim() || undefined)) body.label = nextLabel;
+    // Label: send the new text on a real change; send an explicit `null` when a
+    // previously-set label is BLANKED (undefined would be dropped by JSON.stringify,
+    // silently losing the clear so the old label persisted after refresh); omit it
+    // when unchanged.
+    const prevLabel = (trigger?.label ?? "").trim();
+    const nextLabel = label.trim();
+    if (nextLabel !== prevLabel) body.label = nextLabel === "" ? null : nextLabel;
     if (enabled !== (trigger?.enabled !== false)) body.enabled = enabled;
     await onSubmit(body);
   }

@@ -118,18 +118,33 @@ async def patch_routine(
 ):
     """Patch a routine.
 
-    Gated ONLY on activation. Flipping ``status`` to ``active`` is the same lever
-    as creating a routine — it is what makes the schedule fire — and the enable
-    toggle PATCHes exactly ``{status: "active"}``. Without this, a trial owner
-    could re-enable any pre-existing routine (one seeded before this gate, or
-    created through the Paperclip pass-through) and walk straight around the
-    create-side check.
+    Gated on any fireability-INCREASING edit. Flipping ``status`` to ``active`` is
+    the same lever as creating a routine — it is what makes the schedule fire — and
+    the enable toggle PATCHes exactly ``{status: "active"}``. But activation is not
+    the only lever: switching ``concurrency_policy`` to ``always_enqueue`` (never
+    coalesce/skip an overlapping run) or ``catch_up_policy`` to
+    ``enqueue_missed_with_cap`` (replay missed runs after downtime) raises scheduled
+    dispatch VOLUME on an already-active routine without ever touching ``status``.
+    Gating only ``status=="active"`` left that walk-around open — a trial owner
+    could retime dispatch just as trigger-retiming let them retime cadence.
+
+    Ranked on the TARGET value (the more-dispatching enum), so the gate fires only
+    when the edit moves TOWARD more autonomy: narrowing a policy back to
+    ``skip_if_active`` / ``coalesce_if_active`` / ``skip_missed`` is never blocked,
+    matching the pause/rename/delete escape hatch. This needs no read of the current
+    value — the frontend sends only changed fields, so the field's presence with a
+    more-dispatching target IS the increase.
 
     Pause, rename, reassign and delete stay OPEN to trial owners on purpose:
     refusing those would trap someone with automation they cannot turn off, and
-    only activation reaches for autonomy.
+    only activation / more-dispatch reaches for autonomy.
     """
-    if body.status == "active":
+    increases_fireability = (
+        body.status == "active"
+        or body.concurrency_policy == "always_enqueue"
+        or body.catch_up_policy == "enqueue_missed_with_cap"
+    )
+    if increases_fireability:
         await require_always_on_entitlement(ctx.owner_id)
 
     # Nightly CEO loop opt-out (issue #1273): persist a DURABLE opt-out on the
@@ -329,9 +344,17 @@ async def patch_routine_trigger(
     if body.enabled is False:
         is_nightly = await _is_nightly_ceo_routine(ctx, routine_id)
 
+    # Forward with exclude_UNSET (not exclude_none): the edit dialog sends only the
+    # fields the user changed, and CLEARING a label arrives as an explicit null
+    # (``label: null``). exclude_none would drop that null before Paperclip saw it,
+    # so the clear was silently ignored and the label snapped back on refresh.
+    # exclude_unset keeps client-sent fields — including explicit nulls — while
+    # omitting fields the client never sent, so a partial PATCH stays partial. The
+    # fireability gate above reads model attributes (``body.enabled`` etc.), not this
+    # dict, so it is unaffected; ``extra="forbid"`` still bars stray fields.
     result = await _agents._admin().patch_routine_trigger(
         trigger_id=trigger_id,
-        body=body.model_dump(exclude_none=True, by_alias=True),
+        body=body.model_dump(exclude_unset=True, by_alias=True),
         session_cookie=ctx.session_cookie,
     )
 

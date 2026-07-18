@@ -1066,3 +1066,94 @@ def test_patch_routine_omits_description_when_not_sent(client, admin):
     body = admin.patch_routine.await_args.kwargs["body"]
     assert body == {"title": "Just a rename"}
     assert "description" not in body
+
+
+# ---------------------------------------------------------------------------
+# P1 — routine-POLICY fireability gate (mirrors the trigger-retiming gate).
+#
+# Gating only ``status=="active"`` left a walk-around: switching an ALREADY-active
+# routine's ``concurrency_policy`` to ``always_enqueue`` or ``catch_up_policy`` to
+# ``enqueue_missed_with_cap`` raises scheduled dispatch VOLUME without touching
+# ``status``. Those more-dispatching targets are now gated like activation; a
+# narrowing policy edit stays open (the escape hatch).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"concurrency_policy": "always_enqueue"},
+        {"catch_up_policy": "enqueue_missed_with_cap"},
+    ],
+)
+def test_trial_owner_cannot_raise_dispatch_policy(client, admin, monkeypatch, body):
+    """A trial owner switching a policy to its more-dispatching value is gated 402,
+    the same as flipping status to active."""
+    _trial(monkeypatch)
+
+    r = client.patch(
+        "/api/v1/teams/routines/r1",
+        json=body,
+        headers={"Authorization": "Bearer x"},
+    )
+
+    assert r.status_code == 402
+    assert r.json()["detail"]["code"] == "routines_require_subscription"
+    admin.patch_routine.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"concurrency_policy": "always_enqueue"},
+        {"catch_up_policy": "enqueue_missed_with_cap"},
+    ],
+)
+def test_paid_owner_can_raise_dispatch_policy(client, admin, body):
+    """The paid owner the gate protects can still raise dispatch policy."""
+    r = client.patch(
+        "/api/v1/teams/routines/r1",
+        json=body,
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200, r.text
+    admin.patch_routine.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"concurrency_policy": "skip_if_active"},
+        {"concurrency_policy": "coalesce_if_active"},
+        {"catch_up_policy": "skip_missed"},
+    ],
+)
+def test_trial_owner_can_narrow_dispatch_policy(client, admin, monkeypatch, body):
+    """Narrowing a policy to a LESS-dispatching value can only reduce autonomy, so
+    it stays open to trial owners — never falsely gated."""
+    _trial(monkeypatch)
+
+    r = client.patch(
+        "/api/v1/teams/routines/r1",
+        json=body,
+        headers={"Authorization": "Bearer x"},
+    )
+
+    assert r.status_code == 200, r.text
+    admin.patch_routine.assert_awaited_once()
+
+
+def test_patch_routine_trigger_forwards_explicit_null_label_clear(client, admin):
+    """Blanking a previously-set trigger label sends ``label: null``. The forward must
+    carry the explicit null through to Paperclip (exclude_UNSET, not exclude_none) —
+    exclude_none would drop the null before Paperclip saw it, silently ignoring the
+    clear so the label snapped back on refresh."""
+    r = client.patch(
+        "/api/v1/teams/routines/r1/triggers/tr_1",
+        json={"label": None},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200, r.text
+    body = admin.patch_routine_trigger.await_args.kwargs["body"]
+    assert "label" in body
+    assert body["label"] is None

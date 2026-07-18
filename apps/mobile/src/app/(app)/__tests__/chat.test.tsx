@@ -3,6 +3,9 @@ import { fireEvent, render, screen } from "@testing-library/react-native";
 // expo-router isn't in the jest transform allowlist; stub the bits <Chat/> uses.
 jest.mock("expo-router", () => ({ router: { push: jest.fn() } }));
 
+// Signed-out user: the first-run redirect effect stays inert.
+jest.mock("@clerk/clerk-expo", () => ({ useUser: () => ({ user: null }) }));
+
 // Mock the gateway provider + the agents.list RPC so <Chat/> renders offline.
 jest.mock("../../../providers/gateway", () => ({
   useGateway: () => ({ isConnected: true, error: null }),

@@ -4,6 +4,7 @@ import { Redirect, Tabs } from "expo-router";
 import { StyleSheet, type ColorValue } from "react-native";
 import type { ComponentProps } from "react";
 
+import { FirstRunGate } from "../../components/onboarding/FirstRunGate";
 import { ProvisionGate } from "../../components/provision/ProvisionGate";
 import { PushRegistration } from "../../components/push/PushRegistration";
 import { colors, fonts } from "../../config/theme";
@@ -33,6 +34,10 @@ export default function AppLayout() {
           is actively watching stream in. */}
       <PushRegistration getCurrentAgentId={getCurrentAgentId} />
       <ProvisionGate>
+        {/* Inside ProvisionGate so blocked/team-pending interstitials win;
+            replaces the whole tab shell with the funnel for an eligible
+            first-run trial owner (no skip — the committed front door). */}
+        <FirstRunGate>
         <Tabs
         screenOptions={{
           headerShown: true,
@@ -92,6 +97,7 @@ export default function AppLayout() {
         {/* Chat detail — reachable by navigation only, not a tab. */}
         <Tabs.Screen name="agent/[agentId]" options={{ href: null, title: "Chat" }} />
         </Tabs>
+        </FirstRunGate>
       </ProvisionGate>
     </GatewayProvider>
   );

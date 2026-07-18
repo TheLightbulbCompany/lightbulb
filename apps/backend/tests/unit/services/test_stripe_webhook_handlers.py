@@ -167,6 +167,29 @@ async def test_webhook_backup_write_threads_connector(mock_repo):
 
 
 @pytest.mark.asyncio
+async def test_subscription_updated_never_rewrites_provider_choice(mock_repo):
+    """`customer.subscription.updated` must NOT persist metadata.provider_choice.
+
+    Subscription metadata is a snapshot of the provider chosen at checkout
+    time and is never updated by change_provider. Renewal invoices, seat
+    syncs, and payment-method changes all fire .updated with that stale
+    snapshot — persisting it clobbers a post-onboarding provider switch
+    (and, via set_provider_choice's REMOVE, strips oauth_connector_user_id).
+    The backup write is creation-only; the state sync itself still runs.
+    """
+    event = _subscription_event(
+        default_payment_method=None,
+        status="active",
+        metadata={"owner_id": "org_x", "provider_choice": "bedrock_claude"},
+    )
+    event["type"] = "customer.subscription.updated"
+    await handlers.handle_subscription_state(event, MagicMock())
+
+    mock_repo.set_provider_choice.assert_not_called()
+    mock_repo.set_subscription.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_webhook_backup_write_bedrock_passes_no_connector(mock_repo):
     """A bedrock subscription event passes connector_user_id=None — bedrock is
     not connector-backed, and None leaves any existing connector untouched."""

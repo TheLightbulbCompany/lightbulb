@@ -49,7 +49,7 @@ from core.services.admin_audit import audit_admin_action
 from core.services.admin_service import resolve_admin_owner_id
 from core.services.config_patcher import patch_openclaw_config
 from core.services.idempotency import idempotency
-from core.services.update_service import apply_update
+from core.services.update_service import apply_update, reapply_owner_config
 from schemas.config import ConfigPatchRequest
 
 logger = logging.getLogger(__name__)
@@ -467,6 +467,41 @@ async def admin_container_force_apply_image_update(
         "update_id": update_id,
         "new_image": body.new_image,
     }
+
+
+@router.post(
+    "/users/{user_id}/container/reapply-config",
+    description=(
+        "Regenerate the owner's openclaw.json on EFS from the CURRENT config "
+        "generator (the dashboard twin of scripts/reapply_openclaw_config.py). "
+        "Unlike the deep-merge config PATCH — which preserves stale sibling "
+        "keys — this re-renders the full config via the provisioning write "
+        "path, then restores only the runtime-appended subtrees the regen "
+        "drops (channel pairing accounts, route bindings, boot-time "
+        "identity). Config-only and non-destructive: no task restart, EFS "
+        "workspace/agent state untouched. A running container picks the file "
+        "up via OpenClaw's watcher; changes needing a gateway restart to "
+        "activate (e.g. plugin enablement) land on the next image roll — "
+        "pair with 'Apply now' for an immediate restart. Returns 409 for "
+        "legacy rows without a gateway_token (those need a full "
+        "reprovision). Idempotency-Key supported."
+    ),
+)
+@idempotency()
+@audit_admin_action("container.reapply_config")
+async def admin_container_reapply_config(
+    user_id: str,
+    request: Request,
+    auth: AuthContext = Depends(require_platform_admin),
+):
+    owner_id, _ = await resolve_admin_owner_id(user_id)
+    try:
+        result = await reapply_owner_config(owner_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return {"status": "reapplied", **result}
 
 
 # ---------------------------------------------------------------------------

@@ -139,6 +139,184 @@ async def migrate_removed_config_keys(owner_id: str) -> None:
     )
 
 
+# Top-level subtrees that runtime writers CO-OWN with the config generator:
+# the generator emits the subtree's skeleton, but other writers add entries
+# inside it after provision that the generator does not know about —
+# channel pairing accounts/allowFrom (channel_link_service), marketplace
+# skill entries/allowBundled (deploy's skills_patch), deployed-agent MCP
+# servers (catalog deploy slice). Only these subtrees get the recursive
+# "preserve what the regen omits" treatment. Everywhere else a fresh render
+# WINS WHOLESALE: recursing into arbitrary generator-owned dicts would
+# resurrect stale fields the current generator deliberately no longer emits
+# (e.g. the pre-per-provider Titan ``memorySearch.model``) — the exact stale
+# state a regen exists to clear.
+_RUNTIME_CO_OWNED_SUBTREES: frozenset[str] = frozenset({"channels", "skills", "mcp"})
+
+
+def _runtime_only_delta(existing: dict | None, fresh: dict | None) -> dict:
+    """Diff ``existing`` against a freshly regenerated ``fresh`` config and
+    return only the runtime-appended state the regen dropped.
+
+    The config generator (``build_openclaw_config_dict``) emits an
+    authoritative config for every key it knows about, but some
+    openclaw.json state is written at runtime AFTER provision and a full
+    overwrite drops it. Two shapes of that state exist, with different
+    rules:
+
+    * **Top-level keys the generator never emits** (boot-time ``identity``,
+      ``bindings`` on configs where the generator did not re-inject them)
+      are preserved whole — absent from ``fresh`` means the regen does not
+      own them.
+    * **Entries inside co-owned subtrees** (``_RUNTIME_CO_OWNED_SUBTREES``:
+      ``channels`` pairing accounts, marketplace ``skills`` entries,
+      deployed-agent ``mcp`` servers) are preserved via full recursion —
+      within those subtrees, anything the regen omits is runtime state.
+
+    Every other key present in ``fresh`` is owned by the regen WHOLESALE —
+    no recursion. Recursing into arbitrary generator-owned dicts would
+    resurrect stale nested fields the current generator deliberately
+    stopped emitting (a removed ``memorySearch.model``, a dropped
+    plugin/feature block), which is the exact stale state a regen exists to
+    clear. The trade-off is explicit: a NEW runtime-only surface nested
+    under a generator-owned subtree needs adding to
+    ``_RUNTIME_CO_OWNED_SUBTREES`` to survive a regen.
+
+    Because the delta contains only keys the regen did not set, deep-merging
+    it back over the fresh config can never revert a regenerated value.
+    Lists are never descended into (the regen rebuilds e.g. ``agents.list``
+    wholesale). Returns an empty dict when nothing runtime-only was dropped.
+    """
+    if not isinstance(existing, dict) or not isinstance(fresh, dict):
+        return {}
+
+    delta: dict = {}
+    for key, existing_value in existing.items():
+        if key not in fresh:
+            # The regen does not emit this key at all — preserve it whole.
+            delta[key] = existing_value
+            continue
+        fresh_value = fresh[key]
+        if key in _RUNTIME_CO_OWNED_SUBTREES and isinstance(existing_value, dict) and isinstance(fresh_value, dict):
+            nested = _co_owned_delta(existing_value, fresh_value)
+            if nested:
+                delta[key] = nested
+        # else: the regen owns this key wholesale — exclude it so the
+        # restore can't revert or pollute the fresh value.
+    return delta
+
+
+def _co_owned_delta(existing: dict, fresh: dict) -> dict:
+    """Unrestricted recursive diff used INSIDE co-owned subtrees: preserve
+    every nested key the regen omits (pairing accounts at any depth, skill
+    entries, MCP server blocks)."""
+    delta: dict = {}
+    for key, existing_value in existing.items():
+        if key not in fresh:
+            delta[key] = existing_value
+            continue
+        fresh_value = fresh[key]
+        if isinstance(existing_value, dict) and isinstance(fresh_value, dict):
+            nested = _co_owned_delta(existing_value, fresh_value)
+            if nested:
+                delta[key] = nested
+    return delta
+
+
+async def reapply_owner_config(owner_id: str) -> dict:
+    """Regenerate an owner's ``openclaw.json`` on EFS from the current config
+    generator, preserving runtime-appended state.
+
+    Existing containers keep their PROVISION-TIME config on EFS; a backend
+    deploy that changes the generator does not touch it. This pushes the
+    regenerated config onto an existing owner via the SAME write path
+    provisioning uses (``ecs_manager.write_user_configs`` — which resolves
+    the live Paperclip agent list and connected integration MCP servers),
+    then deep-diffs the pre-regen snapshot against what landed and re-merges
+    only the subtrees the regen dropped (channel pairing accounts, route
+    bindings, boot-time identity, and any future runtime-only subtree).
+
+    Config-only: does not restart the task. A running container picks the
+    file up via OpenClaw's watcher; changes that need a gateway restart to
+    activate (e.g. plugin enablement) land on the next task roll.
+
+    Raises ``LookupError`` when the owner has no container row, and
+    ``ValueError`` for legacy rows without a ``gateway_token`` (minting a
+    fresh token here would diverge from the token baked into the running
+    task-def and break gateway auth — that path needs a full reprovision).
+    """
+    # Module-attribute imports at call time: dodges import cycles and keeps
+    # these seams patchable at their source modules (the reapply script's
+    # tests patch them there and exercise this function through the CLI).
+    from core.containers import get_ecs_manager
+    from core.containers import config as container_config
+    from core.repositories import container_repo
+    from core.services import config_patcher, container_provision
+
+    container = await container_repo.get_by_owner_id(owner_id)
+    if not container:
+        raise LookupError(f"No container row for owner {owner_id} — nothing to reapply")
+
+    gateway_token = container.get("gateway_token")
+    if not gateway_token:
+        raise ValueError(
+            f"Container row for {owner_id} has no gateway_token — refusing to "
+            "reapply (a fresh token would diverge from the running task-def; "
+            "run a full reprovision instead)"
+        )
+
+    hook_token = container.get("hook_token")
+    owner_type = container.get("owner_type") or "personal"
+    # Per-owner AIP map, persisted on the containers row at provision time
+    # (same pattern as gateway_token/hook_token). The generator hard-requires
+    # it on both Bedrock paths; without threading it through, every
+    # bedrock_claude/bedrock_trial owner would fail the regen. Read-only
+    # here — minting AIPs (ensure_owner_aips) is the provisioning path's job.
+    aip_arns = container.get("bedrock_aip_arns")
+    provider_choice, byo_provider = await container_provision.resolve_provider_choice(owner_id)
+
+    # Snapshot the FULL on-disk config BEFORE the regen overwrites it, so the
+    # runtime-only subtrees the fresh render drops can be recovered.
+    existing = await container_config.read_openclaw_config_from_efs(owner_id)
+
+    await get_ecs_manager().write_user_configs(
+        owner_id,
+        gateway_token,
+        provider_choice=provider_choice,
+        byo_provider=byo_provider,
+        hook_token=hook_token,
+        owner_type=owner_type,
+        aip_arns=aip_arns,
+    )
+
+    fresh = await container_config.read_openclaw_config_from_efs(owner_id)
+    restore_patch = _runtime_only_delta(existing, fresh)
+
+    # The trial generator DELIBERATELY omits carried-forward channel accounts
+    # and their route bindings (trial containers must not re-arm channel
+    # bots). Restoring them here would undo that lockdown — mirror the
+    # generator's own conditional and drop both from the restore.
+    if provider_choice == container_config.BEDROCK_TRIAL_CHOICE:
+        restore_patch.pop("channels", None)
+        restore_patch.pop("bindings", None)
+
+    if restore_patch:
+        await config_patcher.patch_openclaw_config(owner_id, restore_patch)
+
+    restored = sorted(restore_patch.keys())
+    logger.info(
+        "Reapplied openclaw.json for owner=%s provider=%s restored_subtrees=%s",
+        owner_id,
+        provider_choice,
+        restored or "-",
+    )
+    return {
+        "owner_id": owner_id,
+        "provider_choice": provider_choice,
+        "byo_provider": byo_provider,
+        "restored_subtrees": restored,
+    }
+
+
 async def apply_update(owner_id: str, update_id: str) -> bool:
     """Apply a single pending update.
 

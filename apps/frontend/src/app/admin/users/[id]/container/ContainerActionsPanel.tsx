@@ -20,6 +20,7 @@ import type { AvailableImage } from "@/app/admin/_lib/api";
 import {
   forceApplyImageUpdate,
   queueImageUpdate,
+  reapplyOwnerConfig,
   reprovisionContainer,
   resizeContainer,
   startContainer,
@@ -173,6 +174,25 @@ export function ContainerActionsPanel({
     }
   }
 
+  async function handleReapplyConfig() {
+    clearStatus();
+    const result = await reapplyOwnerConfig(userId);
+    if (result.ok) {
+      const restored =
+        result.data && typeof result.data === "object" && "restored_subtrees" in result.data
+          ? (result.data as { restored_subtrees?: string[] }).restored_subtrees
+          : undefined;
+      setNotice(
+        restored && restored.length > 0
+          ? `Regenerate config succeeded (restored runtime subtrees: ${restored.join(", ")}).`
+          : "Regenerate config succeeded.",
+      );
+      router.refresh();
+    } else {
+      setError(`Regenerate config failed: ${result.error ?? "unknown_error"}`);
+    }
+  }
+
   function formatPushedAt(iso: string | null | undefined): string {
     if (!iso) return "";
     const d = new Date(iso);
@@ -236,6 +256,36 @@ export function ContainerActionsPanel({
           >
             <Button type="button" variant="default" size="sm">
               Re-apply sizing
+            </Button>
+          </ConfirmActionDialog>
+        </div>
+
+        {/* Config regen from the current generator (dashboard twin of
+            scripts/reapply_openclaw_config.py). Config-only, no restart —
+            the counterpart to "Apply now" below, which rolls the image but
+            reuses the on-disk config verbatim. */}
+        <div className="space-y-2 rounded-lg border border-zinc-800 p-3">
+          <h3 className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+            Regenerate config
+          </h3>
+          <p className="text-xs text-zinc-400">
+            Re-renders <span className="font-mono">openclaw.json</span> from the
+            current config generator via the provisioning write path — clears
+            stale keys a deep-merge patch would preserve — then restores the
+            runtime-appended subtrees the regen drops (channel pairings, route
+            bindings, identity). Config-only: no restart, EFS workspace/agent
+            state untouched. Pair with{" "}
+            <strong className="text-zinc-300">Apply now</strong> below when the
+            change needs a gateway restart to activate (e.g. plugin
+            enablement).
+          </p>
+          <ConfirmActionDialog
+            confirmText={userId}
+            actionLabel="Regenerate config"
+            onConfirm={handleReapplyConfig}
+          >
+            <Button type="button" variant="default" size="sm">
+              Regenerate config
             </Button>
           </ConfirmActionDialog>
         </div>

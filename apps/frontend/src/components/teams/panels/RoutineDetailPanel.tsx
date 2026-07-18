@@ -851,16 +851,26 @@ function EditRoutineDialog({
   const namedVars = vars.filter((v) => v.name.trim() !== "");
   const canSave = title.trim() !== "";
 
+  // Send only fields the user actually changed. The backend gates any body that
+  // (re-)asserts status:"active" as a fireability-increasing edit, so a benign
+  // rename / reassign by a trial owner must NOT carry an unchanged status.
+  // Variables are always sent — deep-diffing the typed-variable array is not
+  // cheap and it is not a fireability-increasing field.
   async function submit() {
     if (!canSave) return;
-    await onSave({
-      title: title.trim(),
-      description: description.trim() || null,
-      assignee_agent_id: assigneeAgentId ?? null,
-      priority,
-      status,
-      variables: namedVars.map(fromDraft),
-    });
+    const body: RoutineEditBody = {};
+    const nextTitle = title.trim();
+    if (nextTitle !== (routine.title ?? "").trim()) body.title = nextTitle;
+    const nextDescription = description.trim() || null;
+    if (nextDescription !== ((routine.description ?? "").trim() || null))
+      body.description = nextDescription;
+    const nextAssignee = assigneeAgentId ?? null;
+    if (nextAssignee !== (routine.assigneeAgentId ?? null))
+      body.assignee_agent_id = nextAssignee;
+    if (priority !== (routine.priority ?? "medium")) body.priority = priority;
+    if (status !== (routine.status ?? "active")) body.status = status;
+    body.variables = namedVars.map(fromDraft);
+    await onSave(body);
   }
 
   return (
@@ -1102,14 +1112,20 @@ function TriggerDialog({
         label: label.trim() || undefined,
         enabled,
       });
-    } else {
-      await onSubmit({
-        cron_expression: cron.trim(),
-        timezone: timezone.trim(),
-        label: label.trim() || undefined,
-        enabled,
-      });
+      return;
     }
+    // Edit: send only fields the user actually changed, so a benign relabel or a
+    // pure disable (unchecking Enabled) doesn't re-assert cron/timezone and trip
+    // the backend fireability gate. A pure disable sends just { enabled: false }.
+    const body: TriggerSubmitBody = {};
+    const nextCron = cron.trim();
+    if (nextCron !== (trigger?.cronExpression ?? "").trim()) body.cron_expression = nextCron;
+    const nextTz = timezone.trim();
+    if (nextTz !== (trigger?.timezone ?? browserTz()).trim()) body.timezone = nextTz;
+    const nextLabel = label.trim() || undefined;
+    if (nextLabel !== ((trigger?.label ?? "").trim() || undefined)) body.label = nextLabel;
+    if (enabled !== (trigger?.enabled !== false)) body.enabled = enabled;
+    await onSubmit(body);
   }
 
   return (

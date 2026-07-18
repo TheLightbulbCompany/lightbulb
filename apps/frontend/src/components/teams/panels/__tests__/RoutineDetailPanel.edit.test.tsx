@@ -160,6 +160,54 @@ describe("RoutineDetailPanel — editable (A2)", () => {
     ]);
   });
 
+  it("omits unchanged status on a title-only routine save", async () => {
+    // The backend gates any body carrying status:"active" as a
+    // fireability-increasing edit, so a benign rename must not re-send it.
+    const user = userEvent.setup();
+    render(<RoutineDetailPanel routineId="r1" />);
+    await user.click(screen.getByRole("button", { name: /edit routine/i }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("Title"), {
+      target: { value: "Nightly digest renamed" },
+    });
+    await user.click(within(dialog).getByRole("button", { name: /^Save$/ }));
+    await waitFor(() => expect(patch).toHaveBeenCalled());
+    const [path, body] = patch.mock.calls[0];
+    expect(path).toBe("/routines/r1");
+    expect(body.title).toBe("Nightly digest renamed");
+    expect(body).not.toHaveProperty("status");
+    expect(body).not.toHaveProperty("priority");
+  });
+
+  it("sends only { enabled: false } when a trigger is disabled without other edits", async () => {
+    const user = userEvent.setup();
+    render(<RoutineDetailPanel routineId="r1" />);
+    await user.click(screen.getByRole("button", { name: /edit schedule/i }));
+    const dialog = await screen.findByRole("dialog");
+    // Uncheck Enabled and save nothing else — cron/timezone stay untouched.
+    await user.click(within(dialog).getByLabelText("Enabled"));
+    await user.click(within(dialog).getByRole("button", { name: /^Save$/ }));
+    await waitFor(() =>
+      expect(patch).toHaveBeenCalledWith("/routines/r1/triggers/t1", { enabled: false }),
+    );
+  });
+
+  it("sends cron_expression (and not timezone) when the schedule actually changes", async () => {
+    const user = userEvent.setup();
+    render(<RoutineDetailPanel routineId="r1" />);
+    await user.click(screen.getByRole("button", { name: /edit schedule/i }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByPlaceholderText("0 9 * * *"), {
+      target: { value: "30 8 * * 1" },
+    });
+    await user.click(within(dialog).getByRole("button", { name: /^Save$/ }));
+    await waitFor(() => expect(patch).toHaveBeenCalled());
+    const [path, body] = patch.mock.calls[0];
+    expect(path).toBe("/routines/r1/triggers/t1");
+    expect(body.cron_expression).toBe("30 8 * * 1");
+    expect(body).not.toHaveProperty("timezone");
+  });
+
   it("surfaces a 402 gate message inline and keeps the dialog open", async () => {
     patch.mockRejectedValue({
       body: { detail: { message: "Scheduled routines are part of a paid plan." } },

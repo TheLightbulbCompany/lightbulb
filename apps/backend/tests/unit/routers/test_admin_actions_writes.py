@@ -426,6 +426,77 @@ class TestContainerForceApplyImageUpdate:
         assert mock_apply.await_count == 1
 
 
+class TestContainerReapplyConfig:
+    """POST /api/v1/admin/users/{user_id}/container/reapply-config.
+
+    Regenerates the owner's openclaw.json from the CURRENT config generator
+    (dashboard twin of scripts/reapply_openclaw_config.py). Config-only —
+    no task restart; the route delegates entirely to
+    ``update_service.reapply_owner_config``, which handles the regen +
+    runtime-subtree restore.
+    """
+
+    _RESULT = {
+        "owner_id": "u_target",
+        "provider_choice": "bedrock_claude",
+        "byo_provider": None,
+        "restored_subtrees": ["bindings", "channels", "identity"],
+    }
+
+    @pytest.mark.asyncio
+    async def test_happy_path(self, async_client, admin_env):
+        with patch("routers.admin.reapply_owner_config", new=AsyncMock(return_value=self._RESULT)) as mock_reapply:
+            res = await async_client.post("/api/v1/admin/users/u_target/container/reapply-config")
+        assert res.status_code == 200
+        body = res.json()
+        assert body["status"] == "reapplied"
+        assert body["restored_subtrees"] == ["bindings", "channels", "identity"]
+        mock_reapply.assert_awaited_once_with("u_target")
+
+    @pytest.mark.asyncio
+    async def test_404_when_no_container_row(self, async_client, admin_env):
+        with patch(
+            "routers.admin.reapply_owner_config",
+            new=AsyncMock(side_effect=LookupError("No container row for owner u_target")),
+        ):
+            res = await async_client.post("/api/v1/admin/users/u_target/container/reapply-config")
+        assert res.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_409_for_legacy_row_without_gateway_token(self, async_client, admin_env):
+        """Legacy rows without a gateway_token are refused — minting a fresh
+        token would diverge from the running task-def and break gateway auth."""
+        with patch(
+            "routers.admin.reapply_owner_config",
+            new=AsyncMock(side_effect=ValueError("no gateway_token")),
+        ):
+            res = await async_client.post("/api/v1/admin/users/u_target/container/reapply-config")
+        assert res.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_403_for_non_admin(self, async_client, non_admin_env):
+        res = await async_client.post("/api/v1/admin/users/u_target/container/reapply-config")
+        assert res.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_audit_row_written(self, async_client, admin_env, mock_audit_repo):
+        with patch("routers.admin.reapply_owner_config", new=AsyncMock(return_value=self._RESULT)):
+            res = await async_client.post("/api/v1/admin/users/u_target/container/reapply-config")
+        assert res.status_code == 200
+        kwargs = mock_audit_repo.await_args.kwargs
+        assert kwargs["action"] == "container.reapply_config"
+        assert kwargs["target_user_id"] == "u_target"
+
+    @pytest.mark.asyncio
+    async def test_idempotent_within_window(self, async_client, admin_env):
+        with patch("routers.admin.reapply_owner_config", new=AsyncMock(return_value=self._RESULT)) as mock_reapply:
+            headers = {"Idempotency-Key": "reapply-key-1"}
+            r1 = await async_client.post("/api/v1/admin/users/u_target/container/reapply-config", headers=headers)
+            r2 = await async_client.post("/api/v1/admin/users/u_target/container/reapply-config", headers=headers)
+        assert r1.json() == r2.json()
+        assert mock_reapply.await_count == 1
+
+
 # ===========================================================================
 # Billing actions
 # ===========================================================================

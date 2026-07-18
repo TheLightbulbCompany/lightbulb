@@ -139,6 +139,136 @@ async def migrate_removed_config_keys(owner_id: str) -> None:
     )
 
 
+def _runtime_only_delta(existing: dict | None, fresh: dict | None) -> dict:
+    """Deep-diff ``existing`` against a freshly regenerated ``fresh`` config
+    and return only the subtrees the regen DROPPED — i.e. everything present
+    in ``existing`` that ``fresh`` does not produce.
+
+    This is the general form of "preserve runtime-appended config." The
+    config generator (``build_openclaw_config_dict``) emits an authoritative
+    config for every key it knows about, but several openclaw.json subtrees
+    are written at runtime AFTER provision (``channels.<provider>.accounts``
+    pairing state, top-level ``bindings`` route entries, the ``identity``
+    OpenClaw adds at boot) and a full overwrite drops them. Rather than
+    hardcode an allowlist of those subtrees (which silently loses any new
+    runtime-only subtree the moment one is added), diff the regen output
+    against the on-disk file and re-add only what the regen left out.
+
+    Because the delta contains ONLY keys the regen did not set, deep-merging
+    it back over the fresh config can never revert a regenerated value.
+
+    Diff rules:
+
+    * A key present in ``existing`` but absent in ``fresh`` is preserved
+      whole (the regen does not own it).
+    * When both have a key holding a dict, recurse — preserve only the nested
+      keys the regen omits.
+    * Any non-dict value the regen set (scalar OR list, even when its value
+      changed) is owned by the fresh write and excluded. Lists are not
+      descended into: the regen rebuilds e.g. ``agents.list`` wholesale, so
+      the fresh list is authoritative.
+
+    Returns an empty dict when the regen is a superset of ``existing``
+    (nothing was dropped); the caller skips the restore patch entirely then.
+    """
+    if not isinstance(existing, dict) or not isinstance(fresh, dict):
+        return {}
+
+    delta: dict = {}
+    for key, existing_value in existing.items():
+        if key not in fresh:
+            # The regen does not emit this key at all — preserve it whole.
+            delta[key] = existing_value
+            continue
+        fresh_value = fresh[key]
+        if isinstance(existing_value, dict) and isinstance(fresh_value, dict):
+            nested = _runtime_only_delta(existing_value, fresh_value)
+            if nested:
+                delta[key] = nested
+        # else: the regen owns this key (scalar/list, or a type the regen
+        # changed) — exclude it so the restore can't revert the fresh value.
+    return delta
+
+
+async def reapply_owner_config(owner_id: str) -> dict:
+    """Regenerate an owner's ``openclaw.json`` on EFS from the current config
+    generator, preserving runtime-appended state.
+
+    Existing containers keep their PROVISION-TIME config on EFS; a backend
+    deploy that changes the generator does not touch it. This pushes the
+    regenerated config onto an existing owner via the SAME write path
+    provisioning uses (``ecs_manager.write_user_configs`` — which resolves
+    the live Paperclip agent list and connected integration MCP servers),
+    then deep-diffs the pre-regen snapshot against what landed and re-merges
+    only the subtrees the regen dropped (channel pairing accounts, route
+    bindings, boot-time identity, and any future runtime-only subtree).
+
+    Config-only: does not restart the task. A running container picks the
+    file up via OpenClaw's watcher; changes that need a gateway restart to
+    activate (e.g. plugin enablement) land on the next task roll.
+
+    Raises ``LookupError`` when the owner has no container row, and
+    ``ValueError`` for legacy rows without a ``gateway_token`` (minting a
+    fresh token here would diverge from the token baked into the running
+    task-def and break gateway auth — that path needs a full reprovision).
+    """
+    # Module-attribute imports at call time: dodges import cycles and keeps
+    # these seams patchable at their source modules (the reapply script's
+    # tests patch them there and exercise this function through the CLI).
+    from core.containers import get_ecs_manager
+    from core.containers import config as container_config
+    from core.repositories import container_repo
+    from core.services import config_patcher, container_provision
+
+    container = await container_repo.get_by_owner_id(owner_id)
+    if not container:
+        raise LookupError(f"No container row for owner {owner_id} — nothing to reapply")
+
+    gateway_token = container.get("gateway_token")
+    if not gateway_token:
+        raise ValueError(
+            f"Container row for {owner_id} has no gateway_token — refusing to "
+            "reapply (a fresh token would diverge from the running task-def; "
+            "run a full reprovision instead)"
+        )
+
+    hook_token = container.get("hook_token")
+    owner_type = container.get("owner_type") or "personal"
+    provider_choice, byo_provider = await container_provision.resolve_provider_choice(owner_id)
+
+    # Snapshot the FULL on-disk config BEFORE the regen overwrites it, so the
+    # runtime-only subtrees the fresh render drops can be recovered.
+    existing = await container_config.read_openclaw_config_from_efs(owner_id)
+
+    await get_ecs_manager().write_user_configs(
+        owner_id,
+        gateway_token,
+        provider_choice=provider_choice,
+        byo_provider=byo_provider,
+        hook_token=hook_token,
+        owner_type=owner_type,
+    )
+
+    fresh = await container_config.read_openclaw_config_from_efs(owner_id)
+    restore_patch = _runtime_only_delta(existing, fresh)
+    if restore_patch:
+        await config_patcher.patch_openclaw_config(owner_id, restore_patch)
+
+    restored = sorted(restore_patch.keys())
+    logger.info(
+        "Reapplied openclaw.json for owner=%s provider=%s restored_subtrees=%s",
+        owner_id,
+        provider_choice,
+        restored or "-",
+    )
+    return {
+        "owner_id": owner_id,
+        "provider_choice": provider_choice,
+        "byo_provider": byo_provider,
+        "restored_subtrees": restored,
+    }
+
+
 async def apply_update(owner_id: str, update_id: str) -> bool:
     """Apply a single pending update.
 

@@ -75,3 +75,18 @@ export async function forceApplyImageUpdate(
   );
 }
 
+/**
+ * Regenerate the owner's openclaw.json on EFS from the CURRENT config
+ * generator. Unlike the deep-merge config PATCH (which preserves stale
+ * sibling keys), this re-renders the full config via the provisioning write
+ * path and restores only the runtime-appended subtrees the regen drops
+ * (channel pairing accounts, route bindings, boot-time identity).
+ * Config-only — no task restart; pair with "Apply now" when the change
+ * needs a gateway restart to activate (e.g. plugin enablement).
+ */
+export async function reapplyOwnerConfig(userId: string): Promise<ActionResult> {
+  return adminPost(
+    `/admin/users/${encodeURIComponent(userId)}/container/reapply-config`,
+  );
+}
+

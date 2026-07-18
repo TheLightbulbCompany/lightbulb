@@ -472,3 +472,96 @@ async def test_expired_or_missing_pending_session_mints_fresh(
     assert resp.status_code == 200
     assert resp.json()["checkout_url"] == "https://checkout.stripe.com/fresh"
     mock_create_checkout.assert_called_once()
+
+
+@pytest.mark.asyncio
+@patch("core.services.billing_service.create_flat_fee_checkout")
+@patch("routers.billing.stripe.checkout.Session.expire")
+@patch("routers.billing.stripe.checkout.Session.retrieve")
+@patch("routers.billing.stripe.Subscription.list")
+@patch("routers.billing.clerk_admin")
+@patch("routers.billing.billing_repo")
+async def test_unexpirable_pending_session_409s_unless_truly_expired(
+    mock_repo, mock_clerk, mock_sub_list, mock_retrieve, mock_expire, mock_create_checkout, async_client
+):
+    """Thin race: the session completes in another tab between retrieve
+    (open) and expire. Minting fresh would leave BOTH chargeable — the
+    handler must re-check and stop."""
+    import stripe as stripe_mod
+
+    mock_repo.get_by_owner_id = AsyncMock(return_value=dict(_PENDING_ROW))
+    mock_clerk.list_pending_invitations_for_user = AsyncMock(return_value=[])
+    mock_sub_list.return_value = _sub_list([])
+    completed = _open_session()
+    completed.get.side_effect = lambda k, d=None: {"status": "complete"}.get(k, d)
+    mock_retrieve.side_effect = [_open_session(), completed]
+    mock_expire.side_effect = stripe_mod.error.InvalidRequestError("already complete", param=None)
+
+    resp = await async_client.post(
+        "/api/v1/billing/trial-checkout",
+        json={"provider_choice": "chatgpt_oauth"},
+    )
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "already_subscribed:checkout_completed"
+    mock_create_checkout.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch("core.services.billing_service.create_flat_fee_checkout")
+@patch("routers.billing.stripe.checkout.Session.expire")
+@patch("routers.billing.stripe.checkout.Session.retrieve")
+@patch("routers.billing.stripe.Subscription.list")
+@patch("routers.billing.clerk_admin")
+@patch("routers.billing.billing_repo")
+async def test_unexpirable_but_expired_session_mints_fresh(
+    mock_repo, mock_clerk, mock_sub_list, mock_retrieve, mock_expire, mock_create_checkout, async_client
+):
+    """The benign variant of the expire race: the session hit its expires_at
+    between retrieve and expire. Nothing is chargeable — mint fresh."""
+    import stripe as stripe_mod
+
+    mock_repo.get_by_owner_id = AsyncMock(return_value=dict(_PENDING_ROW))
+    mock_repo.set_provider_choice = AsyncMock(return_value=None)
+    mock_clerk.list_pending_invitations_for_user = AsyncMock(return_value=[])
+    mock_sub_list.return_value = _sub_list([])
+    expired = _open_session()
+    expired.get.side_effect = lambda k, d=None: {"status": "expired"}.get(k, d)
+    mock_retrieve.side_effect = [_open_session(), expired]
+    mock_expire.side_effect = stripe_mod.error.InvalidRequestError("already expired", param=None)
+    mock_create_checkout.return_value = type("Session", (), {"url": "https://checkout.stripe.com/fresh"})()
+
+    resp = await async_client.post(
+        "/api/v1/billing/trial-checkout",
+        json={"provider_choice": "chatgpt_oauth"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["checkout_url"] == "https://checkout.stripe.com/fresh"
+
+
+@pytest.mark.asyncio
+@patch("core.services.billing_service.create_flat_fee_checkout")
+@patch("routers.billing.stripe.Subscription.list")
+@patch("routers.billing.clerk_admin")
+@patch("routers.billing.billing_repo")
+async def test_lost_checkout_slot_claim_maps_to_409(
+    mock_repo, mock_clerk, mock_sub_list, mock_create_checkout, async_client
+):
+    """Losing the per-owner checkout-slot claim to a concurrent request is a
+    409 (retry reuses the winner's session), not a generic 400."""
+    from core.services.billing_service import BillingServiceError
+
+    mock_repo.get_by_owner_id = AsyncMock(return_value=dict(_TRIAL_LOCAL_ROW))
+    mock_repo.set_provider_choice = AsyncMock(return_value=None)
+    mock_clerk.list_pending_invitations_for_user = AsyncMock(return_value=[])
+    mock_sub_list.return_value = _sub_list([])
+    mock_create_checkout.side_effect = BillingServiceError("checkout_in_progress")
+
+    resp = await async_client.post(
+        "/api/v1/billing/trial-checkout",
+        json={"provider_choice": "bedrock_claude"},
+    )
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "checkout_in_progress"

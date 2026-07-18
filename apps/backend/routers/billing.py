@@ -525,10 +525,18 @@ async def create_trial_checkout(
                 with timing("stripe.api.latency", {"op": "checkout.session.expire"}):
                     stripe.checkout.Session.expire(pending_id)
             except stripe.error.InvalidRequestError:
-                # Lost a thin race (completed between retrieve and expire).
-                # The subscription webhooks + live-subscription guard own
-                # that world; proceed and let them arbitrate.
-                logger.info("Pending checkout session %s no longer expirable", pending_id)
+                # Thin race: the session can complete between retrieve and
+                # expire (checkout finishing in another tab). Minting a
+                # fresh session here would leave BOTH chargeable — re-check
+                # and stop unless it genuinely expired.
+                with timing("stripe.api.latency", {"op": "checkout.session.retrieve"}):
+                    recheck = stripe.checkout.Session.retrieve(pending_id)
+                if recheck.get("status") != "expired":
+                    raise HTTPException(
+                        status_code=409,
+                        detail="already_subscribed:checkout_completed",
+                    )
+                logger.info("Pending checkout session %s expired concurrently — minting fresh", pending_id)
         elif pending is not None and pending.get("status") == "complete":
             # Paid, webhook in flight. Do not mint a parallel session; the
             # row flips active momentarily and the normal guard takes over.
@@ -579,6 +587,11 @@ async def create_trial_checkout(
             clerk_user_id=auth.user_id,
         )
     except BillingServiceError as e:
+        if str(e) == "checkout_in_progress":
+            # Lost the per-owner checkout-slot claim to a concurrent request
+            # — that request's session is (or is about to be) the one open
+            # session. 409, not 400: retrying in a moment reuses it.
+            raise HTTPException(status_code=409, detail="checkout_in_progress")
         raise HTTPException(status_code=400, detail=str(e))
     return {"checkout_url": session.url}
 

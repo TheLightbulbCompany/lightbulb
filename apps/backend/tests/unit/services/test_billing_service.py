@@ -13,6 +13,27 @@ from core.services.billing_service import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _checkout_slot_claim_granted():
+    """create_flat_fee_checkout serializes session creation behind a
+    per-owner DDB claim. Grant it by default so every existing checkout test
+    exercises the path it was written for; the claim's own behavior is
+    tested explicitly in TestCheckoutSlotClaim."""
+    with (
+        patch.object(
+            billing_service.billing_repo,
+            "try_claim_checkout_slot",
+            new=AsyncMock(return_value=True),
+        ),
+        patch.object(
+            billing_service.billing_repo,
+            "release_checkout_slot",
+            new=AsyncMock(),
+        ),
+    ):
+        yield
+
+
 @pytest.fixture
 def dynamodb_billing_table():
     """Moto-backed billing-accounts table (mirrors
@@ -786,3 +807,46 @@ async def test_sync_team_seat_quantity_refreshes_owner_facts(monkeypatch):
 
     assert count == 5
     facts_mock.assert_awaited_once_with("org_x", account_overrides={"seat_count": 5})
+
+
+class TestCheckoutSlotClaim:
+    """Per-owner serialization of Checkout session creation — the guard
+    against two concurrent different-provider requests each minting a
+    completable session (different idempotency keys, so Stripe won't
+    collapse them)."""
+
+    @pytest.mark.asyncio
+    async def test_claim_denied_raises_checkout_in_progress(self, monkeypatch):
+        monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat_test")
+        with (
+            patch.object(
+                billing_service.billing_repo,
+                "try_claim_checkout_slot",
+                new=AsyncMock(return_value=False),
+            ),
+            patch.object(billing_service, "_build_subscription_checkout", new=AsyncMock()) as mock_build,
+            pytest.raises(BillingServiceError, match="checkout_in_progress"),
+        ):
+            await billing_service.create_flat_fee_checkout(owner_id="u_1")
+        mock_build.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_build_failure_releases_slot(self, monkeypatch):
+        """A failed session create must free the claim so the user's retry
+        doesn't wait out the 90s TTL."""
+        monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat_test")
+        with (
+            patch.object(
+                billing_service.billing_repo,
+                "release_checkout_slot",
+                new=AsyncMock(),
+            ) as mock_release,
+            patch.object(
+                billing_service,
+                "_build_subscription_checkout",
+                new=AsyncMock(side_effect=BillingServiceError("No Stripe customer for owner_id=u_1")),
+            ),
+            pytest.raises(BillingServiceError, match="No Stripe customer"),
+        ):
+            await billing_service.create_flat_fee_checkout(owner_id="u_1")
+        mock_release.assert_awaited_once_with("u_1")

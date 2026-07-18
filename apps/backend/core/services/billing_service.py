@@ -229,6 +229,15 @@ async def create_flat_fee_checkout(
     if not settings.STRIPE_FLAT_PRICE_ID:
         raise BillingServiceError("STRIPE_FLAT_PRICE_ID not configured")
 
+    # Serialize session creation per owner. Concurrent requests with
+    # different provider choices carry different idempotency keys, so
+    # without the claim both would mint distinct completable sessions
+    # before either pending-checkout marker lands. Self-expires (90s) so a
+    # crashed request can't wedge the owner; the router maps this error to
+    # a 409.
+    if not await billing_repo.try_claim_checkout_slot(owner_id):
+        raise BillingServiceError("checkout_in_progress")
+
     metadata: dict = {"owner_id": owner_id}
     if provider_choice:
         metadata["provider_choice"] = provider_choice
@@ -237,17 +246,23 @@ async def create_flat_fee_checkout(
     if clerk_user_id:
         metadata["clerk_user_id"] = clerk_user_id
 
-    session = await _build_subscription_checkout(
-        owner_id=owner_id,
-        price_id=settings.STRIPE_FLAT_PRICE_ID,
-        quantity=1,
-        metadata=metadata,
-        success_url=(
-            f"{FRONTEND_URL}/chat?checkout=success" + (f"&provider={provider_choice}" if provider_choice else "")
-        ),
-        cancel_url=f"{FRONTEND_URL}/?checkout=cancel",
-        idempotency_key=_checkout_idempotency_key("flat_checkout", owner_id, provider_choice or "_"),
-    )
+    try:
+        session = await _build_subscription_checkout(
+            owner_id=owner_id,
+            price_id=settings.STRIPE_FLAT_PRICE_ID,
+            quantity=1,
+            metadata=metadata,
+            success_url=(
+                f"{FRONTEND_URL}/chat?checkout=success" + (f"&provider={provider_choice}" if provider_choice else "")
+            ),
+            cancel_url=f"{FRONTEND_URL}/?checkout=cancel",
+            idempotency_key=_checkout_idempotency_key("flat_checkout", owner_id, provider_choice or "_"),
+        )
+    except Exception:
+        # No session exists — free the slot so the user's immediate retry
+        # doesn't wait out the claim TTL.
+        await billing_repo.release_checkout_slot(owner_id)
+        raise
     # Best-effort: the marker is the single-open-session guard, not a
     # correctness dependency — an unrecorded session just floats until its
     # ~31-minute expiry and the live-subscription check still covers anything

@@ -16,7 +16,7 @@
 // would trip CSP. Images render inline; PDFs embed in an iframe; anything else
 // falls back to a download link.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { ExternalLink, Trash2, Download } from "lucide-react";
 import { EditorialDialog } from "@/components/teams/shell/EditorialDialog";
@@ -45,13 +45,20 @@ type AttachmentState =
 // state synchronously.
 function AttachmentBody({ artifact }: { artifact: CompanyArtifact }) {
   const { download } = useTeamsApi();
+  // useTeamsApi() returns a fresh `download` each render; capturing it once at
+  // mount lets the fetch effect depend only on `attachmentId`. Otherwise the
+  // success setState re-renders → new `download` identity → effect re-runs →
+  // revokes the just-made object URL and re-downloads, looping until closed.
+  // This component is keyed per-artifact (it remounts when the attachment
+  // changes), so the mount-time `download` is always the right one.
+  const downloadRef = useRef(download);
   const [state, setState] = useState<AttachmentState>({ status: "loading" });
   const attachmentId = artifactRawId(artifact.id);
 
   useEffect(() => {
     let cancelled = false;
     let objectUrl: string | undefined;
-    download(`/attachments/${attachmentId}/content`)
+    downloadRef.current(`/attachments/${attachmentId}/content`)
       .then((blob) => {
         if (cancelled) return;
         objectUrl = URL.createObjectURL(blob);
@@ -64,7 +71,7 @@ function AttachmentBody({ artifact }: { artifact: CompanyArtifact }) {
       cancelled = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [download, attachmentId]);
+  }, [attachmentId]);
 
   if (state.status === "loading") {
     return (

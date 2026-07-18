@@ -74,6 +74,42 @@ function pickClosest(occurrences: number[], expected: number): number | null {
 }
 
 /**
+ * Mark every raw-markdown character that lives inside an inline link/image
+ * DESTINATION — the `(…)` that follows a `](` label close — as non-selectable.
+ * The label text between `[` and `]` renders and stays selectable; only the
+ * destination (URL + optional title, parens included) is hidden. Balanced
+ * parens and backslash escapes inside the destination are tracked so a URL like
+ * `(a(b)c)` masks fully. The projection walk consults this mask so a rendered
+ * character can never align onto a character buried in a URL.
+ */
+function linkDestinationMask(markdown: string): Uint8Array {
+  const hidden = new Uint8Array(markdown.length);
+  for (let i = 0; i < markdown.length; i += 1) {
+    // A destination opens at "](" — the `]` closing a link/image label, then `(`.
+    if (markdown[i] !== "]" || markdown[i + 1] !== "(") continue;
+    const open = i + 1;
+    let depth = 0;
+    let j = open;
+    for (; j < markdown.length; j += 1) {
+      const ch = markdown[j];
+      if (ch === "\\") {
+        j += 1; // skip the escaped char
+        continue;
+      }
+      if (ch === "(") depth += 1;
+      else if (ch === ")") {
+        depth -= 1;
+        if (depth === 0) break;
+      }
+    }
+    if (j >= markdown.length) continue; // unbalanced — leave it selectable
+    for (let k = open; k <= j; k += 1) hidden[k] = 1;
+    i = j; // resume scanning after the destination
+  }
+  return hidden;
+}
+
+/**
  * Project a selected span from normalized-container (rendered) space into raw
  * markdown offsets by greedily aligning the rendered text as an in-order
  * SUBSEQUENCE of the raw body. Rendered text is the markdown with its inline
@@ -86,6 +122,12 @@ function pickClosest(occurrences: number[], expected: number): number | null {
  * `[click](https://here.example) here` anchors to the trailing rendered `here`,
  * never the `here` buried inside the URL (which the old raw `indexOf` scan could
  * pick when the scaled offset happened to fall closer to it).
+ *
+ * Skipping non-matching syntax alone isn't enough when a rendered word ABUTS a
+ * link with no separating whitespace (`[x](https://word.example)word`): the walk
+ * would keep matching the rendered `word` THROUGH the `word` inside the URL. So
+ * link/image destinations are masked ({@link linkDestinationMask}) and treated
+ * as non-selectable — the walk never aligns a rendered char inside a URL.
  *
  * Consuming the rendered PREFIX before the needle also advances the raw cursor
  * past every earlier occurrence, so a REPEATED phrase resolves to the same
@@ -102,6 +144,10 @@ function projectRenderedSpanToMarkdown(
   normalizedEnd: number,
 ): { start: number; end: number } | null {
   const isSpace = (ch: string) => /\s/.test(ch);
+  const hidden = linkDestinationMask(markdown);
+  // A raw position is a candidate only when it renders — i.e. not inside a
+  // masked link/image destination.
+  const isHidden = (pos: number) => hidden[pos] === 1;
   let cursor = 0;
   let start = -1;
   let lastCharStart = -1; // raw offset of the char at normalizedEnd - 1
@@ -111,13 +157,17 @@ function projectRenderedSpanToMarkdown(
     if (target === " ") {
       // A normalized space maps to the first whitespace char of the next raw
       // whitespace run; the run is then consumed so block syntax (blank lines,
-      // heading markers) between words doesn't derail the alignment.
-      while (cursor < markdown.length && !isSpace(markdown[cursor] ?? "")) cursor += 1;
+      // heading markers) between words doesn't derail the alignment. Masked
+      // (link-destination) whitespace is skipped, never matched.
+      while (cursor < markdown.length && (isHidden(cursor) || !isSpace(markdown[cursor] ?? "")))
+        cursor += 1;
       if (cursor >= markdown.length) return null;
       matched = cursor;
-      while (cursor < markdown.length && isSpace(markdown[cursor] ?? "")) cursor += 1;
+      while (cursor < markdown.length && !isHidden(cursor) && isSpace(markdown[cursor] ?? ""))
+        cursor += 1;
     } else {
-      while (cursor < markdown.length && markdown[cursor] !== target) cursor += 1;
+      while (cursor < markdown.length && (isHidden(cursor) || markdown[cursor] !== target))
+        cursor += 1;
       if (cursor >= markdown.length) return null;
       matched = cursor;
       cursor += 1;

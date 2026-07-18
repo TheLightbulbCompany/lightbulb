@@ -202,6 +202,31 @@ describe("computeAnchor", () => {
       expect(markdown.slice(pos.markdownStart, pos.markdownEnd)).toBe("click");
       expect(pos.markdownStart).toBe(markdown.indexOf("click"));
     });
+
+    it("anchors a trailing word that ABUTS a link (no space) to the rendered occurrence, not the URL", () => {
+      // Regression: the rendered `word` immediately follows the link with NO
+      // separating whitespace, so the subsequence walk could keep matching
+      // THROUGH the hidden `](https://word.example)` destination and land on the
+      // `word` buried inside the URL. The projection must skip link destinations
+      // so only rendered positions are candidates.
+      const adjMarkdown = "[x](https://word.example)word";
+      const adjContainer = "xword"; // link label "x" + trailing rendered "word"
+      const start = adjContainer.indexOf("word"); // 1
+      const anchor = computeAnchor({
+        markdown: adjMarkdown,
+        containerText: adjContainer,
+        startOffset: start,
+        endOffset: start + "word".length,
+      });
+      expect(anchor).not.toBeNull();
+      const pos = anchor!.selector.position;
+      // The URL "word" starts at 12; the selector must point at the trailing
+      // rendered occurrence (25), never inside the destination.
+      expect(pos.markdownStart).not.toBe(adjMarkdown.indexOf("word"));
+      expect(pos.markdownStart).toBe(adjMarkdown.lastIndexOf("word"));
+      expect(adjMarkdown.slice(pos.markdownStart, pos.markdownEnd)).toBe("word");
+      expect(pos.markdownEnd).toBeGreaterThan(pos.markdownStart);
+    });
   });
 });
 

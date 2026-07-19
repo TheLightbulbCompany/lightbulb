@@ -154,3 +154,30 @@ def test_trim_leaves_unpaged_responses_without_a_cursor():
     assert out["truncated"] is True
     assert "nextOffset" not in out
     assert "hasMore" not in out
+
+
+def test_a_single_oversized_message_is_elided_so_the_cursor_advances():
+    # One message alone blows the whole budget. Dropping it entirely would
+    # leave nextOffset == offset and the client would spin on this page.
+    huge = {
+        "role": "toolResult",
+        "content": [{"type": "text", "text": "y" * 64_000}],
+    }
+    result = {
+        "messages": [huge],
+        "offset": 0,
+        "nextOffset": 1,
+        "hasMore": True,
+        "totalMessages": 160,
+    }
+    out = _trim_chat_history_for_frame(result, budget=1000)
+
+    assert len(out["messages"]) == 1
+    assert out["truncated"] is True
+    # Cursor advanced past the offending message.
+    assert out["nextOffset"] == 1
+    assert out["hasMore"] is True
+    # Payload now fits.
+    assert len(json.dumps(out, separators=(",", ":"), default=str).encode()) <= 1000
+    # The elision is visible rather than silent.
+    assert "omitted" in out["messages"][0]["content"][0]["text"]

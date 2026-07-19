@@ -142,6 +142,32 @@ def _filter_sessions_for_user(result, user_id: str):
 _WS_FRAME_BUDGET_BYTES = 110_000
 
 
+def _elide_oversized_message(message, budget: int):
+    """Replace long text blocks in one message with a short marker.
+
+    Last resort for a message that cannot fit a frame even alone (raw tool
+    output — file dumps, stdout floods). Dropping it instead would stall the
+    client's cursor on this page forever. The UI renders tool results as
+    collapsed cards, so eliding the body costs little and the marker keeps the
+    omission honest rather than silent.
+    """
+    if not isinstance(message, dict):
+        return message
+    content = message.get("content")
+    if not isinstance(content, list):
+        return message
+    elided = []
+    for block in content:
+        if isinstance(block, dict) and isinstance(block.get("text"), str):
+            raw = block["text"]
+            if len(raw.encode()) > budget // 4:
+                omitted = len(raw.encode())
+                elided.append({**block, "text": f"[… {omitted} bytes omitted — too large to display …]"})
+                continue
+        elided.append(block)
+    return {**message, "content": elided}
+
+
 def _trim_chat_history_for_frame(result, budget: int = _WS_FRAME_BUDGET_BYTES):
     """Drop the OLDEST chat.history messages until the payload fits one frame.
 
@@ -170,6 +196,17 @@ def _trim_chat_history_for_frame(result, budget: int = _WS_FRAME_BUDGET_BYTES):
             hi = mid
         else:
             lo = mid + 1
+    # Degenerate page: not even the newest single message fits. Ship it elided
+    # so the cursor still advances by one instead of stalling on this page.
+    # This only applies to paged responses; unpaged responses return empty
+    # messages as before.
+    offset = result.get("offset")
+    if lo >= len(messages) and messages and isinstance(offset, int) and not isinstance(offset, bool):
+        elided = _elide_oversized_message(messages[-1], budget)
+        out = {**result, "messages": [elided], "truncated": True}
+        out["nextOffset"] = offset + 1
+        out["hasMore"] = True
+        return out
     kept = messages[lo:]
     out = {**result, "messages": kept, "truncated": True}
     # A paged read: the bisect above dropped the OLDEST messages of this page,

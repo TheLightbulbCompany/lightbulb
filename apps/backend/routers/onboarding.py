@@ -156,7 +156,21 @@ async def submit_brief(
         # Recorded LAST: a claim carrying ids always means both Paperclip
         # rows exist and are linked.
         await repo.record_onboarding_ids(ctx.company_id, goal_id=goal_id, project_id=project_id)
-    except Exception:
+    except BaseException:
+        # BaseException, not Exception: asyncio.CancelledError (client
+        # disconnect mid-flight) inherits from BaseException, not Exception,
+        # and the onboarding claim has no stale-stealing or takeover path by
+        # design. Skipping the release on cancellation would strand the
+        # claim permanently, locking the company out of onboarding with no
+        # automatic or self-service recovery. The bare `raise` below still
+        # re-raises, so cancellation and interrupts propagate as before —
+        # this only adds the cleanup.
+        #
+        # Caveat: awaiting inside a cancellation handler is not guaranteed
+        # to complete — this release can itself be cancelled (e.g. on a hard
+        # shutdown). This makes the release usually happen instead of never;
+        # it is not a guarantee, and no shielded/retried release is
+        # attempted here on purpose.
         await repo.release_onboarding_claim(ctx.company_id)
         raise
 

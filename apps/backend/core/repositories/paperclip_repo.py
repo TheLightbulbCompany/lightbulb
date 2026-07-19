@@ -516,8 +516,10 @@ class PaperclipRepo:
         sentinel out of thin air instead of failing loudly, permanently
         locking the company out of onboarding with no exception and no
         signal. Raises ``ConditionalCheckFailedException`` if no claim was
-        ever taken; callers treat any failure here as "release the claim
-        and return 409".
+        ever taken. Callers release the claim on any failure here, but do
+        NOT translate it into a 409 — the exception (e.g. botocore's
+        ``ClientError``) propagates through a generic handler with no
+        registered mapping for it and surfaces to the client as a raw 500.
         """
         await run_in_thread(
             self._table().update_item,

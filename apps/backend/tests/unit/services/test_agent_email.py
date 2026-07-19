@@ -169,3 +169,37 @@ async def test_mint_never_raises_on_bad_input(monkeypatch):
         slug="acme",
     )
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_mint_never_raises_on_bad_agent_name_when_not_primary(monkeypatch):
+    """`agent_name` is only dereferenced (via `_agent_slug`) on the non-primary
+    path — probe that path directly rather than leaving `is_primary` at its
+    default `True`, which never touches `agent_name` at all."""
+    monkeypatch.setattr(agent_email.settings, "AGENT_EMAIL_DOMAIN", "agents.isol8.co")
+
+    result = await agent_email.mint_agent_email_address(
+        owner_id="user_1",
+        agent_id="agent_atlas",
+        agent_name=None,
+        owner_email="o@example.com",
+        slug="acme",
+        is_primary=False,
+    )
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_mint_never_raises_on_non_string_domain(monkeypatch):
+    """`AGENT_EMAIL_DOMAIN` misconfigured as a non-string (e.g. an int from a
+    bad env parse) must not blow up the pre-try domain read."""
+    monkeypatch.setattr(agent_email.settings, "AGENT_EMAIL_DOMAIN", 12345)
+
+    result = await agent_email.mint_agent_email_address(
+        owner_id="user_1",
+        agent_id="agent_friday",
+        agent_name="Friday",
+        owner_email="o@example.com",
+        slug="acme",
+    )
+    assert result is None

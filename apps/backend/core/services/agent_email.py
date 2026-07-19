@@ -54,12 +54,12 @@ async def mint_agent_email_address(
     Returns the address, or None when the feature is unconfigured, the owner
     has no slug, or minting failed. Never raises.
     """
-    domain = settings.AGENT_EMAIL_DOMAIN.strip()
-    if not domain:
-        logger.debug("agent_email.mint: AGENT_EMAIL_DOMAIN unset; skipping %s", owner_id)
-        return None
-
     try:
+        domain = (settings.AGENT_EMAIL_DOMAIN or "").strip()
+        if not domain:
+            logger.debug("agent_email.mint: AGENT_EMAIL_DOMAIN unset; skipping %s", owner_id)
+            return None
+
         if not slug or not slug.strip():
             logger.debug("agent_email.mint: no slug for owner %s; skipping", owner_id)
             return None

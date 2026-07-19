@@ -180,7 +180,7 @@ class Settings(BaseSettings):
     so the first gate read after this window sees the new balance and
     un-revokes a paid-up owner (see core/services/metronome_gate.py)."""
 
-    TRIAL_WAKE_GATE_ENABLED: bool = os.getenv("TRIAL_WAKE_GATE_ENABLED", "false").lower() == "true"
+    TRIAL_WAKE_GATE_ENABLED: bool = os.getenv("TRIAL_WAKE_GATE_ENABLED", "true").lower() == "true"
     """Kill switch for wake-on-intent gating of parked (stop_reason=trial_idle)
     trial containers. Off = every wake_policy entry point returns ALLOW/no-op,
     restoring wake-on-read exactly as before; stop_reason stamping and the

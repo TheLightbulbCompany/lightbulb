@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import useSWR from "swr";
 import { useAuth } from "@clerk/nextjs";
 import { ApiError, fetchJsonWithStatus } from "@/lib/api";
+import { isPresent } from "@/lib/presence";
 
 /** Server-rendered blocked-state payload from /container/status (402). */
 export interface BlockedPayload {
@@ -26,7 +27,7 @@ export interface BlockedPayload {
  * `unknown` and break the cold-start phase-transition tracking in
  * ProvisioningStepper).
  */
-export type ColdStartPhase = "provisioning" | "starting" | "ready";
+export type ColdStartPhase = "provisioning" | "starting" | "ready" | "parked";
 
 export interface ContainerInfo {
   service_name: string;
@@ -136,7 +137,16 @@ export function useProvisioningState(
   const fetcher = useCallback(
     async (url: string): Promise<FetchResult> => {
       try {
-        const { status, body } = await fetchJsonWithStatus(url, getToken);
+        // Wake marker, computed at FETCH time (not baked into the SWR key —
+        // key stability keeps dedupe/mutate semantics intact). wake=1 only
+        // while a human is plausibly present (visible + input < 120s);
+        // wake=0 otherwise, which tells the backend to report a parked
+        // trial container instead of starting it. Query param by design —
+        // a custom header would fail CORS preflight against an older
+        // backend during deploy skew.
+        const sep = url.includes("?") ? "&" : "?";
+        const wakeUrl = `${url}${sep}wake=${isPresent() ? "1" : "0"}`;
+        const { status, body } = await fetchJsonWithStatus(wakeUrl, getToken);
         if (status === 202) {
           // Backend Task 8: org members whose admin-owned workspace
           // hasn't been provisioned yet get 202 Accepted with a

@@ -41,7 +41,12 @@ export function useGetStartedDerived(): GetStartedDerivedSignals & { chatReady: 
   // `container` already implies a 200 ("normal"), and `.phase === "ready"`
   // additionally requires the gateway pool to have connected.
   const { container } = useProvisioningState();
-  const chatReady = container?.phase === "ready";
+  // Ready-equivalent for the derived UI state: a parked box is a healthy,
+  // completed onboarding — the "chat" step must not un-complete when it
+  // sleeps. The sessions.list RPC below can't fire against a parked socket,
+  // but useGatewayRpc nulls its own key while parked (freezing the last
+  // cached value), so chatStarted stays correct across a park.
+  const chatReady = container?.phase === "ready" || container?.phase === "parked";
 
   // `channel` complete = the user has actually connected a channel: ANY
   // provider has at least one bot a member has paired their identity to
@@ -118,7 +123,8 @@ export function useGetStartedDerived(): GetStartedDerivedSignals & { chatReady: 
   // The newest session may itself be a zero-token shell, so fetch a small
   // bounded window (not `limit: 1`) to be sure a token-bearing one is visible —
   // still cheap (no last-message / derived-title enrichment). Gated on
-  // `chatReady` via a null method (the gateway pool is connected by then) and
+  // `chatReady` via a null method (the gateway pool is connected by then;
+  // useGatewayRpc additionally self-nulls while parked) and
   // low-frequency (dedupingInterval bumped to 5min, overriding the hook's 10s)
   // so it is not an always-on poll; the hook's event-driven revalidation stays
   // throttled. The `emitStep("chat")` event still completes real in-app chats

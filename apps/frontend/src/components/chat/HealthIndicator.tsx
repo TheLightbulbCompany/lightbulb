@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 
 const DOT_STYLES: Record<HealthState, string> = {
   HEALTHY: "bg-[#2d8a4e]",
+  PARKED: "bg-[#b5af9f]",
   STARTING: "bg-yellow-500 animate-pulse",
   RECOVERING: "bg-yellow-500 animate-pulse",
   // GATEWAY_BUSY = parked backend WS, agent still working. Calm yellow with
@@ -19,6 +20,7 @@ const DOT_STYLES: Record<HealthState, string> = {
 
 const LABEL_STYLES: Record<HealthState, string> = {
   HEALTHY: "text-[#8a8578]",
+  PARKED: "text-[#8a8578]",
   STARTING: "text-yellow-600",
   RECOVERING: "text-yellow-600",
   GATEWAY_BUSY: "text-yellow-600",

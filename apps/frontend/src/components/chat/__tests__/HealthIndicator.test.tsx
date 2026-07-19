@@ -28,6 +28,15 @@ function buildHealth(overrides: Partial<SystemHealth> & { state: HealthState }):
 }
 
 describe("HealthIndicator", () => {
+  it("renders PARKED as a calm neutral state with no recovery CTA", () => {
+    mockHealth.mockReturnValue(
+      buildHealth({ state: "PARKED", reason: "Agents asleep — they wake when you interact" }),
+    );
+    render(<HealthIndicator />);
+    expect(screen.queryByText(/restart/i)).toBeNull();
+  });
+
+
   it("HEALTHY renders the green dot with 'Connected' label and no recover button", () => {
     mockHealth.mockReturnValue(
       buildHealth({ state: "HEALTHY", reason: "Connected" }),

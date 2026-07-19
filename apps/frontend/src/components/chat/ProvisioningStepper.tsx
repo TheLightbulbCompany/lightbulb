@@ -315,7 +315,8 @@ export function ProvisioningStepper({
   });
 
   useEffect(() => {
-    if (container?.phase === "ready" && !reachedReady) setReachedReady(true);
+    const p = container?.phase;
+    if ((p === "ready" || p === "parked") && !reachedReady) setReachedReady(true);
   }, [container?.phase, reachedReady]);
 
   // Instant-ready: the backend's connection pool pushes
@@ -371,9 +372,14 @@ export function ProvisioningStepper({
   const previousBackendPhaseRef = useRef<ColdStartPhase | undefined>(undefined);
   const isRegressingFromReady =
     // eslint-disable-next-line react-hooks/refs
-    previousBackendPhaseRef.current === "ready" &&
+    (previousBackendPhaseRef.current === "ready" || previousBackendPhaseRef.current === "parked") &&
     container?.phase !== undefined &&
-    container.phase !== "ready";
+    container.phase !== "ready" &&
+    // Parked is ready-equivalent: a healthy box the backend put to sleep,
+    // one intent away from running. Treating ready->parked (or parked
+    // holding steady) as a regression would swap the whole chat surface
+    // for a cold-start stepper over a perfectly readable page.
+    container.phase !== "parked";
   // Mutate the ref during render — refs are React-blessed for this
   // pattern (derived state from prop transitions).
   // eslint-disable-next-line react-hooks/refs
@@ -403,6 +409,11 @@ export function ProvisioningStepper({
     const backendPhase = container?.phase;
 
     if (!container) return "container";
+    // Parked (wake-gated trial box, deliberately asleep): render the app —
+    // content stays readable, and any interaction / message send wakes it.
+    // Checked BEFORE the error/status branches: a parked row's status is
+    // "stopped", which the legacy checks would misread as a cold start.
+    if (backendPhase === "parked") return resolvePostAgentPhase();
     if (container.status === "error") return "container";
     if (backendPhase === "provisioning") {
       // substatus "task_running" = the ECS task is RUNNING with an IP but

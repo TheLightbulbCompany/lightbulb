@@ -5,6 +5,7 @@ import {
   createContext,
   useContext,
   useEffect,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -16,6 +17,10 @@ import {
 import { WS_URL } from "@/lib/api";
 import { readDesktopPermissionGrant } from "@/lib/desktopPermissions";
 import { subscribeDesktopPermissions } from "@/lib/desktopPermissionsSubscribe";
+import { mutate } from "swr";
+
+import { lastInputAgeMs } from "@/lib/presence";
+import { useContainerWake } from "@/hooks/useContainerWake";
 
 // The connection machine (reconnect/backoff, keepalive, RPC correlation,
 // message routing) lives in @isol8/shared so web and mobile share one
@@ -50,7 +55,88 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
     wsUrl: WS_URL,
     uuid: () => crypto.randomUUID(),
   });
-  const { isConnected, setNodeConnected } = connection;
+  const { isConnected, setNodeConnected, isParked, park, unpark, onEvent, onChatMessage } = connection;
+  const { requestWake } = useContainerWake();
+
+  // ---- Idle park / presence wake ----
+  //
+  // The 30s keepalive ping otherwise holds the gateway WS open forever, so
+  // the backend's disconnect-armed teardown never fires while a tab merely
+  // EXISTS — the 2026-07-18 incident kept a trial container alive 24h with
+  // 46 minutes of actual human presence. Park = deliberately release the
+  // socket once nobody is plausibly here; the backend stops a trial
+  // container ~3min later. Unpark + wake on the next real input. Paid
+  // owners' containers never stop on disconnect, so for them this only
+  // sheds an idle socket.
+  //
+  // "Nobody here": hidden tab for 2min, or visible but untouched for 10min —
+  // AND no server traffic for 5min, so a long streaming run someone is
+  // watching hands-off is never cut mid-flight (every delta bumps the
+  // server-activity clock; the backend's own active-run vetoes are the
+  // second line of defense).
+  const lastServerEventAtRef = useRef(Date.now());
+  useEffect(() => {
+    const bump = () => {
+      lastServerEventAtRef.current = Date.now();
+    };
+    const offEvent = onEvent(bump);
+    const offChat = onChatMessage(bump);
+    return () => {
+      offEvent();
+      offChat();
+    };
+  }, [onEvent, onChatMessage]);
+
+  useEffect(() => {
+    const HIDDEN_PARK_MS = 2 * 60_000;
+    const VISIBLE_IDLE_PARK_MS = 10 * 60_000;
+    const SERVER_QUIET_MS = 5 * 60_000;
+    const id = setInterval(() => {
+      if (isParked) return;
+      const idleFor = lastInputAgeMs();
+      const hidden = typeof document !== "undefined" && document.visibilityState === "hidden";
+      const serverQuietFor = Date.now() - lastServerEventAtRef.current;
+      const humanGone = hidden ? idleFor > HIDDEN_PARK_MS : idleFor > VISIBLE_IDLE_PARK_MS;
+      if (humanGone && serverQuietFor > SERVER_QUIET_MS) {
+        park();
+      }
+    }, 30_000);
+    return () => clearInterval(id);
+  }, [isParked, park]);
+
+  useEffect(() => {
+    if (!isParked) return;
+    const onReturn = () => {
+      unpark();
+      void requestWake("interaction");
+      // requestWake revalidates /container/status itself, but it can be a
+      // cooldown no-op — revalidate here too so the stepper always re-syncs
+      // on return (the reachedReady latch zeroes its own poll interval).
+      void mutate("/container/status");
+    };
+    // `click`, NOT `pointerdown`: a touch-scroll fires pointerdown on first
+    // contact, which would unpark + wake a box the mobile user only meant to
+    // scroll to re-READ (reads work from cached data while parked). A click
+    // fires only on a completed tap/mouse-click — a deliberate action —
+    // never on scroll. This mirrors presence.ts's touch-scroll exclusion for
+    // the wake path specifically (park-recency intentionally still counts a
+    // scroll as "present" so we don't park under an active reader).
+    window.addEventListener("click", onReturn, { capture: true, passive: true });
+    window.addEventListener("keydown", onReturn, { capture: true, passive: true });
+    return () => {
+      window.removeEventListener("click", onReturn, { capture: true });
+      window.removeEventListener("keydown", onReturn, { capture: true });
+    };
+  }, [isParked, unpark, requestWake]);
+
+  // Mount-with-presence: a human arriving at the app is intent — pre-warm a
+  // parked container so it's usually ready before their first message. The
+  // hook's own presence + cooldown gates make this a no-op for background
+  // restores and remount churn.
+  useEffect(() => {
+    void requestWake("mount");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ---- Tauri IPC: listen for node status from desktop app ----
 

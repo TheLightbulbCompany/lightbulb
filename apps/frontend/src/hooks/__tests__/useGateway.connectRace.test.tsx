@@ -20,7 +20,16 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, act } from "@testing-library/react";
 import { GatewayProvider, useGateway } from "@/hooks/useGateway";
 
-vi.mock("@/lib/api", () => ({ WS_URL: "wss://test.example/ws" }));
+// GatewayProvider now also mounts the idle-park scheduler + mount-wake,
+// which pull useApi (POST /container/wake) and the presence lib. Stub both
+// so this connect-race test stays focused on the single-flight socket
+// contract and doesn't fire real wakes or bind global input listeners.
+vi.mock("@/lib/api", () => ({
+  WS_URL: "wss://test.example/ws",
+  useApi: () => ({ post: vi.fn(async () => ({})) }),
+}));
+vi.mock("swr", () => ({ mutate: vi.fn() }));
+vi.mock("@/lib/presence", () => ({ isPresent: () => false, lastInputAgeMs: () => Infinity }));
 
 // Mutable holder so tests can swap getToken identity mid-mount (mirrors
 // Clerk resolving auth state after first render).

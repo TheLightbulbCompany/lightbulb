@@ -68,6 +68,16 @@ async def refresh_instagram_if_stale(owner_id: str) -> bool:
         credential["token_expiry"] = (
             (datetime.now(timezone.utc) + timedelta(seconds=expires_in)).isoformat() if expires_in else ""
         )
+        # This task started fire-and-forget from GET /connections and has been
+        # awaiting Meta for seconds. If DELETE /connections/instagram ran in that
+        # window it already tore down the SM secret + EFS artifacts + status row —
+        # writing now would resurrect a live token and re-enable the skill behind a
+        # UI that reads disconnected. Re-read the credential and abort if it's gone;
+        # this collapses the race from the multi-second network call to the tiny
+        # gap before the writes below.
+        if await integration_secret_store.get(owner_id, "instagram") is None:
+            logger.info("instagram refresh aborted for %s: disconnected mid-refresh", owner_id)
+            return False
         # Rematerialize EFS (the token the agent actually reads) BEFORE advancing
         # the retained credential's expiry. If apply fails here, the stored expiry
         # stays in the past, so the next GET /connections retries — otherwise

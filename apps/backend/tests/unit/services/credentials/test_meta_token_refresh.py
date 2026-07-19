@@ -92,6 +92,21 @@ async def test_rematerialize_failure_does_not_advance_stored_credential(mock_get
 
 
 @pytest.mark.asyncio
+@patch("core.services.credentials.meta_token_refresh.httpx.AsyncClient", _FakeAsyncClient)
+@patch("core.services.credentials.meta_token_refresh.apply_connection.apply_connection", new_callable=AsyncMock)
+@patch("core.services.credentials.meta_token_refresh.integration_secret_store.put", new_callable=AsyncMock)
+@patch("core.services.credentials.meta_token_refresh.integration_secret_store.get", new_callable=AsyncMock)
+async def test_disconnect_mid_refresh_aborts_without_writing(mock_get, mock_put, mock_apply):
+    # First get (staleness check) returns a stale credential; the second get
+    # (post-refresh recheck) returns None, simulating DELETE /connections landing
+    # while we awaited Meta. Must NOT resurrect the credential.
+    mock_get.side_effect = [{"access_token": "OLD", "token_expiry": _iso(5)}, None]
+    assert await meta_token_refresh.refresh_instagram_if_stale("org_1") is False
+    mock_apply.assert_not_awaited()
+    mock_put.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @patch("core.services.credentials.meta_token_refresh.apply_connection.apply_connection", new_callable=AsyncMock)
 @patch("core.services.credentials.meta_token_refresh.integration_secret_store.put", new_callable=AsyncMock)
 @patch("core.services.credentials.meta_token_refresh.integration_secret_store.get", new_callable=AsyncMock)

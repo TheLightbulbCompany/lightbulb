@@ -33,13 +33,13 @@ describe("useContainerStatus parked + wake param", () => {
 
   it("classifies phase=parked as a distinct 'parked' kind (not starting)", async () => {
     fetchSpy.mockResolvedValue({ status: 200, body: { status: "stopped", phase: "parked" } });
-    const { result } = renderHook(() => useContainerStatus());
+    const { result } = await renderHook(() => useContainerStatus());
     await waitFor(() => expect(result.current.status.kind).toBe("parked"));
   });
 
   it("sends wake=1 when foregrounded (present)", async () => {
     fetchSpy.mockResolvedValue({ status: 200, body: { phase: "ready" } });
-    renderHook(() => useContainerStatus());
+    await renderHook(() => useContainerStatus());
     await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
     expect(String(fetchSpy.mock.calls[0][1])).toContain("wake=1");
   });
@@ -47,14 +47,14 @@ describe("useContainerStatus parked + wake param", () => {
   it("sends wake=0 when backgrounded", async () => {
     setActive("background");
     fetchSpy.mockResolvedValue({ status: 200, body: { phase: "ready" } });
-    renderHook(() => useContainerStatus());
+    await renderHook(() => useContainerStatus());
     await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
     expect(String(fetchSpy.mock.calls[0][1])).toContain("wake=0");
   });
 
   it("still treats phase=ready as ready", async () => {
     fetchSpy.mockResolvedValue({ status: 200, body: { phase: "ready" } });
-    const { result } = renderHook(() => useContainerStatus());
+    const { result } = await renderHook(() => useContainerStatus());
     await waitFor(() => expect(result.current.status.kind).toBe("ready"));
   });
 });

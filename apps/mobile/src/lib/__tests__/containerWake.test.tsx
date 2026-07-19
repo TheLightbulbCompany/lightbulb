@@ -32,7 +32,7 @@ describe("useContainerWake", () => {
   });
 
   it("posts /container/wake for a passive reason while foregrounded", async () => {
-    const { result } = renderHook(() => useContainerWake());
+    const { result } = await renderHook(() => useContainerWake());
     await act(async () => {
       await result.current.requestWake("mount");
     });
@@ -41,7 +41,7 @@ describe("useContainerWake", () => {
 
   it("suppresses a passive wake while backgrounded", async () => {
     setActive("background");
-    const { result } = renderHook(() => useContainerWake());
+    const { result } = await renderHook(() => useContainerWake());
     await act(async () => {
       await result.current.requestWake("mount");
     });
@@ -49,7 +49,7 @@ describe("useContainerWake", () => {
   });
 
   it("dedupes repeat calls within the cooldown", async () => {
-    const { result } = renderHook(() => useContainerWake());
+    const { result } = await renderHook(() => useContainerWake());
     await act(async () => {
       await result.current.requestWake("interaction");
       await result.current.requestWake("interaction"); // same `now` → cooldown

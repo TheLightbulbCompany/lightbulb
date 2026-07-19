@@ -52,6 +52,8 @@ def test_min_plan_flips_above_threshold():
         env_requirements=[],
     )
     assert meta.min_plan == "ultra_pro"
+    meta.agent_count = COMPANY_STANDARD_PLAN_MAX_AGENTS
+    assert meta.min_plan == "standard"
 
 
 def test_rejects_non_company_dir(tmp_path):

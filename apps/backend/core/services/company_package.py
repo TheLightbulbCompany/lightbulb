@@ -1,8 +1,8 @@
 """Parse agentcompanies/v1 packages (the companies.sh format).
 
-PR1 scope: metadata only — counts, frontmatter, env requirements — for
-marketplace ingestion. The company-deploy engine (PR2) extends this module
-with full DeployPlan parsing. Format reference: the Agent Companies
+Scope here is metadata only — counts, frontmatter, env requirements — for
+marketplace ingestion. The company-deploy engine extends this module with
+full DeployPlan parsing. Format reference: the Agent Companies
 Specification (schema ``agentcompanies/v1``), vendored fixture under
 ``tests/fixtures/companies/``.
 """

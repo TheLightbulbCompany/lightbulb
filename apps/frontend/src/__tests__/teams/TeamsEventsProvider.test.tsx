@@ -67,6 +67,14 @@ const FIXTURE_KEYS = [
   "/teams/approvals",
   "/teams/agents",
   "/teams/inbox-foo", // boundary check: must NOT match `/teams/inbox`
+  // Issue-detail subtree. Production openers all pass `issue.id` (a UUID) —
+  // see IssueRow/KanbanCard/DashboardPanel/TasksList — so `entityId` from the
+  // activity payload is the key shape that actually needs to match.
+  "/teams/issues/iss_1",
+  "/teams/issues/iss_1/comments",
+  "/teams/issues/iss_1/interactions",
+  "/teams/issues/ADM-481", // identifier-keyed variant (details.identifier)
+  "/teams/issues/iss_other", // a DIFFERENT issue: must NOT be invalidated
 ] as const;
 
 type Predicate = (key: unknown) => boolean;
@@ -128,6 +136,74 @@ describe("TeamsEventsProvider", () => {
     expect(keys).not.toContain("/teams/inbox-foo");
     // Non-listed keys must not be invalidated either.
     expect(keys).not.toContain("/teams/agents");
+  });
+
+  it("invalidates the open issue's detail subtree on an issue activity event", () => {
+    // The regression this guards: an agent (or another user) changing a task
+    // left the OPEN task panel stale forever. `activity.logged` fires, but the
+    // list-prefix predicate (`=== /teams/issues` or `startsWith /teams/issues?`)
+    // never matches the detail key `/teams/issues/{id}`, and nothing else
+    // rescues it — `revalidateOnFocus` is globally off (SwrProvider) and
+    // useIssueDetail sets no refreshInterval.
+    gatewayState.isConnected = true;
+    render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
+    mutateMock.mockClear(); // drop the first-subscribe reconcile
+
+    act(() => {
+      eventHandler!("teams.activity.logged", {
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: "iss_1",
+        details: { identifier: "ADM-481", status: "todo" },
+      });
+    });
+
+    const keys = invalidatedKeys();
+    // The row itself AND its sub-resources — a comment added by an agent must
+    // refresh `/comments`, not just the issue row.
+    expect(keys).toEqual(expect.arrayContaining([
+      "/teams/issues/iss_1",
+      "/teams/issues/iss_1/comments",
+      "/teams/issues/iss_1/interactions",
+    ]));
+    // details.identifier is only present on ~29 of 68 issue activity sites,
+    // so it is belt-and-braces for identifier-keyed panels, not the primary.
+    expect(keys).toContain("/teams/issues/ADM-481");
+    // The list keys still invalidate as before.
+    expect(keys).toEqual(expect.arrayContaining(["/teams/issues", "/teams/inbox"]));
+    // Precision: a DIFFERENT issue's cached detail must be left alone.
+    expect(keys).not.toContain("/teams/issues/iss_other");
+  });
+
+  it("does not touch issue-detail keys for non-issue activity events", () => {
+    gatewayState.isConnected = true;
+    render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
+    mutateMock.mockClear();
+
+    act(() => {
+      eventHandler!("teams.activity.logged", {
+        action: "agent.updated",
+        entityType: "agent",
+        entityId: "iss_1", // same-looking id, different entityType
+      });
+    });
+
+    const keys = invalidatedKeys();
+    expect(keys).not.toContain("/teams/issues/iss_1");
+    expect(keys).toContain("/teams/issues"); // list still refreshes
+  });
+
+  it("survives an activity payload with no entityId", () => {
+    gatewayState.isConnected = true;
+    render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
+    mutateMock.mockClear();
+
+    expect(() => {
+      act(() => {
+        eventHandler!("teams.activity.logged", { entityType: "issue" });
+      });
+    }).not.toThrow();
+    expect(invalidatedKeys()).toContain("/teams/issues");
   });
 
   it("captures first_run_board_pulse on teams.activity.logged during an active first-run show", () => {

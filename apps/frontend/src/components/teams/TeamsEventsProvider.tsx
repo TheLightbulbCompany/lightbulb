@@ -51,6 +51,37 @@ export const EVENT_KEY_MAP: Record<string, string[]> = {
 // useInboxTriage) behind the read layer's 15s dedup window on Teams re-entry.
 const ALL_KEYS = [...new Set(Object.values(EVENT_KEY_MAP).flat())];
 
+/**
+ * `activity.logged` is Paperclip's ONLY signal that a specific issue row
+ * changed — there is no `issue.*` live-event type. Every issue mutation
+ * (status, assignee, comment, reviewers, …) publishes one generic
+ * `activity.logged` carrying the discriminator in its payload
+ * (paperclip/server/src/services/activity-log.ts).
+ *
+ * `entityId` is the issue's UUID and is always present; `details.identifier`
+ * (the human key, e.g. "ADM-481") is only set at ~29 of the 68 issue activity
+ * sites, so it is a bonus match, not something to depend on. Every production
+ * opener — IssueRow, KanbanCard, DashboardPanel, TasksList, ParentLink —
+ * routes by `issue.id`, so the UUID is the key shape that matters.
+ */
+type ActivityPayload = {
+  entityType?: unknown;
+  entityId?: unknown;
+  details?: { identifier?: unknown } | null;
+};
+
+export function issueIdsFromActivity(data: unknown): string[] {
+  const payload = (data ?? {}) as ActivityPayload;
+  if (payload.entityType !== "issue") return [];
+  return [
+    ...new Set(
+      [payload.entityId, payload.details?.identifier].filter(
+        (v): v is string => typeof v === "string" && v.length > 0,
+      ),
+    ),
+  ];
+}
+
 export function TeamsEventsProvider({ children }: { children: React.ReactNode }) {
   const { isConnected, send, onEvent } = useGateway();
   const { mutate } = useSWRConfig();
@@ -75,6 +106,25 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
         (key) =>
           typeof key === "string" &&
           (key === prefix || key.startsWith(`${prefix}?`)),
+      );
+    },
+    [mutate],
+  );
+
+  // Invalidate ONE entity's detail key plus its sub-resource keys
+  // (`/comments`, `/interactions`, …). `mutateKeyPrefix` above deliberately
+  // stops at the `?` boundary so `/teams/inbox` can't match `/teams/inbox-foo`
+  // — but that also means it never matches detail keys, which live one path
+  // segment DEEPER (`/teams/issues/{id}`). Hence this second matcher, scoped
+  // to a single id so other cached issue details are left alone.
+  const mutateEntitySubtree = useCallback(
+    (base: string) => {
+      mutate(
+        (key) =>
+          typeof key === "string" &&
+          (key === base ||
+            key.startsWith(`${base}/`) ||
+            key.startsWith(`${base}?`)),
       );
     },
     [mutate],
@@ -118,7 +168,7 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
 
   // Wire event listener.
   useEffect(() => {
-    const unsub = onEvent((event, _data) => {
+    const unsub = onEvent((event, data) => {
       if (!event.startsWith("teams.")) return;
       if (event === "teams.stream.resumed") {
         for (const key of ALL_KEYS) mutateKeyPrefix(key);
@@ -131,6 +181,15 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
         // payloads don't carry — a follow-up if pulse counts look wrong.
         const { started, completed } = readFirstRun(user);
         if (started && !completed) capture("first_run_board_pulse");
+
+        // Keep an OPEN task panel live. Without this the list keys below
+        // refresh but the detail key never does, so an agent moving a task
+        // (or another user editing it) leaves the panel showing stale
+        // status/assignee until a hard reload — `revalidateOnFocus` is off
+        // globally and useIssueDetail sets no refreshInterval.
+        for (const id of issueIdsFromActivity(data)) {
+          mutateEntitySubtree(`/teams/issues/${id}`);
+        }
       }
       const keys = EVENT_KEY_MAP[event];
       if (!keys || keys.length === 0) return;
@@ -139,7 +198,7 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
     return () => {
       unsub();
     };
-  }, [onEvent, mutateKeyPrefix, user]);
+  }, [onEvent, mutateKeyPrefix, mutateEntitySubtree, user]);
 
   return <>{children}</>;
 }

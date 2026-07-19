@@ -8,6 +8,9 @@ import { useApi } from "@/lib/api";
 
 export type HealthState =
   | "HEALTHY"
+  // Wake-gated trial box, deliberately asleep (phase="parked"). Healthy,
+  // one intent away from running — calm neutral, never a recovery CTA.
+  | "PARKED"
   // Container is starting / cold-starting. Yellow.
   | "STARTING"
   // Frontend WS to API Gateway is reconnecting (transient). Yellow.
@@ -129,6 +132,14 @@ export function useSystemHealth(): SystemHealth {
     reason = container.substatus === "auto_retry"
       ? "Restarting container..."
       : "Container provisioning — waiting for ECS task";
+  } else if (container.phase === "parked") {
+    // BEFORE the stopped branch: a parked row's ECS status IS "stopped",
+    // and mapping it to CONTAINER_DOWN would show a red dot + Restart CTA
+    // over a chat surface the stepper is simultaneously rendering as
+    // ready. Restarting a healthy parked box is actively wrong — any
+    // interaction wakes it.
+    state = "PARKED";
+    reason = "Agents asleep — they wake when you interact";
   } else if (container.status === "stopped" || container.status === "error") {
     state = "CONTAINER_DOWN";
     reason = container.last_error

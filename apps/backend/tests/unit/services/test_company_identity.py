@@ -138,3 +138,48 @@ async def test_allocate_slug_returns_none_when_repo_fails(monkeypatch):
     monkeypatch.setattr(company_identity.company_slug_repo, "reserve", boom)
 
     assert await company_identity.allocate_company_slug(owner_id="user_1", name="Acme") is None
+
+
+@pytest.mark.asyncio
+async def test_allocate_slug_suffix_never_exceeds_max_len(monkeypatch):
+    """A max-length base plus a numeric suffix must still fit within MAX_SLUG_LEN.
+
+    Regression for a 34-char slug (`f"{base}-{attempt}"` with no re-cap) when a
+    32-char base collides.
+    """
+
+    async def fake_reserve(*, slug, owner_id):
+        return slug != "a" * company_identity.MAX_SLUG_LEN
+
+    monkeypatch.setattr(company_identity.company_slug_repo, "reserve", fake_reserve)
+
+    slug = await company_identity.allocate_company_slug(owner_id="user_1", name="a" * 60)
+    assert slug is not None
+    assert len(slug) <= company_identity.MAX_SLUG_LEN
+    assert "--" not in slug
+    assert not slug.endswith("-")
+
+
+@pytest.mark.asyncio
+async def test_allocate_slug_returns_none_instead_of_raising_for_non_string_name(monkeypatch):
+    """`base = slugify(name)` must run inside the try — never raise, even for bad input."""
+
+    async def fake_reserve(*, slug, owner_id):
+        return True
+
+    monkeypatch.setattr(company_identity.company_slug_repo, "reserve", fake_reserve)
+
+    assert await company_identity.allocate_company_slug(owner_id="user_1", name=None) is None
+
+
+@pytest.mark.asyncio
+async def test_generate_name_falls_back_when_clerk_name_is_not_a_string(monkeypatch):
+    """A malformed Clerk payload (non-string `name`) must fall back, not raise."""
+
+    async def fake_get_org(org_id):
+        return {"id": org_id, "name": ["not", "a", "string"]}
+
+    monkeypatch.setattr(company_identity.clerk_admin, "get_organization", fake_get_org)
+
+    name = await company_identity.generate_company_name(org_id="org_123", owner_email="jane.doe@example.com")
+    assert name == "Jane Doe"

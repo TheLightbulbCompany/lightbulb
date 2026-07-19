@@ -85,7 +85,12 @@ async def generate_company_name(*, org_id: str | None, owner_email: str) -> str:
             logger.warning("company_identity: Clerk org lookup failed for %s: %s", org_id, e)
             org = None
         if org:
-            name = (org.get("name") or "").strip()
+            try:
+                name = (org.get("name") or "").strip()
+            except AttributeError:
+                # Malformed Clerk payload (e.g. `name` isn't a string) — fall
+                # back to the email rather than propagate.
+                name = ""
             if name:
                 return name
     return prettify_email_local_part(owner_email)
@@ -95,12 +100,22 @@ async def allocate_company_slug(*, owner_id: str, name: str) -> str | None:
     """Reserve a unique slug derived from ``name``.
 
     Returns the reserved slug, or None if allocation failed. Collisions and
-    reserved words take a numeric suffix. Never raises.
+    reserved words take a numeric suffix, with the base shortened as needed
+    so the suffixed candidate never exceeds ``MAX_SLUG_LEN``. Never raises.
     """
-    base = slugify(name) or _FALLBACK_SLUG
     try:
+        base = slugify(name) or _FALLBACK_SLUG
         for attempt in range(1, _MAX_SUFFIX_ATTEMPTS + 1):
-            candidate = base if attempt == 1 else f"{base}-{attempt}"
+            if attempt == 1:
+                candidate = base
+            else:
+                # Re-cap so `base + suffix` fits in MAX_SLUG_LEN — truncating
+                # `f"{base}-{attempt}"` directly would chop the suffix itself
+                # and reintroduce collisions. Strip a trailing hyphen left by
+                # the truncation so we don't produce "foo--2".
+                suffix = f"-{attempt}"
+                max_base_len = MAX_SLUG_LEN - len(suffix)
+                candidate = f"{base[:max_base_len].rstrip('-')}{suffix}"
             # A reserved word is skipped, not failed: "support" becomes
             # "support-2", which is a fine tenant slug.
             if candidate in RESERVED_SLUGS:

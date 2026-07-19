@@ -1,4 +1,4 @@
-import { useSignIn, useSSO } from "@clerk/clerk-expo";
+import { useSignIn, useSignInWithApple, useSSO } from "@clerk/clerk-expo";
 import * as AuthSession from "expo-auth-session";
 import * as WebBrowser from "expo-web-browser";
 import { useState } from "react";
@@ -37,16 +37,48 @@ function clerkErrorMessage(e: unknown, fallback: string): string {
 export default function SignIn() {
   const { signIn, setActive, isLoaded } = useSignIn();
   const { startSSOFlow } = useSSO();
+  const { startAppleAuthenticationFlow } = useSignInWithApple();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [googleSubmitting, setGoogleSubmitting] = useState(false);
+  const [appleSubmitting, setAppleSubmitting] = useState(false);
   // Presentational only: which input shows the forest focus border.
   const [focusedField, setFocusedField] = useState<"email" | "password" | null>(null);
 
+  const anySubmitting = submitting || googleSubmitting || appleSubmitting;
+
+  // Native Sign in with Apple (guideline 4.8 — required alongside Google).
+  // Clerk's hook drives expo-apple-authentication and handles the
+  // sign-in↔sign-up transfer flow itself; iOS-only by platform gate below.
+  async function onAppleSignIn() {
+    if (!isLoaded || anySubmitting) return;
+    setAppleSubmitting(true);
+    setError(null);
+    try {
+      const { createdSessionId, setActive: setActiveFromFlow } =
+        await startAppleAuthenticationFlow();
+      if (createdSessionId && setActiveFromFlow) {
+        await setActiveFromFlow({ session: createdSessionId });
+        // (auth) layout redirects to /(app)/chat once isSignedIn flips.
+      } else {
+        setError(
+          "Apple sign-in needs another step — finish signing in on isol8.co for now.",
+        );
+      }
+    } catch (e) {
+      // The native sheet's cancel surfaces as ERR_REQUEST_CANCELED — quiet.
+      if ((e as { code?: string })?.code !== "ERR_REQUEST_CANCELED") {
+        setError(clerkErrorMessage(e, "Apple sign-in failed"));
+      }
+    } finally {
+      setAppleSubmitting(false);
+    }
+  }
+
   async function onGoogleSignIn() {
-    if (!isLoaded || submitting || googleSubmitting) return;
+    if (!isLoaded || anySubmitting) return;
     setGoogleSubmitting(true);
     setError(null);
     try {
@@ -79,7 +111,7 @@ export default function SignIn() {
   }
 
   async function onSignIn() {
-    if (!isLoaded || submitting || googleSubmitting) return;
+    if (!isLoaded || anySubmitting) return;
     setSubmitting(true);
     setError(null);
     try {
@@ -114,13 +146,34 @@ export default function SignIn() {
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
       <Text style={styles.logo}>isol8</Text>
+      {Platform.OS === "ios" && (
+        <Pressable
+          style={[
+            styles.appleButton,
+            (!isLoaded || anySubmitting) && styles.buttonDisabled,
+          ]}
+          onPress={onAppleSignIn}
+          disabled={!isLoaded || anySubmitting}
+          accessibilityRole="button"
+          accessibilityLabel="Continue with Apple"
+        >
+          {appleSubmitting ? (
+            <ActivityIndicator color={colors.white} />
+          ) : (
+            <>
+              <Text style={styles.appleMark}></Text>
+              <Text style={styles.appleButtonText}>Continue with Apple</Text>
+            </>
+          )}
+        </Pressable>
+      )}
       <Pressable
         style={[
           styles.googleButton,
-          (!isLoaded || submitting || googleSubmitting) && styles.buttonDisabled,
+          (!isLoaded || anySubmitting) && styles.buttonDisabled,
         ]}
         onPress={onGoogleSignIn}
-        disabled={!isLoaded || submitting || googleSubmitting}
+        disabled={!isLoaded || anySubmitting}
       >
         {googleSubmitting ? (
           <ActivityIndicator color={colors.forest} />
@@ -143,7 +196,7 @@ export default function SignIn() {
         autoCapitalize="none"
         autoComplete="email"
         keyboardType="email-address"
-        editable={!googleSubmitting}
+        editable={!googleSubmitting && !appleSubmitting}
         value={email}
         onChangeText={setEmail}
         onFocus={() => setFocusedField("email")}
@@ -155,7 +208,7 @@ export default function SignIn() {
         placeholderTextColor={colors.muted}
         secureTextEntry
         autoComplete="current-password"
-        editable={!googleSubmitting}
+        editable={!googleSubmitting && !appleSubmitting}
         value={password}
         onChangeText={setPassword}
         onFocus={() => setFocusedField("password")}
@@ -165,10 +218,10 @@ export default function SignIn() {
       <Pressable
         style={[
           styles.button,
-          (!isLoaded || submitting || googleSubmitting) && styles.buttonDisabled,
+          (!isLoaded || anySubmitting) && styles.buttonDisabled,
         ]}
         onPress={onSignIn}
-        disabled={!isLoaded || submitting || googleSubmitting}
+        disabled={!isLoaded || anySubmitting}
       >
         {submitting ? (
           <ActivityIndicator color={colors.white} />
@@ -195,6 +248,28 @@ const styles = StyleSheet.create({
     fontFamily: fonts.loraBold,
     textAlign: "center",
     marginBottom: spacing.xl,
+  },
+  // Apple's HIG: their button must have equal-or-greater prominence than
+  // other third-party sign-in buttons — black fill, listed first.
+  appleButton: {
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    gap: spacing.sm,
+    backgroundColor: "#000000",
+    borderRadius: radii.lg,
+    paddingVertical: spacing.md,
+  },
+  appleMark: {
+    color: "#ffffff",
+    fontSize: 17,
+    lineHeight: 22,
+  },
+  appleButtonText: {
+    color: "#ffffff",
+    fontFamily: fonts.dmSansMedium,
+    fontSize: 15,
+    lineHeight: 22,
   },
   googleButton: {
     flexDirection: "row",

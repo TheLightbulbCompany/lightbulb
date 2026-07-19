@@ -1,11 +1,13 @@
 """User API endpoints."""
 
 import logging
+import time
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
 
 from core.auth import get_current_user, resolve_owner_id, AuthContext
-from core.repositories import billing_repo, user_repo
+from core.repositories import admin_actions_repo, billing_repo, user_repo
 from schemas.user_schemas import SyncUserRequest, SyncUserResponse
 
 logger = logging.getLogger(__name__)
@@ -103,3 +105,89 @@ async def get_me(auth: AuthContext = Depends(get_current_user)) -> dict:
         "provider_choice": provider_choice,
         "byo_provider": byo_provider,
     }
+
+
+class DeleteAccountRequest(BaseModel):
+    """Typed-confirm body for self-serve deletion (mirrors the admin wipe)."""
+
+    confirm_email: str
+
+
+@router.post(
+    "/me/delete",
+    summary="Delete the caller's account",
+    description=(
+        "Self-serve, irreversible account deletion (App Store guideline "
+        "5.1.1(v)). Personal accounts only; runs the same ordered teardown "
+        "as the admin account wipe — container, workspace, Paperclip, "
+        "billing, and finally the Clerk user."
+    ),
+    operation_id="delete_my_account",
+    responses={
+        400: {"description": "Email confirmation mismatch or protected account"},
+        403: {"description": "Org accounts cannot self-delete"},
+    },
+)
+async def delete_my_account(
+    body: DeleteAccountRequest,
+    request: Request,
+    auth: AuthContext = Depends(get_current_user),
+):
+    # Lazy import: the wipe orchestrator pulls the whole teardown surface
+    # (ECS/EFS/Paperclip/Stripe clients) — keep it off users.py import time.
+    from core.services.account_wipe import (
+        BootstrapAccountProtectedError,
+        OrgWipeUnsupportedError,
+        resolve_account_emails,
+        wipe_account,
+    )
+
+    # Personal owners only — an org teardown has per-member fan-out the wipe
+    # orchestrator deliberately refuses (see account_wipe module docstring).
+    if auth.is_org_context:
+        raise HTTPException(
+            status_code=403,
+            detail="Workspace accounts can't be deleted in-app — contact support@isol8.co.",
+        )
+    owner_id = auth.user_id
+
+    # Authoritative email(s) from Clerk; the typed confirm must match one,
+    # case-insensitively — same guard the admin wipe uses.
+    account_emails = await resolve_account_emails(owner_id)
+    typed = body.confirm_email.strip().lower()
+    if not typed or not any(typed == e.strip().lower() for e in account_emails):
+        raise HTTPException(status_code=400, detail="email_mismatch")
+
+    started = time.monotonic()
+    try:
+        report = await wipe_account(owner_id, actor_admin_id=owner_id, account_emails=account_emails)
+    except OrgWipeUnsupportedError:
+        raise HTTPException(status_code=403, detail="org_deletion_unsupported")
+    except BootstrapAccountProtectedError:
+        raise HTTPException(status_code=400, detail="account_protected")
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+
+    report_dict = report.to_dict()
+    has_failures = any(step["status"] == "failed" for step in report_dict["steps"])
+    # Audit like the admin wipe (actor == target marks it self-serve). An
+    # audit-write failure must not mask the already-run teardown.
+    try:
+        await admin_actions_repo.create(
+            admin_user_id=owner_id,
+            target_user_id=owner_id,
+            action="account_wipe_self",
+            payload=report_dict,
+            result="partial_failure" if has_failures else "success",
+            audit_status="written",
+            http_status=200,
+            elapsed_ms=elapsed_ms,
+            error_message=None,
+            user_agent=request.headers.get("user-agent", "unknown"),
+            ip=request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+            or (request.client.host if request.client else "unknown"),
+        )
+    except Exception:  # noqa: BLE001 — mirror the admin wipe's audit posture
+        logger.critical("SELF_WIPE_AUDIT_PANIC target=%s", owner_id, exc_info=True)
+
+    # Never leak the step-by-step infra report to end users.
+    return {"status": "deleted"}

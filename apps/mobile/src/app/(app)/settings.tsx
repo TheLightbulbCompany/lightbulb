@@ -281,6 +281,61 @@ export default function Settings() {
 
   const restricted = orgRestricted || state.kind === "restricted";
 
+  // Self-serve account deletion (App Store 5.1.1(v)): explain permanence,
+  // then require the account email typed back (same guard as the backend),
+  // then run the server-side teardown and sign out. Org members get the
+  // backend's 403 message (workspace deletion is support-only).
+  const confirmDeleteAccount = useCallback(() => {
+    Alert.alert(
+      "Delete account",
+      "This permanently deletes your account, agents, workspace, and data. It cannot be undone.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Continue",
+          style: "destructive",
+          onPress: () =>
+            Alert.prompt(
+              "Confirm deletion",
+              `Type your account email (${email}) to confirm.`,
+              [
+                { text: "Cancel", style: "cancel" },
+                {
+                  text: "Delete forever",
+                  style: "destructive",
+                  onPress: (typed?: string) =>
+                    void (async () => {
+                      try {
+                        await api.post("/users/me/delete", {
+                          confirm_email: (typed ?? "").trim(),
+                        });
+                        await unregisterDevice((p) => api.del(p)).catch(() => {});
+                        await signOut();
+                      } catch (err) {
+                        const detail =
+                          err instanceof ApiError &&
+                          typeof (err.body as { detail?: unknown })?.detail === "string"
+                            ? ((err.body as { detail: string }).detail)
+                            : null;
+                        Alert.alert(
+                          "Couldn't delete account",
+                          detail === "email_mismatch"
+                            ? "That email didn't match this account."
+                            : (detail ?? "Something went wrong — try again or contact support@isol8.co."),
+                        );
+                      }
+                    })(),
+                },
+              ],
+              "plain-text",
+              "",
+              "email-address",
+            ),
+        },
+      ],
+    );
+  }, [api, email, signOut]);
+
   const confirmSignOut = useCallback(() => {
     Alert.alert("Sign out", "Are you sure you want to sign out?", [
       { text: "Cancel", style: "cancel" },
@@ -445,6 +500,26 @@ export default function Settings() {
 
       {billingCards}
 
+      {/* Legal links — App Store 5.1.1(i) requires the privacy policy to be
+          reachable inside the app. */}
+      <Card>
+        <Text style={styles.overline}>LEGAL</Text>
+        <Pressable
+          style={({ pressed }) => [styles.linkRow, pressed && styles.linkRowPressed]}
+          onPress={() => void Linking.openURL("https://isol8.co/privacy")}
+          accessibilityRole="link"
+        >
+          <Text style={styles.linkText}>Privacy Policy</Text>
+        </Pressable>
+        <Pressable
+          style={({ pressed }) => [styles.linkRow, pressed && styles.linkRowPressed]}
+          onPress={() => void Linking.openURL("https://isol8.co/terms")}
+          accessibilityRole="link"
+        >
+          <Text style={styles.linkText}>Terms of Service</Text>
+        </Pressable>
+      </Card>
+
       {/* Sign out — destructive-outline row, confirmed before acting. */}
       <Pressable
         style={({ pressed }) => [
@@ -454,6 +529,19 @@ export default function Settings() {
         onPress={confirmSignOut}
       >
         <Text style={styles.signOutText}>Sign out</Text>
+      </Pressable>
+
+      {/* Account deletion — App Store 5.1.1(v). */}
+      <Pressable
+        style={({ pressed }) => [
+          styles.signOutRow,
+          pressed && styles.signOutRowPressed,
+        ]}
+        onPress={confirmDeleteAccount}
+        accessibilityRole="button"
+        accessibilityLabel="Delete account"
+      >
+        <Text style={styles.deleteText}>Delete account</Text>
       </Pressable>
     </ScrollView>
   );
@@ -608,6 +696,12 @@ const styles = StyleSheet.create({
   signOutText: {
     fontFamily: fonts.dmSansMedium,
     fontSize: 13,
+    lineHeight: 18,
+    color: colors.danger,
+  },
+  deleteText: {
+    fontFamily: fonts.dmSansMedium,
+    fontSize: 14,
     lineHeight: 18,
     color: colors.danger,
   },

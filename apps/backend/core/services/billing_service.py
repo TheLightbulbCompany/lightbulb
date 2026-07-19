@@ -443,6 +443,84 @@ async def sync_team_seat_quantity(owner_id: str) -> int:
     return member_count
 
 
+async def create_ultra_upgrade(
+    *,
+    owner_id: str,
+    clerk_user_id: str | None = None,
+) -> dict | stripe.checkout.Session:
+    """Upgrade an owner to the Ultra Pro tier ($150/mo).
+
+    Two paths, picked by whether the owner already holds a LIVE flat
+    subscription:
+
+    - **In-place item swap** — an owner already on the $50 flat sub
+      (``stripe_subscription_id`` present + status ``active``/``trialing``)
+      is upgraded by swapping the subscription item's price to
+      ``STRIPE_ULTRA_PRICE_ID`` on the SAME Stripe subscription, prorated.
+      Keeps ONE subscription (no cancel + re-subscribe), so the owner is
+      charged only the prorated difference. The flat sub's item id is not
+      persisted on the billing row, so it is read LIVE off the retrieved
+      subscription (``sub["items"]["data"][0]["id"]``). Returns
+      ``{"upgraded": True}``.
+
+    - **Fresh checkout** — an owner with no live subscription (``trial_local``
+      / never subscribed — no item to swap) gets a subscription-mode Checkout
+      session on the Ultra price via the shared builder. Returns the Session;
+      the caller redirects the browser to ``session.url``.
+
+    ``trial_local`` counts as "active" for platform use but carries no
+    ``stripe_subscription_id``, so it correctly takes the fresh-checkout
+    branch. A non-live status (``canceled``/``past_due``) never swaps in
+    place even if a stale ``stripe_subscription_id`` lingers — it falls
+    through to a fresh checkout rather than modifying a dead subscription.
+
+    The durable plan/tier write + container resize happen in the
+    ``customer.subscription.*`` webhook (Task 4), NOT here — this only
+    initiates the Stripe-side change. The webhook derives the Ultra tier from
+    the resulting subscription's price and resizes.
+    """
+    if not settings.STRIPE_ULTRA_PRICE_ID:
+        raise BillingServiceError("STRIPE_ULTRA_PRICE_ID not configured")
+
+    account = await billing_repo.get_by_owner_id(owner_id)
+    sub_id = account.get("stripe_subscription_id") if account else None
+    status = account.get("subscription_status") if account else None
+
+    if sub_id and status in ("active", "trialing"):
+        with timing("stripe.api.latency", {"op": "subscription.retrieve"}):
+            sub = stripe.Subscription.retrieve(sub_id)
+        # The flat sub has a single item whose id is not stored on the billing
+        # row — read it LIVE off the retrieved subscription and swap its price.
+        item_id = sub["items"]["data"][0]["id"]
+        with timing("stripe.api.latency", {"op": "subscription.modify"}):
+            stripe.Subscription.modify(
+                sub_id,
+                items=[{"id": item_id, "price": settings.STRIPE_ULTRA_PRICE_ID}],
+                proration_behavior="create_prorations",
+                # Stable key — a retried upgrade collapses to one write.
+                idempotency_key=f"ultra-upgrade-{owner_id}",
+            )
+        return {"upgraded": True}
+
+    # No live subscription to swap — start a fresh Ultra subscription via
+    # Checkout. ``purpose="ultra"`` rides the subscription metadata so the
+    # webhook records the Ultra tier when the subscription first goes live;
+    # ``clerk_user_id`` is threaded through the same as the flat path so the
+    # webhook can resolve the right per-Clerk-user row.
+    metadata: dict = {"owner_id": owner_id, "purpose": "ultra"}
+    if clerk_user_id:
+        metadata["clerk_user_id"] = clerk_user_id
+    return await _build_subscription_checkout(
+        owner_id=owner_id,
+        price_id=settings.STRIPE_ULTRA_PRICE_ID,
+        quantity=1,
+        metadata=metadata,
+        success_url=f"{FRONTEND_URL}/chat?checkout=success",
+        cancel_url=f"{FRONTEND_URL}/?checkout=cancel",
+        idempotency_key=_checkout_idempotency_key("ultra_checkout", owner_id),
+    )
+
+
 async def create_credit_top_up_checkout(
     *,
     owner_id: str,

@@ -856,8 +856,8 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
       const isFirstPaintWithItems = !hasMountedRef.current && totalItems > 0;
 
       // Snap by setting scrollTop on the container — never scrollIntoView,
-      // which also scrolls outer ancestors (the overflow-hidden workspace
-      // shell included) and shifts the whole app out of the viewport.
+      // which also scrolls outer scrollable ancestors (that once yanked the
+      // whole workspace shell out of the viewport).
       const snapToBottom = () => {
         container.scrollTop = container.scrollHeight;
       };

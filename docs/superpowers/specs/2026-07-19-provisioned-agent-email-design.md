@@ -114,8 +114,12 @@ the agent *uses mid-conversation*, not a surface the email lands on.
 - **GSI** `by-owner` on `owner_id` (list an owner's addresses).
 - Repository `core/repositories/agent_email_repo.py`, modeled on the existing
   `channel_link_repo.py` (plain-dict items, no ORM).
-- Provisioned by CDK `database-stack.ts` (env var `AGENT_EMAIL_ADDRESSES_TABLE`; empty
-  disables the feature, matching the marketplace-table pattern).
+- Provisioned by CDK `database-stack.ts` as `isol8-{env}-agent-email-addresses` and addressed
+  by the **prefix convention** (`core.dynamodb.get_table("agent-email-addresses")`), exactly
+  like `channel-links` — **no table-name env var**. Grants are explicit per-table
+  (`grantReadWriteData` in `service-stack.ts`); there is no wildcard DDB policy.
+- The feature's kill switch is **`AGENT_EMAIL_DOMAIN`** instead: empty ⇒ no address is ever
+  minted, so the whole machinery can ship inert and be switched on per environment.
 
 ### 6.3 Address minting (in provisioning)
 - Mint the address row inside `paperclip_provisioning.provision_org` — the same place Friday
@@ -206,8 +210,10 @@ tiers the platform.
 
 Inbound attachments are **stored and linked**, not inlined:
 - On `email.received`, call Resend's **Attachments API** to fetch metadata + `download_url`.
-- Copy each attachment into an S3 bucket (`AGENT_EMAIL_ATTACHMENTS_BUCKET`, provisioned in
-  `database-stack.ts`) under `inbound/{owner_id}/{message_id}/{filename}`.
+- Copy each attachment into an S3 bucket (`AGENT_EMAIL_ATTACHMENTS_BUCKET`) under
+  `inbound/{owner_id}/{message_id}/{filename}`. Note the bucket is created in
+  **`service-stack.ts`**, not `database-stack.ts` — that's where the marketplace artifacts
+  bucket lives, and buckets follow that precedent.
 - Deliver to the agent a **manifest** (filenames, sizes, content-types, S3 keys / signed URLs)
   rather than raw bytes, so the agent can reference or fetch them as needed.
 - Enforce a per-message size/count cap; scan/verdict per Resend before storing.

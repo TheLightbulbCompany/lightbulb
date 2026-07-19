@@ -302,7 +302,19 @@ async def _run_company_deploy(*, owner_id: str, tar_bytes: bytes, created: list[
                 apply_aux=apply_deploy_aux_mutations,
             )
 
-        await _create_routines(admin=admin, cookie=cookie, company_id=company_id, plan=plan, slug_to_id=slug_to_id)
+        # Routine creation is OUTSIDE the rollback-triggering path. Once every
+        # agent is materialized the deploy is a success; routines are created
+        # PAUSED and are freely re-addable from Teams, so a routine hiccup must
+        # NOT tear down a healthy, fully-deployed company. Log it and move on —
+        # the user adds/enables routines from Teams.
+        try:
+            await _create_routines(admin=admin, cookie=cookie, company_id=company_id, plan=plan, slug_to_id=slug_to_id)
+        except Exception:  # noqa: BLE001 — a routine failure never rolls back a materialized company
+            logger.exception(
+                "company_deploy: owner=%s routine creation failed after all agents materialized "
+                "— leaving the deployed company intact (add routines from Teams)",
+                owner_id,
+            )
     finally:
         await http.aclose()
 

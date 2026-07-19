@@ -385,6 +385,34 @@ async def test_no_cron_routines_creates_none(monkeypatch):
     assert len(h.admin.create_calls) == 3
 
 
+@pytest.mark.asyncio
+async def test_routine_failure_does_not_roll_back_materialized_company(monkeypatch):
+    """A create_agent_routines failure AFTER every agent materialized leaves the
+    deployed company intact — routines are created paused and are re-addable from
+    Teams, so a routine hiccup must NOT tear down healthy agents. run never
+    raises."""
+    plan = _simple_plan(routines=[PlannedRoutine(agent_slug="cto", title="Nightly", description="d", cron="0 8 * * *")])
+    h = Harness()
+    _install(monkeypatch, h, plan=plan)
+
+    async def boom(*, admin, session_cookie, company_id, agent_id, routines):
+        raise RuntimeError("routine creation exploded")
+
+    monkeypatch.setattr(svc, "create_agent_routines", boom)
+
+    # Must NOT raise.
+    await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
+
+    # All three agents were created + materialized...
+    assert [c["name"] for c in h.admin.create_calls] == ["CEO", "CTO", "Worker"]
+    assert len(h.materialize_calls) == 3
+    # ...and NONE were rolled back despite the routine failure.
+    assert h.deleted == []
+    assert h.unwound == []
+    # Admin session still closed.
+    assert h.http.closed is True
+
+
 # ---------------------------------------------------------------------------
 # Failure path — inline rollback of exactly this run's created agents
 # ---------------------------------------------------------------------------

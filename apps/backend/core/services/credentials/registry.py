@@ -226,6 +226,13 @@ class Provider(BaseModel):
     # Review + the platform-secret seed. Enforced in routers/connections.py:
     # gated providers are neither listed nor connectable outside their envs.
     environments: list[str] | None = None
+    # Extra owners who get this provider even OUTSIDE `environments` — a targeted
+    # allowlist for prod-dogfooding a provider that's env-gated off prod for
+    # everyone else. E.g. Instagram pre-App-Review: dev-open for all dev owners,
+    # plus the founder's prod container here, while every other prod user stays
+    # dark (no dead "Connect" button they can't complete pre-review). Owner ids
+    # are Clerk org_/user_ ids. None/empty = no extra owners.
+    owner_allowlist: list[str] | None = None
     # Bundled skill delivered by a paste-token CLI integration (see SkillSpec).
     skill: SkillSpec | None = None
     # AWS STS rail config. Only set for the `aws` provider (acquisition

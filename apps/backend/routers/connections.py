@@ -199,21 +199,25 @@ def _current_env() -> str:
     return settings.ENVIRONMENT or "dev"
 
 
-def _available_in_env(p: registry.Provider) -> bool:
-    """Whether this provider is exposed in the running environment. A provider
-    with no `environments` list is available everywhere; a gated one (e.g. a
-    dev-only Instagram) only in its listed envs."""
-    return p.environments is None or _current_env() in p.environments
+def _available_for(p: registry.Provider, owner_id: str | None) -> bool:
+    """Whether this provider is exposed to this owner in the running environment.
+    Available when it's not env-gated, OR the current env is in its `environments`,
+    OR this owner is on its `owner_allowlist` (the prod-dogfood escape hatch — a
+    dev-gated provider still reachable by a named founder container on prod)."""
+    if p.environments is None or _current_env() in p.environments:
+        return True
+    return bool(owner_id and p.owner_allowlist and owner_id in p.owner_allowlist)
 
 
-def _get_provider_or_404(provider: str) -> registry.Provider:
+def _get_provider_or_404(provider: str, owner_id: str | None = None) -> registry.Provider:
     try:
         p = registry.get_provider(provider)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"unknown integration provider: {provider}")
-    if not _available_in_env(p):
-        # Env-gated provider hit outside its envs (e.g. dev-only in prod): 404
-        # like an unknown provider so it's neither connectable nor discoverable.
+    if not _available_for(p, owner_id):
+        # Env-gated provider hit outside its envs by an owner not on its allowlist
+        # (e.g. dev-only Instagram in prod): 404 like an unknown provider so it's
+        # neither connectable nor discoverable.
         raise HTTPException(status_code=404, detail=f"unknown integration provider: {provider}")
     return p
 
@@ -287,7 +291,7 @@ async def list_connections(auth: AuthContext = Depends(get_current_user)):
     for k, v in registry.all_providers().items():
         # Skip env-gated providers outside their envs so a dev-only integration
         # never appears in the prod connections list.
-        if not _available_in_env(v):
+        if not _available_for(v, owner_id):
             continue
         byo = await _byo_active(owner_id, k)
         connections.append(
@@ -388,7 +392,7 @@ async def aws_credentials(body: AwsCredentialsBody, request: Request):
 async def connect_paste(provider: str, body: PasteBody, auth: AuthContext = Depends(get_current_user)):
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
-    p = _get_provider_or_404(provider)
+    p = _get_provider_or_404(provider, owner_id)
     if p.acquisition != "paste_token":
         raise HTTPException(status_code=400, detail=f"{provider} is not a paste-key integration")
     if not await _validate_token(p, body.token):
@@ -421,7 +425,7 @@ async def aws_setup(provider: str, auth: AuthContext = Depends(get_current_user)
     role and pasted its ARN back."""
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
-    p = _get_provider_or_404(provider)
+    p = _get_provider_or_404(provider, owner_id)
     if p.acquisition != "aws_sts":
         raise HTTPException(status_code=400, detail=f"{provider} is not an AWS STS integration")
 
@@ -495,7 +499,7 @@ async def aws_complete(provider: str, body: AwsCompleteBody, auth: AuthContext =
     this validation is the gate that keeps a bad ARN from ever being stored."""
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
-    p = _get_provider_or_404(provider)
+    p = _get_provider_or_404(provider, owner_id)
     if p.acquisition != "aws_sts":
         raise HTTPException(status_code=400, detail=f"{provider} is not an AWS STS integration")
 
@@ -636,7 +640,7 @@ async def _disconnect_one_google_account(owner_id: str, p: registry.Provider, ac
 async def disconnect(provider: str, account: str | None = None, auth: AuthContext = Depends(get_current_user)):
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
-    p = _get_provider_or_404(provider)
+    p = _get_provider_or_404(provider, owner_id)
     # ?account= scopes the disconnect to one Google account. It is Google-specific
     # (one provider, many accounts), so reject it on any other provider rather
     # than silently honoring it.
@@ -728,7 +732,7 @@ async def put_byo_app(
     BYO-required provider via their own app."""
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
-    p = _get_provider_or_404(provider)
+    p = _get_provider_or_404(provider, owner_id)
     if not p.byo_required:
         raise HTTPException(status_code=400, detail=f"{provider} does not support a bring-your-own app")
     await oauth_app_store.put(
@@ -753,7 +757,7 @@ async def delete_byo_app(
     # 4xxs instead of silently no-opping (a clear signal the route is wrong,
     # not a request that quietly succeeded against a provider that never had a
     # BYO app to clear).
-    p = _get_provider_or_404(provider)
+    p = _get_provider_or_404(provider, owner_id)
     if not p.byo_required:
         raise HTTPException(status_code=400, detail=f"{provider} does not support a bring-your-own app")
     await oauth_app_store.delete(owner_id, provider)
@@ -770,7 +774,7 @@ def _redirect_uri(provider: str) -> str:
 async def authorize(provider: str, auth: AuthContext = Depends(get_current_user)):
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
-    p = _get_provider_or_404(provider)
+    p = _get_provider_or_404(provider, owner_id)
     if p.acquisition != "direct_oauth":
         raise HTTPException(status_code=400, detail=f"{provider} is not an OAuth integration")
     if p.byo_required and not await _byo_active(owner_id, provider):

@@ -34,6 +34,11 @@ def main() -> int:
     ap.add_argument("--name", required=True, help="platform app name, e.g. meta-instagram")
     ap.add_argument("--client-id", required=True)
     ap.add_argument("--region", default="us-east-1")
+    # Operators run this with SSO creds under the isol8-admin profile (see the
+    # other ops scripts). A bare boto3 client would use the DEFAULT chain instead
+    # and silently target the wrong account (or fail with no creds), so pin the
+    # profile explicitly. Pass --profile "" to use ambient credentials (CI role).
+    ap.add_argument("--profile", default="isol8-admin")
     args = ap.parse_args()
 
     client_secret = getpass.getpass("Client secret: ").strip()
@@ -44,7 +49,12 @@ def main() -> int:
     secret_name = f"isol8/{args.env}/integrations/platform-oauth/{args.name}"
     payload = json.dumps({"client_id": args.client_id, "client_secret": client_secret})
 
-    sm = boto3.client("secretsmanager", region_name=args.region)
+    session = boto3.Session(profile_name=args.profile or None, region_name=args.region)
+    # Surface the resolved account up front: writing a platform secret to the
+    # wrong account is silent (a bare create_secret succeeds anywhere), so make
+    # "which account did this land in" visible rather than a guess.
+    account = session.client("sts").get_caller_identity()["Account"]
+    sm = session.client("secretsmanager")
     try:
         sm.create_secret(Name=secret_name, SecretString=payload)
         action = "created"
@@ -53,7 +63,7 @@ def main() -> int:
             raise
         sm.put_secret_value(SecretId=secret_name, SecretString=payload)
         action = "rotated"
-    print(f"{action}: {secret_name} (client_id={args.client_id})")
+    print(f"{action}: {secret_name} (client_id={args.client_id}) in account {account} [{args.region}]")
     return 0
 
 

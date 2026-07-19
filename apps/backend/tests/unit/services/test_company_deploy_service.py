@@ -497,6 +497,67 @@ async def test_missing_gateway_token_fails_with_no_creates(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# _find_friday_id — the true apex, not just "first ceo"
+# ---------------------------------------------------------------------------
+
+
+def test_find_friday_id_picks_rootless_ceo_despite_order():
+    """After a prior deploy the company has 2+ role=ceo agents; the package
+    CEO is a division head with a non-empty reportsTo. Even with the package
+    CEO listed FIRST, Friday (the rootless ceo) must win — list order must
+    not fool the selection."""
+    roster = [
+        {"id": "pc_pkg_ceo", "role": "ceo", "reportsTo": FRIDAY_ID},  # prior deploy's CEO, first
+        {"id": FRIDAY_ID, "role": "ceo", "reportsTo": None},  # the true apex
+    ]
+    assert svc._find_friday_id(roster) == FRIDAY_ID
+
+
+def test_find_friday_id_accepts_snake_case_and_missing_field():
+    # snake_case reports_to is honored defensively.
+    snake = [
+        {"id": "pc_pkg_ceo", "role": "ceo", "reports_to": FRIDAY_ID},
+        {"id": FRIDAY_ID, "role": "ceo", "reports_to": ""},
+    ]
+    assert svc._find_friday_id(snake) == FRIDAY_ID
+    # A ceo with no reports-to field at all is treated as rootless.
+    assert svc._find_friday_id([{"id": FRIDAY_ID, "role": "ceo"}]) == FRIDAY_ID
+
+
+def test_find_friday_id_falls_back_to_first_ceo_if_none_rootless():
+    # Impossible in practice (Friday is always rootless) but never return None
+    # when a ceo exists.
+    roster = [
+        {"id": "pc_a", "role": "ceo", "reportsTo": "x"},
+        {"id": "pc_b", "role": "ceo", "reportsTo": "y"},
+    ]
+    assert svc._find_friday_id(roster) == "pc_a"
+    assert svc._find_friday_id([{"id": "a1", "role": "member"}]) is None
+
+
+@pytest.mark.asyncio
+async def test_deploy_grafts_onto_rootless_friday_not_prior_package_ceo(monkeypatch):
+    """End-to-end: with a prior package CEO listed first, the new deploy's
+    division head still reports to the rootless Friday, not the prior CEO."""
+    plan = _simple_plan()
+    h = Harness()
+    h.admin = FakeAdmin(
+        roster=[
+            {"id": "pc_prior_ceo", "role": "ceo", "reportsTo": FRIDAY_ID},  # earlier deploy, first
+            {"id": FRIDAY_ID, "role": "ceo", "reportsTo": None},
+        ]
+    )
+    _install(monkeypatch, h, plan=plan)
+
+    await svc.run_company_deploy(job_id="cdpl_test", owner_id=OWNER, listing={}, tar_bytes=b"")
+
+    by_name = {c["name"]: c for c in h.admin.create_calls}
+    assert by_name["CEO"]["reports_to"] == FRIDAY_ID
+    assert by_name["CTO"]["reports_to"] == FRIDAY_ID
+    assert by_name["CTO"]["reports_to"] != "pc_prior_ceo"
+
+
+# ---------------------------------------------------------------------------
 # Friday not found -> failed, no creates
 # ---------------------------------------------------------------------------
 

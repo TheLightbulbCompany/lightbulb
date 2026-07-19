@@ -150,21 +150,38 @@ async def _parse_plan_async(tar_bytes: bytes) -> DeployPlan:
 
 
 def _find_friday_id(agents) -> str | None:
-    """Friday = the company's CEO agent (``role == "ceo"``).
+    """Friday = the owner's true apex CEO: the ``role == "ceo"`` agent that is
+    ROOTLESS (empty ``reportsTo``).
 
-    Accepts either the raw list the admin client returns or an enveloped
-    ``{"agents": [...]}`` shape defensively. Returns the first ``ceo`` match;
-    Friday is seeded at provision time (long before any company deploy) so it is
-    the first ``ceo`` in creation-ordered rosters.
+    After a company deploy the package's own CEO exists too, as a division head
+    with ``reportsTo = friday_id`` — so the company has 2+ ``role == "ceo"``
+    agents and "first ceo" is unsafe: ``list_agents`` order is not contractually
+    Friday-first, so a SECOND deploy could otherwise graft the new org chart onto
+    a prior package's CEO. Friday is the only ceo with no manager, so select on
+    that instead. Paperclip returns the field as ``reportsTo`` (camelCase — see
+    the create body in ``paperclip_admin_client``); ``reports_to`` is accepted
+    too for defensiveness.
+
+    Accepts the raw list or an enveloped ``{"agents": [...]}`` shape. Falls back
+    to the first ceo if (impossibly) none are rootless, so a present ceo never
+    yields ``None``.
     """
     if isinstance(agents, dict):
         agents = agents.get("agents") or agents.get("items") or []
     if not isinstance(agents, list):
         return None
+    first_ceo: str | None = None
     for a in agents:
-        if isinstance(a, dict) and a.get("role") == "ceo":
+        if not isinstance(a, dict) or a.get("role") != "ceo":
+            continue
+        if first_ceo is None:
+            first_ceo = a.get("id")
+        reports_to = a.get("reportsTo")
+        if reports_to is None:
+            reports_to = a.get("reports_to")
+        if not reports_to:  # rootless apex = the owner's seeded Friday
             return a.get("id")
-    return None
+    return first_ceo
 
 
 def _resolve_reports_to(planned: PlannedAgent, plan: DeployPlan, friday_id: str, slug_to_id: dict[str, str]) -> str:

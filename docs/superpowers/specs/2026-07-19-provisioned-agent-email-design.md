@@ -125,11 +125,38 @@ the agent *uses mid-conversation*, not a surface the email lands on.
 - Mint the address row inside `paperclip_provisioning.provision_org` — the same place Friday
   and Atlas are seeded — so every newly provisioned owner gets it with zero extra calls.
   Idempotent (short-circuit if a row already exists), matching `provision_org`'s contract.
-- Local part scheme: `friday-<short-owner-token>@agents.isol8.co` (human-ish, collision-safe;
-  the token derives from owner/agent ids). The address does **not** need to be secret — the
-  sender allowlist is the security boundary, not obscurity.
+- **Local part is derived from the owner's company slug** (see §6.3a — this is a hard
+  prerequisite). The address is a conversion asset, so it must look like a real company
+  address, not a hash:
+  - **Primary agent (Friday):** `{slug}@agents.isol8.co` — e.g. `acme@agents.isol8.co`.
+    The company's main address is its CEO's, which is the Polsia shape.
+  - **Additional agents (later, gated):** `{slug}-{agent}@agents.isol8.co` — e.g.
+    `acme-atlas@agents.isol8.co`.
+- Address uniqueness follows from **slug** uniqueness, which is reserved atomically (§6.3a).
+  The address does **not** need to be secret — the sender allowlist is the security boundary,
+  not obscurity.
+- **Alias on rename.** `status` is `"active"` (the current primary) or `"alias"`. Renaming the
+  company mints a new `active` address and demotes the old row to `alias`; **aliases keep
+  routing forever.** A rename must never break a live email thread or orphan mail in flight.
+  Many addresses → one agent is already natural given the address-keyed PK + `by-owner` GSI.
 - Seed `verified_senders` with the owner's Clerk primary email.
 - Backfill for existing owners: a one-shot script (archive after running, per repo policy).
+
+### 6.3a Company identity (prerequisite — separate plan)
+
+The email slug has no source today: `provision_org` currently names the Paperclip company
+`name=owner_email` (`paperclip_provisioning.py:327,338`), i.e. literally `user@gmail.com`, and
+our backend exposes **no rename path**. A sensible address therefore depends on first giving
+the company a real, editable name:
+
+- **Auto-generate at provisioning, then editable** — no extra step in the signup funnel.
+- **Slug reservation** must be atomic (conditional write) so two "Acme" owners can't collide;
+  collisions take a numeric suffix.
+- **Rename** updates the name, re-reserves the slug, and triggers the alias-mint above.
+
+This is scoped as its own plan and sequenced **before** `AGENT_EMAIL_DOMAIN` is ever switched
+on — which is safe precisely because the email feature ships inert (§8/Plan 1), so no
+hash-shaped or email-shaped address is ever minted in the interim.
 
 ### 6.4 Inbound webhook + router
 - `routers/agent_mail.py` → `POST /api/v1/webhooks/resend-inbound` (public, no Clerk; like

@@ -47,10 +47,12 @@ from typing import Optional
 
 import httpx
 
+from core.auth import is_org_owner_id
 from core.config import settings
 from core.encryption import decrypt, encrypt
 from core.repositories.paperclip_repo import PaperclipCompany, PaperclipRepo
 from core.services import service_token
+from core.services.company_identity import allocate_company_slug, generate_company_name
 from core.services.paperclip_adapter_config import OPENCLAW_GATEWAY_TYPE, synthesize_openclaw_adapter
 from core.services.paperclip_admin_client import PaperclipAdminClient, PaperclipApiError
 
@@ -319,12 +321,28 @@ class PaperclipProvisioning:
                     )
                 )
 
+            # The company name is user-visible and editable afterwards, so
+            # generate a real one. Falling back to the owner's email keeps
+            # the previous behaviour if naming fails — never abort here.
+            try:
+                company_name = await generate_company_name(
+                    org_id=owner_id if is_org_owner_id(owner_id) else None,
+                    owner_email=owner_email,
+                )
+            except Exception as e:  # noqa: BLE001 — naming must not fail provisioning
+                logger.warning(
+                    "paperclip_provisioning.provision_org: name generation failed for owner_id %s: %s",
+                    owner_id,
+                    e,
+                )
+                company_name = owner_email
+
             # 2. ADMIN creates the company. Admin becomes the initial
             #    owner via Paperclip's auto-ensureMembership in
             #    ``routes/companies.ts:273``.
             try:
                 company = await self._admin.create_company(
-                    name=owner_email,
+                    name=company_name,
                     description="Isol8 Teams workspace",
                     session_cookie=admin_cookie,
                     idempotency_key=owner_user_id,
@@ -335,7 +353,7 @@ class PaperclipProvisioning:
                     invalidate_admin_session()
                     admin_cookie = await get_admin_session_cookie(self._admin._http)
                     company = await self._admin.create_company(
-                        name=owner_email,
+                        name=company_name,
                         description="Isol8 Teams workspace",
                         session_cookie=admin_cookie,
                         idempotency_key=owner_user_id,
@@ -343,6 +361,18 @@ class PaperclipProvisioning:
                 else:
                     raise
             company_id = company["id"]
+
+            # Reserve the platform-unique slug the agent's email address will
+            # later be built from. Best-effort: an owner without a slug simply
+            # has no address minted yet.
+            try:
+                await allocate_company_slug(owner_id=owner_id, name=company_name)
+            except Exception as e:  # noqa: BLE001 — allocation must not fail provisioning
+                logger.warning(
+                    "paperclip_provisioning.provision_org: slug allocation failed for owner_id %s: %s",
+                    owner_id,
+                    e,
+                )
 
             # 3. ADMIN creates a one-shot invite for the new user.
             #    ``human_role="owner"`` is critical: Paperclip's

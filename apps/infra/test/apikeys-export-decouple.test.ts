@@ -67,6 +67,7 @@ function build(environment: "dev" | "prod"): {
       usageCountersTable: database.usageCountersTable,
       pendingUpdatesTable: database.pendingUpdatesTable,
       channelLinksTable: database.channelLinksTable,
+      companySlugsTable: database.companySlugsTable,
       adminActionsTable: database.adminActionsTable,
       oauthTokensTable: database.oauthTokensTable,
       webhookDedupTable: database.webhookDedupTable,

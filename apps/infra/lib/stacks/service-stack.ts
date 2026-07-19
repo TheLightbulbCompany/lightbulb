@@ -103,6 +103,7 @@ export interface ServiceStackProps extends cdk.StackProps {
     usageCountersTable: dynamodb.Table;
     pendingUpdatesTable: dynamodb.Table;
     channelLinksTable: dynamodb.Table;
+    companySlugsTable: dynamodb.Table;
     adminActionsTable: dynamodb.Table;
     oauthTokensTable: dynamodb.Table;
     webhookDedupTable: dynamodb.Table;
@@ -686,6 +687,21 @@ export class ServiceStack extends cdk.Stack {
         ],
       }),
     );
+
+    // Platform-unique company slugs (company-identity Task 1). Deliberately
+    // granted here — AFTER the bedrock-gate-url statement above, not beside
+    // the other table grants earlier in this method — because CDK's inline-
+    // policy overflow packs statements into TaskRoleDefaultPolicy in
+    // add-order and spills whatever doesn't fit into a TaskRoleOverflowPolicy
+    // once the ~10 KB ceiling is hit (confirmed via synth: this stack is
+    // already at that ceiling). Adding this grant any earlier pushed
+    // BedrockGateUrlParamRead itself into the overflow policy, which broke
+    // test/service-stack.test.ts's assertion that it lives in the inline
+    // AWS::IAM::Policy. Placing new grants after that statement means any
+    // overflow lands on the new grant instead, leaving already-tested
+    // statements' packing undisturbed. Functionally identical either way —
+    // an overflow ManagedPolicy still attaches to the same role.
+    props.database.companySlugsTable.grantReadWriteData(this.taskRole);
 
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({

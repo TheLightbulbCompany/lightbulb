@@ -52,6 +52,7 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
       usageCountersTable: database.usageCountersTable,
       pendingUpdatesTable: database.pendingUpdatesTable,
       channelLinksTable: database.channelLinksTable,
+      companySlugsTable: database.companySlugsTable,
       adminActionsTable: database.adminActionsTable,
       oauthTokensTable: database.oauthTokensTable,
       webhookDedupTable: database.webhookDedupTable,

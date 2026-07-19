@@ -28,6 +28,7 @@ export class DatabaseStack extends cdk.Stack {
   public readonly usageCountersTable: dynamodb.Table;
   public readonly pendingUpdatesTable: dynamodb.Table;
   public readonly channelLinksTable: dynamodb.Table;
+  public readonly companySlugsTable: dynamodb.Table;
   public readonly webhookDedupTable: dynamodb.Table;
   public readonly adminActionsTable: dynamodb.Table;
   public readonly metronomeFastGateTable: dynamodb.Table;
@@ -159,6 +160,14 @@ export class DatabaseStack extends cdk.Stack {
       indexName: "by-member",
       partitionKey: { name: "member_id", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "owner_provider_agent", type: dynamodb.AttributeType.STRING },
+    });
+
+    this.companySlugsTable = createTable("CompanySlugsTable", "company-slugs", {
+      partitionKey: { name: "slug", type: dynamodb.AttributeType.STRING },
+    });
+    this.companySlugsTable.addGlobalSecondaryIndex({
+      indexName: "by-owner",
+      partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
     });
 
     // Webhook event dedup table — shared by Stripe and Clerk webhooks

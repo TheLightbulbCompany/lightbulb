@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
+from core.services.credentials import registry
 from routers import connections
 
 
@@ -282,6 +283,39 @@ class TestEnvGatedProvider:
         monkeypatch.setattr(connections.settings, "ENVIRONMENT", "prod")
         response = await async_client.get("/api/v1/connections/instagram/authorize")
         assert response.status_code == 404
+
+    def test_available_for_owner_allowlist(self, monkeypatch):
+        # A dev-gated provider with an owner_allowlist: open to everyone in dev,
+        # and in prod ONLY to the allowlisted owner (the prod-dogfood escape hatch).
+        p = registry.Provider(
+            key="x",
+            display_name="X",
+            acquisition="direct_oauth",
+            actor="cli",
+            refresh_owner="isol8_rematerialize",
+            wiring={"materializer": "instagram_cli"},
+            oauth={
+                "authorization_url": "https://x/a",
+                "token_url": "https://x/t",
+                "scopes": ["a"],
+                "platform_app": "meta-x",
+            },
+            environments=["local", "dev"],
+            owner_allowlist=["org_founder"],
+        )
+        monkeypatch.setattr(connections.settings, "ENVIRONMENT", "dev")
+        assert connections._available_for(p, "org_anyone") is True  # dev: open to all
+        assert connections._available_for(p, None) is True
+        monkeypatch.setattr(connections.settings, "ENVIRONMENT", "prod")
+        assert connections._available_for(p, "org_founder") is True  # prod: allowlisted only
+        assert connections._available_for(p, "org_other") is False
+        assert connections._available_for(p, None) is False
+
+    def test_available_for_ungated_provider(self, monkeypatch):
+        # No environments list → available everywhere, allowlist irrelevant.
+        p = registry.get_provider("stripe")
+        monkeypatch.setattr(connections.settings, "ENVIRONMENT", "prod")
+        assert connections._available_for(p, "org_anyone") is True
 
 
 class TestByoRequiredGate:

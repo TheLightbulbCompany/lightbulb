@@ -133,6 +133,50 @@ describe("useAgentChat — F-CANCEL targeted server-reconciled abort", () => {
     expect(result.current.isStreaming).toBe(false);
   });
 
+  it("renders the abort as a calm notice, not an error", async () => {
+    // The backend delivers a user-initiated Stop as an `error` frame
+    // (connection_pool.py's chat.aborted transform). It is the outcome the
+    // user asked for, so it must NOT get the "Error: " prefix or an errorCode
+    // — an errorCode is what MessageList upgrades into a red ChatErrorCard.
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    const { result } = renderHook(() => useAgentChat("agent-X", "session-1"));
+
+    await act(async () => {
+      await result.current.sendMessage("first");
+    });
+    const runA = lastClientRunId();
+    act(() =>
+      dispatch({ type: "chunk", agent_id: "agent-X", runId: runA, content: "live" } as ChatIncomingMessage),
+    );
+
+    await act(async () => {
+      await result.current.cancelMessage();
+    });
+    act(() =>
+      dispatch({
+        type: "error",
+        agent_id: "agent-X",
+        runId: runA,
+        message: "Agent run was cancelled",
+      } as ChatIncomingMessage),
+    );
+
+    const items = result.current.renderGroups.flatMap((g) => g.items);
+    const notice = items.find(
+      (i) =>
+        i.kind === "message" &&
+        (i.message.content?.[0]?.text ?? i.message.text ?? "").includes(
+          "Agent run was cancelled",
+        ),
+    );
+    expect(notice, "expected the abort notice in the transcript").toBeDefined();
+    const msg = (notice as { message: { text?: string; content?: { text?: string }[]; errorCode?: string } }).message;
+    const text = msg.content?.[0]?.text ?? msg.text ?? "";
+    expect(text).toBe("Agent run was cancelled");
+    expect(text.startsWith("Error: ")).toBe(false);
+    expect(msg.errorCode).toBeUndefined();
+  });
+
   it("when disconnected, stores the pending abort and replays it on reconnect", async () => {
     const { useAgentChat } = await import("@/hooks/useAgentChat");
     const { result, rerender } = renderHook(() =>

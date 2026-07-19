@@ -116,7 +116,6 @@ describe("useAgentChat — container_waking self-heal", () => {
     expect(msgs).toHaveLength(1);
     expect(msgs[0].errorCode).toBeUndefined();
     expect(msgs[0].content?.[0]).toMatchObject({ type: "text", text: WAKING_MESSAGE });
-    expect(result.current.error).toBeNull();
 
     // Busy gate released (no-runId transport terminal), same as no-container.
     expect(result.current.isStreaming).toBe(false);
@@ -139,10 +138,14 @@ describe("useAgentChat — container_waking self-heal", () => {
     );
 
     expect(mutate).not.toHaveBeenCalled();
-    // Ordinary error keeps the "Error: " prefix + surfaces the top-level banner.
-    expect(result.current.error).toBe(
-      "No container provisioned. Please subscribe to start chatting.",
-    );
+    // Ordinary error keeps the "Error: " prefix in the transcript bubble (there
+    // is no top-level banner — an error must never swap the panel layout).
+    const ordinary = assistantMessages(result.current.renderItems);
+    expect(ordinary).toHaveLength(1);
+    expect(ordinary[0].content?.[0]).toMatchObject({
+      type: "text",
+      text: "Error: No container provisioned. Please subscribe to start chatting.",
+    });
   });
 
   it("fires exactly one revalidation per waking frame (no stuck loop)", async () => {

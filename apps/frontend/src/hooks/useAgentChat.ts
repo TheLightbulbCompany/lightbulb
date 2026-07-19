@@ -88,6 +88,14 @@ function friendlyError(raw: string): string {
   return raw;
 }
 
+// A user-initiated Stop is delivered as an `error` frame — connection_pool.py
+// transforms chat.aborted into {"type":"error","message":"Agent run was
+// cancelled"} (and websocket_chat.py synthesizes the identical frame when the
+// abort RPC can't be confirmed). It carries no errorCode, so string-matching is
+// the available signal, same as ERROR_PATTERNS above. An abort is the outcome
+// the user asked for: it renders as a calm notice, not an error.
+const ABORTED_PATTERN = /Agent run was cancelled/i;
+
 // Builds the OpenClaw session key the read path (chat.history) queries. The
 // write path constructs the authoritative key server-side; this must mirror
 // it: 4-part `agent:{agentId}:{userId}:{sessionId}` for a real session, or the
@@ -156,7 +164,6 @@ export interface UseAgentChatReturn {
   isStreaming: boolean;
   /** isStreaming (local anchor) OR containerRunActive (server truth via `run_active`). */
   busy: boolean;
-  error: string | null;
   sendMessage: (message: string) => Promise<void>;
   cancelMessage: () => Promise<void>;
   clearMessages: () => void;
@@ -550,7 +557,6 @@ export function useAgentChat(
   // connection drop, so a lost `run_active:false` can't strand it true.
   const [containerRunActive, setContainerRunActive] = useState(false);
 
-  const [error, setError] = useState<string | null>(null);
 
   // Ephemeral `/btw` side-result cards. Transient by design: never written to
   // _messageCache or chatMessages, so they don't survive a refresh and are not
@@ -971,7 +977,6 @@ export function useAgentChat(
     toolStreamByIdRef.current.clear();
     toolStreamOrderRef.current = [];
     setBtwResults([]);
-    setError(null);
     setIsStreaming(false);
     // Scope the server-truth busy bit to the chat it came from: the old
     // session's later run_active:false/terminal is tagged with the old
@@ -1640,15 +1645,18 @@ export function useAgentChat(
         setContainerRunActive(false);
 
         const displayError = friendlyError(msg.message);
-        const errorCode = isWaking ? undefined : msg.code;
-        // Append an assistant-role message. A waking notice renders as calm
-        // plain markdown (no "Error: " prefix, no errorCode); a genuine error
-        // carries the "Error: " prefix + errorCode that MessageList upgrades
-        // to a typed ChatErrorCard.
+        // A user-initiated Stop is not a failure — treat it like the waking
+        // notice: calm plain text, no errorCode.
+        const isCalmNotice = isWaking || ABORTED_PATTERN.test(msg.message);
+        const errorCode = isCalmNotice ? undefined : msg.code;
+        // Append an assistant-role message. A calm notice (waking / aborted)
+        // renders as plain markdown (no "Error: " prefix, no errorCode); a
+        // genuine error carries the "Error: " prefix + errorCode that
+        // MessageList upgrades to a typed ChatErrorCard.
         const errMsg: HistoryMessage = {
           role: "assistant",
           content: [
-            { type: "text", text: isWaking ? displayError : `Error: ${displayError}` },
+            { type: "text", text: isCalmNotice ? displayError : `Error: ${displayError}` },
           ],
           timestamp: Date.now(),
           runId: msg.runId,
@@ -1674,10 +1682,6 @@ export function useAgentChat(
         toolStreamByIdRef.current.clear();
         toolStreamOrderRef.current = [];
         setChatToolMessages([]);
-        // A waking notice is not a failure — leave the top-level `error` (which
-        // drives AgentChatWindow's full pink "Error" banner) untouched so the
-        // brief window before the stepper takes over stays calm.
-        if (!isWaking) setError(displayError);
         // Did THIS error end the active run? A terminal agent error carries
         // the run's runId (the no-runId agent_busy notice was handled and
         // returned above). Capture state before clearing so we can drain.
@@ -1979,7 +1983,6 @@ export function useAgentChat(
       const trimmed = message.trim();
       if (!trimmed) return;
 
-      setError(null);
       const key = agentIdRef.current
         ? `${agentIdRef.current}:${sessionName}:${activeSessionIdRef.current ?? ""}`
         : null;
@@ -2255,7 +2258,6 @@ export function useAgentChat(
       ? `${agentIdRef.current}:${sessionName}:${activeSessionIdRef.current ?? ""}`
       : null;
     if (key) _messageCache.delete(key);
-    setError(null);
     setIsStreaming(false);
     // Drop the server-truth busy bit too (agent switch routes through here):
     // the old scope's run_active:false is demux-dropped once the agent changes,
@@ -2326,7 +2328,6 @@ export function useAgentChat(
     renderItems,
     isStreaming,
     busy: isStreaming || containerRunActive,
-    error,
     sendMessage,
     cancelMessage,
     clearMessages,

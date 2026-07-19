@@ -106,6 +106,7 @@ describe("ObservabilityStack", () => {
         pendingUpdatesTable: makeTable("Pending"),
         channelLinksTable: makeTable("Channels"),
         companySlugsTable: makeTable("CompanySlugs"),
+        agentEmailAddressesTable: makeTable("AgentEmailAddresses"),
       },
       connectionsTableName: "isol8-dev-ws-connections",
       authorizerFunctionName: "isol8-dev-ws-authorizer",

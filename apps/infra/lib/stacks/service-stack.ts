@@ -104,6 +104,7 @@ export interface ServiceStackProps extends cdk.StackProps {
     pendingUpdatesTable: dynamodb.Table;
     channelLinksTable: dynamodb.Table;
     companySlugsTable: dynamodb.Table;
+    agentEmailAddressesTable: dynamodb.Table;
     adminActionsTable: dynamodb.Table;
     oauthTokensTable: dynamodb.Table;
     webhookDedupTable: dynamodb.Table;
@@ -702,6 +703,13 @@ export class ServiceStack extends cdk.Stack {
     // statements' packing undisturbed. Functionally identical either way —
     // an overflow ManagedPolicy still attaches to the same role.
     props.database.companySlugsTable.grantReadWriteData(this.taskRole);
+
+    // Provisioned agent email addresses (agent-email-foundation Task 3).
+    // Placed immediately after companySlugsTable per the overflow-packing
+    // rationale in the comment above — any new IAM-size overflow should land
+    // on this grant, not push an earlier, already-tested statement into the
+    // TaskRoleOverflowPolicy.
+    props.database.agentEmailAddressesTable.grantReadWriteData(this.taskRole);
 
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({

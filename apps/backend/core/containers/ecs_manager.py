@@ -46,6 +46,12 @@ GATEWAY_PORT = 18789
 PER_USER_CPU = "512"
 PER_USER_MEMORY_MIB = "2048"
 
+# Ultra Pro tier box (large marketplace companies exceeding the flat tier's
+# agent budget). 2 vCPU / 8 GB — same constant home as PER_USER_* so the
+# resize/register paths and the webhook tier logic pull sizes from one place.
+ULTRA_CPU = "2048"
+ULTRA_MEMORY_MIB = "8192"
+
 # The AIP tiers minted for a `bedrock_trial` (no-card free tier) owner. ONE
 # tier, and it must be sonnet: config.py makes sonnet the trial's
 # agents.defaults.model.primary and hard-fails a Bedrock config without it.

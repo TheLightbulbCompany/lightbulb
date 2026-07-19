@@ -388,6 +388,92 @@ def _bridge_subscription_state(
     )
 
 
+async def _count_owner_paperclip_agents(owner_id: str) -> int:
+    """Live Paperclip agent count for an owner, or 0 if it can't be fetched.
+
+    Constructs the httpx client + repo + admin_client the same way
+    ``agent_export`` and ``ecs_manager`` do, then delegates to
+    ``fetch_paperclip_agents_for_owner`` (which returns [] — never raises — when
+    the owner has no company yet or Paperclip is unreachable). Best-effort: any
+    construction failure degrades to 0.
+    """
+    import httpx
+
+    from core.repositories.paperclip_repo import PaperclipRepo
+    from core.services.paperclip_admin_client import PaperclipAdminClient
+    from core.services.paperclip_openclaw_pairing import fetch_paperclip_agents_for_owner
+
+    http = httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0)
+    try:
+        repo = PaperclipRepo(table_name="paperclip-companies")
+        admin_client = PaperclipAdminClient(http_client=http)
+        agents = await fetch_paperclip_agents_for_owner(owner_id=owner_id, repo=repo, admin_client=admin_client)
+        return len(agents)
+    except Exception:
+        logger.exception("Failed to count Paperclip agents for owner %s", owner_id)
+        return 0
+    finally:
+        await http.aclose()
+
+
+async def _apply_ultra_resize(owner_id: str, *, old_plan: str, new_plan: str) -> None:
+    """Resize the owner's container to match a tier TRANSITION.
+
+    No-op unless the tier actually flipped — every ordinary ``.updated`` (renewal,
+    payment-method change, seat sync) must not bounce the container.
+
+    - Upgrade (→ ultra_pro): grow to the Ultra box.
+    - Downgrade (ultra_pro → standard): shrink to the flat box ONLY when the
+      company still fits the standard agent budget. An oversized company
+      (> COMPANY_STANDARD_PLAN_MAX_AGENTS agents) is LEFT at Ultra size — the
+      smaller box would OOM under the same workload. Billing follows Stripe
+      (the plan is already persisted "standard"), but the runtime waits for the
+      owner to trim agents; a later sub event or an admin completes the shrink.
+      The deferred metric surfaces it for follow-up. This is the OOM-safe
+      downgrade.
+
+    Best-effort: a resize failure must not 500 the webhook back to Stripe.
+    """
+    was_ultra = old_plan == "ultra_pro"
+    now_ultra = new_plan == "ultra_pro"
+    if was_ultra == now_ultra:
+        return  # no tier transition — never resize on a plain .updated
+
+    from core.containers import get_ecs_manager
+    from core.containers.ecs_manager import (
+        PER_USER_CPU,
+        PER_USER_MEMORY_MIB,
+        ULTRA_CPU,
+        ULTRA_MEMORY_MIB,
+    )
+    from core.services.company_package import COMPANY_STANDARD_PLAN_MAX_AGENTS
+
+    try:
+        if now_ultra:
+            await get_ecs_manager().resize_user_container(owner_id, new_cpu=ULTRA_CPU, new_memory=ULTRA_MEMORY_MIB)
+            put_metric("ultra.resize", dimensions={"direction": "up"})
+            return
+
+        # Downgrade out of Ultra: guard against shrinking an oversized company
+        # into an OOM.
+        agent_count = await _count_owner_paperclip_agents(owner_id)
+        if agent_count > COMPANY_STANDARD_PLAN_MAX_AGENTS:
+            put_metric("ultra.downgrade_deferred_oversized", 1)
+            logger.warning(
+                "Deferring Ultra down-resize for owner %s: %d agents exceed the "
+                "standard budget of %d — leaving container at Ultra size to avoid OOM",
+                owner_id,
+                agent_count,
+                COMPANY_STANDARD_PLAN_MAX_AGENTS,
+            )
+            return
+
+        await get_ecs_manager().resize_user_container(owner_id, new_cpu=PER_USER_CPU, new_memory=PER_USER_MEMORY_MIB)
+        put_metric("ultra.resize", dimensions={"direction": "down"})
+    except Exception:
+        logger.exception("Ultra tier resize failed for owner %s", owner_id)
+
+
 async def handle_subscription_state(event: dict[str, Any], billing_service: BillingService) -> Response | None:
     """`customer.subscription.created` + `customer.subscription.updated`.
 
@@ -540,6 +626,30 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
             team_seat_persisted = True
         except Exception:
             logger.exception("Failed to record team seat state for owner %s", account["owner_id"])
+
+    # Ultra Pro tier: derive the tier FROM THE PRICE on the subscription item —
+    # a direct sibling of the team-seat detection above, and NEVER from
+    # subscription.metadata (a checkout-time snapshot that goes stale; the same
+    # clobber the entering_live provider guard defends against). Persist the
+    # plan and resize the container only on the tier transition.
+    is_ultra = bool(settings.STRIPE_ULTRA_PRICE_ID) and first_price_id == settings.STRIPE_ULTRA_PRICE_ID
+    if items and not is_team_seat:
+        # Only act when the payload actually carries the subscription item. A
+        # partial `.updated` can arrive with an empty items.data; treating that
+        # absence as "not ultra" would wrongly downgrade + shrink an Ultra owner.
+        # Team-seat subs are excluded outright — their per-seat pricing is a
+        # different axis (never the ultra price), and their container sizing is
+        # managed by the seat flow, not the tier flow.
+        old_plan = account.get("plan") or "standard"
+        new_plan = "ultra_pro" if is_ultra else "standard"
+        try:
+            await billing_repo.set_plan(account["owner_id"], plan=new_plan, now_iso=utc_now_iso())
+        except Exception:
+            logger.exception("Failed to persist plan for owner %s", account["owner_id"])
+        # Resize decisions key off the row's PRIOR plan vs the price-derived one,
+        # so a resize fires only on an actual transition even though the plan
+        # persist above is idempotent.
+        await _apply_ultra_resize(account["owner_id"], old_plan=old_plan, new_plan=new_plan)
 
     if old_status == "trial_local" and new_status in ("trialing", "active"):
         # Trial→paid conversion: the running container is still the locked-down

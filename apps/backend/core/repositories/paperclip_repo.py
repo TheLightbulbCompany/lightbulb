@@ -67,6 +67,19 @@ def _org_create_claim_key(org_id: str) -> str:
     return f"{_ORG_CREATE_CLAIM_PREFIX}{org_id}"
 
 
+# Reserved user_id namespace for the per-company "onboarding seed" sentinel.
+# Same rationale as the org-create claim above: the table is keyed per-user,
+# so a field on the submitting user's row would leave every other member of
+# the same org unmarked. This synthetic PK is reached only by direct
+# get/put/update, never via a GSI, and a PK conditional write is strongly
+# consistent and cross-instance-safe.
+_ONBOARDING_CLAIM_PREFIX = "__onboarded__:"
+
+
+def _onboarding_claim_key(company_id: str) -> str:
+    return f"{_ONBOARDING_CLAIM_PREFIX}{company_id}"
+
+
 @dataclass
 class PaperclipCompany:
     """Per-USER row. ``company_id`` is shared across all rows belonging
@@ -451,6 +464,69 @@ class PaperclipRepo:
             )
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             pass
+
+    async def claim_onboarding(self, company_id: str) -> bool:
+        """Claim the one-shot onboarding seed for a COMPANY.
+
+        The table is keyed per-user, so a field on the submitting user's
+        row would leave every other member of the same org unmarked. This
+        sentinel is keyed on company_id instead, following the same shape
+        as the org-create claim above.
+
+        PK conditional write: strongly consistent and cross-instance-safe,
+        so two tabs submitting the brief at once cannot both seed. Exactly
+        one gets True.
+
+        Unlike the org-create claim there is no stale-stealing — onboarding
+        happens once per company, forever. Callers MUST
+        ``release_onboarding_claim`` on failure so a retry can re-enter.
+        """
+        table = self._table()
+        try:
+            await run_in_thread(
+                table.put_item,
+                Item={
+                    "user_id": _onboarding_claim_key(company_id),
+                    "kind": "onboarding_claim",
+                    "company_id": company_id,
+                    "claimed_at": datetime.now(timezone.utc).isoformat(),
+                },
+                ConditionExpression="attribute_not_exists(user_id)",
+            )
+            return True
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            return False
+
+    async def release_onboarding_claim(self, company_id: str) -> None:
+        """Drop the claim so a failed seed can be retried."""
+        await run_in_thread(
+            self._table().delete_item,
+            Key={"user_id": _onboarding_claim_key(company_id)},
+        )
+
+    async def record_onboarding_ids(self, company_id: str, *, goal_id: str, project_id: str) -> None:
+        """Record the seeded rows on the claim. Written LAST, so a claim
+        carrying ids always means both Paperclip rows exist and are linked.
+        """
+        await run_in_thread(
+            self._table().update_item,
+            Key={"user_id": _onboarding_claim_key(company_id)},
+            UpdateExpression=("SET onboarding_goal_id = :g, onboarding_project_id = :p, seeded_at = :t"),
+            ExpressionAttributeValues={
+                ":g": goal_id,
+                ":p": project_id,
+                ":t": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+
+    async def get_onboarding(self, company_id: str) -> Optional[dict]:
+        """Read the sentinel. Strongly consistent — callers branch on it."""
+        resp = await run_in_thread(
+            self._table().get_item,
+            Key={"user_id": _onboarding_claim_key(company_id)},
+            ConsistentRead=True,
+        )
+        return resp.get("Item")
 
     async def scan_purge_due(self, now: datetime) -> list[PaperclipCompany]:
         """Return disabled rows whose ``scheduled_purge_at <= now`` via the GSI.

@@ -401,9 +401,16 @@ class CancelInteractionBody(_Strict):
 
 class PatchCompanySettingsBody(_Strict):
     """Tenant-safe subset of company PATCH. No instance settings, no
-    branding overrides that affect other tenants, no adapter fields."""
+    branding overrides that affect other tenants, no adapter fields.
 
-    display_name: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    ``name`` must match Paperclip's company field exactly. Paperclip's
+    ``updateCompanySchema`` is a default-mode ``z.object``, which
+    *silently strips* unknown keys — so a mismatched key (this field was
+    once ``display_name`` → ``displayName``) is dropped downstream and
+    the rename no-ops with no error anywhere. Keep this named ``name``.
+    """
+
+    name: Optional[str] = Field(default=None, min_length=1, max_length=80)
     description: Optional[str] = Field(default=None, max_length=4000)
 
 

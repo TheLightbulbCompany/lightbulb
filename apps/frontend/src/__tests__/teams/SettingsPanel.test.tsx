@@ -1,6 +1,11 @@
 // Test for SettingsPanel — confirms PATCH body contains ONLY
-// {displayName, description}. Adapter/plugin/instance fields would 422
+// {name, description}. Adapter/plugin/instance fields would 422
 // at the BFF (PatchCompanySettingsBody, extra="forbid").
+//
+// The key is `name`, matching Paperclip's company field. `stableData`
+// below MUST mirror the real GET /settings payload (the raw Paperclip
+// record) — mocking a shape the server never returns is exactly what
+// let the original displayName mismatch ship green.
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 
@@ -9,7 +14,7 @@ const mockMutate = vi.fn();
 // Use a stable object reference: useEffect depends on `data` identity, so
 // returning a new object on every render would re-run the effect and fight
 // with user-typed state.
-const stableData = { displayName: "Acme Co", description: "Building things" };
+const stableData = { name: "Acme Co", description: "Building things" };
 const stableResp = {
   data: stableData,
   isLoading: false,
@@ -43,7 +48,7 @@ describe("SettingsPanel", () => {
     ).toBeInTheDocument();
   });
 
-  it("save patches /settings with ONLY {displayName, description}", async () => {
+  it("save patches /settings with ONLY {name, description}", async () => {
     mockPatch.mockResolvedValue({});
     render(<SettingsPanel />);
 
@@ -56,14 +61,14 @@ describe("SettingsPanel", () => {
       expect(mockPatch).toHaveBeenCalledTimes(1);
     });
     expect(mockPatch).toHaveBeenCalledWith("/settings", {
-      displayName: "New name",
+      name: "New name",
       description: "Building things",
     });
 
     const [, body] = mockPatch.mock.calls[0];
     expect(Object.keys(body as Record<string, unknown>).sort()).toEqual([
       "description",
-      "displayName",
+      "name",
     ]);
     // Defense-in-depth: confirm no smuggled fields.
     expect(body).not.toHaveProperty("adapterType");

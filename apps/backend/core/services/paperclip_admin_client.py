@@ -2667,9 +2667,12 @@ class PaperclipAdminClient:
         body: dict,
     ) -> dict:
         """Patch the company record. Body is whitelisted by the BFF
-        to ``display_name`` and ``description`` only.
+        to ``name`` and ``description`` only.
 
-        Maps to ``PATCH /api/companies/{companyId}``.
+        Maps to ``PATCH /api/companies/{companyId}``, governed by
+        ``updateCompanySchema``. That schema strips unknown keys
+        silently, so the body's keys must match Paperclip's field names
+        exactly or the patch no-ops without raising.
         """
         return await self._patch(
             f"/api/companies/{company_id}",

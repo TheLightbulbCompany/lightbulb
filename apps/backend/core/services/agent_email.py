@@ -51,8 +51,16 @@ async def mint_agent_email_address(
 ) -> str | None:
     """Mint (or re-affirm) an agent's address row.
 
+    Ownership is checked, not assumed: if the address already exists for a
+    DIFFERENT owner, that's a collision — logged loudly (``logger.error``,
+    naming the address and both owner ids) and treated as a failed mint, not
+    a silent success. ``agent_email_repo.put`` is itself a conditional put
+    (mirrors ``company_slug_repo.reserve``), so a race losing there also
+    fails the mint rather than overwriting the winner's row.
+
     Returns the address, or None when the feature is unconfigured, the owner
-    has no slug, or minting failed. Never raises.
+    has no slug, the address is already held by another owner, or the
+    conditional put lost a race. Never raises.
     """
     try:
         domain = (settings.AGENT_EMAIL_DOMAIN or "").strip()
@@ -65,14 +73,32 @@ async def mint_agent_email_address(
             return None
 
         address = build_agent_email_address(slug=slug, agent_name=agent_name, domain=domain, is_primary=is_primary)
-        if await agent_email_repo.get_by_address(address) is not None:
-            return address
-        await agent_email_repo.put(
+
+        existing = await agent_email_repo.get_by_address(address)
+        if existing is not None:
+            if existing.get("owner_id") == owner_id:
+                return address
+            logger.error(
+                "agent_email.mint: address collision for %s — held by owner %s, requested by owner %s",
+                address,
+                existing.get("owner_id"),
+                owner_id,
+            )
+            return None
+
+        row = await agent_email_repo.put(
             address=address,
             owner_id=owner_id,
             agent_id=agent_id,
             verified_senders=[owner_email] if owner_email else [],
         )
+        if row is None:
+            logger.error(
+                "agent_email.mint: conditional put lost a race for %s (owner %s)",
+                address,
+                owner_id,
+            )
+            return None
         logger.info("agent_email.mint: minted %s for owner %s", address, owner_id)
         return address
     except Exception as e:  # noqa: BLE001 — minting must never break provisioning

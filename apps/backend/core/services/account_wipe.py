@@ -52,6 +52,13 @@ for any of them. A trial_local account has none of these rows, so this does
 not block the trial-account dogfood use case, but it IS a real gap for paid
 Bedrock-managed, ChatGPT-OAuth, and BYOK accounts — those credentials
 survive a wipe today. Follow-up work, not yet built.
+
+Also NOT wiped: the ``company-slugs`` table (a wiped account keeps its slug
+reservation permanently — there is no delete path, so the name can never be
+handed to another owner) and the ``agent-email-addresses`` table (once
+``AGENT_EMAIL_DOMAIN`` is live, a wiped account leaves its address row
+pointing at a deleted owner, so inbound mail to that address has nowhere
+valid to route). No collaborator exists yet for either.
 """
 
 from __future__ import annotations

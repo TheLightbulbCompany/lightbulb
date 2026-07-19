@@ -26,25 +26,37 @@ _MAX_SUFFIX_ATTEMPTS = 50
 _FALLBACK_SLUG = "company"
 
 # These become email local parts, so they must never be handed to a tenant.
+#
+# Reservations are PERMANENT — `company_slug_repo` has no delete path, so a
+# name added here after the namespace goes live may already be held by a
+# tenant. This list must be complete BEFORE `AGENT_EMAIL_DOMAIN` goes live.
 RESERVED_SLUGS = frozenset(
     {
         "abuse",
         "admin",
         "administrator",
         "billing",
+        "bounce",
         "contact",
+        "dmarc",
+        "ftp",
         "help",
         "hostmaster",
         "info",
         "isol8",
         "mail",
+        "mailer-daemon",
         "no-reply",
+        "noc",
         "noreply",
+        "news",
         "postmaster",
         "root",
         "security",
         "support",
         "team",
+        "usenet",
+        "uucp",
         "webmaster",
         "www",
     }
@@ -76,7 +88,8 @@ async def generate_company_name(*, org_id: str | None, owner_email: str) -> str:
 
     Org owners get their Clerk organization's real name; personal owners
     get a prettified form of their email local part. Never raises — a
-    Clerk hiccup falls back to the email.
+    Clerk hiccup falls back to the email, and a malformed (non-string)
+    ``owner_email`` falls back to a generic name rather than propagating.
     """
     if org_id:
         try:
@@ -93,17 +106,36 @@ async def generate_company_name(*, org_id: str | None, owner_email: str) -> str:
                 name = ""
             if name:
                 return name
-    return prettify_email_local_part(owner_email)
+    try:
+        return prettify_email_local_part(owner_email)
+    except (AttributeError, TypeError) as e:
+        # `owner_email` wasn't a string (e.g. None from a malformed caller) —
+        # fall back to a generic name rather than raise. The docstring says
+        # "Never raises" and must stay true for this path too.
+        logger.warning("company_identity: owner_email was not a string (%s); using fallback name", e)
+        return "My Company"
 
 
 async def allocate_company_slug(*, owner_id: str, name: str) -> str | None:
-    """Reserve a unique slug derived from ``name``.
+    """Reserve a unique slug derived from ``name``, or return the owner's
+    existing reservation if they already have one.
+
+    ``provision_org`` can re-enter after a partial failure. If the org's
+    Clerk name changed in between, re-deriving and reserving a new slug from
+    scratch would leave the owner holding a SECOND slug row that never gets
+    released (``company_slug_repo`` has no delete path). So before deriving a
+    base slug, check whether this owner already holds a reservation and, if
+    so, return it unchanged — this makes re-entry stable.
 
     Returns the reserved slug, or None if allocation failed. Collisions and
     reserved words take a numeric suffix, with the base shortened as needed
     so the suffixed candidate never exceeds ``MAX_SLUG_LEN``. Never raises.
     """
     try:
+        existing = await company_slug_repo.get_by_owner(owner_id)
+        if existing:
+            return existing["slug"]
+
         base = slugify(name) or _FALLBACK_SLUG
         for attempt in range(1, _MAX_SUFFIX_ATTEMPTS + 1):
             if attempt == 1:

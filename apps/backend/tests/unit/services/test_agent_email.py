@@ -113,12 +113,13 @@ async def test_mint_creates_row_with_owner_as_verified_sender(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_mint_is_idempotent_when_row_exists(monkeypatch):
+async def test_mint_is_idempotent_when_row_exists_for_the_same_owner(monkeypatch):
+    """Re-minting your own address is a no-op re-affirmation, not a write."""
     monkeypatch.setattr(agent_email.settings, "AGENT_EMAIL_DOMAIN", "agents.isol8.co")
     puts = []
 
     async def fake_get(address):
-        return {"address": address}
+        return {"address": address, "owner_id": "user_1"}
 
     async def fake_put(**kwargs):
         puts.append(kwargs)
@@ -138,13 +139,50 @@ async def test_mint_is_idempotent_when_row_exists(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_mint_never_raises_on_repo_failure(monkeypatch):
+async def test_mint_refuses_and_logs_when_address_held_by_a_different_owner(monkeypatch, caplog):
+    """A collision must be LOUD, not a silent success — the caller must not
+    believe minting worked when it wrote nothing."""
+    monkeypatch.setattr(agent_email.settings, "AGENT_EMAIL_DOMAIN", "agents.isol8.co")
+    puts = []
+
+    async def fake_get(address):
+        return {"address": address, "owner_id": "user_other"}
+
+    async def fake_put(**kwargs):
+        puts.append(kwargs)
+
+    monkeypatch.setattr(agent_email.agent_email_repo, "get_by_address", fake_get)
+    monkeypatch.setattr(agent_email.agent_email_repo, "put", fake_put)
+
+    with caplog.at_level("ERROR"):
+        result = await agent_email.mint_agent_email_address(
+            owner_id="user_1",
+            agent_id="agent_friday",
+            agent_name="Friday",
+            owner_email="o@example.com",
+            slug="acme",
+        )
+
+    assert result is None
+    assert puts == []
+    assert any("collision" in r.message for r in caplog.records)
+    assert any("user_1" in r.message and "user_other" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_mint_returns_none_when_conditional_put_loses_a_race(monkeypatch):
+    """`agent_email_repo.put` returning None (lost the conditional put race)
+    must be treated as a failed mint, not surfaced as a minted address."""
     monkeypatch.setattr(agent_email.settings, "AGENT_EMAIL_DOMAIN", "agents.isol8.co")
 
-    async def boom(*args, **kwargs):
-        raise RuntimeError("dynamo down")
+    async def fake_get(address):
+        return None
 
-    monkeypatch.setattr(agent_email.agent_email_repo, "get_by_address", boom)
+    async def fake_put(**kwargs):
+        return None
+
+    monkeypatch.setattr(agent_email.agent_email_repo, "get_by_address", fake_get)
+    monkeypatch.setattr(agent_email.agent_email_repo, "put", fake_put)
 
     result = await agent_email.mint_agent_email_address(
         owner_id="user_1",
@@ -157,14 +195,18 @@ async def test_mint_never_raises_on_repo_failure(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_mint_never_raises_on_bad_input(monkeypatch):
-    """Best-effort contract holds even for malformed arguments."""
+async def test_mint_never_raises_on_repo_failure(monkeypatch):
     monkeypatch.setattr(agent_email.settings, "AGENT_EMAIL_DOMAIN", "agents.isol8.co")
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("dynamo down")
+
+    monkeypatch.setattr(agent_email.agent_email_repo, "get_by_address", boom)
 
     result = await agent_email.mint_agent_email_address(
         owner_id="user_1",
         agent_id="agent_friday",
-        agent_name=None,
+        agent_name="Friday",
         owner_email="o@example.com",
         slug="acme",
     )

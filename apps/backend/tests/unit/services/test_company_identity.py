@@ -9,6 +9,20 @@ os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 from core.services import company_identity  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _no_existing_slug_reservation(monkeypatch):
+    """`allocate_company_slug` now checks `get_by_owner` before deriving a
+    base slug (re-entry stability — see FIX 8). Default every test to "no
+    existing reservation" so pre-existing allocate_slug tests, which only
+    mock `reserve`, keep exercising the fresh-allocation path unchanged. The
+    dedicated re-entry test overrides this."""
+
+    async def fake_get_by_owner(owner_id):
+        return None
+
+    monkeypatch.setattr(company_identity.company_slug_repo, "get_by_owner", fake_get_by_owner)
+
+
 @pytest.mark.parametrize(
     "raw,expected",
     [
@@ -170,6 +184,36 @@ async def test_allocate_slug_returns_none_instead_of_raising_for_non_string_name
     monkeypatch.setattr(company_identity.company_slug_repo, "reserve", fake_reserve)
 
     assert await company_identity.allocate_company_slug(owner_id="user_1", name=None) is None
+
+
+@pytest.mark.asyncio
+async def test_generate_name_falls_back_instead_of_raising_for_non_string_owner_email(monkeypatch):
+    """`prettify_email_local_part(owner_email)` sat outside any guard — a
+    non-string `owner_email` (personal-owner path, no org_id) must not raise,
+    per the "Never raises" docstring contract."""
+    name = await company_identity.generate_company_name(org_id=None, owner_email=None)
+    assert name == "My Company"
+
+
+@pytest.mark.asyncio
+async def test_allocate_slug_returns_existing_reservation_without_reserving_again(monkeypatch):
+    """`provision_org` re-entry after a partial failure must not mint a
+    second, never-released slug row for the same owner."""
+    reserve_calls = []
+
+    async def fake_get_by_owner(owner_id):
+        return {"slug": "acme-existing", "owner_id": owner_id}
+
+    async def fake_reserve(*, slug, owner_id):
+        reserve_calls.append(slug)
+        return True
+
+    monkeypatch.setattr(company_identity.company_slug_repo, "get_by_owner", fake_get_by_owner)
+    monkeypatch.setattr(company_identity.company_slug_repo, "reserve", fake_reserve)
+
+    slug = await company_identity.allocate_company_slug(owner_id="user_1", name="A Totally Different Name")
+    assert slug == "acme-existing"
+    assert reserve_calls == []
 
 
 @pytest.mark.asyncio

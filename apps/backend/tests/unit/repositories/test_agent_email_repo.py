@@ -89,6 +89,57 @@ async def test_get_by_address_is_case_insensitive_on_read(agent_email_table):
 
 
 @pytest.mark.asyncio
+async def test_put_is_idempotent_for_the_same_owner(agent_email_table):
+    """Re-affirming your own address is a success, not a conflict — mirrors
+    ``company_slug_repo.reserve``'s idempotent-for-the-same-owner posture."""
+    from core.repositories import agent_email_repo
+
+    first = await agent_email_repo.put(
+        address="acme@agents.isol8.co",
+        owner_id="user_1",
+        agent_id="agent_friday",
+        verified_senders=[],
+    )
+    second = await agent_email_repo.put(
+        address="acme@agents.isol8.co",
+        owner_id="user_1",
+        agent_id="agent_friday",
+        verified_senders=["owner@example.com"],
+    )
+
+    assert first is not None
+    assert second is not None
+    assert second["verified_senders"] == ["owner@example.com"]
+
+
+@pytest.mark.asyncio
+async def test_put_rejects_and_returns_none_for_a_conflicting_owner(agent_email_table):
+    """The conditional put must reject a different owner's write rather than
+    last-writer-wins clobbering the existing row's owner_id/agent_id."""
+    from core.repositories import agent_email_repo
+
+    await agent_email_repo.put(
+        address="acme@agents.isol8.co",
+        owner_id="user_1",
+        agent_id="agent_friday",
+        verified_senders=[],
+    )
+
+    result = await agent_email_repo.put(
+        address="acme@agents.isol8.co",
+        owner_id="user_2",
+        agent_id="agent_intruder",
+        verified_senders=["intruder@example.com"],
+    )
+    assert result is None
+
+    row = await agent_email_repo.get_by_address("acme@agents.isol8.co")
+    assert row["owner_id"] == "user_1"
+    assert row["agent_id"] == "agent_friday"
+    assert row["verified_senders"] == []
+
+
+@pytest.mark.asyncio
 async def test_query_by_owner_returns_only_that_owner(agent_email_table):
     from core.repositories import agent_email_repo
 

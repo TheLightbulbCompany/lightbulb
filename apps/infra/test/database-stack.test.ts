@@ -273,6 +273,13 @@ describe("DatabaseStack — metronome fast-gate table (Phase 2)", () => {
       }),
     });
   });
+});
+
+describe("DatabaseStack — agent email + company identity tables", () => {
+  let template: Template;
+  beforeAll(() => {
+    template = buildStack("dev");
+  });
 
   test("creates the company-slugs table with a by-owner GSI", () => {
     template.hasResourceProperties("AWS::DynamoDB::Table", {

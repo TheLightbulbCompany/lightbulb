@@ -264,7 +264,8 @@ isol8/                       # Turborepo monorepo (Isol8AI/isol8)
 |               |     |  DynamoDB (users, containers, billing,             |
 |               |     |            api-keys, usage-counters,               |
 |               |     |            pending-updates, channel-links,         |
-|               |     |            admin-actions, ws-connections)          |
+|               |     |            admin-actions, ws-connections,          |
+|               |     |            company-slugs, agent-email-addresses)   |
 |               |     |  Secrets Manager + KMS                             |
 |               |     |  S3 (config + catalog) + CloudFront                |
 |               |     |  ECR (isol8-backend, isol8/openclaw-extended)      |
@@ -315,6 +316,8 @@ DynamoDB-backed data access. One repo per table.
 | `update_repo.py` | `pending-updates` (container update queue) |
 | `channel_link_repo.py` | `channel-links` (Telegram/Discord/WhatsApp bindings) |
 | `admin_actions_repo.py` | `admin-actions` (audit log of admin ops) |
+| `company_slug_repo.py` | `company-slugs` (platform-unique slug reservations, conditional put) |
+| `agent_email_repo.py` | `agent-email-addresses` (provisioned agent email addresses, conditional put) |
 
 ### Container Orchestration (`core/containers/`)
 
@@ -660,6 +663,7 @@ POST /marketplace/listings/{slug}/deploy
 | `MARKETPLACE_PAYOUT_ACCOUNTS_TABLE` | DDB seller payout-account table | Set by CDK |
 | `MARKETPLACE_TAKEDOWNS_TABLE` | DDB takedown / abuse-report table | Set by CDK |
 | `MARKETPLACE_ARTIFACTS_BUCKET` | S3 bucket for `listings/{id}/v{n}/workspace.tar.gz` + `manifest.json` + `openclaw-slice.json` | Set by CDK |
+| `AGENT_EMAIL_DOMAIN` | Domain agent email addresses are minted under (e.g. `agents.isol8.co`); empty disables agent-email minting entirely | Empty |
 
 ### Frontend (.env.local)
 
@@ -686,7 +690,7 @@ Located in `apps/infra/lib/stacks/`. Entry point: `apps/infra/lib/app.ts`. Per-e
 |-------|---------|
 | `network-stack.ts` | VPC (public/private subnets, NAT), ALB, NLB (for WebSocket VPC Link V1), security groups |
 | `auth-stack.ts` | Secrets Manager secrets (Clerk, Stripe, encryption keys) + KMS key |
-| `database-stack.ts` | All DynamoDB tables (users, containers, billing-accounts, api-keys, usage-counters, pending-updates, channel-links, admin-actions, ws-connections, marketplace-listings + marketplace-purchases + marketplace-payout-accounts + marketplace-takedowns, plus Teams BFF tables) and the marketplace artifacts S3 bucket |
+| `database-stack.ts` | All DynamoDB tables (users, containers, billing-accounts, api-keys, usage-counters, pending-updates, channel-links, admin-actions, ws-connections, marketplace-listings + marketplace-purchases + marketplace-payout-accounts + marketplace-takedowns, company-slugs, agent-email-addresses, plus Teams BFF tables) and the marketplace artifacts S3 bucket |
 | `container-stack.ts` | ECS cluster for per-user OpenClaw containers, EFS filesystem, Cloud Map namespace/service, container task-definition scaffolding |
 | `service-stack.ts` | Backend FastAPI service on ECS Fargate: task definition (Docker image from ECR), service, autoscaling, target-group wiring, DynamoDB/secrets IAM |
 | `api-stack.ts` | WebSocket API Gateway, Lambda authorizer (Clerk JWT), VPC Link V1 wiring |

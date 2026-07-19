@@ -67,6 +67,28 @@ async def test_get_by_address_missing_returns_none(agent_email_table):
 
 
 @pytest.mark.asyncio
+async def test_get_by_address_is_case_insensitive_on_read(agent_email_table):
+    """Stored address is already lowercase; the query casing must still normalize.
+
+    Regression guard for dropping `normalize()` from `get_by_address`'s
+    `Key=` construction -- a mutation that every other test here misses
+    because they all query with an already-lowercase address.
+    """
+    from core.repositories import agent_email_repo
+
+    await agent_email_repo.put(
+        address="acme@agents.isol8.co",
+        owner_id="user_1",
+        agent_id="agent_friday",
+        verified_senders=[],
+    )
+
+    row = await agent_email_repo.get_by_address("AcMe@Agents.Isol8.CO")
+    assert row is not None
+    assert row["owner_id"] == "user_1"
+
+
+@pytest.mark.asyncio
 async def test_query_by_owner_returns_only_that_owner(agent_email_table):
     from core.repositories import agent_email_repo
 

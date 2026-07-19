@@ -77,6 +77,23 @@ async def test_get_by_slug_missing_returns_none(slug_table):
 
 
 @pytest.mark.asyncio
+async def test_get_by_slug_is_case_insensitive_on_read(slug_table):
+    """Stored slug is already lowercase; the query casing must still normalize.
+
+    Regression guard for dropping `normalize()` from `get_by_slug`'s
+    `Key=` construction -- a mutation that every other test here misses
+    because they all query with an already-lowercase slug.
+    """
+    from core.repositories import company_slug_repo
+
+    await company_slug_repo.reserve(slug="acme", owner_id="user_1")
+
+    row = await company_slug_repo.get_by_slug("AcMe")
+    assert row is not None
+    assert row["owner_id"] == "user_1"
+
+
+@pytest.mark.asyncio
 async def test_get_by_owner_returns_the_owners_slug(slug_table):
     from core.repositories import company_slug_repo
 

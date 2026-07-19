@@ -72,10 +72,19 @@ def build_package_tarball(pkg_dir: Path) -> bytes:
     return gz_buf.getvalue()
 
 
-async def ingest_one(pkg_dir: Path, *, source_commit: str, existing_slugs: set[str], dry_run: bool) -> dict:
+async def ingest_one(pkg_dir: Path, *, source_commit: str, existing_listings: dict[str, str], dry_run: bool) -> dict:
     meta = parse_company_meta(pkg_dir)
-    if meta.slug in existing_slugs:
-        return {"slug": meta.slug, "status": "skipped_existing"}
+    if meta.slug in existing_listings:
+        # Unconditional skip for ANY existing row, even a half-transitioned
+        # draft/review one from a crashed run — re-attempting would mint a
+        # second listing with a duplicate slug. The existing_status field
+        # tells the operator which rows need manual cleanup before a re-run
+        # (published = fine; anything else = stuck).
+        return {
+            "slug": meta.slug,
+            "status": "skipped_existing",
+            "existing_status": existing_listings[meta.slug],
+        }
 
     tar_bytes = build_package_tarball(pkg_dir)
     findings = scan_tarball(tar_bytes)
@@ -143,6 +152,29 @@ async def ingest_one(pkg_dir: Path, *, source_commit: str, existing_slugs: set[s
     return {"slug": meta.slug, "status": "published", "listing_id": listing_id}
 
 
+async def ingest_all(
+    repo_dir: Path, *, source_commit: str, existing_listings: dict[str, str], dry_run: bool
+) -> list[dict]:
+    """Run ingest_one over every discovered package, printing one summary
+    line per package. A per-package exception becomes an ``error`` summary
+    and the run continues — one bad package must not abort the rest.
+    """
+    summaries: list[dict] = []
+    for pkg_dir in discover_packages(repo_dir):
+        try:
+            summary = await ingest_one(
+                pkg_dir,
+                source_commit=source_commit,
+                existing_listings=existing_listings,
+                dry_run=dry_run,
+            )
+        except Exception as exc:
+            summary = {"slug": pkg_dir.name, "status": "error", "error": str(exc)}
+        print(json.dumps(summary))
+        summaries.append(summary)
+    return summaries
+
+
 async def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--repo-dir", type=Path, required=True)
@@ -159,15 +191,17 @@ async def main() -> None:
     if head != args.commit:
         raise SystemExit(f"repo HEAD {head} != --commit {args.commit}; re-pin and retry")
 
-    existing = {row["slug"] for row in await marketplace_repo.scan_all_listings() if row.get("slug")}
-    for pkg_dir in discover_packages(args.repo_dir):
-        summary = await ingest_one(
-            pkg_dir,
-            source_commit=args.commit,
-            existing_slugs=existing,
-            dry_run=args.dry_run,
-        )
-        print(json.dumps(summary))
+    existing = {
+        row["slug"]: str(row.get("status") or "")
+        for row in await marketplace_repo.scan_all_listings()
+        if row.get("slug")
+    }
+    await ingest_all(
+        args.repo_dir,
+        source_commit=args.commit,
+        existing_listings=existing,
+        dry_run=args.dry_run,
+    )
 
 
 if __name__ == "__main__":

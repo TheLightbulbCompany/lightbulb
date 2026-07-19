@@ -2,6 +2,7 @@
 
 import hashlib
 import io
+import shutil
 import tarfile
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -12,6 +13,7 @@ from scripts.ingest_companies_registry import (
     ISOL8_SYSTEM_SELLER_ID,
     build_package_tarball,
     discover_packages,
+    ingest_all,
     ingest_one,
 )
 
@@ -48,6 +50,22 @@ def test_tarball_is_deterministic_and_keeps_paperclip_yaml():
     assert not any(".git/" in n or ".DS_Store" in n for n in names)
 
 
+def test_tarball_excludes_planted_noise(tmp_path):
+    # The vendored fixture ships clean, so plant real noise to make the
+    # exclusion assertion non-vacuous.
+    pkg = tmp_path / "gstack"
+    shutil.copytree(FIXTURES / "gstack", pkg)
+    (pkg / ".git").mkdir()
+    (pkg / ".git" / "config").write_text("[core]\n")
+    (pkg / ".DS_Store").write_bytes(b"\x00noise")
+    (pkg / "agents" / ".DS_Store").write_bytes(b"\x00noise")
+
+    with tarfile.open(fileobj=io.BytesIO(build_package_tarball(pkg))) as tf:
+        names = tf.getnames()
+    assert not any(".git" in Path(n).parts or ".DS_Store" in Path(n).parts for n in names)
+    assert "gstack/.paperclip.yaml" in names  # non-noise dotfile still ships
+
+
 @pytest.mark.asyncio
 async def test_ingest_one_pipeline(monkeypatch):
     from scripts import ingest_companies_registry as mod
@@ -64,7 +82,7 @@ async def test_ingest_one_pipeline(monkeypatch):
     monkeypatch.setattr(mod.marketplace_repo, "mark_review", mark_review)
     monkeypatch.setattr(mod.marketplace_repo, "mark_published", mark_published)
 
-    summary = await ingest_one(FIXTURES / "gstack", source_commit="abc123", existing_slugs=set(), dry_run=False)
+    summary = await ingest_one(FIXTURES / "gstack", source_commit="abc123", existing_listings={}, dry_run=False)
 
     assert summary["slug"] == "gstack" and summary["status"] == "published"
     manifest = upload.call_args.kwargs["manifest"]
@@ -92,13 +110,40 @@ async def test_ingest_one_pipeline(monkeypatch):
 async def test_ingest_one_skips_existing_slug_and_flags_findings(monkeypatch):
     from scripts import ingest_companies_registry as mod
 
-    skipped = await ingest_one(FIXTURES / "gstack", source_commit="abc", existing_slugs={"gstack"}, dry_run=False)
+    skipped = await ingest_one(
+        FIXTURES / "gstack", source_commit="abc", existing_listings={"gstack": "review"}, dry_run=False
+    )
     assert skipped["status"] == "skipped_existing"
+    # The row's status rides along so the operator can spot a stuck
+    # draft/review row needing manual cleanup before a re-run.
+    assert skipped["existing_status"] == "review"
 
     upload = AsyncMock()
     monkeypatch.setattr(mod, "_upload_artifact_to_s3", upload)
     monkeypatch.setattr(mod, "scan_tarball", lambda b: [_FAKE_FINDING])
-    flagged = await ingest_one(FIXTURES / "gstack", source_commit="abc", existing_slugs=set(), dry_run=False)
+    flagged = await ingest_one(FIXTURES / "gstack", source_commit="abc", existing_listings={}, dry_run=False)
     assert flagged["status"] == "blocked_safety"
     assert flagged["findings"] == [_FAKE_FINDING]
     upload.assert_not_awaited()  # a safety finding writes nothing
+
+
+@pytest.mark.asyncio
+async def test_ingest_all_continues_past_package_errors(tmp_path, monkeypatch, capsys):
+    from scripts import ingest_companies_registry as mod
+
+    for name in ("alpha", "beta"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "COMPANY.md").write_text(f"---\nname: {name}\nslug: {name}\ndescription: d\n---\n")
+
+    async def fake_ingest_one(pkg_dir, **kwargs):
+        if pkg_dir.name == "alpha":
+            raise RuntimeError("boom")
+        return {"slug": pkg_dir.name, "status": "dry_run", "agents": 0}
+
+    monkeypatch.setattr(mod, "ingest_one", fake_ingest_one)
+    summaries = await ingest_all(tmp_path, source_commit="abc", existing_listings={}, dry_run=True)
+
+    assert summaries[0] == {"slug": "alpha", "status": "error", "error": "boom"}
+    assert summaries[1]["status"] == "dry_run"  # the failure did not stop the loop
+    out_lines = capsys.readouterr().out.strip().splitlines()
+    assert len(out_lines) == 2  # both summaries printed

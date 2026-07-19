@@ -44,6 +44,10 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
   unparkRef.current = connection.unpark;
   const isParkedRef = useRef(connection.isParked);
   isParkedRef.current = connection.isParked;
+  const isConnectedRef = useRef(connection.isConnected);
+  isConnectedRef.current = connection.isConnected;
+  const reconnectRef = useRef(connection.reconnect);
+  reconnectRef.current = connection.reconnect;
   const requestWakeRef = useRef(requestWake);
   requestWakeRef.current = requestWake;
 
@@ -60,8 +64,16 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
       if (state === "active") {
         // Foreground = intent. unpark() reconnects (it also resets backoff and
         // tears down whatever half-dead socket iOS left behind); the wake
-        // starts a parked container in parallel.
-        if (isParkedRef.current) unparkRef.current();
+        // starts a parked container in parallel. If we're NOT parked but the
+        // socket is dead anyway — a foreground network blip / server restart
+        // whose reconnect backoff has since exhausted — kick a reconnect. This
+        // is the pre-existing foreground-recovery fallback; the park refactor
+        // must not drop it.
+        if (isParkedRef.current) {
+          unparkRef.current();
+        } else if (!isConnectedRef.current) {
+          reconnectRef.current();
+        }
         void requestWakeRef.current("mount");
       } else if (state === "background") {
         // Real backgrounding (home / app-switch away) — release the socket so

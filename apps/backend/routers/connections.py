@@ -27,6 +27,7 @@ from core.services import config_patcher
 from core.services.credentials import (
     apply_connection,
     aws_cfn,
+    connection_lock,
     integration_secret_store,
     meta_token_refresh,
     oauth_app_store,
@@ -622,6 +623,18 @@ async def disconnect(provider: str, account: str | None = None, auth: AuthContex
             raise HTTPException(status_code=400, detail="the account parameter is only supported for google")
         await _disconnect_one_google_account(owner_id, p, account)
         return {"status": "disconnected", "provider": provider, "account": account}
+    # Serialize the teardown against a concurrent background refresh (Instagram's
+    # lazy token refresh writes EFS + SM fire-and-forget from GET /connections).
+    # The refresh takes the same per-owner lock around its recheck→write section,
+    # so whichever runs second sees the other's completed state — a disconnect can
+    # no longer be undone by an in-flight refresh. Uncontended for providers with
+    # no background writer.
+    async with connection_lock.connection_lock(owner_id, provider):
+        await _disconnect_teardown(owner_id, provider, p)
+    return {"status": "disconnected", "provider": provider}
+
+
+async def _disconnect_teardown(owner_id: str, provider: str, p: registry.Provider) -> None:
     # Materializer-backed providers wrote credential files onto EFS; remove
     # those first so disconnect leaves no on-disk residue. The remover deletes
     # the artifact by owner/provider and does not need the secret value.
@@ -680,7 +693,6 @@ async def disconnect(provider: str, account: str | None = None, auth: AuthContex
         # command-less (invalid) server, and a blanked token would keep a dead
         # entry around.
         await config_patcher.delete_openclaw_config_path(owner_id, ["mcp", "servers", p.wiring.mcp_server.key])
-    return {"status": "disconnected", "provider": provider}
 
 
 @router.put("/{provider}/byo-app")

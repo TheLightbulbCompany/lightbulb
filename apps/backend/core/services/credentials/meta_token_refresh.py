@@ -22,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
-from core.services.credentials import apply_connection, integration_secret_store
+from core.services.credentials import apply_connection, connection_lock, integration_secret_store
 
 logger = logging.getLogger(__name__)
 
@@ -69,22 +69,25 @@ async def refresh_instagram_if_stale(owner_id: str) -> bool:
             (datetime.now(timezone.utc) + timedelta(seconds=expires_in)).isoformat() if expires_in else ""
         )
         # This task started fire-and-forget from GET /connections and has been
-        # awaiting Meta for seconds. If DELETE /connections/instagram ran in that
-        # window it already tore down the SM secret + EFS artifacts + status row —
-        # writing now would resurrect a live token and re-enable the skill behind a
-        # UI that reads disconnected. Re-read the credential and abort if it's gone;
-        # this collapses the race from the multi-second network call to the tiny
-        # gap before the writes below.
-        if await integration_secret_store.get(owner_id, "instagram") is None:
-            logger.info("instagram refresh aborted for %s: disconnected mid-refresh", owner_id)
-            return False
-        # Rematerialize EFS (the token the agent actually reads) BEFORE advancing
-        # the retained credential's expiry. If apply fails here, the stored expiry
-        # stays in the past, so the next GET /connections retries — otherwise
-        # Secrets Manager would read fresh for ~60d while credentials.json kept the
-        # dead token, and the agent would 401 with no self-heal.
-        await apply_connection.apply_connection(owner_id, "instagram", credential)
-        await integration_secret_store.put(owner_id, "instagram", credential)
+        # awaiting Meta for seconds. A concurrent DELETE /connections/instagram
+        # tears down the SM secret + EFS artifacts + status row; if it interleaves
+        # with the writes below, we'd resurrect a live token + re-enable the skill
+        # behind a UI that reads disconnected. Take the per-owner connection lock
+        # (disconnect takes the same one) so the recheck→write section is atomic
+        # w.r.t. disconnect, then re-read the secret under the lock: gone => the
+        # owner disconnected first, so abort without writing. The lock is taken
+        # AFTER the slow Meta call, never around it.
+        async with connection_lock.connection_lock(owner_id, "instagram"):
+            if await integration_secret_store.get(owner_id, "instagram") is None:
+                logger.info("instagram refresh aborted for %s: disconnected mid-refresh", owner_id)
+                return False
+            # Rematerialize EFS (the token the agent actually reads) BEFORE advancing
+            # the retained credential's expiry. If apply fails here, the stored expiry
+            # stays in the past, so the next GET /connections retries — otherwise
+            # Secrets Manager would read fresh for ~60d while credentials.json kept the
+            # dead token, and the agent would 401 with no self-heal.
+            await apply_connection.apply_connection(owner_id, "instagram", credential)
+            await integration_secret_store.put(owner_id, "instagram", credential)
         logger.info("instagram token refreshed for %s", owner_id)
         return True
     except Exception:

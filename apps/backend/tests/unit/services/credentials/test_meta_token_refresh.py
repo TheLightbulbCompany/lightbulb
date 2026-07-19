@@ -1,3 +1,4 @@
+import asyncio
 import os
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
@@ -6,7 +7,7 @@ os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 import pytest  # noqa: E402
 
-from core.services.credentials import meta_token_refresh  # noqa: E402
+from core.services.credentials import connection_lock, meta_token_refresh  # noqa: E402
 
 
 def _iso(days_from_now: int) -> str:
@@ -104,6 +105,29 @@ async def test_disconnect_mid_refresh_aborts_without_writing(mock_get, mock_put,
     assert await meta_token_refresh.refresh_instagram_if_stale("org_1") is False
     mock_apply.assert_not_awaited()
     mock_put.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("core.services.credentials.meta_token_refresh.httpx.AsyncClient", _FakeAsyncClient)
+@patch("core.services.credentials.meta_token_refresh.apply_connection.apply_connection", new_callable=AsyncMock)
+@patch("core.services.credentials.meta_token_refresh.integration_secret_store.put", new_callable=AsyncMock)
+@patch("core.services.credentials.meta_token_refresh.integration_secret_store.get", new_callable=AsyncMock)
+async def test_refresh_blocks_on_held_connection_lock(mock_get, mock_put, mock_apply):
+    # While the per-owner connection lock is held (as an in-flight disconnect
+    # would), refresh must NOT reach its write section — the recheck→apply→put
+    # is inside the same lock. The slow Meta call runs first (outside the lock),
+    # so the task parks at lock acquisition with apply/put untouched.
+    mock_get.return_value = {"access_token": "OLD", "token_expiry": _iso(5)}
+    lock = connection_lock.connection_lock("org_lock", "instagram")
+    async with lock:
+        task = asyncio.create_task(meta_token_refresh.refresh_instagram_if_stale("org_lock"))
+        await asyncio.sleep(0.05)  # let it clear get()+network and park on the lock
+        mock_apply.assert_not_awaited()
+        mock_put.assert_not_awaited()
+    # Lock released → refresh proceeds (secret still present) and writes.
+    assert await task is True
+    mock_apply.assert_awaited_once()
+    mock_put.assert_awaited_once()
 
 
 @pytest.mark.asyncio

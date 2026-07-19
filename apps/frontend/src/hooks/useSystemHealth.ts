@@ -53,7 +53,7 @@ interface RecoverResponse {
 const MAX_RECONNECT = 10;
 
 export function useSystemHealth(): SystemHealth {
-  const { isConnected, reconnectAttempt, onEvent } = useGateway();
+  const { isConnected, reconnectAttempt, onEvent, isParked } = useGateway();
   const { container } = useProvisioningState({
     refreshInterval: 10_000,
     enabled: true,
@@ -124,6 +124,16 @@ export function useSystemHealth(): SystemHealth {
   if (pushState) {
     state = pushState.state as HealthState;
     reason = pushState.reason;
+  } else if (isParked || container?.phase === "parked") {
+    // Client-driven park (isParked) OR backend-reflected park (phase).
+    // isParked leads by ~3min: between the client closing its socket and
+    // the backend's disconnect-armed teardown flipping the row to
+    // stopped/parked, isConnected is false with reconnectAttempt=0, which
+    // would otherwise fall through to GATEWAY_DOWN_DEAD (red, "Restart
+    // Gateway") over a deliberately-asleep box. Checked before every
+    // !isConnected branch so the alarm never flashes during an idle park.
+    state = "PARKED";
+    reason = "Agents asleep — they wake when you interact";
   } else if (!container) {
     state = "STARTING";
     reason = "Loading container status...";
@@ -132,14 +142,6 @@ export function useSystemHealth(): SystemHealth {
     reason = container.substatus === "auto_retry"
       ? "Restarting container..."
       : "Container provisioning — waiting for ECS task";
-  } else if (container.phase === "parked") {
-    // BEFORE the stopped branch: a parked row's ECS status IS "stopped",
-    // and mapping it to CONTAINER_DOWN would show a red dot + Restart CTA
-    // over a chat surface the stepper is simultaneously rendering as
-    // ready. Restarting a healthy parked box is actively wrong — any
-    // interaction wakes it.
-    state = "PARKED";
-    reason = "Agents asleep — they wake when you interact";
   } else if (container.status === "stopped" || container.status === "error") {
     state = "CONTAINER_DOWN";
     reason = container.last_error

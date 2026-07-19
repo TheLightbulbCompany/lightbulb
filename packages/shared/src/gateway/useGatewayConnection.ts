@@ -279,11 +279,28 @@ export function useGatewayConnection(options: GatewayConnectionOptions): Gateway
       try {
         const token = await getTokenRef.current();
         if (!token) throw new Error("Not authenticated");
+        // park() may have fired while the token fetch was in flight — and
+        // its socket-close branch was a no-op then (wsRef was still null),
+        // so it only flipped the flag. Without this re-check we'd open a
+        // live, ping-pinging socket while isParked===true, and the backend
+        // would never see the disconnect that park() intends. Re-check here
+        // (before creating the socket) AND after (belt-and-suspenders, in
+        // case park races the constructor).
+        if (parkedRef.current) return;
 
         const ws = new WebSocket(`${wsUrlRef.current}?token=${token}`);
+        if (parkedRef.current) {
+          ws.close(1000, "Parked during connect");
+          return;
+        }
 
         ws.onopen = () => {
           if (wsRef.current !== ws) return; // superseded while opening
+          if (parkedRef.current) {
+            // Parked between construction and open — close and stay down.
+            ws.close(1000, "Parked during connect");
+            return;
+          }
           console.info("[gateway] ws open");
           reconnectAttemptRef.current = 0;
           setReconnectAttempt(0);

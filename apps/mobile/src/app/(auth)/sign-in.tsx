@@ -62,11 +62,9 @@ export default function SignIn() {
       if (createdSessionId && setActiveFromFlow) {
         await setActiveFromFlow({ session: createdSessionId });
         // (auth) layout redirects to /(app)/chat once isSignedIn flips.
-      } else {
-        setError(
-          "Apple sign-in needs another step — finish signing in on isol8.co for now.",
-        );
       }
+      // A null session is the user dismissing the native Apple sheet (Clerk
+      // resolves rather than throwing for cancels) — stay quiet, no error.
     } catch (e) {
       // The native sheet's cancel surfaces as ERR_REQUEST_CANCELED — quiet.
       if ((e as { code?: string })?.code !== "ERR_REQUEST_CANCELED") {

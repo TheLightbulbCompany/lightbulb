@@ -169,6 +169,8 @@ async def delete_my_account(
 
     report_dict = report.to_dict()
     has_failures = any(step["status"] == "failed" for step in report_dict["steps"])
+    # (Audit below runs BEFORE the failure gate so a partial teardown is
+    # always recorded; the raise after it keeps the client honest.)
     # Audit like the admin wipe (actor == target marks it self-serve). An
     # audit-write failure must not mask the already-run teardown.
     try:
@@ -188,6 +190,13 @@ async def delete_my_account(
         )
     except Exception:  # noqa: BLE001 — mirror the admin wipe's audit posture
         logger.critical("SELF_WIPE_AUDIT_PANIC target=%s", owner_id, exc_info=True)
+
+    # A partial teardown must NOT report success: the Clerk user (always the
+    # LAST step) may still exist, so "deleted" would sign the user out of an
+    # account that can regrow on the next /container/status poll. The wipe is
+    # idempotent — an honest error lets the client simply retry.
+    if has_failures:
+        raise HTTPException(status_code=502, detail="deletion_incomplete")
 
     # Never leak the step-by-step infra report to end users.
     return {"status": "deleted"}

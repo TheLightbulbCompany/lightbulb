@@ -321,7 +321,9 @@ export default function Settings() {
                           "Couldn't delete account",
                           detail === "email_mismatch"
                             ? "That email didn't match this account."
-                            : (detail ?? "Something went wrong — try again or contact support@isol8.co."),
+                            : detail === "deletion_incomplete"
+                              ? "Deletion didn't finish — try again in a moment, or contact support@isol8.co."
+                              : (detail ?? "Something went wrong — try again or contact support@isol8.co."),
                         );
                       }
                     })(),

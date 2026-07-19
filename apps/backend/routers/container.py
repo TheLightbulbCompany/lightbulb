@@ -7,7 +7,7 @@ and a manual retry-provision endpoint.
 import asyncio
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from core.auth import AuthContext, get_current_user, is_org_owner_id, resolve_owner_id
 from core.config import settings
@@ -18,6 +18,7 @@ from core.containers.ecs_manager import (
     ContainerStartRefused,
     EcsManagerError,
 )
+from core.services import container_wake, wake_policy
 from core.services.management_api_client import ManagementApiClientError
 from core.observability.metrics import put_metric, timing
 from core.repositories import container_repo
@@ -120,6 +121,16 @@ async def _assert_provision_allowed(
 )
 async def container_status(
     auth: AuthContext = Depends(get_current_user),
+    wake: str | None = Query(
+        default=None,
+        description=(
+            "Wake marker. '0' = read-only status: never start a parked "
+            "(trial_idle) container. '1' = explicit presence-backed wake. "
+            "Absent = legacy client; wake-on-read preserved but budgeted "
+            "for parked rows. Error/stale-lease self-heal ignores this "
+            "param entirely."
+        ),
+    ),
 ):
     owner_id = resolve_owner_id(auth)
     # Opportunistic seat reconcile for org owners: converges the Stripe seat
@@ -303,6 +314,32 @@ async def container_status(
         except HTTPException:
             pass
         else:
+            # Wake-on-intent gate — applies ONLY to a healthy parked trial box
+            # (status=stopped + stop_reason=trial_idle + trial_local +
+            # !conversion_pending). Error rows, stale leases, killswitch and
+            # admin stops all fail the predicate and keep the unconditional
+            # poll-driven self-heal below; gates above already 402'd capped or
+            # expired owners, so parked can never mask a limit card.
+            parked = await wake_policy.is_parked_trial(owner_id, container)
+            if parked and wake == "0":
+                # Read-only poll from a presence-aware client: report the
+                # parked state, start nothing.
+                wake_policy.note_wake_suppressed(owner_id, container, door="status_poll", reason="gated")
+                return _status_response(container, owner_id, parked=True)
+            if parked and wake is None:
+                # Legacy client (pre-gate bundle, never reloaded): preserve
+                # wake-on-read but bound it to the daily budget so a zombie
+                # tab can't run the container around the clock.
+                if not await wake_policy.legacy_wake_allowed(owner_id):
+                    wake_policy.note_wake_suppressed(owner_id, container, door="status_legacy", reason="budget")
+                    # Legacy-shaped response: old bundles get today's field
+                    # set (plain stopped), never the new parked fields.
+                    return _status_response(container, owner_id)
+                wake_policy.note_wake_dispatched(door="status_legacy", intent="poll")
+            elif parked:
+                wake_policy.note_wake_dispatched(door="status_poll", intent="explicit")
+            else:
+                wake_policy.note_wake_dispatched(door="status_poll", intent="self_heal")
             # No status pre-write here: background_provision's atomic lease
             # claim IS the transition to "provisioning". A pre-write would (a)
             # race concurrent polls into double-dispatch (the exact incident
@@ -328,7 +365,18 @@ async def container_status(
     if auth.is_org_context:
         asyncio.create_task(ensure_user_ready(auth, provision_container=False))
 
-    return {
+    return _status_response(container, owner_id)
+
+
+def _status_response(container: dict, owner_id: str, *, parked: bool = False) -> dict:
+    """The one 200 shape for /container/status.
+
+    ``parked=True`` is additive: same base fields (so no consumer schema
+    drift) plus ``parked``/``wake_retry_after_s`` and ``phase="parked"`` —
+    the phase every stepper consumer must treat as ready-equivalent (a parked
+    box is healthy and one intent away from running, not mid-provision).
+    """
+    body = {
         "service_name": container.get("service_name"),
         "status": container.get("status"),
         "substatus": container.get("substatus"),
@@ -341,6 +389,39 @@ async def container_status(
         # _resolve_cold_start_phase for the (status, pool) -> phase map.
         "phase": _safe_phase(container, owner_id),
     }
+    if parked:
+        body["phase"] = "parked"
+        body["parked"] = True
+        body["wake_retry_after_s"] = 30
+    return body
+
+
+@router.post(
+    "/wake",
+    summary="Explicitly wake the owner's container",
+    operation_id="container_wake",
+    responses={402: {"description": "Provision/trial gate is up (structured blocked payload)"}},
+)
+async def container_wake_endpoint(
+    auth: AuthContext = Depends(get_current_user),
+    reason: str = Body(default="interaction", embed=True),
+):
+    """The explicit intent verb. Never budgeted, never suppressed — gates
+    are the only refusal, and they return the same structured 402 payload as
+    every other door. Old backends 404 this route; clients must treat that as
+    a per-request soft-fail (never cache it)."""
+    owner_id = resolve_owner_id(auth)
+    if reason not in container_wake.WAKE_REASONS:
+        reason = "interaction"
+    result = await container_wake.request_wake(
+        owner_id,
+        reason=reason,
+        is_admin=auth.is_org_admin if auth.is_org_context else True,
+        user_id=auth.user_id,
+    )
+    if result.outcome == "blocked":
+        raise HTTPException(status_code=402, detail=result.gate_payload)
+    return {"outcome": result.outcome}
 
 
 def _safe_phase(container: dict, owner_id: str) -> str:

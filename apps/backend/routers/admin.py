@@ -286,7 +286,7 @@ async def admin_container_stop(
 ):
     owner_id, _ = await resolve_admin_owner_id(user_id)
     ecs = get_ecs_manager()
-    return await ecs.stop_user_service(owner_id)
+    return await ecs.stop_user_service(owner_id, reason="admin")
 
 
 @router.post(

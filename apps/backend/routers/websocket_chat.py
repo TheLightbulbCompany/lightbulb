@@ -1918,9 +1918,21 @@ async def _process_agent_chat_background(
                     owner_id,
                 )
             if row and row.get("status") == "stopped":
+                # Server-side wake: a message IS intent, and it must wake the
+                # container on every client version ever shipped — the client
+                # cannot be trusted to follow up (a hidden tab's polling is
+                # paused, an old bundle knows nothing about wake gating). The
+                # dispatch is lease-idempotent and stands down on
+                # conversion_pending and trial gates; the frame below is
+                # emitted regardless — the wake is a side effect, not the
+                # reply. This makes the historical "the WS path never wakes"
+                # invariant intentionally FALSE for the stopped branch.
+                from core.services import container_wake as _cw
+
+                await _cw.request_wake_silent(owner_id, user_id=user_id)
                 put_metric("chat.error", dimensions={"reason": "container_waking"})
                 logger.info(
-                    "[%s] chat.send: container stopped (scaled to zero) for owner=%s — signaling wake",
+                    "[%s] chat.send: container stopped (scaled to zero) for owner=%s — wake dispatched",
                     user_id,
                     owner_id,
                 )

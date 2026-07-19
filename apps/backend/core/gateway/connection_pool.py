@@ -2694,7 +2694,7 @@ class GatewayConnectionPool:
                 return
             from core.containers import get_ecs_manager
 
-            await get_ecs_manager().stop_user_service(owner_id)
+            await get_ecs_manager().stop_user_service(owner_id, reason="trial_idle")
             put_metric("gateway.trial_scale_to_zero", dimensions={"trigger": trigger})
         except Exception:
             logger.exception("trial scale-to-zero check failed owner=%s", owner_id)

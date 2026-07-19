@@ -750,4 +750,4 @@ async def test_stop_proceeds_once_the_paperclip_run_ends(monkeypatch):
     ):
         await pool._maybe_stop_trial_container("user_x")
 
-    stop.assert_awaited_once_with("user_x")
+    stop.assert_awaited_once_with("user_x", reason="trial_idle")

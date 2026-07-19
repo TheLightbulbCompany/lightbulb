@@ -68,40 +68,36 @@ def _tar_body(data: bytes = b"COMPANYTAR"):
 
 
 @patch("routers.marketplace_listings.asyncio.create_task")
-@patch("routers.marketplace_listings.company_deploy_service.run_company_deploy", new_callable=MagicMock)
-@patch("routers.marketplace_listings.company_deploy_repo.create_job", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.company_deploy_service.run_company_deploy")
 @patch("routers.marketplace_listings.boto3.client")
 @patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.billing_repo.get_by_owner_id", new_callable=AsyncMock)
 def test_ultra_pro_owner_deploys_ultra_company_202(
-    mock_billing, mock_get_published, mock_boto, mock_create_job, mock_run, mock_create_task, admin_client
+    mock_billing, mock_get_published, mock_boto, mock_run, mock_create_task, admin_client
 ):
-    """ultra_pro owner + Ultra listing -> passes the plan gate and dispatches
-    the deploy (202), NOT 409."""
+    """ultra_pro owner + Ultra listing -> passes the plan gate and fire-and-forget
+    dispatches the deploy (202), NOT 409."""
     mock_billing.return_value = {"owner_id": "user_admin", "plan": "ultra_pro"}
     mock_get_published.return_value = _ultra_company_listing()
     mock_boto.return_value.get_object.return_value = _tar_body(b"COMPANYTAR")
-    mock_create_job.return_value = "cdpl_ultra"
 
     resp = admin_client.post("/api/v1/marketplace/listings/bigco/deploy")
 
     assert resp.status_code == 202, resp.text
-    assert resp.json() == {"job_id": "cdpl_ultra"}
-    mock_create_job.assert_awaited_once()
-    assert mock_create_job.await_args.kwargs["owner_id"] == "user_admin"
-    mock_create_task.assert_called_once_with(mock_run.return_value)
+    assert resp.json() == {"started": True, "agent_count": 15}
+    mock_create_task.assert_called_once()
 
 
 @patch("routers.marketplace_listings.asyncio.create_task")
-@patch("routers.marketplace_listings.company_deploy_repo.create_job", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.company_deploy_service.run_company_deploy")
 @patch("routers.marketplace_listings.boto3.client")
 @patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.billing_repo.get_by_owner_id", new_callable=AsyncMock)
 def test_standard_owner_ultra_company_409(
-    mock_billing, mock_get_published, mock_boto, mock_create_job, mock_create_task, admin_client
+    mock_billing, mock_get_published, mock_boto, mock_run, mock_create_task, admin_client
 ):
     """standard owner + Ultra listing -> still 409 'Requires Ultra Pro', before
-    any S3/job work."""
+    any S3/dispatch work."""
     mock_billing.return_value = {"owner_id": "user_admin", "plan": "standard"}
     mock_get_published.return_value = _ultra_company_listing()
 
@@ -110,5 +106,5 @@ def test_standard_owner_ultra_company_409(
     assert resp.status_code == 409, resp.text
     assert "ultra pro" in resp.json()["detail"].lower()
     mock_boto.assert_not_called()
-    mock_create_job.assert_not_awaited()
+    mock_run.assert_not_called()
     mock_create_task.assert_not_called()

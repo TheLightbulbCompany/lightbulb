@@ -100,6 +100,30 @@ async def record_agent(
     )
 
 
+async def record_routine_ids(
+    *,
+    job_id: str,
+    routine_ids: list[str],
+    now_iso: str,
+) -> None:
+    """Overwrite the job's ``routine_ids`` with the full created-routine list and
+    bump updated_at.
+
+    Called once after the routines are created (before the terminal
+    ``completed`` status) so the polling surface / RoutinesEnableCard sees the
+    ids that shipped. ``routine_ids`` is not a DynamoDB reserved word, so it
+    needs no alias. ``attribute_exists(job_id)`` guards a missing row so a stray
+    call never conjures a phantom job — a single write, mirroring ``set_status``."""
+    table = _table()
+    await run_in_thread(
+        table.update_item,
+        Key={"job_id": job_id},
+        UpdateExpression="SET routine_ids = :ids, updated_at = :now",
+        ConditionExpression="attribute_exists(job_id)",
+        ExpressionAttributeValues={":ids": routine_ids, ":now": now_iso},
+    )
+
+
 async def set_status(
     *,
     job_id: str,

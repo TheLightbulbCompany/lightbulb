@@ -116,6 +116,10 @@ class FakeRepo:
         self.job = job
         self.status_calls: list[tuple[str, str | None]] = []
         self.record_calls: list[tuple[str, str | None, str]] = []
+        self.routine_ids_calls: list[list[str]] = []
+        # Ordered log of the terminal writes so a test can assert the routine
+        # ids land BEFORE the completed status.
+        self.op_log: list[str] = []
 
     async def get_job(self, job_id):
         return self.job
@@ -129,8 +133,15 @@ class FakeRepo:
                     a["state"] = state
                     break
 
+    async def record_routine_ids(self, *, job_id, routine_ids, now_iso):
+        self.routine_ids_calls.append(list(routine_ids))
+        self.op_log.append("record_routine_ids")
+        if self.job:
+            self.job["routine_ids"] = list(routine_ids)
+
     async def set_status(self, *, job_id, status, now_iso, error=None):
         self.status_calls.append((status, error))
+        self.op_log.append(f"set_status:{status}")
         if self.job:
             self.job["status"] = status
             self.job["error"] = error
@@ -257,6 +268,7 @@ def _install(monkeypatch, h: Harness, plan=None, tar_bytes=b""):
     # Repo.
     monkeypatch.setattr(svc.company_deploy_repo, "get_job", h.repo.get_job)
     monkeypatch.setattr(svc.company_deploy_repo, "record_agent", h.repo.record_agent)
+    monkeypatch.setattr(svc.company_deploy_repo, "record_routine_ids", h.repo.record_routine_ids)
     monkeypatch.setattr(svc.company_deploy_repo, "set_status", h.repo.set_status)
 
 
@@ -403,6 +415,51 @@ async def test_routines_created_via_create_agent_routines(monkeypatch):
     worker_id = h.admin.name_to_id["Worker"]
     assert by_agent[cto_id] == [{"title": "Nightly", "description": "d", "cron": "0 8 * * *"}]
     assert by_agent[worker_id] == [{"title": "Hourly", "description": "d2", "cron": "0 * * * *"}]
+
+
+@pytest.mark.asyncio
+async def test_created_routine_ids_persisted_onto_job_before_completed(monkeypatch):
+    """The ids returned by create_agent_routines are accumulated and written to
+    the job row via record_routine_ids — BEFORE the terminal completed status —
+    so the frontend RoutinesEnableCard sees a non-empty routine_ids."""
+    plan = _simple_plan(
+        routines=[
+            PlannedRoutine(agent_slug="cto", title="Nightly", description="d", cron="0 8 * * *"),
+            PlannedRoutine(agent_slug="worker", title="Hourly", description="d2", cron="0 * * * *"),
+        ]
+    )
+    h = Harness()
+    _install(monkeypatch, h, plan=plan)
+
+    await svc.run_company_deploy(job_id="cdpl_test", owner_id=OWNER, listing={}, tar_bytes=b"")
+
+    # fake create_agent_routines returns [f"routine_{agent_id}"] per assignee,
+    # grouped cto-then-worker (plan.routines order).
+    cto_id = h.admin.name_to_id["CTO"]
+    worker_id = h.admin.name_to_id["Worker"]
+    expected = [f"routine_{cto_id}", f"routine_{worker_id}"]
+
+    # Persisted exactly once, with the accumulated ids, and landed on the row.
+    assert h.repo.routine_ids_calls == [expected]
+    assert h.repo.job["routine_ids"] == expected
+
+    # Ordering: routine ids are recorded strictly before status flips to completed.
+    assert h.repo.op_log.index("record_routine_ids") < h.repo.op_log.index("set_status:completed")
+
+
+@pytest.mark.asyncio
+async def test_no_routines_persists_empty_list(monkeypatch):
+    """A plan with no cron'd routines still records an empty routine_ids list
+    (idempotent with the seeded []), and still completes."""
+    plan = _simple_plan(routines=[])
+    h = Harness()
+    _install(monkeypatch, h, plan=plan)
+
+    await svc.run_company_deploy(job_id="cdpl_test", owner_id=OWNER, listing={}, tar_bytes=b"")
+
+    assert h.repo.routine_ids_calls == [[]]
+    assert h.repo.job["routine_ids"] == []
+    assert h.repo.job["status"] == "completed"
 
 
 # ---------------------------------------------------------------------------

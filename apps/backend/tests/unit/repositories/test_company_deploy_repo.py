@@ -137,6 +137,40 @@ async def test_record_agent_can_flip_to_failed(deploys_table):
 
 
 # ---------------------------------------------------------------------------
+# record_routine_ids
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_record_routine_ids_writes_list_and_round_trips(deploys_table):
+    job_id = await _create()
+    # Seeded empty at create time.
+    assert (await company_deploy_repo.get_job(job_id))["routine_ids"] == []
+
+    await company_deploy_repo.record_routine_ids(
+        job_id=job_id,
+        routine_ids=["rt_1", "rt_2"],
+        now_iso=LATER,
+    )
+
+    job = await company_deploy_repo.get_job(job_id)
+    assert job["routine_ids"] == ["rt_1", "rt_2"]
+    assert job["updated_at"] == LATER
+
+
+@pytest.mark.asyncio
+async def test_record_routine_ids_overwrites_with_full_list(deploys_table):
+    job_id = await _create()
+
+    await company_deploy_repo.record_routine_ids(job_id=job_id, routine_ids=["rt_1"], now_iso=NOW)
+    await company_deploy_repo.record_routine_ids(job_id=job_id, routine_ids=["rt_a", "rt_b"], now_iso=LATER)
+
+    job = await company_deploy_repo.get_job(job_id)
+    # Full overwrite — the last write wins, not an append.
+    assert job["routine_ids"] == ["rt_a", "rt_b"]
+
+
+# ---------------------------------------------------------------------------
 # set_status
 # ---------------------------------------------------------------------------
 

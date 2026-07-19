@@ -338,7 +338,10 @@ async def _run_company_deploy(*, job_id: str, owner_id: str, tar_bytes: bytes) -
                 job_id=job_id, slug=planned.slug, paperclip_id=pc_id, state="materialized", now_iso=_now_iso()
             )
 
-        await _create_routines(admin=admin, cookie=cookie, company_id=company_id, plan=plan, slug_to_id=slug_to_id)
+        routine_ids = await _create_routines(
+            admin=admin, cookie=cookie, company_id=company_id, plan=plan, slug_to_id=slug_to_id
+        )
+        await company_deploy_repo.record_routine_ids(job_id=job_id, routine_ids=routine_ids, now_iso=_now_iso())
 
         await company_deploy_repo.set_status(job_id=job_id, status="completed", now_iso=_now_iso())
     finally:
@@ -347,13 +350,17 @@ async def _run_company_deploy(*, job_id: str, owner_id: str, tar_bytes: bytes) -
 
 async def _create_routines(
     *, admin, cookie: str, company_id: str, plan: DeployPlan, slug_to_id: dict[str, str]
-) -> None:
+) -> list[str]:
     """Create each planned routine DORMANT (paused) on its assigned agent.
 
     ``create_agent_routines`` always attaches an ``enabled: False`` schedule
     trigger, so nothing fires until a human flips it on. Routines are grouped by
     assignee id; cron-less specs are dropped (a schedule trigger needs a cron),
     and routines whose assignee never got an id (skipped/failed agent) are too.
+
+    Returns the ids of every routine created this run (accumulated across
+    agents), so the caller can persist them onto the job row for the
+    routines-enable UX. Empty when nothing had a cron.
     """
     by_agent: dict[str, list[dict]] = defaultdict(list)
     for routine in plan.routines:
@@ -364,14 +371,17 @@ async def _create_routines(
             continue
         by_agent[agent_id].append({"title": routine.title, "description": routine.description, "cron": routine.cron})
 
+    routine_ids: list[str] = []
     for agent_id, specs in by_agent.items():
-        await create_agent_routines(
+        created = await create_agent_routines(
             admin=admin,
             session_cookie=cookie,
             company_id=company_id,
             agent_id=agent_id,
             routines=specs,
         )
+        routine_ids.extend(created)
+    return routine_ids
 
 
 async def rollback_company_deploy(*, job_id: str) -> None:

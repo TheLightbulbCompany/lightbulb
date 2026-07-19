@@ -80,6 +80,22 @@ async def test_get_onboarding_absent_returns_none(paperclip_table):
 
 
 @pytest.mark.asyncio
+async def test_record_ids_without_claim_raises_and_creates_no_row(paperclip_table):
+    """record_onboarding_ids must never fabricate the sentinel row: it may
+    only update a row claim_onboarding already created. Without a prior
+    claim, the conditional update_item should raise rather than silently
+    creating the row from scratch.
+    """
+    repo = PaperclipRepo(paperclip_table)
+    table = repo._table()
+
+    with pytest.raises(table.meta.client.exceptions.ConditionalCheckFailedException):
+        await repo.record_onboarding_ids("comp-never-claimed", goal_id="goal-1", project_id="proj-1")
+
+    assert await repo.get_onboarding("comp-never-claimed") is None
+
+
+@pytest.mark.asyncio
 async def test_sentinel_does_not_collide_with_a_user_row(paperclip_table):
     """The synthetic key must not be reachable as a real user_id."""
     repo = PaperclipRepo(paperclip_table)

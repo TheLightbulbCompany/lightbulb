@@ -507,16 +507,28 @@ class PaperclipRepo:
     async def record_onboarding_ids(self, company_id: str, *, goal_id: str, project_id: str) -> None:
         """Record the seeded rows on the claim. Written LAST, so a claim
         carrying ids always means both Paperclip rows exist and are linked.
+
+        Guarded with ``attribute_exists(user_id)`` so this can only ever
+        update a row that ``claim_onboarding``'s PK-conditional ``put_item``
+        already created. Without the guard, ``update_item`` on a
+        non-existent key silently CREATES it from scratch — a caller bug
+        (e.g. calling this without ever claiming) would fabricate the
+        sentinel out of thin air instead of failing loudly, permanently
+        locking the company out of onboarding with no exception and no
+        signal. Raises ``ConditionalCheckFailedException`` if no claim was
+        ever taken; callers treat any failure here as "release the claim
+        and return 409".
         """
         await run_in_thread(
             self._table().update_item,
             Key={"user_id": _onboarding_claim_key(company_id)},
-            UpdateExpression=("SET onboarding_goal_id = :g, onboarding_project_id = :p, seeded_at = :t"),
+            UpdateExpression="SET onboarding_goal_id = :g, onboarding_project_id = :p, seeded_at = :t",
             ExpressionAttributeValues={
                 ":g": goal_id,
                 ":p": project_id,
                 ":t": datetime.now(timezone.utc).isoformat(),
             },
+            ConditionExpression="attribute_exists(user_id)",
         )
 
     async def get_onboarding(self, company_id: str) -> Optional[dict]:

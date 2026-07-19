@@ -789,7 +789,7 @@ export interface MessageListHandle {
 
 export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(
   function MessageList({ renderGroups, isStreaming, isTyping, agentName, onOpenFile }, ref) {
-    const { containerRef, endRef, scrollToBottom } = useScrollToBottom();
+    const { containerRef, scrollToBottom } = useScrollToBottom();
 
     // Track whether the user is at (or near) the bottom of the scroll
     // container. While true, incoming streamed chunks pull the view down.
@@ -846,8 +846,7 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
     //     user who scrolled up isn't yanked back while reading).
     React.useEffect(() => {
       const container = containerRef.current;
-      const end = endRef.current;
-      if (!container || !end) return;
+      if (!container) return;
 
       const itemsIncreased = totalItems > prevTotalItemsRef.current;
       const tailGrew =
@@ -856,22 +855,26 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
       const newUserMessage = itemsIncreased && lastSide === "user";
       const isFirstPaintWithItems = !hasMountedRef.current && totalItems > 0;
 
-      // JSDOM test envs don't always polyfill scrollIntoView; production
-      // browsers always have it. Optional-chain so tests that don't mock
-      // it don't crash when they transitively render MessageList.
+      // Snap by setting scrollTop on the container — never scrollIntoView,
+      // which also scrolls outer scrollable ancestors (that once yanked the
+      // whole workspace shell out of the viewport).
+      const snapToBottom = () => {
+        container.scrollTop = container.scrollHeight;
+      };
+
       if (isFirstPaintWithItems || newUserMessage) {
-        end.scrollIntoView?.({ behavior: "auto", block: "end" });
+        snapToBottom();
         isNearBottomRef.current = true;
         hasMountedRef.current = true;
       } else if ((itemsIncreased || tailGrew) && isNearBottomRef.current) {
-        end.scrollIntoView?.({ behavior: "auto", block: "end" });
+        snapToBottom();
       }
 
       if (totalItems > 0) hasMountedRef.current = true;
       prevTotalItemsRef.current = totalItems;
       prevLastTailLengthRef.current = lastTailLength;
       prevLastSideRef.current = lastSide;
-    }, [totalItems, lastTailLength, lastSide, containerRef, endRef]);
+    }, [totalItems, lastTailLength, lastSide, containerRef]);
 
     // The "typing placeholder" shows the agent header (animated thinking
     // glyph) during the window between `sendMessage` and the first
@@ -913,7 +916,6 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
             />
           ))}
           {showTypingPlaceholder && <TypingPlaceholder agentName={agentName} />}
-          <div ref={endRef} />
         </div>
       </div>
     );

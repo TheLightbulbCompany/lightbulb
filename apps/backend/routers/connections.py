@@ -797,21 +797,26 @@ async def oauth_callback(provider: str, code: str, state: str):
         # the connections page with a retryable error instead of a 500.
         return RedirectResponse(f"{settings.FRONTEND_URL}/settings/connections?error=oauth_exchange")
     p = registry.get_provider(prov)
-    # Retain the credential in Secrets Manager only when the backend is the
-    # custodian. Actor-refresh providers (e.g. gog) self-refresh inside the
-    # container, so the backend stores nothing and the EFS keyring written by
-    # apply_connection is the sole durable copy. Mark connected only after
-    # wiring succeeds.
-    if _retains_secret(p):
-        await integration_secret_store.put(owner_id, prov, credential)
-    try:
-        connection_identity = await apply_connection.apply_connection(owner_id, prov, credential)
-    except Exception:
-        await _remove_materialized_artifacts(owner_id, p, credential)
+    # Serialize the connect writes against a concurrent disconnect or background
+    # refresh (same per-owner lock all three take): a lazy Instagram refresh that
+    # captured the old token before this connect must not clobber the credential
+    # this callback stores. Taken AFTER the exchange network call, never around it.
+    async with connection_lock.connection_lock(owner_id, prov):
+        # Retain the credential in Secrets Manager only when the backend is the
+        # custodian. Actor-refresh providers (e.g. gog) self-refresh inside the
+        # container, so the backend stores nothing and the EFS keyring written by
+        # apply_connection is the sole durable copy. Mark connected only after
+        # wiring succeeds.
         if _retains_secret(p):
-            await integration_secret_store.delete(owner_id, prov)
-        return RedirectResponse(f"{settings.FRONTEND_URL}/settings/connections?error=apply_failed")
-    await integrations_repo.put_status(owner_id, prov, "connected")
+            await integration_secret_store.put(owner_id, prov, credential)
+        try:
+            connection_identity = await apply_connection.apply_connection(owner_id, prov, credential)
+        except Exception:
+            await _remove_materialized_artifacts(owner_id, p, credential)
+            if _retains_secret(p):
+                await integration_secret_store.delete(owner_id, prov)
+            return RedirectResponse(f"{settings.FRONTEND_URL}/settings/connections?error=apply_failed")
+        await integrations_repo.put_status(owner_id, prov, "connected")
     # Google supports multiple accounts under one provider-level "connected"
     # status: each connect adds a distinct account to the owner's inventory so an
     # agent can later be bound to a specific one. The account identity is the

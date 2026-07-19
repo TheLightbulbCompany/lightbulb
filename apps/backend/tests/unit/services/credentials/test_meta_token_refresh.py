@@ -66,7 +66,13 @@ async def test_stale_token_refreshes_and_rematerializes(mock_get, mock_put, mock
     calls = []
     mock_apply.side_effect = lambda *a, **k: calls.append("apply")
     mock_put.side_effect = lambda *a, **k: calls.append("put")
-    mock_get.return_value = {"access_token": "OLD", "token_expiry": _iso(5)}
+    # Two DISTINCT reads with the same token (the initial read, then the recheck
+    # under the lock) — mirrors Secrets Manager returning a fresh dict per call,
+    # so the CAS sees the still-current token rather than the in-place-mutated one.
+    mock_get.side_effect = [
+        {"access_token": "OLD", "token_expiry": _iso(5)},
+        {"access_token": "OLD", "token_expiry": _iso(5)},
+    ]
     assert await meta_token_refresh.refresh_instagram_if_stale("org_1") is True
     stored = mock_put.await_args.args[2]
     assert stored["access_token"] == "REFRESHED"
@@ -112,12 +118,34 @@ async def test_disconnect_mid_refresh_aborts_without_writing(mock_get, mock_put,
 @patch("core.services.credentials.meta_token_refresh.apply_connection.apply_connection", new_callable=AsyncMock)
 @patch("core.services.credentials.meta_token_refresh.integration_secret_store.put", new_callable=AsyncMock)
 @patch("core.services.credentials.meta_token_refresh.integration_secret_store.get", new_callable=AsyncMock)
+async def test_reconnect_mid_refresh_does_not_clobber(mock_get, mock_put, mock_apply):
+    # First get returns the token we refresh; the recheck returns a DIFFERENT
+    # token, as if the owner disconnected and reconnected (possibly a new account)
+    # while we awaited Meta. The refreshed-but-now-stale token must NOT overwrite
+    # the newer connection.
+    mock_get.side_effect = [
+        {"access_token": "OLD", "token_expiry": _iso(5)},
+        {"access_token": "NEW_FROM_RECONNECT", "token_expiry": _iso(60)},
+    ]
+    assert await meta_token_refresh.refresh_instagram_if_stale("org_1") is False
+    mock_apply.assert_not_awaited()
+    mock_put.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("core.services.credentials.meta_token_refresh.httpx.AsyncClient", _FakeAsyncClient)
+@patch("core.services.credentials.meta_token_refresh.apply_connection.apply_connection", new_callable=AsyncMock)
+@patch("core.services.credentials.meta_token_refresh.integration_secret_store.put", new_callable=AsyncMock)
+@patch("core.services.credentials.meta_token_refresh.integration_secret_store.get", new_callable=AsyncMock)
 async def test_refresh_blocks_on_held_connection_lock(mock_get, mock_put, mock_apply):
     # While the per-owner connection lock is held (as an in-flight disconnect
     # would), refresh must NOT reach its write section — the recheck→apply→put
     # is inside the same lock. The slow Meta call runs first (outside the lock),
     # so the task parks at lock acquisition with apply/put untouched.
-    mock_get.return_value = {"access_token": "OLD", "token_expiry": _iso(5)}
+    mock_get.side_effect = [
+        {"access_token": "OLD", "token_expiry": _iso(5)},
+        {"access_token": "OLD", "token_expiry": _iso(5)},
+    ]
     lock = connection_lock.connection_lock("org_lock", "instagram")
     async with lock:
         task = asyncio.create_task(meta_token_refresh.refresh_instagram_if_stale("org_lock"))

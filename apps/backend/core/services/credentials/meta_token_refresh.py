@@ -54,6 +54,11 @@ async def refresh_instagram_if_stale(owner_id: str) -> bool:
         return False
     if not _is_stale(credential.get("token_expiry", "")):
         return False
+    # The exact token we're about to refresh. Under the lock below we confirm the
+    # stored credential is STILL this one before writing — so a disconnect+reconnect
+    # (even to a different IG account) that lands while we await Meta can't be
+    # clobbered by our now-stale refreshed token.
+    original_token = credential["access_token"]
     try:
         async with httpx.AsyncClient(timeout=15) as http:
             resp = await http.get(
@@ -69,17 +74,18 @@ async def refresh_instagram_if_stale(owner_id: str) -> bool:
             (datetime.now(timezone.utc) + timedelta(seconds=expires_in)).isoformat() if expires_in else ""
         )
         # This task started fire-and-forget from GET /connections and has been
-        # awaiting Meta for seconds. A concurrent DELETE /connections/instagram
-        # tears down the SM secret + EFS artifacts + status row; if it interleaves
-        # with the writes below, we'd resurrect a live token + re-enable the skill
-        # behind a UI that reads disconnected. Take the per-owner connection lock
-        # (disconnect takes the same one) so the recheck→write section is atomic
-        # w.r.t. disconnect, then re-read the secret under the lock: gone => the
-        # owner disconnected first, so abort without writing. The lock is taken
-        # AFTER the slow Meta call, never around it.
+        # awaiting Meta for seconds. Disconnect AND connect/callback both take this
+        # same per-owner lock around their writes, so acquiring it makes the
+        # recheck→write section atomic w.r.t. both. Under the lock, only write if
+        # the stored credential is STILL the exact one we refreshed: if it's gone
+        # (disconnected) or its token changed (reconnected — possibly a different
+        # account, or another refresh already ran), our refreshed token is stale
+        # and writing it would resurrect a dead grant or switch the agent to the
+        # wrong account. The lock is taken AFTER the slow Meta call, never around it.
         async with connection_lock.connection_lock(owner_id, "instagram"):
-            if await integration_secret_store.get(owner_id, "instagram") is None:
-                logger.info("instagram refresh aborted for %s: disconnected mid-refresh", owner_id)
+            current = await integration_secret_store.get(owner_id, "instagram")
+            if not current or current.get("access_token") != original_token:
+                logger.info("instagram refresh aborted for %s: connection changed mid-refresh", owner_id)
                 return False
             # Rematerialize EFS (the token the agent actually reads) BEFORE advancing
             # the retained credential's expiry. If apply fails here, the stored expiry

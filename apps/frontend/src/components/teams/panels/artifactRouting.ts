@@ -98,16 +98,54 @@ export function issueListPathForArtifact(a: CompanyArtifact): string | null {
   return null;
 }
 
+/**
+ * The BFF content route (relative to `/teams`) for an artifact's downloadable
+ * bytes, or null when it has none. Attachment-backed artifacts expose their
+ * bytes through upstream-relative `/api/attachments/{id}/content` URLs:
+ *   - a direct `attachment:` artifact carries the attachment id in its OWN typed
+ *     id, so the route is derived from that;
+ *   - a `work_product:` artifact whose output has an attachment carries the
+ *     attachment id only inside `openPath`/`downloadPath`, so the route is parsed
+ *     back out of those (stripping the `/api` prefix and any `?download=1` query).
+ * The bytes must be fetched through `useTeamsApi().download` (Clerk bearer) — a
+ * bare `<a href>` to the upstream path can't authenticate — so this returns our
+ * BFF-relative path, never the raw upstream one. Documents have no content route.
+ */
+export function artifactContentPath(a: CompanyArtifact): string | null {
+  if (artifactKind(a.id) === "attachment") {
+    return `/attachments/${artifactRawId(a.id)}/content`;
+  }
+  const src = a.downloadPath ?? a.openPath;
+  if (!src) return null;
+  const path = src.split("?")[0].replace(/^\/api/, "");
+  return path.startsWith("/attachments/") ? path : null;
+}
+
 export type ArtifactSort = "newest" | "oldest";
 
-/** Client-side sort of the grouped gallery by each group's `updatedAt`. Returns
- * a stable copy (never mutates the input). Default is newest-first. */
+/** Stable, non-mutating sort of anything carrying an `updatedAt` timestamp.
+ * Default (`newest`) is most-recent first. */
+function sortByUpdated<T extends { updatedAt: string }>(items: T[], dir: ArtifactSort): T[] {
+  return [...items].sort((a, b) => {
+    const diff = Date.parse(a.updatedAt) - Date.parse(b.updatedAt);
+    return dir === "newest" ? -diff : diff;
+  });
+}
+
+/** Client-side sort of the grouped gallery (stack list) by each group's
+ * `updatedAt`. Returns a stable copy (never mutates the input). */
 export function sortGroupsByUpdated(
   groups: CompanyArtifactGroup[],
   dir: ArtifactSort,
 ): CompanyArtifactGroup[] {
-  return [...groups].sort((a, b) => {
-    const diff = Date.parse(a.updatedAt) - Date.parse(b.updatedAt);
-    return dir === "newest" ? -diff : diff;
-  });
+  return sortByUpdated(groups, dir);
+}
+
+/** Client-side sort of an expanded stack's artifacts by each artifact's
+ * `updatedAt`. Returns a stable copy (never mutates the input). */
+export function sortArtifactsByUpdated(
+  artifacts: CompanyArtifact[],
+  dir: ArtifactSort,
+): CompanyArtifact[] {
+  return sortByUpdated(artifacts, dir);
 }

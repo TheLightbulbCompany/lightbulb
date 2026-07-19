@@ -5,7 +5,9 @@ import {
   documentKeyFromArtifact,
   deletePathForArtifact,
   issueListPathForArtifact,
+  artifactContentPath,
   sortGroupsByUpdated,
+  sortArtifactsByUpdated,
 } from "../artifactRouting";
 import type {
   CompanyArtifact,
@@ -85,6 +87,48 @@ describe("artifactRouting", () => {
       issueListPathForArtifact(artifact({ id: "work_product:wp1", issue: undefined })),
     ).toBeNull();
     expect(issueListPathForArtifact(artifact({ id: "bogus:x" }))).toBeNull();
+  });
+
+  it("resolves the BFF content route for downloadable, attachment-backed artifacts", () => {
+    // A direct attachment carries its id in its own typed id.
+    expect(artifactContentPath(artifact({ id: "attachment:att1" }))).toBe(
+      "/attachments/att1/content",
+    );
+    // A work-product's attachment id lives only in its upstream open/download
+    // path; strip the `/api` prefix and the `?download=1` query.
+    expect(
+      artifactContentPath(
+        artifact({
+          id: "work_product:wp1",
+          downloadPath: "/api/attachments/att9/content?download=1",
+        }),
+      ),
+    ).toBe("/attachments/att9/content");
+    expect(
+      artifactContentPath(
+        artifact({ id: "work_product:wp1", openPath: "/api/attachments/att9/content" }),
+      ),
+    ).toBe("/attachments/att9/content");
+    // Documents (and anything without an attachment path) have no content route.
+    expect(
+      artifactContentPath(artifact({ id: "document:d1", href: "/x#document-plan" })),
+    ).toBeNull();
+    expect(artifactContentPath(artifact({ id: "work_product:wp1" }))).toBeNull();
+  });
+
+  it("sorts artifacts newest/oldest by updatedAt without mutating the input", () => {
+    const a = artifact({ id: "attachment:a", updatedAt: "2026-01-01T00:00:00Z" });
+    const b = artifact({ id: "attachment:b", updatedAt: "2026-02-01T00:00:00Z" });
+    const list = [a, b];
+    expect(sortArtifactsByUpdated(list, "newest").map((x) => x.id)).toEqual([
+      "attachment:b",
+      "attachment:a",
+    ]);
+    expect(sortArtifactsByUpdated(list, "oldest").map((x) => x.id)).toEqual([
+      "attachment:a",
+      "attachment:b",
+    ]);
+    expect(list.map((x) => x.id)).toEqual(["attachment:a", "attachment:b"]);
   });
 
   it("sorts groups newest/oldest by updatedAt without mutating the input", () => {

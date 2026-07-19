@@ -1,8 +1,8 @@
 """Company deploy dispatch + job-status/rollback endpoints (admin-flagged, standard-only).
 
-Replaces the PR1 "Company deploys are coming soon." 400 stub in
-``deploy_listing`` with the real (platform-admin-gated) dispatch, plus the two
-owner-scoped job endpoints. Follows the PR1 client/auth idiom from
+Replaces the "Company deploys are coming soon." 400 stub in ``deploy_listing``
+with the real (platform-admin-gated) dispatch, plus the two owner-scoped job
+endpoints. Follows the company-listing client/auth idiom from
 ``test_marketplace_company_listings.py`` — the conftest ``client`` fixture is a
 personal (non-admin, email=None) caller; ``admin_client`` below is an
 ``@isol8.co`` platform admin.
@@ -42,6 +42,7 @@ def _company_listing(
     agent_count: int = 5,
     min_plan: str = "standard",
     agent_slugs: list[str] | None = None,
+    price_cents: int = 0,
 ) -> dict:
     return {
         "listing_id": listing_id,
@@ -50,7 +51,7 @@ def _company_listing(
         "name": "GStack",
         "format": "company",
         "status": "published",
-        "price_cents": 0,
+        "price_cents": price_cents,
         "tags": [],
         "seller_id": "__isol8__",
         "s3_prefix": f"listings/{listing_id}/v1/",
@@ -108,6 +109,40 @@ def test_admin_deploy_standard_company_202(
     mock_run.assert_called_once_with(
         job_id="cdpl_abc123", owner_id="user_admin", listing=listing, tar_bytes=b"COMPANYTAR"
     )
+    mock_create_task.assert_called_once_with(mock_run.return_value)
+
+
+@patch("core.repositories.marketplace_repo._purchases_table")
+@patch("routers.marketplace_listings.asyncio.create_task")
+@patch("routers.marketplace_listings.company_deploy_service.run_company_deploy", new_callable=MagicMock)
+@patch("routers.marketplace_listings.company_deploy_repo.create_job", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_admin_deploy_priced_company_short_circuits_entitlement(
+    mock_get_published, mock_boto, mock_create_job, mock_run, mock_create_task, mock_purchases, admin_client
+):
+    """The company branch returns BEFORE the agent-path paid-entitlement check.
+
+    A priced (price_cents=2000) company listing with NO purchase row still
+    deploys 202 for an admin — proving the company branch short-circuits ahead
+    of the entitlement gate (which would otherwise 403). The purchases table is
+    never queried.
+    """
+    mock_get_published.return_value = _company_listing(price_cents=2000)
+    mock_boto.return_value.get_object.return_value = _tar_body(b"COMPANYTAR")
+    mock_create_job.return_value = "cdpl_paid"
+    # Real dict (not a bare MagicMock): has_unrevoked_purchase pages on
+    # resp.get("LastEvaluatedKey"), and a MagicMock's truthy return there
+    # spins the pagination loop forever.
+    mock_purchases.return_value.query.return_value = {"Items": []}
+
+    resp = admin_client.post("/api/v1/marketplace/listings/gstack/deploy")
+
+    assert resp.status_code == 202, resp.text
+    assert resp.json() == {"job_id": "cdpl_paid"}
+    # Entitlement path never touched — company branch returned first.
+    mock_purchases.return_value.query.assert_not_called()
+    mock_create_job.assert_awaited_once()
     mock_create_task.assert_called_once_with(mock_run.return_value)
 
 

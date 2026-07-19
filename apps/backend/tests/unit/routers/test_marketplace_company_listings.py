@@ -56,6 +56,6 @@ def test_search_accepts_company_format(mock_search, unauth_client):
     assert mock_search.call_args.kwargs["format"] == "company"
 
 
-# The PR1 "Company deploys are coming soon." 400-stub test was removed when the
-# stub was replaced by the real admin-gated dispatch — that behavior now lives
-# in test_company_deploy_endpoints.py.
+# The "Company deploys are coming soon." 400-stub test was removed when the stub
+# was replaced by the real admin-gated dispatch — that behavior is superseded by
+# the company-deploy endpoint tests in test_company_deploy_endpoints.py.

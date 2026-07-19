@@ -417,6 +417,35 @@ class EcsManager:
             return ULTRA_CPU, ULTRA_MEMORY_MIB
         return PER_USER_CPU, PER_USER_MEMORY_MIB
 
+    async def current_container_size(self, owner_id: str) -> tuple[str, str] | None:
+        """The (cpu, memory) of the owner's CURRENTLY REGISTERED task definition.
+
+        Reads the live task-def off the containers row (``task_definition_arn``)
+        and returns its ``(cpu, memory)`` strings — the actual size of the box
+        that will run right now — or ``None`` if the owner has no provisioned
+        container / no task-def ARN on the row (or the describe yields no size).
+
+        Read-only: it describes the task def, registers nothing, mutates
+        nothing — the mirror of the size the resize path WOULD change. The
+        company-deploy gate uses it to refuse seeding a >10-agent Ultra company
+        onto a box the upgrade-webhook resize never actually enlarged (a
+        swallowed transient resize leaves ``plan=ultra_pro`` on the standard
+        0.5 vCPU / 2 GB box, which would OOM under a big roster).
+        """
+        container = await container_repo.get_by_owner_id(owner_id)
+        if not container or not container.get("task_definition_arn"):
+            return None
+        resp = await asyncio.to_thread(
+            self._ecs.describe_task_definition,
+            taskDefinition=container["task_definition_arn"],
+        )
+        td = resp.get("taskDefinition") or {}
+        cpu = td.get("cpu")
+        memory = td.get("memory")
+        if cpu is None or memory is None:
+            return None
+        return str(cpu), str(memory)
+
     def _build_register_kwargs_from_base(
         self,
         access_point_id: str,

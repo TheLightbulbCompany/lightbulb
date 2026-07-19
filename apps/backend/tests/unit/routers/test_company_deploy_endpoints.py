@@ -102,6 +102,35 @@ def test_admin_deploy_standard_company_202(mock_get_published, mock_boto, mock_r
     mock_create_task.assert_called_once_with(mock_run.return_value)
 
 
+@patch("routers.marketplace_listings.get_ecs_manager")
+@patch("routers.marketplace_listings.asyncio.create_task")
+@patch("routers.marketplace_listings.company_deploy_service.run_company_deploy", new_callable=MagicMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_admin_deploy_standard_company_skips_size_reconcile(
+    mock_get_published, mock_boto, mock_run, mock_create_task, mock_get_ecs, admin_client
+):
+    """A standard (<=10-agent) company is NOT size-gated: the ecs manager is
+    never consulted (no current-size read, no resize) and the deploy dispatches
+    202 exactly as before. A standard box is always adequate."""
+    ecs = MagicMock()
+    ecs.current_container_size = AsyncMock(return_value=("512", "2048"))
+    ecs.resize_user_container = AsyncMock()
+    mock_get_ecs.return_value = ecs
+    mock_get_published.return_value = _company_listing(agent_count=5, min_plan="standard")
+    mock_boto.return_value.get_object.return_value = _tar_body(b"COMPANYTAR")
+
+    resp = admin_client.post("/api/v1/marketplace/listings/gstack/deploy")
+
+    assert resp.status_code == 202, resp.text
+    assert resp.json() == {"started": True, "agent_count": 5}
+    mock_create_task.assert_called_once_with(mock_run.return_value)
+    # Standard company: the size-reconcile path is never entered.
+    mock_get_ecs.assert_not_called()
+    ecs.current_container_size.assert_not_called()
+    ecs.resize_user_container.assert_not_called()
+
+
 @patch("core.repositories.marketplace_repo._purchases_table")
 @patch("routers.marketplace_listings.asyncio.create_task")
 @patch("routers.marketplace_listings.company_deploy_service.run_company_deploy", new_callable=MagicMock)

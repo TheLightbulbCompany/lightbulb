@@ -402,6 +402,27 @@ async def deploy_listing(
             if (account or {}).get("plan") != "ultra_pro":
                 raise HTTPException(status_code=409, detail="Requires Ultra Pro")
 
+            # Size reconcile BEFORE dispatch. The Ultra upgrade webhook's
+            # up-resize (standard -> 2 vCPU / 8 GB) is best-effort/swallowed;
+            # if it failed transiently the owner is plan=ultra_pro but their
+            # container is still the standard 0.5 vCPU / 2 GB box. Seeding a
+            # >10-agent company onto that box OOMs. A resize restarts the
+            # container, so we CANNOT resize mid-deploy — instead we compare
+            # the running box's size against the plan-desired size and, on a
+            # mismatch, KICK the resize and refuse this deploy. Durable sizing
+            # (_size_for_owner) makes the box converge to Ultra; the owner
+            # retries once it is up. Only runs when needs_ultra — a standard
+            # box is always adequate for a standard company.
+            ecs = get_ecs_manager()
+            desired_size = await ecs._size_for_owner(owner_id)
+            if await ecs.current_container_size(owner_id) != desired_size:
+                desired_cpu, desired_memory = desired_size
+                await ecs.resize_user_container(owner_id, new_cpu=desired_cpu, new_memory=desired_memory)
+                raise HTTPException(
+                    status_code=409,
+                    detail=("Your container is resizing to Ultra Pro — please retry the deploy in about a minute."),
+                )
+
         s3_prefix = listing.get("s3_prefix")
         if not s3_prefix:
             raise HTTPException(status_code=500, detail="listing has no artifact prefix")

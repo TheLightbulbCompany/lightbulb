@@ -1,54 +1,152 @@
+var __create = Object.create;
 var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __getProtoOf = Object.getPrototypeOf;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __commonJS = (cb, mod) => function __require() {
+  try {
+    return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+  } catch (e) {
+    throw mod = 0, e;
+  }
+};
 var __export = (target, all) => {
   for (var name in all)
     __defProp(target, name, { get: all[name], enumerable: true });
 };
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
+  // If the importer is in node compatibility mode or this is not an ESM
+  // file that has been converted to a CommonJS file using a Babel-
+  // compatible transform (i.e. "__esModule" has not been set), then set
+  // "default" to the CommonJS "module.exports" for node compatibility.
+  isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
+  mod
+));
 
-// packages/net-policy/src/url-protocol.ts
-function parseUrl(value) {
-  if (value instanceof URL) {
-    return value;
+// node_modules/ms/index.js
+var require_ms = __commonJS({
+  "node_modules/ms/index.js"(exports, module) {
+    var s = 1e3;
+    var m = s * 60;
+    var h = m * 60;
+    var d = h * 24;
+    var w = d * 7;
+    var y = d * 365.25;
+    module.exports = function(val, options) {
+      options = options || {};
+      var type = typeof val;
+      if (type === "string" && val.length > 0) {
+        return parse3(val);
+      } else if (type === "number" && isFinite(val)) {
+        return options.long ? fmtLong(val) : fmtShort(val);
+      }
+      throw new Error(
+        "val is not a non-empty string or a valid number. val=" + JSON.stringify(val)
+      );
+    };
+    function parse3(str) {
+      str = String(str);
+      if (str.length > 100) {
+        return;
+      }
+      var match = /^(-?(?:\d+)?\.?\d+) *(milliseconds?|msecs?|ms|seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|w|years?|yrs?|y)?$/i.exec(
+        str
+      );
+      if (!match) {
+        return;
+      }
+      var n = parseFloat(match[1]);
+      var type = (match[2] || "ms").toLowerCase();
+      switch (type) {
+        case "years":
+        case "year":
+        case "yrs":
+        case "yr":
+        case "y":
+          return n * y;
+        case "weeks":
+        case "week":
+        case "w":
+          return n * w;
+        case "days":
+        case "day":
+        case "d":
+          return n * d;
+        case "hours":
+        case "hour":
+        case "hrs":
+        case "hr":
+        case "h":
+          return n * h;
+        case "minutes":
+        case "minute":
+        case "mins":
+        case "min":
+        case "m":
+          return n * m;
+        case "seconds":
+        case "second":
+        case "secs":
+        case "sec":
+        case "s":
+          return n * s;
+        case "milliseconds":
+        case "millisecond":
+        case "msecs":
+        case "msec":
+        case "ms":
+          return n;
+        default:
+          return void 0;
+      }
+    }
+    function fmtShort(ms) {
+      var msAbs = Math.abs(ms);
+      if (msAbs >= d) {
+        return Math.round(ms / d) + "d";
+      }
+      if (msAbs >= h) {
+        return Math.round(ms / h) + "h";
+      }
+      if (msAbs >= m) {
+        return Math.round(ms / m) + "m";
+      }
+      if (msAbs >= s) {
+        return Math.round(ms / s) + "s";
+      }
+      return ms + "ms";
+    }
+    function fmtLong(ms) {
+      var msAbs = Math.abs(ms);
+      if (msAbs >= d) {
+        return plural(ms, msAbs, d, "day");
+      }
+      if (msAbs >= h) {
+        return plural(ms, msAbs, h, "hour");
+      }
+      if (msAbs >= m) {
+        return plural(ms, msAbs, m, "minute");
+      }
+      if (msAbs >= s) {
+        return plural(ms, msAbs, s, "second");
+      }
+      return ms + " ms";
+    }
+    function plural(ms, msAbs, n, name) {
+      var isPlural = msAbs >= n * 1.5;
+      return Math.round(ms / n) + " " + name + (isPlural ? "s" : "");
+    }
   }
-  try {
-    return new URL(value);
-  } catch {
-    return null;
-  }
-}
-function isHttpUrl(value) {
-  const url2 = parseUrl(value);
-  return url2?.protocol === "http:" || url2?.protocol === "https:";
-}
-function isHttpsUrl(value) {
-  return parseUrl(value)?.protocol === "https:";
-}
-
-// packages/normalization-core/src/string-coerce.ts
-function normalizeNullableString(value) {
-  if (typeof value !== "string") {
-    return null;
-  }
-  const trimmed = value.trim();
-  return trimmed ? trimmed : null;
-}
-function normalizeOptionalString(value) {
-  return normalizeNullableString(value) ?? void 0;
-}
-function normalizeStringifiedOptionalString(value) {
-  if (typeof value === "string") {
-    return normalizeOptionalString(value);
-  }
-  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
-    return normalizeOptionalString(String(value));
-  }
-  return void 0;
-}
-function normalizeOptionalLowercaseString(value) {
-  return normalizeOptionalString(value)?.toLowerCase();
-}
-function normalizeLowercaseStringOrEmpty(value) {
-  return normalizeOptionalLowercaseString(value) ?? "";
-}
+});
 
 // node_modules/zod/v4/classic/external.js
 var external_exports = {};
@@ -14564,6 +14662,110 @@ function date4(params) {
 // node_modules/zod/v4/classic/external.js
 config(en_default());
 
+// packages/normalization-core/src/string-coerce.ts
+function normalizeNullableString(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+function normalizeOptionalString(value) {
+  return normalizeNullableString(value) ?? void 0;
+}
+function normalizeStringifiedOptionalString(value) {
+  if (typeof value === "string") {
+    return normalizeOptionalString(value);
+  }
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return normalizeOptionalString(String(value));
+  }
+  return void 0;
+}
+function normalizeOptionalLowercaseString(value) {
+  return normalizeOptionalString(value)?.toLowerCase();
+}
+function normalizeLowercaseStringOrEmpty(value) {
+  return normalizeOptionalLowercaseString(value) ?? "";
+}
+
+// packages/normalization-core/src/agent-id.ts
+var DEFAULT_AGENT_ID = "main";
+var VALID_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
+var INVALID_CHARS_RE = /[^a-z0-9_-]+/g;
+var LEADING_DASH_RE = /^-+/;
+var TRAILING_DASH_RE = /-+$/;
+function normalizeAgentId(value) {
+  const trimmed = (value ?? "").trim();
+  if (!trimmed) {
+    return DEFAULT_AGENT_ID;
+  }
+  const normalized = normalizeLowercaseStringOrEmpty(trimmed);
+  if (VALID_ID_RE.test(trimmed)) {
+    return normalized;
+  }
+  return normalized.replace(INVALID_CHARS_RE, "-").replace(LEADING_DASH_RE, "").replace(TRAILING_DASH_RE, "").slice(0, 64) || DEFAULT_AGENT_ID;
+}
+
+// src/infra/prototype-keys.ts
+var BLOCKED_OBJECT_KEYS = /* @__PURE__ */ new Set(["__proto__", "prototype", "constructor"]);
+function isBlockedObjectKey(key) {
+  return BLOCKED_OBJECT_KEYS.has(key);
+}
+
+// src/cli/parse-duration.ts
+var import_ms2 = __toESM(require_ms(), 1);
+function invalidDuration(raw, reason) {
+  const value = raw.trim() ? `"${raw}"` : "empty value";
+  const prefix = reason ? `Invalid duration (${reason}): ${value}.` : `Invalid duration: ${value}.`;
+  return new Error(`${prefix} Use values like 500ms, 30s, 5m, 2h, or 1h30m.`);
+}
+function parseDurationToken(raw, value, unit) {
+  const parsed = (0, import_ms2.default)(`${value}${unit}`);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw invalidDuration(raw);
+  }
+  return parsed;
+}
+function roundSafeDurationMs(raw, value) {
+  const ms = Math.round(value);
+  if (!Number.isSafeInteger(ms)) {
+    throw invalidDuration(raw);
+  }
+  return ms;
+}
+function parseDurationMs(raw, opts) {
+  const trimmed = normalizeLowercaseStringOrEmpty(normalizeOptionalString(raw) ?? "");
+  if (!trimmed) {
+    throw invalidDuration(raw, "empty");
+  }
+  const single = /^(\d+(?:\.\d+)?)(ms|s|m|h|d)?$/.exec(trimmed);
+  if (single) {
+    const value = single[1] ?? "";
+    const unit = single[2] ?? opts?.defaultUnit ?? "ms";
+    return roundSafeDurationMs(raw, parseDurationToken(raw, value, unit));
+  }
+  let totalMs = 0;
+  let consumed = 0;
+  const tokenRe = /(\d+(?:\.\d+)?)(ms|s|m|h|d)/g;
+  for (const match of trimmed.matchAll(tokenRe)) {
+    const [full, valueRaw, unitRaw] = match;
+    const index = match.index ?? -1;
+    if (!full || !valueRaw || !unitRaw || index < 0) {
+      throw invalidDuration(raw);
+    }
+    if (index !== consumed) {
+      throw invalidDuration(raw, "each composite segment needs a unit");
+    }
+    totalMs += parseDurationToken(raw, valueRaw, unitRaw);
+    consumed += full.length;
+  }
+  if (consumed !== trimmed.length || consumed === 0) {
+    throw invalidDuration(raw);
+  }
+  return roundSafeDurationMs(raw, totalMs);
+}
+
 // src/cli/parse-bytes.ts
 var UNIT_MULTIPLIERS = {
   b: 1,
@@ -14600,158 +14802,17 @@ function parseByteSize(raw, opts) {
     throw invalidByteSize(raw, `unknown unit "${unit}"`);
   }
   const bytes = Math.round(value * multiplier);
-  if (!Number.isFinite(bytes)) {
+  if (!Number.isSafeInteger(bytes)) {
     throw invalidByteSize(raw);
   }
   return bytes;
 }
 
-// src/cli/parse-duration.ts
-var DURATION_MULTIPLIERS = {
-  ms: 1,
-  s: 1e3,
-  m: 6e4,
-  h: 36e5,
-  d: 864e5
-};
-function invalidDuration(raw, reason) {
-  const value = raw.trim() ? `"${raw}"` : "empty value";
-  const prefix = reason ? `Invalid duration (${reason}): ${value}.` : `Invalid duration: ${value}.`;
-  return new Error(`${prefix} Use values like 500ms, 30s, 5m, 2h, or 1h30m.`);
-}
-function roundSafeDurationMs(raw, value) {
-  const ms = Math.round(value);
-  if (!Number.isSafeInteger(ms)) {
-    throw invalidDuration(raw);
-  }
-  return ms;
-}
-function parseDurationMs(raw, opts) {
-  const trimmed = normalizeLowercaseStringOrEmpty(normalizeOptionalString(raw) ?? "");
-  if (!trimmed) {
-    throw invalidDuration(raw, "empty");
-  }
-  const single = /^(\d+(?:\.\d+)?)(ms|s|m|h|d)?$/.exec(trimmed);
-  if (single) {
-    const value = Number(single[1]);
-    if (!Number.isFinite(value) || value < 0) {
-      throw invalidDuration(raw);
-    }
-    const unit = single[2] ?? opts?.defaultUnit ?? "ms";
-    return roundSafeDurationMs(raw, value * DURATION_MULTIPLIERS[unit]);
-  }
-  let totalMs = 0;
-  let consumed = 0;
-  const tokenRe = /(\d+(?:\.\d+)?)(ms|s|m|h|d)/g;
-  for (const match of trimmed.matchAll(tokenRe)) {
-    const [full, valueRaw, unitRaw] = match;
-    const index = match.index ?? -1;
-    if (!full || !valueRaw || !unitRaw || index < 0) {
-      throw invalidDuration(raw);
-    }
-    if (index !== consumed) {
-      throw invalidDuration(raw, "each composite segment needs a unit");
-    }
-    const value = Number(valueRaw);
-    if (!Number.isFinite(value) || value < 0) {
-      throw invalidDuration(raw);
-    }
-    const multiplier = DURATION_MULTIPLIERS[unitRaw];
-    if (!multiplier) {
-      throw invalidDuration(raw);
-    }
-    totalMs += value * multiplier;
-    consumed += full.length;
-  }
-  if (consumed !== trimmed.length || consumed === 0) {
-    throw invalidDuration(raw);
-  }
-  return roundSafeDurationMs(raw, totalMs);
-}
-
-// src/infra/prototype-keys.ts
-var BLOCKED_OBJECT_KEYS = /* @__PURE__ */ new Set(["__proto__", "prototype", "constructor"]);
-function isBlockedObjectKey(key) {
-  return BLOCKED_OBJECT_KEYS.has(key);
-}
-
-// src/routing/session-key.ts
-var DEFAULT_AGENT_ID = "main";
-var VALID_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
-var INVALID_CHARS_RE = /[^a-z0-9_-]+/g;
-var LEADING_DASH_RE = /^-+/;
-var TRAILING_DASH_RE = /-+$/;
-function normalizeAgentId(value) {
-  const trimmed = (value ?? "").trim();
-  if (!trimmed) {
-    return DEFAULT_AGENT_ID;
-  }
-  const normalized = normalizeLowercaseStringOrEmpty(trimmed);
-  if (VALID_ID_RE.test(trimmed)) {
-    return normalized;
-  }
-  return normalized.replace(INVALID_CHARS_RE, "-").replace(LEADING_DASH_RE, "").replace(TRAILING_DASH_RE, "").slice(0, 64) || DEFAULT_AGENT_ID;
-}
-
-// src/config/control-ui-css.ts
-var CSS_WIDTH_KEYWORDS = /* @__PURE__ */ new Set(["none", "min-content", "max-content"]);
-var CSS_WIDTH_FUNCTIONS = /* @__PURE__ */ new Set(["calc", "clamp", "fit-content", "max", "min"]);
-var CSS_WIDTH_UNITS = /* @__PURE__ */ new Set(["ch", "em", "rem", "vh", "vmax", "vmin", "vw", "px"]);
-var CSS_WIDTH_ALLOWED_CHARS = /^[0-9A-Za-z.%+\-*/(),\s]+$/;
-var CSS_WIDTH_IDENTIFIER_RE = /[A-Za-z][A-Za-z0-9-]*/g;
-var CSS_WIDTH_SIMPLE_RE = /^(?:\d+(?:\.\d+)?|\.\d+)(?:px|rem|em|ch|vw|vh|vmin|vmax|%)$/i;
-var CSS_WIDTH_MAX_LENGTH = 96;
-function hasBalancedParentheses(value) {
-  let depth = 0;
-  for (const char of value) {
-    if (char === "(") {
-      depth++;
-    } else if (char === ")") {
-      depth--;
-      if (depth < 0) {
-        return false;
-      }
-    }
-  }
-  return depth === 0;
-}
-function hasAllowedIdentifiers(value) {
-  for (const match of value.matchAll(CSS_WIDTH_IDENTIFIER_RE)) {
-    const identifier = match[0].toLowerCase();
-    if (!CSS_WIDTH_FUNCTIONS.has(identifier) && !CSS_WIDTH_KEYWORDS.has(identifier) && !CSS_WIDTH_UNITS.has(identifier)) {
-      return false;
-    }
-  }
-  return true;
-}
-function normalizeControlUiChatMessageMaxWidth(value) {
-  return value.trim().replace(/\s+/g, " ");
-}
-function isValidControlUiChatMessageMaxWidth(value) {
-  const normalized = normalizeControlUiChatMessageMaxWidth(value);
-  if (normalized.length === 0 || normalized.length > CSS_WIDTH_MAX_LENGTH) {
-    return false;
-  }
-  if (CSS_WIDTH_KEYWORDS.has(normalized.toLowerCase())) {
-    return true;
-  }
-  if (CSS_WIDTH_SIMPLE_RE.test(normalized)) {
-    return true;
-  }
-  if (!CSS_WIDTH_ALLOWED_CHARS.test(normalized)) {
-    return false;
-  }
-  if (!hasBalancedParentheses(normalized) || !hasAllowedIdentifiers(normalized)) {
-    return false;
-  }
-  return /^(?:calc|clamp|fit-content|max|min)\(.+\)$/i.test(normalized);
-}
-
 // src/config/byte-size.ts
 function parseNonNegativeByteSize(value) {
-  if (typeof value === "number" && Number.isFinite(value)) {
+  if (typeof value === "number") {
     const int2 = Math.floor(value);
-    return int2 >= 0 ? int2 : null;
+    return Number.isSafeInteger(int2) && int2 >= 0 ? int2 : null;
   }
   if (typeof value === "string") {
     const trimmed = value.trim();
@@ -14906,11 +14967,8 @@ var AgentToolModelSchema = external_exports.union([
 import path3 from "node:path";
 
 // packages/model-catalog-core/src/provider-id.ts
-function normalizeLowercaseStringOrEmpty2(value) {
-  return typeof value === "string" ? value.trim().toLowerCase() : "";
-}
 function normalizeProviderId(provider) {
-  return normalizeLowercaseStringOrEmpty2(provider);
+  return normalizeLowercaseStringOrEmpty(provider);
 }
 
 // src/infra/exec-safety.ts
@@ -14955,6 +15013,10 @@ function isSafeExecutableValue(value) {
   }
   return BARE_NAME_PATTERN.test(trimmed);
 }
+
+// packages/normalization-core/src/number-coercion.ts
+var MAX_TIMER_TIMEOUT_MS = 2147e6;
+var MAX_TIMER_TIMEOUT_SECONDS = Math.floor(MAX_TIMER_TIMEOUT_MS / 1e3);
 
 // src/utils.ts
 import fs from "node:fs";
@@ -15051,18 +15113,14 @@ function resolveHomeRelativePath(input, opts) {
   }
   return path.resolve(trimmed);
 }
-
-// packages/normalization-core/src/number-coercion.ts
-var MAX_TIMER_TIMEOUT_MS = 2147e6;
-var MAX_TIMER_TIMEOUT_SECONDS = Math.floor(MAX_TIMER_TIMEOUT_MS / 1e3);
-
-// src/utils.ts
-function resolveUserPath(input, env = process.env, homedir = os2.homedir) {
+function resolveUserPath(input, env = process.env, homedir = os.homedir) {
   if (!input) {
     return "";
   }
   return resolveHomeRelativePath(input, { env, homedir });
 }
+
+// src/utils.ts
 function resolveConfigDir(env = process.env, homedir = os2.homedir) {
   const override = env.OPENCLAW_STATE_DIR?.trim();
   if (override) {
@@ -15084,8 +15142,24 @@ function resolveConfigDir(env = process.env, homedir = os2.homedir) {
 }
 var CONFIG_DIR = resolveConfigDir();
 
+// src/config/types.secrets.ts
+var ENV_SECRET_REF_ID_RE = /^[A-Z][A-Z0-9_]{0,127}$/;
+function isValidEnvSecretRefId(value) {
+  return ENV_SECRET_REF_ID_RE.test(value);
+}
+function isSecretRef(value) {
+  if (!isRecord(value)) {
+    return false;
+  }
+  if (Object.keys(value).length !== 3) {
+    return false;
+  }
+  return (value.source === "env" || value.source === "file" || value.source === "exec") && typeof value.provider === "string" && value.provider.trim().length > 0 && typeof value.id === "string" && value.id.trim().length > 0;
+}
+
 // src/secrets/ref-contract.ts
 var FILE_SECRET_REF_SEGMENT_PATTERN = /^(?:[^~]|~0|~1)*$/;
+var SECRET_PROVIDER_ALIAS_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
 var EXEC_SECRET_REF_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/#-]{0,255}$/;
 var SINGLE_VALUE_FILE_REF_ID = "value";
 function isValidFileSecretRefId(value) {
@@ -15096,6 +15170,9 @@ function isValidFileSecretRefId(value) {
     return false;
   }
   return value.slice(1).split("/").every((segment) => FILE_SECRET_REF_SEGMENT_PATTERN.test(segment));
+}
+function isValidSecretProviderAlias(value) {
+  return SECRET_PROVIDER_ALIAS_PATTERN.test(value);
 }
 function validateExecSecretRefId(value) {
   if (!EXEC_SECRET_REF_ID_PATTERN.test(value)) {
@@ -15110,6 +15187,21 @@ function validateExecSecretRefId(value) {
 }
 function isValidExecSecretRefId(value) {
   return validateExecSecretRefId(value).ok;
+}
+function isValidSecretRef(ref) {
+  if (!isSecretRef(ref)) {
+    return false;
+  }
+  if (!isValidSecretProviderAlias(ref.provider)) {
+    return false;
+  }
+  if (ref.source === "env") {
+    return isValidEnvSecretRefId(ref.id);
+  }
+  if (ref.source === "file") {
+    return isValidFileSecretRefId(ref.id);
+  }
+  return isValidExecSecretRefId(ref.id);
 }
 function formatExecSecretRefIdValidationMessage() {
   return [
@@ -15173,7 +15265,7 @@ var sensitive = external_exports.registry();
 
 // src/config/zod-schema.core.ts
 var ENV_SECRET_REF_ID_PATTERN = /^[A-Z][A-Z0-9_]{0,127}$/;
-var SECRET_PROVIDER_ALIAS_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
+var SECRET_PROVIDER_ALIAS_PATTERN2 = /^[a-z][a-z0-9_-]{0,63}$/;
 var WINDOWS_ABS_PATH_PATTERN = /^[A-Za-z]:[\\/]/;
 var WINDOWS_UNC_PATH_PATTERN = /^\\\\[^\\]+\\[^\\]+/;
 function isAbsolutePath(value) {
@@ -15182,7 +15274,7 @@ function isAbsolutePath(value) {
 var EnvSecretRefSchema = external_exports.object({
   source: external_exports.literal("env"),
   provider: external_exports.string().regex(
-    SECRET_PROVIDER_ALIAS_PATTERN,
+    SECRET_PROVIDER_ALIAS_PATTERN2,
     'Secret reference provider must match /^[a-z][a-z0-9_-]{0,63}$/ (example: "default").'
   ),
   id: external_exports.string().regex(
@@ -15193,7 +15285,7 @@ var EnvSecretRefSchema = external_exports.object({
 var FileSecretRefSchema = external_exports.object({
   source: external_exports.literal("file"),
   provider: external_exports.string().regex(
-    SECRET_PROVIDER_ALIAS_PATTERN,
+    SECRET_PROVIDER_ALIAS_PATTERN2,
     'Secret reference provider must match /^[a-z][a-z0-9_-]{0,63}$/ (example: "default").'
   ),
   id: external_exports.string().refine(
@@ -15204,7 +15296,7 @@ var FileSecretRefSchema = external_exports.object({
 var ExecSecretRefSchema = external_exports.object({
   source: external_exports.literal("exec"),
   provider: external_exports.string().regex(
-    SECRET_PROVIDER_ALIAS_PATTERN,
+    SECRET_PROVIDER_ALIAS_PATTERN2,
     'Secret reference provider must match /^[a-z][a-z0-9_-]{0,63}$/ (example: "default").'
   ),
   id: external_exports.string().refine(isValidExecSecretRefId, formatExecSecretRefIdValidationMessage())
@@ -15267,9 +15359,9 @@ var SecretsConfigSchema = external_exports.object({
     // Keep this as a record so users can define multiple named providers per source.
   }).catchall(SecretProviderSchema).optional(),
   defaults: external_exports.object({
-    env: external_exports.string().regex(SECRET_PROVIDER_ALIAS_PATTERN).optional(),
-    file: external_exports.string().regex(SECRET_PROVIDER_ALIAS_PATTERN).optional(),
-    exec: external_exports.string().regex(SECRET_PROVIDER_ALIAS_PATTERN).optional()
+    env: external_exports.string().regex(SECRET_PROVIDER_ALIAS_PATTERN2).optional(),
+    file: external_exports.string().regex(SECRET_PROVIDER_ALIAS_PATTERN2).optional(),
+    exec: external_exports.string().regex(SECRET_PROVIDER_ALIAS_PATTERN2).optional()
   }).strict().optional(),
   resolution: external_exports.object({
     maxProviderConcurrency: external_exports.number().int().positive().max(16).optional(),
@@ -15433,6 +15525,7 @@ var BUILT_IN_MODEL_PROVIDER_OVERLAY_IDS = /* @__PURE__ */ new Set([
   "cerebras",
   "chutes",
   "claude-cli",
+  "clawrouter",
   "cloudflare-ai-gateway",
   "codex",
   "comfy",
@@ -15478,9 +15571,7 @@ var BUILT_IN_MODEL_PROVIDER_OVERLAY_IDS = /* @__PURE__ */ new Set([
   "openrouter",
   "qianfan",
   "qwen",
-  "qwen-cli",
-  "qwen-oauth",
-  "qwen-portal",
+  "qwen-token-plan",
   "qwencloud",
   "sglang",
   "stepfun",
@@ -15495,6 +15586,7 @@ var BUILT_IN_MODEL_PROVIDER_OVERLAY_IDS = /* @__PURE__ */ new Set([
   "volcengine",
   "volcengine-plan",
   "vydra",
+  "x-ai",
   "xai",
   "xiaomi",
   "xiaomi-token-plan",
@@ -15612,15 +15704,22 @@ var BlockStreamingCoalesceSchema = external_exports.object({
   maxChars: external_exports.number().int().positive().optional(),
   idleMs: external_exports.number().int().nonnegative().optional()
 }).strict();
+var TextChunkModeSchema = external_exports.enum(["length", "newline"]);
+var ChannelStreamingBlockSchema = external_exports.object({
+  enabled: external_exports.boolean().optional(),
+  coalesce: BlockStreamingCoalesceSchema.optional()
+}).strict();
+var ChannelDeliveryStreamingConfigSchema = external_exports.object({
+  chunkMode: TextChunkModeSchema.optional(),
+  block: ChannelStreamingBlockSchema.optional()
+}).strict();
 var ReplyRuntimeConfigSchemaShape = {
   historyLimit: external_exports.number().int().min(0).optional(),
   dmHistoryLimit: external_exports.number().int().min(0).optional(),
   contextVisibility: ContextVisibilityModeSchema.optional(),
   dms: external_exports.record(external_exports.string(), DmConfigSchema.optional()).optional(),
   textChunkLimit: external_exports.number().int().positive().optional(),
-  chunkMode: external_exports.enum(["length", "newline"]).optional(),
-  blockStreaming: external_exports.boolean().optional(),
-  blockStreamingCoalesce: BlockStreamingCoalesceSchema.optional(),
+  streaming: ChannelDeliveryStreamingConfigSchema.optional(),
   responsePrefix: external_exports.string().optional(),
   mediaMaxMb: external_exports.number().positive().optional()
 };
@@ -15719,6 +15818,7 @@ var CliBackendSchema = external_exports.object({
   sessionArg: external_exports.string().optional(),
   sessionArgs: external_exports.array(external_exports.string()).optional(),
   resumeArgs: external_exports.array(external_exports.string()).optional(),
+  forkArg: external_exports.string().optional(),
   sessionMode: external_exports.union([external_exports.literal("always"), external_exports.literal("existing"), external_exports.literal("none")]).optional(),
   sessionIdFields: external_exports.array(external_exports.string()).optional(),
   systemPromptArg: external_exports.string().optional(),
@@ -15773,19 +15873,6 @@ var QueueSchema = external_exports.object({
 var InboundDebounceSchema = external_exports.object({
   debounceMs: external_exports.number().int().nonnegative().optional(),
   byChannel: DebounceMsBySurfaceSchema
-}).strict().optional();
-var TranscribeAudioSchema = external_exports.object({
-  command: external_exports.array(external_exports.string()).superRefine((value, ctx) => {
-    const executable = value[0];
-    if (!isSafeExecutableValue(executable)) {
-      ctx.addIssue({
-        code: external_exports.ZodIssueCode.custom,
-        path: [0],
-        message: "expected safe executable name or path"
-      });
-    }
-  }),
-  timeoutSeconds: external_exports.number().int().positive().optional()
 }).strict().optional();
 var HexColorSchema = external_exports.string().regex(/^#?[0-9a-fA-F]{6}$/, "expected hex color (RRGGBB)");
 var ExecutableTokenSchema = external_exports.string().refine(isSafeExecutableValue, "expected safe executable name or path");
@@ -16442,6 +16529,7 @@ var AgentToolsSchema = external_exports.object({
 }).optional();
 var MemorySearchSchema = external_exports.object({
   enabled: external_exports.boolean().optional(),
+  rememberAcrossConversations: external_exports.boolean().optional(),
   sources: external_exports.array(external_exports.union([external_exports.literal("memory"), external_exports.literal("sessions")])).optional(),
   extraPaths: external_exports.array(external_exports.string()).optional(),
   qmd: external_exports.object({
@@ -16800,7 +16888,8 @@ var AgentDefaultsSchema = external_exports.object({
   blockStreamingChunk: BlockStreamingChunkSchema.optional(),
   blockStreamingCoalesce: BlockStreamingCoalesceSchema.optional(),
   humanDelay: HumanDelaySchema.optional(),
-  timeoutSeconds: external_exports.number().int().positive().optional(),
+  // 0 = unlimited run budget; stream liveness watchdogs still apply.
+  timeoutSeconds: external_exports.number().int().nonnegative().optional(),
   mediaMaxMb: external_exports.number().positive().optional(),
   imageMaxDimensionPx: external_exports.number().int().positive().optional(),
   imageQuality: external_exports.enum(["auto", "efficient", "balanced", "high"]).optional(),
@@ -16891,9 +16980,6 @@ var BroadcastStrategySchema = external_exports.enum(["parallel", "sequential"]);
 var BroadcastSchema = external_exports.object({
   strategy: BroadcastStrategySchema.optional()
 }).catchall(external_exports.array(external_exports.string())).optional();
-var AudioSchema = external_exports.object({
-  transcription: TranscribeAudioSchema
-}).strict().optional();
 
 // src/config/zod-schema.approvals.ts
 var NativeExecApprovalEnableModeSchema = external_exports.union([external_exports.boolean(), external_exports.literal("auto")]);
@@ -16924,6 +17010,13 @@ var ChannelHeartbeatVisibilitySchema = external_exports.object({
 var ChannelHealthMonitorSchema = external_exports.object({
   enabled: external_exports.boolean().optional()
 }).strict().optional();
+
+// src/config/zod-schema.implicit-mentions.ts
+var ChannelImplicitMentionsSchema = external_exports.object({
+  replyToBot: external_exports.boolean().optional(),
+  quotedBot: external_exports.boolean().optional(),
+  threadParticipation: external_exports.boolean().optional()
+}).strict();
 
 // src/config/zod-schema.channels-config.ts
 var ChannelModelByChannelSchema = external_exports.record(external_exports.string(), external_exports.record(external_exports.string(), external_exports.string())).optional();
@@ -16962,11 +17055,1067 @@ var ChannelsSchema = external_exports.object({
     groupPolicy: GroupPolicySchema.optional(),
     contextVisibility: ContextVisibilityModeSchema.optional(),
     heartbeat: ChannelHeartbeatVisibilitySchema,
-    botLoopProtection: ChannelBotLoopProtectionSchema.optional()
+    botLoopProtection: ChannelBotLoopProtectionSchema.optional(),
+    implicitMentions: ChannelImplicitMentionsSchema.optional()
   }).strict().optional(),
   modelByChannel: ChannelModelByChannelSchema
 }).passthrough().superRefine((value, ctx) => {
   addLegacyChannelAcpBindingIssues(value, ctx);
+}).optional();
+
+// src/plugins/host-hook-json.ts
+var PLUGIN_JSON_VALUE_LIMITS = {
+  maxDepth: 32,
+  maxNodes: 4096,
+  maxObjectKeys: 512,
+  maxStringLength: 64 * 1024,
+  maxSerializedBytes: 256 * 1024
+};
+function isPluginJsonValueWithinLimits(value, limits, state) {
+  state.nodes += 1;
+  if (state.nodes > limits.maxNodes || state.depth > limits.maxDepth) {
+    return false;
+  }
+  if (value === null || typeof value === "boolean") {
+    return true;
+  }
+  if (typeof value === "string") {
+    return value.length <= limits.maxStringLength;
+  }
+  if (typeof value === "number") {
+    return Number.isFinite(value);
+  }
+  if (Array.isArray(value)) {
+    state.depth += 1;
+    const ok2 = value.every((entry) => isPluginJsonValueWithinLimits(entry, limits, state));
+    state.depth -= 1;
+    return ok2;
+  }
+  if (typeof value !== "object") {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    return false;
+  }
+  const entries = Object.entries(value);
+  if (entries.length > limits.maxObjectKeys) {
+    return false;
+  }
+  state.depth += 1;
+  const ok = entries.every(
+    ([key, entry]) => key.length <= limits.maxStringLength && isPluginJsonValueWithinLimits(entry, limits, state)
+  );
+  state.depth -= 1;
+  return ok;
+}
+function isPluginJsonValue(value) {
+  if (!isPluginJsonValueWithinLimits(value, PLUGIN_JSON_VALUE_LIMITS, { depth: 0, nodes: 0 })) {
+    return false;
+  }
+  try {
+    return Buffer.byteLength(JSON.stringify(value), "utf8") <= PLUGIN_JSON_VALUE_LIMITS.maxSerializedBytes;
+  } catch {
+    return false;
+  }
+}
+
+// src/config/sensitive-paths.ts
+var SENSITIVE_KEY_WHITELIST_SUFFIXES = [
+  "maxtokens",
+  "maxoutputtokens",
+  "maxinputtokens",
+  "maxcompletiontokens",
+  "contexttokens",
+  "totaltokens",
+  "tokencount",
+  "tokenlimit",
+  "tokenbudget",
+  "passwordFile"
+];
+var NORMALIZED_SENSITIVE_KEY_WHITELIST_SUFFIXES = SENSITIVE_KEY_WHITELIST_SUFFIXES.map(
+  (suffix) => normalizeLowercaseStringOrEmpty(suffix)
+);
+var SENSITIVE_PATTERNS = [
+  /token$/i,
+  /password/i,
+  /secret/i,
+  /api.?key/i,
+  /encrypt.?key/i,
+  /private.?key/i,
+  /serviceaccount(?:ref)?$/i
+];
+function isWhitelistedSensitivePath(path5) {
+  const lowerPath = normalizeLowercaseStringOrEmpty(path5);
+  return NORMALIZED_SENSITIVE_KEY_WHITELIST_SUFFIXES.some((suffix) => lowerPath.endsWith(suffix));
+}
+function matchesSensitivePattern(path5) {
+  return SENSITIVE_PATTERNS.some((pattern) => pattern.test(path5));
+}
+function isLocalServiceEnvValuePath(path5) {
+  const lowerPath = normalizeLowercaseStringOrEmpty(path5);
+  return lowerPath.includes("localservice.env.");
+}
+function isSensitiveConfigPath(path5) {
+  return (
+    // Every local service env value is sensitive, even innocuous-looking names.
+    isLocalServiceEnvValuePath(path5) || !isWhitelistedSensitivePath(path5) && matchesSensitivePattern(path5)
+  );
+}
+
+// src/config/zod-schema.cloud-workers.ts
+var CloudWorkerLifetimePolicyShape = {
+  idleTimeoutMinutes: external_exports.number().int().positive().optional(),
+  maxLifetimeMinutes: external_exports.number().int().positive().optional()
+};
+var CloudWorkerLifetimePolicySchema = external_exports.object(CloudWorkerLifetimePolicyShape).strict();
+function validateCloudWorkerProfileSettings(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value) || !isPluginJsonValue(value)) {
+    return "Worker profile settings must be bounded finite JSON";
+  }
+  const visit = (entry) => {
+    if (Array.isArray(entry)) {
+      return entry.map(visit).find((error51) => error51 !== void 0);
+    }
+    if (typeof entry !== "object" || entry === null) {
+      return void 0;
+    }
+    for (const [key, child] of Object.entries(entry)) {
+      const baseKey = key.replace(/ref$/i, "");
+      const isSensitive = key.toLowerCase() === "keyref" || isSensitiveConfigPath(key) || baseKey !== key && isSensitiveConfigPath(baseKey);
+      if (isSensitive) {
+        if (!isSecretRef(child) || !isValidSecretRef(child)) {
+          return `Worker profile ${key} must use a SecretRef`;
+        }
+        continue;
+      }
+      const error51 = visit(child);
+      if (error51) {
+        return error51;
+      }
+    }
+    return void 0;
+  };
+  return visit(value);
+}
+var CloudWorkerSettingsSchema = external_exports.record(external_exports.string(), external_exports.unknown()).superRefine((value, ctx) => {
+  const message = validateCloudWorkerProfileSettings(value);
+  if (message) {
+    ctx.addIssue({ code: "custom", message });
+  }
+});
+var CloudWorkerProfileShape = {
+  provider: external_exports.string().trim().min(1),
+  install: external_exports.enum(["bundle", "npm"]).optional().default("bundle"),
+  settings: CloudWorkerSettingsSchema.optional(),
+  lifetime: CloudWorkerLifetimePolicySchema.optional()
+};
+var CloudWorkerProfileSchema = external_exports.object(CloudWorkerProfileShape).strict();
+var CloudWorkerProfileIdSchema = external_exports.string().min(1).refine(
+  (value) => value === value.trim(),
+  "Worker profile ids must not contain outer whitespace"
+);
+var CloudWorkersConfigShape = {
+  profiles: external_exports.record(CloudWorkerProfileIdSchema, CloudWorkerProfileSchema).optional()
+};
+var CloudWorkersConfigSchema = external_exports.object(CloudWorkersConfigShape).strict().optional();
+
+// src/config/control-ui-css.ts
+var CSS_WIDTH_KEYWORDS = /* @__PURE__ */ new Set(["none", "min-content", "max-content"]);
+var CSS_WIDTH_FUNCTIONS = /* @__PURE__ */ new Set(["calc", "clamp", "fit-content", "max", "min"]);
+var CSS_WIDTH_UNITS = /* @__PURE__ */ new Set(["ch", "em", "rem", "vh", "vmax", "vmin", "vw", "px"]);
+var CSS_WIDTH_ALLOWED_CHARS = /^[0-9A-Za-z.%+\-*/(),\s]+$/;
+var CSS_WIDTH_IDENTIFIER_RE = /[A-Za-z][A-Za-z0-9-]*/g;
+var CSS_WIDTH_SIMPLE_RE = /^(?:\d+(?:\.\d+)?|\.\d+)(?:px|rem|em|ch|vw|vh|vmin|vmax|%)$/i;
+var CSS_WIDTH_MAX_LENGTH = 96;
+function hasBalancedParentheses(value) {
+  let depth = 0;
+  for (const char of value) {
+    if (char === "(") {
+      depth++;
+    } else if (char === ")") {
+      depth--;
+      if (depth < 0) {
+        return false;
+      }
+    }
+  }
+  return depth === 0;
+}
+function hasAllowedIdentifiers(value) {
+  for (const match of value.matchAll(CSS_WIDTH_IDENTIFIER_RE)) {
+    const identifier = match[0].toLowerCase();
+    if (!CSS_WIDTH_FUNCTIONS.has(identifier) && !CSS_WIDTH_KEYWORDS.has(identifier) && !CSS_WIDTH_UNITS.has(identifier)) {
+      return false;
+    }
+  }
+  return true;
+}
+function normalizeControlUiChatMessageMaxWidth(value) {
+  return value.trim().replace(/\s+/g, " ");
+}
+function isValidControlUiChatMessageMaxWidth(value) {
+  const normalized = normalizeControlUiChatMessageMaxWidth(value);
+  if (normalized.length === 0 || normalized.length > CSS_WIDTH_MAX_LENGTH) {
+    return false;
+  }
+  if (CSS_WIDTH_KEYWORDS.has(normalized.toLowerCase())) {
+    return true;
+  }
+  if (CSS_WIDTH_SIMPLE_RE.test(normalized)) {
+    return true;
+  }
+  if (!CSS_WIDTH_ALLOWED_CHARS.test(normalized)) {
+    return false;
+  }
+  if (!hasBalancedParentheses(normalized) || !hasAllowedIdentifiers(normalized)) {
+    return false;
+  }
+  return /^(?:calc|clamp|fit-content|max|min)\(.+\)$/i.test(normalized);
+}
+
+// packages/net-policy/src/url-protocol.ts
+function parseUrl(value) {
+  if (value instanceof URL) {
+    return value;
+  }
+  try {
+    return new URL(value);
+  } catch {
+    return null;
+  }
+}
+function isHttpUrl(value) {
+  const url2 = parseUrl(value);
+  return url2?.protocol === "http:" || url2?.protocol === "https:";
+}
+function isHttpsUrl(value) {
+  return parseUrl(value)?.protocol === "https:";
+}
+
+// src/infra/ed25519-signature.ts
+import crypto from "node:crypto";
+var ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
+var ED25519_PKCS8_PRIVATE_PREFIX = Buffer.from("302e020100300506032b657004220420", "hex");
+function base64UrlEncode(buf) {
+  return buf.toString("base64").replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/g, "");
+}
+var MAX_BASE64URL_DECODE_INPUT_LENGTH = 4096;
+function base64UrlDecode(input) {
+  if (input.length > MAX_BASE64URL_DECODE_INPUT_LENGTH) {
+    throw new Error("base64url input exceeds the maximum allowed length");
+  }
+  const normalized = input.replaceAll("-", "+").replaceAll("_", "/");
+  const padded = normalized + "=".repeat((4 - normalized.length % 4) % 4);
+  return Buffer.from(padded, "base64");
+}
+function deriveEd25519PublicKeyRaw(publicKeyPem) {
+  const key = crypto.createPublicKey(publicKeyPem);
+  const spki = key.export({ type: "spki", format: "der" });
+  if (spki.length === ED25519_SPKI_PREFIX.length + 32 && spki.subarray(0, ED25519_SPKI_PREFIX.length).equals(ED25519_SPKI_PREFIX)) {
+    return spki.subarray(ED25519_SPKI_PREFIX.length);
+  }
+  return spki;
+}
+function publicKeyRawBase64UrlFromEd25519Pem(publicKeyPem) {
+  return base64UrlEncode(deriveEd25519PublicKeyRaw(publicKeyPem));
+}
+function normalizeEd25519PublicKeyBase64Url(publicKey) {
+  try {
+    if (publicKey.includes("BEGIN")) {
+      return publicKeyRawBase64UrlFromEd25519Pem(publicKey);
+    }
+    const raw = base64UrlDecode(publicKey);
+    if (raw.length === 0) {
+      return null;
+    }
+    return base64UrlEncode(raw);
+  } catch {
+    return null;
+  }
+}
+
+// src/config/zod-schema.node-host.ts
+var BrowserSnapshotDefaultsSchema = external_exports.object({
+  mode: external_exports.literal("efficient").optional()
+}).strict().optional();
+var NodeHostAgentRunsSchema = external_exports.object({
+  claude: external_exports.object({
+    enabled: external_exports.boolean().optional()
+  }).strict().optional()
+}).strict().optional();
+
+// src/config/zod-schema.session.ts
+var SessionResetConfigSchema = external_exports.object({
+  mode: external_exports.union([external_exports.literal("daily"), external_exports.literal("idle")]).optional(),
+  atHour: external_exports.number().int().min(0).max(23).optional(),
+  idleMinutes: external_exports.number().int().positive().optional()
+}).strict();
+var PositiveDurationSchema = external_exports.union([external_exports.string(), external_exports.number()]).superRefine((value, ctx) => {
+  try {
+    const ms = parseDurationMs(normalizeStringifiedOptionalString(value) ?? "", {
+      defaultUnit: "d"
+    });
+    if (ms <= 0) {
+      ctx.addIssue({
+        code: external_exports.ZodIssueCode.custom,
+        message: "duration must be positive (use ms, s, m, h, d), e.g. 30d"
+      });
+    }
+  } catch {
+    ctx.addIssue({
+      code: external_exports.ZodIssueCode.custom,
+      message: "invalid duration (use ms, s, m, h, d)"
+    });
+  }
+});
+var SessionSendPolicySchema = createAllowDenyChannelRulesSchema();
+var SessionSchema = external_exports.object({
+  scope: external_exports.union([external_exports.literal("per-sender"), external_exports.literal("global")]).optional(),
+  dmScope: external_exports.union([
+    external_exports.literal("main"),
+    external_exports.literal("per-peer"),
+    external_exports.literal("per-channel-peer"),
+    external_exports.literal("per-account-channel-peer")
+  ]).optional(),
+  identityLinks: external_exports.record(external_exports.string(), external_exports.array(external_exports.string())).optional(),
+  resetTriggers: external_exports.array(external_exports.string()).optional(),
+  idleMinutes: external_exports.number().int().positive().optional(),
+  reset: SessionResetConfigSchema.optional(),
+  resetByType: external_exports.object({
+    direct: SessionResetConfigSchema.optional(),
+    /** @deprecated Use `direct` instead. Kept for backward compatibility. */
+    dm: SessionResetConfigSchema.optional(),
+    group: SessionResetConfigSchema.optional(),
+    thread: SessionResetConfigSchema.optional()
+  }).strict().optional(),
+  resetByChannel: external_exports.record(external_exports.string(), SessionResetConfigSchema).optional(),
+  store: external_exports.string().optional(),
+  typingIntervalSeconds: external_exports.number().int().positive().optional(),
+  typingMode: TypingModeSchema.optional(),
+  mainKey: external_exports.string().optional(),
+  sendPolicy: SessionSendPolicySchema.optional(),
+  writeLock: external_exports.object({
+    acquireTimeoutMs: external_exports.number().int().positive().optional(),
+    staleMs: external_exports.number().int().positive().optional(),
+    maxHoldMs: external_exports.number().int().positive().optional()
+  }).strict().optional(),
+  agentToAgent: external_exports.object({
+    maxPingPongTurns: external_exports.number().int().min(0).max(20).optional()
+  }).strict().optional(),
+  threadBindings: external_exports.object({
+    enabled: external_exports.boolean().optional(),
+    idleHours: external_exports.number().nonnegative().optional(),
+    maxAgeHours: external_exports.number().nonnegative().optional(),
+    spawnSessions: external_exports.boolean().optional(),
+    defaultSpawnContext: external_exports.enum(["isolated", "fork"]).optional()
+  }).strict().optional(),
+  maintenance: external_exports.object({
+    mode: external_exports.enum(["enforce", "warn"]).optional(),
+    pruneAfter: PositiveDurationSchema.optional(),
+    /** @deprecated Use pruneAfter instead. */
+    pruneDays: external_exports.number().int().positive().optional(),
+    maxEntries: external_exports.number().int().positive().optional(),
+    resetArchiveRetention: external_exports.union([PositiveDurationSchema, external_exports.literal(false)]).optional(),
+    maxDiskBytes: external_exports.union([external_exports.string(), external_exports.number(), external_exports.literal(false)]).optional(),
+    highWaterBytes: external_exports.union([external_exports.string(), external_exports.number()]).optional()
+  }).strict().superRefine((val, ctx) => {
+    if (val.maxDiskBytes !== void 0 && val.maxDiskBytes !== false) {
+      try {
+        parseByteSize(normalizeStringifiedOptionalString(val.maxDiskBytes) ?? "", {
+          defaultUnit: "b"
+        });
+      } catch {
+        ctx.addIssue({
+          code: external_exports.ZodIssueCode.custom,
+          path: ["maxDiskBytes"],
+          message: "invalid size (use b, kb, mb, gb, tb)"
+        });
+      }
+    }
+    if (val.highWaterBytes !== void 0) {
+      try {
+        parseByteSize(normalizeStringifiedOptionalString(val.highWaterBytes) ?? "", {
+          defaultUnit: "b"
+        });
+      } catch {
+        ctx.addIssue({
+          code: external_exports.ZodIssueCode.custom,
+          path: ["highWaterBytes"],
+          message: "invalid size (use b, kb, mb, gb, tb)"
+        });
+      }
+    }
+  }).optional()
+}).strict().optional();
+var ResponseUsageModeSchema = external_exports.enum(["on", "off", "tokens", "full"]);
+var MessagesSchema = external_exports.object({
+  messagePrefix: external_exports.string().optional(),
+  visibleReplies: VisibleRepliesSchema.optional(),
+  responsePrefix: external_exports.string().optional(),
+  usageTemplate: external_exports.union([external_exports.string(), external_exports.record(external_exports.string(), external_exports.unknown())]).optional(),
+  responseUsage: external_exports.union([ResponseUsageModeSchema, external_exports.record(external_exports.string(), ResponseUsageModeSchema)]).optional(),
+  groupChat: GroupChatSchema,
+  queue: QueueSchema,
+  inbound: InboundDebounceSchema,
+  ackReaction: external_exports.string().optional(),
+  ackReactionScope: external_exports.enum(["group-mentions", "group-all", "direct", "all", "off", "none"]).optional(),
+  removeAckAfterReply: external_exports.boolean().optional(),
+  statusReactions: external_exports.object({
+    enabled: external_exports.boolean().optional(),
+    emojis: external_exports.object({
+      queued: external_exports.string().optional(),
+      thinking: external_exports.string().optional(),
+      tool: external_exports.string().optional(),
+      coding: external_exports.string().optional(),
+      web: external_exports.string().optional(),
+      deploy: external_exports.string().optional(),
+      build: external_exports.string().optional(),
+      concierge: external_exports.string().optional(),
+      done: external_exports.string().optional(),
+      error: external_exports.string().optional(),
+      stallSoft: external_exports.string().optional(),
+      stallHard: external_exports.string().optional(),
+      compacting: external_exports.string().optional()
+    }).strict().optional(),
+    timing: external_exports.object({
+      debounceMs: external_exports.number().int().min(0).optional(),
+      stallSoftMs: external_exports.number().int().min(0).optional(),
+      stallHardMs: external_exports.number().int().min(0).optional(),
+      doneHoldMs: external_exports.number().int().min(0).optional(),
+      errorHoldMs: external_exports.number().int().min(0).optional()
+    }).strict().optional()
+  }).strict().optional(),
+  suppressToolErrors: external_exports.boolean().optional(),
+  tts: TtsConfigSchema
+}).strict().optional();
+var CommandsSchema = external_exports.object({
+  native: NativeCommandsSettingSchema.optional().default("auto"),
+  nativeSkills: NativeCommandsSettingSchema.optional().default("auto"),
+  text: external_exports.boolean().optional(),
+  bash: external_exports.boolean().optional(),
+  bashForegroundMs: external_exports.number().int().min(0).max(3e4).optional(),
+  config: external_exports.boolean().optional(),
+  mcp: external_exports.boolean().optional(),
+  plugins: external_exports.boolean().optional(),
+  debug: external_exports.boolean().optional(),
+  restart: external_exports.boolean().optional().default(true),
+  useAccessGroups: external_exports.boolean().optional(),
+  ownerAllowFrom: external_exports.array(external_exports.union([external_exports.string(), external_exports.number()])).optional(),
+  ownerDisplay: external_exports.enum(["raw", "hash"]).optional().default("raw"),
+  ownerDisplaySecret: external_exports.string().optional().register(sensitive),
+  allowFrom: ElevatedAllowFromSchema.optional()
+}).strict().optional().default(
+  () => ({
+    native: "auto",
+    nativeSkills: "auto",
+    restart: true,
+    ownerDisplay: "raw"
+  })
+);
+
+// src/config/zod-schema.root-support.ts
+var GatewayRemoteSchemaShape = {
+  url: external_exports.string().optional(),
+  transport: external_exports.union([external_exports.literal("ssh"), external_exports.literal("direct")]).optional(),
+  remotePort: external_exports.number().int().min(1).max(65535).optional(),
+  token: SecretInputSchema.optional().register(sensitive),
+  password: SecretInputSchema.optional().register(sensitive),
+  tlsFingerprint: external_exports.string().optional(),
+  sshTarget: external_exports.string().optional(),
+  sshIdentity: external_exports.string().optional(),
+  sshHostKeyPolicy: external_exports.union([external_exports.literal("strict"), external_exports.literal("openssh")]).optional()
+};
+var GatewayRemoteConfigSchema = external_exports.strictObject(GatewayRemoteSchemaShape).optional();
+var TailscaleServiceNameSchema = external_exports.string().regex(/^svc:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/, {
+  message: 'Tailscale serviceName must use the "svc:<dns-label>" format, for example "svc:openclaw"'
+});
+var LegacyCanvasHostSchema = external_exports.strictObject({
+  enabled: external_exports.boolean().optional(),
+  root: external_exports.string().optional(),
+  port: external_exports.number().int().positive().optional(),
+  liveReload: external_exports.boolean().optional()
+}).optional();
+var SecuritySchema = external_exports.strictObject({
+  audit: external_exports.strictObject({
+    suppressions: external_exports.array(
+      external_exports.strictObject({
+        checkId: external_exports.string().min(1),
+        titleIncludes: external_exports.string().min(1).optional(),
+        detailIncludes: external_exports.string().min(1).optional(),
+        reason: external_exports.string().min(1).optional()
+      })
+    ).optional()
+  }).optional(),
+  installPolicy: external_exports.strictObject({
+    enabled: external_exports.boolean().optional(),
+    targets: external_exports.array(external_exports.union([external_exports.literal("skill"), external_exports.literal("plugin")])).min(1).optional(),
+    exec: external_exports.strictObject({
+      source: external_exports.literal("exec"),
+      command: external_exports.string().min(1),
+      args: external_exports.array(external_exports.string()).optional(),
+      timeoutMs: external_exports.number().int().min(1).optional(),
+      noOutputTimeoutMs: external_exports.number().int().min(1).optional(),
+      maxOutputBytes: external_exports.number().int().min(1).optional(),
+      env: external_exports.record(external_exports.string(), external_exports.string().register(sensitive)).optional(),
+      passEnv: external_exports.array(external_exports.string()).optional(),
+      trustedDirs: external_exports.array(external_exports.string()).optional(),
+      allowInsecurePath: external_exports.boolean().optional(),
+      allowSymlinkCommand: external_exports.boolean().optional()
+    }).optional()
+  }).optional()
+}).optional();
+var AccessGroupsSchema = external_exports.record(
+  external_exports.string().min(1),
+  external_exports.discriminatedUnion("type", [
+    external_exports.strictObject({
+      type: external_exports.literal("discord.channelAudience"),
+      guildId: external_exports.string().min(1),
+      channelId: external_exports.string().min(1),
+      membership: external_exports.literal("canViewChannel").optional()
+    }),
+    external_exports.strictObject({
+      type: external_exports.literal("message.senders"),
+      members: external_exports.record(external_exports.string().min(1), external_exports.array(external_exports.string().min(1)))
+    })
+  ])
+).optional();
+var MemoryQmdPathSchema = external_exports.strictObject({
+  path: external_exports.string(),
+  name: external_exports.string().optional(),
+  pattern: external_exports.string().optional()
+});
+var MemoryQmdSessionSchema = external_exports.strictObject({
+  enabled: external_exports.boolean().optional(),
+  exportDir: external_exports.string().optional(),
+  retentionDays: external_exports.number().int().nonnegative().optional()
+});
+var MemoryQmdUpdateSchema = external_exports.strictObject({
+  interval: external_exports.string().optional(),
+  debounceMs: external_exports.number().int().nonnegative().optional(),
+  onBoot: external_exports.boolean().optional(),
+  startup: external_exports.enum(["off", "idle", "immediate"]).optional(),
+  startupDelayMs: external_exports.number().int().nonnegative().optional(),
+  waitForBootSync: external_exports.boolean().optional(),
+  embedInterval: external_exports.string().optional(),
+  commandTimeoutMs: external_exports.number().int().nonnegative().optional(),
+  updateTimeoutMs: external_exports.number().int().nonnegative().optional(),
+  embedTimeoutMs: external_exports.number().int().nonnegative().optional()
+});
+var MemoryQmdLimitsSchema = external_exports.strictObject({
+  maxResults: external_exports.number().int().positive().optional(),
+  maxSnippetChars: external_exports.number().int().positive().optional(),
+  maxInjectedChars: external_exports.number().int().positive().optional(),
+  timeoutMs: external_exports.number().int().nonnegative().optional()
+});
+var MemoryQmdMcporterSchema = external_exports.strictObject({
+  enabled: external_exports.boolean().optional(),
+  serverName: external_exports.string().optional(),
+  startDaemon: external_exports.boolean().optional()
+});
+var LoggingLevelSchema = external_exports.union([
+  external_exports.literal("silent"),
+  external_exports.literal("fatal"),
+  external_exports.literal("error"),
+  external_exports.literal("warn"),
+  external_exports.literal("info"),
+  external_exports.literal("debug"),
+  external_exports.literal("trace")
+]);
+var MemoryQmdSchema = external_exports.strictObject({
+  command: external_exports.string().optional(),
+  mcporter: MemoryQmdMcporterSchema.optional(),
+  searchMode: external_exports.union([external_exports.literal("query"), external_exports.literal("search"), external_exports.literal("vsearch")]).optional(),
+  rerank: external_exports.boolean().optional(),
+  searchTool: external_exports.string().trim().min(1).optional(),
+  includeDefaultMemory: external_exports.boolean().optional(),
+  paths: external_exports.array(MemoryQmdPathSchema).optional(),
+  sessions: MemoryQmdSessionSchema.optional(),
+  update: MemoryQmdUpdateSchema.optional(),
+  limits: MemoryQmdLimitsSchema.optional(),
+  scope: SessionSendPolicySchema.optional()
+});
+var MemorySchema = external_exports.strictObject({
+  backend: external_exports.union([external_exports.literal("builtin"), external_exports.literal("qmd")]).optional(),
+  citations: external_exports.union([external_exports.literal("auto"), external_exports.literal("on"), external_exports.literal("off")]).optional(),
+  qmd: MemoryQmdSchema.optional()
+}).optional();
+var HttpUrlSchema = external_exports.string().url().refine(isHttpUrl, "Expected http:// or https:// URL");
+var McpOAuthClientMetadataUrlSchema = external_exports.string().url().refine((value) => {
+  const url2 = new URL(value);
+  return isHttpsUrl(url2) && url2.pathname !== "/";
+}, "Expected https:// URL with a non-root pathname");
+var ResponsesEndpointUrlFetchShape = {
+  allowUrl: external_exports.boolean().optional(),
+  urlAllowlist: external_exports.array(external_exports.string()).optional(),
+  allowedMimes: external_exports.array(external_exports.string()).optional(),
+  maxBytes: external_exports.number().int().positive().optional(),
+  maxRedirects: external_exports.number().int().nonnegative().optional(),
+  timeoutMs: external_exports.number().int().positive().optional()
+};
+var SkillEntrySchema = external_exports.strictObject({
+  enabled: external_exports.boolean().optional(),
+  apiKey: SecretInputSchema.optional().register(sensitive),
+  env: external_exports.record(external_exports.string(), external_exports.string()).optional(),
+  config: external_exports.record(external_exports.string(), external_exports.unknown()).optional()
+});
+var PluginEntrySchema = external_exports.strictObject({
+  enabled: external_exports.boolean().optional(),
+  hooks: external_exports.strictObject({
+    allowPromptInjection: external_exports.boolean().optional(),
+    allowConversationAccess: external_exports.boolean().optional(),
+    timeoutMs: external_exports.number().int().positive().max(6e5).optional(),
+    timeouts: external_exports.record(external_exports.string(), external_exports.number().int().positive().max(6e5)).optional()
+  }).optional(),
+  subagent: external_exports.strictObject({
+    allowModelOverride: external_exports.boolean().optional(),
+    allowedModels: external_exports.array(external_exports.string()).optional()
+  }).optional(),
+  llm: external_exports.strictObject({
+    allowModelOverride: external_exports.boolean().optional(),
+    allowedModels: external_exports.array(external_exports.string()).optional(),
+    allowAgentIdOverride: external_exports.boolean().optional()
+  }).optional(),
+  config: external_exports.record(external_exports.string(), external_exports.unknown()).optional()
+});
+var TalkProviderEntrySchema = external_exports.object({
+  apiKey: SecretInputSchema.optional().register(sensitive)
+}).catchall(external_exports.unknown());
+var TalkRealtimeSchema = external_exports.strictObject({
+  provider: external_exports.string().optional(),
+  providers: external_exports.record(external_exports.string(), TalkProviderEntrySchema).optional(),
+  model: external_exports.string().optional(),
+  speakerVoice: external_exports.string().optional(),
+  speakerVoiceId: external_exports.string().optional(),
+  voice: external_exports.string().optional(),
+  instructions: external_exports.string().optional(),
+  mode: external_exports.enum(["realtime", "stt-tts", "transcription"]).optional(),
+  transport: external_exports.enum(["webrtc", "provider-websocket", "gateway-relay", "managed-room"]).optional(),
+  vadThreshold: external_exports.number().min(0).max(1).optional(),
+  silenceDurationMs: external_exports.number().int().positive().optional(),
+  prefixPaddingMs: external_exports.number().int().nonnegative().optional(),
+  reasoningEffort: external_exports.string().min(1).optional(),
+  brain: external_exports.enum(["agent-consult", "direct-tools", "none"]).optional(),
+  consultRouting: external_exports.enum(["provider-direct", "force-agent-consult"]).optional()
+}).superRefine((realtime, ctx) => {
+  const provider = normalizeLowercaseStringOrEmpty(realtime.provider ?? "");
+  const providers = realtime.providers ? Object.keys(realtime.providers) : [];
+  if (provider && providers.length > 0 && !Object.hasOwn(realtime.providers, provider)) {
+    ctx.addIssue({
+      code: external_exports.ZodIssueCode.custom,
+      path: ["provider"],
+      message: `talk.realtime.provider must match a key in talk.realtime.providers (missing "${provider}")`
+    });
+  }
+  if (!provider && providers.length > 1) {
+    ctx.addIssue({
+      code: external_exports.ZodIssueCode.custom,
+      path: ["provider"],
+      message: "talk.realtime.provider is required when talk.realtime.providers defines multiple providers"
+    });
+  }
+});
+var TalkSchema = external_exports.strictObject({
+  provider: external_exports.string().optional(),
+  providers: external_exports.record(external_exports.string(), TalkProviderEntrySchema).optional(),
+  realtime: TalkRealtimeSchema.optional(),
+  consultThinkingLevel: external_exports.enum(["off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max", "ultra"]).optional(),
+  consultFastMode: external_exports.boolean().optional(),
+  speechLocale: external_exports.string().optional(),
+  interruptOnSpeech: external_exports.boolean().optional(),
+  silenceTimeoutMs: external_exports.number().int().positive().optional()
+}).superRefine((talk, ctx) => {
+  const provider = normalizeLowercaseStringOrEmpty(talk.provider ?? "");
+  const providers = talk.providers ? Object.keys(talk.providers) : [];
+  if (provider && providers.length > 0 && !Object.hasOwn(talk.providers, provider)) {
+    ctx.addIssue({
+      code: external_exports.ZodIssueCode.custom,
+      path: ["provider"],
+      message: `talk.provider must match a key in talk.providers (missing "${provider}")`
+    });
+  }
+  if (!provider && providers.length > 1) {
+    ctx.addIssue({
+      code: external_exports.ZodIssueCode.custom,
+      path: ["provider"],
+      message: "talk.provider is required when talk.providers defines multiple providers"
+    });
+  }
+});
+var McpServerSchema = external_exports.object({
+  enabled: external_exports.boolean().optional(),
+  command: external_exports.string().optional(),
+  args: external_exports.array(external_exports.string()).optional(),
+  env: external_exports.record(
+    external_exports.string(),
+    external_exports.union([external_exports.string().register(sensitive), external_exports.number(), external_exports.boolean()]).register(sensitive)
+  ).optional(),
+  cwd: external_exports.string().optional(),
+  workingDirectory: external_exports.string().optional(),
+  url: HttpUrlSchema.optional(),
+  transport: external_exports.union([external_exports.literal("stdio"), external_exports.literal("sse"), external_exports.literal("streamable-http")]).optional(),
+  headers: external_exports.record(
+    external_exports.string(),
+    external_exports.union([external_exports.string().register(sensitive), external_exports.number(), external_exports.boolean()]).register(sensitive)
+  ).optional(),
+  connectionTimeoutMs: external_exports.number().finite().positive().optional(),
+  connectTimeout: external_exports.number().finite().positive().optional(),
+  connect_timeout: external_exports.number().finite().positive().optional(),
+  requestTimeoutMs: external_exports.number().finite().positive().optional(),
+  timeout: external_exports.number().finite().positive().optional(),
+  supportsParallelToolCalls: external_exports.boolean().optional(),
+  supports_parallel_tool_calls: external_exports.boolean().optional(),
+  auth: external_exports.literal("oauth").optional(),
+  oauth: external_exports.strictObject({
+    authProfileId: external_exports.string().trim().min(1).optional(),
+    scope: external_exports.string().trim().min(1).optional(),
+    redirectUrl: HttpUrlSchema.optional(),
+    clientMetadataUrl: McpOAuthClientMetadataUrlSchema.optional()
+  }).optional(),
+  sslVerify: external_exports.boolean().optional(),
+  ssl_verify: external_exports.boolean().optional(),
+  clientCert: external_exports.string().optional(),
+  client_cert: external_exports.string().optional(),
+  clientKey: external_exports.string().optional(),
+  client_key: external_exports.string().optional(),
+  toolFilter: external_exports.strictObject({
+    include: external_exports.array(external_exports.string().trim().min(1)).min(1).optional(),
+    exclude: external_exports.array(external_exports.string().trim().min(1)).min(1).optional()
+  }).optional(),
+  codex: external_exports.strictObject({
+    agents: external_exports.array(
+      external_exports.string().trim().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/i)
+    ).min(1).optional(),
+    defaultToolsApprovalMode: external_exports.enum(["auto", "prompt", "approve"]).optional(),
+    default_tools_approval_mode: external_exports.enum(["auto", "prompt", "approve"]).optional()
+  }).optional()
+}).superRefine((data, ctx) => {
+  if (Object.hasOwn(data, "disabled")) {
+    const disabled = Reflect.get(data, "disabled");
+    const replacement = typeof disabled === "boolean" ? `"enabled: ${!disabled}" instead, then run "openclaw doctor --fix" to migrate existing config` : 'the canonical "enabled" boolean instead';
+    ctx.addIssue({
+      code: external_exports.ZodIssueCode.custom,
+      message: `unsupported key "disabled"; use ${replacement}`,
+      path: ["disabled"]
+    });
+  }
+  if (data.transport === "stdio" && (typeof data.command !== "string" || data.command.trim().length === 0)) {
+    ctx.addIssue({
+      code: external_exports.ZodIssueCode.custom,
+      message: '"stdio" transport requires a non-empty command',
+      path: ["transport"]
+    });
+  }
+}).catchall(external_exports.unknown());
+var McpConfigSchema = external_exports.strictObject({
+  servers: external_exports.record(external_exports.string(), McpServerSchema).optional(),
+  apps: external_exports.strictObject({
+    enabled: external_exports.boolean().optional(),
+    sandboxOrigin: external_exports.string().url().refine((value) => {
+      try {
+        const url2 = new URL(value);
+        return (url2.protocol === "http:" || url2.protocol === "https:") && url2.origin === value.replace(/\/$/u, "") && !url2.username && !url2.password;
+      } catch {
+        return false;
+      }
+    }, "sandboxOrigin must be an HTTP(S) origin without a path, query, or credentials").optional(),
+    sandboxPort: external_exports.number().int().min(1).max(65535).optional()
+  }).optional(),
+  sessionIdleTtlMs: external_exports.number().finite().min(0).optional(),
+  // ISOL8 FORK PATCH (shared-runtime-scope): bundled MCP runtime sharing
+  // policy. "session" (default) = one runtime per gateway session; "shared"
+  // keys the runtime on (workspaceDir, configFingerprint) so sessions on the
+  // same workspace + mcp config reuse one ref-counted runtime (single-tenant
+  // per-user containers on EFS — avoids the per-session connect storm). This
+  // key is fork-only; it must live in THIS strictObject (McpConfigSchema
+  // relocated here from zod-schema.ts in upstream #106359) or the strict
+  // schema rejects mcp.runtimeScope and every MCP owner crash-loops on boot.
+  runtimeScope: external_exports.enum(["session", "shared"]).optional()
+}).optional();
+var NodeHostMcpServerNameSchema = external_exports.string().refine(
+  (value) => value.length > 0 && value === value.trim(),
+  "MCP server name must be non-empty and must not have surrounding whitespace"
+);
+var NodeHostSchema = external_exports.strictObject({
+  agentRuns: NodeHostAgentRunsSchema,
+  browserProxy: external_exports.strictObject({
+    enabled: external_exports.boolean().optional(),
+    allowProfiles: external_exports.array(external_exports.string()).optional()
+  }).optional(),
+  mcp: external_exports.strictObject({
+    servers: external_exports.record(NodeHostMcpServerNameSchema, McpServerSchema).optional()
+  }).optional(),
+  skills: external_exports.strictObject({
+    enabled: external_exports.boolean().optional()
+  }).optional()
+}).optional();
+var SystemAgentSchema = external_exports.strictObject({
+  rescue: external_exports.strictObject({
+    enabled: external_exports.union([external_exports.literal("auto"), external_exports.boolean()]).optional(),
+    ownerDmOnly: external_exports.boolean().optional(),
+    pendingTtlMinutes: external_exports.number().int().positive().optional()
+  }).optional()
+}).optional();
+function isPlainHttpsUrl(value) {
+  try {
+    const url2 = new URL(value);
+    return url2.protocol === "https:" && !url2.username && !url2.password && !url2.search && !url2.hash;
+  } catch {
+    return false;
+  }
+}
+function isEd25519PublicKeyConfig(value) {
+  if (/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(value)) {
+    return false;
+  }
+  if (!value.includes("BEGIN") && !/^[A-Za-z0-9_-]{43}$/.test(value)) {
+    return false;
+  }
+  try {
+    const normalized = normalizeEd25519PublicKeyBase64Url(value);
+    return normalized ? base64UrlDecode(normalized).length === 32 : false;
+  } catch {
+    return false;
+  }
+}
+var MarketplaceFeedTrustedPublicKeySchema = external_exports.strictObject({
+  keyId: external_exports.string().trim().min(1),
+  publicKey: external_exports.string().trim().min(1).refine(
+    (value) => isEd25519PublicKeyConfig(value),
+    "Expected Ed25519 public key as PEM or raw base64url"
+  )
+});
+var MarketplaceVerificationSchema = external_exports.union([
+  external_exports.strictObject({
+    mode: external_exports.literal("unsigned")
+  }),
+  external_exports.strictObject({
+    mode: external_exports.literal("signed"),
+    keys: external_exports.array(MarketplaceFeedTrustedPublicKeySchema).min(1),
+    threshold: external_exports.number().int().positive().optional()
+  }).superRefine((value, ctx) => {
+    const seenKeyIds = /* @__PURE__ */ new Map();
+    const seenPublicKeys = /* @__PURE__ */ new Map();
+    value.keys.forEach((key, index) => {
+      const previousKeyIdIndex = seenKeyIds.get(key.keyId);
+      if (previousKeyIdIndex !== void 0) {
+        ctx.addIssue({
+          code: external_exports.ZodIssueCode.custom,
+          path: ["keys", index, "keyId"],
+          message: "Signed marketplace feed publisher key IDs must be unique"
+        });
+      } else {
+        seenKeyIds.set(key.keyId, index);
+      }
+      const normalizedPublicKey = normalizeEd25519PublicKeyBase64Url(key.publicKey);
+      if (!normalizedPublicKey) {
+        return;
+      }
+      const previousPublicKeyIndex = seenPublicKeys.get(normalizedPublicKey);
+      if (previousPublicKeyIndex !== void 0) {
+        ctx.addIssue({
+          code: external_exports.ZodIssueCode.custom,
+          path: ["keys", index, "publicKey"],
+          message: "Signed marketplace feed publisher public keys must be unique"
+        });
+      } else {
+        seenPublicKeys.set(normalizedPublicKey, index);
+      }
+    });
+    if (value.threshold !== void 0 && value.threshold > value.keys.length) {
+      ctx.addIssue({
+        code: external_exports.ZodIssueCode.custom,
+        path: ["threshold"],
+        message: "Signed marketplace feed threshold cannot exceed configured key count"
+      });
+    }
+  })
+]);
+var MarketplaceFeedProfileSchema = external_exports.strictObject({
+  url: external_exports.string().url().refine(
+    (value) => isPlainHttpsUrl(value),
+    "Expected https:// URL without credentials, query, or fragment"
+  ),
+  verification: MarketplaceVerificationSchema.optional()
+});
+var MarketplaceSourceProfileSchema = external_exports.union([
+  external_exports.strictObject({ type: external_exports.literal("npm") }),
+  external_exports.strictObject({ type: external_exports.literal("clawhub") }),
+  external_exports.strictObject({ type: external_exports.literal("git") })
+]);
+var MarketplacesSchema = external_exports.strictObject({
+  feeds: external_exports.record(external_exports.string().min(1), MarketplaceFeedProfileSchema).optional(),
+  sources: external_exports.record(external_exports.string().min(1), MarketplaceSourceProfileSchema).optional()
+}).optional();
+var CommitmentsSchema = external_exports.strictObject({
+  enabled: external_exports.boolean().optional(),
+  maxPerDay: external_exports.number().int().positive().optional()
+}).optional();
+
+// src/config/zod-schema.gateway.ts
+var GatewayConfigSchema = external_exports.strictObject({
+  port: external_exports.number().int().positive().optional(),
+  mode: external_exports.union([external_exports.literal("local"), external_exports.literal("remote")]).optional(),
+  bind: external_exports.union([
+    external_exports.literal("auto"),
+    external_exports.literal("lan"),
+    external_exports.literal("loopback"),
+    external_exports.literal("custom"),
+    external_exports.literal("tailnet")
+  ]).optional(),
+  customBindHost: external_exports.string().optional(),
+  controlUi: external_exports.strictObject({
+    enabled: external_exports.boolean().optional(),
+    basePath: external_exports.string().optional(),
+    root: external_exports.string().optional(),
+    toolTitles: external_exports.boolean().optional(),
+    embedSandbox: external_exports.union([external_exports.literal("strict"), external_exports.literal("scripts"), external_exports.literal("trusted")]).optional(),
+    allowExternalEmbedUrls: external_exports.boolean().optional(),
+    chatMessageMaxWidth: external_exports.string().transform((value) => normalizeControlUiChatMessageMaxWidth(value)).refine((value) => isValidControlUiChatMessageMaxWidth(value), {
+      message: "Expected a CSS width value such as 960px, 82%, min(1280px, 82%), or calc(100% - 2rem)"
+    }).optional(),
+    allowedOrigins: external_exports.array(external_exports.string()).optional(),
+    dangerouslyAllowHostHeaderOriginFallback: external_exports.boolean().optional(),
+    allowInsecureAuth: external_exports.boolean().optional(),
+    dangerouslyDisableDeviceAuth: external_exports.boolean().optional()
+  }).optional(),
+  terminal: external_exports.strictObject({
+    enabled: external_exports.boolean().optional(),
+    shell: external_exports.string().optional(),
+    detachedSessionTimeoutSeconds: external_exports.number().int().min(0).optional()
+  }).optional(),
+  auth: external_exports.strictObject({
+    mode: external_exports.union([
+      external_exports.literal("none"),
+      external_exports.literal("token"),
+      external_exports.literal("password"),
+      external_exports.literal("trusted-proxy")
+    ]).optional(),
+    token: SecretInputSchema.optional().register(sensitive),
+    password: SecretInputSchema.optional().register(sensitive),
+    allowTailscale: external_exports.boolean().optional(),
+    rateLimit: external_exports.strictObject({
+      maxAttempts: external_exports.number().optional(),
+      windowMs: external_exports.number().optional(),
+      lockoutMs: external_exports.number().optional(),
+      exemptLoopback: external_exports.boolean().optional()
+    }).optional(),
+    trustedProxy: external_exports.strictObject({
+      userHeader: external_exports.string().min(1, "userHeader is required for trusted-proxy mode"),
+      requiredHeaders: external_exports.array(external_exports.string()).optional(),
+      allowUsers: external_exports.array(external_exports.string()).optional(),
+      allowLoopback: external_exports.boolean().optional()
+    }).optional()
+  }).optional(),
+  trustedProxies: external_exports.array(external_exports.string()).optional(),
+  allowRealIpFallback: external_exports.boolean().optional(),
+  tools: external_exports.strictObject({
+    deny: external_exports.array(external_exports.string()).optional(),
+    allow: external_exports.array(external_exports.string()).optional()
+  }).optional(),
+  handshakeTimeoutMs: external_exports.number().int().min(1).optional(),
+  channelHealthCheckMinutes: external_exports.number().int().min(0).optional(),
+  channelStaleEventThresholdMinutes: external_exports.number().int().min(1).optional(),
+  channelMaxRestartsPerHour: external_exports.number().int().min(1).optional(),
+  tailscale: external_exports.strictObject({
+    mode: external_exports.union([external_exports.literal("off"), external_exports.literal("serve"), external_exports.literal("funnel")]).optional(),
+    resetOnExit: external_exports.boolean().optional(),
+    serviceName: TailscaleServiceNameSchema.optional(),
+    preserveFunnel: external_exports.boolean().optional()
+  }).optional(),
+  remote: GatewayRemoteConfigSchema,
+  reload: external_exports.strictObject({
+    mode: external_exports.union([external_exports.literal("off"), external_exports.literal("restart"), external_exports.literal("hot"), external_exports.literal("hybrid")]).optional(),
+    debounceMs: external_exports.number().int().min(0).optional(),
+    deferralTimeoutMs: external_exports.number().int().min(0).optional()
+  }).optional(),
+  tls: external_exports.object({
+    enabled: external_exports.boolean().optional(),
+    autoGenerate: external_exports.boolean().optional(),
+    // Reject blank values without transforming the string. Trimming here would
+    // silently rewrite a legitimate filesystem path that contains leading or
+    // trailing spaces and persist the trimmed value into validated config;
+    // runtime path resolution (resolveUserPath) owns all normalization.
+    certPath: external_exports.string().optional().refine((v) => v === void 0 || v.trim().length > 0, "certPath must not be blank"),
+    keyPath: external_exports.string().optional().refine((v) => v === void 0 || v.trim().length > 0, "keyPath must not be blank"),
+    caPath: external_exports.string().optional()
+  }).optional(),
+  http: external_exports.strictObject({
+    endpoints: external_exports.strictObject({
+      chatCompletions: external_exports.strictObject({
+        enabled: external_exports.boolean().optional(),
+        maxBodyBytes: external_exports.number().int().positive().optional(),
+        maxImageParts: external_exports.number().int().nonnegative().optional(),
+        maxTotalImageBytes: external_exports.number().int().positive().optional(),
+        images: external_exports.strictObject({
+          ...ResponsesEndpointUrlFetchShape
+        }).optional()
+      }).optional(),
+      responses: external_exports.strictObject({
+        enabled: external_exports.boolean().optional(),
+        maxBodyBytes: external_exports.number().int().positive().optional(),
+        maxUrlParts: external_exports.number().int().nonnegative().optional(),
+        files: external_exports.strictObject({
+          ...ResponsesEndpointUrlFetchShape,
+          maxChars: external_exports.number().int().positive().optional(),
+          pdf: external_exports.strictObject({
+            maxPages: external_exports.number().int().positive().optional(),
+            maxPixels: external_exports.number().int().positive().optional(),
+            minTextChars: external_exports.number().int().nonnegative().optional()
+          }).optional()
+        }).optional(),
+        images: external_exports.strictObject({
+          ...ResponsesEndpointUrlFetchShape
+        }).optional()
+      }).optional()
+    }).optional(),
+    securityHeaders: external_exports.strictObject({
+      strictTransportSecurity: external_exports.union([external_exports.string(), external_exports.literal(false)]).optional()
+    }).optional()
+  }).optional(),
+  push: external_exports.strictObject({
+    apns: external_exports.strictObject({
+      relay: external_exports.strictObject({
+        baseUrl: external_exports.string().optional(),
+        timeoutMs: external_exports.number().int().positive().optional()
+      }).optional()
+    }).optional()
+  }).optional(),
+  nodes: external_exports.strictObject({
+    browser: external_exports.strictObject({
+      mode: external_exports.union([external_exports.literal("auto"), external_exports.literal("manual"), external_exports.literal("off")]).optional(),
+      node: external_exports.string().optional()
+    }).optional(),
+    pairing: external_exports.strictObject({
+      autoApproveCidrs: external_exports.array(external_exports.string()).optional(),
+      sshVerify: external_exports.union([
+        external_exports.boolean(),
+        external_exports.strictObject({
+          user: external_exports.string().optional(),
+          identity: external_exports.string().optional(),
+          timeoutMs: external_exports.number().int().positive().optional(),
+          cidrs: external_exports.array(external_exports.string()).optional()
+        })
+      ]).optional()
+    }).optional(),
+    pluginTools: external_exports.strictObject({
+      enabled: external_exports.boolean().optional()
+    }).optional(),
+    skills: external_exports.strictObject({
+      enabled: external_exports.boolean().optional()
+    }).optional(),
+    allowCommands: external_exports.array(external_exports.string()).optional(),
+    denyCommands: external_exports.array(external_exports.string()).optional()
+  }).optional()
+}).superRefine((gateway, ctx) => {
+  const effectiveHealthCheckMinutes = gateway.channelHealthCheckMinutes ?? 5;
+  if (gateway.channelStaleEventThresholdMinutes != null && effectiveHealthCheckMinutes !== 0 && gateway.channelStaleEventThresholdMinutes < effectiveHealthCheckMinutes) {
+    ctx.addIssue({
+      code: external_exports.ZodIssueCode.custom,
+      path: ["channelStaleEventThresholdMinutes"],
+      message: "channelStaleEventThresholdMinutes should be >= channelHealthCheckMinutes to avoid delayed stale detection"
+    });
+  }
 }).optional();
 
 // src/config/zod-schema.hooks.ts
@@ -17149,520 +18298,10 @@ var ProxyConfigSchema = external_exports.object({
   loopbackMode: ProxyLoopbackModeSchema.optional()
 }).strict().optional();
 
-// src/config/zod-schema.session.ts
-var SessionResetConfigSchema = external_exports.object({
-  mode: external_exports.union([external_exports.literal("daily"), external_exports.literal("idle")]).optional(),
-  atHour: external_exports.number().int().min(0).max(23).optional(),
-  idleMinutes: external_exports.number().int().positive().optional()
-}).strict();
-var SessionSendPolicySchema = createAllowDenyChannelRulesSchema();
-var SessionSchema = external_exports.object({
-  scope: external_exports.union([external_exports.literal("per-sender"), external_exports.literal("global")]).optional(),
-  dmScope: external_exports.union([
-    external_exports.literal("main"),
-    external_exports.literal("per-peer"),
-    external_exports.literal("per-channel-peer"),
-    external_exports.literal("per-account-channel-peer")
-  ]).optional(),
-  identityLinks: external_exports.record(external_exports.string(), external_exports.array(external_exports.string())).optional(),
-  resetTriggers: external_exports.array(external_exports.string()).optional(),
-  idleMinutes: external_exports.number().int().positive().optional(),
-  reset: SessionResetConfigSchema.optional(),
-  resetByType: external_exports.object({
-    direct: SessionResetConfigSchema.optional(),
-    /** @deprecated Use `direct` instead. Kept for backward compatibility. */
-    dm: SessionResetConfigSchema.optional(),
-    group: SessionResetConfigSchema.optional(),
-    thread: SessionResetConfigSchema.optional()
-  }).strict().optional(),
-  resetByChannel: external_exports.record(external_exports.string(), SessionResetConfigSchema).optional(),
-  store: external_exports.string().optional(),
-  typingIntervalSeconds: external_exports.number().int().positive().optional(),
-  typingMode: TypingModeSchema.optional(),
-  mainKey: external_exports.string().optional(),
-  sendPolicy: SessionSendPolicySchema.optional(),
-  writeLock: external_exports.object({
-    acquireTimeoutMs: external_exports.number().int().positive().optional(),
-    staleMs: external_exports.number().int().positive().optional(),
-    maxHoldMs: external_exports.number().int().positive().optional()
-  }).strict().optional(),
-  agentToAgent: external_exports.object({
-    maxPingPongTurns: external_exports.number().int().min(0).max(20).optional()
-  }).strict().optional(),
-  threadBindings: external_exports.object({
-    enabled: external_exports.boolean().optional(),
-    idleHours: external_exports.number().nonnegative().optional(),
-    maxAgeHours: external_exports.number().nonnegative().optional(),
-    spawnSessions: external_exports.boolean().optional(),
-    defaultSpawnContext: external_exports.enum(["isolated", "fork"]).optional()
-  }).strict().optional(),
-  maintenance: external_exports.object({
-    mode: external_exports.enum(["enforce", "warn"]).optional(),
-    pruneAfter: external_exports.union([external_exports.string(), external_exports.number()]).optional(),
-    /** @deprecated Use pruneAfter instead. */
-    pruneDays: external_exports.number().int().positive().optional(),
-    maxEntries: external_exports.number().int().positive().optional(),
-    rotateBytes: external_exports.union([external_exports.string(), external_exports.number()]).optional(),
-    resetArchiveRetention: external_exports.union([external_exports.string(), external_exports.number(), external_exports.literal(false)]).optional(),
-    maxDiskBytes: external_exports.union([external_exports.string(), external_exports.number()]).optional(),
-    highWaterBytes: external_exports.union([external_exports.string(), external_exports.number()]).optional()
-  }).strict().superRefine((val, ctx) => {
-    if (val.pruneAfter !== void 0) {
-      try {
-        parseDurationMs(normalizeStringifiedOptionalString(val.pruneAfter) ?? "", {
-          defaultUnit: "d"
-        });
-      } catch {
-        ctx.addIssue({
-          code: external_exports.ZodIssueCode.custom,
-          path: ["pruneAfter"],
-          message: "invalid duration (use ms, s, m, h, d)"
-        });
-      }
-    }
-    if (val.resetArchiveRetention !== void 0 && val.resetArchiveRetention !== false) {
-      try {
-        parseDurationMs(normalizeStringifiedOptionalString(val.resetArchiveRetention) ?? "", {
-          defaultUnit: "d"
-        });
-      } catch {
-        ctx.addIssue({
-          code: external_exports.ZodIssueCode.custom,
-          path: ["resetArchiveRetention"],
-          message: "invalid duration (use ms, s, m, h, d)"
-        });
-      }
-    }
-    if (val.maxDiskBytes !== void 0) {
-      try {
-        parseByteSize(normalizeStringifiedOptionalString(val.maxDiskBytes) ?? "", {
-          defaultUnit: "b"
-        });
-      } catch {
-        ctx.addIssue({
-          code: external_exports.ZodIssueCode.custom,
-          path: ["maxDiskBytes"],
-          message: "invalid size (use b, kb, mb, gb, tb)"
-        });
-      }
-    }
-    if (val.highWaterBytes !== void 0) {
-      try {
-        parseByteSize(normalizeStringifiedOptionalString(val.highWaterBytes) ?? "", {
-          defaultUnit: "b"
-        });
-      } catch {
-        ctx.addIssue({
-          code: external_exports.ZodIssueCode.custom,
-          path: ["highWaterBytes"],
-          message: "invalid size (use b, kb, mb, gb, tb)"
-        });
-      }
-    }
-  }).optional()
-}).strict().optional();
-var ResponseUsageModeSchema = external_exports.enum(["on", "off", "tokens", "full"]);
-var MessagesSchema = external_exports.object({
-  messagePrefix: external_exports.string().optional(),
-  visibleReplies: VisibleRepliesSchema.optional(),
-  responsePrefix: external_exports.string().optional(),
-  usageTemplate: external_exports.union([external_exports.string(), external_exports.record(external_exports.string(), external_exports.unknown())]).optional(),
-  responseUsage: external_exports.union([ResponseUsageModeSchema, external_exports.record(external_exports.string(), ResponseUsageModeSchema)]).optional(),
-  groupChat: GroupChatSchema,
-  queue: QueueSchema,
-  inbound: InboundDebounceSchema,
-  ackReaction: external_exports.string().optional(),
-  ackReactionScope: external_exports.enum(["group-mentions", "group-all", "direct", "all", "off", "none"]).optional(),
-  removeAckAfterReply: external_exports.boolean().optional(),
-  statusReactions: external_exports.object({
-    enabled: external_exports.boolean().optional(),
-    emojis: external_exports.object({
-      queued: external_exports.string().optional(),
-      thinking: external_exports.string().optional(),
-      tool: external_exports.string().optional(),
-      coding: external_exports.string().optional(),
-      web: external_exports.string().optional(),
-      deploy: external_exports.string().optional(),
-      build: external_exports.string().optional(),
-      concierge: external_exports.string().optional(),
-      done: external_exports.string().optional(),
-      error: external_exports.string().optional(),
-      stallSoft: external_exports.string().optional(),
-      stallHard: external_exports.string().optional(),
-      compacting: external_exports.string().optional()
-    }).strict().optional(),
-    timing: external_exports.object({
-      debounceMs: external_exports.number().int().min(0).optional(),
-      stallSoftMs: external_exports.number().int().min(0).optional(),
-      stallHardMs: external_exports.number().int().min(0).optional(),
-      doneHoldMs: external_exports.number().int().min(0).optional(),
-      errorHoldMs: external_exports.number().int().min(0).optional()
-    }).strict().optional()
-  }).strict().optional(),
-  suppressToolErrors: external_exports.boolean().optional(),
-  tts: TtsConfigSchema
-}).strict().optional();
-var CommandsSchema = external_exports.object({
-  native: NativeCommandsSettingSchema.optional().default("auto"),
-  nativeSkills: NativeCommandsSettingSchema.optional().default("auto"),
-  text: external_exports.boolean().optional(),
-  bash: external_exports.boolean().optional(),
-  bashForegroundMs: external_exports.number().int().min(0).max(3e4).optional(),
-  config: external_exports.boolean().optional(),
-  mcp: external_exports.boolean().optional(),
-  plugins: external_exports.boolean().optional(),
-  debug: external_exports.boolean().optional(),
-  restart: external_exports.boolean().optional().default(true),
-  useAccessGroups: external_exports.boolean().optional(),
-  ownerAllowFrom: external_exports.array(external_exports.union([external_exports.string(), external_exports.number()])).optional(),
-  ownerDisplay: external_exports.enum(["raw", "hash"]).optional().default("raw"),
-  ownerDisplaySecret: external_exports.string().optional().register(sensitive),
-  allowFrom: ElevatedAllowFromSchema.optional()
-}).strict().optional().default(
-  () => ({
-    native: "auto",
-    nativeSkills: "auto",
-    restart: true,
-    ownerDisplay: "raw"
-  })
-);
-
-// src/config/zod-schema.ts
-var BrowserSnapshotDefaultsSchema = external_exports.object({
-  mode: external_exports.literal("efficient").optional()
-}).strict().optional();
-var NodeHostSchema = external_exports.object({
-  browserProxy: external_exports.object({
-    enabled: external_exports.boolean().optional(),
-    allowProfiles: external_exports.array(external_exports.string()).optional()
-  }).strict().optional()
-}).strict().optional();
-var GatewayRemoteSchemaShape = {
-  enabled: external_exports.boolean().optional(),
-  url: external_exports.string().optional(),
-  transport: external_exports.union([external_exports.literal("ssh"), external_exports.literal("direct")]).optional(),
-  remotePort: external_exports.number().int().min(1).max(65535).optional(),
-  token: SecretInputSchema.optional().register(sensitive),
-  password: SecretInputSchema.optional().register(sensitive),
-  tlsFingerprint: external_exports.string().optional(),
-  sshTarget: external_exports.string().optional(),
-  sshIdentity: external_exports.string().optional(),
-  sshHostKeyPolicy: external_exports.union([external_exports.literal("strict"), external_exports.literal("openssh")]).optional()
-};
-var GatewayRemoteConfigSchema = external_exports.object(GatewayRemoteSchemaShape).strict().optional();
-var TailscaleServiceNameSchema = external_exports.string().regex(/^svc:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/, {
-  message: 'Tailscale serviceName must use the "svc:<dns-label>" format, for example "svc:openclaw"'
-});
-var LegacyCanvasHostSchema = external_exports.object({
-  enabled: external_exports.boolean().optional(),
-  root: external_exports.string().optional(),
-  port: external_exports.number().int().positive().optional(),
-  liveReload: external_exports.boolean().optional()
-}).strict().optional();
-var SecuritySchema = external_exports.object({
-  audit: external_exports.object({
-    suppressions: external_exports.array(
-      external_exports.object({
-        checkId: external_exports.string().min(1),
-        titleIncludes: external_exports.string().min(1).optional(),
-        detailIncludes: external_exports.string().min(1).optional(),
-        reason: external_exports.string().min(1).optional()
-      }).strict()
-    ).optional()
-  }).strict().optional(),
-  installPolicy: external_exports.object({
-    enabled: external_exports.boolean().optional(),
-    targets: external_exports.array(external_exports.union([external_exports.literal("skill"), external_exports.literal("plugin")])).min(1).optional(),
-    exec: external_exports.object({
-      source: external_exports.literal("exec"),
-      command: external_exports.string().min(1),
-      args: external_exports.array(external_exports.string()).optional(),
-      timeoutMs: external_exports.number().int().min(1).optional(),
-      noOutputTimeoutMs: external_exports.number().int().min(1).optional(),
-      maxOutputBytes: external_exports.number().int().min(1).optional(),
-      env: external_exports.record(external_exports.string(), external_exports.string().register(sensitive)).optional(),
-      passEnv: external_exports.array(external_exports.string()).optional(),
-      trustedDirs: external_exports.array(external_exports.string()).optional(),
-      allowInsecurePath: external_exports.boolean().optional(),
-      allowSymlinkCommand: external_exports.boolean().optional()
-    }).strict().optional()
-  }).strict().optional()
-}).strict().optional();
-var AccessGroupsSchema = external_exports.record(
-  external_exports.string().min(1),
-  external_exports.discriminatedUnion("type", [
-    external_exports.object({
-      type: external_exports.literal("discord.channelAudience"),
-      guildId: external_exports.string().min(1),
-      channelId: external_exports.string().min(1),
-      membership: external_exports.literal("canViewChannel").optional()
-    }).strict(),
-    external_exports.object({
-      type: external_exports.literal("message.senders"),
-      members: external_exports.record(external_exports.string().min(1), external_exports.array(external_exports.string().min(1)))
-    }).strict()
-  ])
-).optional();
-var MemoryQmdPathSchema = external_exports.object({
-  path: external_exports.string(),
-  name: external_exports.string().optional(),
-  pattern: external_exports.string().optional()
-}).strict();
-var MemoryQmdSessionSchema = external_exports.object({
-  enabled: external_exports.boolean().optional(),
-  exportDir: external_exports.string().optional(),
-  retentionDays: external_exports.number().int().nonnegative().optional()
-}).strict();
-var MemoryQmdUpdateSchema = external_exports.object({
-  interval: external_exports.string().optional(),
-  debounceMs: external_exports.number().int().nonnegative().optional(),
-  onBoot: external_exports.boolean().optional(),
-  startup: external_exports.enum(["off", "idle", "immediate"]).optional(),
-  startupDelayMs: external_exports.number().int().nonnegative().optional(),
-  waitForBootSync: external_exports.boolean().optional(),
-  embedInterval: external_exports.string().optional(),
-  commandTimeoutMs: external_exports.number().int().nonnegative().optional(),
-  updateTimeoutMs: external_exports.number().int().nonnegative().optional(),
-  embedTimeoutMs: external_exports.number().int().nonnegative().optional()
-}).strict();
-var MemoryQmdLimitsSchema = external_exports.object({
-  maxResults: external_exports.number().int().positive().optional(),
-  maxSnippetChars: external_exports.number().int().positive().optional(),
-  maxInjectedChars: external_exports.number().int().positive().optional(),
-  timeoutMs: external_exports.number().int().nonnegative().optional()
-}).strict();
-var MemoryQmdMcporterSchema = external_exports.object({
-  enabled: external_exports.boolean().optional(),
-  serverName: external_exports.string().optional(),
-  startDaemon: external_exports.boolean().optional()
-}).strict();
-var LoggingLevelSchema = external_exports.union([
-  external_exports.literal("silent"),
-  external_exports.literal("fatal"),
-  external_exports.literal("error"),
-  external_exports.literal("warn"),
-  external_exports.literal("info"),
-  external_exports.literal("debug"),
-  external_exports.literal("trace")
-]);
-var MemoryQmdSchema = external_exports.object({
-  command: external_exports.string().optional(),
-  mcporter: MemoryQmdMcporterSchema.optional(),
-  searchMode: external_exports.union([external_exports.literal("query"), external_exports.literal("search"), external_exports.literal("vsearch")]).optional(),
-  rerank: external_exports.boolean().optional(),
-  searchTool: external_exports.string().trim().min(1).optional(),
-  includeDefaultMemory: external_exports.boolean().optional(),
-  paths: external_exports.array(MemoryQmdPathSchema).optional(),
-  sessions: MemoryQmdSessionSchema.optional(),
-  update: MemoryQmdUpdateSchema.optional(),
-  limits: MemoryQmdLimitsSchema.optional(),
-  scope: SessionSendPolicySchema.optional()
-}).strict();
-var MemorySchema = external_exports.object({
-  backend: external_exports.union([external_exports.literal("builtin"), external_exports.literal("qmd")]).optional(),
-  citations: external_exports.union([external_exports.literal("auto"), external_exports.literal("on"), external_exports.literal("off")]).optional(),
-  qmd: MemoryQmdSchema.optional()
-}).strict().optional();
-var HttpUrlSchema = external_exports.string().url().refine(isHttpUrl, "Expected http:// or https:// URL");
-var McpOAuthClientMetadataUrlSchema = external_exports.string().url().refine((value) => {
-  const url2 = new URL(value);
-  return isHttpsUrl(url2) && url2.pathname !== "/";
-}, "Expected https:// URL with a non-root pathname");
-var ResponsesEndpointUrlFetchShape = {
-  allowUrl: external_exports.boolean().optional(),
-  urlAllowlist: external_exports.array(external_exports.string()).optional(),
-  allowedMimes: external_exports.array(external_exports.string()).optional(),
-  maxBytes: external_exports.number().int().positive().optional(),
-  maxRedirects: external_exports.number().int().nonnegative().optional(),
-  timeoutMs: external_exports.number().int().positive().optional()
-};
-var SkillEntrySchema = external_exports.object({
-  enabled: external_exports.boolean().optional(),
-  apiKey: SecretInputSchema.optional().register(sensitive),
-  env: external_exports.record(external_exports.string(), external_exports.string()).optional(),
-  config: external_exports.record(external_exports.string(), external_exports.unknown()).optional()
-}).strict();
-var PluginEntrySchema = external_exports.object({
-  enabled: external_exports.boolean().optional(),
-  hooks: external_exports.object({
-    allowPromptInjection: external_exports.boolean().optional(),
-    allowConversationAccess: external_exports.boolean().optional(),
-    timeoutMs: external_exports.number().int().positive().max(6e5).optional(),
-    timeouts: external_exports.record(external_exports.string(), external_exports.number().int().positive().max(6e5)).optional()
-  }).strict().optional(),
-  subagent: external_exports.object({
-    allowModelOverride: external_exports.boolean().optional(),
-    allowedModels: external_exports.array(external_exports.string()).optional()
-  }).strict().optional(),
-  llm: external_exports.object({
-    allowModelOverride: external_exports.boolean().optional(),
-    allowedModels: external_exports.array(external_exports.string()).optional(),
-    allowAgentIdOverride: external_exports.boolean().optional()
-  }).strict().optional(),
-  config: external_exports.record(external_exports.string(), external_exports.unknown()).optional()
-}).strict();
-var TalkProviderEntrySchema = external_exports.object({
-  apiKey: SecretInputSchema.optional().register(sensitive)
-}).catchall(external_exports.unknown());
-var TalkRealtimeSchema = external_exports.object({
-  provider: external_exports.string().optional(),
-  providers: external_exports.record(external_exports.string(), TalkProviderEntrySchema).optional(),
-  model: external_exports.string().optional(),
-  speakerVoice: external_exports.string().optional(),
-  speakerVoiceId: external_exports.string().optional(),
-  voice: external_exports.string().optional(),
-  instructions: external_exports.string().optional(),
-  mode: external_exports.enum(["realtime", "stt-tts", "transcription"]).optional(),
-  transport: external_exports.enum(["webrtc", "provider-websocket", "gateway-relay", "managed-room"]).optional(),
-  vadThreshold: external_exports.number().min(0).max(1).optional(),
-  silenceDurationMs: external_exports.number().int().positive().optional(),
-  prefixPaddingMs: external_exports.number().int().nonnegative().optional(),
-  reasoningEffort: external_exports.string().min(1).optional(),
-  brain: external_exports.enum(["agent-consult", "direct-tools", "none"]).optional(),
-  consultRouting: external_exports.enum(["provider-direct", "force-agent-consult"]).optional()
-}).strict().superRefine((realtime, ctx) => {
-  const provider = normalizeLowercaseStringOrEmpty(realtime.provider ?? "");
-  const providers = realtime.providers ? Object.keys(realtime.providers) : [];
-  if (provider && providers.length > 0 && !Object.hasOwn(realtime.providers, provider)) {
-    ctx.addIssue({
-      code: external_exports.ZodIssueCode.custom,
-      path: ["provider"],
-      message: `talk.realtime.provider must match a key in talk.realtime.providers (missing "${provider}")`
-    });
-  }
-  if (!provider && providers.length > 1) {
-    ctx.addIssue({
-      code: external_exports.ZodIssueCode.custom,
-      path: ["provider"],
-      message: "talk.realtime.provider is required when talk.realtime.providers defines multiple providers"
-    });
-  }
-});
-var TalkSchema = external_exports.object({
-  provider: external_exports.string().optional(),
-  providers: external_exports.record(external_exports.string(), TalkProviderEntrySchema).optional(),
-  realtime: TalkRealtimeSchema.optional(),
-  consultThinkingLevel: external_exports.enum(["off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max", "ultra"]).optional(),
-  consultFastMode: external_exports.boolean().optional(),
-  speechLocale: external_exports.string().optional(),
-  interruptOnSpeech: external_exports.boolean().optional(),
-  silenceTimeoutMs: external_exports.number().int().positive().optional()
-}).strict().superRefine((talk, ctx) => {
-  const provider = normalizeLowercaseStringOrEmpty(talk.provider ?? "");
-  const providers = talk.providers ? Object.keys(talk.providers) : [];
-  if (provider && providers.length > 0 && !Object.hasOwn(talk.providers, provider)) {
-    ctx.addIssue({
-      code: external_exports.ZodIssueCode.custom,
-      path: ["provider"],
-      message: `talk.provider must match a key in talk.providers (missing "${provider}")`
-    });
-  }
-  if (!provider && providers.length > 1) {
-    ctx.addIssue({
-      code: external_exports.ZodIssueCode.custom,
-      path: ["provider"],
-      message: "talk.provider is required when talk.providers defines multiple providers"
-    });
-  }
-});
-var McpServerSchema = external_exports.object({
-  enabled: external_exports.boolean().optional(),
-  command: external_exports.string().optional(),
-  args: external_exports.array(external_exports.string()).optional(),
-  env: external_exports.record(external_exports.string(), external_exports.union([external_exports.string(), external_exports.number(), external_exports.boolean()])).optional(),
-  cwd: external_exports.string().optional(),
-  workingDirectory: external_exports.string().optional(),
-  url: HttpUrlSchema.optional(),
-  transport: external_exports.union([external_exports.literal("stdio"), external_exports.literal("sse"), external_exports.literal("streamable-http")]).optional(),
-  headers: external_exports.record(
-    external_exports.string(),
-    external_exports.union([external_exports.string().register(sensitive), external_exports.number(), external_exports.boolean()]).register(sensitive)
-  ).optional(),
-  connectionTimeoutMs: external_exports.number().finite().positive().optional(),
-  connectTimeout: external_exports.number().finite().positive().optional(),
-  connect_timeout: external_exports.number().finite().positive().optional(),
-  requestTimeoutMs: external_exports.number().finite().positive().optional(),
-  timeout: external_exports.number().finite().positive().optional(),
-  supportsParallelToolCalls: external_exports.boolean().optional(),
-  supports_parallel_tool_calls: external_exports.boolean().optional(),
-  auth: external_exports.literal("oauth").optional(),
-  oauth: external_exports.object({
-    scope: external_exports.string().trim().min(1).optional(),
-    redirectUrl: HttpUrlSchema.optional(),
-    clientMetadataUrl: McpOAuthClientMetadataUrlSchema.optional()
-  }).strict().optional(),
-  sslVerify: external_exports.boolean().optional(),
-  ssl_verify: external_exports.boolean().optional(),
-  clientCert: external_exports.string().optional(),
-  client_cert: external_exports.string().optional(),
-  clientKey: external_exports.string().optional(),
-  client_key: external_exports.string().optional(),
-  toolFilter: external_exports.object({
-    include: external_exports.array(external_exports.string().trim().min(1)).min(1).optional(),
-    exclude: external_exports.array(external_exports.string().trim().min(1)).min(1).optional()
-  }).strict().optional(),
-  codex: external_exports.object({
-    agents: external_exports.array(
-      external_exports.string().trim().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/i)
-    ).min(1).optional(),
-    defaultToolsApprovalMode: external_exports.enum(["auto", "prompt", "approve"]).optional(),
-    default_tools_approval_mode: external_exports.enum(["auto", "prompt", "approve"]).optional()
-  }).strict().optional()
-}).superRefine((data, ctx) => {
-  if (data.transport === "stdio" && (typeof data.command !== "string" || data.command.trim().length === 0)) {
-    ctx.addIssue({
-      code: external_exports.ZodIssueCode.custom,
-      message: '"stdio" transport requires a non-empty command',
-      path: ["transport"]
-    });
-  }
-}).catchall(external_exports.unknown());
-var McpConfigSchema = external_exports.object({
-  servers: external_exports.record(external_exports.string(), McpServerSchema).optional(),
-  sessionIdleTtlMs: external_exports.number().finite().min(0).optional(),
-  runtimeScope: external_exports.enum(["session", "shared"]).optional()
-}).strict().optional();
-var CrestodianSchema = external_exports.object({
-  rescue: external_exports.object({
-    enabled: external_exports.union([external_exports.literal("auto"), external_exports.boolean()]).optional(),
-    ownerDmOnly: external_exports.boolean().optional(),
-    pendingTtlMinutes: external_exports.number().int().positive().optional()
-  }).strict().optional()
-}).strict().optional();
-function isPlainHttpsUrl(value) {
-  try {
-    const url2 = new URL(value);
-    return url2.protocol === "https:" && !url2.username && !url2.password && !url2.search && !url2.hash;
-  } catch {
-    return false;
-  }
-}
-var MarketplaceVerificationSchema = external_exports.object({
-  mode: external_exports.literal("unsigned")
-}).strict();
-var MarketplaceFeedProfileSchema = external_exports.object({
-  url: external_exports.string().url().refine(
-    (value) => isPlainHttpsUrl(value),
-    "Expected https:// URL without credentials, query, or fragment"
-  ),
-  verification: MarketplaceVerificationSchema.optional()
-}).strict();
-var MarketplaceSourceProfileSchema = external_exports.union([
-  external_exports.object({ type: external_exports.literal("npm") }).strict(),
-  external_exports.object({ type: external_exports.literal("clawhub") }).strict(),
-  external_exports.object({ type: external_exports.literal("git") }).strict()
-]);
-var MarketplacesSchema = external_exports.object({
-  feeds: external_exports.record(external_exports.string().min(1), MarketplaceFeedProfileSchema).optional(),
-  sources: external_exports.record(external_exports.string().min(1), MarketplaceSourceProfileSchema).optional()
-}).strict().optional();
-var CommitmentsSchema = external_exports.object({
-  enabled: external_exports.boolean().optional(),
-  maxPerDay: external_exports.number().int().positive().optional()
-}).strict().optional();
-var OpenClawSchema = external_exports.object({
+// src/config/zod-schema.root-shape.ts
+var OpenClawSchemaShape = {
   $schema: external_exports.string().optional(),
-  meta: external_exports.object({
+  meta: external_exports.strictObject({
     lastTouchedVersion: external_exports.string().optional(),
     // Accept any string unchanged (backwards-compatible) and coerce numeric Unix
     // timestamps to ISO strings (agent file edits may write Date.now()).
@@ -17677,29 +18316,32 @@ var OpenClawSchema = external_exports.object({
         return d.toISOString();
       }).pipe(external_exports.string())
     ]).optional()
-  }).strict().optional(),
+  }).optional(),
   env: external_exports.object({
-    shellEnv: external_exports.object({
+    shellEnv: external_exports.strictObject({
       enabled: external_exports.boolean().optional(),
       timeoutMs: external_exports.number().int().nonnegative().optional()
-    }).strict().optional(),
+    }).optional(),
     vars: external_exports.record(external_exports.string(), external_exports.string()).optional()
   }).catchall(external_exports.string()).optional(),
-  wizard: external_exports.object({
+  wizard: external_exports.strictObject({
+    accessMode: external_exports.union([external_exports.literal("full"), external_exports.literal("guarded")]).optional(),
+    appRecommendations: external_exports.boolean().optional(),
     lastRunAt: external_exports.string().optional(),
     lastRunVersion: external_exports.string().optional(),
     lastRunCommit: external_exports.string().optional(),
     lastRunCommand: external_exports.string().optional(),
     lastRunMode: external_exports.union([external_exports.literal("local"), external_exports.literal("remote")]).optional(),
+    localModelLeanAutoModel: external_exports.string().optional(),
     securityAcknowledgedAt: external_exports.string().optional()
-  }).strict().optional(),
-  diagnostics: external_exports.object({
+  }).optional(),
+  diagnostics: external_exports.strictObject({
     enabled: external_exports.boolean().optional(),
     flags: external_exports.array(external_exports.string()).optional(),
     stuckSessionWarnMs: external_exports.number().int().positive().optional(),
     stuckSessionAbortMs: external_exports.number().int().positive().optional(),
     memoryPressureSnapshot: external_exports.boolean().optional(),
-    otel: external_exports.object({
+    otel: external_exports.strictObject({
       enabled: external_exports.boolean().optional(),
       endpoint: external_exports.string().optional(),
       tracesEndpoint: external_exports.string().optional(),
@@ -17716,7 +18358,7 @@ var OpenClawSchema = external_exports.object({
       flushIntervalMs: external_exports.number().int().nonnegative().optional(),
       captureContent: external_exports.union([
         external_exports.boolean(),
-        external_exports.object({
+        external_exports.strictObject({
           enabled: external_exports.boolean().optional(),
           inputMessages: external_exports.boolean().optional(),
           outputMessages: external_exports.boolean().optional(),
@@ -17724,21 +18366,22 @@ var OpenClawSchema = external_exports.object({
           toolOutputs: external_exports.boolean().optional(),
           systemPrompt: external_exports.boolean().optional(),
           toolDefinitions: external_exports.boolean().optional()
-        }).strict()
+        })
       ]).optional()
-    }).strict().optional(),
-    cacheTrace: external_exports.object({
+    }).optional(),
+    cacheTrace: external_exports.strictObject({
       enabled: external_exports.boolean().optional(),
       filePath: external_exports.string().optional(),
       includeMessages: external_exports.boolean().optional(),
       includePrompt: external_exports.boolean().optional(),
       includeSystem: external_exports.boolean().optional()
-    }).strict().optional()
-  }).strict().optional(),
-  audit: external_exports.object({
-    enabled: external_exports.boolean().optional()
-  }).strict().optional(),
-  logging: external_exports.object({
+    }).optional()
+  }).optional(),
+  audit: external_exports.strictObject({
+    enabled: external_exports.boolean().optional(),
+    messages: external_exports.union([external_exports.literal("off"), external_exports.literal("direct"), external_exports.literal("all")]).optional()
+  }).optional(),
+  logging: external_exports.strictObject({
     level: LoggingLevelSchema.optional(),
     file: external_exports.string().optional(),
     maxFileBytes: external_exports.number().int().positive().optional(),
@@ -17746,14 +18389,14 @@ var OpenClawSchema = external_exports.object({
     consoleStyle: external_exports.union([external_exports.literal("pretty"), external_exports.literal("compact"), external_exports.literal("json")]).optional(),
     redactSensitive: external_exports.union([external_exports.literal("off"), external_exports.literal("tools")]).optional(),
     redactPatterns: external_exports.array(external_exports.string()).optional()
-  }).strict().optional(),
-  cli: external_exports.object({
-    banner: external_exports.object({
+  }).optional(),
+  cli: external_exports.strictObject({
+    banner: external_exports.strictObject({
       taglineMode: external_exports.union([external_exports.literal("random"), external_exports.literal("default"), external_exports.literal("off")]).optional()
-    }).strict().optional()
-  }).strict().optional(),
-  crestodian: CrestodianSchema,
-  update: external_exports.object({
+    }).optional()
+  }).optional(),
+  systemAgent: SystemAgentSchema,
+  update: external_exports.strictObject({
     channel: external_exports.union([
       external_exports.literal("stable"),
       external_exports.literal("extended-stable"),
@@ -17761,15 +18404,16 @@ var OpenClawSchema = external_exports.object({
       external_exports.literal("dev")
     ]).optional(),
     checkOnStart: external_exports.boolean().optional(),
-    auto: external_exports.object({
+    auto: external_exports.strictObject({
       enabled: external_exports.boolean().optional(),
       stableDelayHours: external_exports.number().nonnegative().max(168).optional(),
       stableJitterHours: external_exports.number().nonnegative().max(168).optional(),
       betaCheckIntervalHours: external_exports.number().positive().max(24).optional()
-    }).strict().optional()
-  }).strict().optional(),
-  browser: external_exports.object({
+    }).optional()
+  }).optional(),
+  browser: external_exports.strictObject({
     enabled: external_exports.boolean().optional(),
+    allowSystemProfileImport: external_exports.boolean().optional(),
     evaluateEnabled: external_exports.boolean().optional(),
     cdpUrl: external_exports.string().optional(),
     remoteCdpTimeoutMs: external_exports.number().int().nonnegative().optional(),
@@ -17785,14 +18429,14 @@ var OpenClawSchema = external_exports.object({
     cdpPortRangeStart: external_exports.number().int().min(1).max(65535).optional(),
     defaultProfile: external_exports.string().optional(),
     snapshotDefaults: BrowserSnapshotDefaultsSchema,
-    ssrfPolicy: external_exports.object({
+    ssrfPolicy: external_exports.strictObject({
       dangerouslyAllowPrivateNetwork: external_exports.boolean().optional(),
       allowedHostnames: external_exports.array(external_exports.string()).optional(),
       hostnameAllowlist: external_exports.array(external_exports.string()).optional()
-    }).strict().optional(),
+    }).optional(),
     profiles: external_exports.record(
       external_exports.string().regex(/^[a-z0-9-]+$/, "Profile names must be alphanumeric with hyphens only"),
-      external_exports.object({
+      external_exports.strictObject({
         cdpPort: external_exports.number().int().min(1).max(65535).optional(),
         cdpUrl: external_exports.string().optional(),
         userDataDir: external_exports.string().optional(),
@@ -17808,7 +18452,7 @@ var OpenClawSchema = external_exports.object({
         executablePath: external_exports.string().optional(),
         attachOnly: external_exports.boolean().optional(),
         color: HexColorSchema
-      }).strict().refine(
+      }).refine(
         (value) => value.driver === "existing-session" || value.driver === "extension" || value.cdpPort || value.cdpUrl,
         {
           message: "Profile must set cdpPort or cdpUrl"
@@ -17820,31 +18464,43 @@ var OpenClawSchema = external_exports.object({
       })
     ).optional(),
     extraArgs: external_exports.array(external_exports.string()).optional(),
-    tabCleanup: external_exports.object({
+    tabCleanup: external_exports.strictObject({
       enabled: external_exports.boolean().optional(),
       idleMinutes: external_exports.number().int().nonnegative().optional(),
       maxTabsPerSession: external_exports.number().int().nonnegative().optional(),
       sweepMinutes: external_exports.number().int().positive().optional()
-    }).strict().optional()
-  }).strict().optional(),
-  ui: external_exports.object({
+    }).optional()
+  }).optional(),
+  ui: external_exports.strictObject({
     seamColor: HexColorSchema.optional(),
-    assistant: external_exports.object({
+    assistant: external_exports.strictObject({
       name: external_exports.string().max(50).optional(),
       avatar: external_exports.string().max(2e6).optional()
-    }).strict().optional()
-  }).strict().optional(),
-  tui: external_exports.object({
-    footer: external_exports.object({
+    }).optional(),
+    // Operator display prefs. Canonical here (agent-writable via approval,
+    // synced across devices); the Control UI mirrors them into local
+    // storage for instant boot and offline fallback.
+    prefs: external_exports.strictObject({
+      theme: external_exports.union([external_exports.literal("claw"), external_exports.literal("knot"), external_exports.literal("dash"), external_exports.literal("custom")]).optional(),
+      themeMode: external_exports.union([external_exports.literal("light"), external_exports.literal("dark"), external_exports.literal("system")]).optional(),
+      textScale: external_exports.union([external_exports.literal(90), external_exports.literal(100), external_exports.literal(110), external_exports.literal(125), external_exports.literal(140)]).optional(),
+      locale: external_exports.string().max(20).optional(),
+      chatShowThinking: external_exports.boolean().optional(),
+      chatShowToolCalls: external_exports.boolean().optional(),
+      chatSendShortcut: external_exports.union([external_exports.literal("enter"), external_exports.literal("modifier-enter")]).optional()
+    }).optional()
+  }).optional(),
+  tui: external_exports.strictObject({
+    footer: external_exports.strictObject({
       showRemoteHost: external_exports.boolean().optional()
-    }).strict().optional()
-  }).strict().optional(),
+    }).optional()
+  }).optional(),
   secrets: SecretsConfigSchema,
   marketplaces: MarketplacesSchema,
-  auth: external_exports.object({
+  auth: external_exports.strictObject({
     profiles: external_exports.record(
       external_exports.string(),
-      external_exports.object({
+      external_exports.strictObject({
         provider: external_exports.string(),
         mode: external_exports.union([
           external_exports.literal("api_key"),
@@ -17854,10 +18510,10 @@ var OpenClawSchema = external_exports.object({
         ]),
         email: external_exports.string().optional(),
         displayName: external_exports.string().optional()
-      }).strict()
+      })
     ).optional(),
     order: external_exports.record(external_exports.string(), external_exports.array(external_exports.string())).optional(),
-    cooldowns: external_exports.object({
+    cooldowns: external_exports.strictObject({
       billingBackoffHours: external_exports.number().positive().optional(),
       billingBackoffHoursByProvider: external_exports.record(external_exports.string(), external_exports.number().positive()).optional(),
       billingMaxHours: external_exports.number().positive().optional(),
@@ -17867,20 +18523,20 @@ var OpenClawSchema = external_exports.object({
       overloadedProfileRotations: external_exports.number().int().nonnegative().optional(),
       overloadedBackoffMs: external_exports.number().int().nonnegative().optional(),
       rateLimitedProfileRotations: external_exports.number().int().nonnegative().optional()
-    }).strict().optional()
-  }).strict().optional(),
+    }).optional()
+  }).optional(),
   accessGroups: AccessGroupsSchema,
-  acp: external_exports.object({
+  acp: external_exports.strictObject({
     enabled: external_exports.boolean().optional(),
-    dispatch: external_exports.object({
+    dispatch: external_exports.strictObject({
       enabled: external_exports.boolean().optional()
-    }).strict().optional(),
+    }).optional(),
     backend: external_exports.string().optional(),
     fallbacks: external_exports.array(external_exports.string()).optional(),
     defaultAgent: external_exports.string().optional(),
     allowedAgents: external_exports.array(external_exports.string()).optional(),
     maxConcurrentSessions: external_exports.number().int().positive().optional(),
-    stream: external_exports.object({
+    stream: external_exports.strictObject({
       coalesceIdleMs: external_exports.number().int().nonnegative().optional(),
       maxChunkChars: external_exports.number().int().positive().optional(),
       repeatSuppression: external_exports.boolean().optional(),
@@ -17894,12 +18550,12 @@ var OpenClawSchema = external_exports.object({
       maxOutputChars: external_exports.number().int().positive().optional(),
       maxSessionUpdateChars: external_exports.number().int().positive().optional(),
       tagVisibility: external_exports.record(external_exports.string(), external_exports.boolean()).optional()
-    }).strict().optional(),
-    runtime: external_exports.object({
+    }).optional(),
+    runtime: external_exports.strictObject({
       ttlMinutes: external_exports.number().int().positive().optional(),
       installCommand: external_exports.string().optional()
-    }).strict().optional()
-  }).strict().optional(),
+    }).optional()
+  }).optional(),
   models: ModelsConfigSchema,
   nodeHost: NodeHostSchema,
   agents: AgentsSchema,
@@ -17907,50 +18563,45 @@ var OpenClawSchema = external_exports.object({
   security: SecuritySchema,
   bindings: BindingsSchema,
   broadcast: BroadcastSchema,
-  audio: AudioSchema,
-  media: external_exports.object({
+  media: external_exports.strictObject({
     preserveFilenames: external_exports.boolean().optional(),
     ttlHours: external_exports.number().int().min(1).max(24 * 7).optional()
-  }).strict().optional(),
+  }).optional(),
   messages: MessagesSchema,
   commands: CommandsSchema,
   approvals: ApprovalsSchema,
   session: SessionSchema,
-  cron: external_exports.object({
+  cron: external_exports.strictObject({
     enabled: external_exports.boolean().optional(),
     store: external_exports.string().optional(),
     maxConcurrentRuns: external_exports.number().int().positive().optional(),
-    triggers: external_exports.object({
+    triggers: external_exports.strictObject({
       enabled: external_exports.boolean().optional(),
       minIntervalMs: external_exports.number().int().positive().optional()
-    }).strict().optional(),
-    retry: external_exports.object({
+    }).optional(),
+    retry: external_exports.strictObject({
       maxAttempts: external_exports.number().int().min(0).max(10).optional(),
       backoffMs: external_exports.array(external_exports.number().int().nonnegative()).min(1).max(10).optional(),
       retryOn: external_exports.array(external_exports.enum(["rate_limit", "overloaded", "network", "timeout", "server_error"])).min(1).optional()
-    }).strict().optional(),
+    }).optional(),
     webhook: HttpUrlSchema.optional(),
     webhookToken: SecretInputSchema.optional().register(sensitive),
     sessionRetention: external_exports.union([external_exports.string(), external_exports.literal(false)]).optional(),
-    runLog: external_exports.object({
-      maxBytes: external_exports.union([external_exports.string(), external_exports.number()]).optional(),
-      keepLines: external_exports.number().int().positive().optional()
-    }).strict().optional(),
-    failureAlert: external_exports.object({
+    failureAlert: external_exports.strictObject({
       enabled: external_exports.boolean().optional(),
       after: external_exports.number().int().min(1).optional(),
       cooldownMs: external_exports.number().int().min(0).optional(),
       includeSkipped: external_exports.boolean().optional(),
       mode: external_exports.enum(["announce", "webhook"]).optional(),
       accountId: external_exports.string().optional()
-    }).strict().optional(),
-    failureDestination: external_exports.object({
+    }).optional(),
+    failureDestination: external_exports.strictObject({
       channel: external_exports.string().optional(),
       to: external_exports.string().optional(),
       accountId: external_exports.string().optional(),
       mode: external_exports.enum(["announce", "webhook"]).optional()
-    }).strict().optional()
-  }).strict().superRefine((val, ctx) => {
+    }).optional()
+  }).superRefine((val, ctx) => {
     if (val.sessionRetention !== void 0 && val.sessionRetention !== false) {
       try {
         parseDurationMs(normalizeStringifiedOptionalString(val.sessionRetention) ?? "", {
@@ -17964,25 +18615,18 @@ var OpenClawSchema = external_exports.object({
         });
       }
     }
-    if (val.runLog?.maxBytes !== void 0) {
-      try {
-        parseByteSize(normalizeStringifiedOptionalString(val.runLog.maxBytes) ?? "", {
-          defaultUnit: "b"
-        });
-      } catch {
-        ctx.addIssue({
-          code: external_exports.ZodIssueCode.custom,
-          path: ["runLog", "maxBytes"],
-          message: "invalid size (use b, kb, mb, gb, tb)"
-        });
-      }
-    }
   }).optional(),
-  transcripts: external_exports.object({
+  worktrees: external_exports.strictObject({
+    cleanup: external_exports.strictObject({
+      maxCount: external_exports.number().int().min(0).optional(),
+      maxTotalSizeGb: external_exports.number().min(0).optional()
+    }).optional()
+  }).optional(),
+  transcripts: external_exports.strictObject({
     enabled: external_exports.boolean().optional(),
     maxUtterances: external_exports.number().int().min(1).max(1e4).optional(),
     autoStart: external_exports.array(
-      external_exports.object({
+      external_exports.strictObject({
         providerId: external_exports.string().min(1),
         sessionId: external_exports.string().min(1).optional(),
         title: external_exports.string().min(1).optional(),
@@ -17990,11 +18634,11 @@ var OpenClawSchema = external_exports.object({
         guildId: external_exports.string().min(1).optional(),
         channelId: external_exports.string().min(1).optional(),
         meetingUrl: external_exports.string().min(1).optional()
-      }).strict()
+      })
     ).optional()
-  }).strict().optional(),
+  }).optional(),
   commitments: CommitmentsSchema,
-  hooks: external_exports.object({
+  hooks: external_exports.strictObject({
     enabled: external_exports.boolean().optional(),
     path: external_exports.string().optional(),
     token: external_exports.string().optional().register(sensitive),
@@ -18008,243 +18652,99 @@ var OpenClawSchema = external_exports.object({
     mappings: external_exports.array(HookMappingSchema).optional(),
     gmail: HooksGmailSchema,
     internal: InternalHooksSchema
-  }).strict().optional(),
-  web: external_exports.object({
+  }).optional(),
+  web: external_exports.strictObject({
     enabled: external_exports.boolean().optional(),
     heartbeatSeconds: external_exports.number().int().positive().optional(),
-    reconnect: external_exports.object({
+    reconnect: external_exports.strictObject({
       initialMs: external_exports.number().positive().optional(),
       maxMs: external_exports.number().positive().optional(),
       factor: external_exports.number().positive().optional(),
       jitter: external_exports.number().min(0).max(1).optional(),
       maxAttempts: external_exports.number().int().min(0).optional()
-    }).strict().optional(),
-    whatsapp: external_exports.object({
+    }).optional(),
+    whatsapp: external_exports.strictObject({
       keepAliveIntervalMs: external_exports.number().int().positive().optional(),
       connectTimeoutMs: external_exports.number().int().positive().optional(),
       defaultQueryTimeoutMs: external_exports.number().int().positive().optional()
-    }).strict().optional()
-  }).strict().optional(),
+    }).optional()
+  }).optional(),
   channels: ChannelsSchema,
-  discovery: external_exports.object({
-    wideArea: external_exports.object({
+  discovery: external_exports.strictObject({
+    wideArea: external_exports.strictObject({
       enabled: external_exports.boolean().optional(),
       domain: external_exports.string().optional()
-    }).strict().optional(),
-    mdns: external_exports.object({
-      mode: external_exports.enum(["off", "minimal", "full"]).optional()
-    }).strict().optional()
-  }).strict().optional(),
-  talk: TalkSchema.optional(),
-  gateway: external_exports.object({
-    port: external_exports.number().int().positive().optional(),
-    mode: external_exports.union([external_exports.literal("local"), external_exports.literal("remote")]).optional(),
-    bind: external_exports.union([
-      external_exports.literal("auto"),
-      external_exports.literal("lan"),
-      external_exports.literal("loopback"),
-      external_exports.literal("custom"),
-      external_exports.literal("tailnet")
-    ]).optional(),
-    customBindHost: external_exports.string().optional(),
-    controlUi: external_exports.object({
-      enabled: external_exports.boolean().optional(),
-      basePath: external_exports.string().optional(),
-      root: external_exports.string().optional(),
-      embedSandbox: external_exports.union([external_exports.literal("strict"), external_exports.literal("scripts"), external_exports.literal("trusted")]).optional(),
-      allowExternalEmbedUrls: external_exports.boolean().optional(),
-      chatMessageMaxWidth: external_exports.string().transform((value) => normalizeControlUiChatMessageMaxWidth(value)).refine((value) => isValidControlUiChatMessageMaxWidth(value), {
-        message: "Expected a CSS width value such as 960px, 82%, min(1280px, 82%), or calc(100% - 2rem)"
-      }).optional(),
-      allowedOrigins: external_exports.array(external_exports.string()).optional(),
-      dangerouslyAllowHostHeaderOriginFallback: external_exports.boolean().optional(),
-      allowInsecureAuth: external_exports.boolean().optional(),
-      dangerouslyDisableDeviceAuth: external_exports.boolean().optional()
-    }).strict().optional(),
-    terminal: external_exports.object({
-      enabled: external_exports.boolean().optional(),
-      shell: external_exports.string().optional(),
-      detachedSessionTimeoutSeconds: external_exports.number().int().min(0).optional()
-    }).strict().optional(),
-    auth: external_exports.object({
-      mode: external_exports.union([
-        external_exports.literal("none"),
-        external_exports.literal("token"),
-        external_exports.literal("password"),
-        external_exports.literal("trusted-proxy")
-      ]).optional(),
-      token: SecretInputSchema.optional().register(sensitive),
-      password: SecretInputSchema.optional().register(sensitive),
-      allowTailscale: external_exports.boolean().optional(),
-      rateLimit: external_exports.object({
-        maxAttempts: external_exports.number().optional(),
-        windowMs: external_exports.number().optional(),
-        lockoutMs: external_exports.number().optional(),
-        exemptLoopback: external_exports.boolean().optional()
-      }).strict().optional(),
-      trustedProxy: external_exports.object({
-        userHeader: external_exports.string().min(1, "userHeader is required for trusted-proxy mode"),
-        requiredHeaders: external_exports.array(external_exports.string()).optional(),
-        allowUsers: external_exports.array(external_exports.string()).optional(),
-        allowLoopback: external_exports.boolean().optional()
-      }).strict().optional()
-    }).strict().optional(),
-    trustedProxies: external_exports.array(external_exports.string()).optional(),
-    allowRealIpFallback: external_exports.boolean().optional(),
-    tools: external_exports.object({
-      deny: external_exports.array(external_exports.string()).optional(),
-      allow: external_exports.array(external_exports.string()).optional()
-    }).strict().optional(),
-    handshakeTimeoutMs: external_exports.number().int().min(1).optional(),
-    channelHealthCheckMinutes: external_exports.number().int().min(0).optional(),
-    channelStaleEventThresholdMinutes: external_exports.number().int().min(1).optional(),
-    channelMaxRestartsPerHour: external_exports.number().int().min(1).optional(),
-    tailscale: external_exports.object({
-      mode: external_exports.union([external_exports.literal("off"), external_exports.literal("serve"), external_exports.literal("funnel")]).optional(),
-      resetOnExit: external_exports.boolean().optional(),
-      serviceName: TailscaleServiceNameSchema.optional(),
-      preserveFunnel: external_exports.boolean().optional()
-    }).strict().optional(),
-    remote: GatewayRemoteConfigSchema,
-    reload: external_exports.object({
-      mode: external_exports.union([
-        external_exports.literal("off"),
-        external_exports.literal("restart"),
-        external_exports.literal("hot"),
-        external_exports.literal("hybrid")
-      ]).optional(),
-      debounceMs: external_exports.number().int().min(0).optional(),
-      deferralTimeoutMs: external_exports.number().int().min(0).optional()
-    }).strict().optional(),
-    tls: external_exports.object({
-      enabled: external_exports.boolean().optional(),
-      autoGenerate: external_exports.boolean().optional(),
-      // Reject blank values without transforming the string. Trimming here would
-      // silently rewrite a legitimate filesystem path that contains leading or
-      // trailing spaces and persist the trimmed value into validated config;
-      // runtime path resolution (resolveUserPath) owns all normalization.
-      certPath: external_exports.string().optional().refine((v) => v === void 0 || v.trim().length > 0, "certPath must not be blank"),
-      keyPath: external_exports.string().optional().refine((v) => v === void 0 || v.trim().length > 0, "keyPath must not be blank"),
-      caPath: external_exports.string().optional()
     }).optional(),
-    http: external_exports.object({
-      endpoints: external_exports.object({
-        chatCompletions: external_exports.object({
-          enabled: external_exports.boolean().optional(),
-          maxBodyBytes: external_exports.number().int().positive().optional(),
-          maxImageParts: external_exports.number().int().nonnegative().optional(),
-          maxTotalImageBytes: external_exports.number().int().positive().optional(),
-          images: external_exports.object({
-            ...ResponsesEndpointUrlFetchShape
-          }).strict().optional()
-        }).strict().optional(),
-        responses: external_exports.object({
-          enabled: external_exports.boolean().optional(),
-          maxBodyBytes: external_exports.number().int().positive().optional(),
-          maxUrlParts: external_exports.number().int().nonnegative().optional(),
-          files: external_exports.object({
-            ...ResponsesEndpointUrlFetchShape,
-            maxChars: external_exports.number().int().positive().optional(),
-            pdf: external_exports.object({
-              maxPages: external_exports.number().int().positive().optional(),
-              maxPixels: external_exports.number().int().positive().optional(),
-              minTextChars: external_exports.number().int().nonnegative().optional()
-            }).strict().optional()
-          }).strict().optional(),
-          images: external_exports.object({
-            ...ResponsesEndpointUrlFetchShape
-          }).strict().optional()
-        }).strict().optional()
-      }).strict().optional(),
-      securityHeaders: external_exports.object({
-        strictTransportSecurity: external_exports.union([external_exports.string(), external_exports.literal(false)]).optional()
-      }).strict().optional()
-    }).strict().optional(),
-    push: external_exports.object({
-      apns: external_exports.object({
-        relay: external_exports.object({
-          baseUrl: external_exports.string().optional(),
-          timeoutMs: external_exports.number().int().positive().optional()
-        }).strict().optional()
-      }).strict().optional()
-    }).strict().optional(),
-    nodes: external_exports.object({
-      browser: external_exports.object({
-        mode: external_exports.union([external_exports.literal("auto"), external_exports.literal("manual"), external_exports.literal("off")]).optional(),
-        node: external_exports.string().optional()
-      }).strict().optional(),
-      pairing: external_exports.object({
-        autoApproveCidrs: external_exports.array(external_exports.string()).optional()
-      }).strict().optional(),
-      allowCommands: external_exports.array(external_exports.string()).optional(),
-      denyCommands: external_exports.array(external_exports.string()).optional()
-    }).strict().optional()
-  }).strict().superRefine((gateway, ctx) => {
-    const effectiveHealthCheckMinutes = gateway.channelHealthCheckMinutes ?? 5;
-    if (gateway.channelStaleEventThresholdMinutes != null && effectiveHealthCheckMinutes !== 0 && gateway.channelStaleEventThresholdMinutes < effectiveHealthCheckMinutes) {
-      ctx.addIssue({
-        code: external_exports.ZodIssueCode.custom,
-        path: ["channelStaleEventThresholdMinutes"],
-        message: "channelStaleEventThresholdMinutes should be >= channelHealthCheckMinutes to avoid delayed stale detection"
-      });
-    }
+    mdns: external_exports.strictObject({
+      mode: external_exports.enum(["off", "minimal", "full"]).optional()
+    }).optional()
   }).optional(),
+  talk: TalkSchema.optional(),
+  gateway: GatewayConfigSchema,
+  cloudWorkers: CloudWorkersConfigSchema,
   memory: MemorySchema,
   mcp: McpConfigSchema,
-  skills: external_exports.object({
+  skills: external_exports.strictObject({
     allowBundled: external_exports.array(external_exports.string()).optional(),
-    load: external_exports.object({
+    load: external_exports.strictObject({
       extraDirs: external_exports.array(external_exports.string()).optional(),
       allowSymlinkTargets: external_exports.array(external_exports.string()).optional(),
       watch: external_exports.boolean().optional(),
       watchDebounceMs: external_exports.number().int().min(0).optional()
-    }).strict().optional(),
-    install: external_exports.object({
+    }).optional(),
+    install: external_exports.strictObject({
       preferBrew: external_exports.boolean().optional(),
       nodeManager: external_exports.union([external_exports.literal("npm"), external_exports.literal("pnpm"), external_exports.literal("yarn"), external_exports.literal("bun")]).optional(),
       allowUploadedArchives: external_exports.boolean().optional()
-    }).strict().optional(),
-    limits: external_exports.object({
+    }).optional(),
+    limits: external_exports.strictObject({
       maxCandidatesPerRoot: external_exports.number().int().min(1).optional(),
       maxSkillsLoadedPerSource: external_exports.number().int().min(1).optional(),
       maxSkillsInPrompt: external_exports.number().int().min(0).optional(),
       maxSkillsPromptChars: external_exports.number().int().min(0).optional(),
       maxSkillFileBytes: external_exports.number().int().min(0).optional()
-    }).strict().optional(),
-    workshop: external_exports.object({
-      autonomous: external_exports.object({
+    }).optional(),
+    workshop: external_exports.strictObject({
+      autonomous: external_exports.strictObject({
         enabled: external_exports.boolean().optional()
-      }).strict().optional(),
+      }).optional(),
       approvalPolicy: external_exports.union([external_exports.literal("pending"), external_exports.literal("auto")]).optional(),
       allowSymlinkTargetWrites: external_exports.boolean().optional(),
       maxPending: external_exports.number().int().min(1).optional(),
       maxSkillBytes: external_exports.number().int().min(1).optional()
-    }).strict().optional(),
+    }).optional(),
     entries: external_exports.record(external_exports.string(), SkillEntrySchema).optional()
-  }).strict().optional(),
-  plugins: external_exports.object({
+  }).optional(),
+  plugins: external_exports.strictObject({
     enabled: external_exports.boolean().optional(),
     allow: external_exports.array(external_exports.string()).optional(),
     deny: external_exports.array(external_exports.string()).optional(),
-    load: external_exports.object({
+    load: external_exports.strictObject({
       paths: external_exports.array(external_exports.string()).optional()
-    }).strict().optional(),
-    slots: external_exports.object({
+    }).optional(),
+    slots: external_exports.strictObject({
       memory: external_exports.string().optional(),
       contextEngine: external_exports.string().optional()
-    }).strict().optional(),
+    }).optional(),
     entries: external_exports.record(external_exports.string(), PluginEntrySchema).optional(),
     bundledDiscovery: external_exports.enum(["compat", "allowlist"]).optional()
-  }).strict().optional(),
+  }).optional(),
   canvasHost: LegacyCanvasHostSchema,
   surfaces: external_exports.record(
     external_exports.string(),
-    external_exports.object({
+    external_exports.strictObject({
       silentReply: SilentReplyPolicyConfigSchema.optional()
-    }).strict()
+    })
   ).optional(),
   proxy: ProxyConfigSchema
-}).strict().superRefine((cfg, ctx) => {
+};
+
+// src/config/zod-schema.ts
+function installZodDefaultLocale() {
+  external_exports.config(external_exports.locales.en());
+}
+installZodDefaultLocale();
+var OpenClawSchema = external_exports.strictObject(OpenClawSchemaShape).superRefine((cfg, ctx) => {
   const agents = cfg.agents?.list ?? [];
   if (agents.length === 0) {
     return;
@@ -18279,8 +18779,7 @@ var OpenClawSchema = external_exports.object({
     if (!Array.isArray(ids)) {
       continue;
     }
-    for (let idx = 0; idx < ids.length; idx += 1) {
-      const agentId = ids[idx];
+    for (const [idx, agentId] of ids.entries()) {
       if (!agentIds.has(agentId)) {
         ctx.addIssue({
           code: external_exports.ZodIssueCode.custom,

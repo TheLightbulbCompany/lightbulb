@@ -78,15 +78,17 @@ RUN git clone --depth=1 https://github.com/openhue/openhue-cli.git /tmp/openhue 
 # =============================================================================
 # Fat (non-slim) variant: bundles plugin runtime deps so first-use of
 # browser/codex/channels doesn't pay a ~6min lazy npm-install on cold start.
-FROM ghcr.io/isol8ai/agent:2026.7.1-isol8.2
+FROM ghcr.io/isol8ai/agent:2026.7.2-isol8.1
 # PLUGIN-PIN POLICY (read before bumping the @openclaw/* pins below): the baked
 # plugins pin to the latest PUBLISHED plugin dist of the FROM tag's release
-# line on npm — 2026.7.1 (final) dists are published for all six baked
-# plugins. Keep these pins in lockstep with the FROM tag on every base bump;
-# the 7.1 final line moved the channel inbound-dispatch contract
-# (turn-adoption ack), so a stale channel plugin on a newer host is not a
-# safe skew. The dev canary boots the built image to confirm every baked
-# plugin converges on the host.
+# line on npm. The FROM tag is on the 2026.7.2 line, which is BETA-only upstream
+# — its latest published dist is 2026.7.2-beta.3 (npm `beta` dist-tag; no stable
+# 2026.7.2 dist exists yet), so all seven baked plugins pin to 2026.7.2-beta.3 to
+# stay in lockstep with the 7.2 host (this base rolls to DEV only). Keep these
+# pins in lockstep with the FROM tag on every base bump: the 7.1 line moved the
+# channel inbound-dispatch contract (turn-adoption ack), so a stale channel
+# plugin (slack/discord) on a newer host is not a safe skew. The dev canary boots
+# the built image to confirm every baked plugin converges on the host.
 
 USER root
 
@@ -254,7 +256,7 @@ RUN mkdir -p /home/node/.cache/ms-playwright && \
 RUN set -eux; \
     for P in slack discord; do \
       mkdir -p "/opt/stage-$P"; \
-      npm install --prefix "/opt/stage-$P" "@openclaw/$P@2026.7.1"; \
+      npm install --prefix "/opt/stage-$P" "@openclaw/$P@2026.7.2-beta.3"; \
       mkdir -p "/app/dist/extensions/$P"; \
       cp -R "/opt/stage-$P/node_modules/@openclaw/$P/." "/app/dist/extensions/$P/"; \
       mkdir -p "/app/dist/extensions/$P/node_modules"; \
@@ -278,7 +280,7 @@ RUN set -eux; \
 # the FROM tag / openclaw-version.json#upstream.
 RUN set -eux; \
     mkdir -p /opt/stage-amazon-bedrock; \
-    npm install --prefix /opt/stage-amazon-bedrock "@openclaw/amazon-bedrock-provider@2026.7.1"; \
+    npm install --prefix /opt/stage-amazon-bedrock "@openclaw/amazon-bedrock-provider@2026.7.2-beta.3"; \
     mkdir -p /app/dist/extensions/amazon-bedrock; \
     cp -R /opt/stage-amazon-bedrock/node_modules/@openclaw/amazon-bedrock-provider/. /app/dist/extensions/amazon-bedrock/; \
     mkdir -p /app/dist/extensions/amazon-bedrock/node_modules; \
@@ -302,7 +304,7 @@ RUN set -eux; \
 # pinned in lockstep with the FROM tag / openclaw-version.json#upstream.
 RUN set -eux; \
     mkdir -p /opt/stage-lobster; \
-    npm install --prefix /opt/stage-lobster "@openclaw/lobster@2026.7.1"; \
+    npm install --prefix /opt/stage-lobster "@openclaw/lobster@2026.7.2-beta.3"; \
     mkdir -p /app/dist/extensions/lobster; \
     cp -R /opt/stage-lobster/node_modules/@openclaw/lobster/. /app/dist/extensions/lobster/; \
     mkdir -p /app/dist/extensions/lobster/node_modules; \
@@ -323,7 +325,7 @@ RUN set -eux; \
 # lockstep with the FROM tag, same as the layers above.
 RUN set -eux; \
     mkdir -p /opt/stage-parallel; \
-    npm install --prefix /opt/stage-parallel "@openclaw/parallel-plugin@2026.7.1"; \
+    npm install --prefix /opt/stage-parallel "@openclaw/parallel-plugin@2026.7.2-beta.3"; \
     mkdir -p /app/dist/extensions/parallel; \
     cp -R /opt/stage-parallel/node_modules/@openclaw/parallel-plugin/. /app/dist/extensions/parallel/; \
     mkdir -p /app/dist/extensions/parallel/node_modules; \
@@ -354,7 +356,7 @@ RUN set -eux; \
 # the FROM tag / openclaw-version.json#upstream.
 RUN set -eux; \
     mkdir -p /opt/stage-acpx; \
-    npm install --prefix /opt/stage-acpx "@openclaw/acpx@2026.7.1"; \
+    npm install --prefix /opt/stage-acpx "@openclaw/acpx@2026.7.2-beta.3"; \
     mkdir -p /app/dist/extensions/acpx; \
     cp -R /opt/stage-acpx/node_modules/@openclaw/acpx/. /app/dist/extensions/acpx/; \
     mkdir -p /app/dist/extensions/acpx/node_modules; \
@@ -380,7 +382,7 @@ RUN set -eux; \
 # openclaw-version.json#upstream.
 RUN set -eux; \
     mkdir -p /opt/stage-tokenjuice; \
-    npm install --prefix /opt/stage-tokenjuice "@openclaw/tokenjuice@2026.7.1"; \
+    npm install --prefix /opt/stage-tokenjuice "@openclaw/tokenjuice@2026.7.2-beta.3"; \
     mkdir -p /app/dist/extensions/tokenjuice; \
     cp -R /opt/stage-tokenjuice/node_modules/@openclaw/tokenjuice/. /app/dist/extensions/tokenjuice/; \
     mkdir -p /app/dist/extensions/tokenjuice/node_modules; \

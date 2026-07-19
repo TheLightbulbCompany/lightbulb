@@ -149,6 +149,27 @@ async def test_downgrade_oversized_company_defers_resize_with_metric():
 
 
 @pytest.mark.asyncio
+async def test_downgrade_with_unavailable_count_defers_resize():
+    """OOM-safety: on downgrade, an agent count of 0 means Paperclip was
+    unreachable (every provisioned owner always has Friday + Atlas seeded, so a
+    reachable list is never empty). Treating 0 as "small" would shrink an
+    oversized owner into an OOM that never self-heals. Defer the down-resize +
+    emit the unknown-count metric; plan still persists standard."""
+    with patch.object(handlers, "put_metric") as metric:
+        repo, mgr = await _drive(
+            _ultra_event(item_price=FLAT_PRICE),
+            account=_account(plan="ultra_pro"),
+            agents=[],  # fetch returned [] → Paperclip unreachable
+        )
+
+    assert repo.set_plan.await_args.kwargs["plan"] == "standard"
+    mgr.resize_user_container.assert_not_awaited()
+    names = [c.args[0] for c in metric.call_args_list]
+    assert "ultra.downgrade_deferred_unknown_count" in names
+    assert "ultra.downgrade_deferred_oversized" not in names
+
+
+@pytest.mark.asyncio
 async def test_metadata_tier_is_ignored_price_wins():
     """(d) subscription.metadata claiming a DIFFERENT tier is ignored — the
     Ultra price still drives ultra_pro + the up-resize."""

@@ -424,12 +424,20 @@ async def _apply_ultra_resize(owner_id: str, *, old_plan: str, new_plan: str) ->
 
     - Upgrade (→ ultra_pro): grow to the Ultra box.
     - Downgrade (ultra_pro → standard): shrink to the flat box ONLY when the
-      company still fits the standard agent budget. An oversized company
-      (> COMPANY_STANDARD_PLAN_MAX_AGENTS agents) is LEFT at Ultra size — the
-      smaller box would OOM under the same workload. Billing follows Stripe
-      (the plan is already persisted "standard"), but the runtime waits for the
-      owner to trim agents; a later sub event or an admin completes the shrink.
-      The deferred metric surfaces it for follow-up. This is the OOM-safe
+      live agent count is in ``0 < count <= COMPANY_STANDARD_PLAN_MAX_AGENTS``.
+      The count is DEFERRED (container left at Ultra size, metric emitted) when:
+        * ``count > COMPANY_STANDARD_PLAN_MAX_AGENTS`` — an oversized company;
+          the smaller box would OOM under the same workload.
+        * ``count == 0`` — the count is UNDETERMINABLE. Every provisioned owner
+          always has Friday + Atlas seeded, so a reachable owner's list is never
+          empty (>= 2); 0 means Paperclip was unreachable, NOT a legitimately
+          tiny owner. Shrinking on an unknown count would OOM an oversized owner
+          and NOT self-heal (post-shrink the plan is "standard", so later
+          flat-price events are standard->standard no-ops — only an admin resize
+          or a paid re-upgrade recovers). Defer instead.
+      Billing follows Stripe either way (the plan is already persisted
+      "standard"); only the resize waits for the owner to trim agents (a later
+      sub event or an admin completes the shrink). This is the OOM-safe
       downgrade.
 
     Best-effort: a resize failure must not 500 the webhook back to Stripe.
@@ -454,9 +462,24 @@ async def _apply_ultra_resize(owner_id: str, *, old_plan: str, new_plan: str) ->
             put_metric("ultra.resize", dimensions={"direction": "up"})
             return
 
-        # Downgrade out of Ultra: guard against shrinking an oversized company
-        # into an OOM.
+        # Downgrade out of Ultra: shrink DOWN only for a confirmed-small company
+        # (0 < count <= budget). Defer otherwise so we never OOM an oversized —
+        # or an undeterminable — owner into the smaller box.
         agent_count = await _count_owner_paperclip_agents(owner_id)
+        if agent_count == 0:
+            # A reachable owner ALWAYS lists >= 2 agents (Friday + Atlas are
+            # seeded at provision), so 0 means the count is unavailable
+            # (Paperclip unreachable), never a genuinely tiny owner. Shrinking on
+            # an unknown count risks OOMing an oversized owner AND doesn't
+            # self-heal (post-shrink plan="standard" makes later flat events
+            # standard->standard no-ops). Defer to an admin / re-upgrade.
+            put_metric("ultra.downgrade_deferred_unknown_count", 1)
+            logger.warning(
+                "Deferring Ultra down-resize for owner %s: agent count unavailable "
+                "(Paperclip unreachable) — leaving container at Ultra size to avoid OOM",
+                owner_id,
+            )
+            return
         if agent_count > COMPANY_STANDARD_PLAN_MAX_AGENTS:
             put_metric("ultra.downgrade_deferred_oversized", 1)
             logger.warning(

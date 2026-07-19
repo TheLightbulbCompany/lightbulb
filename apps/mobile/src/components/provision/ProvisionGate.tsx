@@ -264,12 +264,18 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
     );
   }
 
-  // Only `starting` remains as the non-blocking banner: a normal container
-  // cold-start where chat still works underneath and the bar auto-clears.
+  // `starting` (cold start) and `parked` (deliberately-asleep trial box) both
+  // render as a NON-blocking banner over live children — a parked container is
+  // healthy and one intent away from running, so it must never blank the chat
+  // or spin forever. Foregrounding already fired a wake in parallel and the
+  // poll carries wake=1, so both bars auto-clear to `ready`.
   return (
     <View style={styles.root}>
       {status.kind === "starting" && (
         <StartingBanner label="Your workspace is starting…" />
+      )}
+      {status.kind === "parked" && (
+        <StartingBanner label="Waking your agents…" />
       )}
       {children}
     </View>

@@ -4,7 +4,10 @@ import useSWR, { type SWRConfiguration } from "swr";
 import type { GatewayConnectionValue } from "../gateway/useGatewayConnection";
 
 /** The slice of the gateway connection the RPC hooks actually need. */
-export type GatewayRpcSource = Pick<GatewayConnectionValue, "sendReq" | "onEvent">;
+export type GatewayRpcSource = Pick<
+  GatewayConnectionValue,
+  "sendReq" | "onEvent" | "isParked"
+>;
 
 export interface RpcResult<T = unknown> {
   data: T | undefined;
@@ -27,7 +30,7 @@ export function useGatewayRpc<T = unknown>(
   params?: Record<string, unknown>,
   config?: SWRConfiguration,
 ): RpcResult<T> {
-  const { sendReq, onEvent } = gateway;
+  const { sendReq, onEvent, isParked } = gateway;
 
   const fetcher = useCallback(
     async (key: string) => {
@@ -50,7 +53,16 @@ export function useGatewayRpc<T = unknown>(
     [sendReq],
   );
 
-  const swrKey = method
+  // Null the SWR key while the socket is deliberately parked: a parked
+  // connection has no live WS, so any read RPC would reject and — because
+  // onErrorRetry below retries at a fixed 3s cadence up to ~5min — every
+  // gateway-backed component that renders over a parked box (the chat
+  // surface stays mounted by design) would enter a retry storm against the
+  // closed socket. Nulling the key freezes each RPC at its last cached value
+  // and stops revalidation; unpark() flips isParked false and SWR resumes.
+  // This never triggers a wake (RPCs don't touch /container/*), so park is
+  // preserved.
+  const swrKey = method && !isParked
     ? `rpc|${method}|${params ? JSON.stringify(params) : ""}`
     : null;
 

@@ -48,6 +48,7 @@ export class DatabaseStack extends cdk.Stack {
   public readonly marketplacePayoutAccountsTable: dynamodb.Table;
   public readonly marketplaceTakedownsTable: dynamodb.Table;
   public readonly marketplaceSellersTable: dynamodb.Table;
+  public readonly marketplaceCompanyDeploysTable: dynamodb.Table;
 
   // OpenClaw webhook ingress audit log (T4 of openclaw-hook-token-provisioning).
   // Per-owner event history for /hooks/{owner_id}/{path} requests proxied
@@ -354,6 +355,15 @@ export class DatabaseStack extends cdk.Stack {
     this.marketplaceSellersTable.addGlobalSecondaryIndex({
       indexName: "handle-index",
       partitionKey: { name: "handle", type: dynamodb.AttributeType.STRING },
+    });
+
+    // Company-deploy job ledger + polling surface — one row per company
+    // deploy, keyed by a minted job_id. Tracks overall status, per-agent
+    // materialization state, and created routine ids so the deploy engine
+    // can resume/roll back and the frontend can poll progress. No GSI: the
+    // only access pattern is get-by-job_id.
+    this.marketplaceCompanyDeploysTable = createTable("MarketplaceCompanyDeploysTable", "marketplace-company-deploys", {
+      partitionKey: { name: "job_id", type: dynamodb.AttributeType.STRING },
     });
 
     // OpenClaw webhook ingress audit table — every /hooks/{owner_id}/{path}

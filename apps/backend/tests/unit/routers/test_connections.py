@@ -286,6 +286,20 @@ class TestByoRequiredGate:
         response = await async_client.get("/api/v1/connections/google/authorize")
         assert response.status_code == 502
 
+    @pytest.mark.asyncio
+    @patch("routers.connections.oauth_dance")
+    async def test_authorize_returns_503_not_500_when_platform_app_unseeded(self, mock_dance, async_client):
+        # A platform-app provider (instagram) whose shared client hasn't been
+        # seeded into Secrets Manager yet: _oauth_client raises ValueError. That
+        # must degrade to a clean 503, not an uncaught 500 — the seed step is an
+        # operator gap, and a user clicking Connect before it lands should see a
+        # retryable message.
+        mock_dance.start = AsyncMock(
+            side_effect=ValueError("instagram: platform OAuth app 'meta-instagram' is not provisioned")
+        )
+        response = await async_client.get("/api/v1/connections/instagram/authorize")
+        assert response.status_code == 503
+
 
 class TestConnectPaste:
     """POST /api/v1/connections/{provider} — paste-key connect."""

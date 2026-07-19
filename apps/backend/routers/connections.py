@@ -747,6 +747,15 @@ async def authorize(provider: str, auth: AuthContext = Depends(get_current_user)
     # crash in a demo. The callback leg already degrades the same way.
     try:
         url = await oauth_dance.start(owner_id, provider, redirect_uri=_redirect_uri(provider))
+    except ValueError:
+        # No usable OAuth client — e.g. a platform-app provider (instagram) whose
+        # shared client hasn't been seeded into Secrets Manager for this env yet
+        # (_oauth_client raises). That's an operator gap, not a user error: return
+        # a clean 503 the frontend can show as "not available yet" instead of a 500.
+        raise HTTPException(
+            status_code=503,
+            detail=f"{p.display_name} isn't available to connect yet; please try again later.",
+        )
     except httpx.HTTPError:
         raise HTTPException(
             status_code=502,

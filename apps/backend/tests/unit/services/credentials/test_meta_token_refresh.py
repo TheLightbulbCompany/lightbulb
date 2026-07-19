@@ -62,6 +62,9 @@ class _FakeAsyncClient:
 @patch("core.services.credentials.meta_token_refresh.integration_secret_store.put", new_callable=AsyncMock)
 @patch("core.services.credentials.meta_token_refresh.integration_secret_store.get", new_callable=AsyncMock)
 async def test_stale_token_refreshes_and_rematerializes(mock_get, mock_put, mock_apply):
+    calls = []
+    mock_apply.side_effect = lambda *a, **k: calls.append("apply")
+    mock_put.side_effect = lambda *a, **k: calls.append("put")
     mock_get.return_value = {"access_token": "OLD", "token_expiry": _iso(5)}
     assert await meta_token_refresh.refresh_instagram_if_stale("org_1") is True
     stored = mock_put.await_args.args[2]
@@ -69,6 +72,23 @@ async def test_stale_token_refreshes_and_rematerializes(mock_get, mock_put, mock
     assert stored["expires_in"] == 5184000
     assert stored["token_expiry"]
     mock_apply.assert_awaited_once_with("org_1", "instagram", stored)
+    # EFS rematerialize must land BEFORE the stored expiry is advanced, so a
+    # failed apply leaves the credential looking stale for the next retry.
+    assert calls == ["apply", "put"]
+
+
+@pytest.mark.asyncio
+@patch("core.services.credentials.meta_token_refresh.apply_connection.apply_connection", new_callable=AsyncMock)
+@patch("core.services.credentials.meta_token_refresh.integration_secret_store.put", new_callable=AsyncMock)
+@patch("core.services.credentials.meta_token_refresh.integration_secret_store.get", new_callable=AsyncMock)
+async def test_rematerialize_failure_does_not_advance_stored_credential(mock_get, mock_put, mock_apply):
+    # If EFS rematerialize fails, the stored token/expiry must NOT advance —
+    # otherwise Secrets Manager reads fresh for ~60d while credentials.json keeps
+    # the dead token and the agent 401s with no self-heal.
+    mock_get.return_value = {"access_token": "OLD", "token_expiry": _iso(5)}
+    mock_apply.side_effect = RuntimeError("efs write failed")
+    assert await meta_token_refresh.refresh_instagram_if_stale("org_1") is False
+    mock_put.assert_not_awaited()
 
 
 @pytest.mark.asyncio

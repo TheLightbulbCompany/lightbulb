@@ -68,8 +68,13 @@ async def refresh_instagram_if_stale(owner_id: str) -> bool:
         credential["token_expiry"] = (
             (datetime.now(timezone.utc) + timedelta(seconds=expires_in)).isoformat() if expires_in else ""
         )
-        await integration_secret_store.put(owner_id, "instagram", credential)
+        # Rematerialize EFS (the token the agent actually reads) BEFORE advancing
+        # the retained credential's expiry. If apply fails here, the stored expiry
+        # stays in the past, so the next GET /connections retries — otherwise
+        # Secrets Manager would read fresh for ~60d while credentials.json kept the
+        # dead token, and the agent would 401 with no self-heal.
         await apply_connection.apply_connection(owner_id, "instagram", credential)
+        await integration_secret_store.put(owner_id, "instagram", credential)
         logger.info("instagram token refreshed for %s", owner_id)
         return True
     except Exception:

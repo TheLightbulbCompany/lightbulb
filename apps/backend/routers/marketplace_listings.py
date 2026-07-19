@@ -26,6 +26,7 @@ from core.auth import (
 )
 from core.config import settings
 from core.containers import get_ecs_manager, get_workspace
+from core.containers.ecs_manager import ULTRA_CPU, ULTRA_MEMORY_MIB
 from core.repositories import billing_repo, marketplace_repo
 from core.services import (
     agent_export,
@@ -408,15 +409,21 @@ async def deploy_listing(
             # container is still the standard 0.5 vCPU / 2 GB box. Seeding a
             # >10-agent company onto that box OOMs. A resize restarts the
             # container, so we CANNOT resize mid-deploy — instead we compare
-            # the running box's size against the plan-desired size and, on a
-            # mismatch, KICK the resize and refuse this deploy. Durable sizing
-            # (_size_for_owner) makes the box converge to Ultra; the owner
-            # retries once it is up. Only runs when needs_ultra — a standard
-            # box is always adequate for a standard company.
+            # the running box's ACTUAL size against Ultra and, on a mismatch,
+            # KICK the resize and refuse this deploy; the owner retries once it
+            # is up. Only runs when needs_ultra — a standard box is always
+            # adequate for a standard company.
+            #
+            # The desired size is the Ultra constants INLINE, not
+            # _size_for_owner: the plan gate just above already confirmed
+            # ultra_pro, and _size_for_owner is fail-open (a transient billing
+            # read error there returns the STANDARD size, which would falsely
+            # match the still-standard box and dispatch the big company onto
+            # the 2 GB box — the exact OOM this guards). current_container_size
+            # reads the real running size and does not touch billing.
+            desired_cpu, desired_memory = ULTRA_CPU, ULTRA_MEMORY_MIB
             ecs = get_ecs_manager()
-            desired_size = await ecs._size_for_owner(owner_id)
-            if await ecs.current_container_size(owner_id) != desired_size:
-                desired_cpu, desired_memory = desired_size
+            if await ecs.current_container_size(owner_id) != (desired_cpu, desired_memory):
                 await ecs.resize_user_container(owner_id, new_cpu=desired_cpu, new_memory=desired_memory)
                 raise HTTPException(
                     status_code=409,

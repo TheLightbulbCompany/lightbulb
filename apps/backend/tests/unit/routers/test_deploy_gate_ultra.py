@@ -67,10 +67,13 @@ def _tar_body(data: bytes = b"COMPANYTAR"):
     return {"Body": body}
 
 
-def _ecs_mock(*, current_size, desired_size=("2048", "8192")):
-    """ecs manager stub: plan-desired size + the running box's current size."""
+def _ecs_mock(*, current_size):
+    """ecs manager stub: the running box's ACTUAL size + resize.
+
+    The router derives the desired Ultra size inline from the ULTRA_* constants
+    (the plan gate already confirmed ultra_pro), so it does NOT call
+    _size_for_owner here — only current_container_size + resize_user_container."""
     ecs = MagicMock()
-    ecs._size_for_owner = AsyncMock(return_value=desired_size)
     ecs.current_container_size = AsyncMock(return_value=current_size)
     ecs.resize_user_container = AsyncMock()
     return ecs

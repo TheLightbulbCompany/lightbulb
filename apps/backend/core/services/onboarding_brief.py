@@ -79,21 +79,46 @@ Load your Paperclip identity first (see AGENTS.md — the export block for
    briefly as you go — no walls of text between actions.
 2. Read BRIEF.md (this workspace) to learn what business you're running. If
    it says they have no idea yet, picking one is your first job — look them
-   up (their email is in the brief, and you have web_search), commit to a
-   single business you can argue for, and say what you chose and why. Then
-   carry on below as though it had been their idea all along.
-3. Understand the business: research it and its market with web_search —
+   up (their email is in the brief), commit to a single business you can
+   argue for, and say what you chose and why. Then carry on below as though
+   it had been their idea all along.
+3. **Name the company.** Their company and project are both currently
+   named after them as a placeholder — pick a real name for the business
+   from what you just read, then set it in ONE go before anything else.
+   This is the first thing {first_name} sees change, so do it now, not at
+   the end.
+
+   ```
+   PATCH /api/companies/$PAPERCLIP_COMPANY_ID   {{"name": "<the name>"}}
+   PATCH /api/projects/{project_id}             {{"name": "<the name>"}}
+   ```
+
+   If the company PATCH 403s, keep going — the project rename is the one
+   that matters and the rest of the session is unaffected.
+4. Understand the business: research it and its market with web_search —
    on the grow path, fetch their website first. This is the heart of the
    session; actually understand who they serve and what they're up against.
-4. Write what you learned as durable docs — this is the visible output of
+5. Write what you learned as durable docs — this is the visible output of
    the research: `research/market-research.md` (market, competitors,
    positioning) and `MISSION.md` (what this company is, who it serves,
    where it's headed). Fold the mission's essence into USER.md's Context
    section and append durable facts to MEMORY.md — your permanent context.
-5. ONLY NOW, as the session's closing OUTPUT, propose their three best next
-   moves as tasks on the board. Create them; do NOT start them — each is a
-   task {first_name} will run later, in its own session. Branch on the Path
-   you read in BRIEF.md:
+6. **Write the mission onto the goal.** The company goal currently holds
+   their raw words. Replace it with the mission you just wrote:
+
+   ```
+   PATCH /api/goals/{goal_id}
+   {{"title": "<one-line mission>", "description": "<2-3 sentences>"}}
+   ```
+
+   Do NOT change its status or delete it — it is the company's north star
+   and everything else hangs off it.
+7. ONLY NOW, as the session's closing OUTPUT, propose their three best next
+   moves as tasks on the board. Create each with `"projectId": "{project_id}"`
+   so it lands in their project and inherits the company goal. You do not
+   need to set `goalId` — the board resolves it from the project. Create
+   them; do NOT start them — each is a task {first_name} will run later, in
+   its own session. Branch on the Path you read in BRIEF.md:
      - NEW business (starting from scratch): the FIRST task is ALWAYS a
        website — create a "Build [company] website" task for a landing page,
        noting that running it produces the site in this workspace and going
@@ -107,7 +132,7 @@ Load your Paperclip identity first (see AGENTS.md — the export block for
        content engine, lead research, or a pricing review — whichever you
        found weakest or with the most upside for THIS business.
    Give each a short specific title and a one-line description.
-6. Close in chat: recap what you learned about their business, name the
+8. Close in chat: recap what you learned about their business, name the
    three tasks you queued, and invite them to pick one and hit run —
    "I'll do it while you watch." If they want things running while they're
    away, that's a plan upgrade — say so plainly, don't sell.
@@ -145,8 +170,12 @@ def render_brief_md(
     )
 
 
-def render_first_run_bootstrap(*, first_name: str) -> str:
-    return _FIRST_RUN_BOOTSTRAP_TEMPLATE.format(first_name=first_name)
+def render_first_run_bootstrap(*, first_name: str, goal_id: str, project_id: str) -> str:
+    return _FIRST_RUN_BOOTSTRAP_TEMPLATE.format(
+        first_name=first_name,
+        goal_id=goal_id,
+        project_id=project_id,
+    )
 
 
 _MAX_GOAL_TITLE = 120

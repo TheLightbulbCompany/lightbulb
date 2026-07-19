@@ -139,7 +139,7 @@ async def submit_brief(
             display_name=first_name,
             email=auth.email or "",
         )
-        bootstrap_md = render_first_run_bootstrap(first_name=first_name)
+        bootstrap_md = render_first_run_bootstrap(first_name=first_name, goal_id=goal_id, project_id=project_id)
 
         # No board seeding here: the first run is Friday's own research
         # session, and the board fills at the END of it with the three

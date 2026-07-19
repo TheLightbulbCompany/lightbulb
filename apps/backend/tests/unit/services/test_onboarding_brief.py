@@ -70,14 +70,14 @@ def test_render_brief_md_no_idea_tells_friday_to_pick_one():
 
 
 def test_render_first_run_bootstrap_tells_friday_to_pick_when_no_idea():
-    md = render_first_run_bootstrap(first_name="Max")
+    md = render_first_run_bootstrap(first_name="Max", goal_id="goal-1", project_id="proj-1")
     assert "no idea yet" in md
     # The pick happens BEFORE the research step, not after.
     assert md.index("picking one is your first job") < md.index("Understand the business")
 
 
 def test_render_first_run_bootstrap_researches_before_proposing_tasks():
-    md = render_first_run_bootstrap(first_name="Max")
+    md = render_first_run_bootstrap(first_name="Max", goal_id="goal-1", project_id="proj-1")
     assert "BRIEF.md" in md
     assert "Max" in md
     # New ordering (spec §4.D): understand the business + write the docs FIRST,
@@ -95,6 +95,29 @@ def test_render_first_run_bootstrap_researches_before_proposing_tasks():
     assert "do NOT start them" in md
     # No Set-up-issue claim/seed in the new flow (the board fills at the end).
     assert "check out the issue" not in md
+
+
+def test_bootstrap_names_before_researching():
+    md = render_first_run_bootstrap(first_name="Max", goal_id="goal-1", project_id="proj-1")
+    assert md.index("Name the company") < md.index("web_search")
+
+
+def test_bootstrap_carries_the_ids():
+    md = render_first_run_bootstrap(first_name="Max", goal_id="goal-1", project_id="proj-1")
+    assert "goal-1" in md
+    assert "proj-1" in md
+
+
+def test_bootstrap_files_tasks_into_the_project():
+    md = render_first_run_bootstrap(first_name="Max", goal_id="goal-1", project_id="proj-1")
+    assert "projectId" in md
+
+
+def test_bootstrap_renders_with_braces_intact():
+    """JSON braces in the template must survive str.format()."""
+    md = render_first_run_bootstrap(first_name="Max", goal_id="goal-1", project_id="proj-1")
+    assert '"projectId"' in md
+    assert "{{" not in md
 
 
 def test_goal_title_new_path_uses_their_words():

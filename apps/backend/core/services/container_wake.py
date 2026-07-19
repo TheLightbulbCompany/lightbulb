@@ -86,25 +86,40 @@ async def request_wake(owner_id: str, *, reason: str, is_admin: bool, user_id: s
     return WakeResult(outcome="dispatched")
 
 
+# Stop provenances a chat message must NOT undo: an operator deliberately took
+# the box down (admin stop, runaway killswitch). The status poll's auto-retry
+# may still recover these per its own rules; the SILENT path never does.
+_OPERATOR_STOP_REASONS = frozenset({"admin", "killswitch"})
+
+
 async def request_wake_silent(owner_id: str, *, user_id: str, door: str = "chat_send") -> str:
     """Best-effort wake for server-side intent (a message arrived for a
-    stopped container). Same stand-downs as ``request_wake`` but never raises
-    and returns only the outcome string — the caller emits its user-facing
-    frame regardless (the wake is a side effect, not the reply)."""
+    stopped container). Same gate ordering as ``request_wake`` — the trial
+    gates AND ``evaluate_provision_gate`` (subscription/credits/OAuth) both
+    stand the wake down, so a canceled owner can never resurrect a container
+    with a chat message — plus one stricter rule: rows an operator stopped
+    (``stop_reason`` admin/killswitch) are never silently restarted. Never
+    raises; returns only the outcome string — the caller emits its
+    user-facing frame regardless (the wake is a side effect, not the
+    reply)."""
     try:
         from core.repositories import container_repo
-        from core.services import trial_cap
+        from core.services import provision_gate, trial_cap
 
         # Trial gates still apply — a capped owner's send must not start a
         # container the cap already parked. (The chat path surfaces its own
         # limit card; this helper just declines to wake.)
         if await trial_cap.trial_block_reason(owner_id) is not None:
             return "blocked"
+        if await provision_gate.evaluate_provision_gate(owner_id=owner_id, is_admin=True) is not None:
+            return "blocked"
         container = await container_repo.get_by_owner_id(owner_id)
         if not container:
             return "no_row"
         if container.get("conversion_pending"):
             return "converting"
+        if container.get("stop_reason") in _OPERATOR_STOP_REASONS:
+            return "operator_stopped"
         status = container.get("status")
         if status == "running":
             return "already_running"

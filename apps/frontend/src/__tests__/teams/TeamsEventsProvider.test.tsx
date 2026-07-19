@@ -75,6 +75,24 @@ const FIXTURE_KEYS = [
   "/teams/issues/iss_1/interactions",
   "/teams/issues/ADM-481", // identifier-keyed variant (details.identifier)
   "/teams/issues/iss_other", // a DIFFERENT issue: must NOT be invalidated
+  // Sibling detail panels. Every production opener for these routes passes the
+  // row's UUID (`r.id`/`p.id`/`node.id`/`run.id`) — none has a human
+  // identifier field at all — so the activity payload's entityId interpolates
+  // straight into the cache key.
+  "/teams/routines",
+  "/teams/routines/rt_1",
+  "/teams/routines/rt_1/runs",
+  "/teams/routines/rt_1/revisions",
+  "/teams/routines/rt_other",
+  "/teams/projects",
+  "/teams/projects/pr_1",
+  "/teams/goals",
+  "/teams/goals/g_1",
+  // Run detail reads a primary key plus a legacy fallback, and its
+  // sub-resources carry query strings.
+  "/teams/heartbeat-runs/run_1",
+  "/teams/heartbeat-runs/run_1/events?limit=1000",
+  "/teams/runs/run_1",
 ] as const;
 
 type Predicate = (key: unknown) => boolean;
@@ -204,6 +222,113 @@ describe("TeamsEventsProvider", () => {
       });
     }).not.toThrow();
     expect(invalidatedKeys()).toContain("/teams/issues");
+  });
+
+  it.each([
+    ["routine", "rt_1", ["/teams/routines/rt_1", "/teams/routines/rt_1/runs", "/teams/routines/rt_1/revisions"], "/teams/routines"],
+    ["project", "pr_1", ["/teams/projects/pr_1"], "/teams/projects"],
+    ["goal", "g_1", ["/teams/goals/g_1"], "/teams/goals"],
+  ])(
+    "invalidates the open %s detail subtree + its list on an entity activity event",
+    (entityType, entityId, expectedDetailKeys, listKey) => {
+      gatewayState.isConnected = true;
+      render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
+      mutateMock.mockClear(); // drop the first-subscribe reconcile
+
+      act(() => {
+        eventHandler!("teams.activity.logged", {
+          action: `${entityType}.updated`,
+          entityType,
+          entityId,
+        });
+      });
+
+      const keys = invalidatedKeys();
+      expect(keys).toEqual(expect.arrayContaining(expectedDetailKeys));
+      // The matching LIST key refreshes too — activity.logged previously
+      // refreshed no routines/projects/goals key at all, so these lists went
+      // stale on create/delete just like the detail panels did.
+      expect(keys).toContain(listKey);
+      // Entity-scoped: an unrelated entity type's list is untouched.
+      expect(keys).not.toContain("/teams/agents");
+    },
+  );
+
+  it("invalidates both the primary and legacy run keys on a heartbeat_run activity event", () => {
+    // RunDetailPanel reads `/teams/heartbeat-runs/{id}` with a `/teams/runs/{id}`
+    // legacy fallback, and its sub-resources carry query strings.
+    gatewayState.isConnected = true;
+    render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
+    mutateMock.mockClear();
+
+    act(() => {
+      eventHandler!("teams.activity.logged", {
+        action: "heartbeat.cancelled",
+        entityType: "heartbeat_run",
+        entityId: "run_1",
+      });
+    });
+
+    const keys = invalidatedKeys();
+    expect(keys).toEqual(expect.arrayContaining([
+      "/teams/heartbeat-runs/run_1",
+      "/teams/heartbeat-runs/run_1/events?limit=1000",
+      "/teams/runs/run_1",
+    ]));
+  });
+
+  it("refreshes the agent roster on an agent activity event (no per-agent detail key exists)", () => {
+    // AgentInspectorPanel has no `/teams/agents/{id}` key — it scans the
+    // roster list. Only `teams.agent.status` refreshed that list before, so an
+    // agent.updated/paused/renamed activity left the inspector stale.
+    gatewayState.isConnected = true;
+    render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
+    mutateMock.mockClear();
+
+    act(() => {
+      eventHandler!("teams.activity.logged", {
+        action: "agent.paused",
+        entityType: "agent",
+        entityId: "ag_1",
+      });
+    });
+
+    expect(invalidatedKeys()).toContain("/teams/agents");
+  });
+
+  it("ignores entity types with no mapped surface", () => {
+    // Paperclip's plugin SDK can emit an arbitrary entityType/entityId
+    // (plugin-host-services.ts), and built-in agents can pass a slug instead
+    // of a UUID. Both must be inert, not throw and not over-invalidate.
+    gatewayState.isConnected = true;
+    render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
+    mutateMock.mockClear();
+
+    act(() => {
+      eventHandler!("teams.activity.logged", {
+        entityType: "company_skill",
+        entityId: "some-plugin-slug",
+      });
+    });
+
+    const keys = invalidatedKeys();
+    expect(keys).not.toContain("/teams/routines");
+    expect(keys).not.toContain("/teams/projects");
+    expect(keys).not.toContain("/teams/agents");
+    expect(keys).toContain("/teams/inbox"); // unconditional list keys still fire
+  });
+
+  it("reconcile covers the entity list keys too (ALL_KEYS drift guard)", () => {
+    // ALL_KEYS must stay the union of EVERY key any path can invalidate. If
+    // the entity prefixes are omitted, a routine/project/goal changed while
+    // the user was outside Teams stays stale on re-entry, because the read
+    // layer's 15s dedup blocks the mount-refetch.
+    gatewayState.isConnected = true;
+    render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
+    const keys = invalidatedKeys();
+    expect(keys).toEqual(expect.arrayContaining([
+      "/teams/routines", "/teams/projects", "/teams/goals", "/teams/agents",
+    ]));
   });
 
   it("captures first_run_board_pulse on teams.activity.logged during an active first-run show", () => {

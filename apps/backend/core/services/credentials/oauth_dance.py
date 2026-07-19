@@ -1,5 +1,5 @@
 """Generic 3-legged OAuth (authorization_code + PKCE). Endpoint metadata from
-the registry. Two client-acquisition modes:
+the registry. Three client-acquisition modes:
 
 - BYO app (e.g. google): the owner stores their own client_id + client_secret in
   Secrets Manager; the dance reads it on every connect/reconnect.
@@ -7,6 +7,10 @@ the registry. Two client-acquisition modes:
   endpoint, so the dance registers a fresh PUBLIC client (no secret, PKCE-only)
   the first time the owner connects and caches it in the same store, keyed
   client_secret="" to mark it public.
+- Platform app (e.g. instagram): Isol8 hosts ONE reviewed OAuth client
+  (oauth.platform_app names it in platform_oauth_app_store); every owner
+  authorizes against it and grants access to their own assets. The per-owner
+  app store is never consulted.
 """
 
 from __future__ import annotations
@@ -20,7 +24,12 @@ from urllib.parse import urlencode
 import httpx
 
 from core.repositories import oauth_state_repo
-from core.services.credentials import oauth_app_store, registry
+from core.services.credentials import oauth_app_store, platform_oauth_app_store, registry
+
+# Instagram's short→long-lived token upgrade endpoint (Business Login for
+# Instagram / "Instagram API with Instagram Login"). GET with the app secret;
+# returns a ~60-day token. See OAuthSpec.long_lived_exchange.
+_IG_LONG_LIVED_URL = "https://graph.instagram.com/access_token"
 
 
 def _pkce() -> tuple[str, str]:
@@ -67,12 +76,21 @@ async def _register_dcr_client(owner_id: str, provider_key: str, p: registry.Pro
 
 
 async def _oauth_client(owner_id: str, provider_key: str) -> tuple[str, str]:
-    """The OAuth client for this provider: the owner's BYO app, or a DCR-registered
-    public client. A missing/half-populated app is an error — start() and exchange()
+    """The OAuth client for this provider: the Isol8 platform app (when the
+    provider declares one), the owner's BYO app, or a DCR-registered public
+    client. A missing/half-populated app is an error — start() and exchange()
     both call this, so a connect attempt without a usable client fails fast.
 
     A public client legitimately has an empty secret (client_secret=""), so only the
     client_id is required here; the secret may be empty."""
+    p = registry.get_provider(provider_key)
+    if p.oauth and p.oauth.platform_app:
+        app = await platform_oauth_app_store.get(p.oauth.platform_app)
+        if not app:
+            # Operator-side gap, not a user error: the shared client was never
+            # seeded into Secrets Manager for this environment.
+            raise ValueError(f"{provider_key}: platform OAuth app '{p.oauth.platform_app}' is not provisioned")
+        return app["client_id"], app["client_secret"]
     byo = await oauth_app_store.get(owner_id, provider_key)
     if not (byo and byo.get("client_id")):
         raise ValueError(f"{provider_key} requires your own OAuth app; none configured for this owner")
@@ -159,8 +177,24 @@ async def exchange(state: str, code: str, *, redirect_uri: str) -> tuple[str, st
         data["resource"] = p.mcp_remote.url
     async with httpx.AsyncClient(timeout=15) as http:
         resp = await http.post(p.oauth.token_url, data=data)
-    resp.raise_for_status()
-    tok = resp.json()
+        resp.raise_for_status()
+        tok = resp.json()
+        # Instagram's code exchange yields a ~1h token; agents need the ~60d one.
+        # The upgrade requires the app secret, so it happens here — the ONLY place
+        # outside Secrets Manager that ever sees the platform client_secret.
+        if p.oauth.long_lived_exchange == "ig_exchange_token":
+            ll = await http.get(
+                _IG_LONG_LIVED_URL,
+                params={
+                    "grant_type": "ig_exchange_token",
+                    "client_secret": client_secret,
+                    "access_token": tok["access_token"],
+                },
+            )
+            ll.raise_for_status()
+            upgraded = ll.json()
+            tok["access_token"] = upgraded["access_token"]
+            tok["expires_in"] = upgraded.get("expires_in")
     expires_in = tok.get("expires_in")
     credential = {
         "access_token": tok["access_token"],
@@ -170,17 +204,29 @@ async def exchange(state: str, code: str, *, redirect_uri: str) -> tuple[str, st
         "client_id": client_id,
         "client_secret": client_secret,
     }
+    # Instagram's exchange also returns the app-scoped IG user id — materializers
+    # need it for Graph calls, so carry it through when present.
+    if tok.get("user_id"):
+        credential["provider_user_id"] = str(tok["user_id"])
+    # The platform app's secret is Isol8's, not the owner's. It must exist only in
+    # its own Secrets Manager entry — never inside a per-owner credential payload,
+    # where downstream rails (materializers, client_information) would carry it
+    # toward agent-readable surfaces.
+    if p.oauth.platform_app:
+        credential["client_secret"] = ""
     # The mcp_oauth materializer needs the full registered-client JSON to write
     # store.clientInformation. It was cached at registration; carry it through so
     # the materializer doesn't re-read the store. A BYO provider (google) has no
     # cached client_information — synthesize the minimal {client_id[, client_secret]}
     # so the field is always present and shaped like OAuthClientInformationMixed.
-    app = await oauth_app_store.get(rec["owner_id"], rec["provider"])
+    app = None if p.oauth.platform_app else await oauth_app_store.get(rec["owner_id"], rec["provider"])
     if app and app.get("client_information"):
         credential["client_information"] = app["client_information"]
     else:
+        # Synthesize from the credential (not the local client_secret) so a
+        # platform app's blanked secret stays blank here too.
         info: dict = {"client_id": client_id}
-        if client_secret:
-            info["client_secret"] = client_secret
+        if credential["client_secret"]:
+            info["client_secret"] = credential["client_secret"]
         credential["client_information"] = info
     return rec["owner_id"], rec["provider"], credential

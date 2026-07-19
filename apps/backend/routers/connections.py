@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import logging
@@ -26,7 +27,9 @@ from core.services import config_patcher
 from core.services.credentials import (
     apply_connection,
     aws_cfn,
+    connection_lock,
     integration_secret_store,
+    meta_token_refresh,
     oauth_app_store,
     oauth_dance,
     registry,
@@ -190,11 +193,29 @@ async def _self_account_role_is_pinned(role_arn: str, owner_id: str, external_id
         return False
 
 
+def _current_env() -> str:
+    # Empty ENVIRONMENT (local dev) is treated as "dev", matching the
+    # integration_secret_store / provider-secret naming convention.
+    return settings.ENVIRONMENT or "dev"
+
+
+def _available_in_env(p: registry.Provider) -> bool:
+    """Whether this provider is exposed in the running environment. A provider
+    with no `environments` list is available everywhere; a gated one (e.g. a
+    dev-only Instagram) only in its listed envs."""
+    return p.environments is None or _current_env() in p.environments
+
+
 def _get_provider_or_404(provider: str) -> registry.Provider:
     try:
-        return registry.get_provider(provider)
+        p = registry.get_provider(provider)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"unknown integration provider: {provider}")
+    if not _available_in_env(p):
+        # Env-gated provider hit outside its envs (e.g. dev-only in prod): 404
+        # like an unknown provider so it's neither connectable nor discoverable.
+        raise HTTPException(status_code=404, detail=f"unknown integration provider: {provider}")
+    return p
 
 
 async def _byo_active(owner_id: str, provider_key: str) -> bool:
@@ -257,8 +278,17 @@ async def list_connections(auth: AuthContext = Depends(get_current_user)):
     owner_id = resolve_owner_id(auth)
     rows = await integrations_repo.list_for_owner(owner_id)
     connected = {r["provider"]: r.get("status", "connected") for r in rows}
+    # Lazy server-side refresh for backend-refreshed tokens (Instagram): every
+    # Settings visit inside the refresh window renews the 60-day token in the
+    # background. Fire-and-forget — the listing must not wait on Graph API.
+    if connected.get("instagram") == "connected":
+        asyncio.create_task(meta_token_refresh.refresh_instagram_if_stale(owner_id))
     connections = []
     for k, v in registry.all_providers().items():
+        # Skip env-gated providers outside their envs so a dev-only integration
+        # never appears in the prod connections list.
+        if not _available_in_env(v):
+            continue
         byo = await _byo_active(owner_id, k)
         connections.append(
             {
@@ -615,6 +645,18 @@ async def disconnect(provider: str, account: str | None = None, auth: AuthContex
             raise HTTPException(status_code=400, detail="the account parameter is only supported for google")
         await _disconnect_one_google_account(owner_id, p, account)
         return {"status": "disconnected", "provider": provider, "account": account}
+    # Serialize the teardown against a concurrent background refresh (Instagram's
+    # lazy token refresh writes EFS + SM fire-and-forget from GET /connections).
+    # The refresh takes the same per-owner lock around its recheck→write section,
+    # so whichever runs second sees the other's completed state — a disconnect can
+    # no longer be undone by an in-flight refresh. Uncontended for providers with
+    # no background writer.
+    async with connection_lock.connection_lock(owner_id, provider):
+        await _disconnect_teardown(owner_id, provider, p)
+    return {"status": "disconnected", "provider": provider}
+
+
+async def _disconnect_teardown(owner_id: str, provider: str, p: registry.Provider) -> None:
     # Materializer-backed providers wrote credential files onto EFS; remove
     # those first so disconnect leaves no on-disk residue. The remover deletes
     # the artifact by owner/provider and does not need the secret value.
@@ -673,7 +715,6 @@ async def disconnect(provider: str, account: str | None = None, auth: AuthContex
         # command-less (invalid) server, and a blanked token would keep a dead
         # entry around.
         await config_patcher.delete_openclaw_config_path(owner_id, ["mcp", "servers", p.wiring.mcp_server.key])
-    return {"status": "disconnected", "provider": provider}
 
 
 @router.put("/{provider}/byo-app")
@@ -740,6 +781,15 @@ async def authorize(provider: str, auth: AuthContext = Depends(get_current_user)
     # crash in a demo. The callback leg already degrades the same way.
     try:
         url = await oauth_dance.start(owner_id, provider, redirect_uri=_redirect_uri(provider))
+    except ValueError:
+        # No usable OAuth client — e.g. a platform-app provider (instagram) whose
+        # shared client hasn't been seeded into Secrets Manager for this env yet
+        # (_oauth_client raises). That's an operator gap, not a user error: return
+        # a clean 503 the frontend can show as "not available yet" instead of a 500.
+        raise HTTPException(
+            status_code=503,
+            detail=f"{p.display_name} isn't available to connect yet; please try again later.",
+        )
     except httpx.HTTPError:
         raise HTTPException(
             status_code=502,
@@ -769,21 +819,26 @@ async def oauth_callback(provider: str, code: str, state: str):
         # the connections page with a retryable error instead of a 500.
         return RedirectResponse(f"{settings.FRONTEND_URL}/settings/connections?error=oauth_exchange")
     p = registry.get_provider(prov)
-    # Retain the credential in Secrets Manager only when the backend is the
-    # custodian. Actor-refresh providers (e.g. gog) self-refresh inside the
-    # container, so the backend stores nothing and the EFS keyring written by
-    # apply_connection is the sole durable copy. Mark connected only after
-    # wiring succeeds.
-    if _retains_secret(p):
-        await integration_secret_store.put(owner_id, prov, credential)
-    try:
-        connection_identity = await apply_connection.apply_connection(owner_id, prov, credential)
-    except Exception:
-        await _remove_materialized_artifacts(owner_id, p, credential)
+    # Serialize the connect writes against a concurrent disconnect or background
+    # refresh (same per-owner lock all three take): a lazy Instagram refresh that
+    # captured the old token before this connect must not clobber the credential
+    # this callback stores. Taken AFTER the exchange network call, never around it.
+    async with connection_lock.connection_lock(owner_id, prov):
+        # Retain the credential in Secrets Manager only when the backend is the
+        # custodian. Actor-refresh providers (e.g. gog) self-refresh inside the
+        # container, so the backend stores nothing and the EFS keyring written by
+        # apply_connection is the sole durable copy. Mark connected only after
+        # wiring succeeds.
         if _retains_secret(p):
-            await integration_secret_store.delete(owner_id, prov)
-        return RedirectResponse(f"{settings.FRONTEND_URL}/settings/connections?error=apply_failed")
-    await integrations_repo.put_status(owner_id, prov, "connected")
+            await integration_secret_store.put(owner_id, prov, credential)
+        try:
+            connection_identity = await apply_connection.apply_connection(owner_id, prov, credential)
+        except Exception:
+            await _remove_materialized_artifacts(owner_id, p, credential)
+            if _retains_secret(p):
+                await integration_secret_store.delete(owner_id, prov)
+            return RedirectResponse(f"{settings.FRONTEND_URL}/settings/connections?error=apply_failed")
+        await integrations_repo.put_status(owner_id, prov, "connected")
     # Google supports multiple accounts under one provider-level "connected"
     # status: each connect adds a distinct account to the owner's inventory so an
     # agent can later be bound to a specific one. The account identity is the

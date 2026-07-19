@@ -136,6 +136,19 @@ class OAuthSpec(BaseModel):
     # stored, the dance registers a fresh public OAuth client at this URL (RFC 7591)
     # and caches it, so a headless owner never needs to pre-create an OAuth app.
     registration_url: str | None = None
+    # Platform-hosted OAuth app: the name of the Isol8-owned client stored at
+    # ``isol8/<env>/integrations/platform-oauth/<name>`` in Secrets Manager. Every
+    # owner OAuths against this ONE reviewed app (the Buffer/Hootsuite model —
+    # Meta app review approves the app once, each user grants access to their own
+    # assets). Mutually exclusive with BYO (byo_required) and DCR
+    # (registration_url): when set, the dance never consults the per-owner app
+    # store for the client.
+    platform_app: str | None = None
+    # Provider-specific post-exchange hook. "ig_exchange_token" upgrades
+    # Instagram's short-lived (1h) token to a long-lived (60d) one immediately
+    # after the code exchange — the upgrade needs the client_secret, so it must
+    # run in the dance (backend), never in a materializer or the container.
+    long_lived_exchange: Literal["ig_exchange_token"] | None = None
 
 
 class ValidateSpec(BaseModel):
@@ -207,6 +220,12 @@ class Provider(BaseModel):
     # materializer. Only set for OAuth-protected remote MCP servers (e.g. Attio);
     # see McpRemote for why it lives at the provider level rather than in Wiring.
     mcp_remote: McpRemote | None = None
+    # Restrict this provider to specific environments (e.g. ["local", "dev"]).
+    # None = available in every environment. Used to ship a provider to dev for
+    # testing before it's cleared for prod — e.g. Instagram, pending Meta App
+    # Review + the platform-secret seed. Enforced in routers/connections.py:
+    # gated providers are neither listed nor connectable outside their envs.
+    environments: list[str] | None = None
     # Bundled skill delivered by a paste-token CLI integration (see SkillSpec).
     skill: SkillSpec | None = None
     # AWS STS rail config. Only set for the `aws` provider (acquisition
@@ -225,6 +244,11 @@ class Provider(BaseModel):
             raise ValueError(f"{self.key}: direct_oauth requires an `oauth` block")
         if self.acquisition == "aws_sts" and self.aws_sts is None:
             raise ValueError(f"{self.key}: aws_sts requires an aws_sts block")
+        # A platform app IS the client — a provider can't simultaneously demand a
+        # BYO app or register one dynamically. Catching the contradiction at load
+        # time keeps _oauth_client's resolution order unambiguous.
+        if self.oauth and self.oauth.platform_app and (self.byo_required or self.oauth.registration_url):
+            raise ValueError(f"{self.key}: platform_app is mutually exclusive with byo_required/registration_url")
         return self
 
 

@@ -17,7 +17,8 @@
 - The project MUST NOT set `targetDate`. It is a permanent bucket, not a milestone.
 - Project name is `f"{first_name}'s Company"` on every path. Never a placeholder string.
 - Goal title is a real mission statement on every path. Never a placeholder string.
-- Existing behaviour that must not regress: `BRIEF.md` stays `write_file_if_missing`, `BOOTSTRAP.md` stays an unconditional overwrite, and a replay still returns `{"status": "already_submitted"}`.
+- The claim is the **sole** one-shot marker. `BRIEF.md` was previously the marker via `write_file_if_missing`; holding the claim already proves this is the company's first run, so both files are now written unconditionally. Two markers can disagree — a run that seeds, stages, then fails to record ids would release the claim, and the retry would win a fresh claim, seed a **second** goal and project, then see `BRIEF.md` present and return `already_submitted`, orphaning the duplicate pair. One marker makes that state unrepresentable.
+- A replay still returns `{"status": "already_submitted"}` — decided by the claim, not by file existence.
 - Branch: `spec/onboarding-goal-and-project`. Do not push without explicit approval.
 - Run backend tests with `cd apps/backend && uv run pytest <path> -v`.
 
@@ -555,7 +556,62 @@ async def seed_goal_and_project(
 Run: `cd apps/backend && uv run pytest tests/unit/services/test_onboarding_brief.py -v`
 Expected: all pass
 
-- [ ] **Step 5: Verify the create-goal response shape**
+- [ ] **Step 5: Make staging unconditional**
+
+The claim is now the only one-shot marker, so `stage_first_run_files` no longer needs to decide anything. Add this test:
+
+```python
+def test_staging_overwrites_a_partial_prior_attempt():
+    """The claim decides one-shot-ness now, so staging always writes both.
+
+    A prior attempt that staged files and then failed leaves BRIEF.md behind.
+    Returning early on that would strand the goal and project this run just
+    seeded, so we overwrite instead.
+    """
+    ws = MagicMock()
+
+    stage_first_run_files(
+        workspace=ws,
+        owner_id="user_abc",
+        friday_agent_id="friday-uuid",
+        brief_md="brief",
+        bootstrap_md="bootstrap",
+    )
+
+    assert ws.write_file.call_count == 2
+    ws.write_file_if_missing.assert_not_called()
+```
+
+Then rewrite the function:
+
+```python
+def stage_first_run_files(
+    *,
+    workspace: Workspace,
+    owner_id: str,
+    friday_agent_id: str,
+    brief_md: str,
+    bootstrap_md: str,
+) -> None:
+    """Write BRIEF.md + the first-run BOOTSTRAP.md, both unconditionally.
+
+    BRIEF.md used to be written write-if-missing because its existence WAS
+    the one-shot marker for the flow. The company-scoped onboarding claim is
+    that marker now, and holding it already proves this is the first run —
+    so a BRIEF.md left behind by an attempt that failed partway is stale
+    state to overwrite, not a reason to stop. Stopping there would strand the
+    goal and project the caller seeded moments earlier.
+    """
+    base = f"workspaces/{friday_agent_id}"
+    workspace.write_file(owner_id, f"{base}/BRIEF.md", brief_md)
+    workspace.write_file(owner_id, f"{base}/BOOTSTRAP.md", bootstrap_md)
+```
+
+Note the return type changed from `bool` to `None` — the caller no longer branches on it. Update the module docstring at `onboarding_brief.py:7-9`, which still describes BRIEF.md as "written write-if-missing: its existence IS the one-shot marker for the whole flow."
+
+Delete any existing test asserting the write-if-missing/rollback behaviour rather than inverting it.
+
+- [ ] **Step 6: Verify the create-goal response shape**
 
 The implementation reads `goal["id"]` and `project["id"]`. Confirm the BFF passes Paperclip's row through unwrapped rather than enveloping it:
 
@@ -717,15 +773,13 @@ Wrap everything after the claim so any failure releases it:
             project_id=project_id,
         )
 
-        wrote = stage_first_run_files(
+        stage_first_run_files(
             workspace=get_workspace(),
             owner_id=ctx.owner_id,
             friday_agent_id=friday_id,
             brief_md=brief_md,
             bootstrap_md=bootstrap_md,
         )
-        if not wrote:
-            return {"status": "already_submitted"}
 
         # Recorded LAST: a claim carrying ids always means both Paperclip
         # rows exist and are linked.
@@ -763,20 +817,14 @@ from core.services.onboarding_brief import (
 )
 ```
 
-**Open question this task surfaces — decide before implementing.** The spec says "the
-org admin fills the brief," but removing `auth.is_org_context` wholesale lets any org
-*member* submit it. The sentinel keeps that safe — only one person can seed — but
-whoever gets there first supplies the provisional project name, so a non-admin member
-loading `/chat` before the admin would produce "Priya's Company" for an org the admin
-owns. Friday renames it either way, so the blast radius is one turn of a slightly odd
-name.
-
-Two defensible answers: gate org submits on `auth.org_role == "admin"` (matches the
-spec's wording, but an org whose admin never opens the app is stuck with no
-onboarding), or leave it open (any member can kick it off; the sentinel prevents
-duplicates). **Recommendation: leave it open**, because the failure mode is cosmetic
-and self-correcting, while the admin-gated version has a permanent stuck state. Confirm
-with the requester before writing the code, and record the answer in the commit body.
+**Org submits are open to any member — decided, do not add an admin gate.** Removing
+`auth.is_org_context` wholesale means any org member can submit, not just the admin.
+That is intentional: the claim already prevents duplicates, so the only consequence is
+that whoever submits first supplies the provisional project name — a non-admin member
+would produce "Priya's Company" for an org the admin owns, which Friday renames a turn
+later. An admin-only gate was rejected because an org whose admin never opens the app
+would be permanently stuck with no onboarding and no self-service recovery. A cosmetic,
+self-correcting failure beats a permanent one.
 
 Resolve the repo the same way other callers do — `grep -rn "PaperclipRepo(" apps/backend/core apps/backend/routers | grep -v test` to find the existing accessor, and use it rather than constructing one.
 

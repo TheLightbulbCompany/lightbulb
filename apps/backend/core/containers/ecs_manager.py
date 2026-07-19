@@ -845,17 +845,26 @@ class EcsManager:
         logger.info("Created ECS service %s for user %s", service_name, user_id)
         return service_name
 
-    async def stop_user_service(self, user_id: str) -> None:
+    async def stop_user_service(self, user_id: str, *, reason: str = "manual") -> None:
         """Scale a user's ECS service to 0 (stopped).
 
         Args:
             user_id: Clerk user ID.
+            reason: Stop provenance stamped onto the row as ``stop_reason``
+                (``trial_idle`` also stamps ``parked_at``). The wake-suppression
+                predicate treats ONLY ``trial_idle`` rows as parked; every other
+                reason keeps the status poll's wake/self-heal behavior, so a
+                killswitch or admin stop can never masquerade as a healthy
+                parked box.
 
         Raises:
             EcsManagerError: If the ECS update_service call fails.
         """
         service_name = self._service_name(user_id)
-        put_metric("container.lifecycle.state_change", dimensions={"state": "stopping"})
+        put_metric(
+            "container.lifecycle.state_change",
+            dimensions={"state": "stopping", "reason": reason},
+        )
 
         try:
             with timing("container.lifecycle.latency", {"op": "stop"}):
@@ -876,8 +885,12 @@ class EcsManager:
         container = await container_repo.get_by_owner_id(user_id)
         if container:
             await container_repo.update_status(user_id, "stopped")
+            # Scoped stamp AFTER the status write: stamp_stop_reason is a
+            # conditioned update_item and can never resurrect a stale item over
+            # a concurrent wake's lease claim, unlike the get→put above.
+            await container_repo.stamp_stop_reason(user_id, reason)
 
-        logger.info("Stopped ECS service %s for user %s", service_name, user_id)
+        logger.info("Stopped ECS service %s for user %s (reason=%s)", service_name, user_id, reason)
 
     async def kill_owner_bedrock(self, owner_id: str) -> None:
         """ADMIN BREAK-GLASS — NOT balance enforcement.
@@ -913,7 +926,7 @@ class EcsManager:
                 "IAM revoke failed for owner %s during kill-switch — proceeding to ECS desired=0 (the guaranteed stop)",
                 owner_id,
             )
-        await self.stop_user_service(owner_id)
+        await self.stop_user_service(owner_id, reason="killswitch")
         logger.warning("Bedrock kill-switch completed for owner %s", owner_id)
 
     async def _assert_start_allowed(self, user_id: str) -> None:
@@ -1266,7 +1279,7 @@ class EcsManager:
         # Drop to desiredCount=0 so the dispatched provision takes the
         # scale-from-zero branch (re-register + write_user_configs), not the
         # running force-redeploy branch.
-        await self.stop_user_service(user_id)
+        await self.stop_user_service(user_id, reason="reprovision")
 
         # Block until the old task is fully stopped before provisioning the new
         # one. stop_user_service only issues desiredCount=0 and returns at once;

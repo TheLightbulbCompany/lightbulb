@@ -361,3 +361,47 @@ async def test_remove_paired_device_deletes_only_target(dynamodb_table):
     await container_repo.remove_paired_device("ghost", "dev_a")
     row = await container_repo.get_by_owner_id("owner_1")
     assert set(row["paired_devices"]) == {"dev_b"}
+
+
+@pytest.mark.asyncio
+async def test_record_wake_debit_increments_nested_map(dynamodb_table):
+    """The wake budget's debit must actually count against a REAL DynamoDB
+    engine — the whole budget is dead if the UpdateExpression raises. Guards
+    the nested-map SET form against a regression back to `ADD wake_debits.#d`
+    (ValidationException → fail-open → unbounded wakes)."""
+    from core.repositories import container_repo
+
+    await container_repo.upsert("user_wd", {"status": "stopped", "stop_reason": "trial_idle"})
+
+    assert await container_repo.record_wake_debit("user_wd", "2026-07-19") == 1
+    assert await container_repo.record_wake_debit("user_wd", "2026-07-19") == 2
+    assert await container_repo.record_wake_debit("user_wd", "2026-07-19") == 3
+    # A different UTC day is an independent counter.
+    assert await container_repo.record_wake_debit("user_wd", "2026-07-20") == 1
+
+    row = await container_repo.get_by_owner_id("user_wd")
+    assert row["wake_debits"] == {"2026-07-19": 3, "2026-07-20": 1}
+
+
+@pytest.mark.asyncio
+async def test_record_wake_debit_missing_row_returns_zero(dynamodb_table):
+    from core.repositories import container_repo
+
+    assert await container_repo.record_wake_debit("nonexistent", "2026-07-19") == 0
+
+
+@pytest.mark.asyncio
+async def test_stamp_stop_reason_trial_idle_sets_parked_at(dynamodb_table):
+    from core.repositories import container_repo
+
+    await container_repo.upsert("user_sr", {"status": "stopped"})
+    await container_repo.stamp_stop_reason("user_sr", "trial_idle")
+    row = await container_repo.get_by_owner_id("user_sr")
+    assert row["stop_reason"] == "trial_idle"
+    assert "parked_at" in row
+
+    # A subsequent operator stop clears parked_at (no longer a healthy park).
+    await container_repo.stamp_stop_reason("user_sr", "admin")
+    row = await container_repo.get_by_owner_id("user_sr")
+    assert row["stop_reason"] == "admin"
+    assert "parked_at" not in row

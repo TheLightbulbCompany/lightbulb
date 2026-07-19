@@ -86,7 +86,7 @@ async def test_reconcile_stops_trial_container_with_zero_live_conns():
         await asyncio.sleep(0)
 
     mock_get.assert_awaited_once_with("running")
-    stop.assert_awaited_once_with(OWNER)
+    stop.assert_awaited_once_with(OWNER, reason="trial_idle")
 
 
 @pytest.mark.asyncio

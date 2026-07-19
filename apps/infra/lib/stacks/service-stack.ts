@@ -1248,6 +1248,14 @@ export class ServiceStack extends cdk.Stack {
         // in openclaw-version.json for both dev and prod; existing containers
         // pick up the acp block on their next reprovision / config patch.
         ACP_ENABLED: "true",
+        // Wake-on-intent gating for parked (stop_reason=trial_idle) trial
+        // containers. Read by core.config.settings.TRIAL_WAKE_GATE_ENABLED —
+        // off = every wake_policy entry point no-ops (wake-on-read restored
+        // wholesale). Staged rollout: dev soaks first; flip prod after the
+        // idle-tab soak validates suppression + the legacy budget. The
+        // stop_reason stamping and chat-send server wake are live regardless
+        // of this flag (harmless, keeps a later enable coherent).
+        TRIAL_WAKE_GATE_ENABLED: env === "dev" ? "true" : "false",
         // Marketplace DDB tables + S3 artifacts bucket. Backend reads these
         // env vars via core.config.settings; empty defaults keep the app
         // booting in non-marketplace contexts (unit tests, smoke tests).

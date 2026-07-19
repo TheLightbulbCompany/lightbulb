@@ -44,7 +44,7 @@ async def test_kill_fires_iam_revoke_and_ecs_stop(manager):
     ):
         await manager.kill_owner_bedrock("org_Y")
     revoke_mock.assert_awaited_once_with("org_Y")
-    stop_mock.assert_awaited_once_with("org_Y")
+    stop_mock.assert_awaited_once_with("org_Y", reason="killswitch")
 
 
 @pytest.mark.asyncio
@@ -61,4 +61,4 @@ async def test_ecs_stop_runs_even_if_iam_revoke_raises(manager):
     ):
         await manager.kill_owner_bedrock("org_Y")
     revoke_mock.assert_awaited_once_with("org_Y")
-    stop_mock.assert_awaited_once_with("org_Y")
+    stop_mock.assert_awaited_once_with("org_Y", reason="killswitch")

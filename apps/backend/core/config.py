@@ -180,6 +180,22 @@ class Settings(BaseSettings):
     so the first gate read after this window sees the new balance and
     un-revokes a paid-up owner (see core/services/metronome_gate.py)."""
 
+    TRIAL_WAKE_GATE_ENABLED: bool = os.getenv("TRIAL_WAKE_GATE_ENABLED", "false").lower() == "true"
+    """Kill switch for wake-on-intent gating of parked (stop_reason=trial_idle)
+    trial containers. Off = every wake_policy entry point returns ALLOW/no-op,
+    restoring wake-on-read exactly as before; stop_reason stamping and the
+    chat-send server wake stay live either way (harmless, keeps re-enable
+    coherent). Flipping requires a CDK deploy (~15-25 min) — but because the
+    suppress marker is a query param (no CORS surface), a plain backend code
+    revert is equally safe."""
+
+    TRIAL_WAKE_DAILY_BUDGET: int = int(os.getenv("TRIAL_WAKE_DAILY_BUDGET", "6"))
+    """Max legacy (un-flagged) poll-driven wakes of a parked trial container
+    per UTC day. Bounds already-open tabs running pre-gate frontend bundles —
+    the only lever that reaches them, since a never-reloaded tab keeps its old
+    JS for weeks. Explicit intent (wake verb, chat send, retry) is never
+    budgeted."""
+
     BEDROCK_ENFORCEMENT_LIVE: bool = os.getenv("BEDROCK_ENFORCEMENT_LIVE", "true").lower() == "true"
     """Arms the revoke-only enforcement off the Metronome low-balance
     webhook. Defaults True now that Metronome is the only ledger — there is

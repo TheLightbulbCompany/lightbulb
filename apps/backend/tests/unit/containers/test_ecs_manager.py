@@ -633,6 +633,7 @@ class TestStopUserService:
         with patch("core.containers.ecs_manager.container_repo") as mock_repo:
             mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="running"))
             mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="stopped"))
+            mock_repo.stamp_stop_reason = AsyncMock()
 
             await manager.stop_user_service("user_test_123")
 
@@ -642,6 +643,8 @@ class TestStopUserService:
                 desiredCount=0,
             )
             mock_repo.update_status.assert_called_once_with("user_test_123", "stopped")
+            # Default reason "manual" is stamped (clears any stale parked_at).
+            mock_repo.stamp_stop_reason.assert_awaited_once_with("user_test_123", "manual")
 
     @pytest.mark.asyncio
     async def test_stop_no_db_record(self, manager, mock_ecs_client):
@@ -2862,7 +2865,7 @@ async def test_reprovision_for_user_scales_to_zero_then_full_reprovision(manager
     order = []
     dispatched = []
 
-    async def _fake_stop(uid):
+    async def _fake_stop(uid, *, reason="manual"):
         order.append("stop")
 
     async def _fake_drain(uid, timeout_s=90.0):
@@ -2888,7 +2891,7 @@ async def test_reprovision_for_user_scales_to_zero_then_full_reprovision(manager
 
     assert result == {"status": "reprovisioning"}
     # Scale to 0 first so provision hits the re-register + write-config branch.
-    manager.stop_user_service.assert_awaited_once_with("org_abc")
+    manager.stop_user_service.assert_awaited_once_with("org_abc", reason="reprovision")
     # The old task MUST be fully drained before the new one is provisioned —
     # otherwise the draining old task and the new task share the EFS WAL DB and
     # corrupt it. Ordering is load-bearing: stop -> drain -> provision.

@@ -340,6 +340,90 @@ async def update_fields(owner_id: str, fields: dict) -> dict | None:
     return existing
 
 
+async def stamp_stop_reason(owner_id: str, reason: str) -> None:
+    """Scoped write of stop provenance onto an existing row.
+
+    ``stop_reason`` distinguishes a deliberately parked trial box
+    (``"trial_idle"``, which also stamps ``parked_at``) from every other way a
+    row lands on ``status="stopped"`` (admin stop, killswitch, conversion
+    drain). The wake-suppression predicate keys on it, so a crashed or
+    admin-stopped container can never be mistaken for parked and lose its
+    poll-driven self-heal.
+
+    A scoped ``update_item`` SET — never the get→put ``update_fields``: this
+    stamp can race a concurrent wake's ``try_claim_provision``, and a full-item
+    put here could resurrect ``status="stopped"`` over a freshly claimed lease
+    (the documented double-provision class). Condition on the row existing so a
+    concurrent delete never turns the stamp into a ghost row; that miss is
+    swallowed (nothing left to stamp).
+    """
+    table = _get_table()
+    expr = "SET stop_reason = :r, updated_at = :iso"
+    if reason == "trial_idle":
+        expr += ", parked_at = :iso"
+    else:
+        expr += " REMOVE parked_at"
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression=expr,
+            ConditionExpression="attribute_exists(owner_id)",
+            ExpressionAttributeValues={":r": reason, ":iso": utc_now_iso()},
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+
+
+async def record_wake_debit(owner_id: str, date: str) -> int:
+    """Atomically count a legacy (un-flagged) poll wake of a parked row for
+    the given UTC ``date`` and return the new day count.
+
+    Two scoped ``update_item`` steps (ensure the parent map, then increment the
+    day key via ``SET ... if_not_exists(...) + :one``) — the same shape as the
+    bedrock-gate ledger's ``reserved_microcents``/``spent`` nested-map
+    accounting, and never the get→put ``update_fields``, which racing
+    ``try_claim_provision`` could resurrect a stale ``status`` over a claimed
+    lease. The increment is a nested SET, NOT ``ADD``: DynamoDB's ADD action
+    only targets top-level Number/Set attributes, so ``ADD wake_debits.#d``
+    would raise ValidationException and fail the debit open. Both steps
+    condition on the row existing; a missing row returns 0 debits (nothing to
+    bound).
+    """
+    table = _get_table()
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET wake_debits = if_not_exists(wake_debits, :empty)",
+            ConditionExpression="attribute_exists(owner_id)",
+            ExpressionAttributeValues={":empty": {}},
+        )
+        result = await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            # SET ... if_not_exists(...) + :one — NOT `ADD wake_debits.#d`.
+            # DynamoDB's ADD only targets top-level Number/Set attributes; on a
+            # nested map path it raises ValidationException, which would fail the
+            # whole debit open (legacy_wake_allowed swallows the error and
+            # returns True) — silently disabling the budget. The parent map is
+            # guaranteed present by the ensure step above, so the nested SET is
+            # safe. Mirrors the bedrock-gate ledger's reserved_microcents form.
+            UpdateExpression="SET wake_debits.#d = if_not_exists(wake_debits.#d, :zero) + :one, updated_at = :iso",
+            ConditionExpression="attribute_exists(owner_id)",
+            ExpressionAttributeNames={"#d": date},
+            ExpressionAttributeValues={":one": 1, ":zero": 0, ":iso": utc_now_iso()},
+            ReturnValues="UPDATED_NEW",
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return 0
+        raise
+    day = (result.get("Attributes") or {}).get("wake_debits", {}).get(date, 0)
+    return int(day)
+
+
 async def upsert_paired_devices(owner_id: str, entries: dict) -> None:
     """Project desktop device-pubkey entries onto the owner row's ``paired_devices`` map.
 

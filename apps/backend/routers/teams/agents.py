@@ -409,6 +409,24 @@ async def _provision_after_gate(auth: AuthContext, owner_id: str) -> None:
         # Container state indeterminate -> safe no-restart path (Paperclip
         # only); the /chat poll remains the backstop for the container.
         container = object()  # sentinel: treat as "exists", skip container start
+    if container is None:
+        # resolve_running_container is None for a STOPPED row too — and a
+        # deliberately parked trial box (stop_reason=trial_idle) must not be
+        # woken by a /teams read. Reads render fine from Paperclip; the wake
+        # belongs to explicit intent (POST /container/wake, chat send). Its
+        # own try/except so an indeterminate parked-check fails OPEN to
+        # provision_container=True — missing and crashed rows must never lose
+        # their first-provision/self-heal to this guard.
+        try:
+            from core.repositories import container_repo
+            from core.services import wake_policy
+
+            row = await container_repo.get_by_owner_id(owner_id)
+            if await wake_policy.is_parked_trial(owner_id, row):
+                wake_policy.note_wake_suppressed(owner_id, row, door="teams", reason="gated")
+                container = object()  # sentinel: exists, skip container start
+        except Exception:
+            logger.debug("teams parked-check failed for %s — provisioning proceeds", owner_id, exc_info=True)
     try:
         await ensure_user_ready(auth, provision_container=container is None)
     except Exception:

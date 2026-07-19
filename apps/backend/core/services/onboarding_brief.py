@@ -5,8 +5,9 @@ boots (same pre-boot window friday_identity.py uses; OpenClaw's
 writeFileIfMissing honors pre-written files):
 
   - ``BRIEF.md``      — the user's funnel input, verbatim + identity context.
-                        Written write-if-missing: its existence IS the
-                        one-shot marker for the whole flow.
+                        Written unconditionally. The one-shot marker for the
+                        whole flow is the company-scoped onboarding claim in
+                        paperclip_repo.py, not BRIEF.md's existence.
   - ``BOOTSTRAP.md``  — the first-run variant, unconditionally overwritten.
                         Ordering note: friday_identity seeds the standard
                         BOOTSTRAP with write_file_if_missing, so whichever
@@ -148,6 +149,107 @@ def render_first_run_bootstrap(*, first_name: str) -> str:
     return _FIRST_RUN_BOOTSTRAP_TEMPLATE.format(first_name=first_name)
 
 
+_MAX_GOAL_TITLE = 120
+
+
+def _domain_of(raw: str) -> str:
+    """Best-effort registrable domain from whatever went in the URL field.
+
+    The grow-path input is free text — users type ``ferrosocial.com``,
+    ``https://ferrosocial.com/pricing``, or ``www.ferrosocial.com``. Falls
+    back to the raw string rather than raising: this feeds a provisional
+    title Friday overwrites within one turn, so a scruffy value is a
+    cosmetic problem, not a failure.
+    """
+    value = raw.strip()
+    if "//" in value:
+        value = value.split("//", 1)[1]
+    value = value.split("/", 1)[0].split("?", 1)[0].strip().lower()
+    if value.startswith("www."):
+        value = value[4:]
+    return value or raw.strip()
+
+
+def derive_goal_title(*, path: str, user_input: str | None) -> str:
+    """Provisional goal title — a real mission statement on every path.
+
+    Friday rewrites this after research. It must never read as filler in
+    the meantime, because the user is watching the board while she works.
+    """
+    if not user_input:
+        # "I don't know yet — you pick". This is an accurate description of
+        # their situation and stops being true the moment Friday chooses.
+        return "Find the right business to build"
+    if path == "grow":
+        return f"Grow {_domain_of(user_input)}"
+    text = user_input.strip()
+    if len(text) <= _MAX_GOAL_TITLE:
+        return text
+    return text[: _MAX_GOAL_TITLE - 1].rstrip() + "…"
+
+
+def project_name_for(first_name: str) -> str:
+    """The funnel never collects a company name, and the description makes a
+    bad one ("A social media agency for small restaurants" is not a name).
+    The owner's first name is always available and always reads as real.
+    Friday renames it as her first visible action.
+    """
+    return f"{first_name}'s Company"
+
+
+async def seed_goal_and_project(
+    *,
+    admin,
+    session_cookie: str,
+    company_id: str,
+    friday_agent_id: str,
+    goal_title: str,
+    project_name: str,
+) -> tuple[str, str]:
+    """Create the company goal, then the project linked to it.
+
+    Order is load-bearing. The project passes ``goalIds: [goal_id]``, and
+    Paperclip mirrors ``goalIds[0]`` into the legacy ``projects.goalId``
+    column that ``getProjectDefaultGoalId`` reads. A project with a null
+    ``goalId`` is worse than no project at all: ``resolveIssueGoalId``
+    returns ``projectGoalId ?? null`` for any issue that HAS a project and
+    does not fall through to the company default, so every task filed into
+    it would be silently unattributed.
+
+    ``level="company"``, ``status="active"``, no ``parentId`` — anything
+    else and ``getDefaultCompanyGoal`` never selects it.
+
+    Rolls the goal back if the project create fails, so a retry never finds
+    a half-seeded company.
+    """
+    goal = await admin.create_goal(
+        session_cookie=session_cookie,
+        company_id=company_id,
+        body={
+            "title": goal_title,
+            "level": "company",
+            "status": "active",
+            "ownerAgentId": friday_agent_id,
+        },
+    )
+    goal_id = goal["id"]
+    try:
+        project = await admin.create_project(
+            session_cookie=session_cookie,
+            company_id=company_id,
+            body={
+                "name": project_name,
+                "status": "in_progress",
+                "goalIds": [goal_id],
+                "leadAgentId": friday_agent_id,
+            },
+        )
+    except Exception:
+        await admin.delete_goal(session_cookie=session_cookie, goal_id=goal_id)
+        raise
+    return goal_id, project["id"]
+
+
 def stage_first_run_files(
     *,
     workspace: Workspace,
@@ -155,31 +257,16 @@ def stage_first_run_files(
     friday_agent_id: str,
     brief_md: str,
     bootstrap_md: str,
-) -> bool:
-    """Write BRIEF.md (if missing) + first-run BOOTSTRAP.md (overwrite).
+) -> None:
+    """Write BRIEF.md + the first-run BOOTSTRAP.md, both unconditionally.
 
-    Returns True on a fresh submit. Returns False when BRIEF.md already
-    existed — a replay — in which case NOTHING else is touched (the
-    container may already have consumed the bootstrap).
-
-    Staging is all-or-nothing on the marker: BRIEF.md is the atomic claim,
-    but if the BOOTSTRAP write then fails we roll the claim back by deleting
-    BRIEF.md, so a retry re-stages BOTH files rather than seeing the marker
-    and short-circuiting to a half-staged workspace (BRIEF present, first-run
-    bootstrap missing). A genuine replay — both files already written — still
-    returns False on the write_file_if_missing claim and leaves the possibly
-    container-evolved BOOTSTRAP untouched.
+    BRIEF.md used to be written write-if-missing because its existence WAS
+    the one-shot marker for the flow. The company-scoped onboarding claim is
+    that marker now, and holding it already proves this is the first run —
+    so a BRIEF.md left behind by an attempt that failed partway is stale
+    state to overwrite, not a reason to stop. Stopping there would strand the
+    goal and project the caller seeded moments earlier.
     """
-    brief_rel = f"workspaces/{friday_agent_id}/BRIEF.md"
-    wrote = workspace.write_file_if_missing(owner_id, brief_rel, brief_md)
-    if not wrote:
-        return False
-    bootstrap_rel = f"workspaces/{friday_agent_id}/BOOTSTRAP.md"
-    try:
-        workspace.write_file(owner_id, bootstrap_rel, bootstrap_md)
-    except Exception:
-        # Undo the marker so this staging isn't recorded as complete — the
-        # next submit re-claims BRIEF.md fresh and re-stages both files.
-        workspace.delete_file(owner_id, brief_rel)
-        raise
-    return True
+    base = f"workspaces/{friday_agent_id}"
+    workspace.write_file(owner_id, f"{base}/BRIEF.md", brief_md)
+    workspace.write_file(owner_id, f"{base}/BOOTSTRAP.md", bootstrap_md)

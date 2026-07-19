@@ -1,17 +1,21 @@
 """Unit tests for the first-run brief staging service.
 
 Mirrors tests/unit/services/test_friday_identity.py: Workspace is a
-MagicMock; we assert exact workspace-relative paths and one-shot
-semantics (BRIEF.md write-if-missing decides whether BOOTSTRAP.md is
-overwritten).
+MagicMock; we assert exact workspace-relative paths. Staging itself is
+unconditional now (the company-scoped onboarding claim in
+paperclip_repo.py is the one-shot marker, not BRIEF.md's existence).
 """
 
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
-from unittest.mock import MagicMock
 
 from core.services.onboarding_brief import (
+    derive_goal_title,
+    project_name_for,
     render_brief_md,
     render_first_run_bootstrap,
+    seed_goal_and_project,
     stage_first_run_files,
 )
 
@@ -93,58 +97,98 @@ def test_render_first_run_bootstrap_researches_before_proposing_tasks():
     assert "check out the issue" not in md
 
 
-def test_stage_first_run_files_fresh_writes_brief_then_bootstrap():
-    ws = MagicMock()
-    ws.write_file_if_missing = MagicMock(return_value=True)
-    ws.write_file = MagicMock()
-
-    wrote = stage_first_run_files(
-        workspace=ws,
-        owner_id=OWNER,
-        friday_agent_id=FRIDAY_ID,
-        brief_md="brief",
-        bootstrap_md="bootstrap",
+def test_goal_title_new_path_uses_their_words():
+    assert (
+        derive_goal_title(path="new", user_input="A social media agency for restaurants")
+        == "A social media agency for restaurants"
     )
 
-    assert wrote is True
-    ws.write_file_if_missing.assert_called_once_with(OWNER, f"workspaces/{FRIDAY_ID}/BRIEF.md", "brief")
-    ws.write_file.assert_called_once_with(OWNER, f"workspaces/{FRIDAY_ID}/BOOTSTRAP.md", "bootstrap")
+
+def test_goal_title_new_path_truncates_long_input():
+    title = derive_goal_title(path="new", user_input="x" * 300)
+    assert len(title) <= 120
+    assert title.endswith("…")
 
 
-def test_stage_first_run_files_replay_touches_nothing_else():
-    ws = MagicMock()
-    ws.write_file_if_missing = MagicMock(return_value=False)
-    ws.write_file = MagicMock()
-
-    wrote = stage_first_run_files(
-        workspace=ws,
-        owner_id=OWNER,
-        friday_agent_id=FRIDAY_ID,
-        brief_md="brief",
-        bootstrap_md="bootstrap",
+def test_goal_title_grow_path_is_a_mission_not_a_url():
+    assert derive_goal_title(path="grow", user_input="https://www.ferrosocial.com/pricing?x=1") == (
+        "Grow ferrosocial.com"
     )
 
-    assert wrote is False
-    # Replay must not clobber a BOOTSTRAP the container may have consumed.
-    ws.write_file.assert_not_called()
+
+def test_goal_title_no_idea_path_describes_the_actual_situation():
+    assert derive_goal_title(path="new", user_input=None) == "Find the right business to build"
 
 
-def test_stage_first_run_files_rolls_back_brief_when_bootstrap_write_fails():
-    """If BRIEF is claimed but the BOOTSTRAP write raises, the marker is
-    deleted and the error propagates — so a retry re-stages both files
-    instead of short-circuiting to a half-staged workspace."""
-    ws = MagicMock()
-    ws.write_file_if_missing = MagicMock(return_value=True)
-    ws.write_file = MagicMock(side_effect=RuntimeError("efs boom"))
-    ws.delete_file = MagicMock()
+def test_project_name_is_never_a_placeholder():
+    assert project_name_for("Max") == "Max's Company"
 
-    with pytest.raises(RuntimeError, match="efs boom"):
-        stage_first_run_files(
-            workspace=ws,
-            owner_id=OWNER,
-            friday_agent_id=FRIDAY_ID,
-            brief_md="brief",
-            bootstrap_md="bootstrap",
+
+@pytest.mark.asyncio
+async def test_seed_creates_goal_then_project_linked_to_it():
+    admin = MagicMock()
+    admin.create_goal = AsyncMock(return_value={"id": "goal-1"})
+    admin.create_project = AsyncMock(return_value={"id": "proj-1"})
+
+    goal_id, project_id = await seed_goal_and_project(
+        admin=admin,
+        session_cookie="cookie",
+        company_id="comp-1",
+        friday_agent_id="friday-uuid",
+        goal_title="A social media agency",
+        project_name="Max's Company",
+    )
+
+    assert (goal_id, project_id) == ("goal-1", "proj-1")
+
+    goal_body = admin.create_goal.await_args.kwargs["body"]
+    assert goal_body["level"] == "company"
+    assert goal_body["status"] == "active"
+    assert "parentId" not in goal_body
+
+    project_body = admin.create_project.await_args.kwargs["body"]
+    # goalIds[0] is mirrored into projects.goalId, which is what
+    # getProjectDefaultGoalId reads for issue inheritance.
+    assert project_body["goalIds"] == ["goal-1"]
+    assert "targetDate" not in project_body
+
+
+@pytest.mark.asyncio
+async def test_seed_rolls_back_the_goal_when_project_create_fails():
+    admin = MagicMock()
+    admin.create_goal = AsyncMock(return_value={"id": "goal-1"})
+    admin.create_project = AsyncMock(side_effect=RuntimeError("upstream down"))
+    admin.delete_goal = AsyncMock()
+
+    with pytest.raises(RuntimeError):
+        await seed_goal_and_project(
+            admin=admin,
+            session_cookie="cookie",
+            company_id="comp-1",
+            friday_agent_id="friday-uuid",
+            goal_title="A social media agency",
+            project_name="Max's Company",
         )
 
-    ws.delete_file.assert_called_once_with(OWNER, f"workspaces/{FRIDAY_ID}/BRIEF.md")
+    admin.delete_goal.assert_awaited_once_with(session_cookie="cookie", goal_id="goal-1")
+
+
+def test_staging_overwrites_a_partial_prior_attempt():
+    """The claim decides one-shot-ness now, so staging always writes both.
+
+    A prior attempt that staged files and then failed leaves BRIEF.md behind.
+    Returning early on that would strand the goal and project this run just
+    seeded, so we overwrite instead.
+    """
+    ws = MagicMock()
+
+    stage_first_run_files(
+        workspace=ws,
+        owner_id="user_abc",
+        friday_agent_id="friday-uuid",
+        brief_md="brief",
+        bootstrap_md="bootstrap",
+    )
+
+    assert ws.write_file.call_count == 2
+    ws.write_file_if_missing.assert_not_called()

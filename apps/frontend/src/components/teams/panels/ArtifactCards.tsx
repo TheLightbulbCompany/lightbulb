@@ -250,6 +250,10 @@ export function ArtifactGalleryCard({
       data-media-kind={artifact.mediaKind}
       onClick={() => onOpen(artifact)}
       onKeyDown={(e) => {
+        // Only the card itself opens the viewer on Enter/Space. Enter/Space on a
+        // focused overlay action (Open-in-issue / Download / Delete) bubbles its
+        // keydown up to the card, so ignore events originating from a descendant.
+        if (e.target !== e.currentTarget) return;
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
           onOpen(artifact);

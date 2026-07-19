@@ -24,11 +24,13 @@ import { AppState } from "react-native";
 import { ApiError, fetchJsonWithStatus } from "@isol8/shared";
 
 import { makeAdapter } from "./adapter";
+import { isPresent } from "./presence";
 
 export type ContainerStatus =
   | { kind: "loading" }
   | { kind: "ready" }
   | { kind: "starting"; phase?: string; substatus?: string }
+  | { kind: "parked" }
   | { kind: "teamPending" }
   | {
       kind: "blocked";
@@ -71,9 +73,15 @@ export function useContainerStatus() {
     const seq = ++seqRef.current;
     let next: ContainerStatus;
     try {
+      // Wake marker: `wake=1` while the app is foregrounded (present → a poll
+      // may wake a parked trial container), `wake=0` when backgrounded
+      // (read-only, never start a parked box). Query param, not a header —
+      // CORS-safe against a backend that predates the param, which just
+      // ignores it. On an old backend `phase: "parked"` never comes back, so
+      // the new branch below is inert there.
       const { status: code, body } = await fetchJsonWithStatus(
         config,
-        "/container/status",
+        `/container/status?wake=${isPresent() ? "1" : "0"}`,
       );
       if (code === 202) {
         next = { kind: "teamPending" };
@@ -82,6 +90,12 @@ export function useContainerStatus() {
         // phase absent (older backend / plain running box) → treat as ready.
         if (info.phase == null || info.phase === "ready") {
           next = { kind: "ready" };
+        } else if (info.phase === "parked") {
+          // Deliberately-asleep trial box (wake-gated). Distinct from a cold
+          // start: it's healthy, one intent away from running, so it must NOT
+          // render as a perpetual "starting…" spinner. Foregrounding already
+          // fired a wake in parallel (gateway provider), so this is transient.
+          next = { kind: "parked" };
         } else {
           next = {
             kind: "starting",
@@ -122,11 +136,19 @@ export function useContainerStatus() {
     void load();
   }, [load]);
 
-  // Poll only while transient (starting / team-pending). The dep is
+  // Poll only while transient (starting / team-pending / parked). The dep is
   // `status.kind`, so the interval is torn down + rebuilt only on a state
   // TRANSITION — never once per tick — and stops entirely once ready/blocked.
+  // `parked` polls too: a foreground poll carries wake=1, so it drives the box
+  // from asleep → starting → ready without any user action.
   useEffect(() => {
-    if (status.kind !== "starting" && status.kind !== "teamPending") return;
+    if (
+      status.kind !== "starting" &&
+      status.kind !== "teamPending" &&
+      status.kind !== "parked"
+    ) {
+      return;
+    }
     const id = setInterval(() => void load(), POLL_INTERVAL_MS);
     return () => clearInterval(id);
   }, [status.kind, load]);

@@ -48,7 +48,7 @@ export function DeployCompanyButton({ listing }: { listing: Listing }) {
   }
 
   if (jobId) {
-    return <DeployProgress jobId={jobId} listingId={listing.listing_id} />;
+    return <DeployProgress jobId={jobId} />;
   }
 
   async function deploy() {

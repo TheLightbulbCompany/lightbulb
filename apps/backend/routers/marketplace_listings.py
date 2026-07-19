@@ -129,7 +129,7 @@ async def search_listings(
     response: Response,
     auth: Annotated[AuthContext | None, Depends(get_optional_user)] = None,
     q: str | None = Query(default=None, description="Whitespace-tokenized query"),
-    format: str | None = Query(default=None, pattern="^(openclaw|skillmd)$"),
+    format: str | None = Query(default=None, pattern="^(openclaw|skillmd|company)$"),
     limit: int = Query(default=24, ge=1, le=100),
     seller_id: str | None = Query(default=None),
     category: str | None = Query(
@@ -341,6 +341,12 @@ async def deploy_listing(
     listing = await marketplace_service.get_published_by_id(listing_id=listing_id)
     if not listing or listing.get("status") != "published":
         raise HTTPException(status_code=404, detail="listing not found")
+
+    if listing.get("format") == "company":
+        raise HTTPException(
+            status_code=400,
+            detail="Company deploys are coming soon.",
+        )
 
     price_cents = int(listing.get("price_cents", 0) or 0)
     # Seller-self-deploy bypass: sellers don't buy their own listings, so

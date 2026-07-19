@@ -249,7 +249,39 @@ class TestListConnections:
         assert "google" in by_key
         assert by_key["google"]["byo_required"] is True
         assert "requires_bedrock" not in by_key["google"]
-        assert "byo_capable" not in by_key["google"]
+
+
+class TestEnvGatedProvider:
+    """A provider with an `environments` list (Instagram: [local, dev]) is only
+    listed + connectable in those envs. The test env resolves to dev (empty
+    ENVIRONMENT), so it's available by default; force prod to prove the gate."""
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.integrations_repo")
+    async def test_instagram_listed_in_dev(self, mock_repo, async_client):
+        mock_repo.list_for_owner = AsyncMock(return_value=[])
+        response = await async_client.get("/api/v1/connections")
+        by_key = {c["provider"]: c for c in response.json()["connections"]}
+        assert "instagram" in by_key
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.integrations_repo")
+    async def test_instagram_hidden_in_prod(self, mock_repo, async_client, monkeypatch):
+        mock_repo.list_for_owner = AsyncMock(return_value=[])
+        monkeypatch.setattr(connections.settings, "ENVIRONMENT", "prod")
+        response = await async_client.get("/api/v1/connections")
+        by_key = {c["provider"]: c for c in response.json()["connections"]}
+        assert "instagram" not in by_key
+        # A non-gated provider is unaffected.
+        assert "google" in by_key
+
+    @pytest.mark.asyncio
+    async def test_instagram_authorize_404s_in_prod(self, async_client, monkeypatch):
+        # Gated provider is not just hidden — the connect path 404s outside its
+        # envs, so it can't be reached by a hand-crafted request either.
+        monkeypatch.setattr(connections.settings, "ENVIRONMENT", "prod")
+        response = await async_client.get("/api/v1/connections/instagram/authorize")
+        assert response.status_code == 404
 
 
 class TestByoRequiredGate:

@@ -193,11 +193,29 @@ async def _self_account_role_is_pinned(role_arn: str, owner_id: str, external_id
         return False
 
 
+def _current_env() -> str:
+    # Empty ENVIRONMENT (local dev) is treated as "dev", matching the
+    # integration_secret_store / provider-secret naming convention.
+    return settings.ENVIRONMENT or "dev"
+
+
+def _available_in_env(p: registry.Provider) -> bool:
+    """Whether this provider is exposed in the running environment. A provider
+    with no `environments` list is available everywhere; a gated one (e.g. a
+    dev-only Instagram) only in its listed envs."""
+    return p.environments is None or _current_env() in p.environments
+
+
 def _get_provider_or_404(provider: str) -> registry.Provider:
     try:
-        return registry.get_provider(provider)
+        p = registry.get_provider(provider)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"unknown integration provider: {provider}")
+    if not _available_in_env(p):
+        # Env-gated provider hit outside its envs (e.g. dev-only in prod): 404
+        # like an unknown provider so it's neither connectable nor discoverable.
+        raise HTTPException(status_code=404, detail=f"unknown integration provider: {provider}")
+    return p
 
 
 async def _byo_active(owner_id: str, provider_key: str) -> bool:
@@ -267,6 +285,10 @@ async def list_connections(auth: AuthContext = Depends(get_current_user)):
         asyncio.create_task(meta_token_refresh.refresh_instagram_if_stale(owner_id))
     connections = []
     for k, v in registry.all_providers().items():
+        # Skip env-gated providers outside their envs so a dev-only integration
+        # never appears in the prod connections list.
+        if not _available_in_env(v):
+            continue
         byo = await _byo_active(owner_id, k)
         connections.append(
             {

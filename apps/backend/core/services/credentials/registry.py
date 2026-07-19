@@ -220,6 +220,12 @@ class Provider(BaseModel):
     # materializer. Only set for OAuth-protected remote MCP servers (e.g. Attio);
     # see McpRemote for why it lives at the provider level rather than in Wiring.
     mcp_remote: McpRemote | None = None
+    # Restrict this provider to specific environments (e.g. ["local", "dev"]).
+    # None = available in every environment. Used to ship a provider to dev for
+    # testing before it's cleared for prod — e.g. Instagram, pending Meta App
+    # Review + the platform-secret seed. Enforced in routers/connections.py:
+    # gated providers are neither listed nor connectable outside their envs.
+    environments: list[str] | None = None
     # Bundled skill delivered by a paste-token CLI integration (see SkillSpec).
     skill: SkillSpec | None = None
     # AWS STS rail config. Only set for the `aws` provider (acquisition

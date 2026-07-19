@@ -158,12 +158,19 @@ async def test_no_containment_keys_delegation_preserved():
 
 
 @pytest.mark.asyncio
-async def test_skills_threaded_to_apply_aux():
+async def test_skills_bind_via_agent_entry_not_skills_patch():
+    """The real skill binding rides in ``agent_entry["skills"]`` (which lands in
+    ``agents.list[].skills``), NOT the top-level ``skills_patch`` block.
+
+    ``skills_patch`` must stay ``None``: the real
+    ``apply_deploy_aux_mutations`` treats it as a dict
+    (``skills_patch.get("allowBundled")``) and would AttributeError on a list.
+    """
     ws = FakeWorkspace()
     aux = FakeApplyAux()
     planned = _planned(skills=["alpha", "beta"])
 
-    await materialize_agent(
+    entry = await materialize_agent(
         owner_id=OWNER,
         new_agent_id=AGENT_ID,
         planned=planned,
@@ -175,8 +182,11 @@ async def test_skills_threaded_to_apply_aux():
     assert len(aux.calls) == 1
     call = aux.calls[0]
     assert call["owner_id"] == OWNER
-    assert call["skills_patch"] == ["alpha", "beta"]
-    # Company deploy carries no plugin/mcp mutations through this path.
+    # The binding is threaded through the agent entry, not the skills block.
+    assert entry["skills"] == ["alpha", "beta"]
+    assert call["agent_entry"]["skills"] == ["alpha", "beta"]
+    # Company deploy carries no plugin/mcp/skills-block mutations through here.
+    assert call["skills_patch"] is None
     assert call["plugins_patch"] is None
     assert call["mcp_patch"] is None
 
@@ -226,21 +236,36 @@ async def test_none_skill_assets_is_valid():
 
 
 @pytest.mark.asyncio
-async def test_empty_skills_sends_none_skills_patch():
+async def test_skills_patch_is_always_none_regardless_of_skills():
+    """``skills_patch`` is unconditionally ``None`` — whether the agent has
+    skills or not — because the binding lives in ``agent_entry["skills"]``.
+    """
     ws = FakeWorkspace()
     aux = FakeApplyAux()
 
-    entry = await materialize_agent(
+    # Skilled agent: still None.
+    entry_skilled = await materialize_agent(
         owner_id=OWNER,
         new_agent_id=AGENT_ID,
+        planned=_planned(skills=["gamma"]),
+        skill_assets=None,
+        workspace=ws,
+        apply_aux=aux,
+    )
+    assert entry_skilled["skills"] == ["gamma"]
+    assert aux.calls[0]["skills_patch"] is None
+
+    # Skill-less agent: also None, and an empty entry skills list.
+    entry_bare = await materialize_agent(
+        owner_id=OWNER,
+        new_agent_id="agent_bare",
         planned=_planned(skills=[]),
         skill_assets={},
         workspace=ws,
         apply_aux=aux,
     )
-
-    assert entry["skills"] == []
-    assert aux.calls[0]["skills_patch"] is None
+    assert entry_bare["skills"] == []
+    assert aux.calls[1]["skills_patch"] is None
 
 
 @pytest.mark.asyncio

@@ -101,13 +101,20 @@ async def materialize_agent(
         agent_entry["name"] = planned.name
 
     # 4. Merge the entry into ``openclaw.json`` ``agents.list``. Company deploy
-    #    carries no plugin/mcp mutations through this path.
+    #    carries no plugin/mcp/skills-block mutations through this path: the
+    #    per-agent skill BINDING already rides in ``agent_entry["skills"]``
+    #    (landing in ``agents.list[].skills``), and the package's skill files
+    #    are written into the agent workspace above via ``write_bytes``. The
+    #    top-level ``skills_patch`` (container-level ``config["skills"].entries``/
+    #    ``allowBundled``) is neither needed nor buildable from a bare name list
+    #    — and passing a list would AttributeError in ``apply_deploy_aux_mutations``
+    #    (it does ``skills_patch.get("allowBundled")``). So it stays ``None``.
     await apply_aux(
         owner_id,
         agent_entry=agent_entry,
         plugins_patch=None,
         mcp_patch=None,
-        skills_patch=(list(planned.skills) or None),
+        skills_patch=None,
     )
 
     return agent_entry

@@ -41,3 +41,83 @@ async def test_oauth_client_raises_when_client_id_missing(mock_byo_get):
     mock_byo_get.return_value = {"client_secret": "owner_sec"}
     with pytest.raises(ValueError):
         await oauth_dance._oauth_client("user_1", "google")
+
+
+@pytest.mark.asyncio
+@patch("core.services.credentials.oauth_dance.oauth_app_store.get", new_callable=AsyncMock)
+@patch("core.services.credentials.oauth_dance.platform_oauth_app_store.get", new_callable=AsyncMock)
+async def test_oauth_client_platform_app_skips_owner_store(mock_platform_get, mock_byo_get):
+    # instagram declares oauth.platform_app — the client is Isol8's shared app,
+    # and the per-owner BYO/DCR store must never be consulted.
+    mock_platform_get.return_value = {"client_id": "ig_cid", "client_secret": "ig_sec"}
+    cid, sec = await oauth_dance._oauth_client("user_1", "instagram")
+    assert (cid, sec) == ("ig_cid", "ig_sec")
+    mock_platform_get.assert_awaited_once_with("meta-instagram")
+    mock_byo_get.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("core.services.credentials.oauth_dance.platform_oauth_app_store.get", new_callable=AsyncMock)
+async def test_oauth_client_platform_app_unprovisioned_is_operator_error(mock_platform_get):
+    mock_platform_get.return_value = None
+    with pytest.raises(ValueError, match="not provisioned"):
+        await oauth_dance._oauth_client("user_1", "instagram")
+
+
+class _FakeResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
+class _FakeAsyncClient:
+    """Stub httpx.AsyncClient capturing the IG exchange sequence: POST (code
+    exchange -> short-lived token + user_id) then GET (long-lived upgrade)."""
+
+    def __init__(self, *args, **kwargs):
+        self.get_params = None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def post(self, url, data=None):
+        return _FakeResponse(
+            {"access_token": "SHORT", "user_id": 178414123, "permissions": ["instagram_business_basic"]}
+        )
+
+    async def get(self, url, params=None):
+        self.get_params = params
+        return _FakeResponse({"access_token": "LONG60D", "token_type": "bearer", "expires_in": 5184000})
+
+
+@pytest.mark.asyncio
+@patch("core.services.credentials.oauth_dance.httpx.AsyncClient", _FakeAsyncClient)
+@patch("core.services.credentials.oauth_dance._oauth_client", new_callable=AsyncMock)
+@patch("core.services.credentials.oauth_dance.oauth_state_repo.consume", new_callable=AsyncMock)
+async def test_exchange_instagram_upgrades_to_long_lived_and_blanks_platform_secret(mock_consume, mock_client):
+    mock_consume.return_value = {
+        "owner_id": "user_1",
+        "provider": "instagram",
+        "verifier": "v" * 43,
+        "client_id": "ig_cid",
+    }
+    mock_client.return_value = ("ig_cid", "ig_platform_secret")
+    owner, provider, cred = await oauth_dance.exchange("state123", "code456", redirect_uri="https://api/cb")
+    assert (owner, provider) == ("user_1", "instagram")
+    # Long-lived upgrade replaced the short token and set the ~60d expiry.
+    assert cred["access_token"] == "LONG60D"
+    assert cred["expires_in"] == 5184000
+    assert cred["token_expiry"]
+    # IG's app-scoped user id is carried for the materializer.
+    assert cred["provider_user_id"] == "178414123"
+    # The platform app secret never leaves the dance in the credential payload.
+    assert cred["client_secret"] == ""
+    assert cred["client_information"] == {"client_id": "ig_cid"}

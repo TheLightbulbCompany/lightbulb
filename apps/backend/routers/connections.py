@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import logging
@@ -27,6 +28,7 @@ from core.services.credentials import (
     apply_connection,
     aws_cfn,
     integration_secret_store,
+    meta_token_refresh,
     oauth_app_store,
     oauth_dance,
     registry,
@@ -257,6 +259,11 @@ async def list_connections(auth: AuthContext = Depends(get_current_user)):
     owner_id = resolve_owner_id(auth)
     rows = await integrations_repo.list_for_owner(owner_id)
     connected = {r["provider"]: r.get("status", "connected") for r in rows}
+    # Lazy server-side refresh for backend-refreshed tokens (Instagram): every
+    # Settings visit inside the refresh window renews the 60-day token in the
+    # background. Fire-and-forget — the listing must not wait on Graph API.
+    if connected.get("instagram") == "connected":
+        asyncio.create_task(meta_token_refresh.refresh_instagram_if_stale(owner_id))
     connections = []
     for k, v in registry.all_providers().items():
         byo = await _byo_active(owner_id, k)

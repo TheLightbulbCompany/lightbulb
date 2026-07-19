@@ -1,4 +1,4 @@
-"""format="company" listings: searchable, not deployable (until PR2)."""
+"""format="company" listings: searchable, not deployable until the company deploy engine ships."""
 
 import os
 
@@ -62,7 +62,7 @@ def test_search_accepts_company_format(mock_search, unauth_client):
 @patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
 def test_deploy_company_listing_returns_400(mock_get_published, mock_get_catalog, mock_boto, mock_purchases, client):
     """Deploying a published company listing 400s until the company deploy
-    engine ships (PR2).
+    engine ships.
 
     The row is priced so the test also pins guard ordering: without the
     guard, a paid listing with no purchase row would 403 at the entitlement

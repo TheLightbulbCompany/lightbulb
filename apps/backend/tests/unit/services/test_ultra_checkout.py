@@ -634,3 +634,23 @@ class TestUltraCheckoutEndpoint:
             with pytest.raises(HTTPException) as exc:
                 await billing.create_ultra_checkout(auth=_personal_ctx())
         assert exc.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_maps_checkout_in_progress_to_409(self, monkeypatch):
+        """A concurrent fresh-Ultra checkout (claim denied → create_ultra_upgrade
+        raises checkout_in_progress) surfaces as 409 Conflict, not the generic
+        400 — endpoint parity with /trial-checkout so the frontend's
+        already-in-progress handling works for Ultra too."""
+        monkeypatch.setattr(
+            billing,
+            "_get_billing_account",
+            AsyncMock(return_value={"owner_id": "user_p", "stripe_customer_id": "cus_p"}),
+        )
+        with patch(
+            "core.services.billing_service.create_ultra_upgrade",
+            new=AsyncMock(side_effect=BillingServiceError("checkout_in_progress")),
+        ):
+            with pytest.raises(HTTPException) as exc:
+                await billing.create_ultra_checkout(auth=_personal_ctx())
+        assert exc.value.status_code == 409
+        assert exc.value.detail == "checkout_in_progress"

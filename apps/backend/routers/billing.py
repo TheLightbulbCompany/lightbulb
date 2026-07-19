@@ -731,6 +731,12 @@ async def create_ultra_checkout(
     try:
         result = await create_ultra_upgrade(owner_id=owner_id, clerk_user_id=auth.user_id)
     except BillingServiceError as e:
+        if str(e) == "checkout_in_progress":
+            # Lost the per-owner checkout-slot claim to a concurrent fresh-Ultra
+            # request — that request's session is (or is about to be) the one open
+            # session. 409, not 400: retrying in a moment reuses it. Mirrors
+            # /trial-checkout's mapping.
+            raise HTTPException(status_code=409, detail="checkout_in_progress")
         raise HTTPException(status_code=400, detail=str(e))
 
     # In-place swap → {"upgraded": True} (returned verbatim); a fresh checkout

@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Every newly provisioned owner gets a deterministic, durable agent-email address row (owner → Friday), and the agent learns its own address through owner-facts. No mail is sent or received yet.
+**Goal:** Every newly provisioned owner gets a durable agent-email address row derived from their company slug, and the agent learns its own address through owner-facts. No mail is sent or received yet.
 
-**Architecture:** A new prefix-convention DynamoDB table `agent-email-addresses` (PK = `address`, GSI `by-owner`) maps a provisioned address to its `(owner_id, agent_id)` plus a verified-sender allowlist. A small `core/services/agent_email.py` builds a *deterministic* address from `(owner_id, agent_id, agent_name)` + the environment's mail domain, which makes minting naturally idempotent. `provision_org` mints best-effort right after Friday is seeded; `owner_facts` publishes the address into `isol8-facts.json` so the baked isol8 skill can tell the agent its own address.
+**Architecture:** A new prefix-convention DynamoDB table `agent-email-addresses` (PK = `address`, GSI `by-owner`) maps a provisioned address to its `(owner_id, agent_id)` plus a verified-sender allowlist. `core/services/agent_email.py` builds the address from the owner's **company slug** (already allocated by the Company Identity work) and mints the row. `provision_org` mints best-effort right after Friday is seeded, passing the slug it just allocated. `owner_facts` publishes the address into `isol8-facts.json` so the baked isol8 skill can tell the agent its own address.
 
 **Tech Stack:** Python 3 / FastAPI backend (uv, pytest, pytest-asyncio, moto), AWS CDK v2 (TypeScript, jest), DynamoDB.
 
@@ -12,15 +12,19 @@
 
 ## Global Constraints
 
-- Mail domain comes from `settings.AGENT_EMAIL_DOMAIN`. **An empty value disables minting entirely.** Plan 1 deliberately does **not** set this in CDK — the machinery ships inert and Plan 2 flips it on once the Resend domain is verified.
-- Minting is **idempotent** (deterministic address) and **best-effort**: a mail-side failure must never fail or undo `provision_org`. Friday surviving is more important than the address.
-- The table uses the **prefix convention** (`core.dynamodb.get_table("agent-email-addresses")`), matching `channel_link_repo` — **no** table-name env var.
+- Mail domain comes from `settings.AGENT_EMAIL_DOMAIN`. **An empty value disables minting entirely.** This plan deliberately does **not** set it in CDK — the machinery ships inert; a later plan flips it on once the Resend domain is verified.
+- **Address shape:** the primary agent (Friday) gets `{slug}@{domain}` — the company's main address is its CEO's. Additional agents (later, gated) get `{slug}-{agent}@{domain}`.
+- **The slug is an input, never looked up during provisioning.** `provision_org` passes the slug it just allocated from `allocate_company_slug`. It must NOT call `company_slug_repo.get_by_owner`, because a rare re-entry can leave an owner holding two slug rows and `get_by_owner` uses `Limit=1` with no ordering — the value it returns is not deterministic.
+- Minting is **idempotent** (deterministic given the same slug) and **best-effort**: a mail-side failure must never fail or undo `provision_org`. Friday surviving matters more than the address.
+- `status` is `"active"` (the current primary) or `"alias"` (a superseded address that must keep routing). Readers select `active`, and where more than one could match they MUST break the tie deterministically (earliest `created_at`) rather than taking an arbitrary row.
+- The table uses the **prefix convention** (`core.dynamodb.get_table("agent-email-addresses")`), matching `channel-links` — no table-name env var.
+- A new DynamoDB table requires the full CDK chain: `database-stack.ts` → `service-stack.ts` (props + grant) → `isol8-stage.ts` **and** `local-stage.ts` → `observability-stack.ts`. Grants are explicit per-table; there is no wildcard. **Note:** `service-stack`'s inline IAM policy is near CloudFormation's ~10KB ceiling and CDK packs statements in add-order — place the new grant beside the other DynamoDB grants and re-run `pnpm test`; if `BedrockGateUrlParamRead` gets pushed into the overflow managed policy, move the grant later in the sequence (see the existing comment at the `companySlugsTable` grant).
 - All addresses and sender emails are stored and compared **lowercased**.
-- A new DynamoDB table requires the full CDK chain: `database-stack.ts` → `service-stack.ts` (props + grant) → `isol8-stage.ts` **and** `local-stage.ts` → `observability-stack.ts`. Grants are explicit per-table; there is no wildcard.
-- Run backend tests from `apps/backend` with `uv run pytest`; infra tests from `apps/infra` with `pnpm test`.
+- Backend tests: `cd apps/backend && uv run pytest`. Infra tests: `cd apps/infra && pnpm test`. Run tests in the FOREGROUND.
+- One **pre-existing** backend failure is unrelated to this work and must not be fixed here: `tests/unit/routers/teams/test_agents.py::test_create_agent_returns_upstream_status_on_paperclip_error` (missing `PAPERCLIP_SERVICE_TOKEN_KEY`; it only surfaces in isolated runs).
 - Commit after each task.
 
-**Deferred to Plan 2:** the backfill script for existing owners (pointless until `AGENT_EMAIL_DOMAIN` is live).
+**Deferred:** the backfill script for existing owners (pointless until `AGENT_EMAIL_DOMAIN` is live).
 
 ---
 
@@ -91,13 +95,13 @@ async def test_put_normalizes_and_get_by_address(agent_email_table):
     from core.repositories import agent_email_repo
 
     await agent_email_repo.put(
-        address="Friday-AB12CD34EF@Agents.Isol8.co",
+        address="Acme@Agents.Isol8.co",
         owner_id="user_1",
         agent_id="agent_friday",
         verified_senders=["Owner@Example.com"],
     )
 
-    row = await agent_email_repo.get_by_address("friday-ab12cd34ef@agents.isol8.co")
+    row = await agent_email_repo.get_by_address("acme@agents.isol8.co")
     assert row is not None
     assert row["owner_id"] == "user_1"
     assert row["agent_id"] == "agent_friday"
@@ -119,19 +123,19 @@ async def test_query_by_owner_returns_only_that_owner(agent_email_table):
     from core.repositories import agent_email_repo
 
     await agent_email_repo.put(
-        address="friday-a@agents.isol8.co",
+        address="acme@agents.isol8.co",
         owner_id="user_1",
         agent_id="agent_friday",
         verified_senders=[],
     )
     await agent_email_repo.put(
-        address="atlas-b@agents.isol8.co",
+        address="acme-atlas@agents.isol8.co",
         owner_id="user_1",
         agent_id="agent_atlas",
         verified_senders=[],
     )
     await agent_email_repo.put(
-        address="friday-c@agents.isol8.co",
+        address="other@agents.isol8.co",
         owner_id="user_2",
         agent_id="agent_friday",
         verified_senders=[],
@@ -139,15 +143,15 @@ async def test_query_by_owner_returns_only_that_owner(agent_email_table):
 
     rows = await agent_email_repo.query_by_owner("user_1")
     assert {r["address"] for r in rows} == {
-        "friday-a@agents.isol8.co",
-        "atlas-b@agents.isol8.co",
+        "acme@agents.isol8.co",
+        "acme-atlas@agents.isol8.co",
     }
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd apps/backend && uv run pytest tests/unit/repositories/test_agent_email_repo.py -v`
-Expected: FAIL — `ModuleNotFoundError` / `ImportError: cannot import name 'agent_email_repo'`
+Run: `cd apps/backend && uv run pytest tests/unit/repositories/test_agent_email_repo.py -v --no-cov -p no:cacheprovider`
+Expected: FAIL — `ImportError: cannot import name 'agent_email_repo'`
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -156,12 +160,16 @@ Create `apps/backend/core/repositories/agent_email_repo.py`:
 ```python
 """Address-book for provisioned agent email.
 
-One row per provisioned agent email address. The address itself is the
-partition key because inbound mail is routed by recipient; a ``by-owner`` GSI
-lists an owner's addresses.
+One row per provisioned agent email address. The address is the partition
+key because inbound mail is routed by recipient; a ``by-owner`` GSI lists an
+owner's addresses.
+
+``status`` is ``"active"`` for the current primary address and ``"alias"``
+for a superseded one that must keep routing — so an owner can accumulate
+several rows over time and readers must select deliberately.
 
 Prefix-convention table (``core.dynamodb.get_table``), matching
-``channel_link_repo`` — the same shape of per-owner external-identity mapping.
+``channel_link_repo``.
 """
 
 from boto3.dynamodb.conditions import Key
@@ -218,7 +226,7 @@ async def query_by_owner(owner_id: str) -> list[dict]:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd apps/backend && uv run pytest tests/unit/repositories/test_agent_email_repo.py -v`
+Run: `cd apps/backend && uv run pytest tests/unit/repositories/test_agent_email_repo.py -v --no-cov -p no:cacheprovider`
 Expected: PASS (3 passed)
 
 - [ ] **Step 5: Commit**
@@ -230,25 +238,25 @@ git commit -m "feat(agent-email): address-book repository"
 
 ---
 
-### Task 2: `agent_email` service — deterministic address + idempotent mint
+### Task 2: `agent_email` service — slug-derived address + idempotent mint
 
 **Files:**
 - Create: `apps/backend/core/services/agent_email.py`
-- Modify: `apps/backend/core/config.py` (add `AGENT_EMAIL_DOMAIN` beside the other feature-config fields, e.g. near `MARKETPLACE_ARTIFACTS_BUCKET` around line 245)
+- Modify: `apps/backend/core/config.py` (add `AGENT_EMAIL_DOMAIN` immediately after `MARKETPLACE_ARTIFACTS_BUCKET`, around line 245)
 - Test: `apps/backend/tests/unit/services/test_agent_email.py`
 
 **Interfaces:**
 - Consumes: `agent_email_repo.put`, `agent_email_repo.get_by_address` (Task 1); `settings.AGENT_EMAIL_DOMAIN`.
 - Produces:
-  - `build_agent_email_address(*, owner_id: str, agent_id: str, agent_name: str, domain: str) -> str`
-  - `async mint_agent_email_address(*, owner_id: str, agent_id: str, agent_name: str, owner_email: str) -> str | None`
+  - `build_agent_email_address(*, slug: str, agent_name: str, domain: str, is_primary: bool) -> str`
+  - `async mint_agent_email_address(*, owner_id: str, agent_id: str, agent_name: str, owner_email: str, slug: str, is_primary: bool = True) -> str | None`
 
 - [ ] **Step 1: Write the failing test**
 
 Create `apps/backend/tests/unit/services/test_agent_email.py`:
 
 ```python
-"""agent_email: deterministic address building + best-effort idempotent mint."""
+"""agent_email: slug-derived address building + best-effort idempotent mint."""
 
 import os
 
@@ -259,35 +267,34 @@ os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 from core.services import agent_email  # noqa: E402
 
 
-def test_build_address_is_deterministic_and_lowercased():
-    a = agent_email.build_agent_email_address(
-        owner_id="user_1", agent_id="agent_friday", agent_name="Friday",
-        domain="agents.isol8.co",
-    )
-    b = agent_email.build_agent_email_address(
-        owner_id="user_1", agent_id="agent_friday", agent_name="Friday",
-        domain="agents.isol8.co",
-    )
-    assert a == b
-    assert a == a.lower()
-    assert a.startswith("friday-")
-    assert a.endswith("@agents.isol8.co")
-
-
-def test_build_address_differs_per_owner_and_per_agent():
-    base = dict(agent_name="Friday", domain="agents.isol8.co")
-    a = agent_email.build_agent_email_address(owner_id="user_1", agent_id="agent_friday", **base)
-    b = agent_email.build_agent_email_address(owner_id="user_2", agent_id="agent_friday", **base)
-    c = agent_email.build_agent_email_address(owner_id="user_1", agent_id="agent_atlas", **base)
-    assert len({a, b, c}) == 3
-
-
-def test_build_address_slugifies_awkward_agent_names():
+def test_primary_address_is_just_the_slug():
+    """The company's main address is its CEO's — {slug}@domain."""
     addr = agent_email.build_agent_email_address(
-        owner_id="user_1", agent_id="agent_x", agent_name="  Chief  Ops!! ",
-        domain="agents.isol8.co",
+        slug="acme", agent_name="Friday", domain="agents.isol8.co", is_primary=True
     )
-    assert addr.startswith("chief-ops-")
+    assert addr == "acme@agents.isol8.co"
+
+
+def test_secondary_address_appends_the_agent():
+    addr = agent_email.build_agent_email_address(
+        slug="acme", agent_name="Atlas", domain="agents.isol8.co", is_primary=False
+    )
+    assert addr == "acme-atlas@agents.isol8.co"
+
+
+def test_address_is_lowercased_and_agent_name_slugified():
+    addr = agent_email.build_agent_email_address(
+        slug="Acme", agent_name="  Chief  Ops!! ", domain="Agents.Isol8.co",
+        is_primary=False,
+    )
+    assert addr == "acme-chief-ops@agents.isol8.co"
+
+
+def test_address_is_deterministic():
+    kwargs = dict(slug="acme", agent_name="Friday", domain="agents.isol8.co", is_primary=True)
+    assert agent_email.build_agent_email_address(**kwargs) == (
+        agent_email.build_agent_email_address(**kwargs)
+    )
 
 
 @pytest.mark.asyncio
@@ -301,8 +308,27 @@ async def test_mint_skips_when_domain_unset(monkeypatch):
     monkeypatch.setattr(agent_email.agent_email_repo, "put", fake_put)
 
     result = await agent_email.mint_agent_email_address(
-        owner_id="user_1", agent_id="agent_friday",
-        agent_name="Friday", owner_email="o@example.com",
+        owner_id="user_1", agent_id="agent_friday", agent_name="Friday",
+        owner_email="o@example.com", slug="acme",
+    )
+    assert result is None
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_mint_skips_when_slug_missing(monkeypatch):
+    """No slug means no address — an owner whose slug allocation failed."""
+    monkeypatch.setattr(agent_email.settings, "AGENT_EMAIL_DOMAIN", "agents.isol8.co")
+    calls = []
+
+    async def fake_put(**kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr(agent_email.agent_email_repo, "put", fake_put)
+
+    result = await agent_email.mint_agent_email_address(
+        owner_id="user_1", agent_id="agent_friday", agent_name="Friday",
+        owner_email="o@example.com", slug="",
     )
     assert result is None
     assert calls == []
@@ -324,11 +350,11 @@ async def test_mint_creates_row_with_owner_as_verified_sender(monkeypatch):
     monkeypatch.setattr(agent_email.agent_email_repo, "put", fake_put)
 
     address = await agent_email.mint_agent_email_address(
-        owner_id="user_1", agent_id="agent_friday",
-        agent_name="Friday", owner_email="o@example.com",
+        owner_id="user_1", agent_id="agent_friday", agent_name="Friday",
+        owner_email="o@example.com", slug="acme",
     )
 
-    assert address is not None and address.endswith("@agents.isol8.co")
+    assert address == "acme@agents.isol8.co"
     assert len(puts) == 1
     assert puts[0]["owner_id"] == "user_1"
     assert puts[0]["agent_id"] == "agent_friday"
@@ -350,10 +376,10 @@ async def test_mint_is_idempotent_when_row_exists(monkeypatch):
     monkeypatch.setattr(agent_email.agent_email_repo, "put", fake_put)
 
     address = await agent_email.mint_agent_email_address(
-        owner_id="user_1", agent_id="agent_friday",
-        agent_name="Friday", owner_email="o@example.com",
+        owner_id="user_1", agent_id="agent_friday", agent_name="Friday",
+        owner_email="o@example.com", slug="acme",
     )
-    assert address is not None
+    assert address == "acme@agents.isol8.co"
     assert puts == []
 
 
@@ -367,20 +393,32 @@ async def test_mint_never_raises_on_repo_failure(monkeypatch):
     monkeypatch.setattr(agent_email.agent_email_repo, "get_by_address", boom)
 
     result = await agent_email.mint_agent_email_address(
-        owner_id="user_1", agent_id="agent_friday",
-        agent_name="Friday", owner_email="o@example.com",
+        owner_id="user_1", agent_id="agent_friday", agent_name="Friday",
+        owner_email="o@example.com", slug="acme",
+    )
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_mint_never_raises_on_bad_input(monkeypatch):
+    """Best-effort contract holds even for malformed arguments."""
+    monkeypatch.setattr(agent_email.settings, "AGENT_EMAIL_DOMAIN", "agents.isol8.co")
+
+    result = await agent_email.mint_agent_email_address(
+        owner_id="user_1", agent_id="agent_friday", agent_name=None,
+        owner_email="o@example.com", slug="acme",
     )
     assert result is None
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd apps/backend && uv run pytest tests/unit/services/test_agent_email.py -v`
+Run: `cd apps/backend && uv run pytest tests/unit/services/test_agent_email.py -v --no-cov -p no:cacheprovider`
 Expected: FAIL — `ImportError: cannot import name 'agent_email' from 'core.services'`
 
 - [ ] **Step 3: Add the config field**
 
-In `apps/backend/core/config.py`, alongside the other feature-config fields (immediately after `MARKETPLACE_ARTIFACTS_BUCKET`):
+In `apps/backend/core/config.py`, immediately after `MARKETPLACE_ARTIFACTS_BUCKET`:
 
 ```python
     # Provisioned agent email (set by CDK ServiceStack). Empty disables address
@@ -395,16 +433,21 @@ Create `apps/backend/core/services/agent_email.py`:
 ```python
 """Provisioned agent email addresses.
 
-Builds the deterministic address for an (owner, agent) pair and mints its
-address-book row. Deterministic means minting is naturally idempotent: the same
-owner+agent always yields the same address, so a re-run re-affirms one row
-instead of creating a second address.
+The address is built from the owner's company slug, which the Company
+Identity work already reserved: the primary agent (Friday) gets
+``{slug}@{domain}`` — a company's main address is its CEO's — and any
+additional agent gets ``{slug}-{agent}@{domain}``.
 
-Minting is best-effort by contract — ``provision_org`` calls it after seeding
-Friday, and a mail-side failure must never undo a successful provision.
+The slug is always passed IN, never looked up here. A rare provisioning
+re-entry can leave an owner holding two slug rows, and
+``company_slug_repo.get_by_owner`` uses ``Limit=1`` with no ordering, so
+reading it back would be nondeterministic. Callers pass the slug they just
+allocated.
+
+Minting is best-effort by contract — ``provision_org`` calls it after
+seeding Friday, and a mail-side failure must never undo a good provision.
 """
 
-import hashlib
 import logging
 import re
 
@@ -414,33 +457,37 @@ from core.repositories import agent_email_repo
 logger = logging.getLogger(__name__)
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
-_TOKEN_LEN = 10
 
 
-def _slug(agent_name: str) -> str:
+def _agent_slug(agent_name: str) -> str:
     slug = _SLUG_RE.sub("-", agent_name.strip().lower()).strip("-")
     return slug or "agent"
 
 
 def build_agent_email_address(
-    *, owner_id: str, agent_id: str, agent_name: str, domain: str
+    *, slug: str, agent_name: str, domain: str, is_primary: bool
 ) -> str:
-    """``<agent-slug>-<token>@<domain>``.
-
-    The token is a short digest of owner+agent, so the address is stable across
-    re-provisions, unique per (owner, agent), and leaks neither identifier.
-    """
-    digest = hashlib.sha256(f"{owner_id}:{agent_id}".encode()).hexdigest()
-    return f"{_slug(agent_name)}-{digest[:_TOKEN_LEN]}@{domain}".lower()
+    """``{slug}@{domain}`` for the primary agent, ``{slug}-{agent}@{domain}``
+    otherwise. Deterministic and lowercased."""
+    local = slug.strip().lower()
+    if not is_primary:
+        local = f"{local}-{_agent_slug(agent_name)}"
+    return f"{local}@{domain.strip().lower()}"
 
 
 async def mint_agent_email_address(
-    *, owner_id: str, agent_id: str, agent_name: str, owner_email: str
+    *,
+    owner_id: str,
+    agent_id: str,
+    agent_name: str,
+    owner_email: str,
+    slug: str,
+    is_primary: bool = True,
 ) -> str | None:
     """Mint (or re-affirm) an agent's address row.
 
-    Returns the address, or None when the feature is unconfigured or minting
-    failed. Never raises.
+    Returns the address, or None when the feature is unconfigured, the owner
+    has no slug, or minting failed. Never raises.
     """
     domain = settings.AGENT_EMAIL_DOMAIN.strip()
     if not domain:
@@ -448,8 +495,12 @@ async def mint_agent_email_address(
         return None
 
     try:
+        if not slug or not slug.strip():
+            logger.debug("agent_email.mint: no slug for owner %s; skipping", owner_id)
+            return None
+
         address = build_agent_email_address(
-            owner_id=owner_id, agent_id=agent_id, agent_name=agent_name, domain=domain
+            slug=slug, agent_name=agent_name, domain=domain, is_primary=is_primary
         )
         if await agent_email_repo.get_by_address(address) is not None:
             return address
@@ -468,14 +519,14 @@ async def mint_agent_email_address(
 
 - [ ] **Step 5: Run test to verify it passes**
 
-Run: `cd apps/backend && uv run pytest tests/unit/services/test_agent_email.py -v`
-Expected: PASS (7 passed)
+Run: `cd apps/backend && uv run pytest tests/unit/services/test_agent_email.py -v --no-cov -p no:cacheprovider`
+Expected: PASS (10 passed)
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add apps/backend/core/services/agent_email.py apps/backend/core/config.py apps/backend/tests/unit/services/test_agent_email.py
-git commit -m "feat(agent-email): deterministic address builder + idempotent mint"
+git commit -m "feat(agent-email): slug-derived address builder + idempotent mint"
 ```
 
 ---
@@ -483,22 +534,20 @@ git commit -m "feat(agent-email): deterministic address builder + idempotent min
 ### Task 3: CDK — `agent-email-addresses` table + IAM + stage wiring
 
 **Files:**
-- Modify: `apps/infra/lib/stacks/database-stack.ts` (public property near line 30; table creation near the `channelLinksTable` block at line 154)
-- Modify: `apps/infra/lib/stacks/service-stack.ts` (props interface near line 105; grant near line 556)
-- Modify: `apps/infra/lib/isol8-stage.ts` (service-stack wiring near line 95; observability wiring near line 190)
-- Modify: `apps/infra/lib/local-stage.ts` (same two places, near lines 97 and 189)
-- Modify: `apps/infra/lib/stacks/observability-stack.ts` (props near line 59; arrays near lines 389 and 1548)
+- Modify: `apps/infra/lib/stacks/database-stack.ts` (public property near line 30; table beside the `companySlugsTable` block)
+- Modify: `apps/infra/lib/stacks/service-stack.ts` (props interface near line 105; grant beside the `companySlugsTable` grant)
+- Modify: `apps/infra/lib/isol8-stage.ts` and `apps/infra/lib/local-stage.ts` (both the service and observability wiring sites, beside `companySlugsTable`)
+- Modify: `apps/infra/lib/stacks/observability-stack.ts` (props + BOTH table arrays, beside `companySlugs`)
 - Test: `apps/infra/test/database-stack.test.ts`
 
 **Interfaces:**
-- Consumes: nothing from earlier tasks (infra only).
-- Produces: DynamoDB table `isol8-${env}-agent-email-addresses`, PK `address` (S), GSI `by-owner` PK `owner_id` (S); read/write granted to the backend task role. This is the physical table that Task 1's prefix-convention repo resolves to.
+- Produces: DynamoDB table `isol8-${env}-agent-email-addresses`, PK `address` (S), GSI `by-owner` PK `owner_id` (S); read/write granted to the backend task role. This is the physical table Task 1's prefix-convention repo resolves to.
 
-**Note:** `AGENT_EMAIL_DOMAIN` is deliberately **not** set here — the feature ships inert; Plan 2 sets it once the Resend domain is verified.
+**Note:** `AGENT_EMAIL_DOMAIN` is deliberately **not** set here — the feature ships inert.
 
 - [ ] **Step 1: Write the failing test**
 
-Add to `apps/infra/test/database-stack.test.ts`, inside the existing top-level `describe` block (reuse the `template` that file already builds):
+Add to `apps/infra/test/database-stack.test.ts`. Place it beside the existing `company-slugs` table test so related assertions live together (that test was appended into an unrelated `describe` block — do not repeat that mistake; put yours immediately after it):
 
 ```typescript
   test("creates the agent-email-addresses table with a by-owner GSI", () => {
@@ -515,22 +564,18 @@ Add to `apps/infra/test/database-stack.test.ts`, inside the existing top-level `
   });
 ```
 
-If `Match` is not already imported in that file, add it: `import { Match, Template } from "aws-cdk-lib/assertions";`
-
-- [ ] **Step 2: Run test to verify it fails**
-
 Run: `cd apps/infra && pnpm test -- database-stack`
-Expected: FAIL — no DynamoDB table matching `agent-email-addresses`
+Expected: FAIL — no table matching `agent-email-addresses`
 
-- [ ] **Step 3: Create the table in `database-stack.ts`**
+- [ ] **Step 2: Create the table and wire the full CDK chain**
 
-Add the public property beside the other table declarations (near line 30):
+Mirror exactly how `companySlugsTable` is defined, granted, and wired across all five files — it is the same shape (PK + single-attribute by-owner GSI) and was added by the immediately preceding work, so it is the correct template to copy.
+
+In `database-stack.ts`:
 
 ```typescript
   public readonly agentEmailAddressesTable: dynamodb.Table;
 ```
-
-Add the table immediately after the `channelLinksTable` block (line ~162):
 
 ```typescript
     this.agentEmailAddressesTable = createTable(
@@ -546,38 +591,31 @@ Add the table immediately after the `channelLinksTable` block (line ~162):
     });
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `cd apps/infra && pnpm test -- database-stack`
-Expected: PASS
-
-- [ ] **Step 5: Wire the grant and stage plumbing**
-
-In `apps/infra/lib/stacks/service-stack.ts`, add to the `database` props interface (beside `channelLinksTable: dynamodb.Table;`, line ~105):
+In `service-stack.ts` props interface:
 
 ```typescript
     agentEmailAddressesTable: dynamodb.Table;
 ```
 
-And grant beside the `channelLinksTable` grant (line ~556):
+and the grant (place it beside the `companySlugsTable` grant, and heed the IAM-size note in Global Constraints):
 
 ```typescript
     props.database.agentEmailAddressesTable.grantReadWriteData(this.taskRole);
 ```
 
-In `apps/infra/lib/isol8-stage.ts` (line ~95) and `apps/infra/lib/local-stage.ts` (line ~97), beside `channelLinksTable: database.channelLinksTable,`:
+In `isol8-stage.ts` and `local-stage.ts`, at BOTH the service-stack and observability-stack construction sites:
 
 ```typescript
         agentEmailAddressesTable: database.agentEmailAddressesTable,
 ```
 
-In `apps/infra/lib/stacks/observability-stack.ts`, add to the `databaseTables` props interface (line ~59):
+In `observability-stack.ts` props:
 
 ```typescript
     agentEmailAddressesTable: dynamodb.ITable;
 ```
 
-and to both table arrays (lines ~389 and ~1548 respectively):
+and both arrays:
 
 ```typescript
       ["agentEmailAddresses", props.databaseTables.agentEmailAddressesTable],
@@ -587,21 +625,15 @@ and to both table arrays (lines ~389 and ~1548 respectively):
       ["agent-email-addresses", props.databaseTables.agentEmailAddressesTable],
 ```
 
-Then pass it in both stage files where the observability stack is constructed (`isol8-stage.ts` line ~190, `local-stage.ts` line ~189):
-
-```typescript
-          agentEmailAddressesTable: database.agentEmailAddressesTable,
-```
-
-- [ ] **Step 6: Run the full infra suite and synth**
+- [ ] **Step 3: Run the infra suite and synth**
 
 Run: `cd apps/infra && pnpm test`
-Expected: PASS (all suites — the stage wiring must satisfy every stack's props)
+Expected: PASS except the known pre-existing `credential-export-decouple.test.ts` failure (oauth-state ARN export), which is unrelated — do not fix it.
 
 Run: `cd apps/infra && npx cdk synth 2>&1 | tail -5`
-Expected: synth completes without a TypeScript or missing-prop error
+Expected: completes with no TypeScript or missing-prop error
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add apps/infra/lib apps/infra/test/database-stack.test.ts
@@ -613,21 +645,23 @@ git commit -m "feat(agent-email): agent-email-addresses table + IAM + stage wiri
 ### Task 4: Mint the address during `provision_org`
 
 **Files:**
-- Modify: `apps/backend/core/services/paperclip_provisioning.py` (import at module top; call just before the step-8 persist block, ~line 479)
+- Modify: `apps/backend/core/services/paperclip_provisioning.py` (import at module top; capture the slug at the existing `allocate_company_slug` call; mint just before the step-8 persist block)
 - Test: `apps/backend/tests/unit/services/test_paperclip_provisioning.py`
 
 **Interfaces:**
-- Consumes: `mint_agent_email_address(*, owner_id, agent_id, agent_name, owner_email) -> str | None` (Task 2).
-- Produces: no new symbols — `provision_org`'s existing contract is unchanged.
+- Consumes: `mint_agent_email_address(*, owner_id, agent_id, agent_name, owner_email, slug, is_primary=True) -> str | None` (Task 2).
+- Produces: no new symbols — `provision_org`'s signature and return type are unchanged.
+
+**Key detail:** `provision_org` already calls `allocate_company_slug(...)` and currently **discards** its return value. Capture it into a local and pass it to the mint. Do NOT read the slug back via `company_slug_repo.get_by_owner` — see Global Constraints.
 
 - [ ] **Step 1: Write the failing test**
 
-Append these cases to `apps/backend/tests/unit/services/test_paperclip_provisioning.py`. They reuse that module's existing `_build_provision_org_doubles` helper (line 22) and its already-imported `AsyncMock` / `PaperclipApiError`:
+Append to `apps/backend/tests/unit/services/test_paperclip_provisioning.py`, reusing that module's `_build_provision_org_doubles` helper and its already-imported `AsyncMock`:
 
 ```python
 @pytest.mark.asyncio
-async def test_provision_org_mints_agent_email_for_friday(monkeypatch):
-    """A successful provision mints exactly one address, for the seeded Friday."""
+async def test_provision_org_mints_agent_email_from_allocated_slug(monkeypatch):
+    """The address is built from the slug we just allocated, not a lookup."""
     import core.services.paperclip_provisioning as mod
     from core.services.paperclip_provisioning import PaperclipProvisioning
 
@@ -636,19 +670,29 @@ async def test_provision_org_mints_agent_email_for_friday(monkeypatch):
         side_effect=[{"id": "agent-friday"}, {"id": "agent-atlas"}]
     )
 
+    async def fake_generate(*, org_id, owner_email):
+        return "Acme Robotics"
+
+    async def fake_allocate(*, owner_id, name):
+        return "acme-robotics"
+
     minted = []
 
-    async def fake_mint(*, owner_id, agent_id, agent_name, owner_email):
+    async def fake_mint(*, owner_id, agent_id, agent_name, owner_email, slug, is_primary=True):
         minted.append(
             {
                 "owner_id": owner_id,
                 "agent_id": agent_id,
                 "agent_name": agent_name,
                 "owner_email": owner_email,
+                "slug": slug,
+                "is_primary": is_primary,
             }
         )
-        return "friday-abc1234567@agents.isol8.co"
+        return f"{slug}@agents.isol8.co"
 
+    monkeypatch.setattr(mod, "generate_company_name", fake_generate)
+    monkeypatch.setattr(mod, "allocate_company_slug", fake_allocate)
     monkeypatch.setattr(mod, "mint_agent_email_address", fake_mint)
 
     svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
@@ -658,19 +702,20 @@ async def test_provision_org_mints_agent_email_for_friday(monkeypatch):
         owner_email="owner@example.com",
     )
 
-    # The address is keyed by owner_id (the container key), NOT owner_user_id.
     assert len(minted) == 1
     assert minted[0] == {
         "owner_id": "org_xyz",
         "agent_id": "agent-friday",
         "agent_name": "Friday",
         "owner_email": "owner@example.com",
+        "slug": "acme-robotics",
+        "is_primary": True,
     }
 
 
 @pytest.mark.asyncio
-async def test_provision_org_survives_agent_email_mint_failure(monkeypatch):
-    """Defense-in-depth: a mail-side failure must NOT fail the provision."""
+async def test_provision_org_skips_mint_when_slug_allocation_failed(monkeypatch):
+    """No slug means no address — but the provision still succeeds."""
     import core.services.paperclip_provisioning as mod
     from core.services.paperclip_provisioning import PaperclipProvisioning
 
@@ -679,9 +724,55 @@ async def test_provision_org_survives_agent_email_mint_failure(monkeypatch):
         side_effect=[{"id": "agent-friday"}, {"id": "agent-atlas"}]
     )
 
+    async def fake_generate(*, org_id, owner_email):
+        return "Acme Robotics"
+
+    async def fake_allocate(*, owner_id, name):
+        return None  # allocation failed
+
+    minted = []
+
+    async def fake_mint(**kwargs):
+        minted.append(kwargs)
+        return None
+
+    monkeypatch.setattr(mod, "generate_company_name", fake_generate)
+    monkeypatch.setattr(mod, "allocate_company_slug", fake_allocate)
+    monkeypatch.setattr(mod, "mint_agent_email_address", fake_mint)
+
+    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    row = await svc.provision_org(
+        owner_id="org_xyz",
+        owner_user_id="user_owner",
+        owner_email="owner@example.com",
+    )
+
+    assert row.status == "active"
+    assert minted == []
+
+
+@pytest.mark.asyncio
+async def test_provision_org_survives_agent_email_mint_failure(monkeypatch):
+    """A mail-side failure must NOT fail the provision."""
+    import core.services.paperclip_provisioning as mod
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    admin, repo = _build_provision_org_doubles(monkeypatch)
+    admin.create_agent = AsyncMock(
+        side_effect=[{"id": "agent-friday"}, {"id": "agent-atlas"}]
+    )
+
+    async def fake_generate(*, org_id, owner_email):
+        return "Acme Robotics"
+
+    async def fake_allocate(*, owner_id, name):
+        return "acme-robotics"
+
     async def boom(**kwargs):
         raise RuntimeError("mail down")
 
+    monkeypatch.setattr(mod, "generate_company_name", fake_generate)
+    monkeypatch.setattr(mod, "allocate_company_slug", fake_allocate)
     monkeypatch.setattr(mod, "mint_agent_email_address", boom)
 
     svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
@@ -693,63 +784,53 @@ async def test_provision_org_survives_agent_email_mint_failure(monkeypatch):
 
     assert row.status == "active"
     repo.put.assert_awaited()
-
-
-@pytest.mark.asyncio
-async def test_provision_org_skips_mint_when_friday_seed_failed(monkeypatch):
-    """No Friday means no agent to own an address, so nothing is minted."""
-    import core.services.paperclip_provisioning as mod
-    from core.services.paperclip_provisioning import PaperclipProvisioning
-
-    admin, repo = _build_provision_org_doubles(monkeypatch)
-    # Friday fails, Atlas succeeds — mirrors the existing unparented-Atlas case.
-    admin.create_agent = AsyncMock(
-        side_effect=[PaperclipApiError("boom"), {"id": "agent-atlas"}]
-    )
-
-    minted = []
-
-    async def fake_mint(**kwargs):
-        minted.append(kwargs)
-
-    monkeypatch.setattr(mod, "mint_agent_email_address", fake_mint)
-
-    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
-    await svc.provision_org(
-        owner_id="org_xyz",
-        owner_user_id="user_owner",
-        owner_email="owner@example.com",
-    )
-
-    assert minted == []
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd apps/backend && uv run pytest tests/unit/services/test_paperclip_provisioning.py -k "agent_email or mint" -v`
+Run: `cd apps/backend && uv run pytest tests/unit/services/test_paperclip_provisioning.py -k "mints_agent_email or skips_mint or agent_email_mint_failure" -v --no-cov -p no:cacheprovider`
 Expected: FAIL — `AttributeError: module 'core.services.paperclip_provisioning' has no attribute 'mint_agent_email_address'`
 
 - [ ] **Step 3: Write minimal implementation**
 
-Add the import near the other `core.services` imports at the top of `apps/backend/core/services/paperclip_provisioning.py`:
+Add to the module-top imports:
 
 ```python
 from core.services.agent_email import mint_agent_email_address
 ```
 
-Insert the mint immediately before the `# 8. Persist.` block (~line 479), after Friday and Atlas are seeded:
+Change the existing slug-allocation call to capture its result. It currently reads `await allocate_company_slug(owner_id=owner_id, name=company_name)` inside a `try`; make it assign, and initialise the local to `None` before the `try` so it is always bound:
 
 ```python
-            # Mint the agent's email address. Best-effort and guarded on Friday
-            # existing: the address is a convenience, and a mail-side failure
-            # must never undo a successful provision (same posture as Atlas).
-            if friday_agent_id:
+            company_slug: str | None = None
+            try:
+                company_slug = await allocate_company_slug(
+                    owner_id=owner_id, name=company_name
+                )
+            except Exception as e:  # noqa: BLE001 — allocation must not fail provisioning
+                logger.warning(
+                    "paperclip_provisioning.provision_org: slug allocation failed "
+                    "for owner_id %s: %s",
+                    owner_id,
+                    e,
+                )
+```
+
+Then, immediately before the `# 8. Persist.` block, mint the address:
+
+```python
+            # Mint the agent's email address from the slug we just allocated.
+            # Best-effort and guarded on both Friday and the slug existing —
+            # the address is a convenience, and a mail-side failure must never
+            # undo a successful provision (same posture as the Atlas seed).
+            if friday_agent_id and company_slug:
                 try:
                     await mint_agent_email_address(
                         owner_id=owner_id,
                         agent_id=friday_agent_id,
                         agent_name="Friday",
                         owner_email=owner_email,
+                        slug=company_slug,
                     )
                 except Exception as e:  # noqa: BLE001 — never fail the provision
                     logger.warning(
@@ -760,18 +841,18 @@ Insert the mint immediately before the `# 8. Persist.` block (~line 479), after 
                     )
 ```
 
-The inner `try/except` is deliberate belt-and-braces: `mint_agent_email_address` already swallows its own errors, but this whole block sits inside the provisioning `try` that calls `_mark_failed`, so a raise here would wrongly mark a healthy org failed.
+The inner `try/except` is deliberate belt-and-braces: `mint_agent_email_address` already swallows its own errors, but this block sits inside the provisioning `try` that calls `_mark_failed`, so a raise here would wrongly mark a healthy org failed.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd apps/backend && uv run pytest tests/unit/services/test_paperclip_provisioning.py -v`
+Run: `cd apps/backend && uv run pytest tests/unit/services/test_paperclip_provisioning.py -v --no-cov -p no:cacheprovider`
 Expected: PASS (new cases plus all pre-existing cases in the module)
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add apps/backend/core/services/paperclip_provisioning.py apps/backend/tests/unit/services/test_paperclip_provisioning.py
-git commit -m "feat(agent-email): mint address during provision_org"
+git commit -m "feat(agent-email): mint address from allocated slug during provision_org"
 ```
 
 ---
@@ -784,20 +865,15 @@ git commit -m "feat(agent-email): mint address during provision_org"
 
 **Interfaces:**
 - Consumes: `agent_email_repo.query_by_owner(owner_id) -> list[dict]` (Task 1).
-- Produces: `isol8-facts.json` gains an `email_address` key — `str` when the owner has an address, `None` otherwise. The baked isol8 skill reads this in Plan 2.
+- Produces: `isol8-facts.json` gains an `email_address` key — `str` when the owner has an active address, `None` otherwise.
 
 - [ ] **Step 1: Write the failing test**
 
 Add to `apps/backend/tests/unit/services/test_owner_facts.py`:
 
 ```python
-@pytest.mark.asyncio
-async def test_write_owner_facts_includes_email_address(monkeypatch):
-    import json
-
-    from core.services import owner_facts
-
-    written = {}
+def _facts_env(monkeypatch, owner_facts, rows, written):
+    """Shared doubles: billing row, workspace capture, address rows."""
 
     class FakeWs:
         def write_file(self, user_id, path, content):
@@ -807,18 +883,76 @@ async def test_write_owner_facts_includes_email_address(monkeypatch):
         return {"subscription_status": "active", "provider_choice": "bedrock_claude"}
 
     async def fake_query_by_owner(owner_id):
-        return [{"address": "friday-abc123@agents.isol8.co", "status": "active"}]
+        if callable(rows):
+            return rows(owner_id)
+        return rows
 
     monkeypatch.setattr(owner_facts.billing_repo, "get_by_owner_id", fake_billing)
     monkeypatch.setattr(owner_facts, "get_workspace", lambda: FakeWs())
-    monkeypatch.setattr(
-        owner_facts.agent_email_repo, "query_by_owner", fake_query_by_owner
+    monkeypatch.setattr(owner_facts.agent_email_repo, "query_by_owner", fake_query_by_owner)
+
+
+@pytest.mark.asyncio
+async def test_write_owner_facts_includes_email_address(monkeypatch):
+    import json
+
+    from core.services import owner_facts
+
+    written = {}
+    _facts_env(
+        monkeypatch, owner_facts,
+        [{"address": "acme@agents.isol8.co", "status": "active", "created_at": "2026-01-01T00:00:00Z"}],
+        written,
     )
 
     await owner_facts.write_owner_facts("user_abc")
 
-    facts = json.loads(written["content"])
-    assert facts["email_address"] == "friday-abc123@agents.isol8.co"
+    assert json.loads(written["content"])["email_address"] == "acme@agents.isol8.co"
+
+
+@pytest.mark.asyncio
+async def test_write_owner_facts_ignores_alias_rows(monkeypatch):
+    """An alias still routes, but it is not the address we advertise."""
+    import json
+
+    from core.services import owner_facts
+
+    written = {}
+    _facts_env(
+        monkeypatch, owner_facts,
+        [
+            {"address": "old@agents.isol8.co", "status": "alias", "created_at": "2026-01-01T00:00:00Z"},
+            {"address": "acme@agents.isol8.co", "status": "active", "created_at": "2026-02-01T00:00:00Z"},
+        ],
+        written,
+    )
+
+    await owner_facts.write_owner_facts("user_abc")
+
+    assert json.loads(written["content"])["email_address"] == "acme@agents.isol8.co"
+
+
+@pytest.mark.asyncio
+async def test_write_owner_facts_picks_oldest_active_deterministically(monkeypatch):
+    """Two active rows can exist after a rare re-provision; the choice must
+    not depend on DynamoDB's arbitrary return order."""
+    import json
+
+    from core.services import owner_facts
+
+    written = {}
+    _facts_env(
+        monkeypatch, owner_facts,
+        [
+            {"address": "second@agents.isol8.co", "status": "active", "created_at": "2026-03-01T00:00:00Z"},
+            {"address": "first@agents.isol8.co", "status": "active", "created_at": "2026-01-01T00:00:00Z"},
+        ],
+        written,
+    )
+
+    await owner_facts.write_owner_facts("user_abc")
+
+    assert json.loads(written["content"])["email_address"] == "first@agents.isol8.co"
 
 
 @pytest.mark.asyncio
@@ -828,27 +962,11 @@ async def test_write_owner_facts_email_address_none_when_unminted(monkeypatch):
     from core.services import owner_facts
 
     written = {}
-
-    class FakeWs:
-        def write_file(self, user_id, path, content):
-            written["content"] = content
-
-    async def fake_billing(owner_id, *, consistent_read=False):
-        return {"subscription_status": "active", "provider_choice": "bedrock_claude"}
-
-    async def fake_query_by_owner(owner_id):
-        return []
-
-    monkeypatch.setattr(owner_facts.billing_repo, "get_by_owner_id", fake_billing)
-    monkeypatch.setattr(owner_facts, "get_workspace", lambda: FakeWs())
-    monkeypatch.setattr(
-        owner_facts.agent_email_repo, "query_by_owner", fake_query_by_owner
-    )
+    _facts_env(monkeypatch, owner_facts, [], written)
 
     await owner_facts.write_owner_facts("user_abc")
 
-    facts = json.loads(written["content"])
-    assert facts["email_address"] is None
+    assert json.loads(written["content"])["email_address"] is None
 
 
 @pytest.mark.asyncio
@@ -859,19 +977,10 @@ async def test_write_owner_facts_survives_email_lookup_failure(monkeypatch):
 
     written = {}
 
-    class FakeWs:
-        def write_file(self, user_id, path, content):
-            written["content"] = content
-
-    async def fake_billing(owner_id, *, consistent_read=False):
-        return {"subscription_status": "active", "provider_choice": "bedrock_claude"}
-
-    async def boom(owner_id):
+    def boom_rows(owner_id):
         raise RuntimeError("dynamo down")
 
-    monkeypatch.setattr(owner_facts.billing_repo, "get_by_owner_id", fake_billing)
-    monkeypatch.setattr(owner_facts, "get_workspace", lambda: FakeWs())
-    monkeypatch.setattr(owner_facts.agent_email_repo, "query_by_owner", boom)
+    _facts_env(monkeypatch, owner_facts, boom_rows, written)
 
     await owner_facts.write_owner_facts("user_abc")
 
@@ -882,7 +991,7 @@ async def test_write_owner_facts_survives_email_lookup_failure(monkeypatch):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd apps/backend && uv run pytest tests/unit/services/test_owner_facts.py -k email -v`
+Run: `cd apps/backend && uv run pytest tests/unit/services/test_owner_facts.py -k email -v --no-cov -p no:cacheprovider`
 Expected: FAIL — `AttributeError: module 'core.services.owner_facts' has no attribute 'agent_email_repo'`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -897,20 +1006,28 @@ Add a lookup helper above `write_owner_facts`:
 
 ```python
 async def _lookup_email_address(owner_id: str) -> str | None:
-    """The owner's provisioned agent email, or None. Never raises — the address
-    is a nicety and must not stop the rest of the facts from being written."""
+    """The owner's advertised agent email, or None.
+
+    Selects the ``active`` row (aliases still route but are not advertised)
+    and breaks ties on the earliest ``created_at`` — a rare re-provision can
+    leave two active rows, and DynamoDB's return order is arbitrary, so an
+    unordered pick would make the agent's own address nondeterministic.
+    Never raises: the address is a nicety and must not stop the rest of the
+    facts from being written.
+    """
     try:
         rows = await agent_email_repo.query_by_owner(owner_id)
     except Exception as e:  # noqa: BLE001 — facts must never block callers
         logger.warning("owner_facts: agent-email lookup failed for %s: %s", owner_id, e)
         return None
-    for row in rows:
-        if row.get("status") == "active":
-            return row.get("address")
-    return None
+    active = [r for r in rows if r.get("status") == "active"]
+    if not active:
+        return None
+    active.sort(key=lambda r: r.get("created_at") or "")
+    return active[0].get("address")
 ```
 
-Give `build_owner_facts` an `email_address` parameter and emit it in the dict:
+Give `build_owner_facts` an `email_address` parameter and emit it:
 
 ```python
 def build_owner_facts(owner_id, account, *, email_address: str | None = None) -> dict:
@@ -936,8 +1053,8 @@ And thread it through the writer:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd apps/backend && uv run pytest tests/unit/services/test_owner_facts.py -v`
-Expected: PASS (new cases plus all pre-existing cases — `email_address` defaults to `None`, so existing `build_owner_facts` callers and assertions are unaffected)
+Run: `cd apps/backend && uv run pytest tests/unit/services/test_owner_facts.py -v --no-cov -p no:cacheprovider`
+Expected: PASS (new cases plus all pre-existing — `email_address` defaults to `None`, so existing `build_owner_facts` callers are unaffected)
 
 - [ ] **Step 5: Commit**
 
@@ -952,19 +1069,17 @@ git commit -m "feat(agent-email): publish address in owner facts"
 
 **Files:** none (verification only)
 
-- [ ] **Step 1: Run the backend unit suite**
+- [ ] **Step 1: Backend unit suite**
 
-Run: `cd apps/backend && uv run pytest tests/unit -q`
-Expected: PASS, no regressions. If anything fails, it is almost certainly this change — these are dependent systems.
+Run: `cd apps/backend && uv run pytest tests/unit -q --no-cov -p no:cacheprovider`
+Expected: PASS, no regressions.
 
-- [ ] **Step 2: Run the infra suite**
+- [ ] **Step 2: Infra suite**
 
 Run: `cd apps/infra && pnpm test`
-Expected: PASS
+Expected: PASS except the known pre-existing `credential-export-decouple.test.ts` failure.
 
 - [ ] **Step 3: Confirm the feature is inert**
-
-Verify `AGENT_EMAIL_DOMAIN` is set nowhere in `apps/infra/lib`:
 
 Run: `grep -rn "AGENT_EMAIL_DOMAIN" apps/infra/lib || echo "not set — feature inert as intended"`
 Expected: `not set — feature inert as intended`
@@ -972,14 +1087,13 @@ Expected: `not set — feature inert as intended`
 - [ ] **Step 4: Commit any lint fixups**
 
 ```bash
-git add -A
-git commit -m "chore(agent-email): lint fixups" || echo "nothing to commit"
+git add -A && git commit -m "chore(agent-email): lint fixups" || echo "nothing to commit"
 ```
 
 ---
 
-## Plan 1 Done — What Ships
+## Done — What Ships
 
-A deployed but **inert** foundation: the table exists, the backend can mint and read addresses, `provision_org` mints for every new owner, and `owner_facts` publishes the address — all gated off because `AGENT_EMAIL_DOMAIN` is unset.
+A deployed but **inert** foundation: the table exists, addresses are built from the company slug, `provision_org` mints for every new owner, and `owner_facts` publishes the address — all gated off because `AGENT_EMAIL_DOMAIN` is unset.
 
-**Plan 2 (Inbound)** then: verify the Resend receiving domain, set `AGENT_EMAIL_DOMAIN` in CDK (which switches minting on), add the backfill script for existing owners, build the `email.received` webhook router with signature verification + sender allowlist + cap gating, deliver into the container via the native `/hooks/agent`, and teach the baked isol8 skill about the address.
+**Next:** verify the Resend receiving domain, set `AGENT_EMAIL_DOMAIN`, backfill existing owners, then build the inbound webhook + native `/hooks/agent` delivery and the outbound relay.

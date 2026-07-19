@@ -68,6 +68,7 @@ export type AnalyticsEvent =
   | "agent_selected"
   // Billing
   | "billing_portal_opened"
+  | "billing_ultra_upgrade_clicked"
   | "subscription_checkout_canceled"
   | "subscription_checkout_failed"
   | "subscription_checkout_returned_success"

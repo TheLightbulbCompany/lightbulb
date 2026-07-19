@@ -1,0 +1,96 @@
+"""agent_email_repo: address-keyed rows with a by-owner GSI."""
+
+import os
+from unittest.mock import patch
+
+import boto3
+import pytest
+from moto import mock_aws
+
+os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
+
+
+@pytest.fixture
+def agent_email_table():
+    with mock_aws():
+        resource = boto3.resource("dynamodb", region_name="us-east-1")
+        table = resource.create_table(
+            TableName="test-agent-email-addresses",
+            KeySchema=[{"AttributeName": "address", "KeyType": "HASH"}],
+            AttributeDefinitions=[
+                {"AttributeName": "address", "AttributeType": "S"},
+                {"AttributeName": "owner_id", "AttributeType": "S"},
+            ],
+            GlobalSecondaryIndexes=[
+                {
+                    "IndexName": "by-owner",
+                    "KeySchema": [{"AttributeName": "owner_id", "KeyType": "HASH"}],
+                    "Projection": {"ProjectionType": "ALL"},
+                }
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        table.meta.client.get_waiter("table_exists").wait(TableName="test-agent-email-addresses")
+        with (
+            patch("core.dynamodb._table_prefix", "test-"),
+            patch("core.dynamodb._dynamodb_resource", resource),
+        ):
+            yield table
+
+
+@pytest.mark.asyncio
+async def test_put_normalizes_and_get_by_address(agent_email_table):
+    from core.repositories import agent_email_repo
+
+    await agent_email_repo.put(
+        address="Acme@Agents.Isol8.co",
+        owner_id="user_1",
+        agent_id="agent_friday",
+        verified_senders=["Owner@Example.com"],
+    )
+
+    row = await agent_email_repo.get_by_address("acme@agents.isol8.co")
+    assert row is not None
+    assert row["owner_id"] == "user_1"
+    assert row["agent_id"] == "agent_friday"
+    assert row["verified_senders"] == ["owner@example.com"]
+    assert row["public"] is False
+    assert row["status"] == "active"
+    assert row["created_at"]
+
+
+@pytest.mark.asyncio
+async def test_get_by_address_missing_returns_none(agent_email_table):
+    from core.repositories import agent_email_repo
+
+    assert await agent_email_repo.get_by_address("nope@agents.isol8.co") is None
+
+
+@pytest.mark.asyncio
+async def test_query_by_owner_returns_only_that_owner(agent_email_table):
+    from core.repositories import agent_email_repo
+
+    await agent_email_repo.put(
+        address="acme@agents.isol8.co",
+        owner_id="user_1",
+        agent_id="agent_friday",
+        verified_senders=[],
+    )
+    await agent_email_repo.put(
+        address="acme-atlas@agents.isol8.co",
+        owner_id="user_1",
+        agent_id="agent_atlas",
+        verified_senders=[],
+    )
+    await agent_email_repo.put(
+        address="other@agents.isol8.co",
+        owner_id="user_2",
+        agent_id="agent_friday",
+        verified_senders=[],
+    )
+
+    rows = await agent_email_repo.query_by_owner("user_1")
+    assert {r["address"] for r in rows} == {
+        "acme@agents.isol8.co",
+        "acme-atlas@agents.isol8.co",
+    }

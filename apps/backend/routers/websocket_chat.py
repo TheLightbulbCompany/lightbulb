@@ -170,7 +170,19 @@ def _trim_chat_history_for_frame(result, budget: int = _WS_FRAME_BUDGET_BYTES):
             hi = mid
         else:
             lo = mid + 1
-    return {**result, "messages": messages[lo:], "truncated": True}
+    kept = messages[lo:]
+    out = {**result, "messages": kept, "truncated": True}
+    # A paged read: the bisect above dropped the OLDEST messages of this page,
+    # which sit at the FAR end of the cursor (offset counts backward from
+    # newest). The server's nextOffset assumed the full page was delivered, so
+    # resuming from it would skip exactly what we just dropped. Re-anchor the
+    # cursor to what actually shipped, and force hasMore — messages were
+    # dropped, so more definitely remain.
+    offset = result.get("offset")
+    if isinstance(offset, int) and not isinstance(offset, bool):
+        out["nextOffset"] = offset + len(kept)
+        out["hasMore"] = True
+    return out
 
 
 # Methods whose result payload the frontend DISCARDS (it revalidates via a

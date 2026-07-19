@@ -120,3 +120,37 @@ def test_fit_caps_sessions_list_previews_so_many_sessions_stay_frame_sized():
 def test_fit_leaves_short_preview_rows_alone():
     result = {"sessions": [{"key": "agent:a1:user_1", "lastMessage": {"text": "short"}}]}
     assert _fit_rpc_result_for_frame("sessions.list", result) is result
+
+
+def test_trim_rewrites_next_offset_for_a_paged_response():
+    # A page of 4 messages, chronological (index 0 == oldest of the page).
+    # Only the newest 2 fit the budget, so the 2 oldest are dropped. Those
+    # dropped messages are at the FAR end of the page, so the client must
+    # resume at offset + kept, not at the server's original nextOffset.
+    big = "x" * 400
+    result = {
+        "messages": [{"role": "user", "content": big} for _ in range(4)],
+        "offset": 10,
+        "nextOffset": 14,
+        "hasMore": True,
+        "totalMessages": 160,
+    }
+    out = _trim_chat_history_for_frame(result, budget=1000)
+
+    assert out["truncated"] is True
+    assert len(out["messages"]) < 4
+    assert out["nextOffset"] == 10 + len(out["messages"])
+    assert out["hasMore"] is True
+    assert out["totalMessages"] == 160
+
+
+def test_trim_leaves_unpaged_responses_without_a_cursor():
+    # No `offset` in the request == the legacy unpaged shape. Trimming must
+    # not invent a cursor the client cannot interpret.
+    big = "x" * 400
+    result = {"messages": [{"role": "user", "content": big} for _ in range(4)]}
+    out = _trim_chat_history_for_frame(result, budget=1000)
+
+    assert out["truncated"] is True
+    assert "nextOffset" not in out
+    assert "hasMore" not in out

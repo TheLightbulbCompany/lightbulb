@@ -41,7 +41,7 @@ export function useGetStartedDerived(): GetStartedDerivedSignals & { chatReady: 
   // `container` already implies a 200 ("normal"), and `.phase === "ready"`
   // additionally requires the gateway pool to have connected.
   const { container } = useProvisioningState();
-  const chatReady = container?.phase === "ready";
+  const chatReady = container?.phase === "ready" || container?.phase === "parked";
 
   // `channel` complete = the user has actually connected a channel: ANY
   // provider has at least one bot a member has paired their identity to

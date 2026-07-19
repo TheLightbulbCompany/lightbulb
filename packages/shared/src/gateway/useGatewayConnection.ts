@@ -50,6 +50,18 @@ export interface GatewayConnectionValue {
   onEvent: (handler: (event: string, data: unknown) => void) => () => void;
   onChatMessage: (handler: (msg: ChatIncomingMessage) => void) => () => void;
   reconnect: () => void;
+  /** True while the connection is deliberately parked (idle release). */
+  isParked: boolean;
+  /**
+   * Idle park: deliberately release the socket (clean 1000 close — the
+   * backend reads the disconnect as "nobody home" and its grace ladder
+   * stops a trial container ~3min later) and refuse reconnects until
+   * `unpark()`. Reversible, side-effect-free for paid owners (their
+   * containers never stop on disconnect).
+   */
+  park: () => void;
+  /** Leave parked state and reconnect immediately. */
+  unpark: () => void;
   /**
    * Platform escape hatch: lets a wrapper layer feed node-connection state
    * from outside the socket (the desktop webview learns it via Tauri IPC).
@@ -112,6 +124,12 @@ export function useGatewayConnection(options: GatewayConnectionOptions): Gateway
   // in-flight attempt. Concurrent callers (mount effect, sendReq,
   // reconnect) share one handshake.
   const connectInFlightRef = useRef<Promise<void> | null>(null);
+  // Deliberate idle-park: while true, connect() is a no-op so nothing —
+  // sendReq's lazy connect, the mount effect, a stray timer — can resurrect
+  // the socket until unpark(). Ref + state pair: the ref gates the machine,
+  // the state renders.
+  const parkedRef = useRef(false);
+  const [isParked, setIsParked] = useState(false);
 
   // ---- Cleanup helpers ----
 
@@ -244,6 +262,9 @@ export function useGatewayConnection(options: GatewayConnectionOptions): Gateway
   // ---- Connect ----
 
   const connect = useCallback(async () => {
+    if (parkedRef.current) {
+      return;
+    }
     if (
       wsRef.current?.readyState === WebSocket.OPEN ||
       wsRef.current?.readyState === WebSocket.CONNECTING
@@ -336,6 +357,35 @@ export function useGatewayConnection(options: GatewayConnectionOptions): Gateway
 
   // Keep ref in sync for stable reconnect closure
   connectRef.current = connect;
+
+  const park = useCallback(() => {
+    if (parkedRef.current) return;
+    parkedRef.current = true;
+    setIsParked(true);
+    clearReconnectTimeout();
+    clearPingInterval();
+    if (wsRef.current) {
+      // Code 1000 — the onclose handler treats it as deliberate and never
+      // schedules a reconnect; the parked guard in connect() covers every
+      // other resurrection path.
+      wsRef.current.close(1000, "Idle park");
+      wsRef.current = null;
+      rejectPendingRpcs("WebSocket parked");
+    }
+    setIsConnected(false);
+    console.info("[gateway] parked (idle)");
+  }, [clearReconnectTimeout, clearPingInterval, rejectPendingRpcs]);
+
+  const unpark = useCallback(() => {
+    if (!parkedRef.current) return;
+    parkedRef.current = false;
+    setIsParked(false);
+    reconnectAttemptRef.current = 0;
+    setReconnectAttempt(0);
+    setError(null);
+    console.info("[gateway] unparked");
+    connect();
+  }, [connect]);
 
   const reconnect = useCallback(() => {
     if (wsRef.current) {
@@ -491,8 +541,11 @@ export function useGatewayConnection(options: GatewayConnectionOptions): Gateway
       onEvent,
       onChatMessage,
       reconnect,
+      isParked,
+      park,
+      unpark,
       setNodeConnected,
     }),
-    [isConnected, nodeConnected, error, reconnectAttempt, send, sendReq, sendChat, onEvent, onChatMessage, reconnect],
+    [isConnected, nodeConnected, error, reconnectAttempt, send, sendReq, sendChat, onEvent, onChatMessage, reconnect, isParked, park, unpark],
   );
 }

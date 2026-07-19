@@ -52,6 +52,7 @@ async def test_apply_update_migrates_removed_keys_before_image_roll():
 
     order: list[str] = []
     ecs = MagicMock()
+    ecs._size_for_owner = AsyncMock(return_value=("512", "2048"))
     ecs.resize_user_container = AsyncMock(side_effect=lambda *a, **k: order.append("resize"))
     migrate = AsyncMock(side_effect=lambda *a, **k: order.append("migrate"))
 
@@ -68,6 +69,57 @@ async def test_apply_update_migrates_removed_keys_before_image_roll():
     migrate.assert_awaited_once_with(owner_id)
     ecs.resize_user_container.assert_awaited_once()
     assert order == ["migrate", "resize"]
+
+
+async def _apply_image_only_update(owner_id, update_id, size):
+    """Drive apply_update for an image-ONLY change (no cpu/memory) with a
+    _size_for_owner stub returning ``size``; return the resize call kwargs."""
+    update_item = {
+        "owner_id": owner_id,
+        "update_id": update_id,
+        "update_type": "image_update",
+        "changes": {"new_image": "ecr/openclaw-extended:2026.6.1-abc"},
+    }
+    repo = MagicMock()
+    repo.set_status_conditional = AsyncMock(return_value=True)
+    repo.mark_applied = AsyncMock()
+
+    ecs = MagicMock()
+    ecs._size_for_owner = AsyncMock(return_value=size)
+    ecs.resize_user_container = AsyncMock()
+
+    with (
+        patch.object(update_service, "update_repo", repo),
+        patch.object(update_service, "migrate_removed_config_keys", AsyncMock()),
+        patch("core.dynamodb.get_table", return_value=MagicMock()),
+        patch("core.dynamodb.run_in_thread", new=AsyncMock(return_value={"Items": [update_item]})),
+        patch("core.containers.get_ecs_manager", return_value=ecs),
+    ):
+        result = await update_service.apply_update(owner_id, update_id)
+
+    assert result is True
+    ecs._size_for_owner.assert_awaited_once_with(owner_id)
+    ecs.resize_user_container.assert_awaited_once()
+    return ecs.resize_user_container.await_args.kwargs
+
+
+@pytest.mark.asyncio
+async def test_apply_image_only_update_preserves_ultra_size():
+    """An image-only roll for an ultra_pro owner must re-register the Ultra box,
+    not the standard one — otherwise every routine image bump / fleet-force-apply
+    silently shrinks the container back to 0.5 vCPU / 2 GB."""
+    kwargs = await _apply_image_only_update("owner_ultra", "upd_ultra", ("2048", "8192"))
+    assert kwargs["new_cpu"] == "2048"
+    assert kwargs["new_memory"] == "8192"
+    assert kwargs["new_image"] == "ecr/openclaw-extended:2026.6.1-abc"
+
+
+@pytest.mark.asyncio
+async def test_apply_image_only_update_keeps_standard_size():
+    """An image-only roll for a standard owner stays on the standard box."""
+    kwargs = await _apply_image_only_update("owner_std", "upd_std", ("512", "2048"))
+    assert kwargs["new_cpu"] == "512"
+    assert kwargs["new_memory"] == "2048"
 
 
 @pytest.mark.asyncio

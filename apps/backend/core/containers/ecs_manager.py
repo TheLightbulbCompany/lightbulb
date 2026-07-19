@@ -390,12 +390,14 @@ class EcsManager:
         box (large marketplace companies past the flat tier's agent budget);
         everyone else the flat ``PER_USER_CPU`` / ``PER_USER_MEMORY_MIB`` box.
 
-        Deriving the size from the billing plan HERE — on EVERY provision and
-        reprovision — is what makes the Ultra size DURABLE. The upgrade webhook
-        resizes the running container, but the provision path re-registers the
-        task def from the CDK base on any image-roll, provider switch, restart,
-        or admin reprovision; a hardcoded standard size there would silently undo
-        the webhook's resize. Reading the plan closes that revert.
+        Deriving the size from the billing plan HERE is what makes the Ultra
+        size DURABLE. The upgrade webhook resizes the running container, but the
+        provision/reprovision path re-registers the task def from the CDK base
+        (provider switch, restart, admin reprovision) and a hardcoded standard
+        size there would silently undo the webhook's resize. Callers on those
+        paths route their size through this helper — as does the Track-2
+        image-roll apply (``update_service.apply_update``), which resizes with no
+        size of its own — so the box always tracks the owner's plan.
 
         Fail-safe: a provision must NEVER fail because billing is momentarily
         unreadable. Any read error (or an absent row) falls back to the standard

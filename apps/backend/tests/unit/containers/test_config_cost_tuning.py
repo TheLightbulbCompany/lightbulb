@@ -108,10 +108,11 @@ class TestHeartbeatIsolation:
         assert hb["lightContext"] is True
         assert hb["model"] == "openai/gpt-5.4-mini"
 
-    def test_heartbeat_still_absent_on_trial(self):
-        """The isolation keys ride inside the heartbeat block; they must not
-        resurrect it on trial (a present key is truthy upstream)."""
-        assert "heartbeat" not in _cfg("bedrock_trial")["agents"]["defaults"]
+    def test_heartbeat_disabled_on_trial(self):
+        """Trial must pin every="0m" — the documented upstream disable. An
+        ABSENT key is NOT off: upstream falls back to a 30m heartbeat at full
+        session context on the trial's single premium AIP."""
+        assert _cfg("bedrock_trial")["agents"]["defaults"]["heartbeat"] == {"every": "0m"}
 
 
 class TestUtilityModel:

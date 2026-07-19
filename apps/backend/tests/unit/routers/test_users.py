@@ -255,3 +255,86 @@ class TestGetMe:
         body = response.json()
         assert body["provider_choice"] == "bedrock_claude"
         assert body["byo_provider"] is None
+
+
+class TestDeleteMyAccount:
+    """Tests for POST /api/v1/users/me/delete (self-serve deletion, 5.1.1(v))."""
+
+    @staticmethod
+    def _report():
+        from unittest.mock import MagicMock
+
+        report = MagicMock()
+        report.to_dict.return_value = {"steps": [{"status": "done"}]}
+        return report
+
+    @pytest.mark.asyncio
+    @patch("routers.users.admin_actions_repo")
+    @patch("core.services.account_wipe.wipe_account", new_callable=AsyncMock)
+    @patch("core.services.account_wipe.resolve_account_emails", new_callable=AsyncMock)
+    async def test_deletes_personal_account(self, mock_emails, mock_wipe, mock_audit, async_client):
+        """Typed-confirm match runs the wipe for the caller and audits it."""
+        mock_emails.return_value = ["Person@Example.com"]
+        mock_wipe.return_value = self._report()
+        mock_audit.create = AsyncMock()
+
+        response = await async_client.post("/api/v1/users/me/delete", json={"confirm_email": "person@example.com"})
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "deleted"}
+        mock_wipe.assert_awaited_once_with(
+            "user_test_123",
+            actor_admin_id="user_test_123",
+            account_emails=["Person@Example.com"],
+        )
+        assert mock_audit.create.await_args.kwargs["action"] == "account_wipe_self"
+        assert mock_audit.create.await_args.kwargs["target_user_id"] == "user_test_123"
+
+    @pytest.mark.asyncio
+    @patch("core.services.account_wipe.wipe_account", new_callable=AsyncMock)
+    @patch("core.services.account_wipe.resolve_account_emails", new_callable=AsyncMock)
+    async def test_email_mismatch_never_wipes(self, mock_emails, mock_wipe, async_client):
+        """A wrong typed email 400s before any teardown runs."""
+        mock_emails.return_value = ["person@example.com"]
+
+        response = await async_client.post("/api/v1/users/me/delete", json={"confirm_email": "wrong@example.com"})
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "email_mismatch"
+        mock_wipe.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch("core.services.account_wipe.wipe_account", new_callable=AsyncMock)
+    async def test_org_context_refused(self, mock_wipe, async_client_org_admin):
+        """Org accounts can't self-delete (wipe orchestrator is personal-only)."""
+        response = await async_client_org_admin.post(
+            "/api/v1/users/me/delete", json={"confirm_email": "person@example.com"}
+        )
+
+        assert response.status_code == 403
+        mock_wipe.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_requires_authentication(self, unauthenticated_async_client):
+        response = await unauthenticated_async_client.post("/api/v1/users/me/delete", json={"confirm_email": "a@b.co"})
+        assert response.status_code in (401, 403)
+
+    @pytest.mark.asyncio
+    @patch("routers.users.admin_actions_repo")
+    @patch("core.services.account_wipe.wipe_account", new_callable=AsyncMock)
+    @patch("core.services.account_wipe.resolve_account_emails", new_callable=AsyncMock)
+    async def test_partial_failure_never_reports_deleted(self, mock_emails, mock_wipe, mock_audit, async_client):
+        """A failed teardown step 502s (still audited) — never a false 'deleted'."""
+        from unittest.mock import MagicMock
+
+        mock_emails.return_value = ["person@example.com"]
+        report = MagicMock()
+        report.to_dict.return_value = {"steps": [{"status": "done"}, {"status": "failed"}]}
+        mock_wipe.return_value = report
+        mock_audit.create = AsyncMock()
+
+        response = await async_client.post("/api/v1/users/me/delete", json={"confirm_email": "person@example.com"})
+
+        assert response.status_code == 502
+        assert response.json()["detail"] == "deletion_incomplete"
+        assert mock_audit.create.await_args.kwargs["result"] == "partial_failure"

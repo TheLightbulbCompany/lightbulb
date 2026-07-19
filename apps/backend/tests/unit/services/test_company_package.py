@@ -68,3 +68,15 @@ def test_missing_optional_files_are_fine(tmp_path):
     assert meta.agent_count == 0
     assert meta.env_requirements == []
     assert meta.license is None
+
+
+def test_numeric_frontmatter_scalars_coerce_to_str(tmp_path):
+    """YAML parses `version: 1.1` as a float. The parser must coerce it to a
+    string — a float here violates the annotation and, worse, fails the DDB
+    Map write after the S3 upload and draft row have already happened."""
+    (tmp_path / "COMPANY.md").write_text(
+        "---\nname: Tiny\nslug: tiny\ndescription: d\nversion: 1.1\nlicense: 2026\n---\nbody\n"
+    )
+    meta = parse_company_meta(tmp_path)
+    assert meta.version == "1.1"
+    assert meta.license == "2026"

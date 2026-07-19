@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
-import { CompanyCard } from "../storefront/Listing/CompanyCard";
+import { CompanyCard, companyMeta } from "../storefront/Listing/CompanyCard";
 import type { Listing } from "@/lib/marketplace/types";
 
 function companyListing(agentCount: number, minPlan: "standard" | "ultra_pro"): Listing {
@@ -32,5 +32,23 @@ describe("CompanyCard", () => {
   it("shows the Ultra Pro badge for large companies", () => {
     render(<CompanyCard listing={companyListing(49, "ultra_pro")} />);
     expect(screen.getByText(/requires ultra pro/i)).toBeInTheDocument();
+  });
+});
+
+describe("companyMeta", () => {
+  it("returns the company block for a company-format listing", () => {
+    expect(companyMeta(companyListing(5, "standard"))?.agent_count).toBe(5);
+  });
+
+  it("returns null for a non-company listing even if it carries a stray company key", () => {
+    // Guard against a mis-shaped agent row hijacking the detail page into
+    // company mode (disabled deploy button + CompanyFacts deref).
+    const agentRow = {
+      listing_id: "l2", version: 1, slug: "some-agent", name: "Some Agent",
+      description_md: "An agent", format: "openclaw", price_cents: 0,
+      tags: [], seller_id: "seller_1", status: "published",
+      manifest_json: { company: { min_plan: "standard" } },
+    } as unknown as Listing;
+    expect(companyMeta(agentRow)).toBeNull();
   });
 });

@@ -24,6 +24,7 @@ import gzip
 import io
 import json
 import subprocess
+import sys
 import tarfile
 import uuid
 from datetime import datetime, timezone
@@ -37,6 +38,8 @@ from core.services.marketplace_service import _upload_artifact_to_s3
 ISOL8_SYSTEM_SELLER_ID = "__isol8__"
 SOURCE_REPO = "paperclipai/companies"
 _EXCLUDED = {".git", ".DS_Store", "__pycache__", "node_modules"}
+# Registry packages out of ingestion scope: not deployable on any current tier.
+EXCLUDED_PACKAGES = {"agency-agents"}
 
 
 def discover_packages(repo_dir: Path) -> list[Path]:
@@ -149,6 +152,9 @@ async def ingest_one(pkg_dir: Path, *, source_commit: str, existing_listings: di
         approved_by=ISOL8_SYSTEM_SELLER_ID,
         now_iso=now_iso,
     )
+    # Register the slug so a second registry dir declaring the same slug in
+    # this run hits the skipped_existing path instead of double-publishing.
+    existing_listings[meta.slug] = "published"
     return {"slug": meta.slug, "status": "published", "listing_id": listing_id}
 
 
@@ -161,6 +167,11 @@ async def ingest_all(
     """
     summaries: list[dict] = []
     for pkg_dir in discover_packages(repo_dir):
+        if pkg_dir.name in EXCLUDED_PACKAGES:
+            summary = {"slug": pkg_dir.name, "status": "skipped_excluded"}
+            print(json.dumps(summary))
+            summaries.append(summary)
+            continue
         try:
             summary = await ingest_one(
                 pkg_dir,
@@ -196,12 +207,16 @@ async def main() -> None:
         for row in await marketplace_repo.scan_all_listings()
         if row.get("slug")
     }
-    await ingest_all(
+    summaries = await ingest_all(
         args.repo_dir,
         source_commit=args.commit,
         existing_listings=existing,
         dry_run=args.dry_run,
     )
+    # Non-zero exit when anything errored so the operator (or a wrapping
+    # shell) can't mistake a partial run for a clean one.
+    if any(s.get("status") == "error" for s in summaries):
+        sys.exit(1)
 
 
 if __name__ == "__main__":

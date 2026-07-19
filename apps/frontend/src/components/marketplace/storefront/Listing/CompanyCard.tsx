@@ -2,8 +2,11 @@ import Link from "next/link";
 
 import type { CompanyManifest, Listing } from "@/lib/marketplace/types";
 
-/** Company metadata for `format: "company"` listings; null for agent rows. */
+/** Company metadata for `format: "company"` listings; null for agent rows.
+ * Gated on format — a stray `company` key on an agent listing's manifest
+ * must not switch the detail page into company mode. */
 export function companyMeta(listing: Listing): CompanyManifest | null {
+  if (listing.format !== "company") return null;
   const company = (listing.manifest_json as { company?: CompanyManifest } | undefined)?.company;
   return company ?? null;
 }
@@ -25,7 +28,7 @@ export function CompanyCard({ listing }: { listing: Listing }) {
           </span>
         ) : (
           <span className="rounded-full border border-[var(--edge)] px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--mute)]">
-            Deploy coming soon
+            Deploy — coming soon
           </span>
         )}
       </div>

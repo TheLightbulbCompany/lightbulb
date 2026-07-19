@@ -196,7 +196,8 @@ export function ManifestSummary({ manifest }: { manifest: ListingManifest }) {
  * and the mirrored-from attribution. Rendered instead of ManifestSummary —
  * company metadata rides on the listing row, not the S3 agent manifest. */
 function CompanyFacts({ company }: { company: CompanyManifest }) {
-  const envNames = Array.from(new Set(company.env_requirements.map((req) => req.name)));
+  // Defensive: rows written by older ingestion runs may lack these fields.
+  const envNames = Array.from(new Set((company.env_requirements ?? []).map((req) => req.name)));
   return (
     <section className="mt-8 editorial-card p-7">
       <SectionLabel label="What's inside" />
@@ -217,10 +218,12 @@ function CompanyFacts({ company }: { company: CompanyManifest }) {
           </div>
         </div>
       )}
-      <p className="mt-6 text-xs leading-5 text-[var(--mute)]">
-        Mirrored from {company.source.repo}
-        {company.license ? ` · ${company.license}` : ""}
-      </p>
+      {company.source?.repo && (
+        <p className="mt-6 text-xs leading-5 text-[var(--mute)]">
+          Mirrored from {company.source.repo}
+          {company.license ? ` · ${company.license}` : ""}
+        </p>
+      )}
     </section>
   );
 }

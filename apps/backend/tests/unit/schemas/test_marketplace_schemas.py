@@ -58,3 +58,38 @@ def test_listing_create_rejects_price_above_2000():
             price_cents=2001,
             tags=[],
         )
+
+
+def test_listing_create_rejects_company_format():
+    """Sellers cannot publish company listings — those are registry-ingested
+    by the curated pipeline. A seller POSTing format="company" must 422."""
+    with pytest.raises(ValidationError):
+        marketplace.ListingCreate(
+            slug="my-company",
+            name="My Company",
+            description_md="x",
+            format="company",
+            price_cents=0,
+            tags=[],
+        )
+
+
+def test_preview_response_accepts_company_format():
+    """The admin moderation preview response must accept company rows, or
+    the inspect/takedown surface 500s on exactly the mirrored third-party
+    content that most needs oversight."""
+    resp = marketplace.ListingPreviewResponse(
+        listing_id="lst_x",
+        version=1,
+        slug="gstack",
+        name="GStack",
+        seller_id="__isol8__",
+        format="company",
+        status="published",
+        price_cents=0,
+        tags=["company"],
+        manifest={"company": {"agent_count": 5}},
+        file_tree=[],
+        safety_flags=[],
+    )
+    assert resp.format == "company"

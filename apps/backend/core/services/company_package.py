@@ -109,8 +109,10 @@ def parse_company_meta(pkg_dir: Path) -> CompanyMeta:
         slug=str(fm.get("slug") or pkg_dir.name),
         name=str(fm.get("name") or pkg_dir.name),
         description=str(fm.get("description") or ""),
-        version=fm.get("version"),
-        license=fm.get("license"),
+        # YAML scalars like `version: 1.1` parse as float — coerce to str so
+        # downstream consumers (and the DDB Map write) always see strings.
+        version=str(fm["version"]) if fm.get("version") is not None else None,
+        license=str(fm["license"]) if fm.get("license") is not None else None,
         authors=[a for a in authors if a],
         agent_count=len(agent_slugs),
         team_count=len(team_slugs),

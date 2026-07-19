@@ -128,6 +128,56 @@ async def test_ingest_one_skips_existing_slug_and_flags_findings(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_publish_registers_slug_within_run(monkeypatch):
+    """A successful publish records its slug in existing_listings so a second
+    registry dir declaring the same slug this run is skipped, not double-
+    published (slugs are not unique per listing_id)."""
+    from scripts import ingest_companies_registry as mod
+
+    monkeypatch.setattr(mod, "scan_tarball", lambda b: [])
+    monkeypatch.setattr(mod, "_upload_artifact_to_s3", AsyncMock(return_value=("listings/x/v1/", "sha")))
+    monkeypatch.setattr(mod.marketplace_repo, "put_draft_v1", AsyncMock())
+    monkeypatch.setattr(mod.marketplace_repo, "update_artifact_fields", AsyncMock())
+    monkeypatch.setattr(mod.marketplace_repo, "mark_review", AsyncMock())
+    monkeypatch.setattr(mod.marketplace_repo, "mark_published", AsyncMock())
+
+    existing: dict = {}
+    first = await ingest_one(FIXTURES / "gstack", source_commit="abc", existing_listings=existing, dry_run=False)
+    assert first["status"] == "published"
+    assert existing.get("gstack") == "published"  # registered in-run
+
+    second = await ingest_one(FIXTURES / "gstack", source_commit="abc", existing_listings=existing, dry_run=False)
+    assert second["status"] == "skipped_existing"
+    assert second["existing_status"] == "published"
+
+
+@pytest.mark.asyncio
+async def test_ingest_all_skips_excluded_packages(tmp_path, monkeypatch, capsys):
+    """Out-of-scope packages (agency-agents: not deployable on any current
+    tier) are skipped before any parse/write, with a visible summary line."""
+    from scripts import ingest_companies_registry as mod
+
+    for name in ("agency-agents", "beta"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "COMPANY.md").write_text(f"---\nname: {name}\nslug: {name}\ndescription: d\n---\n")
+
+    attempted = []
+
+    async def fake_ingest_one(pkg_dir, **kwargs):
+        attempted.append(pkg_dir.name)
+        return {"slug": pkg_dir.name, "status": "dry_run", "agents": 0}
+
+    monkeypatch.setattr(mod, "ingest_one", fake_ingest_one)
+    summaries = await ingest_all(tmp_path, source_commit="abc", existing_listings={}, dry_run=True)
+
+    assert "agency-agents" not in attempted  # never parsed/written
+    excluded = [s for s in summaries if s["slug"] == "agency-agents"]
+    assert excluded == [{"slug": "agency-agents", "status": "skipped_excluded"}]
+    assert "beta" in attempted
+    assert "skipped_excluded" in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
 async def test_ingest_all_continues_past_package_errors(tmp_path, monkeypatch, capsys):
     from scripts import ingest_companies_registry as mod
 

@@ -72,9 +72,11 @@ export interface CompanyManifest {
   team_count: number;
   skill_count: number;
   agent_slugs: string[];
-  env_requirements: { name: string; kind: string; requirement: string; agent: string }[];
+  /** Optional: API rows are untrusted input — renderers must tolerate absence. */
+  env_requirements?: { name: string; kind: string; requirement: string; agent: string }[];
   min_plan: "standard" | "ultra_pro";
-  source: { repo: string; commit: string; path: string };
+  /** Optional: API rows are untrusted input — renderers must tolerate absence. */
+  source?: { repo: string; commit: string; path: string };
 }
 
 export interface Purchase {

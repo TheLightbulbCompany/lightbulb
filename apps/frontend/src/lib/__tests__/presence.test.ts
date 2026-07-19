@@ -43,3 +43,32 @@ describe("presence", () => {
     nowSpy.mockRestore();
   });
 });
+
+describe("presence touch-scroll exclusion", () => {
+  it("a touch pointerdown (scroll start) does NOT count as input, but a click (tap) does", () => {
+    const nowSpy = vi.spyOn(performance, "now");
+    nowSpy.mockReturnValue(3_000_000);
+    // Establish a stale baseline via a keydown far in the past.
+    window.dispatchEvent(new Event("keydown"));
+    nowSpy.mockReturnValue(3_000_000 + 200_000);
+    // A touch-scroll's pointerdown must be ignored — age keeps growing.
+    const touch = new Event("pointerdown") as PointerEvent;
+    Object.defineProperty(touch, "pointerType", { value: "touch" });
+    window.dispatchEvent(touch);
+    expect(lastInputAgeMs()).toBe(200_000);
+    // The click that follows a real tap DOES count.
+    window.dispatchEvent(new Event("click"));
+    expect(lastInputAgeMs()).toBe(0);
+    nowSpy.mockRestore();
+  });
+
+  it("a mouse pointerdown (non-touch) still counts", () => {
+    const nowSpy = vi.spyOn(performance, "now");
+    nowSpy.mockReturnValue(4_000_000);
+    const mouse = new Event("pointerdown") as PointerEvent;
+    Object.defineProperty(mouse, "pointerType", { value: "mouse" });
+    window.dispatchEvent(mouse);
+    expect(lastInputAgeMs()).toBe(0);
+    nowSpy.mockRestore();
+  });
+});

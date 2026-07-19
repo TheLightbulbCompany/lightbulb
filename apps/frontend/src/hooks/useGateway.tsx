@@ -114,10 +114,17 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
       // on return (the reachedReady latch zeroes its own poll interval).
       void mutate("/container/status");
     };
-    window.addEventListener("pointerdown", onReturn, { capture: true, passive: true });
+    // `click`, NOT `pointerdown`: a touch-scroll fires pointerdown on first
+    // contact, which would unpark + wake a box the mobile user only meant to
+    // scroll to re-READ (reads work from cached data while parked). A click
+    // fires only on a completed tap/mouse-click — a deliberate action —
+    // never on scroll. This mirrors presence.ts's touch-scroll exclusion for
+    // the wake path specifically (park-recency intentionally still counts a
+    // scroll as "present" so we don't park under an active reader).
+    window.addEventListener("click", onReturn, { capture: true, passive: true });
     window.addEventListener("keydown", onReturn, { capture: true, passive: true });
     return () => {
-      window.removeEventListener("pointerdown", onReturn, { capture: true });
+      window.removeEventListener("click", onReturn, { capture: true });
       window.removeEventListener("keydown", onReturn, { capture: true });
     };
   }, [isParked, unpark, requestWake]);

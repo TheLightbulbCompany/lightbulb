@@ -3,16 +3,22 @@
 // The browser's visibility signal alone cannot answer that — a display waking
 // at 5am reports the frontmost tab "visible" with nobody in the room (the
 // exact failure mode of the 2026-07-18 trial-burn incident). Presence is
-// therefore visibility AND input recency: pointerdown/keydown/wheel within
-// the window. Deliberately NOT touchstart — on mobile every scroll-swipe
-// fires it, which would leak wakes from idle reading (verified in the
-// wake-design review); wheel is included so desktop reading (scroll without
-// clicks) still counts as present for PARK purposes.
+// therefore visibility AND input recency.
+//
+// Signals: `keydown` (typing), `wheel` (desktop scroll — kept so desktop
+// reading counts as present, avoiding a park under an active reader),
+// `click` (a completed tap or mouse-click — a DELIBERATE action, and the
+// only pointer signal that never fires on a scroll), and `pointerdown` ONLY
+// for non-touch pointers (mouse/pen). A touch `pointerdown` is EXCLUDED
+// because it fires on the first contact of a scroll-swipe — counting it
+// would let a mobile user scrolling a parked chat to re-read wake the box,
+// the exact "idle reading wakes it" leak this gate exists to close. A real
+// touch TAP still registers via the `click` that follows it.
 //
 // Module-level singleton: listeners bind once per page, capture phase, and
 // are passive — this must never affect scrolling performance.
 
-const INPUT_EVENTS: Array<keyof WindowEventMap> = ["pointerdown", "keydown", "wheel"];
+const INPUT_EVENTS: Array<keyof WindowEventMap> = ["pointerdown", "keydown", "wheel", "click"];
 
 let lastInputAt = typeof performance !== "undefined" ? performance.now() : 0;
 let bound = false;
@@ -25,7 +31,13 @@ function bind() {
   }
 }
 
-function markInput() {
+function markInput(event: Event) {
+  // Ignore touch pointerdowns — a scroll-swipe starts with one, and a real
+  // tap is caught by the following `click`. Non-pointer events (keydown,
+  // wheel, click) always count.
+  if (event.type === "pointerdown" && (event as PointerEvent).pointerType === "touch") {
+    return;
+  }
   lastInputAt = performance.now();
 }
 

@@ -702,7 +702,7 @@ class TestAdminMutationOwnerResolution:
         with patch("routers.admin.get_ecs_manager", return_value=ecs):
             res = await async_client.post("/api/v1/admin/users/user_123/container/stop")
         assert res.status_code == 200
-        ecs.stop_user_service.assert_awaited_once_with("org_abc")
+        ecs.stop_user_service.assert_awaited_once_with("org_abc", reason="admin")
         org_mode.assert_awaited_once_with("user_123")
 
     @pytest.mark.asyncio
@@ -714,7 +714,7 @@ class TestAdminMutationOwnerResolution:
         with patch("routers.admin.get_ecs_manager", return_value=ecs):
             res = await async_client.post("/api/v1/admin/users/user_123/container/stop")
         assert res.status_code == 200
-        ecs.stop_user_service.assert_awaited_once_with("user_123")
+        ecs.stop_user_service.assert_awaited_once_with("user_123", reason="admin")
 
     @pytest.mark.asyncio
     async def test_container_start_uses_org_owner_id(self, async_client, admin_env, org_mode):

@@ -102,7 +102,7 @@ async def test_stops_when_all_vetoes_pass():
     ):
         await pool._maybe_stop_trial_container(OWNER)
 
-    stop.assert_awaited_once_with(OWNER)
+    stop.assert_awaited_once_with(OWNER, reason="trial_idle")
     metric.assert_any_call("gateway.trial_scale_to_zero", dimensions={"trigger": "grace"})
 
 
@@ -229,7 +229,7 @@ async def test_stop_user_service_exception_swallowed_and_logged():
         # Must not raise.
         await pool._maybe_stop_trial_container(OWNER)
 
-    stop.assert_awaited_once_with(OWNER)
+    stop.assert_awaited_once_with(OWNER, reason="trial_idle")
     log_exc.assert_called_once()
 
 
@@ -245,7 +245,7 @@ async def test_trigger_dimension_passthrough_for_task_13_14():
     ):
         await pool._maybe_stop_trial_container(OWNER, trigger="idle_sweep")
 
-    stop.assert_awaited_once_with(OWNER)
+    stop.assert_awaited_once_with(OWNER, reason="trial_idle")
     metric.assert_any_call("gateway.trial_scale_to_zero", dimensions={"trigger": "idle_sweep"})
 
 
@@ -291,7 +291,7 @@ async def test_grace_close_stops_trial_after_extended_grace(monkeypatch):
         await pool._grace_close(OWNER)
 
     close_mock.assert_awaited_once()  # WS closed
-    stop.assert_awaited_once_with(OWNER)  # container stopped
+    stop.assert_awaited_once_with(OWNER, reason="trial_idle")  # container stopped
     assert OWNER not in pool._connections
 
 
@@ -378,7 +378,7 @@ async def test_grace_close_arms_trial_stop_after_mixed_case_session_key_run_comp
         await pool._grace_close(mixed_case_owner_id)
 
     conn.close.assert_awaited_once()
-    stop.assert_awaited_once_with(mixed_case_owner_id)
+    stop.assert_awaited_once_with(mixed_case_owner_id, reason="trial_idle")
 
 
 @pytest.mark.asyncio
@@ -668,7 +668,7 @@ async def test_client_deadline_expiry_flows_into_trial_stop(monkeypatch):
         else:
             pytest.fail("client-deadline expiry never flowed through to trial stop")
 
-    stop.assert_awaited_once_with(OWNER)
+    stop.assert_awaited_once_with(OWNER, reason="trial_idle")
     close_mock.assert_awaited_once()
     assert len(pool._frontend_connections.get(OWNER, set())) == 0
 

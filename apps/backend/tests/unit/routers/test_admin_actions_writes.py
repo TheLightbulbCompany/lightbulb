@@ -153,7 +153,7 @@ class TestContainerStop:
         with patch("routers.admin.get_ecs_manager", return_value=ecs):
             res = await async_client.post("/api/v1/admin/users/u_target/container/stop")
         assert res.status_code == 200
-        ecs.stop_user_service.assert_awaited_once_with("u_target")
+        ecs.stop_user_service.assert_awaited_once_with("u_target", reason="admin")
 
     @pytest.mark.asyncio
     async def test_403_for_non_admin(self, async_client, non_admin_env):

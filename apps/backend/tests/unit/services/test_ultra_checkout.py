@@ -195,6 +195,81 @@ class TestCreateUltraUpgradeService:
         modify_mock.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_rejects_per_seat_team_subscription(self, monkeypatch):
+        """A per-seat Teams sub (subscription_item_id set) must NOT be swapped
+        in place — swapping the $/seat item to the Ultra flat price would
+        corrupt per-seat billing. Reject with a clear error, no Subscription
+        call. (Ultra + Teams is out of scope.)"""
+        monkeypatch.setattr(billing_service.settings, "STRIPE_ULTRA_PRICE_ID", "price_ultra_test")
+        monkeypatch.setattr(
+            billing_service.billing_repo,
+            "get_by_owner_id",
+            AsyncMock(
+                return_value={
+                    "owner_id": "org_seats",
+                    "stripe_customer_id": "cus_org",
+                    "stripe_subscription_id": "sub_seat",
+                    "subscription_item_id": "si_seat",
+                    "seat_count": 5,
+                    "subscription_status": "active",
+                }
+            ),
+        )
+        retrieve_mock = MagicMock()
+        modify_mock = MagicMock()
+        monkeypatch.setattr(billing_service.stripe.Subscription, "retrieve", retrieve_mock)
+        monkeypatch.setattr(billing_service.stripe.Subscription, "modify", modify_mock)
+        builder_mock = AsyncMock()
+        monkeypatch.setattr(billing_service, "_build_subscription_checkout", builder_mock)
+
+        with pytest.raises(BillingServiceError, match="per-seat team"):
+            await billing_service.create_ultra_upgrade(owner_id="org_seats")
+
+        # No swap, no fresh checkout — pure rejection.
+        retrieve_mock.assert_not_called()
+        modify_mock.assert_not_called()
+        builder_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_past_due_flat_sub_swaps_in_place_not_fresh_checkout(self, monkeypatch):
+        """A past_due (still-billable) flat sub is a LIVE subscription — it must
+        be upgraded IN PLACE, not routed to a fresh checkout (which would create
+        a SECOND parallel subscription → double-bill)."""
+        monkeypatch.setattr(billing_service.settings, "STRIPE_ULTRA_PRICE_ID", "price_ultra_test")
+        monkeypatch.setattr(
+            billing_service.billing_repo,
+            "get_by_owner_id",
+            AsyncMock(
+                return_value={
+                    "owner_id": "owner_pd",
+                    "stripe_customer_id": "cus_pd",
+                    "stripe_subscription_id": "sub_pd",
+                    "subscription_status": "past_due",
+                }
+            ),
+        )
+        monkeypatch.setattr(
+            billing_service.stripe.Subscription,
+            "retrieve",
+            MagicMock(return_value={"id": "sub_pd", "items": {"data": [{"id": "si_pd"}]}}),
+        )
+        modify_mock = MagicMock()
+        monkeypatch.setattr(billing_service.stripe.Subscription, "modify", modify_mock)
+        # A fresh-checkout attempt here would be the double-bill bug — assert it
+        # is never reached.
+        builder_mock = AsyncMock()
+        monkeypatch.setattr(billing_service, "_build_subscription_checkout", builder_mock)
+
+        result = await billing_service.create_ultra_upgrade(owner_id="owner_pd")
+
+        assert result == {"upgraded": True}
+        modify_mock.assert_called_once()
+        _, kwargs = modify_mock.call_args
+        assert kwargs["items"] == [{"id": "si_pd", "price": "price_ultra_test"}]
+        assert kwargs["idempotency_key"] == "ultra-upgrade-owner_pd"
+        builder_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_raises_without_ultra_price_id(self, monkeypatch):
         """An unconfigured Ultra price fails clearly (mirrors the flat / team
         price-id guards) before any Stripe call."""

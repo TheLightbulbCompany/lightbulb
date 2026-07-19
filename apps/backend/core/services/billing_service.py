@@ -450,29 +450,37 @@ async def create_ultra_upgrade(
 ) -> dict | stripe.checkout.Session:
     """Upgrade an owner to the Ultra Pro tier ($150/mo).
 
-    Two paths, picked by whether the owner already holds a LIVE flat
+    Two paths, picked by whether the owner already holds a LIVE
     subscription:
 
     - **In-place item swap** — an owner already on the $50 flat sub
-      (``stripe_subscription_id`` present + status ``active``/``trialing``)
-      is upgraded by swapping the subscription item's price to
-      ``STRIPE_ULTRA_PRICE_ID`` on the SAME Stripe subscription, prorated.
-      Keeps ONE subscription (no cancel + re-subscribe), so the owner is
-      charged only the prorated difference. The flat sub's item id is not
-      persisted on the billing row, so it is read LIVE off the retrieved
-      subscription (``sub["items"]["data"][0]["id"]``). Returns
-      ``{"upgraded": True}``.
+      (``stripe_subscription_id`` present + a LIVE ``subscription_status`` —
+      any of ``LIVE_SUBSCRIPTION_STATUSES``, i.e. active/trialing but also
+      past_due/unpaid/paused/incomplete) is upgraded by swapping the
+      subscription item's price to ``STRIPE_ULTRA_PRICE_ID`` on the SAME
+      Stripe subscription, prorated. Keeps ONE subscription (no cancel +
+      re-subscribe), so the owner is charged only the prorated difference and
+      a still-billable (e.g. past_due) owner never gets a SECOND parallel
+      subscription. The flat sub's item id is not persisted on the billing
+      row, so it is read LIVE off the retrieved subscription
+      (``sub["items"]["data"][0]["id"]``). Returns ``{"upgraded": True}``.
 
     - **Fresh checkout** — an owner with no live subscription (``trial_local``
-      / never subscribed — no item to swap) gets a subscription-mode Checkout
-      session on the Ultra price via the shared builder. Returns the Session;
-      the caller redirects the browser to ``session.url``.
+      / canceled / never subscribed — no item to swap) gets a
+      subscription-mode Checkout session on the Ultra price via the shared
+      builder. Returns the Session; the caller redirects to ``session.url``.
 
     ``trial_local`` counts as "active" for platform use but carries no
     ``stripe_subscription_id``, so it correctly takes the fresh-checkout
-    branch. A non-live status (``canceled``/``past_due``) never swaps in
-    place even if a stale ``stripe_subscription_id`` lingers — it falls
-    through to a fresh checkout rather than modifying a dead subscription.
+    branch. A terminal status (``canceled``/``incomplete_expired``) never
+    swaps in place even if a stale ``stripe_subscription_id`` lingers — it
+    falls through to a fresh checkout rather than modifying a dead sub.
+
+    **Per-seat team subscriptions are rejected**, not swapped: a row with a
+    ``subscription_item_id`` (the ``is_seat_subscription`` discriminator) is a
+    per-seat Teams sub whose item price is $/seat — swapping it to the Ultra
+    flat price would corrupt per-seat billing. Ultra + Teams is out of scope,
+    so raise rather than proceed.
 
     The durable plan/tier write + container resize happen in the
     ``customer.subscription.*`` webhook (Task 4), NOT here — this only
@@ -482,11 +490,23 @@ async def create_ultra_upgrade(
     if not settings.STRIPE_ULTRA_PRICE_ID:
         raise BillingServiceError("STRIPE_ULTRA_PRICE_ID not configured")
 
+    from core.services.provision_gate import LIVE_SUBSCRIPTION_STATUSES
+
     account = await billing_repo.get_by_owner_id(owner_id)
+
+    # Team per-seat subscriptions are out of scope for Ultra. A set
+    # subscription_item_id (same discriminator is_seat_subscription keys on in
+    # routers/billing.py) means a live per-seat Teams sub — swapping that
+    # item's $/seat price to the Ultra flat price would corrupt per-seat
+    # billing. Reject BEFORE the live-status swap below; the endpoint maps this
+    # BillingServiceError to a 400.
+    if account and account.get("subscription_item_id"):
+        raise BillingServiceError("Ultra Pro isn't available for per-seat team plans yet")
+
     sub_id = account.get("stripe_subscription_id") if account else None
     status = account.get("subscription_status") if account else None
 
-    if sub_id and status in ("active", "trialing"):
+    if sub_id and status in LIVE_SUBSCRIPTION_STATUSES:
         with timing("stripe.api.latency", {"op": "subscription.retrieve"}):
             sub = stripe.Subscription.retrieve(sub_id)
         # The flat sub has a single item whose id is not stored on the billing

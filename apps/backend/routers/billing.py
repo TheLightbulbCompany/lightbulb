@@ -148,6 +148,7 @@ async def get_billing_account(
         trial_end=int(trial_end) if trial_end is not None else None,
         provider_choice=account.get("provider_choice") if account else None,
         byo_provider=account.get("byo_provider") if account else None,
+        plan=(account.get("plan") or "standard") if account else "standard",
         seat_count=seat_count,
         team_seat_price_usd=team_seat_price_usd,
         is_seat_subscription=is_seat_subscription,

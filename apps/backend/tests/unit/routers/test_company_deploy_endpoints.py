@@ -154,9 +154,14 @@ def test_non_admin_deploy_company_403(mock_get_published, mock_boto, mock_run, m
 @patch("routers.marketplace_listings.company_deploy_service.run_company_deploy")
 @patch("routers.marketplace_listings.boto3.client")
 @patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
-def test_admin_deploy_ultra_pro_company_409(mock_get_published, mock_boto, mock_run, mock_create_task, admin_client):
-    """A >10-agent (ultra_pro) company is rejected 409 'Requires Ultra Pro' —
-    the plan gate lives inside the admin-gated branch, before any S3/dispatch work."""
+@patch("routers.marketplace_listings.billing_repo.get_by_owner_id", new_callable=AsyncMock)
+def test_admin_deploy_ultra_pro_company_409(
+    mock_billing, mock_get_published, mock_boto, mock_run, mock_create_task, admin_client
+):
+    """A NON-ultra_pro admin deploying a >10-agent (ultra_pro) company is
+    rejected 409 'Requires Ultra Pro' — the plan gate lives inside the
+    admin-gated branch, before any S3/dispatch work."""
+    mock_billing.return_value = None  # no billing row -> not ultra_pro
     mock_get_published.return_value = _company_listing(agent_count=15, min_plan="ultra_pro")
 
     resp = admin_client.post("/api/v1/marketplace/listings/gstack/deploy")
@@ -172,10 +177,13 @@ def test_admin_deploy_ultra_pro_company_409(mock_get_published, mock_boto, mock_
 @patch("routers.marketplace_listings.company_deploy_service.run_company_deploy")
 @patch("routers.marketplace_listings.boto3.client")
 @patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.billing_repo.get_by_owner_id", new_callable=AsyncMock)
 def test_admin_deploy_inconsistent_agent_count_409(
-    mock_get_published, mock_boto, mock_run, mock_create_task, admin_client
+    mock_billing, mock_get_published, mock_boto, mock_run, mock_create_task, admin_client
 ):
-    """Belt-and-suspenders: min_plan='standard' but agent_count>10 still 409s."""
+    """Belt-and-suspenders: min_plan='standard' but agent_count>10 still 409s for
+    a non-ultra_pro owner."""
+    mock_billing.return_value = {"plan": "standard"}
     mock_get_published.return_value = _company_listing(agent_count=11, min_plan="standard")
 
     resp = admin_client.post("/api/v1/marketplace/listings/gstack/deploy")

@@ -26,7 +26,7 @@ from core.auth import (
 )
 from core.config import settings
 from core.containers import get_ecs_manager, get_workspace
-from core.repositories import marketplace_repo
+from core.repositories import billing_repo, marketplace_repo
 from core.services import (
     agent_export,
     company_deploy_service,
@@ -387,21 +387,26 @@ async def deploy_listing(
         # gate is enforced server-side here, not merely in the UI.
         require_platform_admin(auth)
 
+        owner_id = resolve_owner_id(auth)
         # min_plan is "standard" iff agent_count <= 10 (see company_package).
-        # >10-agent companies require the Ultra Pro tier, which ships in a
-        # later PR — reject both the min_plan verdict and, belt-and-suspenders,
-        # a raw agent_count over the standard cap in case a manifest disagrees.
+        # A company needing Ultra (min_plan != standard, or — belt-and-
+        # suspenders — a raw agent_count over the standard cap should a manifest
+        # disagree) may only be deployed by an ultra_pro owner. A standard-plan
+        # owner still 409s; an ultra_pro owner passes and gets the large box
+        # (the provision path sizes their container by plan).
         company = (listing.get("manifest_json") or {}).get("company") or {}
         agent_count = int(company.get("agent_count", 0) or 0)
-        if company.get("min_plan") != "standard" or agent_count > COMPANY_STANDARD_PLAN_MAX_AGENTS:
-            raise HTTPException(status_code=409, detail="Requires Ultra Pro")
+        needs_ultra = company.get("min_plan") != "standard" or agent_count > COMPANY_STANDARD_PLAN_MAX_AGENTS
+        if needs_ultra:
+            account = await billing_repo.get_by_owner_id(owner_id)
+            if (account or {}).get("plan") != "ultra_pro":
+                raise HTTPException(status_code=409, detail="Requires Ultra Pro")
 
         s3_prefix = listing.get("s3_prefix")
         if not s3_prefix:
             raise HTTPException(status_code=500, detail="listing has no artifact prefix")
         tar_bytes = _fetch_company_tar(s3_prefix=s3_prefix, listing_id=listing.get("listing_id"))
 
-        owner_id = resolve_owner_id(auth)
         # Fire-and-forget: instantiate the whole package off the request path and
         # return 202 immediately. There is no job row — progress and the final
         # roster are observed in Teams (the Paperclip roster is the source of

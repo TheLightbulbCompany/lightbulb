@@ -8,8 +8,15 @@ Reference material for niche workflows that are pointed to from `SKILL.md`. Load
 
 When asked to set up a new project with workspace config (local folder and/or GitHub repo):
 
-1. `POST /api/companies/{companyId}/projects` with project fields.
-2. Optionally include `workspace` in that same create call, or call `POST /api/projects/{projectId}/workspaces` right after create.
+1. Find the company goal this project serves: `GET /api/companies/{companyId}/goals`
+   and take the `level: "company"` one.
+2. `POST /api/companies/{companyId}/projects` with project fields **and
+   `"goalIds": ["<that goal id>"]`**. Always link a goal. Tasks filed into a
+   project inherit their goal from it, and a project with no goal leaves
+   every task in it unattributed — the company default does NOT apply once a
+   task has a project.
+3. Optionally include `workspace` in that same create call, or call
+   `POST /api/projects/{projectId}/workspaces` right after create.
 
 Workspace rules:
 

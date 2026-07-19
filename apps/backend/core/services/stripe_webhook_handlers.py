@@ -665,14 +665,23 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
         # managed by the seat flow, not the tier flow.
         old_plan = account.get("plan") or "standard"
         new_plan = "ultra_pro" if is_ultra else "standard"
+        plan_persisted = False
         try:
             await billing_repo.set_plan(account["owner_id"], plan=new_plan, now_iso=utc_now_iso())
+            plan_persisted = True
         except Exception:
             logger.exception("Failed to persist plan for owner %s", account["owner_id"])
-        # Resize decisions key off the row's PRIOR plan vs the price-derived one,
-        # so a resize fires only on an actual transition even though the plan
-        # persist above is idempotent.
-        await _apply_ultra_resize(account["owner_id"], old_plan=old_plan, new_plan=new_plan)
+        # Resize ONLY when the durable plan write committed. If set_plan raised
+        # (transient DDB) but we resized anyway, the container size would change
+        # without the plan persisted — plan and size diverge, and a later
+        # flat-price event would read the OLD plan and mis-decide the resize.
+        # Skipping the resize keeps them from ever splitting in the
+        # size-without-plan direction. Resize decisions still key off the row's
+        # PRIOR plan vs the price-derived one, so it fires only on a real
+        # transition even though the persist is idempotent. Best-effort inside
+        # (a resize failure never 500s the webhook).
+        if plan_persisted:
+            await _apply_ultra_resize(account["owner_id"], old_plan=old_plan, new_plan=new_plan)
 
     if old_status == "trial_local" and new_status in ("trialing", "active"):
         # Trial→paid conversion: the running container is still the locked-down
@@ -813,6 +822,18 @@ async def handle_subscription_deleted(event: dict[str, Any], billing_service: Bi
     )
     await billing_service.cancel_subscription(account)
     logger.info("Subscription cancelled for owner %s", account["owner_id"])
+
+    # Reset the pricing tier to the implicit standard plan — teardown removes the
+    # container but leaves the billing row, and a lingering plan="ultra_pro"
+    # would misreport the tier (and, if the owner re-subscribes onto a flat sub,
+    # the first flat-price webhook would read the stale ultra_pro and treat it as
+    # a downgrade). Guarded like the other set_plan calls: best-effort so a
+    # transient DDB failure never 500s the webhook back to Stripe, and set_plan
+    # is attribute_exists-guarded so an already-deleted row is a silent no-op.
+    try:
+        await billing_repo.set_plan(account["owner_id"], plan="standard", now_iso=utc_now_iso())
+    except Exception:
+        logger.exception("Failed to reset plan to standard on cancel for owner %s", account["owner_id"])
 
     # Refresh the owner-facts file before teardown: teardown is best-effort
     # and may be delayed or fail, and a still-running container's agents must

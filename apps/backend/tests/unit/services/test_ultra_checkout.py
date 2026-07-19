@@ -22,6 +22,18 @@ from core.services.billing_service import BillingServiceError  # noqa: E402
 from routers import billing  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _checkout_slot_claim_granted(monkeypatch):
+    """The fresh-Ultra-checkout branch serializes session creation behind the
+    same per-owner DDB claim as create_flat_fee_checkout. Grant it by default so
+    the fresh-checkout tests exercise the path they were written for; the claim's
+    own denial/record behavior on the Ultra path is tested explicitly below. The
+    in-place-swap tests never reach the claim, so this is a harmless no-op there."""
+    monkeypatch.setattr(billing_service.billing_repo, "try_claim_checkout_slot", AsyncMock(return_value=True))
+    monkeypatch.setattr(billing_service.billing_repo, "release_checkout_slot", AsyncMock())
+    monkeypatch.setattr(billing_service.billing_repo, "set_pending_checkout", AsyncMock())
+
+
 # ---------------------------------------------------------------------------
 # Service: create_ultra_upgrade
 # ---------------------------------------------------------------------------
@@ -68,8 +80,10 @@ class TestCreateUltraUpgradeService:
         # The Ultra price swapped onto the EXISTING item id (read live).
         assert kwargs["items"] == [{"id": "si_flat", "price": "price_ultra_test"}]
         assert kwargs["proration_behavior"] == "create_prorations"
-        # Stable idempotency key — a retried upgrade collapses to one write.
-        assert kwargs["idempotency_key"] == "ultra-upgrade-owner_1"
+        # Idempotency key scoped to the current subscription item id — a retried
+        # upgrade (same item) collapses to one write; a later re-upgrade on a new
+        # item id gets a fresh key.
+        assert kwargs["idempotency_key"] == "ultra-upgrade-owner_1-si_flat"
         builder_mock.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -266,8 +280,242 @@ class TestCreateUltraUpgradeService:
         modify_mock.assert_called_once()
         _, kwargs = modify_mock.call_args
         assert kwargs["items"] == [{"id": "si_pd", "price": "price_ultra_test"}]
-        assert kwargs["idempotency_key"] == "ultra-upgrade-owner_pd"
+        assert kwargs["idempotency_key"] == "ultra-upgrade-owner_pd-si_pd"
         builder_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_live_team_seat_sub_rejected_before_swap_even_without_local_field(self, monkeypatch):
+        """F2: even when the local row hasn't persisted subscription_item_id yet
+        (team-seat webhook lagged), a LIVE sub whose retrieved item is on the
+        seat price must be rejected BEFORE Subscription.modify — else the swap
+        would reprice a $/seat item to the Ultra flat price."""
+        monkeypatch.setattr(billing_service.settings, "STRIPE_ULTRA_PRICE_ID", "price_ultra_test")
+        monkeypatch.setattr(billing_service.settings, "STRIPE_TEAM_SEAT_PRICE_ID", "price_seat_test")
+        monkeypatch.setattr(
+            billing_service.billing_repo,
+            "get_by_owner_id",
+            AsyncMock(
+                return_value={
+                    "owner_id": "org_lag",
+                    "stripe_customer_id": "cus_lag",
+                    "stripe_subscription_id": "sub_seat_live",
+                    "subscription_status": "active",
+                    # subscription_item_id intentionally ABSENT — the local guard
+                    # can't fire; the LIVE inspection must catch it.
+                }
+            ),
+        )
+        retrieve_mock = MagicMock(
+            return_value={
+                "id": "sub_seat_live",
+                "items": {"data": [{"id": "si_seat", "price": {"id": "price_seat_test"}}]},
+            }
+        )
+        modify_mock = MagicMock()
+        monkeypatch.setattr(billing_service.stripe.Subscription, "retrieve", retrieve_mock)
+        monkeypatch.setattr(billing_service.stripe.Subscription, "modify", modify_mock)
+
+        with pytest.raises(BillingServiceError, match="per-seat team"):
+            await billing_service.create_ultra_upgrade(owner_id="org_lag")
+
+        retrieve_mock.assert_called_once_with("sub_seat_live")
+        modify_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_live_sub_with_multiple_items_rejected(self, monkeypatch):
+        """F2: a live sub with more than one line item is a Teams/multi-item sub
+        — reject before the swap regardless of the price ids."""
+        monkeypatch.setattr(billing_service.settings, "STRIPE_ULTRA_PRICE_ID", "price_ultra_test")
+        monkeypatch.setattr(
+            billing_service.billing_repo,
+            "get_by_owner_id",
+            AsyncMock(
+                return_value={
+                    "owner_id": "org_multi",
+                    "stripe_customer_id": "cus_multi",
+                    "stripe_subscription_id": "sub_multi",
+                    "subscription_status": "active",
+                }
+            ),
+        )
+        retrieve_mock = MagicMock(return_value={"id": "sub_multi", "items": {"data": [{"id": "si_1"}, {"id": "si_2"}]}})
+        modify_mock = MagicMock()
+        monkeypatch.setattr(billing_service.stripe.Subscription, "retrieve", retrieve_mock)
+        monkeypatch.setattr(billing_service.stripe.Subscription, "modify", modify_mock)
+
+        with pytest.raises(BillingServiceError, match="per-seat team"):
+            await billing_service.create_ultra_upgrade(owner_id="org_multi")
+
+        modify_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_idempotency_key_varies_by_item_id(self, monkeypatch):
+        """F3: the swap key is scoped to the current subscription item id. A
+        genuine double-click (same item) collapses to one write; a later
+        downgrade-then-re-upgrade (new item id) gets a fresh key so it re-swaps
+        instead of returning Stripe's cached first response."""
+        monkeypatch.setattr(billing_service.settings, "STRIPE_ULTRA_PRICE_ID", "price_ultra_test")
+        monkeypatch.setattr(
+            billing_service.billing_repo,
+            "get_by_owner_id",
+            AsyncMock(
+                return_value={
+                    "owner_id": "owner_k",
+                    "stripe_customer_id": "cus_k",
+                    "stripe_subscription_id": "sub_k",
+                    "subscription_status": "active",
+                }
+            ),
+        )
+        modify_mock = MagicMock()
+        monkeypatch.setattr(billing_service.stripe.Subscription, "modify", modify_mock)
+
+        # First upgrade cycle: item si_A.
+        monkeypatch.setattr(
+            billing_service.stripe.Subscription,
+            "retrieve",
+            MagicMock(return_value={"id": "sub_k", "items": {"data": [{"id": "si_A"}]}}),
+        )
+        await billing_service.create_ultra_upgrade(owner_id="owner_k")
+        key_a = modify_mock.call_args.kwargs["idempotency_key"]
+        # Double-click within the SAME cycle: same item si_A → same key.
+        await billing_service.create_ultra_upgrade(owner_id="owner_k")
+        key_a2 = modify_mock.call_args.kwargs["idempotency_key"]
+
+        # Later re-upgrade after a downgrade + re-subscribe: NEW item si_B.
+        monkeypatch.setattr(
+            billing_service.stripe.Subscription,
+            "retrieve",
+            MagicMock(return_value={"id": "sub_k", "items": {"data": [{"id": "si_B"}]}}),
+        )
+        await billing_service.create_ultra_upgrade(owner_id="owner_k")
+        key_b = modify_mock.call_args.kwargs["idempotency_key"]
+
+        assert key_a == key_a2 == "ultra-upgrade-owner_k-si_A"  # double-click de-dupes
+        assert key_b == "ultra-upgrade-owner_k-si_B"  # real re-upgrade gets a fresh key
+        assert key_a != key_b
+
+    @pytest.mark.asyncio
+    async def test_fresh_checkout_denied_when_claim_in_progress(self, monkeypatch):
+        """F1: the fresh-Ultra-checkout branch serializes behind the same
+        per-owner claim as create_flat_fee_checkout. A denied claim raises
+        checkout_in_progress and never builds a session — a trial/canceled owner
+        can't open duplicate concurrent Ultra checkouts."""
+        monkeypatch.setattr(billing_service.settings, "STRIPE_ULTRA_PRICE_ID", "price_ultra_test")
+        monkeypatch.setattr(
+            billing_service.billing_repo,
+            "get_by_owner_id",
+            AsyncMock(
+                return_value={
+                    "owner_id": "owner_trial",
+                    "stripe_customer_id": "cus_t",
+                    "subscription_status": "trial_local",
+                }
+            ),
+        )
+        # Deny the claim (overrides the autouse grant for this test).
+        monkeypatch.setattr(billing_service.billing_repo, "try_claim_checkout_slot", AsyncMock(return_value=False))
+        builder_mock = AsyncMock()
+        monkeypatch.setattr(billing_service, "_build_subscription_checkout", builder_mock)
+
+        with pytest.raises(BillingServiceError, match="checkout_in_progress"):
+            await billing_service.create_ultra_upgrade(owner_id="owner_trial")
+
+        builder_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_fresh_checkout_claims_and_records_pending_session(self, monkeypatch):
+        """F1: a successful fresh Ultra checkout claims the slot and records the
+        pending session (mirror create_flat_fee_checkout) so a second click
+        can't mint a parallel completable session."""
+        monkeypatch.setattr(billing_service.settings, "STRIPE_ULTRA_PRICE_ID", "price_ultra_test")
+        monkeypatch.setattr(
+            billing_service.billing_repo,
+            "get_by_owner_id",
+            AsyncMock(
+                return_value={
+                    "owner_id": "owner_trial",
+                    "stripe_customer_id": "cus_t",
+                    "subscription_status": "trial_local",
+                }
+            ),
+        )
+        claim_mock = AsyncMock(return_value=True)
+        pending_mock = AsyncMock()
+        monkeypatch.setattr(billing_service.billing_repo, "try_claim_checkout_slot", claim_mock)
+        monkeypatch.setattr(billing_service.billing_repo, "set_pending_checkout", pending_mock)
+        monkeypatch.setattr(
+            billing_service,
+            "_build_subscription_checkout",
+            AsyncMock(return_value=MagicMock(url="https://checkout/ultra", id="cs_ultra")),
+        )
+
+        result = await billing_service.create_ultra_upgrade(owner_id="owner_trial")
+
+        assert result.url == "https://checkout/ultra"
+        claim_mock.assert_awaited_once_with("owner_trial")
+        pending_mock.assert_awaited_once()
+        assert pending_mock.await_args.kwargs["session_id"] == "cs_ultra"
+
+    @pytest.mark.asyncio
+    async def test_fresh_checkout_seeds_provider_choice_into_metadata(self, monkeypatch):
+        """F6: a no-sub owner with an existing provider_choice threads it into
+        the fresh Ultra checkout metadata (mirror create_flat_fee_checkout) so
+        they don't hit the provider_required gate after paying."""
+        monkeypatch.setattr(billing_service.settings, "STRIPE_ULTRA_PRICE_ID", "price_ultra_test")
+        monkeypatch.setattr(
+            billing_service.billing_repo,
+            "get_by_owner_id",
+            AsyncMock(
+                return_value={
+                    "owner_id": "owner_pc",
+                    "stripe_customer_id": "cus_pc",
+                    "subscription_status": "trial_local",
+                    "provider_choice": "bedrock_claude",
+                }
+            ),
+        )
+        seen: dict = {}
+
+        async def _fake_builder(**kwargs):
+            seen.update(kwargs)
+            return MagicMock(url="https://checkout/ultra-pc", id="cs_pc")
+
+        monkeypatch.setattr(billing_service, "_build_subscription_checkout", _fake_builder)
+
+        await billing_service.create_ultra_upgrade(owner_id="owner_pc")
+
+        assert seen["metadata"]["provider_choice"] == "bedrock_claude"
+        # Recorded pending session carries the same provider (for a later switch).
+        assert seen["metadata"]["owner_id"] == "owner_pc"
+
+    @pytest.mark.asyncio
+    async def test_fresh_checkout_omits_provider_choice_when_absent(self, monkeypatch):
+        """F6: an owner with NO provider_choice gets metadata WITHOUT one — the
+        fix must not invent a provider."""
+        monkeypatch.setattr(billing_service.settings, "STRIPE_ULTRA_PRICE_ID", "price_ultra_test")
+        monkeypatch.setattr(
+            billing_service.billing_repo,
+            "get_by_owner_id",
+            AsyncMock(
+                return_value={
+                    "owner_id": "owner_np",
+                    "stripe_customer_id": "cus_np",
+                    "subscription_status": "trial_local",
+                }
+            ),
+        )
+        seen: dict = {}
+
+        async def _fake_builder(**kwargs):
+            seen.update(kwargs)
+            return MagicMock(url="https://checkout/ultra-np", id="cs_np")
+
+        monkeypatch.setattr(billing_service, "_build_subscription_checkout", _fake_builder)
+
+        await billing_service.create_ultra_upgrade(owner_id="owner_np")
+
+        assert "provider_choice" not in seen["metadata"]
 
     @pytest.mark.asyncio
     async def test_raises_without_ultra_price_id(self, monkeypatch):

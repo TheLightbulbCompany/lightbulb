@@ -217,6 +217,35 @@ async def test_standard_to_standard_persists_plan_but_no_resize():
 
 
 @pytest.mark.asyncio
+async def test_failed_set_plan_skips_resize():
+    """F4: a failed durable plan write (transient DDB) must SKIP the resize —
+    resizing without persisting the plan would leave the container size changed
+    while the row still reads the old plan, so a later flat event would
+    mis-decide the next resize. The webhook must also not 500."""
+    mgr = MagicMock()
+    mgr.resize_user_container = AsyncMock(return_value="arn:new")
+    with (
+        patch.object(handlers, "billing_repo") as repo,
+        patch("core.containers.get_ecs_manager", return_value=mgr),
+        patch(
+            "core.services.paperclip_openclaw_pairing.fetch_paperclip_agents_for_owner",
+            AsyncMock(return_value=[]),
+        ),
+    ):
+        repo.get_by_owner_id = AsyncMock(return_value=_account(plan="standard"))
+        repo.set_subscription = AsyncMock()
+        repo.set_provider_choice = AsyncMock()
+        repo.set_team_subscription = AsyncMock()
+        # The durable plan write fails — the resize must not follow it.
+        repo.set_plan = AsyncMock(side_effect=RuntimeError("ddb down"))
+        # An upgrade event (would normally resize UP) — must NOT raise.
+        await handlers.handle_subscription_state(_ultra_event(item_price=ULTRA_PRICE), MagicMock())
+
+    repo.set_plan.assert_awaited_once()
+    mgr.resize_user_container.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_team_seat_event_never_reaches_tier_logic(monkeypatch):
     """A team-seat sub is on a different pricing axis (never the ultra price):
     the tier branch is skipped entirely — no set_plan, no resize — so the

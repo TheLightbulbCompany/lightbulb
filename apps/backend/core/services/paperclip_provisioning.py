@@ -52,6 +52,7 @@ from core.config import settings
 from core.encryption import decrypt, encrypt
 from core.repositories.paperclip_repo import PaperclipCompany, PaperclipRepo
 from core.services import service_token
+from core.services.agent_email import mint_agent_email_address
 from core.services.company_identity import allocate_company_slug, generate_company_name
 from core.services.paperclip_adapter_config import OPENCLAW_GATEWAY_TYPE, synthesize_openclaw_adapter
 from core.services.paperclip_admin_client import PaperclipAdminClient, PaperclipApiError
@@ -365,8 +366,9 @@ class PaperclipProvisioning:
             # Reserve the platform-unique slug the agent's email address will
             # later be built from. Best-effort: an owner without a slug simply
             # has no address minted yet.
+            company_slug: str | None = None
             try:
-                await allocate_company_slug(owner_id=owner_id, name=company_name)
+                company_slug = await allocate_company_slug(owner_id=owner_id, name=company_name)
             except Exception as e:  # noqa: BLE001 — allocation must not fail provisioning
                 logger.warning(
                     "paperclip_provisioning.provision_org: slug allocation failed for owner_id %s: %s",
@@ -502,6 +504,26 @@ class PaperclipProvisioning:
                     owner_user_id,
                     e,
                 )
+
+            # Mint the agent's email address from the slug we just allocated.
+            # Best-effort and guarded on both Friday and the slug existing —
+            # the address is a convenience, and a mail-side failure must never
+            # undo a successful provision (same posture as the Atlas seed).
+            if friday_agent_id and company_slug:
+                try:
+                    await mint_agent_email_address(
+                        owner_id=owner_id,
+                        agent_id=friday_agent_id,
+                        agent_name="Friday",
+                        owner_email=owner_email,
+                        slug=company_slug,
+                    )
+                except Exception as e:  # noqa: BLE001 — never fail the provision
+                    logger.warning(
+                        "paperclip_provisioning.provision_org: agent-email mint failed for owner_id %s: %s",
+                        owner_id,
+                        e,
+                    )
 
             # 8. Persist. The DDB column is still ``org_id`` — that's a
             #    Paperclip-side stored concept; we just feed it from the

@@ -64,6 +64,7 @@ def admin(monkeypatch):
         "get_project",
         "create_project",
         "patch_project",
+        "delete_project",
     ):
         setattr(a, name, AsyncMock(return_value={"ok": True}))
     from routers.teams import agents as agents_mod
@@ -1157,3 +1158,13 @@ def test_patch_routine_trigger_forwards_explicit_null_label_clear(client, admin)
     body = admin.patch_routine_trigger.await_args.kwargs["body"]
     assert "label" in body
     assert body["label"] is None
+
+
+def test_delete_project_calls_admin(client, admin):
+    resp = client.delete("/api/v1/teams/projects/proj-1")
+
+    assert resp.status_code == 200
+    admin.delete_project.assert_awaited_once_with(
+        project_id="proj-1",
+        session_cookie="cookie",
+    )

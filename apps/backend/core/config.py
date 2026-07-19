@@ -244,6 +244,10 @@ class Settings(BaseSettings):
     MARKETPLACE_SELLERS_TABLE: str = os.getenv("MARKETPLACE_SELLERS_TABLE", "")
     MARKETPLACE_ARTIFACTS_BUCKET: str = os.getenv("MARKETPLACE_ARTIFACTS_BUCKET", "")
 
+    # Provisioned agent email (set by CDK ServiceStack). Empty disables address
+    # minting entirely, so an env without a verified mail domain never mints.
+    AGENT_EMAIL_DOMAIN: str = os.getenv("AGENT_EMAIL_DOMAIN", "")
+
     # Stripe Connect (seller payout onboarding) — environment-specific URLs
     # set by CDK so the marketplace UI can return the user back to the right
     # host after Stripe-hosted onboarding.

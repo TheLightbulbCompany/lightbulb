@@ -29,7 +29,9 @@ function markInput() {
   lastInputAt = performance.now();
 }
 
-/** Milliseconds since the last real input event (Infinity before any). */
+/** Milliseconds since the last real input event. Initialized to the module
+ * load time, so a fresh page load reads as recent input — deliberate: a
+ * human navigating to the app IS presence for the mount-wake check. */
 export function lastInputAgeMs(): number {
   bind();
   return performance.now() - lastInputAt;

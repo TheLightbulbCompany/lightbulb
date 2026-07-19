@@ -17,6 +17,8 @@ import {
 import { WS_URL } from "@/lib/api";
 import { readDesktopPermissionGrant } from "@/lib/desktopPermissions";
 import { subscribeDesktopPermissions } from "@/lib/desktopPermissionsSubscribe";
+import { mutate } from "swr";
+
 import { lastInputAgeMs } from "@/lib/presence";
 import { useContainerWake } from "@/hooks/useContainerWake";
 
@@ -107,6 +109,10 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
     const onReturn = () => {
       unpark();
       void requestWake("interaction");
+      // requestWake revalidates /container/status itself, but it can be a
+      // cooldown no-op — revalidate here too so the stepper always re-syncs
+      // on return (the reachedReady latch zeroes its own poll interval).
+      void mutate("/container/status");
     };
     window.addEventListener("pointerdown", onReturn, { capture: true, passive: true });
     window.addEventListener("keydown", onReturn, { capture: true, passive: true });

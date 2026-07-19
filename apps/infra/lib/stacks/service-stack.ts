@@ -112,7 +112,6 @@ export interface ServiceStackProps extends cdk.StackProps {
     marketplacePayoutAccountsTable: dynamodb.Table;
     marketplaceTakedownsTable: dynamodb.Table;
     marketplaceSellersTable: dynamodb.Table;
-    marketplaceCompanyDeploysTable: dynamodb.Table;
     hookEventsTable: dynamodb.Table;
     opsCacheTable: dynamodb.Table;
   };
@@ -631,7 +630,6 @@ export class ServiceStack extends cdk.Stack {
     props.database.marketplacePayoutAccountsTable.grantReadWriteData(this.taskRole);
     props.database.marketplaceTakedownsTable.grantReadWriteData(this.taskRole);
     props.database.marketplaceSellersTable.grantReadWriteData(this.taskRole);
-    props.database.marketplaceCompanyDeploysTable.grantReadWriteData(this.taskRole);
 
     // OpenClaw webhook ingress audit log (T4 of openclaw-hook-token-provisioning).
     // T5 repo writes one row per delivery; T6 proxy + admin views read.
@@ -1272,8 +1270,6 @@ export class ServiceStack extends cdk.Stack {
           props.database.marketplaceTakedownsTable.tableName,
         MARKETPLACE_SELLERS_TABLE:
           props.database.marketplaceSellersTable.tableName,
-        MARKETPLACE_COMPANY_DEPLOYS_TABLE:
-          props.database.marketplaceCompanyDeploysTable.tableName,
         // Per-env owner the platform_ops agent token binds to (the founder's
         // own owner_id). Read from the runner's secrets at synth time like the
         // Stripe/Clerk per-env values above; the dev and prod Clerk instances

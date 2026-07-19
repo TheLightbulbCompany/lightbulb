@@ -1,5 +1,4 @@
 import type {
-  CompanyDeployJob,
   Listing,
   ListingDetailResponse,
   ListingFormat,
@@ -95,17 +94,20 @@ export async function checkout(opts: {
 // Company deploys
 //
 // A `format: "company"` listing deploys the whole org-chart bundle
-// asynchronously: the POST returns a job_id (202) and the storefront polls the
-// job row until it goes terminal. `listingId` is the listing's `listing_id`
-// (the backend resolves the deploy target by id, same as the single-agent
-// `/deploy` path). All three calls require the buyer's Clerk bearer.
+// fire-and-forget: the POST returns 202 with `{started, agent_count}` and the
+// backend instantiates the org off the request path. There is no job to poll —
+// the agents show up in the buyer's Teams roster as they're created (the
+// Paperclip roster is the source of truth). `listingId` is the listing's
+// `listing_id` (the backend resolves the deploy target by id, same as the
+// single-agent `/deploy` path). Requires the buyer's Clerk bearer.
 // ---------------------------------------------------------------------------
 
-/** Kick off a company deploy. Returns the job_id to poll. */
+/** Kick off a company deploy. Returns immediately (202) with the agent count
+ * the backend is instantiating; progress + the roster live in Teams. */
 export async function deployCompany(opts: {
   listingId: string;
   jwt: string;
-}): Promise<{ job_id: string }> {
+}): Promise<{ started: boolean; agent_count: number }> {
   const resp = await fetch(
     `${API}/marketplace/listings/${encodeURIComponent(opts.listingId)}/deploy`,
     {
@@ -120,51 +122,7 @@ export async function deployCompany(opts: {
       detail: body.detail,
     });
   }
-  return (await resp.json()) as { job_id: string };
-}
-
-/** Poll one company-deploy job. */
-export async function getCompanyDeploy(opts: {
-  jobId: string;
-  jwt: string;
-}): Promise<CompanyDeployJob> {
-  const resp = await fetch(
-    `${API}/marketplace/company-deploys/${encodeURIComponent(opts.jobId)}`,
-    {
-      headers: { Authorization: `Bearer ${opts.jwt}` },
-    },
-  );
-  if (!resp.ok) {
-    const body = (await resp.json().catch(() => ({}))) as { detail?: string };
-    throw Object.assign(new Error(body.detail || `getCompanyDeploy failed: ${resp.status}`), {
-      status: resp.status,
-      detail: body.detail,
-    });
-  }
-  return (await resp.json()) as CompanyDeployJob;
-}
-
-/** Tear down exactly the agents a company deploy created. Dispatched off the
- * request path server-side (202); the caller keeps polling to observe the
- * job flip to `rolled_back`. */
-export async function rollbackCompanyDeploy(opts: {
-  jobId: string;
-  jwt: string;
-}): Promise<void> {
-  const resp = await fetch(
-    `${API}/marketplace/company-deploys/${encodeURIComponent(opts.jobId)}/rollback`,
-    {
-      method: "POST",
-      headers: { Authorization: `Bearer ${opts.jwt}` },
-    },
-  );
-  if (!resp.ok) {
-    const body = (await resp.json().catch(() => ({}))) as { detail?: string };
-    throw Object.assign(new Error(body.detail || `rollbackCompanyDeploy failed: ${resp.status}`), {
-      status: resp.status,
-      detail: body.detail,
-    });
-  }
+  return (await resp.json()) as { started: boolean; agent_count: number };
 }
 
 export interface SearchOptions {

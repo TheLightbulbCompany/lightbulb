@@ -79,35 +79,6 @@ export interface CompanyManifest {
   source?: { repo: string; commit: string; path: string };
 }
 
-/**
- * One agent's slot in a company-deploy job. `state` advances as the
- * per-agent materializer runs: pending → created → paired → materialized
- * (or failed). `paperclip_id` is null until the agent is created in the
- * buyer's Paperclip company.
- */
-export interface CompanyDeployAgentState {
-  slug: string;
-  paperclip_id: string | null;
-  state: string;
-}
-
-/**
- * A company-deploy job row, as returned by
- * `GET /marketplace/company-deploys/{job_id}`. This is the poll + rollback
- * surface for one `format: "company"` deploy: `POST /listings/{id}/deploy`
- * returns `{job_id}` (202) and dispatches the instantiation off the request
- * path, then the storefront polls this shape until `status` goes terminal.
- */
-export interface CompanyDeployJob {
-  job_id: string;
-  status: "running" | "failed" | "completed" | "rolled_back";
-  agents: CompanyDeployAgentState[];
-  /** Paperclip routine ids imported by the deploy — seeded paused; the
-   * RoutinesEnableCard surfaces them for enabling. */
-  routine_ids: string[];
-  error: string | null;
-}
-
 export interface Purchase {
   purchase_id: string;
   listing_id: string;

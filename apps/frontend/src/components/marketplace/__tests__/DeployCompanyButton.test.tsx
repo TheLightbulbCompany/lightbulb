@@ -2,12 +2,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import { DeployCompanyButton } from "../company/DeployCompanyButton";
-import { deployCompany, getCompanyDeploy } from "@/lib/marketplace/api";
-import type { CompanyDeployJob, Listing } from "@/lib/marketplace/types";
+import { deployCompany } from "@/lib/marketplace/api";
+import type { Listing } from "@/lib/marketplace/types";
 
-// Stable auth object — DeployProgress lists getToken in a useEffect dep, so a
-// fresh function per render would re-fire the poll loop indefinitely (same trap
-// the ListingDetailView tests document).
 const { stableAuth } = vi.hoisted(() => ({
   stableAuth: {
     isLoaded: true,
@@ -22,8 +19,6 @@ vi.mock("@clerk/nextjs", () => ({
 
 vi.mock("@/lib/marketplace/api", () => ({
   deployCompany: vi.fn(),
-  getCompanyDeploy: vi.fn(),
-  rollbackCompanyDeploy: vi.fn(),
 }));
 
 function companyListing(minPlan: "standard" | "ultra_pro"): Listing {
@@ -58,27 +53,15 @@ function companyListing(minPlan: "standard" | "ultra_pro"): Listing {
   } as unknown as Listing;
 }
 
-const runningJob: CompanyDeployJob = {
-  job_id: "cdpl_1",
-  status: "running",
-  agents: [{ slug: "ceo", paperclip_id: null, state: "pending" }],
-  routine_ids: [],
-  error: null,
-};
-
 beforeEach(() => {
   vi.mocked(deployCompany).mockReset();
-  vi.mocked(getCompanyDeploy).mockReset();
-  // Keep the post-deploy poll harmless — a still-running job with a pending
-  // agent, so DeployProgress renders without reaching completed/failed.
-  vi.mocked(getCompanyDeploy).mockResolvedValue(runningJob);
   stableAuth.isSignedIn = true;
   stableAuth.userId = "owner_1";
 });
 
 describe("<DeployCompanyButton>", () => {
-  it("standard company: renders an enabled Deploy button that calls deployCompany", async () => {
-    vi.mocked(deployCompany).mockResolvedValueOnce({ job_id: "cdpl_1" });
+  it("standard company: renders an enabled Deploy button that calls deployCompany and shows the confirmation on success", async () => {
+    vi.mocked(deployCompany).mockResolvedValueOnce({ started: true, agent_count: 5 });
     render(<DeployCompanyButton listing={companyListing("standard")} />);
 
     const btn = screen.getByRole("button", { name: /deploy company/i });
@@ -91,6 +74,14 @@ describe("<DeployCompanyButton>", () => {
         expect.objectContaining({ listingId: "l1" }),
       ),
     );
+
+    // On success the button is replaced by a static confirmation card that
+    // names the agent count and points the buyer at Teams.
+    const card = await screen.findByTestId("deploy-started-card");
+    expect(card).toHaveTextContent(/deploying gstack/i);
+    expect(card).toHaveTextContent(/5 agents/i);
+    expect(screen.getByRole("link", { name: /open teams/i })).toHaveAttribute("href", "/chat");
+    expect(screen.queryByRole("button", { name: /deploy company/i })).toBeNull();
   });
 
   it("ultra_pro company: renders the Requires Ultra Pro upsell and never deploys", () => {

@@ -1,8 +1,12 @@
-"""Tests for the company deploy orchestration service (Task 4).
+"""Tests for the company deploy orchestration service.
 
 These are mock-heavy unit tests: the real Paperclip admin client, gateway
-pool, ECS manager, EFS workspace, and the deploy-job repo are all faked, so
-the orchestration logic is exercised with no AWS / container / Paperclip.
+pool, ECS manager, and EFS workspace are all faked, so the orchestration logic
+is exercised with no AWS / container / Paperclip.
+
+The deploy engine is FIRE-AND-FORGET: ``run_company_deploy`` is a background
+task target that NEVER raises. There is no job row and no resume — progress and
+the final roster live in Teams (the Paperclip roster is the source of truth).
 
 The load-bearing invariants under test (from the task brief):
 
@@ -13,9 +17,10 @@ The load-bearing invariants under test (from the task brief):
 * the package CEO / division head reports to Friday; a child reports to its
   own manager's freshly-minted id;
 * routines are created via ``create_agent_routines`` (the dormant path);
-* resume skips an already-``materialized`` agent (no duplicate create);
-* rollback deletes exactly the created set and never an ``is_seeded_agent``;
-* an unreachable container fails the job with ZERO creates.
+* on failure the agents this run created are rolled back INLINE — deleted +
+  unwound — and never an ``is_seeded_agent``;
+* an unreachable container creates ZERO agents;
+* ``run_company_deploy`` never raises.
 """
 
 from __future__ import annotations
@@ -109,51 +114,12 @@ class FakeEcs:
         return self._container, self._ip
 
 
-class FakeRepo:
-    """In-memory deploy-job store mirroring company_deploy_repo's surface."""
-
-    def __init__(self, job) -> None:
-        self.job = job
-        self.status_calls: list[tuple[str, str | None]] = []
-        self.record_calls: list[tuple[str, str | None, str]] = []
-        self.routine_ids_calls: list[list[str]] = []
-        # Ordered log of the terminal writes so a test can assert the routine
-        # ids land BEFORE the completed status.
-        self.op_log: list[str] = []
-
-    async def get_job(self, job_id):
-        return self.job
-
-    async def record_agent(self, *, job_id, slug, paperclip_id, state, now_iso):
-        self.record_calls.append((slug, paperclip_id, state))
-        if self.job:
-            for a in self.job.get("agents", []):
-                if a.get("slug") == slug:
-                    a["paperclip_id"] = paperclip_id
-                    a["state"] = state
-                    break
-
-    async def record_routine_ids(self, *, job_id, routine_ids, now_iso):
-        self.routine_ids_calls.append(list(routine_ids))
-        self.op_log.append("record_routine_ids")
-        if self.job:
-            self.job["routine_ids"] = list(routine_ids)
-
-    async def set_status(self, *, job_id, status, now_iso, error=None):
-        self.status_calls.append((status, error))
-        self.op_log.append(f"set_status:{status}")
-        if self.job:
-            self.job["status"] = status
-            self.job["error"] = error
-
-
 class Harness:
     """Bundles the fakes + call recorders installed onto the service module."""
 
     def __init__(self) -> None:
         self.admin = FakeAdmin()
         self.http = FakeHttp()
-        self.repo = None
         self.pair_calls: list[str] = []
         self.ensure_calls: list[str] = []
         self.materialize_calls: list[str] = []
@@ -165,31 +131,8 @@ class Harness:
         self.ip = "10.0.0.5"
 
 
-def _seed_job(agent_slugs, materialized=None, paperclip_ids=None):
-    """Build a running job row with pending agents (some pre-materialized)."""
-    materialized = materialized or set()
-    paperclip_ids = paperclip_ids or {}
-    return {
-        "job_id": "cdpl_test",
-        "owner_id": OWNER,
-        "status": "running",
-        "error": None,
-        "routine_ids": [],
-        "agents": [
-            {
-                "slug": s,
-                "paperclip_id": paperclip_ids.get(s),
-                "state": "materialized" if s in materialized else "pending",
-            }
-            for s in agent_slugs
-        ],
-    }
-
-
-def _install(monkeypatch, h: Harness, plan=None, tar_bytes=b""):
+def _install(monkeypatch, h: Harness, plan=None):
     """Wire every external dependency of the service to a fake."""
-    if h.repo is None:
-        h.repo = FakeRepo(_seed_job([p.slug for p in plan.agents]) if plan else None)
 
     # Admin session — the SERVER-side bootstrap-admin cookie mechanism.
     async def fake_open_admin_session():
@@ -265,12 +208,6 @@ def _install(monkeypatch, h: Harness, plan=None, tar_bytes=b""):
     monkeypatch.setattr(svc, "delete_paperclip_for_marketplace", fake_delete)
     monkeypatch.setattr(svc, "get_catalog_service", lambda: FakeCatalog())
 
-    # Repo.
-    monkeypatch.setattr(svc.company_deploy_repo, "get_job", h.repo.get_job)
-    monkeypatch.setattr(svc.company_deploy_repo, "record_agent", h.repo.record_agent)
-    monkeypatch.setattr(svc.company_deploy_repo, "record_routine_ids", h.repo.record_routine_ids)
-    monkeypatch.setattr(svc.company_deploy_repo, "set_status", h.repo.set_status)
-
 
 # ---------------------------------------------------------------------------
 # Hand-built plans
@@ -319,11 +256,10 @@ def _tar_fixture(pkg_dir: Path) -> bytes:
 @pytest.mark.asyncio
 async def test_gstack_full_deploy_topological(monkeypatch):
     h = Harness()
-    h.repo = FakeRepo(_seed_job(["ceo", "cto", "qa-engineer", "release-engineer", "staff-engineer"]))
-    _install(monkeypatch, h, plan=None, tar_bytes=b"")  # real parse path
+    _install(monkeypatch, h, plan=None)  # real parse path
 
     tar_bytes = _tar_fixture(FIXTURE)
-    await svc.run_company_deploy(job_id="cdpl_test", owner_id=OWNER, listing={}, tar_bytes=tar_bytes)
+    await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=tar_bytes)
 
     # All five agents created, CEO first, CTO second (topological).
     names = [c["name"] for c in h.admin.create_calls]
@@ -347,33 +283,51 @@ async def test_gstack_full_deploy_topological(monkeypatch):
     assert by_name["Release Engineer"]["reports_to"] == cto_id
     assert by_name["Staff Engineer"]["reports_to"] == cto_id
 
-    assert ("completed", None) in h.repo.status_calls
+    # Every agent paired + operator-device-trusted + materialized.
     assert len(h.pair_calls) == 5
     assert len(h.ensure_calls) == 5
     assert len(h.materialize_calls) == 5
+    # No rollback on the happy path.
+    assert h.deleted == []
+    # Admin session closed.
+    assert h.http.closed is True
 
 
 # ---------------------------------------------------------------------------
-# Per-agent progression + adapter/budget invariants (hand-built plan)
+# Per-agent pipeline + adapter/budget invariants (hand-built plan)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_state_progression_created_paired_materialized(monkeypatch):
+async def test_every_agent_created_paired_and_materialized(monkeypatch):
     plan = _simple_plan()
     h = Harness()
     _install(monkeypatch, h, plan=plan)
 
-    await svc.run_company_deploy(job_id="cdpl_test", owner_id=OWNER, listing={}, tar_bytes=b"")
+    await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
 
-    # Each agent advances created -> paired -> materialized, in order.
     ceo_id = h.admin.name_to_id["CEO"]
-    assert ("ceo", ceo_id, "created") in h.repo.record_calls
-    assert ("ceo", ceo_id, "paired") in h.repo.record_calls
-    assert ("ceo", ceo_id, "materialized") in h.repo.record_calls
-    # 3 agents x 3 states.
-    assert len(h.repo.record_calls) == 9
-    assert h.repo.job["status"] == "completed"
+    cto_id = h.admin.name_to_id["CTO"]
+    worker_id = h.admin.name_to_id["Worker"]
+    assert h.pair_calls == [ceo_id, cto_id, worker_id]
+    assert h.ensure_calls == [ceo_id, cto_id, worker_id]
+    assert h.materialize_calls == [ceo_id, cto_id, worker_id]
+    assert h.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_every_create_carries_server_adapter_and_budget(monkeypatch):
+    plan = _simple_plan()
+    h = Harness()
+    _install(monkeypatch, h, plan=plan)
+
+    await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
+
+    assert h.admin.create_calls  # sanity
+    for call in h.admin.create_calls:
+        assert call["adapter_type"] == "openclaw_gateway"
+        assert call["budget_monthly_cents"] == 1000
+        assert call["adapter_config"]["authToken"] == "svc_tok"
 
 
 @pytest.mark.asyncio
@@ -382,7 +336,7 @@ async def test_child_reports_to_freshly_minted_manager(monkeypatch):
     h = Harness()
     _install(monkeypatch, h, plan=plan)
 
-    await svc.run_company_deploy(job_id="cdpl_test", owner_id=OWNER, listing={}, tar_bytes=b"")
+    await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
 
     by_name = {c["name"]: c for c in h.admin.create_calls}
     assert by_name["CEO"]["reports_to"] == FRIDAY_ID
@@ -408,7 +362,7 @@ async def test_routines_created_via_create_agent_routines(monkeypatch):
     h = Harness()
     _install(monkeypatch, h, plan=plan)
 
-    await svc.run_company_deploy(job_id="cdpl_test", owner_id=OWNER, listing={}, tar_bytes=b"")
+    await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
 
     by_agent = {c["agent_id"]: c["routines"] for c in h.routine_calls}
     cto_id = h.admin.name_to_id["CTO"]
@@ -418,139 +372,109 @@ async def test_routines_created_via_create_agent_routines(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_created_routine_ids_persisted_onto_job_before_completed(monkeypatch):
-    """The ids returned by create_agent_routines are accumulated and written to
-    the job row via record_routine_ids — BEFORE the terminal completed status —
-    so the frontend RoutinesEnableCard sees a non-empty routine_ids."""
-    plan = _simple_plan(
-        routines=[
-            PlannedRoutine(agent_slug="cto", title="Nightly", description="d", cron="0 8 * * *"),
-            PlannedRoutine(agent_slug="worker", title="Hourly", description="d2", cron="0 * * * *"),
-        ]
-    )
-    h = Harness()
-    _install(monkeypatch, h, plan=plan)
-
-    await svc.run_company_deploy(job_id="cdpl_test", owner_id=OWNER, listing={}, tar_bytes=b"")
-
-    # fake create_agent_routines returns [f"routine_{agent_id}"] per assignee,
-    # grouped cto-then-worker (plan.routines order).
-    cto_id = h.admin.name_to_id["CTO"]
-    worker_id = h.admin.name_to_id["Worker"]
-    expected = [f"routine_{cto_id}", f"routine_{worker_id}"]
-
-    # Persisted exactly once, with the accumulated ids, and landed on the row.
-    assert h.repo.routine_ids_calls == [expected]
-    assert h.repo.job["routine_ids"] == expected
-
-    # Ordering: routine ids are recorded strictly before status flips to completed.
-    assert h.repo.op_log.index("record_routine_ids") < h.repo.op_log.index("set_status:completed")
-
-
-@pytest.mark.asyncio
-async def test_no_routines_persists_empty_list(monkeypatch):
-    """A plan with no cron'd routines still records an empty routine_ids list
-    (idempotent with the seeded []), and still completes."""
+async def test_no_cron_routines_creates_none(monkeypatch):
+    """A plan with no cron'd routines makes no create_agent_routines calls and
+    still completes without raising."""
     plan = _simple_plan(routines=[])
     h = Harness()
     _install(monkeypatch, h, plan=plan)
 
-    await svc.run_company_deploy(job_id="cdpl_test", owner_id=OWNER, listing={}, tar_bytes=b"")
+    await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
 
-    assert h.repo.routine_ids_calls == [[]]
-    assert h.repo.job["routine_ids"] == []
-    assert h.repo.job["status"] == "completed"
+    assert h.routine_calls == []
+    assert len(h.admin.create_calls) == 3
 
 
 # ---------------------------------------------------------------------------
-# Resume
+# Failure path — inline rollback of exactly this run's created agents
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_resume_skips_materialized_ceo(monkeypatch):
+async def test_failure_rolls_back_created_set_and_skips_seeded(monkeypatch):
+    """A materialize failure mid-run tears down exactly the agents created so
+    far (delete + unwind), guarding is_seeded_agent so a seed is never
+    deleted."""
     plan = _simple_plan()
     h = Harness()
-    # CEO already materialized in a prior run.
-    h.repo = FakeRepo(
-        _seed_job(
-            ["ceo", "cto", "worker"],
-            materialized={"ceo"},
-            paperclip_ids={"ceo": "pc_ceo_prior"},
-        )
-    )
     _install(monkeypatch, h, plan=plan)
 
-    await svc.run_company_deploy(job_id="cdpl_test", owner_id=OWNER, listing={}, tar_bytes=b"")
+    async def boom(*, owner_id, new_agent_id, planned, skill_assets, workspace, apply_aux):
+        if planned.name == "CTO":
+            raise RuntimeError("materialize exploded")
+        h.materialize_calls.append(new_agent_id)
+        return {"id": new_agent_id}
 
-    created_names = [c["name"] for c in h.admin.create_calls]
-    assert "CEO" not in created_names  # skipped on resume
-    assert created_names == ["CTO", "Worker"]
-    # Its prior id is not re-materialized.
-    assert "pc_ceo_prior" not in h.materialize_calls
-    assert h.repo.job["status"] == "completed"
+    monkeypatch.setattr(svc, "materialize_agent", boom)
+    # Pretend the CEO's freshly-minted id is a seeded agent (never deletable).
+    h.seeded_ids = {"pc_1"}
 
+    # Must NOT raise.
+    await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
 
-# ---------------------------------------------------------------------------
-# Rollback
-# ---------------------------------------------------------------------------
+    # Two agents were created (CEO pc_1, CTO pc_2) before the crash; the Worker
+    # was never reached.
+    assert [c["name"] for c in h.admin.create_calls] == ["CEO", "CTO"]
+    # pc_2 (CTO) is not seeded -> deleted + unwound. pc_1 (CEO) is seeded -> skipped.
+    assert h.deleted == ["pc_2"]
+    assert h.unwound == ["pc_2"]
+    assert "pc_1" not in h.deleted
+    # Admin session still closed on the failure path.
+    assert h.http.closed is True
 
 
 @pytest.mark.asyncio
-async def test_rollback_deletes_created_set_and_skips_seeded(monkeypatch):
+async def test_run_company_deploy_never_raises_and_rolls_back(monkeypatch):
+    """A pairing failure on the first agent is swallowed (never escapes the
+    background target) and the one created agent is rolled back."""
     plan = _simple_plan()
     h = Harness()
-    h.repo = FakeRepo(
-        _seed_job(
-            ["ceo", "cto", "worker"],
-            paperclip_ids={"ceo": "pc_ceo", "cto": "pc_cto", "worker": None},
-        )
-    )
-    # Pretend the CEO id is a seeded agent (must never be deleted).
-    h.seeded_ids = {"pc_ceo"}
     _install(monkeypatch, h, plan=plan)
 
-    await svc.rollback_company_deploy(job_id="cdpl_test")
+    async def boom(*, owner_id, paperclip_agent, gateway_pool, ip, token):
+        raise RuntimeError("pair exploded")
 
-    # pc_cto has a paperclip_id and is not seeded -> deleted + unwound.
-    assert h.deleted == ["pc_cto"]
-    assert h.unwound == ["pc_cto"]
-    # pc_ceo is seeded (skipped); worker has no id (skipped).
-    assert "pc_ceo" not in h.deleted
-    assert ("rolled_back", None) in h.repo.status_calls
+    monkeypatch.setattr(svc, "pair_with_openclaw", boom)
+
+    # Must NOT raise.
+    await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
+
+    # Only the CEO was created before pairing blew up; it is rolled back.
+    assert [c["name"] for c in h.admin.create_calls] == ["CEO"]
+    assert h.deleted == ["pc_1"]
+    assert h.unwound == ["pc_1"]
 
 
 # ---------------------------------------------------------------------------
-# Container unreachable -> failed, no creates
+# Container unreachable -> zero creates
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_container_unreachable_fails_with_no_creates(monkeypatch):
+async def test_container_unreachable_creates_nothing(monkeypatch):
     plan = _simple_plan()
     h = Harness()
     h.container = None  # ECS reports no running container
     h.ip = None
     _install(monkeypatch, h, plan=plan)
 
-    await svc.run_company_deploy(job_id="cdpl_test", owner_id=OWNER, listing={}, tar_bytes=b"")
+    await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
 
     assert h.admin.create_calls == []
-    statuses = [s for s, _ in h.repo.status_calls]
-    assert statuses == ["failed"]
+    assert h.deleted == []
 
 
 @pytest.mark.asyncio
-async def test_missing_gateway_token_fails_with_no_creates(monkeypatch):
+async def test_missing_gateway_token_creates_nothing(monkeypatch):
     plan = _simple_plan()
     h = Harness()
     h.container = {"gateway_token": ""}  # row exists but no token
     _install(monkeypatch, h, plan=plan)
 
-    await svc.run_company_deploy(job_id="cdpl_test", owner_id=OWNER, listing={}, tar_bytes=b"")
+    await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
 
     assert h.admin.create_calls == []
-    assert [s for s, _ in h.repo.status_calls] == ["failed"]
+    assert h.deleted == []
 
 
 # ---------------------------------------------------------------------------
@@ -606,7 +530,7 @@ async def test_deploy_grafts_onto_rootless_friday_not_prior_package_ceo(monkeypa
     )
     _install(monkeypatch, h, plan=plan)
 
-    await svc.run_company_deploy(job_id="cdpl_test", owner_id=OWNER, listing={}, tar_bytes=b"")
+    await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
 
     by_name = {c["name"]: c for c in h.admin.create_calls}
     assert by_name["CEO"]["reports_to"] == FRIDAY_ID
@@ -615,25 +539,25 @@ async def test_deploy_grafts_onto_rootless_friday_not_prior_package_ceo(monkeypa
 
 
 # ---------------------------------------------------------------------------
-# Friday not found -> failed, no creates
+# Preconditions that create nothing (and never raise)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_no_friday_fails_with_no_creates(monkeypatch):
+async def test_no_friday_creates_nothing(monkeypatch):
     plan = _simple_plan()
     h = Harness()
     h.admin = FakeAdmin(roster=[{"id": "a1", "role": "member"}])  # no ceo
     _install(monkeypatch, h, plan=plan)
 
-    await svc.run_company_deploy(job_id="cdpl_test", owner_id=OWNER, listing={}, tar_bytes=b"")
+    await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
 
     assert h.admin.create_calls == []
-    assert [s for s, _ in h.repo.status_calls] == ["failed"]
+    assert h.deleted == []
 
 
 @pytest.mark.asyncio
-async def test_no_paperclip_company_fails(monkeypatch):
+async def test_no_paperclip_company_creates_nothing(monkeypatch):
     plan = _simple_plan()
     h = Harness()
     _install(monkeypatch, h, plan=plan)
@@ -643,37 +567,10 @@ async def test_no_paperclip_company_fails(monkeypatch):
 
     monkeypatch.setattr(svc, "resolve_company_id_for_owner", none_company)
 
-    await svc.run_company_deploy(job_id="cdpl_test", owner_id=OWNER, listing={}, tar_bytes=b"")
+    await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
 
     assert h.admin.create_calls == []
-    assert [s for s, _ in h.repo.status_calls] == ["failed"]
-
-
-# ---------------------------------------------------------------------------
-# Never raises: an exception mid-loop records failed and leaves created agents.
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_never_raises_records_failed_on_exception(monkeypatch):
-    plan = _simple_plan()
-    h = Harness()
-    _install(monkeypatch, h, plan=plan)
-
-    async def boom(*, owner_id, new_agent_id, planned, skill_assets, workspace, apply_aux):
-        raise RuntimeError("materialize exploded")
-
-    monkeypatch.setattr(svc, "materialize_agent", boom)
-
-    # Must NOT raise.
-    await svc.run_company_deploy(job_id="cdpl_test", owner_id=OWNER, listing={}, tar_bytes=b"")
-
-    # Failed status carries the error message.
-    failed = [(s, e) for s, e in h.repo.status_calls if s == "failed"]
-    assert failed
-    assert "materialize exploded" in failed[-1][1]
-    # The first agent's create was recorded before the crash (left for resume).
-    assert any(state == "created" for _, _, state in h.repo.record_calls)
+    assert h.deleted == []
 
 
 @pytest.mark.asyncio
@@ -682,6 +579,6 @@ async def test_admin_http_closed_on_success(monkeypatch):
     h = Harness()
     _install(monkeypatch, h, plan=plan)
 
-    await svc.run_company_deploy(job_id="cdpl_test", owner_id=OWNER, listing={}, tar_bytes=b"")
+    await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
 
     assert h.http.closed is True

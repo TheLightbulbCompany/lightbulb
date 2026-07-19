@@ -9,7 +9,6 @@ we don't need an external SaaS index.
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
 from typing import Annotated
 
 import boto3
@@ -27,7 +26,7 @@ from core.auth import (
 )
 from core.config import settings
 from core.containers import get_ecs_manager, get_workspace
-from core.repositories import company_deploy_repo, marketplace_repo
+from core.repositories import marketplace_repo
 from core.services import (
     agent_export,
     company_deploy_service,
@@ -403,22 +402,15 @@ async def deploy_listing(
         tar_bytes = _fetch_company_tar(s3_prefix=s3_prefix, listing_id=listing.get("listing_id"))
 
         owner_id = resolve_owner_id(auth)
-        job_id = await company_deploy_repo.create_job(
-            owner_id=owner_id,
-            listing_id=listing["listing_id"],
-            listing_version=int(listing.get("version", 1) or 1),
-            company_slug=listing.get("slug"),
-            agent_slugs=list(company.get("agent_slugs") or []),
-            now_iso=datetime.now(timezone.utc).isoformat(),
-        )
-        # Instantiate the whole package off the request path — the job row is
-        # the poll/rollback surface (see the two endpoints below).
+        # Fire-and-forget: instantiate the whole package off the request path and
+        # return 202 immediately. There is no job row — progress and the final
+        # roster are observed in Teams (the Paperclip roster is the source of
+        # truth). On failure the background task best-effort rolls back exactly
+        # the agents it created this run (see company_deploy_service).
         asyncio.create_task(
-            company_deploy_service.run_company_deploy(
-                job_id=job_id, owner_id=owner_id, listing=listing, tar_bytes=tar_bytes
-            )
+            company_deploy_service.run_company_deploy(owner_id=owner_id, listing=listing, tar_bytes=tar_bytes)
         )
-        return JSONResponse(status_code=202, content={"job_id": job_id})
+        return JSONResponse(status_code=202, content={"started": True, "agent_count": agent_count})
 
     price_cents = int(listing.get("price_cents", 0) or 0)
     # Seller-self-deploy bypass: sellers don't buy their own listings, so
@@ -671,39 +663,6 @@ async def deploy_listing(
     # block the deploy (the hard gate already ran inside deploy_from_artifact);
     # they let the buyer-facing UI tell the truth about what won't run.
     return {"agent_uuid": result["agent_id"], "warnings": warn_rows(manifest), **result}
-
-
-@router.get("/company-deploys/{job_id}")
-async def get_company_deploy(
-    job_id: str,
-    auth: Annotated[AuthContext, Depends(get_current_user)],
-):
-    """Poll one company-deploy job. Owner-scoped: a caller may only read a job
-    whose ``owner_id`` matches their resolved owner (org_id in an org, else
-    user_id). 404 for an unknown job; 403 for another owner's job."""
-    job = await company_deploy_repo.get_job(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="job not found")
-    if job.get("owner_id") != resolve_owner_id(auth):
-        raise HTTPException(status_code=403, detail="not your deploy job")
-    return job
-
-
-@router.post("/company-deploys/{job_id}/rollback")
-async def rollback_company_deploy(
-    job_id: str,
-    auth: Annotated[AuthContext, Depends(get_current_user)],
-):
-    """Tear down exactly the agents a company deploy created. Owner-scoped like
-    the status endpoint (404/403), then dispatches the teardown off the request
-    path and returns 202."""
-    job = await company_deploy_repo.get_job(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="job not found")
-    if job.get("owner_id") != resolve_owner_id(auth):
-        raise HTTPException(status_code=403, detail="not your deploy job")
-    asyncio.create_task(company_deploy_service.rollback_company_deploy(job_id=job_id))
-    return JSONResponse(status_code=202, content={"job_id": job_id, "status": "rolling_back"})
 
 
 @router.post("/listings")

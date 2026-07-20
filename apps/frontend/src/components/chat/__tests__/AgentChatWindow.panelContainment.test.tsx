@@ -120,6 +120,24 @@ function assertBoundedColumnChain(root: HTMLElement) {
     `flex-column ancestor(s) missing min-h-0 — the composer will be pushed past the ` +
       `dock panel's clip boundary and become unreachable:\n  ${offenders.join("\n  ")}`,
   ).toEqual([]);
+
+  // Second route to the same "present but unreachable" failure: a scrollport
+  // that centers on its main axis with UNSAFE alignment. `justify-content:
+  // center` splits the overflow across both ends, so the top is clipped and
+  // scrollHeight never covers it (measured: scrollHeight 300 for 400px of
+  // content, top pinned at -100px). `justify-center-safe` falls back to
+  // flex-start once it overflows.
+  const unsafeCentered = Array.from(
+    root.querySelectorAll<HTMLElement>(".overflow-y-auto, .overflow-hidden"),
+  )
+    .map((el) => (typeof el.className === "string" ? el.className : ""))
+    .filter((cls) => cls.includes("flex-col") && /(^|\s)justify-center(\s|$)/.test(cls));
+
+  expect(
+    unsafeCentered,
+    `scroll container(s) using unsafe justify-center — content above the fold ` +
+      `becomes unreachable when it overflows. Use justify-center-safe:\n  ${unsafeCentered.join("\n  ")}`,
+  ).toEqual([]);
 }
 
 describe("AgentChatWindow — panel containment", () => {

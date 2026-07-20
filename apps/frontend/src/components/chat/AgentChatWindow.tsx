@@ -468,7 +468,14 @@ export function AgentChatWindow({
   if (isInitialState) {
     return (
       <div className="flex flex-col h-full min-h-0 bg-[#faf7f2]">
-        <div className="flex-1 min-h-0 overflow-y-auto flex flex-col items-center justify-center p-4">
+        {/* justify-center-safe, not justify-center: unsafe centering splits the
+            overflow across BOTH ends, so once the content outgrows a short dock
+            slot the top is clipped and unreachable even with overflow-y-auto
+            (measured: scrollHeight 300 for 400px of content, top pinned at
+            -100px). Safe centering falls back to flex-start when it overflows —
+            same "present but unreachable" failure this branch exists to fix,
+            reached by a different mechanism. */}
+        <div className="flex-1 min-h-0 overflow-y-auto flex flex-col items-center justify-center-safe p-4">
           <div className="text-center mb-8">
             <div className="mb-6 flex justify-center">
               <span style={{ fontFamily: "var(--font-lora), serif", fontStyle: "italic", fontWeight: 400, fontSize: "56px", color: "#1a1a1a", lineHeight: 1 }}>8</span>

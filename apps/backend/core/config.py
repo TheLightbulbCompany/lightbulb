@@ -324,6 +324,9 @@ class Settings(BaseSettings):
     # no-op and the feature self-arms the moment a real key is deployed. No
     # separate enable flag.
     RESEND_API_KEY: str = os.getenv("RESEND_API_KEY", "")
+    # Inbound-email webhook signing secret (Svix `whsec_…`). Empty disables
+    # the inbound webhook entirely (fail-closed — never process unsigned mail).
+    RESEND_WEBHOOK_SECRET: str = os.getenv("RESEND_WEBHOOK_SECRET", "")
     # Visible From identities on the verified isol8.co domain. Same across
     # envs, so plain defaults (no CDK wiring) — override via env only if a
     # future env needs a different sender.

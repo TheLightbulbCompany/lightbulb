@@ -13,6 +13,7 @@ duplicate pair. Open to any org member, not just admins — see
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Literal
 
 import httpx
@@ -91,7 +92,13 @@ async def submit_brief(
     # admin-only gate was rejected because an org whose admin never opens
     # the app would be permanently stuck with no self-service recovery.
     repo = PaperclipRepo(table_name="paperclip-companies")
-    if not await repo.claim_onboarding(ctx.company_id):
+    # Fresh per request, not per user: a user retrying twice must be
+    # distinguishable from themselves for the holder-guarded release below
+    # to mean anything -- see claim_onboarding's docstring for the race this
+    # closes (a stalled original holder releasing a claim a stealer since
+    # took over).
+    holder = uuid.uuid4().hex
+    if not await repo.claim_onboarding(ctx.company_id, holder=holder):
         return {"status": "already_submitted"}
 
     # Set once seed_goal_and_project returns -- used by the except block
@@ -210,7 +217,7 @@ async def submit_brief(
         # shielded/retried cleanup is attempted here on purpose — FIX 2's
         # stale-steal safety net covers what doesn't complete.
         try:
-            await repo.release_onboarding_claim(ctx.company_id)
+            await repo.release_onboarding_claim(ctx.company_id, holder=holder)
         except Exception as cleanup_err:
             logger.error(
                 "onboarding: failed to release claim for company %s after post-seed failure: %s",

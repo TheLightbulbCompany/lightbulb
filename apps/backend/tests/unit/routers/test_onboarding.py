@@ -11,7 +11,7 @@ the ``PaperclipRepo`` onboarding claim gates the seed, so ``client.claim``
 """
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -219,7 +219,7 @@ def test_paperclip_not_ready_releases_the_claim(client):
     resp = client.post("/api/v1/onboarding/brief", json={"path": "new", "input": "An agency"})
 
     assert resp.status_code == 409
-    client.release.assert_awaited_once_with("comp-1")
+    client.release.assert_awaited_once_with("comp-1", holder=ANY)
 
 
 def test_seed_failure_releases_the_claim(client):
@@ -228,7 +228,7 @@ def test_seed_failure_releases_the_claim(client):
     resp = client.post("/api/v1/onboarding/brief", json={"path": "new", "input": "An agency"})
 
     assert resp.status_code == 409
-    client.release.assert_awaited_once_with("comp-1")
+    client.release.assert_awaited_once_with("comp-1", holder=ANY)
     client.ws.write_file.assert_not_called()
 
 
@@ -249,7 +249,7 @@ def test_post_seed_failure_rolls_back_goal_and_project_then_releases_claim(clien
 
     client.admin.delete_project.assert_awaited_once_with(session_cookie="cookie", project_id="proj-1")
     client.admin.delete_goal.assert_awaited_once_with(session_cookie="cookie", goal_id="goal-1")
-    client.release.assert_awaited_once_with("comp-1")
+    client.release.assert_awaited_once_with("comp-1", holder=ANY)
 
 
 def test_post_seed_cleanup_is_failure_tolerant_and_preserves_the_original_error(client):
@@ -263,7 +263,7 @@ def test_post_seed_cleanup_is_failure_tolerant_and_preserves_the_original_error(
         client.post("/api/v1/onboarding/brief", json={"path": "new", "input": "An agency"})
 
     client.admin.delete_goal.assert_awaited_once_with(session_cookie="cookie", goal_id="goal-1")
-    client.release.assert_awaited_once_with("comp-1")
+    client.release.assert_awaited_once_with("comp-1", holder=ANY)
 
 
 def test_seed_only_failure_does_not_attempt_rollback(client):

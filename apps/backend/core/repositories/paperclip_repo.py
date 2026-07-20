@@ -465,7 +465,7 @@ class PaperclipRepo:
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             pass
 
-    async def claim_onboarding(self, company_id: str, *, stale_after_seconds: int = 60) -> bool:
+    async def claim_onboarding(self, company_id: str, *, holder: str, stale_after_seconds: int = 60) -> bool:
         """Claim the one-shot onboarding seed for a COMPANY.
 
         The table is keyed per-user, so a field on the submitting user's
@@ -486,7 +486,8 @@ class PaperclipRepo:
           ``stale_after_seconds`` -> stranded (the holder died between
           claiming and recording -- e.g. an ECS task kill or a deploy
           landing in that ~3s window, which ``release_onboarding_claim``
-          never runs for) -> take it over and return True.
+          never runs for) -> take it over (becoming the new holder) and
+          return True.
         * otherwise -> a claim is legitimately in flight -> False.
 
         Without this, a stranded sentinel locks the company out of
@@ -500,6 +501,18 @@ class PaperclipRepo:
         ``attribute_not_exists(seeded_at)``, so a seed that lands mid-steal
         can't be clobbered) -- so two simultaneous stealers can't both win.
 
+        ``holder`` identifies THIS caller and is written onto the sentinel
+        on both the fresh claim and a successful steal, exactly like the
+        org-create claim's ``holder``. This closes a race the stale-steal
+        takeover would otherwise reopen: without it, an original holder (A)
+        that stalls past the stale window, gets stolen from by B, and only
+        THEN fails and calls ``release_onboarding_claim`` would delete B's
+        live claim out from under it -- letting a third request (C) win a
+        fresh claim and seed a SECOND goal/project pair while B is still
+        working. Generate a fresh ``holder`` per request (a retry by the
+        same user must be distinguishable from their own prior attempt);
+        pass the SAME value to the matching ``release_onboarding_claim``.
+
         Callers MUST ``release_onboarding_claim`` on failure so a retry (or
         a steal) can re-enter without waiting out the stale window.
         """
@@ -509,6 +522,7 @@ class PaperclipRepo:
             "user_id": key,
             "kind": "onboarding_claim",
             "company_id": company_id,
+            "holder": holder,
             "claimed_at": now.isoformat(),
         }
         table = self._table()
@@ -551,9 +565,10 @@ class PaperclipRepo:
             # A claim is legitimately in flight.
             return False
 
-        # Steal — overwrite only if claimed_at is unchanged since our read
-        # AND no seed has landed since, so two concurrent stealers can't
-        # both win and a just-completed seed can't be clobbered.
+        # Steal — overwrite (becoming the new holder) only if claimed_at is
+        # unchanged since our read AND no seed has landed since, so two
+        # concurrent stealers can't both win and a just-completed seed can't
+        # be clobbered.
         try:
             await run_in_thread(
                 table.put_item,
@@ -565,12 +580,30 @@ class PaperclipRepo:
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             return False
 
-    async def release_onboarding_claim(self, company_id: str) -> None:
-        """Drop the claim so a failed seed can be retried."""
-        await run_in_thread(
-            self._table().delete_item,
-            Key={"user_id": _onboarding_claim_key(company_id)},
-        )
+    async def release_onboarding_claim(self, company_id: str, *, holder: str) -> None:
+        """Drop the claim so a failed seed can be retried -- iff we still
+        hold it.
+
+        Guarded on ``holder`` so we never delete a claim another caller has
+        since stolen (mirrors ``release_org_create_claim``). Without this
+        guard, an original holder that stalled past the stale window, got
+        stolen from, and only then failed would delete the new holder's
+        live claim out from under it -- reopening the duplicate-pair race
+        the claim mechanism exists to prevent. A lost guard is a no-op, not
+        an error: the claim is either already released, already re-claimed
+        by someone else, or already completed -- none of which this caller
+        should touch.
+        """
+        table = self._table()
+        try:
+            await run_in_thread(
+                table.delete_item,
+                Key={"user_id": _onboarding_claim_key(company_id)},
+                ConditionExpression="holder = :h",
+                ExpressionAttributeValues={":h": holder},
+            )
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            pass
 
     async def record_onboarding_ids(self, company_id: str, *, goal_id: str, project_id: str) -> None:
         """Record the seeded rows on the claim. Written LAST, so a claim

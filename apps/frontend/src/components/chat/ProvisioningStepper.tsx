@@ -640,17 +640,21 @@ export function ProvisioningStepper({
     return () => clearInterval(interval);
   }, [phase]);
 
-  // First-run funnel: a trial signup describes their business here before
-  // reaching chat — it's the committed onboarding front door (no skip), so
-  // the only way past it is submitting the brief. Placed BEFORE the ready
-  // return so a quick provision can't drop the funnel and lose the in-progress
-  // brief (and leave the kickoff hook, which requires briefSubmitted, unable
-  // to fire). Gated on gatePhase === "normal" so it never preempts a blocked /
-  // needs-signup / team-pending state. The `user` guard is load-bearing beyond
-  // null-safety: submit writes user.unsafeMetadata, so without a loaded Clerk
-  // user the funnel would be a dead-end form.
+  // First-run funnel: whoever first reaches a ready company — trial_local
+  // free-tier signup or an org owner/member — describes the business here
+  // before reaching chat. It's the committed onboarding front door (no
+  // skip), so the only way past it is submitting the brief (the backend's
+  // per-company DynamoDB claim makes a second submitter within the same
+  // org a no-op "already_submitted" rather than a duplicate). Placed
+  // BEFORE the ready return so a quick provision can't drop the funnel and
+  // lose the in-progress brief (and leave the kickoff hook, which requires
+  // briefSubmitted, unable to fire). Gated on gatePhase === "normal" so it
+  // never preempts a blocked / needs-signup / team-pending state. The
+  // `user` guard is load-bearing beyond null-safety: submit writes
+  // user.unsafeMetadata, so without a loaded Clerk user the funnel would
+  // be a dead-end form.
   const firstRun = readFirstRun(user);
-  if (isTrialLocal && user && gatePhase === "normal" && !firstRun.briefSubmitted) {
+  if (user && gatePhase === "normal" && !firstRun.briefSubmitted) {
     return <FirstRunFunnel />;
   }
 

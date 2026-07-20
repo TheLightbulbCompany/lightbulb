@@ -299,6 +299,9 @@ export function AgentChatWindow({
     retryQueuedMessage,
     activeSessionId,
     historyTruncated,
+    hasOlderMessages,
+    isLoadingOlder,
+    loadOlderMessages,
   } = useAgentChat(agentId, sessionName, handleChatCompleted);
 
   // Hydrate the composer pill from the ACTIVE session's persisted row so it
@@ -518,7 +521,7 @@ export function AgentChatWindow({
     <div className="flex flex-col h-full min-h-0 bg-[#faf7f2]">
       {historyTruncated && (
         <div className="shrink-0 px-4 py-1.5 text-center text-[11px] text-[#8a8578] bg-[#f3efe6] border-b border-[#e0dbd0]">
-          Older messages aren&apos;t shown — this conversation is too large to load in full.
+          Some large tool output in this conversation was shortened to fit.
         </div>
       )}
       <MessageList
@@ -528,6 +531,9 @@ export function AgentChatWindow({
         onOpenFile={onOpenFile}
         isStreaming={isStreaming}
         isTyping={isStreaming}
+        hasOlder={hasOlderMessages}
+        isLoadingOlder={isLoadingOlder}
+        onLoadOlder={loadOlderMessages}
       />
       <UpdateBanner />
       <StreamingStatusBar isStreaming={isStreaming} renderItems={renderItems} active={busy} />

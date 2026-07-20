@@ -203,6 +203,20 @@ def test_seeds_goal_and_project_before_staging_files(client):
     client.admin.create_project.assert_awaited_once()
 
 
+def test_same_holder_threads_through_claim_and_record(client):
+    """The route generates one holder per request and must pass the SAME
+    value to claim_onboarding and record_onboarding_ids -- record's guard
+    (attribute_exists(user_id) AND holder = :h) would reject even the
+    happy path if these ever drifted apart."""
+    resp = client.post("/api/v1/onboarding/brief", json={"path": "new", "input": "An agency"})
+
+    assert resp.status_code == 200
+    claim_holder = client.claim.await_args.kwargs["holder"]
+    record_holder = client.record.await_args.kwargs["holder"]
+    assert claim_holder == record_holder
+    client.record.assert_awaited_once_with("comp-1", goal_id="goal-1", project_id="proj-1", holder=claim_holder)
+
+
 def test_second_submit_for_same_company_is_a_noop(client):
     client.claim.return_value = False
 

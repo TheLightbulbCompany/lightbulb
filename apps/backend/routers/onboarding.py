@@ -166,7 +166,7 @@ async def submit_brief(
 
         # Recorded LAST: a claim carrying ids always means both Paperclip
         # rows exist and are linked.
-        await repo.record_onboarding_ids(ctx.company_id, goal_id=goal_id, project_id=project_id)
+        await repo.record_onboarding_ids(ctx.company_id, goal_id=goal_id, project_id=project_id, holder=holder)
     except BaseException:
         # BaseException, not Exception: asyncio.CancelledError (client
         # disconnect mid-flight) inherits from BaseException, not Exception.
@@ -184,12 +184,24 @@ async def submit_brief(
         # (PaperclipApiError, httpx.HTTPError, RuntimeError) set above and so
         # reaches here directly. Left alone, a client retry would win a
         # fresh claim and seed a SECOND goal/project pair for the same
-        # company. Roll both back: delete the project, then the goal, then
-        # release the claim. Each step runs independently of the others'
-        # success — a failure deleting the project must not skip the goal
-        # delete or the claim release — and none of them may raise past
-        # this block, or a cleanup failure would replace the ORIGINAL error
-        # instead of the caller seeing it.
+        # company.
+        #
+        # The same path also catches the case where THIS caller stalled past
+        # the stale window, got stolen from, and only now finished seeding:
+        # record_onboarding_ids is holder-guarded, so its write fails
+        # (ConditionalCheckFailedException) instead of stamping this
+        # caller's ids over the new holder's claim. That routes us here with
+        # OUR OWN goal_id/project_id -- the ones to roll back -- while the
+        # new holder's claim and in-progress seed are untouched (our release
+        # below carries our own now-stale `holder`, so it no-ops against
+        # theirs).
+        #
+        # Roll both back: delete the project, then the goal, then release
+        # the claim. Each step runs independently of the others' success —
+        # a failure deleting the project must not skip the goal delete or
+        # the claim release — and none of them may raise past this block,
+        # or a cleanup failure would replace the ORIGINAL error instead of
+        # the caller seeing it.
         if goal_id is not None and project_id is not None:
             try:
                 await admin.delete_project(session_cookie=ctx.session_cookie, project_id=project_id)

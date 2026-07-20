@@ -605,22 +605,39 @@ class PaperclipRepo:
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             pass
 
-    async def record_onboarding_ids(self, company_id: str, *, goal_id: str, project_id: str) -> None:
+    async def record_onboarding_ids(self, company_id: str, *, goal_id: str, project_id: str, holder: str) -> None:
         """Record the seeded rows on the claim. Written LAST, so a claim
         carrying ids always means both Paperclip rows exist and are linked.
 
-        Guarded with ``attribute_exists(user_id)`` so this can only ever
-        update a row that ``claim_onboarding``'s PK-conditional ``put_item``
-        already created. Without the guard, ``update_item`` on a
-        non-existent key silently CREATES it from scratch — a caller bug
-        (e.g. calling this without ever claiming) would fabricate the
-        sentinel out of thin air instead of failing loudly, permanently
-        locking the company out of onboarding with no exception and no
-        signal. Raises ``ConditionalCheckFailedException`` if no claim was
-        ever taken. Callers release the claim on any failure here, but do
-        NOT translate it into a 409 — the exception (e.g. botocore's
-        ``ClientError``) propagates through a generic handler with no
-        registered mapping for it and surfaces to the client as a raw 500.
+        Guarded with ``attribute_exists(user_id) AND holder = :h`` — TWO
+        conditions, both load-bearing:
+
+        * ``attribute_exists(user_id)`` — this can only ever update a row
+          that ``claim_onboarding``'s PK-conditional ``put_item`` already
+          created. Without it, ``update_item`` on a non-existent key
+          silently CREATES it from scratch — a caller bug (e.g. calling
+          this without ever claiming) would fabricate the sentinel out of
+          thin air instead of failing loudly, permanently locking the
+          company out of onboarding with no exception and no signal.
+        * ``holder = :h`` — existence alone is not enough once
+          ``claim_onboarding`` can steal: if THIS caller (A) stalls past
+          the stale window, gets stolen from by B, then recovers and
+          finishes seeding, the row still exists (it's B's now) -- so an
+          existence-only guard would let A's ``update_item`` land and
+          stamp A's ids over B's in-flight claim. Both seeded pairs would
+          then exist with only one linked from the sentinel, orphaning the
+          other on the user's first screen. The holder guard makes that
+          write fail instead, routing A into its own cleanup (delete its
+          own goal/project, then a holder-guarded release that no-ops
+          against B's claim) while B proceeds untouched.
+
+        Raises ``ConditionalCheckFailedException`` if no claim was ever
+        taken under this key, OR if a different holder now owns it (having
+        stolen it after this caller stalled). Callers release the claim on
+        any failure here, but do NOT translate it into a 409 — the
+        exception (e.g. botocore's ``ClientError``) propagates through a
+        generic handler with no registered mapping for it and surfaces to
+        the client as a raw 500.
         """
         await run_in_thread(
             self._table().update_item,
@@ -630,8 +647,9 @@ class PaperclipRepo:
                 ":g": goal_id,
                 ":p": project_id,
                 ":t": datetime.now(timezone.utc).isoformat(),
+                ":h": holder,
             },
-            ConditionExpression="attribute_exists(user_id)",
+            ConditionExpression="attribute_exists(user_id) AND holder = :h",
         )
 
     async def get_onboarding(self, company_id: str) -> Optional[dict]:

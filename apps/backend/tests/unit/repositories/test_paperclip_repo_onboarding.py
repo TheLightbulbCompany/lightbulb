@@ -66,7 +66,7 @@ async def test_record_ids_then_read_back(paperclip_table):
     repo = PaperclipRepo(paperclip_table)
     await repo.claim_onboarding("comp-1", holder="a")
 
-    await repo.record_onboarding_ids("comp-1", goal_id="goal-1", project_id="proj-1")
+    await repo.record_onboarding_ids("comp-1", goal_id="goal-1", project_id="proj-1", holder="a")
 
     row = await repo.get_onboarding("comp-1")
     assert row["onboarding_goal_id"] == "goal-1"
@@ -91,7 +91,7 @@ async def test_record_ids_without_claim_raises_and_creates_no_row(paperclip_tabl
     table = repo._table()
 
     with pytest.raises(table.meta.client.exceptions.ConditionalCheckFailedException):
-        await repo.record_onboarding_ids("comp-never-claimed", goal_id="goal-1", project_id="proj-1")
+        await repo.record_onboarding_ids("comp-never-claimed", goal_id="goal-1", project_id="proj-1", holder="a")
 
     assert await repo.get_onboarding("comp-never-claimed") is None
 
@@ -136,8 +136,9 @@ async def test_stranded_claim_is_stealable(paperclip_table):
     assert await repo.claim_onboarding("comp-1", holder="b", stale_after_seconds=0) is True
 
     # The steal must leave a fresh, still-claimable-by-record sentinel behind
-    # (not just return True) -- record_onboarding_ids should still work.
-    await repo.record_onboarding_ids("comp-1", goal_id="goal-1", project_id="proj-1")
+    # (not just return True) -- record_onboarding_ids should still work,
+    # AS THE NEW HOLDER ("b").
+    await repo.record_onboarding_ids("comp-1", goal_id="goal-1", project_id="proj-1", holder="b")
     row = await repo.get_onboarding("comp-1")
     assert row["onboarding_goal_id"] == "goal-1"
 
@@ -150,7 +151,7 @@ async def test_completed_seeded_claim_is_never_stealable(paperclip_table):
     repo = PaperclipRepo(paperclip_table)
 
     assert await repo.claim_onboarding("comp-1", holder="a") is True
-    await repo.record_onboarding_ids("comp-1", goal_id="goal-1", project_id="proj-1")
+    await repo.record_onboarding_ids("comp-1", goal_id="goal-1", project_id="proj-1", holder="a")
 
     # Even with a zero stale window (which would steal any unseeded claim),
     # a seeded claim must stay put.
@@ -225,3 +226,45 @@ async def test_two_simultaneous_stealers_produce_exactly_one_winner(paperclip_ta
     # Exactly one of B/C ended up as the recorded holder.
     row = await repo.get_onboarding("comp-1")
     assert row["holder"] in ("B", "C")
+
+
+# ---------------------------------------------------------------------------
+# Holder-guarded record: closes the LAST unguarded window. Existence alone
+# is not enough once claim_onboarding can steal -- the row still exists
+# after a steal, so an existence-only guard would let a recovered original
+# holder stamp its own ids over the new holder's in-flight claim.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stolen_from_holder_cannot_record_and_its_cleanup_does_not_disturb_new_holder(
+    paperclip_table,
+):
+    """The full sequence from the review: A claims, stalls past the stale
+    window, B steals and starts seeding. A recovers and finishes its own
+    seed, then tries to record -- the row exists (it's B's now), but the
+    holder guard must still fail the write, because A is no longer the
+    holder. A's own cleanup (a holder-guarded release with A's stale
+    holder) must then be a no-op that leaves B's claim completely
+    untouched, and B must still be able to record its own ids
+    successfully."""
+    repo = PaperclipRepo(paperclip_table)
+    table = repo._table()
+
+    assert await repo.claim_onboarding("comp-1", holder="A") is True
+    assert await repo.claim_onboarding("comp-1", holder="B", stale_after_seconds=0) is True
+
+    # A recovers and finishes seeding, but recording under its own (now
+    # stale) holder must fail -- existence alone would let this land.
+    with pytest.raises(table.meta.client.exceptions.ConditionalCheckFailedException):
+        await repo.record_onboarding_ids("comp-1", goal_id="goal-A", project_id="proj-A", holder="A")
+
+    # A's cleanup: a release carrying A's own holder is a guarded no-op.
+    await repo.release_onboarding_claim("comp-1", holder="A")
+
+    # B's claim is untouched by any of the above, and B can still record.
+    await repo.record_onboarding_ids("comp-1", goal_id="goal-B", project_id="proj-B", holder="B")
+    row = await repo.get_onboarding("comp-1")
+    assert row["holder"] == "B"
+    assert row["onboarding_goal_id"] == "goal-B"
+    assert row["onboarding_project_id"] == "proj-B"

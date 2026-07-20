@@ -6,7 +6,14 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 
+# Create-side formats: what a seller may publish. "company" rows are
+# registry-ingested by the curated pipeline only, so it is deliberately
+# absent here — a seller POSTing format="company" must 422.
 FormatStr = Literal["openclaw", "skillmd"]
+# Response-side formats: everything a stored listing row can carry,
+# including registry-ingested "company" rows. Response schemas must use
+# this wider literal or company rows fail response validation and 500.
+ListingFormatStr = Literal["openclaw", "skillmd", "company"]
 ListingStatusStr = Literal["draft", "review", "published", "retired", "taken_down"]
 
 
@@ -41,7 +48,7 @@ class Listing(BaseModel):
     slug: str
     name: str
     description_md: str
-    format: FormatStr
+    format: ListingFormatStr
     price_cents: int
     tags: list[str]
     seller_id: str
@@ -278,7 +285,7 @@ class ListingPreviewResponse(BaseModel):
     slug: str
     name: str
     seller_id: str
-    format: FormatStr
+    format: ListingFormatStr
     status: ListingStatusStr
     price_cents: int
     tags: list[str]

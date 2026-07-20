@@ -33,6 +33,12 @@ export default function MarketplaceLayout({ children }: { children: React.ReactN
             >
               Browse
             </Link>
+            <Link
+              href="/marketplace/companies"
+              className="rounded-full px-3 py-1.5 text-[var(--ink-soft)] no-underline hover:bg-[var(--forest-tint)] hover:text-[var(--forest)]"
+            >
+              Companies
+            </Link>
             <SignedIn>
               <Link
                 href="/marketplace/buyer"

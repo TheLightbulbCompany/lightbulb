@@ -2,11 +2,12 @@ import { notFound } from "next/navigation";
 
 import { getListing } from "@/lib/marketplace/api";
 import { BuyButton } from "@/components/marketplace/storefront/Listing/BuyButton";
+import { companyMeta } from "@/components/marketplace/storefront/Listing/CompanyCard";
 import { MarkdownDescription } from "@/components/marketplace/storefront/Listing/MarkdownDescription";
 import { OwnerManageLink } from "@/components/marketplace/storefront/Listing/OwnerManageLink";
 import { Monogram, AgentPill, SectionLabel } from "@/components/agents/AgentIdentity";
 import { fromListing } from "@/lib/agentDesign";
-import type { ListingManifest, RequirementRow } from "@/lib/marketplace/types";
+import type { CompanyManifest, ListingManifest, RequirementRow } from "@/lib/marketplace/types";
 
 export default async function ListingDetail({
   params,
@@ -23,6 +24,7 @@ export default async function ListingDetail({
   if (!detail) notFound();
   const { listing, manifest } = detail;
   const editorial = fromListing(listing);
+  const company = companyMeta(listing);
   const isPaid = listing.price_cents > 0;
 
   return (
@@ -46,7 +48,26 @@ export default async function ListingDetail({
             ))}
           </div>
           <div className="mt-6">
-            <BuyButton listing={listing} />
+            {company ? (
+              company.min_plan === "ultra_pro" ? (
+                <button
+                  disabled
+                  className="editorial-btn editorial-btn--primary h-12 px-6 text-sm opacity-60"
+                  title="Ultra Pro tier coming soon"
+                >
+                  Requires Ultra Pro
+                </button>
+              ) : (
+                <button
+                  disabled
+                  className="editorial-btn editorial-btn--primary h-12 px-6 text-sm opacity-60"
+                >
+                  Deploy — coming soon
+                </button>
+              )
+            ) : (
+              <BuyButton listing={listing} />
+            )}
           </div>
           {/* Client component — renders the seller-only CTA when the
               signed-in viewer matches listing.seller_id. Server-rendered
@@ -61,7 +82,9 @@ export default async function ListingDetail({
           <MarkdownDescription source={listing.description_md} />
         </article>
 
-        {manifest && <ManifestSummary manifest={manifest} />}
+        {company && <CompanyFacts company={company} />}
+
+        {!company && manifest && <ManifestSummary manifest={manifest} />}
 
         {isPaid && (
           <section className="mt-8 editorial-card p-6">
@@ -163,6 +186,42 @@ export function ManifestSummary({ manifest }: { manifest: ListingManifest }) {
       {manifest.scan_incomplete === true && (
         <p className="mt-6 text-xs leading-5 text-[var(--mute)]">
           Some dependencies may not have been fully detected.
+        </p>
+      )}
+    </section>
+  );
+}
+
+/** Company-listing facts: org-chart counts, env vars the buyer must supply,
+ * and the mirrored-from attribution. Rendered instead of ManifestSummary —
+ * company metadata rides on the listing row, not the S3 agent manifest. */
+function CompanyFacts({ company }: { company: CompanyManifest }) {
+  // Defensive: rows written by older ingestion runs may lack these fields.
+  const envNames = Array.from(new Set((company.env_requirements ?? []).map((req) => req.name)));
+  return (
+    <section className="mt-8 editorial-card p-7">
+      <SectionLabel label="What's inside" />
+      <div className="flex flex-wrap gap-x-4 gap-y-1 font-mono text-[11px] uppercase tracking-[0.12em] text-[var(--mute)]">
+        <span>{company.agent_count} agents</span>
+        <span>{company.team_count} {company.team_count === 1 ? "team" : "teams"}</span>
+        <span>{company.skill_count} skills</span>
+      </div>
+      {envNames.length > 0 && (
+        <div className="mt-5">
+          <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--mute)]">
+            Environment required
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {envNames.map((name) => (
+              <AgentPill key={name}>{name}</AgentPill>
+            ))}
+          </div>
+        </div>
+      )}
+      {company.source?.repo && (
+        <p className="mt-6 text-xs leading-5 text-[var(--mute)]">
+          Mirrored from {company.source.repo}
+          {company.license ? ` · ${company.license}` : ""}
         </p>
       )}
     </section>

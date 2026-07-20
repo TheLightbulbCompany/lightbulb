@@ -4,9 +4,11 @@
 //
 // `format` keeps openclaw + skillmd for now — the field is on the
 // listings table and may be useful for a future "publish a SKILL.md
-// from your container" flow. v0 only emits openclaw.
+// from your container" flow. v0 only emits openclaw. `company` rows are
+// registry-ingested whole-company bundles (org chart + skills), browsed
+// on /marketplace/companies.
 
-export type ListingFormat = "openclaw" | "skillmd";
+export type ListingFormat = "openclaw" | "skillmd" | "company";
 export type ListingStatus = "draft" | "review" | "published" | "retired" | "taken_down";
 
 export interface Listing {
@@ -53,6 +55,28 @@ export interface Listing {
    * sets these). */
   rejection_notes?: string | null;
   rejected_at?: string | null;
+}
+
+/**
+ * Company metadata carried under `manifest_json.company` on
+ * `format: "company"` listings. Written by the registry ingestion
+ * pipeline — the storefront only reads it.
+ */
+export interface CompanyManifest {
+  slug: string;
+  name: string;
+  description: string;
+  license: string | null;
+  authors: string[];
+  agent_count: number;
+  team_count: number;
+  skill_count: number;
+  agent_slugs: string[];
+  /** Optional: API rows are untrusted input — renderers must tolerate absence. */
+  env_requirements?: { name: string; kind: string; requirement: string; agent: string }[];
+  min_plan: "standard" | "ultra_pro";
+  /** Optional: API rows are untrusted input — renderers must tolerate absence. */
+  source?: { repo: string; commit: string; path: string };
 }
 
 export interface Purchase {

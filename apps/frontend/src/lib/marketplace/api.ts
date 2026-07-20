@@ -1,9 +1,9 @@
-import type { Listing, ListingDetailResponse } from "@/lib/marketplace/types";
+import type { Listing, ListingDetailResponse, ListingFormat } from "@/lib/marketplace/types";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
 
 export async function browseListings(
-  opts: { query?: string; limit?: number; format?: "openclaw" | "skillmd" } = {},
+  opts: { query?: string; limit?: number; format?: ListingFormat } = {},
 ): Promise<{ items: Listing[]; count: number }> {
   // The backend search endpoint returns at most `limit` results. v0 storefront
   // only renders the first page, so `count` is just items.length.

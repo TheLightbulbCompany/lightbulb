@@ -41,6 +41,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Literal, Optional
 
 from boto3.dynamodb.conditions import Key
@@ -48,6 +49,32 @@ from boto3.dynamodb.conditions import Key
 from core.dynamodb import get_table, run_in_thread
 
 logger = logging.getLogger(__name__)
+
+
+class OnboardingClaimResult(str, Enum):
+    """What ``claim_onboarding`` decided, for the caller to act on.
+
+    A bare bool conflates two very different "False" cases: "the company is
+    genuinely done" (a durable, terminal fact worth returning to the client
+    as success) and "another request holds a fresh in-flight claim" (a
+    transient state that should be retried, not treated as done). Callers
+    that can't tell those apart risk marking a caller's own submission
+    ``already_submitted`` on a company that in fact has no goal or project
+    yet, because the peer whose claim they collided with later failed.
+    """
+
+    WON = "won"
+    """This caller now holds the claim (fresh or stolen) and should
+    proceed to seed."""
+
+    SEEDED = "seeded"
+    """The existing claim already completed (``seeded_at`` is set). This is
+    the ONLY case that means genuinely, durably done."""
+
+    IN_FLIGHT = "in_flight"
+    """A non-stale claim exists with no ``seeded_at`` yet -- someone else is
+    legitimately working on it right now. Retry later; do not treat as
+    done."""
 
 
 PaperclipCompanyStatus = Literal["provisioning", "active", "failed", "disabled"]
@@ -465,7 +492,9 @@ class PaperclipRepo:
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             pass
 
-    async def claim_onboarding(self, company_id: str, *, holder: str, stale_after_seconds: int = 60) -> bool:
+    async def claim_onboarding(
+        self, company_id: str, *, holder: str, stale_after_seconds: int = 60
+    ) -> OnboardingClaimResult:
         """Claim the one-shot onboarding seed for a COMPANY.
 
         The table is keyed per-user, so a field on the submitting user's
@@ -475,25 +504,40 @@ class PaperclipRepo:
 
         PK conditional write: strongly consistent and cross-instance-safe,
         so two tabs submitting the brief at once cannot both seed. Exactly
-        one gets True on a fresh claim.
+        one gets ``WON`` on a fresh claim.
 
         On a collision (a sentinel already exists) this reads it via
         ``get_onboarding`` and decides:
 
-        * ``seeded_at`` present -> the seed genuinely completed -> False.
-          A finished seed is never stealable, no matter how old.
+        * ``seeded_at`` present -> the seed genuinely completed ->
+          ``SEEDED``. A finished seed is never stealable, no matter how
+          old. This is the ONLY result that means the company is durably
+          done — callers must treat it, and only it, as
+          ``already_submitted``.
         * no ``seeded_at`` and ``claimed_at`` is older than
           ``stale_after_seconds`` -> stranded (the holder died between
           claiming and recording -- e.g. an ECS task kill or a deploy
           landing in that ~3s window, which ``release_onboarding_claim``
           never runs for) -> take it over (becoming the new holder) and
-          return True.
-        * otherwise -> a claim is legitimately in flight -> False.
+          return ``WON``.
+        * otherwise -> a claim is legitimately in flight -> ``IN_FLIGHT``.
+          This is transient, not done: the holder may itself still fail
+          and release, at which point a retry should be allowed to claim.
 
-        Without this, a stranded sentinel locks the company out of
-        onboarding forever: every later submit sees ``already_submitted``
-        and the user is waved into a company with no goal, no project, and
-        no first-run instructions staged, with no self-service recovery.
+        Returning a bare bool here would conflate ``SEEDED`` and
+        ``IN_FLIGHT`` into a single "False" — exactly the defect this
+        result type exists to prevent (see ``OnboardingClaimResult``'s
+        docstring): a caller that treats a losing collision as
+        ``already_submitted`` regardless of WHY can mark itself done on a
+        company that in fact has no goal or project, if the peer it
+        collided with later fails.
+
+        Without the stale-steal takeover, a stranded sentinel locks the
+        company out of onboarding forever: every later submit sees
+        ``SEEDED`` (or, before this fix, an undifferentiated
+        ``already_submitted``) and the user is waved into a company with
+        no goal, no project, and no first-run instructions staged, with no
+        self-service recovery.
 
         Mirrors ``try_acquire_org_create_claim``'s structure: a fresh
         conditional put, then a strongly-consistent read, then a guarded
@@ -534,7 +578,7 @@ class PaperclipRepo:
                 Item=item,
                 ConditionExpression="attribute_not_exists(user_id)",
             )
-            return True
+            return OnboardingClaimResult.WON
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             pass
 
@@ -548,13 +592,18 @@ class PaperclipRepo:
                     Item=item,
                     ConditionExpression="attribute_not_exists(user_id)",
                 )
-                return True
+                return OnboardingClaimResult.WON
             except table.meta.client.exceptions.ConditionalCheckFailedException:
-                return False
+                # Someone else claimed it in the gap between our read and
+                # write. We don't know their state without re-reading, and
+                # a false SEEDED would wrongly tell our caller "done" — so
+                # report the conservative option: retry. If it really is
+                # SEEDED, the retry's own read will see that.
+                return OnboardingClaimResult.IN_FLIGHT
 
         if existing.get("seeded_at"):
             # Genuinely done — never steal a completed seed.
-            return False
+            return OnboardingClaimResult.SEEDED
 
         prev_claimed_at = existing.get("claimed_at", "")
         try:
@@ -563,7 +612,7 @@ class PaperclipRepo:
             age = float("inf")  # unparseable timestamp → treat as stale
         if age < stale_after_seconds:
             # A claim is legitimately in flight.
-            return False
+            return OnboardingClaimResult.IN_FLIGHT
 
         # Steal — overwrite (becoming the new holder) only if claimed_at is
         # unchanged since our read AND no seed has landed since, so two
@@ -576,9 +625,12 @@ class PaperclipRepo:
                 ConditionExpression="claimed_at = :prev AND attribute_not_exists(seeded_at)",
                 ExpressionAttributeValues={":prev": prev_claimed_at},
             )
-            return True
+            return OnboardingClaimResult.WON
         except table.meta.client.exceptions.ConditionalCheckFailedException:
-            return False
+            # Another stealer won the race, or a seed landed underneath us.
+            # Same reasoning as above: report the conservative IN_FLIGHT
+            # rather than guessing which.
+            return OnboardingClaimResult.IN_FLIGHT
 
     async def release_onboarding_claim(self, company_id: str, *, holder: str) -> None:
         """Drop the claim so a failed seed can be retried -- iff we still

@@ -13,7 +13,7 @@ import boto3
 import pytest
 from moto import mock_aws
 
-from core.repositories.paperclip_repo import PaperclipRepo
+from core.repositories.paperclip_repo import OnboardingClaimResult, PaperclipRepo
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
@@ -38,27 +38,29 @@ def paperclip_table():
 
 @pytest.mark.asyncio
 async def test_first_claim_wins_second_loses(paperclip_table):
+    """The second, colliding claim is IN_FLIGHT (a peer is legitimately
+    working), not SEEDED -- it has not completed yet."""
     repo = PaperclipRepo(paperclip_table)
 
-    assert await repo.claim_onboarding("comp-1", holder="a") is True
-    assert await repo.claim_onboarding("comp-1", holder="b") is False
+    assert await repo.claim_onboarding("comp-1", holder="a") is OnboardingClaimResult.WON
+    assert await repo.claim_onboarding("comp-1", holder="b") is OnboardingClaimResult.IN_FLIGHT
 
 
 @pytest.mark.asyncio
 async def test_claim_is_scoped_per_company(paperclip_table):
     repo = PaperclipRepo(paperclip_table)
 
-    assert await repo.claim_onboarding("comp-1", holder="a") is True
-    assert await repo.claim_onboarding("comp-2", holder="a") is True
+    assert await repo.claim_onboarding("comp-1", holder="a") is OnboardingClaimResult.WON
+    assert await repo.claim_onboarding("comp-2", holder="a") is OnboardingClaimResult.WON
 
 
 @pytest.mark.asyncio
 async def test_release_allows_reclaim(paperclip_table):
     repo = PaperclipRepo(paperclip_table)
 
-    assert await repo.claim_onboarding("comp-1", holder="a") is True
+    assert await repo.claim_onboarding("comp-1", holder="a") is OnboardingClaimResult.WON
     await repo.release_onboarding_claim("comp-1", holder="a")
-    assert await repo.claim_onboarding("comp-1", holder="b") is True
+    assert await repo.claim_onboarding("comp-1", holder="b") is OnboardingClaimResult.WON
 
 
 @pytest.mark.asyncio
@@ -115,12 +117,15 @@ async def test_sentinel_does_not_collide_with_a_user_row(paperclip_table):
 @pytest.mark.asyncio
 async def test_fresh_in_flight_claim_is_not_stealable(paperclip_table):
     """A claim that hasn't gone stale yet is a legitimate in-flight seed --
-    a second submitter must NOT be able to take it over."""
+    a second submitter must NOT be able to take it over, and must be told
+    IN_FLIGHT (not SEEDED) so it knows to retry rather than treat this as
+    done."""
     repo = PaperclipRepo(paperclip_table)
 
-    assert await repo.claim_onboarding("comp-1", holder="a") is True
+    assert await repo.claim_onboarding("comp-1", holder="a") is OnboardingClaimResult.WON
     # A generous stale window -> the claim we just took is nowhere near it.
-    assert await repo.claim_onboarding("comp-1", holder="b", stale_after_seconds=120) is False
+    result = await repo.claim_onboarding("comp-1", holder="b", stale_after_seconds=120)
+    assert result is OnboardingClaimResult.IN_FLIGHT
 
 
 @pytest.mark.asyncio
@@ -131,13 +136,14 @@ async def test_stranded_claim_is_stealable(paperclip_table):
     recovery."""
     repo = PaperclipRepo(paperclip_table)
 
-    assert await repo.claim_onboarding("comp-1", holder="a") is True
+    assert await repo.claim_onboarding("comp-1", holder="a") is OnboardingClaimResult.WON
     # stale_after_seconds=0 -> any existing claim's age counts as stale.
-    assert await repo.claim_onboarding("comp-1", holder="b", stale_after_seconds=0) is True
+    result = await repo.claim_onboarding("comp-1", holder="b", stale_after_seconds=0)
+    assert result is OnboardingClaimResult.WON
 
     # The steal must leave a fresh, still-claimable-by-record sentinel behind
-    # (not just return True) -- record_onboarding_ids should still work,
-    # AS THE NEW HOLDER ("b").
+    # (not just report WON) -- record_onboarding_ids should still work, AS
+    # THE NEW HOLDER ("b").
     await repo.record_onboarding_ids("comp-1", goal_id="goal-1", project_id="proj-1", holder="b")
     row = await repo.get_onboarding("comp-1")
     assert row["onboarding_goal_id"] == "goal-1"
@@ -147,15 +153,16 @@ async def test_stranded_claim_is_stealable(paperclip_table):
 async def test_completed_seeded_claim_is_never_stealable(paperclip_table):
     """A claim that already completed the seed (seeded_at set) must never be
     stolen, no matter how old claimed_at is -- a completed seed is not a
-    stranded one."""
+    stranded one, and must report SEEDED (durably done), not IN_FLIGHT."""
     repo = PaperclipRepo(paperclip_table)
 
-    assert await repo.claim_onboarding("comp-1", holder="a") is True
+    assert await repo.claim_onboarding("comp-1", holder="a") is OnboardingClaimResult.WON
     await repo.record_onboarding_ids("comp-1", goal_id="goal-1", project_id="proj-1", holder="a")
 
     # Even with a zero stale window (which would steal any unseeded claim),
-    # a seeded claim must stay put.
-    assert await repo.claim_onboarding("comp-1", holder="b", stale_after_seconds=0) is False
+    # a seeded claim must stay put and report SEEDED.
+    result = await repo.claim_onboarding("comp-1", holder="b", stale_after_seconds=0)
+    assert result is OnboardingClaimResult.SEEDED
 
 
 # ---------------------------------------------------------------------------
@@ -173,13 +180,15 @@ async def test_original_holders_release_after_being_stolen_from_is_a_noop(paperc
     third caller (C) still can't win a fresh claim while B is working."""
     repo = PaperclipRepo(paperclip_table)
 
-    assert await repo.claim_onboarding("comp-1", holder="A") is True
-    assert await repo.claim_onboarding("comp-1", holder="B", stale_after_seconds=0) is True
+    assert await repo.claim_onboarding("comp-1", holder="A") is OnboardingClaimResult.WON
+    assert await repo.claim_onboarding("comp-1", holder="B", stale_after_seconds=0) is OnboardingClaimResult.WON
 
     await repo.release_onboarding_claim("comp-1", holder="A")
 
-    # B's claim must still be intact -- a fresh caller C still loses.
-    assert await repo.claim_onboarding("comp-1", holder="C") is False
+    # B's claim must still be intact -- a fresh caller C still loses (and is
+    # told IN_FLIGHT, since B hasn't seeded yet).
+    result = await repo.claim_onboarding("comp-1", holder="C")
+    assert result is OnboardingClaimResult.IN_FLIGHT
     row = await repo.get_onboarding("comp-1")
     assert row["holder"] == "B"
 
@@ -192,18 +201,19 @@ async def test_stealers_release_does_not_delete_a_later_reclaim(paperclip_table)
     claim -- only a release carrying A2's own holder id may."""
     repo = PaperclipRepo(paperclip_table)
 
-    assert await repo.claim_onboarding("comp-1", holder="A") is True
-    assert await repo.claim_onboarding("comp-1", holder="B", stale_after_seconds=0) is True
+    assert await repo.claim_onboarding("comp-1", holder="A") is OnboardingClaimResult.WON
+    assert await repo.claim_onboarding("comp-1", holder="B", stale_after_seconds=0) is OnboardingClaimResult.WON
     await repo.release_onboarding_claim("comp-1", holder="B")
 
     # A fresh claimant (e.g. A retrying as a brand new request) re-claims.
-    assert await repo.claim_onboarding("comp-1", holder="A2") is True
+    assert await repo.claim_onboarding("comp-1", holder="A2") is OnboardingClaimResult.WON
 
     # A stale/duplicate release using B's old holder id must not touch A2's
     # live claim.
     await repo.release_onboarding_claim("comp-1", holder="B")
 
-    assert await repo.claim_onboarding("comp-1", holder="C") is False
+    result = await repo.claim_onboarding("comp-1", holder="C")
+    assert result is OnboardingClaimResult.IN_FLIGHT
     row = await repo.get_onboarding("comp-1")
     assert row["holder"] == "A2"
 
@@ -213,16 +223,18 @@ async def test_two_simultaneous_stealers_produce_exactly_one_winner(paperclip_ta
     """Two callers racing to steal the same stranded claim must not both
     win. The steal's ConditionExpression on the unchanged claimed_at
     serializes them against DynamoDB's own atomic conditional write,
-    exactly like try_acquire_org_create_claim's steal."""
+    exactly like try_acquire_org_create_claim's steal. The loser gets
+    IN_FLIGHT (conservative -- we don't re-read to know it's actually
+    SEEDED-by-the-winner, and don't need to: a retry will see the truth)."""
     repo = PaperclipRepo(paperclip_table)
-    assert await repo.claim_onboarding("comp-1", holder="A") is True
+    assert await repo.claim_onboarding("comp-1", holder="A") is OnboardingClaimResult.WON
 
     results = await asyncio.gather(
         repo.claim_onboarding("comp-1", holder="B", stale_after_seconds=0),
         repo.claim_onboarding("comp-1", holder="C", stale_after_seconds=0),
     )
 
-    assert sorted(results) == [False, True]
+    assert set(results) == {OnboardingClaimResult.WON, OnboardingClaimResult.IN_FLIGHT}
     # Exactly one of B/C ended up as the recorded holder.
     row = await repo.get_onboarding("comp-1")
     assert row["holder"] in ("B", "C")
@@ -251,8 +263,8 @@ async def test_stolen_from_holder_cannot_record_and_its_cleanup_does_not_disturb
     repo = PaperclipRepo(paperclip_table)
     table = repo._table()
 
-    assert await repo.claim_onboarding("comp-1", holder="A") is True
-    assert await repo.claim_onboarding("comp-1", holder="B", stale_after_seconds=0) is True
+    assert await repo.claim_onboarding("comp-1", holder="A") is OnboardingClaimResult.WON
+    assert await repo.claim_onboarding("comp-1", holder="B", stale_after_seconds=0) is OnboardingClaimResult.WON
 
     # A recovers and finishes seeding, but recording under its own (now
     # stale) holder must fail -- existence alone would let this land.

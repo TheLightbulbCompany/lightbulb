@@ -204,6 +204,31 @@ async def test_seed_rolls_back_the_goal_when_project_create_fails():
     admin.delete_goal.assert_awaited_once_with(session_cookie="cookie", goal_id="goal-1")
 
 
+@pytest.mark.asyncio
+async def test_seed_goal_cleanup_failure_does_not_mask_the_original_error():
+    """If delete_goal itself raises during rollback, that cleanup failure
+    must not REPLACE the original create_project error -- the router maps
+    (PaperclipApiError, httpx.HTTPError, RuntimeError) to a retryable 409,
+    and an unrelated cleanup exception could fall outside that set and
+    surface as a raw 500 instead, reclassifying a retryable failure."""
+    admin = MagicMock()
+    admin.create_goal = AsyncMock(return_value={"id": "goal-1"})
+    admin.create_project = AsyncMock(side_effect=RuntimeError("upstream down"))
+    admin.delete_goal = AsyncMock(side_effect=Exception("goal delete also failed"))
+
+    with pytest.raises(RuntimeError, match="upstream down"):
+        await seed_goal_and_project(
+            admin=admin,
+            session_cookie="cookie",
+            company_id="comp-1",
+            friday_agent_id="friday-uuid",
+            goal_title="A social media agency",
+            project_name="Max's Company",
+        )
+
+    admin.delete_goal.assert_awaited_once_with(session_cookie="cookie", goal_id="goal-1")
+
+
 def test_staging_overwrites_a_partial_prior_attempt():
     """The claim decides one-shot-ness now, so staging always writes both.
 

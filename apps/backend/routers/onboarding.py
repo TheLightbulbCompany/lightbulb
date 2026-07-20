@@ -1,5 +1,11 @@
 """First-run onboarding endpoints.
 
+GET /api/v1/onboarding/status reports whether the caller's COMPANY has
+actually completed onboarding (the sentinel's ``seeded_at``) -- the
+server-side source of truth the frontend's per-USER "have I seen the
+funnel" marker cannot provide for accounts that predate it. See
+``onboarding_status`` for why this is deploy-safety-critical.
+
 POST /api/v1/onboarding/brief stages the funnel input as OpenClaw
 primitives (BRIEF.md + first-run BOOTSTRAP.md in Friday's workspace,
 pre-boot) and seeds a company-level goal + project for Friday to work
@@ -23,7 +29,7 @@ from pydantic import BaseModel, Field, model_validator
 from core.auth import AuthContext, get_current_user
 from core.containers import get_workspace
 from core.observability.product_analytics import capture_product_event
-from core.repositories.paperclip_repo import PaperclipRepo
+from core.repositories.paperclip_repo import OnboardingClaimResult, PaperclipRepo
 from core.services.paperclip_admin_client import PaperclipApiError
 from core.services.onboarding_brief import (
     derive_goal_title,
@@ -73,6 +79,33 @@ def _first_name(auth: AuthContext) -> str:
     return local.replace(".", " ").title() or "there"
 
 
+@router.get("/status")
+async def onboarding_status(ctx=Depends(_ctx)):
+    """Whether this caller's COMPANY has actually completed onboarding.
+
+    Deploy-safety endpoint: the frontend gate shows the funnel whenever a
+    per-USER Clerk marker is absent, and that marker is empty for every
+    account that existed before this feature shipped -- which is the
+    entire pre-existing fleet, including live org members and the
+    founders' container. Without a server-side source of truth, all of
+    them would be shown the no-skip funnel and re-run onboarding on a
+    running company. The onboarding sentinel already knows the truth
+    (``submit_brief`` writes it), so this just exposes it.
+
+    Resolves the caller's company the same way ``submit_brief`` does (via
+    ``_ctx``, which requires the same Clerk auth already). ``onboarded``
+    means SEEDED, not merely claimed: a bare in-flight claim (someone
+    else's submit still running) is not onboarding-complete for this
+    company, so it must NOT report ``onboarded: true`` — the frontend
+    would then skip the funnel on a company control panel for a company
+    that has no goal or project yet.
+    """
+    repo = PaperclipRepo(table_name="paperclip-companies")
+    sentinel = await repo.get_onboarding(ctx.company_id)
+    onboarded = sentinel is not None and sentinel.get("seeded_at") is not None
+    return {"onboarded": onboarded}
+
+
 @router.post("/brief")
 async def submit_brief(
     body: BriefBody,
@@ -98,8 +131,18 @@ async def submit_brief(
     # closes (a stalled original holder releasing a claim a stealer since
     # took over).
     holder = uuid.uuid4().hex
-    if not await repo.claim_onboarding(ctx.company_id, holder=holder):
+    claim_result = await repo.claim_onboarding(ctx.company_id, holder=holder)
+    if claim_result is OnboardingClaimResult.SEEDED:
+        # Genuinely, durably done -- the only case that means this.
         return {"status": "already_submitted"}
+    if claim_result is OnboardingClaimResult.IN_FLIGHT:
+        # A peer holds a fresh (non-stale) claim right now. This is
+        # transient, not done -- treating it as already_submitted would
+        # wave THIS caller into a company that may end up with no goal or
+        # project at all if the peer's own submit later fails. The client
+        # already retries on 409, same as the other not_ready cases below.
+        raise HTTPException(status_code=409, detail="not_ready")
+    # claim_result is WON (fresh claim or a stale-steal takeover) -- proceed.
 
     # Set once seed_goal_and_project returns -- used by the except block
     # below to decide whether the Paperclip rows need to be rolled back.
@@ -152,6 +195,20 @@ async def submit_brief(
         )
         bootstrap_md = render_first_run_bootstrap(first_name=first_name, goal_id=goal_id, project_id=project_id)
 
+        # Recorded BEFORE staging the workspace files, not after: this is
+        # the holder-guarded write that actually decides who wins the steal
+        # window. Staging is a visible side effect on Friday's NEXT boot --
+        # if a stalled holder A staged first and only THEN lost the record
+        # guard to stealer B, A's BOOTSTRAP.md (baked with A's now-deleted
+        # ids) would already be on disk, and Friday could boot against dead
+        # ids until B's own staging happened to overwrite it (a race, not a
+        # guarantee -- B might boot first). Recording first means only the
+        # caller whose record_onboarding_ids actually lands ever reaches
+        # the staging call below; a caller that loses the record guard
+        # raises here instead and never stages anything (see the except
+        # block's cleanup).
+        await repo.record_onboarding_ids(ctx.company_id, goal_id=goal_id, project_id=project_id, holder=holder)
+
         # No board seeding here: the first run is Friday's own research
         # session, and the board fills at the END of it with the three
         # next-move tasks she proposes (BOOTSTRAP step 7). Each of those
@@ -163,10 +220,6 @@ async def submit_brief(
             brief_md=brief_md,
             bootstrap_md=bootstrap_md,
         )
-
-        # Recorded LAST: a claim carrying ids always means both Paperclip
-        # rows exist and are linked.
-        await repo.record_onboarding_ids(ctx.company_id, goal_id=goal_id, project_id=project_id, holder=holder)
     except BaseException:
         # BaseException, not Exception: asyncio.CancelledError (client
         # disconnect mid-flight) inherits from BaseException, not Exception.
@@ -178,11 +231,12 @@ async def submit_brief(
         # propagate as before — this only adds the cleanup.
         #
         # If seed_goal_and_project already returned ids, both Paperclip rows
-        # exist but the failure happened before (or during) recording them
-        # against the claim — e.g. a DynamoDB throttle on
-        # record_onboarding_ids, which is NOT in the caught
-        # (PaperclipApiError, httpx.HTTPError, RuntimeError) set above and so
-        # reaches here directly. Left alone, a client retry would win a
+        # exist but the failure happened during recording them against the
+        # claim, or afterward while staging the workspace files — e.g. a
+        # DynamoDB throttle on record_onboarding_ids, or an EFS write error
+        # from stage_first_run_files. Neither is in the caught
+        # (PaperclipApiError, httpx.HTTPError, RuntimeError) set above, so
+        # both reach here directly. Left alone, a client retry would win a
         # fresh claim and seed a SECOND goal/project pair for the same
         # company.
         #

@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 
 from main import app
 from core.auth import AuthContext, get_current_user
+from core.repositories.paperclip_repo import OnboardingClaimResult
 from core.services.paperclip_admin_client import PaperclipApiError
 import routers.onboarding as onboarding_mod
 from routers.teams import agents as agents_mod
@@ -58,9 +59,10 @@ def client(ctx, monkeypatch):
     monkeypatch.setattr(onboarding_mod, "get_workspace", lambda: ws)
 
     repo = MagicMock()
-    repo.claim_onboarding = AsyncMock(return_value=True)
+    repo.claim_onboarding = AsyncMock(return_value=OnboardingClaimResult.WON)
     repo.release_onboarding_claim = AsyncMock()
     repo.record_onboarding_ids = AsyncMock()
+    repo.get_onboarding = AsyncMock(return_value=None)
     monkeypatch.setattr(onboarding_mod, "PaperclipRepo", lambda **kwargs: repo)
 
     app.dependency_overrides[get_current_user] = _personal_auth
@@ -72,8 +74,54 @@ def client(ctx, monkeypatch):
         c.claim = repo.claim_onboarding
         c.release = repo.release_onboarding_claim
         c.record = repo.record_onboarding_ids
+        c.get_onboarding = repo.get_onboarding
         yield c
     app.dependency_overrides.clear()
+
+
+# --- GET /onboarding/status (FIX A: deploy-safety source of truth) ----------
+
+
+def test_status_reports_onboarded_when_seeded(client):
+    client.get_onboarding.return_value = {
+        "user_id": "__onboarded__:comp-1",
+        "seeded_at": "2026-07-19T00:00:00+00:00",
+        "onboarding_goal_id": "goal-1",
+        "onboarding_project_id": "proj-1",
+    }
+
+    resp = client.get("/api/v1/onboarding/status")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"onboarded": True}
+
+
+def test_status_reports_not_onboarded_when_sentinel_absent(client):
+    """The entire pre-existing fleet has no sentinel row at all -- this is
+    the case that matters most for deploy safety."""
+    client.get_onboarding.return_value = None
+
+    resp = client.get("/api/v1/onboarding/status")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"onboarded": False}
+
+
+def test_status_reports_not_onboarded_when_claimed_but_not_seeded(client):
+    """A bare in-flight claim (someone's submit is running right now) is
+    NOT onboarding-complete -- reporting True here would skip the funnel
+    on a company that still has no goal or project."""
+    client.get_onboarding.return_value = {
+        "user_id": "__onboarded__:comp-1",
+        "holder": "some-request",
+        "claimed_at": "2026-07-19T00:00:00+00:00",
+        # no seeded_at
+    }
+
+    resp = client.get("/api/v1/onboarding/status")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"onboarded": False}
 
 
 def test_fresh_submit_stages_files_without_seeding_a_board_issue(client):
@@ -218,13 +266,33 @@ def test_same_holder_threads_through_claim_and_record(client):
 
 
 def test_second_submit_for_same_company_is_a_noop(client):
-    client.claim.return_value = False
+    """SEEDED means the company is genuinely, durably done -- this is the
+    ONLY claim_onboarding result that should produce already_submitted."""
+    client.claim.return_value = OnboardingClaimResult.SEEDED
 
     resp = client.post("/api/v1/onboarding/brief", json={"path": "new", "input": "An agency"})
 
     assert resp.json() == {"status": "already_submitted"}
     client.admin.create_goal.assert_not_awaited()
     client.ws.write_file.assert_not_called()
+
+
+def test_in_flight_claim_is_a_retryable_409_not_already_submitted(client):
+    """A peer's claim being merely in-flight (not yet SEEDED) must NOT be
+    reported as already_submitted -- that peer's own submit could still
+    fail, and this caller would then be permanently waved into a company
+    with no goal or project. It must be a retryable 409 instead, matching
+    the other not_ready cases the client already retries on."""
+    client.claim.return_value = OnboardingClaimResult.IN_FLIGHT
+
+    resp = client.post("/api/v1/onboarding/brief", json={"path": "new", "input": "An agency"})
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "not_ready"
+    client.admin.create_goal.assert_not_awaited()
+    client.ws.write_file.assert_not_called()
+    # Not the caller's claim to release -- it never held one.
+    client.release.assert_not_awaited()
 
 
 def test_paperclip_not_ready_releases_the_claim(client):

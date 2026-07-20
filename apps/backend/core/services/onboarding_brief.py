@@ -21,7 +21,11 @@ The spec is docs/superpowers/specs/2026-07-12-onboarding-aha-first-run-design.md
 
 from __future__ import annotations
 
+import logging
+
 from core.containers.workspace import Workspace
+
+logger = logging.getLogger(__name__)
 
 _BRIEF_TEMPLATE = """\
 # BRIEF.md — Onboarding brief
@@ -249,7 +253,16 @@ async def seed_goal_and_project(
     else and ``getDefaultCompanyGoal`` never selects it.
 
     Rolls the goal back if the project create fails, so a retry never finds
-    a half-seeded company.
+    a half-seeded company. That rollback delete is itself best-effort: if
+    ``delete_goal`` also raises, we swallow it rather than let it propagate
+    -- otherwise a cleanup failure would REPLACE the original
+    ``create_project`` error (e.g. a retryable Paperclip 503) with an
+    unrelated one, misclassifying what the caller sees (the router maps
+    ``PaperclipApiError``/``httpx.HTTPError``/``RuntimeError`` to a
+    retryable 409; a masked exception could fall outside that set and
+    surface as a raw 500 instead). The orphaned goal this can leave behind
+    is a lesser problem than losing the original error, and is bounded --
+    it is never linked to a project or the onboarding sentinel.
     """
     goal = await admin.create_goal(
         session_cookie=session_cookie,
@@ -274,7 +287,14 @@ async def seed_goal_and_project(
             },
         )
     except Exception:
-        await admin.delete_goal(session_cookie=session_cookie, goal_id=goal_id)
+        try:
+            await admin.delete_goal(session_cookie=session_cookie, goal_id=goal_id)
+        except Exception as cleanup_err:
+            logger.error(
+                "seed_goal_and_project: failed to roll back goal %s after project create failure: %s",
+                goal_id,
+                cleanup_err,
+            )
         raise
     return goal_id, project["id"]
 

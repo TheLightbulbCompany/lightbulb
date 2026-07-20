@@ -46,15 +46,40 @@ function PostHogInit() {
       person_profiles: "identified_only",
       capture_pageview: false,
       capture_pageleave: true,
-      // CEO observability: enable session replay. Record typed text by
-      // default so admins can actually see what users tried to do, but
-      // mask anything marked sensitive (password + email fields always; add
-      // `data-private` to any DOM node that must not be recorded). Email is
-      // masked because replay records typed input verbatim including on the
-      // Clerk sign-in/sign-up screens — a PII channel that bypasses the
-      // no-PII-in-props discipline everywhere else.
-      // See https://posthog.com/docs/session-replay/configuration.
+      // Off: we hand-instrument a strict, explicitly-typed union of product
+      // events in @/lib/analytics, so autocapture adds no signal we don't
+      // already have — it only adds document-level listeners plus a DOM-path
+      // walk on every interaction, on the same main thread /chat is already
+      // saturating. It also serialises surrounding element text/attributes
+      // into `$element_chain`, an uncontrolled PII surface that bypasses the
+      // no-PII-in-props discipline we hold everywhere else. Heatmaps are a
+      // separate subsystem (`capture_heatmaps`) and are unaffected.
+      autocapture: false,
+      // CEO observability: keep session replay, but sample it instead of
+      // recording every session. rrweb installs a document-wide
+      // MutationObserver and serialises every mutation; on /chat the
+      // transcript is un-virtualized and mutates continuously while a
+      // response streams, so recording is sustained main-thread work rather
+      // than a one-off cost. Sampling is decided once per session and is
+      // deterministic on the session id — an unsampled session never starts
+      // rrweb at all, so the majority now pay nothing.
+      //
+      // Recording typed text stays on so admins can still see what users
+      // tried to do, and every masking rule below is unchanged (password +
+      // email fields always; add `data-private` to any DOM node that must
+      // not be recorded). Email is masked because replay records typed input
+      // verbatim including on the Clerk sign-in/sign-up screens — a PII
+      // channel that bypasses the no-PII-in-props discipline everywhere else.
+      // See https://posthog.com/docs/session-replay/how-to-control-which-sessions-you-record.
       session_recording: {
+        // 0-1; ~1 in 4 sessions. Kept deliberately high because at this
+        // traffic level replay earns its keep through individual sessions
+        // watched end-to-end, not through aggregate coverage — a token 1-5%
+        // would leave too few real sessions to learn anything from. Set here
+        // rather than in the PostHog project settings because a client-side
+        // value takes precedence over the remote config: this literal is the
+        // rate, and moving the dashboard slider will not change it.
+        sampleRate: 0.25,
         maskAllInputs: false,
         maskInputOptions: {
           password: true,

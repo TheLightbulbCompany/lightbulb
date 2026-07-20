@@ -264,6 +264,21 @@ describe("workspaceController", () => {
     expect(_snapshotForTests().visibleChatAgentIds).toContain("friday-id");
   });
 
+  it("a recompute that changes nothing keeps the previous snapshot object", () => {
+    // Identity is the change signal useSyncExternalStore reads (Object.is), and
+    // onDidLayoutChange fires for moves that touch no snapshot field — a fresh
+    // object each time would re-render every subscriber on every dock event.
+    const api = makeFakeApi();
+    attachDockviewApi(api, () => "friday-id");
+    openChatPanel("a-1");
+    const before = _snapshotForTests();
+    refreshWorkspaceSnapshot();
+    expect(_snapshotForTests()).toBe(before);
+    // A real change still publishes a new object.
+    openPanel("teams-inbox");
+    expect(_snapshotForTests()).not.toBe(before);
+  });
+
   it("teamsPanelVisible requires a teams panel to be some group's ACTIVE tab, not merely open", () => {
     // Mission Control keeps teams panels permanently OPEN — if open counted
     // as visible, teams run toasts would be suppressed forever on the

@@ -27,29 +27,39 @@ vi.mock("../panels/AgentInspectorPanel", () => ({
 // mapping is covered by panelRegistry.test.ts; this router now only routes
 // already-resolved keys.
 describe("ControlPanelRouter routing", () => {
-  it("renders mapped panels directly for their key", () => {
+  // Panels load via next/dynamic, so they resolve asynchronously —
+  // findByTestId retries until the lazy boundary settles.
+  it("renders mapped panels directly for their key", async () => {
     render(<ControlPanelRouter panel="llm" onPanelChange={vi.fn()} />);
-    expect(screen.getByTestId("llm-panel")).toBeInTheDocument();
+    expect(await screen.findByTestId("llm-panel")).toBeInTheDocument();
   });
 
-  it("falls back to OverviewPanel for unknown panel keys", () => {
+  it("falls back to OverviewPanel for unknown panel keys", async () => {
     render(<ControlPanelRouter panel="does-not-exist" onPanelChange={vi.fn()} />);
-    expect(screen.getByTestId("overview-panel")).toBeInTheDocument();
+    expect(await screen.findByTestId("overview-panel")).toBeInTheDocument();
   });
 
-  it("does NOT call onPanelChange for a plain key", () => {
+  it("does NOT call onPanelChange for a plain key", async () => {
     const onPanelChange = vi.fn();
     render(<ControlPanelRouter panel="overview" onPanelChange={onPanelChange} />);
+    await screen.findByTestId("overview-panel");
     expect(onPanelChange).not.toHaveBeenCalled();
   });
 
-  it("mounts the skills store directly (no Capabilities tab wrapper)", () => {
+  it("mounts the skills store directly (no Capabilities tab wrapper)", async () => {
     render(<ControlPanelRouter panel="skills" onPanelChange={vi.fn()} />);
-    expect(screen.getByTestId("skills-store")).toBeInTheDocument();
+    expect(await screen.findByTestId("skills-store")).toBeInTheDocument();
   });
 
-  it("routes the agent-inspector key to AgentInspectorPanel", () => {
+  it("routes the agent-inspector key to AgentInspectorPanel", async () => {
     render(<ControlPanelRouter panel="agent-inspector" onPanelChange={vi.fn()} />);
-    expect(screen.getByTestId("agent-inspector-panel")).toBeInTheDocument();
+    expect(await screen.findByTestId("agent-inspector-panel")).toBeInTheDocument();
+  });
+
+  it("shows the loading fallback before a panel chunk resolves", () => {
+    const { container } = render(
+      <ControlPanelRouter panel="sessions" onPanelChange={vi.fn()} />,
+    );
+    expect(container.querySelector('[aria-busy="true"]')).toBeInTheDocument();
   });
 });

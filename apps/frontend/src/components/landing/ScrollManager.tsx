@@ -38,11 +38,33 @@ export function ScrollManager() {
   const lenis = useLenis();
 
   // Keep ScrollTrigger in lockstep with Lenis' smoothed scroll position.
+  //
+  // Lenis writes the scroll position from inside its own rAF tick, so calling
+  // ScrollTrigger.update() straight from its "scroll" event reads layout back
+  // mid-write — a forced reflow per tick, across every registered trigger, and
+  // Lenis then re-reads the position after ScrollTrigger has written styles.
+  // Flag the triggers dirty instead and flush them once per frame off gsap's
+  // ticker, prioritised so the update still lands before the global timeline
+  // renders and scrubbed animations stay on the same frame as the scroll.
   useEffect(() => {
     if (!lenis) return;
-    const update = () => ScrollTrigger.update();
-    lenis.on("scroll", update);
-    return () => lenis.off("scroll", update);
+
+    let dirty = false;
+    const markDirty = () => {
+      dirty = true;
+    };
+    const flush = () => {
+      if (!dirty) return;
+      dirty = false;
+      ScrollTrigger.update();
+    };
+
+    lenis.on("scroll", markDirty);
+    gsap.ticker.add(flush, false, true);
+    return () => {
+      lenis.off("scroll", markDirty);
+      gsap.ticker.remove(flush);
+    };
   }, [lenis]);
 
   useEffect(() => {

@@ -96,6 +96,56 @@ const ALL_KEYS = [
   ]),
 ];
 
+/**
+ * Event-driven revalidation is throttled per cache key, mirroring the gateway
+ * RPC path (`useGatewayRpc` in @isol8/shared, which throttles the same way and
+ * for the same reason). The read layer gives these zero protection on its own:
+ * `mutate(predicate)` explicitly deletes SWR's concurrent-request markers, so
+ * useTeamsApi's 15s `dedupingInterval` never applies and EVERY event becomes a
+ * real proxied, token-refreshed BFF round trip. One `activity.logged` fans out
+ * to five prefixes, and a busy company emits them continuously.
+ *
+ * Leading edge fires immediately, so a single change still lands live. Further
+ * hits on that key inside the window are coalesced into ONE trailing flush —
+ * unlike the RPC path, which simply drops them. The trailing edge is required
+ * here: these keys carry no `refreshInterval` and `revalidateOnFocus` is off
+ * globally (SwrProvider), so a dropped LAST event of a burst would leave the
+ * board stale until the next Teams re-entry reconcile.
+ */
+const REVALIDATE_THROTTLE_MS = 10_000;
+
+type ThrottleState = {
+  /** When each key last actually revalidated. */
+  lastAt: Map<string, number>;
+  /** Coalesced trailing flush for keys hit again inside their window. */
+  pending: Map<string, () => void>;
+  timer: ReturnType<typeof setTimeout> | undefined;
+};
+
+/**
+ * Drain due entries from `pending`. A single shared timer serves all pending
+ * keys, so it can fire before some of them are due; re-check each against its
+ * OWN window and reschedule the stragglers rather than flushing them early.
+ */
+function flushPending(st: ThrottleState) {
+  st.timer = undefined;
+  const now = Date.now();
+  let soonest = Infinity;
+  for (const [key, run] of [...st.pending]) {
+    const dueIn = REVALIDATE_THROTTLE_MS - (now - (st.lastAt.get(key) ?? 0));
+    if (dueIn <= 0) {
+      st.pending.delete(key);
+      st.lastAt.set(key, now);
+      run();
+    } else {
+      soonest = Math.min(soonest, dueIn);
+    }
+  }
+  if (st.pending.size > 0 && soonest !== Infinity) {
+    st.timer = setTimeout(() => flushPending(st), soonest);
+  }
+}
+
 type ActivityPayload = {
   entityType?: unknown;
   entityId?: unknown;
@@ -183,6 +233,37 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
     [mutate],
   );
 
+  // Per-key throttle state for the event path — see REVALIDATE_THROTTLE_MS.
+  const throttleRef = useRef<ThrottleState>({
+    lastAt: new Map(),
+    pending: new Map(),
+    timer: undefined,
+  });
+
+  const throttledMutate = useCallback((key: string, run: () => void) => {
+    const st = throttleRef.current;
+    const elapsed = Date.now() - (st.lastAt.get(key) ?? 0);
+    if (elapsed >= REVALIDATE_THROTTLE_MS) {
+      st.lastAt.set(key, Date.now());
+      run();
+      return;
+    }
+    st.pending.set(key, run);
+    if (st.timer === undefined) {
+      st.timer = setTimeout(
+        () => flushPending(st),
+        REVALIDATE_THROTTLE_MS - elapsed,
+      );
+    }
+  }, []);
+
+  useEffect(() => {
+    const st = throttleRef.current;
+    return () => {
+      if (st.timer !== undefined) clearTimeout(st.timer);
+    };
+  }, []);
+
   // Refcounted hold on the shared per-connection subscription: another
   // consumer (RunNotifications) may still need teams events after this
   // panel-scoped provider unmounts. Declared BEFORE the resubscribe effect
@@ -223,6 +304,10 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
   useEffect(() => {
     const unsub = onEvent((event, data) => {
       if (!event.startsWith("teams.")) return;
+      // Reconcile paths stay UNTHROTTLED (here and in the resubscribe effect):
+      // they are the missed-event catch-up, they fire once per Teams entry /
+      // stream resume rather than per mutation, and throttling them would
+      // reopen exactly the staleness window they exist to close.
       if (event === "teams.stream.resumed") {
         for (const key of ALL_KEYS) mutateKeyPrefix(key);
         return;
@@ -242,17 +327,23 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
         // `revalidateOnFocus` is off globally and none of these detail hooks
         // sets a refreshInterval.
         const targets = activityTargets(data);
-        for (const key of targets.lists) mutateKeyPrefix(key);
-        for (const base of targets.details) mutateEntitySubtree(base);
+        for (const key of targets.lists) {
+          throttledMutate(key, () => mutateKeyPrefix(key));
+        }
+        for (const base of targets.details) {
+          throttledMutate(base, () => mutateEntitySubtree(base));
+        }
       }
       const keys = EVENT_KEY_MAP[event];
       if (!keys || keys.length === 0) return;
-      for (const key of keys) mutateKeyPrefix(key);
+      for (const key of keys) {
+        throttledMutate(key, () => mutateKeyPrefix(key));
+      }
     });
     return () => {
       unsub();
     };
-  }, [onEvent, mutateKeyPrefix, mutateEntitySubtree, user]);
+  }, [onEvent, mutateKeyPrefix, mutateEntitySubtree, throttledMutate, user]);
 
   return <>{children}</>;
 }

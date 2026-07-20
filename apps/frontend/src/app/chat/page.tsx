@@ -1,6 +1,7 @@
 "use client";
 
 import { Suspense, useCallback, useEffect, useState } from "react";
+import dynamic from "next/dynamic";
 import { useSearchParams } from "next/navigation";
 import { ChatLayout } from "@/components/chat/ChatLayout";
 import { AgentChatWindow } from "@/components/chat/AgentChatWindow";
@@ -21,7 +22,32 @@ import { preloadTeamsPanels } from "@/components/teams/TeamsPanelRouter";
 import { resolvePanelAlias } from "@/components/workspace/panelRegistry";
 import { pushSearchParams, replaceSearchParams } from "@/lib/shellNav";
 import { useIsDesktop } from "@/hooks/useIsDesktop";
-import { WorkspaceShell } from "@/components/workspace/WorkspaceShell";
+
+// Matches WorkspaceShell's own onboarding-gate spinner, which is what the
+// desktop branch renders on first mount anyway (useOnboardingGate starts at
+// "loading"), so the chunk fetch reads as the same settle rather than a flash
+// of nothing.
+function WorkspaceShellLoading() {
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
+      <div style={{ color: "#6b6b6b", fontSize: 14 }}>Loading…</div>
+    </div>
+  );
+}
+
+// The dock shell statically imports dockview (~356 KB raw / 82 KB gzip) — dead
+// weight for every mobile visitor, who never renders this branch. useIsDesktop's
+// server snapshot is false, so the desktop branch is absent from SSR and from
+// the hydration pass too; ssr:false therefore costs nothing here and keeps the
+// browser-only dock out of the server bundle.
+// The mobile shell is deliberately NOT split to match: it IS the SSR/hydration
+// branch, so splitting it would delay first paint for EVERY visitor, and its
+// heavy children (AgentChatWindow, ControlPanelRouter) are shared with the
+// desktop dock panels anyway — there's little unique weight to reclaim.
+const WorkspaceShell = dynamic(
+  () => import("@/components/workspace/WorkspaceShell").then((m) => m.WorkspaceShell),
+  { ssr: false, loading: WorkspaceShellLoading },
+);
 
 export default function ChatPage() {
   // useSearchParams() forces dynamic rendering; wrap in Suspense so the

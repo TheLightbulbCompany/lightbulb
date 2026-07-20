@@ -187,7 +187,9 @@ export interface UseAgentChatReturn {
   selectSession: (sessionId: string | null) => void;
   /** True when older pages of this session's transcript remain unfetched. */
   hasOlderMessages: boolean;
+  /** True while a loadOlderMessages() fetch is in flight. */
   isLoadingOlder: boolean;
+  /** Fetch and prepend the next older page of history (walks the module-level paging cursor backward). */
   loadOlderMessages: () => Promise<void>;
 }
 
@@ -1048,14 +1050,31 @@ export function useAgentChat(
   // `historyRefetchNonce` — this is additive to the already-loaded newest
   // page, not a revalidation of it.
   const [isLoadingOlder, setIsLoadingOlder] = useState(false);
+  // REF-based in-flight guard. `isLoadingOlder` (React state) is exposed for
+  // the UI to gate its own trigger (e.g. disable a "Load older" button), but
+  // a truly synchronous double-invocation (a double-click before that state
+  // update paints, or two programmatic callers in the same tick) would both
+  // read a stale `false` closure of the state and both fire the same page
+  // fetch — a state check couldn't reliably block the second call. The ref
+  // is mutated synchronously before the first `await`, so the second
+  // invocation observes it immediately and bails out.
+  const loadingOlderRef = useRef(false);
 
   const loadOlderMessages = useCallback(async (): Promise<void> => {
+    if (loadingOlderRef.current) return;
     const agent = agentIdRef.current;
     if (!agent) return;
-    const key = `${agent}:${sessionName}:${activeSessionIdRef.current ?? ""}`;
+    // Capture the session this call is FOR. Re-checked after the await below
+    // — mirrors the initial-fetch effect's "a fetch that resolves after a
+    // session switch must not stomp the new view" guard — so a session
+    // switch mid-fetch can't prepend a stale page onto the now-active
+    // (already-swapped) transcript.
+    const sessionAtCall = activeSessionIdRef.current;
+    const key = `${agent}:${sessionName}:${sessionAtCall ?? ""}`;
     const cursor = _historyPaging.get(key);
     if (!cursor?.hasMore) return;
-    const sessionKey = buildChatSessionKey(agent, sessionName, activeSessionIdRef.current);
+    const sessionKey = buildChatSessionKey(agent, sessionName, sessionAtCall);
+    loadingOlderRef.current = true;
     setIsLoadingOlder(true);
     try {
       const res = (await sendReq("chat.history", {
@@ -1066,6 +1085,10 @@ export function useAgentChat(
       const older = projectChatHistoryMessages(
         Array.isArray(res?.messages) ? res.messages : [],
       );
+      // Cursor bookkeeping is written under the key this fetch was issued
+      // for regardless of whether the user is still on that session — a
+      // later switch back must see the advanced cursor, not one stuck at
+      // the pre-fetch value.
       _historyPaging.set(key, {
         nextOffset: typeof res?.nextOffset === "number" ? res.nextOffset : cursor.nextOffset,
         hasMore: res?.hasMore === true,
@@ -1076,7 +1099,12 @@ export function useAgentChat(
       // effect already persists any non-empty messages state under the active
       // cacheKey. Writing the cache inside the updater would also be a side
       // effect in a function React may invoke twice under StrictMode.
-      if (older.length > 0) {
+      //
+      // Only touch the live transcript if the user is still on the session
+      // this fetch was issued for.
+      const stillCurrent =
+        agentIdRef.current === agent && activeSessionIdRef.current === sessionAtCall;
+      if (stillCurrent && older.length > 0) {
         setChatMessages((prev) => [...older, ...prev]);
       }
     } catch (err) {
@@ -1084,6 +1112,7 @@ export function useAgentChat(
         dedupeKey: "history-older",
       });
     } finally {
+      loadingOlderRef.current = false;
       setIsLoadingOlder(false);
     }
   }, [sessionName, sendReq, setChatMessages]);
@@ -2333,7 +2362,14 @@ export function useAgentChat(
     const key = agentIdRef.current
       ? `${agentIdRef.current}:${sessionName}:${activeSessionIdRef.current ?? ""}`
       : null;
-    if (key) _messageCache.delete(key);
+    if (key) {
+      _messageCache.delete(key);
+      // Same as invalidateHistoryAndRefetch and the stale-key demux branch:
+      // a stale {nextOffset, hasMore:true} cursor left behind after a /clear
+      // would report hasOlderMessages=true on an empty transcript and
+      // loadOlderMessages() would prepend a floating old page onto [].
+      _historyPaging.delete(key);
+    }
     setIsStreaming(false);
     // Drop the server-truth busy bit too (agent switch routes through here):
     // the old scope's run_active:false is demux-dropped once the agent changes,

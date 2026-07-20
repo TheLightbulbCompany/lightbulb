@@ -286,7 +286,6 @@ export function AgentChatWindow({
     renderItems,
     isStreaming,
     busy,
-    error: chatError,
     sendMessage,
     cancelMessage,
     clearMessages,
@@ -406,45 +405,14 @@ export function AgentChatWindow({
     [sendMessage, api, agentId],
   );
 
-  if (chatError) {
-    return (
-      <div className="flex flex-col h-full bg-[#faf7f2]">
-        <div className="flex-1 flex flex-col">
-          {renderGroups.length > 0 && (
-            <MessageList
-              ref={messageListRef}
-              renderGroups={renderGroups}
-              agentName={agentName}
-              onOpenFile={onOpenFile}
-              isStreaming={isStreaming}
-              isTyping={isStreaming}
-            />
-          )}
-          <div className="p-4 m-4 bg-[#fce4ec] border border-[#f8bbd0] text-[#a5311f] rounded-lg">
-            <p className="font-medium">Error</p>
-            <p className="text-sm">{chatError}</p>
-          </div>
-          <StreamingStatusBar isStreaming={isStreaming} renderItems={renderItems} active={busy} />
-          <ExecApprovalCards />
-          <ChatInput
-            onSend={handleSend}
-            onStop={cancelMessage}
-            agentId={agentId}
-            isConnected={isConnected}
-            disabled={!agentId}
-            isStreaming={isStreaming}
-            isUploading={isUploading}
-            queuedMessages={queuedMessages}
-            onRemoveQueued={removeQueuedMessage}
-            onClearQueue={clearQueue}
-            onSteerQueued={steerMessage}
-            onRetryQueued={retryQueuedMessage}
-            controls={modelEffortPill}
-          />
-        </div>
-      </div>
-    );
-  }
+  // NOTE: there is deliberately no `if (chatError)` branch. Errors render as
+  // ChatErrorCard bubbles inside the transcript (useAgentChat appends one per
+  // failed run), which keeps them in run order and lets them scroll away. An
+  // error must never swap the panel's layout: this branch used to hand-roll its
+  // own flex column without `min-h-0`, so the message list grew to full
+  // transcript height and pushed ChatInput past the dock panel's clip boundary
+  // — unreachable, with no way to scroll to it. Mobile (ChatLayout) has always
+  // rendered errors transcript-only; this is the same model.
 
   if (isLoadingHistory) {
     // Render the chat SHELL while chat.history is in flight so the chat
@@ -499,8 +467,15 @@ export function AgentChatWindow({
 
   if (isInitialState) {
     return (
-      <div className="flex flex-col h-full bg-[#faf7f2]">
-        <div className="flex-1 flex flex-col items-center justify-center p-4">
+      <div className="flex flex-col h-full min-h-0 bg-[#faf7f2]">
+        {/* justify-center-safe, not justify-center: unsafe centering splits the
+            overflow across BOTH ends, so once the content outgrows a short dock
+            slot the top is clipped and unreachable even with overflow-y-auto
+            (measured: scrollHeight 300 for 400px of content, top pinned at
+            -100px). Safe centering falls back to flex-start when it overflows —
+            same "present but unreachable" failure this branch exists to fix,
+            reached by a different mechanism. */}
+        <div className="flex-1 min-h-0 overflow-y-auto flex flex-col items-center justify-center-safe p-4">
           <div className="text-center mb-8">
             <div className="mb-6 flex justify-center">
               <span style={{ fontFamily: "var(--font-lora), serif", fontStyle: "italic", fontWeight: 400, fontSize: "56px", color: "#1a1a1a", lineHeight: 1 }}>8</span>

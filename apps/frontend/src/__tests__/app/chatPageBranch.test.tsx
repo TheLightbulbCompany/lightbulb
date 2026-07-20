@@ -39,7 +39,17 @@ vi.mock("@/components/notifications/RunNotifications", () => ({
 // Providers → pass-throughs (no WebSocket, no drawer context churn).
 vi.mock("@/hooks/useGateway", () => ({
   GatewayProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  useGateway: () => ({}),
+  // Inert, but SHAPE-FAITHFUL. MobileChatShell calls useAgents() → useGatewayRpc,
+  // which destructures { sendReq, onEvent, isParked } and invokes onEvent inside
+  // a passive effect. A bare {} made only the mobile case throw "onEvent is not
+  // a function" (desktop never hit it — WorkspaceShell is mocked inert).
+  useGateway: () => ({
+    sendReq: vi.fn().mockResolvedValue({}),
+    onEvent: () => () => {},
+    onChatMessage: () => () => {},
+    isParked: false,
+    isConnected: false,
+  }),
 }));
 vi.mock("@/hooks/useExecApprovals", () => ({
   ExecApprovalsProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,

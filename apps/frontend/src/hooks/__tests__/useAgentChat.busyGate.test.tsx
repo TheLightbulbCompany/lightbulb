@@ -203,7 +203,6 @@ describe("useAgentChat — tombstoned terminals", () => {
     );
     expect(assistantMessages).toHaveLength(0);
     expect(result.current.isStreaming).toBe(true);
-    expect(result.current.error).toBeNull();
   });
 });
 

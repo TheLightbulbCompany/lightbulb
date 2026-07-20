@@ -160,6 +160,8 @@ export interface UseAgentChatReturn {
   renderGroups: RenderGroup[];
   /** Raw flat items before grouping — exposed for snapshot testing and StreamingStatusBar. */
   renderItems: ChatRenderItem[];
+  /** The persisted transcript backing renderItems — exposed for pagination assertions. */
+  chatMessages: HistoryMessage[];
   /** Whether a user-turn is in flight (chatStream non-null OR live tools running OR clientRunIdRef set). */
   isStreaming: boolean;
   /** isStreaming (local anchor) OR containerRunActive (server truth via `run_active`). */
@@ -183,6 +185,10 @@ export interface UseAgentChatReturn {
   newSession: () => string;
   /** Switch the active session (null selects General). */
   selectSession: (sessionId: string | null) => void;
+  /** True when older pages of this session's transcript remain unfetched. */
+  hasOlderMessages: boolean;
+  isLoadingOlder: boolean;
+  loadOlderMessages: () => Promise<void>;
 }
 
 // =============================================================================
@@ -195,6 +201,14 @@ export interface UseAgentChatReturn {
 
 const _messageCache = new Map<string, HistoryMessage[]>();
 const _needsBootstrap = new Set<string>();
+
+// Newest-page size for chat.history. Small enough that a typical page clears
+// the 110 KB frame budget without the backend trim engaging, large enough to
+// fill a screen. offset counts BACKWARD from newest, so offset 0 is this page.
+const HISTORY_PAGE_SIZE = 30;
+
+// Per-cacheKey paging cursor, mirroring _messageCache's module-store lifetime.
+const _historyPaging = new Map<string, { nextOffset: number; hasMore: boolean }>();
 
 // Bounded backoff (ms) for re-reading chat.history when the FIRST read comes
 // back empty AND there is no cached transcript to fall back on. A scaled-to-
@@ -851,9 +865,14 @@ export function useAgentChat(
     const loadedKeys = historyLoadedRef.current;
 
     const runFetch = (attempt: number): void => {
-      sendReq("chat.history", { sessionKey, limit: 200 })
+      sendReq("chat.history", { sessionKey, limit: HISTORY_PAGE_SIZE, offset: 0 })
         .then((result: unknown) => {
-          const historyResult = result as { messages?: HistoryMessage[]; truncated?: boolean };
+          const historyResult = result as {
+            messages?: HistoryMessage[];
+            truncated?: boolean;
+            nextOffset?: number;
+            hasMore?: boolean;
+          };
           // A local transcript mutation while this fetch was in flight (a sent
           // message, a folded run, a clear) means the snapshot is stale —
           // applying it would silently drop that mutation from BOTH the live
@@ -873,6 +892,15 @@ export function useAgentChat(
           }
           const raw = Array.isArray(historyResult?.messages) ? historyResult.messages : [];
           const projected = projectChatHistoryMessages(raw);
+          // Cursor bookkeeping uses the SERVER's nextOffset, never a local
+          // count: projectChatHistoryMessages drops hidden rows, so a local
+          // tally would drift from the store's absolute indexing.
+          if (typeof historyResult?.nextOffset === "number") {
+            _historyPaging.set(cacheKey, {
+              nextOffset: historyResult.nextOffset,
+              hasMore: historyResult.hasMore === true,
+            });
+          }
           if (projected.length === 0) {
             // Server has nothing: only decide bootstrap when we ALSO have no
             // cache — an existing cached transcript must not regress to the
@@ -1008,9 +1036,57 @@ export function useAgentChat(
     if (!key) return;
     _messageCache.delete(key);
     historyLoadedRef.current.delete(key);
+    _historyPaging.delete(key);
     setChatMessages([]);
     setHistoryRefetchNonce((n) => n + 1);
   }, [sessionName, setChatMessages]);
+
+  // ---- Load older history (paging backward) ----
+  //
+  // Walks the module-level `_historyPaging` cursor backward one page at a
+  // time and prepends the result. Never touches `historyLoadedRef` /
+  // `historyRefetchNonce` — this is additive to the already-loaded newest
+  // page, not a revalidation of it.
+  const [isLoadingOlder, setIsLoadingOlder] = useState(false);
+
+  const loadOlderMessages = useCallback(async (): Promise<void> => {
+    const agent = agentIdRef.current;
+    if (!agent) return;
+    const key = `${agent}:${sessionName}:${activeSessionIdRef.current ?? ""}`;
+    const cursor = _historyPaging.get(key);
+    if (!cursor?.hasMore) return;
+    const sessionKey = buildChatSessionKey(agent, sessionName, activeSessionIdRef.current);
+    setIsLoadingOlder(true);
+    try {
+      const res = (await sendReq("chat.history", {
+        sessionKey,
+        limit: HISTORY_PAGE_SIZE,
+        offset: cursor.nextOffset,
+      })) as { messages?: HistoryMessage[]; nextOffset?: number; hasMore?: boolean };
+      const older = projectChatHistoryMessages(
+        Array.isArray(res?.messages) ? res.messages : [],
+      );
+      _historyPaging.set(key, {
+        nextOffset: typeof res?.nextOffset === "number" ? res.nextOffset : cursor.nextOffset,
+        hasMore: res?.hasMore === true,
+      });
+      // A page is chronological internally and every message in it predates
+      // the page we already hold, so a straight prepend preserves order.
+      // No _messageCache write here: useSessionScopedMessages' write-back
+      // effect already persists any non-empty messages state under the active
+      // cacheKey. Writing the cache inside the updater would also be a side
+      // effect in a function React may invoke twice under StrictMode.
+      if (older.length > 0) {
+        setChatMessages((prev) => [...older, ...prev]);
+      }
+    } catch (err) {
+      notifyApiError(err, "Couldn't load earlier messages", {
+        dedupeKey: "history-older",
+      });
+    } finally {
+      setIsLoadingOlder(false);
+    }
+  }, [sessionName, sendReq, setChatMessages]);
 
   // ---- Chat message handler ----
   // Dependencies are intentionally minimal ([onChatMessage]) because all
@@ -1055,6 +1131,7 @@ export function useAgentChat(
           if (staleKey) {
             _messageCache.delete(staleKey);
             historyLoadedRef.current.delete(staleKey);
+            _historyPaging.delete(staleKey);
           }
         }
         return;
@@ -2325,6 +2402,7 @@ export function useAgentChat(
   return {
     renderGroups,
     renderItems,
+    chatMessages,
     isStreaming,
     busy: isStreaming || containerRunActive,
     sendMessage,
@@ -2342,5 +2420,8 @@ export function useAgentChat(
     activeSessionId,
     newSession,
     selectSession,
+    hasOlderMessages: !!(cacheKey && _historyPaging.get(cacheKey)?.hasMore),
+    isLoadingOlder,
+    loadOlderMessages,
   };
 }

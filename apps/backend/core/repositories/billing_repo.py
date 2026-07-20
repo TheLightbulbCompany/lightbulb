@@ -284,6 +284,28 @@ async def set_credits_auto_charge(owner_id: str, *, enabled: bool) -> None:
     )
 
 
+async def set_plan(owner_id: str, *, plan: str, now_iso: str) -> None:
+    """Persist the owner's pricing tier on the billing row.
+
+    ``plan`` is ``"standard"`` (the implicit single $50/mo tier) or
+    ``"ultra_pro"`` (the higher tier that unlocks larger companies). The
+    attribute is absent on rows created before the field existed — the billing
+    response defaults a missing value to ``"standard"``, so a backfill isn't
+    required. Same existing-row condition as the other billing-row setters
+    (``set_credits_auto_charge`` et al.): an unconditional update would upsert a
+    phantom ``{owner_id, plan}`` row with no stripe_customer_id.
+    """
+    table = _get_table()
+    await run_in_thread(
+        table.update_item,
+        Key={"owner_id": owner_id},
+        UpdateExpression="SET #p = :p, updated_at = :t",
+        ExpressionAttributeNames={"#p": "plan"},
+        ExpressionAttributeValues={":p": plan, ":t": now_iso},
+        ConditionExpression="attribute_exists(owner_id)",
+    )
+
+
 async def create_if_not_exists(
     owner_id: str,
     stripe_customer_id: str,

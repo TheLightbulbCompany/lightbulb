@@ -148,6 +148,7 @@ async def get_billing_account(
         trial_end=int(trial_end) if trial_end is not None else None,
         provider_choice=account.get("provider_choice") if account else None,
         byo_provider=account.get("byo_provider") if account else None,
+        plan=(account.get("plan") or "standard") if account else "standard",
         seat_count=seat_count,
         team_seat_price_usd=team_seat_price_usd,
         is_seat_subscription=is_seat_subscription,
@@ -683,6 +684,66 @@ async def create_team_checkout(
     except BillingServiceError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"checkout_url": session.url}
+
+
+@router.post(
+    "/ultra-checkout",
+    summary="Upgrade to the Ultra Pro tier",
+    description=(
+        "Upgrades the owner to the Ultra Pro tier ($150/mo). An owner already "
+        "on the flat subscription is upgraded IN PLACE — the existing "
+        "subscription item's price is swapped to the Ultra price (one "
+        'subscription, prorated) — and the endpoint returns {"upgraded": true}. '
+        "An owner with no live subscription (free tier / never subscribed) gets "
+        "a fresh Ultra Checkout session and the endpoint returns its "
+        '{"checkout_url"}. The durable tier write + container resize happen in '
+        "the subscription webhook, not here. Org-context callers must be admins."
+    ),
+    operation_id="create_ultra_checkout",
+)
+async def create_ultra_checkout(
+    auth: AuthContext = Depends(get_current_user),
+):
+    from core.services.billing_service import BillingServiceError, create_ultra_upgrade
+
+    # Org admins only — a billing action, so mirror /trial-checkout,
+    # /team-checkout and /provider. A non-admin org member must not be able to
+    # bump the org onto the $150 tier.
+    if auth.is_org_context:
+        require_org_admin(auth)
+
+    owner_id = resolve_owner_id(auth)
+
+    # Ensure a Stripe customer exists before create_ultra_upgrade may build a
+    # fresh Ultra Checkout: a trial_local row carries no stripe_customer_id and
+    # the checkout builder requires one. No-op for an owner already on the flat
+    # sub (they already have a customer). Mirrors /trial-checkout and
+    # /team-checkout, which backfill the customer here.
+    account = await _get_billing_account(auth)
+    if not account or not account.get("stripe_customer_id"):
+        owner_type = get_owner_type(auth)
+        await BillingService().create_customer_for_owner(
+            owner_id=owner_id,
+            owner_type=owner_type,
+            email=auth.email,
+        )
+
+    try:
+        result = await create_ultra_upgrade(owner_id=owner_id, clerk_user_id=auth.user_id)
+    except BillingServiceError as e:
+        if str(e) == "checkout_in_progress":
+            # Lost the per-owner checkout-slot claim to a concurrent fresh-Ultra
+            # request — that request's session is (or is about to be) the one open
+            # session. 409, not 400: retrying in a moment reuses it. Mirrors
+            # /trial-checkout's mapping.
+            raise HTTPException(status_code=409, detail="checkout_in_progress")
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # In-place swap → {"upgraded": True} (returned verbatim); a fresh checkout
+    # → the Checkout Session, mapped to its URL.
+    if isinstance(result, dict):
+        return result
+    return {"checkout_url": result.url}
 
 
 # ---------------------------------------------------------------------------

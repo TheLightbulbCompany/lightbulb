@@ -32,7 +32,7 @@ from core.containers.config import (
     write_openclaw_config,
 )
 from core.containers.workspace import get_workspace
-from core.repositories import container_repo
+from core.repositories import billing_repo, container_repo
 from core.repositories.container_repo import ProvisionSuperseded
 
 logger = logging.getLogger(__name__)
@@ -45,6 +45,12 @@ GATEWAY_PORT = 18789
 # so the resize/register paths pull from a single place.
 PER_USER_CPU = "512"
 PER_USER_MEMORY_MIB = "2048"
+
+# Ultra Pro tier box (large marketplace companies exceeding the flat tier's
+# agent budget). 2 vCPU / 8 GB — same constant home as PER_USER_* so the
+# resize/register paths and the webhook tier logic pull sizes from one place.
+ULTRA_CPU = "2048"
+ULTRA_MEMORY_MIB = "8192"
 
 # The AIP tiers minted for a `bedrock_trial` (no-card free tier) owner. ONE
 # tier, and it must be sonnet: config.py makes sonnet the trial's
@@ -377,6 +383,69 @@ class EcsManager:
     # Per-user task definition revisions
     # ------------------------------------------------------------------
 
+    async def _size_for_owner(self, owner_id: str) -> tuple[str, str]:
+        """The (cpu, memory) a provision/reprovision must register for ``owner_id``.
+
+        ``ultra_pro`` owners run the large ``ULTRA_CPU`` / ``ULTRA_MEMORY_MIB``
+        box (large marketplace companies past the flat tier's agent budget);
+        everyone else the flat ``PER_USER_CPU`` / ``PER_USER_MEMORY_MIB`` box.
+
+        Deriving the size from the billing plan HERE is what makes the Ultra
+        size DURABLE. The upgrade webhook resizes the running container, but the
+        provision/reprovision path re-registers the task def from the CDK base
+        (provider switch, restart, admin reprovision) and a hardcoded standard
+        size there would silently undo the webhook's resize. Callers on those
+        paths route their size through this helper — as does the Track-2
+        image-roll apply (``update_service.apply_update``), which resizes with no
+        size of its own — so the box always tracks the owner's plan.
+
+        Fail-safe: a provision must NEVER fail because billing is momentarily
+        unreadable. Any read error (or an absent row) falls back to the standard
+        size — worst case an Ultra owner's reprovision lands standard-sized and
+        the next reprovision restores it, which beats a failed provision.
+        """
+        try:
+            account = await billing_repo.get_by_owner_id(owner_id)
+        except Exception:  # noqa: BLE001 — sizing must never fail a provision.
+            logger.warning(
+                "plan-size lookup failed for owner %s; defaulting to standard size",
+                owner_id,
+                exc_info=True,
+            )
+            account = None
+        if (account or {}).get("plan") == "ultra_pro":
+            return ULTRA_CPU, ULTRA_MEMORY_MIB
+        return PER_USER_CPU, PER_USER_MEMORY_MIB
+
+    async def current_container_size(self, owner_id: str) -> tuple[str, str] | None:
+        """The (cpu, memory) of the owner's CURRENTLY REGISTERED task definition.
+
+        Reads the live task-def off the containers row (``task_definition_arn``)
+        and returns its ``(cpu, memory)`` strings — the actual size of the box
+        that will run right now — or ``None`` if the owner has no provisioned
+        container / no task-def ARN on the row (or the describe yields no size).
+
+        Read-only: it describes the task def, registers nothing, mutates
+        nothing — the mirror of the size the resize path WOULD change. The
+        company-deploy gate uses it to refuse seeding a >10-agent Ultra company
+        onto a box the upgrade-webhook resize never actually enlarged (a
+        swallowed transient resize leaves ``plan=ultra_pro`` on the standard
+        0.5 vCPU / 2 GB box, which would OOM under a big roster).
+        """
+        container = await container_repo.get_by_owner_id(owner_id)
+        if not container or not container.get("task_definition_arn"):
+            return None
+        resp = await asyncio.to_thread(
+            self._ecs.describe_task_definition,
+            taskDefinition=container["task_definition_arn"],
+        )
+        td = resp.get("taskDefinition") or {}
+        cpu = td.get("cpu")
+        memory = td.get("memory")
+        if cpu is None or memory is None:
+            return None
+        return str(cpu), str(memory)
+
     def _build_register_kwargs_from_base(
         self,
         access_point_id: str,
@@ -498,6 +567,8 @@ class EcsManager:
         environment_for_task: list[dict] | None = None,
         hook_token: str | None = None,
         task_role_arn: str | None = None,
+        new_cpu: str | None = None,
+        new_memory: str | None = None,
     ) -> str:
         """Clone the CDK base for a new per-user container.
 
@@ -513,6 +584,10 @@ class EcsManager:
             hook_token: Optional per-user OpenClaw webhook auth token. When
                 provided, injected as ``OPENCLAW_HOOK_TOKEN`` env var on the
                 primary container.
+            new_cpu / new_memory: Optional task size. The provision/reprovision
+                callers pass the owner's plan-derived size (``_size_for_owner``)
+                so an Ultra Pro owner's box stays 2 vCPU / 8 GB across every
+                re-register. ``None`` falls back to the standard PER_USER_* box.
 
         Returns:
             The ARN of the newly registered task definition revision.
@@ -527,6 +602,8 @@ class EcsManager:
                 environment_for_task=environment_for_task,
                 hook_token=hook_token,
                 task_role_arn=task_role_arn,
+                new_cpu=new_cpu,
+                new_memory=new_memory,
             )
             reg_resp = self._ecs.register_task_definition(**reg_kwargs)
             task_def_arn = reg_resp["taskDefinition"]["taskDefinitionArn"]
@@ -762,13 +839,18 @@ class EcsManager:
             # Inject any per-user secrets (e.g. byo_key OPENAI/ANTHROPIC ARN),
             # per-user env vars, and the per-user OPENCLAW_HOOK_TOKEN (so the
             # OpenClaw gateway can verify inbound webhook calls) before the
-            # service is created so the first task pulls them.
+            # service is created so the first task pulls them. Size by the
+            # owner's plan so an Ultra Pro owner's first task def is the large
+            # box, not the standard one.
+            new_cpu, new_memory = await self._size_for_owner(user_id)
             task_def_arn = self._register_task_definition(
                 access_point_id,
                 secrets_for_task=secrets_for_task,
                 environment_for_task=environment_for_task,
                 hook_token=hook_token,
                 task_role_arn=task_role_arn,
+                new_cpu=new_cpu,
+                new_memory=new_memory,
             )
             await self._update_container(
                 user_id,
@@ -1298,20 +1380,26 @@ class EcsManager:
         return {"status": "reprovisioning"}
 
     async def reapply_standard_sizing(self, user_id: str) -> dict:
-        """Roll the user's task definition with the canonical flat-fee
-        size. Admin recovery action for containers wedged on a stale
-        task def. No tier arg — every user gets the same 0.5 vCPU /
-        2 GB box post flat-fee cutover.
+        """Roll the user's task definition back to the owner's canonical
+        provision size. Admin recovery action for containers wedged on a
+        stale task def.
+
+        Sizes by the owner's plan (``_size_for_owner``) rather than a flat
+        hardcode: for a standard owner that IS the 0.5 vCPU / 2 GB box, but an
+        Ultra Pro owner must land on their 2 vCPU / 8 GB box — re-applying the
+        standard size here would silently undo the upgrade webhook's resize,
+        the exact revert the plan-derived provision sizing exists to prevent.
         """
+        new_cpu, new_memory = await self._size_for_owner(user_id)
         await self.resize_user_container(
             user_id,
-            new_cpu=PER_USER_CPU,
-            new_memory=PER_USER_MEMORY_MIB,
+            new_cpu=new_cpu,
+            new_memory=new_memory,
         )
         return {
             "status": "resized",
-            "cpu": PER_USER_CPU,
-            "memory": PER_USER_MEMORY_MIB,
+            "cpu": new_cpu,
+            "memory": new_memory,
         }
 
     async def delete_user_service(self, user_id: str) -> None:
@@ -2094,6 +2182,11 @@ class EcsManager:
                         restart_task_role_arn = bedrock_role_arn or (
                             existing.get("bedrock_role_arn") if existing else None
                         )
+                        # Size by plan on the restart path too — this is the
+                        # branch a full reprovision (stop -> background_provision)
+                        # lands on, so without it an Ultra Pro reprovision would
+                        # silently revert the container to the standard box.
+                        restart_cpu, restart_memory = await self._size_for_owner(user_id)
                         new_task_def_arn = await asyncio.to_thread(
                             self._register_task_definition,
                             access_point_id,
@@ -2101,6 +2194,8 @@ class EcsManager:
                             environment_for_task=environment_for_task,
                             hook_token=existing_hook_token,
                             task_role_arn=restart_task_role_arn,
+                            new_cpu=restart_cpu,
+                            new_memory=restart_memory,
                         )
                         await asyncio.to_thread(
                             self._ecs.update_service,

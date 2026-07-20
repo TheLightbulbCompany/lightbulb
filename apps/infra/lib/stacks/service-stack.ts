@@ -1114,6 +1114,14 @@ export class ServiceStack extends cdk.Stack {
           env === "prod"
             ? (process.env.STRIPE_TEAM_SEAT_PRICE_ID_PROD ?? "")
             : (process.env.STRIPE_TEAM_SEAT_PRICE_ID_DEV ?? ""),
+        // Stripe Ultra Pro Price ID — same env-specific live/test split as
+        // STRIPE_FLAT_PRICE_ID above (a test-mode Price would silently create
+        // test subscriptions in prod). Read per-env from the runner's secrets
+        // at synth time. Consumed by the Ultra-tier checkout call site.
+        STRIPE_ULTRA_PRICE_ID:
+          env === "prod"
+            ? (process.env.STRIPE_ULTRA_PRICE_ID_PROD ?? "")
+            : (process.env.STRIPE_ULTRA_PRICE_ID_DEV ?? ""),
         FRONTEND_URL:
           env === "local"
             ? "http://localhost:3000"

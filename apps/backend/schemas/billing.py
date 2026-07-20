@@ -20,6 +20,11 @@ class BillingAccountResponse(BaseModel):
     # to render.
     provider_choice: str | None = None
     byo_provider: str | None = None
+    # Pricing tier: "standard" (the single $50/mo tier) or "ultra_pro" (the
+    # higher tier that unlocks larger marketplace companies). Defaults to
+    # "standard" so a billing row created before the plan field existed (no
+    # `plan` key) surfaces cleanly rather than as null.
+    plan: str = "standard"
     # Teams (org) per-seat billing. seat_count is the live org member count for
     # org owners (drives the paywall's "N × $20" math); team_seat_price_usd is
     # the single server-side source of the per-seat display price. Both None

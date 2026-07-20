@@ -97,6 +97,71 @@ function ProfilePanel() {
 // Billing Panel
 // =============================================================================
 
+// Mirrors backend ULTRA_PRICE_USD (apps/backend/core/config.py). The billing
+// account response carries only `plan`, not the price, so the display price is
+// a labeled constant here rather than echoed from the server.
+const ULTRA_PRICE_USD = 150;
+
+// Ultra Pro control for a non-per-seat subscribed owner. When the owner is
+// already on ultra_pro it collapses to an "Ultra Pro" active badge; otherwise
+// it renders the upgrade button that calls useBilling().upgradeToUltra (which
+// redirects to a fresh Checkout, or refreshes in place on the item-swap path).
+// Never rendered on the per-seat TeamBillingCard — Ultra rejects team subs.
+function UltraUpgradeRow({
+  plan,
+  upgradeToUltra,
+}: {
+  plan: "standard" | "ultra_pro" | undefined;
+  upgradeToUltra: () => Promise<void>;
+}) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleUpgrade = useCallback(async () => {
+    capture("billing_ultra_upgrade_clicked");
+    setError(null);
+    setLoading(true);
+    try {
+      await upgradeToUltra();
+      // The fresh-checkout path redirects away and never returns here; the
+      // in-place swap resolves and the refreshed account re-renders this row
+      // as the Ultra badge — clear the spinner either way.
+      setLoading(false);
+    } catch {
+      setError("Couldn't start the upgrade. Please try again.");
+      setLoading(false);
+    }
+  }, [upgradeToUltra]);
+
+  if (plan === "ultra_pro") {
+    return (
+      <div style={{ marginTop: 14 }}>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 600, color: "#06402B", background: "rgba(6,64,43,.08)", padding: "3px 10px", borderRadius: 999 }}>
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          Ultra Pro
+        </span>
+        <div className="settings-card-desc" style={{ marginTop: 6 }}>
+          Larger marketplace companies unlocked.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ marginTop: 14 }}>
+      <button type="button" className="settings-btn-save" onClick={handleUpgrade} disabled={loading}>
+        {loading && <span className="settings-spinner" style={{ width: 14, height: 14, borderWidth: 2, marginRight: 6, display: "inline-block", verticalAlign: "middle" }} />}
+        Upgrade to Ultra Pro — ${ULTRA_PRICE_USD}/mo
+      </button>
+      {error && (
+        <div className="settings-alert settings-alert-error" style={{ marginTop: 8 }}>
+          {error}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function BillingPanel() {
   const {
     account,
@@ -105,6 +170,7 @@ function BillingPanel() {
     isSubscribed,
     openPortal,
     startTeamCheckout,
+    upgradeToUltra,
   } = useBilling();
   const { membership } = useOrganization();
 
@@ -243,6 +309,9 @@ function BillingPanel() {
               Manage Payment
             </button>
           </div>
+          {/* A flat/comped org sub (no per-seat item) can still upgrade to
+              Ultra — only the per-seat TeamBillingCard path is excluded. */}
+          <UltraUpgradeRow plan={account?.plan} upgradeToUltra={upgradeToUltra} />
         </div>
       </div>
     );
@@ -293,6 +362,11 @@ function BillingPanel() {
             </Link>
           )}
         </div>
+        {/* Ultra upgrade hangs off the paid card for a subscribed owner only —
+            an unsubscribed / Sign-up owner must pick the base plan first. */}
+        {isSubscribed && (
+          <UltraUpgradeRow plan={account?.plan} upgradeToUltra={upgradeToUltra} />
+        )}
       </div>
     </div>
   );

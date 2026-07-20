@@ -56,6 +56,13 @@ const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
       // both secrets are populated.
       STRIPE_TEAM_SEAT_PRICE_ID_DEV: "${{ secrets.STRIPE_TEAM_SEAT_PRICE_ID_DEV }}",
       STRIPE_TEAM_SEAT_PRICE_ID_PROD: "${{ secrets.STRIPE_TEAM_SEAT_PRICE_ID_PROD }}",
+      // Stripe Ultra Pro Price IDs — same synth-time bake + per-env live/test
+      // split as the flat/team prices above. Empty string is tolerated (the
+      // backend surfaces "STRIPE_ULTRA_PRICE_ID not configured" at the
+      // ultra-checkout call site) but the Ultra tier cannot be purchased until
+      // both secrets are populated.
+      STRIPE_ULTRA_PRICE_ID_DEV: "${{ secrets.STRIPE_ULTRA_PRICE_ID_DEV }}",
+      STRIPE_ULTRA_PRICE_ID_PROD: "${{ secrets.STRIPE_ULTRA_PRICE_ID_PROD }}",
       // Same secrets the Vercel build job already consumes (lines below).
       // Re-exported here so service-stack.ts can bake the publishable key
       // into the backend container env at synth time — the paperclip-proxy

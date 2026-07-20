@@ -376,6 +376,8 @@ async def apply_update(owner_id: str, update_id: str) -> bool:
         if new_image or new_cpu or new_memory:
             from core.containers import get_ecs_manager
 
+            ecs = get_ecs_manager()
+
             # An image roll reuses the container's existing on-disk
             # openclaw.json. Strip keys the new image's strict schema no
             # longer accepts so the rolled gateway doesn't crash-loop at
@@ -383,7 +385,18 @@ async def apply_update(owner_id: str, update_id: str) -> bool:
             if new_image:
                 await migrate_removed_config_keys(owner_id)
 
-            await get_ecs_manager().resize_user_container(
+            # An image-only roll carries NO size — queue_image_update /
+            # queue_fleet_image_update write {"new_image": X} only. Passing the
+            # resulting None/None straight through would default the re-register
+            # to the standard PER_USER_* box and silently shrink an Ultra Pro
+            # owner's container on every routine image bump / fleet-force-apply
+            # — the exact revert plan-derived sizing exists to prevent. Fill the
+            # gap from the owner's plan ONLY when the change specifies neither
+            # dimension; a real resize (explicit cpu/memory) is left untouched.
+            if new_cpu is None and new_memory is None:
+                new_cpu, new_memory = await ecs._size_for_owner(owner_id)
+
+            await ecs.resize_user_container(
                 user_id=owner_id,
                 new_cpu=new_cpu,
                 new_memory=new_memory,

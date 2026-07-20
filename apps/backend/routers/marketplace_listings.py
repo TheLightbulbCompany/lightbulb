@@ -383,9 +383,10 @@ async def deploy_listing(
         raise HTTPException(status_code=404, detail="listing not found")
 
     if listing.get("format") == "company":
-        # Company deploys are platform-admin-only until the dev E2E validates
-        # the deploy engine (a later task flips this to the buyer gate). The
-        # gate is enforced server-side here, not merely in the UI.
+        # COMPANY_MARKETPLACE_LAUNCH_GATE: company deploys are platform-admin-only
+        # until the dev E2E validates the deploy engine. Enforced server-side, not
+        # merely in the UI. Remove every COMPANY_MARKETPLACE_LAUNCH_GATE marker to
+        # open the marketplace (deploy + Ultra upgrade) to buyers together.
         require_platform_admin(auth)
 
         owner_id = resolve_owner_id(auth)

@@ -71,14 +71,22 @@ def test_unrecognized_shapes_pass_through():
     assert _trim_chat_history_for_frame(not_a_list) is not_a_list
 
 
-def test_single_giant_message_still_yields_a_deliverable_frame():
-    # Degenerate: even the newest message alone exceeds the budget. The frame
-    # must still fit (empty messages + truncated flag) rather than 413ing.
+def test_single_giant_message_is_elided_for_unpaged_requests():
+    # Degenerate: even the newest message alone exceeds the budget, AND this
+    # is the legacy unpaged shape (no `offset` key). The frame must still
+    # ship one elided message rather than dropping to an empty transcript —
+    # blanking the page for unpaged callers is the exact bug this guard
+    # exists to eliminate.
     result = _history(3, 300_000)
+    assert "offset" not in result
     out = _trim_chat_history_for_frame(result)
     assert _payload_size(out) <= _WS_FRAME_BUDGET_BYTES
-    assert out["messages"] == []
+    assert len(out["messages"]) == 1
     assert out["truncated"] is True
+    assert "omitted" in out["messages"][0]["content"][0]["text"]
+    # Unpaged: no cursor fields invented.
+    assert "nextOffset" not in out
+    assert "hasMore" not in out
 
 
 def test_fit_replaces_oversized_discarded_method_payload_with_marker():
@@ -181,3 +189,51 @@ def test_a_single_oversized_message_is_elided_so_the_cursor_advances():
     assert len(json.dumps(out, separators=(",", ":"), default=str).encode()) <= 1000
     # The elision is visible rather than silent.
     assert "omitted" in out["messages"][0]["content"][0]["text"]
+
+
+def test_many_subthreshold_blocks_that_sum_over_budget_are_hard_truncated():
+    # _elide_oversized_message only shrinks a block that ALONE crosses
+    # budget // 4. Five blocks under that threshold (27_000 < 27_500) but
+    # summing to 135_000 bytes — well over the budget — defeat it: every
+    # block passes through unchanged and the payload still doesn't fit. The
+    # post-elision size check must catch this and hard-truncate.
+    budget = _WS_FRAME_BUDGET_BYTES  # threshold = budget // 4 == 27_500
+    blocks = [{"type": "text", "text": "z" * 27_000} for _ in range(5)]
+    huge = {"role": "toolResult", "content": blocks}
+    result = {
+        "messages": [huge],
+        "offset": 0,
+        "nextOffset": 1,
+        "hasMore": True,
+        "totalMessages": 160,
+    }
+
+    out = _trim_chat_history_for_frame(result, budget=budget)
+
+    assert len(out["messages"]) == 1
+    assert _payload_size(out) <= budget
+    assert out["nextOffset"] == 1
+    assert out["hasMore"] is True
+
+
+def test_string_content_message_is_hard_truncated_when_oversized():
+    # `content` as a plain string (not a block list) is a shape the codebase
+    # treats as valid (see test_trim_rewrites_next_offset_for_a_paged_response
+    # above). _elide_oversized_message is a no-op on it (`if not
+    # isinstance(content, list): return message`), so an oversized message of
+    # this shape ships completely unmodified unless the fallback catches it.
+    huge = {"role": "toolResult", "content": "s" * 64_000}
+    result = {
+        "messages": [huge],
+        "offset": 0,
+        "nextOffset": 1,
+        "hasMore": True,
+        "totalMessages": 160,
+    }
+
+    out = _trim_chat_history_for_frame(result, budget=1000)
+
+    assert len(out["messages"]) == 1
+    assert _payload_size(out) <= 1000
+    assert out["nextOffset"] == 1
+    assert out["hasMore"] is True

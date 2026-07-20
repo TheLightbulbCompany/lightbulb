@@ -168,6 +168,25 @@ def _elide_oversized_message(message, budget: int):
     return {**message, "content": elided}
 
 
+def _hard_truncate_message(message, original_bytes: int) -> dict:
+    """Guaranteed-fit fallback when per-block elision isn't enough.
+
+    ``_elide_oversized_message`` only shrinks a content block once that block
+    ALONE crosses ``budget // 4`` — two shapes defeat it: several
+    sub-threshold blocks whose SUM still exceeds the budget (each passes
+    through unchanged), and non-list ``content`` (a plain string), where it's
+    a no-op entirely. This replaces the whole message body with one marker
+    block, keeping only ``role`` (when present) so the transcript still shows
+    who "spoke". Called only after a post-elision size check has confirmed
+    elision alone didn't fit — this is what makes "the returned payload
+    always fits" an enforced guarantee rather than a heuristic.
+    """
+    stub = {"content": [{"type": "text", "text": f"[… {original_bytes} bytes omitted — too large to display …]"}]}
+    if isinstance(message, dict) and "role" in message:
+        stub["role"] = message["role"]
+    return stub
+
+
 def _trim_chat_history_for_frame(result, budget: int = _WS_FRAME_BUDGET_BYTES):
     """Drop the OLDEST chat.history messages until the payload fits one frame.
 
@@ -196,16 +215,27 @@ def _trim_chat_history_for_frame(result, budget: int = _WS_FRAME_BUDGET_BYTES):
             hi = mid
         else:
             lo = mid + 1
-    # Degenerate page: not even the newest single message fits. Ship it elided
-    # so the cursor still advances by one instead of stalling on this page.
-    # This only applies to paged responses; unpaged responses return empty
-    # messages as before.
-    offset = result.get("offset")
-    if lo >= len(messages) and messages and isinstance(offset, int) and not isinstance(offset, bool):
-        elided = _elide_oversized_message(messages[-1], budget)
+    # Degenerate page: not even the newest single message fits. Ship it
+    # elided (or, failing that, hard-truncated) so the cursor still advances
+    # by one instead of stalling on this page forever. This applies to BOTH
+    # paged and unpaged requests — gating it on `offset` would leave the
+    # legacy unpaged shape falling through to an empty transcript, which is
+    # the exact bug this guard exists to eliminate. Only the cursor fields
+    # (nextOffset/hasMore) are conditioned on this being a paged request.
+    if lo >= len(messages) and messages:
+        last = messages[-1]
+        elided = _elide_oversized_message(last, budget)
         out = {**result, "messages": [elided], "truncated": True}
-        out["nextOffset"] = offset + 1
-        out["hasMore"] = True
+        if _size(out) > budget:
+            # Elision alone didn't shrink it enough (many sub-threshold
+            # blocks, or non-list `content`). Fall back to a hard truncation
+            # that is guaranteed to fit.
+            stub = _hard_truncate_message(last, _size(last))
+            out = {**result, "messages": [stub], "truncated": True}
+        offset = result.get("offset")
+        if isinstance(offset, int) and not isinstance(offset, bool):
+            out["nextOffset"] = offset + 1
+            out["hasMore"] = True
         return out
     kept = messages[lo:]
     out = {**result, "messages": kept, "truncated": True}

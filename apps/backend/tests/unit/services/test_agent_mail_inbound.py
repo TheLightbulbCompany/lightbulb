@@ -32,6 +32,7 @@ def test_parse_from_address(raw, expected):
         ({"Precedence": "bulk"}, True),
         ({"Precedence": "list"}, True),
         ({"precedence": "Junk"}, True),  # case-insensitive
+        ({"Precedence": "auto_reply"}, True),
     ],
 )
 def test_is_auto_submitted(headers, blocked):
@@ -86,3 +87,15 @@ async def test_fetch_received_email_never_raises(monkeypatch):
     transport = httpx.MockTransport(boom)
     monkeypatch.setattr(inbound, "_client_factory", lambda: httpx.AsyncClient(transport=transport))
     assert await inbound.fetch_received_email("eml_x") is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_received_email_undecodable_body_returns_none(monkeypatch):
+    """A 200 response whose body is not valid JSON must return None, not raise
+    — `resp.json()` raising a decode error is caught by the same broad
+    `except Exception` as network failures.
+    """
+    monkeypatch.setattr(inbound.settings, "RESEND_API_KEY", "re_test")
+    transport = httpx.MockTransport(lambda r: httpx.Response(200, content=b"this is not json"))
+    monkeypatch.setattr(inbound, "_client_factory", lambda: httpx.AsyncClient(transport=transport))
+    assert await inbound.fetch_received_email("eml_bad_json") is None

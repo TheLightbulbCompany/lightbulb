@@ -76,3 +76,23 @@ async def test_error_on_post_failure_never_raises(monkeypatch):
         owner_id="org_1", agent_id="agent_friday", message="hi", idempotency_key="eml_1"
     )
     assert result == "error"
+
+
+@pytest.mark.asyncio
+async def test_non_2xx_response_is_not_reported_delivered(monkeypatch):
+    """A 4xx/5xx from the container's /hooks/agent must resolve to "error", not
+    "delivered" — guards the `response.raise_for_status()` call in
+    `deliver_to_agent`. If that call is ever deleted, a failed delivery would
+    silently be reported as a success.
+    """
+    monkeypatch.setattr(delivery, "get_ecs_manager", lambda: _fake_ecs({"hook_token": "tok_abc"}, "10.0.0.5"))
+
+    def handler(request):
+        return httpx.Response(500, json={"error": "boom"})
+
+    monkeypatch.setattr(delivery, "_client_factory", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+
+    result = await delivery.deliver_to_agent(
+        owner_id="org_1", agent_id="agent_friday", message="hi", idempotency_key="eml_1"
+    )
+    assert result == "error"

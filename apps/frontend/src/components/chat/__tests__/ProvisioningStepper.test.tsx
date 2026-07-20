@@ -29,6 +29,15 @@ vi.mock("@/hooks/useProvisioningState", () => ({
   useProvisioningState: vi.fn(),
 }));
 
+// Configurable so the onboarding-status gate tests can exercise the
+// `user` present branch — most other tests in this file rely on the
+// default `null` (which makes the first-run funnel branch unreachable and
+// keeps every pre-existing test's assertions about phase="ready" etc.
+// untouched).
+let clerkMockUser: {
+  id: string;
+  unsafeMetadata: { firstRun?: { briefSubmitted?: boolean } };
+} | null = null;
 vi.mock("@clerk/nextjs", () => ({
   useOrganization: () => ({ organization: null, membership: null, isLoaded: true }),
   // Components in the stepper tree (useApi consumers) read useAuth/useUser.
@@ -36,7 +45,7 @@ vi.mock("@clerk/nextjs", () => ({
     getToken: vi.fn().mockResolvedValue("test-token"),
     isSignedIn: true,
   }),
-  useUser: () => ({ user: null, isLoaded: true }),
+  useUser: () => ({ user: clerkMockUser, isLoaded: true }),
 }));
 
 // ``lib/analytics`` re-exports PostHogProvider as ``Provider`` at module
@@ -121,8 +130,22 @@ vi.mock("@/hooks/useGatewayRpc", () => ({
   useGatewayRpc: () => ({ data: gatewayHealthData, error: null }),
 }));
 
+// Configurable per-test onboarding-status SWR return, keyed off the hook's
+// key argument so it only intercepts ProvisioningStepper's own
+// `useSWR("/onboarding/status", ...)` call — every other (currently
+// nonexistent) direct SWR consumer in the tree keeps the inert default.
+let onboardingStatusSWR: {
+  data: { onboarded: boolean } | undefined;
+  error: unknown;
+  isLoading: boolean;
+} = { data: undefined, error: undefined, isLoading: false };
 vi.mock("swr", () => ({
-  default: () => ({ data: null, error: null, mutate: vi.fn() }),
+  default: (key: unknown) => {
+    if (key === "/onboarding/status") {
+      return { ...onboardingStatusSWR, mutate: vi.fn() };
+    }
+    return { data: null, error: null, isLoading: false, mutate: vi.fn() };
+  },
 }));
 
 vi.mock("@/lib/analytics", () => ({
@@ -161,6 +184,8 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     billingMockAccount = { provider_choice: "bedrock_claude" };
     billingMockRefresh = vi.fn();
     billingMockStartTeamCheckout.mockClear();
+    clerkMockUser = null;
+    onboardingStatusSWR = { data: undefined, error: undefined, isLoading: false };
   });
 
   afterEach(() => {
@@ -662,5 +687,102 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     expect(
       screen.queryByRole("link", { name: "Sign in with ChatGPT" }),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("ProvisioningStepper server-backed onboarding gate", () => {
+  // Every test here needs a loaded Clerk user (the funnel branch is a
+  // no-op when `user` is null — see the other describe block's default),
+  // with the per-user firstRun marker unset, and a `normal` gate phase so
+  // the gate's own preconditions are met and GET /onboarding/status is
+  // actually consulted.
+  beforeEach(() => {
+    useProvMock.mockReset();
+    apiPost.mockClear();
+    apiGet.mockClear();
+    apiPut.mockClear();
+    apiDel.mockClear();
+    billingMockIsSubscribed = true;
+    billingMockAccount = { provider_choice: "bedrock_claude" };
+    billingMockRefresh = vi.fn();
+    billingMockStartTeamCheckout.mockClear();
+    clerkMockUser = { id: "user_1", unsafeMetadata: {} };
+    onboardingStatusSWR = { data: undefined, error: undefined, isLoading: false };
+    // A ready-ish container so that, whenever the gate falls through
+    // instead of showing the funnel, the assertions can distinguish
+    // "children rendered" from "funnel rendered" instead of landing on an
+    // unrelated cold-start/blocked screen.
+    useProvMock.mockReturnValue({
+      phase: "normal",
+      container: { status: "running", phase: "ready" },
+      blocked: null,
+      refreshInterval: 3000,
+      refresh: vi.fn(),
+    });
+  });
+
+  afterEach(() => {
+    apiGet.mockResolvedValue({});
+  });
+
+  it("shows the funnel when the status reports onboarded:false and the per-user marker is unset", () => {
+    onboardingStatusSWR = { data: { onboarded: false }, error: undefined, isLoading: false };
+
+    render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+
+    expect(screen.getByText(/get started/i)).toBeInTheDocument();
+    expect(screen.queryByText("children")).not.toBeInTheDocument();
+  });
+
+  it("does not show the funnel when the status reports onboarded:true", () => {
+    onboardingStatusSWR = { data: { onboarded: true }, error: undefined, isLoading: false };
+
+    render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+
+    expect(screen.queryByText(/get started/i)).not.toBeInTheDocument();
+    expect(screen.getByText("children")).toBeInTheDocument();
+  });
+
+  it("shows neither the funnel nor children while the status request is still loading", () => {
+    onboardingStatusSWR = { data: undefined, error: undefined, isLoading: true };
+
+    const { container: dom } = render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+
+    expect(screen.queryByText(/get started/i)).not.toBeInTheDocument();
+    expect(screen.queryByText("children")).not.toBeInTheDocument();
+    // Still renders a loader, not a blank screen.
+    expect(dom.querySelector(".animate-spin")).toBeInTheDocument();
+  });
+
+  it("fails safe toward the app (not the funnel) when the status request errors", () => {
+    onboardingStatusSWR = {
+      data: undefined,
+      error: new Error("onboarding status fetch failed"),
+      isLoading: false,
+    };
+
+    render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+
+    // The wrong default here is "show the funnel" — that's the exact
+    // deploy-safety bug this gate fixes, re-triggered on every backend
+    // blip. A failed fetch must fall through toward the app instead.
+    expect(screen.queryByText(/get started/i)).not.toBeInTheDocument();
+    expect(screen.getByText("children")).toBeInTheDocument();
   });
 });

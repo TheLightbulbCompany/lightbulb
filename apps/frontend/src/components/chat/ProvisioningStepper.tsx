@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import useSWR from "swr";
 
 import { capture } from "@/lib/analytics";
 import {
@@ -209,6 +210,10 @@ export function ProvisioningStepper({
   // Clerk user object — the first-run funnel branch below reads (and its
   // component writes) user.unsafeMetadata.firstRun.
   const { user } = useUser();
+  // Used below by the server-backed onboarding-status gate (GET
+  // /onboarding/status), the same authenticated fetch layer every other
+  // data call in this component goes through.
+  const api = useApi();
   // Per-OWNER activation-marker key so a shared/QA browser doesn't let the first
   // account's activation suppress onboarding_ready for a later account's real
   // first cold start. The event is a person-level denominator (PostHog is
@@ -653,9 +658,53 @@ export function ProvisioningStepper({
   // `user` guard is load-bearing beyond null-safety: submit writes
   // user.unsafeMetadata, so without a loaded Clerk user the funnel would
   // be a dead-end form.
+  //
+  // The per-user Clerk marker (firstRun.briefSubmitted) alone is NOT
+  // sufficient: it is blank for every account that existed before this
+  // feature shipped — the entire pre-existing fleet, including live org
+  // members and the founders' container — so gating on it alone would show
+  // the no-skip funnel to all of them and re-run onboarding on a running
+  // company. GET /onboarding/status is the server-side source of truth
+  // (`onboarded` is true only once a goal + project were actually seeded
+  // for the caller's COMPANY, per its docstring), so showing the funnel
+  // additionally requires a clean `onboarded === false` response. Only
+  // fetched when it could matter — after the per-user marker already says
+  // "not submitted" and the gate has settled to "normal" — so a
+  // blocked / needs-signup / loading render never fires this request.
   const firstRun = readFirstRun(user);
-  if (user && gatePhase === "normal" && !firstRun.briefSubmitted) {
-    return <FirstRunFunnel />;
+  const shouldCheckOnboardingStatus =
+    !!user && gatePhase === "normal" && !firstRun.briefSubmitted;
+  const {
+    data: onboardingStatus,
+    error: onboardingStatusError,
+    isLoading: onboardingStatusLoading,
+  } = useSWR<{ onboarded: boolean }>(
+    shouldCheckOnboardingStatus ? "/onboarding/status" : null,
+    (url: string) => api.get(url) as Promise<{ onboarded: boolean }>,
+    { revalidateOnFocus: false, dedupingInterval: 30000 },
+  );
+  if (shouldCheckOnboardingStatus) {
+    // While the status call is in flight, show neither the funnel (would
+    // be the exact bug this gate exists to fix) nor `children` (would let
+    // the app flash before a "not onboarded" answer arrives) — hold the
+    // same neutral loader the component falls back to below for its other
+    // not-yet-ready states.
+    if (onboardingStatusLoading) {
+      return (
+        <div className="flex-1 flex items-center justify-center">
+          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+        </div>
+      );
+    }
+    // A failed request fails SAFE toward the app, not toward the funnel:
+    // defaulting to "show the funnel" on any backend blip would
+    // reintroduce this exact deploy-safety bug for the whole fleet every
+    // time the endpoint has a hiccup. Only a clean `onboarded === false`
+    // response shows it; an error response (or `onboarded === true`) falls
+    // through to the rest of the gate below.
+    if (!onboardingStatusError && onboardingStatus?.onboarded === false) {
+      return <FirstRunFunnel />;
+    }
   }
 
   // Ready — render children

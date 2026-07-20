@@ -70,11 +70,27 @@ def test_google_is_byo_required():
     assert not hasattr(g, "allow_byo_app")
 
 
-def test_no_provider_is_byo_required_except_google():
+def test_only_google_and_x_are_byo_required():
     from core.services.credentials import registry
 
     byo = [k for k, v in registry.all_providers().items() if v.byo_required]
-    assert byo == ["google"]
+    assert byo == ["google", "x"]
+
+
+def test_x_provider_shape():
+    p = registry.get_provider("x")
+    assert p.acquisition == "direct_oauth"
+    assert p.actor == "cli"
+    assert p.refresh_owner == "actor"
+    assert p.byo_required is True
+    assert p.byo_setup_url == "https://developer.x.com/en/portal/dashboard"
+    assert p.requires.bins == ["xurl"]
+    assert p.oauth.authorization_url == "https://x.com/i/oauth2/authorize"
+    assert p.oauth.token_url == "https://api.x.com/2/oauth2/token"
+    assert "tweet.write" in p.oauth.scopes
+    assert "offline.access" in p.oauth.scopes
+    assert p.wiring.materializer == "xurl_cli"
+    assert p.wiring.mcp_server is None and p.wiring.openclaw_paths is None
 
 
 def test_unknown_provider_raises():

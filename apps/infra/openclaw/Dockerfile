@@ -183,9 +183,16 @@ RUN npm i -g --ignore-scripts \
       clawhub openai \
       @steipete/oracle @steipete/summarize \
       @anthropic-ai/claude-code @google/gemini-cli \
-      @xdevplatform/xurl \
       mcporter@0.12.0 \
       @paperclipai/mcp-server@2026.529.0
+
+# xurl's npm package is a small wrapper whose postinstall downloads the native
+# release binary into node_modules. Do NOT install it with --ignore-scripts: that
+# leaves /usr/local/bin/xurl pointing at a wrapper that fails with
+# "xurl binary not found" at runtime.
+RUN npm i -g @xdevplatform/xurl@1.2.3 && \
+    xurl --help >/dev/null && \
+    (xurl auth status >/dev/null 2>&1 || test $? -eq 1)
 
 # Durable lobster pipeline state. Lobster's native `state.get`/`state.set` verbs are a
 # real, gateway-free file-KV, but they default to $HOME/.lobster/state — on the ephemeral

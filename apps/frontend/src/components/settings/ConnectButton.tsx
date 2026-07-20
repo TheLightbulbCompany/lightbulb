@@ -190,8 +190,15 @@ export function ConnectButton({
               <strong>Google Drive</strong> APIs for the project.
             </li>
           )}
+          {provider === "x" && (
+            <li>
+              Enable <strong>OAuth 2.0 user context</strong> for the app and make sure its X plan allows the read/write scopes shown during consent.
+            </li>
+          )}
           <li>Add the authorized redirect URI shown below.</li>
-          <li>On the OAuth consent screen, add your Google account as a <strong>Test user</strong>.</li>
+          {provider === "google" && (
+            <li>On the OAuth consent screen, add your Google account as a <strong>Test user</strong>.</li>
+          )}
           <li>Paste the Client ID and secret here.</li>
         </ol>
         <div className="flex flex-col gap-1">

@@ -17,12 +17,15 @@ from core.services.credentials.materializers.skill_cli import remove as _skill_c
 from core.services.credentials.materializers.skill_cli import write as _skill_cli
 from core.services.credentials.materializers.toml_cli import remove as _toml_remove
 from core.services.credentials.materializers.toml_cli import write as _toml
+from core.services.credentials.materializers.xurl_cli import remove as _xurl_remove
+from core.services.credentials.materializers.xurl_cli import write as _xurl
 
 MATERIALIZERS: dict[str, object] = {
     "toml_cli": _toml,
     "gog_cli": _gog,
     "gh_cli": _gh,
     "instagram_cli": _instagram,
+    "xurl_cli": _xurl,
     "mcp_oauth": _mcp_oauth,
     "skill_cli": _skill_cli,
     "aws_cli": _aws,
@@ -32,6 +35,7 @@ MATERIALIZER_REMOVERS: dict[str, object] = {
     "gog_cli": _gog_remove,
     "gh_cli": _gh_remove,
     "instagram_cli": _instagram_remove,
+    "xurl_cli": _xurl_remove,
     "mcp_oauth": _mcp_oauth_remove,
     "skill_cli": _skill_cli_remove,
     "aws_cli": _aws_remove,

@@ -190,8 +190,19 @@ export function ConnectButton({
               <strong>Google Drive</strong> APIs for the project.
             </li>
           )}
+          {provider === "x" && (
+            <li>
+              In the X developer portal, enable <strong>OAuth 2.0 user context</strong>{" "}
+              with read, write, DM, follow, like, media and offline access scopes.
+            </li>
+          )}
           <li>Add the authorized redirect URI shown below.</li>
-          <li>On the OAuth consent screen, add your Google account as a <strong>Test user</strong>.</li>
+          {provider === "google" && (
+            <li>On the OAuth consent screen, add your Google account as a <strong>Test user</strong>.</li>
+          )}
+          {provider === "x" && (
+            <li>X API package/app permissions may limit posting, reads, DMs or media until enabled by X.</li>
+          )}
           <li>Paste the Client ID and secret here.</li>
         </ol>
         <div className="flex flex-col gap-1">

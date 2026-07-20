@@ -13,6 +13,8 @@ from core.services.credentials.materializers.instagram_cli import remove as _ins
 from core.services.credentials.materializers.instagram_cli import write as _instagram
 from core.services.credentials.materializers.mcp_oauth import remove as _mcp_oauth_remove
 from core.services.credentials.materializers.mcp_oauth import write as _mcp_oauth
+from core.services.credentials.materializers.xurl_cli import remove as _xurl_remove
+from core.services.credentials.materializers.xurl_cli import write as _xurl
 from core.services.credentials.materializers.skill_cli import remove as _skill_cli_remove
 from core.services.credentials.materializers.skill_cli import write as _skill_cli
 from core.services.credentials.materializers.toml_cli import remove as _toml_remove
@@ -26,6 +28,7 @@ MATERIALIZERS: dict[str, object] = {
     "mcp_oauth": _mcp_oauth,
     "skill_cli": _skill_cli,
     "aws_cli": _aws,
+    "xurl_cli": _xurl,
 }
 MATERIALIZER_REMOVERS: dict[str, object] = {
     "toml_cli": _toml_remove,
@@ -35,4 +38,5 @@ MATERIALIZER_REMOVERS: dict[str, object] = {
     "mcp_oauth": _mcp_oauth_remove,
     "skill_cli": _skill_cli_remove,
     "aws_cli": _aws_remove,
+    "xurl_cli": _xurl_remove,
 }

@@ -25,6 +25,12 @@ logger = logging.getLogger(__name__)
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
+# RFC 5321 §4.5.3.1.1 caps the local part at 64 octets. The company slug is
+# bounded (company_identity.MAX_SLUG_LEN = 32) but an agent name is not, so
+# the secondary form has to be truncated or we would persist an address no
+# mail system will accept.
+MAX_LOCAL_PART_LEN = 64
+
 
 def _agent_slug(agent_name: str) -> str:
     slug = _SLUG_RE.sub("-", agent_name.strip().lower()).strip("-")
@@ -33,11 +39,17 @@ def _agent_slug(agent_name: str) -> str:
 
 def build_agent_email_address(*, slug: str, agent_name: str, domain: str, is_primary: bool) -> str:
     """``{slug}@{domain}`` for the primary agent, ``{slug}-{agent}@{domain}``
-    otherwise. Deterministic and lowercased."""
+    otherwise. Deterministic, lowercased, and never longer than
+    ``MAX_LOCAL_PART_LEN`` in the local part."""
     local = slug.strip().lower()
     if not is_primary:
-        local = f"{local}-{_agent_slug(agent_name)}"
-    return f"{local}@{domain.strip().lower()}"
+        # Truncate the AGENT segment only — the company slug is the owner's
+        # identity and must survive intact, and trimming the whole joined
+        # string could clip the separator and collide with the primary.
+        budget = MAX_LOCAL_PART_LEN - len(local) - 1
+        agent = _agent_slug(agent_name)[:budget].strip("-") if budget > 0 else ""
+        local = f"{local}-{agent or 'agent'[: max(budget, 1)]}"
+    return f"{local[:MAX_LOCAL_PART_LEN]}@{domain.strip().lower()}"
 
 
 async def mint_agent_email_address(

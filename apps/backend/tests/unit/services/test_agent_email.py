@@ -245,3 +245,31 @@ async def test_mint_never_raises_on_non_string_domain(monkeypatch):
         slug="acme",
     )
     assert result is None
+
+
+def test_secondary_local_part_respects_rfc5321_limit():
+    """RFC 5321 caps the local part at 64 octets.
+
+    The company slug is capped at 32, but an agent name is not (agent names
+    accept up to 80 chars upstream), so ``{slug}-{agent}`` could otherwise
+    emit an address no mail system will accept — and the mint would happily
+    persist it.
+    """
+    addr = agent_email.build_agent_email_address(
+        slug="a" * 32,
+        agent_name="Chief " * 20,  # slugifies far past the remaining budget
+        domain="agents.isol8.co",
+        is_primary=False,
+    )
+    local = addr.split("@", 1)[0]
+    assert len(local) <= agent_email.MAX_LOCAL_PART_LEN
+    assert not local.endswith("-")
+    assert "--" not in local
+
+
+def test_secondary_local_part_untouched_when_short():
+    """Ordinary names must not be truncated by the cap."""
+    addr = agent_email.build_agent_email_address(
+        slug="acme", agent_name="Atlas", domain="agents.isol8.co", is_primary=False
+    )
+    assert addr == "acme-atlas@agents.isol8.co"

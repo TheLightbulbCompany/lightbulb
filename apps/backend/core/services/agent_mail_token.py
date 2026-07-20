@@ -29,10 +29,26 @@ def encode_reply_token(ctx: ReplyContext) -> str:
     return encrypt(json.dumps(ctx, separators=(",", ":")))
 
 
+_REQUIRED_KEYS = ("owner_id", "agent_id", "reply_to", "in_reply_to", "subject")
+
+
 def decode_reply_token(token: str) -> ReplyContext | None:
     if not token:
         return None
     try:
-        return json.loads(decrypt(token))
+        payload = json.loads(decrypt(token))
     except Exception:  # noqa: BLE001 — any tamper/format error → not a valid token
         return None
+
+    # `core/encryption.py`'s Fernet key is shared across the whole system, so
+    # a DIFFERENT encrypted value (or an old-format token after a schema
+    # change) can decrypt successfully and hand back a wrong-shape object —
+    # a dict missing keys, a list, a bare string. Validate the shape before
+    # trusting it as a ReplyContext; the outbound relay indexes into this
+    # with ctx["reply_to"] etc. and a wrong-shape return would crash it.
+    if not isinstance(payload, dict):
+        return None
+    for key in _REQUIRED_KEYS:
+        if not isinstance(payload.get(key), str):
+            return None
+    return payload  # type: ignore[return-value]

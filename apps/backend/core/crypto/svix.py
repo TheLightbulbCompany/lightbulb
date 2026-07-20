@@ -36,6 +36,9 @@ def verify_svix_signature(*, secret: str, body: bytes, headers: dict) -> bool:
     try:
         key = base64.b64decode(raw_secret)
     except Exception:
+        # Deliberate fail-closed divergence from the Clerk inline version
+        # (routers/webhooks.py:72-76), which logs and skips (fail-open) on a
+        # malformed secret. Do not "fix" this back to match — it's intentional.
         return False
 
     msg_id = headers.get("svix-id", "")

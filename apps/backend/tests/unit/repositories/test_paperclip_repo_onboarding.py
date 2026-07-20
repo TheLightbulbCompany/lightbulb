@@ -102,3 +102,55 @@ async def test_sentinel_does_not_collide_with_a_user_row(paperclip_table):
     await repo.claim_onboarding("comp-1")
 
     assert await repo.get("comp-1") is None
+
+
+# ---------------------------------------------------------------------------
+# Stale-steal safety net (mirrors try_acquire_org_create_claim's coverage
+# in tests/test_paperclip_repo.py: control staleness via stale_after_seconds
+# rather than mocking the clock).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fresh_in_flight_claim_is_not_stealable(paperclip_table):
+    """A claim that hasn't gone stale yet is a legitimate in-flight seed --
+    a second submitter must NOT be able to take it over."""
+    repo = PaperclipRepo(paperclip_table)
+
+    assert await repo.claim_onboarding("comp-1") is True
+    # A generous stale window -> the claim we just took is nowhere near it.
+    assert await repo.claim_onboarding("comp-1", stale_after_seconds=120) is False
+
+
+@pytest.mark.asyncio
+async def test_stranded_claim_is_stealable(paperclip_table):
+    """A claim whose holder died between claiming and recording (no
+    seeded_at) must be stealable once it's past the stale window, or the
+    company is locked out of onboarding forever with no self-service
+    recovery."""
+    repo = PaperclipRepo(paperclip_table)
+
+    assert await repo.claim_onboarding("comp-1") is True
+    # stale_after_seconds=0 -> any existing claim's age counts as stale.
+    assert await repo.claim_onboarding("comp-1", stale_after_seconds=0) is True
+
+    # The steal must leave a fresh, still-claimable-by-record sentinel behind
+    # (not just return True) -- record_onboarding_ids should still work.
+    await repo.record_onboarding_ids("comp-1", goal_id="goal-1", project_id="proj-1")
+    row = await repo.get_onboarding("comp-1")
+    assert row["onboarding_goal_id"] == "goal-1"
+
+
+@pytest.mark.asyncio
+async def test_completed_seeded_claim_is_never_stealable(paperclip_table):
+    """A claim that already completed the seed (seeded_at set) must never be
+    stolen, no matter how old claimed_at is -- a completed seed is not a
+    stranded one."""
+    repo = PaperclipRepo(paperclip_table)
+
+    assert await repo.claim_onboarding("comp-1") is True
+    await repo.record_onboarding_ids("comp-1", goal_id="goal-1", project_id="proj-1")
+
+    # Even with a zero stale window (which would steal any unseeded claim),
+    # a seeded claim must stay put.
+    assert await repo.claim_onboarding("comp-1", stale_after_seconds=0) is False

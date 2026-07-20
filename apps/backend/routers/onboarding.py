@@ -94,6 +94,10 @@ async def submit_brief(
     if not await repo.claim_onboarding(ctx.company_id):
         return {"status": "already_submitted"}
 
+    # Set once seed_goal_and_project returns -- used by the except block
+    # below to decide whether the Paperclip rows need to be rolled back.
+    goal_id: str | None = None
+    project_id: str | None = None
     try:
         admin = _agents._admin()
         try:
@@ -143,7 +147,7 @@ async def submit_brief(
 
         # No board seeding here: the first run is Friday's own research
         # session, and the board fills at the END of it with the three
-        # next-move tasks she proposes (BOOTSTRAP step 5). Each of those
+        # next-move tasks she proposes (BOOTSTRAP step 7). Each of those
         # runs later as its own session when the owner picks it.
         stage_first_run_files(
             workspace=get_workspace(),
@@ -158,20 +162,61 @@ async def submit_brief(
         await repo.record_onboarding_ids(ctx.company_id, goal_id=goal_id, project_id=project_id)
     except BaseException:
         # BaseException, not Exception: asyncio.CancelledError (client
-        # disconnect mid-flight) inherits from BaseException, not Exception,
-        # and the onboarding claim has no stale-stealing or takeover path by
-        # design. Skipping the release on cancellation would strand the
-        # claim permanently, locking the company out of onboarding with no
-        # automatic or self-service recovery. The bare `raise` below still
-        # re-raises, so cancellation and interrupts propagate as before —
-        # this only adds the cleanup.
+        # disconnect mid-flight) inherits from BaseException, not Exception.
+        # Skipping the release here would strand the claim: FIX 2 gives it a
+        # stale-steal safety net (claim_onboarding takes over a >60s-old
+        # claim with no seeded_at), but releasing promptly still lets an
+        # immediate retry re-enter instead of waiting out that window. The
+        # bare `raise` below still re-raises, so cancellation and interrupts
+        # propagate as before — this only adds the cleanup.
         #
+        # If seed_goal_and_project already returned ids, both Paperclip rows
+        # exist but the failure happened before (or during) recording them
+        # against the claim — e.g. a DynamoDB throttle on
+        # record_onboarding_ids, which is NOT in the caught
+        # (PaperclipApiError, httpx.HTTPError, RuntimeError) set above and so
+        # reaches here directly. Left alone, a client retry would win a
+        # fresh claim and seed a SECOND goal/project pair for the same
+        # company. Roll both back: delete the project, then the goal, then
+        # release the claim. Each step runs independently of the others'
+        # success — a failure deleting the project must not skip the goal
+        # delete or the claim release — and none of them may raise past
+        # this block, or a cleanup failure would replace the ORIGINAL error
+        # instead of the caller seeing it.
+        if goal_id is not None and project_id is not None:
+            try:
+                await admin.delete_project(session_cookie=ctx.session_cookie, project_id=project_id)
+            except Exception as cleanup_err:
+                logger.error(
+                    "onboarding: failed to roll back project %s for company %s after post-seed failure: %s",
+                    project_id,
+                    ctx.company_id,
+                    cleanup_err,
+                )
+            try:
+                await admin.delete_goal(session_cookie=ctx.session_cookie, goal_id=goal_id)
+            except Exception as cleanup_err:
+                logger.error(
+                    "onboarding: failed to roll back goal %s for company %s after post-seed failure: %s",
+                    goal_id,
+                    ctx.company_id,
+                    cleanup_err,
+                )
+
         # Caveat: awaiting inside a cancellation handler is not guaranteed
-        # to complete — this release can itself be cancelled (e.g. on a hard
-        # shutdown). This makes the release usually happen instead of never;
-        # it is not a guarantee, and no shielded/retried release is
-        # attempted here on purpose.
-        await repo.release_onboarding_claim(ctx.company_id)
+        # to complete — this release (and the deletes above) can themselves
+        # be cancelled (e.g. on a hard shutdown). This makes recovery
+        # usually happen instead of never; it is not a guarantee, and no
+        # shielded/retried cleanup is attempted here on purpose — FIX 2's
+        # stale-steal safety net covers what doesn't complete.
+        try:
+            await repo.release_onboarding_claim(ctx.company_id)
+        except Exception as cleanup_err:
+            logger.error(
+                "onboarding: failed to release claim for company %s after post-seed failure: %s",
+                ctx.company_id,
+                cleanup_err,
+            )
         raise
 
     capture_product_event(

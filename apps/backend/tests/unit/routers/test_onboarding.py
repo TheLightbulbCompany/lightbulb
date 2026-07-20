@@ -49,10 +49,11 @@ def client(ctx, monkeypatch):
     admin.list_agents = AsyncMock(return_value=[FRIDAY, ATLAS])
     admin.create_goal = AsyncMock(return_value={"id": "goal-1"})
     admin.create_project = AsyncMock(return_value={"id": "proj-1"})
+    admin.delete_goal = AsyncMock()
+    admin.delete_project = AsyncMock()
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
 
     ws = MagicMock()
-    ws.write_file_if_missing = MagicMock(return_value=True)
     ws.write_file = MagicMock()
     monkeypatch.setattr(onboarding_mod, "get_workspace", lambda: ws)
 
@@ -209,7 +210,7 @@ def test_second_submit_for_same_company_is_a_noop(client):
 
     assert resp.json() == {"status": "already_submitted"}
     client.admin.create_goal.assert_not_awaited()
-    client.ws.write_file_if_missing.assert_not_called()
+    client.ws.write_file.assert_not_called()
 
 
 def test_paperclip_not_ready_releases_the_claim(client):
@@ -228,4 +229,51 @@ def test_seed_failure_releases_the_claim(client):
 
     assert resp.status_code == 409
     client.release.assert_awaited_once_with("comp-1")
-    client.ws.write_file_if_missing.assert_not_called()
+    client.ws.write_file.assert_not_called()
+
+
+# --- Post-seed failure rolls back both seeded rows (FIX 1) -------------------
+
+
+def test_post_seed_failure_rolls_back_goal_and_project_then_releases_claim(client):
+    """Once seed_goal_and_project has returned ids, a later failure (e.g. a
+    DynamoDB throttle on record_onboarding_ids, which is NOT in the caught
+    (PaperclipApiError, httpx.HTTPError, RuntimeError) set and so escapes as
+    a raw 500) must delete both seeded Paperclip rows before releasing the
+    claim. Otherwise a client retry wins a fresh claim and seeds a SECOND
+    goal/project pair for the same company."""
+    client.record.side_effect = Exception("dynamodb throttled")
+
+    with pytest.raises(Exception, match="dynamodb throttled"):
+        client.post("/api/v1/onboarding/brief", json={"path": "new", "input": "An agency"})
+
+    client.admin.delete_project.assert_awaited_once_with(session_cookie="cookie", project_id="proj-1")
+    client.admin.delete_goal.assert_awaited_once_with(session_cookie="cookie", goal_id="goal-1")
+    client.release.assert_awaited_once_with("comp-1")
+
+
+def test_post_seed_cleanup_is_failure_tolerant_and_preserves_the_original_error(client):
+    """A failure deleting the project must not skip the goal delete or the
+    claim release, and the cleanup failure itself must not mask the
+    ORIGINAL error the caller sees."""
+    client.record.side_effect = Exception("dynamodb throttled")
+    client.admin.delete_project.side_effect = Exception("project delete also failed")
+
+    with pytest.raises(Exception, match="dynamodb throttled"):
+        client.post("/api/v1/onboarding/brief", json={"path": "new", "input": "An agency"})
+
+    client.admin.delete_goal.assert_awaited_once_with(session_cookie="cookie", goal_id="goal-1")
+    client.release.assert_awaited_once_with("comp-1")
+
+
+def test_seed_only_failure_does_not_attempt_rollback(client):
+    """When seed_goal_and_project itself fails (goal_id/project_id never
+    assigned), there is nothing to roll back here -- seed_goal_and_project
+    already deletes the goal it created if the project create fails."""
+    client.admin.create_goal = AsyncMock(side_effect=RuntimeError("upstream down"))
+
+    resp = client.post("/api/v1/onboarding/brief", json={"path": "new", "input": "An agency"})
+
+    assert resp.status_code == 409
+    client.admin.delete_project.assert_not_awaited()
+    client.admin.delete_goal.assert_not_awaited()

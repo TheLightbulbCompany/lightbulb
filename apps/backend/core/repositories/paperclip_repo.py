@@ -465,7 +465,7 @@ class PaperclipRepo:
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             pass
 
-    async def claim_onboarding(self, company_id: str) -> bool:
+    async def claim_onboarding(self, company_id: str, *, stale_after_seconds: int = 60) -> bool:
         """Claim the one-shot onboarding seed for a COMPANY.
 
         The table is keyed per-user, so a field on the submitting user's
@@ -475,23 +475,91 @@ class PaperclipRepo:
 
         PK conditional write: strongly consistent and cross-instance-safe,
         so two tabs submitting the brief at once cannot both seed. Exactly
-        one gets True.
+        one gets True on a fresh claim.
 
-        Unlike the org-create claim there is no stale-stealing — onboarding
-        happens once per company, forever. Callers MUST
-        ``release_onboarding_claim`` on failure so a retry can re-enter.
+        On a collision (a sentinel already exists) this reads it via
+        ``get_onboarding`` and decides:
+
+        * ``seeded_at`` present -> the seed genuinely completed -> False.
+          A finished seed is never stealable, no matter how old.
+        * no ``seeded_at`` and ``claimed_at`` is older than
+          ``stale_after_seconds`` -> stranded (the holder died between
+          claiming and recording -- e.g. an ECS task kill or a deploy
+          landing in that ~3s window, which ``release_onboarding_claim``
+          never runs for) -> take it over and return True.
+        * otherwise -> a claim is legitimately in flight -> False.
+
+        Without this, a stranded sentinel locks the company out of
+        onboarding forever: every later submit sees ``already_submitted``
+        and the user is waved into a company with no goal, no project, and
+        no first-run instructions staged, with no self-service recovery.
+
+        Mirrors ``try_acquire_org_create_claim``'s structure: a fresh
+        conditional put, then a strongly-consistent read, then a guarded
+        steal keyed on the unchanged ``claimed_at`` (plus
+        ``attribute_not_exists(seeded_at)``, so a seed that lands mid-steal
+        can't be clobbered) -- so two simultaneous stealers can't both win.
+
+        Callers MUST ``release_onboarding_claim`` on failure so a retry (or
+        a steal) can re-enter without waiting out the stale window.
         """
+        key = _onboarding_claim_key(company_id)
+        now = datetime.now(timezone.utc)
+        item = {
+            "user_id": key,
+            "kind": "onboarding_claim",
+            "company_id": company_id,
+            "claimed_at": now.isoformat(),
+        }
         table = self._table()
+
+        # 1. Fresh claim — wins iff no sentinel exists yet.
         try:
             await run_in_thread(
                 table.put_item,
-                Item={
-                    "user_id": _onboarding_claim_key(company_id),
-                    "kind": "onboarding_claim",
-                    "company_id": company_id,
-                    "claimed_at": datetime.now(timezone.utc).isoformat(),
-                },
+                Item=item,
                 ConditionExpression="attribute_not_exists(user_id)",
+            )
+            return True
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            pass
+
+        # 2. A sentinel exists — strongly-consistent read, then decide.
+        existing = await self.get_onboarding(company_id)
+        if existing is None:
+            # Released (deleted) between our put and get — try one fresh claim.
+            try:
+                await run_in_thread(
+                    table.put_item,
+                    Item=item,
+                    ConditionExpression="attribute_not_exists(user_id)",
+                )
+                return True
+            except table.meta.client.exceptions.ConditionalCheckFailedException:
+                return False
+
+        if existing.get("seeded_at"):
+            # Genuinely done — never steal a completed seed.
+            return False
+
+        prev_claimed_at = existing.get("claimed_at", "")
+        try:
+            age = (now - datetime.fromisoformat(prev_claimed_at)).total_seconds()
+        except (ValueError, TypeError):
+            age = float("inf")  # unparseable timestamp → treat as stale
+        if age < stale_after_seconds:
+            # A claim is legitimately in flight.
+            return False
+
+        # Steal — overwrite only if claimed_at is unchanged since our read
+        # AND no seed has landed since, so two concurrent stealers can't
+        # both win and a just-completed seed can't be clobbered.
+        try:
+            await run_in_thread(
+                table.put_item,
+                Item=item,
+                ConditionExpression="claimed_at = :prev AND attribute_not_exists(seeded_at)",
+                ExpressionAttributeValues={":prev": prev_claimed_at},
             )
             return True
         except table.meta.client.exceptions.ConditionalCheckFailedException:

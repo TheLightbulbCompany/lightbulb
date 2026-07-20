@@ -82,7 +82,7 @@ def test_render_first_run_bootstrap_researches_before_proposing_tasks():
     assert "Max" in md
     # New ordering (spec §4.D): understand the business + write the docs FIRST,
     # then propose the three next-move tasks as the session's closing output.
-    # Anchor on step 5's unique "three best next" (the full phrase wraps a line).
+    # Anchor on step 7's unique "three best next" (the full phrase wraps a line).
     assert md.index("MISSION.md") < md.index("three best next")
     # Task proposals are path-aware: a website-first move for a NEW business,
     # growth moves for a GROW one (they already have a site).
@@ -170,8 +170,16 @@ async def test_seed_creates_goal_then_project_linked_to_it():
     assert "parentId" not in goal_body
 
     project_body = admin.create_project.await_args.kwargs["body"]
-    # goalIds[0] is mirrored into projects.goalId, which is what
-    # getProjectDefaultGoalId reads for issue inheritance.
+    # Regression this guards: a task created with projectId = the onboarding
+    # project must resolve goalId to the onboarding goal. Paperclip mirrors
+    # goalIds[0] into the legacy projects.goalId column that
+    # getProjectDefaultGoalId reads, and resolveIssueGoalId returns
+    # projectGoalId ?? null for any issue with a project -- it does NOT fall
+    # through to the company default. So if this ever becomes goalId (singular)
+    # instead of goalIds (plural, list), or drops goal_id from the list, every
+    # task filed into the project goes silently unattributed. This is the
+    # highest level our code can assert the fix at -- Paperclip's own mirroring
+    # of goalIds[0] -> goalId is upstream behavior, not ours to unit test here.
     assert project_body["goalIds"] == ["goal-1"]
     assert "targetDate" not in project_body
 

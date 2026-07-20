@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 
 import { getListing } from "@/lib/marketplace/api";
 import { BuyButton } from "@/components/marketplace/storefront/Listing/BuyButton";
+import { DeployCompanyButton } from "@/components/marketplace/company/DeployCompanyButton";
 import { companyMeta } from "@/components/marketplace/storefront/Listing/CompanyCard";
 import { MarkdownDescription } from "@/components/marketplace/storefront/Listing/MarkdownDescription";
 import { OwnerManageLink } from "@/components/marketplace/storefront/Listing/OwnerManageLink";
@@ -49,22 +50,7 @@ export default async function ListingDetail({
           </div>
           <div className="mt-6">
             {company ? (
-              company.min_plan === "ultra_pro" ? (
-                <button
-                  disabled
-                  className="editorial-btn editorial-btn--primary h-12 px-6 text-sm opacity-60"
-                  title="Ultra Pro tier coming soon"
-                >
-                  Requires Ultra Pro
-                </button>
-              ) : (
-                <button
-                  disabled
-                  className="editorial-btn editorial-btn--primary h-12 px-6 text-sm opacity-60"
-                >
-                  Deploy — coming soon
-                </button>
-              )
+              <DeployCompanyButton listing={listing} />
             ) : (
               <BuyButton listing={listing} />
             )}

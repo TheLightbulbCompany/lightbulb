@@ -49,7 +49,91 @@ export const EVENT_KEY_MAP: Record<string, string[]> = {
 // silently skip a live key. That drift is exactly what would strand
 // /teams/approvals and /teams/inbox/runs (both feed NeedsAttentionBand via
 // useInboxTriage) behind the read layer's 15s dedup window on Teams re-entry.
-const ALL_KEYS = [...new Set(Object.values(EVENT_KEY_MAP).flat())];
+/**
+ * `activity.logged` is Paperclip's ONLY signal that a specific row changed —
+ * there are no `issue.*` / `routine.*` / `project.*` live-event types. Every
+ * mutation publishes one generic `activity.logged` carrying the discriminator
+ * in its payload (paperclip/server/src/services/activity-log.ts), and until
+ * now nothing downstream read it, so the ROW-level caches never refreshed.
+ *
+ * Maps `entityType` → the SWR path prefix(es) its rows live under. The list
+ * key IS the prefix; the detail key is `${prefix}/${entityId}`.
+ *
+ * Why `entityId` is enough: every one of these detail panels is opened with
+ * the row's UUID — RoutinesPanel `r.id`, ProjectsListPanel `p.id`, GoalsPanel
+ * `node.id`, FailedRunRow `run.id`. None of these row types even HAS a human
+ * identifier field (only `Issue` does). So `entityId` interpolates straight
+ * into the cache key with no lookup.
+ *
+ * Two upstream escape hatches can emit a non-UUID `entityId` — the plugin SDK
+ * (`plugin-host-services.ts`, arbitrary entityType/entityId) and built-in
+ * agents (`built-in-agents.ts`, slug fallback when the UUID is null). Both are
+ * inert here: they produce a key that matches nothing in cache.
+ */
+const ACTIVITY_ENTITY_PREFIXES: Record<string, string[]> = {
+  issue: ["/teams/issues"],
+  routine: ["/teams/routines"],
+  project: ["/teams/projects"],
+  goal: ["/teams/goals"],
+  // No per-agent detail key exists — AgentInspectorPanel finds its agent by
+  // scanning the roster — so this refreshes the LIST only. Worth wiring
+  // anyway: `teams.agent.status` (a run-status event) was the only thing that
+  // refreshed the roster, so an agent.paused/renamed activity left it stale.
+  agent: ["/teams/agents"],
+  // RunDetailPanel reads the first with the second as a legacy fallback.
+  heartbeat_run: ["/teams/heartbeat-runs", "/teams/runs"],
+};
+
+// The reconcile set must stay the union of every key ANY path can invalidate,
+// entity prefixes included — otherwise a routine/project/goal changed while
+// the user was outside Teams stays stale on re-entry, since the read layer's
+// 15s dedup blocks the mount-refetch. Same drift trap the comment above
+// EVENT_KEY_MAP warns about.
+const ALL_KEYS = [
+  ...new Set([
+    ...Object.values(EVENT_KEY_MAP).flat(),
+    ...Object.values(ACTIVITY_ENTITY_PREFIXES).flat(),
+  ]),
+];
+
+type ActivityPayload = {
+  entityType?: unknown;
+  entityId?: unknown;
+  details?: { identifier?: unknown } | null;
+};
+
+/**
+ * Resolve an activity payload to the concrete cache-key bases it should
+ * invalidate: `{prefix}` (the list) and `{prefix}/{id}` (the detail subtree).
+ *
+ * For issues we also try `details.identifier` (e.g. "ADM-481") — belt and
+ * braces for any identifier-keyed panel, NOT the mechanism: it is set at only
+ * ~29 of the 68 issue activity sites, whereas `entityId` is always present.
+ */
+export function activityTargets(data: unknown): {
+  lists: string[];
+  details: string[];
+} {
+  const payload = (data ?? {}) as ActivityPayload;
+  const entityType =
+    typeof payload.entityType === "string" ? payload.entityType : "";
+  const prefixes = ACTIVITY_ENTITY_PREFIXES[entityType];
+  if (!prefixes) return { lists: [], details: [] };
+
+  const ids = [
+    ...new Set(
+      [
+        payload.entityId,
+        entityType === "issue" ? payload.details?.identifier : undefined,
+      ].filter((v): v is string => typeof v === "string" && v.length > 0),
+    ),
+  ];
+
+  return {
+    lists: prefixes,
+    details: prefixes.flatMap((p) => ids.map((id) => `${p}/${id}`)),
+  };
+}
 
 export function TeamsEventsProvider({ children }: { children: React.ReactNode }) {
   const { isConnected, send, onEvent } = useGateway();
@@ -75,6 +159,25 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
         (key) =>
           typeof key === "string" &&
           (key === prefix || key.startsWith(`${prefix}?`)),
+      );
+    },
+    [mutate],
+  );
+
+  // Invalidate ONE entity's detail key plus its sub-resource keys
+  // (`/comments`, `/interactions`, …). `mutateKeyPrefix` above deliberately
+  // stops at the `?` boundary so `/teams/inbox` can't match `/teams/inbox-foo`
+  // — but that also means it never matches detail keys, which live one path
+  // segment DEEPER (`/teams/issues/{id}`). Hence this second matcher, scoped
+  // to a single id so other cached issue details are left alone.
+  const mutateEntitySubtree = useCallback(
+    (base: string) => {
+      mutate(
+        (key) =>
+          typeof key === "string" &&
+          (key === base ||
+            key.startsWith(`${base}/`) ||
+            key.startsWith(`${base}?`)),
       );
     },
     [mutate],
@@ -118,7 +221,7 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
 
   // Wire event listener.
   useEffect(() => {
-    const unsub = onEvent((event, _data) => {
+    const unsub = onEvent((event, data) => {
       if (!event.startsWith("teams.")) return;
       if (event === "teams.stream.resumed") {
         for (const key of ALL_KEYS) mutateKeyPrefix(key);
@@ -131,6 +234,16 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
         // payloads don't carry — a follow-up if pulse counts look wrong.
         const { started, completed } = readFirstRun(user);
         if (started && !completed) capture("first_run_board_pulse");
+
+        // Keep the OPEN detail panel live. Without this the unconditional
+        // list keys below refresh but the row's own key never does, so an
+        // agent changing a task/routine/project/goal (or another user editing
+        // it) leaves the panel showing stale values until a hard reload —
+        // `revalidateOnFocus` is off globally and none of these detail hooks
+        // sets a refreshInterval.
+        const targets = activityTargets(data);
+        for (const key of targets.lists) mutateKeyPrefix(key);
+        for (const base of targets.details) mutateEntitySubtree(base);
       }
       const keys = EVENT_KEY_MAP[event];
       if (!keys || keys.length === 0) return;
@@ -139,7 +252,7 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
     return () => {
       unsub();
     };
-  }, [onEvent, mutateKeyPrefix, user]);
+  }, [onEvent, mutateKeyPrefix, mutateEntitySubtree, user]);
 
   return <>{children}</>;
 }

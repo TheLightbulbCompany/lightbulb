@@ -557,7 +557,6 @@ export function useAgentChat(
   // connection drop, so a lost `run_active:false` can't strand it true.
   const [containerRunActive, setContainerRunActive] = useState(false);
 
-
   // Ephemeral `/btw` side-result cards. Transient by design: never written to
   // _messageCache or chatMessages, so they don't survive a refresh and are not
   // part of the persisted transcript — matching OpenClaw's "Not saved to chat

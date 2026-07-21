@@ -114,18 +114,21 @@ async def submit_brief(
     holder = uuid.uuid4().hex
     claim_result = await repo.claim_onboarding(ctx.company_id, holder=holder)
     if claim_result is OnboardingClaimResult.SEEDED:
-        # SEEDED means the sentinel carries seeded_at, but the DURABLE truth is
-        # the container's onboarded_at -- stamped only after staging fully
-        # succeeds, and never set on the rollback path. A peer that recorded
-        # seeded_at moments before its own staging fails (and rolls the seed
-        # back) would otherwise have this caller told "already_submitted" for a
-        # company about to end up empty. If the container isn't stamped yet,
-        # report not_ready so the caller retries (the peer either finishes and
-        # stamps it, or rolls back and releases the claim for a real retry).
-        container = await container_repo.get_by_owner_id(ctx.owner_id)
-        if (container or {}).get("onboarded_at"):
-            return {"status": "already_submitted"}
-        raise HTTPException(status_code=409, detail="not_ready")
+        # Durably done: seeded_at is set on a claim that was NOT rolled back
+        # (the rollback path deletes the goal/project and releases the claim,
+        # so a released claim never reports SEEDED). The goal + project exist,
+        # so a peer here walks into a finished company.
+        #
+        # There is a narrow, self-healing window: a peer can read seeded_at in
+        # the few hundred ms between record_onboarding_ids and a failing
+        # caller's rollback-release, and be told already_submitted for a
+        # company about to be emptied. Accepted deliberately -- it needs a
+        # staging failure AND a concurrent submit in that window, the
+        # container never gets stamped onboarded so any other member still
+        # onboards it, and the alternative (gating this on the container stamp)
+        # turns a swallowed onboarded_at write-failure into a permanent
+        # org-wide 409 lockout, which is strictly worse.
+        return {"status": "already_submitted"}
     if claim_result is OnboardingClaimResult.IN_FLIGHT:
         # A peer holds a fresh (non-stale) claim right now. This is
         # transient, not done -- treating it as already_submitted would

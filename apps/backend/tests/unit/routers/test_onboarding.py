@@ -69,10 +69,6 @@ def client(ctx, monkeypatch):
     # per-container funnel-done marker /container/status surfaces).
     mark_onboarded = AsyncMock()
     monkeypatch.setattr(onboarding_mod.container_repo, "update_fields", mark_onboarded)
-    # A SEEDED claim only reports already_submitted once the container is
-    # DURABLY stamped onboarded. Default to stamped; the race test overrides.
-    get_container = AsyncMock(return_value={"onboarded_at": "2026-07-20T00:00:00+00:00"})
-    monkeypatch.setattr(onboarding_mod.container_repo, "get_by_owner_id", get_container)
 
     app.dependency_overrides[get_current_user] = _personal_auth
     app.dependency_overrides[onboarding_mod._ctx] = lambda: ctx
@@ -85,7 +81,6 @@ def client(ctx, monkeypatch):
         c.record = repo.record_onboarding_ids
         c.get_onboarding = repo.get_onboarding
         c.mark_onboarded = mark_onboarded
-        c.get_container = get_container
         yield c
     app.dependency_overrides.clear()
 
@@ -248,8 +243,8 @@ def test_same_holder_threads_through_claim_and_record(client):
 
 
 def test_second_submit_for_same_company_is_a_noop(client):
-    """SEEDED plus a durably-onboarded container is the ONLY combination that
-    should produce already_submitted."""
+    """SEEDED is a durably-done company (seeded_at on a non-rolled-back claim)
+    -- the goal + project exist, so a peer here is already_submitted."""
     client.claim.return_value = OnboardingClaimResult.SEEDED
 
     resp = client.post("/api/v1/onboarding/brief", json={"path": "new", "input": "An agency"})
@@ -257,26 +252,6 @@ def test_second_submit_for_same_company_is_a_noop(client):
     assert resp.json() == {"status": "already_submitted"}
     client.admin.create_goal.assert_not_awaited()
     client.ws.write_file.assert_not_called()
-
-
-def test_seeded_but_container_not_yet_stamped_is_a_retryable_409(client):
-    """SEEDED means the sentinel carries seeded_at, but the durable truth is
-    the container's onboarded_at. A peer that recorded seeded_at moments
-    before its own staging fails (and rolls the seed back) would otherwise
-    have this caller told "already done" for a company about to be empty.
-    Until the container is stamped, it's a retryable 409 -- the peer either
-    finishes and stamps it, or rolls back and frees the claim for a real
-    retry."""
-    client.claim.return_value = OnboardingClaimResult.SEEDED
-    client.get_container.return_value = {"status": "running"}  # no onboarded_at
-
-    resp = client.post("/api/v1/onboarding/brief", json={"path": "new", "input": "An agency"})
-
-    assert resp.status_code == 409
-    assert resp.json()["detail"] == "not_ready"
-    client.admin.create_goal.assert_not_awaited()
-    # Not the caller's claim to release -- it never won one.
-    client.release.assert_not_awaited()
 
 
 def test_in_flight_claim_is_a_retryable_409_not_already_submitted(client):

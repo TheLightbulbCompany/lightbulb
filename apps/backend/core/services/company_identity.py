@@ -60,6 +60,34 @@ RESERVED_SLUGS = frozenset(
         "uucp",
         "webmaster",
         "www",
+        # Company slugs are now subdomains of AGENT_EMAIL_DOMAIN (e.g.
+        # {slug}.isol8.co), so these guard against a tenant slug shadowing
+        # one of our own infrastructure subdomains.
+        "api",
+        "ws",
+        "app",
+        "dev",
+        "staging",
+        "prod",
+        "cdn",
+        "assets",
+        "static",
+        "control",
+        "gateway",
+        "auth",
+        "login",
+        "status",
+        "docs",
+        "blog",
+        "smtp",
+        "imap",
+        "pop",
+        "ns",
+        "ns1",
+        "ns2",
+        "mx",
+        "vpn",
+        "test",
     }
 )
 

@@ -9,77 +9,43 @@ os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 from core.services import agent_email  # noqa: E402
 
 
-def test_primary_address_is_just_the_slug():
-    """The company's main address is its CEO's — {slug}@domain."""
-    addr = agent_email.build_agent_email_address(
-        slug="acme", agent_name="Friday", domain="agents.isol8.co", is_primary=True, agent_id="agent_friday"
-    )
-    assert addr == "acme@agents.isol8.co"
+def test_address_is_agent_at_company_subdomain():
+    """Each agent is a mailbox on its own company subdomain —
+    {agent}@{slug}.{domain}."""
+    addr = agent_email.build_agent_email_address(slug="acme-robotics", agent_name="Friday", domain="isol8.co")
+    assert addr == "friday@acme-robotics.isol8.co"
 
 
-def test_secondary_address_appends_the_agent():
-    addr = agent_email.build_agent_email_address(
-        slug="acme", agent_name="Atlas", domain="agents.isol8.co", is_primary=False, agent_id="agent_atlas"
-    )
-    assert addr == "acme-atlas@agents.isol8.co"
+def test_different_agent_name_yields_different_local_part():
+    addr = agent_email.build_agent_email_address(slug="acme-robotics", agent_name="Atlas", domain="isol8.co")
+    assert addr == "atlas@acme-robotics.isol8.co"
 
 
-def test_address_is_lowercased_and_agent_name_slugified():
-    addr = agent_email.build_agent_email_address(
-        slug="Acme",
-        agent_name="  Chief  Ops!! ",
-        domain="Agents.Isol8.co",
-        is_primary=False,
-        agent_id="agent_chief_ops",
-    )
-    assert addr == "acme-chief-ops@agents.isol8.co"
+def test_agent_name_is_slugified_into_the_local_part():
+    addr = agent_email.build_agent_email_address(slug="acme-robotics", agent_name="Chief Ops", domain="isol8.co")
+    assert addr == "chief-ops@acme-robotics.isol8.co"
+
+
+def test_address_is_lowercased_and_trimmed():
+    addr = agent_email.build_agent_email_address(slug=" Acme ", agent_name="  Chief  Ops!! ", domain="ISOL8.co")
+    assert addr == "chief-ops@acme.isol8.co"
 
 
 def test_address_is_deterministic():
-    kwargs = dict(slug="acme", agent_name="Friday", domain="agents.isol8.co", is_primary=True, agent_id="agent_friday")
+    kwargs = dict(slug="acme-robotics", agent_name="Friday", domain="isol8.co")
     assert agent_email.build_agent_email_address(**kwargs) == (agent_email.build_agent_email_address(**kwargs))
 
 
-def test_secondary_address_disambiguates_when_truncation_would_collide():
-    """Two agents of the same owner whose names slugify to a shared 59+ char
-    prefix used to truncate to the IDENTICAL local part and collide — the
-    second mint would then overwrite the first agent's row via
-    `agent_email_repo.put`'s owner-scoped conditional. Truncation must now
-    fold in a short deterministic disambiguator derived from `agent_id`."""
-    common_prefix = "x" * 70
-    addr_a = agent_email.build_agent_email_address(
-        slug="acme",
-        agent_name=f"{common_prefix}-alpha",
-        domain="agents.isol8.co",
-        is_primary=False,
-        agent_id="agent_1",
-    )
-    addr_b = agent_email.build_agent_email_address(
-        slug="acme",
-        agent_name=f"{common_prefix}-beta",
-        domain="agents.isol8.co",
-        is_primary=False,
-        agent_id="agent_2",
-    )
-    assert addr_a != addr_b
-    for addr in (addr_a, addr_b):
-        local = addr.split("@", 1)[0]
-        assert len(local) <= agent_email.MAX_LOCAL_PART_LEN
-        assert not local.endswith("-")
-        assert "--" not in local
-
-
-def test_secondary_address_disambiguator_is_deterministic():
-    """Same agent_id + same inputs must always produce the same address —
-    the disambiguator is a stable hash, not randomness."""
-    kwargs = dict(
-        slug="acme",
-        agent_name="x" * 80,
-        domain="agents.isol8.co",
-        is_primary=False,
-        agent_id="agent_stable",
-    )
-    assert agent_email.build_agent_email_address(**kwargs) == agent_email.build_agent_email_address(**kwargs)
+def test_two_agents_of_the_same_company_get_different_addresses():
+    """Each agent is its own mailbox on the company subdomain, so two agents
+    of the same owner trivially never collide — no truncation/disambiguation
+    machinery is needed (the prior per-agent address-collision bug is gone
+    with the machinery that caused it)."""
+    friday = agent_email.build_agent_email_address(slug="acme-robotics", agent_name="Friday", domain="isol8.co")
+    atlas = agent_email.build_agent_email_address(slug="acme-robotics", agent_name="Atlas", domain="isol8.co")
+    assert friday != atlas
+    assert friday == "friday@acme-robotics.isol8.co"
+    assert atlas == "atlas@acme-robotics.isol8.co"
 
 
 @pytest.mark.asyncio
@@ -106,7 +72,7 @@ async def test_mint_skips_when_domain_unset(monkeypatch):
 @pytest.mark.asyncio
 async def test_mint_skips_when_slug_missing(monkeypatch):
     """No slug means no address — an owner whose slug allocation failed."""
-    monkeypatch.setattr(agent_email.settings, "AGENT_EMAIL_DOMAIN", "agents.isol8.co")
+    monkeypatch.setattr(agent_email.settings, "AGENT_EMAIL_DOMAIN", "isol8.co")
     calls = []
 
     async def fake_put(**kwargs):
@@ -127,7 +93,7 @@ async def test_mint_skips_when_slug_missing(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_mint_creates_row_with_owner_as_verified_sender(monkeypatch):
-    monkeypatch.setattr(agent_email.settings, "AGENT_EMAIL_DOMAIN", "agents.isol8.co")
+    monkeypatch.setattr(agent_email.settings, "AGENT_EMAIL_DOMAIN", "isol8.co")
     puts = []
 
     async def fake_get(address):
@@ -148,7 +114,7 @@ async def test_mint_creates_row_with_owner_as_verified_sender(monkeypatch):
         slug="acme",
     )
 
-    assert address == "acme@agents.isol8.co"
+    assert address == "friday@acme.isol8.co"
     assert len(puts) == 1
     assert puts[0]["owner_id"] == "user_1"
     assert puts[0]["agent_id"] == "agent_friday"
@@ -158,7 +124,7 @@ async def test_mint_creates_row_with_owner_as_verified_sender(monkeypatch):
 @pytest.mark.asyncio
 async def test_mint_is_idempotent_when_row_exists_for_the_same_owner(monkeypatch):
     """Re-minting your own address is a no-op re-affirmation, not a write."""
-    monkeypatch.setattr(agent_email.settings, "AGENT_EMAIL_DOMAIN", "agents.isol8.co")
+    monkeypatch.setattr(agent_email.settings, "AGENT_EMAIL_DOMAIN", "isol8.co")
     puts = []
 
     async def fake_get(address):
@@ -177,7 +143,7 @@ async def test_mint_is_idempotent_when_row_exists_for_the_same_owner(monkeypatch
         owner_email="o@example.com",
         slug="acme",
     )
-    assert address == "acme@agents.isol8.co"
+    assert address == "friday@acme.isol8.co"
     assert puts == []
 
 
@@ -185,7 +151,7 @@ async def test_mint_is_idempotent_when_row_exists_for_the_same_owner(monkeypatch
 async def test_mint_refuses_and_logs_when_address_held_by_a_different_owner(monkeypatch, caplog):
     """A collision must be LOUD, not a silent success — the caller must not
     believe minting worked when it wrote nothing."""
-    monkeypatch.setattr(agent_email.settings, "AGENT_EMAIL_DOMAIN", "agents.isol8.co")
+    monkeypatch.setattr(agent_email.settings, "AGENT_EMAIL_DOMAIN", "isol8.co")
     puts = []
 
     async def fake_get(address):
@@ -216,7 +182,7 @@ async def test_mint_refuses_and_logs_when_address_held_by_a_different_owner(monk
 async def test_mint_returns_none_when_conditional_put_loses_a_race(monkeypatch):
     """`agent_email_repo.put` returning None (lost the conditional put race)
     must be treated as a failed mint, not surfaced as a minted address."""
-    monkeypatch.setattr(agent_email.settings, "AGENT_EMAIL_DOMAIN", "agents.isol8.co")
+    monkeypatch.setattr(agent_email.settings, "AGENT_EMAIL_DOMAIN", "isol8.co")
 
     async def fake_get(address):
         return None
@@ -239,7 +205,7 @@ async def test_mint_returns_none_when_conditional_put_loses_a_race(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_mint_never_raises_on_repo_failure(monkeypatch):
-    monkeypatch.setattr(agent_email.settings, "AGENT_EMAIL_DOMAIN", "agents.isol8.co")
+    monkeypatch.setattr(agent_email.settings, "AGENT_EMAIL_DOMAIN", "isol8.co")
 
     async def boom(*args, **kwargs):
         raise RuntimeError("dynamo down")
@@ -257,11 +223,11 @@ async def test_mint_never_raises_on_repo_failure(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_mint_never_raises_on_bad_agent_name_when_not_primary(monkeypatch):
-    """`agent_name` is only dereferenced (via `_agent_slug`) on the non-primary
-    path — probe that path directly rather than leaving `is_primary` at its
-    default `True`, which never touches `agent_name` at all."""
-    monkeypatch.setattr(agent_email.settings, "AGENT_EMAIL_DOMAIN", "agents.isol8.co")
+async def test_mint_never_raises_on_bad_agent_name(monkeypatch):
+    """`agent_name` is always dereferenced via `_agent_slug` now (there is no
+    more primary/secondary distinction) — a bad `agent_name` (e.g. `None`)
+    must not blow up minting, just fail it."""
+    monkeypatch.setattr(agent_email.settings, "AGENT_EMAIL_DOMAIN", "isol8.co")
 
     result = await agent_email.mint_agent_email_address(
         owner_id="user_1",
@@ -269,7 +235,6 @@ async def test_mint_never_raises_on_bad_agent_name_when_not_primary(monkeypatch)
         agent_name=None,
         owner_email="o@example.com",
         slug="acme",
-        is_primary=False,
     )
     assert result is None
 
@@ -288,33 +253,3 @@ async def test_mint_never_raises_on_non_string_domain(monkeypatch):
         slug="acme",
     )
     assert result is None
-
-
-def test_secondary_local_part_respects_rfc5321_limit():
-    """RFC 5321 caps the local part at 64 octets.
-
-    The company slug is capped at 32, but an agent name is not (agent names
-    accept up to 80 chars upstream), so ``{slug}-{agent}`` could otherwise
-    emit an address no mail system will accept — and the mint would happily
-    persist it.
-    """
-    addr = agent_email.build_agent_email_address(
-        slug="a" * 32,
-        agent_name="Chief " * 20,  # slugifies far past the remaining budget
-        domain="agents.isol8.co",
-        is_primary=False,
-        agent_id="agent_chief",
-    )
-    local = addr.split("@", 1)[0]
-    assert len(local) <= agent_email.MAX_LOCAL_PART_LEN
-    assert not local.endswith("-")
-    assert "--" not in local
-
-
-def test_secondary_local_part_untouched_when_short():
-    """Ordinary names must not be truncated by the cap, and no disambiguator
-    is added when there was nothing to disambiguate."""
-    addr = agent_email.build_agent_email_address(
-        slug="acme", agent_name="Atlas", domain="agents.isol8.co", is_primary=False, agent_id="agent_atlas"
-    )
-    assert addr == "acme-atlas@agents.isol8.co"

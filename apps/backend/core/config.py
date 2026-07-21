@@ -251,8 +251,11 @@ class Settings(BaseSettings):
     MARKETPLACE_SELLERS_TABLE: str = os.getenv("MARKETPLACE_SELLERS_TABLE", "")
     MARKETPLACE_ARTIFACTS_BUCKET: str = os.getenv("MARKETPLACE_ARTIFACTS_BUCKET", "")
 
-    # Provisioned agent email (set by CDK ServiceStack). Empty disables address
-    # minting entirely, so an env without a verified mail domain never mints.
+    # Provisioned agent email (set by CDK ServiceStack). This is the BASE
+    # domain (e.g. "isol8.co" in prod) — each company gets its own subdomain,
+    # so an address is "{agent}@{slug}.{AGENT_EMAIL_DOMAIN}" (e.g.
+    # "friday@acme-robotics.isol8.co"). Empty disables address minting
+    # entirely, so an env without a verified mail domain never mints.
     AGENT_EMAIL_DOMAIN: str = os.getenv("AGENT_EMAIL_DOMAIN", "")
 
     # Stripe Connect (seller payout onboarding) — environment-specific URLs

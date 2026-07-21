@@ -130,24 +130,6 @@ vi.mock("@/hooks/useGatewayRpc", () => ({
   useGatewayRpc: () => ({ data: gatewayHealthData, error: null }),
 }));
 
-// Configurable per-test onboarding-status SWR return, keyed off the hook's
-// key argument so it only intercepts ProvisioningStepper's own
-// `useSWR("/onboarding/status", ...)` call — every other (currently
-// nonexistent) direct SWR consumer in the tree keeps the inert default.
-let onboardingStatusSWR: {
-  data: { onboarded: boolean } | undefined;
-  error: unknown;
-  isLoading: boolean;
-} = { data: undefined, error: undefined, isLoading: false };
-vi.mock("swr", () => ({
-  default: (key: unknown) => {
-    if (key === "/onboarding/status") {
-      return { ...onboardingStatusSWR, mutate: vi.fn() };
-    }
-    return { data: null, error: null, isLoading: false, mutate: vi.fn() };
-  },
-}));
-
 vi.mock("@/lib/analytics", () => ({
   capture: vi.fn(),
 }));
@@ -185,7 +167,6 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     billingMockRefresh = vi.fn();
     billingMockStartTeamCheckout.mockClear();
     clerkMockUser = null;
-    onboardingStatusSWR = { data: undefined, error: undefined, isLoading: false };
   });
 
   afterEach(() => {
@@ -690,12 +671,28 @@ describe("ProvisioningStepper blocked-state rendering", () => {
   });
 });
 
-describe("ProvisioningStepper server-backed onboarding gate", () => {
+describe("ProvisioningStepper per-container onboarding gate", () => {
   // Every test here needs a loaded Clerk user (the funnel branch is a
   // no-op when `user` is null — see the other describe block's default),
   // with the per-user firstRun marker unset, and a `normal` gate phase so
-  // the gate's own preconditions are met and GET /onboarding/status is
-  // actually consulted.
+  // the gate's own preconditions are met. Whether the funnel shows is then
+  // decided by `container.onboarded`, which rides on the /container/status
+  // poll the hook already returns — no separate request.
+  const renderWith = (container: Record<string, unknown>) => {
+    useProvMock.mockReturnValue({
+      phase: "normal",
+      container,
+      blocked: null,
+      refreshInterval: 3000,
+      refresh: vi.fn(),
+    });
+    return render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+  };
+
   beforeEach(() => {
     useProvMock.mockReset();
     apiPost.mockClear();
@@ -707,81 +704,48 @@ describe("ProvisioningStepper server-backed onboarding gate", () => {
     billingMockRefresh = vi.fn();
     billingMockStartTeamCheckout.mockClear();
     clerkMockUser = { id: "user_1", unsafeMetadata: {} };
-    onboardingStatusSWR = { data: undefined, error: undefined, isLoading: false };
-    // A ready-ish container so that, whenever the gate falls through
-    // instead of showing the funnel, the assertions can distinguish
-    // "children rendered" from "funnel rendered" instead of landing on an
-    // unrelated cold-start/blocked screen.
-    useProvMock.mockReturnValue({
-      phase: "normal",
-      container: { status: "running", phase: "ready" },
-      blocked: null,
-      refreshInterval: 3000,
-      refresh: vi.fn(),
-    });
   });
 
   afterEach(() => {
     apiGet.mockResolvedValue({});
   });
 
-  it("shows the funnel when the status reports onboarded:false and the per-user marker is unset", () => {
-    onboardingStatusSWR = { data: { onboarded: false }, error: undefined, isLoading: false };
-
-    render(
-      <ProvisioningStepper>
-        <div>children</div>
-      </ProvisioningStepper>,
-    );
+  it("shows the funnel when the container is not onboarded and the per-user marker is unset", () => {
+    renderWith({ status: "running", phase: "ready", onboarded: false });
 
     expect(screen.getByText(/get started/i)).toBeInTheDocument();
     expect(screen.queryByText("children")).not.toBeInTheDocument();
   });
 
-  it("does not show the funnel when the status reports onboarded:true", () => {
-    onboardingStatusSWR = { data: { onboarded: true }, error: undefined, isLoading: false };
+  it("shows the funnel when `onboarded` is absent (older backend / new container)", () => {
+    // A backend that doesn't send the field, or a brand-new container, must
+    // still show the funnel — absence is not "onboarded".
+    renderWith({ status: "running", phase: "ready" });
 
-    render(
-      <ProvisioningStepper>
-        <div>children</div>
-      </ProvisioningStepper>,
-    );
+    expect(screen.getByText(/get started/i)).toBeInTheDocument();
+    expect(screen.queryByText("children")).not.toBeInTheDocument();
+  });
+
+  it("does not show the funnel when the container is already onboarded", () => {
+    // The whole point of the per-container flag: a second org member on an
+    // already-onboarded container (their own per-user marker still empty)
+    // goes straight to the app.
+    renderWith({ status: "running", phase: "ready", onboarded: true });
 
     expect(screen.queryByText(/get started/i)).not.toBeInTheDocument();
     expect(screen.getByText("children")).toBeInTheDocument();
   });
 
-  it("shows neither the funnel nor children while the status request is still loading", () => {
-    onboardingStatusSWR = { data: undefined, error: undefined, isLoading: true };
-
-    const { container: dom } = render(
-      <ProvisioningStepper>
-        <div>children</div>
-      </ProvisioningStepper>,
-    );
-
-    expect(screen.queryByText(/get started/i)).not.toBeInTheDocument();
-    expect(screen.queryByText("children")).not.toBeInTheDocument();
-    // Still renders a loader, not a blank screen.
-    expect(dom.querySelector(".animate-spin")).toBeInTheDocument();
-  });
-
-  it("fails safe toward the app (not the funnel) when the status request errors", () => {
-    onboardingStatusSWR = {
-      data: undefined,
-      error: new Error("onboarding status fetch failed"),
-      isLoading: false,
+  it("does not show the funnel once the per-user marker is set, even before the poll flips onboarded", () => {
+    // The instant local latch: right after this user submits, the funnel
+    // must not flash back over the working session while the next poll is
+    // still catching up to onboarded:true.
+    clerkMockUser = {
+      id: "user_1",
+      unsafeMetadata: { firstRun: { briefSubmitted: true } },
     };
+    renderWith({ status: "running", phase: "ready", onboarded: false });
 
-    render(
-      <ProvisioningStepper>
-        <div>children</div>
-      </ProvisioningStepper>,
-    );
-
-    // The wrong default here is "show the funnel" — that's the exact
-    // deploy-safety bug this gate fixes, re-triggered on every backend
-    // blip. A failed fetch must fall through toward the app instead.
     expect(screen.queryByText(/get started/i)).not.toBeInTheDocument();
     expect(screen.getByText("children")).toBeInTheDocument();
   });

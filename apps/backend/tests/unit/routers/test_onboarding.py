@@ -65,6 +65,11 @@ def client(ctx, monkeypatch):
     repo.get_onboarding = AsyncMock(return_value=None)
     monkeypatch.setattr(onboarding_mod, "PaperclipRepo", lambda **kwargs: repo)
 
+    # The success path stamps onboarded_at on the container row (the
+    # per-container funnel-done marker /container/status surfaces).
+    mark_onboarded = AsyncMock()
+    monkeypatch.setattr(onboarding_mod.container_repo, "update_fields", mark_onboarded)
+
     app.dependency_overrides[get_current_user] = _personal_auth
     app.dependency_overrides[onboarding_mod._ctx] = lambda: ctx
     with TestClient(app) as c:
@@ -75,53 +80,25 @@ def client(ctx, monkeypatch):
         c.release = repo.release_onboarding_claim
         c.record = repo.record_onboarding_ids
         c.get_onboarding = repo.get_onboarding
+        c.mark_onboarded = mark_onboarded
         yield c
     app.dependency_overrides.clear()
 
 
-# --- GET /onboarding/status (FIX A: deploy-safety source of truth) ----------
-
-
-def test_status_reports_onboarded_when_seeded(client):
-    client.get_onboarding.return_value = {
-        "user_id": "__onboarded__:comp-1",
-        "seeded_at": "2026-07-19T00:00:00+00:00",
-        "onboarding_goal_id": "goal-1",
-        "onboarding_project_id": "proj-1",
-    }
-
-    resp = client.get("/api/v1/onboarding/status")
+def test_success_stamps_onboarded_on_the_container(client):
+    """The per-container funnel-done marker: stamped on the owner's container
+    row so /container/status can report onboarded and the funnel never shows
+    to a second org member on the same container."""
+    resp = client.post(
+        "/api/v1/onboarding/brief",
+        json={"path": "new", "input": "An agency for restaurants"},
+    )
 
     assert resp.status_code == 200
-    assert resp.json() == {"onboarded": True}
-
-
-def test_status_reports_not_onboarded_when_sentinel_absent(client):
-    """The entire pre-existing fleet has no sentinel row at all -- this is
-    the case that matters most for deploy safety."""
-    client.get_onboarding.return_value = None
-
-    resp = client.get("/api/v1/onboarding/status")
-
-    assert resp.status_code == 200
-    assert resp.json() == {"onboarded": False}
-
-
-def test_status_reports_not_onboarded_when_claimed_but_not_seeded(client):
-    """A bare in-flight claim (someone's submit is running right now) is
-    NOT onboarding-complete -- reporting True here would skip the funnel
-    on a company that still has no goal or project."""
-    client.get_onboarding.return_value = {
-        "user_id": "__onboarded__:comp-1",
-        "holder": "some-request",
-        "claimed_at": "2026-07-19T00:00:00+00:00",
-        # no seeded_at
-    }
-
-    resp = client.get("/api/v1/onboarding/status")
-
-    assert resp.status_code == 200
-    assert resp.json() == {"onboarded": False}
+    client.mark_onboarded.assert_awaited_once()
+    call = client.mark_onboarded.await_args
+    assert call.args[0] == "user_abc"  # ctx.owner_id (container owner)
+    assert "onboarded_at" in call.args[1]
 
 
 def test_fresh_submit_stages_files_without_seeding_a_board_issue(client):

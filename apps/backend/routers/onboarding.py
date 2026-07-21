@@ -1,11 +1,5 @@
 """First-run onboarding endpoints.
 
-GET /api/v1/onboarding/status reports whether the caller's COMPANY has
-actually completed onboarding (the sentinel's ``seeded_at``) -- the
-server-side source of truth the frontend's per-USER "have I seen the
-funnel" marker cannot provide for accounts that predate it. See
-``onboarding_status`` for why this is deploy-safety-critical.
-
 POST /api/v1/onboarding/brief stages the funnel input as OpenClaw
 primitives (BRIEF.md + first-run BOOTSTRAP.md in Friday's workspace,
 pre-boot) and seeds a company-level goal + project for Friday to work
@@ -14,12 +8,21 @@ against. One-shot per COMPANY: a PK-conditional onboarding claim in
 second member of the same org submitting concurrently cannot seed a
 duplicate pair. Open to any org member, not just admins — see
 ``submit_brief`` for why an admin-only gate was rejected.
+
+Whether the funnel shows at all is a per-CONTAINER fact, not per-user: an
+org shares one container, so onboarding happens once for the whole org.
+On success this stamps ``onboarded_at`` on the container row, which
+``GET /container/status`` (already polled by the frontend) surfaces as
+``onboarded`` — so once anyone in the org completes the funnel, no one on
+that container sees it again. There is no separate onboarding-status
+endpoint; the container the fact belongs to already carries it.
 """
 
 from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime, timezone
 from typing import Literal
 
 import httpx
@@ -29,6 +32,7 @@ from pydantic import BaseModel, Field, model_validator
 from core.auth import AuthContext, get_current_user
 from core.containers import get_workspace
 from core.observability.product_analytics import capture_product_event
+from core.repositories import container_repo
 from core.repositories.paperclip_repo import OnboardingClaimResult, PaperclipRepo
 from core.services.paperclip_admin_client import PaperclipApiError
 from core.services.onboarding_brief import (
@@ -79,31 +83,8 @@ def _first_name(auth: AuthContext) -> str:
     return local.replace(".", " ").title() or "there"
 
 
-@router.get("/status")
-async def onboarding_status(ctx=Depends(_ctx)):
-    """Whether this caller's COMPANY has actually completed onboarding.
-
-    Deploy-safety endpoint: the frontend gate shows the funnel whenever a
-    per-USER Clerk marker is absent, and that marker is empty for every
-    account that existed before this feature shipped -- which is the
-    entire pre-existing fleet, including live org members and the
-    founders' container. Without a server-side source of truth, all of
-    them would be shown the no-skip funnel and re-run onboarding on a
-    running company. The onboarding sentinel already knows the truth
-    (``submit_brief`` writes it), so this just exposes it.
-
-    Resolves the caller's company the same way ``submit_brief`` does (via
-    ``_ctx``, which requires the same Clerk auth already). ``onboarded``
-    means SEEDED, not merely claimed: a bare in-flight claim (someone
-    else's submit still running) is not onboarding-complete for this
-    company, so it must NOT report ``onboarded: true`` — the frontend
-    would then skip the funnel on a company control panel for a company
-    that has no goal or project yet.
-    """
-    repo = PaperclipRepo(table_name="paperclip-companies")
-    sentinel = await repo.get_onboarding(ctx.company_id)
-    onboarded = sentinel is not None and sentinel.get("seeded_at") is not None
-    return {"onboarded": onboarded}
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 @router.post("/brief")
@@ -291,6 +272,20 @@ async def submit_brief(
                 cleanup_err,
             )
         raise
+
+    # Mark the CONTAINER onboarded (not the user): an org shares one
+    # container, so this is the per-org "the funnel is done" fact that
+    # GET /container/status surfaces as `onboarded`, keeping the funnel from
+    # ever showing again to anyone on this container -- including a second
+    # org member whose own per-user marker is empty. ctx.owner_id is the
+    # container owner (org owner for orgs), so the flag lands on the shared
+    # row. Best-effort: the seed already succeeded, and if this write fails
+    # the only fallback is that another member sees the funnel once more and
+    # gets a harmless `already_submitted` (the claim blocks a duplicate seed).
+    try:
+        await container_repo.update_fields(ctx.owner_id, {"onboarded_at": _now_iso()})
+    except Exception as e:
+        logger.warning("onboarding: failed to stamp onboarded_at for %s: %s", ctx.owner_id, e)
 
     capture_product_event(
         distinct_id=auth.user_id,

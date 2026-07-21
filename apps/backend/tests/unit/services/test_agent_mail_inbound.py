@@ -39,6 +39,23 @@ def test_is_auto_submitted(headers, blocked):
     assert inbound.is_auto_submitted(headers) is blocked
 
 
+@pytest.mark.parametrize(
+    "headers,expected",
+    [
+        ({"Authentication-Results": "mx.google.com; dmarc=pass header.from=x.com"}, True),
+        ({"authentication-results": "spf=pass smtp.mailfrom=a@x.com; dkim=fail"}, True),
+        ({"Authentication-Results": "spf=fail; dkim=fail; dmarc=fail"}, False),
+        # dmarc=fail is authoritative — must NOT be rescued by spf=pass.
+        ({"Authentication-Results": "dmarc=fail; spf=pass"}, False),
+        ({}, False),
+        (None, False),
+        ({"Authentication-Results": 12345}, False),
+    ],
+)
+def test_passes_sender_authentication(headers, expected):
+    assert inbound.passes_sender_authentication(headers) is expected
+
+
 def test_build_delivered_message_inlines_header_and_token():
     msg = inbound.build_delivered_message(
         from_addr="alice@example.com",

@@ -29,6 +29,11 @@ _AUTO_SUBMITTED_HEADER = "auto-submitted"
 _PRECEDENCE_HEADER = "precedence"
 _PRECEDENCE_BLOCK_VALUES = {"bulk", "list", "junk", "auto_reply"}
 
+# Sender-authentication verdict header: values are provider-formatted (e.g.
+# `"mx.google.com; dmarc=pass header.from=x.com"`), so we match on the
+# substring token rather than parsing full RFC 8601-style Auth-Results ABNF.
+_AUTHENTICATION_RESULTS_HEADER = "authentication-results"
+
 
 def parse_from_address(raw_from: str) -> str:
     """Extract a bare, lowercased, trimmed email address from a `From` header.
@@ -58,6 +63,35 @@ def is_auto_submitted(headers: dict[str, str]) -> bool:
         return True
 
     return False
+
+
+def passes_sender_authentication(headers: dict) -> bool:
+    """True iff the fetched email's headers show it passed sender authentication.
+
+    Looks for the `Authentication-Results` header (case-insensitive key) and
+    accepts the mail if DMARC passed, or (absent a DMARC verdict) if either SPF
+    or DKIM passed. Absent/uninterpretable → False (fail-closed): the From header
+    is forgeable, so we do not trust an unauthenticated sender even when it
+    matches the allowlist.
+
+    DMARC is authoritative when present: an explicit `dmarc=fail` (or any
+    other non-`pass` dmarc verdict) is NOT rescued by a passing SPF/DKIM
+    token elsewhere in the same header — the spf/dkim fallback only applies
+    when there is no `dmarc=` token in the header at all.
+    """
+    if not isinstance(headers, dict):
+        return False
+
+    lowered = {k.lower(): v for k, v in headers.items()}
+    value = lowered.get(_AUTHENTICATION_RESULTS_HEADER)
+    if not isinstance(value, str):
+        return False
+
+    value = value.lower()
+    if "dmarc=" in value:
+        return "dmarc=pass" in value
+
+    return "spf=pass" in value or "dkim=pass" in value
 
 
 def _client_factory() -> httpx.AsyncClient:

@@ -327,6 +327,12 @@ class Settings(BaseSettings):
     # Inbound-email webhook signing secret (Svix `whsec_…`). Empty disables
     # the inbound webhook entirely (fail-closed — never process unsigned mail).
     RESEND_WEBHOOK_SECRET: str = os.getenv("RESEND_WEBHOOK_SECRET", "")
+    # Fail-closed sender authentication for inbound email. When true (default),
+    # inbound mail must pass SPF/DKIM/DMARC (per the fetched Authentication-Results
+    # header) even if the From address matches an owner's verified_senders — the
+    # From header alone is forgeable. Only set false if the mail provider is
+    # confirmed to reject unauthenticated mail upstream.
+    AGENT_EMAIL_REQUIRE_AUTH: bool = os.getenv("AGENT_EMAIL_REQUIRE_AUTH", "true").lower() == "true"
     # Visible From identities on the verified isol8.co domain. Same across
     # envs, so plain defaults (no CDK wiring) — override via env only if a
     # future env needs a different sender.

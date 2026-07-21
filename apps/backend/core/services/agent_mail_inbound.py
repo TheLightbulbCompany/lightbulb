@@ -1,26 +1,15 @@
-"""Inbound provisioned-agent email: sender parsing, loop guard, body fetch.
+"""Inbound provisioned-agent email: sender parsing, loop guard, message format.
 
-Resend's inbound webhook payload is a thin envelope (sender, subject, an
-`email_id`) — the actual body/headers live behind Resend's receiving REST
-API and must be fetched separately (`fetch_received_email`). This module is
-the "make it agent-shaped" step of that pipeline: normalize the `From`
-address, guard against autoresponder loops (an agent replying to a bounce
-or a mailing-list digest would otherwise re-trigger itself indefinitely),
-fetch the full message, and format the string handed to `/hooks/agent`.
+Shared by `routers/ses_inbound.py` (the SES ingest endpoint): normalize the
+`From` address, guard against autoresponder loops (an agent replying to a
+bounce or a mailing-list digest would otherwise re-trigger itself
+indefinitely), and format the string handed to `/hooks/agent`.
 """
 
 import logging
 from email.utils import parseaddr
-from typing import Any
-
-import httpx
-
-from core.config import settings
 
 logger = logging.getLogger(__name__)
-
-RESEND_RECEIVING_URL = "https://api.resend.com/emails/receiving/{email_id}"
-RESEND_ATTACHMENTS_URL = "https://api.resend.com/emails/receiving/{email_id}/attachments"
 
 # Manifest is capped so a mail bombed with dozens of attachments doesn't blow
 # out the agent's context window; the rest are simply not shown.
@@ -116,58 +105,6 @@ def sender_authentication_verdict(headers) -> str:
     if "spf=fail" in value or "dkim=fail" in value:
         return "fail"
     return "unknown"
-
-
-def _client_factory() -> httpx.AsyncClient:
-    """Isolated so tests can inject a `httpx.MockTransport`-backed client."""
-    return httpx.AsyncClient(timeout=10)
-
-
-async def fetch_received_email(email_id: str) -> dict[str, Any] | None:
-    """Fetch the full received-email payload (text/html/headers/…) from Resend.
-
-    Never raises — network errors, non-200 responses, and malformed JSON
-    all resolve to None so callers can treat "couldn't fetch" uniformly.
-    """
-    url = RESEND_RECEIVING_URL.format(email_id=email_id)
-    headers = {"Authorization": f"Bearer {settings.RESEND_API_KEY}"}
-    try:
-        async with _client_factory() as client:
-            resp = await client.get(url, headers=headers)
-        if resp.status_code != 200:
-            logger.warning(
-                "resend_receiving_fetch_non_200",
-                extra={"email_id": email_id, "status_code": resp.status_code},
-            )
-            return None
-        return resp.json()
-    except Exception:  # noqa: BLE001 — any transport/parse error → None, never raise
-        logger.exception("resend_receiving_fetch_failed", extra={"email_id": email_id})
-        return None
-
-
-async def list_received_attachments(email_id: str) -> list[dict]:
-    """Fetch the attachment list for a received email from Resend.
-
-    Never raises — network errors and non-200 responses both resolve to an
-    empty list so callers can treat "no attachments" and "couldn't fetch"
-    the same way (best-effort manifest, not a hard requirement).
-    """
-    url = RESEND_ATTACHMENTS_URL.format(email_id=email_id)
-    headers = {"Authorization": f"Bearer {settings.RESEND_API_KEY}"}
-    try:
-        async with _client_factory() as client:
-            resp = await client.get(url, headers=headers)
-        if resp.status_code != 200:
-            logger.warning(
-                "resend_attachments_fetch_non_200",
-                extra={"email_id": email_id, "status_code": resp.status_code},
-            )
-            return []
-        return resp.json().get("data", [])
-    except Exception:  # noqa: BLE001 — any transport/parse error → [], never raise
-        logger.exception("resend_attachments_fetch_failed", extra={"email_id": email_id})
-        return []
 
 
 def build_attachment_manifest(attachments: list[dict]) -> str:

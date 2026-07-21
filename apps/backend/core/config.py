@@ -334,9 +334,6 @@ class Settings(BaseSettings):
     # no-op and the feature self-arms the moment a real key is deployed. No
     # separate enable flag.
     RESEND_API_KEY: str = os.getenv("RESEND_API_KEY", "")
-    # Inbound-email webhook signing secret (Svix `whsec_…`). Empty disables
-    # the inbound webhook entirely (fail-closed — never process unsigned mail).
-    RESEND_WEBHOOK_SECRET: str = os.getenv("RESEND_WEBHOOK_SECRET", "")
     # Shared secret the SES-ingest Lambda presents to POST /webhooks/ses-inbound.
     # Empty disables the SES inbound endpoint entirely (fail-closed).
     SES_INBOUND_SECRET: str = os.getenv("SES_INBOUND_SECRET", "")

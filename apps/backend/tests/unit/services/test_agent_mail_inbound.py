@@ -1,8 +1,7 @@
-"""agent_mail_inbound: sender parsing, loop guard, body fetch, message format."""
+"""agent_mail_inbound: sender parsing, loop guard, message format."""
 
 import os
 
-import httpx
 import pytest
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
@@ -79,109 +78,6 @@ def test_build_delivered_message_inlines_header_and_token():
     assert "Can you draft a reply?" in msg
     # The body must come after the header block.
     assert msg.index("TOKEN123") < msg.index("Can you draft a reply?")
-
-
-@pytest.mark.asyncio
-async def test_fetch_received_email_ok(monkeypatch):
-    def handler(request):
-        assert request.url.path == "/emails/receiving/eml_1"
-        assert request.headers["authorization"].startswith("Bearer ")
-        return httpx.Response(200, json={"text": "hi", "message_id": "<m@x>", "headers": {}})
-
-    monkeypatch.setattr(inbound.settings, "RESEND_API_KEY", "re_test")
-    transport = httpx.MockTransport(handler)
-    monkeypatch.setattr(inbound, "_client_factory", lambda: httpx.AsyncClient(transport=transport))
-
-    got = await inbound.fetch_received_email("eml_1")
-    assert got["text"] == "hi"
-
-
-@pytest.mark.asyncio
-async def test_fetch_received_email_non_200_returns_none(monkeypatch):
-    monkeypatch.setattr(inbound.settings, "RESEND_API_KEY", "re_test")
-    transport = httpx.MockTransport(lambda r: httpx.Response(404, json={"error": "nope"}))
-    monkeypatch.setattr(inbound, "_client_factory", lambda: httpx.AsyncClient(transport=transport))
-    assert await inbound.fetch_received_email("eml_missing") is None
-
-
-@pytest.mark.asyncio
-async def test_fetch_received_email_never_raises(monkeypatch):
-    monkeypatch.setattr(inbound.settings, "RESEND_API_KEY", "re_test")
-
-    def boom(r):
-        raise httpx.ConnectError("down")
-
-    transport = httpx.MockTransport(boom)
-    monkeypatch.setattr(inbound, "_client_factory", lambda: httpx.AsyncClient(transport=transport))
-    assert await inbound.fetch_received_email("eml_x") is None
-
-
-@pytest.mark.asyncio
-async def test_fetch_received_email_undecodable_body_returns_none(monkeypatch):
-    """A 200 response whose body is not valid JSON must return None, not raise
-    — `resp.json()` raising a decode error is caught by the same broad
-    `except Exception` as network failures.
-    """
-    monkeypatch.setattr(inbound.settings, "RESEND_API_KEY", "re_test")
-    transport = httpx.MockTransport(lambda r: httpx.Response(200, content=b"this is not json"))
-    monkeypatch.setattr(inbound, "_client_factory", lambda: httpx.AsyncClient(transport=transport))
-    assert await inbound.fetch_received_email("eml_bad_json") is None
-
-
-@pytest.mark.asyncio
-async def test_list_received_attachments_ok(monkeypatch):
-    def handler(request):
-        assert request.url.path == "/emails/receiving/eml_1/attachments"
-        assert request.headers["authorization"].startswith("Bearer ")
-        return httpx.Response(
-            200,
-            json={
-                "object": "list",
-                "has_more": False,
-                "data": [
-                    {
-                        "filename": "a.pdf",
-                        "content_type": "application/pdf",
-                        "size": 10,
-                        "download_url": "https://cdn/a",
-                    }
-                ],
-            },
-        )
-
-    monkeypatch.setattr(inbound.settings, "RESEND_API_KEY", "re_test")
-    transport = httpx.MockTransport(handler)
-    monkeypatch.setattr(inbound, "_client_factory", lambda: httpx.AsyncClient(transport=transport))
-
-    got = await inbound.list_received_attachments("eml_1")
-    assert got == [
-        {
-            "filename": "a.pdf",
-            "content_type": "application/pdf",
-            "size": 10,
-            "download_url": "https://cdn/a",
-        }
-    ]
-
-
-@pytest.mark.asyncio
-async def test_list_received_attachments_non_200_returns_empty(monkeypatch):
-    monkeypatch.setattr(inbound.settings, "RESEND_API_KEY", "re_test")
-    transport = httpx.MockTransport(lambda r: httpx.Response(404, json={"error": "nope"}))
-    monkeypatch.setattr(inbound, "_client_factory", lambda: httpx.AsyncClient(transport=transport))
-    assert await inbound.list_received_attachments("eml_missing") == []
-
-
-@pytest.mark.asyncio
-async def test_list_received_attachments_never_raises(monkeypatch):
-    monkeypatch.setattr(inbound.settings, "RESEND_API_KEY", "re_test")
-
-    def boom(r):
-        raise httpx.ConnectError("down")
-
-    transport = httpx.MockTransport(boom)
-    monkeypatch.setattr(inbound, "_client_factory", lambda: httpx.AsyncClient(transport=transport))
-    assert await inbound.list_received_attachments("eml_x") == []
 
 
 def test_build_attachment_manifest_empty_list():

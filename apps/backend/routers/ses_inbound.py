@@ -1,20 +1,20 @@
 """SES-inbound agent-email ingest endpoint — provisioned agent email (inbound leg).
 
-This REPLACES the Resend webhook path (``routers/agent_mail.py``) as the
-inbound leg of provisioned agent email, but does not remove it — that's a
-later cleanup chunk. An AWS Lambda (built separately) parses the raw SES
+This is the sole inbound leg of provisioned agent email — it replaced the
+Resend-webhook path (formerly ``routers/agent_mail.py``, deleted once this
+endpoint took over). An AWS Lambda (built separately) parses the raw SES
 inbound email (SNS notification -> raw MIME on S3) into a clean JSON payload
-and POSTs it here. Unlike Resend, SES's own receipt pipeline already ran
+and POSTs it here. SES's own receipt pipeline already ran
 SPF/DKIM/DMARC/spam/virus scanning by the time this endpoint sees the mail —
 those verdicts are the AUTHORITATIVE sender-authentication signal here (see
-the auth-verdict gate below), not best-effort defense-in-depth the way
-Resend's `Authentication-Results` header parse was.
+the auth-verdict gate below), unlike the Resend predecessor's best-effort
+`Authentication-Results` header parse.
 
 Auth is a shared secret (``X-Isol8-SES-Secret``), timing-safe compared
 against ``SES_INBOUND_SECRET`` — there is no per-request signature the way
-Svix gives Resend, because the Lambda is trusted infrastructure we control,
-not a third party. An empty secret disables the endpoint entirely
-(fail-closed), mirroring ``RESEND_WEBHOOK_SECRET``'s posture.
+Svix gave the old Resend webhook, because the Lambda is trusted
+infrastructure we control, not a third party. An empty secret disables the
+endpoint entirely (fail-closed).
 
 **Every branch returns 200** except a bad/missing shared secret (401 — not
 retried; there is no fixing a forged credential by resending the same
@@ -22,8 +22,7 @@ request). Every drop reason (unknown recipient, unverified sender, over cap,
 spam/virus, failed authentication, auto-submitted) is terminal, so those stay
 200. The entire handler body is wrapped in a top-level try/except: an
 unexpected exception must never surface as an unhandled 5xx — SES/Lambda
-retry policy would otherwise hammer a permanently-broken event forever. This
-mirrors ``routers/agent_mail.py``'s posture; see its module docstring.
+retry policy would otherwise hammer a permanently-broken event forever.
 
 Drop reasons are returned in the JSON body's ``status`` field purely for
 observability (log/metric correlation); the Lambda does not parse it.

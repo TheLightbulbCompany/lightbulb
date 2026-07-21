@@ -68,6 +68,17 @@ _AGENT_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{2,63}$")
 _AGENT_DIR_SENTINEL = "__AGENT_DIR__"
 
 
+def _agent_id_from_dir_name(dir_name: str) -> str:
+    """Strip the upstream per-agent workspace prefix from a dir name.
+
+    Workspace dirs are ``workspace-{agent_id}`` (upstream convention); the
+    agent id is everything after the prefix. Passing an already-bare id
+    through is a no-op, so callers can use this on any resolved dir name.
+    """
+    prefix = "workspace-"
+    return dir_name[len(prefix) :] if dir_name.startswith(prefix) else dir_name
+
+
 def _rewrite_mcp_args_paths(slice_: dict, seller_agent_id: str) -> None:
     """In-place: replace ``workspace-{seller_agent_id}`` segments in MCP
     server args with ``workspace-{_AGENT_DIR_SENTINEL}``.
@@ -409,7 +420,7 @@ def resolve_workspace_agent_id(seller_id: str, agent_id: str) -> str:
         config = workspace.read_openclaw_config(seller_id)
     except WorkspaceError:
         config = None
-    return _resolve_agent_dir(seller_id=seller_id, agent_id=agent_id, config=config).name
+    return _agent_id_from_dir_name(_resolve_agent_dir(seller_id=seller_id, agent_id=agent_id, config=config).name)
 
 
 def _build_tarball(agent_dir: Path) -> tuple[bytes, list[str]]:
@@ -519,15 +530,15 @@ def _summarize_openclaw_config(agent_dir: Path) -> dict:
     """
     cfg_path = agent_dir / "openclaw.json"
     if not cfg_path.exists():
-        return {"name": agent_dir.name, "description": ""}
+        return {"name": _agent_id_from_dir_name(agent_dir.name), "description": ""}
     try:
         data = json.loads(cfg_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {"name": agent_dir.name, "description": ""}
+        return {"name": _agent_id_from_dir_name(agent_dir.name), "description": ""}
 
     identity = data.get("identity", {}) if isinstance(data, dict) else {}
     return {
-        "name": identity.get("name") or agent_dir.name,
+        "name": identity.get("name") or _agent_id_from_dir_name(agent_dir.name),
         "description": identity.get("description") or identity.get("vibe") or "",
     }
 
@@ -633,11 +644,12 @@ def export_agent_from_efs(
         # Bad seller_id — let _resolve_agent_dir surface it as InvalidAgentIdError.
         config = None
     agent_dir = _resolve_agent_dir(seller_id=seller_id, agent_id=agent_id, config=config)
-    # The dir name is the live workspace UUID. For legacy slug-keyed listings
-    # this differs from the requested agent_id — key the slice, MCP-arg rewrite,
-    # cron filter, and manifest off the resolved UUID so the snapshot self-heals
+    # The dir name is ``workspace-{uuid}`` — strip the layout prefix to get
+    # the live workspace UUID. For legacy slug-keyed listings this differs
+    # from the requested agent_id — key the slice, MCP-arg rewrite, cron
+    # filter, and manifest off the resolved UUID so the snapshot self-heals
     # (replace_artifact then persists the UUID onto the row).
-    resolved_agent_id = agent_dir.name
+    resolved_agent_id = _agent_id_from_dir_name(agent_dir.name)
     tarball_bytes, contents = _build_tarball(agent_dir)
 
     if not config:
@@ -941,8 +953,9 @@ def enumerate_for_preview(*, seller_id: str, agent_id: str) -> dict:
         # Bad seller_id — let _resolve_agent_dir surface it as InvalidAgentIdError.
         config = {}
     agent_dir = _resolve_agent_dir(seller_id=seller_id, agent_id=agent_id, config=config)
-    # Resolved workspace UUID — differs from agent_id only for legacy slug listings.
-    resolved_agent_id = agent_dir.name
+    # Resolved workspace UUID (dir name minus the ``workspace-`` layout
+    # prefix) — differs from agent_id only for legacy slug listings.
+    resolved_agent_id = _agent_id_from_dir_name(agent_dir.name)
 
     # Validate the agent is registered in the seller's config; the entry
     # itself is NOT used as a skills source (no per-agent skill scoping

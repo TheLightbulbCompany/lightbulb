@@ -560,6 +560,40 @@ def test_export_replaces_seller_agent_id_in_mcp_args_with_sentinel(fake_efs, tmp
     assert args[0].endswith("/mcp-resy/index.js"), args[0]
 
 
+def test_export_normalizes_legacy_workspaces_layout_in_mcp_args(fake_efs, tmp_path: Path):
+    """Sellers whose containers predate the workspace-layout migration still
+    carry the retired ``workspaces/{agent_id}`` spelling in MCP args. Export
+    must normalize that OLD form to the same ``workspace-__AGENT_DIR__``
+    sentinel the new form produces, so every artifact ships layout-current.
+    """
+    seller_id, agent_id, agent_dir = fake_efs
+    cfg_path = tmp_path / "users" / seller_id / "openclaw.json"
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    cfg["mcp"] = {
+        "servers": {
+            "resy": {
+                "command": "node",
+                "args": [f"/home/node/.openclaw/workspaces/{agent_id}/mcp-resy/index.js"],
+                "env": {"RESY_EMAIL": ""},
+            }
+        }
+    }
+    cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+
+    pkg = agent_export.export_agent_from_efs(
+        seller_id=seller_id,
+        agent_id=agent_id,
+        selected_mcps=["resy"],
+    )
+
+    args = pkg.openclaw_slice["mcp"]["servers"]["resy"]["args"]
+    assert agent_id not in args[0], f"seller agent_id leaked into slice mcp args: {args}"
+    # Old plural-dir spelling must be gone; the modern sentinel form remains.
+    assert "workspaces/" not in args[0], args[0]
+    assert "workspace-__AGENT_DIR__" in args[0], args[0]
+    assert args[0].endswith("/mcp-resy/index.js"), args[0]
+
+
 def test_export_carries_seller_cron_jobs_targeting_this_agent(fake_efs, tmp_path):
     """Cron jobs that target this agent get carried into the slice with
     runtime fields (id, sessionKey, state, createdAtMs, updatedAtMs)

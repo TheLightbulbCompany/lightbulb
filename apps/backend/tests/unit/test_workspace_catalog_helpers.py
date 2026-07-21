@@ -71,7 +71,11 @@ def test_list_workspace_agent_dirs_empty_when_missing(workspace: Workspace, tmp_
 
 def test_list_workspace_agent_dirs_returns_sorted_subdirs(workspace: Workspace, tmp_path: Path):
     base = tmp_path / "user_abc"
-    (base / "zeta").mkdir(parents=True)
-    (base / "alpha").mkdir(parents=True)
+    (base / "workspace-zeta").mkdir(parents=True)
+    (base / "workspace-alpha").mkdir(parents=True)
+    # Non-prefixed siblings (runtime state, stray files) must be ignored.
+    (base / "agents").mkdir(parents=True)
     (base / "README.md").write_text("not a dir")
+    # A prefixed FILE must be ignored too — only dirs count.
+    (base / "workspace-notadir").write_text("file, not a workspace")
     assert workspace.list_workspace_agent_dirs("user_abc") == ["alpha", "zeta"]

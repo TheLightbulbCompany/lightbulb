@@ -39,6 +39,13 @@ def test_is_auto_submitted(headers, blocked):
     assert inbound.is_auto_submitted(headers) is blocked
 
 
+@pytest.mark.parametrize("headers", [["not", "a", "dict"], None])
+def test_is_auto_submitted_non_dict_returns_false(headers):
+    """A malformed (non-dict) `headers` value must not raise — mirrors the
+    same guard already present in `sender_authentication_verdict`."""
+    assert inbound.is_auto_submitted(headers) is False
+
+
 @pytest.mark.parametrize(
     "headers,expected",
     [
@@ -199,6 +206,22 @@ def test_build_attachment_manifest_single_attachment():
     assert "unverified" in manifest.lower()
 
 
+def test_build_attachment_manifest_mentions_link_expiry():
+    """`download_url` is a short-lived (~1h) link — the manifest must warn
+    the agent to fetch promptly rather than treating it as durable."""
+    manifest = inbound.build_attachment_manifest(
+        [
+            {
+                "filename": "contract.pdf",
+                "content_type": "application/pdf",
+                "size": 1234,
+                "download_url": "https://cdn/x",
+            }
+        ]
+    )
+    assert "expire" in manifest.lower()
+
+
 def test_build_attachment_manifest_truncates_at_ten():
     attachments = [
         {
@@ -240,3 +263,29 @@ def test_build_delivered_message_with_manifest_appends_after_body():
     )
     assert manifest_text in msg
     assert msg.index("Can you draft a reply?") < msg.index(manifest_text)
+
+
+def test_build_delivered_message_truncates_oversized_body():
+    """A body over OpenClaw's ~1 MB /hooks/agent limit must be capped rather
+    than inlined whole — an over-limit request 413s and silently drops the
+    entire delivery."""
+    huge_body = "x" * 600_000
+    msg = inbound.build_delivered_message(
+        from_addr="alice@example.com",
+        subject="Huge",
+        body_text=huge_body,
+        reply_token="TOKEN123",
+    )
+    assert len(msg) < 520_000
+    assert "truncated" in msg
+
+
+def test_build_delivered_message_short_body_is_unchanged():
+    msg = inbound.build_delivered_message(
+        from_addr="alice@example.com",
+        subject="Short",
+        body_text="a normal short body",
+        reply_token="TOKEN123",
+    )
+    assert "truncated" not in msg
+    assert "a normal short body" in msg

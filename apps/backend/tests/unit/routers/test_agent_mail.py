@@ -1,13 +1,21 @@
 """Unit tests for POST /api/v1/webhooks/resend-inbound (inbound agent email).
 
 One test per branch of the orchestration in ``routers/agent_mail.py``:
-feature-gate disabled, bad signature, duplicate svix-id, unknown recipient,
-unverified sender (+ the public-address bypass), over cap, fetch failure,
-auto-submitted loop guard, the sender-authentication verdict gate (explicit
-fail always drops; unknown drops only under ``AGENT_EMAIL_REQUIRE_AUTH``
-strict mode; unknown delivers by default — the common real Resend case, since
-Resend surfaces no verdict field), the happy path, and the top-level
-catch-all that guarantees the handler never returns 5xx.
+feature-gate disabled, bad signature, duplicate svix-id (recorded immediately
+before delivery, not up front — see below), unknown recipient, unverified
+sender (+ the public-address bypass), over cap, fetch failure (a transient
+503 so Resend retries — never deduped), auto-submitted loop guard, the
+sender-authentication verdict gate (explicit fail always drops; unknown
+always delivers — the common real Resend case, since Resend surfaces no
+verdict field at all), the happy path, and the top-level catch-all that
+guarantees the handler never returns 5xx.
+
+Idempotency dedup (``record_event_or_skip``) is recorded immediately before
+``deliver_to_agent`` is called, not up front after signature verification —
+everything before that point (recipient/sender/cap gates, the Resend fetch)
+can fail transiently and must remain retryable by Resend/Svix (which only
+retries non-2xx responses), so only a message that is actually about to be
+delivered gets marked as seen.
 
 Seams (``verify_svix_signature``, ``record_event_or_skip``,
 ``get_by_address``, ``trial_block_reason``, ``fetch_received_email``,
@@ -121,8 +129,18 @@ def test_bad_signature_returns_401(client, monkeypatch):
 
 
 def test_duplicate_svix_id_returns_duplicate(client, monkeypatch):
+    """Dedup is now recorded immediately before delivery (after the fetch and
+    all other gates succeed), so this test must get the happy path all the
+    way to that point before the ALREADY_SEEN mock can take effect."""
     _enable(monkeypatch)
     _valid_sig(monkeypatch)
+    monkeypatch.setattr(agent_mail, "get_by_address", AsyncMock(return_value=_row()))
+    monkeypatch.setattr(agent_mail, "trial_block_reason", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        agent_mail,
+        "fetch_received_email",
+        AsyncMock(return_value={"headers": {}, "text": "hi"}),
+    )
     monkeypatch.setattr(
         agent_mail,
         "record_event_or_skip",
@@ -186,8 +204,8 @@ def test_public_address_bypasses_unverified_sender_and_delivers(client, monkeypa
     monkeypatch.setattr(
         agent_mail,
         "fetch_received_email",
-        # No Authentication-Results header at all — the common real Resend case.
-        # Default mode (AGENT_EMAIL_REQUIRE_AUTH=False) must still deliver.
+        # No Authentication-Results header at all — the common real Resend
+        # case — must still deliver (unknown verdict is never dropped).
         AsyncMock(return_value={"headers": {}, "text": "hi"}),
     )
     deliver_mock = AsyncMock(return_value="delivered")
@@ -219,7 +237,10 @@ def test_over_cap_is_dropped(client, monkeypatch):
     deliver_mock.assert_not_called()
 
 
-def test_fetch_failure_is_dropped(client, monkeypatch):
+def test_fetch_failure_returns_503_retryable(client, monkeypatch):
+    """A fetch failure is transient (Resend API blip, network error), so it
+    must return a non-2xx status so Resend/Svix retries the delivery — a 200
+    here would get the event deduped-away with no processing ever happening."""
     _enable(monkeypatch)
     _valid_sig(monkeypatch)
     _dedup_recorded(monkeypatch)
@@ -231,8 +252,8 @@ def test_fetch_failure_is_dropped(client, monkeypatch):
 
     resp = _post(client, _body())
 
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "dropped_fetch_failed"
+    assert resp.status_code == 503
+    assert resp.json()["status"] == "fetch_failed_retryable"
     deliver_mock.assert_not_called()
 
 
@@ -286,60 +307,6 @@ def test_failed_authentication_is_dropped(client, monkeypatch):
     deliver_mock.assert_not_called()
 
 
-def test_unknown_authentication_dropped_when_require_auth_true(client, monkeypatch):
-    """AGENT_EMAIL_REQUIRE_AUTH=True governs the strict gate: an UNKNOWN verdict
-    (no Authentication-Results header at all) is dropped only in strict mode —
-    the default (False) delivers this same fixture (see test_happy_path_delivers)."""
-    _enable(monkeypatch)
-    _valid_sig(monkeypatch)
-    _dedup_recorded(monkeypatch)
-    monkeypatch.setattr(agent_mail.settings, "AGENT_EMAIL_REQUIRE_AUTH", True)
-    monkeypatch.setattr(agent_mail, "get_by_address", AsyncMock(return_value=_row()))
-    monkeypatch.setattr(agent_mail, "trial_block_reason", AsyncMock(return_value=None))
-    monkeypatch.setattr(
-        agent_mail,
-        "fetch_received_email",
-        AsyncMock(return_value={"headers": {}, "text": "hi"}),
-    )
-    deliver_mock = AsyncMock()
-    monkeypatch.setattr(agent_mail, "deliver_to_agent", deliver_mock)
-
-    resp = _post(client, _body())
-
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "dropped_unverified_authentication"
-    deliver_mock.assert_not_called()
-
-
-def test_explicit_pass_delivers_in_strict_mode(client, monkeypatch):
-    """AGENT_EMAIL_REQUIRE_AUTH=True still delivers when the fetched headers
-    carry an explicit auth PASS verdict."""
-    _enable(monkeypatch)
-    _valid_sig(monkeypatch)
-    _dedup_recorded(monkeypatch)
-    monkeypatch.setattr(agent_mail.settings, "AGENT_EMAIL_REQUIRE_AUTH", True)
-    monkeypatch.setattr(agent_mail, "get_by_address", AsyncMock(return_value=_row()))
-    monkeypatch.setattr(agent_mail, "trial_block_reason", AsyncMock(return_value=None))
-    monkeypatch.setattr(
-        agent_mail,
-        "fetch_received_email",
-        AsyncMock(
-            return_value={
-                "headers": {"Authentication-Results": "dmarc=pass header.from=example.com"},
-                "text": "hi",
-            }
-        ),
-    )
-    deliver_mock = AsyncMock(return_value="delivered")
-    monkeypatch.setattr(agent_mail, "deliver_to_agent", deliver_mock)
-
-    resp = _post(client, _body())
-
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "delivered"
-    deliver_mock.assert_awaited_once()
-
-
 def test_non_string_recipient_entry_is_skipped_and_scanning_continues(client, monkeypatch):
     """A malformed (non-string) entry in `to` must not abort recipient
     resolution — scanning should continue to the next entry."""
@@ -368,14 +335,46 @@ def test_non_string_recipient_entry_is_skipped_and_scanning_continues(client, mo
     deliver_mock.assert_awaited_once()
 
 
-def test_happy_path_delivers(client, monkeypatch):
-    """Default mode (AGENT_EMAIL_REQUIRE_AUTH=False): no Authentication-Results
-    header at all is the common real Resend case, and it must still deliver —
-    the sender allowlist (matched earlier via verified_senders), not this
-    header, is the primary control."""
+def test_string_to_field_is_coerced_to_list_and_delivers(client, monkeypatch):
+    """Resend's `data.to` is normally a list, but a single-string value must
+    not be iterated char-by-char — each single character would fail
+    `normalize()`'s lookup and the message would incorrectly drop as
+    unknown_recipient."""
     _enable(monkeypatch)
     _valid_sig(monkeypatch)
     _dedup_recorded(monkeypatch)
+    known_address = "agent@agents.isol8.co"
+
+    async def fake_get_by_address(addr):
+        return _row() if addr == known_address else None
+
+    monkeypatch.setattr(agent_mail, "get_by_address", fake_get_by_address)
+    monkeypatch.setattr(agent_mail, "trial_block_reason", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        agent_mail,
+        "fetch_received_email",
+        AsyncMock(return_value={"headers": {}, "text": "hi"}),
+    )
+    deliver_mock = AsyncMock(return_value="delivered")
+    monkeypatch.setattr(agent_mail, "deliver_to_agent", deliver_mock)
+
+    resp = _post(client, _body(to=known_address))
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "delivered"
+    deliver_mock.assert_awaited_once()
+
+
+def test_happy_path_delivers(client, monkeypatch):
+    """Default mode: no Authentication-Results header at all is the common
+    real Resend case, and it must still deliver — the sender allowlist
+    (matched earlier via verified_senders), not this header, is the primary
+    control. Also verifies dedup is recorded (keyed on svix-id) right before
+    delivery on this success path."""
+    _enable(monkeypatch)
+    _valid_sig(monkeypatch)
+    dedup_mock = AsyncMock(return_value=WebhookDedupResult.RECORDED)
+    monkeypatch.setattr(agent_mail, "record_event_or_skip", dedup_mock)
     monkeypatch.setattr(agent_mail, "get_by_address", AsyncMock(return_value=_row()))
     monkeypatch.setattr(agent_mail, "trial_block_reason", AsyncMock(return_value=None))
     monkeypatch.setattr(
@@ -396,6 +395,7 @@ def test_happy_path_delivers(client, monkeypatch):
     assert resp.status_code == 200
     assert resp.json()["status"] == "delivered"
     deliver_mock.assert_awaited_once()
+    dedup_mock.assert_awaited_once_with("evt-1", source="resend_inbound")
     kwargs = deliver_mock.await_args.kwargs
     assert kwargs["owner_id"] == OWNER_ID
     assert kwargs["agent_id"] == AGENT_ID

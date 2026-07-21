@@ -11,13 +11,18 @@ does NOT skip verification — it disables the whole endpoint (see the
 feature-gate check below), because there is no "local dev is fine without
 this" case for third-party inbound mail.
 
-**Every branch returns 200** (except a genuinely bad signature, which is
-401 — a legitimate reason for Resend to NOT retry-loop). The entire handler
-body is wrapped in a top-level try/except: an unexpected exception must
-never surface as a 5xx, because that would put Resend into a retry storm
-against a permanently-broken event. The tradeoff mirrors the Clerk webhook's
-posture (see its module docstring) — we own recovery from here on, not the
-provider's retry logic.
+**Every branch returns 200** except two deliberately non-2xx cases Resend
+(via Svix) is expected to retry on: a genuinely bad signature (401 — not
+retried; there is no fixing a forged/corrupt payload by resending it) and a
+failed fetch against Resend's receiving API (503 — a transient blip that
+retrying can plausibly fix). Every other drop reason (unknown recipient,
+unverified sender, over cap, auto-submitted, failed authentication) is
+terminal — retrying would just reach the same drop again — so those stay
+200. The entire handler body is wrapped in a top-level try/except: an
+unexpected exception must never surface as an unhandled 5xx, because that
+would put Resend into a retry storm against a permanently-broken event. The
+tradeoff mirrors the Clerk webhook's posture (see its module docstring) — we
+own recovery from here on, not the provider's retry logic.
 
 Drop reasons are returned in the JSON body's ``status`` field purely for
 observability (log/metric correlation); Resend does not parse it.
@@ -75,15 +80,6 @@ async def handle_resend_inbound(request: Request):
         ):
             return JSONResponse(status_code=401, content={"status": "bad_signature"})
 
-        # Idempotency dedupe — Resend, like svix-based providers generally,
-        # is at-least-once delivery. Keyed on svix-id, which is unique per
-        # genuine event and identical across redeliveries of the same one.
-        svix_id = request.headers.get("svix-id")
-        if svix_id:
-            dedup = await record_event_or_skip(svix_id, source="resend_inbound")
-            if dedup is WebhookDedupResult.ALREADY_SEEN:
-                return {"status": "duplicate"}
-
         payload = json.loads(body)
         if payload.get("type") != "email.received":
             return {"status": "ignored"}
@@ -91,6 +87,11 @@ async def handle_resend_inbound(request: Request):
         data = payload["data"]
         email_id = data["email_id"]
         to_list = data.get("to") or []
+        if isinstance(to_list, str):
+            # A single recipient can arrive as a bare string rather than a
+            # one-element list; iterating it directly below would scan it
+            # character-by-character instead of as one address.
+            to_list = [to_list]
         raw_from = data.get("from", "")
         subject = data.get("subject", "")
         message_id = data.get("message_id", "")
@@ -125,7 +126,11 @@ async def handle_resend_inbound(request: Request):
         # second fetch against Resend's receiving API.
         fetched = await fetch_received_email(email_id)
         if fetched is None:
-            return {"status": "dropped_fetch_failed"}
+            # Transient (Resend API blip, network error) — nothing has been
+            # deduped yet (dedup is recorded later, right before delivery),
+            # so a non-2xx here makes Resend/Svix retry the delivery instead
+            # of silently dropping it forever.
+            return JSONResponse(status_code=503, content={"status": "fetch_failed_retryable"})
 
         # Loop guard: never deliver autoresponder/bulk/list traffic — an
         # agent replying to one of these could re-trigger itself forever.
@@ -136,14 +141,12 @@ async def handle_resend_inbound(request: Request):
         # `verified_senders` above just matched against), so read the mail's
         # SPF/DKIM/DMARC verdict per the fetched Authentication-Results header.
         # An explicit FAIL is always dropped. Resend surfaces no verdict field
-        # at all, so an UNKNOWN verdict (the common case) is delivered unless
-        # AGENT_EMAIL_REQUIRE_AUTH opts into strict mode — see its docstring
-        # in core/config.py.
+        # at all, so an UNKNOWN verdict (the common case) is delivered — the
+        # sender allowlist above is the primary control, this header is only
+        # best-effort defense-in-depth on top of it.
         verdict = sender_authentication_verdict(fetched.get("headers") or {})
         if verdict == "fail":
             return {"status": "dropped_failed_authentication"}
-        if verdict == "unknown" and settings.AGENT_EMAIL_REQUIRE_AUTH:
-            return {"status": "dropped_unverified_authentication"}
 
         # v1: plain-text body only. No HTML-stripping fallback — an empty
         # text part just delivers an empty body rather than attempting to
@@ -177,6 +180,22 @@ async def handle_resend_inbound(request: Request):
             reply_token=token,
             attachments_manifest=manifest,
         )
+
+        # Idempotency dedupe — Resend, like svix-based providers generally, is
+        # at-least-once delivery. Keyed on svix-id, which is unique per
+        # genuine event and identical across redeliveries of the same one.
+        # Recorded here, immediately before delivery, rather than up front
+        # right after signature verification: every gate above this point
+        # (recipient/sender/cap checks, the Resend fetch) can fail
+        # transiently and must stay retryable — only a message that is
+        # actually about to be delivered gets marked as seen, so a genuine
+        # at-least-once redelivery is still caught right before it would
+        # double-deliver.
+        svix_id = request.headers.get("svix-id")
+        if svix_id:
+            dedup = await record_event_or_skip(svix_id, source="resend_inbound")
+            if dedup is WebhookDedupResult.ALREADY_SEEN:
+                return {"status": "duplicate"}
 
         result = await deliver_to_agent(
             owner_id=row["owner_id"],

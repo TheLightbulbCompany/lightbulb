@@ -270,8 +270,9 @@ authentication-verdict field — so the `Authentication-Results` header check in
 `sender_authentication_verdict` (`core/services/agent_mail_inbound.py`) is opportunistic
 defense-in-depth, not a control Resend asks for: it rejects mail that **explicitly fails**
 SPF/DKIM/DMARC when a mail relay happens to stamp the header, and delivers everything else
-(no verdict is the common case, per Resend). `AGENT_EMAIL_REQUIRE_AUTH` can flip this to
-also drop no-verdict mail, but that's an opt-in tightening, not the default posture.
+(no verdict is the common case, per Resend). There is no strict-mode flag to also drop
+no-verdict mail — Resend surfaces no verdict field at all, so such a flag could only ever
+blackhole all inbound mail.
 
 The From header is a filter, not a spoof-proof fence. The protections that actually hold
 under a forged sender are structural: per-owner isolation (a forged sender can only reach

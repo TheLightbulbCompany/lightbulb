@@ -556,6 +556,36 @@ export class ContainerStack extends cdk.Stack {
       "mkdir -p /home/node/.openclaw/mcporter || exit 1",
       "[ -e /home/node/.mcporter ] && [ ! -L /home/node/.mcporter ] && { mv /home/node/.mcporter /home/node/.mcporter.efs-archive-$(date +%s) || exit 1; }",
       "ln -sfn /home/node/.openclaw/mcporter /home/node/.mcporter || exit 1",
+      // Step C3 — one-time legacy-state migration, BEFORE the gateway starts.
+      // 2026.7.x fail-closes agent runs on un-migrated legacy per-workspace
+      // setup state (assertNoUnmigratedWorkspaceState throws "Legacy workspace
+      // setup state requires migration ...; run openclaw doctor --fix"). The
+      // gateway's own boot migrates the SHARED state DB but NOT the per-workspace
+      // setup state, so on the first boot after an upgrade every agent errors
+      // until doctor runs. Run it HERE, before `exec ... gateway`, so no gateway
+      // holds the SQLite maintenance lock: the migration applies with zero
+      // two-writer EFS contention. (Running doctor against a live gateway can
+      // abort mid config-audit-scrub and take that lock; upstream explicitly says
+      // "stop the gateway or wait until it is idle".)
+      //
+      // `--fix` applies recommended repairs WITHOUT prompting and backs up before
+      // modifying (non-destructive). `< /dev/null` makes any residual y/N prompt
+      // read EOF and take its default instead of hanging this headless boot.
+      // `timeout` bounds a wedged migration (EFS/SQLite can stall) so it can never
+      // infinite-loop the boot; `--kill-after=30` escalates SIGTERM -> SIGKILL 30s
+      // later so a migration that ignores/misses the term (or is between syscalls)
+      // is still reaped, rather than outliving the window (a truly D-state process
+      // blocked in an NFS syscall stays immune to any signal until the kernel call
+      // returns — same failure class this file's `_npx` extract notes above call
+      // out — but SIGKILL covers everything short of that). `|| echo` keeps a
+      // doctor failure from bricking the container: the gateway still starts and
+      // the run-time gate surfaces the unmigrated state visibly rather than the
+      // box crash-looping. Idempotent — once migrated it is a fast no-op, so it
+      // stays cheap on every later boot (and doubles as an on-boot config
+      // self-repair). The health-check startPeriod below is widened to cover this
+      // pass so a heavy first-boot migration does not trip a spurious task
+      // replacement.
+      "timeout --kill-after=30 420 node /app/openclaw.mjs doctor --fix < /dev/null || echo '[boot] openclaw doctor --fix did not finish cleanly; continuing to gateway'",
       // Step D — launch the gateway.
       "exec node /app/openclaw.mjs gateway --port 18789 --bind lan",
     ].join("; ");
@@ -680,9 +710,17 @@ export class ContainerStack extends cdk.Stack {
         // cold storm, a crash-loop. A truly dead gateway is still replaced in
         // ~3 min.
         retries: 6,
-        // 180s start period covers EFS first-touch latency, gateway boot, and
-        // the first cold MCP connect on a brand-new container.
-        startPeriod: cdk.Duration.seconds(180),
+        // Start period covers EFS first-touch latency, the boot-time
+        // `openclaw doctor --fix` legacy-state migration (startupCommand Step C3,
+        // bounded at 420s), gateway boot, and the first cold MCP connect on a
+        // brand-new container. Widened 180s -> 480s so a heavy FIRST-boot
+        // migration (doctor pass + the gateway's own shared-state migration on a
+        // large session) completes inside the grace window instead of tripping a
+        // spurious task replacement — the probe only starts counting failures
+        // after this, and a healthy gateway still reports ready as soon as it
+        // binds, so steady-state boots are unaffected. A genuinely dead gateway
+        // is still replaced within ~480s + retries*interval.
+        startPeriod: cdk.Duration.seconds(480),
       },
       // Inject Fargate's init process (tini-equivalent) as PID 1. The
       // openclaw container runs `sh -c "... ; exec node ..."` so Node

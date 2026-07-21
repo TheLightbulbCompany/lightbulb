@@ -58,7 +58,7 @@ class TestOpenclawConfigShape:
 
     def test_agents_defaults_workspace_routes_to_efs(self):
         config = _cfg()
-        assert config["agents"]["defaults"]["workspace"] == "/home/node/.openclaw/workspaces"
+        assert config["agents"]["defaults"]["workspace"] == "/home/node/.openclaw/workspace"
 
     def test_meta_shim_uses_real_upstream_version(self):
         """`meta.lastTouchedVersion` must be the real openclaw version

@@ -989,8 +989,8 @@ class TestReadEndpointTraversal:
         monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
         root = self._two_agents(workspace)
         (root / f"workspace-{AGENT_ID}" / "notes.txt").write_text("legit", encoding="utf-8")
-        # workspace-<attacker>/link -> ../<victim> (a sibling agent workspace)
-        os.symlink(f"../{self.VICTIM_AGENT}", root / f"workspace-{AGENT_ID}" / "link")
+        # workspace-<attacker>/link -> ../workspace-<victim> (a sibling agent workspace)
+        os.symlink(f"../workspace-{self.VICTIM_AGENT}", root / f"workspace-{AGENT_ID}" / "link")
 
         tree = await list_workspace_tree(agent_id=AGENT_ID, path="", recursive=True, auth=_auth())
         paths = {f["path"] for f in tree["files"]}
@@ -1011,7 +1011,7 @@ class TestReadEndpointTraversal:
         monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
         root = self._two_agents(workspace)
         (root / f"workspace-{AGENT_ID}" / "notes.txt").write_text("legit", encoding="utf-8")
-        os.symlink(f"../{self.VICTIM_AGENT}", root / f"workspace-{AGENT_ID}" / "link")
+        os.symlink(f"../workspace-{self.VICTIM_AGENT}", root / f"workspace-{AGENT_ID}" / "link")
 
         tree = await list_workspace_tree(agent_id=AGENT_ID, path="", recursive=False, auth=_auth())
         names = {f["name"] for f in tree["files"]}

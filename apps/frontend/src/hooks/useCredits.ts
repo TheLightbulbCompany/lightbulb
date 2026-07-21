@@ -41,10 +41,15 @@ export function useCredits() {
     (path: string) => api.get(path) as Promise<CreditsBalance>,
     {
       // Top-ups release asynchronously (Metronome collects via the saved
-      // card), so revalidate quickly to surface the new balance without
+      // card), so revalidate on an interval to surface the new balance without
       // forcing the user to refresh the page manually.
       refreshInterval: 30_000,
-      revalidateOnFocus: true,
+      // Matched to the interval because this hook has several always-mounted
+      // consumers (OutOfCreditsBanner, CreditsSection, CreditsStep) and SWR's
+      // polling timer is per-hook-instance. Their timers drift apart by more
+      // than the 2s default dedupe window, so each mount was contributing its
+      // own round trip; a matched dedupe collapses them back to one.
+      dedupingInterval: 30_000,
     },
   );
 

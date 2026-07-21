@@ -6,6 +6,7 @@ and a manual retry-provision endpoint.
 
 import asyncio
 import logging
+import time
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
@@ -36,6 +37,28 @@ from core.services.stripe_webhook_handlers import CONVERTING_SUBSTATUS, maybe_re
 from core.services.user_provision import ensure_personal_trial_default, ensure_user_ready
 
 logger = logging.getLogger(__name__)
+
+# Per-owner dispatch guards for the status poll's pool self-heal. The pool
+# serializes ALL connect I/O behind one process-wide lock — and every chat
+# RPC (send_rpc → ensure_connection) queues on that same lock — while the
+# absent-create path has no reconnect floor. So the dispatch site must not
+# let the ~5s poll cadence pile up dials: the in-flight set stops duplicate
+# dispatches while one is outstanding, and the cooldown stops a wedged
+# container (running row + unreachable IP) from eating a fresh
+# handshake-timeout lock hold per poll. A chat send still dials immediately
+# through its own path — the cooldown only paces this background repair.
+_SELF_HEAL_DIAL_COOLDOWN_S = 60.0
+_self_heal_inflight: set[str] = set()
+_self_heal_last_dial: dict[str, float] = {}
+
+
+def _self_heal_dial_allowed(owner_id: str) -> bool:
+    """True when no self-heal dial is outstanding for *owner_id* and the
+    last attempt is at least the cooldown ago (or never happened)."""
+    if owner_id in _self_heal_inflight:
+        return False
+    last = _self_heal_last_dial.get(owner_id)
+    return last is None or (time.monotonic() - last) >= _SELF_HEAL_DIAL_COOLDOWN_S
 
 
 # A start refusal carries the SAME code as the provision gate's, so each maps
@@ -145,7 +168,7 @@ async def container_status(
     ecs_manager = get_ecs_manager()
     # Use resolve_running_container so polling triggers the
     # provisioning -> running health-check transition.
-    container, _ip = await ecs_manager.resolve_running_container(owner_id)
+    container, container_ip = await ecs_manager.resolve_running_container(owner_id)
     if not container:
         # Fall back to get_service_status for error/stopped containers
         container = await ecs_manager.get_service_status(owner_id)
@@ -222,6 +245,10 @@ async def container_status(
             "last_error": None,
             "last_error_at": None,
             "phase": "provisioning",
+            # Still provisioning -> definitionally not onboarded yet. The
+            # first-run funnel gates on this; a container mid-provision has
+            # no goal/project, so the funnel should show once it's ready.
+            "onboarded": False,
         }
 
     # Daily Bedrock restore: a capped-out (or previously-expired-and-now-
@@ -365,6 +392,27 @@ async def container_status(
     if auth.is_org_context:
         asyncio.create_task(ensure_user_ready(auth, provision_container=False))
 
+    # phase "ready" requires THIS task's in-memory pool to hold the user's
+    # gateway connection — but the pool is per-process. After a rolling deploy
+    # (or an idle reap) the container is up and serving chat while the task
+    # answering this poll holds no connection, so the poll reports "starting"
+    # over a perfectly working workspace until a chat send happens to land
+    # here. Self-heal: dial in the background so the NEXT poll tells the
+    # truth. wake=0 (backgrounded read-only poll) never dials. The phase
+    # check encodes the rest of the guard: "starting" only ever means
+    # status=="running" + pool reachable + not locally connected (the
+    # pool-uninitialized fallback never returns it).
+    if (
+        wake != "0"
+        and container_ip
+        and container.get("gateway_token")
+        and _self_heal_dial_allowed(owner_id)
+        and _safe_phase(container, owner_id) == "starting"
+    ):
+        _self_heal_inflight.add(owner_id)
+        _self_heal_last_dial[owner_id] = time.monotonic()
+        asyncio.create_task(_pool_self_heal_connect(owner_id, container_ip, container["gateway_token"]))
+
     return _status_response(container, owner_id)
 
 
@@ -388,6 +436,12 @@ def _status_response(container: dict, owner_id: str, *, parked: bool = False) ->
         # Cold-start phase for the frontend stepper. See
         # _resolve_cold_start_phase for the (status, pool) -> phase map.
         "phase": _safe_phase(container, owner_id),
+        # Per-CONTAINER onboarding fact: stamped by the /onboarding/brief
+        # route when the first-run funnel is completed for this container.
+        # An org shares one container, so this is the whole org's "funnel
+        # done" signal -- the frontend gates the funnel on it, so a second
+        # org member never re-sees it. No extra read: it lives on the row.
+        "onboarded": container.get("onboarded_at") is not None,
     }
     if parked:
         body["phase"] = "parked"
@@ -422,6 +476,28 @@ async def container_wake_endpoint(
     if result.outcome == "blocked":
         raise HTTPException(status_code=402, detail=result.gate_payload)
     return {"outcome": result.outcome}
+
+
+async def _pool_self_heal_connect(owner_id: str, ip: str, token: str) -> None:
+    """Background dial for the status poll's pool self-heal.
+
+    Same (owner, ip, token) triple and ensure_connection primitive the chat
+    send path uses — idempotent, fast-paths when a racing dial already won.
+    The dial races real container state (mid-deploy handoff, task just
+    died), so failures are logged and swallowed: the poll it came from has
+    already answered, and the next poll simply reports whatever is true.
+    Always clears the per-owner in-flight marker the dispatch site set —
+    the cooldown (stamped at dispatch) paces the next attempt.
+    """
+    try:
+        pool = get_gateway_pool()
+        if pool.is_user_connected(owner_id):
+            return
+        await pool.ensure_connection(owner_id, ip, token)
+    except Exception as exc:
+        logger.info("status-poll pool self-heal dial failed owner=%s: %s", owner_id, exc)
+    finally:
+        _self_heal_inflight.discard(owner_id)
 
 
 def _safe_phase(container: dict, owner_id: str) -> str:

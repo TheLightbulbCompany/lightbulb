@@ -41,6 +41,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Literal, Optional
 
 from boto3.dynamodb.conditions import Key
@@ -48,6 +49,32 @@ from boto3.dynamodb.conditions import Key
 from core.dynamodb import get_table, run_in_thread
 
 logger = logging.getLogger(__name__)
+
+
+class OnboardingClaimResult(str, Enum):
+    """What ``claim_onboarding`` decided, for the caller to act on.
+
+    A bare bool conflates two very different "False" cases: "the company is
+    genuinely done" (a durable, terminal fact worth returning to the client
+    as success) and "another request holds a fresh in-flight claim" (a
+    transient state that should be retried, not treated as done). Callers
+    that can't tell those apart risk marking a caller's own submission
+    ``already_submitted`` on a company that in fact has no goal or project
+    yet, because the peer whose claim they collided with later failed.
+    """
+
+    WON = "won"
+    """This caller now holds the claim (fresh or stolen) and should
+    proceed to seed."""
+
+    SEEDED = "seeded"
+    """The existing claim already completed (``seeded_at`` is set). This is
+    the ONLY case that means genuinely, durably done."""
+
+    IN_FLIGHT = "in_flight"
+    """A non-stale claim exists with no ``seeded_at`` yet -- someone else is
+    legitimately working on it right now. Retry later; do not treat as
+    done."""
 
 
 PaperclipCompanyStatus = Literal["provisioning", "active", "failed", "disabled"]
@@ -65,6 +92,19 @@ _ORG_CREATE_CLAIM_PREFIX = "__org_create_claim__:"
 
 def _org_create_claim_key(org_id: str) -> str:
     return f"{_ORG_CREATE_CLAIM_PREFIX}{org_id}"
+
+
+# Reserved user_id namespace for the per-company "onboarding seed" sentinel.
+# Same rationale as the org-create claim above: the table is keyed per-user,
+# so a field on the submitting user's row would leave every other member of
+# the same org unmarked. This synthetic PK is reached only by direct
+# get/put/update, never via a GSI, and a PK conditional write is strongly
+# consistent and cross-instance-safe.
+_ONBOARDING_CLAIM_PREFIX = "__onboarded__:"
+
+
+def _onboarding_claim_key(company_id: str) -> str:
+    return f"{_ONBOARDING_CLAIM_PREFIX}{company_id}"
 
 
 @dataclass
@@ -451,6 +491,227 @@ class PaperclipRepo:
             )
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             pass
+
+    async def claim_onboarding(
+        self, company_id: str, *, holder: str, stale_after_seconds: int = 60
+    ) -> OnboardingClaimResult:
+        """Claim the one-shot onboarding seed for a COMPANY.
+
+        The table is keyed per-user, so a field on the submitting user's
+        row would leave every other member of the same org unmarked. This
+        sentinel is keyed on company_id instead, following the same shape
+        as the org-create claim above.
+
+        PK conditional write: strongly consistent and cross-instance-safe,
+        so two tabs submitting the brief at once cannot both seed. Exactly
+        one gets ``WON`` on a fresh claim.
+
+        On a collision (a sentinel already exists) this reads it via
+        ``get_onboarding`` and decides:
+
+        * ``seeded_at`` present -> the seed genuinely completed ->
+          ``SEEDED``. A finished seed is never stealable, no matter how
+          old. This is the ONLY result that means the company is durably
+          done — callers must treat it, and only it, as
+          ``already_submitted``.
+        * no ``seeded_at`` and ``claimed_at`` is older than
+          ``stale_after_seconds`` -> stranded (the holder died between
+          claiming and recording -- e.g. an ECS task kill or a deploy
+          landing in that ~3s window, which ``release_onboarding_claim``
+          never runs for) -> take it over (becoming the new holder) and
+          return ``WON``.
+        * otherwise -> a claim is legitimately in flight -> ``IN_FLIGHT``.
+          This is transient, not done: the holder may itself still fail
+          and release, at which point a retry should be allowed to claim.
+
+        Returning a bare bool here would conflate ``SEEDED`` and
+        ``IN_FLIGHT`` into a single "False" — exactly the defect this
+        result type exists to prevent (see ``OnboardingClaimResult``'s
+        docstring): a caller that treats a losing collision as
+        ``already_submitted`` regardless of WHY can mark itself done on a
+        company that in fact has no goal or project, if the peer it
+        collided with later fails.
+
+        Without the stale-steal takeover, a stranded sentinel locks the
+        company out of onboarding forever: every later submit sees
+        ``SEEDED`` (or, before this fix, an undifferentiated
+        ``already_submitted``) and the user is waved into a company with
+        no goal, no project, and no first-run instructions staged, with no
+        self-service recovery.
+
+        Mirrors ``try_acquire_org_create_claim``'s structure: a fresh
+        conditional put, then a strongly-consistent read, then a guarded
+        steal keyed on the unchanged ``claimed_at`` (plus
+        ``attribute_not_exists(seeded_at)``, so a seed that lands mid-steal
+        can't be clobbered) -- so two simultaneous stealers can't both win.
+
+        ``holder`` identifies THIS caller and is written onto the sentinel
+        on both the fresh claim and a successful steal, exactly like the
+        org-create claim's ``holder``. This closes a race the stale-steal
+        takeover would otherwise reopen: without it, an original holder (A)
+        that stalls past the stale window, gets stolen from by B, and only
+        THEN fails and calls ``release_onboarding_claim`` would delete B's
+        live claim out from under it -- letting a third request (C) win a
+        fresh claim and seed a SECOND goal/project pair while B is still
+        working. Generate a fresh ``holder`` per request (a retry by the
+        same user must be distinguishable from their own prior attempt);
+        pass the SAME value to the matching ``release_onboarding_claim``.
+
+        Callers MUST ``release_onboarding_claim`` on failure so a retry (or
+        a steal) can re-enter without waiting out the stale window.
+        """
+        key = _onboarding_claim_key(company_id)
+        now = datetime.now(timezone.utc)
+        item = {
+            "user_id": key,
+            "kind": "onboarding_claim",
+            "company_id": company_id,
+            "holder": holder,
+            "claimed_at": now.isoformat(),
+        }
+        table = self._table()
+
+        # 1. Fresh claim — wins iff no sentinel exists yet.
+        try:
+            await run_in_thread(
+                table.put_item,
+                Item=item,
+                ConditionExpression="attribute_not_exists(user_id)",
+            )
+            return OnboardingClaimResult.WON
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            pass
+
+        # 2. A sentinel exists — strongly-consistent read, then decide.
+        existing = await self.get_onboarding(company_id)
+        if existing is None:
+            # Released (deleted) between our put and get — try one fresh claim.
+            try:
+                await run_in_thread(
+                    table.put_item,
+                    Item=item,
+                    ConditionExpression="attribute_not_exists(user_id)",
+                )
+                return OnboardingClaimResult.WON
+            except table.meta.client.exceptions.ConditionalCheckFailedException:
+                # Someone else claimed it in the gap between our read and
+                # write. We don't know their state without re-reading, and
+                # a false SEEDED would wrongly tell our caller "done" — so
+                # report the conservative option: retry. If it really is
+                # SEEDED, the retry's own read will see that.
+                return OnboardingClaimResult.IN_FLIGHT
+
+        if existing.get("seeded_at"):
+            # Genuinely done — never steal a completed seed.
+            return OnboardingClaimResult.SEEDED
+
+        prev_claimed_at = existing.get("claimed_at", "")
+        try:
+            age = (now - datetime.fromisoformat(prev_claimed_at)).total_seconds()
+        except (ValueError, TypeError):
+            age = float("inf")  # unparseable timestamp → treat as stale
+        if age < stale_after_seconds:
+            # A claim is legitimately in flight.
+            return OnboardingClaimResult.IN_FLIGHT
+
+        # Steal — overwrite (becoming the new holder) only if claimed_at is
+        # unchanged since our read AND no seed has landed since, so two
+        # concurrent stealers can't both win and a just-completed seed can't
+        # be clobbered.
+        try:
+            await run_in_thread(
+                table.put_item,
+                Item=item,
+                ConditionExpression="claimed_at = :prev AND attribute_not_exists(seeded_at)",
+                ExpressionAttributeValues={":prev": prev_claimed_at},
+            )
+            return OnboardingClaimResult.WON
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            # Another stealer won the race, or a seed landed underneath us.
+            # Same reasoning as above: report the conservative IN_FLIGHT
+            # rather than guessing which.
+            return OnboardingClaimResult.IN_FLIGHT
+
+    async def release_onboarding_claim(self, company_id: str, *, holder: str) -> None:
+        """Drop the claim so a failed seed can be retried -- iff we still
+        hold it.
+
+        Guarded on ``holder`` so we never delete a claim another caller has
+        since stolen (mirrors ``release_org_create_claim``). Without this
+        guard, an original holder that stalled past the stale window, got
+        stolen from, and only then failed would delete the new holder's
+        live claim out from under it -- reopening the duplicate-pair race
+        the claim mechanism exists to prevent. A lost guard is a no-op, not
+        an error: the claim is either already released, already re-claimed
+        by someone else, or already completed -- none of which this caller
+        should touch.
+        """
+        table = self._table()
+        try:
+            await run_in_thread(
+                table.delete_item,
+                Key={"user_id": _onboarding_claim_key(company_id)},
+                ConditionExpression="holder = :h",
+                ExpressionAttributeValues={":h": holder},
+            )
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            pass
+
+    async def record_onboarding_ids(self, company_id: str, *, goal_id: str, project_id: str, holder: str) -> None:
+        """Record the seeded rows on the claim. Written LAST, so a claim
+        carrying ids always means both Paperclip rows exist and are linked.
+
+        Guarded with ``attribute_exists(user_id) AND holder = :h`` — TWO
+        conditions, both load-bearing:
+
+        * ``attribute_exists(user_id)`` — this can only ever update a row
+          that ``claim_onboarding``'s PK-conditional ``put_item`` already
+          created. Without it, ``update_item`` on a non-existent key
+          silently CREATES it from scratch — a caller bug (e.g. calling
+          this without ever claiming) would fabricate the sentinel out of
+          thin air instead of failing loudly, permanently locking the
+          company out of onboarding with no exception and no signal.
+        * ``holder = :h`` — existence alone is not enough once
+          ``claim_onboarding`` can steal: if THIS caller (A) stalls past
+          the stale window, gets stolen from by B, then recovers and
+          finishes seeding, the row still exists (it's B's now) -- so an
+          existence-only guard would let A's ``update_item`` land and
+          stamp A's ids over B's in-flight claim. Both seeded pairs would
+          then exist with only one linked from the sentinel, orphaning the
+          other on the user's first screen. The holder guard makes that
+          write fail instead, routing A into its own cleanup (delete its
+          own goal/project, then a holder-guarded release that no-ops
+          against B's claim) while B proceeds untouched.
+
+        Raises ``ConditionalCheckFailedException`` if no claim was ever
+        taken under this key, OR if a different holder now owns it (having
+        stolen it after this caller stalled). Callers release the claim on
+        any failure here, but do NOT translate it into a 409 — the
+        exception (e.g. botocore's ``ClientError``) propagates through a
+        generic handler with no registered mapping for it and surfaces to
+        the client as a raw 500.
+        """
+        await run_in_thread(
+            self._table().update_item,
+            Key={"user_id": _onboarding_claim_key(company_id)},
+            UpdateExpression="SET onboarding_goal_id = :g, onboarding_project_id = :p, seeded_at = :t",
+            ExpressionAttributeValues={
+                ":g": goal_id,
+                ":p": project_id,
+                ":t": datetime.now(timezone.utc).isoformat(),
+                ":h": holder,
+            },
+            ConditionExpression="attribute_exists(user_id) AND holder = :h",
+        )
+
+    async def get_onboarding(self, company_id: str) -> Optional[dict]:
+        """Read the sentinel. Strongly consistent — callers branch on it."""
+        resp = await run_in_thread(
+            self._table().get_item,
+            Key={"user_id": _onboarding_claim_key(company_id)},
+            ConsistentRead=True,
+        )
+        return resp.get("Item")
 
     async def scan_purge_due(self, now: datetime) -> list[PaperclipCompany]:
         """Return disabled rows whose ``scheduled_purge_at <= now`` via the GSI.

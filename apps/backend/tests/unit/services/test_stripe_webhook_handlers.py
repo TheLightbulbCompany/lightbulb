@@ -998,10 +998,49 @@ async def test_subscription_deleted_refreshes_owner_facts(facts_mock):
         repo.get_by_owner_id = AsyncMock(
             return_value={"owner_id": "org_x", "owner_type": "org", "stripe_customer_id": "cus_x"}
         )
+        repo.set_plan = AsyncMock()
         ecs.return_value.delete_user_service = AsyncMock()
         await handlers.handle_subscription_deleted(event, billing_service)
 
     facts_mock.assert_awaited_once_with("org_x", account_overrides={"subscription_status": "canceled"})
+
+
+@pytest.mark.asyncio
+async def test_subscription_deleted_resets_plan_to_standard(facts_mock):
+    """Cancellation must reset the pricing tier: teardown removes the container
+    but leaves the billing row, so a lingering plan="ultra_pro" would misreport
+    the tier and turn a later flat re-subscribe's first webhook into a bogus
+    downgrade. set_plan(owner, "standard") is called, best-effort."""
+    billing_service = MagicMock()
+    billing_service.cancel_subscription = AsyncMock()
+    event = {
+        "id": "evt_del2",
+        "type": "customer.subscription.deleted",
+        "data": {"object": {"id": "sub_u", "customer": "cus_u", "metadata": {"owner_id": "org_u"}}},
+    }
+    with (
+        patch.object(handlers, "billing_repo") as repo,
+        patch("core.containers.get_ecs_manager") as ecs,
+        patch(
+            "core.services.paperclip_provisioning.build_paperclip_provisioning",
+            AsyncMock(side_effect=RuntimeError("skip paperclip teardown")),
+        ),
+    ):
+        repo.get_by_owner_id = AsyncMock(
+            return_value={
+                "owner_id": "org_u",
+                "owner_type": "org",
+                "stripe_customer_id": "cus_u",
+                "plan": "ultra_pro",
+            }
+        )
+        repo.set_plan = AsyncMock()
+        ecs.return_value.delete_user_service = AsyncMock()
+        await handlers.handle_subscription_deleted(event, billing_service)
+
+    repo.set_plan.assert_awaited_once()
+    assert repo.set_plan.await_args.args[0] == "org_u"
+    assert repo.set_plan.await_args.kwargs["plan"] == "standard"
 
 
 @pytest.mark.asyncio

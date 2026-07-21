@@ -26,7 +26,8 @@ from core.auth import (
 )
 from core.config import settings
 from core.containers import get_ecs_manager, get_workspace
-from core.repositories import marketplace_repo
+from core.containers.ecs_manager import ULTRA_CPU, ULTRA_MEMORY_MIB
+from core.repositories import billing_repo, marketplace_repo
 from core.services import (
     agent_export,
     company_deploy_service,
@@ -382,26 +383,59 @@ async def deploy_listing(
         raise HTTPException(status_code=404, detail="listing not found")
 
     if listing.get("format") == "company":
-        # Company deploys are platform-admin-only until the dev E2E validates
-        # the deploy engine (a later task flips this to the buyer gate). The
-        # gate is enforced server-side here, not merely in the UI.
+        # COMPANY_MARKETPLACE_LAUNCH_GATE: company deploys are platform-admin-only
+        # until the dev E2E validates the deploy engine. Enforced server-side, not
+        # merely in the UI. Remove every COMPANY_MARKETPLACE_LAUNCH_GATE marker to
+        # open the marketplace (deploy + Ultra upgrade) to buyers together.
         require_platform_admin(auth)
 
+        owner_id = resolve_owner_id(auth)
         # min_plan is "standard" iff agent_count <= 10 (see company_package).
-        # >10-agent companies require the Ultra Pro tier, which ships in a
-        # later PR — reject both the min_plan verdict and, belt-and-suspenders,
-        # a raw agent_count over the standard cap in case a manifest disagrees.
+        # A company needing Ultra (min_plan != standard, or — belt-and-
+        # suspenders — a raw agent_count over the standard cap should a manifest
+        # disagree) may only be deployed by an ultra_pro owner. A standard-plan
+        # owner still 409s; an ultra_pro owner passes and gets the large box
+        # (the provision path sizes their container by plan).
         company = (listing.get("manifest_json") or {}).get("company") or {}
         agent_count = int(company.get("agent_count", 0) or 0)
-        if company.get("min_plan") != "standard" or agent_count > COMPANY_STANDARD_PLAN_MAX_AGENTS:
-            raise HTTPException(status_code=409, detail="Requires Ultra Pro")
+        needs_ultra = company.get("min_plan") != "standard" or agent_count > COMPANY_STANDARD_PLAN_MAX_AGENTS
+        if needs_ultra:
+            account = await billing_repo.get_by_owner_id(owner_id)
+            if (account or {}).get("plan") != "ultra_pro":
+                raise HTTPException(status_code=409, detail="Requires Ultra Pro")
+
+            # Size reconcile BEFORE dispatch. The Ultra upgrade webhook's
+            # up-resize (standard -> 2 vCPU / 8 GB) is best-effort/swallowed;
+            # if it failed transiently the owner is plan=ultra_pro but their
+            # container is still the standard 0.5 vCPU / 2 GB box. Seeding a
+            # >10-agent company onto that box OOMs. A resize restarts the
+            # container, so we CANNOT resize mid-deploy — instead we compare
+            # the running box's ACTUAL size against Ultra and, on a mismatch,
+            # KICK the resize and refuse this deploy; the owner retries once it
+            # is up. Only runs when needs_ultra — a standard box is always
+            # adequate for a standard company.
+            #
+            # The desired size is the Ultra constants INLINE, not
+            # _size_for_owner: the plan gate just above already confirmed
+            # ultra_pro, and _size_for_owner is fail-open (a transient billing
+            # read error there returns the STANDARD size, which would falsely
+            # match the still-standard box and dispatch the big company onto
+            # the 2 GB box — the exact OOM this guards). current_container_size
+            # reads the real running size and does not touch billing.
+            desired_cpu, desired_memory = ULTRA_CPU, ULTRA_MEMORY_MIB
+            ecs = get_ecs_manager()
+            if await ecs.current_container_size(owner_id) != (desired_cpu, desired_memory):
+                await ecs.resize_user_container(owner_id, new_cpu=desired_cpu, new_memory=desired_memory)
+                raise HTTPException(
+                    status_code=409,
+                    detail=("Your container is resizing to Ultra Pro — please retry the deploy in about a minute."),
+                )
 
         s3_prefix = listing.get("s3_prefix")
         if not s3_prefix:
             raise HTTPException(status_code=500, detail="listing has no artifact prefix")
         tar_bytes = _fetch_company_tar(s3_prefix=s3_prefix, listing_id=listing.get("listing_id"))
 
-        owner_id = resolve_owner_id(auth)
         # Fire-and-forget: instantiate the whole package off the request path and
         # return 202 immediately. There is no job row — progress and the final
         # roster are observed in Teams (the Paperclip roster is the source of

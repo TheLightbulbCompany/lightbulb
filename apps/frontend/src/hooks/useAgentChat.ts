@@ -88,6 +88,14 @@ function friendlyError(raw: string): string {
   return raw;
 }
 
+// A user-initiated Stop is delivered as an `error` frame — connection_pool.py
+// transforms chat.aborted into {"type":"error","message":"Agent run was
+// cancelled"} (and websocket_chat.py synthesizes the identical frame when the
+// abort RPC can't be confirmed). It carries no errorCode, so string-matching is
+// the available signal, same as ERROR_PATTERNS above. An abort is the outcome
+// the user asked for: it renders as a calm notice, not an error.
+const ABORTED_PATTERN = /Agent run was cancelled/i;
+
 // Builds the OpenClaw session key the read path (chat.history) queries. The
 // write path constructs the authoritative key server-side; this must mirror
 // it: 4-part `agent:{agentId}:{userId}:{sessionId}` for a real session, or the
@@ -152,11 +160,12 @@ export interface UseAgentChatReturn {
   renderGroups: RenderGroup[];
   /** Raw flat items before grouping — exposed for snapshot testing and StreamingStatusBar. */
   renderItems: ChatRenderItem[];
+  /** The persisted transcript backing renderItems — exposed for pagination assertions. */
+  chatMessages: HistoryMessage[];
   /** Whether a user-turn is in flight (chatStream non-null OR live tools running OR clientRunIdRef set). */
   isStreaming: boolean;
   /** isStreaming (local anchor) OR containerRunActive (server truth via `run_active`). */
   busy: boolean;
-  error: string | null;
   sendMessage: (message: string) => Promise<void>;
   cancelMessage: () => Promise<void>;
   clearMessages: () => void;
@@ -176,6 +185,12 @@ export interface UseAgentChatReturn {
   newSession: () => string;
   /** Switch the active session (null selects General). */
   selectSession: (sessionId: string | null) => void;
+  /** True when older pages of this session's transcript remain unfetched. */
+  hasOlderMessages: boolean;
+  /** True while a loadOlderMessages() fetch is in flight. */
+  isLoadingOlder: boolean;
+  /** Fetch and prepend the next older page of history (walks the module-level paging cursor backward). */
+  loadOlderMessages: () => Promise<void>;
 }
 
 // =============================================================================
@@ -188,6 +203,14 @@ export interface UseAgentChatReturn {
 
 const _messageCache = new Map<string, HistoryMessage[]>();
 const _needsBootstrap = new Set<string>();
+
+// Newest-page size for chat.history. Small enough that a typical page clears
+// the 110 KB frame budget without the backend trim engaging, large enough to
+// fill a screen. offset counts BACKWARD from newest, so offset 0 is this page.
+const HISTORY_PAGE_SIZE = 30;
+
+// Per-cacheKey paging cursor, mirroring _messageCache's module-store lifetime.
+const _historyPaging = new Map<string, { nextOffset: number; hasMore: boolean }>();
 
 // Bounded backoff (ms) for re-reading chat.history when the FIRST read comes
 // back empty AND there is no cached transcript to fall back on. A scaled-to-
@@ -550,8 +573,6 @@ export function useAgentChat(
   // connection drop, so a lost `run_active:false` can't strand it true.
   const [containerRunActive, setContainerRunActive] = useState(false);
 
-  const [error, setError] = useState<string | null>(null);
-
   // Ephemeral `/btw` side-result cards. Transient by design: never written to
   // _messageCache or chatMessages, so they don't survive a refresh and are not
   // part of the persisted transcript — matching OpenClaw's "Not saved to chat
@@ -846,9 +867,14 @@ export function useAgentChat(
     const loadedKeys = historyLoadedRef.current;
 
     const runFetch = (attempt: number): void => {
-      sendReq("chat.history", { sessionKey, limit: 200 })
+      sendReq("chat.history", { sessionKey, limit: HISTORY_PAGE_SIZE, offset: 0 })
         .then((result: unknown) => {
-          const historyResult = result as { messages?: HistoryMessage[]; truncated?: boolean };
+          const historyResult = result as {
+            messages?: HistoryMessage[];
+            truncated?: boolean;
+            nextOffset?: number;
+            hasMore?: boolean;
+          };
           // A local transcript mutation while this fetch was in flight (a sent
           // message, a folded run, a clear) means the snapshot is stale —
           // applying it would silently drop that mutation from BOTH the live
@@ -864,6 +890,21 @@ export function useAgentChat(
               _truncatedHistory.add(cacheKey);
             } else {
               _truncatedHistory.delete(cacheKey);
+            }
+            // Cursor bookkeeping uses the SERVER's nextOffset, never a local
+            // count: projectChatHistoryMessages drops hidden rows, so a local
+            // tally would drift from the store's absolute indexing. This must
+            // stay INSIDE the staleSnapshot guard: the cursor is snapshot
+            // metadata exactly like `truncated`, describing the very page
+            // whose message-apply is skipped below when stale. Writing it
+            // unconditionally would resurrect a cursor a /clear or agent
+            // switch just deleted, reporting "Load earlier" available on a
+            // transcript that was never actually paged.
+            if (typeof historyResult?.nextOffset === "number") {
+              _historyPaging.set(cacheKey, {
+                nextOffset: historyResult.nextOffset,
+                hasMore: historyResult.hasMore === true,
+              });
             }
           }
           const raw = Array.isArray(historyResult?.messages) ? historyResult.messages : [];
@@ -971,7 +1012,6 @@ export function useAgentChat(
     toolStreamByIdRef.current.clear();
     toolStreamOrderRef.current = [];
     setBtwResults([]);
-    setError(null);
     setIsStreaming(false);
     // Scope the server-truth busy bit to the chat it came from: the old
     // session's later run_active:false/terminal is tagged with the old
@@ -1004,9 +1044,95 @@ export function useAgentChat(
     if (!key) return;
     _messageCache.delete(key);
     historyLoadedRef.current.delete(key);
+    _historyPaging.delete(key);
     setChatMessages([]);
     setHistoryRefetchNonce((n) => n + 1);
   }, [sessionName, setChatMessages]);
+
+  // ---- Load older history (paging backward) ----
+  //
+  // Walks the module-level `_historyPaging` cursor backward one page at a
+  // time and prepends the result. Never touches `historyLoadedRef` /
+  // `historyRefetchNonce` — this is additive to the already-loaded newest
+  // page, not a revalidation of it.
+  const [isLoadingOlder, setIsLoadingOlder] = useState(false);
+  // REF-based in-flight guard. `isLoadingOlder` (React state) is exposed for
+  // the UI to gate its own trigger (e.g. disable a "Load older" button), but
+  // a truly synchronous double-invocation (a double-click before that state
+  // update paints, or two programmatic callers in the same tick) would both
+  // read a stale `false` closure of the state and both fire the same page
+  // fetch — a state check couldn't reliably block the second call. The ref
+  // is mutated synchronously before the first `await`, so the second
+  // invocation observes it immediately and bails out.
+  const loadingOlderRef = useRef(false);
+
+  const loadOlderMessages = useCallback(async (): Promise<void> => {
+    if (loadingOlderRef.current) return;
+    const agent = agentIdRef.current;
+    if (!agent) return;
+    // Capture the session this call is FOR. Re-checked after the await below
+    // — mirrors the initial-fetch effect's "a fetch that resolves after a
+    // session switch must not stomp the new view" guard — so a session
+    // switch mid-fetch can't prepend a stale page onto the now-active
+    // (already-swapped) transcript.
+    const sessionAtCall = activeSessionIdRef.current;
+    const key = `${agent}:${sessionName}:${sessionAtCall ?? ""}`;
+    const cursor = _historyPaging.get(key);
+    if (!cursor?.hasMore) return;
+    const sessionKey = buildChatSessionKey(agent, sessionName, sessionAtCall);
+    loadingOlderRef.current = true;
+    setIsLoadingOlder(true);
+    try {
+      const res = (await sendReq("chat.history", {
+        sessionKey,
+        limit: HISTORY_PAGE_SIZE,
+        offset: cursor.nextOffset,
+      })) as { messages?: HistoryMessage[]; nextOffset?: number; hasMore?: boolean };
+      const older = projectChatHistoryMessages(
+        Array.isArray(res?.messages) ? res.messages : [],
+      );
+      // Only touch the live transcript — and only advance the cursor — if
+      // the user is still on the session this fetch was issued for.
+      const stillCurrent =
+        agentIdRef.current === agent && activeSessionIdRef.current === sessionAtCall;
+      // Cursor and content must advance together. If the session switched
+      // away while this fetch was in flight, the page below is intentionally
+      // NOT applied (the `stillCurrent && older.length > 0` gate) — so the
+      // cursor must be left at its pre-fetch value too. Advancing it anyway
+      // would silently skip the discarded page: switching back would resume
+      // paging from the SERVER's nextOffset instead of re-fetching what was
+      // never shown, leaving an unmarked gap in the middle of the transcript.
+      if (stillCurrent) {
+        _historyPaging.set(key, {
+          nextOffset: typeof res?.nextOffset === "number" ? res.nextOffset : cursor.nextOffset,
+          hasMore: res?.hasMore === true,
+        });
+      }
+      // A page is chronological internally and every message in it predates
+      // the page we already hold, so a straight prepend preserves order.
+      // No _messageCache write here: useSessionScopedMessages' write-back
+      // effect already persists any non-empty messages state under the active
+      // cacheKey. Writing the cache inside the updater would also be a side
+      // effect in a function React may invoke twice under StrictMode.
+      if (stillCurrent && older.length > 0) {
+        setChatMessages((prev) => [...older, ...prev]);
+      }
+    } catch (err) {
+      // Only surface the error toast if the failing fetch's session is still
+      // the active one — otherwise a session the user already left behind
+      // pops a toast on whatever they switched to.
+      const stillCurrentOnError =
+        agentIdRef.current === agent && activeSessionIdRef.current === sessionAtCall;
+      if (stillCurrentOnError) {
+        notifyApiError(err, "Couldn't load earlier messages", {
+          dedupeKey: "history-older",
+        });
+      }
+    } finally {
+      loadingOlderRef.current = false;
+      setIsLoadingOlder(false);
+    }
+  }, [sessionName, sendReq, setChatMessages]);
 
   // ---- Chat message handler ----
   // Dependencies are intentionally minimal ([onChatMessage]) because all
@@ -1051,6 +1177,7 @@ export function useAgentChat(
           if (staleKey) {
             _messageCache.delete(staleKey);
             historyLoadedRef.current.delete(staleKey);
+            _historyPaging.delete(staleKey);
           }
         }
         return;
@@ -1640,15 +1767,18 @@ export function useAgentChat(
         setContainerRunActive(false);
 
         const displayError = friendlyError(msg.message);
-        const errorCode = isWaking ? undefined : msg.code;
-        // Append an assistant-role message. A waking notice renders as calm
-        // plain markdown (no "Error: " prefix, no errorCode); a genuine error
-        // carries the "Error: " prefix + errorCode that MessageList upgrades
-        // to a typed ChatErrorCard.
+        // A user-initiated Stop is not a failure — treat it like the waking
+        // notice: calm plain text, no errorCode.
+        const isCalmNotice = isWaking || ABORTED_PATTERN.test(msg.message);
+        const errorCode = isCalmNotice ? undefined : msg.code;
+        // Append an assistant-role message. A calm notice (waking / aborted)
+        // renders as plain markdown (no "Error: " prefix, no errorCode); a
+        // genuine error carries the "Error: " prefix + errorCode that
+        // MessageList upgrades to a typed ChatErrorCard.
         const errMsg: HistoryMessage = {
           role: "assistant",
           content: [
-            { type: "text", text: isWaking ? displayError : `Error: ${displayError}` },
+            { type: "text", text: isCalmNotice ? displayError : `Error: ${displayError}` },
           ],
           timestamp: Date.now(),
           runId: msg.runId,
@@ -1674,10 +1804,6 @@ export function useAgentChat(
         toolStreamByIdRef.current.clear();
         toolStreamOrderRef.current = [];
         setChatToolMessages([]);
-        // A waking notice is not a failure — leave the top-level `error` (which
-        // drives AgentChatWindow's full pink "Error" banner) untouched so the
-        // brief window before the stepper takes over stays calm.
-        if (!isWaking) setError(displayError);
         // Did THIS error end the active run? A terminal agent error carries
         // the run's runId (the no-runId agent_busy notice was handled and
         // returned above). Capture state before clearing so we can drain.
@@ -1979,7 +2105,6 @@ export function useAgentChat(
       const trimmed = message.trim();
       if (!trimmed) return;
 
-      setError(null);
       const key = agentIdRef.current
         ? `${agentIdRef.current}:${sessionName}:${activeSessionIdRef.current ?? ""}`
         : null;
@@ -2254,8 +2379,14 @@ export function useAgentChat(
     const key = agentIdRef.current
       ? `${agentIdRef.current}:${sessionName}:${activeSessionIdRef.current ?? ""}`
       : null;
-    if (key) _messageCache.delete(key);
-    setError(null);
+    if (key) {
+      _messageCache.delete(key);
+      // Same as invalidateHistoryAndRefetch and the stale-key demux branch:
+      // a stale {nextOffset, hasMore:true} cursor left behind after a /clear
+      // would report hasOlderMessages=true on an empty transcript and
+      // loadOlderMessages() would prepend a floating old page onto [].
+      _historyPaging.delete(key);
+    }
     setIsStreaming(false);
     // Drop the server-truth busy bit too (agent switch routes through here):
     // the old scope's run_active:false is demux-dropped once the agent changes,
@@ -2324,9 +2455,9 @@ export function useAgentChat(
   return {
     renderGroups,
     renderItems,
+    chatMessages,
     isStreaming,
     busy: isStreaming || containerRunActive,
-    error,
     sendMessage,
     cancelMessage,
     clearMessages,
@@ -2342,5 +2473,8 @@ export function useAgentChat(
     activeSessionId,
     newSession,
     selectSession,
+    hasOlderMessages: !!(cacheKey && _historyPaging.get(cacheKey)?.hasMore),
+    isLoadingOlder,
+    loadOlderMessages,
   };
 }

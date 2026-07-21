@@ -558,3 +558,16 @@ async def patch_project(
         body=body.model_dump(exclude_none=True, by_alias=True),
         session_cookie=ctx.session_cookie,
     )
+
+
+@router.delete("/projects/{project_id}")
+async def delete_project(project_id: str, ctx: TeamsContext = Depends(_ctx)):
+    """Delete a project.
+
+    ``_delete`` treats a 404 as already-gone (idempotent), so a
+    double-delete from a stale UI is a no-op rather than an error.
+    """
+    return await _agents._admin().delete_project(
+        project_id=project_id,
+        session_cookie=ctx.session_cookie,
+    )

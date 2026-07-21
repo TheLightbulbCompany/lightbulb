@@ -39,7 +39,17 @@ vi.mock("@/components/notifications/RunNotifications", () => ({
 // Providers → pass-throughs (no WebSocket, no drawer context churn).
 vi.mock("@/hooks/useGateway", () => ({
   GatewayProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  useGateway: () => ({}),
+  // Inert, but SHAPE-FAITHFUL. MobileChatShell calls useAgents() → useGatewayRpc,
+  // which destructures { sendReq, onEvent, isParked } and invokes onEvent inside
+  // a passive effect. A bare {} made only the mobile case throw "onEvent is not
+  // a function" (desktop never hit it — WorkspaceShell is mocked inert).
+  useGateway: () => ({
+    sendReq: vi.fn().mockResolvedValue({}),
+    onEvent: () => () => {},
+    onChatMessage: () => () => {},
+    isParked: false,
+    isConnected: false,
+  }),
 }));
 vi.mock("@/hooks/useExecApprovals", () => ({
   ExecApprovalsProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
@@ -66,10 +76,13 @@ describe("/chat page — desktop/mobile branch", () => {
     view.isDesktop = false;
   });
 
-  it("desktop: mounts WorkspaceShell (mode=desktop notifications), no ChatLayout", () => {
+  // WorkspaceShell loads via next/dynamic (mobile must not download dockview),
+  // so the desktop branch resolves asynchronously — findByTestId retries until
+  // the lazy boundary settles.
+  it("desktop: mounts WorkspaceShell (mode=desktop notifications), no ChatLayout", async () => {
     view.isDesktop = true;
     render(<ChatPage />);
-    expect(screen.getByTestId("workspace-shell")).toBeInTheDocument();
+    expect(await screen.findByTestId("workspace-shell")).toBeInTheDocument();
     expect(screen.queryByTestId("chat-layout")).not.toBeInTheDocument();
     expect(screen.getByTestId("run-notifications")).toHaveAttribute("data-mode", "desktop");
   });
@@ -82,9 +95,10 @@ describe("/chat page — desktop/mobile branch", () => {
     expect(screen.getByTestId("run-notifications")).toHaveAttribute("data-mode", "mobile");
   });
 
-  it("exactly one shell and one notifications mount at a time", () => {
+  it("exactly one shell and one notifications mount at a time", async () => {
     view.isDesktop = true;
     render(<ChatPage />);
+    await screen.findByTestId("workspace-shell");
     expect(screen.getAllByTestId("run-notifications")).toHaveLength(1);
   });
 });

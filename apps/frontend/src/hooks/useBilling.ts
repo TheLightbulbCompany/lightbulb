@@ -22,6 +22,11 @@ export interface BillingAccount {
   // an org whose admin has already picked.
   provider_choice: string | null;
   byo_provider: string | null;
+  // Pricing tier: "standard" (the single $50/mo tier) or "ultra_pro" (the
+  // higher $150/mo tier that unlocks larger marketplace companies). Backend
+  // defaults a plan-less row to "standard"; optional here so pre-plan
+  // response shapes (and test fixtures) don't have to carry it.
+  plan?: "standard" | "ultra_pro";
   // Teams per-seat billing (org owners only; null for personal). seat_count is
   // the live org member count; team_seat_price_usd is echoed from backend
   // config so the paywall never hardcodes the per-seat price.
@@ -107,6 +112,26 @@ export function useBilling() {
     window.location.href = checkout_url;
   }, [api]);
 
+  // Upgrade the owner to the Ultra Pro tier via POST /billing/ultra-checkout.
+  // Two response shapes (see routers/billing.py create_ultra_checkout):
+  //   - {checkout_url}   → free-tier / no live sub: a fresh Ultra Checkout
+  //                        session; redirect the browser to Stripe.
+  //   - {upgraded: true} → owner already on the flat sub: an in-place item
+  //                        swap (one subscription, prorated), no redirect —
+  //                        refresh the billing row so the card flips to the
+  //                        Ultra badge once the webhook records the tier.
+  const upgradeToUltra = useCallback(async () => {
+    const res = (await api.post("/billing/ultra-checkout", {})) as {
+      checkout_url?: string;
+      upgraded?: boolean;
+    };
+    if (res.checkout_url) {
+      window.location.href = res.checkout_url;
+    } else {
+      await mutate();
+    }
+  }, [api, mutate]);
+
   // Same 404→null contract as /billing/account.
   const fetchUsage = useCallback(async (): Promise<UsageSummary | null> => {
     try {
@@ -127,6 +152,7 @@ export function useBilling() {
     isSubscribed,
     openPortal,
     startTeamCheckout,
+    upgradeToUltra,
     fetchUsage,
     refresh,
   };

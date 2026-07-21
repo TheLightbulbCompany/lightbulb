@@ -49,7 +49,6 @@ import {
   resetWorkspaceLayout,
   getWorkspaceSnapshot,
   refreshWorkspaceSnapshot,
-  useWorkspaceState,
 } from "./workspaceController";
 
 const ISOL8_THEME: DockviewTheme = { ...themeLight, name: "isol8", gap: 4 };
@@ -108,14 +107,6 @@ export function WorkspaceShell(): React.ReactElement {
   const searchParams = useSearchParams();
   const lastAppliedRef = useRef<string | null>(null);
   const [recoveryTriggered, setRecoveryTriggered] = useState(false);
-
-  // leaveToList resolves the calling detail panel from the dock's active
-  // panel; via a ref so the memoized nav value never sees a stale closure.
-  const { activePanelId } = useWorkspaceState();
-  const activePanelIdRef = useRef(activePanelId);
-  useEffect(() => {
-    activePanelIdRef.current = activePanelId;
-  });
 
   useUserSyncOnce(Boolean(isSignedIn) && onboardingPhase === "ready");
   const { showSubscriptionSuccess } = useCheckoutReturn();
@@ -337,9 +328,12 @@ export function WorkspaceShell(): React.ReactElement {
           }
         }
         // Fallback (no self id): the invoking detail panel is assumed to be
-        // the dock's active panel. Guard on the id grammar so a stray call
-        // from a non-detail surface can't close an unrelated panel.
-        const selfPanelId = activePanelIdRef.current;
+        // the dock's active panel. Read the live snapshot at call time rather
+        // than subscribing — the shell has no other reactive use for it, and a
+        // subscription here would re-render the whole shell (dock included) on
+        // every dockview event. Guard on the id grammar so a stray call from a
+        // non-detail surface can't close an unrelated panel.
+        const selfPanelId = getWorkspaceSnapshot().activePanelId;
         if (!selfPanelId || !TEAMS_DETAIL_PANEL_ID_RE.test(selfPanelId)) return;
         closeSubjectDeleted(selfPanelId, listPanelKey);
       },

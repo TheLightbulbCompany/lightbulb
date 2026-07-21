@@ -370,7 +370,7 @@ Pydantic request/response models for the HTTP surface: `billing.py`, `user_schem
 
 ## Frontend (Next.js 16 App Router)
 
-React 19, Tailwind CSS v4, Clerk auth, Framer Motion, SWR, lucide-react icons.
+React 19, Tailwind CSS v4, Clerk auth, SWR, lucide-react icons.
 
 ### Pages (`src/app/`)
 
@@ -517,7 +517,7 @@ Two fixes:
 
 ### Plan model
 
-Post-2026-04-26 flat-fee cutover: a single $50/mo subscription per owner (personal user OR org). Every container is the same 0.5 vCPU / 2 GB box; there is no longer a tier-based size ladder. Paid containers stay always-on while the subscription is active. Checkout bills the first month immediately — the 14-day Stripe trial was removed 2026-07-17 (evaluation happens on the no-card free tier below; the `/billing/trial-checkout` route path and `is_trial_blocked` names were kept for compatibility). Legacy `trialing` rows created before the cutover remain valid until they convert; for those, trial-clock state is owned by Stripe (do not compute trial-days-left from `trial_end` locally).
+Post-2026-04-26 flat-fee cutover: a single $50/mo subscription per owner (personal user OR org). Every container is the same 1 vCPU / 4 GB box launched on **Fargate Spot** (~70% cheaper than on-demand; `ecs_manager` falls back to on-demand when Spot capacity is unavailable — at service create and via a zero-placement timeout in the provisioning poller). There is no longer a tier-based size ladder. Paid containers stay always-on while the subscription is active. Checkout bills the first month immediately — the 14-day Stripe trial was removed 2026-07-17 (evaluation happens on the no-card free tier below; the `/billing/trial-checkout` route path and `is_trial_blocked` names were kept for compatibility). Legacy `trialing` rows created before the cutover remain valid until they convert; for those, trial-clock state is owned by Stripe (do not compute trial-days-left from `trial_end` locally).
 
 ### Free tier (no card) — `trial_local`
 

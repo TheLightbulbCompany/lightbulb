@@ -34,6 +34,7 @@ import { colors, fonts, radii, spacing } from "../../../config/theme";
 import { setCurrentAgentId } from "../../../lib/activeAgent";
 import { projectHistoryToChatItems } from "../../../lib/chatHistory";
 import { readFirstRun, writeFirstRun } from "../../../lib/firstRun";
+import { useNavParamConsumer } from "../../../lib/useNavParamConsumer";
 import { buildChatSessionKey } from "../../../lib/sessionKey";
 import { useGateway } from "../../../providers/gateway";
 
@@ -57,11 +58,15 @@ function ReconnectingBanner() {
  * (General or a named UUID session — see .superpowers/sdd/
  * w1-sessions-contract.md). Protocol handling follows the web contract:
  *
- * - `chunk` frames arrive as append deltas (`append: true`) or full-text
- *   resyncs; accumulateStreamText reconstructs the run's CUMULATIVE text
- *   (matching the web useAgentChat segment model). Bubbles REPLACE their
- *   text from that buffer, and a per-run committed offset splits the
- *   cumulative stream into per-segment bubbles when tool calls interleave.
+ * - `chunk` frames arrive as append deltas (`append: true`), folded into
+ *   the run buffer via accumulateStreamText, or as SEGMENT-scoped resyncs
+ *   (no `append` — the current assistant message only), which the chunk
+ *   handler rebuilds as frozen-prefix + segment text itself (see
+ *   packages/shared streamText docstring; web useAgentChat still folds
+ *   resyncs through the cumulative model and carries the latent chop).
+ *   Bubbles REPLACE their text from that buffer, and a per-run committed
+ *   offset splits the cumulative stream into per-segment bubbles when
+ *   tool calls interleave.
  * - `run_ended` (not `done`) releases the busy gate — `done` also fires on
  *   interim tool-approval brackets.
  *
@@ -70,8 +75,19 @@ function ReconnectingBanner() {
  * AgentHead whose glyph pulses while the run is active.
  */
 export default function AgentChat() {
-  const { agentId, name, newSession: newSessionParam } =
-    useLocalSearchParams<{ agentId: string; name?: string; newSession?: string }>();
+  const {
+    agentId,
+    name,
+    newSession: newSessionParam,
+    sessionId: sessionIdParam,
+    sessionLabel: sessionLabelParam,
+  } = useLocalSearchParams<{
+    agentId: string;
+    name?: string;
+    newSession?: string;
+    sessionId?: string;
+    sessionLabel?: string;
+  }>();
   // Publish the focused agent so the push notification handler suppresses the
   // banner for a reply the user is actively watching stream in (activeAgent.ts).
   useFocusEffect(
@@ -93,9 +109,8 @@ export default function AgentChat() {
   const [items, setItems] = useState<ChatItem[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
-  // Presentational-only composer state (spec §4): focus ring + auto-grow.
+  // Presentational-only composer state (spec §4): focus ring.
   const [inputFocused, setInputFocused] = useState(false);
-  const [inputHeight, setInputHeight] = useState(24);
   // ---- Sessions (contract §1): null == the legacy "General" session. ----
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [activeSessionLabel, setActiveSessionLabel] = useState<string | null>(null);
@@ -155,7 +170,18 @@ export default function AgentChat() {
 
       if (msg.type === "chunk") {
         const segmentId = `${runId}-s${segmentRef.current}`;
-        const cumulative = accumulateStreamText(cumulativeTextRef.current, msg);
+        // Non-append resync frames (first frame after a reconnect, replace
+        // events, the chat.final backstop) carry the CURRENT assistant
+        // message's full text — upstream resets its accumulator at every
+        // message_start, i.e. after every tool call — NOT the run-cumulative
+        // text this buffer holds. Rebuild as frozen-prefix + segment text;
+        // treating it as run-cumulative chopped the live bubble at the
+        // committed offset ("disappearing sentences"). With no committed
+        // prefix this degrades to the plain replace it always was.
+        const cumulative = msg.append
+          ? accumulateStreamText(cumulativeTextRef.current, msg)
+          : (cumulativeTextRef.current ?? "").slice(0, committedOffsetRef.current) +
+            msg.content;
         cumulativeTextRef.current = cumulative;
         const segmentText = cumulative.slice(committedOffsetRef.current);
         lastCumulativeLenRef.current = cumulative.length;
@@ -353,18 +379,36 @@ export default function AgentChat() {
     setSheetOpen(false);
   }, [switchSession]);
 
-  // "New task" from the roster navigates here with `newSession=1`: mint a
-  // fresh session once on mount and focus the composer. A ref guard keeps it
-  // from re-firing on re-render (the param stays in the URL for the screen's
-  // lifetime).
-  const didNewSessionParamRef = useRef(false);
-  useEffect(() => {
-    if (newSessionParam === "1" && !didNewSessionParamRef.current) {
-      didNewSessionParamRef.current = true;
-      newSession();
-      inputRef.current?.focus();
-    }
-  }, [newSessionParam, newSession]);
+  // ---- Roster nav params (contract §1) ----
+  // "New task" arrives as `newSession=1` (mint a fresh session + focus the
+  // composer); a session picked from the roster's per-agent sheet arrives as
+  // `sessionId`(+`sessionLabel`). Both consume their param via router.setParams
+  // so the SAME value re-fires on a later navigation — this screen is a
+  // persisted tab (href:null), so the param is the only signal a fresh
+  // navigation happened, not a remount.
+  const startNewSessionFromParam = useCallback(() => {
+    newSession();
+    inputRef.current?.focus();
+  }, [newSession]);
+  const clearNewSessionParam = useCallback(
+    () => router.setParams({ newSession: undefined }),
+    [],
+  );
+  useNavParamConsumer(
+    newSessionParam === "1" ? newSessionParam : undefined,
+    startNewSessionFromParam,
+    clearNewSessionParam,
+  );
+
+  const applySessionFromParam = useCallback(
+    (sessionId: string) => switchSession(sessionId, sessionLabelParam ?? null),
+    [switchSession, sessionLabelParam],
+  );
+  const clearSessionParam = useCallback(
+    () => router.setParams({ sessionId: undefined, sessionLabel: undefined }),
+    [],
+  );
+  useNavParamConsumer(sessionIdParam, applySessionFromParam, clearSessionParam);
 
   // Full local send pipeline (bubble + busy + dispatch), shared by the
   // composer and the first-run kickoff. Returns false when nothing was sent
@@ -406,6 +450,36 @@ export default function AgentChat() {
   const send = useCallback(() => {
     if (dispatchText(input.trim())) setInput("");
   }, [dispatchText, input]);
+
+  // Cancel the in-flight run. agent_abort → upstream chat.abort, targeted at
+  // this screen's run. Fire-and-don't-wait-for-terminal (the backend contract):
+  // the aborted terminal arrives via the normal stream and releases `busy`
+  // there — never here, so a dropped abort can't strand a live run's frames.
+  const stopRun = useCallback(() => {
+    const runId = activeRunIdRef.current;
+    if (!runId || !agentId) return;
+    const sent = gateway.send({
+      type: "agent_abort",
+      agent_id: agentId,
+      runId,
+      // Same shape rule as sendChat: session_id rides only for a named session.
+      ...(activeSessionId ? { session_id: activeSessionId } : {}),
+    });
+    // The raw send is a silent no-op on a closed socket. The button is gated
+    // on isConnected, but that state can trail the socket by a beat — surface
+    // the miss instead of swallowing it. The run gate stays up either way;
+    // only the run's terminal releases it.
+    if (!sent) {
+      setItems((prev) => [
+        ...prev,
+        {
+          id: randomUUID(),
+          role: "error",
+          text: "Connection lost — stop not sent. Try again once reconnected.",
+        },
+      ]);
+    }
+  }, [gateway, agentId, activeSessionId]);
 
   // First-run kickoff (web useFirstRunKickoff parity): once the funnel brief
   // is submitted and this screen shows the DEFAULT agent (Friday) over a live
@@ -501,12 +575,18 @@ export default function AgentChat() {
       />
       <FlatList
         ref={listRef}
+        testID="chat-timeline"
         data={allItems}
         keyExtractor={(m) => m.id}
         contentContainerStyle={[
           styles.list,
           allItems.length === 0 && !showTyping && !historyLoading && styles.listEmpty,
         ]}
+        // Swipe down over the timeline to dismiss the keyboard (iOS tracks the
+        // drag); taps on timeline controls land on the control while the
+        // keyboard is up instead of only dismissing it.
+        keyboardDismissMode="interactive"
+        keyboardShouldPersistTaps="handled"
         onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: true })}
         ListHeaderComponent={
           historyError ? (
@@ -632,18 +712,17 @@ export default function AgentChat() {
           );
         }}
       />
-      {/* Composer (spec §4). Same logic as before — identical disabled
-          conditions and send semantics; only the presentation changed. No
-          stop button v1: the screen has no abort path (the mobile gateway
-          exposes no chat.abort helper yet). Attach is non-functional v1 —
-          no upload flow on mobile. */}
+      {/* Composer (spec §4). While a run is active the send button becomes a
+          Stop button (agent_abort → upstream chat.abort). No attach affordance
+          until an upload flow exists on mobile — a dead control reads as
+          broken. */}
       <View style={styles.composerOuter}>
         {!gateway.isConnected && <ReconnectingBanner />}
         <View style={[styles.card, inputFocused && styles.cardFocused]}>
           <View style={styles.inputZone}>
             <TextInput
               ref={inputRef}
-              style={[styles.input, { height: inputHeight }]}
+              style={styles.input}
               placeholder="Ask anything"
               placeholderTextColor={colors.placeholder}
               value={input}
@@ -652,33 +731,44 @@ export default function AgentChat() {
               editable={gateway.isConnected}
               onFocus={() => setInputFocused(true)}
               onBlur={() => setInputFocused(false)}
-              onContentSizeChange={(e) =>
-                setInputHeight(
-                  Math.min(200, Math.max(24, e.nativeEvent.contentSize.height)),
-                )
-              }
             />
           </View>
           <View style={styles.rail}>
-            <View style={styles.attachButton}>
-              <Feather name="plus" size={16} color={colors.mute} />
-            </View>
-            <Pressable
-              style={[
-                styles.sendButton,
-                (busy || !input.trim()) && styles.sendDisabled,
-              ]}
-              onPress={send}
-              disabled={busy || !input.trim()}
-              accessibilityRole="button"
-              accessibilityLabel="Send"
-            >
-              <Feather
-                name="arrow-up"
-                size={16}
-                color={busy || !input.trim() ? colors.placeholder : colors.white}
-              />
-            </Pressable>
+            {busy ? (
+              // Gated on the socket like the TextInput above: a dead socket
+              // makes stopRun's raw send a silent no-op, so an active-looking
+              // Stop would eat taps without feedback.
+              <Pressable
+                style={[
+                  styles.sendButton,
+                  !gateway.isConnected && styles.sendDisabled,
+                ]}
+                onPress={stopRun}
+                disabled={!gateway.isConnected}
+                accessibilityRole="button"
+                accessibilityLabel="Stop"
+              >
+                <Feather
+                  name="square"
+                  size={14}
+                  color={!gateway.isConnected ? colors.placeholder : colors.white}
+                />
+              </Pressable>
+            ) : (
+              <Pressable
+                style={[styles.sendButton, !input.trim() && styles.sendDisabled]}
+                onPress={send}
+                disabled={!input.trim()}
+                accessibilityRole="button"
+                accessibilityLabel="Send"
+              >
+                <Feather
+                  name="arrow-up"
+                  size={16}
+                  color={!input.trim() ? colors.placeholder : colors.white}
+                />
+              </Pressable>
+            )}
           </View>
         </View>
       </View>
@@ -791,12 +881,14 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
   inputZone: { paddingHorizontal: spacing.lg, paddingTop: spacing.md },
-  // Height is driven by onContentSizeChange (auto-grow 24–200); zero the
-  // platform-default vertical padding so the measured height is the text's.
+  // Native multiline auto-grow: no fixed height (a controlled height doesn't
+  // track typing reliably on Fabric iOS), capped at 200. Zero the
+  // platform-default vertical padding so the box hugs the text.
   input: {
     fontFamily: fonts.dmSans,
     fontSize: 15,
     lineHeight: 24,
+    maxHeight: 200,
     color: colors.ink,
     paddingTop: 0,
     paddingBottom: 0,
@@ -809,15 +901,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.sm,
     paddingBottom: spacing.sm,
     paddingTop: 6,
-  },
-  // Attach affordance — disabled/non-functional v1, rendered at 40%.
-  attachButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    alignItems: "center",
-    justifyContent: "center",
-    opacity: 0.4,
   },
   sendButton: {
     marginLeft: "auto",

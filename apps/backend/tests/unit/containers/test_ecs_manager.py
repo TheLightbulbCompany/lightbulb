@@ -476,7 +476,8 @@ class TestCreateUserService:
             assert call_kwargs["cluster"] == manager._cluster
             assert call_kwargs["serviceName"] == "openclaw-user_test_123-f4ae64abb2db"
             assert call_kwargs["desiredCount"] == 0
-            assert call_kwargs["launchType"] == "FARGATE"
+            assert call_kwargs["capacityProviderStrategy"] == [{"capacityProvider": "FARGATE_SPOT", "weight": 1}]
+            assert "launchType" not in call_kwargs
             assert call_kwargs["enableExecuteCommand"] is True
 
             # Verify update_fields called for substatus progression (3 calls)
@@ -617,6 +618,52 @@ class TestCreateUserService:
             assert update_calls[1]["substatus"] == "task_registered"
             assert "task_definition_arn" in update_calls[1]
             assert update_calls[2]["substatus"] == "service_created"
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_launch_type_when_spot_provider_rejected(
+        self, manager, mock_ecs_client, mock_efs_client
+    ):
+        """A cluster without FARGATE_SPOT associated (CDK deploy lagging the
+        backend deploy) rejects the strategy with InvalidParameterException.
+        Provisioning must not hard-fail on a cost optimization — retry with
+        launchType=FARGATE, which works on any cluster."""
+        mock_ecs_client.create_service.side_effect = [
+            ClientError(
+                {"Error": {"Code": "InvalidParameterException", "Message": "capacity provider not associated"}},
+                "CreateService",
+            ),
+            {"service": {}},
+        ]
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict())
+
+            await manager.create_user_service("user_test_123", "token-abc")
+
+        assert mock_ecs_client.create_service.call_count == 2
+        first = mock_ecs_client.create_service.call_args_list[0].kwargs
+        retry = mock_ecs_client.create_service.call_args_list[1].kwargs
+        assert first["capacityProviderStrategy"] == [{"capacityProvider": "FARGATE_SPOT", "weight": 1}]
+        assert "capacityProviderStrategy" not in retry
+        assert retry["launchType"] == "FARGATE"
+
+    @pytest.mark.asyncio
+    async def test_non_capacity_provider_create_errors_still_raise(self, manager, mock_ecs_client, mock_efs_client):
+        """Only the capacity-provider rejection triggers the on-demand retry;
+        any other create_service failure keeps the existing error path
+        (mark error + rollback), it must not be swallowed."""
+        mock_ecs_client.create_service.side_effect = ClientError(
+            {"Error": {"Code": "AccessDeniedException", "Message": "nope"}},
+            "CreateService",
+        )
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict())
+
+            with pytest.raises(Exception):
+                await manager.create_user_service("user_test_123", "token-abc")
+
+        assert mock_ecs_client.create_service.call_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -1796,6 +1843,71 @@ class TestAwaitRunningTransition:
 
             mock_repo.update_fields.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_spot_placement_timeout_flips_service_to_on_demand(self, manager, mock_ecs_client):
+        """Zero placed tasks past SPOT_PLACEMENT_FALLBACK_S is the Spot
+        capacity-unavailable signature (no tasks, no failures, no rollout
+        change). The poller must flip the service to on-demand exactly once
+        and keep polling; the flip passes no desiredCount so it can never
+        restart a concurrently-stopped service."""
+        mock_ecs_client.list_tasks.return_value = {"taskArns": []}
+        rows = [
+            _make_container_dict(status="provisioning"),
+            _make_container_dict(status="provisioning"),
+            _make_container_dict(status="stopped"),
+        ]
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch("core.containers.ecs_manager.asyncio.sleep", new_callable=AsyncMock),
+            patch("core.containers.ecs_manager.time.monotonic", side_effect=[0.0, 301.0]),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(side_effect=rows)
+            mock_repo.update_fields = AsyncMock()
+            manager._get_primary_deployment = AsyncMock(
+                return_value={"id": "ecs-svc/primary", "rolloutState": "IN_PROGRESS"}
+            )
+
+            await manager._await_running_transition("user_test_123", interval_s=0)
+
+        mock_ecs_client.update_service.assert_called_once()
+        kwargs = mock_ecs_client.update_service.call_args.kwargs
+        assert kwargs["capacityProviderStrategy"] == [{"capacityProvider": "FARGATE", "weight": 1}]
+        assert kwargs["forceNewDeployment"] is True
+        assert "desiredCount" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_pending_task_pulling_image_never_triggers_spot_fallback(self, manager, mock_ecs_client):
+        """A PENDING task (multi-GB image pull, minutes long) counts as
+        placed — the fallback timer must never even start, no matter how
+        long the pull takes. Only a service ECS has placed NOTHING into
+        may be flipped."""
+        mock_ecs_client.list_tasks.return_value = {"taskArns": ["arn:aws:ecs:us-east-1:123:task/cluster/abc"]}
+        mock_ecs_client.describe_tasks.return_value = {
+            "tasks": [{"lastStatus": "PENDING", "startedBy": "ecs-svc/primary", "attachments": []}]
+        }
+        rows = [
+            _make_container_dict(status="provisioning"),
+            _make_container_dict(status="provisioning"),
+            _make_container_dict(status="stopped"),
+        ]
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch("core.containers.ecs_manager.asyncio.sleep", new_callable=AsyncMock),
+            patch(
+                "core.containers.ecs_manager.time.monotonic",
+                side_effect=AssertionError("fallback timer must not run while a task is placed"),
+            ),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(side_effect=rows)
+            mock_repo.update_fields = AsyncMock()
+            manager._get_primary_deployment = AsyncMock(
+                return_value={"id": "ecs-svc/primary", "rolloutState": "IN_PROGRESS"}
+            )
+
+            await manager._await_running_transition("user_test_123", interval_s=0)
+
+        mock_ecs_client.update_service.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # resize_user_container (per-user CPU/memory/image update path)
@@ -2836,7 +2948,7 @@ class TestAwaitRunningTransitionSubstatus:
             mock_repo.get_by_owner_id = AsyncMock(side_effect=rows)
             mock_repo.update_fields = AsyncMock(side_effect=track_update)
             manager._get_primary_deployment = AsyncMock(return_value={"id": "dep-1", "rolloutState": "COMPLETED"})
-            manager._poll_running_task = AsyncMock(return_value=("arn:aws:ecs:task/abc", "10.0.0.1"))
+            manager._poll_running_task = AsyncMock(return_value=("arn:aws:ecs:task/abc", "10.0.0.1", 1))
             manager.is_healthy = MagicMock(side_effect=[False, False, True])
 
             await manager._await_running_transition("user_test_123", interval_s=0)

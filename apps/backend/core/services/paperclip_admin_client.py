@@ -2535,6 +2535,22 @@ class PaperclipAdminClient:
             session_cookie=session_cookie,
         )
 
+    async def delete_project(
+        self,
+        *,
+        session_cookie: str,
+        project_id: str,
+    ) -> dict:
+        """Delete a project.
+
+        Maps to ``DELETE /api/projects/{projectId}``. ``_delete`` treats 404
+        as already-gone, so a double-delete from a stale UI is a no-op.
+        """
+        return await self._delete(
+            f"/api/projects/{project_id}",
+            session_cookie=session_cookie,
+        )
+
     # ------------------------------------------------------------------
     # Read-only feed: activity, costs, dashboard, sidebar badges
     # ------------------------------------------------------------------

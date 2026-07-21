@@ -90,6 +90,10 @@ export class ContainerStack extends cdk.Stack {
     this.cluster = new ecs.Cluster(this, "Cluster", {
       vpc: props.vpc,
       containerInsights: false,
+      // Associates FARGATE + FARGATE_SPOT capacity providers so the backend
+      // can launch per-user containers on Spot (~70% cheaper). The backend
+      // falls back to on-demand when Spot capacity is unavailable.
+      enableFargateCapacityProviders: true,
     });
 
     // Cloud Map private DNS namespace
@@ -423,8 +427,13 @@ export class ContainerStack extends cdk.Stack {
 
     // Single per-user task size for the flat-fee pivot. Per spec §3.2 / §10.
     // Old per-tier sizing deleted; resize add-ons are out of scope (§3.5).
-    // Backend-side _TIER_TASK_RESOURCES collapse is in Task 13 of this plan.
-    const PER_USER_TASK_RESOURCES = { cpu: 512, memoryMiB: 2048 } as const;
+    // 1 vCPU / 4 GB: 2 GB was upstream OpenClaw's documented floor and OOMed
+    // under two seeded agents + memory sidecar + in-container Chromium; the
+    // full vCPU stops boot/tool-exec/Chromium contending for half a core.
+    // Affordable because per-user services launch on Fargate Spot.
+    // Keep in lockstep with PER_USER_CPU / PER_USER_MEMORY_MIB in
+    // apps/backend/core/containers/ecs_manager.py (clones stamp those values).
+    const PER_USER_TASK_RESOURCES = { cpu: 1024, memoryMiB: 4096 } as const;
 
     this.openclawTaskDef = new ecs.FargateTaskDefinition(this, "OpenClawTaskDef", {
       family: `isol8-${env}-openclaw`,
@@ -556,6 +565,45 @@ export class ContainerStack extends cdk.Stack {
       "mkdir -p /home/node/.openclaw/mcporter || exit 1",
       "[ -e /home/node/.mcporter ] && [ ! -L /home/node/.mcporter ] && { mv /home/node/.mcporter /home/node/.mcporter.efs-archive-$(date +%s) || exit 1; }",
       "ln -sfn /home/node/.openclaw/mcporter /home/node/.mcporter || exit 1",
+      // Step C3 — one-time legacy-state migration, BEFORE the gateway starts.
+      // 2026.7.x fail-closes agent runs on un-migrated legacy per-workspace
+      // setup state (assertNoUnmigratedWorkspaceState throws "Legacy workspace
+      // setup state requires migration ...; run openclaw doctor --fix"). The
+      // gateway's own boot migrates the SHARED state DB but NOT the per-workspace
+      // setup state, so on the first boot after an upgrade every agent errors
+      // until doctor runs. Run it HERE, before `exec ... gateway`, so no gateway
+      // holds the SQLite maintenance lock: the migration applies with zero
+      // two-writer EFS contention. (Running doctor against a live gateway can
+      // abort mid config-audit-scrub and take that lock; upstream explicitly says
+      // "stop the gateway or wait until it is idle".)
+      //
+      // `--fix` applies recommended repairs and backs up before modifying
+      // (non-destructive) — but it does NOT suppress confirm prompts, and a
+      // prompt on a closed stdin HANGS rather than taking its default (observed
+      // on a prod boot: doctor sat at a post-"Command owner" confirm for the
+      // full 300s and was timeout-killed BEFORE ever reaching the legacy-state
+      // migration). `--non-interactive` is the flag that both bypasses every
+      // prompt AND auto-applies the detected legacy-state migration (upstream
+      // treats nonInteractive as consent for safe migrations); `--yes` accepts
+      // defaults on any remaining prompt path. `< /dev/null` stays as a last
+      // line of defense so an unguarded prompt reads EOF instead of a TTY.
+      // `timeout` bounds a wedged migration (EFS/SQLite can stall) so it can never
+      // infinite-loop the boot; `--kill-after=30` escalates SIGTERM -> SIGKILL 30s
+      // later so a migration that ignores/misses the term (or is between syscalls)
+      // is still reaped, rather than outliving the window (a truly D-state process
+      // blocked in an NFS syscall stays immune to any signal until the kernel call
+      // returns — same failure class this file's `_npx` extract notes above call
+      // out — but SIGKILL covers everything short of that). `|| echo` keeps a
+      // doctor failure from bricking the container: the gateway still starts and
+      // the run-time gate surfaces the unmigrated state visibly rather than the
+      // box crash-looping. Idempotent — once migrated it is a fast no-op, so it
+      // stays cheap on every later boot (and doubles as an on-boot config
+      // self-repair). The 300s bound keeps doctor within the health-check budget
+      // (startPeriod 300 + retries*interval below), so `timeout` — not an ECS
+      // mid-run health replacement — is what caps a slow pass; the gateway then
+      // still binds and reports healthy inside the window. A migration heavier
+      // than 300s is cleanly cut and resumes on a later boot (persisted, idempotent).
+      "timeout --kill-after=30 300 node /app/openclaw.mjs doctor --fix --yes --non-interactive < /dev/null || echo '[boot] openclaw doctor --fix did not finish cleanly; continuing to gateway'",
       // Step D — launch the gateway.
       "exec node /app/openclaw.mjs gateway --port 18789 --bind lan",
     ].join("; ");
@@ -680,9 +728,21 @@ export class ContainerStack extends cdk.Stack {
         // cold storm, a crash-loop. A truly dead gateway is still replaced in
         // ~3 min.
         retries: 6,
-        // 180s start period covers EFS first-touch latency, gateway boot, and
-        // the first cold MCP connect on a brand-new container.
-        startPeriod: cdk.Duration.seconds(180),
+        // Start period covers EFS first-touch latency, the boot-time
+        // `openclaw doctor --fix` legacy-state migration (startupCommand Step C3,
+        // bounded at 300s), gateway boot, and the first cold MCP connect on a
+        // brand-new container. Set to 300s — the ECS MAXIMUM for startPeriod
+        // (values >300 are rejected: "Health check startPeriod must be less than
+        // or equal to the maximum allowed value 300") — up from 180s to give the
+        // added doctor pass as much grace as ECS allows. Combined with the
+        // retries*interval window (6*30s=180s) after this, a task tolerates ~480s
+        // of gateway-not-ready before replacement. The doctor step is bounded at
+        // 300s to stay inside that, so a normal first boot never trips a spurious
+        // replacement; a migration heavier than the window self-heals (the
+        // migration persists, ECS replaces the task once, the replacement comes up
+        // fast). A healthy gateway reports ready as soon as it binds, so
+        // steady-state boots are unaffected.
+        startPeriod: cdk.Duration.seconds(300),
       },
       // Inject Fargate's init process (tini-equivalent) as PID 1. The
       // openclaw container runs `sh -c "... ; exec node ..."` so Node

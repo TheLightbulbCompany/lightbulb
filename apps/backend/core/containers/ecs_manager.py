@@ -13,6 +13,7 @@ import logging
 import re
 import secrets
 import socket
+import time
 from pathlib import Path
 
 import boto3
@@ -32,7 +33,7 @@ from core.containers.config import (
     write_openclaw_config,
 )
 from core.containers.workspace import get_workspace
-from core.repositories import container_repo
+from core.repositories import billing_repo, container_repo
 from core.repositories.container_repo import ProvisionSuperseded
 
 logger = logging.getLogger(__name__)
@@ -41,10 +42,34 @@ GATEWAY_PORT = 18789
 
 # Single per-user task size for the flat-fee pivot. Per spec §3.2 / §10.
 # Old per-tier sizing (free/starter 0.5/1, pro 1/2, enterprise 2/4) deleted —
-# every paying user gets the same 0.5 vCPU / 1 GB box. Kept as constants
-# so the resize/register paths pull from a single place.
-PER_USER_CPU = "512"
-PER_USER_MEMORY_MIB = "2048"
+# every user gets the same 1 vCPU / 4 GB box. 2 GB was upstream OpenClaw's
+# documented floor and OOMed under two seeded agents + memory sidecar +
+# in-container Chromium; the full vCPU stops boot/tool-exec/Chromium
+# contending for half a core. Affordable because per-user services launch on
+# Fargate Spot. Kept as constants so the resize/register paths pull from a
+# single place. Keep in lockstep with PER_USER_TASK_RESOURCES in
+# apps/infra/lib/stacks/container-stack.ts.
+PER_USER_CPU = "1024"
+PER_USER_MEMORY_MIB = "4096"
+
+# Per-user containers launch on Fargate Spot (~70% cheaper than on-demand).
+# Interruption is survivable by design: SINGLE_WRITER_DEPLOYMENT_CONFIG means
+# the replacement task only starts after the reclaimed one fully stops (no
+# EFS double-writer), EFS state persists, and the gateway pool reconnects on
+# the next status poll. When Spot capacity is unavailable ECS places nothing
+# and reports no failure, so two fallbacks cover it: create_service retries
+# with on-demand if the cluster rejects the strategy, and
+# _await_running_transition flips a service with zero placed tasks to
+# on-demand after SPOT_PLACEMENT_FALLBACK_S.
+SPOT_CAPACITY_STRATEGY = [{"capacityProvider": "FARGATE_SPOT", "weight": 1}]
+ON_DEMAND_CAPACITY_STRATEGY = [{"capacityProvider": "FARGATE", "weight": 1}]
+SPOT_PLACEMENT_FALLBACK_S = 300.0
+
+# Ultra Pro tier box (large marketplace companies exceeding the flat tier's
+# agent budget). 2 vCPU / 8 GB — same constant home as PER_USER_* so the
+# resize/register paths and the webhook tier logic pull sizes from one place.
+ULTRA_CPU = "2048"
+ULTRA_MEMORY_MIB = "8192"
 
 # The AIP tiers minted for a `bedrock_trial` (no-card free tier) owner. ONE
 # tier, and it must be sonnet: config.py makes sonnet the trial's
@@ -377,6 +402,69 @@ class EcsManager:
     # Per-user task definition revisions
     # ------------------------------------------------------------------
 
+    async def _size_for_owner(self, owner_id: str) -> tuple[str, str]:
+        """The (cpu, memory) a provision/reprovision must register for ``owner_id``.
+
+        ``ultra_pro`` owners run the large ``ULTRA_CPU`` / ``ULTRA_MEMORY_MIB``
+        box (large marketplace companies past the flat tier's agent budget);
+        everyone else the flat ``PER_USER_CPU`` / ``PER_USER_MEMORY_MIB`` box.
+
+        Deriving the size from the billing plan HERE is what makes the Ultra
+        size DURABLE. The upgrade webhook resizes the running container, but the
+        provision/reprovision path re-registers the task def from the CDK base
+        (provider switch, restart, admin reprovision) and a hardcoded standard
+        size there would silently undo the webhook's resize. Callers on those
+        paths route their size through this helper — as does the Track-2
+        image-roll apply (``update_service.apply_update``), which resizes with no
+        size of its own — so the box always tracks the owner's plan.
+
+        Fail-safe: a provision must NEVER fail because billing is momentarily
+        unreadable. Any read error (or an absent row) falls back to the standard
+        size — worst case an Ultra owner's reprovision lands standard-sized and
+        the next reprovision restores it, which beats a failed provision.
+        """
+        try:
+            account = await billing_repo.get_by_owner_id(owner_id)
+        except Exception:  # noqa: BLE001 — sizing must never fail a provision.
+            logger.warning(
+                "plan-size lookup failed for owner %s; defaulting to standard size",
+                owner_id,
+                exc_info=True,
+            )
+            account = None
+        if (account or {}).get("plan") == "ultra_pro":
+            return ULTRA_CPU, ULTRA_MEMORY_MIB
+        return PER_USER_CPU, PER_USER_MEMORY_MIB
+
+    async def current_container_size(self, owner_id: str) -> tuple[str, str] | None:
+        """The (cpu, memory) of the owner's CURRENTLY REGISTERED task definition.
+
+        Reads the live task-def off the containers row (``task_definition_arn``)
+        and returns its ``(cpu, memory)`` strings — the actual size of the box
+        that will run right now — or ``None`` if the owner has no provisioned
+        container / no task-def ARN on the row (or the describe yields no size).
+
+        Read-only: it describes the task def, registers nothing, mutates
+        nothing — the mirror of the size the resize path WOULD change. The
+        company-deploy gate uses it to refuse seeding a >10-agent Ultra company
+        onto a box the upgrade-webhook resize never actually enlarged (a
+        swallowed transient resize leaves ``plan=ultra_pro`` on the standard
+        0.5 vCPU / 2 GB box, which would OOM under a big roster).
+        """
+        container = await container_repo.get_by_owner_id(owner_id)
+        if not container or not container.get("task_definition_arn"):
+            return None
+        resp = await asyncio.to_thread(
+            self._ecs.describe_task_definition,
+            taskDefinition=container["task_definition_arn"],
+        )
+        td = resp.get("taskDefinition") or {}
+        cpu = td.get("cpu")
+        memory = td.get("memory")
+        if cpu is None or memory is None:
+            return None
+        return str(cpu), str(memory)
+
     def _build_register_kwargs_from_base(
         self,
         access_point_id: str,
@@ -498,6 +586,8 @@ class EcsManager:
         environment_for_task: list[dict] | None = None,
         hook_token: str | None = None,
         task_role_arn: str | None = None,
+        new_cpu: str | None = None,
+        new_memory: str | None = None,
     ) -> str:
         """Clone the CDK base for a new per-user container.
 
@@ -513,6 +603,10 @@ class EcsManager:
             hook_token: Optional per-user OpenClaw webhook auth token. When
                 provided, injected as ``OPENCLAW_HOOK_TOKEN`` env var on the
                 primary container.
+            new_cpu / new_memory: Optional task size. The provision/reprovision
+                callers pass the owner's plan-derived size (``_size_for_owner``)
+                so an Ultra Pro owner's box stays 2 vCPU / 8 GB across every
+                re-register. ``None`` falls back to the standard PER_USER_* box.
 
         Returns:
             The ARN of the newly registered task definition revision.
@@ -527,6 +621,8 @@ class EcsManager:
                 environment_for_task=environment_for_task,
                 hook_token=hook_token,
                 task_role_arn=task_role_arn,
+                new_cpu=new_cpu,
+                new_memory=new_memory,
             )
             reg_resp = self._ecs.register_task_definition(**reg_kwargs)
             task_def_arn = reg_resp["taskDefinition"]["taskDefinitionArn"]
@@ -762,13 +858,18 @@ class EcsManager:
             # Inject any per-user secrets (e.g. byo_key OPENAI/ANTHROPIC ARN),
             # per-user env vars, and the per-user OPENCLAW_HOOK_TOKEN (so the
             # OpenClaw gateway can verify inbound webhook calls) before the
-            # service is created so the first task pulls them.
+            # service is created so the first task pulls them. Size by the
+            # owner's plan so an Ultra Pro owner's first task def is the large
+            # box, not the standard one.
+            new_cpu, new_memory = await self._size_for_owner(user_id)
             task_def_arn = self._register_task_definition(
                 access_point_id,
                 secrets_for_task=secrets_for_task,
                 environment_for_task=environment_for_task,
                 hook_token=hook_token,
                 task_role_arn=task_role_arn,
+                new_cpu=new_cpu,
+                new_memory=new_memory,
             )
             await self._update_container(
                 user_id,
@@ -784,7 +885,7 @@ class EcsManager:
                 serviceName=service_name,
                 taskDefinition=task_def_arn,
                 desiredCount=0,
-                launchType="FARGATE",
+                capacityProviderStrategy=SPOT_CAPACITY_STRATEGY,
                 networkConfiguration={
                     "awsvpcConfiguration": {
                         "subnets": self._subnets,
@@ -805,7 +906,30 @@ class EcsManager:
             # its own task definition/role.
             if claim_id is not None:
                 await self._provision_checkpoint(user_id, claim_id)
-            self._ecs.create_service(**create_kwargs)
+            try:
+                self._ecs.create_service(**create_kwargs)
+            except ClientError as e:
+                # A cluster without the FARGATE_SPOT capacity provider
+                # associated (CDK deploy lagging a backend deploy) rejects the
+                # strategy with InvalidParameterException. Provisioning must
+                # not hard-fail on a cost optimization — retry on-demand.
+                if e.response.get("Error", {}).get("Code") != "InvalidParameterException":
+                    raise
+                logger.warning(
+                    "Spot capacity provider rejected for %s; creating on-demand: %s",
+                    service_name,
+                    e,
+                )
+                put_metric(
+                    "container.spot_fallback",
+                    dimensions={"trigger": "create_rejected"},
+                )
+                # launchType, not ON_DEMAND_CAPACITY_STRATEGY: a cluster with
+                # no capacity providers associated rejects ANY strategy, while
+                # launchType works unconditionally.
+                del create_kwargs["capacityProviderStrategy"]
+                create_kwargs["launchType"] = "FARGATE"
+                self._ecs.create_service(**create_kwargs)
             await self._update_container(user_id, substatus="service_created")
         except ProvisionSuperseded:
             raise
@@ -1298,20 +1422,26 @@ class EcsManager:
         return {"status": "reprovisioning"}
 
     async def reapply_standard_sizing(self, user_id: str) -> dict:
-        """Roll the user's task definition with the canonical flat-fee
-        size. Admin recovery action for containers wedged on a stale
-        task def. No tier arg — every user gets the same 0.5 vCPU /
-        2 GB box post flat-fee cutover.
+        """Roll the user's task definition back to the owner's canonical
+        provision size. Admin recovery action for containers wedged on a
+        stale task def.
+
+        Sizes by the owner's plan (``_size_for_owner``) rather than a flat
+        hardcode: for a standard owner that IS the 1 vCPU / 4 GB box, but an
+        Ultra Pro owner must land on their 2 vCPU / 8 GB box — re-applying the
+        standard size here would silently undo the upgrade webhook's resize,
+        the exact revert the plan-derived provision sizing exists to prevent.
         """
+        new_cpu, new_memory = await self._size_for_owner(user_id)
         await self.resize_user_container(
             user_id,
-            new_cpu=PER_USER_CPU,
-            new_memory=PER_USER_MEMORY_MIB,
+            new_cpu=new_cpu,
+            new_memory=new_memory,
         )
         return {
             "status": "resized",
-            "cpu": PER_USER_CPU,
-            "memory": PER_USER_MEMORY_MIB,
+            "cpu": new_cpu,
+            "memory": new_memory,
         }
 
     async def delete_user_service(self, user_id: str) -> None:
@@ -2094,6 +2224,11 @@ class EcsManager:
                         restart_task_role_arn = bedrock_role_arn or (
                             existing.get("bedrock_role_arn") if existing else None
                         )
+                        # Size by plan on the restart path too — this is the
+                        # branch a full reprovision (stop -> background_provision)
+                        # lands on, so without it an Ultra Pro reprovision would
+                        # silently revert the container to the standard box.
+                        restart_cpu, restart_memory = await self._size_for_owner(user_id)
                         new_task_def_arn = await asyncio.to_thread(
                             self._register_task_definition,
                             access_point_id,
@@ -2101,6 +2236,8 @@ class EcsManager:
                             environment_for_task=environment_for_task,
                             hook_token=existing_hook_token,
                             task_role_arn=restart_task_role_arn,
+                            new_cpu=restart_cpu,
+                            new_memory=restart_memory,
                         )
                         await asyncio.to_thread(
                             self._ecs.update_service,
@@ -2348,7 +2485,17 @@ class EcsManager:
         task while the NEW deployment rolls out. The poller filters tasks to
         only those from the PRIMARY deployment so an old task can't cause a
         premature status=running write that masks a failing new rollout.
+
+        Spot capacity fallback: a FARGATE_SPOT service with no Spot capacity
+        available places no tasks, reports no failures, and never trips the
+        circuit breaker — it would sit in provisioning forever. If ECS has
+        placed zero tasks (any lifecycle state, so a PENDING task pulling the
+        multi-GB image does NOT trigger this) for SPOT_PLACEMENT_FALLBACK_S,
+        flip the service to on-demand once and keep polling. The flip only
+        runs when the service is empty, so it can never kill a live task.
         """
+        no_placement_since: float | None = None
+        spot_fallback_done = False
         while True:
             try:
                 container = await container_repo.get_by_owner_id(user_id)
@@ -2383,7 +2530,16 @@ class EcsManager:
                     return
 
                 deployment_id = primary.get("id")
-                task_arn, ip = await self._poll_running_task(service_name, deployment_id)
+                task_arn, ip, placed_count = await self._poll_running_task(service_name, deployment_id)
+                if placed_count > 0:
+                    no_placement_since = None
+                elif not spot_fallback_done:
+                    now = time.monotonic()
+                    if no_placement_since is None:
+                        no_placement_since = now
+                    elif now - no_placement_since >= SPOT_PLACEMENT_FALLBACK_S:
+                        spot_fallback_done = True
+                        self._fallback_service_to_on_demand(service_name, user_id)
                 if task_arn and ip and self.is_healthy(ip):
                     await container_repo.update_fields(
                         user_id,
@@ -2422,6 +2578,44 @@ class EcsManager:
 
             await asyncio.sleep(interval_s)
 
+    def _fallback_service_to_on_demand(self, service_name: str, user_id: str) -> None:
+        """Flip a service that Spot cannot place onto on-demand FARGATE.
+
+        Only called by _await_running_transition after the service has had
+        zero placed tasks for SPOT_PLACEMENT_FALLBACK_S, so forceNewDeployment
+        cannot terminate a live task (there are none). The service stays
+        on-demand until its next full reprovision recreates it on Spot —
+        deliberately no revert path; capacity droughts are rare and a
+        container quietly paying on-demand beats machinery to migrate it back.
+
+        Failure here is non-fatal: the poller keeps polling either way, and
+        the container simply stays pending until capacity appears or an
+        operator intervenes.
+        """
+        try:
+            self._ecs.update_service(
+                cluster=self._cluster,
+                service=service_name,
+                capacityProviderStrategy=ON_DEMAND_CAPACITY_STRATEGY,
+                forceNewDeployment=True,
+            )
+            put_metric(
+                "container.spot_fallback",
+                dimensions={"trigger": "placement_timeout"},
+            )
+            logger.warning(
+                "No Spot capacity for %s after %.0fs with zero placed tasks; flipped service to on-demand (user=%s)",
+                service_name,
+                SPOT_PLACEMENT_FALLBACK_S,
+                user_id,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to flip %s to on-demand after Spot placement timeout (user=%s)",
+                service_name,
+                user_id,
+            )
+
     async def _get_primary_deployment(self, service_name: str) -> dict | None:
         """Return the PRIMARY deployment dict for the service, or None if
         unavailable. Primary is the deployment currently being rolled out or
@@ -2448,8 +2642,11 @@ class EcsManager:
                 return deployment
         return None
 
-    async def _poll_running_task(self, service_name: str, deployment_id: str | None) -> tuple[str | None, str | None]:
-        """Find a RUNNING task from the given deployment and return (task_arn, ip).
+    async def _poll_running_task(
+        self, service_name: str, deployment_id: str | None
+    ) -> tuple[str | None, str | None, int]:
+        """Find a RUNNING task from the given deployment and return
+        (task_arn, ip, placed_count).
 
         Lists ALL running tasks for the service, then filters in-code to
         tasks whose `startedBy` matches the primary deployment's id. ECS
@@ -2457,10 +2654,15 @@ class EcsManager:
         We can't filter via the ListTasks API because ECS rejects startedBy
         combined with serviceName (InvalidParameterException).
 
-        Returns (None, None) when no qualifying task has an IP yet.
+        Returns (None, None, placed_count) when no qualifying task has an IP
+        yet. placed_count is the number of tasks ECS has placed for the
+        service in ANY lifecycle state (PENDING tasks pulling the image count;
+        desiredStatus=RUNNING includes them). Zero means ECS has placed
+        nothing at all — the Spot capacity-unavailable signature, since that
+        condition produces no tasks, no failures, and no rollout state change.
         """
         if not deployment_id:
-            return None, None
+            return None, None, 0
 
         list_resp = self._ecs.list_tasks(
             cluster=self._cluster,
@@ -2469,7 +2671,7 @@ class EcsManager:
         )
         task_arns = list_resp.get("taskArns", [])
         if not task_arns:
-            return None, None
+            return None, None, 0
 
         desc_resp = self._ecs.describe_tasks(
             cluster=self._cluster,
@@ -2486,8 +2688,8 @@ class EcsManager:
                 for detail in attachment.get("details", []):
                     if detail.get("name") == "privateIPv4Address":
                         task_arn = task.get("taskArn") or task_arns[0]
-                        return task_arn, detail.get("value")
-        return None, None
+                        return task_arn, detail.get("value"), len(task_arns)
+        return None, None, len(task_arns)
 
     async def write_user_configs(
         self,

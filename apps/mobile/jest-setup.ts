@@ -2,6 +2,8 @@ jest.mock("expo-secure-store", () => ({
   getItemAsync: jest.fn(async () => null),
   setItemAsync: jest.fn(async () => {}),
   deleteItemAsync: jest.fn(async () => {}),
+  // Keychain-accessibility constant (matches the native module's value shape).
+  AFTER_FIRST_UNLOCK: "afterFirstUnlock",
 }));
 
 // expo-notifications / expo-device are real deps, but we mock them here so unit

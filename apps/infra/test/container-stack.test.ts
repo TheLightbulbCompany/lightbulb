@@ -88,7 +88,8 @@ describe("ContainerStack — dev", () => {
             Interval: 30,
             Timeout: 10,
             Retries: 6,
-            StartPeriod: 180,
+            // 300 is the ECS maximum for startPeriod (values >300 are rejected).
+            StartPeriod: 300,
           },
         }),
       ]),
@@ -137,6 +138,38 @@ describe("ContainerStack — dev", () => {
               + "mv /home/node/\\.openclaw/browser /home/node/\\.openclaw/browser\\.efs-archive-.*\\|\\| exit 1.*"
               + "mkdir -p /tmp/openclaw-browser \\|\\| exit 1.*"
               + "ln -sfn /tmp/openclaw-browser /home/node/\\.openclaw/browser \\|\\| exit 1.*"
+              + "exec node /app/openclaw\\.mjs gateway --port 18789 --bind lan$",
+            ),
+          ],
+        }),
+      ]),
+    });
+  });
+
+  test("openclaw container runs bounded, non-blocking, promptless doctor legacy-state migration before the gateway", () => {
+    // Load-bearing: 2026.7.x fail-closes agent runs on un-migrated legacy
+    // per-workspace state, so this boot step is what unbricks agents on a base
+    // roll. Assert it survives future startup-command refactors, and that its
+    // four safety properties stay intact — bounded (`timeout --kill-after`),
+    // promptless (`--yes --non-interactive`: doctor prompts HANG on a closed
+    // stdin instead of taking their default, and `--non-interactive` is also
+    // what auto-applies the legacy-state migration), headless-safe
+    // (`< /dev/null`), non-blocking (`|| echo`, never `&& exec`) —
+    // AND that it runs BEFORE `exec node ... gateway` so no gateway holds the
+    // SQLite lock during the migration. The trailing `.*exec node ... gateway$`
+    // anchors ordering: doctor must appear earlier in the single joined command.
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      Family: "isol8-dev-openclaw",
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Name: "openclaw",
+          Command: [
+            "sh",
+            "-c",
+            Match.stringLikeRegexp(
+              // `\\|` escapes the regex alternation so we match a literal `|`.
+              "timeout --kill-after=30 300 node /app/openclaw\\.mjs doctor --fix --yes --non-interactive < /dev/null "
+              + "\\|\\| echo .*"
               + "exec node /app/openclaw\\.mjs gateway --port 18789 --bind lan$",
             ),
           ],

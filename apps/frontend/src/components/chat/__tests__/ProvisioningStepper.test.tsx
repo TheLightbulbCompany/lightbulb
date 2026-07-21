@@ -29,6 +29,15 @@ vi.mock("@/hooks/useProvisioningState", () => ({
   useProvisioningState: vi.fn(),
 }));
 
+// Configurable so the onboarding-status gate tests can exercise the
+// `user` present branch — most other tests in this file rely on the
+// default `null` (which makes the first-run funnel branch unreachable and
+// keeps every pre-existing test's assertions about phase="ready" etc.
+// untouched).
+let clerkMockUser: {
+  id: string;
+  unsafeMetadata: { firstRun?: { briefSubmitted?: boolean } };
+} | null = null;
 vi.mock("@clerk/nextjs", () => ({
   useOrganization: () => ({ organization: null, membership: null, isLoaded: true }),
   // Components in the stepper tree (useApi consumers) read useAuth/useUser.
@@ -36,7 +45,7 @@ vi.mock("@clerk/nextjs", () => ({
     getToken: vi.fn().mockResolvedValue("test-token"),
     isSignedIn: true,
   }),
-  useUser: () => ({ user: null, isLoaded: true }),
+  useUser: () => ({ user: clerkMockUser, isLoaded: true }),
 }));
 
 // ``lib/analytics`` re-exports PostHogProvider as ``Provider`` at module
@@ -121,10 +130,6 @@ vi.mock("@/hooks/useGatewayRpc", () => ({
   useGatewayRpc: () => ({ data: gatewayHealthData, error: null }),
 }));
 
-vi.mock("swr", () => ({
-  default: () => ({ data: null, error: null, mutate: vi.fn() }),
-}));
-
 vi.mock("@/lib/analytics", () => ({
   capture: vi.fn(),
 }));
@@ -161,6 +166,7 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     billingMockAccount = { provider_choice: "bedrock_claude" };
     billingMockRefresh = vi.fn();
     billingMockStartTeamCheckout.mockClear();
+    clerkMockUser = null;
   });
 
   afterEach(() => {
@@ -662,5 +668,85 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     expect(
       screen.queryByRole("link", { name: "Sign in with ChatGPT" }),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("ProvisioningStepper per-container onboarding gate", () => {
+  // Every test here needs a loaded Clerk user (the funnel branch is a
+  // no-op when `user` is null — see the other describe block's default),
+  // with the per-user firstRun marker unset, and a `normal` gate phase so
+  // the gate's own preconditions are met. Whether the funnel shows is then
+  // decided by `container.onboarded`, which rides on the /container/status
+  // poll the hook already returns — no separate request.
+  const renderWith = (container: Record<string, unknown>) => {
+    useProvMock.mockReturnValue({
+      phase: "normal",
+      container,
+      blocked: null,
+      refreshInterval: 3000,
+      refresh: vi.fn(),
+    });
+    return render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+  };
+
+  beforeEach(() => {
+    useProvMock.mockReset();
+    apiPost.mockClear();
+    apiGet.mockClear();
+    apiPut.mockClear();
+    apiDel.mockClear();
+    billingMockIsSubscribed = true;
+    billingMockAccount = { provider_choice: "bedrock_claude" };
+    billingMockRefresh = vi.fn();
+    billingMockStartTeamCheckout.mockClear();
+    clerkMockUser = { id: "user_1", unsafeMetadata: {} };
+  });
+
+  afterEach(() => {
+    apiGet.mockResolvedValue({});
+  });
+
+  it("shows the funnel when the container is not onboarded and the per-user marker is unset", () => {
+    renderWith({ status: "running", phase: "ready", onboarded: false });
+
+    expect(screen.getByText(/get started/i)).toBeInTheDocument();
+    expect(screen.queryByText("children")).not.toBeInTheDocument();
+  });
+
+  it("shows the funnel when `onboarded` is absent (older backend / new container)", () => {
+    // A backend that doesn't send the field, or a brand-new container, must
+    // still show the funnel — absence is not "onboarded".
+    renderWith({ status: "running", phase: "ready" });
+
+    expect(screen.getByText(/get started/i)).toBeInTheDocument();
+    expect(screen.queryByText("children")).not.toBeInTheDocument();
+  });
+
+  it("does not show the funnel when the container is already onboarded", () => {
+    // The whole point of the per-container flag: a second org member on an
+    // already-onboarded container (their own per-user marker still empty)
+    // goes straight to the app.
+    renderWith({ status: "running", phase: "ready", onboarded: true });
+
+    expect(screen.queryByText(/get started/i)).not.toBeInTheDocument();
+    expect(screen.getByText("children")).toBeInTheDocument();
+  });
+
+  it("does not show the funnel once the per-user marker is set, even before the poll flips onboarded", () => {
+    // The instant local latch: right after this user submits, the funnel
+    // must not flash back over the working session while the next poll is
+    // still catching up to onboarded:true.
+    clerkMockUser = {
+      id: "user_1",
+      unsafeMetadata: { firstRun: { briefSubmitted: true } },
+    };
+    renderWith({ status: "running", phase: "ready", onboarded: false });
+
+    expect(screen.queryByText(/get started/i)).not.toBeInTheDocument();
+    expect(screen.getByText("children")).toBeInTheDocument();
   });
 });

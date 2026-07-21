@@ -1036,6 +1036,282 @@ class TestContainerStatusOrgMemberDispatchOnExisting:
         )
 
 
+class TestContainerStatusPoolSelfHeal:
+    """GET /container/status vs. the pool's instance-local blind spot.
+
+    phase "ready" requires THIS process's in-memory pool to hold the user's
+    gateway connection — but the pool is per-task. After a rolling deploy (or
+    an idle reap) the container is up and serving chat while the task
+    answering the poll holds no connection, so /status reports "starting"
+    over a perfectly working workspace until a chat send happens to land on
+    this task. The poll must self-heal: dial in the background so the NEXT
+    poll tells the truth.
+
+    The dispatch is paced per owner: the pool serializes all connect I/O
+    (and every chat RPC) behind one process-wide lock and has no reconnect
+    floor on the absent-create path, so the poll cadence must not pile up
+    dials — one in flight at a time, cooldown between attempts.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_self_heal_guards(self):
+        """The dispatch guards are module-level state — isolate every test."""
+        import routers.container as rc
+
+        rc._self_heal_inflight.clear()
+        rc._self_heal_last_dial.clear()
+        yield
+        rc._self_heal_inflight.clear()
+        rc._self_heal_last_dial.clear()
+
+    @staticmethod
+    def _running_row():
+        return {
+            "service_name": "openclaw-abc",
+            "status": "running",
+            "substatus": None,
+            "gateway_token": "gw-token",
+            "created_at": "2026-01-15T12:00:00+00:00",
+            "updated_at": "2026-01-15T12:00:00+00:00",
+        }
+
+    @pytest.mark.asyncio
+    async def test_starting_phase_dispatches_background_pool_connect(self):
+        """The core self-heal: running + IP in hand + no local connection →
+        dispatch a background dial; the response still reports the honest
+        "starting" for THIS poll (the next one finds the truth)."""
+        from routers.container import container_status
+
+        captured: list[str] = []
+
+        def capture_task(coro):
+            captured.append(coro.__qualname__)
+            coro.close()
+            return MagicMock()
+
+        fake_ecs = MagicMock(
+            resolve_running_container=AsyncMock(return_value=(self._running_row(), "10.0.1.5")),
+        )
+        pool = SimpleNamespace(is_user_connected=lambda _u: False)
+        with (
+            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.get_gateway_pool", return_value=pool),
+            patch("routers.container.resolve_owner_id", return_value="user_x"),
+            patch("routers.container.asyncio.create_task", side_effect=capture_task),
+        ):
+            result = await container_status(_personal_auth())
+
+        assert result["phase"] == "starting"
+        assert captured == ["_pool_self_heal_connect"], (
+            f"expected a background pool dial on a starting poll, got {captured}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_connected_pool_does_not_dispatch(self):
+        """Ready polls (pool already connected) must not churn tasks."""
+        from routers.container import container_status
+
+        captured: list[str] = []
+
+        def capture_task(coro):
+            captured.append(coro.__qualname__)
+            coro.close()
+            return MagicMock()
+
+        fake_ecs = MagicMock(
+            resolve_running_container=AsyncMock(return_value=(self._running_row(), "10.0.1.5")),
+        )
+        pool = SimpleNamespace(is_user_connected=lambda _u: True)
+        with (
+            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.get_gateway_pool", return_value=pool),
+            patch("routers.container.resolve_owner_id", return_value="user_x"),
+            patch("routers.container.asyncio.create_task", side_effect=capture_task),
+        ):
+            result = await container_status(_personal_auth())
+
+        assert result["phase"] == "ready"
+        assert captured == []
+
+    @pytest.mark.asyncio
+    async def test_wake0_readonly_poll_never_dials(self):
+        """wake=0 is the backgrounded read-only poll: report, start nothing —
+        the same contract the parked-wake gate honors."""
+        from routers.container import container_status
+
+        captured: list[str] = []
+
+        def capture_task(coro):
+            captured.append(coro.__qualname__)
+            coro.close()
+            return MagicMock()
+
+        fake_ecs = MagicMock(
+            resolve_running_container=AsyncMock(return_value=(self._running_row(), "10.0.1.5")),
+        )
+        pool = SimpleNamespace(is_user_connected=lambda _u: False)
+        with (
+            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.get_gateway_pool", return_value=pool),
+            patch("routers.container.resolve_owner_id", return_value="user_x"),
+            patch("routers.container.asyncio.create_task", side_effect=capture_task),
+        ):
+            result = await container_status(_personal_auth(), wake="0")
+
+        assert result["phase"] == "starting"
+        assert captured == []
+
+    @pytest.mark.asyncio
+    async def test_no_ip_or_no_token_does_not_dispatch(self):
+        """A zombie running row (no live task → no IP) or a row missing its
+        gateway_token has nothing to dial — never dispatch."""
+        from routers.container import container_status
+
+        captured: list[str] = []
+
+        def capture_task(coro):
+            captured.append(coro.__qualname__)
+            coro.close()
+            return MagicMock()
+
+        pool = SimpleNamespace(is_user_connected=lambda _u: False)
+        no_token = self._running_row()
+        del no_token["gateway_token"]
+        for row, ip in ((self._running_row(), None), (no_token, "10.0.1.5")):
+            fake_ecs = MagicMock(
+                resolve_running_container=AsyncMock(return_value=(row, ip)),
+            )
+            with (
+                patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+                patch("routers.container.get_gateway_pool", return_value=pool),
+                patch("routers.container.resolve_owner_id", return_value="user_x"),
+                patch("routers.container.asyncio.create_task", side_effect=capture_task),
+            ):
+                await container_status(_personal_auth())
+
+        assert captured == []
+
+    @pytest.mark.asyncio
+    async def test_self_heal_connect_swallows_failures(self):
+        """The dial races real container state (mid-deploy, task just died) —
+        it must never propagate. And on success it hands ensure_connection
+        exactly the (owner, ip, token) triple the chat path uses."""
+        from routers.container import _pool_self_heal_connect
+
+        raising_pool = SimpleNamespace(
+            is_user_connected=lambda _u: False,
+            ensure_connection=AsyncMock(side_effect=RuntimeError("boom")),
+        )
+        with patch("routers.container.get_gateway_pool", return_value=raising_pool):
+            await _pool_self_heal_connect("user_x", "10.0.1.5", "gw-token")  # must not raise
+
+        ok_pool = SimpleNamespace(
+            is_user_connected=lambda _u: False,
+            ensure_connection=AsyncMock(),
+        )
+        with patch("routers.container.get_gateway_pool", return_value=ok_pool):
+            await _pool_self_heal_connect("user_x", "10.0.1.5", "gw-token")
+        ok_pool.ensure_connection.assert_awaited_once_with("user_x", "10.0.1.5", "gw-token")
+
+    @pytest.mark.asyncio
+    async def test_self_heal_connect_skips_when_already_connected(self):
+        """Racing polls: a second dispatched dial finds the first one won and
+        returns without re-dialing."""
+        from routers.container import _pool_self_heal_connect
+
+        pool = SimpleNamespace(
+            is_user_connected=lambda _u: True,
+            ensure_connection=AsyncMock(),
+        )
+        with patch("routers.container.get_gateway_pool", return_value=pool):
+            await _pool_self_heal_connect("user_x", "10.0.1.5", "gw-token")
+        pool.ensure_connection.assert_not_awaited()
+
+    def _poll_ctx(self, captured: list[str]):
+        """Patch stack for a starting-phase poll that records dispatches."""
+
+        def capture_task(coro):
+            captured.append(coro.__qualname__)
+            coro.close()
+            return MagicMock()
+
+        fake_ecs = MagicMock(
+            resolve_running_container=AsyncMock(return_value=(self._running_row(), "10.0.1.5")),
+        )
+        pool = SimpleNamespace(is_user_connected=lambda _u: False)
+        return (
+            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.get_gateway_pool", return_value=pool),
+            patch("routers.container.resolve_owner_id", return_value="user_x"),
+            patch("routers.container.asyncio.create_task", side_effect=capture_task),
+        )
+
+    @pytest.mark.asyncio
+    async def test_dial_in_flight_blocks_repeat_dispatch(self):
+        """While a dial is outstanding, the ~5s poll cadence must not queue
+        duplicates behind the pool's process-wide lock."""
+        import routers.container as rc
+        from routers.container import container_status
+
+        captured: list[str] = []
+        p1, p2, p3, p4 = self._poll_ctx(captured)
+        with p1, p2, p3, p4:
+            await container_status(_personal_auth())
+            assert captured == ["_pool_self_heal_connect"]
+            assert "user_x" in rc._self_heal_inflight
+            await container_status(_personal_auth())
+
+        assert captured == ["_pool_self_heal_connect"], (
+            f"expected exactly one dispatch while the first dial is in flight, got {captured}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_cooldown_blocks_redial_until_elapsed(self):
+        """A completed-but-failed dial (wedged container: running row,
+        unreachable IP) must not be retried every poll — only after the
+        cooldown. A chat send still dials immediately via its own path."""
+        import time as time_mod
+
+        import routers.container as rc
+        from routers.container import container_status
+
+        captured: list[str] = []
+        p1, p2, p3, p4 = self._poll_ctx(captured)
+
+        # Dial finished (in-flight cleared) moments ago and failed.
+        rc._self_heal_last_dial["user_x"] = time_mod.monotonic()
+        with p1, p2, p3, p4:
+            await container_status(_personal_auth())
+        assert captured == []
+
+        # Cooldown elapsed → the poll may try again.
+        rc._self_heal_last_dial["user_x"] = time_mod.monotonic() - rc._SELF_HEAL_DIAL_COOLDOWN_S - 1.0
+        with p1, p2, p3, p4:
+            await container_status(_personal_auth())
+        assert captured == ["_pool_self_heal_connect"]
+
+    @pytest.mark.asyncio
+    async def test_self_heal_connect_clears_inflight_marker(self):
+        """The dispatch site sets the in-flight marker; the dial must clear
+        it on success, on failure, and on the already-connected fast path."""
+        import routers.container as rc
+        from routers.container import _pool_self_heal_connect
+
+        pools = (
+            SimpleNamespace(is_user_connected=lambda _u: False, ensure_connection=AsyncMock()),
+            SimpleNamespace(
+                is_user_connected=lambda _u: False,
+                ensure_connection=AsyncMock(side_effect=RuntimeError("boom")),
+            ),
+            SimpleNamespace(is_user_connected=lambda _u: True, ensure_connection=AsyncMock()),
+        )
+        for pool in pools:
+            rc._self_heal_inflight.add("user_x")
+            with patch("routers.container.get_gateway_pool", return_value=pool):
+                await _pool_self_heal_connect("user_x", "10.0.1.5", "gw-token")
+            assert "user_x" not in rc._self_heal_inflight
+
+
 class TestGatewayRestart:
     """Test POST /api/v1/container/gateway/restart."""
 

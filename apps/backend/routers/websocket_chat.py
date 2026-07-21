@@ -142,6 +142,51 @@ def _filter_sessions_for_user(result, user_id: str):
 _WS_FRAME_BUDGET_BYTES = 110_000
 
 
+def _elide_oversized_message(message, budget: int):
+    """Replace long text blocks in one message with a short marker.
+
+    Last resort for a message that cannot fit a frame even alone (raw tool
+    output — file dumps, stdout floods). Dropping it instead would stall the
+    client's cursor on this page forever. The UI renders tool results as
+    collapsed cards, so eliding the body costs little and the marker keeps the
+    omission honest rather than silent.
+    """
+    if not isinstance(message, dict):
+        return message
+    content = message.get("content")
+    if not isinstance(content, list):
+        return message
+    elided = []
+    for block in content:
+        if isinstance(block, dict) and isinstance(block.get("text"), str):
+            raw = block["text"]
+            if len(raw.encode()) > budget // 4:
+                omitted = len(raw.encode())
+                elided.append({**block, "text": f"[… {omitted} bytes omitted — too large to display …]"})
+                continue
+        elided.append(block)
+    return {**message, "content": elided}
+
+
+def _hard_truncate_message(message, original_bytes: int) -> dict:
+    """Guaranteed-fit fallback when per-block elision isn't enough.
+
+    ``_elide_oversized_message`` only shrinks a content block once that block
+    ALONE crosses ``budget // 4`` — two shapes defeat it: several
+    sub-threshold blocks whose SUM still exceeds the budget (each passes
+    through unchanged), and non-list ``content`` (a plain string), where it's
+    a no-op entirely. This replaces the whole message body with one marker
+    block, keeping only ``role`` (when present) so the transcript still shows
+    who "spoke". Called only after a post-elision size check has confirmed
+    elision alone didn't fit — this is what makes "the returned payload
+    always fits" an enforced guarantee rather than a heuristic.
+    """
+    stub = {"content": [{"type": "text", "text": f"[… {original_bytes} bytes omitted — too large to display …]"}]}
+    if isinstance(message, dict) and "role" in message:
+        stub["role"] = message["role"]
+    return stub
+
+
 def _trim_chat_history_for_frame(result, budget: int = _WS_FRAME_BUDGET_BYTES):
     """Drop the OLDEST chat.history messages until the payload fits one frame.
 
@@ -170,7 +215,41 @@ def _trim_chat_history_for_frame(result, budget: int = _WS_FRAME_BUDGET_BYTES):
             hi = mid
         else:
             lo = mid + 1
-    return {**result, "messages": messages[lo:], "truncated": True}
+    # Degenerate page: not even the newest single message fits. Ship it
+    # elided (or, failing that, hard-truncated) so the cursor still advances
+    # by one instead of stalling on this page forever. This applies to BOTH
+    # paged and unpaged requests — gating it on `offset` would leave the
+    # legacy unpaged shape falling through to an empty transcript, which is
+    # the exact bug this guard exists to eliminate. Only the cursor fields
+    # (nextOffset/hasMore) are conditioned on this being a paged request.
+    if lo >= len(messages) and messages:
+        last = messages[-1]
+        elided = _elide_oversized_message(last, budget)
+        out = {**result, "messages": [elided], "truncated": True}
+        if _size(out) > budget:
+            # Elision alone didn't shrink it enough (many sub-threshold
+            # blocks, or non-list `content`). Fall back to a hard truncation
+            # that is guaranteed to fit.
+            stub = _hard_truncate_message(last, _size(last))
+            out = {**result, "messages": [stub], "truncated": True}
+        offset = result.get("offset")
+        if isinstance(offset, int) and not isinstance(offset, bool):
+            out["nextOffset"] = offset + 1
+            out["hasMore"] = True
+        return out
+    kept = messages[lo:]
+    out = {**result, "messages": kept, "truncated": True}
+    # A paged read: the bisect above dropped the OLDEST messages of this page,
+    # which sit at the FAR end of the cursor (offset counts backward from
+    # newest). The server's nextOffset assumed the full page was delivered, so
+    # resuming from it would skip exactly what we just dropped. Re-anchor the
+    # cursor to what actually shipped, and force hasMore — messages were
+    # dropped, so more definitely remain.
+    offset = result.get("offset")
+    if isinstance(offset, int) and not isinstance(offset, bool):
+        out["nextOffset"] = offset + len(kept)
+        out["hasMore"] = True
+    return out
 
 
 # Methods whose result payload the frontend DISCARDS (it revalidates via a

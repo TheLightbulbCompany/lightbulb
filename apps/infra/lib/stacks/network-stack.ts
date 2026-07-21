@@ -47,6 +47,12 @@ export class NetworkStack extends cdk.Stack {
       restrictDefaultSecurityGroup: true,
     });
 
+    // S3 Gateway Endpoint — free, routes S3 traffic (incl. ECR image layers)
+    // through AWS instead of the NAT gateway ($0.045/GB data processing)
+    this.vpc.addGatewayEndpoint("S3Endpoint", {
+      service: ec2.GatewayVpcEndpointAwsService.S3,
+    });
+
     // -------------------------------------------------------------------------
     // ALB Security Group
     // -------------------------------------------------------------------------

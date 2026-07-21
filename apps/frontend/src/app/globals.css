@@ -1564,3 +1564,32 @@ button:focus-visible { border-radius: 999px; }
 @media (max-width: 980px) {
   .skills-strip { grid-template-columns: 1fr; gap: 18px; padding: 22px 20px; }
 }
+
+/*
+ * Chat transcript occlusion.
+ *
+ * The /chat transcript keeps every message in the DOM for the life of the
+ * session. Per-streaming-frame reflow is cheap (a chunk only dirties the tail
+ * message's subtree), but any change that invalidates ALL layout — a dockview
+ * panel resize, a web-font finishing load, browser zoom — is O(number of
+ * messages): measured at ~24ms (≈1.5 dropped frames) on a 1000-message
+ * transcript. content-visibility:auto lets the browser skip layout + paint for
+ * off-screen groups, flattening that ~40x, while keeping every node in the DOM
+ * so Ctrl-F, the accessibility tree, session replay, and the autoscroll pin all
+ * keep working untouched.
+ *
+ * Applied to the transcript's direct children (each rendered message group)
+ * rather than the groups themselves because user-side groups render as a
+ * fragment, not a single wrapper. The streaming tail is always on-screen, so it
+ * renders normally and grows normally — occlusion only ever affects the
+ * scrolled-away history above it.
+ *
+ * `auto` in contain-intrinsic-size makes the browser remember each group's real
+ * height once it has rendered, so scrollHeight — which the autoscroll pin reads
+ * to snap to the bottom — stays accurate. The 200px is only the fallback for a
+ * group that has never yet been on-screen (a freshly loaded long history).
+ */
+.chat-transcript > * {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 200px;
+}

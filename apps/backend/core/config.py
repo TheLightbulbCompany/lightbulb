@@ -230,10 +230,17 @@ class Settings(BaseSettings):
     # the app boots without it; CDK-wired in dev/prod. Quantity = org member
     # count, no trial. This is the billing source of truth for "$20/seat".
     STRIPE_TEAM_SEAT_PRICE_ID: str = ""
+    # Stripe price for the Ultra Pro tier (large marketplace companies exceeding
+    # the flat tier's agent budget). Empty default so the app boots without it;
+    # CDK-wired in dev/prod. This is the billing source of truth for "$150".
+    STRIPE_ULTRA_PRICE_ID: str = ""
     # Display dollars for one seat, echoed to the frontend via /billing/account
     # so the paywall renders "N × $20" without hardcoding the number in the UI.
     # Kept in lockstep with STRIPE_TEAM_SEAT_PRICE_ID's unit amount in Stripe.
     TEAM_SEAT_PRICE_USD: int = 20
+    # Display dollars for the Ultra Pro tier, kept in lockstep with
+    # STRIPE_ULTRA_PRICE_ID's unit amount in Stripe.
+    ULTRA_PRICE_USD: int = 150
 
     # Marketplace (set by CDK ServiceStack — empty default lets the backend
     # boot in non-marketplace contexts like local unit tests).

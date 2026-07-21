@@ -7,8 +7,25 @@ import { useScrollToBottom } from "@/hooks/useScrollToBottom";
 import { ChatErrorCard } from "@/components/chat/ChatErrorCard";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
-import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
+import SyntaxHighlighter from "react-syntax-highlighter/dist/esm/prism-light";
+import oneDark from "react-syntax-highlighter/dist/esm/styles/prism/one-dark";
+import bash from "react-syntax-highlighter/dist/esm/languages/prism/bash";
+import css from "react-syntax-highlighter/dist/esm/languages/prism/css";
+import diff from "react-syntax-highlighter/dist/esm/languages/prism/diff";
+import docker from "react-syntax-highlighter/dist/esm/languages/prism/docker";
+import ini from "react-syntax-highlighter/dist/esm/languages/prism/ini";
+import javascript from "react-syntax-highlighter/dist/esm/languages/prism/javascript";
+import json from "react-syntax-highlighter/dist/esm/languages/prism/json";
+import jsx from "react-syntax-highlighter/dist/esm/languages/prism/jsx";
+import markdown from "react-syntax-highlighter/dist/esm/languages/prism/markdown";
+import markup from "react-syntax-highlighter/dist/esm/languages/prism/markup";
+import python from "react-syntax-highlighter/dist/esm/languages/prism/python";
+import rust from "react-syntax-highlighter/dist/esm/languages/prism/rust";
+import sql from "react-syntax-highlighter/dist/esm/languages/prism/sql";
+import toml from "react-syntax-highlighter/dist/esm/languages/prism/toml";
+import tsx from "react-syntax-highlighter/dist/esm/languages/prism/tsx";
+import typescript from "react-syntax-highlighter/dist/esm/languages/prism/typescript";
+import yaml from "react-syntax-highlighter/dist/esm/languages/prism/yaml";
 import {
   pairToolBlocks,
   isToolUseBlock,
@@ -36,6 +53,60 @@ export interface MessageListProps {
   isStreaming?: boolean;
   isTyping?: boolean;
   onOpenFile?: (path: string) => void;
+  hasOlder?: boolean;
+  isLoadingOlder?: boolean;
+  onLoadOlder?: () => void;
+}
+
+/**
+ * Grammars registered on the PrismLight build. The `react-syntax-highlighter`
+ * barrel export bundles all ~300 refractor grammars — nearly half of /chat's
+ * first-load JS — so we register only the fences agents realistically emit
+ * here: the languages this platform is written in and the config / markup
+ * formats that surround them. Registering a grammar also pulls in whatever it
+ * extends (jsx → markup + javascript, typescript → javascript) and installs
+ * its own aliases (py, sh, shell, ts, yml, md, dockerfile, html, …).
+ */
+const PRISM_LANGUAGES = [
+  bash,
+  css,
+  diff,
+  docker,
+  ini,
+  javascript,
+  json,
+  jsx,
+  markdown,
+  markup,
+  python,
+  rust,
+  sql,
+  toml,
+  tsx,
+  typescript,
+  yaml,
+];
+
+/** Language passed through for anything unregistered — renders unhighlighted. */
+const PLAIN_LANGUAGE = "text";
+
+const REGISTERED_LANGUAGES = new Set<string>();
+for (const grammar of PRISM_LANGUAGES) {
+  SyntaxHighlighter.registerLanguage(grammar.displayName, grammar);
+  REGISTERED_LANGUAGES.add(grammar.displayName);
+  for (const alias of (grammar.aliases ?? []) as string[]) {
+    REGISTERED_LANGUAGES.add(alias);
+  }
+}
+
+/**
+ * Resolve a fence's language to one PrismLight can highlight. Unknown
+ * languages fall back to plain text rather than reaching refractor, which
+ * throws on an unregistered grammar. Exported for unit tests.
+ */
+export function resolveHighlightLanguage(language: string): string {
+  const normalized = language.toLowerCase();
+  return REGISTERED_LANGUAGES.has(normalized) ? normalized : PLAIN_LANGUAGE;
 }
 
 function CodeBlock({ className, children, ...props }: React.HTMLAttributes<HTMLElement> & { children?: React.ReactNode }) {
@@ -66,7 +137,7 @@ function CodeBlock({ className, children, ...props }: React.HTMLAttributes<HTMLE
       </div>
       <SyntaxHighlighter
         style={oneDark}
-        language={match[1]}
+        language={resolveHighlightLanguage(match[1])}
         PreTag="div"
         customStyle={{ margin: 0, borderRadius: 0, background: "#f8f5f0" }}
       >
@@ -788,8 +859,28 @@ export interface MessageListHandle {
 }
 
 export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(
-  function MessageList({ renderGroups, isStreaming, isTyping, agentName, onOpenFile }, ref) {
+  function MessageList(
+    { renderGroups, isStreaming, isTyping, agentName, onOpenFile, hasOlder, isLoadingOlder, onLoadOlder },
+    ref
+  ) {
     const { containerRef, scrollToBottom } = useScrollToBottom();
+
+    // Loading an older page prepends messages at the top of a bottom-anchored
+    // transcript, which would otherwise shove the viewport down by the height
+    // of the newly-inserted content. Pin the distance from the bottom before
+    // the fetch, then restore it once the DOM has the new messages painted —
+    // mutate scrollTop on the container directly, never scrollIntoView (see
+    // useScrollToBottom.ts for why).
+    const handleLoadOlder = React.useCallback(() => {
+      const c = containerRef.current;
+      const before = c ? c.scrollHeight - c.scrollTop : null;
+      Promise.resolve(onLoadOlder?.()).then(() => {
+        requestAnimationFrame(() => {
+          const el = containerRef.current;
+          if (el && before !== null) el.scrollTop = el.scrollHeight - before;
+        });
+      });
+    }, [onLoadOlder, containerRef]);
 
     // Track whether the user is at (or near) the bottom of the scroll
     // container. While true, incoming streamed chunks pull the view down.
@@ -806,12 +897,36 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
       scrollToBottom,
     }));
 
+    // Scroll events can burst several times per frame (touch / momentum
+    // scrolling), and every run measures the container. Coalesce them to one
+    // measurement per animation frame: the frame's FIRST event measures, the
+    // rest are dropped until the frame turns over.
+    //
+    // The measurement stays synchronous with that event rather than being
+    // deferred into the rAF callback. A deferred read would land after the
+    // next streaming commit, where `scrollHeight` has already grown by the
+    // freshly appended chunk — the distance would read as "user scrolled up"
+    // and silently kill autoscroll mid-stream. The pinned flag is only ever
+    // allowed to change at scroll time.
+    const scrollFrameRef = React.useRef<number | null>(null);
+
     const handleScroll = React.useCallback(() => {
+      if (scrollFrameRef.current !== null) return;
       const c = containerRef.current;
       if (!c) return;
       const distance = c.scrollHeight - c.scrollTop - c.clientHeight;
       isNearBottomRef.current = distance < 120;
+      scrollFrameRef.current = requestAnimationFrame(() => {
+        scrollFrameRef.current = null;
+      });
     }, [containerRef]);
+
+    React.useEffect(
+      () => () => {
+        if (scrollFrameRef.current !== null) cancelAnimationFrame(scrollFrameRef.current);
+      },
+      [],
+    );
 
     // Auto-scroll signals. Plan §6 keys on `totalItems` (sum of items across
     // groups) instead of `messages.length`, plus a "tail item's text-length
@@ -904,7 +1019,21 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
         className="flex-1 min-h-0 overflow-y-auto p-4 md:px-8"
         data-lenis-prevent
       >
-        <div className="max-w-3xl mx-auto space-y-10 py-8">
+        {/* `chat-transcript` occludes off-screen groups (content-visibility) —
+            see globals.css. Keeps a long history off the layout hot path. */}
+        <div className="max-w-3xl mx-auto space-y-10 py-8 chat-transcript">
+          {hasOlder && (
+            <div className="flex justify-center pb-3">
+              <button
+                type="button"
+                onClick={handleLoadOlder}
+                disabled={isLoadingOlder}
+                className="text-[11px] text-[#8a8578] hover:text-[#302d28] disabled:opacity-60 px-3 py-1 rounded-full border border-[#e0dbd0] bg-[#f3efe6]"
+              >
+                {isLoadingOlder ? "Loading earlier messages…" : "Load earlier messages"}
+              </button>
+            </div>
+          )}
           {renderGroups.map((group, idx) => (
             <BubbleGroup
               key={group.key}

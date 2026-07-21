@@ -1,14 +1,19 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { renderHook } from "@testing-library/react";
+import { renderHook, waitFor } from "@testing-library/react";
+import { SWRConfig } from "swr";
 
-const useGatewayRpc = vi.fn();
+// Task 5 moved useAgentSessions' fetch from a single-shot useGatewayRpc call
+// onto a paging useSWR fetcher built on useGatewayRpcMutation, so the whole
+// gateway surface these tests need to stub is callRpc (sessions.list for the
+// fetch, sessions.patch/sessions.delete for the mutations) — useGatewayRpc
+// itself is no longer called by the hook.
 const callRpc = vi.fn().mockResolvedValue({});
 const notifyApiError = vi.fn();
 vi.mock("@/lib/notify", () => ({
   notifyApiError: (...args: unknown[]): unknown => notifyApiError(...args),
 }));
 vi.mock("@/hooks/useGatewayRpc", () => ({
-  useGatewayRpc: (...args: unknown[]): unknown => useGatewayRpc(...args),
+  useGatewayRpc: vi.fn(),
   useGatewayRpcMutation: (): typeof callRpc => callRpc,
 }));
 
@@ -24,41 +29,51 @@ interface SessionRow {
   thinkingLevel?: string;
   fastMode?: boolean;
 }
-function rpcReturn(rows: SessionRow[]): {
-  data: { sessions: SessionRow[] };
-  error: undefined;
-  isLoading: boolean;
-  mutate: () => Promise<undefined>;
-} {
-  return { data: { sessions: rows }, error: undefined, isLoading: false, mutate: async () => undefined };
+
+// Stubs the single page the hook's sessions.list walk sees (hasMore: false
+// stops the walk after one page). Every other RPC method resolves to {}
+// unless a test overrides callRpc's implementation for its own scenario.
+function stubSessionsList(rows: SessionRow[]): void {
+  callRpc.mockImplementation(async (method: string) =>
+    method === "sessions.list" ? { sessions: rows, hasMore: false } : {},
+  );
 }
+
+// SWR's cache is module-global; every test renders with a fresh Map provider
+// so an earlier test's cached page (same agentId cache key, or a dedupe
+// window that suppresses a "new" fetch) never bleeds into a later one.
+function renderAgentSessions(agentId: string | null, userId: string | null) {
+  return renderHook(() => useAgentSessions(agentId, userId), {
+    wrapper: ({ children }: { children: React.ReactNode }) => (
+      <SWRConfig value={{ provider: () => new Map() }}>{children}</SWRConfig>
+    ),
+  });
+}
+
+import { useAgentSessions } from "../useAgentSessions";
 
 describe("useAgentSessions — filtered per-agent 4-part rows", () => {
   beforeEach(() => {
-    vi.resetModules();
-    useGatewayRpc.mockReset();
-    callRpc.mockClear().mockResolvedValue({});
+    callRpc.mockReset().mockResolvedValue({});
     notifyApiError.mockClear();
   });
 
   it("returns only this agent's user-owned 4-part sessions with a label", async () => {
-    useGatewayRpc.mockReturnValue(
-      rpcReturn([
-        { key: "agent:agent-X:user-1:11111111-1111-4111-8111-111111111111", derivedTitle: "Taxes", updatedAt: 200, totalTokens: 5 },
-        { key: "agent:agent-X:user-1:22222222-2222-4222-8222-222222222222", updatedAt: 300 },
-        // legacy General (3-part) — surfaced as the pinned null row
-        { key: "agent:agent-X:user-1", updatedAt: 100 },
-        // other agent — excluded
-        { key: "agent:agent-Y:user-1:33333333-3333-4333-8333-333333333333" },
-        // other member — excluded
-        { key: "agent:agent-X:user-2:44444444-4444-4444-8444-444444444444" },
-        // malformed trailing segment (not a UUID) — excluded
-        { key: "agent:agent-X:user-1:not-a-uuid" },
-      ]),
-    );
-    const { useAgentSessions } = await import("@/hooks/useAgentSessions");
-    const { result } = renderHook(() => useAgentSessions("agent-X", "user-1"));
+    stubSessionsList([
+      { key: "agent:agent-X:user-1:11111111-1111-4111-8111-111111111111", derivedTitle: "Taxes", updatedAt: 200, totalTokens: 5 },
+      { key: "agent:agent-X:user-1:22222222-2222-4222-8222-222222222222", updatedAt: 300 },
+      // legacy General (3-part) — surfaced as the pinned null row
+      { key: "agent:agent-X:user-1", updatedAt: 100 },
+      // other agent — excluded
+      { key: "agent:agent-Y:user-1:33333333-3333-4333-8333-333333333333" },
+      // other member — excluded
+      { key: "agent:agent-X:user-2:44444444-4444-4444-8444-444444444444" },
+      // malformed trailing segment (not a UUID) — excluded
+      { key: "agent:agent-X:user-1:not-a-uuid" },
+    ]);
+    const { result } = renderAgentSessions("agent-X", "user-1");
 
+    await waitFor(() => expect(result.current.sessions).toHaveLength(3));
     expect(result.current.sessions.map((s) => s.sessionId)).toEqual([
       null, // legacy General pinned first
       "22222222-2222-4222-8222-222222222222", // newer first
@@ -70,23 +85,21 @@ describe("useAgentSessions — filtered per-agent 4-part rows", () => {
   });
 
   it("carries per-session model/effort overrides through on 4-part and General rows", async () => {
-    useGatewayRpc.mockReturnValue(
-      rpcReturn([
-        {
-          key: "agent:agent-X:user-1:11111111-1111-4111-8111-111111111111",
-          model: "openai/gpt-5",
-          modelProvider: "openai",
-          thinkingLevel: "high",
-          fastMode: true,
-          updatedAt: 200,
-        },
-        // legacy General carries its OWN overrides, not the 4-part row's
-        { key: "agent:agent-X:user-1", model: "bedrock/claude", thinkingLevel: "low", updatedAt: 100 },
-      ]),
-    );
-    const { useAgentSessions } = await import("@/hooks/useAgentSessions");
-    const { result } = renderHook(() => useAgentSessions("agent-X", "user-1"));
+    stubSessionsList([
+      {
+        key: "agent:agent-X:user-1:11111111-1111-4111-8111-111111111111",
+        model: "openai/gpt-5",
+        modelProvider: "openai",
+        thinkingLevel: "high",
+        fastMode: true,
+        updatedAt: 200,
+      },
+      // legacy General carries its OWN overrides, not the 4-part row's
+      { key: "agent:agent-X:user-1", model: "bedrock/claude", thinkingLevel: "low", updatedAt: 100 },
+    ]);
+    const { result } = renderAgentSessions("agent-X", "user-1");
 
+    await waitFor(() => expect(result.current.sessions).toHaveLength(2));
     const general = result.current.sessions.find((s) => s.sessionId === null);
     const named = result.current.sessions.find(
       (s) => s.sessionId === "11111111-1111-4111-8111-111111111111",
@@ -104,11 +117,10 @@ describe("useAgentSessions — filtered per-agent 4-part rows", () => {
   });
 
   it("returns empty and does not query when agentId is null", async () => {
-    useGatewayRpc.mockReturnValue(rpcReturn([]));
-    const { useAgentSessions } = await import("@/hooks/useAgentSessions");
-    const { result } = renderHook(() => useAgentSessions(null, "user-1"));
+    stubSessionsList([]);
+    const { result } = renderAgentSessions(null, "user-1");
     expect(result.current.sessions).toEqual([]);
-    expect(useGatewayRpc).toHaveBeenCalledWith(null, expect.anything(), expect.anything());
+    expect(callRpc).not.toHaveBeenCalledWith("sessions.list", expect.anything());
   });
 
   it("matches case-insensitively — lowercased sessions.list keys vs a mixed-case Clerk id", async () => {
@@ -116,58 +128,55 @@ describe("useAgentSessions — filtered per-agent 4-part rows", () => {
     // returns lowercased keys while the Clerk user/agent id passed in is
     // mixed-case. Regression guard: a case-sensitive compare dropped every row,
     // rendering an empty sidebar and never hydrating the pill.
-    useGatewayRpc.mockReturnValue(
-      rpcReturn([
-        { key: "agent:agent-x:user_2abcdef:11111111-1111-4111-8111-111111111111", updatedAt: 200 },
-        { key: "agent:agent-x:user_2abcdef", updatedAt: 100 }, // legacy General, lowercased
-      ]),
-    );
-    const { useAgentSessions } = await import("@/hooks/useAgentSessions");
-    const { result } = renderHook(() => useAgentSessions("Agent-X", "user_2AbcDEF"));
+    stubSessionsList([
+      { key: "agent:agent-x:user_2abcdef:11111111-1111-4111-8111-111111111111", updatedAt: 200 },
+      { key: "agent:agent-x:user_2abcdef", updatedAt: 100 }, // legacy General, lowercased
+    ]);
+    const { result } = renderAgentSessions("Agent-X", "user_2AbcDEF");
 
+    await waitFor(() => expect(result.current.sessions).toHaveLength(2));
     expect(result.current.sessions.map((s) => s.sessionId)).toEqual([
       null, // General still surfaces
       "11111111-1111-4111-8111-111111111111",
     ]);
   });
+
   it("carries the untruncated title as rawLabel alongside the truncated display label", async () => {
     const longTitle = "b".repeat(60);
-    useGatewayRpc.mockReturnValue(
-      rpcReturn([
-        {
-          key: "agent:agent-x:user-1:11111111-1111-4111-8111-111111111111",
-          derivedTitle: longTitle,
-          updatedAt: 200,
-        },
-      ]),
-    );
-    const { useAgentSessions } = await import("@/hooks/useAgentSessions");
-    const { result } = renderHook(() => useAgentSessions("agent-x", "user-1"));
+    stubSessionsList([
+      {
+        key: "agent:agent-x:user-1:11111111-1111-4111-8111-111111111111",
+        derivedTitle: longTitle,
+        updatedAt: 200,
+      },
+    ]);
+    const { result } = renderAgentSessions("agent-x", "user-1");
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1));
     expect(result.current.sessions[0].label).toBe(`${longTitle.slice(0, 48)}…`);
     expect(result.current.sessions[0].rawLabel).toBe(longTitle);
   });
 
   it("prefers a user-set label over derived titles", async () => {
-    useGatewayRpc.mockReturnValue(
-      rpcReturn([
-        {
-          key: "agent:agent-x:user-1:11111111-1111-4111-8111-111111111111",
-          label: "Taxes 2026",
-          derivedTitle: "help me with my taxes",
-          updatedAt: 200,
-        },
-      ]),
-    );
-    const { useAgentSessions } = await import("@/hooks/useAgentSessions");
-    const { result } = renderHook(() => useAgentSessions("agent-x", "user-1"));
+    stubSessionsList([
+      {
+        key: "agent:agent-x:user-1:11111111-1111-4111-8111-111111111111",
+        label: "Taxes 2026",
+        derivedTitle: "help me with my taxes",
+        updatedAt: 200,
+      },
+    ]);
+    const { result } = renderAgentSessions("agent-x", "user-1");
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1));
     expect(result.current.sessions[0].label).toBe("Taxes 2026");
   });
 
   it("a failed rename surfaces a toast instead of rejecting silently", async () => {
-    useGatewayRpc.mockReturnValue(rpcReturn([]));
-    callRpc.mockRejectedValueOnce(new Error("gateway dropped"));
-    const { useAgentSessions } = await import("@/hooks/useAgentSessions");
-    const { result } = renderHook(() => useAgentSessions("agent-x", "user-1"));
+    callRpc.mockImplementation(async (method: string) => {
+      if (method === "sessions.patch") throw new Error("gateway dropped");
+      return { sessions: [] };
+    });
+    const { result } = renderAgentSessions("agent-x", "user-1");
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
     // Must resolve (not reject) — the caller fire-and-forgets it.
     await result.current.renameSession("agent:agent-x:user-1:11111111-1111-4111-8111-111111111111", "X");
     expect(notifyApiError).toHaveBeenCalledWith(
@@ -178,24 +187,30 @@ describe("useAgentSessions — filtered per-agent 4-part rows", () => {
   });
 
   it("a failed revalidation after a successful patch does NOT toast a false failure", async () => {
-    const failingMutate = vi.fn().mockRejectedValue(new Error("revalidate hiccup"));
-    useGatewayRpc.mockReturnValue({
-      data: { sessions: [] },
-      error: undefined,
-      isLoading: false,
-      mutate: failingMutate,
+    let listCalls = 0;
+    callRpc.mockImplementation(async (method: string) => {
+      if (method === "sessions.list") {
+        listCalls += 1;
+        // First call is the initial fetch (succeeds); the second is the
+        // mutate()-triggered revalidation from renameSession, which fails.
+        if (listCalls > 1) throw new Error("revalidate hiccup");
+        return { sessions: [] };
+      }
+      return {}; // sessions.patch succeeds
     });
-    const { useAgentSessions } = await import("@/hooks/useAgentSessions");
-    const { result } = renderHook(() => useAgentSessions("agent-x", "user-1"));
+    const { result } = renderAgentSessions("agent-x", "user-1");
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
     await result.current.renameSession("agent:agent-x:user-1:11111111-1111-4111-8111-111111111111", "X");
-    expect(failingMutate).toHaveBeenCalled();
+    // Proves the revalidation attempt actually ran (and failed) rather than
+    // this assertion passing vacuously because mutate() was never invoked.
+    expect(listCalls).toBeGreaterThan(1);
     expect(notifyApiError).not.toHaveBeenCalled();
   });
 
   it("renameSession patches the label and revalidates", async () => {
-    useGatewayRpc.mockReturnValue(rpcReturn([]));
-    const { useAgentSessions } = await import("@/hooks/useAgentSessions");
-    const { result } = renderHook(() => useAgentSessions("agent-x", "user-1"));
+    stubSessionsList([]);
+    const { result } = renderAgentSessions("agent-x", "user-1");
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
     await result.current.renameSession(
       "agent:agent-x:user-1:11111111-1111-4111-8111-111111111111",
       "Taxes 2026",
@@ -207,15 +222,10 @@ describe("useAgentSessions — filtered per-agent 4-part rows", () => {
   });
 
   it("deleteSession deletes the entry (archiving its transcript) and revalidates", async () => {
-    const mutate = vi.fn().mockResolvedValue(undefined);
-    useGatewayRpc.mockReturnValue({
-      data: { sessions: [] },
-      error: undefined,
-      isLoading: false,
-      mutate,
-    });
-    const { useAgentSessions } = await import("@/hooks/useAgentSessions");
-    const { result } = renderHook(() => useAgentSessions("agent-x", "user-1"));
+    stubSessionsList([]);
+    const { result } = renderAgentSessions("agent-x", "user-1");
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    const listCallsBefore = callRpc.mock.calls.filter(([m]) => m === "sessions.list").length;
     await result.current.deleteSession(
       "agent:agent-x:user-1:11111111-1111-4111-8111-111111111111",
     );
@@ -223,32 +233,42 @@ describe("useAgentSessions — filtered per-agent 4-part rows", () => {
       key: "agent:agent-x:user-1:11111111-1111-4111-8111-111111111111",
       deleteTranscript: true,
     });
-    expect(mutate).toHaveBeenCalled();
+    // A successful delete calls SWR's mutate(), which re-invokes the paging
+    // fetcher — observed here as another sessions.list round trip.
+    await waitFor(() =>
+      expect(
+        callRpc.mock.calls.filter(([m]) => m === "sessions.list").length,
+      ).toBeGreaterThan(listCallsBefore),
+    );
   });
 
   it("deleteSession propagates RPC failure (the confirm dialog surfaces it)", async () => {
-    useGatewayRpc.mockReturnValue(rpcReturn([]));
-    callRpc.mockRejectedValueOnce(new Error("gateway unavailable"));
-    const { useAgentSessions } = await import("@/hooks/useAgentSessions");
-    const { result } = renderHook(() => useAgentSessions("agent-x", "user-1"));
+    callRpc.mockImplementation(async (method: string) => {
+      if (method === "sessions.delete") throw new Error("gateway unavailable");
+      return { sessions: [] };
+    });
+    const { result } = renderAgentSessions("agent-x", "user-1");
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
     await expect(
       result.current.deleteSession("agent:agent-x:user-1:11111111-1111-4111-8111-111111111111"),
     ).rejects.toThrow("gateway unavailable");
   });
 
   it("a failed revalidation after a successful delete does NOT read as a failed delete", async () => {
-    const failingMutate = vi.fn().mockRejectedValue(new Error("revalidate hiccup"));
-    useGatewayRpc.mockReturnValue({
-      data: { sessions: [] },
-      error: undefined,
-      isLoading: false,
-      mutate: failingMutate,
+    let listCalls = 0;
+    callRpc.mockImplementation(async (method: string) => {
+      if (method === "sessions.list") {
+        listCalls += 1;
+        if (listCalls > 1) throw new Error("revalidate hiccup");
+        return { sessions: [] };
+      }
+      return {}; // sessions.delete succeeds
     });
-    const { useAgentSessions } = await import("@/hooks/useAgentSessions");
-    const { result } = renderHook(() => useAgentSessions("agent-x", "user-1"));
+    const { result } = renderAgentSessions("agent-x", "user-1");
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
     await expect(
       result.current.deleteSession("agent:agent-x:user-1:11111111-1111-4111-8111-111111111111"),
     ).resolves.toBeUndefined();
-    expect(failingMutate).toHaveBeenCalled();
+    expect(listCalls).toBeGreaterThan(1);
   });
 });

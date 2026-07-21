@@ -1,7 +1,8 @@
 "use client";
 
 import { useMemo } from "react";
-import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
+import useSWR from "swr";
+import { useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 import { notifyApiError } from "@/lib/notify";
 
 // Mirror of the backend guard (websocket_chat.py _SESSION_ID_RE): a strict
@@ -97,16 +98,42 @@ export function useAgentSessions(
   deleteSession: (key: string) => Promise<void>;
 } {
   const callRpc = useGatewayRpcMutation();
-  const { data, isLoading, mutate } = useGatewayRpc<
-    { sessions?: RawSessionRow[] } | RawSessionRow[]
-  >(
-    agentId ? "sessions.list" : null,
-    {
-      includeGlobal: false,
-      includeUnknown: false,
-      includeDerivedTitles: true,
-      includeLastMessage: true,
-      limit: 50,
+
+  // sessions.list applies `limit` on the container BEFORE the backend proxy
+  // filters rows down to this caller's own 4-part keys — a shared container
+  // busy with paperclip/cron/channel/other-member sessions can push the
+  // user's own rows past a single page's cutoff, making them silently
+  // disappear from the sidebar. Walk the offset/nextOffset/hasMore cursor
+  // (mirrors chat.history's paging) until the container reports no more
+  // rows, accumulating every page before the useMemo filter below runs.
+  const { data, isLoading, mutate } = useSWR<{ sessions: RawSessionRow[] }>(
+    agentId ? ["sessions.list.all", agentId] : null,
+    async () => {
+      const base = {
+        includeGlobal: false,
+        includeUnknown: false,
+        includeDerivedTitles: true,
+        includeLastMessage: true,
+        limit: 100,
+      };
+      const rows: RawSessionRow[] = [];
+      let offset = 0;
+      // Bounded walk: cap the page count so a pathological container store
+      // (or a server that never flips hasMore) can't spin the sidebar
+      // forever. Hitting the cap before hasMore goes false is a silent
+      // coverage limit — an accepted bound, not a bug to raise.
+      for (let page = 0; page < 10; page++) {
+        const res = (await callRpc("sessions.list", { ...base, offset })) as {
+          sessions?: RawSessionRow[];
+          nextOffset?: number;
+          hasMore?: boolean;
+        };
+        const batch = res?.sessions ?? [];
+        rows.push(...batch);
+        if (res?.hasMore !== true || batch.length === 0) break;
+        offset = typeof res.nextOffset === "number" ? res.nextOffset : offset + batch.length;
+      }
+      return { sessions: rows };
     },
     { dedupingInterval: 10_000 },
   );

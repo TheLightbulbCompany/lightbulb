@@ -53,6 +53,9 @@ export interface MessageListProps {
   isStreaming?: boolean;
   isTyping?: boolean;
   onOpenFile?: (path: string) => void;
+  hasOlder?: boolean;
+  isLoadingOlder?: boolean;
+  onLoadOlder?: () => void;
 }
 
 /**
@@ -856,8 +859,28 @@ export interface MessageListHandle {
 }
 
 export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(
-  function MessageList({ renderGroups, isStreaming, isTyping, agentName, onOpenFile }, ref) {
+  function MessageList(
+    { renderGroups, isStreaming, isTyping, agentName, onOpenFile, hasOlder, isLoadingOlder, onLoadOlder },
+    ref
+  ) {
     const { containerRef, scrollToBottom } = useScrollToBottom();
+
+    // Loading an older page prepends messages at the top of a bottom-anchored
+    // transcript, which would otherwise shove the viewport down by the height
+    // of the newly-inserted content. Pin the distance from the bottom before
+    // the fetch, then restore it once the DOM has the new messages painted —
+    // mutate scrollTop on the container directly, never scrollIntoView (see
+    // useScrollToBottom.ts for why).
+    const handleLoadOlder = React.useCallback(() => {
+      const c = containerRef.current;
+      const before = c ? c.scrollHeight - c.scrollTop : null;
+      Promise.resolve(onLoadOlder?.()).then(() => {
+        requestAnimationFrame(() => {
+          const el = containerRef.current;
+          if (el && before !== null) el.scrollTop = el.scrollHeight - before;
+        });
+      });
+    }, [onLoadOlder, containerRef]);
 
     // Track whether the user is at (or near) the bottom of the scroll
     // container. While true, incoming streamed chunks pull the view down.
@@ -999,6 +1022,18 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
         {/* `chat-transcript` occludes off-screen groups (content-visibility) —
             see globals.css. Keeps a long history off the layout hot path. */}
         <div className="max-w-3xl mx-auto space-y-10 py-8 chat-transcript">
+          {hasOlder && (
+            <div className="flex justify-center pb-3">
+              <button
+                type="button"
+                onClick={handleLoadOlder}
+                disabled={isLoadingOlder}
+                className="text-[11px] text-[#8a8578] hover:text-[#302d28] disabled:opacity-60 px-3 py-1 rounded-full border border-[#e0dbd0] bg-[#f3efe6]"
+              >
+                {isLoadingOlder ? "Loading earlier messages…" : "Load earlier messages"}
+              </button>
+            </div>
+          )}
           {renderGroups.map((group, idx) => (
             <BubbleGroup
               key={group.key}

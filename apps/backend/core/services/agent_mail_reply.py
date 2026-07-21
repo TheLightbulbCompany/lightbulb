@@ -22,6 +22,14 @@ from core.services import email_service
 logger = logging.getLogger(__name__)
 
 
+def _header_safe(value: str) -> str:
+    """Strip CR/LF and other control characters from a value bound for an email
+    header. The value (a Message-ID from the original inbound mail) is
+    sender-controlled, so we sanitize before it reaches the provider — defense
+    in depth against header injection regardless of the provider's own handling."""
+    return "".join(ch for ch in value if ch == "\t" or (ch >= " " and ch != "\x7f")).strip()
+
+
 def reply_subject(original: str) -> str:
     """Prefix with 'Re: ', unless original already carries a Re: prefix."""
     if original.strip().lower().startswith("re:"):
@@ -55,8 +63,8 @@ async def send_reply(*, ctx: dict, body_text: str, body_html: str | None = None)
         if from_addr is None:
             return "no_address"
 
+        in_reply_to = _header_safe(ctx.get("in_reply_to") or "")
         headers: dict[str, str] = {}
-        in_reply_to = ctx.get("in_reply_to")
         if in_reply_to:
             headers["In-Reply-To"] = in_reply_to
             headers["References"] = in_reply_to

@@ -132,6 +132,54 @@ async def test_send_reply_disabled_when_domain_empty(monkeypatch):
     query_mock.assert_not_awaited()
 
 
+def test_header_safe_strips_crlf_injection():
+    result = agent_mail_reply._header_safe("<x>\r\nBcc: evil@x.com")
+    assert "\r" not in result
+    assert "\n" not in result
+
+
+def test_header_safe_leaves_normal_message_id_untouched():
+    assert agent_mail_reply._header_safe("<normal@id>") == "<normal@id>"
+
+
+def test_header_safe_strips_surrounding_whitespace():
+    assert agent_mail_reply._header_safe("  <id>  ") == "<id>"
+
+
+@pytest.mark.asyncio
+async def test_send_reply_strips_crlf_injection_from_threading_headers(monkeypatch):
+    monkeypatch.setattr(agent_mail_reply.settings, "AGENT_EMAIL_DOMAIN", "agents.isol8.co")
+    monkeypatch.setattr(
+        agent_mail_reply.agent_email_repo,
+        "query_by_owner",
+        AsyncMock(
+            return_value=[
+                {"address": "acme@agents.isol8.co", "agent_id": "a1", "status": "active"},
+            ]
+        ),
+    )
+    send_mock = AsyncMock(return_value="email_id")
+    monkeypatch.setattr(agent_mail_reply.email_service, "send_email", send_mock)
+
+    ctx = {
+        "owner_id": "o",
+        "agent_id": "a1",
+        "reply_to": "alice@x.com",
+        "in_reply_to": "<m@x>\r\nBcc: evil@x.com",
+        "subject": "Need help",
+    }
+    result = await agent_mail_reply.send_reply(ctx=ctx, body_text="thanks")
+
+    assert result == "sent"
+    send_mock.assert_awaited_once()
+    _, kwargs = send_mock.call_args
+    headers = kwargs["headers"]
+    assert "\r" not in headers["In-Reply-To"]
+    assert "\n" not in headers["In-Reply-To"]
+    assert "\r" not in headers["References"]
+    assert "\n" not in headers["References"]
+
+
 @pytest.mark.asyncio
 async def test_send_reply_never_raises_on_send_error(monkeypatch):
     monkeypatch.setattr(agent_mail_reply.settings, "AGENT_EMAIL_DOMAIN", "agents.isol8.co")

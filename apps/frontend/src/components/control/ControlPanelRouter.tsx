@@ -1,17 +1,20 @@
 "use client";
 
-import { OverviewPanel } from "./panels/OverviewPanel";
-import { SessionsPanel } from "./panels/SessionsPanel";
-import { UsagePanel } from "./panels/UsagePanel";
-import { AgentsPanel } from "./panels/AgentsPanel";
-import { SkillsTab } from "./panels/SkillsTab";
-import { LLMPanel } from "./panels/LLMPanel";
-import { IntegrationsPanel } from "./panels/IntegrationsPanel";
-import { ChannelsStatusPanel } from "./panels/ChannelsStatusPanel";
-import { DreamsPanel } from "./panels/DreamsPanel";
-import { SkillProposalsPanel } from "./panels/SkillProposalsPanel";
-import { AgentInspectorPanel } from "./panels/AgentInspectorPanel";
+import dynamic from "next/dynamic";
+import { Loader2 } from "lucide-react";
 
+// Shown while a panel's code-split chunk loads. Without a loading fallback,
+// next/dynamic renders nothing and a first open flashes a blank pane. This is
+// the same centred spinner each control panel shows while its own gateway
+// data loads, so the chunk fetch and the panel's first render read as one wait
+// rather than two.
+function PanelSkeleton() {
+  return (
+    <div className="flex-1 flex items-center justify-center" aria-busy="true">
+      <Loader2 className="h-5 w-5 animate-spin text-[#8a8578]" />
+    </div>
+  );
+}
 
 interface ControlPanelRouterProps {
   panel: string;
@@ -26,16 +29,46 @@ interface ControlPanelRouterProps {
 
 // Propless panels — rendered as <Panel /> with no params. Panels that take
 // params (agents, llm, agent-inspector) are special-cased in the body below.
-const PANELS: Record<string, React.ComponentType> = {
-  overview: OverviewPanel,
-  sessions: SessionsPanel,
-  channels: ChannelsStatusPanel,
-  usage: UsagePanel,
-  skills: SkillsTab,
-  integrations: IntegrationsPanel,
-  dreams: DreamsPanel,
-  "skill-proposals": SkillProposalsPanel,
+// Loaders are declared apart from their dynamic() wrappers so the whole
+// code-split set reads as one block.
+const PANEL_LOADERS: Record<string, () => Promise<React.ComponentType>> = {
+  overview: () => import("./panels/OverviewPanel").then((m) => m.OverviewPanel),
+  sessions: () => import("./panels/SessionsPanel").then((m) => m.SessionsPanel),
+  channels: () => import("./panels/ChannelsStatusPanel").then((m) => m.ChannelsStatusPanel),
+  usage: () => import("./panels/UsagePanel").then((m) => m.UsagePanel),
+  skills: () => import("./panels/SkillsTab").then((m) => m.SkillsTab),
+  integrations: () => import("./panels/IntegrationsPanel").then((m) => m.IntegrationsPanel),
+  dreams: () => import("./panels/DreamsPanel").then((m) => m.DreamsPanel),
+  "skill-proposals": () => import("./panels/SkillProposalsPanel").then((m) => m.SkillProposalsPanel),
 };
+
+const PANELS: Record<string, React.ComponentType> = Object.fromEntries(
+  Object.entries(PANEL_LOADERS).map(([key, loader]) => [
+    key,
+    dynamic(loader, { loading: PanelSkeleton }),
+  ]),
+);
+
+// Panels that take params/callbacks (unlike the propless entries in PANELS)
+// get their own prop-typed dynamic wrappers. Overview is reachable both ways —
+// its wrapper points at the same chunk as the PANELS entry, so the fallback
+// path and the callback path never load it twice.
+const OverviewPanel = dynamic(
+  () => import("./panels/OverviewPanel").then((m) => m.OverviewPanel),
+  { loading: PanelSkeleton },
+);
+const AgentsPanel = dynamic(
+  () => import("./panels/AgentsPanel").then((m) => m.AgentsPanel),
+  { loading: PanelSkeleton },
+);
+const AgentInspectorPanel = dynamic(
+  () => import("./panels/AgentInspectorPanel").then((m) => m.AgentInspectorPanel),
+  { loading: PanelSkeleton },
+);
+const LLMPanel = dynamic(
+  () => import("./panels/LLMPanel").then((m) => m.LLMPanel),
+  { loading: PanelSkeleton },
+);
 
 export function ControlPanelRouter({
   panel,

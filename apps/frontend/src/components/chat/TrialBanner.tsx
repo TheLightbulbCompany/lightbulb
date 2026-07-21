@@ -42,10 +42,14 @@ const TRIAL_REMINDER_DAYS = 3;
 
 export function TrialBanner() {
   const api = useApi();
+  // No `refreshInterval`: this shares the `/billing/account` key with
+  // useBilling, which deliberately sets none, so an interval here was the sole
+  // reason that endpoint polled at all. A trial end date moves at most once
+  // per billing cycle — the mount read plus useBilling's own revalidations are
+  // ample, and the countdown below re-renders off a local clock regardless.
   const { data } = useSWR<BillingAccount | null>(
     "/billing/account",
     (path: string) => api.get(path) as Promise<BillingAccount | null>,
-    { refreshInterval: 60_000 },
   );
 
   const now = useSyncExternalStore(subscribeToMinute, getNow, getServerNow);

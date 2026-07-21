@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import withBundleAnalyzer from "@next/bundle-analyzer";
 import path from "path";
 
 // Content-Security-Policy shipped in REPORT-ONLY mode first: it never blocks,
@@ -44,6 +45,20 @@ const nextConfig: NextConfig = {
   // @isol8/shared ships TypeScript source (no build step) — Next must
   // transpile it like first-party code.
   transpilePackages: ["@isol8/shared"],
+
+  // Rewrites barrel imports to direct module paths so one named import doesn't
+  // drag in a package's whole surface. Only packages whose barrel actually
+  // fans out are worth listing: `radix-ui` is the unified re-export of every
+  // Radix primitive (tabs/select/collapsible pull from it). Next already
+  // optimizes lucide-react, date-fns, recharts et al. by default, so
+  // re-declaring those here is noise; three/gsap are single prebundled files
+  // with nothing to split. react-syntax-highlighter is deliberately absent:
+  // MessageList deep-imports the prism-light build and per-language modules
+  // directly, so its barrel is never pulled and there would be nothing to
+  // rewrite.
+  experimental: {
+    optimizePackageImports: ["radix-ui"],
+  },
 
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];
@@ -101,4 +116,12 @@ const nextConfig: NextConfig = {
   },
 };
 
-export default nextConfig;
+// Bundle analysis is opt-in via ANALYZE=true — with the flag unset the plugin
+// hands back the config object untouched, so dev, CI and Vercel builds are
+// unaffected. Note this is the *webpack* analyzer while `next build` defaults
+// to Turbopack, so the two are split across scripts: `pnpm analyze` runs
+// Turbopack's own analyzer (the bundler we actually ship), while
+// `pnpm analyze:webpack` forces --webpack to get the treemap report.
+export default withBundleAnalyzer({ enabled: process.env.ANALYZE === "true" })(
+  nextConfig,
+);

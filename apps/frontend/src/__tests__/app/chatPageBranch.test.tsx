@@ -76,10 +76,13 @@ describe("/chat page — desktop/mobile branch", () => {
     view.isDesktop = false;
   });
 
-  it("desktop: mounts WorkspaceShell (mode=desktop notifications), no ChatLayout", () => {
+  // WorkspaceShell loads via next/dynamic (mobile must not download dockview),
+  // so the desktop branch resolves asynchronously — findByTestId retries until
+  // the lazy boundary settles.
+  it("desktop: mounts WorkspaceShell (mode=desktop notifications), no ChatLayout", async () => {
     view.isDesktop = true;
     render(<ChatPage />);
-    expect(screen.getByTestId("workspace-shell")).toBeInTheDocument();
+    expect(await screen.findByTestId("workspace-shell")).toBeInTheDocument();
     expect(screen.queryByTestId("chat-layout")).not.toBeInTheDocument();
     expect(screen.getByTestId("run-notifications")).toHaveAttribute("data-mode", "desktop");
   });
@@ -92,9 +95,10 @@ describe("/chat page — desktop/mobile branch", () => {
     expect(screen.getByTestId("run-notifications")).toHaveAttribute("data-mode", "mobile");
   });
 
-  it("exactly one shell and one notifications mount at a time", () => {
+  it("exactly one shell and one notifications mount at a time", async () => {
     view.isDesktop = true;
     render(<ChatPage />);
+    await screen.findByTestId("workspace-shell");
     expect(screen.getAllByTestId("run-notifications")).toHaveLength(1);
   });
 });

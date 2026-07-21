@@ -57,6 +57,33 @@ function notify(): void {
   _listeners.forEach((l) => l());
 }
 
+function sameIds(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((id, i) => id === b[i]);
+}
+
+function sameSnapshot(a: WorkspaceSnapshot, b: WorkspaceSnapshot): boolean {
+  return (
+    a.ready === b.ready &&
+    a.activePanelId === b.activePanelId &&
+    a.focusedChatAgentId === b.focusedChatAgentId &&
+    a.lastFocusedChatAgentId === b.lastFocusedChatAgentId &&
+    a.teamsPanelVisible === b.teamsPanelVisible &&
+    sameIds(a.visibleChatAgentIds, b.visibleChatAgentIds) &&
+    sameIds(a.openPanelIds, b.openPanelIds)
+  );
+}
+
+// Object identity IS the change signal: useSyncExternalStore compares with
+// Object.is, so publishing a fresh-but-equal object re-renders every subscriber
+// on every dockview event — and onDidLayoutChange fires for moves that don't
+// touch a single snapshot field. Keep the previous object when nothing moved,
+// and skip the notify entirely (no subscriber has anything to re-read).
+function commitSnapshot(next: WorkspaceSnapshot): void {
+  if (sameSnapshot(_snapshot, next)) return;
+  _snapshot = next;
+  notify();
+}
+
 function agentIdOfChatPanel(panel: IDockviewPanel | undefined): string | null {
   if (!panel || !panel.id.startsWith("chat:")) return null;
   const raw = panel.id.slice("chat:".length);
@@ -66,8 +93,7 @@ function agentIdOfChatPanel(panel: IDockviewPanel | undefined): string | null {
 
 function recomputeSnapshot(): void {
   if (!_api) {
-    _snapshot = emptySnapshot();
-    notify();
+    commitSnapshot(emptySnapshot());
     return;
   }
   const active = _api.activePanel;
@@ -86,7 +112,7 @@ function recomputeSnapshot(): void {
     ),
   );
   const focusedChatAgentId = agentIdOfChatPanel(active);
-  _snapshot = {
+  commitSnapshot({
     ready: true,
     activePanelId: active?.id ?? null,
     focusedChatAgentId,
@@ -101,8 +127,7 @@ function recomputeSnapshot(): void {
       (p) => p !== undefined && p.id.startsWith("teams-"),
     ),
     openPanelIds,
-  };
-  notify();
+  });
 }
 
 export function attachDockviewApi(

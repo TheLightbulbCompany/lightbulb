@@ -52,25 +52,73 @@ interface RecoverResponse {
 
 const MAX_RECONNECT = 10;
 
+// Poll cadences for the two backstop reads behind the health dot.
+//
+// Neither poll is the PRIMARY degradation signal. The backend pushes
+// `status_change` over the WS (handled below), and `isConnected` /
+// `reconnectAttempt` flip client-side the instant the socket drops — both are
+// immediate and cost nothing. Polling only covers a degradation that produced
+// neither, so in the steady state it runs at a slow backstop cadence. The
+// moment any input looks off we return to the fast cadence, which is also what
+// makes a recovery show up promptly: a degraded box is re-checked every few
+// seconds until it reports healthy again.
+//
+// Cold start needs no fast poll here either: ProvisioningStepper mounts
+// alongside this hook's consumers and polls the SAME `/container/status` SWR
+// key at 3s until the container reaches ready, so phase transitions land in
+// shared cache for free. This hook previously duplicated that poll for the
+// whole session — SWR's polling timer is per-hook-instance, so the two were
+// additive, and unlike the stepper this one never latched off.
+const STATUS_POLL_STEADY = 60_000;
+const STATUS_POLL_DEGRADED = 10_000;
+const HEALTH_POLL_STEADY = 60_000;
+const HEALTH_POLL_DEGRADED = 5_000;
+
 export function useSystemHealth(): SystemHealth {
   const { isConnected, reconnectAttempt, onEvent, isParked } = useGateway();
-  const { container } = useProvisioningState({
-    refreshInterval: 10_000,
-    enabled: true,
-  });
-
-  // Gateway health RPC — only when WS connected
-  const { data: health } = useGatewayRpc<HealthData>(
-    isConnected ? "health" : null,
-    undefined,
-    { refreshInterval: 5_000 },
-  );
 
   const [isRecovering, setIsRecovering] = useState(false);
   const isRecoveringRef = useRef(false);
   const [pushState, setPushState] = useState<{ state: string; reason: string } | null>(null);
   const pushTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const api = useApi();
+
+  // Gateway health RPC — only when WS connected. Declared before the status
+  // poll so its result can feed that poll's cadence. A probe reporting
+  // `ok: false` pulls the cadence in. A rejection pulls it in too, by one of
+  // two routes: a generic rejection surfaces as `healthError` (retried at a
+  // fixed 3s by useGatewayRpc's onErrorRetry), while the specific "No
+  // container" rejection is swallowed to `undefined` data with NO error by
+  // useGatewayRpc's 404-equivalent path — so a vanished container shows up as
+  // `health === undefined`, caught in looksDegraded below.
+  const { data: health, error: healthError } = useGatewayRpc<HealthData>(
+    isConnected ? "health" : null,
+    undefined,
+    {
+      refreshInterval: (latest: HealthData | undefined) =>
+        latest?.ok === false ? HEALTH_POLL_DEGRADED : HEALTH_POLL_STEADY,
+    },
+  );
+
+  // Every input that can take the dot off green, evaluated before the status
+  // poll is configured. A park is deliberate sleep, not a degradation, so it
+  // is excluded — otherwise every idle trial box would fast-poll forever.
+  const looksDegraded =
+    (!isConnected && !isParked) ||
+    reconnectAttempt > 0 ||
+    health?.ok === false ||
+    healthError !== undefined ||
+    // Connected but the health probe has produced no positive result — either
+    // it hasn't resolved yet (startup) or a vanished container was swallowed to
+    // undefined (see the health RPC comment above). Both warrant the fast
+    // cadence; parked boxes are excluded because isConnected is false there.
+    (isConnected && health === undefined) ||
+    (pushState !== null && pushState.state !== "HEALTHY");
+
+  const { container } = useProvisioningState({
+    refreshInterval: looksDegraded ? STATUS_POLL_DEGRADED : STATUS_POLL_STEADY,
+    enabled: true,
+  });
 
   // Listen for push status_change events via WS.
   // Backend sends event name "status_change" with payload {state, reason}.

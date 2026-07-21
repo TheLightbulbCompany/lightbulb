@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, act } from "@testing-library/react";
 import { useEffect } from "react";
 
@@ -532,6 +532,134 @@ describe("TeamsEventsProvider", () => {
       (p) => typeof p === "function" && p("/teams/inbox-foo"),
     );
     expect(inboxPredicateMatchedSibling).toBe(false);
+  });
+});
+
+/**
+ * Throttling of the EVENT path. `mutate(predicate)` deletes SWR's
+ * concurrent-request markers, so useTeamsApi's 15s dedupingInterval never
+ * applies and every event was a real BFF round trip — one activity.logged
+ * fanning out to five prefixes, continuously, for a busy company.
+ */
+describe("TeamsEventsProvider revalidation throttle", () => {
+  // Mirrors REVALIDATE_THROTTLE_MS in the provider. Written as a literal
+  // rather than imported so a change to the window has to be made here too,
+  // deliberately, instead of silently redefining what these tests assert.
+  const REVALIDATE_WINDOW_MS = 10_000;
+
+  /** How many captured predicates match `key` (i.e. revalidations of it). */
+  function countMatching(key: string): number {
+    return (mutateMock.mock.calls.map((c) => c[0]) as Predicate[]).filter(
+      (p) => typeof p === "function" && p(key),
+    ).length;
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("coalesces a burst on one key into a leading fire plus ONE trailing flush", () => {
+    gatewayState.isConnected = true;
+    render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
+    mutateMock.mockClear(); // drop the first-subscribe reconcile
+
+    act(() => {
+      for (let i = 0; i < 10; i++) eventHandler!("teams.activity.logged", {});
+    });
+
+    // Leading edge only — the other nine are coalesced, not nine round trips.
+    expect(countMatching("/teams/inbox")).toBe(1);
+
+    act(() => {
+      vi.advanceTimersByTime(REVALIDATE_WINDOW_MS);
+    });
+
+    // Trailing flush lands exactly once, carrying the whole burst.
+    expect(countMatching("/teams/inbox")).toBe(2);
+  });
+
+  it("does not drop the LAST event of a burst", () => {
+    // The reason this throttle has a trailing edge at all, unlike the sibling
+    // useGatewayRpc path which just drops suppressed events: these keys have
+    // no refreshInterval and revalidateOnFocus is off globally, so a dropped
+    // final event would leave the board stale until the next Teams re-entry.
+    gatewayState.isConnected = true;
+    render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
+
+    const issueActivity = {
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: "iss_1",
+    };
+
+    act(() => {
+      eventHandler!("teams.activity.logged", issueActivity);
+    });
+    mutateMock.mockClear(); // drop reconcile + the leading-edge fire
+
+    act(() => {
+      eventHandler!("teams.activity.logged", issueActivity);
+    });
+    // Suppressed for now...
+    expect(countMatching("/teams/issues/iss_1")).toBe(0);
+
+    act(() => {
+      vi.advanceTimersByTime(REVALIDATE_WINDOW_MS);
+    });
+    // ...but it still lands.
+    expect(countMatching("/teams/issues/iss_1")).toBe(1);
+  });
+
+  it("throttles per key — a busy key does not suppress a quiet one", () => {
+    gatewayState.isConnected = true;
+    render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
+    mutateMock.mockClear();
+
+    act(() => {
+      eventHandler!("teams.activity.logged", {}); // hits /teams/inbox
+    });
+    expect(countMatching("/teams/inbox")).toBe(1);
+
+    act(() => {
+      eventHandler!("teams.activity.logged", {}); // suppressed
+      eventHandler!("teams.agent.status", {}); // different key, first hit
+    });
+    // /teams/agents was never fired before, so it goes through immediately
+    // even though /teams/inbox is mid-window.
+    expect(countMatching("/teams/agents")).toBe(1);
+    expect(countMatching("/teams/inbox")).toBe(1);
+  });
+
+  it("lets a single isolated event through immediately (leading edge)", () => {
+    // Throttling must not add latency to the common case: one change, one
+    // live update. The board should not feel laggy.
+    gatewayState.isConnected = true;
+    render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
+    mutateMock.mockClear();
+
+    act(() => {
+      eventHandler!("teams.heartbeat.run.queued", {});
+    });
+    expect(countMatching("/teams/inbox/runs")).toBe(1);
+  });
+
+  it("leaves the reconcile paths unthrottled", () => {
+    // stream.resumed is the missed-event catch-up, not a per-mutation signal.
+    // Throttling it would reopen the staleness window it exists to close.
+    gatewayState.isConnected = true;
+    render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
+    mutateMock.mockClear();
+
+    act(() => {
+      eventHandler!("teams.stream.resumed", {});
+      eventHandler!("teams.stream.resumed", {});
+    });
+
+    expect(countMatching("/teams/inbox")).toBe(2);
   });
 });
 

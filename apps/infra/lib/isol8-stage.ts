@@ -11,6 +11,7 @@ import { FisStack } from "./stacks/fis-stack";
 import { NetworkStack } from "./stacks/network-stack";
 import { ObservabilityStack } from "./stacks/observability-stack";
 import { PaperclipStack } from "./stacks/paperclip-stack";
+import { SesInboundStack } from "./stacks/ses-inbound-stack";
 import { ServiceStack } from "./stacks/service-stack";
 
 export interface Isol8StageProps extends cdk.StageProps {
@@ -32,6 +33,35 @@ export class Isol8Stage extends cdk.Stage {
       stackName: `isol8-${env}-dns`,
       environment: env,
     });
+
+    // SesInboundStack — SES inbound agent-mail receiving (domain identity,
+    // wildcard MX/SPF, S3 buckets, receipt rule set + activation, ingest
+    // Lambda). FLAG-GATED (default OFF) so merging/deploying this feature
+    // never silently activates live mail routing or DNS changes, AND
+    // prod-stage-only — SetActiveReceiptRuleSet is an account+region-scoped
+    // "one active rule set" operation, exactly like the bedrock-meter/
+    // bedrock-gate account-scoped stacks below, so it must be a singleton,
+    // never one-per-env. Flip on via CDK context (`-c
+    // agentEmailSesEnabled=true`) or the AGENT_EMAIL_SES_ENABLED env var once
+    // ready to go live; `this.node.tryGetContext` walks up to the App's
+    // context, so a `-c` flag on the CLI invocation is visible here.
+    const agentEmailSesEnabled =
+      this.node.tryGetContext("agentEmailSesEnabled") === true ||
+      process.env.AGENT_EMAIL_SES_ENABLED === "true";
+    let sesInbound: SesInboundStack | undefined;
+    if (env === "prod" && agentEmailSesEnabled) {
+      sesInbound = new SesInboundStack(this, `isol8-${env}-ses-inbound`, {
+        stackName: `isol8-${env}-ses-inbound`,
+        envName: env,
+        hostedZone: dns.hostedZone,
+        // By-name import — same cross-stack-cycle-avoidance posture as every
+        // other secret name threaded into ServiceStack below.
+        sesIngestSecretName: auth.sesIngestSecret.secretName,
+        mailDomain: "isol8.co",
+      });
+      sesInbound.addDependency(auth);
+      sesInbound.addDependency(dns);
+    }
 
     const network = new NetworkStack(this, `isol8-${env}-network`, {
       stackName: `isol8-${env}-network`,
@@ -123,6 +153,7 @@ export class Isol8Stage extends cdk.Stage {
         metronomeWebhookSecret: auth.metronomeWebhookSecret.secretName,
         resendApiKey: auth.resendApiKey.secretName,
         wsInternalSecret: auth.wsInternalSecret.secretName,
+        sesIngestSecret: auth.sesIngestSecret.secretName,
       },
       kmsKeyArn: auth.kmsKey.keyArn,
       container: {
@@ -143,6 +174,10 @@ export class Isol8Stage extends cdk.Stage {
       connectionsTableName: api.connectionsTableName,
       wsApiId: api.wsApiId,
       wsStage: api.wsStage,
+      // Undefined in every env/deploy where SesInboundStack isn't
+      // instantiated (flag off, or non-prod stage) — ServiceStack defaults
+      // this to an empty string, which is inert without AGENT_EMAIL_DOMAIN.
+      agentEmailAttachmentsBucket: sesInbound?.attachmentsBucketName,
     });
 
     // PaperclipStack — runs the pinned Paperclip image (extended overlay,

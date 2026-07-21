@@ -1,0 +1,289 @@
+import * as path from "path";
+import * as cdk from "aws-cdk-lib";
+import * as iam from "aws-cdk-lib/aws-iam";
+import * as lambda from "aws-cdk-lib/aws-lambda";
+import * as logs from "aws-cdk-lib/aws-logs";
+import * as route53 from "aws-cdk-lib/aws-route53";
+import * as s3 from "aws-cdk-lib/aws-s3";
+import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
+import * as ses from "aws-cdk-lib/aws-ses";
+import * as sesActions from "aws-cdk-lib/aws-ses-actions";
+import * as cr from "aws-cdk-lib/custom-resources";
+import { Construct } from "constructs";
+
+// =============================================================================
+// SesInboundStack — SES inbound agent-mail receiving (agent-email SES chunk 2).
+//
+// FLAG-GATED, PROD-STAGE-ONLY. This stack is only ever instantiated by
+// isol8-stage.ts when BOTH `env === "prod"` AND the `agentEmailSesEnabled`
+// context/env flag is on (see isol8-stage.ts for the gate) — merging this
+// file to main creates NO live SES/DNS resources by default. Two independent
+// reasons drive that gating:
+//   1. SetActiveReceiptRuleSet is an ACCOUNT+REGION-scoped "one active rule
+//      set" operation (like Bedrock's PutModelInvocationLoggingConfiguration
+//      in bedrock-meter-stack.ts) — a second instantiation in the same
+//      account/region would fight over which rule set is active, so this
+//      stack must be a SINGLETON, never one-per-env.
+//   2. The wildcard MX + SPF records and the domain identity are real DNS +
+//      mail-routing changes against the LIVE isol8.co zone — not something
+//      a routine dev-stage deploy should ever touch implicitly.
+//
+// Both env's `ses_ingest_secret` are created unconditionally by AuthStack
+// (cheap, inert, matches the wsInternalSecret/resendApiKey shape), but only
+// the PROD secret is ever actually read here — the ingest Lambda posts to
+// the prod backend (BACKEND_INGEST_URL is a fixed prod hostname) because
+// AGENT_EMAIL_DOMAIN mail only ever resolves under the single production
+// isol8.co domain, regardless of which env's containers mint the addresses.
+// =============================================================================
+
+export interface SesInboundStackProps extends cdk.StackProps {
+  /**
+   * Stage env name — always "prod" in practice (this stack is only ever
+   * instantiated in the prod stage). Named `envName` (not `env`) because
+   * `cdk.StackProps` already reserves `env` for the account/region object.
+   * Used only for resource naming/tagging + deriving the by-name secret
+   * import, exactly like `BedrockMeterStackProps.envName`.
+   */
+  envName: string;
+  /** The isol8.co Route53 hosted zone (from DnsStack) — DKIM + MX + SPF land here. */
+  hostedZone: route53.IHostedZone;
+  /**
+   * Name (NOT ISecret) of the shared secret the ingest Lambda presents to
+   * POST /webhooks/ses-inbound, e.g. `isol8/prod/ses_ingest_secret`. Passed
+   * by name — same cross-stack-cycle-avoidance posture as every other
+   * by-name secret import in this codebase (see bedrock-meter-stack.ts's
+   * Metronome key import).
+   */
+  sesIngestSecretName: string;
+  /** Base mail domain, e.g. "isol8.co". Verified for BOTH receiving and sending. */
+  mailDomain: string;
+}
+
+export class SesInboundStack extends cdk.Stack {
+  public readonly rawBucket: s3.Bucket;
+  public readonly attachmentsBucket: s3.Bucket;
+  public readonly ingestFunction: lambda.Function;
+  public readonly ruleSet: ses.ReceiptRuleSet;
+  /** Attachments bucket name — threaded into ServiceStack's backend env. */
+  public readonly attachmentsBucketName: string;
+  /** Raw-mail bucket name — exposed for completeness/ops visibility. */
+  public readonly rawBucketName: string;
+
+  constructor(scope: Construct, id: string, props: SesInboundStackProps) {
+    super(scope, id, props);
+
+    const { envName, hostedZone, mailDomain } = props;
+
+    // -------------------------------------------------------------------------
+    // Domain identity — verifies `mailDomain` for BOTH receiving and sending.
+    // `Identity.publicHostedZone` auto-creates the 3 DKIM CNAME records in the
+    // zone (see DkimIdentity.easyDkim().bind() — no manual DNS work needed).
+    // No `mailFromDomain` override: outbound agent replies default to SES's
+    // own amazonses.com bounce domain, which is fine for our use case and
+    // avoids provisioning a second MX/SPF pair purely for bounces.
+    // -------------------------------------------------------------------------
+    new ses.EmailIdentity(this, "AgentMailDomainIdentity", {
+      identity: ses.Identity.publicHostedZone(hostedZone),
+    });
+
+    // -------------------------------------------------------------------------
+    // Wildcard MX — routes `*.mailDomain` (every company subdomain,
+    // `{slug}.isol8.co`) to SES receiving. The apex `isol8.co` MX is
+    // deliberately untouched (unmanaged / Resend) — this record only ever
+    // matches subdomain mail.
+    // -------------------------------------------------------------------------
+    new route53.MxRecord(this, "AgentMailWildcardMx", {
+      zone: hostedZone,
+      recordName: `*.${mailDomain}`,
+      values: [{ priority: 10, hostName: "inbound-smtp.us-east-1.amazonaws.com" }],
+    });
+
+    // Wildcard SPF — authorizes SES to send mail "from" any subdomain
+    // address (friday@acme.isol8.co, etc).
+    new route53.TxtRecord(this, "AgentMailWildcardSpf", {
+      zone: hostedZone,
+      recordName: `*.${mailDomain}`,
+      values: ["v=spf1 include:amazonses.com ~all"],
+    });
+
+    // Deterministic literal names (not read off the live construct — see
+    // note below) so cross-stage consumers never receive a CDK Token.
+    const rawBucketName = `isol8-${envName}-agent-mail-raw`;
+    const attachmentsBucketName = `isol8-${envName}-agent-mail-attachments`;
+
+    // -------------------------------------------------------------------------
+    // Raw-mail S3 bucket — the SES receipt rule's S3 action lands the full
+    // MIME here; the ingest Lambda reads it back by `{prefix}{messageId}`.
+    // Short-lived: the Lambda consumes each object within seconds of
+    // delivery, so 7 days is purely a debugging window, not a system of
+    // record (mirrors the bedrock-invocation log group's retention
+    // reasoning in bedrock-meter-stack.ts).
+    // -------------------------------------------------------------------------
+    this.rawBucket = new s3.Bucket(this, "RawMailBucket", {
+      bucketName: rawBucketName,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      removalPolicy:
+        envName === "prod" ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: envName !== "prod",
+      lifecycleRules: [{ expiration: cdk.Duration.days(7) }],
+    });
+
+    // -------------------------------------------------------------------------
+    // Attachments S3 bucket — the ingest Lambda copies each MIME attachment
+    // here and mints a 24h presigned GET URL for the agent to fetch. Longer
+    // retention than raw mail (30 days) since an agent may act on a message
+    // well after the triggering delivery.
+    // -------------------------------------------------------------------------
+    this.attachmentsBucket = new s3.Bucket(this, "AttachmentsBucket", {
+      bucketName: attachmentsBucketName,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      removalPolicy:
+        envName === "prod" ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: envName !== "prod",
+      lifecycleRules: [{ expiration: cdk.Duration.days(30) }],
+    });
+    // NOTE: exposed as the LITERAL strings above, not `this.attachmentsBucket
+    // .bucketName` / `this.rawBucket.bucketName`. Even with an explicit
+    // `bucketName` prop, the L2 Bucket's `.bucketName` getter returns a CDK
+    // Token (`Ref` to the underlying CfnBucket), not the plain string. Since
+    // isol8-stage.ts threads `attachmentsBucketName` into ServiceStack (a
+    // DIFFERENT stack), a Token there would force CDK to emit a real
+    // CloudFormation Export/Fn::ImportValue pair across the stack boundary —
+    // exactly the "export that can never be safely renamed/deleted" trap
+    // this codebase deliberately avoids everywhere else (see the
+    // DynamoDbIntegrations by-name-grant comment above, and
+    // marketplaceArtifactsBucket vs. CFN_TEMPLATE_URL for the same
+    // literal-string-over-token posture). Because the name is fully
+    // deterministic, the literal is exactly as correct as the token and
+    // costs nothing.
+    this.attachmentsBucketName = attachmentsBucketName;
+    this.rawBucketName = rawBucketName;
+
+    // The shared secret the ingest Lambda presents to the backend, imported
+    // by NAME (not ISecret) — same no-cross-stack-KMS-cycle posture as every
+    // other secret import in this codebase.
+    const sesIngestSecret = secretsmanager.Secret.fromSecretNameV2(
+      this,
+      "ImportSesIngestSecret",
+      props.sesIngestSecretName,
+    );
+
+    // -------------------------------------------------------------------------
+    // The ses-inbound ingest Lambda. Stdlib-only (requirements.txt is empty)
+    // so a plain Code.fromAsset needs no bundling. Non-VPC — it only talks to
+    // S3, Secrets Manager, and the backend's public HTTPS endpoint.
+    // -------------------------------------------------------------------------
+    this.ingestFunction = new lambda.Function(this, "SesIngestFunction", {
+      runtime: lambda.Runtime.PYTHON_3_12,
+      handler: "index.handler",
+      code: lambda.Code.fromAsset(path.join(__dirname, "..", "..", "lambda", "ses-inbound")),
+      timeout: cdk.Duration.seconds(30),
+      memorySize: 256,
+      environment: {
+        RAW_MAIL_BUCKET: this.rawBucket.bucketName,
+        RAW_MAIL_PREFIX: "inbound/",
+        ATTACHMENTS_BUCKET: this.attachmentsBucket.bucketName,
+        BACKEND_INGEST_URL: `https://api.${mailDomain}/api/v1/webhooks/ses-inbound`,
+        SES_INBOUND_SECRET_ARN: sesIngestSecret.secretArn,
+      },
+      logRetention: logs.RetentionDays.ONE_MONTH,
+    });
+
+    this.rawBucket.grantRead(this.ingestFunction);
+    this.attachmentsBucket.grantReadWrite(this.ingestFunction);
+    // grantRead only adds GetSecretValue — the secret is CMK-encrypted with
+    // AuthStack's key, and that key's ARN is unknowable here (cross-stage:
+    // this is the prod-stage SesInboundStack, and threading a KMS ARN prop
+    // just for this one secret would reintroduce the cross-stack-ref cycle
+    // this codebase deliberately avoids elsewhere). Same trap + same fix as
+    // bedrock-meter-stack.ts's Metronome secret import: scope kms:Decrypt by
+    // kms:ViaService=secretsmanager instead of a specific key ARN. Read-only
+    // (no GenerateDataKey) — this Lambda never writes the secret.
+    sesIngestSecret.grantRead(this.ingestFunction);
+    this.ingestFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        sid: "KmsDecryptViaSecretsManager",
+        effect: iam.Effect.ALLOW,
+        actions: ["kms:Decrypt"],
+        resources: ["*"],
+        conditions: {
+          StringEquals: {
+            "kms:ViaService": [`secretsmanager.${this.region}.amazonaws.com`],
+          },
+        },
+      }),
+    );
+
+    // -------------------------------------------------------------------------
+    // Receipt rule set + catch-all rule. `recipients: [mailDomain]` matches
+    // the domain AND all its subdomains (SES semantics), so one rule covers
+    // every company's `{slug}.isol8.co` mailbox.
+    //
+    // No fixed `receiptRuleSetName` — CDK auto-generates one, avoiding the
+    // CREATE-before-DELETE collision risk a fixed name would have on replace
+    // (same reasoning as the meter Lambdas in bedrock-meter-stack.ts).
+    //
+    // NOTE ON BUCKET/LAMBDA PERMISSIONS: unlike the task's initial framing,
+    // no hand-rolled bucket resource policy or Lambda permission is needed
+    // here — `sesActions.S3` and `sesActions.Lambda`'s own `bind()` methods
+    // already add the `ses.amazonaws.com` principal grants (S3: scoped
+    // `s3:PutObject` on `{prefix}*`, conditioned on `aws:Referer` = this
+    // account; Lambda: `addPermission` scoped by `sourceAccount`) the moment
+    // `addRule` is called below. Adding a second, hand-rolled statement would
+    // just be a redundant/overlapping policy.
+    // -------------------------------------------------------------------------
+    this.ruleSet = new ses.ReceiptRuleSet(this, "AgentMailRuleSet");
+
+    const catchAllRule = this.ruleSet.addRule("AgentMailCatchAll", {
+      recipients: [mailDomain],
+      scanEnabled: true,
+      actions: [
+        new sesActions.S3({ bucket: this.rawBucket, objectKeyPrefix: "inbound/" }),
+        new sesActions.Lambda({ function: this.ingestFunction }),
+      ],
+    });
+
+    // -------------------------------------------------------------------------
+    // Activate the rule set. No CDK L1/L2 for SetActiveReceiptRuleSet — same
+    // AwsCustomResource pattern as bedrock-meter-stack.ts's
+    // PutModelInvocationLoggingConfiguration custom resource. onDelete clears
+    // the active rule set entirely (empty params — SES semantics: omitting
+    // RuleSetName deactivates whatever is currently active).
+    // -------------------------------------------------------------------------
+    const activateRuleSet = new cr.AwsCustomResource(this, "ActivateAgentMailRuleSet", {
+      onCreate: {
+        service: "SES",
+        action: "setActiveReceiptRuleSet",
+        parameters: { RuleSetName: this.ruleSet.receiptRuleSetName },
+        physicalResourceId: cr.PhysicalResourceId.of(`ses-active-rule-set-${this.region}`),
+      },
+      onUpdate: {
+        service: "SES",
+        action: "setActiveReceiptRuleSet",
+        parameters: { RuleSetName: this.ruleSet.receiptRuleSetName },
+        physicalResourceId: cr.PhysicalResourceId.of(`ses-active-rule-set-${this.region}`),
+      },
+      onDelete: {
+        service: "SES",
+        action: "setActiveReceiptRuleSet",
+        parameters: {},
+      },
+      policy: cr.AwsCustomResourcePolicy.fromStatements([
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: ["ses:SetActiveReceiptRuleSet"],
+          resources: ["*"], // account-level config — no resource ARN exists
+        }),
+      ]),
+    });
+    // Activation must run AFTER the rule (and its S3/Lambda actions' own
+    // resource policies) exist — otherwise a race could activate the rule
+    // set before SES is permitted to write to the bucket / invoke the fn.
+    activateRuleSet.node.addDependency(catchAllRule);
+
+    cdk.Tags.of(this).add("Project", "isol8");
+    cdk.Tags.of(this).add("Environment", envName);
+  }
+}

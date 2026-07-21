@@ -34,6 +34,7 @@ export class AuthStack extends cdk.Stack {
   public readonly metronomeApiKey: secretsmanager.Secret;
   public readonly metronomeWebhookSecret: secretsmanager.Secret;
   public readonly resendApiKey: secretsmanager.Secret;
+  public readonly sesIngestSecret: secretsmanager.Secret;
   constructor(scope: Construct, id: string, props: AuthStackProps) {
     super(scope, id, props);
 
@@ -164,6 +165,22 @@ export class AuthStack extends cdk.Stack {
       "resend_api_key",
       { passwordLength: 48, excludePunctuation: true },
       "Resend API bearer token for transactional email. Overwritten out-of-band with the real re_… key after the Resend domain runbook.",
+    );
+
+    // Shared secret the SES-ingest Lambda (ses-inbound-stack.ts, prod-stage
+    // only, flag-gated) presents as the X-Isol8-SES-Secret header on its POST
+    // to /webhooks/ses-inbound; the backend compares it in constant time (see
+    // routers/ses_inbound.py). Created unconditionally in every env — same
+    // posture as wsInternalSecret/resendApiKey — but only ever actually READ
+    // by the prod SesInboundStack (the ingest Lambda posts to the fixed prod
+    // backend hostname regardless of which env's containers minted the
+    // address). Harmless placeholder in envs where the SES stack doesn't
+    // exist. Same CMK as the other auth secrets.
+    this.sesIngestSecret = createSecret(
+      "SesIngestSecret",
+      "ses_ingest_secret",
+      { passwordLength: 64, excludePunctuation: true },
+      "Shared secret the SES-ingest Lambda attaches so /webhooks/ses-inbound can distinguish it from a forged caller.",
     );
 
     // Bootstrap admin Better Auth credentials. CDK creates the secret

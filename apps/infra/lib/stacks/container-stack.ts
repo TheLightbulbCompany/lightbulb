@@ -572,14 +572,20 @@ export class ContainerStack extends cdk.Stack {
       // modifying (non-destructive). `< /dev/null` makes any residual y/N prompt
       // read EOF and take its default instead of hanging this headless boot.
       // `timeout` bounds a wedged migration (EFS/SQLite can stall) so it can never
-      // infinite-loop the boot. `|| echo` keeps a doctor failure from bricking the
-      // container: the gateway still starts and the run-time gate surfaces the
-      // unmigrated state visibly rather than the box crash-looping. Idempotent —
-      // once migrated it is a fast no-op, so it stays cheap on every later boot
-      // (and doubles as an on-boot config self-repair). The health-check
-      // startPeriod below is widened to cover this pass so a heavy first-boot
-      // migration does not trip a spurious task replacement.
-      "timeout 420 node /app/openclaw.mjs doctor --fix < /dev/null || echo '[boot] openclaw doctor --fix did not finish cleanly; continuing to gateway'",
+      // infinite-loop the boot; `--kill-after=30` escalates SIGTERM -> SIGKILL 30s
+      // later so a migration that ignores/misses the term (or is between syscalls)
+      // is still reaped, rather than outliving the window (a truly D-state process
+      // blocked in an NFS syscall stays immune to any signal until the kernel call
+      // returns — same failure class this file's `_npx` extract notes above call
+      // out — but SIGKILL covers everything short of that). `|| echo` keeps a
+      // doctor failure from bricking the container: the gateway still starts and
+      // the run-time gate surfaces the unmigrated state visibly rather than the
+      // box crash-looping. Idempotent — once migrated it is a fast no-op, so it
+      // stays cheap on every later boot (and doubles as an on-boot config
+      // self-repair). The health-check startPeriod below is widened to cover this
+      // pass so a heavy first-boot migration does not trip a spurious task
+      // replacement.
+      "timeout --kill-after=30 420 node /app/openclaw.mjs doctor --fix < /dev/null || echo '[boot] openclaw doctor --fix did not finish cleanly; continuing to gateway'",
       // Step D — launch the gateway.
       "exec node /app/openclaw.mjs gateway --port 18789 --bind lan",
     ].join("; ");

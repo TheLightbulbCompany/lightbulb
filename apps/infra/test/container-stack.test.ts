@@ -88,7 +88,7 @@ describe("ContainerStack — dev", () => {
             Interval: 30,
             Timeout: 10,
             Retries: 6,
-            StartPeriod: 180,
+            StartPeriod: 480,
           },
         }),
       ]),

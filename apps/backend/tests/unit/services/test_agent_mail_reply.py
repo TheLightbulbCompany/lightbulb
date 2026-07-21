@@ -63,8 +63,8 @@ async def test_send_reply_happy_path(monkeypatch):
             ]
         ),
     )
-    send_mock = AsyncMock(return_value="email_id")
-    monkeypatch.setattr(agent_mail_reply.email_service, "send_email", send_mock)
+    send_mock = AsyncMock(return_value="ses-123")
+    monkeypatch.setattr(agent_mail_reply.ses_email, "send_ses_reply", send_mock)
 
     ctx = {
         "owner_id": "o",
@@ -82,15 +82,14 @@ async def test_send_reply_happy_path(monkeypatch):
     assert kwargs["from_addr"] == "acme@agents.isol8.co"
     assert kwargs["subject"] == "Re: Need help"
     assert kwargs["headers"] == {"In-Reply-To": "<m@x>", "References": "<m@x>"}
-    assert kwargs["text"] == "thanks"
-    assert kwargs["kind"] == "agent_reply"
+    assert kwargs["body_text"] == "thanks"
 
 
 @pytest.mark.asyncio
-async def test_send_reply_returns_not_sent_when_send_email_returns_none(monkeypatch):
-    """send_email returns None (never raises) when RESEND_API_KEY is unset/invalid
-    or Resend errors. That must not be reported as "sent" — the agent would tell
-    the user it replied when nothing actually went out."""
+async def test_send_reply_returns_not_sent_when_send_ses_reply_returns_none(monkeypatch):
+    """send_ses_reply returns None (never raises) when SES send fails or agent
+    email is disabled. That must not be reported as "sent" — the agent would
+    tell the user it replied when nothing actually went out."""
     monkeypatch.setattr(agent_mail_reply.settings, "AGENT_EMAIL_DOMAIN", "agents.isol8.co")
     monkeypatch.setattr(
         agent_mail_reply.agent_email_repo,
@@ -102,7 +101,7 @@ async def test_send_reply_returns_not_sent_when_send_email_returns_none(monkeypa
         ),
     )
     send_mock = AsyncMock(return_value=None)
-    monkeypatch.setattr(agent_mail_reply.email_service, "send_email", send_mock)
+    monkeypatch.setattr(agent_mail_reply.ses_email, "send_ses_reply", send_mock)
 
     ctx = {
         "owner_id": "o",
@@ -126,7 +125,7 @@ async def test_send_reply_no_address(monkeypatch):
         AsyncMock(return_value=[]),
     )
     send_mock = AsyncMock()
-    monkeypatch.setattr(agent_mail_reply.email_service, "send_email", send_mock)
+    monkeypatch.setattr(agent_mail_reply.ses_email, "send_ses_reply", send_mock)
 
     ctx = {
         "owner_id": "o",
@@ -145,7 +144,7 @@ async def test_send_reply_no_address(monkeypatch):
 async def test_send_reply_disabled_when_domain_empty(monkeypatch):
     monkeypatch.setattr(agent_mail_reply.settings, "AGENT_EMAIL_DOMAIN", "")
     send_mock = AsyncMock()
-    monkeypatch.setattr(agent_mail_reply.email_service, "send_email", send_mock)
+    monkeypatch.setattr(agent_mail_reply.ses_email, "send_ses_reply", send_mock)
     query_mock = AsyncMock()
     monkeypatch.setattr(agent_mail_reply.agent_email_repo, "query_by_owner", query_mock)
 
@@ -189,8 +188,8 @@ async def test_send_reply_strips_crlf_injection_from_threading_headers(monkeypat
             ]
         ),
     )
-    send_mock = AsyncMock(return_value="email_id")
-    monkeypatch.setattr(agent_mail_reply.email_service, "send_email", send_mock)
+    send_mock = AsyncMock(return_value="ses-123")
+    monkeypatch.setattr(agent_mail_reply.ses_email, "send_ses_reply", send_mock)
 
     ctx = {
         "owner_id": "o",
@@ -224,8 +223,8 @@ async def test_send_reply_never_raises_on_send_error(monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        agent_mail_reply.email_service,
-        "send_email",
+        agent_mail_reply.ses_email,
+        "send_ses_reply",
         AsyncMock(side_effect=RuntimeError("boom")),
     )
 

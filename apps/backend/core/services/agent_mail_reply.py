@@ -2,22 +2,24 @@
 
 Consumes the ``agent-email-addresses`` address book (via
 ``agent_email_repo``) to resolve which of an owner's addresses belongs to
-the replying agent, and the single outbound-email seam (``email_service``)
-to actually send. Both are imported as modules (not `from ... import ...`)
-so tests can monkeypatch their attributes without needing to patch this
-module's own names.
+the replying agent, and the SES-backed outbound-email seam (``ses_email``)
+to actually send the reply from the agent's own subdomain address. Resend
+cannot originate mail from an arbitrary owner subdomain, so agent replies
+go out via SES while the app's own welcome/support mail stays on
+``email_service`` (Resend) — see that module's docstring. Both dependencies
+are imported as modules (not `from ... import ...`) so tests can monkeypatch
+their attributes without needing to patch this module's own names.
 
 ``send_reply`` never raises — a reply failure must never take down the
 inbound-mail handler that called it. It returns a short result string the
 caller can log/metric on instead.
 """
 
-import html as _html
 import logging
 
 from core.config import settings
 from core.repositories import agent_email_repo
-from core.services import email_service
+from core.services import ses_email
 
 logger = logging.getLogger(__name__)
 
@@ -69,20 +71,17 @@ async def send_reply(*, ctx: dict, body_text: str, body_html: str | None = None)
             headers["In-Reply-To"] = in_reply_to
             headers["References"] = in_reply_to
 
-        html_body = body_html if body_html is not None else f"<pre>{_html.escape(body_text)}</pre>"
-
-        email_id = await email_service.send_email(
+        message_id = await ses_email.send_ses_reply(
+            from_addr=from_addr,
             to=ctx["reply_to"],
             subject=reply_subject(ctx["subject"]),
-            html=html_body,
-            text=body_text,
-            from_addr=from_addr,
+            body_text=body_text,
+            body_html=body_html,
             headers=(headers or None),
-            kind="agent_reply",
         )
-        if email_id is None:
+        if message_id is None:
             logger.error(
-                "send_reply: send_email returned None for agent_id=%s (RESEND_API_KEY unset or send failed)",
+                "send_reply: send_ses_reply returned None for agent_id=%s (SES send failed or agent email disabled)",
                 ctx.get("agent_id"),
             )
             return "not_sent"

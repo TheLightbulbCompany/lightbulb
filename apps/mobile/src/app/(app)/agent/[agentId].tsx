@@ -166,7 +166,18 @@ export default function AgentChat() {
 
       if (msg.type === "chunk") {
         const segmentId = `${runId}-s${segmentRef.current}`;
-        const cumulative = accumulateStreamText(cumulativeTextRef.current, msg);
+        // Non-append resync frames (first frame after a reconnect, replace
+        // events, the chat.final backstop) carry the CURRENT assistant
+        // message's full text — upstream resets its accumulator at every
+        // message_start, i.e. after every tool call — NOT the run-cumulative
+        // text this buffer holds. Rebuild as frozen-prefix + segment text;
+        // treating it as run-cumulative chopped the live bubble at the
+        // committed offset ("disappearing sentences"). With no committed
+        // prefix this degrades to the plain replace it always was.
+        const cumulative = msg.append
+          ? accumulateStreamText(cumulativeTextRef.current, msg)
+          : (cumulativeTextRef.current ?? "").slice(0, committedOffsetRef.current) +
+            msg.content;
         cumulativeTextRef.current = cumulative;
         const segmentText = cumulative.slice(committedOffsetRef.current);
         lastCumulativeLenRef.current = cumulative.length;

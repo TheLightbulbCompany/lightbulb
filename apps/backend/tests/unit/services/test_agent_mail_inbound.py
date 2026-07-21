@@ -119,3 +119,124 @@ async def test_fetch_received_email_undecodable_body_returns_none(monkeypatch):
     transport = httpx.MockTransport(lambda r: httpx.Response(200, content=b"this is not json"))
     monkeypatch.setattr(inbound, "_client_factory", lambda: httpx.AsyncClient(transport=transport))
     assert await inbound.fetch_received_email("eml_bad_json") is None
+
+
+@pytest.mark.asyncio
+async def test_list_received_attachments_ok(monkeypatch):
+    def handler(request):
+        assert request.url.path == "/emails/receiving/eml_1/attachments"
+        assert request.headers["authorization"].startswith("Bearer ")
+        return httpx.Response(
+            200,
+            json={
+                "object": "list",
+                "has_more": False,
+                "data": [
+                    {
+                        "filename": "a.pdf",
+                        "content_type": "application/pdf",
+                        "size": 10,
+                        "download_url": "https://cdn/a",
+                    }
+                ],
+            },
+        )
+
+    monkeypatch.setattr(inbound.settings, "RESEND_API_KEY", "re_test")
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(inbound, "_client_factory", lambda: httpx.AsyncClient(transport=transport))
+
+    got = await inbound.list_received_attachments("eml_1")
+    assert got == [
+        {
+            "filename": "a.pdf",
+            "content_type": "application/pdf",
+            "size": 10,
+            "download_url": "https://cdn/a",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_list_received_attachments_non_200_returns_empty(monkeypatch):
+    monkeypatch.setattr(inbound.settings, "RESEND_API_KEY", "re_test")
+    transport = httpx.MockTransport(lambda r: httpx.Response(404, json={"error": "nope"}))
+    monkeypatch.setattr(inbound, "_client_factory", lambda: httpx.AsyncClient(transport=transport))
+    assert await inbound.list_received_attachments("eml_missing") == []
+
+
+@pytest.mark.asyncio
+async def test_list_received_attachments_never_raises(monkeypatch):
+    monkeypatch.setattr(inbound.settings, "RESEND_API_KEY", "re_test")
+
+    def boom(r):
+        raise httpx.ConnectError("down")
+
+    transport = httpx.MockTransport(boom)
+    monkeypatch.setattr(inbound, "_client_factory", lambda: httpx.AsyncClient(transport=transport))
+    assert await inbound.list_received_attachments("eml_x") == []
+
+
+def test_build_attachment_manifest_empty_list():
+    assert inbound.build_attachment_manifest([]) == ""
+
+
+def test_build_attachment_manifest_single_attachment():
+    manifest = inbound.build_attachment_manifest(
+        [
+            {
+                "filename": "contract.pdf",
+                "content_type": "application/pdf",
+                "size": 1234,
+                "download_url": "https://cdn/x",
+            }
+        ]
+    )
+    assert "contract.pdf" in manifest
+    assert "application/pdf" in manifest
+    assert "1234" in manifest
+    assert "https://cdn/x" in manifest
+    assert "unverified" in manifest.lower()
+
+
+def test_build_attachment_manifest_truncates_at_ten():
+    attachments = [
+        {
+            "filename": f"file{i}.txt",
+            "content_type": "text/plain",
+            "size": i,
+            "download_url": f"https://cdn/{i}",
+        }
+        for i in range(12)
+    ]
+    manifest = inbound.build_attachment_manifest(attachments)
+    for i in range(10):
+        assert f"file{i}.txt" in manifest
+    assert "file10.txt" not in manifest
+    assert "file11.txt" not in manifest
+    assert "2 more" in manifest
+
+
+def test_build_delivered_message_empty_manifest_is_byte_identical():
+    kwargs = dict(
+        from_addr="alice@example.com",
+        subject="Need a hand",
+        body_text="Can you draft a reply?",
+        reply_token="TOKEN123",
+    )
+    assert inbound.build_delivered_message(**kwargs) == inbound.build_delivered_message(
+        **kwargs, attachments_manifest=""
+    )
+
+
+def test_build_delivered_message_with_manifest_appends_after_body():
+    manifest_text = "Attachments (1):\n- a.pdf (application/pdf, 10 bytes)\n  https://cdn/a"
+    msg = inbound.build_delivered_message(
+        from_addr="alice@example.com",
+        subject="Need a hand",
+        body_text="Can you draft a reply?",
+        reply_token="TOKEN123",
+        attachments_manifest=manifest_text,
+    )
+    assert manifest_text in msg
+    assert msg.index("Can you draft a reply?") < msg.index(manifest_text)

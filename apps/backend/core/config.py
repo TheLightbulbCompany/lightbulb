@@ -337,6 +337,9 @@ class Settings(BaseSettings):
     # Inbound-email webhook signing secret (Svix `whsec_…`). Empty disables
     # the inbound webhook entirely (fail-closed — never process unsigned mail).
     RESEND_WEBHOOK_SECRET: str = os.getenv("RESEND_WEBHOOK_SECRET", "")
+    # Shared secret the SES-ingest Lambda presents to POST /webhooks/ses-inbound.
+    # Empty disables the SES inbound endpoint entirely (fail-closed).
+    SES_INBOUND_SECRET: str = os.getenv("SES_INBOUND_SECRET", "")
     # Visible From identities on the verified isol8.co domain. Same across
     # envs, so plain defaults (no CDK wiring) — override via env only if a
     # future env needs a different sender.

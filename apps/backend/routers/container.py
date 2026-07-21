@@ -145,7 +145,7 @@ async def container_status(
     ecs_manager = get_ecs_manager()
     # Use resolve_running_container so polling triggers the
     # provisioning -> running health-check transition.
-    container, _ip = await ecs_manager.resolve_running_container(owner_id)
+    container, container_ip = await ecs_manager.resolve_running_container(owner_id)
     if not container:
         # Fall back to get_service_status for error/stopped containers
         container = await ecs_manager.get_service_status(owner_id)
@@ -369,6 +369,24 @@ async def container_status(
     if auth.is_org_context:
         asyncio.create_task(ensure_user_ready(auth, provision_container=False))
 
+    # phase "ready" requires THIS task's in-memory pool to hold the user's
+    # gateway connection — but the pool is per-process. After a rolling deploy
+    # (or an idle reap) the container is up and serving chat while the task
+    # answering this poll holds no connection, so the poll reports "starting"
+    # over a perfectly working workspace until a chat send happens to land
+    # here. Self-heal: dial in the background so the NEXT poll tells the
+    # truth. wake=0 (backgrounded read-only poll) never dials. The phase
+    # check encodes the rest of the guard: "starting" only ever means
+    # status=="running" + pool reachable + not locally connected (the
+    # pool-uninitialized fallback never returns it).
+    if (
+        wake != "0"
+        and container_ip
+        and container.get("gateway_token")
+        and _safe_phase(container, owner_id) == "starting"
+    ):
+        asyncio.create_task(_pool_self_heal_connect(owner_id, container_ip, container["gateway_token"]))
+
     return _status_response(container, owner_id)
 
 
@@ -432,6 +450,24 @@ async def container_wake_endpoint(
     if result.outcome == "blocked":
         raise HTTPException(status_code=402, detail=result.gate_payload)
     return {"outcome": result.outcome}
+
+
+async def _pool_self_heal_connect(owner_id: str, ip: str, token: str) -> None:
+    """Background dial for the status poll's pool self-heal.
+
+    Same (owner, ip, token) triple and ensure_connection primitive the chat
+    send path uses — idempotent, fast-paths when a racing dial already won.
+    The dial races real container state (mid-deploy handoff, task just
+    died), so failures are logged and swallowed: the poll it came from has
+    already answered, and the next poll simply reports whatever is true.
+    """
+    try:
+        pool = get_gateway_pool()
+        if pool.is_user_connected(owner_id):
+            return
+        await pool.ensure_connection(owner_id, ip, token)
+    except Exception as exc:
+        logger.info("status-poll pool self-heal dial failed owner=%s: %s", owner_id, exc)
 
 
 def _safe_phase(container: dict, owner_id: str) -> str:

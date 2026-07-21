@@ -1036,6 +1036,182 @@ class TestContainerStatusOrgMemberDispatchOnExisting:
         )
 
 
+class TestContainerStatusPoolSelfHeal:
+    """GET /container/status vs. the pool's instance-local blind spot.
+
+    phase "ready" requires THIS process's in-memory pool to hold the user's
+    gateway connection — but the pool is per-task. After a rolling deploy (or
+    an idle reap) the container is up and serving chat while the task
+    answering the poll holds no connection, so /status reports "starting"
+    over a perfectly working workspace until a chat send happens to land on
+    this task. The poll must self-heal: dial in the background so the NEXT
+    poll tells the truth.
+    """
+
+    @staticmethod
+    def _running_row():
+        return {
+            "service_name": "openclaw-abc",
+            "status": "running",
+            "substatus": None,
+            "gateway_token": "gw-token",
+            "created_at": "2026-01-15T12:00:00+00:00",
+            "updated_at": "2026-01-15T12:00:00+00:00",
+        }
+
+    @pytest.mark.asyncio
+    async def test_starting_phase_dispatches_background_pool_connect(self):
+        """The core self-heal: running + IP in hand + no local connection →
+        dispatch a background dial; the response still reports the honest
+        "starting" for THIS poll (the next one finds the truth)."""
+        from routers.container import container_status
+
+        captured: list[str] = []
+
+        def capture_task(coro):
+            captured.append(coro.__qualname__)
+            coro.close()
+            return MagicMock()
+
+        fake_ecs = MagicMock(
+            resolve_running_container=AsyncMock(return_value=(self._running_row(), "10.0.1.5")),
+        )
+        pool = SimpleNamespace(is_user_connected=lambda _u: False)
+        with (
+            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.get_gateway_pool", return_value=pool),
+            patch("routers.container.resolve_owner_id", return_value="user_x"),
+            patch("routers.container.asyncio.create_task", side_effect=capture_task),
+        ):
+            result = await container_status(_personal_auth())
+
+        assert result["phase"] == "starting"
+        assert captured == ["_pool_self_heal_connect"], (
+            f"expected a background pool dial on a starting poll, got {captured}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_connected_pool_does_not_dispatch(self):
+        """Ready polls (pool already connected) must not churn tasks."""
+        from routers.container import container_status
+
+        captured: list[str] = []
+
+        def capture_task(coro):
+            captured.append(coro.__qualname__)
+            coro.close()
+            return MagicMock()
+
+        fake_ecs = MagicMock(
+            resolve_running_container=AsyncMock(return_value=(self._running_row(), "10.0.1.5")),
+        )
+        pool = SimpleNamespace(is_user_connected=lambda _u: True)
+        with (
+            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.get_gateway_pool", return_value=pool),
+            patch("routers.container.resolve_owner_id", return_value="user_x"),
+            patch("routers.container.asyncio.create_task", side_effect=capture_task),
+        ):
+            result = await container_status(_personal_auth())
+
+        assert result["phase"] == "ready"
+        assert captured == []
+
+    @pytest.mark.asyncio
+    async def test_wake0_readonly_poll_never_dials(self):
+        """wake=0 is the backgrounded read-only poll: report, start nothing —
+        the same contract the parked-wake gate honors."""
+        from routers.container import container_status
+
+        captured: list[str] = []
+
+        def capture_task(coro):
+            captured.append(coro.__qualname__)
+            coro.close()
+            return MagicMock()
+
+        fake_ecs = MagicMock(
+            resolve_running_container=AsyncMock(return_value=(self._running_row(), "10.0.1.5")),
+        )
+        pool = SimpleNamespace(is_user_connected=lambda _u: False)
+        with (
+            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.get_gateway_pool", return_value=pool),
+            patch("routers.container.resolve_owner_id", return_value="user_x"),
+            patch("routers.container.asyncio.create_task", side_effect=capture_task),
+        ):
+            result = await container_status(_personal_auth(), wake="0")
+
+        assert result["phase"] == "starting"
+        assert captured == []
+
+    @pytest.mark.asyncio
+    async def test_no_ip_or_no_token_does_not_dispatch(self):
+        """A zombie running row (no live task → no IP) or a row missing its
+        gateway_token has nothing to dial — never dispatch."""
+        from routers.container import container_status
+
+        captured: list[str] = []
+
+        def capture_task(coro):
+            captured.append(coro.__qualname__)
+            coro.close()
+            return MagicMock()
+
+        pool = SimpleNamespace(is_user_connected=lambda _u: False)
+        no_token = self._running_row()
+        del no_token["gateway_token"]
+        for row, ip in ((self._running_row(), None), (no_token, "10.0.1.5")):
+            fake_ecs = MagicMock(
+                resolve_running_container=AsyncMock(return_value=(row, ip)),
+            )
+            with (
+                patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+                patch("routers.container.get_gateway_pool", return_value=pool),
+                patch("routers.container.resolve_owner_id", return_value="user_x"),
+                patch("routers.container.asyncio.create_task", side_effect=capture_task),
+            ):
+                await container_status(_personal_auth())
+
+        assert captured == []
+
+    @pytest.mark.asyncio
+    async def test_self_heal_connect_swallows_failures(self):
+        """The dial races real container state (mid-deploy, task just died) —
+        it must never propagate. And on success it hands ensure_connection
+        exactly the (owner, ip, token) triple the chat path uses."""
+        from routers.container import _pool_self_heal_connect
+
+        raising_pool = SimpleNamespace(
+            is_user_connected=lambda _u: False,
+            ensure_connection=AsyncMock(side_effect=RuntimeError("boom")),
+        )
+        with patch("routers.container.get_gateway_pool", return_value=raising_pool):
+            await _pool_self_heal_connect("user_x", "10.0.1.5", "gw-token")  # must not raise
+
+        ok_pool = SimpleNamespace(
+            is_user_connected=lambda _u: False,
+            ensure_connection=AsyncMock(),
+        )
+        with patch("routers.container.get_gateway_pool", return_value=ok_pool):
+            await _pool_self_heal_connect("user_x", "10.0.1.5", "gw-token")
+        ok_pool.ensure_connection.assert_awaited_once_with("user_x", "10.0.1.5", "gw-token")
+
+    @pytest.mark.asyncio
+    async def test_self_heal_connect_skips_when_already_connected(self):
+        """Racing polls: a second dispatched dial finds the first one won and
+        returns without re-dialing."""
+        from routers.container import _pool_self_heal_connect
+
+        pool = SimpleNamespace(
+            is_user_connected=lambda _u: True,
+            ensure_connection=AsyncMock(),
+        )
+        with patch("routers.container.get_gateway_pool", return_value=pool):
+            await _pool_self_heal_connect("user_x", "10.0.1.5", "gw-token")
+        pool.ensure_connection.assert_not_awaited()
+
+
 class TestGatewayRestart:
     """Test POST /api/v1/container/gateway/restart."""
 

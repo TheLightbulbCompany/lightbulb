@@ -66,15 +66,15 @@ AGENT_RUN_WAIT_TIMEOUT_MS: Final[int] = 600_000
 def claimed_api_key_path(agent_id: str) -> str:
     """Per-agent path to the Paperclip claimed-key file the agent reads at wake.
 
-    Each agent's own workspace is its cwd (``~/.openclaw/workspaces/{agentId}/``,
-    PLURAL — the singular ``~/.openclaw/workspace`` is container-global and would
-    collide across agents). Isol8 pre-stages the per-agent identity file there
+    Each agent's own workspace is its cwd (``~/.openclaw/workspace-{agentId}/``,
+    upstream's per-agent convention — the bare ``~/.openclaw/workspace`` is the
+    default-agent dir and would collide across agents). Isol8 pre-stages the per-agent identity file there
     (``friday_identity.pre_stage_paperclip_identities``), and the seed prompt
     instructs the agent to load it from its own cwd. We also surface it as the
     adapter's ``claimedApiKeyPath`` so Paperclip's native wake flow points at the
     same per-agent file rather than the colliding default.
     """
-    return f"~/.openclaw/workspaces/{agent_id}/paperclip-claimed-api-key.json"
+    return f"~/.openclaw/workspace-{agent_id}/paperclip-claimed-api-key.json"
 
 
 class AdapterConfigError(Exception):

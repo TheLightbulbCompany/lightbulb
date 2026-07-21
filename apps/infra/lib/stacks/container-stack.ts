@@ -584,6 +584,17 @@ export class ContainerStack extends cdk.Stack {
       // un-migrated legacy setup state, so containers that never got migrated
       // stay gated (visible error, data intact) — strictly better than the
       // alternative.
+      //
+      // NOTE on the LEGACY workspaces/ layout: agent workspaces now live at
+      // upstream's per-agent convention (~/.openclaw/workspace-<agentId>/,
+      // agent-scope-config.ts resolveAgentWorkspaceDir). There is
+      // deliberately NO boot-time migration of the old
+      // ~/.openclaw/workspaces/<agentId>/ layout: the only containers that
+      // ever held real data there were wiped by the doctor incident above or
+      // belong to fresh accounts that get reprovisioned. Leftover
+      // workspaces/ dirs are post-wipe junk; nothing legitimate lives at
+      // that path again, which is exactly what makes the upstream doctor's
+      // removed-workspaces-state repair harmless to us going forward.
       // Step D — launch the gateway.
       "exec node /app/openclaw.mjs gateway --port 18789 --bind lan",
     ].join("; ");

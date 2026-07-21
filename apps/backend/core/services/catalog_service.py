@@ -220,7 +220,18 @@ def _substitute_agent_dir_sentinel(mcp_patch: dict | None, new_agent_id: str) ->
             continue
         args = entry.get("args")
         if isinstance(args, list):
-            entry["args"] = [a.replace(_AGENT_DIR_SENTINEL, new_agent_id) if isinstance(a, str) else a for a in args]
+            entry["args"] = [
+                # Artifacts published before the workspace-layout migration
+                # carry ``workspaces/<sentinel>`` paths; normalize to the
+                # upstream-convention ``workspace-<sentinel>`` form BEFORE
+                # substituting the buyer's agent id.
+                a.replace(f"workspaces/{_AGENT_DIR_SENTINEL}", f"workspace-{_AGENT_DIR_SENTINEL}").replace(
+                    _AGENT_DIR_SENTINEL, new_agent_id
+                )
+                if isinstance(a, str)
+                else a
+                for a in args
+            ]
     return mcp_patch
 
 
@@ -322,7 +333,7 @@ class CatalogService:
         owner's container.
 
         Steps:
-          1. Extract ``tar_bytes`` into EFS at ``workspaces/{new_agent_id}/``.
+          1. Extract ``tar_bytes`` into EFS at ``workspace-{new_agent_id}/``.
           2. If the slice carries an agent, register it LIVE via
              ``pair_with_openclaw`` over the gateway — bypassing the
              chokidar reload lag that plagued the file-merge path. The
@@ -379,7 +390,7 @@ class CatalogService:
             # caller's state (matters if s3 returns a cached/shared dict).
             agent_entry = strip_removed_agent_entry_keys(slice_.get("agent") or {})
             agent_entry["id"] = new_agent_id
-            agent_entry["workspace"] = f".openclaw/workspaces/{new_agent_id}"
+            agent_entry["workspace"] = f".openclaw/workspace-{new_agent_id}"
 
             # Per-agent containment: marketplace agents carry third-party-
             # authored instructions. Without allowAgents pinned to the agent's
@@ -689,9 +700,9 @@ class CatalogService:
     def list_deployed_for_user(self, owner_id: str) -> list[dict[str, Any]]:
         """Scan the owner's workspaces for .template sidecars; return provenance.
 
-        Scans ``workspaces/`` (where sidecars live and where deploy writes
-        immediately) rather than ``agents/`` (OpenClaw runtime state that
-        lags behind openclaw.json updates). Caller must pass the same
+        Scans the per-agent ``workspace-{id}`` dirs (where sidecars live and
+        where deploy writes immediately) rather than ``agents/`` (OpenClaw
+        runtime state that lags behind openclaw.json updates). Caller must pass the same
         owner_id used during ``deploy()`` — the router resolves it via
         ``core.auth.resolve_owner_id(auth)`` so deploy + list stay keyed
         consistently for both personal and org-context callers.

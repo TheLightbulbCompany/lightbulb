@@ -127,7 +127,7 @@ async def seed_agent_google_identity(
     simply isn't seeded.
     """
     ws = workspace or get_workspace()
-    rel_path = f"workspaces/{agent_id}/IDENTITY.md"
+    rel_path = f"workspace-{agent_id}/IDENTITY.md"
 
     email = await google_accounts_repo.get_assignment(owner_id, agent_id)
 

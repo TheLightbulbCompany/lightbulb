@@ -937,7 +937,7 @@ def tmp_efs_with_bedrock_provider(monkeypatch):
                     "workspace": "/home/node/.openclaw/workspaces",
                 },
                 "list": [
-                    {"id": "main", "default": True, "workspace": "/home/node/.openclaw/workspaces/main"},
+                    {"id": "main", "default": True, "workspace": "/home/node/.openclaw/workspace-main"},
                 ],
             },
             "plugins": {
@@ -1016,7 +1016,7 @@ async def test_replace_provider_block_preserves_unrelated_subtrees(tmp_efs_with_
         result = json.load(f)
     # agents.list (catalog-deployed agents) preserved.
     assert result["agents"]["list"] == [
-        {"id": "main", "default": True, "workspace": "/home/node/.openclaw/workspaces/main"},
+        {"id": "main", "default": True, "workspace": "/home/node/.openclaw/workspace-main"},
     ]
     # agents.defaults.workspace preserved (only .model swapped).
     assert result["agents"]["defaults"]["workspace"] == "/home/node/.openclaw/workspaces"
@@ -1200,11 +1200,11 @@ def tmp_efs_with_ceo_premium_model(monkeypatch):
                         "id": "agent_friday",
                         "default": True,
                         "model": "amazon-bedrock/us.anthropic.claude-opus-4-6-v1",
-                        "workspace": "/home/node/.openclaw/workspaces/agent_friday",
+                        "workspace": "/home/node/.openclaw/workspace-agent_friday",
                     },
                     {
                         "id": "agent_atlas",
-                        "workspace": "/home/node/.openclaw/workspaces/agent_atlas",
+                        "workspace": "/home/node/.openclaw/workspace-agent_atlas",
                     },
                 ],
             },
@@ -1249,7 +1249,7 @@ async def test_replace_provider_block_sets_ceo_model_when_provided(tmp_efs_with_
     config_path = os.path.join(tmp_efs_with_bedrock_provider, "user_p", "openclaw.json")
     with open(config_path) as f:
         cfg = json.load(f)
-    cfg["agents"]["list"].append({"id": "agent_atlas", "workspace": "/home/node/.openclaw/workspaces/agent_atlas"})
+    cfg["agents"]["list"].append({"id": "agent_atlas", "workspace": "/home/node/.openclaw/workspace-agent_atlas"})
     with open(config_path, "w") as f:
         json.dump(cfg, f)
 
@@ -1335,7 +1335,7 @@ def tmp_efs_with_aux_model_overrides(monkeypatch):
                     "heartbeat": {"every": "30m", "model": haiku},
                 },
                 "list": [
-                    {"id": "main", "default": True, "workspace": "/home/node/.openclaw/workspaces/main"},
+                    {"id": "main", "default": True, "workspace": "/home/node/.openclaw/workspace-main"},
                 ],
             },
             "plugins": {"entries": {"amazon-bedrock": {"config": {"discovery": {"enabled": False}}}}},

@@ -239,7 +239,7 @@ async def my_installed_templates(
 
     Used by the chat sidebar gallery to filter out rows the user has
     already hired (so they don't appear as deployable). Backed by EFS
-    sidecar files at ``workspaces/{agent_id}/.template`` written by
+    sidecar files at ``workspace-{agent_id}/.template`` written by
     ``catalog_service.deploy_from_artifact`` on every deploy. Replaces
     the legacy ``GET /catalog/deployed`` endpoint that was tied to the
     deleted admin-catalog router.
@@ -370,7 +370,7 @@ async def deploy_listing(
     signed in, paid → caller must hold a non-revoked marketplace-purchases
     row), fetches the artifact tarball + openclaw-slice from S3, and hands
     them to ``catalog_service.deploy_from_artifact`` which extracts files into
-    the buyer's EFS at ``workspaces/{agent_uuid}/`` and deep-merges the slice
+    the buyer's EFS at ``workspace-{agent_uuid}/`` and deep-merges the slice
     into their ``openclaw.json`` so the new agent auto-registers.
 
     Listings published before slice-synthesis shipped have an empty

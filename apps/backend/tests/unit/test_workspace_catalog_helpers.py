@@ -38,18 +38,18 @@ def test_extract_tarball_to_workspace_writes_files(workspace: Workspace, tmp_pat
         agent_id="agent_new",
         tar_bytes=tar_bytes,
     )
-    base = tmp_path / "user_abc" / "workspaces" / "agent_new"
+    base = tmp_path / "user_abc" / "workspace-agent_new"
     assert (base / "IDENTITY.md").read_text() == "name: Pitch\n"
     assert (base / "uploads" / "hello.txt").read_text() == "world"
 
 
 def test_read_template_sidecar_returns_none_when_absent(workspace: Workspace, tmp_path: Path):
-    (tmp_path / "user_abc" / "workspaces" / "agent_new").mkdir(parents=True)
+    (tmp_path / "user_abc" / "workspace-agent_new").mkdir(parents=True)
     assert workspace.read_template_sidecar("user_abc", "agent_new") is None
 
 
 def test_read_template_sidecar_returns_parsed_json(workspace: Workspace, tmp_path: Path):
-    base = tmp_path / "user_abc" / "workspaces" / "agent_new"
+    base = tmp_path / "user_abc" / "workspace-agent_new"
     base.mkdir(parents=True)
     (base / ".template").write_text('{"template_slug":"pitch","template_version":3}')
     assert workspace.read_template_sidecar("user_abc", "agent_new") == {
@@ -59,7 +59,7 @@ def test_read_template_sidecar_returns_parsed_json(workspace: Workspace, tmp_pat
 
 
 def test_read_template_sidecar_returns_none_on_corrupt_json(workspace: Workspace, tmp_path: Path):
-    base = tmp_path / "user_abc" / "workspaces" / "agent_new"
+    base = tmp_path / "user_abc" / "workspace-agent_new"
     base.mkdir(parents=True)
     (base / ".template").write_text("{not-json")
     assert workspace.read_template_sidecar("user_abc", "agent_new") is None
@@ -70,7 +70,7 @@ def test_list_workspace_agent_dirs_empty_when_missing(workspace: Workspace, tmp_
 
 
 def test_list_workspace_agent_dirs_returns_sorted_subdirs(workspace: Workspace, tmp_path: Path):
-    base = tmp_path / "user_abc" / "workspaces"
+    base = tmp_path / "user_abc"
     (base / "zeta").mkdir(parents=True)
     (base / "alpha").mkdir(parents=True)
     (base / "README.md").write_text("not a dir")

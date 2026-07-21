@@ -169,6 +169,26 @@ describe("ContainerStack — dev", () => {
     }
   });
 
+  test("openclaw container startup never references the retired workspaces/ layout", () => {
+    // Agent workspaces live at upstream's per-agent convention
+    // (~/.openclaw/workspace-<agentId>). The old ~/.openclaw/workspaces/
+    // layout is retired — upstream doctor deletes that exact dir as
+    // removed-plugin state, so no boot step may create, move, or reference
+    // it (there is deliberately no migration: pre-incident data there was
+    // wiped or belongs to accounts that get reprovisioned).
+    const tj = template.toJSON();
+    let checked = 0;
+    for (const r of Object.values(tj.Resources as Record<string, any>)) {
+      if (r.Type !== "AWS::ECS::TaskDefinition") continue;
+      for (const cd of r.Properties.ContainerDefinitions ?? []) {
+        const cmd = (cd.Command ?? []).join(" ");
+        expect(cmd).not.toContain(".openclaw/workspaces");
+        checked += 1;
+      }
+    }
+    expect(checked).toBeGreaterThan(0);
+  });
+
   test("openclaw container sets XDG_CONFIG_HOME + XDG_DATA_HOME + GOG_KEYRING_BACKEND for the gog file keyring", () => {
     // XDG_DATA_HOME is the load-bearing one: gog stores its file keyring under
     // the data home (verified: setting XDG_DATA_HOME=/x puts the keyring at

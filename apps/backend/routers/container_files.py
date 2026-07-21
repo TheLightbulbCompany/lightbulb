@@ -1,7 +1,7 @@
 """File uploads into the user's OpenClaw agent workspace.
 
 Single endpoint: POST /files writes uploaded files to the user's EFS workspace
-under ``workspaces/{agent_id}/uploads/`` so the agent can read them. This is a
+under ``workspace-{agent_id}/uploads/`` so the agent can read them. This is a
 plain EFS write — no gateway WebSocket is involved.
 """
 
@@ -39,7 +39,7 @@ def _sanitize_filename(name: str) -> str:
     summary="Upload files to the user's agent workspace",
     description=(
         "Uploads one or more files to the user's workspace on EFS. "
-        "Files are placed in the agent's `workspaces/{agent_id}/uploads/` directory "
+        "Files are placed in the agent's `workspace-{agent_id}/uploads/` directory "
         "and are accessible to the user's OpenClaw agent. "
         "Max 10MB per file, 10 files per request."
     ),
@@ -84,7 +84,7 @@ async def upload_files(
             )
 
         safe_name = _sanitize_filename(f.filename or "upload")
-        dest_path = f"workspaces/{agent_id}/uploads/{safe_name}"
+        dest_path = f"workspace-{agent_id}/uploads/{safe_name}"
         workspace.write_bytes(owner_id, dest_path, data)
         # The agent's working dir is $HOME (/home/node) but EFS is mounted
         # at $HOME/.openclaw, so the agent sees uploads relative to that mount.

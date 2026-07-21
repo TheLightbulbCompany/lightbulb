@@ -181,7 +181,7 @@ async def test_deploy_file_merges_full_agent_entry_into_agents_list():
     # and the full per-agent config preserved.
     entry = kw["agent_entry"]
     assert entry["id"] == "agent_new"
-    assert entry["workspace"] == ".openclaw/workspaces/agent_new"
+    assert entry["workspace"] == ".openclaw/workspace-agent_new"
     assert entry["skills"] == ["search"]
     assert entry["reasoningDefault"] == "high"
     assert entry["identity"] == {"name": "Demo", "emoji": "🍃"}
@@ -458,7 +458,7 @@ async def test_deploy_uses_supplied_new_agent_id_in_sentinel_substitution():
         "servers": {
             "resy": {
                 "command": "node",
-                "args": ["/home/node/.openclaw/workspaces/__AGENT_DIR__/mcp-resy/index.js"],
+                "args": ["/home/node/.openclaw/workspace-__AGENT_DIR__/mcp-resy/index.js"],
                 "env": {"RESY_EMAIL": ""},
             }
         }
@@ -574,7 +574,7 @@ async def test_deploy_uses_owner_id_for_all_efs_writes():
 
 
 def test_list_deployed_for_user_keyed_by_owner_id():
-    """Sidebar's already-deployed filter scans ``workspaces/`` sidecars by
+    """Sidebar's already-deployed filter scans ``workspace-{id}`` sidecars by
     owner_id (org_id for orgs, user_id for personal-mode). Each sidecar
     becomes ``{agent_id, template_slug, template_version}``.
     """

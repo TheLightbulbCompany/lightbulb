@@ -101,7 +101,7 @@ class TestOpenclawConfigShape:
         process cwd. Relative breaks because exec tools run with cwd=workspaceDir."""
         config = _cfg()
         main_entry = next(a for a in config["agents"]["list"] if a.get("id") == "main")
-        assert main_entry["workspace"] == "/home/node/.openclaw/workspaces/main"
+        assert main_entry["workspace"] == "/home/node/.openclaw/workspace-main"
         assert main_entry["default"] is True
         assert main_entry["reasoningDefault"] == "stream"
 

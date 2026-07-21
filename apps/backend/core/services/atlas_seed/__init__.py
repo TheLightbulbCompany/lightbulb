@@ -206,7 +206,7 @@ async def pre_stage_atlas(
     # Pre-mark setup complete first so OpenClaw's boot reconcile doesn't rm
     # BOOTSTRAP.md when it sees Atlas's customized IDENTITY/SOUL/USER files.
     now_iso = datetime.now(timezone.utc).isoformat()
-    state_rel = f"workspaces/{atlas_uuid}/.openclaw/workspace-state.json"
+    state_rel = f"workspace-{atlas_uuid}/.openclaw/workspace-state.json"
     state = {"version": 1, "bootstrapSeededAt": now_iso, "setupCompletedAt": now_iso}
     try:
         _stage(state_rel, json.dumps(state))
@@ -224,7 +224,7 @@ async def pre_stage_atlas(
         try:
             base_agents = (_FILES_DIR / "AGENTS.md").read_text(encoding="utf-8")
             wrote_acp = _stage(
-                f"workspaces/{atlas_uuid}/AGENTS.md",
+                f"workspace-{atlas_uuid}/AGENTS.md",
                 base_agents + _ACP_DELEGATION_SECTION,
             )
             # Record so the loop skips AGENTS.md under force (keeps the augmented
@@ -252,7 +252,7 @@ async def pre_stage_atlas(
             build_src = build_path.read_text(encoding="utf-8")
             if _BRIDGE_URL_PLACEHOLDER in build_src:
                 wrote_build = _stage(
-                    f"workspaces/{atlas_uuid}/build.lobster",
+                    f"workspace-{atlas_uuid}/build.lobster",
                     build_src.replace(_BRIDGE_URL_PLACEHOLDER, _bridge_url(owner_id)),
                 )
                 # Record so the loop skips build.lobster under force (keeps the
@@ -281,7 +281,7 @@ async def pre_stage_atlas(
             # Already force-staged above with augmented/substituted content;
             # re-writing the vanilla vendored copy here would clobber it.
             continue
-        dest = f"workspaces/{atlas_uuid}/{rel}"
+        dest = f"workspace-{atlas_uuid}/{rel}"
         try:
             # Text-only: Atlas's vendored tree is all text (.md/.js/.lobster/.json/
             # .sh/.py/.ts). If a binary asset is ever added, switch to

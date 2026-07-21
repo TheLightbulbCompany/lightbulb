@@ -6,6 +6,7 @@ and a manual retry-provision endpoint.
 
 import asyncio
 import logging
+import time
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
@@ -36,6 +37,28 @@ from core.services.stripe_webhook_handlers import CONVERTING_SUBSTATUS, maybe_re
 from core.services.user_provision import ensure_personal_trial_default, ensure_user_ready
 
 logger = logging.getLogger(__name__)
+
+# Per-owner dispatch guards for the status poll's pool self-heal. The pool
+# serializes ALL connect I/O behind one process-wide lock — and every chat
+# RPC (send_rpc → ensure_connection) queues on that same lock — while the
+# absent-create path has no reconnect floor. So the dispatch site must not
+# let the ~5s poll cadence pile up dials: the in-flight set stops duplicate
+# dispatches while one is outstanding, and the cooldown stops a wedged
+# container (running row + unreachable IP) from eating a fresh
+# handshake-timeout lock hold per poll. A chat send still dials immediately
+# through its own path — the cooldown only paces this background repair.
+_SELF_HEAL_DIAL_COOLDOWN_S = 60.0
+_self_heal_inflight: set[str] = set()
+_self_heal_last_dial: dict[str, float] = {}
+
+
+def _self_heal_dial_allowed(owner_id: str) -> bool:
+    """True when no self-heal dial is outstanding for *owner_id* and the
+    last attempt is at least the cooldown ago (or never happened)."""
+    if owner_id in _self_heal_inflight:
+        return False
+    last = _self_heal_last_dial.get(owner_id)
+    return last is None or (time.monotonic() - last) >= _SELF_HEAL_DIAL_COOLDOWN_S
 
 
 # A start refusal carries the SAME code as the provision gate's, so each maps
@@ -383,8 +406,11 @@ async def container_status(
         wake != "0"
         and container_ip
         and container.get("gateway_token")
+        and _self_heal_dial_allowed(owner_id)
         and _safe_phase(container, owner_id) == "starting"
     ):
+        _self_heal_inflight.add(owner_id)
+        _self_heal_last_dial[owner_id] = time.monotonic()
         asyncio.create_task(_pool_self_heal_connect(owner_id, container_ip, container["gateway_token"]))
 
     return _status_response(container, owner_id)
@@ -460,6 +486,8 @@ async def _pool_self_heal_connect(owner_id: str, ip: str, token: str) -> None:
     The dial races real container state (mid-deploy handoff, task just
     died), so failures are logged and swallowed: the poll it came from has
     already answered, and the next poll simply reports whatever is true.
+    Always clears the per-owner in-flight marker the dispatch site set —
+    the cooldown (stamped at dispatch) paces the next attempt.
     """
     try:
         pool = get_gateway_pool()
@@ -468,6 +496,8 @@ async def _pool_self_heal_connect(owner_id: str, ip: str, token: str) -> None:
         await pool.ensure_connection(owner_id, ip, token)
     except Exception as exc:
         logger.info("status-poll pool self-heal dial failed owner=%s: %s", owner_id, exc)
+    finally:
+        _self_heal_inflight.discard(owner_id)
 
 
 def _safe_phase(container: dict, owner_id: str) -> str:

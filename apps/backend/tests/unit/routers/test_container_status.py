@@ -1046,7 +1046,23 @@ class TestContainerStatusPoolSelfHeal:
     over a perfectly working workspace until a chat send happens to land on
     this task. The poll must self-heal: dial in the background so the NEXT
     poll tells the truth.
+
+    The dispatch is paced per owner: the pool serializes all connect I/O
+    (and every chat RPC) behind one process-wide lock and has no reconnect
+    floor on the absent-create path, so the poll cadence must not pile up
+    dials — one in flight at a time, cooldown between attempts.
     """
+
+    @pytest.fixture(autouse=True)
+    def _reset_self_heal_guards(self):
+        """The dispatch guards are module-level state — isolate every test."""
+        import routers.container as rc
+
+        rc._self_heal_inflight.clear()
+        rc._self_heal_last_dial.clear()
+        yield
+        rc._self_heal_inflight.clear()
+        rc._self_heal_last_dial.clear()
 
     @staticmethod
     def _running_row():
@@ -1210,6 +1226,90 @@ class TestContainerStatusPoolSelfHeal:
         with patch("routers.container.get_gateway_pool", return_value=pool):
             await _pool_self_heal_connect("user_x", "10.0.1.5", "gw-token")
         pool.ensure_connection.assert_not_awaited()
+
+    def _poll_ctx(self, captured: list[str]):
+        """Patch stack for a starting-phase poll that records dispatches."""
+
+        def capture_task(coro):
+            captured.append(coro.__qualname__)
+            coro.close()
+            return MagicMock()
+
+        fake_ecs = MagicMock(
+            resolve_running_container=AsyncMock(return_value=(self._running_row(), "10.0.1.5")),
+        )
+        pool = SimpleNamespace(is_user_connected=lambda _u: False)
+        return (
+            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.get_gateway_pool", return_value=pool),
+            patch("routers.container.resolve_owner_id", return_value="user_x"),
+            patch("routers.container.asyncio.create_task", side_effect=capture_task),
+        )
+
+    @pytest.mark.asyncio
+    async def test_dial_in_flight_blocks_repeat_dispatch(self):
+        """While a dial is outstanding, the ~5s poll cadence must not queue
+        duplicates behind the pool's process-wide lock."""
+        import routers.container as rc
+        from routers.container import container_status
+
+        captured: list[str] = []
+        p1, p2, p3, p4 = self._poll_ctx(captured)
+        with p1, p2, p3, p4:
+            await container_status(_personal_auth())
+            assert captured == ["_pool_self_heal_connect"]
+            assert "user_x" in rc._self_heal_inflight
+            await container_status(_personal_auth())
+
+        assert captured == ["_pool_self_heal_connect"], (
+            f"expected exactly one dispatch while the first dial is in flight, got {captured}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_cooldown_blocks_redial_until_elapsed(self):
+        """A completed-but-failed dial (wedged container: running row,
+        unreachable IP) must not be retried every poll — only after the
+        cooldown. A chat send still dials immediately via its own path."""
+        import time as time_mod
+
+        import routers.container as rc
+        from routers.container import container_status
+
+        captured: list[str] = []
+        p1, p2, p3, p4 = self._poll_ctx(captured)
+
+        # Dial finished (in-flight cleared) moments ago and failed.
+        rc._self_heal_last_dial["user_x"] = time_mod.monotonic()
+        with p1, p2, p3, p4:
+            await container_status(_personal_auth())
+        assert captured == []
+
+        # Cooldown elapsed → the poll may try again.
+        rc._self_heal_last_dial["user_x"] = time_mod.monotonic() - rc._SELF_HEAL_DIAL_COOLDOWN_S - 1.0
+        with p1, p2, p3, p4:
+            await container_status(_personal_auth())
+        assert captured == ["_pool_self_heal_connect"]
+
+    @pytest.mark.asyncio
+    async def test_self_heal_connect_clears_inflight_marker(self):
+        """The dispatch site sets the in-flight marker; the dial must clear
+        it on success, on failure, and on the already-connected fast path."""
+        import routers.container as rc
+        from routers.container import _pool_self_heal_connect
+
+        pools = (
+            SimpleNamespace(is_user_connected=lambda _u: False, ensure_connection=AsyncMock()),
+            SimpleNamespace(
+                is_user_connected=lambda _u: False,
+                ensure_connection=AsyncMock(side_effect=RuntimeError("boom")),
+            ),
+            SimpleNamespace(is_user_connected=lambda _u: True, ensure_connection=AsyncMock()),
+        )
+        for pool in pools:
+            rc._self_heal_inflight.add("user_x")
+            with patch("routers.container.get_gateway_pool", return_value=pool):
+                await _pool_self_heal_connect("user_x", "10.0.1.5", "gw-token")
+            assert "user_x" not in rc._self_heal_inflight
 
 
 class TestGatewayRestart:

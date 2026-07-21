@@ -1,6 +1,7 @@
 import { memo } from "react";
 import { Text, View } from "react-native";
 import Markdown, {
+  MarkdownIt,
   type ASTNode,
   type RenderRules,
 } from "react-native-markdown-display";
@@ -17,6 +18,11 @@ import { colors, fonts, radii, spacing } from "../../config/theme";
  * Exported memoized: completed transcript segments keep a stable `text`,
  * so only the actively streaming segment re-parses per chunk.
  */
+
+// The library's default instance plus linkify: agents post bare URLs
+// constantly, and without linkify they render as dead text (web autolinks
+// them via GFM). typographer matches the library default.
+const markdownIt = MarkdownIt({ typographer: true, linkify: true });
 const rules: RenderRules = {
   // Bordered code card: header bar with the fence's language label, mono
   // body on the code surface (spec §2 fenced code block).
@@ -190,7 +196,7 @@ const markdownStyles = {
 
 function MessageMarkdownInner({ text }: { text: string }) {
   return (
-    <Markdown style={markdownStyles} rules={rules}>
+    <Markdown style={markdownStyles} rules={rules} markdownit={markdownIt}>
       {text}
     </Markdown>
   );

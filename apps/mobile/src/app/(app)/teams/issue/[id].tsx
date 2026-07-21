@@ -20,6 +20,7 @@ import { ApprovalCard } from "../../../../components/teams/ApprovalCard";
 import { AssigneeAvatar } from "../../../../components/teams/AssigneeAvatar";
 import { CommentComposer } from "../../../../components/teams/CommentComposer";
 import { CreateIssueSheet } from "../../../../components/teams/CreateIssueSheet";
+import { IssueRunsSection } from "../../../../components/teams/IssueRunsSection";
 import { PickerSheet, type PickerOption } from "../../../../components/teams/PickerSheet";
 import { colors, fonts, radii, spacing, type } from "../../../../config/theme";
 import {
@@ -43,6 +44,7 @@ import {
   type CreateIssueInput,
   type IssueComment,
   type IssueDetail,
+  type IssueRun,
   type Priority,
   type TeamsAgent,
   type TeamsApproval,
@@ -364,6 +366,7 @@ function ReadyBody({
     agents: TeamsAgent[];
     members: CompanyMember[];
     approvals: TeamsApproval[];
+    runs: IssueRun[];
   };
   currentUserId: string | null;
   onSetStatus: (status: BoardStatus) => void;
@@ -374,7 +377,7 @@ function ReadyBody({
   onApproveApproval: (approvalId: string) => void;
   onRejectApproval: (approvalId: string, reason: string) => void;
 }) {
-  const { issue, comments, children, agents, members, approvals } = state;
+  const { issue, comments, children, agents, members, approvals, runs } = state;
   const identifier = issue.identifier ?? issue.id.slice(0, 8);
   const assignee = resolveAssignee(issue, agents, members);
   const created = issue.createdAt ? timeAgo(issue.createdAt) : null;
@@ -484,6 +487,9 @@ function ReadyBody({
           </View>
         </View>
       )}
+
+      {/* Agent runs against this issue (web IssueRunsSection parity). */}
+      <IssueRunsSection runs={runs} agents={agents} />
 
       {/* Sub-issues — interactive mini-cards + add affordance. */}
       <View style={styles.section}>

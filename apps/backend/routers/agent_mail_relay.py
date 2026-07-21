@@ -76,9 +76,9 @@ async def reply(body: ReplyRequest, request: Request) -> dict:
 
     Bearer-token authenticated against ``containers.hook_token`` (timing-safe
     compare) for the owner named inside the (unforgeable) ``reply_token``.
-    Returns ``{"status": ...}`` — "sent"/"no_address"/"disabled"/"error" from
-    ``send_reply`` on success, or raises 400/401/429 on auth/validation
-    failures.
+    Returns ``{"status": ...}`` — "sent"/"not_sent"/"no_address"/"disabled"/
+    "error" from ``send_reply`` on success, or raises 400/401/429 on
+    auth/validation failures.
     """
     # 1. Bearer extract
     auth = request.headers.get("Authorization", "")
@@ -96,7 +96,13 @@ async def reply(body: ReplyRequest, request: Request) -> dict:
     # the load-bearing check — see module docstring.
     container = await container_repo.get_by_owner_id(ctx["owner_id"])
     expected = container.get("hook_token") if container else ""
-    if not expected or not hmac.compare_digest(presented, expected):
+    # Compare bytes, not str: hmac.compare_digest raises TypeError on `str`
+    # arguments containing non-ASCII characters. `presented` comes straight
+    # from the raw Authorization header, so it isn't guaranteed ASCII — an
+    # unhandled TypeError here would surface as a 500 instead of the intended
+    # 401. `.encode("utf-8")` on any `str` always succeeds, and comparing
+    # bytes is still constant-time.
+    if not expected or not hmac.compare_digest(presented.encode("utf-8"), expected.encode("utf-8")):
         raise HTTPException(status_code=401, detail={"status": "invalid_token"})
 
     # 4. Rate limit (after auth so 401s don't fill the bucket)
@@ -104,6 +110,6 @@ async def reply(body: ReplyRequest, request: Request) -> dict:
         raise HTTPException(status_code=429, detail={"status": "rate_limited"})
 
     # 5. Send. `send_reply` never raises — it maps its own failures to a
-    # result string ("no_address"/"disabled"/"error").
+    # result string ("not_sent"/"no_address"/"disabled"/"error").
     result = await send_reply(ctx=ctx, body_text=body.body_text, body_html=body.body_html)
     return {"status": result}

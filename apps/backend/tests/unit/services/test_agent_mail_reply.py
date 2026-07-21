@@ -87,6 +87,37 @@ async def test_send_reply_happy_path(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_send_reply_returns_not_sent_when_send_email_returns_none(monkeypatch):
+    """send_email returns None (never raises) when RESEND_API_KEY is unset/invalid
+    or Resend errors. That must not be reported as "sent" — the agent would tell
+    the user it replied when nothing actually went out."""
+    monkeypatch.setattr(agent_mail_reply.settings, "AGENT_EMAIL_DOMAIN", "agents.isol8.co")
+    monkeypatch.setattr(
+        agent_mail_reply.agent_email_repo,
+        "query_by_owner",
+        AsyncMock(
+            return_value=[
+                {"address": "acme@agents.isol8.co", "agent_id": "a1", "status": "active"},
+            ]
+        ),
+    )
+    send_mock = AsyncMock(return_value=None)
+    monkeypatch.setattr(agent_mail_reply.email_service, "send_email", send_mock)
+
+    ctx = {
+        "owner_id": "o",
+        "agent_id": "a1",
+        "reply_to": "alice@x.com",
+        "in_reply_to": "<m@x>",
+        "subject": "Need help",
+    }
+    result = await agent_mail_reply.send_reply(ctx=ctx, body_text="thanks")
+
+    assert result == "not_sent"
+    send_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_send_reply_no_address(monkeypatch):
     monkeypatch.setattr(agent_mail_reply.settings, "AGENT_EMAIL_DOMAIN", "agents.isol8.co")
     monkeypatch.setattr(

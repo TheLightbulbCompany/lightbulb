@@ -123,6 +123,36 @@ def test_no_container_row_returns_401_and_does_not_call_send_reply(client, fake_
         mock_send.assert_not_called()
 
 
+def test_non_ascii_authorization_returns_401_not_500(client, fake_ctx, fake_container):
+    """A raw Authorization header with non-ASCII bytes must not blow up the
+    timing-safe compare. CPython's hmac.compare_digest raises TypeError when
+    comparing `str` values that contain non-ASCII characters -- if that
+    exception is unhandled it surfaces as a 500, not the intended 401.
+
+    Header values pass over the wire as raw bytes; ASGI servers decode them as
+    latin-1. We build the header value as raw latin-1-encoded bytes here (not
+    a plain `str`) so httpx's client-side ASCII validation doesn't reject the
+    request before it ever reaches the app -- that would test httpx, not our
+    endpoint.
+    """
+    with (
+        patch("routers.agent_mail_relay.decode_reply_token", return_value=fake_ctx),
+        patch(
+            "routers.agent_mail_relay.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value=fake_container),
+        ),
+        patch("routers.agent_mail_relay.send_reply", new=AsyncMock()) as mock_send,
+    ):
+        r = client.post(
+            "/api/v1/agent-mail/reply",
+            json=_body(),
+            headers={"Authorization": "Bearer ÿþ".encode("latin-1")},
+        )
+        assert r.status_code == 401
+        assert r.json()["detail"] == {"status": "invalid_token"}
+        mock_send.assert_not_called()
+
+
 def test_happy_path_returns_200_sent_and_calls_send_reply_once(client, fake_ctx, fake_container):
     with (
         patch("routers.agent_mail_relay.decode_reply_token", return_value=fake_ctx),

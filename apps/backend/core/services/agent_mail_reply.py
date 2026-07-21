@@ -53,7 +53,7 @@ async def resolve_from_address(owner_id: str, agent_id: str) -> str | None:
 async def send_reply(*, ctx: dict, body_text: str, body_html: str | None = None) -> str:
     """Send a threaded reply for a decoded ReplyContext ``ctx``.
 
-    Returns "sent", "no_address", "disabled", or "error". Never raises.
+    Returns "sent", "not_sent", "no_address", "disabled", or "error". Never raises.
     """
     try:
         if not settings.AGENT_EMAIL_DOMAIN.strip():
@@ -71,7 +71,7 @@ async def send_reply(*, ctx: dict, body_text: str, body_html: str | None = None)
 
         html_body = body_html if body_html is not None else f"<pre>{_html.escape(body_text)}</pre>"
 
-        await email_service.send_email(
+        email_id = await email_service.send_email(
             to=ctx["reply_to"],
             subject=reply_subject(ctx["subject"]),
             html=html_body,
@@ -80,6 +80,12 @@ async def send_reply(*, ctx: dict, body_text: str, body_html: str | None = None)
             headers=(headers or None),
             kind="agent_reply",
         )
+        if email_id is None:
+            logger.error(
+                "send_reply: send_email returned None for agent_id=%s (RESEND_API_KEY unset or send failed)",
+                ctx.get("agent_id"),
+            )
+            return "not_sent"
         return "sent"
     except Exception:
         logger.exception("send_reply failed for agent_id=%s", ctx.get("agent_id"))

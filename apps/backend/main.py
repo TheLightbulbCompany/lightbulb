@@ -31,6 +31,7 @@ from core.services.paperclip_admin_client import PaperclipApiError
 from core.services.update_service import run_scheduled_worker
 from routers import (
     agent_builder,
+    agent_mail,
     billing,
     channels,
     config,
@@ -733,6 +734,9 @@ app.include_router(devices.router, prefix="/api/v1/devices", tags=["devices"])
 
 # Clerk webhook events (user lifecycle)
 app.include_router(webhooks.router, prefix="/api/v1/webhooks", tags=["webhooks"])
+
+# Resend inbound-email webhook (provisioned agent email)
+app.include_router(agent_mail.router, prefix="/api/v1/webhooks", tags=["webhooks"])
 
 # WebSocket routes (API Gateway WebSocket -> HTTP POST)
 app.include_router(websocket_chat.router, prefix="/api/v1/ws")

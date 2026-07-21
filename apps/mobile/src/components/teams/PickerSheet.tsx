@@ -59,71 +59,71 @@ export function PickerSheet({
       maxHeight="80%"
     >
       <View style={styles.sheet}>
-          <View style={styles.grabber} />
-          <Text style={styles.heading}>{heading}</Text>
-          {subheading != null && subheading !== "" && (
-            <Text style={styles.subheading} numberOfLines={1}>
-              {subheading}
-            </Text>
-          )}
-          <ScrollView
-            style={styles.list}
-            contentContainerStyle={styles.listContent}
-            showsVerticalScrollIndicator={false}
-            bounces={false}
-          >
-            {options.map((option, index) => {
-              const active = selectedKey === option.key;
-              // Draw a group header whenever this option starts a new section.
-              const prevSection = index > 0 ? options[index - 1].section : null;
-              const showHeader =
-                option.section != null &&
-                option.section !== "" &&
-                option.section !== prevSection;
-              return (
-                <Fragment key={option.key}>
-                  {showHeader ? (
-                    <Text style={styles.sectionHeader}>
-                      {option.section?.toUpperCase()}
-                    </Text>
+        <View style={styles.grabber} />
+        <Text style={styles.heading}>{heading}</Text>
+        {subheading != null && subheading !== "" && (
+          <Text style={styles.subheading} numberOfLines={1}>
+            {subheading}
+          </Text>
+        )}
+        <ScrollView
+          style={styles.list}
+          contentContainerStyle={styles.listContent}
+          showsVerticalScrollIndicator={false}
+          bounces={false}
+        >
+          {options.map((option, index) => {
+            const active = selectedKey === option.key;
+            // Draw a group header whenever this option starts a new section.
+            const prevSection = index > 0 ? options[index - 1].section : null;
+            const showHeader =
+              option.section != null &&
+              option.section !== "" &&
+              option.section !== prevSection;
+            return (
+              <Fragment key={option.key}>
+                {showHeader ? (
+                  <Text style={styles.sectionHeader}>
+                    {option.section?.toUpperCase()}
+                  </Text>
+                ) : null}
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.row,
+                    active && styles.rowActive,
+                    pressed && styles.rowPressed,
+                  ]}
+                  onPress={() => {
+                    if (!active) onSelect(option.key);
+                    onClose();
+                  }}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: active }}
+                  accessibilityLabel={option.label}
+                >
+                  {option.dotColor ? (
+                    <View style={[styles.dot, { backgroundColor: option.dotColor }]} />
                   ) : null}
-                  <Pressable
-                    style={({ pressed }) => [
-                      styles.row,
-                      active && styles.rowActive,
-                      pressed && styles.rowPressed,
+                  {option.leading ?? null}
+                  <Text
+                    style={[
+                      styles.rowLabel,
+                      option.strikethrough && styles.rowLabelStruck,
                     ]}
-                    onPress={() => {
-                      if (!active) onSelect(option.key);
-                      onClose();
-                    }}
-                    accessibilityRole="button"
-                    accessibilityState={{ selected: active }}
-                    accessibilityLabel={option.label}
+                    numberOfLines={1}
                   >
-                    {option.dotColor ? (
-                      <View style={[styles.dot, { backgroundColor: option.dotColor }]} />
-                    ) : null}
-                    {option.leading ?? null}
-                    <Text
-                      style={[
-                        styles.rowLabel,
-                        option.strikethrough && styles.rowLabelStruck,
-                      ]}
-                      numberOfLines={1}
-                    >
-                      {option.label}
-                    </Text>
-                    {active ? (
-                      <Feather name="check" size={16} color={colors.forest} />
-                    ) : (
-                      <View style={styles.checkSpacer} />
-                    )}
-                  </Pressable>
-                </Fragment>
-              );
-            })}
-          </ScrollView>
+                    {option.label}
+                  </Text>
+                  {active ? (
+                    <Feather name="check" size={16} color={colors.forest} />
+                  ) : (
+                    <View style={styles.checkSpacer} />
+                  )}
+                </Pressable>
+              </Fragment>
+            );
+          })}
+        </ScrollView>
       </View>
     </BottomSheet>
   );

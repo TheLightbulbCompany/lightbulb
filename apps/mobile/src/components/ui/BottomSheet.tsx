@@ -54,9 +54,10 @@ export function BottomSheet({
   // `mounted` keeps the Modal alive through the close animation; it flips false
   // only once the exit finishes. The card slides its full off-screen distance —
   // the excess travel below the screen edge is invisible, so no height measure
-  // is needed.
+  // is needed. Progress always starts at 0 so a sheet that mounts already-open
+  // (e.g. opened in the same render it first renders) still slides in.
   const [mounted, setMounted] = useState(visible);
-  const progress = useRef(new Animated.Value(visible ? 1 : 0)).current;
+  const progress = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     if (visible) {

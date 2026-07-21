@@ -5,7 +5,6 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
-  Modal,
   Platform,
   Pressable,
   StyleSheet,
@@ -14,6 +13,7 @@ import {
 } from "react-native";
 
 import { colors, fonts, radii, spacing } from "../../config/theme";
+import { BottomSheet } from "../ui/BottomSheet";
 import {
   projectSessionRows,
   relativeTime,
@@ -128,13 +128,12 @@ export function SessionsSheet({
   );
 
   return (
-    <Modal
+    <BottomSheet
       visible={visible}
-      transparent
-      animationType="slide"
-      onRequestClose={onClose}
+      onClose={onClose}
+      closeLabel="Close sessions"
+      maxHeight="70%"
     >
-      <Pressable style={styles.scrim} onPress={onClose} accessibilityLabel="Close sessions" />
       <View style={styles.card}>
         <View style={styles.handle} />
         <View style={styles.header}>
@@ -215,17 +214,15 @@ export function SessionsSheet({
           </>
         )}
       </View>
-    </Modal>
+    </BottomSheet>
   );
 }
 
 const styles = StyleSheet.create({
-  scrim: { flex: 1, backgroundColor: colors.scrim },
   card: {
     backgroundColor: colors.cream,
     borderTopLeftRadius: radii.xl,
     borderTopRightRadius: radii.xl,
-    maxHeight: "70%",
     paddingBottom: spacing.xl,
   },
   handle: {

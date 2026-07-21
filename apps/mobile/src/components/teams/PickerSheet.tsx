@@ -1,8 +1,9 @@
 import Feather from "@expo/vector-icons/Feather";
 import { Fragment, type ReactNode } from "react";
-import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { colors, fonts, radii, spacing } from "../../config/theme";
+import { BottomSheet } from "../ui/BottomSheet";
 
 // ---------------------------------------------------------------------------
 // Generic bottom-sheet single-select picker (factored from T2a's StatusSheet).
@@ -51,15 +52,13 @@ export function PickerSheet({
   onClose,
 }: PickerSheetProps) {
   return (
-    <Modal
+    <BottomSheet
       visible={visible}
-      transparent
-      animationType="slide"
-      onRequestClose={onClose}
+      onClose={onClose}
+      closeLabel="Dismiss"
+      maxHeight="80%"
     >
-      <Pressable style={styles.scrim} onPress={onClose} accessibilityLabel="Dismiss">
-        {/* Stop propagation: taps inside the sheet must not dismiss it. */}
-        <Pressable style={styles.sheet} onPress={() => {}}>
+      <View style={styles.sheet}>
           <View style={styles.grabber} />
           <Text style={styles.heading}>{heading}</Text>
           {subheading != null && subheading !== "" && (
@@ -125,18 +124,12 @@ export function PickerSheet({
               );
             })}
           </ScrollView>
-        </Pressable>
-      </Pressable>
-    </Modal>
+      </View>
+    </BottomSheet>
   );
 }
 
 const styles = StyleSheet.create({
-  scrim: {
-    flex: 1,
-    backgroundColor: colors.scrim,
-    justifyContent: "flex-end",
-  },
   sheet: {
     backgroundColor: colors.cream,
     borderTopLeftRadius: radii.xl,
@@ -145,7 +138,6 @@ const styles = StyleSheet.create({
     paddingTop: spacing.sm,
     paddingBottom: spacing.xl,
     gap: spacing.xs,
-    maxHeight: "80%",
   },
   grabber: {
     alignSelf: "center",

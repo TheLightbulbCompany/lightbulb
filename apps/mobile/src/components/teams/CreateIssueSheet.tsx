@@ -3,7 +3,6 @@ import { useState } from "react";
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
-  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -14,6 +13,7 @@ import {
 } from "react-native";
 
 import { colors, fonts, radii, spacing } from "../../config/theme";
+import { BottomSheet } from "../ui/BottomSheet";
 import {
   BOARD_STATUSES,
   PRIORITIES,
@@ -126,15 +126,13 @@ export function CreateIssueSheet({
   };
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={close}>
-      <Pressable style={styles.scrim} onPress={close} accessibilityLabel="Dismiss">
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
-          style={styles.avoider}
-        >
-          {/* Stop propagation: taps inside must not dismiss. */}
-          <Pressable style={styles.sheet} onPress={() => {}}>
-            <View style={styles.grabber} />
+    <BottomSheet visible={visible} onClose={close} closeLabel="Dismiss" maxHeight="88%">
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        style={styles.avoider}
+      >
+        <View style={styles.sheet}>
+          <View style={styles.grabber} />
             <Text style={styles.heading}>
               {mode === "subissue" ? "New sub-issue" : "New issue"}
             </Text>
@@ -241,15 +239,13 @@ export function CreateIssueSheet({
                 )}
               </Pressable>
             </View>
-          </Pressable>
-        </KeyboardAvoidingView>
-      </Pressable>
-    </Modal>
+        </View>
+      </KeyboardAvoidingView>
+    </BottomSheet>
   );
 }
 
 const styles = StyleSheet.create({
-  scrim: { flex: 1, backgroundColor: colors.scrim, justifyContent: "flex-end" },
   avoider: { width: "100%" },
   sheet: {
     backgroundColor: colors.cream,
@@ -259,7 +255,6 @@ const styles = StyleSheet.create({
     paddingTop: spacing.sm,
     paddingBottom: spacing.xl,
     gap: spacing.md,
-    maxHeight: "88%",
   },
   grabber: {
     alignSelf: "center",

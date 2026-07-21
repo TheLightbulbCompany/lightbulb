@@ -1,7 +1,8 @@
-import { FlatList, Modal, Pressable, StyleSheet, Text, View } from "react-native";
+import { FlatList, Pressable, StyleSheet, Text, View } from "react-native";
 import { agentDisplayName, type AgentsListResponse } from "@isol8/shared";
 
 import { colors, fonts, radii, spacing } from "../../config/theme";
+import { BottomSheet } from "../ui/BottomSheet";
 
 type Agent = NonNullable<AgentsListResponse["agents"]>[number];
 
@@ -19,12 +20,12 @@ interface Props {
  */
 export function AgentPickerSheet({ visible, onClose, agents, onPick }: Props) {
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <Pressable
-        style={styles.scrim}
-        onPress={onClose}
-        accessibilityLabel="Close agent picker"
-      />
+    <BottomSheet
+      visible={visible}
+      onClose={onClose}
+      closeLabel="Close agent picker"
+      maxHeight="70%"
+    >
       <View style={styles.card}>
         <View style={styles.handle} />
         <Text style={styles.overline}>START A NEW TASK WITH…</Text>
@@ -55,17 +56,15 @@ export function AgentPickerSheet({ visible, onClose, agents, onPick }: Props) {
           )}
         />
       </View>
-    </Modal>
+    </BottomSheet>
   );
 }
 
 const styles = StyleSheet.create({
-  scrim: { flex: 1, backgroundColor: colors.scrim },
   card: {
     backgroundColor: colors.cream,
     borderTopLeftRadius: radii.xl,
     borderTopRightRadius: radii.xl,
-    maxHeight: "70%",
     paddingBottom: spacing.xl,
   },
   handle: {

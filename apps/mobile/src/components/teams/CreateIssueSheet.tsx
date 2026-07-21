@@ -3,7 +3,6 @@ import { useState } from "react";
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
-  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -14,6 +13,7 @@ import {
 } from "react-native";
 
 import { colors, fonts, radii, spacing } from "../../config/theme";
+import { BottomSheet } from "../ui/BottomSheet";
 import {
   BOARD_STATUSES,
   PRIORITIES,
@@ -126,130 +126,126 @@ export function CreateIssueSheet({
   };
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={close}>
-      <Pressable style={styles.scrim} onPress={close} accessibilityLabel="Dismiss">
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
-          style={styles.avoider}
-        >
-          {/* Stop propagation: taps inside must not dismiss. */}
-          <Pressable style={styles.sheet} onPress={() => {}}>
-            <View style={styles.grabber} />
-            <Text style={styles.heading}>
-              {mode === "subissue" ? "New sub-issue" : "New issue"}
-            </Text>
+    <BottomSheet visible={visible} onClose={close} closeLabel="Dismiss" maxHeight="88%">
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        style={styles.avoider}
+      >
+        <View style={styles.sheet}>
+          <View style={styles.grabber} />
+          <Text style={styles.heading}>
+            {mode === "subissue" ? "New sub-issue" : "New issue"}
+          </Text>
 
-            <ScrollView
-              style={styles.form}
-              contentContainerStyle={styles.formContent}
-              keyboardShouldPersistTaps="handled"
-              showsVerticalScrollIndicator={false}
-              bounces={false}
-            >
-              {/* Title (required). */}
-              <View style={styles.field}>
-                <Text style={styles.fieldLabel}>TITLE</Text>
-                <TextInput
-                  style={styles.titleInput}
-                  placeholder="What needs doing?"
-                  placeholderTextColor={colors.placeholder}
-                  value={title}
-                  onChangeText={setTitle}
-                  autoFocus
-                  returnKeyType="done"
+          <ScrollView
+            style={styles.form}
+            contentContainerStyle={styles.formContent}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+            bounces={false}
+          >
+            {/* Title (required). */}
+            <View style={styles.field}>
+              <Text style={styles.fieldLabel}>TITLE</Text>
+              <TextInput
+                style={styles.titleInput}
+                placeholder="What needs doing?"
+                placeholderTextColor={colors.placeholder}
+                value={title}
+                onChangeText={setTitle}
+                autoFocus
+                returnKeyType="done"
+              />
+            </View>
+
+            {/* Priority chips (optional). */}
+            <View style={styles.field}>
+              <Text style={styles.fieldLabel}>PRIORITY</Text>
+              <View style={styles.chipRow}>
+                <Chip
+                  label="None"
+                  active={priority == null}
+                  onPress={() => setPriority(null)}
                 />
-              </View>
-
-              {/* Priority chips (optional). */}
-              <View style={styles.field}>
-                <Text style={styles.fieldLabel}>PRIORITY</Text>
-                <View style={styles.chipRow}>
+                {PRIORITIES.map((p) => (
                   <Chip
-                    label="None"
-                    active={priority == null}
-                    onPress={() => setPriority(null)}
+                    key={p}
+                    label={PRIORITY_LABELS[p]}
+                    active={priority === p}
+                    dotColor={priorityColor(p)}
+                    onPress={() => setPriority(p)}
                   />
-                  {PRIORITIES.map((p) => (
+                ))}
+              </View>
+            </View>
+
+            {/* Status chips (top-level only). */}
+            {mode === "issue" && (
+              <View style={styles.field}>
+                <Text style={styles.fieldLabel}>STATUS</Text>
+                <View style={styles.chipRow}>
+                  {BOARD_STATUSES.map((s) => (
                     <Chip
-                      key={p}
-                      label={PRIORITY_LABELS[p]}
-                      active={priority === p}
-                      dotColor={priorityColor(p)}
-                      onPress={() => setPriority(p)}
+                      key={s}
+                      label={STATUS_LABELS[s]}
+                      active={status === s}
+                      dotColor={statusColors(s).color}
+                      onPress={() => setStatus(s)}
                     />
                   ))}
                 </View>
               </View>
+            )}
 
-              {/* Status chips (top-level only). */}
-              {mode === "issue" && (
-                <View style={styles.field}>
-                  <Text style={styles.fieldLabel}>STATUS</Text>
-                  <View style={styles.chipRow}>
-                    {BOARD_STATUSES.map((s) => (
-                      <Chip
-                        key={s}
-                        label={STATUS_LABELS[s]}
-                        active={status === s}
-                        dotColor={statusColors(s).color}
-                        onPress={() => setStatus(s)}
-                      />
-                    ))}
-                  </View>
-                </View>
-              )}
-
-              {/* Description (optional). */}
-              <View style={styles.field}>
-                <Text style={styles.fieldLabel}>DESCRIPTION</Text>
-                <TextInput
-                  style={styles.descInput}
-                  placeholder="Add more detail (optional)"
-                  placeholderTextColor={colors.placeholder}
-                  value={description}
-                  onChangeText={setDescription}
-                  multiline
-                  textAlignVertical="top"
-                />
-              </View>
-            </ScrollView>
-
-            <View style={styles.actions}>
-              <Pressable
-                style={({ pressed }) => [styles.cancelBtn, pressed && styles.cancelPressed]}
-                onPress={close}
-                disabled={busy}
-                accessibilityRole="button"
-                accessibilityLabel="Cancel"
-              >
-                <Text style={styles.cancelText}>Cancel</Text>
-              </Pressable>
-              <Pressable
-                style={[styles.createBtn, titleEmpty && styles.createDisabled]}
-                onPress={submit}
-                disabled={!canSubmit}
-                accessibilityRole="button"
-                accessibilityLabel={mode === "subissue" ? "Create sub-issue" : "Create issue"}
-              >
-                {busy ? (
-                  <ActivityIndicator size="small" color={colors.white} />
-                ) : (
-                  <>
-                    <Feather name="plus" size={15} color={colors.white} />
-                    <Text style={styles.createText}>Create</Text>
-                  </>
-                )}
-              </Pressable>
+            {/* Description (optional). */}
+            <View style={styles.field}>
+              <Text style={styles.fieldLabel}>DESCRIPTION</Text>
+              <TextInput
+                style={styles.descInput}
+                placeholder="Add more detail (optional)"
+                placeholderTextColor={colors.placeholder}
+                value={description}
+                onChangeText={setDescription}
+                multiline
+                textAlignVertical="top"
+              />
             </View>
-          </Pressable>
-        </KeyboardAvoidingView>
-      </Pressable>
-    </Modal>
+          </ScrollView>
+
+          <View style={styles.actions}>
+            <Pressable
+              style={({ pressed }) => [styles.cancelBtn, pressed && styles.cancelPressed]}
+              onPress={close}
+              disabled={busy}
+              accessibilityRole="button"
+              accessibilityLabel="Cancel"
+            >
+              <Text style={styles.cancelText}>Cancel</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.createBtn, titleEmpty && styles.createDisabled]}
+              onPress={submit}
+              disabled={!canSubmit}
+              accessibilityRole="button"
+              accessibilityLabel={mode === "subissue" ? "Create sub-issue" : "Create issue"}
+            >
+              {busy ? (
+                <ActivityIndicator size="small" color={colors.white} />
+              ) : (
+                <>
+                  <Feather name="plus" size={15} color={colors.white} />
+                  <Text style={styles.createText}>Create</Text>
+                </>
+              )}
+            </Pressable>
+          </View>
+        </View>
+      </KeyboardAvoidingView>
+    </BottomSheet>
   );
 }
 
 const styles = StyleSheet.create({
-  scrim: { flex: 1, backgroundColor: colors.scrim, justifyContent: "flex-end" },
   avoider: { width: "100%" },
   sheet: {
     backgroundColor: colors.cream,
@@ -259,7 +255,6 @@ const styles = StyleSheet.create({
     paddingTop: spacing.sm,
     paddingBottom: spacing.xl,
     gap: spacing.md,
-    maxHeight: "88%",
   },
   grabber: {
     alignSelf: "center",

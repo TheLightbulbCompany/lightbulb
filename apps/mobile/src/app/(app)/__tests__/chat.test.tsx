@@ -11,8 +11,15 @@ jest.mock("@clerk/clerk-expo", () => ({
 }));
 
 // Mock the gateway provider + the agents.list RPC so <Chat/> renders offline.
+// sendReq backs the reused SessionsSheet's sessions.list fetch; the payload is
+// swapped per test (mock-prefixed so the jest.mock factory may reference it).
+let mockSessionsPayload: unknown = { sessions: [] };
+const mockSendReq = jest.fn(async (method: string) => {
+  if (method === "sessions.list") return mockSessionsPayload;
+  return {};
+});
 jest.mock("../../../providers/gateway", () => ({
-  useGateway: () => ({ isConnected: true, error: null }),
+  useGateway: () => ({ isConnected: true, error: null, sendReq: mockSendReq }),
 }));
 
 jest.mock("@isol8/shared", () => ({
@@ -38,6 +45,8 @@ describe("Chat roster", () => {
   beforeEach(() => {
     mockClerkUser = null;
     routerPush.mockClear();
+    mockSendReq.mockClear();
+    mockSessionsPayload = { sessions: [] };
   });
 
   it("renders the agent grid and the New task action", async () => {
@@ -73,5 +82,70 @@ describe("Chat roster", () => {
     };
     await render(<Chat />);
     await waitFor(() => expect(routerPush).not.toHaveBeenCalled());
+  });
+
+  describe("per-agent sessions (long-press)", () => {
+    const NAMED = {
+      key: "agent:agent_a:user_x:11111111-1111-4111-8111-111111111111",
+      label: "Plan the launch",
+      updatedAt: 1000,
+    };
+
+    it("opens the agent's sessions sheet on long-press", async () => {
+      mockClerkUser = { id: "user_x" };
+      await render(<Chat />);
+      expect(screen.queryByText("SESSIONS")).toBeNull();
+      fireEvent(screen.getByLabelText("Friday"), "longPress");
+      expect(await screen.findByText("SESSIONS")).toBeTruthy();
+    });
+
+    it("navigates into a chosen session with its id + label", async () => {
+      mockClerkUser = { id: "user_x" };
+      mockSessionsPayload = { sessions: [NAMED] };
+      await render(<Chat />);
+      fireEvent(screen.getByLabelText("Friday"), "longPress");
+      fireEvent.press(await screen.findByText("Plan the launch"));
+      expect(routerPush).toHaveBeenCalledWith({
+        pathname: "/(app)/agent/[agentId]",
+        params: {
+          agentId: "agent_a",
+          name: "Friday",
+          sessionId: "11111111-1111-4111-8111-111111111111",
+          sessionLabel: "Plan the launch",
+        },
+      });
+    });
+
+    it("navigates to General without a session id", async () => {
+      mockClerkUser = { id: "user_x" };
+      await render(<Chat />);
+      fireEvent(screen.getByLabelText("Friday"), "longPress");
+      fireEvent.press(await screen.findByText("General"));
+      expect(routerPush).toHaveBeenCalledWith({
+        pathname: "/(app)/agent/[agentId]",
+        params: { agentId: "agent_a", name: "Friday" },
+      });
+    });
+
+    it("starts a new session from the roster sheet", async () => {
+      mockClerkUser = { id: "user_x" };
+      await render(<Chat />);
+      fireEvent(screen.getByLabelText("Friday"), "longPress");
+      fireEvent.press(await screen.findByLabelText("New session"));
+      expect(routerPush).toHaveBeenCalledWith({
+        pathname: "/(app)/agent/[agentId]",
+        params: { agentId: "agent_a", name: "Friday", newSession: "1" },
+      });
+    });
+
+    it("still opens General chat on a normal tap", async () => {
+      mockClerkUser = { id: "user_x" };
+      await render(<Chat />);
+      fireEvent.press(screen.getByLabelText("Friday"));
+      expect(routerPush).toHaveBeenCalledWith({
+        pathname: "/(app)/agent/[agentId]",
+        params: { agentId: "agent_a", name: "Friday" },
+      });
+    });
   });
 });

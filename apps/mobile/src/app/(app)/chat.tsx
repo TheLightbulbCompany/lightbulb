@@ -18,6 +18,7 @@ import {
 
 import { colors, fonts, radii, spacing, type } from "../../config/theme";
 import { AgentPickerSheet } from "../../components/chat/AgentPickerSheet";
+import { SessionsSheet } from "../../components/chat/SessionsSheet";
 import { usePulse } from "../../components/chat/usePulse";
 import { readFirstRun } from "../../lib/firstRun";
 import { useGateway } from "../../providers/gateway";
@@ -113,6 +114,15 @@ export default function Chat() {
   const connectionDown = !gateway.isConnected && gateway.error != null;
   const showEmpty = agents.length === 0 && !isLoading && data != null;
   const [pickerOpen, setPickerOpen] = useState(false);
+  // Long-pressing a tile opens that agent's session switcher right from the
+  // roster. `sessionsAgent` stays set after close so the sheet can animate out
+  // (unmounting it mid-close would cut the exit animation); `sessionsOpen`
+  // drives visibility.
+  const [sessionsAgent, setSessionsAgent] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
+  const [sessionsOpen, setSessionsOpen] = useState(false);
 
   // First-run aha: right after the funnel brief is submitted (and until the
   // kickoff fires — `started` stays false), walk the user straight into the
@@ -190,6 +200,12 @@ export default function Chat() {
                 params: { agentId: item.id, name: agentDisplayName(item) },
               })
             }
+            onLongPress={() => {
+              setSessionsAgent({ id: item.id, name: agentDisplayName(item) });
+              setSessionsOpen(true);
+            }}
+            accessibilityRole="button"
+            accessibilityLabel={agentDisplayName(item)}
           >
             <Monogram
               name={agentDisplayName(item)}
@@ -240,6 +256,40 @@ export default function Chat() {
           });
         }}
       />
+      {sessionsAgent ? (
+        <SessionsSheet
+          visible={sessionsOpen}
+          onClose={() => setSessionsOpen(false)}
+          agentId={sessionsAgent.id}
+          userId={user?.id ?? null}
+          // The roster has no active session — General reads as the default.
+          activeSessionId={null}
+          onSelect={(sessionId, label) => {
+            setSessionsOpen(false);
+            router.push({
+              pathname: "/(app)/agent/[agentId]",
+              params: {
+                agentId: sessionsAgent.id,
+                name: sessionsAgent.name,
+                // A named session carries its id + label into the chat screen;
+                // General (null) navigates with neither so the screen defaults.
+                ...(sessionId ? { sessionId, sessionLabel: label ?? "" } : {}),
+              },
+            });
+          }}
+          onNewSession={() => {
+            setSessionsOpen(false);
+            router.push({
+              pathname: "/(app)/agent/[agentId]",
+              params: {
+                agentId: sessionsAgent.id,
+                name: sessionsAgent.name,
+                newSession: "1",
+              },
+            });
+          }}
+        />
+      ) : null}
     </View>
   );
 }

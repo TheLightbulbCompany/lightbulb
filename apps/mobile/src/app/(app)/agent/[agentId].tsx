@@ -34,6 +34,7 @@ import { colors, fonts, radii, spacing } from "../../../config/theme";
 import { setCurrentAgentId } from "../../../lib/activeAgent";
 import { projectHistoryToChatItems } from "../../../lib/chatHistory";
 import { readFirstRun, writeFirstRun } from "../../../lib/firstRun";
+import { useNavParamConsumer } from "../../../lib/useNavParamConsumer";
 import { buildChatSessionKey } from "../../../lib/sessionKey";
 import { useGateway } from "../../../providers/gateway";
 
@@ -70,8 +71,19 @@ function ReconnectingBanner() {
  * AgentHead whose glyph pulses while the run is active.
  */
 export default function AgentChat() {
-  const { agentId, name, newSession: newSessionParam } =
-    useLocalSearchParams<{ agentId: string; name?: string; newSession?: string }>();
+  const {
+    agentId,
+    name,
+    newSession: newSessionParam,
+    sessionId: sessionIdParam,
+    sessionLabel: sessionLabelParam,
+  } = useLocalSearchParams<{
+    agentId: string;
+    name?: string;
+    newSession?: string;
+    sessionId?: string;
+    sessionLabel?: string;
+  }>();
   // Publish the focused agent so the push notification handler suppresses the
   // banner for a reply the user is actively watching stream in (activeAgent.ts).
   useFocusEffect(
@@ -353,18 +365,36 @@ export default function AgentChat() {
     setSheetOpen(false);
   }, [switchSession]);
 
-  // "New task" from the roster navigates here with `newSession=1`: mint a
-  // fresh session once on mount and focus the composer. A ref guard keeps it
-  // from re-firing on re-render (the param stays in the URL for the screen's
-  // lifetime).
-  const didNewSessionParamRef = useRef(false);
-  useEffect(() => {
-    if (newSessionParam === "1" && !didNewSessionParamRef.current) {
-      didNewSessionParamRef.current = true;
-      newSession();
-      inputRef.current?.focus();
-    }
-  }, [newSessionParam, newSession]);
+  // ---- Roster nav params (contract §1) ----
+  // "New task" arrives as `newSession=1` (mint a fresh session + focus the
+  // composer); a session picked from the roster's per-agent sheet arrives as
+  // `sessionId`(+`sessionLabel`). Both consume their param via router.setParams
+  // so the SAME value re-fires on a later navigation — this screen is a
+  // persisted tab (href:null), so the param is the only signal a fresh
+  // navigation happened, not a remount.
+  const startNewSessionFromParam = useCallback(() => {
+    newSession();
+    inputRef.current?.focus();
+  }, [newSession]);
+  const clearNewSessionParam = useCallback(
+    () => router.setParams({ newSession: undefined }),
+    [],
+  );
+  useNavParamConsumer(
+    newSessionParam === "1" ? newSessionParam : undefined,
+    startNewSessionFromParam,
+    clearNewSessionParam,
+  );
+
+  const applySessionFromParam = useCallback(
+    (sessionId: string) => switchSession(sessionId, sessionLabelParam ?? null),
+    [switchSession, sessionLabelParam],
+  );
+  const clearSessionParam = useCallback(
+    () => router.setParams({ sessionId: undefined, sessionLabel: undefined }),
+    [],
+  );
+  useNavParamConsumer(sessionIdParam, applySessionFromParam, clearSessionParam);
 
   // Full local send pipeline (bubble + busy + dispatch), shared by the
   // composer and the first-run kickoff. Returns false when nothing was sent

@@ -12,14 +12,14 @@ from core.services import agent_email  # noqa: E402
 def test_primary_address_is_just_the_slug():
     """The company's main address is its CEO's — {slug}@domain."""
     addr = agent_email.build_agent_email_address(
-        slug="acme", agent_name="Friday", domain="agents.isol8.co", is_primary=True
+        slug="acme", agent_name="Friday", domain="agents.isol8.co", is_primary=True, agent_id="agent_friday"
     )
     assert addr == "acme@agents.isol8.co"
 
 
 def test_secondary_address_appends_the_agent():
     addr = agent_email.build_agent_email_address(
-        slug="acme", agent_name="Atlas", domain="agents.isol8.co", is_primary=False
+        slug="acme", agent_name="Atlas", domain="agents.isol8.co", is_primary=False, agent_id="agent_atlas"
     )
     assert addr == "acme-atlas@agents.isol8.co"
 
@@ -30,13 +30,56 @@ def test_address_is_lowercased_and_agent_name_slugified():
         agent_name="  Chief  Ops!! ",
         domain="Agents.Isol8.co",
         is_primary=False,
+        agent_id="agent_chief_ops",
     )
     assert addr == "acme-chief-ops@agents.isol8.co"
 
 
 def test_address_is_deterministic():
-    kwargs = dict(slug="acme", agent_name="Friday", domain="agents.isol8.co", is_primary=True)
+    kwargs = dict(slug="acme", agent_name="Friday", domain="agents.isol8.co", is_primary=True, agent_id="agent_friday")
     assert agent_email.build_agent_email_address(**kwargs) == (agent_email.build_agent_email_address(**kwargs))
+
+
+def test_secondary_address_disambiguates_when_truncation_would_collide():
+    """Two agents of the same owner whose names slugify to a shared 59+ char
+    prefix used to truncate to the IDENTICAL local part and collide — the
+    second mint would then overwrite the first agent's row via
+    `agent_email_repo.put`'s owner-scoped conditional. Truncation must now
+    fold in a short deterministic disambiguator derived from `agent_id`."""
+    common_prefix = "x" * 70
+    addr_a = agent_email.build_agent_email_address(
+        slug="acme",
+        agent_name=f"{common_prefix}-alpha",
+        domain="agents.isol8.co",
+        is_primary=False,
+        agent_id="agent_1",
+    )
+    addr_b = agent_email.build_agent_email_address(
+        slug="acme",
+        agent_name=f"{common_prefix}-beta",
+        domain="agents.isol8.co",
+        is_primary=False,
+        agent_id="agent_2",
+    )
+    assert addr_a != addr_b
+    for addr in (addr_a, addr_b):
+        local = addr.split("@", 1)[0]
+        assert len(local) <= agent_email.MAX_LOCAL_PART_LEN
+        assert not local.endswith("-")
+        assert "--" not in local
+
+
+def test_secondary_address_disambiguator_is_deterministic():
+    """Same agent_id + same inputs must always produce the same address —
+    the disambiguator is a stable hash, not randomness."""
+    kwargs = dict(
+        slug="acme",
+        agent_name="x" * 80,
+        domain="agents.isol8.co",
+        is_primary=False,
+        agent_id="agent_stable",
+    )
+    assert agent_email.build_agent_email_address(**kwargs) == agent_email.build_agent_email_address(**kwargs)
 
 
 @pytest.mark.asyncio
@@ -260,6 +303,7 @@ def test_secondary_local_part_respects_rfc5321_limit():
         agent_name="Chief " * 20,  # slugifies far past the remaining budget
         domain="agents.isol8.co",
         is_primary=False,
+        agent_id="agent_chief",
     )
     local = addr.split("@", 1)[0]
     assert len(local) <= agent_email.MAX_LOCAL_PART_LEN
@@ -268,8 +312,9 @@ def test_secondary_local_part_respects_rfc5321_limit():
 
 
 def test_secondary_local_part_untouched_when_short():
-    """Ordinary names must not be truncated by the cap."""
+    """Ordinary names must not be truncated by the cap, and no disambiguator
+    is added when there was nothing to disambiguate."""
     addr = agent_email.build_agent_email_address(
-        slug="acme", agent_name="Atlas", domain="agents.isol8.co", is_primary=False
+        slug="acme", agent_name="Atlas", domain="agents.isol8.co", is_primary=False, agent_id="agent_atlas"
     )
     assert addr == "acme-atlas@agents.isol8.co"

@@ -75,8 +75,16 @@ async def put(
 
 
 async def get_by_address(address: str) -> dict | None:
+    """Strongly consistent — this is the mint-time idempotency guard
+    (`agent_email.mint_agent_email_address` calls it before `put`). An
+    eventually-consistent miss right after a same-address write would let
+    `put` "win" a race it should have folded into, overwriting the existing
+    row and resetting its `created_at` — which flips the deterministic
+    earliest-`created_at` tie-break `owner_facts._lookup_email_address`
+    sorts on. Base-table GetItem supports `ConsistentRead`; the `by-owner`
+    GSI in `query_by_owner` below does not, so that one stays eventual."""
     table = _get_table()
-    response = await run_in_thread(table.get_item, Key={"address": normalize(address)})
+    response = await run_in_thread(table.get_item, Key={"address": normalize(address)}, ConsistentRead=True)
     return response.get("Item")
 
 

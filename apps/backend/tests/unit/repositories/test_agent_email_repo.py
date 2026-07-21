@@ -89,6 +89,42 @@ async def test_get_by_address_is_case_insensitive_on_read(agent_email_table):
 
 
 @pytest.mark.asyncio
+async def test_get_by_address_uses_consistent_read(agent_email_table, monkeypatch):
+    """`mint_agent_email_address` uses `get_by_address` as its idempotency
+    guard before `put`. A stale (eventually-consistent) GetItem miss would
+    let `put` overwrite an existing row and reset its `created_at`, which
+    flips the deterministic earliest-`created_at` tie-break in
+    `owner_facts._lookup_email_address`. GetItem against the base table
+    supports `ConsistentRead=True`, so the guard must ask for it."""
+    from core.repositories import agent_email_repo
+
+    await agent_email_repo.put(
+        address="acme@agents.isol8.co",
+        owner_id="user_1",
+        agent_id="agent_friday",
+        verified_senders=[],
+    )
+
+    calls = []
+    real_get_item = agent_email_table.get_item
+
+    def spy_get_item(**kwargs):
+        calls.append(kwargs)
+        return real_get_item(**kwargs)
+
+    class _TableSpy:
+        def get_item(self, **kwargs):
+            return spy_get_item(**kwargs)
+
+    monkeypatch.setattr(agent_email_repo, "_get_table", lambda: _TableSpy())
+
+    row = await agent_email_repo.get_by_address("acme@agents.isol8.co")
+    assert row is not None
+    assert len(calls) == 1
+    assert calls[0].get("ConsistentRead") is True
+
+
+@pytest.mark.asyncio
 async def test_put_is_idempotent_for_the_same_owner(agent_email_table):
     """Re-affirming your own address is a success, not a conflict — mirrors
     ``company_slug_repo.reserve``'s idempotent-for-the-same-owner posture."""

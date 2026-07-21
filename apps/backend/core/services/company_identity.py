@@ -24,6 +24,7 @@ _SLUG_STRIP_RE = re.compile(r"[^a-z0-9]+")
 MAX_SLUG_LEN = 32
 _MAX_SUFFIX_ATTEMPTS = 50
 _FALLBACK_SLUG = "company"
+_FALLBACK_COMPANY_NAME = "My Company"
 
 # These become email local parts, so they must never be handed to a tenant.
 #
@@ -90,6 +91,12 @@ async def generate_company_name(*, org_id: str | None, owner_email: str) -> str:
     get a prettified form of their email local part. Never raises — a
     Clerk hiccup falls back to the email, and a malformed (non-string)
     ``owner_email`` falls back to a generic name rather than propagating.
+    Never returns an empty/whitespace string either: a pathological
+    ``owner_email`` (e.g. ``"@example.com"``) prettifies to ``""``, and the
+    ``create_company(name=...)`` call site is NOT inside this function's
+    try/except — an empty name would 400 and fail a net-new owner's
+    provision, so both the Clerk-org path (empty org name) and the
+    email-fallback path funnel through the same non-empty guard below.
     """
     if org_id:
         try:
@@ -107,13 +114,14 @@ async def generate_company_name(*, org_id: str | None, owner_email: str) -> str:
             if name:
                 return name
     try:
-        return prettify_email_local_part(owner_email)
+        name = prettify_email_local_part(owner_email)
     except (AttributeError, TypeError) as e:
         # `owner_email` wasn't a string (e.g. None from a malformed caller) —
         # fall back to a generic name rather than raise. The docstring says
         # "Never raises" and must stay true for this path too.
         logger.warning("company_identity: owner_email was not a string (%s); using fallback name", e)
-        return "My Company"
+        return _FALLBACK_COMPANY_NAME
+    return name if name.strip() else _FALLBACK_COMPANY_NAME
 
 
 async def allocate_company_slug(*, owner_id: str, name: str) -> str | None:
@@ -132,6 +140,20 @@ async def allocate_company_slug(*, owner_id: str, name: str) -> str | None:
     so the suffixed candidate never exceeds ``MAX_SLUG_LEN``. Never raises.
     """
     try:
+        # Best-effort reuse check: `get_by_owner` reads the `by-owner` GSI,
+        # which is eventually consistent. A re-entry that lands within the
+        # GSI's propagation window of the FIRST reservation's write can miss
+        # it here and fall through to deriving + reserving a base slug again
+        # — and if the derived base differs (e.g. the owner's Clerk org name
+        # changed between attempts), that reservation succeeds and the owner
+        # ends up holding a SECOND, never-released slug row
+        # (`company_slug_repo` has no delete path). When the derived base is
+        # stable across re-entries this is harmless: `company_slug_repo`'s
+        # base-table conditional put makes reservation of the SAME slug
+        # idempotent regardless of this check. A durable fix needs an
+        # authoritative per-owner slug value living on the (strongly
+        # consistent) company row itself, not a GSI lookup; that's an
+        # architectural change and out of scope here.
         existing = await company_slug_repo.get_by_owner(owner_id)
         if existing:
             return existing["slug"]

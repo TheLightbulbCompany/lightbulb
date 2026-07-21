@@ -15,6 +15,7 @@ Minting is best-effort by contract — ``provision_org`` calls it after
 seeding Friday, and a mail-side failure must never undo a good provision.
 """
 
+import hashlib
 import logging
 import re
 
@@ -31,23 +32,60 @@ _SLUG_RE = re.compile(r"[^a-z0-9]+")
 # mail system will accept.
 MAX_LOCAL_PART_LEN = 64
 
+# When the agent segment has to be truncated, two DIFFERENT agent names (or
+# two agents whose names happen to share a long slugified prefix) can
+# truncate to the IDENTICAL segment and collide on the identical address —
+# and `agent_email_repo.put`'s owner-scoped conditional lets the second mint
+# silently overwrite the first agent's row. `_DISAMBIGUATOR_LEN` hex chars of
+# a hash of `agent_id` are appended (only when truncation actually occurs) so
+# two different agents can never collide this way.
+_DISAMBIGUATOR_LEN = 6
+
 
 def _agent_slug(agent_name: str) -> str:
     slug = _SLUG_RE.sub("-", agent_name.strip().lower()).strip("-")
     return slug or "agent"
 
 
-def build_agent_email_address(*, slug: str, agent_name: str, domain: str, is_primary: bool) -> str:
+def _disambiguator(agent_id: str) -> str:
+    """Short, deterministic, derived from `agent_id` — never randomness, so
+    the same agent always mints the same address."""
+    return hashlib.sha256(agent_id.encode()).hexdigest()[:_DISAMBIGUATOR_LEN]
+
+
+def build_agent_email_address(*, slug: str, agent_name: str, domain: str, is_primary: bool, agent_id: str) -> str:
     """``{slug}@{domain}`` for the primary agent, ``{slug}-{agent}@{domain}``
     otherwise. Deterministic, lowercased, and never longer than
-    ``MAX_LOCAL_PART_LEN`` in the local part."""
+    ``MAX_LOCAL_PART_LEN`` in the local part.
+
+    When the agent segment doesn't fit and has to be truncated, a short
+    disambiguator derived from ``agent_id`` is folded in so two different
+    agents can never truncate to the same segment and collide (see
+    ``_DISAMBIGUATOR_LEN`` docstring above). Short names that fit untouched
+    get no disambiguator — the address stays clean (``acme-atlas@``)."""
     local = slug.strip().lower()
     if not is_primary:
         # Truncate the AGENT segment only — the company slug is the owner's
         # identity and must survive intact, and trimming the whole joined
         # string could clip the separator and collide with the primary.
         budget = MAX_LOCAL_PART_LEN - len(local) - 1
-        agent = _agent_slug(agent_name)[:budget].strip("-") if budget > 0 else ""
+        if budget > 0:
+            full_agent = _agent_slug(agent_name)
+            if len(full_agent) <= budget:
+                agent = full_agent
+            else:
+                disambiguator = _disambiguator(agent_id)
+                trimmed_budget = budget - len(disambiguator) - 1  # "-" + hash
+                if trimmed_budget > 0:
+                    stripped = full_agent[:trimmed_budget].rstrip("-")
+                    agent = f"{stripped}-{disambiguator}" if stripped else disambiguator
+                else:
+                    # Budget too small even for "prefix-hash" — fall back to
+                    # (a slice of) the hash alone, prioritizing uniqueness
+                    # over readability.
+                    agent = disambiguator[:budget]
+        else:
+            agent = ""
         local = f"{local}-{agent or 'agent'[: max(budget, 1)]}"
     return f"{local[:MAX_LOCAL_PART_LEN]}@{domain.strip().lower()}"
 
@@ -84,7 +122,9 @@ async def mint_agent_email_address(
             logger.debug("agent_email.mint: no slug for owner %s; skipping", owner_id)
             return None
 
-        address = build_agent_email_address(slug=slug, agent_name=agent_name, domain=domain, is_primary=is_primary)
+        address = build_agent_email_address(
+            slug=slug, agent_name=agent_name, domain=domain, is_primary=is_primary, agent_id=agent_id
+        )
 
         existing = await agent_email_repo.get_by_address(address)
         if existing is not None:

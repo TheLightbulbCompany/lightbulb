@@ -22,7 +22,10 @@ jest.mock("expo-router", () => ({
 
 // user: null keeps history hydration inert — which is exactly the trap this
 // suite pins: nothing else may be relied on to clear a stale conversation.
-jest.mock("@clerk/clerk-expo", () => ({ useUser: () => ({ user: null }) }));
+jest.mock("@clerk/clerk-expo", () => ({
+  useUser: () => ({ user: null }),
+  useAuth: () => ({ getToken: jest.fn(async () => "token") }),
+}));
 
 jest.mock("expo-crypto", () => ({
   randomUUID: () => "00000000-0000-4000-8000-000000000000",

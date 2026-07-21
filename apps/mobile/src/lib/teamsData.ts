@@ -93,6 +93,16 @@ export interface ChildIssue {
   status?: string | null;
 }
 
+/** An agent run from `GET /teams/issues/{id}/runs` (`{runs:[…]}`, web parity). */
+export interface IssueRun {
+  runId: string;
+  status: string;
+  agentId?: string | null;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  createdAt?: string | null;
+}
+
 /** An agent from `GET /teams/agents` (`{agents:[{…,seeded}]}`, adapter redacted). */
 export interface TeamsAgent {
   id: string;
@@ -316,6 +326,7 @@ export type IssueDetailState =
       agents: TeamsAgent[];
       members: CompanyMember[];
       approvals: TeamsApproval[];
+      runs: IssueRun[];
     };
 
 export function useTeamsIssue(issueId: string | undefined) {
@@ -361,7 +372,7 @@ export function useTeamsIssue(issueId: string | undefined) {
 
       // Secondary reads are best-effort: a comments/children/agents/members
       // failure must not blank out an issue that loaded fine.
-      const [comments, children, agents, members, approvals] = await Promise.all([
+      const [comments, children, agents, members, approvals, runs] = await Promise.all([
         // Upstream defaults to newest-first; the web thread view renders
         // ascending chronological, so request asc and defensively re-sort by
         // createdAt in case the query param isn't honored.
@@ -383,9 +394,23 @@ export function useTeamsIssue(issueId: string | undefined) {
         // secondary reads: a failure just hides the Approvals section, it never
         // blanks an issue that otherwise loaded.
         fetchIssueApprovals(config, issueId),
+        // Agent runs for this issue (web IssueRunsSection parity) — newest
+        // first; a failure just hides the Runs section.
+        fetchJsonWithStatus(config, `/teams/issues/${encodeURIComponent(issueId)}/runs`)
+          .then((r) => {
+            const list = (r.body as { runs?: unknown } | null)?.runs;
+            const runRows = Array.isArray(list) ? (list as IssueRun[]) : [];
+            const runTime = (run: IssueRun) => {
+              const v = run.startedAt ?? run.createdAt ?? null;
+              const t = v ? new Date(v).getTime() : 0;
+              return Number.isNaN(t) ? 0 : t;
+            };
+            return [...runRows].sort((a, b) => runTime(b) - runTime(a));
+          })
+          .catch(() => [] as IssueRun[]),
       ]);
       if (loadSeq.current !== seq) return;
-      setState({ kind: "ready", issue, comments, children, agents, members, approvals });
+      setState({ kind: "ready", issue, comments, children, agents, members, approvals, runs });
     } catch (err) {
       if (loadSeq.current !== seq) return;
       const gate = gateFromError(err);
@@ -1596,9 +1621,11 @@ export function commentAuthorLabel(
   return "Comment";
 }
 
-/** Heuristic: treat text with markdown markers as markdown, else plain. */
+/** Heuristic: should this body go through the markdown renderer?
+ * True for markdown markers AND bare URLs — MessageMarkdown linkifies bare
+ * URLs into tappable links, while a plain <Text> renders them dead. */
 export function looksLikeMarkdown(text: string): boolean {
-  return /(^|\n)\s{0,3}(#{1,6}\s|[-*+]\s|\d+\.\s|>\s|```)|\*\*|`[^`]+`|\[[^\]]+\]\([^)]+\)/.test(
+  return /(^|\n)\s{0,3}(#{1,6}\s|[-*+]\s|\d+\.\s|>\s|```)|\*\*|`[^`]+`|\[[^\]]+\]\([^)]+\)|https?:\/\//.test(
     text,
   );
 }

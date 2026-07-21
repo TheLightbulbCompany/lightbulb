@@ -146,12 +146,15 @@ describe("ContainerStack — dev", () => {
     });
   });
 
-  test("openclaw container runs bounded, non-blocking `doctor --fix` legacy-state migration before the gateway", () => {
+  test("openclaw container runs bounded, non-blocking, promptless doctor legacy-state migration before the gateway", () => {
     // Load-bearing: 2026.7.x fail-closes agent runs on un-migrated legacy
     // per-workspace state, so this boot step is what unbricks agents on a base
     // roll. Assert it survives future startup-command refactors, and that its
-    // three safety properties stay intact — bounded (`timeout --kill-after`),
-    // headless-safe (`< /dev/null`), non-blocking (`|| echo`, never `&& exec`) —
+    // four safety properties stay intact — bounded (`timeout --kill-after`),
+    // promptless (`--yes --non-interactive`: doctor prompts HANG on a closed
+    // stdin instead of taking their default, and `--non-interactive` is also
+    // what auto-applies the legacy-state migration), headless-safe
+    // (`< /dev/null`), non-blocking (`|| echo`, never `&& exec`) —
     // AND that it runs BEFORE `exec node ... gateway` so no gateway holds the
     // SQLite lock during the migration. The trailing `.*exec node ... gateway$`
     // anchors ordering: doctor must appear earlier in the single joined command.
@@ -165,7 +168,7 @@ describe("ContainerStack — dev", () => {
             "-c",
             Match.stringLikeRegexp(
               // `\\|` escapes the regex alternation so we match a literal `|`.
-              "timeout --kill-after=30 300 node /app/openclaw\\.mjs doctor --fix < /dev/null "
+              "timeout --kill-after=30 300 node /app/openclaw\\.mjs doctor --fix --yes --non-interactive < /dev/null "
               + "\\|\\| echo .*"
               + "exec node /app/openclaw\\.mjs gateway --port 18789 --bind lan$",
             ),

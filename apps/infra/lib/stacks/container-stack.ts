@@ -577,9 +577,16 @@ export class ContainerStack extends cdk.Stack {
       // abort mid config-audit-scrub and take that lock; upstream explicitly says
       // "stop the gateway or wait until it is idle".)
       //
-      // `--fix` applies recommended repairs WITHOUT prompting and backs up before
-      // modifying (non-destructive). `< /dev/null` makes any residual y/N prompt
-      // read EOF and take its default instead of hanging this headless boot.
+      // `--fix` applies recommended repairs and backs up before modifying
+      // (non-destructive) — but it does NOT suppress confirm prompts, and a
+      // prompt on a closed stdin HANGS rather than taking its default (observed
+      // on a prod boot: doctor sat at a post-"Command owner" confirm for the
+      // full 300s and was timeout-killed BEFORE ever reaching the legacy-state
+      // migration). `--non-interactive` is the flag that both bypasses every
+      // prompt AND auto-applies the detected legacy-state migration (upstream
+      // treats nonInteractive as consent for safe migrations); `--yes` accepts
+      // defaults on any remaining prompt path. `< /dev/null` stays as a last
+      // line of defense so an unguarded prompt reads EOF instead of a TTY.
       // `timeout` bounds a wedged migration (EFS/SQLite can stall) so it can never
       // infinite-loop the boot; `--kill-after=30` escalates SIGTERM -> SIGKILL 30s
       // later so a migration that ignores/misses the term (or is between syscalls)
@@ -596,7 +603,7 @@ export class ContainerStack extends cdk.Stack {
       // mid-run health replacement — is what caps a slow pass; the gateway then
       // still binds and reports healthy inside the window. A migration heavier
       // than 300s is cleanly cut and resumes on a later boot (persisted, idempotent).
-      "timeout --kill-after=30 300 node /app/openclaw.mjs doctor --fix < /dev/null || echo '[boot] openclaw doctor --fix did not finish cleanly; continuing to gateway'",
+      "timeout --kill-after=30 300 node /app/openclaw.mjs doctor --fix --yes --non-interactive < /dev/null || echo '[boot] openclaw doctor --fix did not finish cleanly; continuing to gateway'",
       // Step D — launch the gateway.
       "exec node /app/openclaw.mjs gateway --port 18789 --bind lan",
     ].join("; ");

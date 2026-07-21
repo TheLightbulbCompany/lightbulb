@@ -451,6 +451,36 @@ export default function AgentChat() {
     if (dispatchText(input.trim())) setInput("");
   }, [dispatchText, input]);
 
+  // Cancel the in-flight run. agent_abort → upstream chat.abort, targeted at
+  // this screen's run. Fire-and-don't-wait-for-terminal (the backend contract):
+  // the aborted terminal arrives via the normal stream and releases `busy`
+  // there — never here, so a dropped abort can't strand a live run's frames.
+  const stopRun = useCallback(() => {
+    const runId = activeRunIdRef.current;
+    if (!runId || !agentId) return;
+    const sent = gateway.send({
+      type: "agent_abort",
+      agent_id: agentId,
+      runId,
+      // Same shape rule as sendChat: session_id rides only for a named session.
+      ...(activeSessionId ? { session_id: activeSessionId } : {}),
+    });
+    // The raw send is a silent no-op on a closed socket. The button is gated
+    // on isConnected, but that state can trail the socket by a beat — surface
+    // the miss instead of swallowing it. The run gate stays up either way;
+    // only the run's terminal releases it.
+    if (!sent) {
+      setItems((prev) => [
+        ...prev,
+        {
+          id: randomUUID(),
+          role: "error",
+          text: "Connection lost — stop not sent. Try again once reconnected.",
+        },
+      ]);
+    }
+  }, [gateway, agentId, activeSessionId]);
+
   // First-run kickoff (web useFirstRunKickoff parity): once the funnel brief
   // is submitted and this screen shows the DEFAULT agent (Friday) over a live
   // socket, auto-send the visible kickoff prompt exactly once. agents.list is
@@ -682,10 +712,10 @@ export default function AgentChat() {
           );
         }}
       />
-      {/* Composer (spec §4). No stop button v1: the screen has no abort path
-          (the mobile gateway exposes no chat.abort helper yet). No attach
-          affordance until an upload flow exists on mobile — a dead control
-          reads as broken. */}
+      {/* Composer (spec §4). While a run is active the send button becomes a
+          Stop button (agent_abort → upstream chat.abort). No attach affordance
+          until an upload flow exists on mobile — a dead control reads as
+          broken. */}
       <View style={styles.composerOuter}>
         {!gateway.isConnected && <ReconnectingBanner />}
         <View style={[styles.card, inputFocused && styles.cardFocused]}>
@@ -704,22 +734,41 @@ export default function AgentChat() {
             />
           </View>
           <View style={styles.rail}>
-            <Pressable
-              style={[
-                styles.sendButton,
-                (busy || !input.trim()) && styles.sendDisabled,
-              ]}
-              onPress={send}
-              disabled={busy || !input.trim()}
-              accessibilityRole="button"
-              accessibilityLabel="Send"
-            >
-              <Feather
-                name="arrow-up"
-                size={16}
-                color={busy || !input.trim() ? colors.placeholder : colors.white}
-              />
-            </Pressable>
+            {busy ? (
+              // Gated on the socket like the TextInput above: a dead socket
+              // makes stopRun's raw send a silent no-op, so an active-looking
+              // Stop would eat taps without feedback.
+              <Pressable
+                style={[
+                  styles.sendButton,
+                  !gateway.isConnected && styles.sendDisabled,
+                ]}
+                onPress={stopRun}
+                disabled={!gateway.isConnected}
+                accessibilityRole="button"
+                accessibilityLabel="Stop"
+              >
+                <Feather
+                  name="square"
+                  size={14}
+                  color={!gateway.isConnected ? colors.placeholder : colors.white}
+                />
+              </Pressable>
+            ) : (
+              <Pressable
+                style={[styles.sendButton, !input.trim() && styles.sendDisabled]}
+                onPress={send}
+                disabled={!input.trim()}
+                accessibilityRole="button"
+                accessibilityLabel="Send"
+              >
+                <Feather
+                  name="arrow-up"
+                  size={16}
+                  color={!input.trim() ? colors.placeholder : colors.white}
+                />
+              </Pressable>
+            )}
           </View>
         </View>
       </View>

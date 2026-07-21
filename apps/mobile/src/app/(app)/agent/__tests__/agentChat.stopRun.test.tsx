@@ -25,10 +25,11 @@ jest.mock("expo-crypto", () => ({
 // captured onChatMessage handler lets tests inject incoming frames.
 const mockSend = jest.fn(() => true);
 const mockSendChat = jest.fn();
+let mockConnected = true;
 let chatHandler: ((msg: unknown) => void) | null = null;
 jest.mock("../../../../providers/gateway", () => ({
   useGateway: () => ({
-    isConnected: true,
+    isConnected: mockConnected,
     error: null,
     onChatMessage: (h: (msg: unknown) => void) => {
       chatHandler = h;
@@ -60,6 +61,7 @@ describe("AgentChat stop run", () => {
   beforeEach(() => {
     mockSend.mockClear().mockReturnValue(true);
     mockSendChat.mockClear();
+    mockConnected = true;
     chatHandler = null;
   });
 
@@ -99,5 +101,45 @@ describe("AgentChat stop run", () => {
     });
     expect(await screen.findByLabelText("Send")).toBeTruthy();
     expect(screen.queryByLabelText("Stop")).toBeNull();
+  });
+
+  it("disables Stop while the socket is down", async () => {
+    await render(<AgentChat />);
+    await startRun();
+    await screen.findByLabelText("Stop");
+    const runId = mockSendChat.mock.calls[0][2];
+    // Socket drops mid-run. A streamed frame re-renders the screen the same
+    // way the provider's disconnect state change does in the app; the next
+    // render must read the dead socket and gate the button — the raw abort
+    // send would be a silent no-op, so Stop must not present as pressable
+    // (mirrors the TextInput's editable gating). The act must be awaited:
+    // the frame lands outside React's event system, so the scheduled render
+    // only flushes across a microtask boundary.
+    mockConnected = false;
+    await act(async () => {
+      chatHandler?.({
+        type: "chunk",
+        agent_id: "agent_a",
+        runId,
+        content: "partial",
+        append: true,
+      });
+    });
+    expect(await screen.findByText("Reconnecting…")).toBeTruthy();
+    expect(screen.getByLabelText("Stop")).toBeDisabled();
+  });
+
+  it("surfaces an inline error when the abort frame can't be sent", async () => {
+    await render(<AgentChat />);
+    await startRun();
+    // isConnected still reads true but the socket closed underneath —
+    // gateway.send reports the miss via its return value.
+    mockSend.mockReturnValue(false);
+    fireEvent.press(await screen.findByLabelText("Stop"));
+    expect(
+      await screen.findByText(/stop not sent/i, { exact: false }),
+    ).toBeTruthy();
+    // The run gate still only releases on the terminal, never locally.
+    expect(screen.getByLabelText("Stop")).toBeTruthy();
   });
 });

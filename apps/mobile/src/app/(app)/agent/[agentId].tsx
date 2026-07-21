@@ -443,13 +443,27 @@ export default function AgentChat() {
   const stopRun = useCallback(() => {
     const runId = activeRunIdRef.current;
     if (!runId || !agentId) return;
-    gateway.send({
+    const sent = gateway.send({
       type: "agent_abort",
       agent_id: agentId,
       runId,
       // Same shape rule as sendChat: session_id rides only for a named session.
       ...(activeSessionId ? { session_id: activeSessionId } : {}),
     });
+    // The raw send is a silent no-op on a closed socket. The button is gated
+    // on isConnected, but that state can trail the socket by a beat — surface
+    // the miss instead of swallowing it. The run gate stays up either way;
+    // only the run's terminal releases it.
+    if (!sent) {
+      setItems((prev) => [
+        ...prev,
+        {
+          id: randomUUID(),
+          role: "error",
+          text: "Connection lost — stop not sent. Try again once reconnected.",
+        },
+      ]);
+    }
   }, [gateway, agentId, activeSessionId]);
 
   // First-run kickoff (web useFirstRunKickoff parity): once the funnel brief
@@ -706,13 +720,24 @@ export default function AgentChat() {
           </View>
           <View style={styles.rail}>
             {busy ? (
+              // Gated on the socket like the TextInput above: a dead socket
+              // makes stopRun's raw send a silent no-op, so an active-looking
+              // Stop would eat taps without feedback.
               <Pressable
-                style={styles.sendButton}
+                style={[
+                  styles.sendButton,
+                  !gateway.isConnected && styles.sendDisabled,
+                ]}
                 onPress={stopRun}
+                disabled={!gateway.isConnected}
                 accessibilityRole="button"
                 accessibilityLabel="Stop"
               >
-                <Feather name="square" size={14} color={colors.white} />
+                <Feather
+                  name="square"
+                  size={14}
+                  color={!gateway.isConnected ? colors.placeholder : colors.white}
+                />
               </Pressable>
             ) : (
               <Pressable

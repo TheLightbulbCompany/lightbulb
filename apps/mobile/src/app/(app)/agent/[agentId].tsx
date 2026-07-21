@@ -58,11 +58,15 @@ function ReconnectingBanner() {
  * (General or a named UUID session — see .superpowers/sdd/
  * w1-sessions-contract.md). Protocol handling follows the web contract:
  *
- * - `chunk` frames arrive as append deltas (`append: true`) or full-text
- *   resyncs; accumulateStreamText reconstructs the run's CUMULATIVE text
- *   (matching the web useAgentChat segment model). Bubbles REPLACE their
- *   text from that buffer, and a per-run committed offset splits the
- *   cumulative stream into per-segment bubbles when tool calls interleave.
+ * - `chunk` frames arrive as append deltas (`append: true`), folded into
+ *   the run buffer via accumulateStreamText, or as SEGMENT-scoped resyncs
+ *   (no `append` — the current assistant message only), which the chunk
+ *   handler rebuilds as frozen-prefix + segment text itself (see
+ *   packages/shared streamText docstring; web useAgentChat still folds
+ *   resyncs through the cumulative model and carries the latent chop).
+ *   Bubbles REPLACE their text from that buffer, and a per-run committed
+ *   offset splits the cumulative stream into per-segment bubbles when
+ *   tool calls interleave.
  * - `run_ended` (not `done`) releases the busy gate — `done` also fires on
  *   interim tool-approval brackets.
  *
@@ -166,7 +170,18 @@ export default function AgentChat() {
 
       if (msg.type === "chunk") {
         const segmentId = `${runId}-s${segmentRef.current}`;
-        const cumulative = accumulateStreamText(cumulativeTextRef.current, msg);
+        // Non-append resync frames (first frame after a reconnect, replace
+        // events, the chat.final backstop) carry the CURRENT assistant
+        // message's full text — upstream resets its accumulator at every
+        // message_start, i.e. after every tool call — NOT the run-cumulative
+        // text this buffer holds. Rebuild as frozen-prefix + segment text;
+        // treating it as run-cumulative chopped the live bubble at the
+        // committed offset ("disappearing sentences"). With no committed
+        // prefix this degrades to the plain replace it always was.
+        const cumulative = msg.append
+          ? accumulateStreamText(cumulativeTextRef.current, msg)
+          : (cumulativeTextRef.current ?? "").slice(0, committedOffsetRef.current) +
+            msg.content;
         cumulativeTextRef.current = cumulative;
         const segmentText = cumulative.slice(committedOffsetRef.current);
         lastCumulativeLenRef.current = cumulative.length;

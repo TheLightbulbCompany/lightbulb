@@ -13,11 +13,17 @@ export type ToolResultBlock = { type: string; text?: string; bytes?: number; omi
 
 export type ChatIncomingMessage =
   // Streaming text. `append: true` means `content` is an incremental delta to
-  // append to the run's accumulated text; absent means `content` is the FULL
-  // accumulated text (cumulative replacement — the legacy contract, still used
-  // for the first frame the backend sends a connection per run, for OpenClaw
-  // `replace: true` events, and for the chat.final backstop). Reconstruct via
-  // accumulateStreamText() so both shapes collapse to one cumulative buffer.
+  // append to the run's accumulated text; absent means `content` is the full
+  // text of the CURRENT assistant message only. Upstream resets its
+  // accumulator at every assistant message_start (i.e. after every tool
+  // call), so mid-run non-append content is SEGMENT-scoped, not
+  // run-cumulative. Sent as the first frame per (connection, run), for
+  // OpenClaw `replace: true` events, and as the chat.final backstop. A
+  // caller tracking a committed segment offset must rebuild non-append
+  // frames as frozen-prefix + content (see the mobile agent screen's chunk
+  // handler) rather than folding them through accumulateStreamText(),
+  // whose replace branch is only run-correct before the first tool call —
+  // see ./streamText.
   | { type: "chunk"; content: string; append?: boolean; agent_id?: string; runId: string; session_id?: string }
   | { type: "thinking"; content: string; append?: boolean; agent_id?: string; runId: string; session_id?: string }
   | { type: "done"; agent_id?: string; runId: string; session_id?: string }

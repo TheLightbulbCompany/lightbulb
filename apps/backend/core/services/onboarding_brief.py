@@ -203,6 +203,21 @@ def _domain_of(raw: str) -> str:
     return value or raw.strip()
 
 
+def _cap_title(title: str) -> str:
+    """Bound a provisional title to _MAX_GOAL_TITLE.
+
+    Applies on EVERY path, not just ``new``: the ``grow`` path derives its
+    title from a free-text field (``_domain_of`` falls back to the raw input
+    when it isn't a parseable URL, and the field allows up to 2000 chars), so
+    a user pasting a paragraph into the website box would otherwise produce a
+    ~2000-char title. If Paperclip's goal schema rejects that, the client
+    retries the identical oversized title forever — same input, same reject.
+    """
+    if len(title) <= _MAX_GOAL_TITLE:
+        return title
+    return title[: _MAX_GOAL_TITLE - 1].rstrip() + "…"
+
+
 def derive_goal_title(*, path: str, user_input: str | None) -> str:
     """Provisional goal title — a real mission statement on every path.
 
@@ -214,11 +229,8 @@ def derive_goal_title(*, path: str, user_input: str | None) -> str:
         # their situation and stops being true the moment Friday chooses.
         return "Find the right business to build"
     if path == "grow":
-        return f"Grow {_domain_of(user_input)}"
-    text = user_input.strip()
-    if len(text) <= _MAX_GOAL_TITLE:
-        return text
-    return text[: _MAX_GOAL_TITLE - 1].rstrip() + "…"
+        return _cap_title(f"Grow {_domain_of(user_input)}")
+    return _cap_title(user_input.strip())
 
 
 def project_name_for(first_name: str) -> str:

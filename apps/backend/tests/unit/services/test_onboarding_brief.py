@@ -139,6 +139,15 @@ def test_goal_title_grow_path_is_a_mission_not_a_url():
     )
 
 
+def test_goal_title_grow_path_caps_a_pasted_paragraph():
+    # The website field is free text (up to 2000 chars); a user pasting prose
+    # instead of a URL must not produce a ~2000-char title that Paperclip
+    # could reject, stalling the client in an identical-input retry loop.
+    title = derive_goal_title(path="grow", user_input="x" * 300)
+    assert len(title) <= 120
+    assert title.endswith("…")
+
+
 def test_goal_title_no_idea_path_describes_the_actual_situation():
     assert derive_goal_title(path="new", user_input=None) == "Find the right business to build"
 

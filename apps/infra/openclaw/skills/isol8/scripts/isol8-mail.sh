@@ -49,7 +49,11 @@ command -v curl >/dev/null 2>&1 || die 'Missing required command: curl'
 [[ -n "${OPENCLAW_HOOK_TOKEN:-}" ]] || die 'Missing OPENCLAW_HOOK_TOKEN.'
 [[ -n "${ISOL8_API_URL:-}" ]] || die 'Missing ISOL8_API_URL.'
 
-body="$(cat)"
+if [[ -t 0 ]]; then
+  body=""
+else
+  body="$(cat)"
+fi
 [[ -n "$body" ]] || die 'Reply body (stdin) is empty -- refusing to send an empty reply.'
 
 payload="$(jq -nc --arg tok "$reply_token" --arg body "$body" '{reply_token: $tok, body_text: $body}')"

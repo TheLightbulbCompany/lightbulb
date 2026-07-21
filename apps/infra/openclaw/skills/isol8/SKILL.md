@@ -106,9 +106,10 @@ the platform can't do.
 ## Replying by email
 
 Some agents have their own email address, provisioned per-owner. Check
-`~/.openclaw/isol8-facts.json` for an `email_address` field — if it's
-missing, this feature isn't provisioned for this owner: don't claim to have
-an email address or offer to reply by email.
+`~/.openclaw/isol8-facts.json` for a non-empty `email_address` value — the
+key is always present, but its value is `null` until provisioned. If it is
+absent, `null`, or empty, email is not provisioned for this owner: don't
+claim to have an email address or offer to reply by email.
 
 When you have one, and a message you receive begins with an email header
 block that includes a `Reply-Token:` line, that message reached you as an

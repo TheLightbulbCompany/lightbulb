@@ -1,12 +1,13 @@
 """Tests for the SES-inbound agent-email ingest Lambda.
 
 Covers: MIME parsing (from/to/subject/plain-text body/headers), SES verdict
-extraction, attachment storage + presigned URLs (with count/size caps and
-per-attachment failure isolation), the shared-secret header, and the
-FAILURE POSTURE described in index.py's module docstring — a non-2xx
-backend response never raises, but an S3/parse failure or a backend
-transport failure (no response at all) always does, so SES/Lambda's retry
-policy re-invokes.
+extraction, attachment storage + presigned URLs (with count/size caps,
+pre-decode size estimation, per-attachment failure isolation, and
+collision-safe S3 keys), the shared-secret header, and the FAILURE POSTURE
+described in index.py's module docstring — a 2xx/4xx backend response never
+raises, but a 5xx response, an S3/parse failure, or a backend transport
+failure (no response at all) always does, so SES/Lambda's retry policy
+re-invokes.
 
 boto3 clients (S3, Secrets Manager) are stubbed with plain MagicMocks —
 unlike the bedrock-usage-meter Lambda's tests, nothing here exercises a
@@ -196,7 +197,9 @@ def test_handler_posts_clean_payload_with_verdicts_and_attachment():
     s3.put_object.assert_called_once()
     put_kwargs = s3.put_object.call_args.kwargs
     assert put_kwargs["Bucket"] == ATTACHMENTS_BUCKET
-    assert put_kwargs["Key"] == f"inbound/{MESSAGE_ID}/note.txt"
+    # The key is index-prefixed (see the duplicate-filename collision test
+    # below); the manifest's `filename` field keeps the plain original name.
+    assert put_kwargs["Key"] == f"inbound/{MESSAGE_ID}/0-note.txt"
     assert put_kwargs["Body"] == b"hello world"
 
 
@@ -332,14 +335,19 @@ def test_attachment_total_bytes_capped(monkeypatch):
     import index
 
     # Shrink the cap so the test doesn't need to construct real megabytes.
-    monkeypatch.setattr(index, "_MAX_ATTACHMENTS_TOTAL_BYTES", 10)
+    # The cap is now checked against the pre-decode (base64) estimate, not
+    # the exact decoded size, so this has to clear "a.txt"'s ~12-byte
+    # estimate (its 10 decoded bytes base64-encode to 17 chars, incl.
+    # padding/newline -> int(17*3/4) == 12) while still excluding "b.txt"'s
+    # ~21-byte estimate (10 + 21 == 31 > 15).
+    monkeypatch.setattr(index, "_MAX_ATTACHMENTS_TOTAL_BYTES", 15)
 
     msg = email.message.EmailMessage()
     msg["From"] = "Jane Doe <jane@example.com>"
     msg["To"] = "agent@agents.isol8.co"
     msg["Subject"] = "Big attachments"
     msg.set_content("body\n")
-    msg.add_attachment(b"0123456789", maintype="text", subtype="plain", filename="a.txt")  # exactly 10 bytes
+    msg.add_attachment(b"0123456789", maintype="text", subtype="plain", filename="a.txt")  # 10 decoded bytes
     msg.add_attachment(b"this-pushes-us-over", maintype="text", subtype="plain", filename="b.txt")
     raw = msg.as_bytes()
 
@@ -358,21 +366,145 @@ def test_attachment_total_bytes_capped(monkeypatch):
     assert attachments[0]["filename"] == "a.txt"
 
 
+def test_oversized_attachment_skipped_without_decoding(monkeypatch):
+    """The size cap must be enforced from the still-encoded payload length
+    BEFORE `get_content()` decodes the part into memory — a crafted huge
+    attachment is never decoded just to find out it should be dropped. The
+    message (and any other, small attachment) still POSTs."""
+    import index
+
+    monkeypatch.setattr(index, "_MAX_ATTACHMENTS_TOTAL_BYTES", 100)
+
+    raw = _build_raw_mime(attachment=False)
+    s3, secretsmanager = _stub_clients(raw)
+    captured = {}
+
+    small_att = MagicMock()
+    small_att.get_filename.return_value = "small.txt"
+    small_att.get_content_type.return_value = "text/plain"
+    small_att.get_payload.return_value = "aGVsbG8="  # tiny base64 payload
+    small_att.get_content.return_value = "hello"
+
+    huge_att = MagicMock()
+    huge_att.get_filename.return_value = "huge.bin"
+    huge_att.get_content_type.return_value = "application/octet-stream"
+    # A raw (still-encoded) payload whose estimated decoded size alone blows
+    # the (monkeypatched, tiny) cap.
+    huge_att.get_payload.return_value = "A" * 1000
+    huge_att.get_content.return_value = b"x" * 750  # would never be reached
+
+    fake_msg = MagicMock()
+    fake_msg.iter_attachments.return_value = [small_att, huge_att]
+    fake_msg.get.side_effect = lambda key, default=None: {
+        "From": "Jane Doe <jane@example.com>",
+        "Subject": "Oversized attachment",
+    }.get(key, default)
+    fake_msg.get_body.return_value = None
+    fake_msg.items.return_value = []
+
+    with (
+        patch.object(index, "_s3", return_value=s3),
+        patch.object(index, "_secretsmanager", return_value=secretsmanager),
+        patch.object(index, "message_from_bytes", return_value=fake_msg),
+        patch("index.urllib.request.urlopen", side_effect=_fake_urlopen_capturing(captured)),
+    ):
+        result = index.handler(_ses_event(), None)
+
+    # The oversized part's get_content() (the full base64 decode) must never
+    # be called — that is the whole point of the pre-decode size estimate.
+    huge_att.get_content.assert_not_called()
+
+    assert result["processed"] == 1
+    attachments = captured["body"]["attachments"]
+    assert len(attachments) == 1
+    assert attachments[0]["filename"] == "small.txt"
+
+
+def test_duplicate_filenames_get_distinct_s3_keys():
+    """Two parts sharing a filename must not collide on the same S3 key —
+    the part index is folded into the key; the manifest keeps the plain
+    original filename."""
+    import index
+
+    msg = email.message.EmailMessage()
+    msg["From"] = "Jane Doe <jane@example.com>"
+    msg["To"] = "agent@agents.isol8.co"
+    msg["Subject"] = "Duplicate filenames"
+    msg.set_content("body\n")
+    msg.add_attachment(b"first", maintype="text", subtype="plain", filename="dup.txt")
+    msg.add_attachment(b"second", maintype="text", subtype="plain", filename="dup.txt")
+    raw = msg.as_bytes()
+
+    s3, secretsmanager = _stub_clients(raw)
+    captured = {}
+
+    with (
+        patch.object(index, "_s3", return_value=s3),
+        patch.object(index, "_secretsmanager", return_value=secretsmanager),
+        patch("index.urllib.request.urlopen", side_effect=_fake_urlopen_capturing(captured)),
+    ):
+        index.handler(_ses_event(), None)
+
+    keys = [call.kwargs["Key"] for call in s3.put_object.call_args_list]
+    assert keys == [f"inbound/{MESSAGE_ID}/0-dup.txt", f"inbound/{MESSAGE_ID}/1-dup.txt"]
+    assert len(set(keys)) == 2  # distinct S3 objects, no overwrite
+
+    attachments = captured["body"]["attachments"]
+    assert [a["filename"] for a in attachments] == ["dup.txt", "dup.txt"]
+
+
 # ---------------------------------------------------------------------------
-# FAILURE POSTURE. A non-2xx backend response never raises (the backend
-# already answered); an S3/parse failure or a transport-level POST failure
-# (no response at all) always does, so SES/Lambda's retry policy fires.
+# Presigned attachment URL TTL — must be realistic (bounded by the Lambda
+# execution role's temporary credentials), not the illusory 24h it used to be.
 # ---------------------------------------------------------------------------
 
 
-def test_backend_non_2xx_response_does_not_raise():
+def test_presigned_url_ttl_is_one_hour():
+    import index
+
+    assert index._PRESIGNED_URL_EXPIRY_SECONDS == 3600
+
+
+# ---------------------------------------------------------------------------
+# FAILURE POSTURE. A 2xx/4xx backend response never raises (the backend
+# already answered, terminally); a 5xx response, an S3/parse failure, or a
+# transport-level POST failure (no response at all) always raises, so
+# SES/Lambda's retry policy fires.
+# ---------------------------------------------------------------------------
+
+
+def test_backend_5xx_response_raises():
+    """A 5xx means the backend is signalling a transient failure — it must
+    propagate so SES retries the delivery (the backend dedups on
+    message_id, so a retry that eventually succeeds is not a double
+    delivery)."""
     import index
 
     raw = _build_raw_mime(attachment=False)
     s3, secretsmanager = _stub_clients(raw)
 
     def _urlopen(req, timeout=None):
-        raise urllib.error.HTTPError(req.full_url, 500, "Internal Server Error", {}, None)
+        raise urllib.error.HTTPError(req.full_url, 503, "Service Unavailable", {}, None)
+
+    with (
+        patch.object(index, "_s3", return_value=s3),
+        patch.object(index, "_secretsmanager", return_value=secretsmanager),
+        patch("index.urllib.request.urlopen", side_effect=_urlopen),
+        pytest.raises(urllib.error.HTTPError),
+    ):
+        index.handler(_ses_event(), None)
+
+
+def test_backend_4xx_response_does_not_raise():
+    """A 4xx is terminal — the backend already answered, and retrying a
+    deterministic 4xx (e.g. bad secret) would only retry-storm the Lambda."""
+    import index
+
+    raw = _build_raw_mime(attachment=False)
+    s3, secretsmanager = _stub_clients(raw)
+
+    def _urlopen(req, timeout=None):
+        raise urllib.error.HTTPError(req.full_url, 403, "Forbidden", {}, None)
 
     with (
         patch.object(index, "_s3", return_value=s3),
@@ -382,7 +514,7 @@ def test_backend_non_2xx_response_does_not_raise():
         result = index.handler(_ses_event(), None)  # must not raise
 
     assert result["processed"] == 1
-    assert result["records"][0]["backend_status"] == 500
+    assert result["records"][0]["backend_status"] == 403
 
 
 def test_backend_transport_failure_raises():

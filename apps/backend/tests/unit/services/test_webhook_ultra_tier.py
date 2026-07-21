@@ -121,7 +121,9 @@ async def test_upgrade_to_ultra_sets_plan_and_resizes_up():
 @pytest.mark.asyncio
 async def test_downgrade_small_company_resizes_down():
     """(b) Ultra→flat with ≤10 agents → set_plan("standard") + resize down to
-    512/2048."""
+    the standard box (PER_USER constants)."""
+    from core.containers.ecs_manager import PER_USER_CPU, PER_USER_MEMORY_MIB
+
     repo, mgr = await _drive(
         _ultra_event(item_price=FLAT_PRICE),
         account=_account(plan="ultra_pro"),
@@ -129,7 +131,7 @@ async def test_downgrade_small_company_resizes_down():
     )
 
     assert repo.set_plan.await_args.kwargs["plan"] == "standard"
-    mgr.resize_user_container.assert_awaited_once_with("org_x", new_cpu="512", new_memory="2048")
+    mgr.resize_user_container.assert_awaited_once_with("org_x", new_cpu=PER_USER_CPU, new_memory=PER_USER_MEMORY_MIB)
 
 
 @pytest.mark.asyncio

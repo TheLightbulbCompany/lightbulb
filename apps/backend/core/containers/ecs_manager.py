@@ -13,6 +13,7 @@ import logging
 import re
 import secrets
 import socket
+import time
 from pathlib import Path
 
 import boto3
@@ -41,10 +42,28 @@ GATEWAY_PORT = 18789
 
 # Single per-user task size for the flat-fee pivot. Per spec §3.2 / §10.
 # Old per-tier sizing (free/starter 0.5/1, pro 1/2, enterprise 2/4) deleted —
-# every paying user gets the same 0.5 vCPU / 1 GB box. Kept as constants
-# so the resize/register paths pull from a single place.
-PER_USER_CPU = "512"
-PER_USER_MEMORY_MIB = "2048"
+# every user gets the same 1 vCPU / 4 GB box. 2 GB was upstream OpenClaw's
+# documented floor and OOMed under two seeded agents + memory sidecar +
+# in-container Chromium; the full vCPU stops boot/tool-exec/Chromium
+# contending for half a core. Affordable because per-user services launch on
+# Fargate Spot. Kept as constants so the resize/register paths pull from a
+# single place. Keep in lockstep with PER_USER_TASK_RESOURCES in
+# apps/infra/lib/stacks/container-stack.ts.
+PER_USER_CPU = "1024"
+PER_USER_MEMORY_MIB = "4096"
+
+# Per-user containers launch on Fargate Spot (~70% cheaper than on-demand).
+# Interruption is survivable by design: SINGLE_WRITER_DEPLOYMENT_CONFIG means
+# the replacement task only starts after the reclaimed one fully stops (no
+# EFS double-writer), EFS state persists, and the gateway pool reconnects on
+# the next status poll. When Spot capacity is unavailable ECS places nothing
+# and reports no failure, so two fallbacks cover it: create_service retries
+# with on-demand if the cluster rejects the strategy, and
+# _await_running_transition flips a service with zero placed tasks to
+# on-demand after SPOT_PLACEMENT_FALLBACK_S.
+SPOT_CAPACITY_STRATEGY = [{"capacityProvider": "FARGATE_SPOT", "weight": 1}]
+ON_DEMAND_CAPACITY_STRATEGY = [{"capacityProvider": "FARGATE", "weight": 1}]
+SPOT_PLACEMENT_FALLBACK_S = 300.0
 
 # Ultra Pro tier box (large marketplace companies exceeding the flat tier's
 # agent budget). 2 vCPU / 8 GB — same constant home as PER_USER_* so the
@@ -866,7 +885,7 @@ class EcsManager:
                 serviceName=service_name,
                 taskDefinition=task_def_arn,
                 desiredCount=0,
-                launchType="FARGATE",
+                capacityProviderStrategy=SPOT_CAPACITY_STRATEGY,
                 networkConfiguration={
                     "awsvpcConfiguration": {
                         "subnets": self._subnets,
@@ -887,7 +906,30 @@ class EcsManager:
             # its own task definition/role.
             if claim_id is not None:
                 await self._provision_checkpoint(user_id, claim_id)
-            self._ecs.create_service(**create_kwargs)
+            try:
+                self._ecs.create_service(**create_kwargs)
+            except ClientError as e:
+                # A cluster without the FARGATE_SPOT capacity provider
+                # associated (CDK deploy lagging a backend deploy) rejects the
+                # strategy with InvalidParameterException. Provisioning must
+                # not hard-fail on a cost optimization — retry on-demand.
+                if e.response.get("Error", {}).get("Code") != "InvalidParameterException":
+                    raise
+                logger.warning(
+                    "Spot capacity provider rejected for %s; creating on-demand: %s",
+                    service_name,
+                    e,
+                )
+                put_metric(
+                    "container.spot_fallback",
+                    dimensions={"trigger": "create_rejected"},
+                )
+                # launchType, not ON_DEMAND_CAPACITY_STRATEGY: a cluster with
+                # no capacity providers associated rejects ANY strategy, while
+                # launchType works unconditionally.
+                del create_kwargs["capacityProviderStrategy"]
+                create_kwargs["launchType"] = "FARGATE"
+                self._ecs.create_service(**create_kwargs)
             await self._update_container(user_id, substatus="service_created")
         except ProvisionSuperseded:
             raise
@@ -1385,7 +1427,7 @@ class EcsManager:
         stale task def.
 
         Sizes by the owner's plan (``_size_for_owner``) rather than a flat
-        hardcode: for a standard owner that IS the 0.5 vCPU / 2 GB box, but an
+        hardcode: for a standard owner that IS the 1 vCPU / 4 GB box, but an
         Ultra Pro owner must land on their 2 vCPU / 8 GB box — re-applying the
         standard size here would silently undo the upgrade webhook's resize,
         the exact revert the plan-derived provision sizing exists to prevent.
@@ -2443,7 +2485,17 @@ class EcsManager:
         task while the NEW deployment rolls out. The poller filters tasks to
         only those from the PRIMARY deployment so an old task can't cause a
         premature status=running write that masks a failing new rollout.
+
+        Spot capacity fallback: a FARGATE_SPOT service with no Spot capacity
+        available places no tasks, reports no failures, and never trips the
+        circuit breaker — it would sit in provisioning forever. If ECS has
+        placed zero tasks (any lifecycle state, so a PENDING task pulling the
+        multi-GB image does NOT trigger this) for SPOT_PLACEMENT_FALLBACK_S,
+        flip the service to on-demand once and keep polling. The flip only
+        runs when the service is empty, so it can never kill a live task.
         """
+        no_placement_since: float | None = None
+        spot_fallback_done = False
         while True:
             try:
                 container = await container_repo.get_by_owner_id(user_id)
@@ -2478,7 +2530,16 @@ class EcsManager:
                     return
 
                 deployment_id = primary.get("id")
-                task_arn, ip = await self._poll_running_task(service_name, deployment_id)
+                task_arn, ip, placed_count = await self._poll_running_task(service_name, deployment_id)
+                if placed_count > 0:
+                    no_placement_since = None
+                elif not spot_fallback_done:
+                    now = time.monotonic()
+                    if no_placement_since is None:
+                        no_placement_since = now
+                    elif now - no_placement_since >= SPOT_PLACEMENT_FALLBACK_S:
+                        spot_fallback_done = True
+                        self._fallback_service_to_on_demand(service_name, user_id)
                 if task_arn and ip and self.is_healthy(ip):
                     await container_repo.update_fields(
                         user_id,
@@ -2517,6 +2578,44 @@ class EcsManager:
 
             await asyncio.sleep(interval_s)
 
+    def _fallback_service_to_on_demand(self, service_name: str, user_id: str) -> None:
+        """Flip a service that Spot cannot place onto on-demand FARGATE.
+
+        Only called by _await_running_transition after the service has had
+        zero placed tasks for SPOT_PLACEMENT_FALLBACK_S, so forceNewDeployment
+        cannot terminate a live task (there are none). The service stays
+        on-demand until its next full reprovision recreates it on Spot —
+        deliberately no revert path; capacity droughts are rare and a
+        container quietly paying on-demand beats machinery to migrate it back.
+
+        Failure here is non-fatal: the poller keeps polling either way, and
+        the container simply stays pending until capacity appears or an
+        operator intervenes.
+        """
+        try:
+            self._ecs.update_service(
+                cluster=self._cluster,
+                service=service_name,
+                capacityProviderStrategy=ON_DEMAND_CAPACITY_STRATEGY,
+                forceNewDeployment=True,
+            )
+            put_metric(
+                "container.spot_fallback",
+                dimensions={"trigger": "placement_timeout"},
+            )
+            logger.warning(
+                "No Spot capacity for %s after %.0fs with zero placed tasks; flipped service to on-demand (user=%s)",
+                service_name,
+                SPOT_PLACEMENT_FALLBACK_S,
+                user_id,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to flip %s to on-demand after Spot placement timeout (user=%s)",
+                service_name,
+                user_id,
+            )
+
     async def _get_primary_deployment(self, service_name: str) -> dict | None:
         """Return the PRIMARY deployment dict for the service, or None if
         unavailable. Primary is the deployment currently being rolled out or
@@ -2543,8 +2642,11 @@ class EcsManager:
                 return deployment
         return None
 
-    async def _poll_running_task(self, service_name: str, deployment_id: str | None) -> tuple[str | None, str | None]:
-        """Find a RUNNING task from the given deployment and return (task_arn, ip).
+    async def _poll_running_task(
+        self, service_name: str, deployment_id: str | None
+    ) -> tuple[str | None, str | None, int]:
+        """Find a RUNNING task from the given deployment and return
+        (task_arn, ip, placed_count).
 
         Lists ALL running tasks for the service, then filters in-code to
         tasks whose `startedBy` matches the primary deployment's id. ECS
@@ -2552,10 +2654,15 @@ class EcsManager:
         We can't filter via the ListTasks API because ECS rejects startedBy
         combined with serviceName (InvalidParameterException).
 
-        Returns (None, None) when no qualifying task has an IP yet.
+        Returns (None, None, placed_count) when no qualifying task has an IP
+        yet. placed_count is the number of tasks ECS has placed for the
+        service in ANY lifecycle state (PENDING tasks pulling the image count;
+        desiredStatus=RUNNING includes them). Zero means ECS has placed
+        nothing at all — the Spot capacity-unavailable signature, since that
+        condition produces no tasks, no failures, and no rollout state change.
         """
         if not deployment_id:
-            return None, None
+            return None, None, 0
 
         list_resp = self._ecs.list_tasks(
             cluster=self._cluster,
@@ -2564,7 +2671,7 @@ class EcsManager:
         )
         task_arns = list_resp.get("taskArns", [])
         if not task_arns:
-            return None, None
+            return None, None, 0
 
         desc_resp = self._ecs.describe_tasks(
             cluster=self._cluster,
@@ -2581,8 +2688,8 @@ class EcsManager:
                 for detail in attachment.get("details", []):
                     if detail.get("name") == "privateIPv4Address":
                         task_arn = task.get("taskArn") or task_arns[0]
-                        return task_arn, detail.get("value")
-        return None, None
+                        return task_arn, detail.get("value"), len(task_arns)
+        return None, None, len(task_arns)
 
     async def write_user_configs(
         self,

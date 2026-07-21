@@ -613,7 +613,8 @@ POST /api/companies/{companyId}/projects
 {
   "name": "Paperclip Mobile App",
   "description": "Ship iOS + Android client",
-  "status": "planned"
+  "status": "planned",
+  "goalIds": ["{goalId}"]
 }
 
 POST /api/projects/{projectId}/workspaces

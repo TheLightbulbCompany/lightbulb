@@ -1,11 +1,13 @@
 "use client";
 
 /**
- * Two-path onboarding funnel shown while the trial container provisions
- * (spec §3). Submitting stages BRIEF.md server-side; the firstRun metadata
- * write flips ProvisioningStepper's branch off, falling through to the
- * cold-start card. It is the committed onboarding front door — there is no
- * skip, so submitting the brief is the only way past it.
+ * Two-path onboarding funnel shown to a first-time owner or org member
+ * (trial_local free-tier signup or organization) while their company's
+ * workspace provisions (spec §3). Submitting stages BRIEF.md server-side;
+ * the firstRun metadata write flips ProvisioningStepper's branch off,
+ * falling through to the cold-start card. It is the committed onboarding
+ * front door — there is no skip, so submitting the brief is the only way
+ * past it.
  */
 import * as React from "react";
 import { useUser } from "@clerk/nextjs";
@@ -66,10 +68,37 @@ export function FirstRunFunnel() {
           // else (including that 202 shape) is retried via the same loop.
           const status = (resp as { status?: string } | null)?.status;
           if (status === "staged" || status === "already_submitted") {
-            await writeFirstRun(user, { briefSubmitted: true, path: path ?? undefined });
-            // snake_case to match both the repo's property convention and the
-            // backend's emission of this same event name.
-            capture("first_run_brief_submitted", { path, no_idea: noIdea });
+            // "staged" and "already_submitted" both dismiss the funnel for
+            // THIS user, but they are not the same event and must not be
+            // collapsed into identical writes:
+            //   - "staged": this submission created the company's goal +
+            //     project. `started` stays unset so useFirstRunKickoff (which
+            //     fires when briefSubmitted && !started) sends the visible
+            //     kickoff prompt and Friday runs the first-run runbook.
+            //   - "already_submitted": the per-company DynamoDB claim was
+            //     already taken by someone else in this org — there is no
+            //     new goal/project to react to. Writing `started: true` here
+            //     too pre-arms the kickoff guard so this user's own
+            //     useFirstRunKickoff treats it as already fired instead of
+            //     replaying the whole runbook (rename company, rewrite goal,
+            //     recreate the three tasks) against an already-onboarded
+            //     company. Do not "simplify" these two branches back
+            //     together.
+            await writeFirstRun(user, {
+              briefSubmitted: true,
+              path: path ?? undefined,
+              ...(status === "already_submitted" ? { started: true } : {}),
+            });
+            // Analytics only on a real seed: the backend emits this same
+            // event name exclusively on "staged" (the actual goal/project
+            // creation). Firing it here for "already_submitted" too would
+            // inflate the count with non-seeding submitters who only ever
+            // hit the pre-existing company claim.
+            if (status === "staged") {
+              // snake_case to match both the repo's property convention and
+              // the backend's emission of this same event name.
+              capture("first_run_brief_submitted", { path, no_idea: noIdea });
+            }
             return;
           }
           if (attempt < MAX_RETRIES) {

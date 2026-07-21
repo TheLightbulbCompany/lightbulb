@@ -40,6 +40,11 @@ export interface ContainerInfo {
   last_error_at: string | null;
   /** Cold-start phase. Optional for backwards compat with old backends. */
   phase?: ColdStartPhase;
+  /** Per-container onboarding fact: true once the first-run funnel has been
+   * completed for this container (an org shares one, so it's org-wide). The
+   * funnel gate reads this so a second org member never re-sees it. Optional
+   * for backwards compat with old backends. */
+  onboarded?: boolean;
   // Other /container/status response fields preserved for downstream use.
   [key: string]: unknown;
 }

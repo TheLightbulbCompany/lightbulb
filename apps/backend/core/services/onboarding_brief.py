@@ -5,8 +5,9 @@ boots (same pre-boot window friday_identity.py uses; OpenClaw's
 writeFileIfMissing honors pre-written files):
 
   - ``BRIEF.md``      — the user's funnel input, verbatim + identity context.
-                        Written write-if-missing: its existence IS the
-                        one-shot marker for the whole flow.
+                        Written unconditionally. The one-shot marker for the
+                        whole flow is the company-scoped onboarding claim in
+                        paperclip_repo.py, not BRIEF.md's existence.
   - ``BOOTSTRAP.md``  — the first-run variant, unconditionally overwritten.
                         Ordering note: friday_identity seeds the standard
                         BOOTSTRAP with write_file_if_missing, so whichever
@@ -20,7 +21,11 @@ The spec is docs/superpowers/specs/2026-07-12-onboarding-aha-first-run-design.md
 
 from __future__ import annotations
 
+import logging
+
 from core.containers.workspace import Workspace
+
+logger = logging.getLogger(__name__)
 
 _BRIEF_TEMPLATE = """\
 # BRIEF.md — Onboarding brief
@@ -78,21 +83,46 @@ Load your Paperclip identity first (see AGENTS.md — the export block for
    briefly as you go — no walls of text between actions.
 2. Read BRIEF.md (this workspace) to learn what business you're running. If
    it says they have no idea yet, picking one is your first job — look them
-   up (their email is in the brief, and you have web_search), commit to a
-   single business you can argue for, and say what you chose and why. Then
-   carry on below as though it had been their idea all along.
-3. Understand the business: research it and its market with web_search —
+   up (their email is in the brief), commit to a single business you can
+   argue for, and say what you chose and why. Then carry on below as though
+   it had been their idea all along.
+3. **Name the company.** Their company and project are both currently
+   named after them as a placeholder — pick a real name for the business
+   from what you just read, then set it in ONE go before anything else.
+   This is the first thing {first_name} sees change, so do it now, not at
+   the end.
+
+   ```
+   PATCH /api/companies/$PAPERCLIP_COMPANY_ID   {{"name": "<the name>"}}
+   PATCH /api/projects/{project_id}             {{"name": "<the name>"}}
+   ```
+
+   If the company PATCH 403s, keep going — the project rename is the one
+   that matters and the rest of the session is unaffected.
+4. Understand the business: research it and its market with web_search —
    on the grow path, fetch their website first. This is the heart of the
    session; actually understand who they serve and what they're up against.
-4. Write what you learned as durable docs — this is the visible output of
+5. Write what you learned as durable docs — this is the visible output of
    the research: `research/market-research.md` (market, competitors,
    positioning) and `MISSION.md` (what this company is, who it serves,
    where it's headed). Fold the mission's essence into USER.md's Context
    section and append durable facts to MEMORY.md — your permanent context.
-5. ONLY NOW, as the session's closing OUTPUT, propose their three best next
-   moves as tasks on the board. Create them; do NOT start them — each is a
-   task {first_name} will run later, in its own session. Branch on the Path
-   you read in BRIEF.md:
+6. **Write the mission onto the goal.** The company goal currently holds
+   their raw words. Replace it with the mission you just wrote:
+
+   ```
+   PATCH /api/goals/{goal_id}
+   {{"title": "<one-line mission>", "description": "<2-3 sentences>"}}
+   ```
+
+   Do NOT change its status or delete it — it is the company's north star
+   and everything else hangs off it.
+7. ONLY NOW, as the session's closing OUTPUT, propose their three best next
+   moves as tasks on the board. Create each with `"projectId": "{project_id}"`
+   so it lands in their project and inherits the company goal. You do not
+   need to set `goalId` — the board resolves it from the project. Create
+   them; do NOT start them — each is a task {first_name} will run later, in
+   its own session. Branch on the Path you read in BRIEF.md:
      - NEW business (starting from scratch): the FIRST task is ALWAYS a
        website — create a "Build [company] website" task for a landing page,
        noting that running it produces the site in this workspace and going
@@ -106,7 +136,7 @@ Load your Paperclip identity first (see AGENTS.md — the export block for
        content engine, lead research, or a pricing review — whichever you
        found weakest or with the most upside for THIS business.
    Give each a short specific title and a one-line description.
-6. Close in chat: recap what you learned about their business, name the
+8. Close in chat: recap what you learned about their business, name the
    three tasks you queued, and invite them to pick one and hit run —
    "I'll do it while you watch." If they want things running while they're
    away, that's a plan upgrade — say so plainly, don't sell.
@@ -144,8 +174,141 @@ def render_brief_md(
     )
 
 
-def render_first_run_bootstrap(*, first_name: str) -> str:
-    return _FIRST_RUN_BOOTSTRAP_TEMPLATE.format(first_name=first_name)
+def render_first_run_bootstrap(*, first_name: str, goal_id: str, project_id: str) -> str:
+    return _FIRST_RUN_BOOTSTRAP_TEMPLATE.format(
+        first_name=first_name,
+        goal_id=goal_id,
+        project_id=project_id,
+    )
+
+
+_MAX_GOAL_TITLE = 120
+
+
+def _domain_of(raw: str) -> str:
+    """Best-effort registrable domain from whatever went in the URL field.
+
+    The grow-path input is free text — users type ``ferrosocial.com``,
+    ``https://ferrosocial.com/pricing``, or ``www.ferrosocial.com``. Falls
+    back to the raw string rather than raising: this feeds a provisional
+    title Friday overwrites within one turn, so a scruffy value is a
+    cosmetic problem, not a failure.
+    """
+    value = raw.strip()
+    if "//" in value:
+        value = value.split("//", 1)[1]
+    value = value.split("/", 1)[0].split("?", 1)[0].strip().lower()
+    if value.startswith("www."):
+        value = value[4:]
+    return value or raw.strip()
+
+
+def _cap_title(title: str) -> str:
+    """Bound a provisional title to _MAX_GOAL_TITLE.
+
+    Applies on EVERY path, not just ``new``: the ``grow`` path derives its
+    title from a free-text field (``_domain_of`` falls back to the raw input
+    when it isn't a parseable URL, and the field allows up to 2000 chars), so
+    a user pasting a paragraph into the website box would otherwise produce a
+    ~2000-char title. If Paperclip's goal schema rejects that, the client
+    retries the identical oversized title forever — same input, same reject.
+    """
+    if len(title) <= _MAX_GOAL_TITLE:
+        return title
+    return title[: _MAX_GOAL_TITLE - 1].rstrip() + "…"
+
+
+def derive_goal_title(*, path: str, user_input: str | None) -> str:
+    """Provisional goal title — a real mission statement on every path.
+
+    Friday rewrites this after research. It must never read as filler in
+    the meantime, because the user is watching the board while she works.
+    """
+    if not user_input:
+        # "I don't know yet — you pick". This is an accurate description of
+        # their situation and stops being true the moment Friday chooses.
+        return "Find the right business to build"
+    if path == "grow":
+        return _cap_title(f"Grow {_domain_of(user_input)}")
+    return _cap_title(user_input.strip())
+
+
+def project_name_for(first_name: str) -> str:
+    """The funnel never collects a company name, and the description makes a
+    bad one ("A social media agency for small restaurants" is not a name).
+    The owner's first name is always available and always reads as real.
+    Friday renames it as her first visible action.
+    """
+    return f"{first_name}'s Company"
+
+
+async def seed_goal_and_project(
+    *,
+    admin,
+    session_cookie: str,
+    company_id: str,
+    friday_agent_id: str,
+    goal_title: str,
+    project_name: str,
+) -> tuple[str, str]:
+    """Create the company goal, then the project linked to it.
+
+    Order is load-bearing. The project passes ``goalIds: [goal_id]``, and
+    Paperclip mirrors ``goalIds[0]`` into the legacy ``projects.goalId``
+    column that ``getProjectDefaultGoalId`` reads. A project with a null
+    ``goalId`` is worse than no project at all: ``resolveIssueGoalId``
+    returns ``projectGoalId ?? null`` for any issue that HAS a project and
+    does not fall through to the company default, so every task filed into
+    it would be silently unattributed.
+
+    ``level="company"``, ``status="active"``, no ``parentId`` — anything
+    else and ``getDefaultCompanyGoal`` never selects it.
+
+    Rolls the goal back if the project create fails, so a retry never finds
+    a half-seeded company. That rollback delete is itself best-effort: if
+    ``delete_goal`` also raises, we swallow it rather than let it propagate
+    -- otherwise a cleanup failure would REPLACE the original
+    ``create_project`` error (e.g. a retryable Paperclip 503) with an
+    unrelated one, misclassifying what the caller sees (the router maps
+    ``PaperclipApiError``/``httpx.HTTPError``/``RuntimeError`` to a
+    retryable 409; a masked exception could fall outside that set and
+    surface as a raw 500 instead). The orphaned goal this can leave behind
+    is a lesser problem than losing the original error, and is bounded --
+    it is never linked to a project or the onboarding sentinel.
+    """
+    goal = await admin.create_goal(
+        session_cookie=session_cookie,
+        company_id=company_id,
+        body={
+            "title": goal_title,
+            "level": "company",
+            "status": "active",
+            "ownerAgentId": friday_agent_id,
+        },
+    )
+    goal_id = goal["id"]
+    try:
+        project = await admin.create_project(
+            session_cookie=session_cookie,
+            company_id=company_id,
+            body={
+                "name": project_name,
+                "status": "in_progress",
+                "goalIds": [goal_id],
+                "leadAgentId": friday_agent_id,
+            },
+        )
+    except Exception:
+        try:
+            await admin.delete_goal(session_cookie=session_cookie, goal_id=goal_id)
+        except Exception as cleanup_err:
+            logger.error(
+                "seed_goal_and_project: failed to roll back goal %s after project create failure: %s",
+                goal_id,
+                cleanup_err,
+            )
+        raise
+    return goal_id, project["id"]
 
 
 def stage_first_run_files(
@@ -155,31 +318,16 @@ def stage_first_run_files(
     friday_agent_id: str,
     brief_md: str,
     bootstrap_md: str,
-) -> bool:
-    """Write BRIEF.md (if missing) + first-run BOOTSTRAP.md (overwrite).
+) -> None:
+    """Write BRIEF.md + the first-run BOOTSTRAP.md, both unconditionally.
 
-    Returns True on a fresh submit. Returns False when BRIEF.md already
-    existed — a replay — in which case NOTHING else is touched (the
-    container may already have consumed the bootstrap).
-
-    Staging is all-or-nothing on the marker: BRIEF.md is the atomic claim,
-    but if the BOOTSTRAP write then fails we roll the claim back by deleting
-    BRIEF.md, so a retry re-stages BOTH files rather than seeing the marker
-    and short-circuiting to a half-staged workspace (BRIEF present, first-run
-    bootstrap missing). A genuine replay — both files already written — still
-    returns False on the write_file_if_missing claim and leaves the possibly
-    container-evolved BOOTSTRAP untouched.
+    BRIEF.md used to be written write-if-missing because its existence WAS
+    the one-shot marker for the flow. The company-scoped onboarding claim is
+    that marker now, and holding it already proves this is the first run —
+    so a BRIEF.md left behind by an attempt that failed partway is stale
+    state to overwrite, not a reason to stop. Stopping there would strand the
+    goal and project the caller seeded moments earlier.
     """
-    brief_rel = f"workspaces/{friday_agent_id}/BRIEF.md"
-    wrote = workspace.write_file_if_missing(owner_id, brief_rel, brief_md)
-    if not wrote:
-        return False
-    bootstrap_rel = f"workspaces/{friday_agent_id}/BOOTSTRAP.md"
-    try:
-        workspace.write_file(owner_id, bootstrap_rel, bootstrap_md)
-    except Exception:
-        # Undo the marker so this staging isn't recorded as complete — the
-        # next submit re-claims BRIEF.md fresh and re-stages both files.
-        workspace.delete_file(owner_id, brief_rel)
-        raise
-    return True
+    base = f"workspaces/{friday_agent_id}"
+    workspace.write_file(owner_id, f"{base}/BRIEF.md", brief_md)
+    workspace.write_file(owner_id, f"{base}/BOOTSTRAP.md", bootstrap_md)

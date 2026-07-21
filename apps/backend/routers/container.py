@@ -222,6 +222,10 @@ async def container_status(
             "last_error": None,
             "last_error_at": None,
             "phase": "provisioning",
+            # Still provisioning -> definitionally not onboarded yet. The
+            # first-run funnel gates on this; a container mid-provision has
+            # no goal/project, so the funnel should show once it's ready.
+            "onboarded": False,
         }
 
     # Daily Bedrock restore: a capped-out (or previously-expired-and-now-
@@ -388,6 +392,12 @@ def _status_response(container: dict, owner_id: str, *, parked: bool = False) ->
         # Cold-start phase for the frontend stepper. See
         # _resolve_cold_start_phase for the (status, pool) -> phase map.
         "phase": _safe_phase(container, owner_id),
+        # Per-CONTAINER onboarding fact: stamped by the /onboarding/brief
+        # route when the first-run funnel is completed for this container.
+        # An org shares one container, so this is the whole org's "funnel
+        # done" signal -- the frontend gates the funnel on it, so a second
+        # org member never re-sees it. No extra read: it lives on the row.
+        "onboarded": container.get("onboarded_at") is not None,
     }
     if parked:
         body["phase"] = "parked"

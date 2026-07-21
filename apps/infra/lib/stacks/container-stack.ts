@@ -582,10 +582,12 @@ export class ContainerStack extends cdk.Stack {
       // the run-time gate surfaces the unmigrated state visibly rather than the
       // box crash-looping. Idempotent — once migrated it is a fast no-op, so it
       // stays cheap on every later boot (and doubles as an on-boot config
-      // self-repair). The health-check startPeriod below is widened to cover this
-      // pass so a heavy first-boot migration does not trip a spurious task
-      // replacement.
-      "timeout --kill-after=30 420 node /app/openclaw.mjs doctor --fix < /dev/null || echo '[boot] openclaw doctor --fix did not finish cleanly; continuing to gateway'",
+      // self-repair). The 300s bound keeps doctor within the health-check budget
+      // (startPeriod 300 + retries*interval below), so `timeout` — not an ECS
+      // mid-run health replacement — is what caps a slow pass; the gateway then
+      // still binds and reports healthy inside the window. A migration heavier
+      // than 300s is cleanly cut and resumes on a later boot (persisted, idempotent).
+      "timeout --kill-after=30 300 node /app/openclaw.mjs doctor --fix < /dev/null || echo '[boot] openclaw doctor --fix did not finish cleanly; continuing to gateway'",
       // Step D — launch the gateway.
       "exec node /app/openclaw.mjs gateway --port 18789 --bind lan",
     ].join("; ");
@@ -712,15 +714,19 @@ export class ContainerStack extends cdk.Stack {
         retries: 6,
         // Start period covers EFS first-touch latency, the boot-time
         // `openclaw doctor --fix` legacy-state migration (startupCommand Step C3,
-        // bounded at 420s), gateway boot, and the first cold MCP connect on a
-        // brand-new container. Widened 180s -> 480s so a heavy FIRST-boot
-        // migration (doctor pass + the gateway's own shared-state migration on a
-        // large session) completes inside the grace window instead of tripping a
-        // spurious task replacement — the probe only starts counting failures
-        // after this, and a healthy gateway still reports ready as soon as it
-        // binds, so steady-state boots are unaffected. A genuinely dead gateway
-        // is still replaced within ~480s + retries*interval.
-        startPeriod: cdk.Duration.seconds(480),
+        // bounded at 300s), gateway boot, and the first cold MCP connect on a
+        // brand-new container. Set to 300s — the ECS MAXIMUM for startPeriod
+        // (values >300 are rejected: "Health check startPeriod must be less than
+        // or equal to the maximum allowed value 300") — up from 180s to give the
+        // added doctor pass as much grace as ECS allows. Combined with the
+        // retries*interval window (6*30s=180s) after this, a task tolerates ~480s
+        // of gateway-not-ready before replacement. The doctor step is bounded at
+        // 300s to stay inside that, so a normal first boot never trips a spurious
+        // replacement; a migration heavier than the window self-heals (the
+        // migration persists, ECS replaces the task once, the replacement comes up
+        // fast). A healthy gateway reports ready as soon as it binds, so
+        // steady-state boots are unaffected.
+        startPeriod: cdk.Duration.seconds(300),
       },
       // Inject Fargate's init process (tini-equivalent) as PID 1. The
       // openclaw container runs `sh -c "... ; exec node ..."` so Node

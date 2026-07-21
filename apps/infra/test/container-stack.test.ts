@@ -88,7 +88,8 @@ describe("ContainerStack — dev", () => {
             Interval: 30,
             Timeout: 10,
             Retries: 6,
-            StartPeriod: 480,
+            // 300 is the ECS maximum for startPeriod (values >300 are rejected).
+            StartPeriod: 300,
           },
         }),
       ]),
@@ -164,7 +165,7 @@ describe("ContainerStack — dev", () => {
             "-c",
             Match.stringLikeRegexp(
               // `\\|` escapes the regex alternation so we match a literal `|`.
-              "timeout --kill-after=30 420 node /app/openclaw\\.mjs doctor --fix < /dev/null "
+              "timeout --kill-after=30 300 node /app/openclaw\\.mjs doctor --fix < /dev/null "
               + "\\|\\| echo .*"
               + "exec node /app/openclaw\\.mjs gateway --port 18789 --bind lan$",
             ),

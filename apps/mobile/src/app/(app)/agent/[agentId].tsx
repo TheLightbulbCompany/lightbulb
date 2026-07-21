@@ -1,4 +1,4 @@
-import { useUser } from "@clerk/clerk-expo";
+import { useAuth, useUser } from "@clerk/clerk-expo";
 import Feather from "@expo/vector-icons/Feather";
 import {
   accumulateStreamText,
@@ -6,9 +6,14 @@ import {
   type AgentsListResponse,
 } from "@isol8/shared";
 import { randomUUID } from "expo-crypto";
+import * as DocumentPicker from "expo-document-picker";
+import * as ImagePicker from "expo-image-picker";
 import { router, Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ActionSheetIOS,
+  ActivityIndicator,
+  Alert,
   Animated,
   FlatList,
   KeyboardAvoidingView,
@@ -21,6 +26,7 @@ import {
 } from "react-native";
 
 import { AgentHead } from "../../../components/chat/AgentHead";
+import { AttachmentChips } from "../../../components/chat/AttachmentChips";
 import { ChatErrorCard } from "../../../components/chat/ChatErrorCard";
 import type { ChatItem } from "../../../components/chat/chatItems";
 import { EmptyState } from "../../../components/chat/EmptyState";
@@ -32,6 +38,13 @@ import { usePulse } from "../../../components/chat/usePulse";
 import { useFirstRunKickoff } from "../../../components/onboarding/useFirstRunKickoff";
 import { colors, fonts, radii, spacing } from "../../../config/theme";
 import { setCurrentAgentId } from "../../../lib/activeAgent";
+import {
+  buildUploadNotice,
+  filterOversized,
+  uploadAttachments,
+  MAX_ATTACHMENTS,
+  type PendingAttachment,
+} from "../../../lib/attachments";
 import { projectHistoryToChatItems } from "../../../lib/chatHistory";
 import { readFirstRun, writeFirstRun } from "../../../lib/firstRun";
 import { useNavParamConsumer } from "../../../lib/useNavParamConsumer";
@@ -118,11 +131,24 @@ function AgentChat() {
   // (Clerk hands out a new object per render) to see fresh firstRun flags.
   const userRef = useRef(user);
   userRef.current = user;
+  // Clerk hands out a NEW getToken reference every render (teamsData.ts
+  // lesson) — pin it in a ref so the upload path always reads the current one
+  // without threading getToken through any dependency array.
+  const { getToken } = useAuth();
+  const getTokenRef = useRef(getToken);
+  getTokenRef.current = getToken;
   const [items, setItems] = useState<ChatItem[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   // Presentational-only composer state (spec §4): focus ring.
   const [inputFocused, setInputFocused] = useState(false);
+  // ---- Attachments (web ChatInput/AgentChatWindow parity). ----
+  const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
+  const [uploading, setUploading] = useState(false);
+  // Oversize-rejection banner: web parity — shows the same message, auto-
+  // dismisses after 5s, manually dismissible.
+  const [sizeError, setSizeError] = useState<string | null>(null);
+  const sizeErrorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // ---- Sessions (contract §1): null == the legacy "General" session. ----
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [activeSessionLabel, setActiveSessionLabel] = useState<string | null>(null);
@@ -420,6 +446,104 @@ function AgentChat() {
   );
   useNavParamConsumer(sessionIdParam, applySessionFromParam, clearSessionParam);
 
+  // ---- Attachment picking ----
+  const showSizeError = useCallback((message: string) => {
+    if (sizeErrorTimerRef.current) clearTimeout(sizeErrorTimerRef.current);
+    setSizeError(message);
+    sizeErrorTimerRef.current = setTimeout(() => {
+      setSizeError(null);
+      sizeErrorTimerRef.current = null;
+    }, 5000);
+  }, []);
+
+  const dismissSizeError = useCallback(() => {
+    if (sizeErrorTimerRef.current) {
+      clearTimeout(sizeErrorTimerRef.current);
+      sizeErrorTimerRef.current = null;
+    }
+    setSizeError(null);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (sizeErrorTimerRef.current) clearTimeout(sizeErrorTimerRef.current);
+    },
+    [],
+  );
+
+  // Oversize gate + pending-list cap, both web-parity (10MB / 10 files).
+  const addAttachments = useCallback(
+    (candidates: PendingAttachment[]) => {
+      const { valid, error } = filterOversized(candidates);
+      if (error) showSizeError(error);
+      if (valid.length > 0)
+        setAttachments((prev) => [...prev, ...valid].slice(0, MAX_ATTACHMENTS));
+    },
+    [showSizeError],
+  );
+
+  const pickFromLibrary = useCallback(async () => {
+    const res = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ["images", "videos"],
+      allowsMultipleSelection: true,
+      selectionLimit: MAX_ATTACHMENTS,
+      quality: 1,
+    });
+    if (res.canceled) return;
+    addAttachments(
+      res.assets.map((a) => ({
+        id: randomUUID(),
+        name: a.fileName ?? a.uri.split("/").pop() ?? "photo",
+        size: a.fileSize ?? 0,
+        uri: a.uri,
+        mimeType: a.mimeType ?? "application/octet-stream",
+      })),
+    );
+  }, [addAttachments]);
+
+  const pickFiles = useCallback(async () => {
+    const res = await DocumentPicker.getDocumentAsync({
+      multiple: true,
+      copyToCacheDirectory: true,
+    });
+    if (res.canceled) return;
+    addAttachments(
+      res.assets.map((a) => ({
+        id: randomUUID(),
+        name: a.name,
+        size: a.size ?? 0,
+        uri: a.uri,
+        mimeType: a.mimeType ?? "application/octet-stream",
+      })),
+    );
+  }, [addAttachments]);
+
+  // "Photo Library" / "Files" / "Cancel" — ActionSheetIOS on iOS (the
+  // SessionsSheet delete pattern), Alert elsewhere.
+  const openAttachSheet = useCallback(() => {
+    const onPickError = (e: unknown) =>
+      console.error("attachment pick failed", e);
+    if (Platform.OS === "ios") {
+      ActionSheetIOS.showActionSheetWithOptions(
+        { options: ["Photo Library", "Files", "Cancel"], cancelButtonIndex: 2 },
+        (index) => {
+          if (index === 0) void pickFromLibrary().catch(onPickError);
+          else if (index === 1) void pickFiles().catch(onPickError);
+        },
+      );
+    } else {
+      Alert.alert("Attach", undefined, [
+        { text: "Photo Library", onPress: () => void pickFromLibrary().catch(onPickError) },
+        { text: "Files", onPress: () => void pickFiles().catch(onPickError) },
+        { text: "Cancel", style: "cancel" },
+      ]);
+    }
+  }, [pickFromLibrary, pickFiles]);
+
+  const removeAttachment = useCallback((id: string) => {
+    setAttachments((prev) => prev.filter((a) => a.id !== id));
+  }, []);
+
   // Full local send pipeline (bubble + busy + dispatch), shared by the
   // composer and the first-run kickoff. Returns false when nothing was sent
   // (empty text, active run, or a dead socket).
@@ -457,9 +581,44 @@ function AgentChat() {
     [busy, agentId, gateway, activeSessionId],
   );
 
-  const send = useCallback(() => {
-    if (dispatchText(input.trim())) setInput("");
-  }, [dispatchText, input]);
+  // Composer send: attachments upload FIRST (web AgentChatWindow order),
+  // then the message goes out with the path notice prepended. One deliberate
+  // divergence from web: an upload failure surfaces as an inline error item
+  // and sends NOTHING — the draft (text + chips) stays for a retry, instead
+  // of sending a message about files the agent can't read.
+  const send = useCallback(async () => {
+    const text = input.trim();
+    if ((!text && attachments.length === 0) || busy || uploading || !agentId)
+      return;
+    let message = text;
+    if (attachments.length > 0) {
+      setUploading(true);
+      try {
+        const uploaded = await uploadAttachments(
+          () => getTokenRef.current(),
+          agentId,
+          attachments,
+        );
+        message = buildUploadNotice(uploaded) + message;
+      } catch (e) {
+        setItems((prev) => [
+          ...prev,
+          {
+            id: randomUUID(),
+            role: "error",
+            text: `File upload failed: ${e instanceof Error ? e.message : "Upload failed"}`,
+          },
+        ]);
+        return;
+      } finally {
+        setUploading(false);
+      }
+    }
+    if (dispatchText(message)) {
+      setInput("");
+      setAttachments([]);
+    }
+  }, [dispatchText, input, attachments, busy, uploading, agentId]);
 
   // Cancel the in-flight run. agent_abort → upstream chat.abort, targeted at
   // this screen's run. Fire-and-don't-wait-for-terminal (the backend contract):
@@ -529,6 +688,9 @@ function AgentChat() {
     .slice(lastUserIdx + 1)
     .some((it) => it.role === "assistant");
   const showTyping = busy && !runHasAssistant;
+  // Attachments alone are sendable (web parity: the message becomes just the
+  // upload notice).
+  const hasDraft = !!input.trim() || attachments.length > 0;
   const lastItem = allItems.length > 0 ? allItems[allItems.length - 1] : undefined;
   // Response groups are anchored at the last user-or-error item; a head
   // rendered past this index belongs to the final group and may pulse.
@@ -723,12 +885,25 @@ function AgentChat() {
         }}
       />
       {/* Composer (spec §4). While a run is active the send button becomes a
-          Stop button (agent_abort → upstream chat.abort). No attach affordance
-          until an upload flow exists on mobile — a dead control reads as
-          broken. */}
+          Stop button (agent_abort → upstream chat.abort). The attach button
+          feeds the pending-chip row above the input; files upload on send. */}
       <View style={styles.composerOuter}>
         {!gateway.isConnected && <ReconnectingBanner />}
+        {sizeError && (
+          <View style={styles.sizeErrorRow}>
+            <Text style={styles.sizeErrorText}>{sizeError}</Text>
+            <Pressable
+              onPress={dismissSizeError}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="Dismiss size error"
+            >
+              <Feather name="x" size={12} color={colors.errorText} />
+            </Pressable>
+          </View>
+        )}
         <View style={[styles.card, inputFocused && styles.cardFocused]}>
+          <AttachmentChips attachments={attachments} onRemove={removeAttachment} />
           <View style={styles.inputZone}>
             <TextInput
               ref={inputRef}
@@ -738,12 +913,26 @@ function AgentChat() {
               value={input}
               onChangeText={setInput}
               multiline
-              editable={gateway.isConnected}
+              editable={gateway.isConnected && !uploading}
               onFocus={() => setInputFocused(true)}
               onBlur={() => setInputFocused(false)}
             />
           </View>
           <View style={styles.rail}>
+            <Pressable
+              style={styles.attachButton}
+              onPress={openAttachSheet}
+              disabled={uploading}
+              hitSlop={4}
+              accessibilityRole="button"
+              accessibilityLabel="Attach"
+            >
+              <Feather
+                name="plus"
+                size={18}
+                color={uploading ? colors.placeholder : colors.mute}
+              />
+            </Pressable>
             {busy ? (
               // Gated on the socket like the TextInput above: a dead socket
               // makes stopRun's raw send a silent no-op, so an active-looking
@@ -766,17 +955,24 @@ function AgentChat() {
               </Pressable>
             ) : (
               <Pressable
-                style={[styles.sendButton, !input.trim() && styles.sendDisabled]}
-                onPress={send}
-                disabled={!input.trim()}
+                style={[styles.sendButton, !hasDraft && styles.sendDisabled]}
+                onPress={() => void send()}
+                disabled={!hasDraft || uploading}
                 accessibilityRole="button"
                 accessibilityLabel="Send"
               >
-                <Feather
-                  name="arrow-up"
-                  size={16}
-                  color={!input.trim() ? colors.placeholder : colors.white}
-                />
+                {uploading ? (
+                  // Upload in flight: keep the filled button (the draft is
+                  // still staged) but gate presses so a double-tap can't
+                  // double-upload — web's Loader2-on-isUploading equivalent.
+                  <ActivityIndicator size="small" color={colors.white} />
+                ) : (
+                  <Feather
+                    name="arrow-up"
+                    size={16}
+                    color={!hasDraft ? colors.placeholder : colors.white}
+                  />
+                )}
               </Pressable>
             )}
           </View>
@@ -912,6 +1108,14 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.sm,
     paddingTop: 6,
   },
+  // Ghost icon button (web's Plus attach affordance) on the rail's left edge.
+  attachButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   sendButton: {
     marginLeft: "auto",
     width: 32,
@@ -922,6 +1126,27 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   sendDisabled: { backgroundColor: colors.creamPressed },
+
+  // Oversize-rejection banner (web sizeError row): danger-tinted, dismissible.
+  sizeErrorRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    backgroundColor: colors.errorBg,
+    borderWidth: 1,
+    borderColor: colors.errorBorder,
+    borderRadius: radii.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 6,
+    marginBottom: spacing.sm,
+  },
+  sizeErrorText: {
+    flex: 1,
+    fontFamily: fonts.dmSans,
+    fontSize: 12,
+    lineHeight: 16,
+    color: colors.errorText,
+  },
 
   // Disconnected banner (spec §4).
   banner: {

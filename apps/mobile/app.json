@@ -19,7 +19,8 @@
       "supportsTablet": false,
       "appleTeamId": "WZX4U3C22Y",
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSPhotoLibraryUsageDescription": "Isol8 lets you attach photos from your library to chat messages for your agents."
       },
       "entitlements": {
         "aps-environment": "production"
@@ -36,7 +37,15 @@
           "imageWidth": 96
         }
       ],
-      "expo-notifications"
+      "expo-notifications",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Isol8 lets you attach photos from your library to chat messages for your agents.",
+          "cameraPermission": false,
+          "microphonePermission": false
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

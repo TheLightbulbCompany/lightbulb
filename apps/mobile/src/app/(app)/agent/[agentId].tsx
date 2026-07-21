@@ -74,7 +74,19 @@ function ReconnectingBanner() {
  * bubble on the right, assistant markdown flat on the page under an
  * AgentHead whose glyph pulses while the run is active.
  */
-export default function AgentChat() {
+export default function AgentChatRoute() {
+  // This route is a PERSISTED tab sibling (href: null): navigating to a
+  // different agent re-params the same mounted component, so every piece of
+  // conversation state (items, history, session, run refs) would carry over
+  // and paint the PREVIOUS agent's transcript until something replaced it —
+  // the stale-conversation flash. Keying by agentId remounts the screen per
+  // agent, which resets all of it structurally; no cross-agent reset effect
+  // can be forgotten or early-return its way into a no-op.
+  const { agentId } = useLocalSearchParams<{ agentId: string }>();
+  return <AgentChat key={agentId ?? "none"} />;
+}
+
+function AgentChat() {
   const {
     agentId,
     name,
@@ -360,14 +372,12 @@ export default function AgentChat() {
     [],
   );
 
-  // A different agent means a different session namespace — never carry a
-  // session id across agents (the route component is reused across params).
-  const prevAgentIdRef = useRef(agentId);
-  useEffect(() => {
-    if (prevAgentIdRef.current === agentId) return;
-    prevAgentIdRef.current = agentId;
-    switchSession(null, null);
-  }, [agentId, switchSession]);
+  // No cross-agent reset effect here: a different agent is a different
+  // COMPONENT INSTANCE (AgentChatRoute keys this screen by agentId), so all
+  // conversation state starts clean structurally. The old effect-based reset
+  // was also a silent no-op for General→General switches — switchSession's
+  // same-session early return — which left the previous agent's transcript
+  // on screen until a history refetch happened to replace it.
 
   const newSession = useCallback(() => {
     // Lowercase RFC-4122 v4 only (contract §1): the server validates, and a

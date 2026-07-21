@@ -38,7 +38,7 @@ from core.services.agent_mail_inbound import (
     fetch_received_email,
     is_auto_submitted,
     parse_from_address,
-    passes_sender_authentication,
+    sender_authentication_verdict,
 )
 from core.services.agent_mail_token import encode_reply_token
 from core.services.trial_cap import trial_block_reason
@@ -131,12 +131,17 @@ async def handle_resend_inbound(request: Request):
             return {"status": "dropped_auto_submitted"}
 
         # Anti-spoof gate: the From header alone is forgeable (that's what
-        # `verified_senders` above just matched against), so require the mail
-        # to have actually passed SPF/DKIM/DMARC per the fetched
-        # Authentication-Results header. Fail-closed by default — see
-        # AGENT_EMAIL_REQUIRE_AUTH docstring in core/config.py.
-        if settings.AGENT_EMAIL_REQUIRE_AUTH and not passes_sender_authentication(fetched.get("headers") or {}):
+        # `verified_senders` above just matched against), so read the mail's
+        # SPF/DKIM/DMARC verdict per the fetched Authentication-Results header.
+        # An explicit FAIL is always dropped. Resend surfaces no verdict field
+        # at all, so an UNKNOWN verdict (the common case) is delivered unless
+        # AGENT_EMAIL_REQUIRE_AUTH opts into strict mode — see its docstring
+        # in core/config.py.
+        verdict = sender_authentication_verdict(fetched.get("headers") or {})
+        if verdict == "fail":
             return {"status": "dropped_failed_authentication"}
+        if verdict == "unknown" and settings.AGENT_EMAIL_REQUIRE_AUTH:
+            return {"status": "dropped_unverified_authentication"}
 
         # v1: plain-text body only. No HTML-stripping fallback — an empty
         # text part just delivers an empty body rather than attempting to

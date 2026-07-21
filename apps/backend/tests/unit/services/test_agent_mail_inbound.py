@@ -42,18 +42,21 @@ def test_is_auto_submitted(headers, blocked):
 @pytest.mark.parametrize(
     "headers,expected",
     [
-        ({"Authentication-Results": "mx.google.com; dmarc=pass header.from=x.com"}, True),
-        ({"authentication-results": "spf=pass smtp.mailfrom=a@x.com; dkim=fail"}, True),
-        ({"Authentication-Results": "spf=fail; dkim=fail; dmarc=fail"}, False),
+        ({"Authentication-Results": "mx.google.com; dmarc=pass header.from=x.com"}, "pass"),
+        ({"Authentication-Results": "spf=pass smtp.mailfrom=a@x.com; dkim=fail"}, "pass"),
+        ({"Authentication-Results": "spf=fail; dkim=fail; dmarc=fail"}, "fail"),
         # dmarc=fail is authoritative — must NOT be rescued by spf=pass.
-        ({"Authentication-Results": "dmarc=fail; spf=pass"}, False),
-        ({}, False),
-        (None, False),
-        ({"Authentication-Results": 12345}, False),
+        ({"Authentication-Results": "dmarc=fail; spf=pass"}, "fail"),
+        ({"Authentication-Results": "spf=fail; dkim=fail"}, "fail"),
+        ({}, "unknown"),
+        (None, "unknown"),
+        ({"Authentication-Results": 12345}, "unknown"),
+        # case-insensitive key
+        ({"authentication-results": "dmarc=pass"}, "pass"),
     ],
 )
-def test_passes_sender_authentication(headers, expected):
-    assert inbound.passes_sender_authentication(headers) is expected
+def test_sender_authentication_verdict(headers, expected):
+    assert inbound.sender_authentication_verdict(headers) == expected
 
 
 def test_build_delivered_message_inlines_header_and_token():

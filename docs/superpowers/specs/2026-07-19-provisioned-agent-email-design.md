@@ -249,8 +249,9 @@ Inbound attachments are **stored and linked**, not inlined:
 ## 10. Security & abuse
 
 - **Subdomain only** — never `isol8.co` apex (MX collision with existing receiving).
-- **Sender allowlist** — spoofed strangers can't trigger billable runs; rely on Resend's
-  SPF/DKIM checks + the `verified_senders` list.
+- **Sender allowlist** — spoofed strangers can't trigger billable runs; enforced via the
+  `verified_senders` list (see "Inbound auth model" below for why this, not SPF/DKIM/DMARC,
+  is the primary boundary).
 - **No mail credentials in the container** — outbound is a backend relay; the relay pins the
   `from` address, so one compromised/prompt-injected container can only ever send as itself.
 - **Loop / auto-reply guard** — `Auto-Submitted`/`Precedence` headers + max-replies-per-thread,
@@ -258,6 +259,29 @@ Inbound attachments are **stored and linked**, not inlined:
 - **Spend gating** — inbound reuses the existing trial-cap gate; each inbound is a run.
 - **Rate limits** — per owner and per thread on the relay.
 - **Webhook signature verification** on the inbound endpoint.
+
+### 10.1 Inbound auth model — Resend Agent Email Inbox Level 1
+
+Resend's own guidance for an agent-facing inbox is a 5-level model. Level 1, **"Strict
+Allowlist — only process emails from known senders,"** is what we implement as the v1
+boundary: the `verified_senders` check in §10 above. Resend's documented model does not
+recommend checking SPF/DKIM/DMARC for this use case, and Resend's receiving API surfaces no
+authentication-verdict field — so the `Authentication-Results` header check in
+`sender_authentication_verdict` (`core/services/agent_mail_inbound.py`) is opportunistic
+defense-in-depth, not a control Resend asks for: it rejects mail that **explicitly fails**
+SPF/DKIM/DMARC when a mail relay happens to stamp the header, and delivers everything else
+(no verdict is the common case, per Resend). `AGENT_EMAIL_REQUIRE_AUTH` can flip this to
+also drop no-verdict mail, but that's an opt-in tightening, not the default posture.
+
+The From header is a filter, not a spoof-proof fence. The protections that actually hold
+under a forged sender are structural: per-owner isolation (a forged sender can only reach
+the one agent/owner the recipient address belongs to), the spend cap (bounds the blast
+radius of any run that does get through), and replies going only to the genuine From address
+captured at receipt time (never to an address the mail body claims).
+
+Higher assurance than Level 1 is a known future direction, not v1 scope: Resend's Level 4
+(sandboxed / restricted agent capabilities for processing mail) and Level 5 (human-in-the-loop
+approval before an agent acts on inbound mail).
 
 ## 11. Error handling
 

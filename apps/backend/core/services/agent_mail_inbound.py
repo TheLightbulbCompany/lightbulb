@@ -65,33 +65,40 @@ def is_auto_submitted(headers: dict[str, str]) -> bool:
     return False
 
 
-def passes_sender_authentication(headers: dict) -> bool:
-    """True iff the fetched email's headers show it passed sender authentication.
+def sender_authentication_verdict(headers) -> str:
+    """Best-effort read of the fetched email's `Authentication-Results` header.
 
-    Looks for the `Authentication-Results` header (case-insensitive key) and
-    accepts the mail if DMARC passed, or (absent a DMARC verdict) if either SPF
-    or DKIM passed. Absent/uninterpretable → False (fail-closed): the From header
-    is forgeable, so we do not trust an unauthenticated sender even when it
-    matches the allowlist.
+    Returns "pass", "fail", or "unknown". Resend's Agent Email Inbox model makes
+    the sender allowlist (Level 1) the primary control and surfaces no auth
+    verdict field, so "unknown" (header absent/unparseable) is the common case
+    and must NOT be treated as a failure by default. This header check is only
+    free defense-in-depth: reject a mail that explicitly FAILS, deliver when
+    there is no verdict.
 
-    DMARC is authoritative when present: an explicit `dmarc=fail` (or any
-    other non-`pass` dmarc verdict) is NOT rescued by a passing SPF/DKIM
-    token elsewhere in the same header — the spf/dkim fallback only applies
-    when there is no `dmarc=` token in the header at all.
+    DMARC is authoritative when present: a `dmarc=` token decides the verdict
+    outright. Only when there is NO `dmarc=` token do we fall back to SPF/DKIM.
     """
     if not isinstance(headers, dict):
-        return False
+        return "unknown"
 
     lowered = {k.lower(): v for k, v in headers.items()}
     value = lowered.get(_AUTHENTICATION_RESULTS_HEADER)
     if not isinstance(value, str):
-        return False
+        return "unknown"
 
     value = value.lower()
     if "dmarc=" in value:
-        return "dmarc=pass" in value
+        if "dmarc=pass" in value:
+            return "pass"
+        if "dmarc=fail" in value:
+            return "fail"
+        return "unknown"
 
-    return "spf=pass" in value or "dkim=pass" in value
+    if "spf=pass" in value or "dkim=pass" in value:
+        return "pass"
+    if "spf=fail" in value or "dkim=fail" in value:
+        return "fail"
+    return "unknown"
 
 
 def _client_factory() -> httpx.AsyncClient:

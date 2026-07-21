@@ -3,8 +3,11 @@
 One test per branch of the orchestration in ``routers/agent_mail.py``:
 feature-gate disabled, bad signature, duplicate svix-id, unknown recipient,
 unverified sender (+ the public-address bypass), over cap, fetch failure,
-auto-submitted loop guard, the happy path, and the top-level catch-all that
-guarantees the handler never returns 5xx.
+auto-submitted loop guard, the sender-authentication verdict gate (explicit
+fail always drops; unknown drops only under ``AGENT_EMAIL_REQUIRE_AUTH``
+strict mode; unknown delivers by default — the common real Resend case, since
+Resend surfaces no verdict field), the happy path, and the top-level
+catch-all that guarantees the handler never returns 5xx.
 
 Seams (``verify_svix_signature``, ``record_event_or_skip``,
 ``get_by_address``, ``trial_block_reason``, ``fetch_received_email``,
@@ -183,7 +186,9 @@ def test_public_address_bypasses_unverified_sender_and_delivers(client, monkeypa
     monkeypatch.setattr(
         agent_mail,
         "fetch_received_email",
-        AsyncMock(return_value={"headers": {"Authentication-Results": "dmarc=pass"}, "text": "hi"}),
+        # No Authentication-Results header at all — the common real Resend case.
+        # Default mode (AGENT_EMAIL_REQUIRE_AUTH=False) must still deliver.
+        AsyncMock(return_value={"headers": {}, "text": "hi"}),
     )
     deliver_mock = AsyncMock(return_value="delivered")
     monkeypatch.setattr(agent_mail, "deliver_to_agent", deliver_mock)
@@ -281,13 +286,38 @@ def test_failed_authentication_is_dropped(client, monkeypatch):
     deliver_mock.assert_not_called()
 
 
-def test_require_auth_false_delivers_despite_failed_authentication(client, monkeypatch):
-    """AGENT_EMAIL_REQUIRE_AUTH=False governs the gate: with it off, a failing
-    authentication verdict no longer blocks delivery."""
+def test_unknown_authentication_dropped_when_require_auth_true(client, monkeypatch):
+    """AGENT_EMAIL_REQUIRE_AUTH=True governs the strict gate: an UNKNOWN verdict
+    (no Authentication-Results header at all) is dropped only in strict mode —
+    the default (False) delivers this same fixture (see test_happy_path_delivers)."""
     _enable(monkeypatch)
     _valid_sig(monkeypatch)
     _dedup_recorded(monkeypatch)
-    monkeypatch.setattr(agent_mail.settings, "AGENT_EMAIL_REQUIRE_AUTH", False)
+    monkeypatch.setattr(agent_mail.settings, "AGENT_EMAIL_REQUIRE_AUTH", True)
+    monkeypatch.setattr(agent_mail, "get_by_address", AsyncMock(return_value=_row()))
+    monkeypatch.setattr(agent_mail, "trial_block_reason", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        agent_mail,
+        "fetch_received_email",
+        AsyncMock(return_value={"headers": {}, "text": "hi"}),
+    )
+    deliver_mock = AsyncMock()
+    monkeypatch.setattr(agent_mail, "deliver_to_agent", deliver_mock)
+
+    resp = _post(client, _body())
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "dropped_unverified_authentication"
+    deliver_mock.assert_not_called()
+
+
+def test_explicit_pass_delivers_in_strict_mode(client, monkeypatch):
+    """AGENT_EMAIL_REQUIRE_AUTH=True still delivers when the fetched headers
+    carry an explicit auth PASS verdict."""
+    _enable(monkeypatch)
+    _valid_sig(monkeypatch)
+    _dedup_recorded(monkeypatch)
+    monkeypatch.setattr(agent_mail.settings, "AGENT_EMAIL_REQUIRE_AUTH", True)
     monkeypatch.setattr(agent_mail, "get_by_address", AsyncMock(return_value=_row()))
     monkeypatch.setattr(agent_mail, "trial_block_reason", AsyncMock(return_value=None))
     monkeypatch.setattr(
@@ -295,7 +325,7 @@ def test_require_auth_false_delivers_despite_failed_authentication(client, monke
         "fetch_received_email",
         AsyncMock(
             return_value={
-                "headers": {"Authentication-Results": "spf=fail; dkim=fail; dmarc=fail"},
+                "headers": {"Authentication-Results": "dmarc=pass header.from=example.com"},
                 "text": "hi",
             }
         ),
@@ -325,7 +355,8 @@ def test_non_string_recipient_entry_is_skipped_and_scanning_continues(client, mo
     monkeypatch.setattr(
         agent_mail,
         "fetch_received_email",
-        AsyncMock(return_value={"headers": {"Authentication-Results": "dmarc=pass"}, "text": "hi"}),
+        # No Authentication-Results header — default mode still delivers.
+        AsyncMock(return_value={"headers": {}, "text": "hi"}),
     )
     deliver_mock = AsyncMock(return_value="delivered")
     monkeypatch.setattr(agent_mail, "deliver_to_agent", deliver_mock)
@@ -338,6 +369,10 @@ def test_non_string_recipient_entry_is_skipped_and_scanning_continues(client, mo
 
 
 def test_happy_path_delivers(client, monkeypatch):
+    """Default mode (AGENT_EMAIL_REQUIRE_AUTH=False): no Authentication-Results
+    header at all is the common real Resend case, and it must still deliver —
+    the sender allowlist (matched earlier via verified_senders), not this
+    header, is the primary control."""
     _enable(monkeypatch)
     _valid_sig(monkeypatch)
     _dedup_recorded(monkeypatch)
@@ -348,7 +383,7 @@ def test_happy_path_delivers(client, monkeypatch):
         "fetch_received_email",
         AsyncMock(
             return_value={
-                "headers": {"Authentication-Results": "dmarc=pass header.from=example.com"},
+                "headers": {},
                 "text": "Hi there, please help.",
             }
         ),
@@ -381,7 +416,7 @@ def test_container_not_running_status_is_surfaced(client, monkeypatch):
     monkeypatch.setattr(
         agent_mail,
         "fetch_received_email",
-        AsyncMock(return_value={"headers": {"Authentication-Results": "dmarc=pass"}, "text": "hi"}),
+        AsyncMock(return_value={"headers": {}, "text": "hi"}),
     )
     monkeypatch.setattr(agent_mail, "deliver_to_agent", AsyncMock(return_value="container_not_running"))
 

@@ -327,12 +327,16 @@ class Settings(BaseSettings):
     # Inbound-email webhook signing secret (Svix `whsec_…`). Empty disables
     # the inbound webhook entirely (fail-closed — never process unsigned mail).
     RESEND_WEBHOOK_SECRET: str = os.getenv("RESEND_WEBHOOK_SECRET", "")
-    # Fail-closed sender authentication for inbound email. When true (default),
-    # inbound mail must pass SPF/DKIM/DMARC (per the fetched Authentication-Results
-    # header) even if the From address matches an owner's verified_senders — the
-    # From header alone is forgeable. Only set false if the mail provider is
-    # confirmed to reject unauthenticated mail upstream.
-    AGENT_EMAIL_REQUIRE_AUTH: bool = os.getenv("AGENT_EMAIL_REQUIRE_AUTH", "true").lower() == "true"
+    # Strict inbound sender authentication (defense-in-depth beyond the sender
+    # allowlist, which is Resend's Agent Email Inbox "Level 1" control and our
+    # primary boundary). When TRUE, inbound mail with NO auth verdict is also
+    # dropped — enable only once the mail provider is confirmed to stamp a
+    # trustworthy Authentication-Results. Default FALSE: mail that EXPLICITLY
+    # fails SPF/DKIM/DMARC is always dropped, but mail with no verdict is
+    # delivered, matching Resend's documented inbound flow. The From allowlist,
+    # per-owner isolation, the spend cap, and replies going only to the genuine
+    # sender are the real protections.
+    AGENT_EMAIL_REQUIRE_AUTH: bool = os.getenv("AGENT_EMAIL_REQUIRE_AUTH", "false").lower() == "true"
     # Visible From identities on the verified isol8.co domain. Same across
     # envs, so plain defaults (no CDK wiring) — override via env only if a
     # future env needs a different sender.

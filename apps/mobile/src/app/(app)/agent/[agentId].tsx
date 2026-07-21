@@ -58,11 +58,15 @@ function ReconnectingBanner() {
  * (General or a named UUID session — see .superpowers/sdd/
  * w1-sessions-contract.md). Protocol handling follows the web contract:
  *
- * - `chunk` frames arrive as append deltas (`append: true`) or full-text
- *   resyncs; accumulateStreamText reconstructs the run's CUMULATIVE text
- *   (matching the web useAgentChat segment model). Bubbles REPLACE their
- *   text from that buffer, and a per-run committed offset splits the
- *   cumulative stream into per-segment bubbles when tool calls interleave.
+ * - `chunk` frames arrive as append deltas (`append: true`), folded into
+ *   the run buffer via accumulateStreamText, or as SEGMENT-scoped resyncs
+ *   (no `append` — the current assistant message only), which the chunk
+ *   handler rebuilds as frozen-prefix + segment text itself (see
+ *   packages/shared streamText docstring; web useAgentChat still folds
+ *   resyncs through the cumulative model and carries the latent chop).
+ *   Bubbles REPLACE their text from that buffer, and a per-run committed
+ *   offset splits the cumulative stream into per-segment bubbles when
+ *   tool calls interleave.
  * - `run_ended` (not `done`) releases the busy gate — `done` also fires on
  *   interim tool-approval brackets.
  *

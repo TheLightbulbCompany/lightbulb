@@ -103,7 +103,7 @@ async def test_writes_agents_md_to_agent_workspace():
 
     # AGENTS.md is the agent's identity — write-if-missing, at the agent's
     # EFS-relative workspace path.
-    assert (OWNER, f"workspaces/{AGENT_ID}/AGENTS.md", planned.body_md) in ws.missing_writes
+    assert (OWNER, f"workspace-{AGENT_ID}/AGENTS.md", planned.body_md) in ws.missing_writes
 
 
 @pytest.mark.asyncio
@@ -122,7 +122,7 @@ async def test_agent_entry_core_fields():
     )
 
     assert entry["id"] == AGENT_ID
-    assert entry["workspace"] == f".openclaw/workspaces/{AGENT_ID}"
+    assert entry["workspace"] == f".openclaw/workspace-{AGENT_ID}"
     assert entry["reasoningDefault"] == "stream"
     assert entry["skills"] == planned.skills
     assert entry["name"] == planned.name
@@ -210,8 +210,8 @@ async def test_skill_assets_written_under_agent_workspace():
     )
 
     written = {(uid, path): data for uid, path, data in ws.byte_writes}
-    assert written[(OWNER, f"workspaces/{AGENT_ID}/skills/code-review/SKILL.md")] == b"# Code Review\n"
-    assert written[(OWNER, f"workspaces/{AGENT_ID}/skills/code-review/helper.py")] == b"print('hi')\n"
+    assert written[(OWNER, f"workspace-{AGENT_ID}/skills/code-review/SKILL.md")] == b"# Code Review\n"
+    assert written[(OWNER, f"workspace-{AGENT_ID}/skills/code-review/helper.py")] == b"print('hi')\n"
 
 
 @pytest.mark.asyncio

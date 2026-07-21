@@ -74,7 +74,7 @@ async def test_personal_owner_writes_four_files(monkeypatch):
     # reconcile from deleting BOOTSTRAP.md.
     assert workspace.write_file_if_missing.call_count == 7
     paths = [call.args[1] for call in workspace.write_file_if_missing.call_args_list]
-    assert all(p.startswith("workspaces/f47ac10b-58cc-4372-a567-0e02b2c3d479/") for p in paths)
+    assert all(p.startswith("workspace-f47ac10b-58cc-4372-a567-0e02b2c3d479/") for p in paths)
     assert sorted(p.rsplit("/", 1)[-1] for p in paths) == [
         "AGENTS.md",
         "BOOTSTRAP.md",
@@ -258,7 +258,7 @@ async def test_state_file_written_first_with_setup_completed(monkeypatch):
     # First write is the state file (defensive ordering).
     first_path = calls[0].args[1]
     first_content = calls[0].args[2]
-    assert first_path == "workspaces/uuid-1/.openclaw/workspace-state.json"
+    assert first_path == "workspace-uuid-1/.openclaw/workspace-state.json"
 
     state = _json.loads(first_content)
     assert state["version"] == 1
@@ -445,17 +445,17 @@ async def test_paperclip_identities_writes_per_agent_file():
 
     calls = {c.args[1]: c.args[2] for c in workspace.write_file_if_missing.call_args_list}
     assert set(calls) == {
-        "workspaces/agent-friday/paperclip-claimed-api-key.json",
-        "workspaces/agent-atlas/paperclip-claimed-api-key.json",
+        "workspace-agent-friday/paperclip-claimed-api-key.json",
+        "workspace-agent-atlas/paperclip-claimed-api-key.json",
     }
-    friday_doc = _json.loads(calls["workspaces/agent-friday/paperclip-claimed-api-key.json"])
+    friday_doc = _json.loads(calls["workspace-agent-friday/paperclip-claimed-api-key.json"])
     assert friday_doc == {
         "token": "key-f",
         "agentId": "agent-friday",
         "companyId": "comp-1",
         "apiUrl": "http://paperclip.internal:3100",
     }
-    atlas_doc = _json.loads(calls["workspaces/agent-atlas/paperclip-claimed-api-key.json"])
+    atlas_doc = _json.loads(calls["workspace-agent-atlas/paperclip-claimed-api-key.json"])
     assert atlas_doc["token"] == "key-a"
     assert atlas_doc["agentId"] == "agent-atlas"
 
@@ -479,7 +479,7 @@ async def test_paperclip_identities_skips_agents_without_a_minted_key():
     )
 
     paths = [c.args[1] for c in workspace.write_file_if_missing.call_args_list]
-    assert paths == ["workspaces/agent-friday/paperclip-claimed-api-key.json"]
+    assert paths == ["workspace-agent-friday/paperclip-claimed-api-key.json"]
 
 
 @pytest.mark.asyncio
@@ -564,7 +564,7 @@ async def test_stage_single_agent_writes_identity_file():
 
     workspace.write_file_if_missing.assert_called_once()
     rel_path = workspace.write_file_if_missing.call_args.args[1]
-    assert rel_path == "workspaces/agent-live/paperclip-claimed-api-key.json"
+    assert rel_path == "workspace-agent-live/paperclip-claimed-api-key.json"
     doc = _json.loads(workspace.write_file_if_missing.call_args.args[2])
     assert doc == {
         "token": "key-live",
@@ -658,7 +658,7 @@ def test_migrate_legacy_user_md_swaps_lines_and_preserves_content():
     ws = _MigrationWs(_LEGACY_USER_MD)
     assert friday_identity._migrate_legacy_user_md(ws, "user_abc", "uuid-f") is True
     path, content = ws.written
-    assert path == "workspaces/uuid-f/USER.md"
+    assert path == "workspace-uuid-f/USER.md"
     assert "isol8-facts.json" in content
     assert "Isol8 plan" not in content
     assert "- **Provider:**" not in content
@@ -781,7 +781,7 @@ def test_soul_md_has_no_nightly_logic():
 def test_migrate_add_nightly_section_appends_when_absent():
     """An existing AGENTS.md without the section gets it appended; idempotent on
     a second run."""
-    store = {"workspaces/friday-uuid/AGENTS.md": "# AGENTS.md — Friday's Playbook\n\nold content\n"}
+    store = {"workspace-friday-uuid/AGENTS.md": "# AGENTS.md — Friday's Playbook\n\nold content\n"}
 
     def read_file(owner_id, rel_path):
         return store[rel_path]
@@ -795,8 +795,8 @@ def test_migrate_add_nightly_section_appends_when_absent():
 
     changed = friday_identity._migrate_add_nightly_section(workspace, "user_abc", "friday-uuid")
     assert changed is True
-    assert "## Nightly self-directed wake" in store["workspaces/friday-uuid/AGENTS.md"]
-    assert "old content" in store["workspaces/friday-uuid/AGENTS.md"]
+    assert "## Nightly self-directed wake" in store["workspace-friday-uuid/AGENTS.md"]
+    assert "old content" in store["workspace-friday-uuid/AGENTS.md"]
 
     # Second run is a no-op (heading already present).
     changed_again = friday_identity._migrate_add_nightly_section(workspace, "user_abc", "friday-uuid")

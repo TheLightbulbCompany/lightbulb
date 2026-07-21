@@ -62,7 +62,7 @@ def _agent_workspace_path(owner_id: str, agent_id: str) -> str:
     """Build the relative path to an agent's workspace within the user dir."""
     if "/" in agent_id or "\\" in agent_id or ".." in agent_id:
         raise HTTPException(status_code=400, detail="Invalid agent_id")
-    return f"workspaces/{agent_id}"
+    return f"workspace-{agent_id}"
 
 
 def _guard_read_subpath(workspace, owner_id: str, agent_base: str, full_path: str, path: str) -> None:
@@ -101,7 +101,7 @@ def _collect_recursive(workspace, owner_id: str, path: str, entries: list, subtr
 
     Guarding only the root path isn't enough: list_directory resolves child paths
     relative to the user root, not the agent subtree, so a symlinked subdir like
-    ``workspaces/agent-a/link -> ../agent-b`` would otherwise let the walk
+    ``workspace-agent-a/link -> ../agent-b`` would otherwise let the walk
     enumerate a sibling workspace. We re-check every entry (files included, so a
     symlinked file is dropped too) and never descend into an escaping dir.
     """
@@ -122,15 +122,15 @@ def _collect_recursive(workspace, owner_id: str, path: str, entries: list, subtr
 def _strip_agent_prefix(entries: list[dict], agent_id: str) -> list[dict]:
     """Rewrite entry paths from user-root-relative to agent-workspace-relative.
 
-    Input paths look like `workspaces/{agent_id}/foo/bar.md`. Output paths
-    strip the `workspaces/{agent_id}/` prefix so they match the contract
+    Input paths look like `workspace-{agent_id}/foo/bar.md`. Output paths
+    strip the `workspace-{agent_id}/` prefix so they match the contract
     expected by the read/write endpoints.
     """
-    prefix = f"workspaces/{agent_id}/"
+    prefix = f"workspace-{agent_id}/"
     out = []
     for entry in entries:
         p = entry["path"]
-        if p == f"workspaces/{agent_id}":
+        if p == f"workspace-{agent_id}":
             # The agent root itself — present when the workspace dir is listed at depth 0.
             new_path = ""
         elif p.startswith(prefix):
@@ -163,7 +163,7 @@ MAX_WRITE_SIZE = 10 * 1024 * 1024  # 10 MB
 def _list_config_files(workspace, owner_id: str, agent_id: str) -> list[dict]:
     """List only allowlisted config files from the agent's workspace.
 
-    Config files (SOUL.md, MEMORY.md, etc.) live inside workspaces/{agent_id}/
+    Config files (SOUL.md, MEMORY.md, etc.) live inside workspace-{agent_id}/
     alongside the agent's working files. They are NOT stored in agents/{agent_id}/
     — that directory holds OpenClaw runtime metadata (sessions, models) which
     is intentionally unreachable from the file viewer.
@@ -171,7 +171,7 @@ def _list_config_files(workspace, owner_id: str, agent_id: str) -> list[dict]:
     if "/" in agent_id or "\\" in agent_id or ".." in agent_id:
         return []
     user_root = workspace.user_path(owner_id)
-    agent_dir = user_root / "workspaces" / agent_id
+    agent_dir = user_root / f"workspace-{agent_id}"
     if not agent_dir.exists() or not agent_dir.is_dir():
         return []
     results = []
@@ -280,7 +280,7 @@ async def read_config_file(
     if "/" in agent_id or "\\" in agent_id or ".." in agent_id:
         raise HTTPException(status_code=400, detail="Invalid agent_id")
     workspace = get_workspace()
-    full_path = f"workspaces/{agent_id}/{path}"
+    full_path = f"workspace-{agent_id}/{path}"
     try:
         info = workspace.read_file_info(owner_id, full_path)
     except WorkspaceError as exc:
@@ -300,7 +300,7 @@ def _write_file(workspace, owner_id: str, agent_id: str, path: str, content: str
     """Write a file into the agent's workspace. Returns the user-root-relative path.
 
     Both tabs ("workspace" and "config") write under the same subtree:
-    workspaces/{agent_id}/. The tab controls the allowlist gate only — the
+    workspace-{agent_id}/. The tab controls the allowlist gate only — the
     config tab is restricted to the 7 personality files (SOUL.md etc.), the
     workspace tab accepts arbitrary relative paths.
     """
@@ -319,7 +319,7 @@ def _write_file(workspace, owner_id: str, agent_id: str, path: str, content: str
     elif tab != "workspace":
         raise ValueError(f"Invalid tab: {tab!r}")
 
-    subtree = f"workspaces/{agent_id}"
+    subtree = f"workspace-{agent_id}"
     full_path = f"{subtree}/{path}"
     _ensure_within_subtree(workspace, owner_id, full_path, subtree)
 

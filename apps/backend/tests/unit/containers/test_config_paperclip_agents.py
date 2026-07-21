@@ -47,7 +47,7 @@ def test_single_paperclip_agent_replaces_main():
     assert len(agents) == 1
     assert agents[0]["id"] == pc_uuid
     assert agents[0]["default"] is True
-    assert agents[0]["workspace"] == f"/home/node/.openclaw/workspaces/{pc_uuid}"
+    assert agents[0]["workspace"] == f"/home/node/.openclaw/workspace-{pc_uuid}"
     assert agents[0]["reasoningDefault"] == "stream"
     # Friendly display name must round-trip into agents.list[].name so the
     # OpenClaw chat surface (and the frontend sidebar that reads from it)

@@ -29,7 +29,7 @@ export function useAgents() {
     // OpenClaw's agents.create requires a non-empty `workspace` string
     // (it does NOT inherit agents.defaults.workspace at create time).
     // When the caller omits `workspace`, we fill in the same path the
-    // default would resolve to at runtime — .openclaw/workspaces/{id} —
+    // default would resolve to at runtime — .openclaw/workspace-{id} —
     // so the agent lands on EFS without the caller knowing about path
     // conventions.
     async (params: { name: string; workspace?: string; emoji?: string }) => {
@@ -38,7 +38,7 @@ export function useAgents() {
         .replace(/[^a-z0-9]+/g, "-")
         .replace(/-+/g, "-")
         .replace(/^-|-$/g, "");
-      const workspace = params.workspace ?? `.openclaw/workspaces/${normalizedId}`;
+      const workspace = params.workspace ?? `.openclaw/workspace-${normalizedId}`;
       // agents.create runs a long *serial* chain server-side: a Paperclip
       // company create, two container RPCs (agents.create + agents.update),
       // and an EFS-locked operator-device pairing. That regularly runs past

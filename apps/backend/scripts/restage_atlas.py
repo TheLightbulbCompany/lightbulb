@@ -13,7 +13,7 @@ container current with the repo bundle.
 Scope — what this touches and what it does NOT:
 
 * Touches ONLY Atlas's workspace files on EFS
-  (``users/<owner>/workspaces/<atlas_uuid>/...``). The bridge-URL
+  (``users/<owner>/workspace-<atlas_uuid>/...``). The bridge-URL
   substitution + ACP augmentation are applied exactly as a fresh provision
   would produce them.
 * Does NOT touch Friday or any other agent's workspace, openclaw.json, the

@@ -68,9 +68,20 @@ _AGENT_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{2,63}$")
 _AGENT_DIR_SENTINEL = "__AGENT_DIR__"
 
 
+def _agent_id_from_dir_name(dir_name: str) -> str:
+    """Strip the upstream per-agent workspace prefix from a dir name.
+
+    Workspace dirs are ``workspace-{agent_id}`` (upstream convention); the
+    agent id is everything after the prefix. Passing an already-bare id
+    through is a no-op, so callers can use this on any resolved dir name.
+    """
+    prefix = "workspace-"
+    return dir_name[len(prefix) :] if dir_name.startswith(prefix) else dir_name
+
+
 def _rewrite_mcp_args_paths(slice_: dict, seller_agent_id: str) -> None:
-    """In-place: replace ``workspaces/{seller_agent_id}`` segments in MCP
-    server args with ``workspaces/{_AGENT_DIR_SENTINEL}``.
+    """In-place: replace ``workspace-{seller_agent_id}`` segments in MCP
+    server args with ``workspace-{_AGENT_DIR_SENTINEL}``.
 
     Only ``args`` is rewritten; ``command`` and ``env`` don't carry
     workspace-relative paths in any seller config we've seen, but the
@@ -83,7 +94,13 @@ def _rewrite_mcp_args_paths(slice_: dict, seller_agent_id: str) -> None:
         args = entry.get("args")
         if isinstance(args, list):
             entry["args"] = [
-                a.replace(f"workspaces/{seller_agent_id}", f"workspaces/{_AGENT_DIR_SENTINEL}")
+                # Old-form first: sellers whose containers predate the
+                # workspace-layout migration still carry ``workspaces/{id}``
+                # in their MCP args; normalize both spellings to the new
+                # sentinel form so every artifact ships layout-current.
+                a.replace(f"workspaces/{seller_agent_id}", f"workspace-{_AGENT_DIR_SENTINEL}").replace(
+                    f"workspace-{seller_agent_id}", f"workspace-{_AGENT_DIR_SENTINEL}"
+                )
                 if isinstance(a, str)
                 else a
                 for a in args
@@ -243,7 +260,7 @@ class CredentialLeakError(Exception):
 
 
 class AgentNotFoundError(Exception):
-    """Seller has no agent workspace at workspaces/{agent_id} on EFS."""
+    """Seller has no agent workspace at workspace-{agent_id} on EFS."""
 
 
 class InvalidAgentIdError(Exception):
@@ -280,7 +297,7 @@ def _slugify(name: str) -> str:
 
 
 def _resolve_workspace_id(seller_id: str, agent_id: str, config: dict | None) -> str:
-    """Map a stored ``agent_id`` to the live ``workspaces/{id}`` dir name.
+    """Map a stored ``agent_id`` to the live ``workspace-{id}`` dir name.
 
     Resolution order:
       1. ``agent_id`` is itself a live workspace dir → return as-is. Covers
@@ -343,7 +360,7 @@ def _resolve_agent_dir(seller_id: str, agent_id: str, *, config: dict | None = N
 
       agents/{id}/      — OpenClaw runtime state (sessions/ logs,
                           agent/ auth tokens). Internal; not seller content.
-      workspaces/{id}/  — the seller's actual workspace: persona files
+      workspace-{id}/  — the seller's actual workspace: persona files
                           (IDENTITY.md / SOUL.md / USER.md / HEARTBEAT.md /
                           TOOLS.md), bundled skills (skills/), MCP server
                           code, memory, etc. This is what buyers need.
@@ -351,7 +368,7 @@ def _resolve_agent_dir(seller_id: str, agent_id: str, *, config: dict | None = N
     The export tars the WORKSPACE dir. Pointing at agents/{id}/ instead
     would only capture OpenClaw's internal state — the resulting tarball
     would be either runtime junk or empty after filtering. Buyers need
-    workspaces/{id}/; the existing filter list strips node_modules, .git,
+    workspace-{id}/; the existing filter list strips node_modules, .git,
     dotfiles, etc. so the published artifact stays clean.
 
     ``config`` (the seller's openclaw.json) is used to resolve a legacy slug
@@ -376,14 +393,13 @@ def _resolve_agent_dir(seller_id: str, agent_id: str, *, config: dict | None = N
     # so the traversal guard below still holds on the resolved name.
     resolved_id = _resolve_workspace_id(seller_id, agent_id, config)
 
-    workspaces_root = seller_root / "workspaces"
-    candidate = (workspaces_root / resolved_id).resolve()
+    candidate = (seller_root / f"workspace-{resolved_id}").resolve()
 
     try:
-        candidate.relative_to(workspaces_root.resolve())
+        candidate.relative_to(seller_root.resolve())
     except ValueError:
         put_metric("marketplace.path_traversal_attempt")
-        raise InvalidAgentIdError(f"agent_id resolves outside seller's workspaces directory: {agent_id!r}")
+        raise InvalidAgentIdError(f"agent_id resolves outside the seller's user root: {agent_id!r}")
 
     return candidate
 
@@ -404,7 +420,7 @@ def resolve_workspace_agent_id(seller_id: str, agent_id: str) -> str:
         config = workspace.read_openclaw_config(seller_id)
     except WorkspaceError:
         config = None
-    return _resolve_agent_dir(seller_id=seller_id, agent_id=agent_id, config=config).name
+    return _agent_id_from_dir_name(_resolve_agent_dir(seller_id=seller_id, agent_id=agent_id, config=config).name)
 
 
 def _build_tarball(agent_dir: Path) -> tuple[bytes, list[str]]:
@@ -514,15 +530,15 @@ def _summarize_openclaw_config(agent_dir: Path) -> dict:
     """
     cfg_path = agent_dir / "openclaw.json"
     if not cfg_path.exists():
-        return {"name": agent_dir.name, "description": ""}
+        return {"name": _agent_id_from_dir_name(agent_dir.name), "description": ""}
     try:
         data = json.loads(cfg_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {"name": agent_dir.name, "description": ""}
+        return {"name": _agent_id_from_dir_name(agent_dir.name), "description": ""}
 
     identity = data.get("identity", {}) if isinstance(data, dict) else {}
     return {
-        "name": identity.get("name") or agent_dir.name,
+        "name": identity.get("name") or _agent_id_from_dir_name(agent_dir.name),
         "description": identity.get("description") or identity.get("vibe") or "",
     }
 
@@ -628,11 +644,12 @@ def export_agent_from_efs(
         # Bad seller_id — let _resolve_agent_dir surface it as InvalidAgentIdError.
         config = None
     agent_dir = _resolve_agent_dir(seller_id=seller_id, agent_id=agent_id, config=config)
-    # The dir name is the live workspace UUID. For legacy slug-keyed listings
-    # this differs from the requested agent_id — key the slice, MCP-arg rewrite,
-    # cron filter, and manifest off the resolved UUID so the snapshot self-heals
+    # The dir name is ``workspace-{uuid}`` — strip the layout prefix to get
+    # the live workspace UUID. For legacy slug-keyed listings this differs
+    # from the requested agent_id — key the slice, MCP-arg rewrite, cron
+    # filter, and manifest off the resolved UUID so the snapshot self-heals
     # (replace_artifact then persists the UUID onto the row).
-    resolved_agent_id = agent_dir.name
+    resolved_agent_id = _agent_id_from_dir_name(agent_dir.name)
     tarball_bytes, contents = _build_tarball(agent_dir)
 
     if not config:
@@ -765,11 +782,11 @@ def export_built_agent_from_staging(owner_id: str, staging_agent_id: str) -> Cat
     Args:
         owner_id: Clerk/org id that owns the EFS dir (same role ``seller_id``
             plays in ``export_agent_from_efs``).
-        staging_agent_id: The ``workspaces/{id}/`` dir name Atlas built into.
+        staging_agent_id: The ``workspace-{id}/`` dir name Atlas built into.
 
     Raises:
         InvalidAgentIdError: staging_agent_id failed format / path-traversal check.
-        AgentNotFoundError: no staging dir at workspaces/{staging_agent_id}.
+        AgentNotFoundError: no staging dir at workspace-{staging_agent_id}.
         BuiltAgentConfigError: the staging dir has no parseable openclaw.json
             (or its config carries no ``agents.list[].id``).
         CredentialLeakError: a credential survived scrubbing in the built slice.
@@ -936,8 +953,9 @@ def enumerate_for_preview(*, seller_id: str, agent_id: str) -> dict:
         # Bad seller_id — let _resolve_agent_dir surface it as InvalidAgentIdError.
         config = {}
     agent_dir = _resolve_agent_dir(seller_id=seller_id, agent_id=agent_id, config=config)
-    # Resolved workspace UUID — differs from agent_id only for legacy slug listings.
-    resolved_agent_id = agent_dir.name
+    # Resolved workspace UUID (dir name minus the ``workspace-`` layout
+    # prefix) — differs from agent_id only for legacy slug listings.
+    resolved_agent_id = _agent_id_from_dir_name(agent_dir.name)
 
     # Validate the agent is registered in the seller's config; the entry
     # itself is NOT used as a skills source (no per-agent skill scoping

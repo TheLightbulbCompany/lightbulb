@@ -629,7 +629,7 @@ export function ChatLayout({
           onCreate={async (name) => {
             // OpenClaw's agents.create requires a non-empty `workspace` —
             // see useAgents.createAgent, which fills in the default path
-            // (.openclaw/workspaces/{id}) when omitted.
+            // (.openclaw/workspace-{id}) when omitted.
             await createAgent({ name });
             setCreateFormOpen(false);
           }}

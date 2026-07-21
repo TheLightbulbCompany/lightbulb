@@ -503,7 +503,7 @@ async def pair_with_openclaw(
 
     create_params = {
         "name": pc_uuid,
-        "workspace": f"/home/node/.openclaw/workspaces/{pc_uuid}",
+        "workspace": f"/home/node/.openclaw/workspace-{pc_uuid}",
     }
     if paperclip_agent.get("model"):
         create_params["model"] = paperclip_agent["model"]

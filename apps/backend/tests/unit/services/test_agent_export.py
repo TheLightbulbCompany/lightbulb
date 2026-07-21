@@ -16,13 +16,13 @@ from core.services import agent_export  # noqa: E402
 
 @pytest.fixture
 def fake_efs(tmp_path: Path):
-    """Builds /tmp/<root>/users/<seller>/workspaces/<agent-id>/ with sample
+    """Builds /tmp/<root>/users/<seller>/workspace-<agent-id>/ with sample
     files and patches get_workspace() to return a Workspace anchored at
     <root>.
 
     Layout mirrors the real OpenClaw EFS convention:
       agents/{id}/      → OpenClaw internal state (sessions/, agent/auth)
-      workspaces/{id}/  → seller-facing content (persona files, skills,
+      workspace-{id}/  → seller-facing content (persona files, skills,
                           per-agent openclaw.json) — what gets exported.
 
     Also writes the seller's per-user openclaw.json with an agents.list[]
@@ -33,7 +33,7 @@ def fake_efs(tmp_path: Path):
     agent_id = "my-agent-001"
 
     user_root = tmp_path / "users" / seller_id
-    agent_dir = user_root / "workspaces" / agent_id
+    agent_dir = user_root / f"workspace-{agent_id}"
     agent_dir.mkdir(parents=True)
 
     # Per-user openclaw.json — what the slice extraction reads.
@@ -49,7 +49,7 @@ def fake_efs(tmp_path: Path):
                             "skills": ["search", "code-review"],
                             "model": "anthropic.claude-3-5-sonnet",
                             "channels": {"telegram": {"chatId": "123"}},
-                            "workspace": ".openclaw/workspaces/old-id",
+                            "workspace": ".openclaw/workspace-old-id",
                         },
                     ],
                 },
@@ -235,7 +235,7 @@ def test_export_requires_desktop_when_publisher_declares(fake_efs):
 def test_export_ships_workspace_subdirs_named_sessions_or_agent(fake_efs):
     """Regression: a guard that strips any top-level ``sessions/`` or
     ``agent/`` dir from the tarball is unnecessary now that exports come
-    from ``workspaces/{id}/`` (runtime state lives in the sibling
+    from ``workspace-{id}/`` (runtime state lives in the sibling
     ``agents/{id}/`` tree we don't touch) and would silently drop
     legitimate seller content in workspaces named ``sessions/`` (e.g.
     user-recorded data) or ``agent/`` (e.g. project files describing the
@@ -420,13 +420,13 @@ def test_export_invalid_seller_id_rejected(tmp_path):
 
 
 def test_export_reads_from_workspaces_dir_not_agents_dir(tmp_path: Path):
-    """Regression for the agents/-vs-workspaces/ mix-up: the OpenClaw EFS
+    """Regression for the agents/-vs-workspace-dirs mix-up: the OpenClaw EFS
     layout puts INTERNAL runtime state under ``agents/{id}/`` and the
     actual seller workspace content under
-    ``workspaces/{id}/``. The export must tar the workspace dir; the agents
+    ``workspace-{id}/``. The export must tar the workspace dir; the agents
     dir holds only sessions/ logs and OAuth tokens.
 
-    Plant identical filenames in both dirs and confirm only the workspaces/
+    Plant identical filenames in both dirs and confirm only the workspace-dir
     copy makes it into the tarball.
     """
     seller_id = "user_seller_xyz"
@@ -442,7 +442,7 @@ def test_export_reads_from_workspaces_dir_not_agents_dir(tmp_path: Path):
     agents_dir.mkdir(parents=True)
     (agents_dir / "MARKER.md").write_text("agents-dir-marker (must NOT ship)", encoding="utf-8")
     # And a different marker in the WORKSPACES dir — this is what ships.
-    workspaces_dir = user_root / "workspaces" / agent_id
+    workspaces_dir = user_root / f"workspace-{agent_id}"
     workspaces_dir.mkdir(parents=True)
     (workspaces_dir / "IDENTITY.md").write_text("workspace content (must ship)", encoding="utf-8")
 
@@ -523,7 +523,7 @@ def test_export_synthesizes_slice_from_seller_config(fake_efs):
 def test_export_replaces_seller_agent_id_in_mcp_args_with_sentinel(fake_efs, tmp_path: Path):
     """Regression for marketplace-deploy-symmetry (spec 2026-05-18): the
     slice's mcp.servers.X.args paths reference the seller's workspace,
-    e.g. ``/home/node/.openclaw/workspaces/{seller_agent_id}/mcp-resy/index.js``.
+    e.g. ``/home/node/.openclaw/workspace-{seller_agent_id}/mcp-resy/index.js``.
     On deploy that path doesn't exist in the buyer's container. Replace
     the seller-keyed segment with __AGENT_DIR__ at export so deploy can
     substitute the buyer's new agent_id cleanly.
@@ -537,7 +537,7 @@ def test_export_replaces_seller_agent_id_in_mcp_args_with_sentinel(fake_efs, tmp
         "servers": {
             "resy": {
                 "command": "node",
-                "args": [f"/home/node/.openclaw/workspaces/{agent_id}/mcp-resy/index.js"],
+                "args": [f"/home/node/.openclaw/workspace-{agent_id}/mcp-resy/index.js"],
                 "env": {"RESY_EMAIL": "", "RESY_PASSWORD": ""},
             }
         }
@@ -557,6 +557,40 @@ def test_export_replaces_seller_agent_id_in_mcp_args_with_sentinel(fake_efs, tmp
     # Sentinel must be substituted in.
     assert "__AGENT_DIR__" in args[0], f"__AGENT_DIR__ sentinel missing from slice mcp args: {args}"
     # Rest of the path (mcp-resy/index.js) preserved.
+    assert args[0].endswith("/mcp-resy/index.js"), args[0]
+
+
+def test_export_normalizes_legacy_workspaces_layout_in_mcp_args(fake_efs, tmp_path: Path):
+    """Sellers whose containers predate the workspace-layout migration still
+    carry the retired ``workspaces/{agent_id}`` spelling in MCP args. Export
+    must normalize that OLD form to the same ``workspace-__AGENT_DIR__``
+    sentinel the new form produces, so every artifact ships layout-current.
+    """
+    seller_id, agent_id, agent_dir = fake_efs
+    cfg_path = tmp_path / "users" / seller_id / "openclaw.json"
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    cfg["mcp"] = {
+        "servers": {
+            "resy": {
+                "command": "node",
+                "args": [f"/home/node/.openclaw/workspaces/{agent_id}/mcp-resy/index.js"],
+                "env": {"RESY_EMAIL": ""},
+            }
+        }
+    }
+    cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+
+    pkg = agent_export.export_agent_from_efs(
+        seller_id=seller_id,
+        agent_id=agent_id,
+        selected_mcps=["resy"],
+    )
+
+    args = pkg.openclaw_slice["mcp"]["servers"]["resy"]["args"]
+    assert agent_id not in args[0], f"seller agent_id leaked into slice mcp args: {args}"
+    # Old plural-dir spelling must be gone; the modern sentinel form remains.
+    assert "workspaces/" not in args[0], args[0]
+    assert "workspace-__AGENT_DIR__" in args[0], args[0]
     assert args[0].endswith("/mcp-resy/index.js"), args[0]
 
 
@@ -623,7 +657,7 @@ def test_export_agent_not_in_config_raises(fake_efs, tmp_path):
     """
     seller_id, _, _ = fake_efs
     # Plant a workspace dir for an agent that isn't in the user-level config.
-    orphan_dir = tmp_path / "users" / seller_id / "workspaces" / "orphan-agent-99"
+    orphan_dir = tmp_path / "users" / seller_id / "workspace-orphan-agent-99"
     orphan_dir.mkdir()
     (orphan_dir / "README.md").write_text("orphan", encoding="utf-8")
     with pytest.raises(agent_export.AgentNotInConfigError, match="not registered"):
@@ -1169,7 +1203,7 @@ async def test_friday_guard_closed_for_legacy_slug(tmp_path):
     friday_uuid = "f1111111-2222-3333-4444-555555555555"
     seller_id = "user_owner_x"
     user_root = tmp_path / "users" / seller_id
-    (user_root / "workspaces" / friday_uuid).mkdir(parents=True)
+    (user_root / f"workspace-{friday_uuid}").mkdir(parents=True)
     (user_root / "openclaw.json").write_text(
         json.dumps({"agents": {"list": [{"id": friday_uuid, "name": "Friday"}]}}),
         encoding="utf-8",

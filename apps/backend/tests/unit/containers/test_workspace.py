@@ -311,7 +311,7 @@ class TestCleanupAgentDirs:
         assert not agents_dir.exists()
 
     def test_removes_workspaces_subdir(self, workspace, user_id, tmp_path):
-        ws_dir = tmp_path / user_id / "workspaces" / "research-assistant"
+        ws_dir = tmp_path / user_id / "workspace-research-assistant"
         ws_dir.mkdir(parents=True)
         (ws_dir / "AGENTS.md").write_text("# Hello")
 
@@ -321,7 +321,7 @@ class TestCleanupAgentDirs:
 
     def test_removes_both_when_both_exist(self, workspace, user_id, tmp_path):
         agents_dir = tmp_path / user_id / "agents" / "ra"
-        ws_dir = tmp_path / user_id / "workspaces" / "ra"
+        ws_dir = tmp_path / user_id / "workspace-ra"
         agents_dir.mkdir(parents=True)
         ws_dir.mkdir(parents=True)
         (agents_dir / "x").write_text("x")
@@ -390,14 +390,14 @@ class TestWriteFileIfMissing:
 
     def test_writes_when_absent(self, workspace, user_id):
         """File doesn't exist → method writes it and returns True."""
-        rel_path = "workspaces/abc/IDENTITY.md"
+        rel_path = "workspace-abc/IDENTITY.md"
         wrote = workspace.write_file_if_missing(user_id, rel_path, "hello")
         assert wrote is True
         assert workspace.read_file(user_id, rel_path) == "hello"
 
     def test_returns_false_when_present(self, workspace, user_id):
         """File exists → method skips write and returns False."""
-        rel_path = "workspaces/abc/IDENTITY.md"
+        rel_path = "workspace-abc/IDENTITY.md"
         workspace.write_file(user_id, rel_path, "original")
         wrote = workspace.write_file_if_missing(user_id, rel_path, "replacement")
         assert wrote is False
@@ -411,7 +411,7 @@ class TestWriteFileIfMissing:
 
     def test_creates_parent_directories(self, workspace, user_id):
         """Method creates intermediate directories on first write."""
-        rel_path = "workspaces/some-uuid/nested/path/SOUL.md"
+        rel_path = "workspace-some-uuid/nested/path/SOUL.md"
         wrote = workspace.write_file_if_missing(user_id, rel_path, "soul content")
         assert wrote is True
         assert workspace.read_file(user_id, rel_path) == "soul content"

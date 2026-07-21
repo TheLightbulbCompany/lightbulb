@@ -3,8 +3,11 @@
 Each user's workspace is stored at:
     {mount_path}/{user_id}/
 
-Agent workspaces live under:
+OpenClaw runtime agent state lives under:
     {mount_path}/{user_id}/agents/{agent_name}/
+
+Per-agent workspace files live at the upstream-convention siblings:
+    {mount_path}/{user_id}/workspace-{agent_id}/
 
 This module handles filesystem CRUD for agent workspaces on EFS.
 No S3 or Docker involved -- plain file operations on a mounted volume.
@@ -195,19 +198,23 @@ class Workspace:
         return sorted(d.name for d in agents_dir.iterdir() if d.is_dir())
 
     def list_workspace_agent_dirs(self, user_id: str) -> list[str]:
-        """List agent_ids that have a workspace directory under workspaces/.
+        """List agent_ids that have a ``workspace-{agent_id}`` directory.
 
         This reflects the set of agents with on-EFS workspace files (created
         by agent CRUD or catalog deploy), independent of OpenClaw's runtime
-        ``agents/`` state. A just-deployed agent lands in ``workspaces/``
-        immediately, but only appears under ``agents/`` after OpenClaw
+        ``agents/`` state. A just-deployed agent gets its ``workspace-{id}``
+        dir immediately, but only appears under ``agents/`` after OpenClaw
         processes the new ``openclaw.json`` — so the deploy-provenance
-        lookup must scan this directory.
+        lookup must scan for these dirs. Layout follows upstream OpenClaw's
+        per-agent convention (``~/.openclaw/workspace-<agentId>``) — never a
+        ``workspaces/`` folder, which upstream doctor treats as retired
+        plugin state and deletes.
         """
-        workspaces_dir = self.user_path(user_id) / "workspaces"
-        if not workspaces_dir.exists():
+        user_root = self.user_path(user_id)
+        if not user_root.exists():
             return []
-        return sorted(d.name for d in workspaces_dir.iterdir() if d.is_dir())
+        prefix = "workspace-"
+        return sorted(d.name[len(prefix) :] for d in user_root.iterdir() if d.is_dir() and d.name.startswith(prefix))
 
     def list_directory(self, user_id: str, path: str) -> list[dict]:
         """List the contents of a directory in a user's workspace.
@@ -596,10 +603,10 @@ class Workspace:
         user_root = self.user_path(user_id)
         # On-EFS roots OpenClaw writes to per agent:
         #   agents/{id}/      — agent/ + sessions/ subdirs (internal state)
-        #   workspaces/{id}/  — workspace files (per agents.defaults.workspace)
+        #   workspace-{id}/  — workspace files (per agents.defaults.workspace)
         targets = [
             user_root / "agents" / agent_id,
-            user_root / "workspaces" / agent_id,
+            user_root / f"workspace-{agent_id}",
         ]
         for target in targets:
             if not target.exists():
@@ -625,7 +632,7 @@ class Workspace:
         agent_id: str,
         tar_bytes: bytes,
     ) -> None:
-        """Extract a workspace tarball into {mount}/{user_id}/workspaces/{agent_id}/.
+        """Extract a workspace tarball into {mount}/{user_id}/workspace-{agent_id}/.
 
         Rejects path traversal via catalog_package.untar_to_directory.
         """
@@ -633,7 +640,7 @@ class Workspace:
         # grows a workspace dependency.
         from core.services.catalog_package import untar_to_directory
 
-        target = self.user_path(user_id) / "workspaces" / agent_id
+        target = self.user_path(user_id) / f"workspace-{agent_id}"
         target.mkdir(parents=True, exist_ok=True)
         untar_to_directory(io.BytesIO(tar_bytes), target)
 
@@ -643,7 +650,7 @@ class Workspace:
 
     def read_template_sidecar(self, user_id: str, agent_id: str) -> dict | None:
         """Return parsed `.template` sidecar JSON for an agent, or None if missing/corrupt."""
-        sidecar = self.user_path(user_id) / "workspaces" / agent_id / ".template"
+        sidecar = self.user_path(user_id) / f"workspace-{agent_id}" / ".template"
         if not sidecar.exists():
             return None
         try:
@@ -658,7 +665,7 @@ class Workspace:
         content: dict,
     ) -> None:
         """Write a `.template` sidecar JSON for an agent created from a catalog template."""
-        sidecar = self.user_path(user_id) / "workspaces" / agent_id / ".template"
+        sidecar = self.user_path(user_id) / f"workspace-{agent_id}" / ".template"
         sidecar.parent.mkdir(parents=True, exist_ok=True)
         sidecar.write_text(json.dumps(content))
         self._chown_for_access_point(sidecar, user_id)
@@ -694,7 +701,7 @@ class Workspace:
         return list(jobs) if isinstance(jobs, list) else []
 
     def agent_workspace_path(self, user_id: str, agent_id: str) -> Path:
-        return self.user_path(user_id) / "workspaces" / agent_id
+        return self.user_path(user_id) / f"workspace-{agent_id}"
 
 
 # Top-level key in OpenClaw's container-global ``credentials/oauth.json`` is

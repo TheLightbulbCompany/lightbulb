@@ -18,7 +18,7 @@ FULL_OPENCLAW_JSON = {
         "list": [
             {
                 "id": "agent_abc",
-                "workspace": ".openclaw/workspaces/agent_abc",
+                "workspace": ".openclaw/workspace-agent_abc",
                 "name": "Pitch",
                 "model": "qwen/qwen3-vl-235b",
                 "thinkingDefault": True,

@@ -112,7 +112,7 @@ def requirements_scan(
     Args:
         effective_config: the agent's per-workspace openclaw.json if present,
             else the global config. Drives the declared-read layer.
-        agent_dir: ``workspaces/<agent_id>`` — pipelines/, scripts/, *.md.
+        agent_dir: ``workspace-<agent_id>`` — pipelines/, scripts/, *.md.
         bundled_mcps / bundled_skills: what the seller chose to bundle (Bundle
             step); marks the matching requirement rows ``bundled=True``.
         scan_files: the export tarball's shipped-file list — scopes the scan to

@@ -38,7 +38,7 @@ def _gw_agent(
 
 
 def _claimed_path(agent_id):
-    return f"~/.openclaw/workspaces/{agent_id}/paperclip-claimed-api-key.json"
+    return f"~/.openclaw/workspace-{agent_id}/paperclip-claimed-api-key.json"
 
 
 def _mock_admin_and_repo(agents, monkeypatch):
@@ -356,7 +356,7 @@ async def test_pair_calls_agents_create_with_uuid_then_update_for_display_name()
     create_call = pool.send_rpc.await_args_list[0]
     assert create_call.kwargs["method"] == "agents.create"
     assert create_call.kwargs["params"]["name"] == pc_uuid
-    assert create_call.kwargs["params"]["workspace"] == (f"/home/node/.openclaw/workspaces/{pc_uuid}")
+    assert create_call.kwargs["params"]["workspace"] == (f"/home/node/.openclaw/workspace-{pc_uuid}")
     # The pool's user_id kwarg is actually owner_id under the hood —
     # the existing gateway pool's signature is what it is.
     assert create_call.kwargs["user_id"] == "user_abc"

@@ -190,9 +190,13 @@ describe("useAgentChat history pagination", () => {
     // stale General page.
     expect(result.current.chatMessages).toHaveLength(0);
 
-    // Switching back to General shows its own (unpolluted) transcript, and
-    // the cursor was still advanced under General's key even though the live
-    // view wasn't touched while it was inactive.
+    // Switching back to General shows its own (unpolluted) transcript. The
+    // cursor must NOT have advanced under General's key while it was
+    // inactive — content and cursor move together, so a discarded page
+    // leaves the cursor at its PRE-fetch value (nextOffset:1, hasMore:true)
+    // rather than jumping to the stale fetch's nextOffset:2/hasMore:false.
+    // Advancing it anyway would silently skip the discarded page on the next
+    // "Load earlier" click.
     act(() => {
       result.current.selectSession(null);
     });
@@ -200,7 +204,7 @@ describe("useAgentChat history pagination", () => {
       (m) => (m.content as { text: string }[])[0].text,
     );
     expect(texts).toEqual(["newest"]);
-    expect(result.current.hasOlderMessages).toBe(false);
+    expect(result.current.hasOlderMessages).toBe(true);
   });
 
   it("loadOlderMessages ignores a second synchronous invocation while a fetch is already in flight", async () => {
@@ -285,5 +289,155 @@ describe("useAgentChat history pagination", () => {
       await result.current.loadOlderMessages();
     });
     expect(sendReq.mock.calls.length).toBe(callsBeforeClear);
+  });
+
+  it("clearMessages() during an in-flight initial fetch must not resurrect the paging cursor once that stale fetch resolves", async () => {
+    // Bug 1 regression: the initial-fetch effect's `_historyPaging.set` sat
+    // OUTSIDE the `staleSnapshot` guard, so a /clear (or agent switch) that
+    // lands WHILE the initial chat.history is in flight would still have its
+    // resolved page re-write the cursor even though the transcript/cache
+    // apply is correctly skipped as stale. That resurrects "Load earlier" on
+    // an emptied transcript.
+    let resolveInitial: (v: unknown) => void = () => {};
+    sendReq.mockImplementation((method: string) => {
+      if (method !== "chat.history") return Promise.resolve({ messages: [] });
+      return new Promise((res) => {
+        resolveInitial = res;
+      });
+    });
+
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    const { result } = renderHook(() => useAgentChat("agent-1", "user_x", vi.fn()));
+
+    // Initial chat.history is issued but held pending.
+    await waitFor(() => expect(sendReq).toHaveBeenCalled());
+
+    // User clears the conversation WHILE that initial fetch is still in flight.
+    act(() => {
+      result.current.clearMessages();
+    });
+    expect(result.current.chatMessages).toHaveLength(0);
+
+    // Now the stale fetch resolves with a page from BEFORE the clear.
+    act(() => {
+      resolveInitial({
+        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+        offset: 0,
+        nextOffset: 1,
+        hasMore: true,
+        totalMessages: 160,
+      });
+    });
+    await waitFor(() => expect(result.current.isLoadingHistory).toBe(false));
+
+    // The transcript correctly stays empty (the message-apply is already
+    // guarded), but the cursor must ALSO stay cleared — otherwise "Load
+    // earlier" reports available on an empty transcript and would prepend a
+    // floating old page onto [].
+    expect(result.current.chatMessages).toHaveLength(0);
+    expect(result.current.hasOlderMessages).toBe(false);
+  });
+
+  it("loadOlderMessages must not advance the cursor for a session that's no longer active when its fetch resolves (silent mid-transcript gap)", async () => {
+    // Bug 2 regression: `_historyPaging.set` in loadOlderMessages ran
+    // unconditionally, while the prepend was correctly gated on
+    // `stillCurrent`. Switching sessions before an in-flight older-page fetch
+    // resolves would advance session A's cursor past a page that was never
+    // applied — so switching back to A and loading earlier again would skip
+    // straight past the discarded page, leaving a silent gap in the
+    // transcript.
+    const GENERAL_KEY = "agent:agent-1:user_x";
+    const pendingOffset10Resolvers: Array<(v: unknown) => void> = [];
+
+    sendReq.mockImplementation((method: string, params?: Record<string, unknown>) => {
+      if (method !== "chat.history") return Promise.resolve({ messages: [] });
+      const sessionKey = params?.sessionKey as string | undefined;
+      const offset = params?.offset as number | undefined;
+      if (sessionKey === GENERAL_KEY && offset === 0) {
+        return Promise.resolve({
+          messages: [{ role: "user", content: [{ type: "text", text: "newest" }] }],
+          offset: 0,
+          nextOffset: 10,
+          hasMore: true,
+        });
+      }
+      if (sessionKey === GENERAL_KEY && offset === 10) {
+        // Held pending each time it's requested so we control exactly when
+        // it resolves relative to the session switch.
+        return new Promise((res) => {
+          pendingOffset10Resolvers.push(res);
+        });
+      }
+      // The new (minted) session's own initial history fetch.
+      return Promise.resolve({ messages: [] });
+    });
+
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    const { result } = renderHook(() => useAgentChat("agent-1", "user_x", vi.fn()));
+
+    await waitFor(() => expect(result.current.chatMessages).toHaveLength(1));
+    await waitFor(() => expect(result.current.hasOlderMessages).toBe(true));
+
+    act(() => {
+      void result.current.loadOlderMessages();
+    });
+    await waitFor(() => expect(pendingOffset10Resolvers).toHaveLength(1));
+
+    // Switch away WHILE the General session's older-page (offset 10) fetch
+    // is still pending.
+    act(() => {
+      result.current.newSession();
+    });
+    expect(result.current.chatMessages).toHaveLength(0);
+
+    // Resolve the stale General fetch while we're on the new session.
+    act(() => {
+      pendingOffset10Resolvers[0]({
+        messages: [{ role: "user", content: [{ type: "text", text: "page-10-19" }] }],
+        offset: 10,
+        nextOffset: 20,
+        hasMore: true,
+      });
+    });
+    await waitFor(() => expect(result.current.isLoadingOlder).toBe(false));
+
+    // Switch back to General — its transcript is unpolluted by the discarded
+    // page.
+    act(() => {
+      result.current.selectSession(null);
+    });
+    const textsAfterSwitchBack = result.current.chatMessages.map(
+      (m) => (m.content as { text: string }[])[0].text,
+    );
+    expect(textsAfterSwitchBack).toEqual(["newest"]);
+
+    // The cursor must NOT have advanced to 20 — it must still request the
+    // SAME offset (10) the discarded fetch was issued for, proving no page
+    // was silently skipped.
+    act(() => {
+      void result.current.loadOlderMessages();
+    });
+    await waitFor(() => expect(pendingOffset10Resolvers).toHaveLength(2));
+    const secondCallOffset = sendReq.mock.calls[sendReq.mock.calls.length - 1][1] as {
+      offset?: number;
+    };
+    expect(secondCallOffset.offset).toBe(10);
+
+    // Resolve the retried fetch and confirm the previously-discarded page is
+    // now applied with no gap: the transcript contains BOTH pages, in order,
+    // with nothing missing between them.
+    act(() => {
+      pendingOffset10Resolvers[1]({
+        messages: [{ role: "user", content: [{ type: "text", text: "page-10-19" }] }],
+        offset: 10,
+        nextOffset: 20,
+        hasMore: false,
+      });
+    });
+    await waitFor(() => expect(result.current.isLoadingOlder).toBe(false));
+    const finalTexts = result.current.chatMessages.map(
+      (m) => (m.content as { text: string }[])[0].text,
+    );
+    expect(finalTexts).toEqual(["page-10-19", "newest"]);
   });
 });

@@ -891,18 +891,24 @@ export function useAgentChat(
             } else {
               _truncatedHistory.delete(cacheKey);
             }
+            // Cursor bookkeeping uses the SERVER's nextOffset, never a local
+            // count: projectChatHistoryMessages drops hidden rows, so a local
+            // tally would drift from the store's absolute indexing. This must
+            // stay INSIDE the staleSnapshot guard: the cursor is snapshot
+            // metadata exactly like `truncated`, describing the very page
+            // whose message-apply is skipped below when stale. Writing it
+            // unconditionally would resurrect a cursor a /clear or agent
+            // switch just deleted, reporting "Load earlier" available on a
+            // transcript that was never actually paged.
+            if (typeof historyResult?.nextOffset === "number") {
+              _historyPaging.set(cacheKey, {
+                nextOffset: historyResult.nextOffset,
+                hasMore: historyResult.hasMore === true,
+              });
+            }
           }
           const raw = Array.isArray(historyResult?.messages) ? historyResult.messages : [];
           const projected = projectChatHistoryMessages(raw);
-          // Cursor bookkeeping uses the SERVER's nextOffset, never a local
-          // count: projectChatHistoryMessages drops hidden rows, so a local
-          // tally would drift from the store's absolute indexing.
-          if (typeof historyResult?.nextOffset === "number") {
-            _historyPaging.set(cacheKey, {
-              nextOffset: historyResult.nextOffset,
-              hasMore: historyResult.hasMore === true,
-            });
-          }
           if (projected.length === 0) {
             // Server has nothing: only decide bootstrap when we ALSO have no
             // cache — an existing cached transcript must not regress to the
@@ -1085,32 +1091,43 @@ export function useAgentChat(
       const older = projectChatHistoryMessages(
         Array.isArray(res?.messages) ? res.messages : [],
       );
-      // Cursor bookkeeping is written under the key this fetch was issued
-      // for regardless of whether the user is still on that session — a
-      // later switch back must see the advanced cursor, not one stuck at
-      // the pre-fetch value.
-      _historyPaging.set(key, {
-        nextOffset: typeof res?.nextOffset === "number" ? res.nextOffset : cursor.nextOffset,
-        hasMore: res?.hasMore === true,
-      });
+      // Only touch the live transcript — and only advance the cursor — if
+      // the user is still on the session this fetch was issued for.
+      const stillCurrent =
+        agentIdRef.current === agent && activeSessionIdRef.current === sessionAtCall;
+      // Cursor and content must advance together. If the session switched
+      // away while this fetch was in flight, the page below is intentionally
+      // NOT applied (the `stillCurrent && older.length > 0` gate) — so the
+      // cursor must be left at its pre-fetch value too. Advancing it anyway
+      // would silently skip the discarded page: switching back would resume
+      // paging from the SERVER's nextOffset instead of re-fetching what was
+      // never shown, leaving an unmarked gap in the middle of the transcript.
+      if (stillCurrent) {
+        _historyPaging.set(key, {
+          nextOffset: typeof res?.nextOffset === "number" ? res.nextOffset : cursor.nextOffset,
+          hasMore: res?.hasMore === true,
+        });
+      }
       // A page is chronological internally and every message in it predates
       // the page we already hold, so a straight prepend preserves order.
       // No _messageCache write here: useSessionScopedMessages' write-back
       // effect already persists any non-empty messages state under the active
       // cacheKey. Writing the cache inside the updater would also be a side
       // effect in a function React may invoke twice under StrictMode.
-      //
-      // Only touch the live transcript if the user is still on the session
-      // this fetch was issued for.
-      const stillCurrent =
-        agentIdRef.current === agent && activeSessionIdRef.current === sessionAtCall;
       if (stillCurrent && older.length > 0) {
         setChatMessages((prev) => [...older, ...prev]);
       }
     } catch (err) {
-      notifyApiError(err, "Couldn't load earlier messages", {
-        dedupeKey: "history-older",
-      });
+      // Only surface the error toast if the failing fetch's session is still
+      // the active one — otherwise a session the user already left behind
+      // pops a toast on whatever they switched to.
+      const stillCurrentOnError =
+        agentIdRef.current === agent && activeSessionIdRef.current === sessionAtCall;
+      if (stillCurrentOnError) {
+        notifyApiError(err, "Couldn't load earlier messages", {
+          dedupeKey: "history-older",
+        });
+      }
     } finally {
       loadingOlderRef.current = false;
       setIsLoadingOlder(false);

@@ -60,6 +60,36 @@ async def test_sends_with_params_and_idempotency(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_sends_with_custom_headers(monkeypatch):
+    """headers is passed through verbatim for reply threading (In-Reply-To/References)."""
+    monkeypatch.setattr(settings, "RESEND_API_KEY", "re_test")
+
+    with patch("resend.Emails.send", return_value={"id": "email_abc"}) as mock_send:
+        await email_service.send_email(
+            to="a@b.com",
+            subject="Re: Welcome",
+            html="<p>hi</p>",
+            from_addr="Isol8 <hello@isol8.co>",
+            headers={"In-Reply-To": "<m@x>", "References": "<m@x>"},
+        )
+
+    params, _ = mock_send.call_args.args
+    assert params["headers"] == {"In-Reply-To": "<m@x>", "References": "<m@x>"}
+
+
+@pytest.mark.asyncio
+async def test_no_headers_key_when_omitted(monkeypatch):
+    """No regression: omitting headers must not add a headers key at all."""
+    monkeypatch.setattr(settings, "RESEND_API_KEY", "re_test")
+
+    with patch("resend.Emails.send", return_value={"id": "email_abc"}) as mock_send:
+        await email_service.send_email(to="a@b.com", subject="hi", html="<p>hi</p>", from_addr="x@y.com")
+
+    params, _ = mock_send.call_args.args
+    assert "headers" not in params
+
+
+@pytest.mark.asyncio
 async def test_non_prod_env_prefixes_subject(monkeypatch):
     """Dev/staging sends get a [ENV] subject tag so test mail is obvious."""
     monkeypatch.setattr(settings, "RESEND_API_KEY", "re_test")

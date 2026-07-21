@@ -105,9 +105,8 @@ export default function AgentChat() {
   const [items, setItems] = useState<ChatItem[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
-  // Presentational-only composer state (spec §4): focus ring + auto-grow.
+  // Presentational-only composer state (spec §4): focus ring.
   const [inputFocused, setInputFocused] = useState(false);
-  const [inputHeight, setInputHeight] = useState(24);
   // ---- Sessions (contract §1): null == the legacy "General" session. ----
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [activeSessionLabel, setActiveSessionLabel] = useState<string | null>(null);
@@ -531,12 +530,18 @@ export default function AgentChat() {
       />
       <FlatList
         ref={listRef}
+        testID="chat-timeline"
         data={allItems}
         keyExtractor={(m) => m.id}
         contentContainerStyle={[
           styles.list,
           allItems.length === 0 && !showTyping && !historyLoading && styles.listEmpty,
         ]}
+        // Swipe down over the timeline to dismiss the keyboard (iOS tracks the
+        // drag); taps on timeline controls land on the control while the
+        // keyboard is up instead of only dismissing it.
+        keyboardDismissMode="interactive"
+        keyboardShouldPersistTaps="handled"
         onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: true })}
         ListHeaderComponent={
           historyError ? (
@@ -662,18 +667,17 @@ export default function AgentChat() {
           );
         }}
       />
-      {/* Composer (spec §4). Same logic as before — identical disabled
-          conditions and send semantics; only the presentation changed. No
-          stop button v1: the screen has no abort path (the mobile gateway
-          exposes no chat.abort helper yet). Attach is non-functional v1 —
-          no upload flow on mobile. */}
+      {/* Composer (spec §4). No stop button v1: the screen has no abort path
+          (the mobile gateway exposes no chat.abort helper yet). No attach
+          affordance until an upload flow exists on mobile — a dead control
+          reads as broken. */}
       <View style={styles.composerOuter}>
         {!gateway.isConnected && <ReconnectingBanner />}
         <View style={[styles.card, inputFocused && styles.cardFocused]}>
           <View style={styles.inputZone}>
             <TextInput
               ref={inputRef}
-              style={[styles.input, { height: inputHeight }]}
+              style={styles.input}
               placeholder="Ask anything"
               placeholderTextColor={colors.placeholder}
               value={input}
@@ -682,17 +686,9 @@ export default function AgentChat() {
               editable={gateway.isConnected}
               onFocus={() => setInputFocused(true)}
               onBlur={() => setInputFocused(false)}
-              onContentSizeChange={(e) =>
-                setInputHeight(
-                  Math.min(200, Math.max(24, e.nativeEvent.contentSize.height)),
-                )
-              }
             />
           </View>
           <View style={styles.rail}>
-            <View style={styles.attachButton}>
-              <Feather name="plus" size={16} color={colors.mute} />
-            </View>
             <Pressable
               style={[
                 styles.sendButton,
@@ -821,12 +817,14 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
   inputZone: { paddingHorizontal: spacing.lg, paddingTop: spacing.md },
-  // Height is driven by onContentSizeChange (auto-grow 24–200); zero the
-  // platform-default vertical padding so the measured height is the text's.
+  // Native multiline auto-grow: no fixed height (a controlled height doesn't
+  // track typing reliably on Fabric iOS), capped at 200. Zero the
+  // platform-default vertical padding so the box hugs the text.
   input: {
     fontFamily: fonts.dmSans,
     fontSize: 15,
     lineHeight: 24,
+    maxHeight: 200,
     color: colors.ink,
     paddingTop: 0,
     paddingBottom: 0,
@@ -839,15 +837,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.sm,
     paddingBottom: spacing.sm,
     paddingTop: 6,
-  },
-  // Attach affordance — disabled/non-functional v1, rendered at 40%.
-  attachButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    alignItems: "center",
-    justifyContent: "center",
-    opacity: 0.4,
   },
   sendButton: {
     marginLeft: "auto",

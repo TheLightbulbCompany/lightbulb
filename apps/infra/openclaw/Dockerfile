@@ -505,6 +505,31 @@ COPY skills/paperclip /app/skills/paperclip
 COPY skills/isol8 /app/skills/isol8
 
 
+# ---- Layer 17: resolve the `openclaw` peer dependency for baked plugins ----
+# @openclaw/* plugins declare `openclaw` (the fork core package; its package.json
+# is /app/package.json, which exports plugin-sdk/*) as a PEER dependency, so the
+# `npm install @openclaw/<p>` steps above never install it. The fork's own
+# bundled plugins under /app/extensions are pnpm workspace members and get
+# `openclaw` linked automatically; our npm-baked plugins under
+# /app/dist/extensions do NOT — so any baked-plugin code importing `openclaw` /
+# `openclaw/plugin-sdk/*` throws ERR_MODULE_NOT_FOUND. A plugin's main entry
+# doesn't import it eagerly (runtime plugin load succeeds), but its doctor
+# contribution does — e.g. the discord plugin's security-doctor imports
+# `openclaw/plugin-sdk/channel-policy` — which crashed the boot-time
+# `openclaw doctor --fix` (startupCommand Step C3) before it could migrate legacy
+# per-workspace state, leaving every agent failing the un-migrated-state gate.
+# Symlink the `openclaw` package root (/app) into each baked plugin's node_modules
+# so the peer resolves to /app/package.json's exports. Root-owned to match the
+# plugin dirs (the loader rejects non-root plugin trees).
+RUN set -eux; \
+    for d in /app/dist/extensions/*/; do \
+      [ -d "$d" ] || continue; \
+      mkdir -p "${d}node_modules"; \
+      ln -sfn /app "${d}node_modules/openclaw"; \
+      chown -h root:root "${d}node_modules/openclaw"; \
+    done
+
+
 # ---- Restore runtime context ----
 USER node
 WORKDIR /home/node

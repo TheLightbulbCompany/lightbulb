@@ -367,7 +367,7 @@ Pydantic request/response models for the HTTP surface: `billing.py`, `user_schem
 
 ## Frontend (Next.js 16 App Router)
 
-React 19, Tailwind CSS v4, Clerk auth, Framer Motion, SWR, lucide-react icons.
+React 19, Tailwind CSS v4, Clerk auth, SWR, lucide-react icons.
 
 ### Pages (`src/app/`)
 

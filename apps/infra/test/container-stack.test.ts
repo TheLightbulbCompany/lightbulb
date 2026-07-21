@@ -145,6 +145,35 @@ describe("ContainerStack — dev", () => {
     });
   });
 
+  test("openclaw container runs bounded, non-blocking `doctor --fix` legacy-state migration before the gateway", () => {
+    // Load-bearing: 2026.7.x fail-closes agent runs on un-migrated legacy
+    // per-workspace state, so this boot step is what unbricks agents on a base
+    // roll. Assert it survives future startup-command refactors, and that its
+    // three safety properties stay intact — bounded (`timeout --kill-after`),
+    // headless-safe (`< /dev/null`), non-blocking (`|| echo`, never `&& exec`) —
+    // AND that it runs BEFORE `exec node ... gateway` so no gateway holds the
+    // SQLite lock during the migration. The trailing `.*exec node ... gateway$`
+    // anchors ordering: doctor must appear earlier in the single joined command.
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      Family: "isol8-dev-openclaw",
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Name: "openclaw",
+          Command: [
+            "sh",
+            "-c",
+            Match.stringLikeRegexp(
+              // `\\|` escapes the regex alternation so we match a literal `|`.
+              "timeout --kill-after=30 420 node /app/openclaw\\.mjs doctor --fix < /dev/null "
+              + "\\|\\| echo .*"
+              + "exec node /app/openclaw\\.mjs gateway --port 18789 --bind lan$",
+            ),
+          ],
+        }),
+      ]),
+    });
+  });
+
   test("openclaw container sets XDG_CONFIG_HOME + XDG_DATA_HOME + GOG_KEYRING_BACKEND for the gog file keyring", () => {
     // XDG_DATA_HOME is the load-bearing one: gog stores its file keyring under
     // the data home (verified: setting XDG_DATA_HOME=/x puts the keyring at

@@ -28,6 +28,7 @@ description: >
                               core/containers/ecs_manager.py (ISOL8_API_URL env the container reads)
   - Paperclip org model ..... Isol8AI/paperclip fork: server/src/services/agent-permissions.ts,
                               services/agents.ts (getChainOfCommand), adapters/registry.ts (openclaw_gateway)
+  - Email reply ............. scripts/isol8-mail.sh + backend routers/agent_mail_relay.py + core/services/agent_mail_reply.py
 -->
 
 # The Isol8 Platform
@@ -101,6 +102,33 @@ the platform can't do.
 - Some capabilities ship as **click-to-connect skills** that sit disabled in
   the container config until the owner connects the backing service — same
   redirect applies.
+
+## Replying by email
+
+Some agents have their own email address, provisioned per-owner. Check
+`~/.openclaw/isol8-facts.json` for an `email_address` field — if it's
+missing, this feature isn't provisioned for this owner: don't claim to have
+an email address or offer to reply by email.
+
+When you have one, and a message you receive begins with an email header
+block that includes a `Reply-Token:` line, that message reached you as an
+inbound email. You can reply to the sender by running
+`scripts/isol8-mail.sh <reply-token>` (a relative path — resolved against
+this skill's directory) with the reply body piped on stdin:
+
+```
+printf '%s' "Thanks -- I've booked that for Tuesday." | scripts/isol8-mail.sh "<the-reply-token>"
+```
+
+Rules:
+
+- **The reply goes only to whoever sent that email.** There is no way to
+  choose a different recipient — the reply-token is scoped to that one
+  thread.
+- **Never paste the raw `Reply-Token` into the visible reply body.** It is
+  a routing credential, not part of the message.
+- If the inbound message has no `Reply-Token:` header, you cannot reply by
+  email to it — treat it as a normal chat message instead.
 
 ## Skills and self-improvement
 

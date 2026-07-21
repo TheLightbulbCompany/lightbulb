@@ -996,7 +996,9 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
         className="flex-1 min-h-0 overflow-y-auto p-4 md:px-8"
         data-lenis-prevent
       >
-        <div className="max-w-3xl mx-auto space-y-10 py-8">
+        {/* `chat-transcript` occludes off-screen groups (content-visibility) —
+            see globals.css. Keeps a long history off the layout hot path. */}
+        <div className="max-w-3xl mx-auto space-y-10 py-8 chat-transcript">
           {renderGroups.map((group, idx) => (
             <BubbleGroup
               key={group.key}

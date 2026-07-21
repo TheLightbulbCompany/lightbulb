@@ -146,27 +146,37 @@ describe("ContainerStack — dev", () => {
     });
   });
 
-  test("openclaw container startup NEVER invokes `openclaw doctor` (destroys agent workspaces on 2026.7.2-beta.3)", () => {
-    // Load-bearing safety fence: upstream 2026.7.2-beta.3 doctor carries the
-    // core/doctor/removed-workspaces-state repair, which `rm -rf`s
-    // `<stateDir>/workspaces` (as retired "Workspaces" PLUGIN state, no
-    // backup). Our per-agent workspaces live at exactly
-    // /home/node/.openclaw/workspaces/<agent_id>, so ANY boot-path
-    // `doctor --fix` deletes every agent workspace on the box — this happened
-    // on two prod containers on 2026-07-21. Do not re-add a doctor step here
-    // until the fork image neuters that check (v2026.7.2-isol8.2+); then this
-    // test flips back to asserting the (bounded, promptless, non-blocking)
-    // doctor invocation instead of its absence.
-    const template2 = template.toJSON();
-    const taskDefs = Object.values(template2.Resources as Record<string, any>)
-      .filter((r: any) => r.Type === "AWS::ECS::TaskDefinition");
-    expect(taskDefs.length).toBeGreaterThan(0);
-    for (const td of taskDefs) {
-      for (const cd of td.Properties.ContainerDefinitions ?? []) {
-        const cmd = (cd.Command ?? []).join(" ");
-        expect(cmd).not.toContain("doctor");
-      }
-    }
+  test("openclaw container runs bounded, promptless, non-blocking doctor legacy-state migration before the gateway", () => {
+    // Load-bearing: 2026.7.x fail-closes agent runs on un-migrated legacy
+    // setup state — including the workspace-state.json marker our own
+    // seeders stage — so this boot step is what lets freshly seeded agents
+    // run. Safety properties pinned: bounded (`timeout --kill-after`),
+    // promptless (`--yes --non-interactive`: doctor prompts HANG on closed
+    // stdin, and `--non-interactive` also auto-applies the migration),
+    // headless-safe (`< /dev/null`), non-blocking (`|| echo`), and ordered
+    // BEFORE `exec ... gateway` (no gateway holds the SQLite lock during
+    // the migration). Doctor is safe on this boot path ONLY because agent
+    // workspaces now live at workspace-<id> — the companion test below
+    // pins that the command never references the doomed
+    // .openclaw/workspaces path.
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      Family: "isol8-dev-openclaw",
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Name: "openclaw",
+          Command: [
+            "sh",
+            "-c",
+            Match.stringLikeRegexp(
+              // `\\|` escapes the regex alternation so we match a literal `|`.
+              "timeout --kill-after=30 300 node /app/openclaw\\.mjs doctor --fix --yes --non-interactive < /dev/null "
+              + "\\|\\| echo .*"
+              + "exec node /app/openclaw\\.mjs gateway --port 18789 --bind lan$",
+            ),
+          ],
+        }),
+      ]),
+    });
   });
 
   test("openclaw container startup never references the retired workspaces/ layout", () => {

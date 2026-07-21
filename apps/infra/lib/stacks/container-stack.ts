@@ -565,36 +565,35 @@ export class ContainerStack extends cdk.Stack {
       "mkdir -p /home/node/.openclaw/mcporter || exit 1",
       "[ -e /home/node/.mcporter ] && [ ! -L /home/node/.mcporter ] && { mv /home/node/.mcporter /home/node/.mcporter.efs-archive-$(date +%s) || exit 1; }",
       "ln -sfn /home/node/.openclaw/mcporter /home/node/.mcporter || exit 1",
-      // Step C3 — REMOVED (2026-07-21): the boot-time `openclaw doctor --fix
-      // --yes --non-interactive` legacy-state migration is DISABLED until the
-      // fork ships a patched doctor. Upstream 2026.7.2-beta.3's doctor carries
-      // core/doctor/removed-workspaces-state (doctor-removed-workspaces-state-
-      // check.ts), which treats `<stateDir>/workspaces` as retired experimental
-      // "Workspaces" PLUGIN state and repairs it with
-      // `rm(target, {force, recursive})` — NO backup. Our config places every
-      // agent workspace at /home/node/.openclaw/workspaces/<agent_id>
-      // (config.py _build_agents_list), so doctor --fix DELETED the entire
-      // per-agent workspace tree (SOUL/IDENTITY/MEMORY, memory/, projects) on
-      // the two prod containers whose boot doctor ran on 2026-07-21. Do NOT
-      // re-add any doctor invocation to this boot path until the fork image
-      // neuters that check (guard: skip when any configured agent workspace
-      // resolves under the target) — tracked for v2026.7.2-isol8.2. The
-      // per-workspace legacy-state migration this step existed for will ride
-      // the patched doctor instead. 2026.7.x still fail-closes agent runs on
-      // un-migrated legacy setup state, so containers that never got migrated
-      // stay gated (visible error, data intact) — strictly better than the
-      // alternative.
+      // Step C3 — boot-time legacy-state migration, BEFORE the gateway
+      // starts. 2026.7.x fail-closes agent runs on un-migrated legacy
+      // per-workspace setup state — including the ``.openclaw/
+      // workspace-state.json`` setup marker our own seeders stage — so
+      // doctor must import it at boot or every freshly seeded agent is born
+      // gated. `--fix` applies recommended repairs; `--yes
+      // --non-interactive` are LOAD-BEARING: doctor's confirm prompts HANG
+      // on a closed stdin (observed killing a prod boot at the 300s
+      // timeout before the migration ever ran), and `--non-interactive` is
+      // also what auto-applies the legacy-state migration. `< /dev/null` is
+      // the last line of defense for any unguarded prompt; `timeout
+      // --kill-after` bounds a wedged run inside the health-check budget
+      // (startPeriod 300); `|| echo` keeps a doctor failure from bricking
+      // the container (gateway still starts; the runtime gate surfaces
+      // unmigrated state visibly).
       //
-      // NOTE on the LEGACY workspaces/ layout: agent workspaces now live at
-      // upstream's per-agent convention (~/.openclaw/workspace-<agentId>/,
-      // agent-scope-config.ts resolveAgentWorkspaceDir). There is
-      // deliberately NO boot-time migration of the old
-      // ~/.openclaw/workspaces/<agentId>/ layout: the only containers that
-      // ever held real data there were wiped by the doctor incident above or
-      // belong to fresh accounts that get reprovisioned. Leftover
-      // workspaces/ dirs are post-wipe junk; nothing legitimate lives at
-      // that path again, which is exactly what makes the upstream doctor's
-      // removed-workspaces-state repair harmless to us going forward.
+      // SAFETY — why doctor is allowed back on this boot path (2026-07-21
+      // incident follow-up): upstream doctor's removed-workspaces-state
+      // repair recursively DELETES `<stateDir>/workspaces` as retired
+      // Workspaces-PLUGIN state. Agent workspaces now live at upstream's
+      // own per-agent convention (~/.openclaw/workspace-<agentId>/ —
+      // agent-scope-config.ts resolveAgentWorkspaceDir), so that target
+      // either doesn't exist (fresh provisions) or holds only post-incident
+      // junk that we WANT cleaned. Nothing legitimate may ever be placed at
+      // ~/.openclaw/workspaces again (regression-tested in
+      // container-stack.test.ts). The only containers where doctor remains
+      // destructive are pre-migration old-layout ones — those stay frozen
+      // until reprovisioned and must never be rolled onto this task def.
+      "timeout --kill-after=30 300 node /app/openclaw.mjs doctor --fix --yes --non-interactive < /dev/null || echo '[boot] openclaw doctor --fix did not finish cleanly; continuing to gateway'",
       // Step D — launch the gateway.
       "exec node /app/openclaw.mjs gateway --port 18789 --bind lan",
     ].join("; ");

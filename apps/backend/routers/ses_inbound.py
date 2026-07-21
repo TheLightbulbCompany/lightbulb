@@ -16,13 +16,24 @@ Svix gave the old Resend webhook, because the Lambda is trusted
 infrastructure we control, not a third party. An empty secret disables the
 endpoint entirely (fail-closed).
 
-**Every branch returns 200** except a bad/missing shared secret (401 — not
-retried; there is no fixing a forged credential by resending the same
-request). Every drop reason (unknown recipient, unverified sender, over cap,
-spam/virus, failed authentication, auto-submitted) is terminal, so those stay
-200. The entire handler body is wrapped in a top-level try/except: an
-unexpected exception must never surface as an unhandled 5xx — SES/Lambda
-retry policy would otherwise hammer a permanently-broken event forever.
+**Outcome -> HTTP status is deliberate, not uniformly 200.** Every
+DETERMINISTIC drop (disabled, unknown recipient, unverified sender, over cap,
+spam/virus, failed authentication, auto-submitted, duplicate) is terminal —
+retrying would produce the identical drop again — so those stay 200, as does
+a successful ``delivered``. ``container_not_running`` also stays 200: a
+scaled-to-zero free-tier box is intentionally silent on inbound mail — we do
+not wake it or hammer it with retries just because mail arrived.
+
+TRANSIENT failures return 503 so SES/the Lambda's own (bounded) retry policy
+gets a chance to succeed later: a ``deliver_to_agent`` outcome of ``"error"``
+(e.g. a delivery error talking to a running container), and the top-level
+catch-all for an unexpected exception (e.g. a DynamoDB blip). Dedup is keyed
+on ``message_id`` and recorded BEFORE delivery is attempted, so a retry that
+later succeeds cannot double-deliver — the second attempt short-circuits at
+the ``duplicate`` check.
+
+A bad/missing shared secret is 401 — not retried; there is no fixing a
+forged credential by resending the same request.
 
 Drop reasons are returned in the JSON body's ``status`` field purely for
 observability (log/metric correlation); the Lambda does not parse it.
@@ -198,7 +209,13 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
             message=message,
             idempotency_key=body.message_id,
         )
+        if result == "error":
+            # Transient delivery failure (e.g. a running container's RPC
+            # errored) — 503 so SES/the Lambda retries. `container_not_running`
+            # is intentionally excluded: that's silence-by-design for a
+            # scaled-to-zero box, not a failure to retry.
+            return JSONResponse(status_code=503, content={"status": result})
         return {"status": result}
-    except Exception:  # noqa: BLE001 — must never 5xx; see module docstring.
+    except Exception:  # noqa: BLE001 — see module docstring.
         logger.exception("ses_inbound handler failed unexpectedly")
-        return {"status": "error"}
+        return JSONResponse(status_code=503, content={"status": "error"})

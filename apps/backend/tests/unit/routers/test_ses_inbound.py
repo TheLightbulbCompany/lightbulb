@@ -10,8 +10,10 @@ recipient, unverified sender (+ the public-address bypass), over cap, the
 SES-verdict gate (virus/spam explicit FAIL, DMARC-authoritative
 sender-auth FAIL, the SPF+DKIM fallback when DMARC is absent, and a
 missing/GRAY verdict set that must still deliver), the auto-submitted loop
-guard, the happy path, and the top-level catch-all that guarantees the
-handler never returns 5xx.
+guard, the happy path, and the transient-vs-terminal outcome split: an
+unexpected exception or a "error" delivery result return 503 (retry), while
+"container_not_running" (scaled-to-zero, intentionally silent) and every
+deterministic drop stay 200.
 
 Seams (``get_by_address``, ``trial_block_reason``, ``deliver_to_agent``,
 ``record_event_or_skip``, …) are imported BY NAME into
@@ -373,15 +375,48 @@ def test_happy_path_delivers(client, monkeypatch):
     assert len(token) > 0
 
 
-def test_unexpected_seam_error_never_returns_5xx(client, monkeypatch):
-    """A raising seam must degrade to a 200 {"status": "error"} ack, never a
-    500 — the Lambda's own retry policy would otherwise retry-storm a
-    permanently-broken event."""
+def test_unexpected_seam_error_returns_503_for_retry(client, monkeypatch):
+    """A raising seam (e.g. a DynamoDB blip) is a TRANSIENT failure — it must
+    return 503 so SES/the Lambda's bounded retry policy gets a chance to
+    succeed later, never a 200 (which would silently and permanently drop the
+    mail) and never an unhandled 500."""
     _enable(monkeypatch)
     _dedup_recorded(monkeypatch)
     monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(side_effect=RuntimeError("ddb blip")))
 
     resp = _post(client, _body())
 
-    assert resp.status_code == 200
+    assert resp.status_code == 503
     assert resp.json()["status"] == "error"
+
+
+def test_deliver_error_returns_503_for_retry(client, monkeypatch):
+    """`deliver_to_agent` returning "error" (e.g. a delivery RPC failure
+    against a RUNNING container) is transient — 503 so SES retries."""
+    _enable(monkeypatch)
+    _dedup_recorded(monkeypatch)
+    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
+    monkeypatch.setattr(ses_inbound, "trial_block_reason", AsyncMock(return_value=None))
+    monkeypatch.setattr(ses_inbound, "deliver_to_agent", AsyncMock(return_value="error"))
+
+    resp = _post(client, _body())
+
+    assert resp.status_code == 503
+    assert resp.json()["status"] == "error"
+
+
+def test_deliver_container_not_running_stays_200_silent(client, monkeypatch):
+    """`deliver_to_agent` returning "container_not_running" means a
+    scaled-to-zero free-tier box — intentionally silent, so this stays 200
+    rather than retrying (we do not wake the container or hammer it with
+    SES retries just because mail arrived)."""
+    _enable(monkeypatch)
+    _dedup_recorded(monkeypatch)
+    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
+    monkeypatch.setattr(ses_inbound, "trial_block_reason", AsyncMock(return_value=None))
+    monkeypatch.setattr(ses_inbound, "deliver_to_agent", AsyncMock(return_value="container_not_running"))
+
+    resp = _post(client, _body())
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "container_not_running"

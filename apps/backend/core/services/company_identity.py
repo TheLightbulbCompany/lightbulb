@@ -88,6 +88,21 @@ RESERVED_SLUGS = frozenset(
         "mx",
         "vpn",
         "test",
+        # Compound infra subdomains — slugs are single hyphenated DNS labels,
+        # and these real hosts are themselves hyphenated compounds, so the
+        # single-word entries above (`api`, `ws`, `admin`, `app`, `test`)
+        # don't cover them.
+        "api-dev",
+        "api-staging",
+        "api-prod",
+        "api-test",
+        "ws-dev",
+        "ws-staging",
+        "ws-prod",
+        "admin-dev",
+        "admin-staging",
+        "app-dev",
+        "app-staging",
     }
 )
 

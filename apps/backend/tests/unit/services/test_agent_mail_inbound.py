@@ -40,29 +40,8 @@ def test_is_auto_submitted(headers, blocked):
 
 @pytest.mark.parametrize("headers", [["not", "a", "dict"], None])
 def test_is_auto_submitted_non_dict_returns_false(headers):
-    """A malformed (non-dict) `headers` value must not raise — mirrors the
-    same guard already present in `sender_authentication_verdict`."""
+    """A malformed (non-dict) `headers` value must not raise."""
     assert inbound.is_auto_submitted(headers) is False
-
-
-@pytest.mark.parametrize(
-    "headers,expected",
-    [
-        ({"Authentication-Results": "mx.google.com; dmarc=pass header.from=x.com"}, "pass"),
-        ({"Authentication-Results": "spf=pass smtp.mailfrom=a@x.com; dkim=fail"}, "pass"),
-        ({"Authentication-Results": "spf=fail; dkim=fail; dmarc=fail"}, "fail"),
-        # dmarc=fail is authoritative — must NOT be rescued by spf=pass.
-        ({"Authentication-Results": "dmarc=fail; spf=pass"}, "fail"),
-        ({"Authentication-Results": "spf=fail; dkim=fail"}, "fail"),
-        ({}, "unknown"),
-        (None, "unknown"),
-        ({"Authentication-Results": 12345}, "unknown"),
-        # case-insensitive key
-        ({"authentication-results": "dmarc=pass"}, "pass"),
-    ],
-)
-def test_sender_authentication_verdict(headers, expected):
-    assert inbound.sender_authentication_verdict(headers) == expected
 
 
 def test_build_delivered_message_inlines_header_and_token():
@@ -103,8 +82,8 @@ def test_build_attachment_manifest_single_attachment():
 
 
 def test_build_attachment_manifest_mentions_link_expiry():
-    """`download_url` is a short-lived (~1h) link — the manifest must warn
-    the agent to fetch promptly rather than treating it as durable."""
+    """`download_url` is a time-limited SES S3 presigned link — the manifest
+    must warn the agent to fetch promptly rather than treating it as durable."""
     manifest = inbound.build_attachment_manifest(
         [
             {
@@ -115,7 +94,8 @@ def test_build_attachment_manifest_mentions_link_expiry():
             }
         ]
     )
-    assert "expire" in manifest.lower()
+    assert "time-limited" in manifest.lower()
+    assert "promptly" in manifest.lower()
 
 
 def test_build_attachment_manifest_truncates_at_ten():

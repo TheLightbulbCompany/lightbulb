@@ -90,6 +90,10 @@ export class ContainerStack extends cdk.Stack {
     this.cluster = new ecs.Cluster(this, "Cluster", {
       vpc: props.vpc,
       containerInsights: false,
+      // Associates FARGATE + FARGATE_SPOT capacity providers so the backend
+      // can launch per-user containers on Spot (~70% cheaper). The backend
+      // falls back to on-demand when Spot capacity is unavailable.
+      enableFargateCapacityProviders: true,
     });
 
     // Cloud Map private DNS namespace
@@ -423,8 +427,13 @@ export class ContainerStack extends cdk.Stack {
 
     // Single per-user task size for the flat-fee pivot. Per spec §3.2 / §10.
     // Old per-tier sizing deleted; resize add-ons are out of scope (§3.5).
-    // Backend-side _TIER_TASK_RESOURCES collapse is in Task 13 of this plan.
-    const PER_USER_TASK_RESOURCES = { cpu: 512, memoryMiB: 2048 } as const;
+    // 1 vCPU / 4 GB: 2 GB was upstream OpenClaw's documented floor and OOMed
+    // under two seeded agents + memory sidecar + in-container Chromium; the
+    // full vCPU stops boot/tool-exec/Chromium contending for half a core.
+    // Affordable because per-user services launch on Fargate Spot.
+    // Keep in lockstep with PER_USER_CPU / PER_USER_MEMORY_MIB in
+    // apps/backend/core/containers/ecs_manager.py (clones stamp those values).
+    const PER_USER_TASK_RESOURCES = { cpu: 1024, memoryMiB: 4096 } as const;
 
     this.openclawTaskDef = new ecs.FargateTaskDefinition(this, "OpenClawTaskDef", {
       family: `isol8-${env}-openclaw`,

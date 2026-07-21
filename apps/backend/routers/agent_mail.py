@@ -34,9 +34,11 @@ from core.crypto.svix import verify_svix_signature
 from core.repositories.agent_email_repo import get_by_address, normalize
 from core.services.agent_mail_delivery import deliver_to_agent
 from core.services.agent_mail_inbound import (
+    build_attachment_manifest,
     build_delivered_message,
     fetch_received_email,
     is_auto_submitted,
+    list_received_attachments,
     parse_from_address,
     sender_authentication_verdict,
 )
@@ -157,11 +159,23 @@ async def handle_resend_inbound(request: Request):
                 "subject": subject,
             }
         )
+
+        # Attachment manifest — best-effort. `list_received_attachments`
+        # already never raises, but this guard means a manifest-formatting
+        # bug can't drop a real delivery: a working text delivery beats a
+        # dropped one.
+        try:
+            attachments = await list_received_attachments(email_id)
+            manifest = build_attachment_manifest(attachments)
+        except Exception:  # noqa: BLE001 — see comment above.
+            manifest = ""
+
         message = build_delivered_message(
             from_addr=sender,
             subject=subject,
             body_text=body_text,
             reply_token=token,
+            attachments_manifest=manifest,
         )
 
         result = await deliver_to_agent(

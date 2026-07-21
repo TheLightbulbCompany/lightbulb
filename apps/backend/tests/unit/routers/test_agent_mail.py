@@ -407,6 +407,83 @@ def test_happy_path_delivers(client, monkeypatch):
     assert len(token) > 0
 
 
+def test_happy_path_with_attachments_includes_manifest_in_message(client, monkeypatch):
+    """When the fetched email has attachments, the delivered message must
+    include the attachment manifest — proven here by asserting the
+    attachment's filename appears in the `message` passed to
+    `deliver_to_agent`. Auth verdict stays "unknown" (no
+    Authentication-Results header) so default mode still delivers, matching
+    the other happy-path fixtures."""
+    _enable(monkeypatch)
+    _valid_sig(monkeypatch)
+    _dedup_recorded(monkeypatch)
+    monkeypatch.setattr(agent_mail, "get_by_address", AsyncMock(return_value=_row()))
+    monkeypatch.setattr(agent_mail, "trial_block_reason", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        agent_mail,
+        "fetch_received_email",
+        AsyncMock(
+            return_value={
+                "headers": {},
+                "text": "Hi there, please help.",
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        agent_mail,
+        "list_received_attachments",
+        AsyncMock(
+            return_value=[
+                {
+                    "filename": "contract.pdf",
+                    "content_type": "application/pdf",
+                    "size": 10,
+                    "download_url": "https://cdn/x",
+                }
+            ]
+        ),
+    )
+    deliver_mock = AsyncMock(return_value="delivered")
+    monkeypatch.setattr(agent_mail, "deliver_to_agent", deliver_mock)
+
+    resp = _post(client, _body())
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "delivered"
+    deliver_mock.assert_awaited_once()
+    assert "contract.pdf" in deliver_mock.await_args.kwargs["message"]
+
+
+def test_happy_path_with_no_attachments_omits_manifest(client, monkeypatch):
+    """When there are no attachments, the delivered message must NOT contain
+    the attachment-manifest caution text."""
+    _enable(monkeypatch)
+    _valid_sig(monkeypatch)
+    _dedup_recorded(monkeypatch)
+    monkeypatch.setattr(agent_mail, "get_by_address", AsyncMock(return_value=_row()))
+    monkeypatch.setattr(agent_mail, "trial_block_reason", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        agent_mail,
+        "fetch_received_email",
+        AsyncMock(
+            return_value={
+                "headers": {},
+                "text": "Hi there, please help.",
+            }
+        ),
+    )
+    monkeypatch.setattr(agent_mail, "list_received_attachments", AsyncMock(return_value=[]))
+    deliver_mock = AsyncMock(return_value="delivered")
+    monkeypatch.setattr(agent_mail, "deliver_to_agent", deliver_mock)
+
+    resp = _post(client, _body())
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "delivered"
+    deliver_mock.assert_awaited_once()
+    assert "unverified sender" not in deliver_mock.await_args.kwargs["message"]
+
+
 def test_container_not_running_status_is_surfaced(client, monkeypatch):
     _enable(monkeypatch)
     _valid_sig(monkeypatch)

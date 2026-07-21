@@ -70,4 +70,17 @@ if [[ "$code" -lt 200 || "$code" -ge 300 ]]; then
   exit 1
 fi
 
-echo "Reply sent."
+# HTTP 200 alone does not mean the reply went out -- the relay returns 200
+# with a JSON body whose `status` field can be "sent" (real success) or
+# "no_address" / "disabled" / "error" (reply did NOT go out). Parse it, and
+# treat an unparseable body (jq failure) as a failure too rather than
+# crashing under `set -euo pipefail`.
+status="$(printf '%s' "$out" | jq -r '.status // empty' 2>/dev/null || true)"
+
+if [[ "$status" == "sent" ]]; then
+  echo "Reply sent."
+  exit 0
+fi
+
+printf 'Reply not sent (status: %s).\n' "${status:-unknown}" >&2
+exit 1

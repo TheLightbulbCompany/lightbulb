@@ -85,9 +85,12 @@ export function useSystemHealth(): SystemHealth {
 
   // Gateway health RPC — only when WS connected. Declared before the status
   // poll so its result can feed that poll's cadence. A probe reporting
-  // `ok: false` pulls the cadence in; a probe that outright REJECTS (container
-  // gone) surfaces as `healthError` and is already retried at a fixed 3s by
-  // useGatewayRpc's onErrorRetry.
+  // `ok: false` pulls the cadence in. A rejection pulls it in too, by one of
+  // two routes: a generic rejection surfaces as `healthError` (retried at a
+  // fixed 3s by useGatewayRpc's onErrorRetry), while the specific "No
+  // container" rejection is swallowed to `undefined` data with NO error by
+  // useGatewayRpc's 404-equivalent path — so a vanished container shows up as
+  // `health === undefined`, caught in looksDegraded below.
   const { data: health, error: healthError } = useGatewayRpc<HealthData>(
     isConnected ? "health" : null,
     undefined,
@@ -105,6 +108,11 @@ export function useSystemHealth(): SystemHealth {
     reconnectAttempt > 0 ||
     health?.ok === false ||
     healthError !== undefined ||
+    // Connected but the health probe has produced no positive result — either
+    // it hasn't resolved yet (startup) or a vanished container was swallowed to
+    // undefined (see the health RPC comment above). Both warrant the fast
+    // cadence; parked boxes are excluded because isConnected is false there.
+    (isConnected && health === undefined) ||
     (pushState !== null && pushState.state !== "HEALTHY");
 
   const { container } = useProvisioningState({

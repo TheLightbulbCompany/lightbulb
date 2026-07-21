@@ -131,13 +131,24 @@ describe("useSystemHealth poll cadence", () => {
     expect(healthInterval({ ok: false })).toBe(5_000);
   });
 
-  it("drops to the fast cadence when the health probe REJECTS", () => {
-    // A container that has gone away makes the RPC reject rather than return
-    // `ok: false`, so `data` stays undefined. Without keying on the error too,
-    // the dot would sit on HEALTHY until the slow status poll came round —
-    // this is what keeps container-death detection at its previous latency.
+  it("drops to the fast cadence when the health probe REJECTS with a surfaced error", () => {
+    // A rejection that ISN'T the "No container" 404-equivalent (a gateway
+    // timeout, say) surfaces as healthError. Keying on the error keeps the dot
+    // from sitting on HEALTHY until the slow status poll came round.
     rpcResult.data = undefined;
-    rpcResult.error = new Error("no container");
+    rpcResult.error = new Error("gateway timeout");
+    renderHook(() => useSystemHealth());
+    expect(statusOptions?.refreshInterval).toBe(10_000);
+  });
+
+  it("drops to the fast cadence when a vanished container is swallowed to undefined", () => {
+    // useGatewayRpc's 404-equivalent path catches "No container" rejections and
+    // returns undefined data with NO error, so healthError never fires. Keying
+    // on `health === undefined` while connected keeps container-death detection
+    // at the fast cadence in that case too, instead of letting the dot sit on
+    // HEALTHY for up to a full slow-poll interval.
+    rpcResult.data = undefined;
+    rpcResult.error = undefined;
     renderHook(() => useSystemHealth());
     expect(statusOptions?.refreshInterval).toBe(10_000);
   });

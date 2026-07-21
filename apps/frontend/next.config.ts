@@ -49,13 +49,15 @@ const nextConfig: NextConfig = {
   // Rewrites barrel imports to direct module paths so one named import doesn't
   // drag in a package's whole surface. Only packages whose barrel actually
   // fans out are worth listing: `radix-ui` is the unified re-export of every
-  // Radix primitive (tabs/select/collapsible pull from it), and
-  // react-syntax-highlighter's barrel exports the highlight.js engines
-  // alongside the Prism one we use. Next already optimizes lucide-react,
-  // date-fns, recharts et al. by default, so re-declaring those here is noise;
-  // three/gsap are single prebundled files with nothing to split.
+  // Radix primitive (tabs/select/collapsible pull from it). Next already
+  // optimizes lucide-react, date-fns, recharts et al. by default, so
+  // re-declaring those here is noise; three/gsap are single prebundled files
+  // with nothing to split. react-syntax-highlighter is deliberately absent:
+  // MessageList deep-imports the prism-light build and per-language modules
+  // directly, so its barrel is never pulled and there would be nothing to
+  // rewrite.
   experimental: {
-    optimizePackageImports: ["radix-ui", "react-syntax-highlighter"],
+    optimizePackageImports: ["radix-ui"],
   },
 
   async headers() {

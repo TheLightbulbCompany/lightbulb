@@ -4,9 +4,11 @@
  * Mounts the `useContainerStatus` probe ABOVE the Tabs (in (app)/_layout.tsx —
  * chat.tsx is off-limits, so the banner can't live inside it). Two surfaces:
  *
- *   • Non-blocking banner — a slim amber bar for `starting` (a normal
- *     container cold-start; chat still works underneath and the bar
- *     auto-clears once ready).
+ *   • Cold start / parked wake — delegated to <ProvisioningStepper/> (mobile
+ *     onboarding-parity Slice 3), which owns the time-box: a slim amber bar
+ *     over live children for a `parked` wake or a quick `starting`, promoted
+ *     to a full-screen phased stepper once a `starting` container has
+ *     genuinely dragged. Either way it auto-clears once ready.
  *   • Blocking interstitial — a full-screen card for `teamPending` / `blocked`
  *     / `needsSignup` / `error`, which each mean there is no working chat
  *     behind the surface (contract §B3). `teamPending` (an org member whose
@@ -52,7 +54,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { usePulse } from "../chat/usePulse";
-import { colors, fonts, radii, spacing, type } from "../../config/theme";
+import { colors, fonts, radii, spacing } from "../../config/theme";
 import {
   useContainerStatus,
   type ContainerStatus,
@@ -60,6 +62,7 @@ import {
 import { ContainerStatusContext } from "../../lib/containerStatusContext";
 import { ByoKeyScreen } from "./ByoKeyScreen";
 import { ChatGPTConnectScreen } from "./ChatGPTConnectScreen";
+import { ProvisioningStepper } from "./ProvisioningStepper";
 
 const WEB_ORIGIN = "https://isol8.co";
 const DEFAULT_MANAGE_URL = `${WEB_ORIGIN}/settings`;
@@ -69,29 +72,6 @@ function resolveManageUrl(href: string | null): string {
   if (!href) return DEFAULT_MANAGE_URL;
   if (href.startsWith("http")) return href;
   return `${WEB_ORIGIN}${href}`;
-}
-
-// ---------------------------------------------------------------------------
-// Non-blocking banner
-// ---------------------------------------------------------------------------
-
-function PulsingDot() {
-  const opacity = usePulse(true, 0.3);
-  return <Animated.View style={[styles.bannerDot, { opacity }]} />;
-}
-
-function StartingBanner({ label }: { label: string }) {
-  const insets = useSafeAreaInsets();
-  return (
-    <View style={[styles.banner, { paddingTop: insets.top }]}>
-      <View style={styles.bannerRow}>
-        <PulsingDot />
-        <Text style={styles.bannerText} numberOfLines={1}>
-          {label}
-        </Text>
-      </View>
-    </View>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -333,11 +313,13 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
     );
   }
 
-  // `starting` (cold start) and `parked` (deliberately-asleep trial box) both
-  // render as a NON-blocking banner over live children — a parked container is
-  // healthy and one intent away from running, so it must never blank the chat
-  // or spin forever. Foregrounding already fired a wake in parallel and the
-  // poll carries wake=1, so both bars auto-clear to `ready`.
+  // `starting` (cold start) and `parked` (deliberately-asleep trial box) hand
+  // off to ProvisioningStepper, which owns the whole time-box (mobile
+  // onboarding-parity Slice 3): the thin non-blocking banner over live
+  // children for a parked wake or a quick start, promoted to a full-screen
+  // phased stepper only once a `starting` container has genuinely dragged.
+  // A parked container is healthy and one intent away from running, so it
+  // never promotes — it must not blank the chat or spin forever.
   //
   // `children` only ever mounts from this branch on (every earlier return
   // above replaces the whole tree with an interstitial), so this is the one
@@ -345,50 +327,25 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
   // ContainerStatusContext — FirstRunGate reads it from there instead of
   // running its own second `/container/status`-adjacent poll (mobile
   // onboarding-parity Slice 2).
+  if (status.kind === "starting" || status.kind === "parked") {
+    return (
+      <ContainerStatusContext.Provider value={status}>
+        <ProvisioningStepper status={status} onRetry={onRetry}>
+          {children}
+        </ProvisioningStepper>
+      </ContainerStatusContext.Provider>
+    );
+  }
+
   return (
     <ContainerStatusContext.Provider value={status}>
-      <View style={styles.root}>
-        {status.kind === "starting" && (
-          <StartingBanner label="Your workspace is starting…" />
-        )}
-        {status.kind === "parked" && (
-          <StartingBanner label="Waking your agents…" />
-        )}
-        {children}
-      </View>
+      <View style={styles.root}>{children}</View>
     </ContainerStatusContext.Provider>
   );
 }
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
-
-  // Non-blocking amber bar (spec §4 disconnected banner tokens).
-  banner: {
-    backgroundColor: colors.bannerBg,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.bannerBorder,
-  },
-  bannerRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.sm,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-  },
-  bannerDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: colors.connectingYellow,
-  },
-  bannerText: {
-    flex: 1,
-    fontFamily: fonts.dmSansMedium,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.bannerText,
-  },
 
   // Blocking interstitial.
   interstitialPage: {
@@ -415,10 +372,13 @@ const styles = StyleSheet.create({
     lineHeight: 56,
     color: colors.forest,
   },
+  // Lora, not type.title's DM Sans Bold — matches web's `.provision-title`
+  // (Lora 400) so the onboarding surfaces read the same on both clients.
   interstitialHeadline: {
-    ...type.title,
-    fontSize: 18,
-    lineHeight: 24,
+    fontFamily: fonts.lora,
+    fontSize: 20,
+    lineHeight: 26,
+    color: colors.ink,
     textAlign: "center",
   },
   interstitialBody: {

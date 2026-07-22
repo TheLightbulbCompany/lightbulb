@@ -256,6 +256,12 @@ describe("ProvisionGate container-status context", () => {
     expect(screen.getByText("STATUS:ready:false")).toBeTruthy();
   });
 
+  // The banner text now comes from <ProvisioningStepper/> (mobile
+  // onboarding-parity Slice 3), not an inline StartingBanner in the gate —
+  // unchanged for the sub-10s window, which is where a freshly-rendered
+  // component sits. The absent dot rail is the proof the gate still hands
+  // children through non-blocking at t=0; the promotion time-box itself is
+  // covered in ProvisioningStepper.test.tsx.
   it("still provides the status via context while starting (banner + context both active)", async () => {
     mockUseContainerStatus.mockReturnValue({
       status: { kind: "starting" },
@@ -270,6 +276,7 @@ describe("ProvisionGate container-status context", () => {
 
     expect(screen.getByText("STATUS:starting:undefined")).toBeTruthy();
     expect(screen.getByText("Your workspace is starting…")).toBeTruthy();
+    expect(screen.queryByTestId("provision-dot-rail")).toBeNull();
   });
 
   it("does NOT provide children (or the context) while blocked — the interstitial replaces the tree", async () => {

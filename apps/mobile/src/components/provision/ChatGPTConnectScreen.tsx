@@ -18,8 +18,9 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as WebBrowser from "expo-web-browser";
 import { createApiClient, useChatGPTOAuth } from "@isol8/shared";
 
-import { colors, fonts, radii, spacing, type } from "../../config/theme";
+import { colors, fonts, radii, spacing } from "../../config/theme";
 import { makeAdapter } from "../../lib/adapter";
+import { Wordmark } from "./Wordmark";
 
 interface Props {
   /** Fired once state.status flips to "completed" so the gate re-polls. */
@@ -116,6 +117,7 @@ export function ChatGPTConnectScreen({ onConnected }: Props) {
   return (
     <View style={[styles.page, { paddingTop: insets.top }]}>
       <View style={styles.card}>
+        <Wordmark />
         {body}
         <Pressable
           style={({ pressed }) => [styles.signOutButton, pressed && styles.pressed]}
@@ -149,10 +151,13 @@ const styles = StyleSheet.create({
     borderColor: colors.edge,
     padding: spacing.xl,
   },
+  // Lora, not type.title's DM Sans Bold — matches web's `.provision-title`
+  // (Lora 400) so the onboarding surfaces read the same on both clients.
   headline: {
-    ...type.title,
-    fontSize: 18,
-    lineHeight: 24,
+    fontFamily: fonts.lora,
+    fontSize: 20,
+    lineHeight: 26,
+    color: colors.ink,
     textAlign: "center",
   },
   body: {

@@ -16,11 +16,22 @@ vi.mock("@/lib/marketplace/api", () => ({
 }));
 
 const showInstallToast = vi.fn();
+const showErrorToast = vi.fn();
+const markInstalled = vi.fn();
 const close = vi.fn();
 const setFreshlyInstalled = vi.fn();
 
+// The free-listing path also calls markInstalled() (optimistic "Hired ✓"),
+// and any throw inside hire() lands on showErrorToast — omit either and the
+// hook fails inside its own catch block.
 vi.mock("@/components/marketplace/drawer/MarketplaceDrawerProvider", () => ({
-  useMarketplaceDrawer: () => ({ showInstallToast, close, setFreshlyInstalled }),
+  useMarketplaceDrawer: () => ({
+    showInstallToast,
+    showErrorToast,
+    markInstalled,
+    close,
+    setFreshlyInstalled,
+  }),
 }));
 
 vi.mock("@clerk/nextjs", () => ({
@@ -38,6 +49,8 @@ describe("useHire", () => {
     checkoutFn.mockReset();
     refreshAgents.mockReset();
     showInstallToast.mockReset();
+    showErrorToast.mockReset();
+    markInstalled.mockReset();
     close.mockReset();
     setFreshlyInstalled.mockReset();
   });
@@ -61,7 +74,11 @@ describe("useHire", () => {
         price_cents: 0,
       } as unknown as Parameters<typeof result.current.hire>[0]);
     });
-    expect(deployFn).toHaveBeenCalledWith("l1");
+    expect(deployFn).toHaveBeenCalledWith("l1", undefined);
+    // hire() swallows its own throws into showErrorToast, so a silent failure
+    // reads as a passing happy path unless we assert the error toast stayed shut.
+    expect(showErrorToast).not.toHaveBeenCalled();
+    expect(markInstalled).toHaveBeenCalledWith("atlas");
     expect(refreshAgents).toHaveBeenCalled();
     expect(setFreshlyInstalled).toHaveBeenCalledWith("ag_42");
     expect(showInstallToast).toHaveBeenCalledWith({ agentName: "Atlas", agentId: "ag_42" });

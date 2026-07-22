@@ -208,11 +208,8 @@ describe("SesInboundStack", () => {
 });
 
 describe("SesInboundStack gating (Isol8Stage)", () => {
-  function stageStacks(
-    environment: "dev" | "prod",
-    extraContext: Record<string, unknown> = {},
-  ): Stack[] {
-    const app = new App({ context: { ...HOSTED_ZONE_CONTEXT, ...extraContext } });
+  function stageStacks(environment: "dev" | "prod"): Stack[] {
+    const app = new App({ context: HOSTED_ZONE_CONTEXT });
     const stage = new Isol8Stage(app, environment, {
       environment,
       env: { account: ACCOUNT, region: REGION },
@@ -220,25 +217,8 @@ describe("SesInboundStack gating (Isol8Stage)", () => {
     return stage.node.children.filter((c): c is Stack => c instanceof Stack);
   }
 
-  test("flag OFF (default): no ses-inbound stack and no SES resources anywhere in prod", () => {
+  test("prod stage: the ses-inbound stack is created with SES resources", () => {
     const stacks = stageStacks("prod");
-    const sesStack = stacks.find((s) => s.node.id === "isol8-prod-ses-inbound");
-    expect(sesStack).toBeUndefined();
-
-    for (const s of stacks) {
-      const json = JSON.stringify(Template.fromStack(s).toJSON());
-      expect(json).not.toContain("AWS::SES::");
-    }
-  });
-
-  test("flag OFF (default): dev stage never gets a ses-inbound stack even if forced (prod-only)", () => {
-    const stacks = stageStacks("dev", { agentEmailSesEnabled: true });
-    const sesStack = stacks.find((s) => s.node.id === "isol8-dev-ses-inbound");
-    expect(sesStack).toBeUndefined();
-  });
-
-  test("flag ON (context) + prod stage: the ses-inbound stack is created with SES resources", () => {
-    const stacks = stageStacks("prod", { agentEmailSesEnabled: true });
     const sesStack = stacks.find((s) => s.node.id === "isol8-prod-ses-inbound");
     expect(sesStack).toBeDefined();
 
@@ -248,8 +228,19 @@ describe("SesInboundStack gating (Isol8Stage)", () => {
     t.resourceCountIs("AWS::S3::Bucket", 2);
   });
 
-  test("flag ON: the service stack's AGENT_EMAIL_ATTACHMENTS_BUCKET env var is the deterministic bucket name, not a token", () => {
-    const stacks = stageStacks("prod", { agentEmailSesEnabled: true });
+  test("dev stage: never gets a ses-inbound stack (prod-only, account-scoped rule set)", () => {
+    const stacks = stageStacks("dev");
+    const sesStack = stacks.find((s) => s.node.id === "isol8-dev-ses-inbound");
+    expect(sesStack).toBeUndefined();
+
+    for (const s of stacks) {
+      const json = JSON.stringify(Template.fromStack(s).toJSON());
+      expect(json).not.toContain("AWS::SES::");
+    }
+  });
+
+  test("prod: the service stack's AGENT_EMAIL_DOMAIN + attachments-bucket env vars are set live", () => {
+    const stacks = stageStacks("prod");
     const serviceStack = stacks.find((s) => s.node.id === "isol8-prod-service");
     expect(serviceStack).toBeDefined();
     const t = Template.fromStack(serviceStack!);
@@ -257,6 +248,7 @@ describe("SesInboundStack gating (Isol8Stage)", () => {
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({
           Environment: Match.arrayWith([
+            { Name: "AGENT_EMAIL_DOMAIN", Value: "isol8.co" },
             {
               Name: "AGENT_EMAIL_ATTACHMENTS_BUCKET",
               Value: "isol8-prod-agent-mail-attachments",
@@ -267,15 +259,16 @@ describe("SesInboundStack gating (Isol8Stage)", () => {
     });
   });
 
-  test("flag OFF: the service stack's AGENT_EMAIL_ATTACHMENTS_BUCKET env var is empty (inert)", () => {
-    const stacks = stageStacks("prod");
-    const serviceStack = stacks.find((s) => s.node.id === "isol8-prod-service");
+  test("dev: the service stack's AGENT_EMAIL_DOMAIN + attachments-bucket env vars are empty (inert)", () => {
+    const stacks = stageStacks("dev");
+    const serviceStack = stacks.find((s) => s.node.id === "isol8-dev-service");
     expect(serviceStack).toBeDefined();
     const t = Template.fromStack(serviceStack!);
     t.hasResourceProperties("AWS::ECS::TaskDefinition", {
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({
           Environment: Match.arrayWith([
+            { Name: "AGENT_EMAIL_DOMAIN", Value: "" },
             { Name: "AGENT_EMAIL_ATTACHMENTS_BUCKET", Value: "" },
           ]),
         }),

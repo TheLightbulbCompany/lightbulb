@@ -93,7 +93,7 @@ export interface SecretNames {
    * Shared secret the SES-ingest Lambda (ses-inbound-stack.ts) attaches to
    * its POST /webhooks/ses-inbound calls. Created unconditionally in every
    * env (same shape as wsInternalSecret), but only meaningful once the
-   * prod-stage SesInboundStack actually exists (flag-gated). Same CMK as the
+   * prod-stage SesInboundStack actually exists (prod-only). Same CMK as the
    * other auth secrets, so KmsDecryptForSecrets already covers decrypt.
    */
   sesIngestSecret: string;
@@ -157,11 +157,18 @@ export interface ServiceStackProps extends cdk.StackProps {
   alertPageTopicArn?: string;
   /**
    * Attachments bucket name from the prod-stage SesInboundStack, when it
-   * exists (flag-gated + prod-only — see isol8-stage.ts). Undefined/empty in
+   * exists (prod-only — see isol8-stage.ts). Undefined/empty in
    * every env where that stack isn't instantiated; the backend only reads
    * this when AGENT_EMAIL_DOMAIN is also set, so an empty string is inert.
    */
   agentEmailAttachmentsBucket?: string;
+  /**
+   * Agent-email base domain, "isol8.co" in prod (set in lockstep with the
+   * prod-only SesInboundStack — see isol8-stage.ts). Empty/undefined in every
+   * other env; the backend's AGENT_EMAIL_DOMAIN guards treat that as "agent
+   * email off", keeping dev/local/CI inert.
+   */
+  agentEmailDomain?: string;
 }
 
 export class ServiceStack extends cdk.Stack {
@@ -426,7 +433,7 @@ export class ServiceStack extends cdk.Stack {
     // every company's `{agent}@{slug}.isol8.co` subdomain address), so one
     // identity ARN covers the whole fleet. Safe to grant unconditionally in
     // every env (dev included): the identity itself only exists once the
-    // prod-stage SesInboundStack is deployed (flag-gated), and sends are
+    // prod-stage SesInboundStack is deployed (prod-only), and sends are
     // separately gated by AGENT_EMAIL_DOMAIN being set (core/services/ses_email.py).
     new iam.ManagedPolicy(this, "BackendSesSend", {
       managedPolicyName: `isol8-${env}-backend-ses-send`,
@@ -1385,8 +1392,13 @@ export class ServiceStack extends cdk.Stack {
         ...(props.alertPageTopicArn
           ? { ALERT_PAGE_TOPIC_ARN: props.alertPageTopicArn }
           : {}),
+        // Agent-email base domain — "isol8.co" in prod (where the SES stack
+        // and verified domain exist), empty in every other env. The backend's
+        // AGENT_EMAIL_DOMAIN guards treat empty as "agent email off", so
+        // dev/local/CI stay inert.
+        AGENT_EMAIL_DOMAIN: props.agentEmailDomain ?? "",
         // Agent-email inbound attachments bucket, from the prod-stage
-        // SesInboundStack when it exists (flag-gated — see isol8-stage.ts).
+        // SesInboundStack when it exists (prod-only — see isol8-stage.ts).
         // Empty string in every env where that stack isn't deployed; the
         // backend only reads this once AGENT_EMAIL_DOMAIN is also set, so an
         // empty value is a harmless no-op, matching the MARKETPLACE_* tables'

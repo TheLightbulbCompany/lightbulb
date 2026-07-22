@@ -14,11 +14,10 @@ import { Construct } from "constructs";
 // =============================================================================
 // SesInboundStack — SES inbound agent-mail receiving (agent-email SES chunk 2).
 //
-// FLAG-GATED, PROD-STAGE-ONLY. This stack is only ever instantiated by
-// isol8-stage.ts when BOTH `env === "prod"` AND the `agentEmailSesEnabled`
-// context/env flag is on (see isol8-stage.ts for the gate) — merging this
-// file to main creates NO live SES/DNS resources by default. Two independent
-// reasons drive that gating:
+// PROD-STAGE-ONLY. This stack is only ever instantiated by isol8-stage.ts
+// when `env === "prod"` (see isol8-stage.ts for the gate) — dev/local stages
+// create NO live SES/DNS resources. Two independent reasons drive that
+// gating:
 //   1. SetActiveReceiptRuleSet is an ACCOUNT+REGION-scoped "one active rule
 //      set" operation (like Bedrock's PutModelInvocationLoggingConfiguration
 //      in bedrock-meter-stack.ts) — a second instantiation in the same

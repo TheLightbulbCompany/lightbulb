@@ -168,7 +168,7 @@ export class AuthStack extends cdk.Stack {
     );
 
     // Shared secret the SES-ingest Lambda (ses-inbound-stack.ts, prod-stage
-    // only, flag-gated) presents as the X-Isol8-SES-Secret header on its POST
+    // only) presents as the X-Isol8-SES-Secret header on its POST
     // to /webhooks/ses-inbound; the backend compares it in constant time (see
     // routers/ses_inbound.py). Created unconditionally in every env — same
     // posture as wsInternalSecret/resendApiKey — but only ever actually READ

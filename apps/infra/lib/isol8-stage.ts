@@ -36,20 +36,14 @@ export class Isol8Stage extends cdk.Stage {
 
     // SesInboundStack — SES inbound agent-mail receiving (domain identity,
     // wildcard MX/SPF, S3 buckets, receipt rule set + activation, ingest
-    // Lambda). FLAG-GATED (default OFF) so merging/deploying this feature
-    // never silently activates live mail routing or DNS changes, AND
-    // prod-stage-only — SetActiveReceiptRuleSet is an account+region-scoped
+    // Lambda). PROD-ONLY — SetActiveReceiptRuleSet is an account+region-scoped
     // "one active rule set" operation, exactly like the bedrock-meter/
     // bedrock-gate account-scoped stacks below, so it must be a singleton,
-    // never one-per-env. Flip on via CDK context (`-c
-    // agentEmailSesEnabled=true`) or the AGENT_EMAIL_SES_ENABLED env var once
-    // ready to go live; `this.node.tryGetContext` walks up to the App's
-    // context, so a `-c` flag on the CLI invocation is visible here.
-    const agentEmailSesEnabled =
-      this.node.tryGetContext("agentEmailSesEnabled") === true ||
-      process.env.AGENT_EMAIL_SES_ENABLED === "true";
+    // never one-per-env. Agent email is live in prod; dev/local stay inert
+    // (no SES stack synthesized, and AGENT_EMAIL_DOMAIN stays unset — the
+    // backend's AGENT_EMAIL_DOMAIN guards keep every non-prod env dormant).
     let sesInbound: SesInboundStack | undefined;
-    if (env === "prod" && agentEmailSesEnabled) {
+    if (env === "prod") {
       sesInbound = new SesInboundStack(this, `isol8-${env}-ses-inbound`, {
         stackName: `isol8-${env}-ses-inbound`,
         envName: env,
@@ -174,9 +168,14 @@ export class Isol8Stage extends cdk.Stage {
       connectionsTableName: api.connectionsTableName,
       wsApiId: api.wsApiId,
       wsStage: api.wsStage,
+      // Agent-email base domain — "isol8.co" in prod (where the SES stack and
+      // verified domain live), empty elsewhere so the backend guards keep
+      // dev/local/CI inert. Kept in lockstep with the SES stack's
+      // `env === "prod"` gate above.
+      agentEmailDomain: env === "prod" ? "isol8.co" : "",
       // Undefined in every env/deploy where SesInboundStack isn't
-      // instantiated (flag off, or non-prod stage) — ServiceStack defaults
-      // this to an empty string, which is inert without AGENT_EMAIL_DOMAIN.
+      // instantiated (non-prod stage) — ServiceStack defaults this to an
+      // empty string, which is inert without AGENT_EMAIL_DOMAIN.
       agentEmailAttachmentsBucket: sesInbound?.attachmentsBucketName,
     });
 

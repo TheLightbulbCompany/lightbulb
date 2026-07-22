@@ -16,7 +16,12 @@ jest.mock("react-native-safe-area-context", () => ({
   useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
 }));
 
+// The real class — the mock above spreads requireActual, so `instanceof
+// ApiError` inside the component matches what these tests throw.
+import { ApiError } from "@isol8/shared";
 import { ByoKeyScreen } from "../ByoKeyScreen";
+
+const ADMIN_ONLY_MESSAGE = "Ask your workspace admin to finish this on isol8.co.";
 
 // NOTE: this @testing-library/react-native version's `fireEvent.press` /
 // `fireEvent.changeText` are ASYNC (they internally `await act(...)` around
@@ -31,7 +36,7 @@ describe("ByoKeyScreen", () => {
     mockPost.mockReset();
   });
 
-  it("saves the key, syncs the provider choice, and calls onConnected", async () => {
+  it("saves the key, commits the provider choice, and calls onConnected", async () => {
     mockPut.mockResolvedValue({});
     mockPost.mockResolvedValue({});
     const onConnected = jest.fn();
@@ -49,11 +54,18 @@ describe("ByoKeyScreen", () => {
         api_key: "sk-ant-secret",
       }),
     );
-    expect(mockPost).toHaveBeenCalledWith("/users/sync", {
+    // /billing/provider — NOT /users/sync, which the backend accepts and then
+    // silently ignores, leaving byo_provider unset and the gate re-firing.
+    expect(mockPost).toHaveBeenCalledWith("/billing/provider", {
       provider_choice: "byo_key",
       byo_provider: "anthropic",
     });
-    await waitFor(() => expect(onConnected).toHaveBeenCalled());
+    // Order is required: change_provider 409s with byo_key_missing unless the
+    // key PUT already landed.
+    expect(mockPut.mock.invocationCallOrder[0]).toBeLessThan(
+      mockPost.mock.invocationCallOrder[0],
+    );
+    await waitFor(() => expect(onConnected).toHaveBeenCalledTimes(1));
   });
 
   it("defaults to openai and disables Save until a key is entered", async () => {
@@ -75,9 +87,13 @@ describe("ByoKeyScreen", () => {
         api_key: "sk-proj-abc",
       }),
     );
+    expect(mockPost).toHaveBeenCalledWith("/billing/provider", {
+      provider_choice: "byo_key",
+      byo_provider: "openai",
+    });
   });
 
-  it("shows an error message when the save fails and does not call onConnected", async () => {
+  it("shows an error message when the key save fails and does not call onConnected", async () => {
     mockPut.mockRejectedValue(new Error("key rejected"));
     const onConnected = jest.fn();
 
@@ -91,5 +107,105 @@ describe("ByoKeyScreen", () => {
     await waitFor(() => expect(screen.getByText("key rejected")).toBeTruthy());
     expect(onConnected).not.toHaveBeenCalled();
     expect(mockPost).not.toHaveBeenCalled();
+  });
+
+  // REGRESSION GUARD. The provider write is what clears the
+  // byo_provider_required gate; calling onConnected() without it re-polls
+  // into the same gate and renders this screen again — an inescapable loop.
+  it("never calls onConnected when the provider write fails", async () => {
+    mockPut.mockResolvedValue({});
+    mockPost.mockRejectedValue(new Error("network down"));
+    const onConnected = jest.fn();
+
+    await act(async () => {
+      render(<ByoKeyScreen onConnected={onConnected} />);
+    });
+
+    await fireEvent.changeText(screen.getByPlaceholderText("sk-proj-…"), "sk-proj-abc");
+    await fireEvent.press(screen.getByText("Save key"));
+
+    await waitFor(() => expect(screen.getByText("network down")).toBeTruthy());
+    expect(mockPut).toHaveBeenCalledTimes(1);
+    expect(onConnected).not.toHaveBeenCalled();
+  });
+
+  // The gate reports admin_only=false for byo_provider_required, so a
+  // non-admin org member reaches this screen — but both backend routes
+  // require_org_admin, so one of them 403s. Status-mapped, so a 403 from
+  // either call reads the same.
+  it("tells a non-admin org member to ask their admin on a 403", async () => {
+    mockPut.mockResolvedValue({});
+    mockPost.mockRejectedValue(
+      new ApiError(403, { detail: "Organization admin access required" }),
+    );
+    const onConnected = jest.fn();
+
+    await act(async () => {
+      render(<ByoKeyScreen onConnected={onConnected} />);
+    });
+
+    await fireEvent.changeText(screen.getByPlaceholderText("sk-proj-…"), "sk-proj-abc");
+    await fireEvent.press(screen.getByText("Save key"));
+
+    await waitFor(() => expect(screen.getByText(ADMIN_ONLY_MESSAGE)).toBeTruthy());
+    expect(screen.queryByText("Organization admin access required")).toBeNull();
+    expect(onConnected).not.toHaveBeenCalled();
+  });
+
+  // change_provider's 409s carry a structured {code, message} detail the
+  // shared client does NOT lift onto ApiError.message (it only does that for
+  // string details), so the raw message would render as "API 409".
+  it("surfaces the message from a structured 409 detail", async () => {
+    mockPut.mockResolvedValue({});
+    mockPost.mockRejectedValue(
+      new ApiError(
+        409,
+        {
+          detail: {
+            code: "subscription_inactive",
+            message: "Subscription is not active. Manage it in /settings/billing.",
+          },
+        },
+        "API 409",
+      ),
+    );
+    const onConnected = jest.fn();
+
+    await act(async () => {
+      render(<ByoKeyScreen onConnected={onConnected} />);
+    });
+
+    await fireEvent.changeText(screen.getByPlaceholderText("sk-proj-…"), "sk-proj-abc");
+    await fireEvent.press(screen.getByText("Save key"));
+
+    await waitFor(() =>
+      expect(
+        screen.getByText("Subscription is not active. Manage it in /settings/billing."),
+      ).toBeTruthy(),
+    );
+    expect(onConnected).not.toHaveBeenCalled();
+  });
+
+  it("leaves Save usable so a retry can resume after a transient failure", async () => {
+    mockPut.mockResolvedValue({});
+    mockPost.mockRejectedValueOnce(new Error("network down")).mockResolvedValueOnce({});
+    const onConnected = jest.fn();
+
+    await act(async () => {
+      render(<ByoKeyScreen onConnected={onConnected} />);
+    });
+
+    await fireEvent.changeText(screen.getByPlaceholderText("sk-proj-…"), "sk-proj-abc");
+    await fireEvent.press(screen.getByText("Save key"));
+    await waitFor(() => expect(screen.getByText("network down")).toBeTruthy());
+    expect(onConnected).not.toHaveBeenCalled();
+
+    // Button is back (not stuck on the spinner) and still enabled.
+    const save = screen.getByLabelText("Save key");
+    expect(save.props.accessibilityState?.disabled).toBe(false);
+
+    await fireEvent.press(save);
+    await waitFor(() => expect(onConnected).toHaveBeenCalledTimes(1));
+    expect(mockPost).toHaveBeenCalledTimes(2);
   });
 });

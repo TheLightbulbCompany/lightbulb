@@ -3,11 +3,20 @@
  *
  * Rendered by ProvisionGate when `blocked.code === "byo_provider_required"`
  * — the owner chose the BYO-key provider path but hasn't picked a
- * sub-provider (OpenAI / Anthropic) yet. Mirrors the web ByoKeyStep: PUT the
- * key first (stored encrypted, injected into the container at runtime), then
- * POST /users/sync to persist `byo_provider` — that field, not whether a key
- * file exists, is what the provision gate checks (see
- * core/services/provision_gate.py's byo_key branch).
+ * sub-provider (OpenAI / Anthropic) yet. Two backend calls, in this order:
+ *
+ *   1. PUT /settings/keys/{provider} — stores the key encrypted (Secrets
+ *      Manager), injected into the container at runtime.
+ *   2. POST /billing/provider — writes `provider_choice`/`byo_provider` onto
+ *      the BILLING row. That row field, not whether a key exists, is what the
+ *      provision gate reads (core/services/provision_gate.py's byo_key
+ *      branch), and /billing/provider is its only post-signup writer. Skip
+ *      this call and the gate re-fires the moment onConnected() re-polls,
+ *      looping the user back onto this screen forever.
+ *
+ * The order is load-bearing in the other direction too: billing_service's
+ * change_provider rejects with 409 `byo_key_missing` unless the key is
+ * already saved.
  */
 import { useAuth } from "@clerk/clerk-expo";
 import { useCallback, useMemo, useRef, useState } from "react";
@@ -21,7 +30,7 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { createApiClient } from "@isol8/shared";
+import { ApiError, createApiClient } from "@isol8/shared";
 
 import { colors, fonts, radii, spacing } from "../../config/theme";
 import { makeAdapter } from "../../lib/adapter";
@@ -29,8 +38,49 @@ import { Wordmark } from "./Wordmark";
 
 type Provider = "openai" | "anthropic";
 
+// Verbatim copy from ProvisionGate's ManageAction admin note — a member who
+// 403s here lands in the same "you can't finish this yourself" state the
+// generic interstitial would have shown, so it should read identically.
+const ADMIN_ONLY_MESSAGE = "Ask your workspace admin to finish this on isol8.co.";
+
+/**
+ * FastAPI's `detail` is a plain string for most raises but a structured
+ * `{code, message}` for billing's ChangeProviderError — and the shared client
+ * only lifts the string form onto `ApiError.message` (an object detail leaves
+ * it as the useless "API 409"). Dig the human-readable half out of both.
+ */
+function detailMessage(err: ApiError): string | null {
+  const detail = (err.body as { detail?: unknown } | null)?.detail;
+  if (typeof detail === "string") return detail;
+  if (detail && typeof detail === "object" && "message" in detail) {
+    const message = (detail as { message?: unknown }).message;
+    if (typeof message === "string") return message;
+  }
+  return null;
+}
+
+function saveErrorMessage(e: unknown): string {
+  if (e instanceof ApiError) {
+    // BOTH calls org-admin-gate server-side (settings_keys.set_key and
+    // billing.change_provider each require_org_admin), but the gate that
+    // routes here reports admin_only=false — so a non-admin member DOES
+    // reach this screen and WILL 403. Give them the out-of-band route
+    // instead of a raw "Organization admin access required".
+    if (e.status === 403) return ADMIN_ONLY_MESSAGE;
+    // 409s from change_provider (byo_key_missing / subscription_inactive /
+    // use_trial_checkout) carry user-facing copy — show it verbatim.
+    const detail = detailMessage(e);
+    if (detail) return detail;
+  }
+  return e instanceof Error ? e.message : "Failed to save key";
+}
+
 interface Props {
-  /** Fired once the key is saved and the provider choice is synced. */
+  /**
+   * Fired once the key is saved AND the provider choice is committed to the
+   * billing row — never on a failed write, which would just re-trip the same
+   * gate.
+   */
   onConnected: () => void;
 }
 
@@ -71,15 +121,24 @@ export function ByoKeyScreen({ onConnected }: Props) {
       // Backend route: PUT /settings/keys/{tool_id} with {api_key} (see
       // routers/settings_keys.py) — mirrors web's ByoKeyStep exactly.
       await api.put(`/settings/keys/${provider}`, { api_key: trimmedKey });
-      // ByoKeyScreen is the only place that knows the chosen sub-provider,
-      // so it owns the /users/sync call rather than passing byo_provider up.
-      await api.post("/users/sync", {
+      // ByoKeyScreen is the only place that knows the chosen sub-provider, so
+      // it owns this write rather than passing byo_provider up. It MUST be
+      // /billing/provider: POST /users/sync still accepts a
+      // provider_choice/byo_provider body for old clients but SILENTLY IGNORES
+      // both fields server-side (routers/users.py says so), so sending it
+      // there wrote nothing, left the gate blocking, and looped this screen.
+      // Do not re-add that call.
+      await api.post("/billing/provider", {
         provider_choice: "byo_key",
         byo_provider: provider,
       });
+      // Strictly after the provider write lands. Firing this on a failed
+      // write is what re-polled into the same gate and back onto this screen.
       onConnected();
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Failed to save key");
+      // The key PUT is idempotent and already durable if it was step 1 that
+      // succeeded, so leaving Save enabled makes a retry resume from here.
+      setError(saveErrorMessage(e));
     } finally {
       setSubmitting(false);
     }

@@ -29,6 +29,12 @@ export type {
   ClassifiedStatus,
   ContainerStatusBody,
 } from "./hooks/containerStatus";
+export {
+  PROVISION_IDEAS,
+  PROVISION_IDEA_ROTATION_MS,
+  PROVISION_TIMEOUT_MS,
+  formatProvisionElapsed,
+} from "./hooks/provisioningCopy";
 
 export { ApiError } from "./api/error";
 export { deriveWebSocketUrl } from "./api/url";

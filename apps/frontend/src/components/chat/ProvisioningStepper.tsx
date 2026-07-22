@@ -27,6 +27,15 @@ import { CreditsStep } from "@/components/chat/CreditsStep";
 import { TeamBillingCard } from "@/components/chat/TeamBillingCard";
 import { Logo } from "@/components/Logo";
 import { PROVIDER_CARDS, type ProviderChoiceId } from "@/lib/providerCards";
+// Provisioning copy + timing live in @isol8/shared so the web and mobile
+// steppers stay in lockstep. Aliased to this file's historical local names so
+// every usage site below is unchanged.
+import {
+  PROVISION_IDEAS,
+  PROVISION_IDEA_ROTATION_MS as IDEA_ROTATION_MS,
+  PROVISION_TIMEOUT_MS as TIMEOUT_MS,
+  formatProvisionElapsed as formatElapsed,
+} from "@isol8/shared";
 
 // Frontend stepper phases. The cold-start "container", "gateway",
 // "channels-sidecars", and "agent" steps all map to the same backend
@@ -114,13 +123,6 @@ const ONBOARDING_PHASE_ORDER: Phase[] = [
   "ready",
 ];
 
-// Fargate cold starts (image pull from ECR + ENI attach + container init) can
-// legitimately run 3-4 minutes for the first task on a service. Anything
-// shorter cries wolf during the normal happy path. The timer also doesn't
-// start until we actually enter the "container" phase — see provisioningStart
-// below — so time spent on OAuth/billing/credits doesn't burn this budget.
-const TIMEOUT_MS = 300_000;
-
 // Persisted marker so the onboarding_ready activation milestone fires at most
 // once per browser, ever. Routine restarts of a stopped/errored container also
 // pass through provisioning on a normal /chat visit, so an in-memory guard
@@ -132,33 +134,6 @@ const ONBOARDING_READY_STORAGE_KEY = "isol8_onboarding_ready_v1";
 // who later converts to paid must NOT re-fire this on a subsequent
 // container recovery pass.
 const TRIAL_STARTED_STORAGE_KEY = "isol8_trial_started_v1";
-
-/**
- * Rotating idea prompts shown while the container spins up. Kept short (≤ ~52 chars)
- * so they fit on one line and don't cause layout shift. Tone matches the rest of the
- * onboarding copy: concrete, action-oriented, a little aspirational.
- */
-const PROVISION_IDEAS: readonly string[] = [
-  "Draft your weekly status report from your inbox",
-  "Triage email and reply in your voice",
-  "Summarize yesterday's meetings into action items",
-  "Spin up a research brief on any topic",
-  "Schedule focus time around your calendar",
-  "Turn a messy doc into a clean one-pager",
-  "Watch a channel and ping you on what matters",
-  "Run a recurring morning briefing for you",
-  "Pull metrics and drop them into a shared doc",
-  "Review a PR and flag the risky changes",
-];
-
-const IDEA_ROTATION_MS = 3200;
-
-function formatElapsed(ms: number): string {
-  const total = Math.max(0, Math.floor(ms / 1000));
-  const m = Math.floor(total / 60);
-  const s = total % 60;
-  return `${m}:${s.toString().padStart(2, "0")}`;
-}
 
 function RotatingIdeas({ eyebrow }: { eyebrow: string }) {
   const [idx, setIdx] = useState(0);

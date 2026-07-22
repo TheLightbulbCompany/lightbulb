@@ -805,11 +805,12 @@ export function ProvisioningStepper({
   // Provider-specific signup step. Renders the right component based on
   // `?provider=` and advances the wizard once the user finishes.
   //
-  // provider_choice is NOT persisted via /users/sync here. The
-  // ProviderPicker's "Subscribe" step writes it synchronously to
-  // billing_accounts via POST /billing/trial-checkout, which is the
-  // canonical (and only) write path. billing_repo (owner-keyed) is the
-  // source of truth.
+  // provider_choice is NOT persisted via /users/sync — that endpoint accepts
+  // the field and ignores it. billing_accounts (owner-keyed) is the source of
+  // truth, and it has exactly two writers: the ProviderPicker's "Subscribe"
+  // step (POST /billing/trial-checkout, at signup) and POST /billing/provider
+  // (post-signup switches — how ByoKeyStep commits its sub-provider, since
+  // trial-checkout submits `byo_key` with no byo_provider).
   if (phase === "provider" && providerChoice !== null) {
     const handleProviderComplete = async () => {
       capture("onboarding_provider_completed", {

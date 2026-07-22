@@ -23,6 +23,12 @@ export type {
 } from "./hooks/agents";
 export { useChatGPTOAuth } from "./hooks/useChatGPTOAuth";
 export type { OAuthState } from "./hooks/useChatGPTOAuth";
+export { classifyContainerStatus, parseBlockedPayload } from "./hooks/containerStatus";
+export type {
+  BlockedPayload,
+  ClassifiedStatus,
+  ContainerStatusBody,
+} from "./hooks/containerStatus";
 
 export { ApiError } from "./api/error";
 export { deriveWebSocketUrl } from "./api/url";

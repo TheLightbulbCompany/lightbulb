@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react-native";
+import { fireEvent, render, screen } from "@testing-library/react-native";
 import { Text } from "react-native";
 
 const mockRefetch = jest.fn();
@@ -293,5 +293,72 @@ describe("ProvisionGate container-status context", () => {
     );
 
     expect(screen.queryByText(/^STATUS:/)).toBeNull();
+  });
+});
+
+// mobile onboarding-parity Slice 1: the one behavior change in this slice.
+// Mobile previously had no surface for a backend-reported container
+// failure (the backend reports phase="provisioning" for a failed container
+// too, so it read as "starting" forever) — this unifies with web's
+// ProvisioningStepper "Setup failed" card, which keys on the same raw
+// `container.status === "error"`.
+describe("ProvisionGate container-error interstitial", () => {
+  beforeEach(() => {
+    mockRefetch.mockReset();
+    mockUseContainerStatus.mockReset();
+  });
+
+  it("renders a blocking 'Setup failed' interstitial with Retry + Sign out for status.kind === 'error'", async () => {
+    mockUseContainerStatus.mockReturnValue({
+      status: { kind: "error" },
+      refetch: mockRefetch,
+    });
+
+    await render(
+      <ProvisionGate>
+        <Text>APP</Text>
+      </ProvisionGate>,
+    );
+
+    expect(screen.getByText("Setup failed")).toBeTruthy();
+    expect(screen.getByText("Retry")).toBeTruthy();
+    expect(screen.getByText("Sign out")).toBeTruthy();
+    // No outbound "Manage on isol8.co" CTA — there's nothing to manage for
+    // a failed provision, unlike the blocked/needsSignup gate states.
+    expect(screen.queryByText(/on isol8\.co/)).toBeNull();
+  });
+
+  it("does NOT render children while in the error state — the interstitial replaces the tree", async () => {
+    mockUseContainerStatus.mockReturnValue({
+      status: { kind: "error" },
+      refetch: mockRefetch,
+    });
+
+    await render(
+      <ProvisionGate>
+        <Text>APP</Text>
+      </ProvisionGate>,
+    );
+
+    expect(screen.queryByText("APP")).toBeNull();
+  });
+
+  it("Retry on the error interstitial calls refetch", async () => {
+    mockUseContainerStatus.mockReturnValue({
+      status: { kind: "error" },
+      refetch: mockRefetch,
+    });
+
+    await render(
+      <ProvisionGate>
+        <Text>APP</Text>
+      </ProvisionGate>,
+    );
+
+    // fireEvent.press is ASYNC on this @testing-library/react-native version
+    // (see ByoKeyScreen.test.tsx's note) — must be awaited or the resulting
+    // act() scope races the next statement.
+    await fireEvent.press(screen.getByText("Retry"));
+    expect(mockRefetch).toHaveBeenCalledTimes(1);
   });
 });

@@ -5,6 +5,7 @@ import useSWR from "swr";
 import { useAuth } from "@clerk/nextjs";
 import { ApiError, fetchJsonWithStatus } from "@/lib/api";
 import { isPresent } from "@/lib/presence";
+import { classifyContainerStatus } from "@isol8/shared";
 
 /** Server-rendered blocked-state payload from /container/status (402). */
 export interface BlockedPayload {
@@ -152,24 +153,41 @@ export function useProvisioningState(
         const sep = url.includes("?") ? "&" : "?";
         const wakeUrl = `${url}${sep}wake=${isPresent() ? "1" : "0"}`;
         const { status, body } = await fetchJsonWithStatus(wakeUrl, getToken);
-        if (status === 202) {
+        // Status-code + payload-shape parse lives in @isol8/shared (mobile
+        // onboarding-parity Slice 1 — shared with mobile's containerStatus.ts,
+        // which used to be a hand-ported, drifting copy of this logic). This
+        // hook keeps everything else: the SWR binding, the fast/slow poll
+        // cadence, and the policies below for each classified kind.
+        const classified = classifyContainerStatus({ status, body });
+        if (classified.kind === "team-pending") {
           // Backend Task 8: org members whose admin-owned workspace
           // hasn't been provisioned yet get 202 Accepted with a
           // {"detail": "..."} message instead of an immediate provision
           // attempt. The stepper renders a "waiting on your admin"
           // empty-state and keeps polling so we transition to `normal`
           // automatically once the admin's container appears.
-          const detail =
-            body && typeof body === "object"
-              ? String((body as Record<string, unknown>).detail ?? "team workspace pending")
-              : "team workspace pending";
-          return { kind: "team-pending", detail };
+          return { kind: "team-pending", detail: classified.detail ?? "team workspace pending" };
         }
-        // 2xx default: container payload.
-        return { kind: "container", data: body as ContainerInfo };
+        if (classified.kind === "container") {
+          // 2xx default: container payload, passed through raw by the
+          // classifier. Cast from `body` (not `classified.body`) — same
+          // `unknown`-sourced cast this hook always used; ContainerInfo and
+          // the shared ContainerStatusBody are deliberately different
+          // (stricter) shapes so this cast stays exactly as permissive as
+          // it was before the rewire.
+          return { kind: "container", data: body as ContainerInfo };
+        }
+        // This endpoint only ever answers with 200 or 202 without throwing
+        // (fetchJsonWithStatus throws on any other status), so `classified`
+        // can't reach here in production — but the type can't prove that.
+        // Treat it exactly like any other unrecognized response below.
+        throw new Error(`Unexpected /container/status classification: ${classified.kind}`);
       } catch (err) {
         if (!(err instanceof ApiError)) throw err;
-        if (err.status === 404) {
+        // 402 / 404 / anything else: same status-code table as the 2xx
+        // path above, fed from the caught ApiError's status + body.
+        const classified = classifyContainerStatus({ status: err.status, body: err.body });
+        if (classified.kind === "needs-signup") {
           // Backend signal for "owner has never started signup": gate
           // would fire `signup_required` for an admin, but the
           // /container/status endpoint converts that to 404 so the
@@ -179,32 +197,15 @@ export function useProvisioningState(
           // Subscribe-loop UI. Inactive-row admins still get 402.
           return { kind: "needs-signup" };
         }
-        if (err.status === 402) {
-          // FastAPI's HTTPException(detail=...) serializes to
-          // {"detail": <whatever was passed>}. Backend passes
-          // gate.to_payload() which is {"blocked": {...}}, so the wire
-          // shape is {"detail": {"blocked": {...}}}. Read from the
-          // detail envelope; fall back to a top-level "blocked" key
-          // (used by some test fixtures and to be defensive about
-          // transport quirks) so this hook stays robust either way.
-          const body = err.body;
-          const envelope =
-            (body && typeof body === "object"
-              ? (body as Record<string, unknown>)
-              : {}) || {};
-          const detail = envelope.detail;
-          const blocked =
-            detail && typeof detail === "object" && "blocked" in (detail as object)
-              ? (detail as { blocked: BlockedPayload }).blocked
-              : (envelope.blocked as BlockedPayload | undefined);
-          // Defensive: 402 without a recognizable blocked payload — let
-          // the ApiError propagate so we don't silently render an empty
-          // blocked screen.
-          if (!blocked) throw err;
-          return { kind: "blocked", data: blocked };
+        if (classified.kind === "blocked") {
+          return { kind: "blocked", data: classified.blocked as BlockedPayload };
         }
-        // Other non-2xx statuses propagate as ApiError so consumers see
-        // a real error rather than a silent stuck UI.
+        // classified.kind === "unrecognized" — either a non-402/404 status,
+        // or a 402 without a recognizable blocked payload (FastAPI's
+        // HTTPException(detail=gate.to_payload()) always sends one in
+        // practice). Let the ORIGINAL ApiError propagate (not a
+        // reconstructed one — preserves its message/requestId) so
+        // consumers see a real error rather than a silently stuck UI.
         throw err;
       }
     },

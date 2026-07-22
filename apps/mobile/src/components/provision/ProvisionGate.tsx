@@ -8,14 +8,18 @@
  *     container cold-start; chat still works underneath and the bar
  *     auto-clears once ready).
  *   • Blocking interstitial — a full-screen card for `teamPending` / `blocked`
- *     / `needsSignup`, which each mean there is no working chat behind the
- *     surface (contract §B3). `teamPending` (an org member whose admin hasn't
- *     provisioned the workspace yet) shows a pulsing "Setting up your team
- *     workspace…" affordance + Retry — NOT a thin bar over a broken chat.
- *     `blocked` / `needsSignup` show an OUTBOUND "Manage on isol8.co" link
- *     (Linking.openURL) — the mobile app never reimplements billing / checkout
- *     (D1). admin-only gates tell org members to ask their workspace admin
- *     instead of showing a CTA.
+ *     / `needsSignup` / `error`, which each mean there is no working chat
+ *     behind the surface (contract §B3). `teamPending` (an org member whose
+ *     admin hasn't provisioned the workspace yet) shows a pulsing "Setting
+ *     up your team workspace…" affordance + Retry — NOT a thin bar over a
+ *     broken chat. `blocked` / `needsSignup` show an OUTBOUND "Manage on
+ *     isol8.co" link (Linking.openURL) — the mobile app never reimplements
+ *     billing / checkout (D1). admin-only gates tell org members to ask
+ *     their workspace admin instead of showing a CTA. `error` (mobile
+ *     onboarding-parity Slice 1 — the backend-reported container failure;
+ *     see `containerStatus.ts`) shows Retry only, no outbound link — there
+ *     is nothing to manage on isol8.co for a failed provision, only a
+ *     re-provision to retry.
  *
  *     Two `blocked` codes are the exception to D1's "never reimplement" for
  *     provider SIGN-IN specifically (mobile onboarding-parity Slice 4):
@@ -305,6 +309,26 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
         onRetry={onRetry}
         retrying={false}
         action={<ManageAction adminOnly={false} manageUrl={DEFAULT_MANAGE_URL} />}
+      />
+    );
+  }
+
+  // Container failed (mobile onboarding-parity Slice 1): the backend
+  // reports phase="provisioning" for a failed container too, so without
+  // this check `status.kind` would read "starting" forever — the gap this
+  // slice closes. Unifies with web's ProvisioningStepper "Setup failed"
+  // card, which keys on the same raw `container.status === "error"`. A
+  // blocking interstitial (there is no working chat behind a failed
+  // container) with Retry + sign-out, mirroring the other blocked states —
+  // no outbound link, since there's nothing to manage on isol8.co for this
+  // one (retrying re-provisioning is the only lever either surface offers).
+  if (status.kind === "error") {
+    return (
+      <Interstitial
+        headline="Setup failed"
+        body="Something went wrong while setting up your workspace. This is usually temporary — try again in a moment."
+        onRetry={onRetry}
+        retrying={false}
       />
     );
   }

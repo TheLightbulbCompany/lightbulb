@@ -3,15 +3,28 @@
  *
  * `GET /container/status` encodes state in the HTTP STATUS CODE, not just the
  * body — so we read it via `fetchJsonWithStatus` (200 vs 202) and catch
- * `ApiError` for 402 (blocked gate) and 404 (needs-signup). Classification
- * (contract §B1/§B3):
+ * `ApiError` for 402 (blocked gate) and 404 (needs-signup). The status-code +
+ * payload-shape parse itself lives in `@isol8/shared`'s `classifyContainerStatus`
+ * (mobile onboarding-parity Slice 1) — this file's job is ONLY the React
+ * binding (`useState` + `AppState`, 5s poll) and turning a `ClassifiedStatus`
+ * into this file's richer `ContainerStatus` (which additionally distinguishes
+ * ready / starting / parked / error from the 200 body's `status`/`phase`
+ * fields — a rendering decision the shared classifier deliberately leaves to
+ * each platform). Classification (contract §B1/§B3):
  *
  *   ready       — 200 with phase === "ready" (openclaw responsive)
  *   starting    — 200 with phase !== "ready" (cold start / provisioning)
+ *   parked      — 200 with phase === "parked" (deliberately-asleep trial box)
+ *   error       — 200 with raw status === "error" (mobile onboarding-parity
+ *                 Slice 1 — the backend reports phase="provisioning" for a
+ *                 failed container too, so this check runs BEFORE the phase
+ *                 branches; matches web's ProvisioningStepper `container.status
+ *                 === "error"` check)
  *   teamPending — 202 (org member waiting on admin's workspace)
  *   blocked     — 402 (provision gate fired; carries code + action.href + admin_only)
  *   needsSignup — 404 (admin never started signup)
- *   unreachable — network / auth / unexpected error
+ *   unreachable — network / auth / unexpected error, OR an unrecognized
+ *                 status code the shared classifier couldn't place
  *
  * getTokenRef REST pattern (control/overview.tsx lesson): pin Clerk's churning
  * `getToken` behind a ref so the adapter config is built exactly once. The
@@ -28,7 +41,13 @@
 import { useAuth } from "@clerk/clerk-expo";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppState } from "react-native";
-import { ApiError, fetchJsonWithStatus } from "@isol8/shared";
+import {
+  ApiError,
+  classifyContainerStatus,
+  fetchJsonWithStatus,
+  type ClassifiedStatus,
+  type ContainerStatusBody,
+} from "@isol8/shared";
 
 import { makeAdapter } from "./adapter";
 import { isPresent } from "./presence";
@@ -38,6 +57,11 @@ export type ContainerStatus =
   | { kind: "ready"; onboarded?: boolean }
   | { kind: "starting"; phase?: string; substatus?: string; onboarded?: boolean }
   | { kind: "parked" }
+  /** Backend-reported container failure (mobile onboarding-parity Slice 1 —
+   * mobile previously had no surface for this and showed `starting` forever;
+   * unifies with web's "Setup failed" card, which keys on the same raw
+   * `status === "error"`). */
+  | { kind: "error" }
   | { kind: "teamPending" }
   | {
       kind: "blocked";
@@ -62,32 +86,75 @@ export type ContainerStatus =
   | { kind: "needsSignup" }
   | { kind: "unreachable"; message: string };
 
-interface BlockedPayload {
-  code?: string;
-  title?: string;
-  message?: string;
-  action?: { label?: string; href?: string; admin_only?: boolean };
-  /** Sibling of `action`, not nested inside it — see `Gate.to_payload` in
-   * core/services/provision_gate.py. */
-  owner_role?: string;
-}
-
-interface StatusBody {
-  status?: string;
-  substatus?: string;
-  phase?: string;
-  /**
-   * Per-container onboarding fact (backend `container.py` `_status_response`:
-   * `container.onboarded_at is not None`). An org shares one container, so
-   * this is the whole org's "first-run funnel done" signal, not per-user —
-   * see FirstRunGate. A current backend always includes this on the 200
-   * body; optional here so an absent field (old backend / malformed
-   * fixture) degrades to `undefined` rather than a false negative.
-   */
-  onboarded?: boolean;
-}
-
 const POLL_INTERVAL_MS = 5_000;
+
+/**
+ * Turns the shared classifier's status-code-level result into this file's
+ * richer `ContainerStatus`. `unreachableMessage` is only used for the
+ * `unrecognized` branch — the caller supplies `err.message` when `classified`
+ * came from a caught `ApiError`, or a generic fallback for the (practically
+ * unreachable — this endpoint only ever answers 200/202 on success)
+ * unrecognized-2xx case.
+ */
+function fromClassified(
+  classified: ClassifiedStatus,
+  unreachableMessage: string,
+): ContainerStatus {
+  switch (classified.kind) {
+    case "team-pending":
+      return { kind: "teamPending" };
+    case "needs-signup":
+      return { kind: "needsSignup" };
+    case "blocked": {
+      const blocked = classified.blocked;
+      return {
+        kind: "blocked",
+        code: blocked.code ?? "blocked",
+        title: blocked.title ?? "Action needed",
+        message: blocked.message ?? null,
+        href: blocked.action?.href ?? null,
+        actionLabel: blocked.action?.label ?? null,
+        adminOnly: Boolean(blocked.action?.admin_only),
+        ownerRole:
+          blocked.owner_role === "admin" || blocked.owner_role === "member"
+            ? blocked.owner_role
+            : undefined,
+      };
+    }
+    case "unrecognized":
+      return { kind: "unreachable", message: unreachableMessage };
+    case "container": {
+      // Defensive against an empty/malformed 200 body — mirrors this file's
+      // pre-Slice-1 behavior. The classifier's `ContainerStatusBody` type
+      // isn't nullable, but that's a type-level claim, not a runtime one.
+      const info = classified.body ?? ({} as ContainerStatusBody);
+      // Checked BEFORE the phase branches below: the backend reports
+      // phase="provisioning" for a failed container too, so an error read
+      // AFTER the phase checks would misrender as a perpetual "starting"
+      // spinner (the exact gap this slice closes — see module docstring).
+      if (info.status === "error") {
+        return { kind: "error" };
+      }
+      // phase absent (older backend / plain running box) → treat as ready.
+      if (info.phase == null || info.phase === "ready") {
+        return { kind: "ready", onboarded: info.onboarded };
+      }
+      if (info.phase === "parked") {
+        // Deliberately-asleep trial box (wake-gated). Distinct from a cold
+        // start: it's healthy, one intent away from running, so it must NOT
+        // render as a perpetual "starting…" spinner. Foregrounding already
+        // fired a wake in parallel (gateway provider), so this is transient.
+        return { kind: "parked" };
+      }
+      return {
+        kind: "starting",
+        phase: info.phase,
+        substatus: info.substatus ?? undefined,
+        onboarded: info.onboarded,
+      };
+    }
+  }
+}
 
 export function useContainerStatus() {
   const { getToken } = useAuth();
@@ -112,48 +179,13 @@ export function useContainerStatus() {
         config,
         `/container/status?wake=${isPresent() ? "1" : "0"}`,
       );
-      if (code === 202) {
-        next = { kind: "teamPending" };
-      } else {
-        const info = (body ?? {}) as StatusBody;
-        // phase absent (older backend / plain running box) → treat as ready.
-        if (info.phase == null || info.phase === "ready") {
-          next = { kind: "ready", onboarded: info.onboarded };
-        } else if (info.phase === "parked") {
-          // Deliberately-asleep trial box (wake-gated). Distinct from a cold
-          // start: it's healthy, one intent away from running, so it must NOT
-          // render as a perpetual "starting…" spinner. Foregrounding already
-          // fired a wake in parallel (gateway provider), so this is transient.
-          next = { kind: "parked" };
-        } else {
-          next = {
-            kind: "starting",
-            phase: info.phase,
-            substatus: info.substatus,
-            onboarded: info.onboarded,
-          };
-        }
-      }
+      next = fromClassified(classifyContainerStatus({ status: code, body }), "Request failed");
     } catch (err) {
-      if (err instanceof ApiError && err.status === 402) {
-        const blocked =
-          ((err.body as { detail?: { blocked?: BlockedPayload } } | null)
-            ?.detail?.blocked ?? {}) as BlockedPayload;
-        next = {
-          kind: "blocked",
-          code: blocked.code ?? "blocked",
-          title: blocked.title ?? "Action needed",
-          message: blocked.message ?? null,
-          href: blocked.action?.href ?? null,
-          actionLabel: blocked.action?.label ?? null,
-          adminOnly: Boolean(blocked.action?.admin_only),
-          ownerRole:
-            blocked.owner_role === "admin" || blocked.owner_role === "member"
-              ? blocked.owner_role
-              : undefined,
-        };
-      } else if (err instanceof ApiError && err.status === 404) {
-        next = { kind: "needsSignup" };
+      if (err instanceof ApiError) {
+        next = fromClassified(
+          classifyContainerStatus({ status: err.status, body: err.body }),
+          err.message,
+        );
       } else {
         next = {
           kind: "unreachable",

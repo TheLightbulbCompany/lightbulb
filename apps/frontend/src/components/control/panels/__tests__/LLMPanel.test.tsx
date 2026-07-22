@@ -70,12 +70,20 @@ vi.mock("../CreditsSection", () => ({
   CreditsSection: () => <div data-testid="credits-section" />,
 }));
 
+// Save failures surface as a sonner toast, not inline text (#895), and no
+// <Toaster /> is mounted in jsdom — so assert on the notify call itself.
+const mockNotifyApiError = vi.fn();
+vi.mock("@/lib/notify", () => ({
+  notifyApiError: (err: unknown, fallback?: string) => mockNotifyApiError(err, fallback),
+}));
+
 
 describe("LLMPanel", () => {
   beforeEach(() => {
     mockSWRData.mockReset();
     mockMutate.mockReset();
     mockApiPut.mockReset();
+    mockNotifyApiError.mockReset();
     mockDisconnect.mockReset();
     mockAuthStatusData.mockReset();
     mockAuthStatusData.mockReturnValue({ ts: 1, providers: [] });
@@ -207,12 +215,15 @@ describe("LLMPanel", () => {
 
   it("surfaces a save error from PUT /settings/keys/{provider}", async () => {
     mockSWRData.mockReturnValue({ provider_choice: "byo_key", byo_provider: "openai" });
-    mockApiPut.mockRejectedValueOnce(new Error("Invalid key"));
+    const failure = new Error("Invalid key");
+    mockApiPut.mockRejectedValueOnce(failure);
     render(<LLMPanel />);
     const input = screen.getByPlaceholderText(/sk-proj-/);
     fireEvent.change(input, { target: { value: "sk-proj-bad" } });
     fireEvent.click(screen.getByRole("button", { name: /save/i }));
-    await waitFor(() => expect(screen.getByText("Invalid key")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(mockNotifyApiError).toHaveBeenCalledWith(failure, "Couldn't save key"),
+    );
   });
 
   it("colors the provider dot green when models.authStatus reports ok", () => {

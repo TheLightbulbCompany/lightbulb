@@ -5,6 +5,28 @@ import { useApi } from "@/lib/api";
 type Provider = "openai" | "anthropic";
 type Props = { onComplete: () => void };
 
+// Onboarding design system — mirrors the stepper branch this step renders
+// inside (cream page, forest CTAs, Lora headings, DM Sans body). Fonts ride
+// the next/font CSS vars via inline styles rather than Tailwind font classes,
+// the same way the stepper's own cards do.
+const SERIF_FONT = { fontFamily: "var(--font-lora-serif), serif" } as const;
+const SANS_FONT = { fontFamily: "var(--font-dm-sans), sans-serif" } as const;
+
+// Segmented pill selector. The real radio stays in the DOM (sr-only) so
+// keyboard + screen-reader behaviour is untouched; the pill is the peer's
+// visual skin. `peer-checked:hover:` re-asserts the selected fill because
+// Tailwind orders the bare `hover:` variant after `checked:`.
+const PROVIDER_PILL =
+  "block cursor-pointer rounded-full border px-4 py-2 text-sm transition-colors " +
+  "border-[#e0dbd0] bg-white text-[#1a1a1a] hover:bg-[#f3efe6] " +
+  "peer-checked:border-[#06402B] peer-checked:bg-[#06402B] peer-checked:text-white " +
+  "peer-checked:hover:bg-[#06402B] " +
+  "peer-focus-visible:ring-2 peer-focus-visible:ring-[rgba(6,64,43,0.25)]";
+
+const PRIMARY_BUTTON =
+  "rounded-full bg-[#06402B] px-6 py-2.5 text-sm font-medium text-white " +
+  "transition-colors hover:bg-[#052e1f] disabled:opacity-50 disabled:hover:bg-[#06402B]";
+
 export function ByoKeyStep({ onComplete }: Props) {
   const api = useApi();
   const [provider, setProvider] = useState<Provider>("openai");
@@ -41,34 +63,39 @@ export function ByoKeyStep({ onComplete }: Props) {
     <form
       onSubmit={submit}
       className="flex flex-col gap-4 py-8 max-w-md mx-auto"
+      style={SANS_FONT}
     >
-      <h3 className="text-xl font-semibold">Bring your own API key</h3>
-      <p className="text-sm text-muted-foreground">
+      <h3 className="text-[22px] font-normal text-[#1a1a1a]" style={SERIF_FONT}>
+        Bring your own API key
+      </h3>
+      <p className="text-sm text-[#8a8578]">
         Use your own OpenAI or Anthropic account. We never see your key
         after you save it &mdash; it&apos;s stored encrypted in AWS Secrets
         Manager and injected into your container at runtime.
       </p>
 
       <fieldset className="flex gap-3">
-        <label className="flex items-center gap-2 cursor-pointer">
+        <label className="relative cursor-pointer">
           <input
             type="radio"
             name="provider"
             value="openai"
             checked={provider === "openai"}
             onChange={() => setProvider("openai")}
+            className="peer sr-only"
           />
-          <span>OpenAI</span>
+          <span className={PROVIDER_PILL}>OpenAI</span>
         </label>
-        <label className="flex items-center gap-2 cursor-pointer">
+        <label className="relative cursor-pointer">
           <input
             type="radio"
             name="provider"
             value="anthropic"
             checked={provider === "anthropic"}
             onChange={() => setProvider("anthropic")}
+            className="peer sr-only"
           />
-          <span>Anthropic</span>
+          <span className={PROVIDER_PILL}>Anthropic</span>
         </label>
       </fieldset>
 
@@ -82,15 +109,16 @@ export function ByoKeyStep({ onComplete }: Props) {
         required
         autoComplete="off"
         spellCheck={false}
-        className="rounded-md border border-input bg-background px-3 py-2 font-mono text-sm"
+        className="rounded-lg border border-[#e0dbd0] bg-white px-3 py-2.5 font-mono text-sm text-[#1a1a1a] placeholder:text-[#b5ae9e] focus:outline-none focus:border-[rgba(6,64,43,0.25)] focus:ring-2 focus:ring-[rgba(6,64,43,0.25)]"
       />
 
-      {error && <p className="text-sm text-destructive">{error}</p>}
+      {error && <p className="text-sm text-[#b32424]">{error}</p>}
 
       <button
         type="submit"
         disabled={submitting || !apiKey}
-        className="rounded-md bg-primary px-4 py-2 text-primary-foreground disabled:opacity-50"
+        className={PRIMARY_BUTTON}
+        style={SANS_FONT}
       >
         {submitting ? "Validating…" : "Save key"}
       </button>

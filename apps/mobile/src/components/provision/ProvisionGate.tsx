@@ -14,8 +14,16 @@
  *     workspace…" affordance + Retry — NOT a thin bar over a broken chat.
  *     `blocked` / `needsSignup` show an OUTBOUND "Manage on isol8.co" link
  *     (Linking.openURL) — the mobile app never reimplements billing / checkout
- *     / OAuth (D1). admin-only gates tell org members to ask their workspace
- *     admin instead of showing a CTA.
+ *     (D1). admin-only gates tell org members to ask their workspace admin
+ *     instead of showing a CTA.
+ *
+ *     Two `blocked` codes are the exception to D1's "never reimplement" for
+ *     provider SIGN-IN specifically (mobile onboarding-parity Slice 4):
+ *     `oauth_required` renders <ChatGPTConnectScreen/> (in-app device-code
+ *     flow) and `byo_provider_required` renders <ByoKeyScreen/> (in-app key
+ *     entry). Every other blocked code — including `provider_required`
+ *     (picking a provider in the first place) and all billing/credits gates —
+ *     keeps the outbound Linking.openURL handoff untouched.
  *
  * `loading` / `ready` / `unreachable` never block — the app renders normally.
  * Polling continues while `teamPending` (see useContainerStatus) so the gate
@@ -41,6 +49,8 @@ import {
   useContainerStatus,
   type ContainerStatus,
 } from "../../lib/containerStatus";
+import { ByoKeyScreen } from "./ByoKeyScreen";
+import { ChatGPTConnectScreen } from "./ChatGPTConnectScreen";
 
 const WEB_ORIGIN = "https://isol8.co";
 const DEFAULT_MANAGE_URL = `${WEB_ORIGIN}/settings`;
@@ -231,6 +241,22 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
         pulseGlyph
       />
     );
+  }
+
+  // In-app provider sign-in (mobile onboarding-parity Slice 4). These two
+  // gate codes fire when the owner already picked a provider (ChatGPT OAuth
+  // or BYO key) but hasn't finished connecting it — a native screen instead
+  // of an outbound link. refetch (not the onRetry wrapper) is passed
+  // directly as onConnected so the gate re-probes as soon as the flow
+  // completes. Every OTHER blocked code — including provider_required
+  // itself (no provider chosen yet) and all billing/credits gates — falls
+  // through to the generic outbound handoff below, untouched.
+  if (status.kind === "blocked" && status.code === "oauth_required") {
+    return <ChatGPTConnectScreen onConnected={refetch} />;
+  }
+
+  if (status.kind === "blocked" && status.code === "byo_provider_required") {
+    return <ByoKeyScreen onConnected={refetch} />;
   }
 
   if (status.kind === "blocked") {

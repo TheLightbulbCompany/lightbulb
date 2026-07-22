@@ -19,6 +19,15 @@ vi.mock('@clerk/nextjs', () => ({
 const mockFetch = vi.fn();
 globalThis.fetch = mockFetch;
 
+// The shared client reads `X-Request-ID` off EVERY response (success included)
+// to feed the request-id ring buffer, so a success mock must expose a real
+// Headers instance — a bare `{ ok, json }` blows up on `headers.get(...)`.
+const okJson = (body: unknown) => ({
+  ok: true,
+  headers: new Headers(),
+  json: () => Promise.resolve(body),
+});
+
 describe('useApi hook', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -27,10 +36,7 @@ describe('useApi hook', () => {
 
   describe('syncUser', () => {
     it('calls POST /users/sync', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve({ status: 'exists', user_id: 'user_test_123' }),
-      });
+      mockFetch.mockResolvedValueOnce(okJson({ status: 'exists', user_id: 'user_test_123' }));
 
       const { result } = renderHook(() => useApi());
       const response = await result.current.syncUser();
@@ -48,10 +54,7 @@ describe('useApi hook', () => {
 
   describe('get', () => {
     it('sends GET request with auth header', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve({ agents: [] }),
-      });
+      mockFetch.mockResolvedValueOnce(okJson({ agents: [] }));
 
       const { result } = renderHook(() => useApi());
       const response = await result.current.get('/agents');
@@ -71,10 +74,7 @@ describe('useApi hook', () => {
 
   describe('post', () => {
     it('sends POST request with body', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve({ status: 'ok' }),
-      });
+      mockFetch.mockResolvedValueOnce(okJson({ status: 'ok' }));
 
       const { result } = renderHook(() => useApi());
       const response = await result.current.post('/users/sync', {});
@@ -85,10 +85,7 @@ describe('useApi hook', () => {
 
   describe('Teams cookie opt-ins (credentials + retry-on-401)', () => {
     it('omits credentials by default (bearer-only callers)', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve({ ok: true }),
-      });
+      mockFetch.mockResolvedValueOnce(okJson({ ok: true }));
 
       const { result } = renderHook(() => useApi());
       await result.current.get('/agents');
@@ -98,10 +95,7 @@ describe('useApi hook', () => {
     });
 
     it('sends credentials: "include" when opted in', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve({ ok: true }),
-      });
+      mockFetch.mockResolvedValueOnce(okJson({ ok: true }));
 
       const { result } = renderHook(() => useApi());
       await result.current.get('/teams/dashboard', { credentials: 'include' });
@@ -121,10 +115,7 @@ describe('useApi hook', () => {
         json: () => Promise.resolve({ detail: 'session refreshed, retry' }),
       });
       // Retry: succeeds with the freshly reseeded cookie.
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve({ data: 'ok' }),
-      });
+      mockFetch.mockResolvedValueOnce(okJson({ data: 'ok' }));
 
       const { result } = renderHook(() => useApi());
       const response = await result.current.get('/teams/dashboard', {

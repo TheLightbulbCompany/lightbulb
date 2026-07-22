@@ -359,7 +359,7 @@ def test_bootstrap_carries_the_first_contact_token_when_minted(client):
     assert resp.status_code == 200
 
     bootstrap_call = client.ws.write_file.call_args_list[1]
-    assert bootstrap_call.args[1] == "workspaces/friday-uuid/BOOTSTRAP.md"
+    assert bootstrap_call.args[1] == "workspace-friday-uuid/BOOTSTRAP.md"
     assert "TOKEN_XYZ" in bootstrap_call.args[2]
     assert "scripts/isol8-mail.sh" in bootstrap_call.args[2]
 
@@ -377,7 +377,7 @@ def test_bootstrap_omits_email_step_when_no_token_minted(client):
     assert resp.status_code == 200
 
     bootstrap_call = client.ws.write_file.call_args_list[1]
-    assert bootstrap_call.args[1] == "workspaces/friday-uuid/BOOTSTRAP.md"
+    assert bootstrap_call.args[1] == "workspace-friday-uuid/BOOTSTRAP.md"
     assert "scripts/isol8-mail.sh" not in bootstrap_call.args[2]
 
 

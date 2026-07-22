@@ -172,27 +172,44 @@ async def ensure_user_ready(auth: AuthContext, *, provision_container: bool = Tr
                 owner_id,
             )
 
-    if auth.is_org_context:
-        # JOIN is role-blind — a co-admin (or member) of an
-        # already-provisioned org joins the org's ONE shared company, never
-        # creates a second one. CREATE is gated to admins: bootstrapping the
-        # org's shared company mirrors who bootstraps the shared container
-        # (admins; members ride). A member polling a not-yet-bootstrapped
-        # org waits for an admin — avoids a company seeded with Friday/Atlas
-        # whose adapters point at a container no member can provision yet.
-        await _ensure_paperclip_for_org(
-            org_id=auth.org_id,
-            user_id=auth.user_id,
-            email=auth.email or "",
-            is_admin=auth.is_org_admin,
-        )
-    else:
-        # Personal owner: always the sole owner of their own company.
-        await _ensure_paperclip_for_owner(
-            owner_id=owner_id,
-            owner_user_id=auth.user_id,
-            owner_email=auth.email or "",
-            org_id=None,
+    # Paperclip (Teams) seed is a SEPARATE concern from the container (ECS)
+    # dispatch below. A seed failure must NOT abort provisioning: the box
+    # still boots and serves chat because ecs_manager falls back to the legacy
+    # `main` agent when no Paperclip company exists. The failure is recorded on
+    # the paperclip-companies row (by _mark_failed) and surfaced via
+    # /container/status; here we only guarantee it never wedges the container.
+    # Best-effort — mirrors the ensure_metronome_customer guard above; the next
+    # /container/status poll retries the seed. Do NOT narrow the except: a seed
+    # can fail with PaperclipApiError (non-409) OR any transient error, and all
+    # of them must fall through to the dispatch rather than escape the poll.
+    try:
+        if auth.is_org_context:
+            # JOIN is role-blind — a co-admin (or member) of an
+            # already-provisioned org joins the org's ONE shared company, never
+            # creates a second one. CREATE is gated to admins: bootstrapping the
+            # org's shared company mirrors who bootstraps the shared container
+            # (admins; members ride). A member polling a not-yet-bootstrapped
+            # org waits for an admin — avoids a company seeded with Friday/Atlas
+            # whose adapters point at a container no member can provision yet.
+            await _ensure_paperclip_for_org(
+                org_id=auth.org_id,
+                user_id=auth.user_id,
+                email=auth.email or "",
+                is_admin=auth.is_org_admin,
+            )
+        else:
+            # Personal owner: always the sole owner of their own company.
+            await _ensure_paperclip_for_owner(
+                owner_id=owner_id,
+                owner_user_id=auth.user_id,
+                owner_email=auth.email or "",
+                org_id=None,
+            )
+    except Exception:
+        put_metric("paperclip.seed.error")
+        logger.exception(
+            "Paperclip seed failed for owner %s — provisioning continues; Teams degraded",
+            owner_id,
         )
 
     # Container (ECS) provisioning is a SEPARATE concern from the Paperclip

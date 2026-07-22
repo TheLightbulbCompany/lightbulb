@@ -1,0 +1,108 @@
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+import * as WebBrowser from "expo-web-browser";
+
+const mockGet = jest.fn();
+const mockPost = jest.fn();
+
+jest.mock("@clerk/clerk-expo", () => ({
+  useAuth: () => ({ getToken: jest.fn(async () => "tok") }),
+}));
+
+// Real useChatGPTOAuth (jest.requireActual) — only the API client factory is
+// stubbed, so this test exercises the actual shared hook logic, same as
+// FirstRunGate.test.tsx's established pattern.
+jest.mock("@isol8/shared", () => ({
+  ...jest.requireActual("@isol8/shared"),
+  createApiClient: () => ({ get: mockGet, post: mockPost }),
+}));
+
+jest.mock("expo-web-browser", () => ({
+  openBrowserAsync: jest.fn(async () => ({ type: "dismiss" })),
+}));
+
+jest.mock("react-native-safe-area-context", () => ({
+  useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+}));
+
+import { ChatGPTConnectScreen } from "../ChatGPTConnectScreen";
+
+describe("ChatGPTConnectScreen", () => {
+  beforeEach(() => {
+    mockGet.mockReset();
+    mockPost.mockReset();
+    (WebBrowser.openBrowserAsync as jest.Mock).mockClear();
+  });
+
+  it("shows the device code and opens the verification URL on press", async () => {
+    mockGet.mockResolvedValue({ connected: false });
+    mockPost.mockImplementation(async (endpoint: string) => {
+      if (endpoint === "/oauth/chatgpt/start") {
+        return {
+          user_code: "ABCD-1234",
+          verification_uri: "https://chatgpt.com/auth/device",
+          expires_in: 900,
+          interval: 5,
+        };
+      }
+      // Poll never completes in this test — keeps state stably "pending".
+      return { status: "pending" };
+    });
+
+    await act(async () => {
+      render(<ChatGPTConnectScreen onConnected={jest.fn()} />);
+    });
+
+    await waitFor(() => expect(screen.getByText("ABCD-1234")).toBeTruthy());
+
+    fireEvent.press(screen.getByText("Open sign-in page"));
+    expect(WebBrowser.openBrowserAsync).toHaveBeenCalledWith(
+      "https://chatgpt.com/auth/device",
+    );
+  });
+
+  it("calls onConnected once the poll reports completion", async () => {
+    mockGet.mockResolvedValue({ connected: false });
+    mockPost
+      .mockResolvedValueOnce({
+        user_code: "ABCD-1234",
+        verification_uri: "https://chatgpt.com/auth/device",
+        expires_in: 900,
+        interval: 0.05,
+      })
+      .mockResolvedValueOnce({ status: "pending" })
+      .mockResolvedValueOnce({ status: "completed", account_id: "acct_1" });
+    const onConnected = jest.fn();
+
+    await act(async () => {
+      render(<ChatGPTConnectScreen onConnected={onConnected} />);
+    });
+
+    await waitFor(() => expect(onConnected).toHaveBeenCalled());
+  });
+
+  it("renders an error with a retry button that re-fires start()", async () => {
+    mockGet.mockResolvedValue({ connected: false });
+    mockPost.mockRejectedValue(new Error("OpenAI device-code failed"));
+
+    await act(async () => {
+      render(<ChatGPTConnectScreen onConnected={jest.fn()} />);
+    });
+
+    await waitFor(() =>
+      expect(screen.getByText(/Connection failed/)).toBeTruthy(),
+    );
+
+    mockPost.mockReset();
+    mockPost.mockResolvedValueOnce({
+      user_code: "RETRY-999",
+      verification_uri: "https://chatgpt.com/auth/device",
+      expires_in: 900,
+      interval: 5,
+    });
+    await act(async () => {
+      fireEvent.press(screen.getByText("Try again"));
+    });
+
+    await waitFor(() => expect(screen.getByText("RETRY-999")).toBeTruthy());
+  });
+});

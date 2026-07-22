@@ -179,9 +179,9 @@ def test_reuses_existing_device_key_on_update():
 
 
 def test_claimed_api_key_path_is_per_agent_plural_workspace():
-    # PLURAL workspaces/{agentId}/ — the agent's own cwd; the singular
+    # per-agent workspace-{agentId}/ — the agent's own cwd; the singular
     # ~/.openclaw/workspace is container-global and collides across agents.
-    assert claimed_api_key_path("agent-123") == "~/.openclaw/workspaces/agent-123/paperclip-claimed-api-key.json"
+    assert claimed_api_key_path("agent-123") == "~/.openclaw/workspace-agent-123/paperclip-claimed-api-key.json"
     # Distinct per agent.
     assert claimed_api_key_path("a") != claimed_api_key_path("b")
 
@@ -204,4 +204,4 @@ def test_synthesize_sets_per_agent_claimed_path_when_agent_id_given():
         user_id="u",
         agent_id="agent-xyz",
     )
-    assert cfg["claimedApiKeyPath"] == "~/.openclaw/workspaces/agent-xyz/paperclip-claimed-api-key.json"
+    assert cfg["claimedApiKeyPath"] == "~/.openclaw/workspace-agent-xyz/paperclip-claimed-api-key.json"

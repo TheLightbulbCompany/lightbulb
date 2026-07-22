@@ -5,7 +5,7 @@ Atlas (the seeded recruiter, running inside the owner's OpenClaw container) buil
 a new specialist agent's files into a *staging* workspace dir on EFS, then POSTs
 here. The backend snapshots that dir (``agent_export``), mints a Paperclip agent
 (``create_paperclip_for_marketplace``), and deploys the snapshot into the owner's
-container (``deploy_from_artifact`` — extracts files into ``workspaces/{uuid}/`` and
+container (``deploy_from_artifact`` — extracts files into ``workspace-{uuid}/`` and
 registers the agent live in ``openclaw.json`` + the Paperclip roster). The new agent
 then shows up in the owner's roster and the seller publish wizard, where the **owner**
 publishes it — Atlas never publishes directly.
@@ -43,7 +43,7 @@ router = APIRouter()
 class RegisterBuiltAgentRequest(BaseModel):
     """Body for ``POST /agent-builder/u/{owner_id}/register-built-agent``."""
 
-    # The workspace dir name (``workspaces/{staging_agent_id}/``) Atlas built the
+    # The workspace dir name (``workspace-{staging_agent_id}/``) Atlas built the
     # new agent's files into. The backend snapshots this dir. min_length=3 to
     # match the path-validation regex (_AGENT_ID_RE) inside _resolve_agent_dir,
     # so a short-but-valid id reaches that gate instead of a confusing 422.

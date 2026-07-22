@@ -373,6 +373,6 @@ def stage_first_run_files(
     state to overwrite, not a reason to stop. Stopping there would strand the
     goal and project the caller seeded moments earlier.
     """
-    base = f"workspaces/{friday_agent_id}"
+    base = f"workspace-{friday_agent_id}"
     workspace.write_file(owner_id, f"{base}/BRIEF.md", brief_md)
     workspace.write_file(owner_id, f"{base}/BOOTSTRAP.md", bootstrap_md)

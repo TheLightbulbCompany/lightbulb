@@ -146,18 +146,19 @@ describe("ContainerStack — dev", () => {
     });
   });
 
-  test("openclaw container runs bounded, non-blocking, promptless doctor legacy-state migration before the gateway", () => {
+  test("openclaw container runs bounded, promptless, non-blocking doctor legacy-state migration before the gateway", () => {
     // Load-bearing: 2026.7.x fail-closes agent runs on un-migrated legacy
-    // per-workspace state, so this boot step is what unbricks agents on a base
-    // roll. Assert it survives future startup-command refactors, and that its
-    // four safety properties stay intact — bounded (`timeout --kill-after`),
-    // promptless (`--yes --non-interactive`: doctor prompts HANG on a closed
-    // stdin instead of taking their default, and `--non-interactive` is also
-    // what auto-applies the legacy-state migration), headless-safe
-    // (`< /dev/null`), non-blocking (`|| echo`, never `&& exec`) —
-    // AND that it runs BEFORE `exec node ... gateway` so no gateway holds the
-    // SQLite lock during the migration. The trailing `.*exec node ... gateway$`
-    // anchors ordering: doctor must appear earlier in the single joined command.
+    // setup state — including the workspace-state.json marker our own
+    // seeders stage — so this boot step is what lets freshly seeded agents
+    // run. Safety properties pinned: bounded (`timeout --kill-after`),
+    // promptless (`--yes --non-interactive`: doctor prompts HANG on closed
+    // stdin, and `--non-interactive` also auto-applies the migration),
+    // headless-safe (`< /dev/null`), non-blocking (`|| echo`), and ordered
+    // BEFORE `exec ... gateway` (no gateway holds the SQLite lock during
+    // the migration). Doctor is safe on this boot path ONLY because agent
+    // workspaces now live at workspace-<id> — the companion test below
+    // pins that the command never references the doomed
+    // .openclaw/workspaces path.
     template.hasResourceProperties("AWS::ECS::TaskDefinition", {
       Family: "isol8-dev-openclaw",
       ContainerDefinitions: Match.arrayWith([
@@ -176,6 +177,26 @@ describe("ContainerStack — dev", () => {
         }),
       ]),
     });
+  });
+
+  test("openclaw container startup never references the retired workspaces/ layout", () => {
+    // Agent workspaces live at upstream's per-agent convention
+    // (~/.openclaw/workspace-<agentId>). The old ~/.openclaw/workspaces/
+    // layout is retired — upstream doctor deletes that exact dir as
+    // removed-plugin state, so no boot step may create, move, or reference
+    // it (there is deliberately no migration: pre-incident data there was
+    // wiped or belongs to accounts that get reprovisioned).
+    const tj = template.toJSON();
+    let checked = 0;
+    for (const r of Object.values(tj.Resources as Record<string, any>)) {
+      if (r.Type !== "AWS::ECS::TaskDefinition") continue;
+      for (const cd of r.Properties.ContainerDefinitions ?? []) {
+        const cmd = (cd.Command ?? []).join(" ");
+        expect(cmd).not.toContain(".openclaw/workspaces");
+        checked += 1;
+      }
+    }
+    expect(checked).toBeGreaterThan(0);
   });
 
   test("openclaw container sets XDG_CONFIG_HOME + XDG_DATA_HOME + GOG_KEYRING_BACKEND for the gog file keyring", () => {

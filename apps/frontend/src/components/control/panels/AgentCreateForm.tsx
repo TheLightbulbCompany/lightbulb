@@ -49,9 +49,9 @@ export function AgentCreateForm({ existingNames, onCreated, onCancel }: AgentCre
           // it does NOT inherit agents.defaults.workspace at create time
           // (only at runtime via resolveAgentWorkspaceDir). Pass the same
           // path the default would resolve to, so the agent lands at
-          // .openclaw/workspaces/{id}/ on EFS — matching main's explicit
-          // workspaces/main override.
-          workspace: ".openclaw/workspaces/" + normalizedId,
+          // .openclaw/workspace-{id}/ on EFS — matching main's explicit
+          // workspace-main override.
+          workspace: ".openclaw/workspace-" + normalizedId,
           reasoningDefault: "stream",
           params: { paperclip: paperclipBlock },
         },

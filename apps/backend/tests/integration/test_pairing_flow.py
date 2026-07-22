@@ -44,7 +44,7 @@ async def test_provision_writes_paperclip_agents_into_config():
         agents = cfg["agents"]["list"]
         assert agents[0]["id"] == pc_uuid
         assert agents[0]["default"] is True
-        assert agents[0]["workspace"] == f"/home/node/.openclaw/workspaces/{pc_uuid}"
+        assert agents[0]["workspace"] == f"/home/node/.openclaw/workspace-{pc_uuid}"
         # Sanity: the literal "main" agent is gone.
         assert all(a["id"] != "main" for a in agents)
 
@@ -98,7 +98,7 @@ async def test_provision_then_chat_create_yields_single_uuid_per_agent():
 @pytest.mark.asyncio
 async def test_friday_identity_files_seeded_at_workspace_path(monkeypatch, tmp_path):
     """End-to-end: pre_stage_friday_identity drops IDENTITY/SOUL/USER/BOOTSTRAP
-    at /{owner_id}/workspaces/<friday_uuid>/ on EFS with the right content."""
+    at /{owner_id}/workspace-<friday_uuid>/ on EFS with the right content."""
     from core.config import settings
     from core.containers.workspace import Workspace
     from core.services import friday_identity
@@ -129,7 +129,7 @@ async def test_friday_identity_files_seeded_at_workspace_path(monkeypatch, tmp_p
         workspace=workspace,
     )
 
-    base = tmp_path / owner_id / "workspaces" / friday_uuid
+    base = tmp_path / owner_id / f"workspace-{friday_uuid}"
     assert (base / "IDENTITY.md").exists()
     assert (base / "SOUL.md").exists()
     assert (base / "USER.md").exists()
@@ -181,7 +181,7 @@ async def test_friday_identity_skipped_on_reprovision(monkeypatch, tmp_path):
     )
 
     # User edits SOUL.md to add personal flair (simulates Friday's evolution).
-    soul_path = tmp_path / owner_id / "workspaces" / friday_uuid / "SOUL.md"
+    soul_path = tmp_path / owner_id / f"workspace-{friday_uuid}" / "SOUL.md"
     soul_path.write_text("CUSTOM SOUL — user edited this")
 
     # Second provision (reprovision).

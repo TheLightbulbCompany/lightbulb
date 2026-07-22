@@ -58,7 +58,7 @@ class TestOpenclawConfigShape:
 
     def test_agents_defaults_workspace_routes_to_efs(self):
         config = _cfg()
-        assert config["agents"]["defaults"]["workspace"] == "/home/node/.openclaw/workspaces"
+        assert config["agents"]["defaults"]["workspace"] == "/home/node/.openclaw/workspace"
 
     def test_meta_shim_uses_real_upstream_version(self):
         """`meta.lastTouchedVersion` must be the real openclaw version
@@ -101,7 +101,7 @@ class TestOpenclawConfigShape:
         process cwd. Relative breaks because exec tools run with cwd=workspaceDir."""
         config = _cfg()
         main_entry = next(a for a in config["agents"]["list"] if a.get("id") == "main")
-        assert main_entry["workspace"] == "/home/node/.openclaw/workspaces/main"
+        assert main_entry["workspace"] == "/home/node/.openclaw/workspace-main"
         assert main_entry["default"] is True
         assert main_entry["reasoningDefault"] == "stream"
 

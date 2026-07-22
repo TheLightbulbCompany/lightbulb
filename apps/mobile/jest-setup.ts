@@ -23,3 +23,21 @@ jest.mock(
 );
 
 jest.mock("expo-device", () => ({ isDevice: true }), { virtual: true });
+
+// Attachment pickers: real deps, mocked for determinism (no native module).
+// Default to a canceled pick; suites drive the jest.fn per-test.
+jest.mock(
+  "expo-image-picker",
+  () => ({
+    launchImageLibraryAsync: jest.fn(async () => ({ canceled: true, assets: null })),
+  }),
+  { virtual: true },
+);
+
+jest.mock(
+  "expo-document-picker",
+  () => ({
+    getDocumentAsync: jest.fn(async () => ({ canceled: true, assets: null })),
+  }),
+  { virtual: true },
+);

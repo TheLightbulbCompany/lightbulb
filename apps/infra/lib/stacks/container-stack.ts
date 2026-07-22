@@ -565,44 +565,34 @@ export class ContainerStack extends cdk.Stack {
       "mkdir -p /home/node/.openclaw/mcporter || exit 1",
       "[ -e /home/node/.mcporter ] && [ ! -L /home/node/.mcporter ] && { mv /home/node/.mcporter /home/node/.mcporter.efs-archive-$(date +%s) || exit 1; }",
       "ln -sfn /home/node/.openclaw/mcporter /home/node/.mcporter || exit 1",
-      // Step C3 — one-time legacy-state migration, BEFORE the gateway starts.
-      // 2026.7.x fail-closes agent runs on un-migrated legacy per-workspace
-      // setup state (assertNoUnmigratedWorkspaceState throws "Legacy workspace
-      // setup state requires migration ...; run openclaw doctor --fix"). The
-      // gateway's own boot migrates the SHARED state DB but NOT the per-workspace
-      // setup state, so on the first boot after an upgrade every agent errors
-      // until doctor runs. Run it HERE, before `exec ... gateway`, so no gateway
-      // holds the SQLite maintenance lock: the migration applies with zero
-      // two-writer EFS contention. (Running doctor against a live gateway can
-      // abort mid config-audit-scrub and take that lock; upstream explicitly says
-      // "stop the gateway or wait until it is idle".)
+      // Step C3 — boot-time legacy-state migration, BEFORE the gateway
+      // starts. 2026.7.x fail-closes agent runs on un-migrated legacy
+      // per-workspace setup state — including the ``.openclaw/
+      // workspace-state.json`` setup marker our own seeders stage — so
+      // doctor must import it at boot or every freshly seeded agent is born
+      // gated. `--fix` applies recommended repairs; `--yes
+      // --non-interactive` are LOAD-BEARING: doctor's confirm prompts HANG
+      // on a closed stdin (observed killing a prod boot at the 300s
+      // timeout before the migration ever ran), and `--non-interactive` is
+      // also what auto-applies the legacy-state migration. `< /dev/null` is
+      // the last line of defense for any unguarded prompt; `timeout
+      // --kill-after` bounds a wedged run inside the health-check budget
+      // (startPeriod 300); `|| echo` keeps a doctor failure from bricking
+      // the container (gateway still starts; the runtime gate surfaces
+      // unmigrated state visibly).
       //
-      // `--fix` applies recommended repairs and backs up before modifying
-      // (non-destructive) — but it does NOT suppress confirm prompts, and a
-      // prompt on a closed stdin HANGS rather than taking its default (observed
-      // on a prod boot: doctor sat at a post-"Command owner" confirm for the
-      // full 300s and was timeout-killed BEFORE ever reaching the legacy-state
-      // migration). `--non-interactive` is the flag that both bypasses every
-      // prompt AND auto-applies the detected legacy-state migration (upstream
-      // treats nonInteractive as consent for safe migrations); `--yes` accepts
-      // defaults on any remaining prompt path. `< /dev/null` stays as a last
-      // line of defense so an unguarded prompt reads EOF instead of a TTY.
-      // `timeout` bounds a wedged migration (EFS/SQLite can stall) so it can never
-      // infinite-loop the boot; `--kill-after=30` escalates SIGTERM -> SIGKILL 30s
-      // later so a migration that ignores/misses the term (or is between syscalls)
-      // is still reaped, rather than outliving the window (a truly D-state process
-      // blocked in an NFS syscall stays immune to any signal until the kernel call
-      // returns — same failure class this file's `_npx` extract notes above call
-      // out — but SIGKILL covers everything short of that). `|| echo` keeps a
-      // doctor failure from bricking the container: the gateway still starts and
-      // the run-time gate surfaces the unmigrated state visibly rather than the
-      // box crash-looping. Idempotent — once migrated it is a fast no-op, so it
-      // stays cheap on every later boot (and doubles as an on-boot config
-      // self-repair). The 300s bound keeps doctor within the health-check budget
-      // (startPeriod 300 + retries*interval below), so `timeout` — not an ECS
-      // mid-run health replacement — is what caps a slow pass; the gateway then
-      // still binds and reports healthy inside the window. A migration heavier
-      // than 300s is cleanly cut and resumes on a later boot (persisted, idempotent).
+      // SAFETY — why doctor is allowed back on this boot path (2026-07-21
+      // incident follow-up): upstream doctor's removed-workspaces-state
+      // repair recursively DELETES `<stateDir>/workspaces` as retired
+      // Workspaces-PLUGIN state. Agent workspaces now live at upstream's
+      // own per-agent convention (~/.openclaw/workspace-<agentId>/ —
+      // agent-scope-config.ts resolveAgentWorkspaceDir), so that target
+      // either doesn't exist (fresh provisions) or holds only post-incident
+      // junk that we WANT cleaned. Nothing legitimate may ever be placed at
+      // ~/.openclaw/workspaces again (regression-tested in
+      // container-stack.test.ts). The only containers where doctor remains
+      // destructive are pre-migration old-layout ones — those stay frozen
+      // until reprovisioned and must never be rolled onto this task def.
       "timeout --kill-after=30 300 node /app/openclaw.mjs doctor --fix --yes --non-interactive < /dev/null || echo '[boot] openclaw doctor --fix did not finish cleanly; continuing to gateway'",
       // Step D — launch the gateway.
       "exec node /app/openclaw.mjs gateway --port 18789 --bind lan",

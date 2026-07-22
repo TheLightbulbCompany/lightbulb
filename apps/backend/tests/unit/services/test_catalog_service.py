@@ -181,7 +181,7 @@ async def test_deploy_file_merges_full_agent_entry_into_agents_list():
     # and the full per-agent config preserved.
     entry = kw["agent_entry"]
     assert entry["id"] == "agent_new"
-    assert entry["workspace"] == ".openclaw/workspaces/agent_new"
+    assert entry["workspace"] == ".openclaw/workspace-agent_new"
     assert entry["skills"] == ["search"]
     assert entry["reasoningDefault"] == "high"
     assert entry["identity"] == {"name": "Demo", "emoji": "🍃"}
@@ -458,7 +458,7 @@ async def test_deploy_uses_supplied_new_agent_id_in_sentinel_substitution():
         "servers": {
             "resy": {
                 "command": "node",
-                "args": ["/home/node/.openclaw/workspaces/__AGENT_DIR__/mcp-resy/index.js"],
+                "args": ["/home/node/.openclaw/workspace-__AGENT_DIR__/mcp-resy/index.js"],
                 "env": {"RESY_EMAIL": ""},
             }
         }
@@ -480,6 +480,46 @@ async def test_deploy_uses_supplied_new_agent_id_in_sentinel_substitution():
     args = mcp_patch["servers"]["resy"]["args"]
     assert "__AGENT_DIR__" not in args[0]
     assert "agent_xyz" in args[0]
+
+
+@pytest.mark.asyncio
+async def test_deploy_normalizes_legacy_workspaces_sentinel_form():
+    """Artifacts published before the workspace-layout migration carry
+    ``workspaces/__AGENT_DIR__`` paths in their slices. Deploy must
+    normalize that OLD spelling to ``workspace-<buyer_agent_id>`` — same
+    result as a new-form artifact — so every published listing keeps
+    deploying after the layout change.
+    """
+    svc, _ws, apply_aux, _pair, _gw = _make_service()
+    slice_ = _slice_with_agent()
+    slice_["mcp"] = {
+        "servers": {
+            "resy": {
+                "command": "node",
+                "args": ["/home/node/.openclaw/workspaces/__AGENT_DIR__/mcp-resy/index.js"],
+                "env": {"RESY_EMAIL": ""},
+            }
+        }
+    }
+
+    await svc.deploy_from_artifact(
+        owner_id="user_buyer",
+        slug="demo",
+        manifest={"name": "Demo", "version": 1},
+        slice_=slice_,
+        tar_bytes=b"<gz>",
+        container_ip="10.0.0.1",
+        container_token="tok",
+        new_agent_id="agent_xyz",
+    )
+
+    apply_aux.assert_awaited_once()
+    mcp_patch = apply_aux.await_args.kwargs.get("mcp_patch")
+    args = mcp_patch["servers"]["resy"]["args"]
+    assert "__AGENT_DIR__" not in args[0]
+    assert "workspaces/" not in args[0], args[0]
+    assert "workspace-agent_xyz" in args[0], args[0]
+    assert args[0].endswith("/mcp-resy/index.js"), args[0]
 
 
 @pytest.mark.asyncio
@@ -574,7 +614,7 @@ async def test_deploy_uses_owner_id_for_all_efs_writes():
 
 
 def test_list_deployed_for_user_keyed_by_owner_id():
-    """Sidebar's already-deployed filter scans ``workspaces/`` sidecars by
+    """Sidebar's already-deployed filter scans ``workspace-{id}`` sidecars by
     owner_id (org_id for orgs, user_id for personal-mode). Each sidecar
     becomes ``{agent_id, template_slug, template_version}``.
     """

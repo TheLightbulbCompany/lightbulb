@@ -150,7 +150,7 @@ class TestListDirectory:
         problem, revisit.
         """
         ws = _make_workspace(tmp_path)
-        root = tmp_path / USER_ID / "workspaces" / "main"
+        root = tmp_path / USER_ID / "workspace-main"
         root.mkdir(parents=True)
         (root / "SOUL.md").write_text("soul", encoding="utf-8")
         (root / "memory").mkdir()
@@ -159,7 +159,7 @@ class TestListDirectory:
         (root / "canvas").mkdir()
         (root / "identity").mkdir()
 
-        entries = ws.list_directory(USER_ID, "workspaces/main")
+        entries = ws.list_directory(USER_ID, "workspace-main")
         names = {e["name"] for e in entries}
         assert "SOUL.md" in names
         assert "memory" in names
@@ -379,7 +379,7 @@ class TestConfigFilesEndpoint:
     def test_returns_only_allowlisted_files(self, tmp_path):
         """Only allowlisted files that exist on disk are returned."""
         ws = _make_workspace(tmp_path)
-        agent_dir = tmp_path / USER_ID / "workspaces" / AGENT_ID
+        agent_dir = tmp_path / USER_ID / f"workspace-{AGENT_ID}"
         agent_dir.mkdir(parents=True)
         (agent_dir / "SOUL.md").write_text("I am helpful", encoding="utf-8")
         (agent_dir / "MEMORY.md").write_text("Remember this", encoding="utf-8")
@@ -405,7 +405,7 @@ class TestConfigFilesEndpoint:
     def test_file_entries_have_required_fields(self, tmp_path):
         """Each entry has name, path, type, size, modified_at."""
         ws = _make_workspace(tmp_path)
-        agent_dir = tmp_path / USER_ID / "workspaces" / AGENT_ID
+        agent_dir = tmp_path / USER_ID / f"workspace-{AGENT_ID}"
         agent_dir.mkdir(parents=True)
         (agent_dir / "SOUL.md").write_text("# Soul", encoding="utf-8")
         from routers.workspace_files import _list_config_files
@@ -420,15 +420,15 @@ class TestConfigFilesEndpoint:
         assert isinstance(entry["modified_at"], float)
 
     def test_reads_from_workspaces_dir_not_agents_dir(self, tmp_path):
-        """Config files are expected under workspaces/{agent_id}/, not agents/{agent_id}/.
+        """Config files are expected under workspace-{agent_id}/, not agents/{agent_id}/.
 
         With the workspace-normalization change, every agent (main and custom)
-        stores its SOUL.md and siblings under workspaces/{agent_id}/. The old
+        stores its SOUL.md and siblings under workspace-{agent_id}/. The old
         agents/{agent_id}/ dir now only holds OpenClaw runtime metadata.
         """
         ws = _make_workspace(tmp_path)
         # Put SOUL.md ONLY in the new location
-        new_dir = tmp_path / USER_ID / "workspaces" / AGENT_ID
+        new_dir = tmp_path / USER_ID / f"workspace-{AGENT_ID}"
         new_dir.mkdir(parents=True)
         (new_dir / "SOUL.md").write_text("new layout", encoding="utf-8")
 
@@ -452,10 +452,10 @@ class TestConfigFileReadEndpoint:
     def test_reads_allowlisted_file(self, tmp_path):
         """Can read an allowlisted config file."""
         ws = _make_workspace(tmp_path)
-        agent_dir = tmp_path / USER_ID / "workspaces" / AGENT_ID
+        agent_dir = tmp_path / USER_ID / f"workspace-{AGENT_ID}"
         agent_dir.mkdir(parents=True)
         (agent_dir / "SOUL.md").write_text("I am helpful", encoding="utf-8")
-        info = ws.read_file_info(USER_ID, f"workspaces/{AGENT_ID}/SOUL.md")
+        info = ws.read_file_info(USER_ID, f"workspace-{AGENT_ID}/SOUL.md")
         assert info["content"] == "I am helpful"
         assert info["binary"] is False
 
@@ -518,7 +518,7 @@ class TestWriteFileEndpoint:
         ws = _make_workspace(tmp_path)
         user_root = tmp_path / USER_ID
         user_root.mkdir(parents=True)
-        ws_dir = user_root / "workspaces" / AGENT_ID
+        ws_dir = user_root / f"workspace-{AGENT_ID}"
         ws_dir.mkdir(parents=True)
 
         from routers.workspace_files import _write_file
@@ -529,7 +529,7 @@ class TestWriteFileEndpoint:
     def test_write_config_file_allowlisted(self, tmp_path):
         """Writing an allowlisted config file succeeds."""
         ws = _make_workspace(tmp_path)
-        agent_dir = tmp_path / USER_ID / "workspaces" / AGENT_ID
+        agent_dir = tmp_path / USER_ID / f"workspace-{AGENT_ID}"
         agent_dir.mkdir(parents=True)
 
         from routers.workspace_files import _write_file
@@ -540,7 +540,7 @@ class TestWriteFileEndpoint:
     def test_write_config_file_not_allowlisted_raises(self, tmp_path):
         """Writing a non-allowlisted config file raises ValueError."""
         ws = _make_workspace(tmp_path)
-        (tmp_path / USER_ID / "workspaces" / AGENT_ID).mkdir(parents=True)
+        (tmp_path / USER_ID / f"workspace-{AGENT_ID}").mkdir(parents=True)
 
         from routers.workspace_files import _write_file
 
@@ -548,15 +548,15 @@ class TestWriteFileEndpoint:
             _write_file(ws, USER_ID, AGENT_ID, "secret.json", "{}", "config")
 
     def test_config_tab_writes_under_workspaces_subtree(self, tmp_path):
-        """tab='config' writes into workspaces/{id}/, not agents/{id}/."""
+        """tab='config' writes into workspace-{id}/, not agents/{id}/."""
         ws = _make_workspace(tmp_path)
-        ws_dir = tmp_path / USER_ID / "workspaces" / AGENT_ID
+        ws_dir = tmp_path / USER_ID / f"workspace-{AGENT_ID}"
         ws_dir.mkdir(parents=True)
 
         from routers.workspace_files import _write_file
 
         written = _write_file(ws, USER_ID, AGENT_ID, "SOUL.md", "hello", "config")
-        assert written == f"workspaces/{AGENT_ID}/SOUL.md"
+        assert written == f"workspace-{AGENT_ID}/SOUL.md"
         assert (ws_dir / "SOUL.md").read_text() == "hello"
         # And confirm nothing was written into the old agents/{id}/ path
         assert not (tmp_path / USER_ID / "agents" / AGENT_ID / "SOUL.md").exists()
@@ -581,12 +581,12 @@ class TestWriteFileEndpoint:
     def test_write_creates_parent_dirs(self, tmp_path):
         """Writing to a nested path creates intermediate directories."""
         ws = _make_workspace(tmp_path)
-        (tmp_path / USER_ID / "workspaces" / AGENT_ID).mkdir(parents=True)
+        (tmp_path / USER_ID / f"workspace-{AGENT_ID}").mkdir(parents=True)
 
         from routers.workspace_files import _write_file
 
         _write_file(ws, USER_ID, AGENT_ID, "deep/nested/file.txt", "hello", "workspace")
-        assert (tmp_path / USER_ID / "workspaces" / AGENT_ID / "deep" / "nested" / "file.txt").read_text() == "hello"
+        assert (tmp_path / USER_ID / f"workspace-{AGENT_ID}" / "deep" / "nested" / "file.txt").read_text() == "hello"
 
     @pytest.mark.asyncio
     async def test_endpoint_rejects_traversal_in_agent_id(self, workspace, monkeypatch):
@@ -630,7 +630,7 @@ class TestWriteFileEndpoint:
     def test_write_rejects_traversal_in_path(self, tmp_path):
         """`..` in path raises ValueError (regression for allowlist bypass)."""
         ws = _make_workspace(tmp_path)
-        (tmp_path / USER_ID / "workspaces" / AGENT_ID).mkdir(parents=True)
+        (tmp_path / USER_ID / f"workspace-{AGENT_ID}").mkdir(parents=True)
 
         from routers.workspace_files import _write_file
 
@@ -647,7 +647,7 @@ class TestWriteFileEndpoint:
     def test_write_rejects_absolute_path(self, tmp_path):
         """Absolute paths are rejected."""
         ws = _make_workspace(tmp_path)
-        (tmp_path / USER_ID / "workspaces" / AGENT_ID).mkdir(parents=True)
+        (tmp_path / USER_ID / f"workspace-{AGENT_ID}").mkdir(parents=True)
 
         from routers.workspace_files import _write_file
 
@@ -657,7 +657,7 @@ class TestWriteFileEndpoint:
     def test_write_rejects_empty_path(self, tmp_path):
         """Empty path is rejected."""
         ws = _make_workspace(tmp_path)
-        (tmp_path / USER_ID / "workspaces" / AGENT_ID).mkdir(parents=True)
+        (tmp_path / USER_ID / f"workspace-{AGENT_ID}").mkdir(parents=True)
 
         from routers.workspace_files import _write_file
 
@@ -667,7 +667,7 @@ class TestWriteFileEndpoint:
     def test_write_rejects_dot_only_path(self, tmp_path):
         """Dot-only paths (., ./, .) are rejected with ValueError."""
         ws = _make_workspace(tmp_path)
-        (tmp_path / USER_ID / "workspaces" / AGENT_ID).mkdir(parents=True)
+        (tmp_path / USER_ID / f"workspace-{AGENT_ID}").mkdir(parents=True)
 
         from routers.workspace_files import _write_file
 
@@ -678,7 +678,7 @@ class TestWriteFileEndpoint:
     def test_write_rejects_oversized_content(self, tmp_path):
         """Content over 10MB is rejected."""
         ws = _make_workspace(tmp_path)
-        (tmp_path / USER_ID / "workspaces" / AGENT_ID).mkdir(parents=True)
+        (tmp_path / USER_ID / f"workspace-{AGENT_ID}").mkdir(parents=True)
 
         from routers.workspace_files import _write_file
 
@@ -704,17 +704,17 @@ class TestWriteFileEndpoint:
         assert exc.value.status_code == 400
 
     def test_write_rejects_symlink_escape_workspace(self, tmp_path):
-        """Symlink in workspaces/{id}/ pointing outside must be rejected."""
+        """Symlink in workspace-{id}/ pointing outside must be rejected."""
         import os
 
         ws = _make_workspace(tmp_path)
-        ws_dir = tmp_path / USER_ID / "workspaces" / AGENT_ID
+        ws_dir = tmp_path / USER_ID / f"workspace-{AGENT_ID}"
         ws_dir.mkdir(parents=True)
         agent_dir = tmp_path / USER_ID / "agents" / AGENT_ID
         agent_dir.mkdir(parents=True)
         (agent_dir / "SOUL.md").write_text("original", encoding="utf-8")
 
-        # Symlink workspaces/{id}/evil -> ../../agents/{id}/SOUL.md
+        # Symlink workspace-{id}/evil -> ../../agents/{id}/SOUL.md
         os.symlink(
             "../../agents/" + AGENT_ID + "/SOUL.md",
             ws_dir / "evil",
@@ -729,16 +729,16 @@ class TestWriteFileEndpoint:
         assert (agent_dir / "SOUL.md").read_text() == "original"
 
     def test_write_rejects_symlink_escape_config(self, tmp_path):
-        """Symlink in workspaces/{id}/ pointing outside must be rejected for config tab."""
+        """Symlink in workspace-{id}/ pointing outside must be rejected for config tab."""
         import os
 
         ws = _make_workspace(tmp_path)
-        agent_dir = tmp_path / USER_ID / "workspaces" / AGENT_ID
+        agent_dir = tmp_path / USER_ID / f"workspace-{AGENT_ID}"
         agent_dir.mkdir(parents=True)
         target = tmp_path / USER_ID / "elsewhere.txt"
         target.write_text("original", encoding="utf-8")
 
-        # Symlink workspaces/{id}/SOUL.md -> ../../elsewhere.txt
+        # Symlink workspace-{id}/SOUL.md -> ../../elsewhere.txt
         os.symlink("../../elsewhere.txt", agent_dir / "SOUL.md")
 
         from routers.workspace_files import _write_file
@@ -751,13 +751,13 @@ class TestWriteFileEndpoint:
     def test_write_allows_nested_dirs_within_workspace(self, tmp_path):
         """Subtree check allows legitimate nested paths inside the workspace."""
         ws = _make_workspace(tmp_path)
-        (tmp_path / USER_ID / "workspaces" / AGENT_ID).mkdir(parents=True)
+        (tmp_path / USER_ID / f"workspace-{AGENT_ID}").mkdir(parents=True)
 
         from routers.workspace_files import _write_file
 
         written = _write_file(ws, USER_ID, AGENT_ID, "deep/nested/notes.md", "ok", "workspace")
-        assert written == f"workspaces/{AGENT_ID}/deep/nested/notes.md"
-        assert (tmp_path / USER_ID / "workspaces" / AGENT_ID / "deep" / "nested" / "notes.md").read_text() == "ok"
+        assert written == f"workspace-{AGENT_ID}/deep/nested/notes.md"
+        assert (tmp_path / USER_ID / f"workspace-{AGENT_ID}" / "deep" / "nested" / "notes.md").read_text() == "ok"
 
 
 # ===========================================================================
@@ -769,22 +769,22 @@ class TestUploadPath:
     """Verify upload destination path construction."""
 
     def test_upload_writes_to_agent_workspace(self, tmp_path):
-        """Uploads should go to workspaces/{agent_id}/uploads/."""
+        """Uploads should go to workspace-{agent_id}/uploads/."""
         ws = _make_workspace(tmp_path)
-        ws_dir = tmp_path / USER_ID / "workspaces" / AGENT_ID / "uploads"
+        ws_dir = tmp_path / USER_ID / f"workspace-{AGENT_ID}" / "uploads"
         (tmp_path / USER_ID).mkdir(parents=True)
 
-        dest_path = f"workspaces/{AGENT_ID}/uploads/test.pdf"
+        dest_path = f"workspace-{AGENT_ID}/uploads/test.pdf"
         ws.write_bytes(USER_ID, dest_path, b"fake pdf content")
         assert (ws_dir / "test.pdf").read_bytes() == b"fake pdf content"
 
     def test_agent_visible_path(self):
-        """Agent-visible path should include workspaces/{agent_id}."""
+        """Agent-visible path should include workspace-{agent_id}."""
         agent_id = "my-agent"
         filename = "data.csv"
-        dest_path = f"workspaces/{agent_id}/uploads/{filename}"
+        dest_path = f"workspace-{agent_id}/uploads/{filename}"
         agent_path = f".openclaw/{dest_path}"
-        assert agent_path == f".openclaw/workspaces/{agent_id}/uploads/{filename}"
+        assert agent_path == f".openclaw/workspace-{agent_id}/uploads/{filename}"
 
 
 # ===========================================================================
@@ -799,7 +799,7 @@ class TestWorkspaceTreeRoundTrip:
     async def test_tree_path_feeds_back_to_read(self, workspace, monkeypatch):
         """A path returned by the tree endpoint reads successfully via the file endpoint."""
         monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
-        ws_dir = workspace._mount / USER_ID / "workspaces" / AGENT_ID
+        ws_dir = workspace._mount / USER_ID / f"workspace-{AGENT_ID}"
         ws_dir.mkdir(parents=True)
         (ws_dir / "plan.md").write_text("# Plan\nstep 1", encoding="utf-8")
         (ws_dir / "uploads").mkdir()
@@ -814,11 +814,11 @@ class TestWorkspaceTreeRoundTrip:
             auth=_auth(),
         )
         paths = {f["path"] for f in tree["files"]}
-        # Paths must be agent-relative (no `workspaces/{agent_id}/` prefix)
+        # Paths must be agent-relative (no `workspace-{agent_id}/` prefix)
         assert "plan.md" in paths
         assert "uploads" in paths
         assert "uploads/data.csv" in paths
-        assert not any(p.startswith("workspaces/") for p in paths if p)
+        assert not any(p.startswith("workspace-") for p in paths if p)
 
         # Every file path should read successfully via the file endpoint
         for entry in tree["files"]:
@@ -835,7 +835,7 @@ class TestWorkspaceTreeRoundTrip:
     async def test_write_then_tree_then_read(self, workspace, monkeypatch):
         """After saveWorkspaceFile writes a workspace file, tree lists it and read returns content."""
         monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
-        (workspace._mount / USER_ID / "workspaces" / AGENT_ID).mkdir(parents=True)
+        (workspace._mount / USER_ID / f"workspace-{AGENT_ID}").mkdir(parents=True)
 
         from routers.workspace_files import (
             WriteFileRequest,
@@ -848,7 +848,7 @@ class TestWorkspaceTreeRoundTrip:
         result = await write_workspace_file(agent_id=AGENT_ID, body=body, auth=_auth())
         assert result["status"] == "ok"
         # Backend returned path is user-root-relative; tree will show agent-relative
-        assert result["path"] == f"workspaces/{AGENT_ID}/notes.txt"
+        assert result["path"] == f"workspace-{AGENT_ID}/notes.txt"
 
         tree = await list_workspace_tree(
             agent_id=AGENT_ID,
@@ -879,8 +879,8 @@ class TestReadEndpointTraversal:
         """Create the attacker (AGENT_ID) + victim agent workspaces; seed a
         secret file in the victim. Returns the user root Path."""
         root = workspace._mount / USER_ID
-        (root / "workspaces" / AGENT_ID).mkdir(parents=True)
-        victim = root / "workspaces" / self.VICTIM_AGENT
+        (root / f"workspace-{AGENT_ID}").mkdir(parents=True)
+        victim = root / f"workspace-{self.VICTIM_AGENT}"
         victim.mkdir(parents=True)
         (victim / "secret.txt").write_text("cross-tenant-secret", encoding="utf-8")
         return root
@@ -928,7 +928,7 @@ class TestReadEndpointTraversal:
         root = self._two_agents(workspace)
         os.symlink(
             f"../{self.VICTIM_AGENT}/secret.txt",
-            root / "workspaces" / AGENT_ID / "evil",
+            root / f"workspace-{AGENT_ID}" / "evil",
         )
         with pytest.raises(HTTPException) as exc:
             await read_workspace_file(agent_id=AGENT_ID, path="evil", auth=_auth())
@@ -941,7 +941,7 @@ class TestReadEndpointTraversal:
 
         monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
         root = self._two_agents(workspace)
-        nested = root / "workspaces" / AGENT_ID / "deep"
+        nested = root / f"workspace-{AGENT_ID}" / "deep"
         nested.mkdir()
         (nested / "ok.txt").write_text("fine", encoding="utf-8")
         info = await read_workspace_file(agent_id=AGENT_ID, path="deep/ok.txt", auth=_auth())
@@ -954,8 +954,8 @@ class TestReadEndpointTraversal:
 
         monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
         root = self._two_agents(workspace)
-        (root / "workspaces" / AGENT_ID / "notes.txt").write_text("hi", encoding="utf-8")
-        leaky = "/mnt/efs/users/" + USER_ID + "/workspaces/secret-internal-path boom"
+        (root / f"workspace-{AGENT_ID}" / "notes.txt").write_text("hi", encoding="utf-8")
+        leaky = "/mnt/efs/users/" + USER_ID + "/workspace-secret-internal-path boom"
         monkeypatch.setattr(workspace, "read_file_info", lambda *a, **k: (_ for _ in ()).throw(WorkspaceError(leaky)))
         with pytest.raises(HTTPException) as exc:
             await read_workspace_file(agent_id=AGENT_ID, path="notes.txt", auth=_auth())
@@ -970,7 +970,7 @@ class TestReadEndpointTraversal:
 
         monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
         self._two_agents(workspace)
-        leaky = "/mnt/efs/users/" + USER_ID + "/workspaces/secret-internal-path boom"
+        leaky = "/mnt/efs/users/" + USER_ID + "/workspace-secret-internal-path boom"
         monkeypatch.setattr(workspace, "list_directory", lambda *a, **k: (_ for _ in ()).throw(WorkspaceError(leaky)))
         with pytest.raises(HTTPException) as exc:
             await list_workspace_tree(agent_id=AGENT_ID, path="", recursive=False, auth=_auth())
@@ -988,9 +988,9 @@ class TestReadEndpointTraversal:
 
         monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
         root = self._two_agents(workspace)
-        (root / "workspaces" / AGENT_ID / "notes.txt").write_text("legit", encoding="utf-8")
-        # workspaces/<attacker>/link -> ../<victim> (a sibling agent workspace)
-        os.symlink(f"../{self.VICTIM_AGENT}", root / "workspaces" / AGENT_ID / "link")
+        (root / f"workspace-{AGENT_ID}" / "notes.txt").write_text("legit", encoding="utf-8")
+        # workspace-<attacker>/link -> ../workspace-<victim> (a sibling agent workspace)
+        os.symlink(f"../workspace-{self.VICTIM_AGENT}", root / f"workspace-{AGENT_ID}" / "link")
 
         tree = await list_workspace_tree(agent_id=AGENT_ID, path="", recursive=True, auth=_auth())
         paths = {f["path"] for f in tree["files"]}
@@ -1010,8 +1010,8 @@ class TestReadEndpointTraversal:
 
         monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
         root = self._two_agents(workspace)
-        (root / "workspaces" / AGENT_ID / "notes.txt").write_text("legit", encoding="utf-8")
-        os.symlink(f"../{self.VICTIM_AGENT}", root / "workspaces" / AGENT_ID / "link")
+        (root / f"workspace-{AGENT_ID}" / "notes.txt").write_text("legit", encoding="utf-8")
+        os.symlink(f"../workspace-{self.VICTIM_AGENT}", root / f"workspace-{AGENT_ID}" / "link")
 
         tree = await list_workspace_tree(agent_id=AGENT_ID, path="", recursive=False, auth=_auth())
         names = {f["name"] for f in tree["files"]}

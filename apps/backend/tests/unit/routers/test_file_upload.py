@@ -58,11 +58,11 @@ async def test_upload_single_file(app, auth_override, mock_container, mock_works
             body = resp.json()
             assert len(body["uploaded"]) == 1
             assert body["uploaded"][0]["filename"] == "test.txt"
-            assert body["uploaded"][0]["path"] == f".openclaw/workspaces/{AGENT_ID}/uploads/test.txt"
+            assert body["uploaded"][0]["path"] == f".openclaw/workspace-{AGENT_ID}/uploads/test.txt"
             assert body["uploaded"][0]["size"] == 11
 
             mock_workspace.write_bytes.assert_called_once_with(
-                "user_123", f"workspaces/{AGENT_ID}/uploads/test.txt", b"hello world"
+                "user_123", f"workspace-{AGENT_ID}/uploads/test.txt", b"hello world"
             )
     finally:
         app.dependency_overrides.pop(get_current_user, None)

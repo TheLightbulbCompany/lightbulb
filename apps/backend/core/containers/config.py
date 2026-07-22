@@ -737,7 +737,7 @@ def _build_agents_list(paperclip_agents: list[dict], ceo_model: str | None = Non
                 "id": "main",
                 "default": True,
                 "reasoningDefault": "stream",
-                "workspace": "/home/node/.openclaw/workspaces/main",
+                "workspace": "/home/node/.openclaw/workspace-main",
             },
         ]
 
@@ -752,7 +752,7 @@ def _build_agents_list(paperclip_agents: list[dict], ceo_model: str | None = Non
         entry: dict = {
             "id": agent_id,
             "reasoningDefault": "stream",
-            "workspace": f"/home/node/.openclaw/workspaces/{agent_id}",
+            "workspace": f"/home/node/.openclaw/workspace-{agent_id}",
         }
         # Pass through the friendly display name when Paperclip has one.
         # OpenClaw's agent-runtime schema accepts an optional ``name`` on
@@ -1339,7 +1339,13 @@ def build_openclaw_config_dict(
                 # the single-AIP IAM policy means the primary IS the only
                 # invocable model, and "" would fall through to it anyway.
                 **({"utilityModel": heartbeat_model} if heartbeat_model else {}),
-                "workspace": "/home/node/.openclaw/workspaces",
+                # Default-agent workspace, upstream convention: bare
+                # ``~/.openclaw/workspace`` (per-agent dirs are the sibling
+                # ``workspace-<agentId>`` set in agents.list). NEVER point any
+                # workspace at ``~/.openclaw/workspaces`` — upstream doctor
+                # treats that exact dir as retired Workspaces-plugin state and
+                # deletes it recursively.
+                "workspace": "/home/node/.openclaw/workspace",
                 # Memory recall stays ON for every owner (memory-core registers
                 # memory_search/memory_get, and the "Memory Recall" prompt
                 # section only renders while those tools exist). The embedding

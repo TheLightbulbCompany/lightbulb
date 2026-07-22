@@ -618,7 +618,7 @@ def _migrate_legacy_user_md(workspace: Workspace, owner_id: str, agent_uuid: str
     lines and everything else in the file are preserved. Returns True when a
     rewrite happened.
     """
-    rel_path = f"workspaces/{agent_uuid}/USER.md"
+    rel_path = f"workspace-{agent_uuid}/USER.md"
     try:
         content = workspace.read_file(owner_id, rel_path)
     except Exception:  # noqa: BLE001 — no USER.md yet; the seed loop writes the new template
@@ -672,7 +672,7 @@ def _migrate_add_nightly_section(workspace: Workspace, owner_id: str, agent_uuid
     seeded, or previously healed) is left untouched. Returns True when a
     rewrite happened.
     """
-    rel_path = f"workspaces/{agent_uuid}/AGENTS.md"
+    rel_path = f"workspace-{agent_uuid}/AGENTS.md"
     try:
         content = workspace.read_file(owner_id, rel_path)
     except Exception:  # noqa: BLE001 — no AGENTS.md yet; the seed loop writes the full template
@@ -843,7 +843,7 @@ async def pre_stage_friday_identity(
     # missing customized files with its own neutral templates rather than
     # running the bootstrap wizard. Idempotent via write_file_if_missing.
     now_iso = datetime.now(timezone.utc).isoformat()
-    state_rel_path = f"workspaces/{friday_uuid}/.openclaw/workspace-state.json"
+    state_rel_path = f"workspace-{friday_uuid}/.openclaw/workspace-state.json"
     workspace_state = {
         "version": 1,
         "bootstrapSeededAt": now_iso,
@@ -899,7 +899,7 @@ async def pre_stage_friday_identity(
     written: list[str] = []
     skipped: list[str] = []
     for filename, content in files.items():
-        rel_path = f"workspaces/{friday_uuid}/{filename}"
+        rel_path = f"workspace-{friday_uuid}/{filename}"
         try:
             wrote = workspace.write_file_if_missing(owner_id, rel_path, content)
         except Exception as exc:  # noqa: BLE001 — best-effort, log + continue
@@ -947,7 +947,7 @@ async def stage_paperclip_identity_for_agent(
     ``paperclip-claimed-api-key.json`` is never written and its first Paperclip
     wake points at a missing credentials file.
 
-    Writes ``workspaces/{agent_id}/paperclip-claimed-api-key.json`` with the
+    Writes ``workspace-{agent_id}/paperclip-claimed-api-key.json`` with the
     agent's OWN credentials, write-if-missing (idempotent — an agent's evolved
     file isn't clobbered). A missing ``token``/``company_id``/``api_url`` (key
     mint failed or Paperclip unreachable) skips staging; the next reprovision
@@ -972,7 +972,7 @@ async def stage_paperclip_identity_for_agent(
             "apiUrl": api_url,
         }
     )
-    rel_path = f"workspaces/{agent_id}/paperclip-claimed-api-key.json"
+    rel_path = f"workspace-{agent_id}/paperclip-claimed-api-key.json"
     try:
         wrote = workspace.write_file_if_missing(owner_id, rel_path, content)
     except Exception as exc:  # noqa: BLE001 — best-effort, log + continue
@@ -1008,12 +1008,12 @@ async def pre_stage_paperclip_identities(
     """Stage each agent's per-agent Paperclip identity file on EFS.
 
     For every agent that has a minted key in ``agent_keys`` we write
-    ``workspaces/{agent_id}/paperclip-claimed-api-key.json`` containing the
+    ``workspace-{agent_id}/paperclip-claimed-api-key.json`` containing the
     agent's OWN Paperclip credentials::
 
         {"token": <key>, "agentId": <id>, "companyId": <company>, "apiUrl": <url>}
 
-    The file lands in the agent's own workspace dir (``workspaces/{agent_id}/``
+    The file lands in the agent's own workspace dir (``workspace-{agent_id}/``
     PLURAL — its runtime cwd; the singular ``workspace`` is container-global and
     collides). The seed prompt instructs the agent to load it before any
     Paperclip call so it authenticates AS ITSELF, not as Friday. Written with
@@ -1058,7 +1058,7 @@ async def pre_stage_paperclip_identities(
                 "apiUrl": api_url,
             }
         )
-        rel_path = f"workspaces/{agent_id}/paperclip-claimed-api-key.json"
+        rel_path = f"workspace-{agent_id}/paperclip-claimed-api-key.json"
         try:
             wrote = workspace.write_file_if_missing(owner_id, rel_path, content)
         except Exception as exc:  # noqa: BLE001 — best-effort, log + continue

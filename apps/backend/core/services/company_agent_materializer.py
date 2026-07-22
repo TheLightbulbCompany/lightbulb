@@ -69,10 +69,10 @@ async def materialize_agent(
         The ``agent_entry`` dict merged into ``agents.list``.
     """
     # EFS-relative agent workspace root. The container reads it at
-    # ``.openclaw/workspaces/{id}`` (the EFS access point chroots
+    # ``.openclaw/workspace-{id}`` (the EFS access point chroots
     # ``/users/{owner}`` to ``/home/node/.openclaw``), hence the two forms:
     # this bare form for EFS writes, the ``.openclaw/`` form in the entry.
-    ws_root = f"workspaces/{new_agent_id}"
+    ws_root = f"workspace-{new_agent_id}"
 
     # 1. Identity. Write-if-missing mirrors the identity-seeding idiom
     #    (Friday/Atlas) — a redeploy retry must not clobber a body the agent
@@ -93,7 +93,7 @@ async def materialize_agent(
     #    so they are handled by the paperclip-meta sync, not this entry.
     agent_entry: dict = {
         "id": new_agent_id,
-        "workspace": f".openclaw/workspaces/{new_agent_id}",
+        "workspace": f".openclaw/workspace-{new_agent_id}",
         "reasoningDefault": "stream",
         "skills": list(planned.skills),
     }

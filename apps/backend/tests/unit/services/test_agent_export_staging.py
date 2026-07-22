@@ -57,7 +57,7 @@ def _staging_openclaw_config() -> dict:
 
 @pytest.fixture
 def fake_staging(tmp_path: Path):
-    """Builds /tmp/<root>/users/<owner>/workspaces/<staging-id>/ with the
+    """Builds /tmp/<root>/users/<owner>/workspace-<staging-id>/ with the
     skeleton-generator on-disk layout (files under workspace/, build-manifest
     at staging root) and patches get_workspace() to anchor at <root>/users.
     """
@@ -65,7 +65,7 @@ def fake_staging(tmp_path: Path):
     staging_agent_id = "atlas-staging-build-001"
 
     user_root = tmp_path / "users" / owner_id
-    staging_dir = user_root / "workspaces" / staging_agent_id
+    staging_dir = user_root / f"workspace-{staging_agent_id}"
     workspace_subdir = staging_dir / "workspace"
     workspace_subdir.mkdir(parents=True)
 
@@ -144,7 +144,7 @@ def test_staging_export_falls_back_to_root_openclaw_json(tmp_path: Path):
     owner_id = "org_owner_flat"
     staging_agent_id = "flat-staging-001"
     user_root = tmp_path / "users" / owner_id
-    staging_dir = user_root / "workspaces" / staging_agent_id
+    staging_dir = user_root / f"workspace-{staging_agent_id}"
     staging_dir.mkdir(parents=True)
     (staging_dir / "openclaw.json").write_text(json.dumps(_staging_openclaw_config()), encoding="utf-8")
     (staging_dir / "AGENTS.md").write_text("# flat\n", encoding="utf-8")
@@ -170,7 +170,7 @@ def test_staging_export_missing_config_raises(tmp_path: Path):
     owner_id = "org_owner_nocfg"
     staging_agent_id = "nocfg-staging-001"
     user_root = tmp_path / "users" / owner_id
-    workspace_subdir = user_root / "workspaces" / staging_agent_id / "workspace"
+    workspace_subdir = user_root / f"workspace-{staging_agent_id}" / "workspace"
     workspace_subdir.mkdir(parents=True)
     (workspace_subdir / "AGENTS.md").write_text("# no config here\n", encoding="utf-8")
 
@@ -188,7 +188,7 @@ def test_staging_export_multi_agent_config_raises(tmp_path: Path):
     owner_id = "org_owner_multi"
     staging_agent_id = "multi-staging-001"
     user_root = tmp_path / "users" / owner_id
-    workspace_subdir = user_root / "workspaces" / staging_agent_id / "workspace"
+    workspace_subdir = user_root / f"workspace-{staging_agent_id}" / "workspace"
     workspace_subdir.mkdir(parents=True)
     cfg = _staging_openclaw_config()
     cfg["agents"]["list"].append({"id": "second-agent", "skills": []})

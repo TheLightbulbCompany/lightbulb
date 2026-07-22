@@ -122,7 +122,7 @@ def test_fresh_submit_stages_files_without_seeding_a_board_issue(client):
 
     brief_call = client.ws.write_file.call_args_list[0]
     assert brief_call.args[0] == "user_abc"
-    assert brief_call.args[1] == "workspaces/friday-uuid/BRIEF.md"
+    assert brief_call.args[1] == "workspace-friday-uuid/BRIEF.md"
     assert "https://acme.com" in brief_call.args[2]
 
     # The board is no longer seeded on submit — Friday fills it at the END of

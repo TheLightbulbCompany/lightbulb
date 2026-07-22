@@ -59,10 +59,10 @@ async def test_seeds_atlas_files_keyed_by_uuid(workspace_stub, fake_files_dir):
     ]
     await pre_stage_atlas(owner_id="user_x", paperclip_agents=agents, workspace=workspace_stub)
     paths = [p for (_u, p) in workspace_stub.calls]
-    assert "workspaces/uuid-atlas/.openclaw/workspace-state.json" in paths
-    assert "workspaces/uuid-atlas/IDENTITY.md" in paths
-    assert "workspaces/uuid-atlas/build.lobster" in paths
-    assert "workspaces/uuid-atlas/skills/fast-io/SKILL.md" in paths
+    assert "workspace-uuid-atlas/.openclaw/workspace-state.json" in paths
+    assert "workspace-uuid-atlas/IDENTITY.md" in paths
+    assert "workspace-uuid-atlas/build.lobster" in paths
+    assert "workspace-uuid-atlas/skills/fast-io/SKILL.md" in paths
     assert all("uuid-friday" not in p for p in paths)
 
 
@@ -100,7 +100,7 @@ async def test_skips_junk_files(workspace_stub, tmp_path, monkeypatch):
     paths = [p for (_u, p) in workspace_stub.calls]
     assert not any("__pycache__" in p for p in paths)
     assert not any(".DS_Store" in p for p in paths)
-    assert "workspaces/uuid-atlas/IDENTITY.md" in paths
+    assert "workspace-uuid-atlas/IDENTITY.md" in paths
 
 
 @pytest.mark.asyncio
@@ -124,7 +124,7 @@ async def test_state_file_written_first(workspace_stub, fake_files_dir):
     agents = [{"id": "uuid-atlas", "role": "general", "name": "Atlas"}]
     await pre_stage_atlas(owner_id="user_x", paperclip_agents=agents, workspace=workspace_stub)
     paths = [p for (_u, p) in workspace_stub.calls]
-    assert paths[0] == "workspaces/uuid-atlas/.openclaw/workspace-state.json", f"state first, got: {paths}"
+    assert paths[0] == "workspace-uuid-atlas/.openclaw/workspace-state.json", f"state first, got: {paths}"
 
 
 @pytest.mark.asyncio
@@ -157,7 +157,7 @@ async def test_acp_section_appended_to_agents_when_flag_on(captured_ws, tmp_path
 
     await pre_stage_atlas(owner_id="user_x", paperclip_agents=agents, workspace=captured_ws)
 
-    agents_md = captured_ws.written["workspaces/uuid-atlas/AGENTS.md"]
+    agents_md = captured_ws.written["workspace-uuid-atlas/AGENTS.md"]
     assert "base recruiter copy" in agents_md  # vendored base preserved
     assert "Coding-Harness Delegation (ACP)" in agents_md  # section appended
     assert 'sessions_spawn({ runtime: "acp" })' in agents_md
@@ -173,7 +173,7 @@ async def test_acp_section_absent_when_flag_off(captured_ws, tmp_path, monkeypat
 
     await pre_stage_atlas(owner_id="user_x", paperclip_agents=agents, workspace=captured_ws)
 
-    agents_md = captured_ws.written["workspaces/uuid-atlas/AGENTS.md"]
+    agents_md = captured_ws.written["workspace-uuid-atlas/AGENTS.md"]
     assert "base recruiter copy" in agents_md
     assert "Coding-Harness Delegation (ACP)" not in agents_md
 
@@ -212,7 +212,7 @@ async def test_bridge_url_substituted_into_build_lobster(captured_ws, tmp_path, 
 
     await pre_stage_atlas(owner_id="org_abc", paperclip_agents=agents, workspace=captured_ws)
 
-    build_lobster = captured_ws.written["workspaces/uuid-atlas/build.lobster"]
+    build_lobster = captured_ws.written["workspace-uuid-atlas/build.lobster"]
     assert "{{ISOL8_BRIDGE_URL}}" not in build_lobster
     assert f"{expected_host}/api/v1/agent-builder/u/org_abc/register-built-agent" in build_lobster
 
@@ -224,7 +224,7 @@ async def test_bridge_url_no_placeholder_leaves_loop_to_write(workspace_stub, fa
     agents = [{"id": "uuid-atlas", "role": "general", "name": "Atlas"}]
     await pre_stage_atlas(owner_id="user_x", paperclip_agents=agents, workspace=workspace_stub)
     build_writes = [p for (_u, p) in workspace_stub.calls if p.endswith("/build.lobster")]
-    assert build_writes == ["workspaces/uuid-atlas/build.lobster"]
+    assert build_writes == ["workspace-uuid-atlas/build.lobster"]
 
 
 @pytest.fixture
@@ -261,10 +261,10 @@ async def test_force_overwrites_existing_files(force_ws, fake_files_dir):
     # Force path NEVER touches the skip-if-exists writer.
     assert force_ws.if_missing_calls == []
     # IDENTITY.md exists (write_if_missing would return False) yet was overwritten.
-    assert "workspaces/uuid-atlas/IDENTITY.md" in force_ws.overwrote
+    assert "workspace-uuid-atlas/IDENTITY.md" in force_ws.overwrote
     # workspace-state.json + the 3 bundle files (IDENTITY.md, build.lobster,
     # skills/fast-io/SKILL.md) all force-written.
-    assert "workspaces/uuid-atlas/.openclaw/workspace-state.json" in force_ws.overwrote
+    assert "workspace-uuid-atlas/.openclaw/workspace-state.json" in force_ws.overwrote
     assert result["force"] is True
     assert result["reason"] is None
     assert result["overwritten"] == len(force_ws.overwrote) == 4
@@ -287,7 +287,7 @@ async def test_force_does_not_clobber_substituted_build_lobster(force_ws, monkey
     force_ws.write_file.side_effect = _wf
     agents = [{"id": "uuid-atlas", "role": "general", "name": "Atlas"}]
     await pre_stage_atlas(owner_id="org_abc", paperclip_agents=agents, workspace=force_ws, force=True)
-    build = written["workspaces/uuid-atlas/build.lobster"]
+    build = written["workspace-uuid-atlas/build.lobster"]
     assert "{{ISOL8_BRIDGE_URL}}" not in build
     assert "https://api-dev.isol8.co/api/v1/agent-builder/u/org_abc/register-built-agent" in build
 
@@ -310,7 +310,7 @@ async def test_force_with_acp_overwrites_agents_with_acp_section(force_ws, monke
     agents = [{"id": "uuid-atlas", "role": "general", "name": "Atlas"}]
     result = await pre_stage_atlas(owner_id="user_x", paperclip_agents=agents, workspace=force_ws, force=True)
 
-    agents_md = written["workspaces/uuid-atlas/AGENTS.md"]
+    agents_md = written["workspace-uuid-atlas/AGENTS.md"]
     assert "base recruiter copy" in agents_md  # vendored base preserved under force
     assert "Coding-Harness Delegation (ACP)" in agents_md  # augmentation carried under force
     assert force_ws.if_missing_calls == []  # never the skip-writer

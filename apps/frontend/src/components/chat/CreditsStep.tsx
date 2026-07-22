@@ -8,6 +8,21 @@ type Props = { onComplete: () => void };
 
 const PRESET_AMOUNTS_CENTS = [1000, 2000, 5000, 10000]; // $10, $20, $50, $100
 
+// Onboarding design system — mirrors the stepper branch this step renders
+// inside (cream page, forest CTAs, Lora headings, DM Sans body). Fonts ride
+// the next/font CSS vars via inline styles rather than Tailwind font classes,
+// the same way the stepper's own cards do.
+const SERIF_FONT = { fontFamily: "var(--font-lora-serif), serif" } as const;
+const SANS_FONT = { fontFamily: "var(--font-dm-sans), sans-serif" } as const;
+
+const PRIMARY_BUTTON =
+  "rounded-full bg-[#06402B] px-6 py-2.5 text-sm font-medium text-white " +
+  "transition-colors hover:bg-[#052e1f] disabled:opacity-50 disabled:hover:bg-[#06402B]";
+
+const TEXT_INPUT =
+  "rounded-lg border border-[#e0dbd0] bg-white px-3 py-2.5 text-sm text-[#1a1a1a] " +
+  "focus:outline-none focus:border-[rgba(6,64,43,0.25)] focus:ring-2 focus:ring-[rgba(6,64,43,0.25)]";
+
 /**
  * Bedrock onboarding step: collect an initial Claude credit top-up.
  *
@@ -67,16 +82,22 @@ export function CreditsStep({ onComplete }: Props) {
   // would 400, so the form is a dead end — offer the way back instead.
   if (lifecycleEnabled === false) {
     return (
-      <div className="flex flex-col gap-4 py-8 max-w-md mx-auto text-center">
-        <h3 className="text-xl font-semibold">Claude credits aren&apos;t available yet</h3>
-        <p className="text-sm text-muted-foreground">
+      <div
+        className="flex flex-col gap-4 py-8 max-w-md mx-auto text-center"
+        style={SANS_FONT}
+      >
+        <h3 className="text-[22px] font-normal text-[#1a1a1a]" style={SERIF_FONT}>
+          Claude credits aren&apos;t available yet
+        </h3>
+        <p className="text-sm text-[#8a8578]">
           Claude credits are not yet available in this environment — choose a
           different provider for now.
         </p>
         <button
           type="button"
           onClick={chooseDifferentProvider}
-          className="rounded-md bg-primary px-4 py-2 text-primary-foreground"
+          className={PRIMARY_BUTTON}
+          style={SANS_FONT}
         >
           Choose a different provider
         </button>
@@ -121,9 +142,11 @@ export function CreditsStep({ onComplete }: Props) {
   };
 
   return (
-    <div className="flex flex-col gap-4 py-8 max-w-md mx-auto">
-      <h3 className="text-xl font-semibold">Add Claude credits</h3>
-      <p className="text-sm text-muted-foreground">
+    <div className="flex flex-col gap-4 py-8 max-w-md mx-auto" style={SANS_FONT}>
+      <h3 className="text-[22px] font-normal text-[#1a1a1a]" style={SERIF_FONT}>
+        Add Claude credits
+      </h3>
+      <p className="text-sm text-[#8a8578]">
         {autoChargeEnabled
           ? "Prepay for Claude inference — charged automatically to your card on file. Add any amount, top up later anytime."
           : "Prepay for Claude inference. You'll confirm the payment on a secure Stripe page — nothing is charged until you do."}
@@ -135,11 +158,12 @@ export function CreditsStep({ onComplete }: Props) {
             key={c}
             type="button"
             onClick={() => setAmount(c)}
+            style={SANS_FONT}
             className={
-              "rounded-md border px-3 py-2 text-sm " +
+              "rounded-full border px-3 py-2 text-sm transition-colors " +
               (amount === c
-                ? "border-primary bg-primary/10"
-                : "border-border bg-card")
+                ? "border-[#06402B] bg-[#e6efe9] text-[#06402B] font-medium"
+                : "border-[#e0dbd0] bg-white text-[#1a1a1a] hover:bg-[#f3efe6]")
             }
           >
             ${c / 100}
@@ -153,16 +177,17 @@ export function CreditsStep({ onComplete }: Props) {
         step={5}
         value={amount / 100}
         onChange={(e) => setAmount(Math.round(Number(e.target.value) * 100))}
-        className="rounded-md border border-input bg-background px-3 py-2"
+        style={SANS_FONT}
+        className={TEXT_INPUT}
       />
 
       {!autoChargeEnabled && (
-        <label className="flex items-start gap-2 text-sm text-muted-foreground">
+        <label className="flex items-start gap-2 text-[13px] text-[#8a8578]">
           <input
             type="checkbox"
             checked={optIn}
             onChange={(e) => setOptIn(e.target.checked)}
-            className="mt-0.5"
+            className="mt-0.5 accent-[#06402B]"
           />
           <span>
             Enable one-click top-ups — save this card so future credit
@@ -173,14 +198,14 @@ export function CreditsStep({ onComplete }: Props) {
       )}
 
       {checkoutCancelled && !requested && !error && (
-        <p className="text-sm text-muted-foreground">
+        <p className="text-sm text-[#8a8578]">
           Checkout was cancelled — nothing was charged. Pick an amount to try
           again.
         </p>
       )}
-      {error && <p className="text-sm text-destructive">{error}</p>}
+      {error && <p className="text-sm text-[#b32424]">{error}</p>}
       {requested && (
-        <p className="text-sm text-muted-foreground">
+        <p className="text-sm text-[#8a8578]">
           Payment requested — your card on file is being charged in the
           background. This step advances automatically once the credits land
           (usually under a minute).
@@ -191,7 +216,8 @@ export function CreditsStep({ onComplete }: Props) {
         <button
           onClick={requestTopUp}
           disabled={submitting || requested || amount < 500}
-          className="rounded-md bg-primary px-4 py-2 text-primary-foreground disabled:opacity-50"
+          className={PRIMARY_BUTTON}
+          style={SANS_FONT}
         >
           {submitting ? "Loading…" : requested ? "Payment requested" : `Add $${amount / 100}`}
         </button>
@@ -199,7 +225,8 @@ export function CreditsStep({ onComplete }: Props) {
         <button
           onClick={goToCheckout}
           disabled={submitting || amount < 500}
-          className="rounded-md bg-primary px-4 py-2 text-primary-foreground disabled:opacity-50"
+          className={PRIMARY_BUTTON}
+          style={SANS_FONT}
         >
           {submitting ? "Redirecting…" : `Continue to payment — $${amount / 100}`}
         </button>

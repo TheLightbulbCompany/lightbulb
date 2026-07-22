@@ -1,140 +1,121 @@
 /**
  * First-run eligibility host — the mobile counterpart of the web's
- * ProvisioningStepper branch (`isTrialLocal && gatePhase === "normal" &&
- * !firstRun.briefSubmitted → <FirstRunFunnel/>`).
+ * ProvisioningStepper branch (`!containerOnboarded && !firstRun.briefSubmitted
+ * → <FirstRunFunnel/>`, see apps/frontend/src/components/chat/ProvisioningStepper.tsx).
  *
- * Mounts INSIDE ProvisionGate, so blocked/team-pending interstitials always
- * win (the web's gatePhase === "normal" requirement). Renders the funnel
- * full-screen INSTEAD of the tab shell for an eligible user; everyone else
- * falls through to children immediately.
+ * Mounts INSIDE ProvisionGate (see (app)/_layout.tsx), so blocked /
+ * team-pending interstitials always win: ProvisionGate only ever renders
+ * `children` — i.e. this component — once it has resolved past those.
+ * Renders the funnel full-screen INSTEAD of the tab shell for an eligible
+ * user; everyone else falls through to children immediately.
  *
- * Eligibility = personal `trial_local` owner who hasn't submitted the
- * brief. The briefSubmitted check is a local Clerk-metadata read, so every
- * onboarded user skips the billing probe entirely. For a brand-new signup
- * the `trial_local` row is created as a side effect of the very first
- * `GET /container/status` (which ProvisionGate is polling in parallel) —
- * and `GET /billing/account` NEVER 404s: a row-less user gets 200 with
- * `subscription_status: null` (billing.py "pre-signup defaults"). So a
- * null status means "not yet" — re-probe on a provisioning-window cadence,
- * bounded so a genuinely row-less account eventually falls through to the
- * normal shell. Any non-null status is definitive either way; 403 (org
- * member) is definitive: not eligible.
+ * Eligibility = ANY owner (org or personal) whose CONTAINER hasn't been
+ * onboarded yet and who hasn't locally submitted the brief. "Have we
+ * onboarded?" is a PER-CONTAINER fact, not per-user (mobile
+ * onboarding-parity Slice 2, matching the web): an org shares one
+ * container, so onboarding happens once for the whole org — the backend
+ * stamps `container.onboarded_at` and surfaces it as `onboarded` on
+ * `/container/status`, so once anyone on the container completes the
+ * funnel, no one on it — including a second org member whose own local
+ * marker is empty — sees it again. Before this slice, this gate only ever
+ * probed `/billing/account` for `trial_local`, which is `false` for every
+ * org owner — org owners never saw the funnel at all. That probe is gone.
  *
- * While the probe is unresolved the gate BLOCKS with a neutral loading
- * frame (web parity — ProvisioningStepper renders its own loading phase
- * while deciding): rendering the shell first would let a not-yet-briefed
- * trial user slip into chat past the no-skip funnel, and swapping the
- * funnel in a beat later flashes. The block is one round-trip for anyone
- * with a billing row; only the row-less fresh signup (who has no working
- * chat behind the gate anyway) waits through the null-status re-probes.
- * Probe FAILURES fail open immediately — an offline legacy user must not
- * stare at a loading frame for a retry window; eligibility simply
- * re-evaluates on the next mount.
+ * The status comes from `useContainerStatusContext()` — the SAME
+ * `/container/status` poll ProvisionGate already runs, read via React
+ * Context instead of a second fetch (collapses what used to be two
+ * independent pollers into one). `briefSubmitted` stays a local
+ * Clerk-metadata latch (reactive: `writeFirstRun({briefSubmitted:true})`
+ * re-renders `useUser` and flips the gate off without navigation), so the
+ * submitter doesn't see a flash between submitting and the next poll
+ * flipping `onboarded`.
+ *
+ * The decision reads a LATCHED `onboarded`, never the live one. The status
+ * here is a poll result that changes every few seconds, and this is the
+ * committed onboarding front door (no skip) hosting a form the user is
+ * typing into — so re-deciding on each poll meant one idle reap, one wake,
+ * or ONE dropped request unmounted the funnel mid-sentence, threw away the
+ * in-progress brief, AND dropped the user into the tab shell without having
+ * onboarded. The latch arms at the FIRST `ready` carrying a boolean
+ * `onboarded` and is never disarmed by a kind, so every transient after it —
+ * parked, starting, unreachable, loading, or a context that briefly reads
+ * null — holds the last definitive answer instead of overwriting it. Web is
+ * immune to exactly this by different means (it gates on
+ * `gatePhase === "normal"`, which spans ready/starting/parked, and SWR keeps
+ * the last good data across a failed revalidate).
+ *
+ * UNKNOWN is treated as "don't show, don't block": until a poll has reported
+ * a READY container carrying a definitive `onboarded`, this falls through to
+ * children. There is deliberately no blocking loading frame here (unlike the
+ * old billing probe): trapping the user on a spinner over an unresolved read
+ * is worse than the funnel appearing one poll late.
+ *
+ * The latch arms at the first `ready` SPECIFICALLY, even though a `starting`
+ * body carries `onboarded` too (the backend stamps it on every 200) and even
+ * though web opens its funnel during a cold start. Web can: its funnel check
+ * runs BEFORE its stepper renders, so a stepper can never preempt it. Mobile
+ * is wired the other way round — ProvisioningStepper WRAPS `children`, i.e.
+ * this gate, so a promoted stepper unmounts whatever this renders. Opening
+ * the funnel on a pre-ready `starting` body would therefore re-create a small
+ * copy of the very bug above: the user starts typing, PROMOTE_MS elapses, the
+ * stepper takes the screen and the in-progress brief is gone. Waiting for
+ * `ready` costs a brief pre-ready glimpse of the tab shell — a window in
+ * which the container isn't up and chat doesn't work anyway — and the door
+ * closes the moment `ready` lands. A glimpse is not a bypass; a discarded
+ * brief is a real loss.
+ *
+ * Blocked / needs-signup / team-pending can't reach this decision at all —
+ * ProvisionGate replaces the whole tree for those and `children` (this
+ * component) never mounts. Nothing here needs to re-check them, and the
+ * latch can't smuggle eligibility into them either: it only ever arms from a
+ * `ready` 200 body.
  */
-import { useAuth, useUser } from "@clerk/clerk-expo";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Animated, StyleSheet, Text, View } from "react-native";
-import { createApiClient } from "@isol8/shared";
+import { useUser } from "@clerk/clerk-expo";
+import { useRef, type ReactNode } from "react";
 
-import { usePulse } from "../chat/usePulse";
-import { colors, fonts } from "../../config/theme";
-import { makeAdapter } from "../../lib/adapter";
+import { useContainerStatusContext } from "../../lib/containerStatusContext";
 import { readFirstRun } from "../../lib/firstRun";
 import { FirstRunFunnel } from "./FirstRunFunnel";
 
-const PROBE_MS = 5_000;
-const MAX_PROBES = 24; // ~2 minutes — covers the provisioning window.
-
 export function FirstRunGate({ children }: { children: ReactNode }) {
   const { user } = useUser();
-  const { getToken } = useAuth();
-  const getTokenRef = useRef(getToken);
-  getTokenRef.current = getToken;
-  const api = useMemo(
-    () => createApiClient(makeAdapter(() => getTokenRef.current())),
-    [],
-  );
+  const status = useContainerStatusContext();
 
   // Reactive: writeFirstRun({briefSubmitted:true}) re-renders useUser and
   // flips the gate off without any navigation.
   const briefSubmitted = readFirstRun(user).briefSubmitted === true;
-  const skip = !user || briefSubmitted;
 
-  // null = unknown (probe not resolved) → block on the neutral loading
-  // frame below: no funnel bypass, no funnel flash for eligible users.
-  const [trialLocal, setTrialLocal] = useState<boolean | null>(null);
-  const probesRef = useRef(0);
+  // `ready` only — NOT `starting`, which carries `onboarded` as well. See the
+  // docstring: the stepper wraps this gate on mobile, so a funnel opened
+  // before the container is ready can be unmounted by a promotion mid-brief.
+  const readyOnboarded =
+    status?.kind === "ready" ? status.onboarded : undefined;
 
-  useEffect(() => {
-    if (skip || trialLocal !== null) return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const probe = async () => {
-      try {
-        const account = (await api.get("/billing/account")) as {
-          subscription_status?: string | null;
-        } | null;
-        if (cancelled) return;
-        const status = account?.subscription_status ?? null;
-        // Null status = pre-signup / trial row not minted yet (the endpoint
-        // never 404s) — keep probing through the provisioning window.
-        if (status === null && probesRef.current < MAX_PROBES) {
-          probesRef.current += 1;
-          timer = setTimeout(() => void probe(), PROBE_MS);
-          return;
-        }
-        setTrialLocal(status === "trial_local");
-      } catch {
-        if (cancelled) return;
-        // Fail open right away — 403 (org member) is definitively out, and
-        // a launch-time network flake must not hold the loading frame
-        // through a retry window; eligibility re-evaluates on next mount.
-        setTrialLocal(false);
-      }
-    };
-    void probe();
-    return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
-    };
-  }, [skip, trialLocal, api]);
+  // Latch: only a definitive boolean arms it, and nothing ever disarms it, so
+  // a later transient kind or a dropped request leaves the last real answer
+  // standing. Written during render because it is derived purely from the
+  // current status — an effect would land a commit late and hand this render
+  // the stale value.
+  const onboardedRef = useRef<boolean | undefined>(undefined);
+  if (typeof readyOnboarded === "boolean") {
+    onboardedRef.current = readyOnboarded;
+  }
 
-  if (!skip && trialLocal === true) return <FirstRunFunnel />;
-  // Unresolved probe: block with a neutral frame instead of the shell —
-  // no funnel bypass, no funnel pop-in flash (see module docstring).
-  if (!skip && trialLocal === null) return <LoadingFrame />;
+  // `user` guard is load-bearing beyond null-safety: submitting writes
+  // user.unsafeMetadata, so without a loaded Clerk user the funnel would be
+  // a dead-end form (see FirstRunFunnel).
+  //
+  // `=== false` (strict) rather than `!== true`, so an unresolved/absent
+  // field never reads as eligible. This is a deliberate divergence from web,
+  // which treats a missing `onboarded` as NOT onboarded and shows the funnel.
+  // It is inert either way: the backend stamps a boolean on EVERY 200 body,
+  // including the synthetic provisioning one (routers/container.py's
+  // `_status_response` + the ensure_user_ready branch), so "ready with no
+  // `onboarded`" isn't a shape any live backend produces. Erring toward
+  // "don't show" is the right default for the one that would only ever come
+  // from a backend older than the field.
+  const eligible = !!user && !briefSubmitted && onboardedRef.current === false;
+
+  if (eligible) return <FirstRunFunnel />;
   return <>{children}</>;
 }
-
-/** Pulsing "8" on cream — same idiom as ProvisionGate's interstitial. */
-function LoadingFrame() {
-  const opacity = usePulse(true, 0.35);
-  return (
-    <View style={styles.loadingPage}>
-      <Animated.Text style={[styles.loadingGlyph, { opacity }]}>8</Animated.Text>
-      <Text style={styles.loadingText}>Getting things ready…</Text>
-    </View>
-  );
-}
-
-const styles = StyleSheet.create({
-  loadingPage: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    backgroundColor: colors.cream,
-  },
-  loadingGlyph: {
-    fontFamily: fonts.loraItalic,
-    fontSize: 48,
-    lineHeight: 56,
-    color: colors.forest,
-  },
-  loadingText: {
-    fontFamily: fonts.dmSans,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.mute,
-  },
-});

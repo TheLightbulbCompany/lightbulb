@@ -16,13 +16,20 @@ import { ServiceStack } from "../lib/stacks/service-stack";
  *
  * The `connections` (credential-vault) table itself was retired 2026-07-14 —
  * it had no remaining consumers, so the table and its pinned ARN export were
- * deleted outright. `oauth-state` is still live: this file continues to lock
- * in that its ARN export is pinned under its exact existing name, and that the
- * service stack grants it by name rather than importing the export.
+ * deleted outright. The `oauth-state` TABLE is still live, but its pinned ARN
+ * export was retired in #1291 (phase 2 of the two-phase removal), after
+ * `cloudformation list-imports` confirmed the export had zero importers.
  *
- * The export name is the live name published by isol8-<env>-database,
- * verified against deployed CloudFormation. The database stack is named
- * `isol8-<env>-database` here so `this.stackName` resolves to that name.
+ * So this file now locks in the END STATE of the decouple: neither credential
+ * table publishes an ARN export, and the service stack grants oauth-state by
+ * NAME rather than importing one. Re-introducing a cross-stack ARN reference
+ * (e.g. grantReadWriteData on oauthStateTable) would make CDK regenerate the
+ * auto-export and restore exactly the coupling that blocked renaming the table
+ * in the 2026-05-31 incident — which is what the assertions below prevent.
+ *
+ * The export name below is the historical live name published by
+ * isol8-<env>-database. The database stack is named `isol8-<env>-database`
+ * here so `this.stackName` resolves to that name.
  */
 
 const OAUTH_STATE_ARN_EXPORT = (env: string) =>
@@ -154,10 +161,23 @@ describe.each(["dev", "prod"] as const)(
       expect(Object.keys(connectionsResources)).toEqual([]);
     });
 
-    test("database stack retains the oauth-state ARN export under its exact live name", () => {
+    test("database stack no longer publishes the oauth-state ARN export", () => {
+      // Retired in #1291 (phase 2) once list-imports showed zero importers.
+      // Asserted on Outputs specifically: the table resource itself stays.
+      const outputs = JSON.stringify(database.toJSON().Outputs ?? {});
+      expect(outputs).not.toContain(OAUTH_STATE_ARN_EXPORT(environment));
+      expect(outputs).not.toContain("ExportsOutputFnGetAttOauthStateTable");
+    });
+
+    test("database stack still owns the oauth-state table and its NAME export", () => {
+      // The decouple removed the ARN export, not the table. The name export is
+      // a stable literal (`<stack>-oauth-state-table`), not a GetAtt auto-export,
+      // so it never created the rename-blocking coupling.
+      database.hasResourceProperties("AWS::DynamoDB::Table", {
+        TableName: `isol8-${environment}-oauth-state`,
+      });
       database.hasOutput("*", {
-        Export: { Name: OAUTH_STATE_ARN_EXPORT(environment) },
-        Value: { "Fn::GetAtt": ["OauthStateTable1D8479B9", "Arn"] },
+        Export: { Name: `isol8-${environment}-database-oauth-state-table` },
       });
     });
 

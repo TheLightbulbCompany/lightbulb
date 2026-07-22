@@ -1013,7 +1013,19 @@ async def change_provider(
             )
         from core.services.key_service import get_secret_arn
 
-        if not await get_secret_arn(clerk_user_id, byo_provider):
+        # Scoped to owner_id, NOT clerk_user_id. BYOK secrets are stored
+        # per-OWNER: every route in routers/settings_keys.py (list/set/delete)
+        # keys them on resolve_owner_id(auth), and the provisioner reads them
+        # back the same way (ecs_manager._build_byo_secrets_for_user). For a
+        # personal owner the two ids are identical, which is why this went
+        # unnoticed — but for an ORG they diverge (org_... vs user_...), so an
+        # org admin who had just saved a key hit a spurious `byo_key_missing`
+        # here and could never complete the switch.
+        #
+        # Contrast the chatgpt_oauth branch above, which correctly uses BOTH:
+        # OAuth tokens are per-HUMAN bound to a workspace, so they need the
+        # clerk id AND owner_id. A BYOK secret has no such per-human identity.
+        if not await get_secret_arn(owner_id, byo_provider):
             raise ChangeProviderError(
                 "byo_key_missing",
                 f"Save your {byo_provider.title()} API key before switching to BYO key.",

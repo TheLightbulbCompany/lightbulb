@@ -3148,3 +3148,74 @@ class TestProvisionLeaseFencing:
         )
         manager._ecs.describe_services = MagicMock(side_effect=RuntimeError("ecs down"))
         assert await manager.has_live_service("u") is True
+
+
+class TestProvisionFailureClassification:
+    """provision_user_container's own except block records the failure CAUSE
+    (last_error + retryable) on the error transition. This is the release that
+    actually lands on the common inner-failure path (it fires before
+    background_provision's, which then no-ops on the flipped status), and it is
+    the ONLY release for the deliberate doors (conversion / recover / admin)
+    that never pass through background_provision — so classification must happen
+    here or a deterministic 4xx would loop forever as retryable."""
+
+    @pytest.mark.asyncio
+    async def test_deterministic_inner_failure_records_not_retryable(self, manager, monkeypatch):
+        """A 4xx PaperclipApiError from the inner provision is deterministic —
+        the row's error transition records retryable=False + a cause, and the
+        exception still propagates."""
+        from core.services.paperclip_admin_client import PaperclipApiError
+
+        monkeypatch.setattr(
+            manager,
+            "_provision_user_container_inner",
+            AsyncMock(side_effect=PaperclipApiError("bad company slug", 400, {})),
+        )
+        release = AsyncMock()
+        monkeypatch.setattr("core.repositories.container_repo.release_provision_to_error", release)
+
+        with pytest.raises(PaperclipApiError):
+            await manager.provision_user_container("user_1", provider_choice="bedrock_claude", claim_id="claim-x")
+
+        assert release.await_args.args == ("user_1", "claim-x")
+        assert release.await_args.kwargs["retryable"] is False
+        assert release.await_args.kwargs["last_error"]
+
+    @pytest.mark.asyncio
+    async def test_transient_inner_failure_records_retryable(self, manager, monkeypatch):
+        """An EcsManagerError (AWS Spot / throttle / capacity) is transient
+        infra — retryable=True so the poll silently re-dispatches."""
+        monkeypatch.setattr(
+            manager,
+            "_provision_user_container_inner",
+            AsyncMock(side_effect=EcsManagerError("Failed to create ECS service: ThrottlingException", "user_1")),
+        )
+        release = AsyncMock()
+        monkeypatch.setattr("core.repositories.container_repo.release_provision_to_error", release)
+
+        with pytest.raises(EcsManagerError):
+            await manager.provision_user_container("user_1", provider_choice="bedrock_claude", claim_id="claim-x")
+
+        assert release.await_args.kwargs["retryable"] is True
+        assert release.await_args.kwargs["last_error"]
+
+    @pytest.mark.asyncio
+    async def test_superseded_inner_failure_does_not_release(self, manager, monkeypatch):
+        """A superseded run is caught by its own branch BEFORE the generic
+        handler — it must NOT release to error (the row belongs to the
+        superseding run). Guards that wiring the classifier into the generic
+        except didn't disturb the ProvisionSuperseded path."""
+        from core.repositories.container_repo import ProvisionSuperseded
+
+        monkeypatch.setattr(
+            manager,
+            "_provision_user_container_inner",
+            AsyncMock(side_effect=ProvisionSuperseded("taken over")),
+        )
+        release = AsyncMock()
+        monkeypatch.setattr("core.repositories.container_repo.release_provision_to_error", release)
+
+        with pytest.raises(ProvisionSuperseded):
+            await manager.provision_user_container("user_1", provider_choice="bedrock_claude", claim_id="claim-x")
+
+        release.assert_not_awaited()

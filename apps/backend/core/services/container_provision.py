@@ -113,15 +113,22 @@ async def background_provision(owner_id: str, clerk_user_id: str) -> None:
         # clobber the superseding run's state).
         logger.info("Provision for owner %s superseded by a deliberate reprovision — standing down", owner_id)
         _emit_provision_metric("superseded")
-    except Exception:
+    except Exception as exc:
         logger.exception("Background provisioning failed for owner %s", owner_id)
+        # Classify WHY it failed so the status endpoint can tell a transient
+        # failure (silently retried by the poll) from a deterministic one
+        # (surfaced to the owner instead of looped forever). Shared classifier
+        # lives in container_repo alongside the error transition it feeds.
+        last_error, retryable = container_repo.classify_provision_error(exc)
         # Release the lease into "error": immediately re-claimable, and the
         # status poll's existing error auto-retry re-dispatches — a failed
         # provision self-heals on the next ~3s poll instead of wedging the
         # owner behind a lease that only expires by staleness. Token-
         # conditioned, so if the lease was meanwhile taken over this no-ops.
         try:
-            await container_repo.release_provision_to_error(owner_id, claim_id)
+            await container_repo.release_provision_to_error(
+                owner_id, claim_id, last_error=last_error, retryable=retryable
+            )
         except Exception:  # noqa: BLE001 — release is best-effort
             logger.exception("Failed to release provision lease to error for owner %s", owner_id)
         # This fire-and-forget task swallows exceptions, so its failures are

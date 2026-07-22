@@ -1861,9 +1861,18 @@ class EcsManager:
             # A newer run owns the row now; write nothing over its state.
             put_metric("container.provision", dimensions={"status": "superseded"})
             raise
-        except Exception:
+        except Exception as exc:
+            # This is the release that ACTUALLY lands on the common inner-failure
+            # path: it fires before background_provision's own (which then no-ops
+            # on the already-flipped status), and it also covers the deliberate
+            # doors (conversion / recover / admin) that never reach
+            # background_provision. So the failure CAUSE must be classified and
+            # recorded HERE too, or a deterministic 4xx would loop as retryable.
+            last_error, retryable = _lease_repo.classify_provision_error(exc)
             try:
-                await _lease_repo.release_provision_to_error(user_id, claim_id)
+                await _lease_repo.release_provision_to_error(
+                    user_id, claim_id, last_error=last_error, retryable=retryable
+                )
             except Exception:  # noqa: BLE001 — release is best-effort
                 logger.exception("Failed to release provision lease for owner %s", user_id)
             raise

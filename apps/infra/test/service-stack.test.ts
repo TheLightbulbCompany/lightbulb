@@ -52,6 +52,8 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
       usageCountersTable: database.usageCountersTable,
       pendingUpdatesTable: database.pendingUpdatesTable,
       channelLinksTable: database.channelLinksTable,
+      companySlugsTable: database.companySlugsTable,
+      agentEmailAddressesTable: database.agentEmailAddressesTable,
       adminActionsTable: database.adminActionsTable,
       oauthTokensTable: database.oauthTokensTable,
       webhookDedupTable: database.webhookDedupTable,
@@ -78,6 +80,7 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
       metronomeWebhookSecret: `isol8/${environment}/metronome_webhook_secret`,
       resendApiKey: `isol8/${environment}/resend_api_key`,
       wsInternalSecret: `isol8/${environment}/ws_internal_secret`,
+      sesIngestSecret: `isol8/${environment}/ses_ingest_secret`,
     },
     kmsKeyArn: kmsKey.keyArn,
     container: {

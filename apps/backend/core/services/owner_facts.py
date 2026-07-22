@@ -22,7 +22,7 @@ import logging
 from datetime import datetime, timezone
 
 from core.containers.workspace import get_workspace
-from core.repositories import billing_repo
+from core.repositories import agent_email_repo, billing_repo
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ def format_provider_label(provider_choice: str | None, byo_provider: str | None)
     return f"unknown ({provider_choice})"
 
 
-def build_owner_facts(owner_id: str, billing_account: dict | None) -> dict:
+def build_owner_facts(owner_id: str, billing_account: dict | None, *, email_address: str | None = None) -> dict:
     """Render the facts dict from a billing row. Pure — no I/O."""
     from core.auth import is_org_owner_id
 
@@ -86,8 +86,31 @@ def build_owner_facts(owner_id: str, billing_account: dict | None) -> dict:
         "provider": format_provider_label(provider_choice, byo_provider),
         "provider_choice": provider_choice,
         "owner_kind": "org" if is_org_owner_id(owner_id) else "personal",
+        "email_address": email_address,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+async def _lookup_email_address(owner_id: str) -> str | None:
+    """The owner's advertised agent email, or None.
+
+    Selects the ``active`` row (aliases still route but are not advertised)
+    and breaks ties on the earliest ``created_at`` — a rare re-provision can
+    leave two active rows, and DynamoDB's return order is arbitrary, so an
+    unordered pick would make the agent's own address nondeterministic.
+    Never raises: the address is a nicety and must not stop the rest of the
+    facts from being written.
+    """
+    try:
+        rows = await agent_email_repo.query_by_owner(owner_id)
+    except Exception as e:  # noqa: BLE001 — facts must never block callers
+        logger.warning("owner_facts: agent-email lookup failed for %s: %s", owner_id, e)
+        return None
+    active = [r for r in rows if r.get("status") == "active"]
+    if not active:
+        return None
+    active.sort(key=lambda r: r.get("created_at") or "")
+    return active[0].get("address")
 
 
 async def write_owner_facts(owner_id: str, *, account_overrides: dict | None = None) -> None:
@@ -105,7 +128,7 @@ async def write_owner_facts(owner_id: str, *, account_overrides: dict | None = N
         account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True) or {}
         if account_overrides:
             account = {**account, **account_overrides}
-        facts = build_owner_facts(owner_id, account)
+        facts = build_owner_facts(owner_id, account, email_address=await _lookup_email_address(owner_id))
         get_workspace().write_file(owner_id, FACTS_FILENAME, json.dumps(facts, indent=2) + "\n")
     except Exception as e:  # noqa: BLE001 — facts must never block callers
         logger.warning("write_owner_facts: skipped for %s: %s", owner_id, e)

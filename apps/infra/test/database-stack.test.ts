@@ -274,3 +274,36 @@ describe("DatabaseStack — metronome fast-gate table (Phase 2)", () => {
     });
   });
 });
+
+describe("DatabaseStack — agent email + company identity tables", () => {
+  let template: Template;
+  beforeAll(() => {
+    template = buildStack("dev");
+  });
+
+  test("creates the company-slugs table with a by-owner GSI", () => {
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: Match.stringLikeRegexp("company-slugs$"),
+      KeySchema: [{ AttributeName: "slug", KeyType: "HASH" }],
+      GlobalSecondaryIndexes: Match.arrayWith([
+        Match.objectLike({
+          IndexName: "by-owner",
+          KeySchema: [{ AttributeName: "owner_id", KeyType: "HASH" }],
+        }),
+      ]),
+    });
+  });
+
+  test("creates the agent-email-addresses table with a by-owner GSI", () => {
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: Match.stringLikeRegexp("agent-email-addresses$"),
+      KeySchema: [{ AttributeName: "address", KeyType: "HASH" }],
+      GlobalSecondaryIndexes: Match.arrayWith([
+        Match.objectLike({
+          IndexName: "by-owner",
+          KeySchema: [{ AttributeName: "owner_id", KeyType: "HASH" }],
+        }),
+      ]),
+    });
+  });
+});

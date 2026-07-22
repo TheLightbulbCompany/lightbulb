@@ -3,8 +3,11 @@
 import { useState, useEffect } from "react";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 
+// Mirrors Paperclip's company record, which GET /settings returns raw.
+// The field is `name` — Paperclip strips unknown keys silently, so a
+// mismatched key here reads blank and saves as a no-op.
 interface CompanySettings {
-  displayName?: string;
+  name?: string;
   description?: string;
 }
 
@@ -18,7 +21,7 @@ export function SettingsPanel() {
 
   useEffect(() => {
     if (data) {
-      setName(data.displayName ?? "");
+      setName(data.name ?? "");
       setDesc(data.description ?? "");
     }
   }, [data]);
@@ -27,10 +30,10 @@ export function SettingsPanel() {
     setSaving(true);
     setErr(null);
     try {
-      // SECURITY: body contains ONLY {displayName, description}, matching
+      // SECURITY: body contains ONLY {name, description}, matching
       // PatchCompanySettingsBody (extra="forbid"). Adapter, plugin, and
       // instance settings are operator-controlled — defense in depth.
-      await patch("/settings", { displayName: name, description: desc });
+      await patch("/settings", { name, description: desc });
       mutate();
     } catch (e) {
       setErr(String(e));

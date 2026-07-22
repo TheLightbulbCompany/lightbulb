@@ -70,6 +70,12 @@ def client(ctx, monkeypatch):
     mark_onboarded = AsyncMock()
     monkeypatch.setattr(onboarding_mod.container_repo, "update_fields", mark_onboarded)
 
+    # Default: no first-contact token (agent email inactive / no active
+    # address yet) -- the inert-safe default so existing tests are
+    # unaffected. Individual tests override this to exercise the wiring.
+    mint_first_contact = AsyncMock(return_value=None)
+    monkeypatch.setattr(onboarding_mod, "mint_first_contact_token", mint_first_contact)
+
     app.dependency_overrides[get_current_user] = _personal_auth
     app.dependency_overrides[onboarding_mod._ctx] = lambda: ctx
     with TestClient(app) as c:
@@ -81,6 +87,7 @@ def client(ctx, monkeypatch):
         c.record = repo.record_onboarding_ids
         c.get_onboarding = repo.get_onboarding
         c.mark_onboarded = mark_onboarded
+        c.mint_first_contact = mint_first_contact
         yield c
     app.dependency_overrides.clear()
 
@@ -323,6 +330,55 @@ def test_post_seed_cleanup_is_failure_tolerant_and_preserves_the_original_error(
 
     client.admin.delete_goal.assert_awaited_once_with(session_cookie="cookie", goal_id="goal-1")
     client.release.assert_awaited_once_with("comp-1", holder=ANY)
+
+
+# --- Friday's first email (first-contact token wiring) -----------------------
+
+
+def test_mints_first_contact_token_with_owner_id_and_email(client):
+    """owner_id/owner_email come from ctx/auth, already in scope here."""
+    resp = client.post(
+        "/api/v1/onboarding/brief",
+        json={"path": "new", "input": "An agency"},
+    )
+    assert resp.status_code == 200
+    client.mint_first_contact.assert_awaited_once()
+    kwargs = client.mint_first_contact.await_args.kwargs
+    assert kwargs["owner_id"] == "user_abc"  # ctx.owner_id
+    assert kwargs["owner_email"] == "max@acme.com"  # auth.email
+    assert isinstance(kwargs["subject"], str) and kwargs["subject"]
+
+
+def test_bootstrap_carries_the_first_contact_token_when_minted(client):
+    client.mint_first_contact.return_value = "TOKEN_XYZ"
+
+    resp = client.post(
+        "/api/v1/onboarding/brief",
+        json={"path": "new", "input": "An agency"},
+    )
+    assert resp.status_code == 200
+
+    bootstrap_call = client.ws.write_file.call_args_list[1]
+    assert bootstrap_call.args[1] == "workspace-friday-uuid/BOOTSTRAP.md"
+    assert "TOKEN_XYZ" in bootstrap_call.args[2]
+    assert "scripts/isol8-mail.sh" in bootstrap_call.args[2]
+
+
+def test_bootstrap_omits_email_step_when_no_token_minted(client):
+    """Inert-safe default: mint_first_contact_token returning None (agent
+    email inactive, or no active address yet) must leave BOOTSTRAP.md with
+    no email step at all."""
+    client.mint_first_contact.return_value = None
+
+    resp = client.post(
+        "/api/v1/onboarding/brief",
+        json={"path": "new", "input": "An agency"},
+    )
+    assert resp.status_code == 200
+
+    bootstrap_call = client.ws.write_file.call_args_list[1]
+    assert bootstrap_call.args[1] == "workspace-friday-uuid/BOOTSTRAP.md"
+    assert "scripts/isol8-mail.sh" not in bootstrap_call.args[2]
 
 
 def test_seed_only_failure_does_not_attempt_rollback(client):

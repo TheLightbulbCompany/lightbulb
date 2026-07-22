@@ -21,7 +21,8 @@ describe("NewIssueDialog with parentId", () => {
       <NewIssueDialog open onOpenChange={() => {}} parentId="p1" parentLabel="ISO-1 Ship billing" />,
     );
     expect(screen.getByText(/ISO-1 Ship billing/)).toBeInTheDocument();
-    fireEvent.change(screen.getByPlaceholderText(/issue title/i), { target: { value: "Sub task" } });
+    // Placeholder is "Task title" since the Issues→Tasks rename (#1030).
+    fireEvent.change(screen.getByPlaceholderText(/task title/i), { target: { value: "Sub task" } });
     fireEvent.click(screen.getByRole("button", { name: /create/i }));
     await waitFor(() => expect(createChild).toHaveBeenCalledWith("p1", expect.objectContaining({ title: "Sub task" })));
     expect(create).not.toHaveBeenCalled();

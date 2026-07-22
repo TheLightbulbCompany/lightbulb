@@ -311,6 +311,58 @@ async def test_org_switch_away_revokes_owner_tokens_and_owner_keyed_file(
 
 
 @pytest.mark.asyncio
+async def test_org_byo_key_prereq_is_owner_scoped_not_clerk_user_scoped(
+    async_client_org_admin,
+    patch_background_provision,
+):
+    """An org's BYOK secret is stored under the ORG id, so the prerequisite
+    check must look it up there too.
+
+    Every route in routers/settings_keys.py (list/set/delete) keys the secret
+    on ``resolve_owner_id(auth)`` — org_id for an org — and the provisioner
+    reads it back the same way (``ecs_manager._build_byo_secrets_for_user``).
+    This check previously passed the CLERK user id instead. For a personal
+    owner the two ids are identical, which is exactly why it went unnoticed;
+    for an ORG they diverge, so an admin who had just saved a key got a
+    spurious ``byo_key_missing`` and could never complete the switch —
+    dead-ending the whole org BYO path, in-app and on web.
+
+    Contrast the chatgpt_oauth branch, which legitimately uses BOTH ids:
+    OAuth tokens are per-HUMAN bound to a workspace. A BYOK secret has no
+    such per-human identity.
+    """
+    org_account = {
+        "owner_id": "org_test_456",
+        "owner_type": "org",
+        "stripe_subscription_id": "sub_x",
+        "subscription_status": "active",
+        "provider_choice": "bedrock_claude",
+    }
+    with (
+        patch(
+            "core.repositories.billing_repo.get_by_owner_id",
+            new=AsyncMock(return_value=org_account),
+        ),
+        patch(
+            "core.repositories.billing_repo.set_provider_choice",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "core.services.key_service.get_secret_arn",
+            new=AsyncMock(return_value="arn:aws:secretsmanager:...:key"),
+        ) as mock_get_secret_arn,
+    ):
+        resp = await async_client_org_admin.post(
+            "/api/v1/billing/provider",
+            json={"provider_choice": "byo_key", "byo_provider": "anthropic"},
+        )
+
+    assert resp.status_code == 200, resp.text
+    # The ORG id — NOT the switching admin's personal clerk id.
+    mock_get_secret_arn.assert_awaited_once_with("org_test_456", "anthropic")
+
+
+@pytest.mark.asyncio
 async def test_personal_switch_away_still_revokes(
     async_client,
     patch_background_provision,

@@ -133,6 +133,24 @@ describe("FirstRunGate", () => {
     expect(screen.queryByText("APP")).toBeNull();
   });
 
+  // Parity check the other direction: the decision has NO owner-type branch
+  // left at all (that's the point of this slice), so the same fixture shape
+  // that used to be the ONLY eligible case (a personal trial_local owner)
+  // must still reach the funnel post-rewrite — this isn't a special case
+  // any more, just the same `ready && onboarded:false` check as everyone else.
+  it("still shows the funnel for a personal trial_local-shaped owner (no regression from the old billing-probe behavior)", async () => {
+    mockUseContainerStatusContext.mockReturnValue({ kind: "ready", onboarded: false });
+
+    await render(
+      <FirstRunGate>
+        <Text>APP</Text>
+      </FirstRunGate>,
+    );
+
+    expect(screen.getByText("Let’s get started.")).toBeTruthy();
+    expect(screen.queryByText("APP")).toBeNull();
+  });
+
   it("renders children for a ready container with onboarded:true", async () => {
     mockUseContainerStatusContext.mockReturnValue({ kind: "ready", onboarded: true });
 

@@ -67,3 +67,72 @@ describe("useContainerStatus parked + wake param", () => {
     await waitFor(() => expect(result.current.status.kind).toBe("ready"));
   });
 });
+
+// mobile onboarding-parity Slice 2: `onboarded` used to be discarded when
+// parsing the /container/status body. These prove it now surfaces on the
+// `ready` (and `starting`) ContainerStatus variants, since FirstRunGate's
+// funnel-eligibility decision reads it straight off this hook's status via
+// ContainerStatusContext (see containerStatusContext.test.tsx).
+describe("useContainerStatus onboarded field", () => {
+  beforeEach(() => {
+    mockFetch.mockReset();
+    setActive("active");
+  });
+
+  it("surfaces onboarded:false on the ready status", async () => {
+    mockFetch.mockResolvedValue({
+      status: 200,
+      body: { phase: "ready", onboarded: false },
+    });
+    const { result } = await renderHook(() => useContainerStatus());
+    await waitFor(() => expect(result.current.status.kind).toBe("ready"));
+    const status = result.current.status;
+    if (status.kind !== "ready") throw new Error(`expected ready, got ${status.kind}`);
+    expect(status.onboarded).toBe(false);
+  });
+
+  it("surfaces onboarded:true on the ready status", async () => {
+    mockFetch.mockResolvedValue({
+      status: 200,
+      body: { phase: "ready", onboarded: true },
+    });
+    const { result } = await renderHook(() => useContainerStatus());
+    await waitFor(() => expect(result.current.status.kind).toBe("ready"));
+    const status = result.current.status;
+    if (status.kind !== "ready") throw new Error(`expected ready, got ${status.kind}`);
+    expect(status.onboarded).toBe(true);
+  });
+
+  it("surfaces onboarded:true on the implicit-ready status (phase absent, old backend)", async () => {
+    mockFetch.mockResolvedValue({
+      status: 200,
+      body: { onboarded: true },
+    });
+    const { result } = await renderHook(() => useContainerStatus());
+    await waitFor(() => expect(result.current.status.kind).toBe("ready"));
+    const status = result.current.status;
+    if (status.kind !== "ready") throw new Error(`expected ready, got ${status.kind}`);
+    expect(status.onboarded).toBe(true);
+  });
+
+  it("leaves onboarded undefined when the field is absent from the body (old backend, no false negative)", async () => {
+    mockFetch.mockResolvedValue({ status: 200, body: { phase: "ready" } });
+    const { result } = await renderHook(() => useContainerStatus());
+    await waitFor(() => expect(result.current.status.kind).toBe("ready"));
+    const status = result.current.status;
+    if (status.kind !== "ready") throw new Error(`expected ready, got ${status.kind}`);
+    expect(status.onboarded).toBeUndefined();
+  });
+
+  it("also surfaces onboarded on the starting status", async () => {
+    mockFetch.mockResolvedValue({
+      status: 200,
+      body: { phase: "agent", onboarded: false },
+    });
+    const { result } = await renderHook(() => useContainerStatus());
+    await waitFor(() => expect(result.current.status.kind).toBe("starting"));
+    const status = result.current.status;
+    if (status.kind !== "starting") throw new Error(`expected starting, got ${status.kind}`);
+    expect(status.onboarded).toBe(false);
+  });
+});

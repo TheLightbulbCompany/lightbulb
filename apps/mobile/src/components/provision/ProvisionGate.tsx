@@ -49,6 +49,7 @@ import {
   useContainerStatus,
   type ContainerStatus,
 } from "../../lib/containerStatus";
+import { ContainerStatusContext } from "../../lib/containerStatusContext";
 import { ByoKeyScreen } from "./ByoKeyScreen";
 import { ChatGPTConnectScreen } from "./ChatGPTConnectScreen";
 
@@ -295,16 +296,25 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
   // healthy and one intent away from running, so it must never blank the chat
   // or spin forever. Foregrounding already fired a wake in parallel and the
   // poll carries wake=1, so both bars auto-clear to `ready`.
+  //
+  // `children` only ever mounts from this branch on (every earlier return
+  // above replaces the whole tree with an interstitial), so this is the one
+  // place that needs to hand the polled status down via
+  // ContainerStatusContext — FirstRunGate reads it from there instead of
+  // running its own second `/container/status`-adjacent poll (mobile
+  // onboarding-parity Slice 2).
   return (
-    <View style={styles.root}>
-      {status.kind === "starting" && (
-        <StartingBanner label="Your workspace is starting…" />
-      )}
-      {status.kind === "parked" && (
-        <StartingBanner label="Waking your agents…" />
-      )}
-      {children}
-    </View>
+    <ContainerStatusContext.Provider value={status}>
+      <View style={styles.root}>
+        {status.kind === "starting" && (
+          <StartingBanner label="Your workspace is starting…" />
+        )}
+        {status.kind === "parked" && (
+          <StartingBanner label="Waking your agents…" />
+        )}
+        {children}
+      </View>
+    </ContainerStatusContext.Provider>
   );
 }
 

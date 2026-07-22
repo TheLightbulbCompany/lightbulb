@@ -38,6 +38,10 @@ jest.mock("../ByoKeyScreen", () => {
 });
 
 import { ProvisionGate } from "../ProvisionGate";
+// Real (unmocked) module — only `react`-dependent, so it's safe to load for
+// real here and lets this file prove ProvisionGate actually wires its
+// polled status into the context, not just that its own mocked hook works.
+import { useContainerStatusContext } from "../../../lib/containerStatusContext";
 
 // NOTE (mobile onboarding-parity Slice 4): written against the same
 // mocking conventions proven in FirstRunGate.test.tsx and
@@ -149,5 +153,87 @@ describe("ProvisionGate provider sign-in routing", () => {
     expect(screen.getByText("Pick how to power your agents")).toBeTruthy();
     expect(screen.queryByText("MOCK_CHATGPT_CONNECT_SCREEN")).toBeNull();
     expect(screen.queryByText("MOCK_BYO_KEY_SCREEN")).toBeNull();
+  });
+});
+
+/** Renders what useContainerStatusContext() sees, so the assertions below
+ * can prove ProvisionGate actually forwards its polled status rather than
+ * just rendering children blindly. Narrows via `status.kind` (not the `in`
+ * operator) so "key absent" and "key present but undefined" — both real
+ * shapes useContainerStatus can produce — render identically, as "undefined". */
+function StatusConsumer() {
+  const status = useContainerStatusContext();
+  if (!status) return <Text>STATUS:none</Text>;
+  const onboarded =
+    status.kind === "ready" || status.kind === "starting"
+      ? String(status.onboarded)
+      : "n/a";
+  return <Text>{`STATUS:${status.kind}:${onboarded}`}</Text>;
+}
+
+// mobile onboarding-parity Slice 2: ProvisionGate now provides the SAME
+// status it polls to descendants via ContainerStatusContext, so FirstRunGate
+// can read `onboarded` without a second poller. This is the wiring proof —
+// FirstRunGate's own tests mock this context hook directly and so would not
+// catch a mistake here (e.g. forgetting the Provider, or wrapping with a
+// stale value).
+describe("ProvisionGate container-status context", () => {
+  beforeEach(() => {
+    mockRefetch.mockReset();
+    mockUseContainerStatus.mockReset();
+  });
+
+  it("provides the polled ready status (with onboarded) to descendants", async () => {
+    mockUseContainerStatus.mockReturnValue({
+      status: { kind: "ready", onboarded: false },
+      refetch: mockRefetch,
+    });
+
+    await render(
+      <ProvisionGate>
+        <StatusConsumer />
+      </ProvisionGate>,
+    );
+
+    expect(screen.getByText("STATUS:ready:false")).toBeTruthy();
+  });
+
+  it("still provides the status via context while starting (banner + context both active)", async () => {
+    mockUseContainerStatus.mockReturnValue({
+      status: { kind: "starting" },
+      refetch: mockRefetch,
+    });
+
+    await render(
+      <ProvisionGate>
+        <StatusConsumer />
+      </ProvisionGate>,
+    );
+
+    expect(screen.getByText("STATUS:starting:undefined")).toBeTruthy();
+    expect(screen.getByText("Your workspace is starting…")).toBeTruthy();
+  });
+
+  it("does NOT provide children (or the context) while blocked — the interstitial replaces the tree", async () => {
+    mockUseContainerStatus.mockReturnValue({
+      status: {
+        kind: "blocked",
+        code: "credits_required",
+        title: "Top up Claude credits to start your container",
+        message: null,
+        href: null,
+        actionLabel: null,
+        adminOnly: false,
+      },
+      refetch: mockRefetch,
+    });
+
+    await render(
+      <ProvisionGate>
+        <StatusConsumer />
+      </ProvisionGate>,
+    );
+
+    expect(screen.queryByText(/^STATUS:/)).toBeNull();
   });
 });

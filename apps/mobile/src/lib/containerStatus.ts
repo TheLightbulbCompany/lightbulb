@@ -17,6 +17,13 @@
  * `getToken` behind a ref so the adapter config is built exactly once. The
  * poll interval reads the latest status via `status.kind` in its effect dep —
  * NOT by recreating the api client each tick.
+ *
+ * `ready` (and `starting`, when the body carries one) also surfaces the
+ * per-CONTAINER `onboarded` fact straight from the body (mobile
+ * onboarding-parity Slice 2) — see `containerStatusContext.ts` for how
+ * FirstRunGate reads this SAME poll instead of running a second one.
+ * `undefined` means "not known" (old backend / not-yet-ready) and callers
+ * must treat that as onboarded-enough to skip the funnel, never as false.
  */
 import { useAuth } from "@clerk/clerk-expo";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -28,8 +35,8 @@ import { isPresent } from "./presence";
 
 export type ContainerStatus =
   | { kind: "loading" }
-  | { kind: "ready" }
-  | { kind: "starting"; phase?: string; substatus?: string }
+  | { kind: "ready"; onboarded?: boolean }
+  | { kind: "starting"; phase?: string; substatus?: string; onboarded?: boolean }
   | { kind: "parked" }
   | { kind: "teamPending" }
   | {
@@ -56,6 +63,15 @@ interface StatusBody {
   status?: string;
   substatus?: string;
   phase?: string;
+  /**
+   * Per-container onboarding fact (backend `container.py` `_status_response`:
+   * `container.onboarded_at is not None`). An org shares one container, so
+   * this is the whole org's "first-run funnel done" signal, not per-user —
+   * see FirstRunGate. A current backend always includes this on the 200
+   * body; optional here so an absent field (old backend / malformed
+   * fixture) degrades to `undefined` rather than a false negative.
+   */
+  onboarded?: boolean;
 }
 
 const POLL_INTERVAL_MS = 5_000;
@@ -89,7 +105,7 @@ export function useContainerStatus() {
         const info = (body ?? {}) as StatusBody;
         // phase absent (older backend / plain running box) → treat as ready.
         if (info.phase == null || info.phase === "ready") {
-          next = { kind: "ready" };
+          next = { kind: "ready", onboarded: info.onboarded };
         } else if (info.phase === "parked") {
           // Deliberately-asleep trial box (wake-gated). Distinct from a cold
           // start: it's healthy, one intent away from running, so it must NOT
@@ -101,6 +117,7 @@ export function useContainerStatus() {
             kind: "starting",
             phase: info.phase,
             substatus: info.substatus,
+            onboarded: info.onboarded,
           };
         }
       }

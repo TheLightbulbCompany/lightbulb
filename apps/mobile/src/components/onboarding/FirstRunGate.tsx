@@ -1,140 +1,69 @@
 /**
  * First-run eligibility host — the mobile counterpart of the web's
- * ProvisioningStepper branch (`isTrialLocal && gatePhase === "normal" &&
- * !firstRun.briefSubmitted → <FirstRunFunnel/>`).
+ * ProvisioningStepper branch (`!containerOnboarded && !firstRun.briefSubmitted
+ * → <FirstRunFunnel/>`, see apps/frontend/src/components/chat/ProvisioningStepper.tsx).
  *
- * Mounts INSIDE ProvisionGate, so blocked/team-pending interstitials always
- * win (the web's gatePhase === "normal" requirement). Renders the funnel
- * full-screen INSTEAD of the tab shell for an eligible user; everyone else
- * falls through to children immediately.
+ * Mounts INSIDE ProvisionGate (see (app)/_layout.tsx), so blocked /
+ * team-pending interstitials always win: ProvisionGate only ever renders
+ * `children` — i.e. this component — once it has resolved past those.
+ * Renders the funnel full-screen INSTEAD of the tab shell for an eligible
+ * user; everyone else falls through to children immediately.
  *
- * Eligibility = personal `trial_local` owner who hasn't submitted the
- * brief. The briefSubmitted check is a local Clerk-metadata read, so every
- * onboarded user skips the billing probe entirely. For a brand-new signup
- * the `trial_local` row is created as a side effect of the very first
- * `GET /container/status` (which ProvisionGate is polling in parallel) —
- * and `GET /billing/account` NEVER 404s: a row-less user gets 200 with
- * `subscription_status: null` (billing.py "pre-signup defaults"). So a
- * null status means "not yet" — re-probe on a provisioning-window cadence,
- * bounded so a genuinely row-less account eventually falls through to the
- * normal shell. Any non-null status is definitive either way; 403 (org
- * member) is definitive: not eligible.
+ * Eligibility = ANY owner (org or personal) whose CONTAINER hasn't been
+ * onboarded yet and who hasn't locally submitted the brief. "Have we
+ * onboarded?" is a PER-CONTAINER fact, not per-user (mobile
+ * onboarding-parity Slice 2, matching the web): an org shares one
+ * container, so onboarding happens once for the whole org — the backend
+ * stamps `container.onboarded_at` and surfaces it as `onboarded` on
+ * `/container/status`, so once anyone on the container completes the
+ * funnel, no one on it — including a second org member whose own local
+ * marker is empty — sees it again. Before this slice, this gate only ever
+ * probed `/billing/account` for `trial_local`, which is `false` for every
+ * org owner — org owners never saw the funnel at all. That probe is gone.
  *
- * While the probe is unresolved the gate BLOCKS with a neutral loading
- * frame (web parity — ProvisioningStepper renders its own loading phase
- * while deciding): rendering the shell first would let a not-yet-briefed
- * trial user slip into chat past the no-skip funnel, and swapping the
- * funnel in a beat later flashes. The block is one round-trip for anyone
- * with a billing row; only the row-less fresh signup (who has no working
- * chat behind the gate anyway) waits through the null-status re-probes.
- * Probe FAILURES fail open immediately — an offline legacy user must not
- * stare at a loading frame for a retry window; eligibility simply
- * re-evaluates on the next mount.
+ * The status comes from `useContainerStatusContext()` — the SAME
+ * `/container/status` poll ProvisionGate already runs, read via React
+ * Context instead of a second fetch (collapses what used to be two
+ * independent pollers into one). `briefSubmitted` stays a local
+ * Clerk-metadata latch (reactive: `writeFirstRun({briefSubmitted:true})`
+ * re-renders `useUser` and flips the gate off without navigation), so the
+ * submitter doesn't see a flash between submitting and the next poll
+ * flipping `onboarded`.
+ *
+ * UNKNOWN is treated as "don't show, don't block": anything other than a
+ * definitive `{kind:"ready", onboarded:false}` — loading, starting, parked,
+ * unreachable, or no provider above this component at all — falls through
+ * to children. There is deliberately no blocking loading frame here (unlike
+ * the old billing probe): trapping the user on a spinner over a
+ * transient/unresolved read is worse than the funnel appearing one poll
+ * late once `ready` + `onboarded:false` actually resolves.
  */
-import { useAuth, useUser } from "@clerk/clerk-expo";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Animated, StyleSheet, Text, View } from "react-native";
-import { createApiClient } from "@isol8/shared";
+import { useUser } from "@clerk/clerk-expo";
+import type { ReactNode } from "react";
 
-import { usePulse } from "../chat/usePulse";
-import { colors, fonts } from "../../config/theme";
-import { makeAdapter } from "../../lib/adapter";
+import { useContainerStatusContext } from "../../lib/containerStatusContext";
 import { readFirstRun } from "../../lib/firstRun";
 import { FirstRunFunnel } from "./FirstRunFunnel";
 
-const PROBE_MS = 5_000;
-const MAX_PROBES = 24; // ~2 minutes — covers the provisioning window.
-
 export function FirstRunGate({ children }: { children: ReactNode }) {
   const { user } = useUser();
-  const { getToken } = useAuth();
-  const getTokenRef = useRef(getToken);
-  getTokenRef.current = getToken;
-  const api = useMemo(
-    () => createApiClient(makeAdapter(() => getTokenRef.current())),
-    [],
-  );
+  const status = useContainerStatusContext();
 
   // Reactive: writeFirstRun({briefSubmitted:true}) re-renders useUser and
   // flips the gate off without any navigation.
   const briefSubmitted = readFirstRun(user).briefSubmitted === true;
-  const skip = !user || briefSubmitted;
 
-  // null = unknown (probe not resolved) → block on the neutral loading
-  // frame below: no funnel bypass, no funnel flash for eligible users.
-  const [trialLocal, setTrialLocal] = useState<boolean | null>(null);
-  const probesRef = useRef(0);
+  // `user` guard is load-bearing beyond null-safety: submitting writes
+  // user.unsafeMetadata, so without a loaded Clerk user the funnel would be
+  // a dead-end form (see FirstRunFunnel). `status?.onboarded === false`
+  // (strict) rather than `!== true` so an unresolved/absent field never
+  // reads as eligible.
+  const eligible =
+    !!user &&
+    !briefSubmitted &&
+    status?.kind === "ready" &&
+    status.onboarded === false;
 
-  useEffect(() => {
-    if (skip || trialLocal !== null) return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const probe = async () => {
-      try {
-        const account = (await api.get("/billing/account")) as {
-          subscription_status?: string | null;
-        } | null;
-        if (cancelled) return;
-        const status = account?.subscription_status ?? null;
-        // Null status = pre-signup / trial row not minted yet (the endpoint
-        // never 404s) — keep probing through the provisioning window.
-        if (status === null && probesRef.current < MAX_PROBES) {
-          probesRef.current += 1;
-          timer = setTimeout(() => void probe(), PROBE_MS);
-          return;
-        }
-        setTrialLocal(status === "trial_local");
-      } catch {
-        if (cancelled) return;
-        // Fail open right away — 403 (org member) is definitively out, and
-        // a launch-time network flake must not hold the loading frame
-        // through a retry window; eligibility re-evaluates on next mount.
-        setTrialLocal(false);
-      }
-    };
-    void probe();
-    return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
-    };
-  }, [skip, trialLocal, api]);
-
-  if (!skip && trialLocal === true) return <FirstRunFunnel />;
-  // Unresolved probe: block with a neutral frame instead of the shell —
-  // no funnel bypass, no funnel pop-in flash (see module docstring).
-  if (!skip && trialLocal === null) return <LoadingFrame />;
+  if (eligible) return <FirstRunFunnel />;
   return <>{children}</>;
 }
-
-/** Pulsing "8" on cream — same idiom as ProvisionGate's interstitial. */
-function LoadingFrame() {
-  const opacity = usePulse(true, 0.35);
-  return (
-    <View style={styles.loadingPage}>
-      <Animated.Text style={[styles.loadingGlyph, { opacity }]}>8</Animated.Text>
-      <Text style={styles.loadingText}>Getting things ready…</Text>
-    </View>
-  );
-}
-
-const styles = StyleSheet.create({
-  loadingPage: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    backgroundColor: colors.cream,
-  },
-  loadingGlyph: {
-    fontFamily: fonts.loraItalic,
-    fontSize: 48,
-    lineHeight: 56,
-    color: colors.forest,
-  },
-  loadingText: {
-    fontFamily: fonts.dmSans,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.mute,
-  },
-});

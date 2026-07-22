@@ -5,9 +5,9 @@ import { describe, test, expect } from "vitest";
 import { NAV_ACTIONS, filterNavActions } from "@/components/teams/command-palette/commandPaletteActions";
 
 describe("filterNavActions", () => {
-  test("empty query returns all 13 actions", () => {
-    expect(filterNavActions("")).toHaveLength(13);
-    expect(filterNavActions("   ")).toHaveLength(13);
+  test("empty query returns all 11 actions", () => {
+    expect(filterNavActions("")).toHaveLength(11);
+    expect(filterNavActions("   ")).toHaveLength(11);
   });
 
   test("substring matches label (case-insensitive)", () => {
@@ -21,15 +21,18 @@ describe("filterNavActions", () => {
     expect(filterNavActions("hierarchy").map((a) => a.id)).toEqual(["go-org-chart"]);
   });
 
-  test("the retired Members action is gone", () => {
-    expect(NAV_ACTIONS.map((a) => a.id)).not.toContain("go-members");
+  test("the retired Members / Skills / Costs actions are gone", () => {
+    const ids = NAV_ACTIONS.map((a) => a.id);
+    expect(ids).not.toContain("go-members"); // #1022
+    expect(ids).not.toContain("go-skills"); // #1175 — Teams skills panel retired
+    expect(ids).not.toContain("go-costs"); // #1236 — spend moved to the usage surfaces
   });
 
   test("returns empty when no match", () => {
     expect(filterNavActions("xyzzy")).toHaveLength(0);
   });
 
-  test("NAV_ACTIONS is exported with 13 entries", () => {
-    expect(NAV_ACTIONS).toHaveLength(13);
+  test("NAV_ACTIONS is exported with 11 entries", () => {
+    expect(NAV_ACTIONS).toHaveLength(11);
   });
 });

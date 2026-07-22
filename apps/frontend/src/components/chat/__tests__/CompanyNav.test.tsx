@@ -2,18 +2,20 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { CompanyNav } from "../CompanyNav";
 
+// The live nav set. "Issues" was renamed to "Tasks" and Members removed
+// (#1022), Costs cut (#1003), Skills retired for in-app ClawHub search
+// (#1175); Artifacts (#1307) and Search (#1312) were added.
 const ALL_LABELS = [
   "Dashboard",
+  "Search",
   "Inbox",
-  "Issues",
+  "Tasks",
   "Routines",
   "Goals",
   "Projects",
   "Org chart",
-  "Skills",
-  "Costs",
+  "Artifacts",
   "Activity",
-  "Members",
 ];
 
 describe("CompanyNav", () => {
@@ -31,7 +33,8 @@ describe("CompanyNav", () => {
   it("emits the teams- panel key on click", () => {
     const onPanelChange = vi.fn();
     render(<CompanyNav onPanelChange={onPanelChange} />);
-    fireEvent.click(screen.getByText("Issues"));
+    // Label is "Tasks"; the panel key stayed `teams-issues`.
+    fireEvent.click(screen.getByText("Tasks"));
     expect(onPanelChange).toHaveBeenCalledWith("teams-issues");
   });
   it("marks the active item with the forest accent", () => {
@@ -39,10 +42,14 @@ describe("CompanyNav", () => {
     const btn = screen.getByText("Routines").closest("button");
     expect(btn?.className).toMatch(/forest/);
   });
-  it("is a shrinkable scroll region so the expanded nav can't clip the sidebar", () => {
+  it("owns no scroll region — the shared .sidebar-scroll wrapper owns the single scroll", () => {
+    // Inverted deliberately in #1002: the nav used to carry its own
+    // `min-h-0 overflow-y-auto`, which nested a second scroll inside
+    // `.sidebar-scroll` and collapsed the roster's height. Re-adding any
+    // overflow/scroll class here reintroduces that bug.
     render(<CompanyNav />);
     const nav = screen.getByRole("navigation", { name: "Company" });
-    expect(nav.className).toMatch(/min-h-0/);
-    expect(nav.className).toMatch(/overflow-y-auto/);
+    expect(nav.className).not.toMatch(/overflow-/);
+    expect(nav.className).not.toMatch(/\boverscroll-/);
   });
 });

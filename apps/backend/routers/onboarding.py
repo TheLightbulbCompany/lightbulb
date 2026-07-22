@@ -34,6 +34,7 @@ from core.containers import get_workspace
 from core.observability.product_analytics import capture_product_event
 from core.repositories import container_repo
 from core.repositories.paperclip_repo import OnboardingClaimResult, PaperclipRepo
+from core.services.agent_mail_token import mint_first_contact_token
 from core.services.paperclip_admin_client import PaperclipApiError
 from core.services.onboarding_brief import (
     derive_goal_title,
@@ -187,7 +188,26 @@ async def submit_brief(
             display_name=first_name,
             email=auth.email or "",
         )
-        bootstrap_md = render_first_run_bootstrap(first_name=first_name, goal_id=goal_id, project_id=project_id)
+        # Mint Friday's first-contact token before rendering BOOTSTRAP.md so
+        # the instruction can embed it. This is inert-safe by construction:
+        # mint_first_contact_token never raises and returns None whenever
+        # agent email is inactive or the owner has no active address yet,
+        # in which case render_first_run_bootstrap renders with no email
+        # step at all. There is no company name in scope yet at this point
+        # in the flow (Friday names the company herself, later in the
+        # session this same BOOTSTRAP.md kicks off) -- a warm generic
+        # subject is the honest choice here, not a placeholder to fix later.
+        first_contact_token = await mint_first_contact_token(
+            owner_id=ctx.owner_id,
+            owner_email=auth.email or "",
+            subject="A first look at your business",
+        )
+        bootstrap_md = render_first_run_bootstrap(
+            first_name=first_name,
+            goal_id=goal_id,
+            project_id=project_id,
+            first_contact_token=first_contact_token,
+        )
 
         # Recorded BEFORE staging the workspace files, not after: this is
         # the holder-guarded write that actually decides who wins the steal

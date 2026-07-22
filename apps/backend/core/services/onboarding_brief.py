@@ -153,6 +153,32 @@ founding record. Your real working context is IDENTITY.md, SOUL.md,
 USER.md, MISSION.md, and MEMORY.md.
 """
 
+# Appended after the main template, ONLY when a first-contact token was
+# minted (agent email active + an active address already provisioned for
+# this owner). Sits between the closing chat recap and "## After this
+# session" -- it is the session's very last piece of OUTPUT, after the
+# research and the docs are already written.
+_FIRST_CONTACT_EMAIL_BLOCK = """\
+## Send your first email
+
+Before you wrap up, send {first_name} a first email of your own — a
+proactive note, not a reply to anything. Introduce yourself, show them
+you already understand their business (reference something specific from
+what you just researched — their market, their competitors, what you
+found), and give them one concrete first take or plan. Keep it warm and
+short: specific to THEIR business, never generic. Close by inviting them
+to just reply if they want to talk it through.
+
+Send it exactly like this — the token below is yours alone, it can only
+reach {first_name}, and only for this one email:
+
+```
+printf '%s' "<your email, written out>" | scripts/isol8-mail.sh "{first_contact_token}"
+```\
+"""
+
+_SECTION_MARKER = "\n\n## After this session"
+
 
 def render_brief_md(
     *,
@@ -174,12 +200,31 @@ def render_brief_md(
     )
 
 
-def render_first_run_bootstrap(*, first_name: str, goal_id: str, project_id: str) -> str:
-    return _FIRST_RUN_BOOTSTRAP_TEMPLATE.format(
+def render_first_run_bootstrap(
+    *,
+    first_name: str,
+    goal_id: str,
+    project_id: str,
+    first_contact_token: str | None = None,
+) -> str:
+    """Render BOOTSTRAP.md. ``first_contact_token`` is None when agent email
+    is inactive or the owner has no active agent-email address yet
+    (``mint_first_contact_token``'s inert-safe cases) — in that case the
+    rendered file is byte-identical to before this feature existed: no
+    email step at all.
+    """
+    rendered = _FIRST_RUN_BOOTSTRAP_TEMPLATE.format(
         first_name=first_name,
         goal_id=goal_id,
         project_id=project_id,
     )
+    if first_contact_token is None:
+        return rendered
+    email_section = _FIRST_CONTACT_EMAIL_BLOCK.format(
+        first_name=first_name,
+        first_contact_token=first_contact_token,
+    )
+    return rendered.replace(_SECTION_MARKER, f"\n\n{email_section}{_SECTION_MARKER}", 1)
 
 
 _MAX_GOAL_TITLE = 120

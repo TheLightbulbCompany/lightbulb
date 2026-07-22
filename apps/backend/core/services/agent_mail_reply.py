@@ -71,10 +71,15 @@ async def send_reply(*, ctx: dict, body_text: str, body_html: str | None = None)
             headers["In-Reply-To"] = in_reply_to
             headers["References"] = in_reply_to
 
+        # A first contact (no in_reply_to -- no thread to answer) is a brand
+        # new email Friday is sending unprompted, not a reply -- prepending
+        # "Re: " to it would be a lie about what it is.
+        subject = ctx["subject"] if not in_reply_to else reply_subject(ctx["subject"])
+
         message_id = await ses_email.send_ses_reply(
             from_addr=from_addr,
             to=ctx["reply_to"],
-            subject=reply_subject(ctx["subject"]),
+            subject=subject,
             body_text=body_text,
             body_html=body_html,
             headers=(headers or None),

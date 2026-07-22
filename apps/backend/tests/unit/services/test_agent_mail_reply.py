@@ -86,6 +86,67 @@ async def test_send_reply_happy_path(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_send_reply_first_contact_uses_subject_verbatim_no_re_prefix(monkeypatch):
+    """A first contact (empty in_reply_to) is a brand-new email, not a reply --
+    it must not get the "Re: " prefix reply_subject would otherwise add."""
+    monkeypatch.setattr(agent_mail_reply.settings, "AGENT_EMAIL_DOMAIN", "agents.isol8.co")
+    monkeypatch.setattr(
+        agent_mail_reply.agent_email_repo,
+        "query_by_owner",
+        AsyncMock(
+            return_value=[
+                {"address": "friday@agents.isol8.co", "agent_id": "a1", "status": "active"},
+            ]
+        ),
+    )
+    send_mock = AsyncMock(return_value="ses-123")
+    monkeypatch.setattr(agent_mail_reply.ses_email, "send_ses_reply", send_mock)
+
+    ctx = {
+        "owner_id": "o",
+        "agent_id": "a1",
+        "reply_to": "owner@x.com",
+        "in_reply_to": "",
+        "subject": "Getting started with Acme",
+    }
+    result = await agent_mail_reply.send_reply(ctx=ctx, body_text="hi there")
+
+    assert result == "sent"
+    _, kwargs = send_mock.call_args
+    assert kwargs["subject"] == "Getting started with Acme"
+    assert kwargs["headers"] is None
+
+
+@pytest.mark.asyncio
+async def test_send_reply_with_in_reply_to_still_gets_re_prefix(monkeypatch):
+    monkeypatch.setattr(agent_mail_reply.settings, "AGENT_EMAIL_DOMAIN", "agents.isol8.co")
+    monkeypatch.setattr(
+        agent_mail_reply.agent_email_repo,
+        "query_by_owner",
+        AsyncMock(
+            return_value=[
+                {"address": "friday@agents.isol8.co", "agent_id": "a1", "status": "active"},
+            ]
+        ),
+    )
+    send_mock = AsyncMock(return_value="ses-123")
+    monkeypatch.setattr(agent_mail_reply.ses_email, "send_ses_reply", send_mock)
+
+    ctx = {
+        "owner_id": "o",
+        "agent_id": "a1",
+        "reply_to": "owner@x.com",
+        "in_reply_to": "<m@x>",
+        "subject": "Getting started with Acme",
+    }
+    result = await agent_mail_reply.send_reply(ctx=ctx, body_text="hi there")
+
+    assert result == "sent"
+    _, kwargs = send_mock.call_args
+    assert kwargs["subject"] == "Re: Getting started with Acme"
+
+
+@pytest.mark.asyncio
 async def test_send_reply_returns_not_sent_when_send_ses_reply_returns_none(monkeypatch):
     """send_ses_reply returns None (never raises) when SES send fails or agent
     email is disabled. That must not be reported as "sent" — the agent would

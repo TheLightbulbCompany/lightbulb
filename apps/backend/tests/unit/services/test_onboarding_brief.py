@@ -120,6 +120,77 @@ def test_bootstrap_renders_with_braces_intact():
     assert "{{" not in md
 
 
+# --- Friday's first email (first_contact_token) ------------------------------
+
+
+def test_bootstrap_omits_email_step_when_token_is_none():
+    """Email gated inert -- when no token is available (email inactive or no
+    active address yet), the bootstrap renders exactly as it did before this
+    feature existed: no email step at all."""
+    md = render_first_run_bootstrap(first_name="Max", goal_id="goal-1", project_id="proj-1")
+    assert "isol8-mail.sh" not in md
+    assert "first email" not in md.lower()
+
+    # Passing the new param explicitly as None must be identical to omitting it.
+    md_explicit_none = render_first_run_bootstrap(
+        first_name="Max", goal_id="goal-1", project_id="proj-1", first_contact_token=None
+    )
+    assert md_explicit_none == md
+
+
+def test_bootstrap_includes_email_step_when_token_present():
+    md = render_first_run_bootstrap(
+        first_name="Max",
+        goal_id="goal-1",
+        project_id="proj-1",
+        first_contact_token="TOKEN_ABC123",
+    )
+    assert "first email" in md.lower()
+    assert "scripts/isol8-mail.sh" in md
+    # The actual token must be embedded verbatim so it can be run as-is.
+    assert '"TOKEN_ABC123"' in md
+    assert "Max" in md.split("## Send your first email", 1)[1]
+
+
+def test_bootstrap_email_step_comes_after_the_research_and_docs_work():
+    """The instruction is to send the email only after she's read BRIEF.md and
+    researched the business -- it must appear after the research/docs steps,
+    not stapled onto the very front of the file."""
+    md = render_first_run_bootstrap(
+        first_name="Max",
+        goal_id="goal-1",
+        project_id="proj-1",
+        first_contact_token="TOKEN_ABC123",
+    )
+    assert md.index("MISSION.md") < md.index("## Send your first email")
+    assert md.index("three best next") < md.index("## Send your first email")
+
+
+def test_bootstrap_email_step_emphasizes_warmth_and_specificity():
+    md = render_first_run_bootstrap(
+        first_name="Max",
+        goal_id="goal-1",
+        project_id="proj-1",
+        first_contact_token="TOKEN_ABC123",
+    )
+    section = md.split("## Send your first email", 1)[1]
+    assert "warm" in section.lower()
+    assert "specific" in section.lower()
+    assert "reply" in section.lower()
+    assert "generic" in section.lower()
+
+
+def test_bootstrap_email_step_run_command_pipes_body_through_stdin():
+    md = render_first_run_bootstrap(
+        first_name="Max",
+        goal_id="goal-1",
+        project_id="proj-1",
+        first_contact_token="TOKEN_ABC123",
+    )
+    assert "printf '%s' \"" in md
+    assert '| scripts/isol8-mail.sh "TOKEN_ABC123"' in md
+
+
 def test_goal_title_new_path_uses_their_words():
     assert (
         derive_goal_title(path="new", user_input="A social media agency for restaurants")

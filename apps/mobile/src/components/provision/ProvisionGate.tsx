@@ -4,11 +4,14 @@
  * Mounts the `useContainerStatus` probe ABOVE the Tabs (in (app)/_layout.tsx —
  * chat.tsx is off-limits, so the banner can't live inside it). Two surfaces:
  *
- *   • Cold start / parked wake — delegated to <ProvisioningStepper/> (mobile
- *     onboarding-parity Slice 3), which owns the time-box: a slim amber bar
- *     over live children for a `parked` wake or a quick `starting`, promoted
- *     to a full-screen phased stepper once a `starting` container has
- *     genuinely dragged. Either way it auto-clears once ready.
+ *   • Non-blocking (starting / parked / ready / loading / unreachable) — ALL
+ *     five delegated to <ProvisioningStepper/> (mobile onboarding-parity
+ *     Slice 3), which owns the time-box: a slim amber bar over live children
+ *     for a `parked` wake or a quick `starting`, promoted to a full-screen
+ *     phased stepper once a `starting` container has genuinely dragged, and a
+ *     plain pass-through for the rest. One element type covers all five on
+ *     purpose — see the comment on that return for why branching remounts the
+ *     entire tab navigator.
  *   • Blocking interstitial — a full-screen card for `teamPending` / `blocked`
  *     / `needsSignup` / `error`, which each mean there is no working chat
  *     behind the surface (contract §B3). `teamPending` (an org member whose
@@ -35,7 +38,8 @@
  *     provider in the first place) and all billing/credits gates — keeps the
  *     outbound Linking.openURL handoff untouched.
  *
- * `loading` / `ready` / `unreachable` never block — the app renders normally.
+ * `loading` / `ready` / `unreachable` never block — the app renders normally
+ * (through the same <ProvisioningStepper/> host, which adds nothing for them).
  * Polling continues while `teamPending` (see useContainerStatus) so the gate
  * clears itself once the admin's workspace comes up.
  */
@@ -313,41 +317,40 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
     );
   }
 
-  // `starting` (cold start) and `parked` (deliberately-asleep trial box) hand
-  // off to ProvisioningStepper, which owns the whole time-box (mobile
-  // onboarding-parity Slice 3): the thin non-blocking banner over live
-  // children for a parked wake or a quick start, promoted to a full-screen
-  // phased stepper only once a `starting` container has genuinely dragged.
-  // A parked container is healthy and one intent away from running, so it
-  // never promotes — it must not blank the chat or spin forever.
+  // Every remaining (non-blocking) status — starting, parked, ready, loading,
+  // unreachable — renders through ONE unconditional return. ProvisioningStepper
+  // owns the whole cold-start time-box (mobile onboarding-parity Slice 3): the
+  // thin non-blocking banner over live children for a parked wake or a quick
+  // start, promoted to a full-screen phased stepper only once a `starting`
+  // container has genuinely dragged. A parked container is healthy and one
+  // intent away from running, so it never promotes. For ready/loading/
+  // unreachable the component is a plain pass-through.
   //
-  // `children` only ever mounts from this branch on (every earlier return
-  // above replaces the whole tree with an interstitial), so this is the one
-  // place that needs to hand the polled status down via
-  // ContainerStatusContext — FirstRunGate reads it from there instead of
-  // running its own second `/container/status`-adjacent poll (mobile
-  // onboarding-parity Slice 2).
-  if (status.kind === "starting" || status.kind === "parked") {
-    return (
-      <ContainerStatusContext.Provider value={status}>
-        <ProvisioningStepper status={status} onRetry={onRetry}>
-          {children}
-        </ProvisioningStepper>
-      </ContainerStatusContext.Provider>
-    );
-  }
-
+  // Branching here instead — stepper for starting/parked, a bare <View> for the
+  // rest — would change the Provider's child element TYPE on every transition,
+  // and React tears down a subtree whose type changed. That subtree is
+  // `<FirstRunGate><Tabs>…` — the entire tab navigator — so a cold start would
+  // remount it twice (loading → starting → ready), discarding composer drafts,
+  // loaded message lists, scroll position and per-screen mount fetches each
+  // time. One element type for all five states is what keeps `children` alive.
+  //
+  // `children` only ever mounts from here (every earlier return replaces the
+  // whole tree with an interstitial), so this is also the one place that hands
+  // the polled status down via ContainerStatusContext — FirstRunGate reads it
+  // from there instead of running its own second `/container/status`-adjacent
+  // poll (mobile onboarding-parity Slice 2).
   return (
     <ContainerStatusContext.Provider value={status}>
-      <View style={styles.root}>{children}</View>
+      <ProvisioningStepper status={status} onRetry={onRetry}>
+        {children}
+      </ProvisioningStepper>
     </ContainerStatusContext.Provider>
   );
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1 },
-
-  // Blocking interstitial.
+  // Blocking interstitial. (The non-blocking path has no styles of its own —
+  // ProvisioningStepper owns that whole surface, banner and pass-through both.)
   interstitialPage: {
     flex: 1,
     backgroundColor: colors.cream,

@@ -1,6 +1,6 @@
 /**
- * Phased provisioning surface for a container cold start (mobile
- * onboarding-parity Slice 3).
+ * Provisioning surface AND pass-through host for every non-blocking container
+ * state (mobile onboarding-parity Slice 3).
  *
  * Mobile previously showed ONE thin amber bar for every cold start, so a
  * 3-5 minute Fargate first-task provision looked identical to a 2-second
@@ -9,15 +9,33 @@
  * (`apps/frontend/src/components/chat/ProvisioningStepper.tsx`). This is the
  * mobile half, time-boxed:
  *
- *   • parked (deliberately-asleep trial box)  → ALWAYS the thin banner. It is
- *     healthy and one intent away from running; the poll already carries
- *     wake=1, so it clears in seconds and must never take the screen.
- *   • starting, elapsed < PROMOTE_MS          → thin banner over live children.
- *   • starting, elapsed ≥ PROMOTE_MS          → full-screen stepper.
+ *   • ready / loading / unreachable            → `children` and nothing else.
+ *   • parked (deliberately-asleep trial box)   → thin banner over live
+ *     children, ALWAYS. It is healthy and one intent away from running; the
+ *     poll already carries wake=1, so it clears in seconds and never takes
+ *     the screen.
+ *   • starting, elapsed < PROMOTE_MS           → thin banner over live children.
+ *   • starting, elapsed ≥ PROMOTE_MS           → full-screen stepper (blocking).
  *
  * The banner-first window is the deliberate divergence from web (which blocks
- * immediately): a quick start or wake must never flash a full-screen takeover,
+ * immediately): a quick start or wake never flashes a full-screen takeover,
  * but a genuinely slow one earns the phase/clock/support affordances.
+ *
+ * ONE component serves all five non-blocking states on purpose. The gate hands
+ * `children` to this component unconditionally, so a starting → ready flip only
+ * changes what renders AROUND `children` and React reconciles in place.
+ * Returning a bare <View> for `ready` and this component for `starting` would
+ * change the child's element TYPE and tear down the whole subtree on every
+ * transition — `children` here is `<FirstRunGate><Tabs>…`, i.e. the entire tab
+ * navigator, so that costs composer drafts, loaded message lists and scroll
+ * position on every cold start and every wake.
+ *
+ * The elapsed clock measures ONLY the current contiguous run of one status
+ * kind, so the promotion budget is spent on `starting` alone. A trial box that
+ * wakes (parked → starting) therefore gets a FULL PROMOTE_MS on the banner
+ * instead of inheriting the seconds it already spent parked — a mount-scoped
+ * clock promoted such a wake at t=0 of `starting` and blanked live chat for
+ * the rest of it.
  *
  * Copy + timing (ideas, rotation cadence, soft-timeout budget, mm:ss format)
  * come from `@isol8/shared` so this and the web stepper can't drift.
@@ -27,10 +45,12 @@
  * Mobile keeps three status-derived steps rather than adding a second network
  * dependency to a screen whose whole job is "the network isn't ready yet".
  */
-import { Fragment, useEffect, useRef, useState } from "react";
+import { useAuth } from "@clerk/clerk-expo";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import {
   AccessibilityInfo,
   ActivityIndicator,
+  Alert,
   Animated,
   Linking,
   Pressable,
@@ -198,7 +218,11 @@ function DotRail({ active }: { active: number }) {
       style={styles.dotRail}
       testID="provision-dot-rail"
       // Three unlabelled dots say nothing to a screen reader — name the rail
-      // with what just finished and where we are.
+      // with what just finished and where we are. `accessible` is what makes
+      // the rail ONE element with that label: without it, iOS keeps walking
+      // into the (unlabelled, decorative) child dots and the label below is
+      // never spoken.
+      accessible
       accessibilityRole="progressbar"
       accessibilityLabel={
         active === 0
@@ -227,9 +251,12 @@ function DotRail({ active }: { active: number }) {
 // ---------------------------------------------------------------------------
 
 interface Props {
-  status:
-    | Extract<ContainerStatus, { kind: "starting" }>
-    | Extract<ContainerStatus, { kind: "parked" }>;
+  /**
+   * The full polled status, not just the cold-start variants: this component
+   * is the gate's single child for EVERY non-blocking state (see module
+   * docstring) precisely so `children` never changes element type.
+   */
+  status: ContainerStatus;
   /** The gate's refetch — re-probes /container/status. */
   onRetry: () => void;
   children: React.ReactNode;
@@ -237,43 +264,89 @@ interface Props {
 
 export function ProvisioningStepper({ status, onRetry, children }: Props) {
   const insets = useSafeAreaInsets();
+  const { signOut } = useAuth();
 
-  // Mount-scoped elapsed clock. This component only exists while
-  // starting/parked — reaching ready unmounts it — so there is no cross-phase
-  // reset to do, unlike web's stepper (which lives across the whole flow and
-  // has to reset its timer when a ready container regresses).
-  const startedAtRef = useRef<number | null>(null);
-  if (startedAtRef.current === null) startedAtRef.current = Date.now();
-  const [elapsedMs, setElapsedMs] = useState(0);
+  // Elapsed clock, scoped to the current contiguous run of ONE status kind, so
+  // the promotion budget below is spent on `starting` alone. Restamped DURING
+  // render (React's "adjust state when a prop changes" pattern) rather than
+  // from an effect: an effect lands after the frame is already on screen, so a
+  // parked → starting wake would flash one frame of the full-screen takeover
+  // before the reset arrived.
+  const [clock, setClock] = useState(() => ({
+    kind: status.kind,
+    startedAt: Date.now(),
+  }));
+  if (clock.kind !== status.kind) {
+    setClock({ kind: status.kind, startedAt: Date.now() });
+  }
+
+  // Tick only while something is reading the clock. This component is mounted
+  // for the WHOLE app session (it hosts every non-blocking state), so an
+  // ungated 1s interval would run forever behind a healthy `ready` container.
+  const ticking = status.kind === "starting" || status.kind === "parked";
+  const [nowMs, setNowMs] = useState(() => Date.now());
   useEffect(() => {
-    const id = setInterval(() => {
-      const start = startedAtRef.current;
-      if (start === null) return;
-      setElapsedMs(Date.now() - start);
-    }, 1000);
+    if (!ticking) return;
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
     return () => clearInterval(id);
-  }, []);
+  }, [ticking]);
+
+  // Clamped: on the render right after a restamp, `nowMs` still holds the
+  // PREVIOUS tick and so predates the new stamp — which reads as 0 elapsed,
+  // exactly what a freshly-entered run should report. The next tick (≤1s away,
+  // and the interval is already running for any kind that reads this) corrects
+  // it, so the clamp is only ever load-bearing for that first frame.
+  const elapsedMs = Math.max(0, nowMs - clock.startedAt);
 
   // `parked` never promotes: it's a healthy box waking on its own, measured in
   // seconds, and blanking readable content for it would be a regression. Only
   // a `starting` container that has genuinely dragged earns the full screen.
-  if (status.kind === "parked" || elapsedMs < PROMOTE_MS) {
+  const promoted = status.kind === "starting" && elapsedMs >= PROMOTE_MS;
+  const activeStep =
+    status.kind === "starting"
+      ? activeStepIndex(status.phase, status.substatus)
+      : 0;
+
+  // iOS has no live regions (`accessibilityLiveRegion` is documented
+  // "@platform android" in ViewAccessibility.d.ts) and iOS is the only
+  // platform this app ships on, so announce phase changes explicitly. Scoped
+  // to the promoted stepper — the thin banner is a line a VoiceOver user can
+  // swipe to, not something worth interrupting them for.
+  useEffect(() => {
+    if (!promoted) return;
+    AccessibilityInfo.announceForAccessibility(STEPS[activeStep].active);
+  }, [promoted, activeStep]);
+
+  // The promoted stepper replaces the whole tab shell, so the gate's rule for
+  // the Interstitial applies verbatim here: it is the only exit a wrong-account
+  // user has, and Retry + a mailto is not an exit.
+  const onSignOut = useCallback(() => {
+    Alert.alert("Sign out", "Sign out of this account?", [
+      { text: "Cancel", style: "cancel" },
+      { text: "Sign out", style: "destructive", onPress: () => void signOut() },
+    ]);
+  }, [signOut]);
+
+  if (!promoted) {
+    // `children` sits at a FIXED index in a static 2-child array, so flipping
+    // starting → ready only turns the banner slot into `null` — React updates
+    // in place and the tab navigator underneath never remounts.
     return (
       <View style={styles.root}>
-        <StartingBanner
-          label={
-            status.kind === "parked"
-              ? "Waking your agents…"
-              : "Your workspace is starting…"
-          }
-        />
+        {status.kind === "starting" || status.kind === "parked" ? (
+          <StartingBanner
+            label={
+              status.kind === "parked"
+                ? "Waking your agents…"
+                : "Your workspace is starting…"
+            }
+          />
+        ) : null}
         {children}
       </View>
     );
   }
 
-  // Narrowed to the `starting` variant by the guard above.
-  const active = activeStepIndex(status.phase, status.substatus);
   const timedOut = elapsedMs > PROVISION_TIMEOUT_MS;
 
   return (
@@ -282,19 +355,13 @@ export function ProvisioningStepper({ status, onRetry, children }: Props) {
 
       <ProvisionRing />
 
-      <Text
-        style={styles.title}
-        // Announce each phase change without stealing focus.
-        accessibilityLiveRegion="polite"
-        accessibilityRole="text"
-        testID="provision-title"
-      >
-        {STEPS[active].active}
+      <Text style={styles.title} accessibilityRole="text" testID="provision-title">
+        {STEPS[activeStep].active}
       </Text>
 
       <RotatingIdeas />
 
-      <DotRail active={active} />
+      <DotRail active={activeStep} />
 
       <Text style={styles.elapsed} testID="provision-elapsed">
         {formatProvisionElapsed(elapsedMs)}
@@ -323,6 +390,15 @@ export function ProvisioningStepper({ status, onRetry, children }: Props) {
           </View>
         </View>
       ) : null}
+
+      <Pressable
+        style={({ pressed }) => [styles.signOutButton, pressed && styles.pressed]}
+        onPress={onSignOut}
+        accessibilityRole="button"
+        accessibilityLabel="Sign out"
+      >
+        <Text style={styles.signOutText}>Sign out</Text>
+      </Pressable>
     </View>
   );
 }
@@ -478,6 +554,19 @@ const styles = StyleSheet.create({
     fontFamily: fonts.dmSans,
     fontSize: 14,
     lineHeight: 18,
+    color: colors.mute,
+  },
+  // Same muted treatment as the gate's interstitial sign-out — a deliberate
+  // last resort, never competing with Retry.
+  signOutButton: {
+    alignSelf: "center",
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.xs,
+  },
+  signOutText: {
+    fontFamily: fonts.dmSans,
+    fontSize: 13,
+    lineHeight: 17,
     color: colors.mute,
   },
   pressed: { opacity: 0.6 },

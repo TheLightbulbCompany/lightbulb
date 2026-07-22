@@ -21,6 +21,8 @@ export type {
   AgentModelRef,
   AgentsListResponse,
 } from "./hooks/agents";
+export { useChatGPTOAuth } from "./hooks/useChatGPTOAuth";
+export type { OAuthState } from "./hooks/useChatGPTOAuth";
 
 export { ApiError } from "./api/error";
 export { deriveWebSocketUrl } from "./api/url";

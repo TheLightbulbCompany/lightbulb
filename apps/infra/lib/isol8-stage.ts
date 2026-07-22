@@ -11,6 +11,7 @@ import { FisStack } from "./stacks/fis-stack";
 import { NetworkStack } from "./stacks/network-stack";
 import { ObservabilityStack } from "./stacks/observability-stack";
 import { PaperclipStack } from "./stacks/paperclip-stack";
+import { SesInboundStack } from "./stacks/ses-inbound-stack";
 import { ServiceStack } from "./stacks/service-stack";
 
 export interface Isol8StageProps extends cdk.StageProps {
@@ -32,6 +33,29 @@ export class Isol8Stage extends cdk.Stage {
       stackName: `isol8-${env}-dns`,
       environment: env,
     });
+
+    // SesInboundStack — SES inbound agent-mail receiving (domain identity,
+    // wildcard MX/SPF, S3 buckets, receipt rule set + activation, ingest
+    // Lambda). PROD-ONLY — SetActiveReceiptRuleSet is an account+region-scoped
+    // "one active rule set" operation, exactly like the bedrock-meter/
+    // bedrock-gate account-scoped stacks below, so it must be a singleton,
+    // never one-per-env. Agent email is live in prod; dev/local stay inert
+    // (no SES stack synthesized, and AGENT_EMAIL_DOMAIN stays unset — the
+    // backend's AGENT_EMAIL_DOMAIN guards keep every non-prod env dormant).
+    let sesInbound: SesInboundStack | undefined;
+    if (env === "prod") {
+      sesInbound = new SesInboundStack(this, `isol8-${env}-ses-inbound`, {
+        stackName: `isol8-${env}-ses-inbound`,
+        envName: env,
+        hostedZone: dns.hostedZone,
+        // By-name import — same cross-stack-cycle-avoidance posture as every
+        // other secret name threaded into ServiceStack below.
+        sesIngestSecretName: auth.sesIngestSecret.secretName,
+        mailDomain: "isol8.co",
+      });
+      sesInbound.addDependency(auth);
+      sesInbound.addDependency(dns);
+    }
 
     const network = new NetworkStack(this, `isol8-${env}-network`, {
       stackName: `isol8-${env}-network`,
@@ -93,6 +117,8 @@ export class Isol8Stage extends cdk.Stage {
         usageCountersTable: database.usageCountersTable,
         pendingUpdatesTable: database.pendingUpdatesTable,
         channelLinksTable: database.channelLinksTable,
+        companySlugsTable: database.companySlugsTable,
+        agentEmailAddressesTable: database.agentEmailAddressesTable,
         adminActionsTable: database.adminActionsTable,
         oauthTokensTable: database.oauthTokensTable,
         webhookDedupTable: database.webhookDedupTable,
@@ -121,6 +147,7 @@ export class Isol8Stage extends cdk.Stage {
         metronomeWebhookSecret: auth.metronomeWebhookSecret.secretName,
         resendApiKey: auth.resendApiKey.secretName,
         wsInternalSecret: auth.wsInternalSecret.secretName,
+        sesIngestSecret: auth.sesIngestSecret.secretName,
       },
       kmsKeyArn: auth.kmsKey.keyArn,
       container: {
@@ -141,6 +168,15 @@ export class Isol8Stage extends cdk.Stage {
       connectionsTableName: api.connectionsTableName,
       wsApiId: api.wsApiId,
       wsStage: api.wsStage,
+      // Agent-email base domain — "isol8.co" in prod (where the SES stack and
+      // verified domain live), empty elsewhere so the backend guards keep
+      // dev/local/CI inert. Kept in lockstep with the SES stack's
+      // `env === "prod"` gate above.
+      agentEmailDomain: env === "prod" ? "isol8.co" : "",
+      // Undefined in every env/deploy where SesInboundStack isn't
+      // instantiated (non-prod stage) — ServiceStack defaults this to an
+      // empty string, which is inert without AGENT_EMAIL_DOMAIN.
+      agentEmailAttachmentsBucket: sesInbound?.attachmentsBucketName,
     });
 
     // PaperclipStack — runs the pinned Paperclip image (extended overlay,
@@ -188,6 +224,8 @@ export class Isol8Stage extends cdk.Stage {
           usageCountersTable: database.usageCountersTable,
           pendingUpdatesTable: database.pendingUpdatesTable,
           channelLinksTable: database.channelLinksTable,
+          companySlugsTable: database.companySlugsTable,
+          agentEmailAddressesTable: database.agentEmailAddressesTable,
         },
         connectionsTableName: api.connectionsTableName,
         authorizerFunctionName: `isol8-${env}-ws-authorizer`,

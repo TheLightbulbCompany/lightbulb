@@ -251,6 +251,13 @@ class Settings(BaseSettings):
     MARKETPLACE_SELLERS_TABLE: str = os.getenv("MARKETPLACE_SELLERS_TABLE", "")
     MARKETPLACE_ARTIFACTS_BUCKET: str = os.getenv("MARKETPLACE_ARTIFACTS_BUCKET", "")
 
+    # Provisioned agent email (set by CDK ServiceStack). This is the BASE
+    # domain (e.g. "isol8.co" in prod) — each company gets its own subdomain,
+    # so an address is "{agent}@{slug}.{AGENT_EMAIL_DOMAIN}" (e.g.
+    # "friday@acme-robotics.isol8.co"). Empty disables address minting
+    # entirely, so an env without a verified mail domain never mints.
+    AGENT_EMAIL_DOMAIN: str = os.getenv("AGENT_EMAIL_DOMAIN", "")
+
     # Stripe Connect (seller payout onboarding) — environment-specific URLs
     # set by CDK so the marketplace UI can return the user back to the right
     # host after Stripe-hosted onboarding.
@@ -327,6 +334,9 @@ class Settings(BaseSettings):
     # no-op and the feature self-arms the moment a real key is deployed. No
     # separate enable flag.
     RESEND_API_KEY: str = os.getenv("RESEND_API_KEY", "")
+    # Shared secret the SES-ingest Lambda presents to POST /webhooks/ses-inbound.
+    # Empty disables the SES inbound endpoint entirely (fail-closed).
+    SES_INBOUND_SECRET: str = os.getenv("SES_INBOUND_SECRET", "")
     # Visible From identities on the verified isol8.co domain. Same across
     # envs, so plain defaults (no CDK wiring) — override via env only if a
     # future env needs a different sender.

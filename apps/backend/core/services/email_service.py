@@ -39,6 +39,7 @@ async def send_email(
     text: str | None = None,
     idempotency_key: str | None = None,
     tags: list[dict[str, str]] | None = None,
+    headers: dict[str, str] | None = None,
     kind: str = "generic",
 ) -> str | None:
     """Send one email via Resend. Returns the Resend email id, or None when
@@ -74,6 +75,8 @@ async def send_email(
         params["reply_to"] = reply_to
     if tags is not None:
         params["tags"] = tags
+    if headers is not None:
+        params["headers"] = headers
 
     options = {"idempotency_key": idempotency_key} if idempotency_key else None
 

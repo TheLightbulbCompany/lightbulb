@@ -158,10 +158,22 @@ def test_ws_gateway_url_empty_falls_back_to_localhost():
 # ----------------------------------------------------------------------
 
 
-async def test_provision_org_happy_path(repo):
+async def test_provision_org_happy_path(repo, monkeypatch):
     admin = _make_admin_mock()
     admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "_session_cookie": "owner-session-1"})
     admin.create_company = AsyncMock(return_value={"id": "co_acme"})
+
+    # The company name is auto-generated now. ``owner_id="org_acme"`` is an org,
+    # so generation consults Clerk first — pin that to None so this asserts the
+    # deterministic email-derived fallback instead of depending on whether a
+    # Clerk key happens to be configured in the test environment.
+    from core.services import company_identity
+
+    async def _no_clerk_org(org_id):
+        return None
+
+    monkeypatch.setattr(company_identity.clerk_admin, "get_organization", _no_clerk_org)
+
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
 
     row = await prov.provision_org(
@@ -183,7 +195,11 @@ async def test_provision_org_happy_path(repo):
     # the autouse _stub_admin_session fixture pins to "admin-cookie-test".
     admin.create_company.assert_awaited_once()
     cc_kwargs = admin.create_company.call_args.kwargs
-    assert cc_kwargs["name"] == "owner@acme.test"
+    # Companies used to be named with the owner's raw email address. They now
+    # get a real generated name; with no Clerk org name available that is the
+    # prettified email local part. (The Better Auth *user* name above is a
+    # different field and deliberately still the email.)
+    assert cc_kwargs["name"] == "Owner"
     assert cc_kwargs["session_cookie"] == "admin-cookie-test"
     assert cc_kwargs["idempotency_key"] == "user_owner"
 

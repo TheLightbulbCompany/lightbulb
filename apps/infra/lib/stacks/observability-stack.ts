@@ -57,6 +57,8 @@ export interface ObservabilityStackProps extends cdk.StackProps {
     usageCountersTable: dynamodb.ITable;
     pendingUpdatesTable: dynamodb.ITable;
     channelLinksTable: dynamodb.ITable;
+    companySlugsTable: dynamodb.ITable;
+    agentEmailAddressesTable: dynamodb.ITable;
   };
   connectionsTableName: string;
   // Lambda authorizer function name (for Lambda alarms)
@@ -387,6 +389,8 @@ export class ObservabilityStack extends cdk.Stack {
       ["usageCounters", props.databaseTables.usageCountersTable],
       ["pendingUpdates", props.databaseTables.pendingUpdatesTable],
       ["channelLinks", props.databaseTables.channelLinksTable],
+      ["companySlugs", props.databaseTables.companySlugsTable],
+      ["agentEmailAddresses", props.databaseTables.agentEmailAddressesTable],
     ];
     const ddbThrottlePerTable: Record<string, cloudwatch.IMetric> = {};
     for (const [key, table] of ddbThrottleTables) {
@@ -1546,6 +1550,8 @@ def handler(event, _ctx):
       ["usage-counters", props.databaseTables.usageCountersTable],
       ["pending-updates", props.databaseTables.pendingUpdatesTable],
       ["channel-links", props.databaseTables.channelLinksTable],
+      ["company-slugs", props.databaseTables.companySlugsTable],
+      ["agent-email-addresses", props.databaseTables.agentEmailAddressesTable],
     ];
 
     // W40: ConsumedReadCapacityUnits anomaly (on-demand tables)

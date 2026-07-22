@@ -149,3 +149,123 @@ def test_build_owner_facts_team_seat_subscription_is_not_labeled_flat_fee():
     assert "per-seat" in facts["plan"]
     assert "4 seats" in facts["plan"]
     assert "flat fee" not in facts["plan"]
+
+
+def _facts_env(monkeypatch, owner_facts, rows, written):
+    """Shared doubles: billing row, workspace capture, address rows."""
+
+    class FakeWs:
+        def write_file(self, user_id, path, content):
+            written["content"] = content
+
+    async def fake_billing(owner_id, *, consistent_read=False):
+        return {"subscription_status": "active", "provider_choice": "bedrock_claude"}
+
+    async def fake_query_by_owner(owner_id):
+        if callable(rows):
+            return rows(owner_id)
+        return rows
+
+    monkeypatch.setattr(owner_facts.billing_repo, "get_by_owner_id", fake_billing)
+    monkeypatch.setattr(owner_facts, "get_workspace", lambda: FakeWs())
+    monkeypatch.setattr(owner_facts.agent_email_repo, "query_by_owner", fake_query_by_owner)
+
+
+@pytest.mark.asyncio
+async def test_write_owner_facts_includes_email_address(monkeypatch):
+    import json
+
+    from core.services import owner_facts
+
+    written = {}
+    _facts_env(
+        monkeypatch,
+        owner_facts,
+        [{"address": "acme@agents.isol8.co", "status": "active", "created_at": "2026-01-01T00:00:00Z"}],
+        written,
+    )
+
+    await owner_facts.write_owner_facts("user_abc")
+
+    assert json.loads(written["content"])["email_address"] == "acme@agents.isol8.co"
+
+
+@pytest.mark.asyncio
+async def test_write_owner_facts_ignores_alias_rows(monkeypatch):
+    """An alias still routes, but it is not the address we advertise."""
+    import json
+
+    from core.services import owner_facts
+
+    written = {}
+    _facts_env(
+        monkeypatch,
+        owner_facts,
+        [
+            {"address": "old@agents.isol8.co", "status": "alias", "created_at": "2026-01-01T00:00:00Z"},
+            {"address": "acme@agents.isol8.co", "status": "active", "created_at": "2026-02-01T00:00:00Z"},
+        ],
+        written,
+    )
+
+    await owner_facts.write_owner_facts("user_abc")
+
+    assert json.loads(written["content"])["email_address"] == "acme@agents.isol8.co"
+
+
+@pytest.mark.asyncio
+async def test_write_owner_facts_picks_oldest_active_deterministically(monkeypatch):
+    """Two active rows can exist after a rare re-provision; the choice must
+    not depend on DynamoDB's arbitrary return order."""
+    import json
+
+    from core.services import owner_facts
+
+    written = {}
+    _facts_env(
+        monkeypatch,
+        owner_facts,
+        [
+            {"address": "second@agents.isol8.co", "status": "active", "created_at": "2026-03-01T00:00:00Z"},
+            {"address": "first@agents.isol8.co", "status": "active", "created_at": "2026-01-01T00:00:00Z"},
+        ],
+        written,
+    )
+
+    await owner_facts.write_owner_facts("user_abc")
+
+    assert json.loads(written["content"])["email_address"] == "first@agents.isol8.co"
+
+
+@pytest.mark.asyncio
+async def test_write_owner_facts_email_address_none_when_unminted(monkeypatch):
+    import json
+
+    from core.services import owner_facts
+
+    written = {}
+    _facts_env(monkeypatch, owner_facts, [], written)
+
+    await owner_facts.write_owner_facts("user_abc")
+
+    assert json.loads(written["content"])["email_address"] is None
+
+
+@pytest.mark.asyncio
+async def test_write_owner_facts_survives_email_lookup_failure(monkeypatch):
+    import json
+
+    from core.services import owner_facts
+
+    written = {}
+
+    def boom_rows(owner_id):
+        raise RuntimeError("dynamo down")
+
+    _facts_env(monkeypatch, owner_facts, boom_rows, written)
+
+    await owner_facts.write_owner_facts("user_abc")
+
+    facts = json.loads(written["content"])
+    assert facts["email_address"] is None
+    assert facts["plan"]  # the rest of the facts still wrote

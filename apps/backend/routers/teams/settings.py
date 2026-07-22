@@ -1,9 +1,12 @@
 """Teams BFF — Company settings.
 
-PATCH whitelist allows only ``display_name`` and ``description``.
+PATCH whitelist allows only ``name`` and ``description``.
 All other company fields (status, billing, instance settings, branding
 overrides that affect other tenants, adapter fields) stay
 operator-controlled and cannot be mutated through this endpoint.
+
+``name`` is Paperclip's own field name; GET returns the raw company
+record, so the panel reads ``name`` too.
 """
 
 from __future__ import annotations

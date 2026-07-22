@@ -89,6 +89,14 @@ export interface SecretNames {
    * the backend starts rejecting callers that lack the header.
    */
   wsInternalSecret: string;
+  /**
+   * Shared secret the SES-ingest Lambda (ses-inbound-stack.ts) attaches to
+   * its POST /webhooks/ses-inbound calls. Created unconditionally in every
+   * env (same shape as wsInternalSecret), but only meaningful once the
+   * prod-stage SesInboundStack actually exists (prod-only). Same CMK as the
+   * other auth secrets, so KmsDecryptForSecrets already covers decrypt.
+   */
+  sesIngestSecret: string;
 }
 
 export interface ServiceStackProps extends cdk.StackProps {
@@ -103,6 +111,8 @@ export interface ServiceStackProps extends cdk.StackProps {
     usageCountersTable: dynamodb.Table;
     pendingUpdatesTable: dynamodb.Table;
     channelLinksTable: dynamodb.Table;
+    companySlugsTable: dynamodb.Table;
+    agentEmailAddressesTable: dynamodb.Table;
     adminActionsTable: dynamodb.Table;
     oauthTokensTable: dynamodb.Table;
     webhookDedupTable: dynamodb.Table;
@@ -145,6 +155,20 @@ export interface ServiceStackProps extends cdk.StackProps {
   wsStage: string;
   /** Optional: page topic ARN from ObservabilityStack (set via env var import). */
   alertPageTopicArn?: string;
+  /**
+   * Attachments bucket name from the prod-stage SesInboundStack, when it
+   * exists (prod-only — see isol8-stage.ts). Undefined/empty in
+   * every env where that stack isn't instantiated; the backend only reads
+   * this when AGENT_EMAIL_DOMAIN is also set, so an empty string is inert.
+   */
+  agentEmailAttachmentsBucket?: string;
+  /**
+   * Agent-email base domain, "isol8.co" in prod (set in lockstep with the
+   * prod-only SesInboundStack — see isol8-stage.ts). Empty/undefined in every
+   * other env; the backend's AGENT_EMAIL_DOMAIN guards treat that as "agent
+   * email off", keeping dev/local/CI inert.
+   */
+  agentEmailDomain?: string;
 }
 
 export class ServiceStack extends cdk.Stack {
@@ -398,6 +422,27 @@ export class ServiceStack extends cdk.Stack {
           sid: "OwnerBedrockProfileList",
           actions: ["bedrock:ListInferenceProfiles"],
           resources: ["*"],
+        }),
+      ],
+    });
+
+    // Agent-email outbound send (SES). Standalone ManagedPolicy for the SAME
+    // 10 KB inline-policy-ceiling reason as BackendOwnerBedrockManage above.
+    // Scoped to the single `isol8.co` domain identity — SES authorizes
+    // sending from ANY address under a verified domain identity (including
+    // every company's `{agent}@{slug}.isol8.co` subdomain address), so one
+    // identity ARN covers the whole fleet. Safe to grant unconditionally in
+    // every env (dev included): the identity itself only exists once the
+    // prod-stage SesInboundStack is deployed (prod-only), and sends are
+    // separately gated by AGENT_EMAIL_DOMAIN being set (core/services/ses_email.py).
+    new iam.ManagedPolicy(this, "BackendSesSend", {
+      managedPolicyName: `isol8-${env}-backend-ses-send`,
+      roles: [this.taskRole],
+      statements: [
+        new iam.PolicyStatement({
+          sid: "AgentMailSesSend",
+          actions: ["ses:SendEmail", "ses:SendRawEmail"],
+          resources: [`arn:aws:ses:${this.region}:${this.account}:identity/isol8.co`],
         }),
       ],
     });
@@ -686,6 +731,28 @@ export class ServiceStack extends cdk.Stack {
         ],
       }),
     );
+
+    // Platform-unique company slugs (company-identity Task 1). Deliberately
+    // granted here — AFTER the bedrock-gate-url statement above, not beside
+    // the other table grants earlier in this method — because CDK's inline-
+    // policy overflow packs statements into TaskRoleDefaultPolicy in
+    // add-order and spills whatever doesn't fit into a TaskRoleOverflowPolicy
+    // once the ~10 KB ceiling is hit (confirmed via synth: this stack is
+    // already at that ceiling). Adding this grant any earlier pushed
+    // BedrockGateUrlParamRead itself into the overflow policy, which broke
+    // test/service-stack.test.ts's assertion that it lives in the inline
+    // AWS::IAM::Policy. Placing new grants after that statement means any
+    // overflow lands on the new grant instead, leaving already-tested
+    // statements' packing undisturbed. Functionally identical either way —
+    // an overflow ManagedPolicy still attaches to the same role.
+    props.database.companySlugsTable.grantReadWriteData(this.taskRole);
+
+    // Provisioned agent email addresses (agent-email-foundation Task 3).
+    // Placed immediately after companySlugsTable per the overflow-packing
+    // rationale in the comment above — any new IAM-size overflow should land
+    // on this grant, not push an earlier, already-tested statement into the
+    // TaskRoleOverflowPolicy.
+    props.database.agentEmailAddressesTable.grantReadWriteData(this.taskRole);
 
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
@@ -1325,6 +1392,18 @@ export class ServiceStack extends cdk.Stack {
         ...(props.alertPageTopicArn
           ? { ALERT_PAGE_TOPIC_ARN: props.alertPageTopicArn }
           : {}),
+        // Agent-email base domain — "isol8.co" in prod (where the SES stack
+        // and verified domain exist), empty in every other env. The backend's
+        // AGENT_EMAIL_DOMAIN guards treat empty as "agent email off", so
+        // dev/local/CI stay inert.
+        AGENT_EMAIL_DOMAIN: props.agentEmailDomain ?? "",
+        // Agent-email inbound attachments bucket, from the prod-stage
+        // SesInboundStack when it exists (prod-only — see isol8-stage.ts).
+        // Empty string in every env where that stack isn't deployed; the
+        // backend only reads this once AGENT_EMAIL_DOMAIN is also set, so an
+        // empty value is a harmless no-op, matching the MARKETPLACE_* tables'
+        // "empty defaults keep the app booting" posture above.
+        AGENT_EMAIL_ATTACHMENTS_BUCKET: props.agentEmailAttachmentsBucket ?? "",
       },
       secrets: {
         // Import secrets by name (NOT cross-stack ISecret) to avoid CDK
@@ -1435,6 +1514,18 @@ export class ServiceStack extends cdk.Stack {
             this,
             "ImportWsInternalSecret",
             props.secretNames.wsInternalSecret,
+          ),
+        ),
+        // Shared secret the SES-ingest Lambda attaches as X-Isol8-SES-Secret.
+        // The backend compares it in constant time (routers/ses_inbound.py)
+        // only when AGENT_EMAIL_DOMAIN is also set. KMS decrypt covered by
+        // the wildcard SecretsAccess + KmsDecryptForSecrets below (same CMK
+        // as the other auth secrets).
+        SES_INBOUND_SECRET: ecs.Secret.fromSecretsManager(
+          secretsmanager.Secret.fromSecretNameV2(
+            this,
+            "ImportSesIngestSecret",
+            props.secretNames.sesIngestSecret,
           ),
         ),
       },

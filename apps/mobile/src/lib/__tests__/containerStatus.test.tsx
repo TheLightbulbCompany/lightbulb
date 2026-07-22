@@ -7,60 +7,17 @@ import { AppState } from "react-native";
 jest.mock("@clerk/clerk-expo", () => ({
   useAuth: () => ({ getToken: jest.fn(async () => "tok") }),
 }));
-jest.mock("@isol8/shared", () => {
-  const fetchJsonWithStatus = jest.fn();
-  // Hand-rolled, faithful mirror of packages/shared/src/hooks/containerStatus.ts
-  // (same convention as the ApiError reimplementation right below: this file
-  // already avoids requireActual for @isol8/shared, so containerStatus.ts's
-  // new `classifyContainerStatus` import needs a mock counterpart too, or it
-  // would be `undefined` at call time). Kept in lockstep with the real
-  // implementation's status-code table; packages/shared/src/hooks/
-  // containerStatus.test.ts is the source of truth for that table's behavior.
-  function parseBlockedPayload(body: unknown): Record<string, unknown> | null {
-    const envelope =
-      body && typeof body === "object" ? (body as Record<string, unknown>) : {};
-    const detail = envelope.detail;
-    const blocked =
-      detail && typeof detail === "object" && "blocked" in (detail as object)
-        ? (detail as { blocked: Record<string, unknown> }).blocked
-        : (envelope.blocked as Record<string, unknown> | undefined);
-    return blocked ?? null;
-  }
-  function classifyContainerStatus(res: { status: number; body: unknown }) {
-    const { status, body } = res;
-    if (status === 200) return { kind: "container", body };
-    if (status === 202) {
-      const detail =
-        body &&
-        typeof body === "object" &&
-        typeof (body as Record<string, unknown>).detail === "string"
-          ? (body as Record<string, unknown>).detail
-          : undefined;
-      return { kind: "team-pending", detail };
-    }
-    if (status === 404) return { kind: "needs-signup" };
-    if (status === 402) {
-      const blocked = parseBlockedPayload(body);
-      if (!blocked) return { kind: "unrecognized", status };
-      return { kind: "blocked", blocked };
-    }
-    return { kind: "unrecognized", status };
-  }
-  return {
-    ApiError: class ApiError extends Error {
-      status: number;
-      body: unknown;
-      constructor(status: number, body: unknown) {
-        super("api");
-        this.status = status;
-        this.body = body;
-      }
-    },
-    fetchJsonWithStatus,
-    classifyContainerStatus,
-    parseBlockedPayload,
-  };
-});
+// Exercise the REAL shared module — the actual `classifyContainerStatus` and
+// the actual `ApiError` — and stub ONLY the network seam. A hand-rolled copy of
+// the classifier here would defeat the point of having extracted one shared
+// classifier: mobile would be testing a mirror that can silently drift from the
+// implementation it is supposed to be sharing. This is also the dominant
+// convention in this app (12 of the 15 mobile suites that mock @isol8/shared
+// already spread requireActual).
+jest.mock("@isol8/shared", () => ({
+  ...jest.requireActual("@isol8/shared"),
+  fetchJsonWithStatus: jest.fn(),
+}));
 jest.mock("../adapter", () => ({ makeAdapter: () => ({}) }));
 
 import { useContainerStatus } from "../containerStatus";

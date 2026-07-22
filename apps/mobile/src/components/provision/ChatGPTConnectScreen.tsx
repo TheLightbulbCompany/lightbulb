@@ -13,7 +13,7 @@
  */
 import { useAuth } from "@clerk/clerk-expo";
 import { useCallback, useEffect, useMemo, useRef } from "react";
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as WebBrowser from "expo-web-browser";
 import { createApiClient, useChatGPTOAuth } from "@isol8/shared";
@@ -28,7 +28,7 @@ interface Props {
 
 export function ChatGPTConnectScreen({ onConnected }: Props) {
   const insets = useSafeAreaInsets();
-  const { getToken } = useAuth();
+  const { getToken, signOut } = useAuth();
   const getTokenRef = useRef(getToken);
   getTokenRef.current = getToken;
   const api = useMemo(
@@ -37,6 +37,17 @@ export function ChatGPTConnectScreen({ onConnected }: Props) {
   );
 
   const { state, start } = useChatGPTOAuth(api);
+
+  // This is a full-screen takeover with no other navigation — a wrong-account
+  // or otherwise-stuck user needs an escape hatch. Same confirm-then-signOut
+  // pattern as ProvisionGate's Interstitial (the every-other-blocked-state
+  // screen this one replaces for the oauth_required gate).
+  const onSignOut = useCallback(() => {
+    Alert.alert("Sign out", "Sign out of this account?", [
+      { text: "Cancel", style: "cancel" },
+      { text: "Sign out", style: "destructive", onPress: () => void signOut() },
+    ]);
+  }, [signOut]);
 
   useEffect(() => {
     if (state.status === "completed") onConnected();
@@ -104,7 +115,17 @@ export function ChatGPTConnectScreen({ onConnected }: Props) {
 
   return (
     <View style={[styles.page, { paddingTop: insets.top }]}>
-      <View style={styles.card}>{body}</View>
+      <View style={styles.card}>
+        {body}
+        <Pressable
+          style={({ pressed }) => [styles.signOutButton, pressed && styles.pressed]}
+          onPress={onSignOut}
+          accessibilityRole="button"
+          accessibilityLabel="Sign out"
+        >
+          <Text style={styles.signOutText}>Sign out</Text>
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -189,4 +210,16 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
   pressed: { opacity: 0.6 },
+  // Matches ProvisionGate's Interstitial signOutButton/signOutText exactly.
+  signOutButton: {
+    alignSelf: "center",
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.xs,
+  },
+  signOutText: {
+    fontFamily: fonts.dmSans,
+    fontSize: 13,
+    lineHeight: 17,
+    color: colors.mute,
+  },
 });

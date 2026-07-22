@@ -21,9 +21,13 @@
  *     provider SIGN-IN specifically (mobile onboarding-parity Slice 4):
  *     `oauth_required` renders <ChatGPTConnectScreen/> (in-app device-code
  *     flow) and `byo_provider_required` renders <ByoKeyScreen/> (in-app key
- *     entry). Every other blocked code — including `provider_required`
- *     (picking a provider in the first place) and all billing/credits gates —
- *     keeps the outbound Linking.openURL handoff untouched.
+ *     entry) — but only when `adminOnly` isn't blocking the CURRENT poller
+ *     specifically (checked against `ownerRole`, same admin-only rule as the
+ *     generic gate copy below); a non-admin org member still falls through
+ *     to "ask your workspace admin" instead of a control they can't use.
+ *     Every other blocked code — including `provider_required` (picking a
+ *     provider in the first place) and all billing/credits gates — keeps the
+ *     outbound Linking.openURL handoff untouched.
  *
  * `loading` / `ready` / `unreachable` never block — the app renders normally.
  * Polling continues while `teamPending` (see useContainerStatus) so the gate
@@ -252,12 +256,26 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
   // completes. Every OTHER blocked code — including provider_required
   // itself (no provider chosen yet) and all billing/credits gates — falls
   // through to the generic outbound handoff below, untouched.
-  if (status.kind === "blocked" && status.code === "oauth_required") {
-    return <ChatGPTConnectScreen onConnected={refetch} />;
-  }
-
-  if (status.kind === "blocked" && status.code === "byo_provider_required") {
-    return <ByoKeyScreen onConnected={refetch} />;
+  //
+  // adminOnly gate (Slice 4 fix): `oauth_required` is admin_only for an ORG
+  // workspace (only the admin who runs the device-code flow can bind a
+  // ChatGPT account to the shared container — see provision_gate.py's
+  // action_admin_only=owner_id.startswith("org_")); a non-admin member must
+  // NOT see a control they can't use. Mirrors web's exact formula
+  // (ProvisioningStepper.tsx's `showAction`): show the in-app screen only
+  // when NOT (adminOnly && not-the-admin) — personal owner + org admin
+  // connect in-app, non-admin member falls through to the generic
+  // "ask your workspace admin" interstitial below. Applied uniformly to
+  // byo_provider_required too, even though its adminOnly is always false
+  // today — so both codes share one gating rule instead of two.
+  if (status.kind === "blocked") {
+    const canConnectInApp = !(status.adminOnly && status.ownerRole !== "admin");
+    if (status.code === "oauth_required" && canConnectInApp) {
+      return <ChatGPTConnectScreen onConnected={refetch} />;
+    }
+    if (status.code === "byo_provider_required" && canConnectInApp) {
+      return <ByoKeyScreen onConnected={refetch} />;
+    }
   }
 
   if (status.kind === "blocked") {

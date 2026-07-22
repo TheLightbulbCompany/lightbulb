@@ -5,7 +5,7 @@ const mockGet = jest.fn();
 const mockPost = jest.fn();
 
 jest.mock("@clerk/clerk-expo", () => ({
-  useAuth: () => ({ getToken: jest.fn(async () => "tok") }),
+  useAuth: () => ({ getToken: jest.fn(async () => "tok"), signOut: jest.fn() }),
 }));
 
 // Real useChatGPTOAuth (jest.requireActual) — only the API client factory is

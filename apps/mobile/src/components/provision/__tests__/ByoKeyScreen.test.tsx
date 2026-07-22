@@ -4,7 +4,7 @@ const mockPut = jest.fn();
 const mockPost = jest.fn();
 
 jest.mock("@clerk/clerk-expo", () => ({
-  useAuth: () => ({ getToken: jest.fn(async () => "tok") }),
+  useAuth: () => ({ getToken: jest.fn(async () => "tok"), signOut: jest.fn() }),
 }));
 
 jest.mock("@isol8/shared", () => ({
@@ -18,6 +18,13 @@ jest.mock("react-native-safe-area-context", () => ({
 
 import { ByoKeyScreen } from "../ByoKeyScreen";
 
+// NOTE: this @testing-library/react-native version's `fireEvent.press` /
+// `fireEvent.changeText` are ASYNC (they internally `await act(...)` around
+// the handler call) and MUST be awaited. An un-awaited fireEvent starts an
+// act() scope without waiting for it to pop before the next statement runs;
+// firing several in a row (or querying newly-rendered text right after one)
+// races that scope and silently drops the resulting state update — which is
+// what made every interaction in this file a no-op before this fix.
 describe("ByoKeyScreen", () => {
   beforeEach(() => {
     mockPut.mockReset();
@@ -33,9 +40,9 @@ describe("ByoKeyScreen", () => {
       render(<ByoKeyScreen onConnected={onConnected} />);
     });
 
-    fireEvent.press(screen.getByLabelText("Anthropic"));
-    fireEvent.changeText(screen.getByPlaceholderText("sk-ant-…"), "sk-ant-secret");
-    fireEvent.press(screen.getByText("Save key"));
+    await fireEvent.press(screen.getByLabelText("Anthropic"));
+    await fireEvent.changeText(screen.getByPlaceholderText("sk-ant-…"), "sk-ant-secret");
+    await fireEvent.press(screen.getByText("Save key"));
 
     await waitFor(() =>
       expect(mockPut).toHaveBeenCalledWith("/settings/keys/anthropic", {
@@ -57,11 +64,11 @@ describe("ByoKeyScreen", () => {
       render(<ByoKeyScreen onConnected={jest.fn()} />);
     });
 
-    fireEvent.press(screen.getByText("Save key"));
+    await fireEvent.press(screen.getByText("Save key"));
     expect(mockPut).not.toHaveBeenCalled();
 
-    fireEvent.changeText(screen.getByPlaceholderText("sk-proj-…"), "sk-proj-abc");
-    fireEvent.press(screen.getByText("Save key"));
+    await fireEvent.changeText(screen.getByPlaceholderText("sk-proj-…"), "sk-proj-abc");
+    await fireEvent.press(screen.getByText("Save key"));
 
     await waitFor(() =>
       expect(mockPut).toHaveBeenCalledWith("/settings/keys/openai", {
@@ -78,8 +85,8 @@ describe("ByoKeyScreen", () => {
       render(<ByoKeyScreen onConnected={onConnected} />);
     });
 
-    fireEvent.changeText(screen.getByPlaceholderText("sk-proj-…"), "sk-proj-bad");
-    fireEvent.press(screen.getByText("Save key"));
+    await fireEvent.changeText(screen.getByPlaceholderText("sk-proj-…"), "sk-proj-bad");
+    await fireEvent.press(screen.getByText("Save key"));
 
     await waitFor(() => expect(screen.getByText("key rejected")).toBeTruthy());
     expect(onConnected).not.toHaveBeenCalled();

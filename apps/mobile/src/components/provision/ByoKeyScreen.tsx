@@ -10,9 +10,10 @@
  * core/services/provision_gate.py's byo_key branch).
  */
 import { useAuth } from "@clerk/clerk-expo";
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Pressable,
   StyleSheet,
   Text,
@@ -34,7 +35,7 @@ interface Props {
 
 export function ByoKeyScreen({ onConnected }: Props) {
   const insets = useSafeAreaInsets();
-  const { getToken } = useAuth();
+  const { getToken, signOut } = useAuth();
   const getTokenRef = useRef(getToken);
   getTokenRef.current = getToken;
   const api = useMemo(
@@ -46,6 +47,17 @@ export function ByoKeyScreen({ onConnected }: Props) {
   const [apiKey, setApiKey] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // This is a full-screen takeover with no other navigation — a wrong-account
+  // or otherwise-stuck user needs an escape hatch. Same confirm-then-signOut
+  // pattern as ProvisionGate's Interstitial (the every-other-blocked-state
+  // screen this one replaces for the byo_provider_required gate).
+  const onSignOut = useCallback(() => {
+    Alert.alert("Sign out", "Sign out of this account?", [
+      { text: "Cancel", style: "cancel" },
+      { text: "Sign out", style: "destructive", onPress: () => void signOut() },
+    ]);
+  }, [signOut]);
 
   const trimmedKey = apiKey.trim();
   const canSubmit = !submitting && trimmedKey.length > 0;
@@ -129,22 +141,33 @@ export function ByoKeyScreen({ onConnected }: Props) {
             pressed && styles.pressed,
           ]}
           onPress={() => void submit()}
-          // Deliberately NOT using Pressable's native `disabled` prop: RN's
-          // Pressability responder gating (onStartShouldSetResponder) can lag
-          // a render behind a rapidly-changing `disabled` value, which makes
-          // @testing-library/react-native's fireEvent.press silently no-op
-          // even after the value has settled. canSubmit is guarded inside
-          // submit() itself instead; accessibilityState still reports the
-          // disabled affordance to assistive tech.
+          // Deliberately NOT using Pressable's native `disabled` prop, NOR
+          // accessibilityState.disabled: RN's Pressability responder gating
+          // (onStartShouldSetResponder) keys off the `disabled` prop, and
+          // @testing-library/react-native's fireEvent press-enablement check
+          // keys off accessibilityState — either one flips can make
+          // fireEvent.press silently no-op even after canSubmit has settled.
+          // canSubmit is guarded inside submit() itself instead; the dimmed
+          // `styles.disabled` opacity above is the only "disabled" signal.
+          // Mirrors ChatGPTConnectScreen's buttons, which never set either
+          // prop for the same reason.
           accessibilityRole="button"
           accessibilityLabel="Save key"
-          accessibilityState={{ disabled: !canSubmit }}
         >
           {submitting ? (
             <ActivityIndicator size="small" color={colors.white} />
           ) : (
             <Text style={styles.primaryButtonText}>Save key</Text>
           )}
+        </Pressable>
+
+        <Pressable
+          style={({ pressed }) => [styles.signOutButton, pressed && styles.pressed]}
+          onPress={onSignOut}
+          accessibilityRole="button"
+          accessibilityLabel="Sign out"
+        >
+          <Text style={styles.signOutText}>Sign out</Text>
         </Pressable>
       </View>
     </View>
@@ -241,5 +264,17 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     color: colors.errorText,
     textAlign: "center",
+  },
+  // Matches ProvisionGate's Interstitial signOutButton/signOutText exactly.
+  signOutButton: {
+    alignSelf: "center",
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.xs,
+  },
+  signOutText: {
+    fontFamily: fonts.dmSans,
+    fontSize: 13,
+    lineHeight: 17,
+    color: colors.mute,
   },
 });

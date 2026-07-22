@@ -46,8 +46,9 @@ import { useContainerStatusContext } from "../../../lib/containerStatusContext";
 // NOTE (mobile onboarding-parity Slice 4): written against the same
 // mocking conventions proven in FirstRunGate.test.tsx and
 // ChatGPTConnectScreen.test.tsx (jest.mock @clerk/clerk-expo +
-// react-native-safe-area-context; `await render(...)`). Not run to green as
-// part of this task per controller policy — see task-s4-report.md.
+// react-native-safe-area-context; `await render(...)`). Run green (9/9,
+// including the adminOnly/ownerRole cases added by the Slice 4 fix pass) —
+// see task-s4-report.md.
 describe("ProvisionGate provider sign-in routing", () => {
   beforeEach(() => {
     mockRefetch.mockReset();
@@ -153,6 +154,63 @@ describe("ProvisionGate provider sign-in routing", () => {
     expect(screen.getByText("Pick how to power your agents")).toBeTruthy();
     expect(screen.queryByText("MOCK_CHATGPT_CONNECT_SCREEN")).toBeNull();
     expect(screen.queryByText("MOCK_BYO_KEY_SCREEN")).toBeNull();
+  });
+
+  // adminOnly + ownerRole gating (Slice 4 fix): oauth_required is admin_only
+  // for an org workspace, so a non-admin member polling the SAME gate must
+  // fall through to the generic "ask your admin" interstitial instead of a
+  // ChatGPT sign-in control they have no power to complete.
+  it("does NOT render ChatGPTConnectScreen when oauth_required is adminOnly and the poller is a non-admin member", async () => {
+    mockUseContainerStatus.mockReturnValue({
+      status: {
+        kind: "blocked",
+        code: "oauth_required",
+        title: "Sign in with ChatGPT",
+        message: "Complete the ChatGPT sign-in to start your container.",
+        href: "/chat?provider=chatgpt_oauth",
+        actionLabel: "Sign in with ChatGPT",
+        adminOnly: true,
+        ownerRole: "member",
+      },
+      refetch: mockRefetch,
+    });
+
+    await render(
+      <ProvisionGate>
+        <Text>APP</Text>
+      </ProvisionGate>,
+    );
+
+    expect(screen.queryByText("MOCK_CHATGPT_CONNECT_SCREEN")).toBeNull();
+    expect(screen.getByText("Sign in with ChatGPT")).toBeTruthy();
+    expect(
+      screen.getByText("Ask your workspace admin to finish this on isol8.co."),
+    ).toBeTruthy();
+  });
+
+  it("renders ChatGPTConnectScreen when oauth_required is adminOnly but the poller IS the admin", async () => {
+    mockUseContainerStatus.mockReturnValue({
+      status: {
+        kind: "blocked",
+        code: "oauth_required",
+        title: "Sign in with ChatGPT",
+        message: "Complete the ChatGPT sign-in to start your container.",
+        href: "/chat?provider=chatgpt_oauth",
+        actionLabel: "Sign in with ChatGPT",
+        adminOnly: true,
+        ownerRole: "admin",
+      },
+      refetch: mockRefetch,
+    });
+
+    await render(
+      <ProvisionGate>
+        <Text>APP</Text>
+      </ProvisionGate>,
+    );
+
+    expect(screen.getByText("MOCK_CHATGPT_CONNECT_SCREEN")).toBeTruthy();
+    expect(screen.queryByText(/ask your workspace admin/i)).toBeNull();
   });
 });
 

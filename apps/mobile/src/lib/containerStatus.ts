@@ -48,6 +48,16 @@ export type ContainerStatus =
       /** Gate action label (e.g. "Upgrade", "Set up billing") — null when absent. */
       actionLabel: string | null;
       adminOnly: boolean;
+      /**
+       * The polling user's role on this owner's workspace ("admin" | "member"),
+       * from the gate payload's `owner_role` (mobile onboarding-parity Slice 4
+       * fix) — same optional-surfacing pattern this file already uses for
+       * `onboarded`. `adminOnly` alone can't tell an org admin apart from a
+       * member; screens that gate on admin-only actions need both. Undefined
+       * on an old backend / unexpected value — callers must treat that as
+       * "unknown", never coerce it to a specific role.
+       */
+      ownerRole?: "admin" | "member";
     }
   | { kind: "needsSignup" }
   | { kind: "unreachable"; message: string };
@@ -57,6 +67,9 @@ interface BlockedPayload {
   title?: string;
   message?: string;
   action?: { label?: string; href?: string; admin_only?: boolean };
+  /** Sibling of `action`, not nested inside it — see `Gate.to_payload` in
+   * core/services/provision_gate.py. */
+  owner_role?: string;
 }
 
 interface StatusBody {
@@ -134,6 +147,10 @@ export function useContainerStatus() {
           href: blocked.action?.href ?? null,
           actionLabel: blocked.action?.label ?? null,
           adminOnly: Boolean(blocked.action?.admin_only),
+          ownerRole:
+            blocked.owner_role === "admin" || blocked.owner_role === "member"
+              ? blocked.owner_role
+              : undefined,
         };
       } else if (err instanceof ApiError && err.status === 404) {
         next = { kind: "needsSignup" };

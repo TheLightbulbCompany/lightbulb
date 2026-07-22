@@ -143,16 +143,19 @@ export function ByoKeyScreen({ onConnected }: Props) {
             pressed && styles.pressed,
           ]}
           onPress={() => void submit()}
-          // Deliberately NOT using Pressable's native `disabled` prop, NOR
-          // accessibilityState.disabled: RN's Pressability responder gating
-          // (onStartShouldSetResponder) keys off the `disabled` prop, and
-          // @testing-library/react-native's fireEvent press-enablement check
-          // keys off accessibilityState — either one flips can make
-          // fireEvent.press silently no-op even after canSubmit has settled.
-          // canSubmit is guarded inside submit() itself instead; the dimmed
-          // `styles.disabled` opacity above is the only "disabled" signal.
-          // Mirrors ChatGPTConnectScreen's buttons, which never set either
-          // prop for the same reason.
+          // The dimmed `styles.disabled` opacity is a SIGHTED-only signal —
+          // without this, VoiceOver announces a live, actionable button that
+          // does nothing until a key is typed. (An earlier revision dropped
+          // it to stop presses no-opping in tests; the real cause there was
+          // un-awaited RNTL v14 `fireEvent` calls, since fixed in
+          // ByoKeyScreen.test.tsx, so the trade bought nothing and cost a
+          // real a11y regression.)
+          //
+          // Still NOT Pressable's native `disabled` prop: that also drops the
+          // element out of the touch-responder chain, and `submit()` already
+          // guards on `canSubmit` itself, so a press that does arrive is a
+          // no-op either way.
+          accessibilityState={{ disabled: !canSubmit }}
           accessibilityRole="button"
           accessibilityLabel="Save key"
         >

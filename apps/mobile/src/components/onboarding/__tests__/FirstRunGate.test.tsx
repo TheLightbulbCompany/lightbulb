@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react-native";
+import { render, screen, userEvent } from "@testing-library/react-native";
 import { Text } from "react-native";
 
 // NOTE (mobile onboarding-parity Slice 2): FirstRunGate no longer probes
@@ -83,7 +83,7 @@ describe("FirstRunGate", () => {
     expect(screen.getByText("APP")).toBeTruthy();
   });
 
-  it("renders children while starting (cold start, not yet ready)", async () => {
+  it("renders children while starting (cold start — the latch only arms at ready)", async () => {
     mockUseContainerStatusContext.mockReturnValue({ kind: "starting", phase: "agent" });
 
     await render(
@@ -133,13 +133,22 @@ describe("FirstRunGate", () => {
     expect(screen.queryByText("APP")).toBeNull();
   });
 
-  // Parity check the other direction: the decision has NO owner-type branch
-  // left at all (that's the point of this slice), so the same fixture shape
-  // that used to be the ONLY eligible case (a personal trial_local owner)
-  // must still reach the funnel post-rewrite — this isn't a special case
-  // any more, just the same `ready && onboarded:false` check as everyone else.
-  it("still shows the funnel for a personal trial_local-shaped owner (no regression from the old billing-probe behavior)", async () => {
-    mockUseContainerStatusContext.mockReturnValue({ kind: "ready", onboarded: false });
+  // PINNED DECISION — do not "fix" this into showing the funnel. The backend
+  // stamps `onboarded` on every 200, including provisioning bodies, and web
+  // does open its funnel during a cold start. Mobile deliberately doesn't:
+  // web's funnel check runs BEFORE its stepper, while mobile's stepper WRAPS
+  // this gate — so a funnel opened pre-ready gets unmounted the moment
+  // ProvisioningStepper promotes at PROMOTE_MS, discarding the in-progress
+  // brief. That is the same failure this file's Important-3 guard exists to
+  // prevent, just smaller. The cost is a pre-ready glimpse of the tab shell,
+  // during which the container isn't up and chat doesn't work anyway; the
+  // door closes as soon as `ready` lands (covered by the ready case above).
+  it("does NOT open the funnel for a starting body carrying onboarded:false before any ready", async () => {
+    mockUseContainerStatusContext.mockReturnValue({
+      kind: "starting",
+      phase: "provisioning",
+      onboarded: false,
+    });
 
     await render(
       <FirstRunGate>
@@ -147,8 +156,8 @@ describe("FirstRunGate", () => {
       </FirstRunGate>,
     );
 
-    expect(screen.getByText("Let’s get started.")).toBeTruthy();
-    expect(screen.queryByText("APP")).toBeNull();
+    expect(screen.getByText("APP")).toBeTruthy();
+    expect(screen.queryByText("Let’s get started.")).toBeNull();
   });
 
   it("renders children for a ready container with onboarded:true", async () => {
@@ -176,6 +185,103 @@ describe("FirstRunGate", () => {
     expect(screen.getByText("APP")).toBeTruthy();
     expect(screen.queryByText("Let’s get started.")).toBeNull();
   });
+
+  // REGRESSION GUARD (whole-branch review, Important #3). Eligibility used to
+  // be re-derived from the LIVE polled status, so any transition off `ready`
+  // unmounted the funnel mid-typing and rendered the tab shell instead: a
+  // free-tier idle reap (`parked`), the wake after it (`starting`), or ONE
+  // failed request (`unreachable` — a network blip on resume, a transient
+  // token refresh, any 5xx). That threw away the in-progress brief AND let
+  // the user past a door that is supposed to have no skip. The latch arms at
+  // the first `ready` and nothing disarms it, so none of these touch it.
+  it("keeps an in-progress funnel — and what the user already typed — across parked / starting / unreachable", async () => {
+    mockUseContainerStatusContext.mockReturnValue({ kind: "ready", onboarded: false });
+
+    // userEvent, not fireEvent: presses don't reach this screen's Pressables
+    // through its ScrollView (see FirstRunFunnel.test.tsx).
+    const u = userEvent.setup();
+    const { rerender } = await render(
+      <FirstRunGate>
+        <Text>APP</Text>
+      </FirstRunGate>,
+    );
+    expect(screen.getByText("Let’s get started.")).toBeTruthy();
+
+    // Get the user mid-brief — this is the state the bug destroyed.
+    await u.press(screen.getByRole("button", { name: "Start something new" }));
+    await u.type(
+      screen.getByPlaceholderText("e.g. A social media agency for small restaurants"),
+      "tea box",
+    );
+    expect(screen.getByDisplayValue("tea box")).toBeTruthy();
+
+    const transients = [
+      { kind: "parked" },
+      { kind: "starting", phase: "provisioning" },
+      { kind: "unreachable", message: "network down" },
+      { kind: "loading" },
+      null,
+    ];
+
+    for (const transient of transients) {
+      mockUseContainerStatusContext.mockReturnValue(transient);
+      await rerender(
+        <FirstRunGate>
+          <Text>APP</Text>
+        </FirstRunGate>,
+      );
+      // Still the funnel, still on the same step, still holding the draft —
+      // a remount would have reset `input` to "" even if the funnel itself
+      // came back.
+      expect(screen.getByDisplayValue("tea box")).toBeTruthy();
+      expect(screen.queryByText("APP")).toBeNull();
+    }
+  });
+
+  // The latch must still be a latch and not a one-way door: a poll that says
+  // the container IS onboarded (someone else on the org finished the funnel,
+  // or this user's submit landed) has to close it.
+  it("drops the funnel once a poll reports onboarded:true", async () => {
+    mockUseContainerStatusContext.mockReturnValue({ kind: "ready", onboarded: false });
+
+    const { rerender } = await render(
+      <FirstRunGate>
+        <Text>APP</Text>
+      </FirstRunGate>,
+    );
+    expect(screen.getByText("Let’s get started.")).toBeTruthy();
+
+    mockUseContainerStatusContext.mockReturnValue({ kind: "ready", onboarded: true });
+    await rerender(
+      <FirstRunGate>
+        <Text>APP</Text>
+      </FirstRunGate>,
+    );
+
+    expect(screen.getByText("APP")).toBeTruthy();
+    expect(screen.queryByText("Let’s get started.")).toBeNull();
+  });
+
+  // The blocking states never reach this component in the app (ProvisionGate
+  // replaces the whole tree for them, so `children` — this gate — never
+  // mounts), and they can't arm the latch either: it only moves on a 200
+  // body's `onboarded`. Pinned so a future "read the status directly" edit
+  // can't quietly put the funnel in front of a gated user.
+  it.each([["blocked"], ["needsSignup"], ["teamPending"]])(
+    "never shows the funnel for a %s status",
+    async (kind) => {
+      mockUseContainerStatusContext.mockReturnValue({ kind });
+
+      await render(
+        <FirstRunGate>
+          <Text>APP</Text>
+        </FirstRunGate>,
+      );
+
+      expect(screen.getByText("APP")).toBeTruthy();
+      expect(screen.queryByText("Let’s get started.")).toBeNull();
+    },
+  );
 
   it("keeps the briefSubmitted local latch: suppresses the funnel even when onboarded:false", async () => {
     mockUser = {

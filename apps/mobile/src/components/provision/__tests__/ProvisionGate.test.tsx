@@ -46,9 +46,10 @@ import { useContainerStatusContext } from "../../../lib/containerStatusContext";
 // NOTE (mobile onboarding-parity Slice 4): written against the same
 // mocking conventions proven in FirstRunGate.test.tsx and
 // ChatGPTConnectScreen.test.tsx (jest.mock @clerk/clerk-expo +
-// react-native-safe-area-context; `await render(...)`). Run green (9/9,
-// including the adminOnly/ownerRole cases added by the Slice 4 fix pass) —
-// see task-s4-report.md.
+// react-native-safe-area-context; `await render(...)`). The routing cases
+// below cover all four blocking kinds this gate serves — blocked (generic,
+// oauth_required, byo_provider_required, and the adminOnly/ownerRole
+// variants), teamPending, needsSignup and error.
 describe("ProvisionGate provider sign-in routing", () => {
   beforeEach(() => {
     mockRefetch.mockReset();
@@ -186,6 +187,48 @@ describe("ProvisionGate provider sign-in routing", () => {
     expect(
       screen.getByText("Ask your workspace admin to finish this on isol8.co."),
     ).toBeTruthy();
+  });
+
+  // The other two blocking states this gate routes. Both replace the tree
+  // rather than banner over it (contract §B3: there is no working chat behind
+  // either), and they differ in exactly one way — team-pending clears itself
+  // and so offers NO outbound CTA, needs-signup needs the user to go finish
+  // onboarding on the web.
+  it("renders the pending-workspace interstitial for teamPending, with no outbound CTA", async () => {
+    mockUseContainerStatus.mockReturnValue({
+      status: { kind: "teamPending" },
+      refetch: mockRefetch,
+    });
+
+    await render(
+      <ProvisionGate>
+        <Text>APP</Text>
+      </ProvisionGate>,
+    );
+
+    expect(screen.getByText("Setting up your team workspace…")).toBeTruthy();
+    expect(screen.getByText("Retry")).toBeTruthy();
+    expect(screen.queryByText("APP")).toBeNull();
+    // Nothing for the member to do on the web — their admin's provision is
+    // already running and the poll clears this on its own.
+    expect(screen.queryByText(/on isol8\.co/)).toBeNull();
+  });
+
+  it("renders the finish-on-web interstitial for needsSignup, with the outbound CTA", async () => {
+    mockUseContainerStatus.mockReturnValue({
+      status: { kind: "needsSignup" },
+      refetch: mockRefetch,
+    });
+
+    await render(
+      <ProvisionGate>
+        <Text>APP</Text>
+      </ProvisionGate>,
+    );
+
+    expect(screen.getByText("Finish setting up on isol8.co")).toBeTruthy();
+    expect(screen.getByText("Manage on isol8.co")).toBeTruthy();
+    expect(screen.queryByText("APP")).toBeNull();
   });
 
   it("renders ChatGPTConnectScreen when oauth_required is adminOnly but the poller IS the admin", async () => {

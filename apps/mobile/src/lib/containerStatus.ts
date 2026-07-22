@@ -6,11 +6,12 @@
  * `ApiError` for 402 (blocked gate) and 404 (needs-signup). The status-code +
  * payload-shape parse itself lives in `@isol8/shared`'s `classifyContainerStatus`
  * (mobile onboarding-parity Slice 1) — this file's job is ONLY the React
- * binding (`useState` + `AppState`, 5s poll) and turning a `ClassifiedStatus`
+ * binding (`useState` + `AppState` + the poll loop) and turning a `ClassifiedStatus`
  * into this file's richer `ContainerStatus` (which additionally distinguishes
  * ready / starting / parked / error from the 200 body's `status`/`phase`
  * fields — a rendering decision the shared classifier deliberately leaves to
- * each platform). Classification (contract §B1/§B3):
+ * each platform) plus the poll loop's per-kind cadence (see
+ * `pollIntervalFor`). Classification (contract §B1/§B3):
  *
  *   ready       — 200 with phase === "ready" (openclaw responsive)
  *   starting    — 200 with phase !== "ready" (cold start / provisioning)
@@ -37,6 +38,9 @@
  * FirstRunGate reads this SAME poll instead of running a second one.
  * `undefined` means "not known" (old backend / not-yet-ready) and callers
  * must treat that as onboarded-enough to skip the funnel, never as false.
+ * FirstRunGate deliberately consumes only the `ready` one — the funnel must
+ * not open behind a container that can still be taken over by the stepper's
+ * cold-start promotion; see that file's docstring.
  */
 import { useAuth } from "@clerk/clerk-expo";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -87,6 +91,51 @@ export type ContainerStatus =
   | { kind: "unreachable"; message: string };
 
 const POLL_INTERVAL_MS = 5_000;
+/**
+ * Slower cadence for `blocked`. A gate can clear entirely server-side (an
+ * admin completes the ChatGPT device-code flow on the web, credits land, a
+ * subscription reactivates), and two long-lived INTERACTIVE screens sit on
+ * this kind — ChatGPTConnectScreen's terminal "Connected — finishing up…"
+ * state has no Retry at all and fires `onConnected` exactly once, so if that
+ * single re-probe loses the race with the gate's eventually-consistent token
+ * read, this poll is the only thing left that un-sticks the user. 30s rather
+ * than 5s because nothing about a gate is urgent and nobody should hammer an
+ * endpoint that dispatches provisioning work.
+ */
+const BLOCKED_POLL_INTERVAL_MS = 30_000;
+
+/**
+ * Poll cadence per status kind — `null` means "settled, stop polling".
+ *
+ * `error` polls at the SAME cadence as `starting` on purpose: this poll is
+ * the backend's only auto-retry trigger for a failed container (see
+ * routers/container.py, `retryable_states = ("error", "stopped")` — "This
+ * poll is the only thing that runs again, so it re-dispatches"). Before
+ * `error` existed as its own kind, a failed container classified as
+ * `starting` and kept polling; giving it a surface without giving it a
+ * cadence would mean the container never auto-recovers unless the user taps
+ * Retry or backgrounds and foregrounds the app.
+ *
+ * `parked` polls because a foreground poll carries wake=1, so it drives the
+ * box from asleep → starting → ready with no user action.
+ *
+ * `ready` / `loading` / `needsSignup` / `unreachable` don't poll: settled,
+ * pre-first-response, or (for `unreachable`) recovered by the AppState
+ * foreground re-check and the surfaces' own Retry.
+ */
+function pollIntervalFor(kind: ContainerStatus["kind"]): number | null {
+  switch (kind) {
+    case "starting":
+    case "teamPending":
+    case "parked":
+    case "error":
+      return POLL_INTERVAL_MS;
+    case "blocked":
+      return BLOCKED_POLL_INTERVAL_MS;
+    default:
+      return null;
+  }
+}
 
 /**
  * Turns the shared classifier's status-code-level result into this file's
@@ -202,20 +251,16 @@ export function useContainerStatus() {
     void load();
   }, [load]);
 
-  // Poll only while transient (starting / team-pending / parked). The dep is
-  // `status.kind`, so the interval is torn down + rebuilt only on a state
-  // TRANSITION — never once per tick — and stops entirely once ready/blocked.
-  // `parked` polls too: a foreground poll carries wake=1, so it drives the box
-  // from asleep → starting → ready without any user action.
+  // Poll while unsettled, at the cadence `pollIntervalFor` picks. The dep is
+  // `status.kind` and nothing else, so the interval is torn down + rebuilt
+  // only on a state TRANSITION — never once per tick, even though the cadence
+  // now varies by kind: every poll that lands on the same kind produces a new
+  // status OBJECT but the same `status.kind` string, so this effect doesn't
+  // re-run. It stops entirely once the status is settled.
   useEffect(() => {
-    if (
-      status.kind !== "starting" &&
-      status.kind !== "teamPending" &&
-      status.kind !== "parked"
-    ) {
-      return;
-    }
-    const id = setInterval(() => void load(), POLL_INTERVAL_MS);
+    const intervalMs = pollIntervalFor(status.kind);
+    if (intervalMs == null) return;
+    const id = setInterval(() => void load(), intervalMs);
     return () => clearInterval(id);
   }, [status.kind, load]);
 

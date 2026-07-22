@@ -41,11 +41,29 @@ describe("activeStepIndex", () => {
   });
 });
 
+/**
+ * Hold every `usePulse` static for the cases that advance the clock.
+ *
+ * With reduce motion OFF (the RN jest preset's default) `usePulse` starts an
+ * INFINITE `Animated.loop`, and the preset's NativeAnimatedModule mock ends
+ * each timing step with a `setTimeout(…, 16)`. So every second of advanced
+ * fake time costs ~60 loop iterations of timer + Animated work, and the cases
+ * below advance tens of seconds — up to the 5-minute soft timeout — with a
+ * banner or the ring mounted. None of them assert anything about animation
+ * (they read text and testIDs), so all of that is pure cost; `usePulse`
+ * short-circuits to a static opacity under reduce motion and schedules
+ * nothing at all.
+ */
+function holdAnimationsStatic() {
+  jest.spyOn(AccessibilityInfo, "isReduceMotionEnabled").mockResolvedValue(true);
+}
+
 describe("ProvisioningStepper time-box", () => {
   beforeEach(() => {
     // Modern fake timers also fake Date.now(), which is what the component's
     // elapsed clock reads — so advancing timers advances elapsed.
     jest.useFakeTimers();
+    holdAnimationsStatic();
     mockSignOut.mockReset();
   });
 
@@ -144,15 +162,19 @@ describe("ProvisioningStepper time-box", () => {
     expect(screen.queryByTestId("provision-dot-rail")).toBeNull();
   });
 
-  // REGRESSION GUARD (review Important #1). A mount-scoped clock survived
-  // parked → starting (same element type ⇒ no remount), so a free-tier wake
-  // arrived at `starting` with the 10s promotion budget already spent and took
-  // the full screen at t=0 — blanking live chat for the whole wake. The clock
-  // must measure only the CURRENT contiguous `starting` run.
-  it("gives a parked wake a FRESH promotion budget when it flips to starting", async () => {
+  // REGRESSION GUARD (whole-branch review, Important #1). A free-tier wake
+  // reads `parked` for exactly ONE poll and then sits in `starting` for the
+  // 30-90s of ECS placement / ENI attach / gateway handshake: the wake
+  // dispatch writes status="provisioning" immediately and the backend maps
+  // every non-running status to phase="provisioning". Promoting anywhere in
+  // that window unmounts `<FirstRunGate><Tabs>…` — composer draft, message
+  // list, scroll position and navigation stack all gone, and the user lands
+  // back on the Chat tab when it remounts. A per-run clock alone only bought
+  // 10 more seconds; the fix is web's `reachedReady` latch — once this mount
+  // has seen ready or parked, the full-screen stepper is off the table.
+  it("never promotes the starting run that follows a parked wake, however long it drags", async () => {
     const { rerender } = await renderStepper({ kind: "parked" });
 
-    // Long enough that an unreset clock would be well past PROMOTE_MS.
     await act(async () => {
       jest.advanceTimersByTime(12_000);
     });
@@ -173,25 +195,52 @@ describe("ProvisioningStepper time-box", () => {
     expect(screen.getByText("APP")).toBeTruthy();
     expect(screen.queryByTestId("provision-dot-rail")).toBeNull();
 
-    // 9s into the NEW run — still banner, still live chat underneath.
+    // A whole realistic wake later — thin banner, live children, still.
     await act(async () => {
-      jest.advanceTimersByTime(9_000);
+      jest.advanceTimersByTime(90_000);
     });
     expect(screen.getByText("Your workspace is starting…")).toBeTruthy();
+    expect(screen.getByText("APP")).toBeTruthy();
     expect(screen.queryByTestId("provision-dot-rail")).toBeNull();
-
-    // A wake that genuinely drags still promotes — 10s after it BEGAN.
-    await act(async () => {
-      jest.advanceTimersByTime(2_000);
-    });
-    expect(screen.getByTestId("provision-dot-rail")).toBeTruthy();
   });
 
-  it("restarts the clock for a starting run that follows a ready spell", async () => {
+  // Same latch, the other entry point: an idle scale-to-zero restart, or the
+  // documented false `starting` that /container/status reports when the
+  // answering backend task holds no pool connection. Both arrive over a chat
+  // the user was just using, so neither may take the screen.
+  it("never promotes a starting run once this mount has seen ready", async () => {
     const { rerender } = await renderStepper({ kind: "ready", onboarded: true });
+
+    await rerender(
+      <ProvisioningStepper
+        status={{ kind: "starting", phase: "provisioning" }}
+        onRetry={jest.fn()}
+      >
+        <Text>APP</Text>
+      </ProvisioningStepper>,
+    );
 
     await act(async () => {
       jest.advanceTimersByTime(120_000);
+    });
+
+    expect(screen.getByText("Your workspace is starting…")).toBeTruthy();
+    expect(screen.getByText("APP")).toBeTruthy();
+    expect(screen.queryByTestId("provision-dot-rail")).toBeNull();
+  });
+
+  // The clock is scoped to the current contiguous run of ONE kind, and this
+  // is the transition where that still matters: `loading` is where a first
+  // cold start begins, and a mount-scoped clock would hand the following
+  // `starting` run a budget that was already spent on the initial probe.
+  // (The parked → starting case above no longer proves this — the latch stops
+  // that one from promoting at all.)
+  it("spends the promotion budget on the starting run alone, not on the loading probe before it", async () => {
+    const { rerender } = await renderStepper({ kind: "loading" });
+
+    // Long enough that an unreset clock would be well past PROMOTE_MS.
+    await act(async () => {
+      jest.advanceTimersByTime(12_000);
     });
 
     await rerender(
@@ -203,9 +252,20 @@ describe("ProvisioningStepper time-box", () => {
       </ProvisioningStepper>,
     );
 
-    // Two minutes of `ready` must not count toward the promotion budget.
+    // 9s into the NEW run — still banner, still live children.
+    await act(async () => {
+      jest.advanceTimersByTime(9_000);
+    });
     expect(screen.getByText("Your workspace is starting…")).toBeTruthy();
     expect(screen.queryByTestId("provision-dot-rail")).toBeNull();
+
+    // A FIRST cold start that genuinely drags does still earn the stepper —
+    // nothing is mounted behind it to lose, and it is the only surface with a
+    // phase, a clock and a support exit.
+    await act(async () => {
+      jest.advanceTimersByTime(2_000);
+    });
+    expect(screen.getByTestId("provision-dot-rail")).toBeTruthy();
   });
 });
 
@@ -322,6 +382,9 @@ describe("ProvisioningStepper rotating ideas", () => {
 describe("ProvisioningStepper blocking-state exits", () => {
   beforeEach(() => {
     jest.useFakeTimers();
+    // The soft-timeout case advances the full 5-minute PROVISION_TIMEOUT_MS
+    // with the ring pulsing — see holdAnimationsStatic.
+    holdAnimationsStatic();
     mockSignOut.mockReset();
   });
 

@@ -14,12 +14,17 @@
  *     children, ALWAYS. It is healthy and one intent away from running; the
  *     poll already carries wake=1, so it clears in seconds and never takes
  *     the screen.
- *   • starting, elapsed < PROMOTE_MS           → thin banner over live children.
- *   • starting, elapsed ≥ PROMOTE_MS           → full-screen stepper (blocking).
+ *   • starting on a FIRST cold start, elapsed < PROMOTE_MS
+ *                                              → thin banner over live children.
+ *   • starting on a FIRST cold start, elapsed ≥ PROMOTE_MS
+ *                                              → full-screen stepper (blocking).
+ *   • starting AFTER this mount has once seen ready or parked
+ *                                              → thin banner over live
+ *     children, for as long as it runs. See `settledOnceRef` below.
  *
  * The banner-first window is the deliberate divergence from web (which blocks
  * immediately): a quick start or wake never flashes a full-screen takeover,
- * but a genuinely slow one earns the phase/clock/support affordances.
+ * but a genuinely slow FIRST one earns the phase/clock/support affordances.
  *
  * ONE component serves all five non-blocking states on purpose. The gate hands
  * `children` to this component unconditionally, so a starting → ready flip only
@@ -31,11 +36,9 @@
  * position on every cold start and every wake.
  *
  * The elapsed clock measures ONLY the current contiguous run of one status
- * kind, so the promotion budget is spent on `starting` alone. A trial box that
- * wakes (parked → starting) therefore gets a FULL PROMOTE_MS on the banner
- * instead of inheriting the seconds it already spent parked — a mount-scoped
- * clock promoted such a wake at t=0 of `starting` and blanked live chat for
- * the rest of it.
+ * kind, so the promotion budget (and the elapsed readout / soft-timeout it
+ * feeds) is spent on the current `starting` run alone — never on the
+ * `loading` probe that precedes a first cold start.
  *
  * Copy + timing (ideas, rotation cadence, soft-timeout budget, mm:ss format)
  * come from `@isol8/shared` so this and the web stepper can't drift.
@@ -72,8 +75,10 @@ import type { ContainerStatus } from "../../lib/containerStatus";
 import { Wordmark } from "./Wordmark";
 
 /**
- * How long a `starting` container may take before the thin banner is promoted
- * to the full-screen stepper. Mobile-only — web has no banner phase.
+ * How long a FIRST-cold-start `starting` container may take before the thin
+ * banner is promoted to the full-screen stepper. Mobile-only — web has no
+ * banner phase. Not a budget for wakes/restarts: those never promote at all
+ * (see `settledOnceRef`).
  */
 const PROMOTE_MS = 10_000;
 
@@ -266,12 +271,43 @@ export function ProvisioningStepper({ status, onRetry, children }: Props) {
   const insets = useSafeAreaInsets();
   const { signOut } = useAuth();
 
+  // Has this mount ever seen a settled container? `ready` obviously, and
+  // `parked` too — a parked box is ready-equivalent (healthy, asleep on
+  // purpose, one intent away from running), which is exactly how web's
+  // `reachedReady` latch treats it.
+  //
+  // This is what makes "a wake must never take the screen" TRUE rather than
+  // merely time-boxed. A free-tier wake reads `parked` for ONE poll and then
+  // spends the next 30-90s in `starting`: the wake dispatch writes
+  // status="provisioning" immediately, and the backend maps every non-running
+  // status to phase="provisioning" (see routers/container.py +
+  // _resolve_cold_start_phase), so ECS placement, ENI attach and the gateway
+  // handshake all read as `starting`. Behind that sits `<FirstRunGate><Tabs>…`
+  // with a composer draft, a loaded message list, a scroll position and a
+  // navigation stack. Same story for an idle scale-to-zero restart, and for
+  // the documented case where /container/status reports `starting` over a
+  // perfectly working container because the answering backend task holds no
+  // pool connection. On a genuine FIRST cold start none of that exists yet —
+  // nothing to lose, and the stepper is the only thing to look at — so the
+  // promotion still happens there and only there.
+  //
+  // Derived from the current prop and written during render (same pattern as
+  // the clock below): it is therefore already true on the very render that
+  // first observes ready/parked, with no question about whether an effect
+  // from the previous commit has run yet.
+  const settledOnceRef = useRef(false);
+  if (status.kind === "ready" || status.kind === "parked") {
+    settledOnceRef.current = true;
+  }
+
   // Elapsed clock, scoped to the current contiguous run of ONE status kind, so
-  // the promotion budget below is spent on `starting` alone. Restamped DURING
-  // render (React's "adjust state when a prop changes" pattern) rather than
-  // from an effect: an effect lands after the frame is already on screen, so a
-  // parked → starting wake would flash one frame of the full-screen takeover
-  // before the reset arrived.
+  // the promotion budget below — and the elapsed readout and soft timeout the
+  // promoted stepper shows — measure the current `starting` run and not the
+  // `loading` probe that precedes a first cold start. Restamped DURING render
+  // (React's "adjust state when a prop changes" pattern) rather than from an
+  // effect: an effect lands after the frame is already on screen, so the first
+  // `starting` frame would render against the previous run's stamp — a
+  // full-screen takeover for one frame when the budget was already spent.
   const [clock, setClock] = useState(() => ({
     kind: status.kind,
     startedAt: Date.now(),
@@ -298,10 +334,14 @@ export function ProvisioningStepper({ status, onRetry, children }: Props) {
   // it, so the clamp is only ever load-bearing for that first frame.
   const elapsedMs = Math.max(0, nowMs - clock.startedAt);
 
-  // `parked` never promotes: it's a healthy box waking on its own, measured in
-  // seconds, and blanking readable content for it would be a regression. Only
-  // a `starting` container that has genuinely dragged earns the full screen.
-  const promoted = status.kind === "starting" && elapsedMs >= PROMOTE_MS;
+  // Promote on a FIRST cold start only: `starting`, nothing settled on this
+  // mount yet (see `settledOnceRef`), and past the banner budget. `parked`
+  // never promotes at all — it's a healthy box waking on its own, measured in
+  // seconds, and blanking readable content for it would be a regression.
+  const promoted =
+    status.kind === "starting" &&
+    !settledOnceRef.current &&
+    elapsedMs >= PROMOTE_MS;
   const activeStep =
     status.kind === "starting"
       ? activeStepIndex(status.phase, status.substatus)

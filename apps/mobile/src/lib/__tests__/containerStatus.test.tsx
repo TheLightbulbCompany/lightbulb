@@ -1,4 +1,4 @@
-import { renderHook, waitFor } from "@testing-library/react-native";
+import { act, renderHook, waitFor } from "@testing-library/react-native";
 import { AppState } from "react-native";
 
 // Spy created INSIDE the factory (jest hoists jest.mock above imports, so an
@@ -69,9 +69,12 @@ describe("useContainerStatus parked + wake param", () => {
 
 // mobile onboarding-parity Slice 2: `onboarded` used to be discarded when
 // parsing the /container/status body. These prove it now surfaces on the
-// `ready` (and `starting`) ContainerStatus variants, since FirstRunGate's
-// funnel-eligibility decision reads it straight off this hook's status via
-// ContainerStatusContext (see containerStatusContext.test.tsx).
+// `ready` (and `starting`) ContainerStatus variants — FirstRunGate's
+// funnel-eligibility decision reads the READY one straight off this hook's
+// status via ContainerStatusContext (see containerStatusContext.test.tsx).
+// The `starting` case below is the parse staying faithful to the body, not a
+// second eligibility signal: FirstRunGate deliberately ignores it so the
+// funnel can't open behind a container the stepper may still take over.
 describe("useContainerStatus onboarded field", () => {
   beforeEach(() => {
     mockFetch.mockReset();
@@ -226,5 +229,104 @@ describe("useContainerStatus blocked / needsSignup / teamPending / unreachable",
     mockFetch.mockRejectedValue(new MockApiError(402, { detail: "not a gate payload" }));
     const { result } = await renderHook(() => useContainerStatus());
     await waitFor(() => expect(result.current.status.kind).toBe("unreachable"));
+  });
+});
+
+// WHICH kinds keep polling — the behavior nothing covered until the
+// whole-branch review found `error` had been given a surface but no cadence.
+// Fake timers throughout: the cadence is the assertion, so the interval has
+// to be driven deterministically rather than waited on.
+describe("useContainerStatus poll cadence", () => {
+  beforeEach(() => {
+    mockFetch.mockReset();
+    setActive("active");
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  /**
+   * Mount, wait for the initial probe to land on `expectedKind`, and hand back
+   * the fetch count so far as the baseline. waitFor is fake-timer aware (it
+   * advances by its 50ms interval per iteration), so settling here costs a
+   * couple hundred ms of fake clock at most — nowhere near the 5s/30s cadences
+   * the cases below measure.
+   */
+  async function mountSettled(expectedKind: string) {
+    const rendered = await renderHook(() => useContainerStatus());
+    await waitFor(() =>
+      expect(rendered.result.current.status.kind).toBe(expectedKind),
+    );
+    return { ...rendered, initialCalls: mockFetch.mock.calls.length };
+  }
+
+  // REGRESSION GUARD (whole-branch review, Important #2), and a REGRESSION vs
+  // origin/main specifically: before `error` was its own kind, a body with
+  // status:"error" classified as `starting` and polled every 5s. That poll is
+  // the backend's ONLY auto-retry trigger for a failed container
+  // (routers/container.py: `retryable_states = ("error", "stopped")` — "This
+  // poll is the only thing that runs again, so it re-dispatches"). Adding the
+  // surface without the cadence meant "Setup failed" sat there forever unless
+  // the user tapped Retry or backgrounded the app.
+  it("keeps polling a failed container at the fast cadence — the backend's only auto-retry trigger", async () => {
+    mockFetch.mockResolvedValue({ status: 200, body: { status: "error" } });
+    const { initialCalls } = await mountSettled("error");
+
+    await act(async () => {
+      jest.advanceTimersByTime(5_000);
+    });
+    expect(mockFetch).toHaveBeenCalledTimes(initialCalls + 1);
+
+    await act(async () => {
+      jest.advanceTimersByTime(5_000);
+    });
+    expect(mockFetch).toHaveBeenCalledTimes(initialCalls + 2);
+  });
+
+  it("keeps polling a starting container at the fast cadence", async () => {
+    mockFetch.mockResolvedValue({ status: 200, body: { phase: "provisioning" } });
+    const { initialCalls } = await mountSettled("starting");
+
+    await act(async () => {
+      jest.advanceTimersByTime(5_000);
+    });
+    expect(mockFetch).toHaveBeenCalledTimes(initialCalls + 1);
+  });
+
+  // A gate can clear entirely server-side (an admin finishes the ChatGPT
+  // device-code flow on the web, credits land, a subscription reactivates),
+  // and ChatGPTConnectScreen's terminal state has no Retry at all — so a
+  // blocked status that never re-probed could strand a user on a screen whose
+  // only other control is Sign out. Slow cadence, though: nothing about a
+  // gate is urgent.
+  it("polls a blocked gate on the slow cadence, not the fast one", async () => {
+    mockFetch.mockRejectedValue(
+      new MockApiError(402, {
+        blocked: { code: "oauth_required", title: "Sign in with ChatGPT" },
+      }),
+    );
+    const { initialCalls } = await mountSettled("blocked");
+
+    await act(async () => {
+      jest.advanceTimersByTime(5_000);
+    });
+    expect(mockFetch).toHaveBeenCalledTimes(initialCalls);
+
+    await act(async () => {
+      jest.advanceTimersByTime(25_000);
+    });
+    expect(mockFetch).toHaveBeenCalledTimes(initialCalls + 1);
+  });
+
+  it("stops polling once ready — a settled container is not a poll loop", async () => {
+    mockFetch.mockResolvedValue({ status: 200, body: { phase: "ready" } });
+    const { initialCalls } = await mountSettled("ready");
+
+    await act(async () => {
+      jest.advanceTimersByTime(120_000);
+    });
+    expect(mockFetch).toHaveBeenCalledTimes(initialCalls);
   });
 });

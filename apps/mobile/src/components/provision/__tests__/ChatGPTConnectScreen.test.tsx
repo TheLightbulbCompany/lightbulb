@@ -60,6 +60,36 @@ describe("ChatGPTConnectScreen", () => {
     );
   });
 
+  it("makes the code long-press-copyable and surfaces the expiry countdown", async () => {
+    mockGet.mockResolvedValue({ connected: false });
+    mockPost.mockImplementation(async (endpoint: string) => {
+      if (endpoint === "/oauth/chatgpt/start") {
+        return {
+          user_code: "ABCD-1234",
+          verification_uri: "https://chatgpt.com/auth/device",
+          expires_in: 900,
+          interval: 5,
+        };
+      }
+      return { status: "pending" };
+    });
+
+    await act(async () => {
+      render(<ChatGPTConnectScreen onConnected={jest.fn()} />);
+    });
+
+    await waitFor(() => expect(screen.getByText("ABCD-1234")).toBeTruthy());
+
+    // Fix 1: long-press → OS "Copy" works without a clipboard binary (the
+    // verification page opens in a modal covering this screen, so the code
+    // must be liftable rather than retyped).
+    expect(screen.getByText("ABCD-1234").props.selectable).toBe(true);
+
+    // Fix 2: the ~15-min lifetime is visible as an M:SS countdown derived from
+    // state.expiresAt, so the code doesn't silently die mid-flow.
+    expect(screen.getByText(/Code expires in \d{1,2}:\d{2}/)).toBeTruthy();
+  });
+
   it("calls onConnected once the poll reports completion", async () => {
     mockGet.mockResolvedValue({ connected: false });
     mockPost

@@ -17,6 +17,7 @@
 import { useAuth, useUser } from "@clerk/clerk-expo";
 import { useCallback, useMemo, useRef, useState } from "react";
 import {
+  Alert,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -42,7 +43,7 @@ const MAX_RETRIES = 5;
 export function FirstRunFunnel() {
   const insets = useSafeAreaInsets();
   const { user } = useUser();
-  const { getToken } = useAuth();
+  const { getToken, signOut } = useAuth();
   const getTokenRef = useRef(getToken);
   getTokenRef.current = getToken;
   const api = useMemo(
@@ -102,6 +103,18 @@ export function FirstRunFunnel() {
     },
     [api, user, path, input, detail],
   );
+
+  // The funnel replaces the whole tab shell and has no skip (committed front
+  // door), so a persistently-failing brief would otherwise trap the user with
+  // only Retry. Offer the same confirm-then-signOut escape every provision
+  // screen has (ProvisionGate's Interstitial). NOT a skip — submitting the
+  // brief stays the only way forward.
+  const onSignOut = useCallback(() => {
+    Alert.alert("Sign out", "Sign out of this account?", [
+      { text: "Cancel", style: "cancel" },
+      { text: "Sign out", style: "destructive", onPress: () => void signOut() },
+    ]);
+  }, [signOut]);
 
   const busy = state === "submitting" || state === "waiting";
 
@@ -224,12 +237,25 @@ export function FirstRunFunnel() {
               </View>
             )}
             {state === "error" && (
-              <Text style={styles.errorText}>
-                Couldn’t save that just yet.{" "}
-                <Text style={styles.retryLink} onPress={() => void submit(mode)}>
-                  Retry
+              <View style={styles.errorBlock}>
+                <Text style={styles.errorText}>
+                  Couldn’t save that just yet.{" "}
+                  <Text style={styles.retryLink} onPress={() => void submit(mode)}>
+                    Retry
+                  </Text>
                 </Text>
-              </Text>
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.signOutButton,
+                    pressed && styles.pressed,
+                  ]}
+                  onPress={onSignOut}
+                  accessibilityRole="button"
+                  accessibilityLabel="Sign out"
+                >
+                  <Text style={styles.signOutText}>Sign out</Text>
+                </Pressable>
+              </View>
             )}
           </View>
         )}
@@ -325,6 +351,7 @@ const styles = StyleSheet.create({
     color: colors.ink,
   },
   inputMultiline: { minHeight: 112, textAlignVertical: "top" },
+  errorBlock: { gap: spacing.sm, alignItems: "flex-start" },
   errorText: {
     fontFamily: fonts.dmSans,
     fontSize: 13,
@@ -332,6 +359,20 @@ const styles = StyleSheet.create({
     color: colors.danger,
   },
   retryLink: { textDecorationLine: "underline", color: colors.danger },
+  // Matches ProvisionGate's Interstitial signOut recipe; the negative left
+  // margin flushes the label under the error text while keeping the padded
+  // tap target.
+  signOutButton: {
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.xs,
+    marginLeft: -spacing.lg,
+  },
+  signOutText: {
+    fontFamily: fonts.dmSans,
+    fontSize: 13,
+    lineHeight: 17,
+    color: colors.mute,
+  },
   disabled: { opacity: 0.5 },
   pressed: { opacity: 0.85 },
 });

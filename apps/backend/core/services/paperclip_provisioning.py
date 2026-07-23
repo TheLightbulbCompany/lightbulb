@@ -1268,6 +1268,13 @@ class PaperclipProvisioning:
         ``paperclip.provision.builtin_purge_error`` and is swallowed. Idempotent
         on the reconcile path: an already-purged company lists only Friday/Atlas
         (both in ``seeded_agent_ids``), so nothing is deleted.
+
+        Each builtin starter ships with an assigned ROUTINE
+        (``routines.assigneeAgentId``), and Paperclip refuses (409) to delete an
+        agent while a routine still references it — so a victim's assigned
+        routines are deleted FIRST, then the agent. Routine cleanup is itself
+        best-effort: a failure is logged + metered and the agent delete is still
+        attempted (it then 409s and is swallowed per-agent, same as before).
         """
         keep = set(seeded_agent_ids or ())
         try:
@@ -1294,6 +1301,44 @@ class PaperclipProvisioning:
         else:
             agents = []
 
+        # Map each agent id -> its assigned routine ids. Paperclip 409s an agent
+        # delete while a routine still references it (routines.assigneeAgentId
+        # FK), so a victim's routines are deleted before the agent (below).
+        # Company-scoped list — Paperclip exposes no per-agent routine endpoint,
+        # so filter client-side on ``assigneeAgentId``. Best-effort: a list
+        # failure just skips routine-deletion (the agent delete is still
+        # attempted, then 409s + is swallowed per-agent), never fatal.
+        routines_by_agent: dict[str, list[str]] = {}
+        try:
+            listed_routines = await self._admin.list_routines(
+                session_cookie=session_cookie,
+                company_id=company_id,
+            )
+        except Exception as e:  # noqa: BLE001 — purge must never fail provisioning
+            logger.warning(
+                "paperclip_provisioning: builtin-agent purge could not list routines for company %s: %s",
+                company_id,
+                e,
+            )
+            put_metric("paperclip.provision.builtin_purge_error")
+            listed_routines = []
+
+        # ``list_routines`` is typed ``dict`` but returns a bare list in practice;
+        # accept both (same normalization as agent_routine_provisioning).
+        if isinstance(listed_routines, dict):
+            routine_items = listed_routines.get("routines") or listed_routines.get("items") or []
+        elif isinstance(listed_routines, list):
+            routine_items = listed_routines
+        else:
+            routine_items = []
+        for routine in routine_items:
+            if not isinstance(routine, dict):
+                continue
+            assignee_id = routine.get("assigneeAgentId")
+            routine_id = routine.get("id")
+            if assignee_id and routine_id:
+                routines_by_agent.setdefault(assignee_id, []).append(routine_id)
+
         purged: list[str] = []
         for agent in agents:
             if not isinstance(agent, dict):
@@ -1302,6 +1347,27 @@ class PaperclipProvisioning:
             if not agent_id or agent_id in keep:
                 continue
             agent_name = agent.get("name")
+            # Delete this victim's assigned routines first — Paperclip 409s the
+            # agent delete while a routine still references it. Best-effort per
+            # routine; a failure is logged + metered and the agent delete is
+            # still attempted below.
+            for routine_id in routines_by_agent.get(agent_id, ()):
+                try:
+                    await self._admin.delete_routine(
+                        session_cookie=session_cookie,
+                        routine_id=routine_id,
+                    )
+                except Exception as e:  # noqa: BLE001 — routine cleanup must not fail provisioning
+                    logger.warning(
+                        "paperclip_provisioning: builtin-agent purge failed to delete routine %s "
+                        "for agent %r (%s) in company %s: %s",
+                        routine_id,
+                        agent_name,
+                        agent_id,
+                        company_id,
+                        e,
+                    )
+                    put_metric("paperclip.provision.builtin_purge_error")
             try:
                 await self._admin.delete_agent(
                     session_cookie=session_cookie,

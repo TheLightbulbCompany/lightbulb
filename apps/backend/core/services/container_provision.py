@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 
+from core.config import settings
 from core.containers import get_ecs_manager
 from core.containers.config import BEDROCK_TRIAL_CHOICE
 from core.observability.logging import bind_log_context
@@ -101,6 +102,16 @@ async def background_provision(owner_id: str, clerk_user_id: str) -> None:
     provision_user_container directly, which takes over the lease and fences
     this path out at its next checkpoint.
     """
+    if settings.PROVISION_EXECUTOR == "sfn":
+        from core.services.provision_dispatch import dispatch_provision
+
+        # The SFN executor owns claim + run + retry end-to-end; this function
+        # remains the single funnel so every existing create_task caller
+        # (status poll, wake, ensure_user_ready, provider change,
+        # reprovision_for_user) rides the flag with no call-site changes.
+        await dispatch_provision(owner_id)
+        return
+
     from core.auth import is_org_owner_id
 
     # Re-bind correlation ids onto the log contextvars: this runs in a detached

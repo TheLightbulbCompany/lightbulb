@@ -479,6 +479,35 @@ async def test_background_provision_validation_error_is_not_retryable():
     assert release.await_args.kwargs["retryable"] is False
     assert release.await_args.kwargs["last_error"]
 
+
+# ---------------------------------------------------------------------------
+# background_provision — PROVISION_EXECUTOR flag routing
+
+
+async def test_background_provision_sfn_flag_dispatches(monkeypatch):
+    from core.services import container_provision
+
+    monkeypatch.setattr(container_provision.settings, "PROVISION_EXECUTOR", "sfn")
+    dispatched = AsyncMock()
+    monkeypatch.setattr("core.services.provision_dispatch.dispatch_provision", dispatched)
+    claimed = AsyncMock()
+    monkeypatch.setattr(container_provision.container_repo, "try_claim_provision", claimed)
+    await container_provision.background_provision("user_a", "user_a")
+    dispatched.assert_awaited_once_with("user_a")
+    claimed.assert_not_awaited()  # inline path never entered
+
+
+async def test_background_provision_inline_flag_unchanged(monkeypatch):
+    from core.services import container_provision
+
+    monkeypatch.setattr(container_provision.settings, "PROVISION_EXECUTOR", "inline")
+    dispatched = AsyncMock()
+    monkeypatch.setattr("core.services.provision_dispatch.dispatch_provision", dispatched)
+    monkeypatch.setattr(container_provision.container_repo, "try_claim_provision", AsyncMock(return_value=None))
+    await container_provision.background_provision("user_a", "user_a")
+    dispatched.assert_not_awaited()
+
+
 class TestIsRetryableProvisionError:
     """Exit-code classifier for the one-shot provision runner."""
 

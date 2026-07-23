@@ -6,9 +6,14 @@ vi.mock("@/lib/api", () => ({ useApi: () => ({ post }) }));
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 
 const update = vi.fn().mockResolvedValue(undefined);
+// Mutable so a test can seed a PRIOR onboarding cycle's stale firstRun flags
+// (account-wipe / reprovision scenario). Reset to {} in beforeEach so every
+// other test sees a clean, first-time user. Read at useUser() call-time, same
+// call-time-deref pattern as `update` above.
+let unsafeMetadata: Record<string, unknown> = {};
 vi.mock("@clerk/nextjs", () => ({
   useUser: () => ({
-    user: { unsafeMetadata: {}, update },
+    user: { unsafeMetadata, update },
     isLoaded: true,
   }),
 }));
@@ -30,6 +35,7 @@ function enterGrowPathAndSubmit() {
 beforeEach(() => {
   post.mockReset();
   update.mockReset().mockResolvedValue(undefined);
+  unsafeMetadata = {};
 });
 
 describe("FirstRunFunnel", () => {
@@ -54,6 +60,30 @@ describe("FirstRunFunnel", () => {
       const meta = update.mock.calls[0][0].unsafeMetadata.firstRun;
       expect(meta.briefSubmitted).toBe(true);
       expect(meta.path).toBe("grow");
+    });
+  });
+
+  it("resets stale started/completed from a prior provision so the new cycle's kickoff isn't suppressed", async () => {
+    // Cross-provision staleness, verified live on dev: the user completed a
+    // PREVIOUS first-run cycle (started/completed both true), then their
+    // account/container was wiped and rebuilt. Clerk metadata is per-user
+    // forever, so those flags survive — while the gate (keying off the fresh
+    // container's onboarded:false) correctly re-shows this funnel. A brief
+    // submit STARTS A NEW cycle, so it must clear the stale flags in the same
+    // write; otherwise useFirstRunKickoff hard-skips on completed:true and the
+    // new cycle's kickoff is permanently suppressed (thread reconciliation
+    // can't rescue a completed-latched run).
+    unsafeMetadata = { firstRun: { briefSubmitted: true, started: true, completed: true } };
+    post.mockResolvedValue({ status: "staged", friday_agent_id: "f1" });
+    render(<FirstRunFunnel />);
+
+    enterGrowPathAndSubmit();
+
+    await waitFor(() => {
+      const meta = update.mock.calls[0][0].unsafeMetadata.firstRun;
+      expect(meta.briefSubmitted).toBe(true);
+      expect(meta.started).toBe(false);
+      expect(meta.completed).toBe(false);
     });
   });
 

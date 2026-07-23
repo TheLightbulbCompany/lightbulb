@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 
 import { CreditsStep } from "../CreditsStep";
 
@@ -14,6 +14,7 @@ const mockBalance = vi.fn();
 const mockStartTopUp = vi.fn();
 const mockStartTopUpCheckout = vi.fn();
 const mockRefresh = vi.fn();
+const mockRotateRequestId = vi.fn();
 // The one-click submit path only renders for owners who previously opted in
 // (autoChargeEnabled); everyone else gets the Stripe Checkout hand-off.
 // Tests flip this per-case to target the path under test.
@@ -27,6 +28,7 @@ vi.mock("@/hooks/useCredits", () => ({
       lifecycleEnabled: balance ? balance.lifecycle_enabled !== false : undefined,
       autoChargeEnabled: mockAutoChargeEnabled,
       startTopUp: mockStartTopUp,
+      rotateRequestId: mockRotateRequestId,
       startTopUpCheckout: mockStartTopUpCheckout,
       refresh: mockRefresh,
     };
@@ -39,6 +41,7 @@ describe("CreditsStep", () => {
     mockStartTopUp.mockReset();
     mockStartTopUpCheckout.mockReset();
     mockRefresh.mockReset();
+    mockRotateRequestId.mockReset();
     mockAutoChargeEnabled = false;
     replaceMock.mockReset();
     searchParams = new URLSearchParams();
@@ -74,6 +77,39 @@ describe("CreditsStep", () => {
     fireEvent.click(screen.getByRole("button", { name: /^add \$20$/i }));
     await waitFor(() => expect(screen.getByText("billing offline")).toBeInTheDocument());
     expect(screen.getByRole("button", { name: /^add \$20$/i })).not.toBeDisabled();
+  });
+
+  it("un-sticks the latched button with an error if credits never land within the grace window", async () => {
+    // The charge was ACCEPTED ("requested") but silently fails to collect (e.g.
+    // a later decline), so no balance ever arrives. Without the timebox the
+    // button would read "Payment requested" forever; after the grace window it
+    // re-enables with a retryable error.
+    vi.useFakeTimers();
+    try {
+      mockAutoChargeEnabled = true;
+      mockBalance.mockReturnValue({ balance_dollars: "0.00", balance_microcents: 0 });
+      mockStartTopUp.mockResolvedValueOnce({ status: "requested", amount_cents: 2000 });
+      render(<CreditsStep onComplete={vi.fn()} />);
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: /^add \$20$/i }));
+        // Flush the startTopUp resolution so the `requested` latch commits.
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(screen.getByRole("button", { name: /payment requested/i })).toBeDisabled();
+
+      // Grace window elapses with no balance change -> un-stick + error.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(90_000);
+      });
+      expect(screen.getByText(/taking longer than expected/i)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /^add \$20$/i })).not.toBeDisabled();
+      // The retry is a NEW intent, so the idempotency token was rotated first —
+      // otherwise the next click replays the dead accepted-but-uncollected commit.
+      expect(mockRotateRequestId).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("hands off to Stripe Checkout when one-click is not enabled", () => {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef } from "react";
+import { useCallback, useRef } from "react";
 import useSWR from "swr";
 import { useApi } from "@/lib/api";
 
@@ -58,11 +58,25 @@ export function useCredits() {
   // carries the same request_id, so the backend's Metronome Idempotency-Key
   // replays the original commit instead of charging the card twice. No
   // regeneration after success is needed — the consuming surfaces latch
-  // their submit button once a top-up is accepted.
+  // their submit button once a top-up is accepted. The ONE exception is
+  // rotateRequestId() below, for a caller that has concluded the prior attempt
+  // is dead and wants a genuinely new intent.
   const requestIdRef = useRef<string | null>(null);
   if (requestIdRef.current === null) {
     requestIdRef.current = crypto.randomUUID();
   }
+
+  // Rotate to a FRESH idempotency token, starting a new top-up intent. The
+  // token is otherwise stable across retries (see above) so a lost-response
+  // retry replays rather than double-charges — but a caller that has concluded
+  // the prior attempt is DEAD (e.g. CreditsStep's collect-timeout backstop:
+  // the charge was accepted but never collected, so no credits will ever land)
+  // MUST rotate first. Without it the "retry" reuses the dead token and the
+  // backend replays the same commit — or 409s on an idempotency/body conflict
+  // if the amount changed — re-sticking the user in the same failed cycle.
+  const rotateRequestId = useCallback(() => {
+    requestIdRef.current = crypto.randomUUID();
+  }, []);
 
   const startTopUp = async (amountCents: number): Promise<TopUpResult> => {
     return (await api.post("/billing/credits/top_up", {
@@ -108,6 +122,7 @@ export function useCredits() {
     error,
     refresh: mutate,
     startTopUp,
+    rotateRequestId,
     startTopUpCheckout,
     disableAutoCharge,
   };

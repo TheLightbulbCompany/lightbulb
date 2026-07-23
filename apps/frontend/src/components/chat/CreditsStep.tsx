@@ -8,6 +8,11 @@ type Props = { onComplete: () => void };
 
 const PRESET_AMOUNTS_CENTS = [1000, 2000, 5000, 10000]; // $10, $20, $50, $100
 
+// Grace window for the one-click `requested` latch before it un-sticks itself
+// with a retryable error. Comfortably longer than the "usually under a minute"
+// happy path so a normally-collecting charge advances the wizard first.
+const REQUESTED_TIMEOUT_MS = 90_000;
+
 // Onboarding design system — mirrors the stepper branch this step renders
 // inside (cream page, forest CTAs, Lora headings, DM Sans body). Fonts ride
 // the next/font CSS vars via inline styles rather than Tailwind font classes,
@@ -37,8 +42,15 @@ const TEXT_INPUT =
  * when the payment collects and the same balance poll advances the wizard.
  */
 export function CreditsStep({ onComplete }: Props) {
-  const { balance, lifecycleEnabled, autoChargeEnabled, refresh, startTopUp, startTopUpCheckout } =
-    useCredits();
+  const {
+    balance,
+    lifecycleEnabled,
+    autoChargeEnabled,
+    refresh,
+    startTopUp,
+    rotateRequestId,
+    startTopUpCheckout,
+  } = useCredits();
   const [amount, setAmount] = useState<number>(2000);
   const [submitting, setSubmitting] = useState(false);
   const [requested, setRequested] = useState(false);
@@ -66,6 +78,35 @@ export function CreditsStep({ onComplete }: Props) {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // Time-box the one-click `requested` latch. The latch keeps the button
+  // disabled while the async charge collects and credits are expected to land
+  // shortly (the balance poll then advances the wizard). But if the charge
+  // silently FAILS after acceptance (e.g. the card is declined once it
+  // actually collects), no balance ever arrives and the button would stay
+  // "Payment requested" forever — a dead end. So after a grace window, if the
+  // wizard hasn't advanced (advancedRef still false), un-stick the button and
+  // surface a retryable error. Pure client-side backstop: a precise decline
+  // reason would need a backend charge-status field, but this alone kills the
+  // stuck-forever state.
+  //
+  // Rotate the idempotency token FIRST: this timeout means the prior attempt is
+  // presumed dead, so the next click must be a NEW top-up intent. Reusing the
+  // token would replay the accepted-but-uncollected commit (or 409 on an
+  // idempotency/body conflict if the amount changed), re-sticking the user in
+  // the same failed cycle.
+  useEffect(() => {
+    if (!requested) return;
+    const t = setTimeout(() => {
+      if (advancedRef.current) return;
+      rotateRequestId();
+      setRequested(false);
+      setError(
+        "That's taking longer than expected — the charge may not have gone through. You can try again.",
+      );
+    }, REQUESTED_TIMEOUT_MS);
+    return () => clearTimeout(t);
+  }, [requested, rotateRequestId]);
 
   // The stepper's only "go back" mechanism is the `?provider=` URL param:
   // stripping it exits the provider step and re-enters the main flow (the

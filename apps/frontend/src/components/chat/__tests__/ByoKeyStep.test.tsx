@@ -19,6 +19,14 @@ vi.mock("@/lib/api", async () => {
   };
 });
 
+// The step now reads useSearchParams (for the "choose a different provider"
+// escape). Mirror the CreditsStep test's next/navigation mock.
+let searchParams = new URLSearchParams();
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ replace: vi.fn(), push: vi.fn() }),
+  useSearchParams: () => searchParams,
+}));
+
 import { ApiError } from "@/lib/api";
 import { ByoKeyStep } from "../ByoKeyStep";
 
@@ -36,6 +44,20 @@ describe("ByoKeyStep", () => {
   beforeEach(() => {
     putMock.mockReset().mockResolvedValue({});
     postMock.mockReset().mockResolvedValue({});
+    searchParams = new URLSearchParams();
+  });
+
+  it("strips ?provider= when choosing a different provider, preserving other params", () => {
+    // The escape hatch out of a mistakenly-picked BYO step — mirrors
+    // CreditsStep. The strip commits through the History API (shellNav).
+    const replaceStateSpy = vi.spyOn(window.history, "replaceState");
+    searchParams = new URLSearchParams({ provider: "byo_key", checkout: "success" });
+    render(<ByoKeyStep onComplete={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: /choose a different provider/i }));
+    const target = replaceStateSpy.mock.calls.at(-1)?.[2] as string;
+    expect(target).not.toMatch(/provider=/);
+    expect(target).toMatch(/checkout=success/);
+    replaceStateSpy.mockRestore();
   });
 
   it("saves the key, commits the provider choice, then completes", async () => {

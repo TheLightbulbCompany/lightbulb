@@ -182,8 +182,10 @@ export function ProvisioningStepper({
   const isOrg = !!organization;
   const { userId: clerkUserId } = useAuth();
   // Clerk user object — the first-run funnel branch below reads (and its
-  // component writes) user.unsafeMetadata.firstRun.
-  const { user } = useUser();
+  // component writes) user.unsafeMetadata.firstRun. `isLoaded` distinguishes
+  // "Clerk still resolving" (hold a loader) from "loaded, signed out"
+  // (user === null) — see the flash guard before the ready branch.
+  const { user, isLoaded: userLoaded } = useUser();
   // Per-OWNER activation-marker key so a shared/QA browser doesn't let the first
   // account's activation suppress onboarding_ready for a later account's real
   // first cold start. The event is a person-level denominator (PostHog is
@@ -328,6 +330,26 @@ export function ProvisioningStepper({
   // appropriate phase. No explicit POST /container/provision from here.
 
   const containerReady = container?.status === "running" || container?.substatus === "gateway_healthy";
+
+  // Honest /container/status error contract (all additive): status="error" is
+  // a REAL failure — previously masked as "provisioning" so a dead container
+  // spun a stepper forever. The UI keys off `substatus`, NEVER `phase` (which
+  // still resolves to a cold-start value like "container" for an error row, so
+  // it could never tell a dead container from a live one).
+  //
+  // Error is TERMINAL by DEFAULT — `error_retrying` is the ONLY non-terminal
+  // exception. Keying "terminal" off a specific substatus (e.g. only
+  // `provision_failed`) is too narrow: the backend also emits terminal rows
+  // with `deployment_failed` (rollout circuit breaker) and a bare
+  // `status:"error"` with NO substatus (auto-retry gated / standing down), and
+  // those would fall through to the plain spinner with no Retry/Support CTA —
+  // the exact endless-spinner bug this contract exists to kill. Treating any
+  // non-retrying error as terminal restores the old catch-all's coverage and
+  // absorbs any future terminal substatus. `last_error` carries the reason.
+  const isRetryingError =
+    container?.status === "error" && container?.substatus === "error_retrying";
+  const isTerminalError =
+    container?.status === "error" && !isRetryingError;
 
   // Poll gateway health every 3s once container looks ready
   const { data: gatewayHealth } = useGatewayRpc<Record<string, unknown>>(
@@ -636,23 +658,84 @@ export function ProvisioningStepper({
   // once anyone on this container completes the funnel, no one on it sees
   // the funnel again — including a second org member whose own per-user
   // marker is empty. No extra request: it rides on the poll we already do.
-  // `firstRun.briefSubmitted` stays only as an instant local latch, so the
-  // submitter doesn't see a flash between submitting and the next poll
-  // flipping `onboarded`.
+  // `container.onboarded` is the SOLE durable authority for "have we
+  // onboarded?": the backend resets it when a container is wiped/reprovisioned,
+  // so a legitimately reprovisioned owner re-onboards. `firstRun.briefSubmitted`
+  // is DURABLE Clerk metadata (`user.unsafeMetadata`) that survives a container
+  // wipe and that nothing ever clears — so reading it as a gate suppressed the
+  // funnel FOREVER for any owner who onboarded once: a returning owner whose
+  // container was reprovisioned has `container.onboarded === false` (fresh) but
+  // a stale `briefSubmitted === true`, and the funnel never showed again. That
+  // is the "returning owner never re-onboards" bug; `briefSubmitted` is NOT a
+  // durable suppressor.
+  //
+  // It survives here only as a SAME-SESSION flash-bridge: when the funnel's
+  // submit writes `briefSubmitted: true`, `useUser` re-renders and we arm an
+  // in-memory latch on that false->true edge, dismissing the funnel at once
+  // instead of leaving it up until the next /container/status poll flips
+  // `onboarded` true. `briefBaselineRef` captures the flag's value at the first
+  // loaded Clerk user, so the async user-load (undefined -> loaded) is never
+  // mistaken for a submit and a stale `true` already present at mount does NOT
+  // arm the latch — the funnel shows for a reprovisioned container, and
+  // `container.onboarded` reasserts durable suppression on the next poll. The
+  // refs are read/written during render (not via an effect, which would land a
+  // commit late and flash the funnel for one frame) — same idiom as
+  // `previousBackendPhaseRef` above.
   const firstRun = readFirstRun(user);
   const containerOnboarded = container?.onboarded === true;
+  const briefSubmittedNow = !!user && firstRun.briefSubmitted === true;
+  const briefBaselineRef = useRef<boolean | null>(null);
+  const sessionBriefSubmittedRef = useRef(false);
+  // eslint-disable-next-line react-hooks/refs
+  if (user && briefBaselineRef.current === null) {
+    briefBaselineRef.current = briefSubmittedNow;
+    // eslint-disable-next-line react-hooks/refs
+  } else if (briefSubmittedNow && briefBaselineRef.current === false) {
+    // eslint-disable-next-line react-hooks/refs
+    sessionBriefSubmittedRef.current = true;
+  }
   if (
     !!user &&
     gatePhase === "normal" &&
+    // A terminally-failed container must fall through to the Setup-failed card
+    // below, never the funnel — submitting a brief to a dead backend is a
+    // dead end. (A retrying error is NOT terminal, so it still shows the
+    // funnel/provisioning UI like any live cold start.)
+    !isTerminalError &&
     !containerOnboarded &&
-    !firstRun.briefSubmitted
+    // eslint-disable-next-line react-hooks/refs
+    !sessionBriefSubmittedRef.current
   ) {
     return <FirstRunFunnel />;
   }
 
-  // Ready — render children
+  // Hold a neutral loader until Clerk resolves `user`. The funnel branch above
+  // requires a loaded user, so a not-yet-onboarded container would otherwise
+  // flash `children` (or the stepper) for a frame before the funnel takes over
+  // once `user` loads. Only matters where the funnel COULD show — a
+  // normal-gate, not-yet-onboarded, non-terminal container. A loaded-but-
+  // signed-out user (isLoaded true, user null) is NOT a loading state and
+  // falls straight through; a terminal error still routes to its card below.
+  if (!userLoaded && gatePhase === "normal" && !containerOnboarded && !isTerminalError) {
+    return (
+      <div className="flex-1 flex items-center justify-center">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  // Ready — render children. `teams_status: "failed"` is a TOP-LEVEL,
+  // non-blocking signal on the honest contract: Teams (Friday/Atlas) seeding
+  // failed but the container itself is healthy and chat works — so we render
+  // the app as normal and layer a small dismissible "Teams needs attention"
+  // notice over it, never a blocking interstitial.
   if (phase === "ready") {
-    return <>{children}</>;
+    return (
+      <>
+        {children}
+        {container?.teams_status === "failed" && <TeamsDegradedNotice />}
+      </>
+    );
   }
 
   // Team-pending: org member whose admin hasn't provisioned the shared
@@ -1117,8 +1200,14 @@ export function ProvisioningStepper({
     return <ProviderPicker isOrg={isOrg} orgName={organization?.name} />;
   }
 
-  // Error state
-  if (container?.status === "error") {
+  // Terminal error — any status="error" that isn't `error_retrying` (see
+  // isTerminalError above). Keyed off substatus, NOT `phase` (which resolves to
+  // "container" for an error row). A retrying error deliberately does NOT match:
+  // it falls through to the provisioning stepper below with a subtle "retrying"
+  // note instead of this terminal card. Copy is honest about a real failure —
+  // no "usually temporary" reassurance — since the container will not recover
+  // on its own; Retry re-checks, but support is the real path if it persists.
+  if (isTerminalError) {
     return (
       <div className="flex-1 flex items-center justify-center bg-[#faf7f2]">
         <div className="text-center space-y-6 max-w-sm">
@@ -1128,8 +1217,8 @@ export function ProvisioningStepper({
             <h2 className="text-lg font-medium text-[#1a1a1a]">Setup failed</h2>
             <p className="text-sm text-[#8a8578]">
               {isOrg
-                ? `Something went wrong while setting up the container for ${organization.name}. This is usually temporary.`
-                : "Something went wrong while setting up your container. This is usually temporary."}
+                ? `We couldn't finish setting up the container for ${organization.name}. Retry below — if it keeps failing, contact support and we'll get it sorted.`
+                : "We couldn't finish setting up your container. Retry below — if it keeps failing, contact support and we'll get it sorted."}
             </p>
           </div>
           <div className="flex gap-3 justify-center">
@@ -1468,6 +1557,15 @@ export function ProvisioningStepper({
               </div>
             )}
 
+          {/* Transient error (status="error" + substatus="error_retrying"): the
+              backend is auto-retrying, so we keep the stepper and add a calm,
+              non-alarming line rather than the terminal "Setup failed" card. */}
+          {isRetryingError && (
+            <div className="provision-elapsed" role="status" aria-live="polite">
+              Hit a snag — retrying automatically.
+            </div>
+          )}
+
           {timedOut && (
             <div className="provision-timeout">
               <p className="provision-timeout-msg">
@@ -1499,6 +1597,56 @@ export function ProvisioningStepper({
         </div>
       </div>
     </>
+  );
+}
+
+
+/**
+ * Non-blocking "Teams needs attention" affordance layered over the ready app
+ * when /container/status reports `teams_status: "failed"` — Teams (Friday/Atlas)
+ * seeding failed but the container is healthy and chat works. Fixed, small, and
+ * dismissible so it never blocks the app. Owns its own dismiss state so the
+ * ready branch stays a plain `children` return with no extra parent hook.
+ */
+function TeamsDegradedNotice() {
+  const [dismissed, setDismissed] = useState(false);
+  useEffect(() => {
+    capture("teams_degraded_notice_shown");
+  }, []);
+  if (dismissed) return null;
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="fixed bottom-4 right-4 z-50 max-w-xs rounded-xl border border-[#e7c9a8] bg-[#fdf6ec] px-4 py-3 shadow-lg"
+    >
+      <div className="flex items-start gap-3">
+        <div className="flex-1">
+          <p className="text-sm font-medium text-[#7a4a12]">Teams needs attention</p>
+          <p className="mt-1 text-xs text-[#8a6a3a]">
+            Your team workspace didn&apos;t finish setting up, so some team
+            features may be unavailable. Chat works normally.
+          </p>
+          <a
+            href="mailto:support@isol8.co"
+            onClick={() =>
+              capture("support_contact_clicked", { source: "teams_degraded_notice" })
+            }
+            className="mt-2 inline-block text-xs font-medium text-[#06402B] underline"
+          >
+            Contact support
+          </a>
+        </div>
+        <button
+          type="button"
+          aria-label="Dismiss"
+          onClick={() => setDismissed(true)}
+          className="text-lg leading-none text-[#b08a5a] hover:text-[#7a4a12]"
+        >
+          ×
+        </button>
+      </div>
+    </div>
   );
 }
 

@@ -38,6 +38,9 @@ let clerkMockUser: {
   id: string;
   unsafeMetadata: { firstRun?: { briefSubmitted?: boolean } };
 } | null = null;
+// Configurable so the user-flash test can exercise the "Clerk still resolving"
+// (isLoaded=false) branch; every other test keeps the default `true`.
+let clerkMockIsLoaded = true;
 vi.mock("@clerk/nextjs", () => ({
   useOrganization: () => ({ organization: null, membership: null, isLoaded: true }),
   // Components in the stepper tree (useApi consumers) read useAuth/useUser.
@@ -45,7 +48,7 @@ vi.mock("@clerk/nextjs", () => ({
     getToken: vi.fn().mockResolvedValue("test-token"),
     isSignedIn: true,
   }),
-  useUser: () => ({ user: clerkMockUser, isLoaded: true }),
+  useUser: () => ({ user: clerkMockUser, isLoaded: clerkMockIsLoaded }),
 }));
 
 // ``lib/analytics`` re-exports PostHogProvider as ``Provider`` at module
@@ -167,6 +170,7 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     billingMockRefresh = vi.fn();
     billingMockStartTeamCheckout.mockClear();
     clerkMockUser = null;
+    clerkMockIsLoaded = true;
   });
 
   afterEach(() => {
@@ -669,15 +673,181 @@ describe("ProvisioningStepper blocked-state rendering", () => {
       screen.queryByRole("link", { name: "Sign in with ChatGPT" }),
     ).not.toBeInTheDocument();
   });
+
+  it("shows the Setup-failed card for a TERMINAL error (status=error + substatus=provision_failed)", () => {
+    // Honest contract: a real provisioning failure now arrives as
+    // status="error". The terminal substatus must surface the "Setup failed"
+    // card (Retry + Contact Support) — keyed off substatus, never `phase`
+    // (which still resolves to "container" for an error row).
+    useProvMock.mockReturnValue({
+      phase: "normal",
+      container: {
+        status: "error",
+        substatus: "provision_failed",
+        phase: "provisioning",
+        last_error: "ECS task failed to start",
+      },
+      blocked: null,
+      refreshInterval: 3000,
+      refresh: vi.fn(),
+    });
+
+    render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+
+    expect(screen.getByText(/Setup failed/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Retry/i })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Contact Support/i })).toBeInTheDocument();
+    // The app itself must not render behind the terminal card.
+    expect(screen.queryByText("children")).not.toBeInTheDocument();
+  });
+
+  it("shows the Setup-failed card for a TERMINAL error with substatus=deployment_failed (rollout circuit breaker)", () => {
+    // Terminal is any status="error" that isn't error_retrying — NOT just
+    // provision_failed. The rollout circuit breaker emits deployment_failed;
+    // it must show the card, not fall through to the plain spinner with no CTA.
+    useProvMock.mockReturnValue({
+      phase: "normal",
+      container: {
+        status: "error",
+        substatus: "deployment_failed",
+        phase: "provisioning",
+        last_error: "deployment rolled back",
+      },
+      blocked: null,
+      refreshInterval: 3000,
+      refresh: vi.fn(),
+    });
+
+    render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+
+    expect(screen.getByText(/Setup failed/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Retry/i })).toBeInTheDocument();
+    expect(screen.queryByText("children")).not.toBeInTheDocument();
+  });
+
+  it("shows the Setup-failed card for a bare status=error with NO substatus (auto-retry gated / standing down)", () => {
+    // When auto-retry is gated or standing down the backend emits a bare
+    // status="error" with substatus=null. That is terminal by default and must
+    // show the card — the exact endless-spinner regression the invert fixes.
+    useProvMock.mockReturnValue({
+      phase: "normal",
+      container: {
+        status: "error",
+        substatus: null,
+        phase: "provisioning",
+        last_error: "retries exhausted",
+      },
+      blocked: null,
+      refreshInterval: 3000,
+      refresh: vi.fn(),
+    });
+
+    render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+
+    expect(screen.getByText(/Setup failed/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Retry/i })).toBeInTheDocument();
+    expect(screen.queryByText("children")).not.toBeInTheDocument();
+  });
+
+  it("keeps the provisioning stepper (NOT the Setup-failed card) for a RETRYING error", () => {
+    // status="error" + substatus="error_retrying" is transient — the backend is
+    // auto-retrying. The stepper must keep showing progress with a calm
+    // "retrying" line; the terminal "Setup failed" card must NOT appear. This
+    // is the whole point of the split: a dead container fails loudly, a
+    // retrying one keeps showing progress.
+    useProvMock.mockReturnValue({
+      phase: "normal",
+      container: {
+        status: "error",
+        substatus: "error_retrying",
+        phase: "provisioning",
+        last_error: "transient image pull error",
+      },
+      blocked: null,
+      refreshInterval: 3000,
+      refresh: vi.fn(),
+    });
+
+    render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+
+    expect(screen.queryByText(/Setup failed/i)).not.toBeInTheDocument();
+    expect(screen.getByText("Provisioning your container...")).toBeInTheDocument();
+    expect(screen.getByText(/retrying automatically/i)).toBeInTheDocument();
+  });
+
+  it("renders the ready app plus a non-blocking Teams-degraded notice when teams_status=failed", () => {
+    // teams_status is a TOP-LEVEL, non-blocking signal: Teams seeding failed but
+    // the container is healthy and chat works. The app (children) must render,
+    // with a small dismissible "Teams needs attention" affordance over it —
+    // never a blocking interstitial.
+    useProvMock.mockReturnValue({
+      phase: "normal",
+      container: { status: "running", phase: "ready", onboarded: true, teams_status: "failed" },
+      blocked: null,
+      refreshInterval: 3000,
+      refresh: vi.fn(),
+    });
+
+    render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+
+    // Chat is NOT blocked...
+    expect(screen.getByText("children")).toBeInTheDocument();
+    // ...and the degraded affordance is layered over it.
+    expect(screen.getByText(/Teams needs attention/i)).toBeInTheDocument();
+  });
+
+  it("does not render the Teams-degraded notice on a healthy ready container", () => {
+    useProvMock.mockReturnValue({
+      phase: "normal",
+      container: { status: "running", phase: "ready", onboarded: true },
+      blocked: null,
+      refreshInterval: 3000,
+      refresh: vi.fn(),
+    });
+
+    render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+
+    expect(screen.getByText("children")).toBeInTheDocument();
+    expect(screen.queryByText(/Teams needs attention/i)).not.toBeInTheDocument();
+  });
 });
 
 describe("ProvisioningStepper per-container onboarding gate", () => {
   // Every test here needs a loaded Clerk user (the funnel branch is a
-  // no-op when `user` is null — see the other describe block's default),
-  // with the per-user firstRun marker unset, and a `normal` gate phase so
-  // the gate's own preconditions are met. Whether the funnel shows is then
-  // decided by `container.onboarded`, which rides on the /container/status
-  // poll the hook already returns — no separate request.
+  // no-op when `user` is null — see the other describe block's default)
+  // and a `normal` gate phase so the gate's own preconditions are met.
+  // Whether the funnel shows is then decided by `container.onboarded`, the
+  // AUTHORITATIVE per-container fact (reset on wipe/reprovision), which rides
+  // on the /container/status poll the hook already returns — no separate
+  // request. `firstRun.briefSubmitted` is durable Clerk metadata that nothing
+  // clears, so it is NOT a gate; it only bridges this session's submit to the
+  // next poll (a false->true edge WHILE MOUNTED dismisses the funnel without a
+  // flash). A stale `true` already present at mount must NOT suppress the
+  // funnel — that was the "returning owner never re-onboards" bug.
   const renderWith = (container: Record<string, unknown>) => {
     useProvMock.mockReturnValue({
       phase: "normal",
@@ -704,6 +874,7 @@ describe("ProvisioningStepper per-container onboarding gate", () => {
     billingMockRefresh = vi.fn();
     billingMockStartTeamCheckout.mockClear();
     clerkMockUser = { id: "user_1", unsafeMetadata: {} };
+    clerkMockIsLoaded = true;
   });
 
   afterEach(() => {
@@ -736,17 +907,148 @@ describe("ProvisioningStepper per-container onboarding gate", () => {
     expect(screen.getByText("children")).toBeInTheDocument();
   });
 
-  it("does not show the funnel once the per-user marker is set, even before the poll flips onboarded", () => {
-    // The instant local latch: right after this user submits, the funnel
-    // must not flash back over the working session while the next poll is
-    // still catching up to onboarded:true.
+  it("shows the funnel when onboarded is false even if a STALE durable briefSubmitted is already true at mount (the returning-owner bug)", () => {
+    // The bug this fix targets: `briefSubmitted` is durable Clerk metadata that
+    // survives a container wipe/reprovision and nothing ever clears it. A
+    // returning owner whose container was reprovisioned has
+    // `container.onboarded === false` (fresh, authoritative) but a STALE
+    // `briefSubmitted === true`. Reading the stale flag as a gate suppressed
+    // the funnel permanently, so a legitimately reprovisioned org never
+    // re-onboarded. `container.onboarded` is authoritative — the funnel MUST
+    // show. (A `true` present at first mount is treated as stale: the baseline
+    // captures it and never arms the same-session latch.)
     clerkMockUser = {
       id: "user_1",
       unsafeMetadata: { firstRun: { briefSubmitted: true } },
     };
     renderWith({ status: "running", phase: "ready", onboarded: false });
 
+    expect(screen.getByText(/get started/i)).toBeInTheDocument();
+    expect(screen.queryByText("children")).not.toBeInTheDocument();
+  });
+
+  it("suppresses the funnel after THIS session's submit (no flash) even before the poll flips onboarded", () => {
+    // Same-session flash-bridge. The funnel is mounted with briefSubmitted
+    // unset, so it shows. Then the user submits: FirstRunFunnel's
+    // writeFirstRun sets briefSubmitted:true in Clerk metadata, re-rendering
+    // useUser. That false->true edge WHILE MOUNTED arms the in-memory latch,
+    // dismissing the funnel immediately instead of leaving it up until the
+    // next /container/status poll flips onboarded:true — while onboarded is
+    // still false. This is the ONLY thing briefSubmitted is allowed to do
+    // (contrast the stale-at-mount test above).
+    clerkMockUser = { id: "user_1", unsafeMetadata: {} };
+    const container = { status: "running", phase: "ready", onboarded: false };
+    useProvMock.mockReturnValue({
+      phase: "normal",
+      container,
+      blocked: null,
+      refreshInterval: 3000,
+      refresh: vi.fn(),
+    });
+    const { rerender } = render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+    // Funnel shows: onboarded false, no submit yet this session.
+    expect(screen.getByText(/get started/i)).toBeInTheDocument();
+
+    // This session's submit lands: briefSubmitted flips false -> true.
+    clerkMockUser = {
+      id: "user_1",
+      unsafeMetadata: { firstRun: { briefSubmitted: true } },
+    };
+    rerender(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+
+    // Latch armed -> funnel dismissed at once, even though onboarded is still false.
     expect(screen.queryByText(/get started/i)).not.toBeInTheDocument();
     expect(screen.getByText("children")).toBeInTheDocument();
+  });
+
+  it("does not show the funnel when the gate is blocked, even with a loaded user and onboarded false", () => {
+    // The `gatePhase === "normal"` guard is load-bearing: a blocked /
+    // needs-signup / team-pending state must win over the funnel. Even with
+    // the funnel's own preconditions met (user loaded, onboarded false, no
+    // this-session submit), a blocked gate shows the blocked card, never the
+    // funnel.
+    clerkMockUser = { id: "user_1", unsafeMetadata: {} };
+    useProvMock.mockReturnValue({
+      phase: "blocked",
+      container: { status: "provisioning", phase: "provisioning", onboarded: false },
+      blocked: {
+        code: "credits_required",
+        title: "Top up Claude credits to start your container",
+        message: "Top up some Claude credits to start your Bedrock container.",
+        action: {
+          kind: "link",
+          label: "Top up now",
+          href: "/settings/billing#credits",
+          admin_only: false,
+        },
+        owner_role: "admin",
+      },
+      refreshInterval: 5000,
+      refresh: vi.fn(),
+    });
+
+    render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+
+    // Funnel absent; the blocked card is shown instead.
+    expect(screen.queryByText(/get started/i)).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/Top up Claude credits to start your container/),
+    ).toBeInTheDocument();
+  });
+
+  it("shows the Setup-failed card (not the funnel) for a terminal error with a loaded, not-onboarded user", () => {
+    // Branch-order guard: the funnel sits ABOVE the error card and fires for a
+    // loaded, not-onboarded user on a normal gate — but a terminally-failed
+    // container must show the Setup-failed card instead (submitting a brief to
+    // a dead backend is a dead end). The funnel is guarded on !isTerminalError.
+    useProvMock.mockReturnValue({
+      phase: "normal",
+      container: {
+        status: "error",
+        substatus: "provision_failed",
+        phase: "provisioning",
+        onboarded: false,
+        last_error: "ECS task failed to start",
+      },
+      blocked: null,
+      refreshInterval: 3000,
+      refresh: vi.fn(),
+    });
+
+    render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+
+    expect(screen.getByText(/Setup failed/i)).toBeInTheDocument();
+    // The funnel must NOT preempt the terminal error card.
+    expect(screen.queryByText(/get started/i)).not.toBeInTheDocument();
+  });
+
+  it("holds a neutral loader (not children) until Clerk resolves the user on a not-yet-onboarded ready container", () => {
+    // The funnel branch requires a loaded user; without the guard a
+    // not-onboarded ready container would flash `children` (the app) for a
+    // frame before the funnel takes over once `user` loads. isLoaded=false +
+    // not onboarded => neutral loader, neither children nor the funnel.
+    clerkMockIsLoaded = false;
+    clerkMockUser = null;
+    const { container } = renderWith({ status: "running", phase: "ready", onboarded: false });
+
+    expect(screen.queryByText("children")).not.toBeInTheDocument();
+    expect(screen.queryByText(/get started/i)).not.toBeInTheDocument();
+    expect(container.querySelector(".animate-spin")).toBeInTheDocument();
   });
 });

@@ -126,12 +126,14 @@ def _make_admin_mock() -> MagicMock:
     )
     admin.create_company = AsyncMock(return_value={"id": "co_default"})
     admin.create_agent = AsyncMock(return_value={"id": "agent_default"})
-    # Builtin-agent purge (step 7c): list then delete non-seeded agents. Default
-    # to an empty roster so nothing is deleted unless a test opts in.
+    # Builtin-agent purge (step 7c): list then attempt to delete non-seeded
+    # agents. Default to an empty roster so nothing is deleted unless a test opts
+    # in. (Paperclip's own built-in agents are undeletable — DELETE answers 409
+    # built_in_agent_undeletable — but the purge no longer pre-touches routines:
+    # the BFF clears a deletable agent's assigned routines in the same delete.)
     admin.list_agents = AsyncMock(return_value=[])
     admin.delete_agent = AsyncMock(return_value={})
-    # The purge deletes a victim's assigned routines before the agent (Paperclip
-    # 409s the agent delete otherwise). Default to no routines.
+    # Retained as harmless defaults for unrelated routine-management tests.
     admin.list_routines = AsyncMock(return_value=[])
     admin.delete_routine = AsyncMock(return_value={})
     admin.create_invite = AsyncMock(return_value={"token": "invite-token-default"})

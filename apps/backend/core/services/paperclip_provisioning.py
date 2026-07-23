@@ -57,6 +57,7 @@ import httpx
 from core.auth import is_org_owner_id
 from core.config import settings
 from core.encryption import decrypt, encrypt
+from core.observability.metrics import put_metric
 from core.repositories.paperclip_repo import PaperclipCompany, PaperclipRepo
 from core.services import service_token
 from core.services.agent_email import mint_agent_email_address
@@ -577,6 +578,21 @@ class PaperclipProvisioning:
                         owner_user_id,
                         e,
                     )
+
+            # 7c. Purge Paperclip's built-in starter agents (see
+            #     _purge_builtin_agents for the full WHY). Gated on the REQUIRED
+            #     Friday seed landing (``friday_agent_id is not None`` — the same
+            #     condition as ``seed_ok`` below): on the failed path we leave the
+            #     half-provisioned company untouched, because the later reconcile
+            #     poll re-runs seeding AND this purge once Friday finally lands.
+            #     Runs on the reconcile path too, idempotently — an already-purged
+            #     company lists only Friday/Atlas, so nothing is deleted.
+            if friday_agent_id is not None:
+                await self._purge_builtin_agents(
+                    company_id=company_id,
+                    session_cookie=new_user_session_cookie,
+                    seeded_agent_ids=seeded_agent_ids,
+                )
 
             # Mint the agent's email address from the slug we just allocated.
             # Best-effort and guarded on both Friday and the slug existing —
@@ -1222,6 +1238,93 @@ class PaperclipProvisioning:
                 request_id=request_id,
             )
         return request_id
+
+    async def _purge_builtin_agents(
+        self,
+        *,
+        company_id: str,
+        session_cookie: str,
+        seeded_agent_ids: list[str],
+    ) -> None:
+        """Delete every agent in the company that Isol8 did not seed.
+
+        WHY this exists: Paperclip's company-bootstrap creates its OWN starter
+        agents ("Reflection Coach", "Summarizer") server-side the instant a
+        company is created — verified via DB timestamps, they land 1-5s BEFORE
+        our Friday/Atlas seeds, produced by upstream company-create and NOT by
+        any Isol8 code. The product requires a freshly provisioned company to
+        contain EXACTLY the two Isol8-seeded agents (Friday + Atlas). We can't
+        patch Paperclip on our timeline (fork release cycle), so provision_org
+        deletes the leftovers here.
+
+        Keyed on ``seeded_agent_ids`` (the stable Isol8-seeded marker persisted
+        on the company row), NOT on agent names: the rule is "only Isol8-seeded
+        agents survive", so it keeps holding even if upstream renames a starter
+        or adds new ones.
+
+        Best-effort and NEVER fatal — a leftover starter is a cosmetic roster
+        wart, not a reason to fail provisioning. A list failure or any per-agent
+        delete failure logs a warning + emits
+        ``paperclip.provision.builtin_purge_error`` and is swallowed. Idempotent
+        on the reconcile path: an already-purged company lists only Friday/Atlas
+        (both in ``seeded_agent_ids``), so nothing is deleted.
+        """
+        keep = set(seeded_agent_ids or ())
+        try:
+            listed = await self._admin.list_agents(
+                session_cookie=session_cookie,
+                company_id=company_id,
+            )
+        except Exception as e:  # noqa: BLE001 — purge must never fail provisioning
+            logger.warning(
+                "paperclip_provisioning: builtin-agent purge could not list agents for company %s: %s",
+                company_id,
+                e,
+            )
+            put_metric("paperclip.provision.builtin_purge_error")
+            return
+
+        # ``list_agents`` is typed ``dict`` upstream but returns a bare list in
+        # practice; accept the list and the enveloped shapes defensively (same
+        # normalization as company_deploy_service._find_friday_id).
+        if isinstance(listed, dict):
+            agents = listed.get("agents") or listed.get("items") or []
+        elif isinstance(listed, list):
+            agents = listed
+        else:
+            agents = []
+
+        purged: list[str] = []
+        for agent in agents:
+            if not isinstance(agent, dict):
+                continue
+            agent_id = agent.get("id")
+            if not agent_id or agent_id in keep:
+                continue
+            agent_name = agent.get("name")
+            try:
+                await self._admin.delete_agent(
+                    session_cookie=session_cookie,
+                    agent_id=agent_id,
+                )
+                purged.append(f"{agent_name!r}({agent_id})")
+            except Exception as e:  # noqa: BLE001 — one delete failing must not fail provisioning
+                logger.warning(
+                    "paperclip_provisioning: builtin-agent purge failed to delete agent %r (%s) in company %s: %s",
+                    agent_name,
+                    agent_id,
+                    company_id,
+                    e,
+                )
+                put_metric("paperclip.provision.builtin_purge_error")
+
+        if purged:
+            logger.info(
+                "paperclip_provisioning: purged %d Paperclip builtin starter agent(s) from company %s: %s",
+                len(purged),
+                company_id,
+                ", ".join(purged),
+            )
 
     async def _mark_failed(
         self,

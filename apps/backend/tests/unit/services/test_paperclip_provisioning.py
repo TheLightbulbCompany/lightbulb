@@ -44,6 +44,11 @@ def _build_provision_org_doubles(monkeypatch):
     # so tests that don't care about the seed still complete to an active row;
     # tests exercising a seed FAILURE override create_agent with a side_effect.
     admin.create_agent = AsyncMock(return_value={"id": "seed-agent-default"})
+    # Builtin-agent purge (step 7c) lists then deletes non-seeded agents. Default
+    # to an empty roster so tests that don't exercise the purge see zero deletes;
+    # purge tests override list_agents with the built-in starters + Friday/Atlas.
+    admin.list_agents = AsyncMock(return_value=[])
+    admin.delete_agent = AsyncMock(return_value={})
 
     repo = MagicMock()
     repo.get = AsyncMock(return_value=None)
@@ -488,6 +493,175 @@ async def test_provision_org_fresh_provision_still_seeds_atlas(monkeypatch):
 
     seeded_names = [c.kwargs.get("name") for c in admin.create_agent.await_args_list]
     assert seeded_names == ["Friday", "Atlas"]  # Atlas create IS called on a fresh provision
+
+
+@pytest.mark.asyncio
+async def test_provision_org_purges_builtin_starter_agents(monkeypatch):
+    """A freshly provisioned company must contain EXACTLY Friday + Atlas.
+
+    Paperclip's company-bootstrap seeds its OWN starter agents ("Reflection
+    Coach", "Summarizer") server-side at company-create time — verified via DB
+    timestamps to land 1-5s BEFORE our Friday/Atlas seeds. provision_org purges
+    every agent whose id is NOT in the Isol8-seeded set, keyed on
+    seeded_agent_ids (the stable marker) — never on agent names, since upstream
+    may rename or add starters.
+    """
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    admin, repo = _build_provision_org_doubles(monkeypatch)
+    # Friday -> "fr", Atlas -> "at": the ONLY ids that may survive the purge.
+    admin.create_agent = AsyncMock(side_effect=[{"id": "fr"}, {"id": "at"}])
+    # The roster after seeding: Paperclip's two builtin starters PLUS our seeds.
+    # list_agents returns a bare list in practice (typed dict upstream).
+    admin.list_agents = AsyncMock(
+        return_value=[
+            {"id": "f", "name": "Reflection Coach"},
+            {"id": "s", "name": "Summarizer"},
+            {"id": "fr", "name": "Friday"},
+            {"id": "at", "name": "Atlas"},
+        ]
+    )
+    admin.delete_agent = AsyncMock(return_value={})
+
+    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    await svc.provision_org(
+        owner_id="org_xyz",
+        owner_user_id="user_owner",
+        owner_email="owner@example.com",
+    )
+
+    # The roster was listed for the freshly created company.
+    admin.list_agents.assert_awaited_once()
+    assert admin.list_agents.await_args.kwargs["company_id"] == "co_xyz"
+
+    # EXACTLY the two builtin starters were deleted — never Friday/Atlas.
+    deleted_ids = {c.kwargs["agent_id"] for c in admin.delete_agent.await_args_list}
+    assert deleted_ids == {"f", "s"}
+    assert "fr" not in deleted_ids
+    assert "at" not in deleted_ids
+
+
+@pytest.mark.asyncio
+async def test_provision_org_builtin_purge_failure_never_fails_provision(monkeypatch):
+    """A delete failure during the builtin-agent purge must NOT fail the
+    provision — the purge is cosmetic cleanup, best-effort per agent."""
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    admin, repo = _build_provision_org_doubles(monkeypatch)
+    admin.create_agent = AsyncMock(side_effect=[{"id": "fr"}, {"id": "at"}])
+    admin.list_agents = AsyncMock(
+        return_value=[
+            {"id": "f", "name": "Reflection Coach"},
+            {"id": "s", "name": "Summarizer"},
+            {"id": "fr", "name": "Friday"},
+            {"id": "at", "name": "Atlas"},
+        ]
+    )
+    # Every delete blows up (5xx) — the purge must swallow it and still complete.
+    admin.delete_agent = AsyncMock(side_effect=PaperclipApiError("delete boom", status_code=500, body="x"))
+
+    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    row = await svc.provision_org(
+        owner_id="org_xyz",
+        owner_user_id="user_owner",
+        owner_email="owner@example.com",
+    )
+
+    # Deletion was attempted for both starters, but the failure never propagated;
+    # the company still lands active because the REQUIRED Friday seed succeeded.
+    assert admin.delete_agent.await_count == 2
+    assert row.status == "active"
+    assert repo.put.await_args.args[0].status == "active"
+
+
+@pytest.mark.asyncio
+async def test_provision_org_failed_friday_skips_builtin_purge(monkeypatch):
+    """The purge is gated on the REQUIRED Friday seed landing. When Friday's
+    seed fails the company is left untouched — a later reconcile poll (which
+    re-seeds Friday) runs the purge instead. Purging a half-provisioned company
+    would race the reconcile that still needs to (re)seed into it."""
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    admin, repo = _build_provision_org_doubles(monkeypatch)
+    # Friday raises; Atlas would land — but a CEO-less company is not purged.
+    admin.create_agent = AsyncMock(
+        side_effect=[
+            PaperclipApiError("friday seed failed", status_code=500, body="boom"),
+            {"id": "at"},
+        ]
+    )
+    admin.list_agents = AsyncMock(return_value=[{"id": "f", "name": "Reflection Coach"}])
+    admin.delete_agent = AsyncMock(return_value={})
+
+    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    row = await svc.provision_org(
+        owner_id="org_xyz",
+        owner_user_id="user_owner",
+        owner_email="owner@example.com",
+    )
+
+    # No CEO landed -> non-active row, and the purge was skipped entirely.
+    assert row.status != "active"
+    admin.list_agents.assert_not_awaited()
+    admin.delete_agent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_provision_org_reconcile_purge_is_idempotent(monkeypatch):
+    """On the reconcile path an already-purged company lists only Friday +
+    Atlas (both in seeded_agent_ids), so the purge finds nothing to delete."""
+    from datetime import datetime, timezone
+
+    from core.encryption import encrypt
+    from core.repositories.paperclip_repo import PaperclipCompany
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    admin, repo = _build_provision_org_doubles(monkeypatch)
+
+    # A prior attempt created the company + seeded Atlas ("at") but the required
+    # Friday seed failed, leaving a non-active row carrying ONLY Atlas.
+    now = datetime.now(timezone.utc)
+    failed_row = PaperclipCompany(
+        user_id="user_owner",
+        org_id="org_xyz",
+        company_id="co_first",
+        paperclip_user_id="pc_user_owner",
+        paperclip_password_encrypted=encrypt("owner-password-plain"),
+        service_token_encrypted="",
+        status="failed",
+        created_at=now,
+        updated_at=now,
+        seeded_agent_ids=["at"],
+    )
+    repo.get = AsyncMock(return_value=failed_row)
+    admin.sign_in_user = AsyncMock(
+        return_value={"user": {"id": "pc_user_owner"}, "_session_cookie": "owner-session-adopt"}
+    )
+    # Reconcile: Friday now lands ("fr_new"); Atlas is NOT re-created (a second
+    # side_effect element would raise StopIteration, proving the single create).
+    admin.create_agent = AsyncMock(side_effect=[{"id": "fr_new"}])
+    # The company already contains only Friday + Atlas — both are seeded ids.
+    admin.list_agents = AsyncMock(
+        return_value=[
+            {"id": "fr_new", "name": "Friday"},
+            {"id": "at", "name": "Atlas"},
+        ]
+    )
+    admin.delete_agent = AsyncMock(return_value={})
+
+    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    row = await svc.provision_org(
+        owner_id="org_xyz",
+        owner_user_id="user_owner",
+        owner_email="owner@example.com",
+    )
+
+    # Purge ran (Friday landed) against the adopted company but deleted nothing —
+    # everything listed is Isol8-seeded.
+    assert row.status == "active"
+    admin.list_agents.assert_awaited_once()
+    assert admin.list_agents.await_args.kwargs["company_id"] == "co_first"
+    admin.delete_agent.assert_not_awaited()
 
 
 @pytest.mark.asyncio

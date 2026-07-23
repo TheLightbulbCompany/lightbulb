@@ -126,6 +126,10 @@ def _make_admin_mock() -> MagicMock:
     )
     admin.create_company = AsyncMock(return_value={"id": "co_default"})
     admin.create_agent = AsyncMock(return_value={"id": "agent_default"})
+    # Builtin-agent purge (step 7c): list then delete non-seeded agents. Default
+    # to an empty roster so nothing is deleted unless a test opts in.
+    admin.list_agents = AsyncMock(return_value=[])
+    admin.delete_agent = AsyncMock(return_value={})
     admin.create_invite = AsyncMock(return_value={"token": "invite-token-default"})
     # accept_invite returns the join request flat — see access.ts:3604
     # (toJoinRequestResponse spreads the row, so ``id`` is top-level).

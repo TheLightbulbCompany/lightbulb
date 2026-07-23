@@ -477,7 +477,16 @@ class PaperclipProvisioning:
             # be deleted" — see PaperclipCompany.seeded_agent_ids and
             # paperclip_openclaw_pairing.is_seeded_agent. Each seed is
             # best-effort, so a failed seed simply contributes no id.
-            seeded_agent_ids: list[str] = []
+            #
+            # On the reconcile path an earlier attempt may already have seeded
+            # Atlas (a failed row can only carry Atlas — Friday's presence is
+            # exactly what marks the row active). Carry those ids forward so we
+            # don't drop them, and skip the Atlas re-create below (Paperclip
+            # ignores Idempotency-Key, so re-creating would spawn a SECOND Atlas
+            # and orphan the first). The ternary short-circuits before touching
+            # ``existing`` unless reconciling_company is True (which implies
+            # existing is not None).
+            seeded_agent_ids: list[str] = list(existing.seeded_agent_ids or []) if reconciling_company else []
 
             # 7. Best-effort seed a "Main Agent" pointing at the
             #    user's OpenClaw container. Failure here is not fatal
@@ -519,41 +528,55 @@ class PaperclipProvisioning:
             #     exist on day one. Wrapped in its own try/except so an Atlas
             #     failure does NOT undo a successful Friday seed
             #     (defense-in-depth — both seeds are best-effort).
-            try:
-                atlas = await self._admin.create_agent(
-                    company_id=company_id,
-                    name="Atlas",
-                    # Atlas was originally typed as ``role="recruiter"``
-                    # but Paperclip's AGENT_ROLES enum doesn't include
-                    # "recruiter" (see paperclip/packages/shared/src/
-                    # constants.ts:44). The constraint here is just
-                    # "must not be 'ceo'" because config.py:463 selects
-                    # the ceo-role agent as the default. "general" is the
-                    # most semantically neutral fit — which is exactly why
-                    # title + capabilities below must carry the real job:
-                    # the roster otherwise describes Atlas as a generalist
-                    # and Friday delegates domain work to it.
-                    role="general",
-                    title=ATLAS_TITLE,
-                    capabilities=ATLAS_CAPABILITIES,
-                    reports_to=friday_agent_id,
-                    adapter_type=OPENCLAW_GATEWAY_TYPE,
-                    adapter_config=synthesize_openclaw_adapter(
-                        gateway_url=_ws_gateway_url(self._env_name),
-                        service_token=svc_token,
-                        user_id=owner_user_id,
-                    ),
-                    session_cookie=new_user_session_cookie,
-                    idempotency_key=f"{owner_user_id}:atlas-agent",
-                )
-                if isinstance(atlas, dict) and atlas.get("id"):
-                    seeded_agent_ids.append(atlas["id"])
-            except PaperclipApiError as e:
-                logger.warning(
-                    "paperclip_provisioning.provision_org: seed Atlas agent failed for %s: %s",
-                    owner_user_id,
-                    e,
-                )
+            #
+            #     Skip the create entirely when RECONCILING a failed row that
+            #     already carries Atlas. A failed row's seeded_agent_ids can
+            #     only ever be Atlas (Friday's presence is what flips the row
+            #     active), and Paperclip ignores our Idempotency-Key — so
+            #     re-creating here would spawn a SECOND Atlas and orphan the
+            #     first (it drops out of seeded_agent_ids, losing its
+            #     delete-protection). Accepted residual: the carried-forward
+            #     Atlas keeps reports_to=None (it was seeded before Friday
+            #     existed) — one correctly-counted unparented Atlas beats two
+            #     with one orphaned; re-parenting would need an extra
+            #     update-agent call (out of scope).
+            atlas_already_seeded = reconciling_company and bool(existing.seeded_agent_ids)
+            if not atlas_already_seeded:
+                try:
+                    atlas = await self._admin.create_agent(
+                        company_id=company_id,
+                        name="Atlas",
+                        # Atlas was originally typed as ``role="recruiter"``
+                        # but Paperclip's AGENT_ROLES enum doesn't include
+                        # "recruiter" (see paperclip/packages/shared/src/
+                        # constants.ts:44). The constraint here is just
+                        # "must not be 'ceo'" because config.py:463 selects
+                        # the ceo-role agent as the default. "general" is the
+                        # most semantically neutral fit — which is exactly why
+                        # title + capabilities below must carry the real job:
+                        # the roster otherwise describes Atlas as a generalist
+                        # and Friday delegates domain work to it.
+                        role="general",
+                        title=ATLAS_TITLE,
+                        capabilities=ATLAS_CAPABILITIES,
+                        reports_to=friday_agent_id,
+                        adapter_type=OPENCLAW_GATEWAY_TYPE,
+                        adapter_config=synthesize_openclaw_adapter(
+                            gateway_url=_ws_gateway_url(self._env_name),
+                            service_token=svc_token,
+                            user_id=owner_user_id,
+                        ),
+                        session_cookie=new_user_session_cookie,
+                        idempotency_key=f"{owner_user_id}:atlas-agent",
+                    )
+                    if isinstance(atlas, dict) and atlas.get("id"):
+                        seeded_agent_ids.append(atlas["id"])
+                except PaperclipApiError as e:
+                    logger.warning(
+                        "paperclip_provisioning.provision_org: seed Atlas agent failed for %s: %s",
+                        owner_user_id,
+                        e,
+                    )
 
             # Mint the agent's email address from the slug we just allocated.
             # Best-effort and guarded on both Friday and the slug existing —

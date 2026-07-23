@@ -390,6 +390,107 @@ async def test_provision_org_seeded_ids_none_when_seeds_fail(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_provision_org_reconcile_does_not_reseed_atlas(monkeypatch):
+    """Reconcile must NOT re-create Atlas when a prior failed attempt already
+    seeded it.
+
+    Paperclip ignores our ``Idempotency-Key`` (see paperclip_admin_client.py:
+    no middleware/route reads it), so re-calling create_agent for Atlas on the
+    reconcile spawns a SECOND Atlas and ORPHANS the first — it drops out of
+    seeded_agent_ids, so it's no longer protected from deletion.
+
+    Failed-row invariant this fix leans on: seeded_agent_ids on a
+    status="failed" row can only ever contain Atlas. Friday's presence is
+    exactly what flips the row to "active" (seed_ok), so a failed row means
+    Friday was NOT seeded; Atlas is the only other agent provision_org seeds.
+    A non-empty seeded_agent_ids on the reconciled failed row therefore means
+    "Atlas already seeded" — skip its re-create while Friday (missing by
+    definition) is re-created.
+    """
+    from datetime import datetime, timezone
+
+    from core.encryption import encrypt
+    from core.repositories.paperclip_repo import PaperclipCompany
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    admin, repo = _build_provision_org_doubles(monkeypatch)
+
+    # Attempt 1 left a non-active row: the company WAS created and Atlas landed
+    # (unparented, since Friday didn't exist yet), but the REQUIRED Friday seed
+    # failed — so the row is status="failed" carrying ONLY Atlas's id.
+    now = datetime.now(timezone.utc)
+    failed_row = PaperclipCompany(
+        user_id="user_owner",
+        org_id="org_xyz",
+        company_id="co_first",
+        paperclip_user_id="pc_user_owner",
+        paperclip_password_encrypted=encrypt("owner-password-plain"),
+        service_token_encrypted="",
+        status="failed",
+        created_at=now,
+        updated_at=now,
+        seeded_agent_ids=["atlas_id_1"],
+    )
+    repo.get = AsyncMock(return_value=failed_row)
+
+    # Adoption signs IN with the stored credential (never re-signs-up).
+    admin.sign_in_user = AsyncMock(
+        return_value={"user": {"id": "pc_user_owner"}, "_session_cookie": "owner-session-adopt"}
+    )
+    # On reconcile Friday now succeeds; a SECOND element is supplied so the
+    # buggy path (which re-calls Atlas) is observable as atlas_id_2.
+    admin.create_agent = AsyncMock(side_effect=[{"id": "friday_new_id"}, {"id": "atlas_id_2"}])
+
+    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    await svc.provision_org(
+        owner_id="org_xyz",
+        owner_user_id="user_owner",
+        owner_email="owner@example.com",
+    )
+
+    # Friday is (re-)created; Atlas is NOT — it already exists from attempt 1.
+    seeded_names = [c.kwargs.get("name") for c in admin.create_agent.await_args_list]
+    assert "Friday" in seeded_names
+    assert "Atlas" not in seeded_names  # FAILS on current code (dup Atlas)
+
+    # Adoption issues exactly one put (the final row; no early credential row is
+    # written when adopting an existing account).
+    assert repo.put.await_count == 1
+    persisted = repo.put.await_args.args[0]
+    assert persisted.status == "active"  # Friday landed on the reconcile
+    seeded = persisted.seeded_agent_ids or []
+    # The original Atlas is carried forward AND the new Friday is added — but
+    # there is never a SECOND Atlas id.
+    assert "atlas_id_1" in seeded
+    assert "friday_new_id" in seeded
+    assert "atlas_id_2" not in seeded
+
+
+@pytest.mark.asyncio
+async def test_provision_org_fresh_provision_still_seeds_atlas(monkeypatch):
+    """Regression guard for the reconcile-only Atlas skip: a fresh
+    (non-reconcile) provision — no prior row — must still seed BOTH Friday
+    and Atlas. The skip keys off ``reconciling_company``, so it must never
+    fire when there is no existing failed row to reconcile.
+    """
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    admin, repo = _build_provision_org_doubles(monkeypatch)
+    # repo.get defaults to None here (fresh owner) → reconciling_company False.
+    admin.create_agent = AsyncMock(side_effect=[{"id": "friday_id"}, {"id": "atlas_id"}])
+
+    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    await svc.provision_org(
+        owner_id="org_xyz",
+        owner_user_id="user_owner",
+        owner_email="owner@example.com",
+    )
+
+    seeded_names = [c.kwargs.get("name") for c in admin.create_agent.await_args_list]
+    assert seeded_names == ["Friday", "Atlas"]  # Atlas create IS called on a fresh provision
+
+
+@pytest.mark.asyncio
 async def test_provision_member_replicates_seeded_agent_ids(monkeypatch):
     """Member rows copy the owner row's seeded marker so Friday/Atlas stay
     protected even if the original provisioner's row is later purged."""

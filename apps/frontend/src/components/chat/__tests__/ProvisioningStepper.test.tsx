@@ -41,8 +41,12 @@ let clerkMockUser: {
 // Configurable so the user-flash test can exercise the "Clerk still resolving"
 // (isLoaded=false) branch; every other test keeps the default `true`.
 let clerkMockIsLoaded = true;
+// Configurable so the per-container onboarding-gate tests can exercise an ORG
+// owner (the reported "paid org owner never sees the funnel" scenario). The
+// funnel gate is org-agnostic, so most tests keep the default `null` (personal).
+let clerkMockOrganization: { id: string; name: string } | null = null;
 vi.mock("@clerk/nextjs", () => ({
-  useOrganization: () => ({ organization: null, membership: null, isLoaded: true }),
+  useOrganization: () => ({ organization: clerkMockOrganization, membership: null, isLoaded: true }),
   // Components in the stepper tree (useApi consumers) read useAuth/useUser.
   useAuth: () => ({
     getToken: vi.fn().mockResolvedValue("test-token"),
@@ -875,10 +879,12 @@ describe("ProvisioningStepper per-container onboarding gate", () => {
     billingMockStartTeamCheckout.mockClear();
     clerkMockUser = { id: "user_1", unsafeMetadata: {} };
     clerkMockIsLoaded = true;
+    clerkMockOrganization = null;
   });
 
   afterEach(() => {
     apiGet.mockResolvedValue({});
+    clerkMockOrganization = null;
   });
 
   it("shows the funnel when the container is not onboarded and the per-user marker is unset", () => {
@@ -1050,6 +1056,88 @@ describe("ProvisioningStepper per-container onboarding gate", () => {
     expect(screen.queryByText("children")).not.toBeInTheDocument();
     expect(screen.queryByText(/get started/i)).not.toBeInTheDocument();
     expect(container.querySelector(".animate-spin")).toBeInTheDocument();
+  });
+
+  it("holds a loader (never the dock) for a ready, not-onboarded container while Clerk `user` is null-but-LOADED — the ready-return must not beat the funnel", () => {
+    // ROOT CAUSE of "paid org owner never sees the funnel". After an org
+    // `setActive` JWT refresh, useUser transiently returns {isLoaded:true,
+    // user:null} while the container is already warm-ready. The funnel gate
+    // needs a truthy `user`, so it is skipped; the `!userLoaded` loader is ALSO
+    // skipped (Clerk reports loaded); and the `phase === "ready"` return would
+    // hand straight off to `children` (the dockable workspace), beating the
+    // funnel for good — the owner is booted into a contextless workspace and
+    // the brief is never submitted. `container.onboarded === false` is
+    // authoritative: hold a loader, never the dock, until `user` resolves.
+    clerkMockUser = null; // loaded-but-null (isLoaded stays the default true)
+    clerkMockIsLoaded = true;
+    const { container } = renderWith({ status: "running", phase: "ready", onboarded: false });
+
+    expect(screen.queryByText("children")).not.toBeInTheDocument();
+    expect(screen.queryByText(/get started/i)).not.toBeInTheDocument();
+    expect(container.querySelector(".animate-spin")).toBeInTheDocument();
+  });
+
+  it("flips from the loader to the funnel once `user` resolves after the null-but-loaded window (loader is a bridge, not a dead end)", () => {
+    // The hold is temporary: the instant useUser resolves the user object, the
+    // funnel takes over the very same ready/not-onboarded container — it is
+    // never permanently stuck on the loader, and never leaks the dock.
+    clerkMockUser = null;
+    clerkMockIsLoaded = true;
+    const container = { status: "running", phase: "ready", onboarded: false };
+    useProvMock.mockReturnValue({
+      phase: "normal",
+      container,
+      blocked: null,
+      refreshInterval: 3000,
+      refresh: vi.fn(),
+    });
+    const { rerender } = render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+    // Null-but-loaded window: neither the funnel nor the dock, just the loader.
+    expect(screen.queryByText(/get started/i)).not.toBeInTheDocument();
+    expect(screen.queryByText("children")).not.toBeInTheDocument();
+
+    // useUser resolves the user object.
+    clerkMockUser = { id: "user_1", unsafeMetadata: {} };
+    rerender(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+
+    expect(screen.getByText(/get started/i)).toBeInTheDocument();
+    expect(screen.queryByText("children")).not.toBeInTheDocument();
+  });
+
+  it("shows the funnel for a SUBSCRIBED (non-trial) ORG owner with a ready, not-onboarded container", () => {
+    // The reported scenario: a paid org (subscription active, provider_choice
+    // bedrock_claude, NOT trial_local) whose container is ready and never
+    // onboarded. The funnel is keyed on container.onboarded, not the plan or
+    // tenancy — a loaded org owner must reach it exactly like a personal one.
+    clerkMockUser = { id: "user_1", unsafeMetadata: {} };
+    clerkMockOrganization = { id: "org_1", name: "Acme" };
+    billingMockIsSubscribed = true;
+    billingMockAccount = { provider_choice: "bedrock_claude" };
+    renderWith({ status: "running", phase: "ready", onboarded: false });
+
+    expect(screen.getByText(/get started/i)).toBeInTheDocument();
+    expect(screen.queryByText("children")).not.toBeInTheDocument();
+  });
+
+  it("shows the funnel for a trial_local owner with a ready, not-onboarded container (regression: not gated on isTrialLocal)", () => {
+    // The free-tier owner must still reach the funnel — the fix keys the funnel
+    // on container.onboarded for ALL owner types, so trial_local is neither a
+    // requirement (org/paid must reach it) nor a special case here.
+    clerkMockUser = { id: "user_1", unsafeMetadata: {} };
+    billingMockIsSubscribed = true;
+    billingMockAccount = { provider_choice: null, subscription_status: "trial_local" };
+    renderWith({ status: "running", phase: "ready", onboarded: false });
+
+    expect(screen.getByText(/get started/i)).toBeInTheDocument();
+    expect(screen.queryByText("children")).not.toBeInTheDocument();
   });
 });
 

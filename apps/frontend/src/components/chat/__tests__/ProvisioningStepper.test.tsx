@@ -669,6 +669,111 @@ describe("ProvisioningStepper blocked-state rendering", () => {
       screen.queryByRole("link", { name: "Sign in with ChatGPT" }),
     ).not.toBeInTheDocument();
   });
+
+  it("shows the Setup-failed card for a TERMINAL error (status=error + substatus=provision_failed)", () => {
+    // Honest contract: a real provisioning failure now arrives as
+    // status="error". The terminal substatus must surface the "Setup failed"
+    // card (Retry + Contact Support) — keyed off substatus, never `phase`
+    // (which still resolves to "container" for an error row).
+    useProvMock.mockReturnValue({
+      phase: "normal",
+      container: {
+        status: "error",
+        substatus: "provision_failed",
+        phase: "provisioning",
+        last_error: "ECS task failed to start",
+      },
+      blocked: null,
+      refreshInterval: 3000,
+      refresh: vi.fn(),
+    });
+
+    render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+
+    expect(screen.getByText(/Setup failed/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Retry/i })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Contact Support/i })).toBeInTheDocument();
+    // The app itself must not render behind the terminal card.
+    expect(screen.queryByText("children")).not.toBeInTheDocument();
+  });
+
+  it("keeps the provisioning stepper (NOT the Setup-failed card) for a RETRYING error", () => {
+    // status="error" + substatus="error_retrying" is transient — the backend is
+    // auto-retrying. The stepper must keep showing progress with a calm
+    // "retrying" line; the terminal "Setup failed" card must NOT appear. This
+    // is the whole point of the split: a dead container fails loudly, a
+    // retrying one keeps showing progress.
+    useProvMock.mockReturnValue({
+      phase: "normal",
+      container: {
+        status: "error",
+        substatus: "error_retrying",
+        phase: "provisioning",
+        last_error: "transient image pull error",
+      },
+      blocked: null,
+      refreshInterval: 3000,
+      refresh: vi.fn(),
+    });
+
+    render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+
+    expect(screen.queryByText(/Setup failed/i)).not.toBeInTheDocument();
+    expect(screen.getByText("Provisioning your container...")).toBeInTheDocument();
+    expect(screen.getByText(/retrying automatically/i)).toBeInTheDocument();
+  });
+
+  it("renders the ready app plus a non-blocking Teams-degraded notice when teams_status=failed", () => {
+    // teams_status is a TOP-LEVEL, non-blocking signal: Teams seeding failed but
+    // the container is healthy and chat works. The app (children) must render,
+    // with a small dismissible "Teams needs attention" affordance over it —
+    // never a blocking interstitial.
+    useProvMock.mockReturnValue({
+      phase: "normal",
+      container: { status: "running", phase: "ready", onboarded: true, teams_status: "failed" },
+      blocked: null,
+      refreshInterval: 3000,
+      refresh: vi.fn(),
+    });
+
+    render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+
+    // Chat is NOT blocked...
+    expect(screen.getByText("children")).toBeInTheDocument();
+    // ...and the degraded affordance is layered over it.
+    expect(screen.getByText(/Teams needs attention/i)).toBeInTheDocument();
+  });
+
+  it("does not render the Teams-degraded notice on a healthy ready container", () => {
+    useProvMock.mockReturnValue({
+      phase: "normal",
+      container: { status: "running", phase: "ready", onboarded: true },
+      blocked: null,
+      refreshInterval: 3000,
+      refresh: vi.fn(),
+    });
+
+    render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+
+    expect(screen.getByText("children")).toBeInTheDocument();
+    expect(screen.queryByText(/Teams needs attention/i)).not.toBeInTheDocument();
+  });
 });
 
 describe("ProvisioningStepper per-container onboarding gate", () => {
@@ -840,5 +945,35 @@ describe("ProvisioningStepper per-container onboarding gate", () => {
     expect(
       screen.getByText(/Top up Claude credits to start your container/),
     ).toBeInTheDocument();
+  });
+
+  it("shows the Setup-failed card (not the funnel) for a terminal error with a loaded, not-onboarded user", () => {
+    // Branch-order guard: the funnel sits ABOVE the error card and fires for a
+    // loaded, not-onboarded user on a normal gate — but a terminally-failed
+    // container must show the Setup-failed card instead (submitting a brief to
+    // a dead backend is a dead end). The funnel is guarded on !isTerminalError.
+    useProvMock.mockReturnValue({
+      phase: "normal",
+      container: {
+        status: "error",
+        substatus: "provision_failed",
+        phase: "provisioning",
+        onboarded: false,
+        last_error: "ECS task failed to start",
+      },
+      blocked: null,
+      refreshInterval: 3000,
+      refresh: vi.fn(),
+    });
+
+    render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+
+    expect(screen.getByText(/Setup failed/i)).toBeInTheDocument();
+    // The funnel must NOT preempt the terminal error card.
+    expect(screen.queryByText(/get started/i)).not.toBeInTheDocument();
   });
 });

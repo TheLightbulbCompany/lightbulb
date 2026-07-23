@@ -329,6 +329,21 @@ export function ProvisioningStepper({
 
   const containerReady = container?.status === "running" || container?.substatus === "gateway_healthy";
 
+  // Honest /container/status error contract (all additive): status="error" is
+  // a REAL failure — previously masked as "provisioning" so a dead container
+  // spun a stepper forever. `substatus` discriminates the two error shapes, and
+  // it is what the UI keys off — NEVER `phase`, which still resolves to a
+  // cold-start value (e.g. "container") for an error row, so a phase-keyed
+  // check could never tell a dead container from a live one:
+  //   - "provision_failed" = TERMINAL → the "Setup failed" card (Retry + support).
+  //   - "error_retrying"   = transient, backend auto-retrying → keep the
+  //     provisioning stepper (still working), with only a subtle "retrying" line.
+  // `last_error` carries the reason string on either shape.
+  const isTerminalError =
+    container?.status === "error" && container?.substatus === "provision_failed";
+  const isRetryingError =
+    container?.status === "error" && container?.substatus === "error_retrying";
+
   // Poll gateway health every 3s once container looks ready
   const { data: gatewayHealth } = useGatewayRpc<Record<string, unknown>>(
     shouldPollContainer && containerReady ? "health" : null,
@@ -675,6 +690,11 @@ export function ProvisioningStepper({
   if (
     !!user &&
     gatePhase === "normal" &&
+    // A terminally-failed container must fall through to the Setup-failed card
+    // below, never the funnel — submitting a brief to a dead backend is a
+    // dead end. (A retrying error is NOT terminal, so it still shows the
+    // funnel/provisioning UI like any live cold start.)
+    !isTerminalError &&
     !containerOnboarded &&
     // eslint-disable-next-line react-hooks/refs
     !sessionBriefSubmittedRef.current
@@ -682,9 +702,18 @@ export function ProvisioningStepper({
     return <FirstRunFunnel />;
   }
 
-  // Ready — render children
+  // Ready — render children. `teams_status: "failed"` is a TOP-LEVEL,
+  // non-blocking signal on the honest contract: Teams (Friday/Atlas) seeding
+  // failed but the container itself is healthy and chat works — so we render
+  // the app as normal and layer a small dismissible "Teams needs attention"
+  // notice over it, never a blocking interstitial.
   if (phase === "ready") {
-    return <>{children}</>;
+    return (
+      <>
+        {children}
+        {container?.teams_status === "failed" && <TeamsDegradedNotice />}
+      </>
+    );
   }
 
   // Team-pending: org member whose admin hasn't provisioned the shared
@@ -1149,8 +1178,12 @@ export function ProvisioningStepper({
     return <ProviderPicker isOrg={isOrg} orgName={organization?.name} />;
   }
 
-  // Error state
-  if (container?.status === "error") {
+  // Terminal provision failure — status="error" + substatus="provision_failed".
+  // Keyed off the substatus, NOT `phase` (which resolves to "container" for an
+  // error row). A retrying error (substatus="error_retrying") deliberately does
+  // NOT match: it falls through to the provisioning stepper below, which shows a
+  // subtle "retrying" note instead of this terminal card.
+  if (isTerminalError) {
     return (
       <div className="flex-1 flex items-center justify-center bg-[#faf7f2]">
         <div className="text-center space-y-6 max-w-sm">
@@ -1500,6 +1533,15 @@ export function ProvisioningStepper({
               </div>
             )}
 
+          {/* Transient error (status="error" + substatus="error_retrying"): the
+              backend is auto-retrying, so we keep the stepper and add a calm,
+              non-alarming line rather than the terminal "Setup failed" card. */}
+          {isRetryingError && (
+            <div className="provision-elapsed" role="status" aria-live="polite">
+              Hit a snag — retrying automatically.
+            </div>
+          )}
+
           {timedOut && (
             <div className="provision-timeout">
               <p className="provision-timeout-msg">
@@ -1531,6 +1573,56 @@ export function ProvisioningStepper({
         </div>
       </div>
     </>
+  );
+}
+
+
+/**
+ * Non-blocking "Teams needs attention" affordance layered over the ready app
+ * when /container/status reports `teams_status: "failed"` — Teams (Friday/Atlas)
+ * seeding failed but the container is healthy and chat works. Fixed, small, and
+ * dismissible so it never blocks the app. Owns its own dismiss state so the
+ * ready branch stays a plain `children` return with no extra parent hook.
+ */
+function TeamsDegradedNotice() {
+  const [dismissed, setDismissed] = useState(false);
+  useEffect(() => {
+    capture("teams_degraded_notice_shown");
+  }, []);
+  if (dismissed) return null;
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="fixed bottom-4 right-4 z-50 max-w-xs rounded-xl border border-[#e7c9a8] bg-[#fdf6ec] px-4 py-3 shadow-lg"
+    >
+      <div className="flex items-start gap-3">
+        <div className="flex-1">
+          <p className="text-sm font-medium text-[#7a4a12]">Teams needs attention</p>
+          <p className="mt-1 text-xs text-[#8a6a3a]">
+            Your team workspace didn&apos;t finish setting up, so some team
+            features may be unavailable. Chat works normally.
+          </p>
+          <a
+            href="mailto:support@isol8.co"
+            onClick={() =>
+              capture("support_contact_clicked", { source: "teams_degraded_notice" })
+            }
+            className="mt-2 inline-block text-xs font-medium text-[#06402B] underline"
+          >
+            Contact support
+          </a>
+        </div>
+        <button
+          type="button"
+          aria-label="Dismiss"
+          onClick={() => setDismissed(true)}
+          className="text-lg leading-none text-[#b08a5a] hover:text-[#7a4a12]"
+        >
+          ×
+        </button>
+      </div>
+    </div>
   );
 }
 

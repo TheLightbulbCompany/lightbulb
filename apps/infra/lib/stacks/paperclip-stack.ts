@@ -383,6 +383,15 @@ export class PaperclipStack extends cdk.Stack {
         HOST: "0.0.0.0",
         SERVE_UI: "true",
         PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
+        // Isol8 tenants must contain EXACTLY the Isol8-seeded agents
+        // (Friday + Atlas). The fork (v2026.7-isol8.5+) gates its built-in
+        // starter-agent auto-provisioning (Reflection Coach / Summarizer)
+        // behind this env var — covering BOTH company-create and the
+        // unconditional startup reconcile that would otherwise re-create
+        // them on every BFF restart. Built-ins are undeletable by design
+        // (409 built_in_agent_undeletable), so not creating them is the
+        // only path. Inert on images older than isol8.5 (unread env).
+        PAPERCLIP_SKIP_BUILTIN_AGENTS: "1",
         PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
         PAPERCLIP_PUBLIC_URL: paperclipPublicUrl,
         // The API host injected into agent heartbeat runs as PAPERCLIP_API_URL.

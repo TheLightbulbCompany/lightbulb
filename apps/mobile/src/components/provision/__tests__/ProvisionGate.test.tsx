@@ -412,3 +412,64 @@ describe("ProvisionGate container-error interstitial", () => {
     expect(mockRefetch).toHaveBeenCalledTimes(1);
   });
 });
+
+// PR3 honest-contract: teams_status="failed" is a TOP-LEVEL, NON-blocking
+// signal — Paperclip seeding failed while the container itself is fine and
+// chat works. The gate must surface a small affordance OVER the live children,
+// NEVER replace them with an interstitial (unlike every blocking kind above).
+describe("ProvisionGate teams-degraded affordance (non-blocking)", () => {
+  beforeEach(() => {
+    mockRefetch.mockReset();
+    mockUseContainerStatus.mockReset();
+  });
+
+  it("renders the Teams affordance OVER the live children (chat not blocked) when ready + teams_status failed", async () => {
+    mockUseContainerStatus.mockReturnValue({
+      status: { kind: "ready", onboarded: true, teamsStatus: "failed" },
+      refetch: mockRefetch,
+    });
+
+    await render(
+      <ProvisionGate>
+        <Text>APP</Text>
+      </ProvisionGate>,
+    );
+
+    // Children still render — the affordance never replaces chat.
+    expect(screen.getByText("APP")).toBeTruthy();
+    expect(screen.getByText(/Teams setup didn.t finish/)).toBeTruthy();
+    expect(screen.getByLabelText("Retry Teams setup")).toBeTruthy();
+  });
+
+  it("wires the Teams affordance Retry to refetch", async () => {
+    mockUseContainerStatus.mockReturnValue({
+      status: { kind: "ready", onboarded: true, teamsStatus: "failed" },
+      refetch: mockRefetch,
+    });
+
+    await render(
+      <ProvisionGate>
+        <Text>APP</Text>
+      </ProvisionGate>,
+    );
+
+    await fireEvent.press(screen.getByLabelText("Retry Teams setup"));
+    expect(mockRefetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT render the Teams affordance on a healthy ready container", async () => {
+    mockUseContainerStatus.mockReturnValue({
+      status: { kind: "ready", onboarded: true },
+      refetch: mockRefetch,
+    });
+
+    await render(
+      <ProvisionGate>
+        <Text>APP</Text>
+      </ProvisionGate>,
+    );
+
+    expect(screen.getByText("APP")).toBeTruthy();
+    expect(screen.queryByText(/Teams setup didn.t finish/)).toBeNull();
+  });
+});

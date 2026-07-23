@@ -14,13 +14,20 @@
  * `pollIntervalFor`). Classification (contract §B1/§B3):
  *
  *   ready       — 200 with phase === "ready" (openclaw responsive)
- *   starting    — 200 with phase !== "ready" (cold start / provisioning)
+ *   starting    — 200 with phase !== "ready" (cold start / provisioning), OR a
+ *                 NON-terminal error the backend is auto-retrying (see below)
  *   parked      — 200 with phase === "parked" (deliberately-asleep trial box)
- *   error       — 200 with raw status === "error" (mobile onboarding-parity
- *                 Slice 1 — the backend reports phase="provisioning" for a
- *                 failed container too, so this check runs BEFORE the phase
- *                 branches; matches web's ProvisioningStepper `container.status
- *                 === "error"` check)
+ *   error       — 200 with raw status === "error" AND substatus ===
+ *                 "provision_failed" (a TERMINAL provision failure — PR3
+ *                 honest-contract consumption). CRITICAL: `phase` still
+ *                 resolves to "provisioning" for a dead container too, so
+ *                 terminal-vs-transient is keyed off `substatus`, NEVER
+ *                 `phase` — keying off phase would render a dead container as a
+ *                 perpetual stepper. Every OTHER error (substatus
+ *                 "error_retrying", or an untagged error row) is the backend
+ *                 still auto-retrying, so it stays `starting` (keep the
+ *                 progress surface, which is also what keeps the recovery poll
+ *                 running). Matches web's ProvisioningStepper terminal check.
  *   teamPending — 202 (org member waiting on admin's workspace)
  *   blocked     — 402 (provision gate fired; carries code + action.href + admin_only)
  *   needsSignup — 404 (admin never started signup)
@@ -58,13 +65,30 @@ import { isPresent } from "./presence";
 
 export type ContainerStatus =
   | { kind: "loading" }
-  | { kind: "ready"; onboarded?: boolean }
-  | { kind: "starting"; phase?: string; substatus?: string; onboarded?: boolean }
+  | { kind: "ready"; onboarded?: boolean; teamsStatus?: string }
+  | {
+      kind: "starting";
+      phase?: string;
+      substatus?: string;
+      onboarded?: boolean;
+      /**
+       * Top-level `teams_status` from the body (PR3 honest-contract), surfaced
+       * on `ready`/`starting` alongside `onboarded` so ProvisionGate can render
+       * the non-blocking Teams-degraded affordance. `"failed"` is the only
+       * value acted on today; undefined on an old backend (never a false
+       * alarm).
+       */
+      teamsStatus?: string;
+    }
   | { kind: "parked" }
-  /** Backend-reported container failure (mobile onboarding-parity Slice 1 —
-   * mobile previously had no surface for this and showed `starting` forever;
-   * unifies with web's "Setup failed" card, which keys on the same raw
-   * `status === "error"`). */
+  /**
+   * TERMINAL container failure — raw `status === "error"` AND `substatus ===
+   * "provision_failed"` (PR3 honest-contract). A transient/auto-retrying error
+   * is classified as `starting` instead (keep progress), so this kind is the
+   * one that earns the blocking "Setup failed" interstitial. Keyed off
+   * substatus, NEVER phase (a dead container still reports phase
+   * "provisioning").
+   */
   | { kind: "error" }
   | { kind: "teamPending" }
   | {
@@ -177,16 +201,33 @@ function fromClassified(
       // pre-Slice-1 behavior. The classifier's `ContainerStatusBody` type
       // isn't nullable, but that's a type-level claim, not a runtime one.
       const info = classified.body ?? ({} as ContainerStatusBody);
-      // Checked BEFORE the phase branches below: the backend reports
-      // phase="provisioning" for a failed container too, so an error read
-      // AFTER the phase checks would misrender as a perpetual "starting"
-      // spinner (the exact gap this slice closes — see module docstring).
+      // `teams_status` isn't a declared field on the shared body type (it rides
+      // the index signature), so narrow it to a string before surfacing.
+      const teamsStatus =
+        typeof info.teams_status === "string" ? info.teams_status : undefined;
+      // Honest failure states (PR3), checked BEFORE the phase branches: the
+      // backend reports phase="provisioning" for a failed container too, so an
+      // error read AFTER the phase checks would misrender as a perpetual
+      // spinner. Terminal-vs-transient is keyed off `substatus`, NEVER `phase`
+      // (the landmine): only `provision_failed` is terminal → the blocking
+      // interstitial. Every other error (error_retrying, or an untagged error
+      // row) is the backend still auto-retrying — stay `starting` so the
+      // progress surface stays up AND the recovery poll keeps running.
       if (info.status === "error") {
-        return { kind: "error" };
+        if (info.substatus === "provision_failed") {
+          return { kind: "error" };
+        }
+        return {
+          kind: "starting",
+          phase: info.phase,
+          substatus: info.substatus ?? undefined,
+          onboarded: info.onboarded,
+          teamsStatus,
+        };
       }
       // phase absent (older backend / plain running box) → treat as ready.
       if (info.phase == null || info.phase === "ready") {
-        return { kind: "ready", onboarded: info.onboarded };
+        return { kind: "ready", onboarded: info.onboarded, teamsStatus };
       }
       if (info.phase === "parked") {
         // Deliberately-asleep trial box (wake-gated). Distinct from a cold
@@ -200,6 +241,7 @@ function fromClassified(
         phase: info.phase,
         substatus: info.substatus ?? undefined,
         onboarded: info.onboarded,
+        teamsStatus,
       };
     }
   }

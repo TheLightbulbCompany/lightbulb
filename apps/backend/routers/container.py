@@ -479,18 +479,16 @@ async def container_status(
                 container["status"] = "provisioning"
                 container["substatus"] = "auto_retry"
 
-    # Org members (and admins): their paperclip-membership-add doesn't fall
-    # out of the missing-container branch above when the org's container
-    # already exists (e.g., a co-admin or member joins an org that's already
-    # provisioned). The "missing container" branch is the canonical
-    # paperclip-add trigger, but anyone sharing the existing container
-    # resolves to a container row here and skips it. Fire ensure_user_ready
-    # idempotently for EVERY org-context user — excluding admins here was the
-    # /teams "team workspace not provisioned" bug for multi-admin orgs.
-    # provision_container=False because the container is already running:
-    # ensure_user_ready must NOT trigger provision_user_container, which
-    # force-restarts a running service (ecs_manager docstring scenario 3).
-    if auth.is_org_context:
+    # Re-dispatch ensure_user_ready(provision_container=False) on the running-container
+    # poll for: (a) EVERY org-context user — idempotent paperclip-membership-add (a
+    # co-admin/member joining an already-provisioned org resolves to a container row
+    # here and would otherwise skip the add); and (b) a PERSONAL owner whose Teams seed
+    # is currently failed — T1 made a seed failure non-fatal to the container, so without
+    # this a transient personal seed blip stays teams_status="failed" forever with no
+    # self-heal. Gating personal on teams_status=="failed" keeps the happy path free of a
+    # per-poll re-seed. provision_container=False: the container is already running and
+    # provision_user_container would force-restart it (ecs_manager scenario 3).
+    if auth.is_org_context or teams_status == "failed":
         _dispatch_watched(ensure_user_ready(auth, provision_container=False))
 
     # phase "ready" requires THIS task's in-memory pool to hold the user's

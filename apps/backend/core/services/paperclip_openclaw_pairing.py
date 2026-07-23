@@ -58,24 +58,38 @@ def _is_org_owner_id(owner_id: str) -> bool:
 async def resolve_company_id_for_owner(*, owner_id: str, repo: PaperclipRepo) -> str | None:
     """Look up the Paperclip company_id for this owner.
 
-    For personal users (owner_id = user_id): repo.get(user_id).company_id
-    For orgs (owner_id = org_id): repo.get_org_company_id(org_id)
+    For personal users (owner_id = user_id): the row's company_id, unless the
+    row is a ``failed`` marker.
+    For orgs (owner_id = org_id): the company_id of an ``active`` row, located
+    by scanning the org's rows (``list_by_org_id``).
 
     Returns None when no company exists yet (provisioning hasn't run) OR the
-    only row is a ``failed`` marker. A net-new failure persists a ``failed``
-    row carrying ``company_id=""`` (the company was never created), so a bare
-    lookup hands back ``""`` — and every caller here guards with
+    only row(s) are ``failed``. Every caller here guards with
     ``if company_id is None`` (paperclip_agent_lifecycle, marketplace_listings,
-    company_deploy_service, agent_export), so ``""`` slips past that guard into
-    a doomed Paperclip call with an empty id. Treat an empty company_id — and
-    any ``failed``-status row — as "no company" so those callers take their
-    clean no-company branch instead.
+    company_deploy_service, agent_export), so returning None routes them into
+    their clean no-company branch instead of a doomed Paperclip call. Two
+    distinct failed shapes must both resolve to None:
+
+      * personal / net-new: a ``failed`` marker carries ``company_id=""`` (the
+        company was never created); the ``status == "failed"`` check below
+        catches it (as does the empty-id check).
+      * org reconcile: a ``failed`` row can now carry a REAL adopted
+        ``company_id`` (the Friday-partial case), and ``get_org_company_id``
+        returns the first row's id regardless of status — so org resolution
+        deliberately does NOT use ``get_org_company_id`` here. It requires an
+        ACTIVE row, so a failed org row (even one with a real company_id)
+        resolves to None, mirroring the personal ``status == "failed"`` filter.
     """
     if _is_org_owner_id(owner_id):
-        # get_org_company_id returns the raw stored value, which is "" for a
-        # net-new failed marker (the company was never created). Coerce empty
-        # to None so the ``is None`` callers above branch correctly.
-        return await repo.get_org_company_id(owner_id) or None
+        # Require an ACTIVE row: a reconcile can persist a ``failed`` org row
+        # carrying a real adopted company_id, which get_org_company_id would
+        # hand back regardless of status. Scan the org's rows (all active rows
+        # share one company_id by the provisioner's invariant) and return the
+        # first active, non-empty company_id; if none is active, return None.
+        for row in await repo.list_by_org_id(owner_id):
+            if row.get("status") == "active" and row.get("company_id"):
+                return row["company_id"]
+        return None
     row = await repo.get(owner_id)
     if row is None or row.status == "failed" or not row.company_id:
         return None

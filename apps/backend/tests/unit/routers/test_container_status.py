@@ -2009,7 +2009,11 @@ class TestContainerStatusTeamsStatus:
     @pytest.mark.asyncio
     async def test_running_container_with_failed_seed_is_ready_plus_teams_failed(self):
         """The core Part C case: a running container whose company seed failed
-        reports phase=ready (chat works) AND teams_status=failed (degraded)."""
+        reports phase=ready (chat works) AND teams_status=failed (degraded). The
+        failed seed also triggers a self-heal re-dispatch of ensure_user_ready on
+        this poll (asserted by test_personal_running_container_with_failed_seed_
+        redispatches_ensure_user_ready); patch it out here so this test doesn't
+        leak a real background provisioning task."""
         from routers.container import container_status
 
         fake_ecs = AsyncMock()
@@ -2025,6 +2029,8 @@ class TestContainerStatusTeamsStatus:
                 return_value=SimpleNamespace(is_user_connected=lambda _u: True),
             ),
             patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=failed_repo),
+            patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
+            patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),
         ):
             result = await container_status(_personal_auth())
 
@@ -2055,6 +2061,80 @@ class TestContainerStatusTeamsStatus:
 
         assert result["phase"] == "ready"
         assert "teams_status" not in result
+
+    @pytest.mark.asyncio
+    async def test_personal_running_container_with_failed_seed_redispatches_ensure_user_ready(self):
+        """A PERSONAL owner whose running container has a FAILED Teams seed must
+        re-dispatch ensure_user_ready(provision_container=False) on the poll, so a
+        transient seed blip self-heals. Before this fix the running-container
+        re-dispatch was gated org-only, leaving a personal seed failure stuck at
+        teams_status="failed" forever with no retry (T1 made the seed failure
+        non-fatal to the container). No seat-sync precedes it because the owner is
+        personal (owner_id="user_x")."""
+        from routers.container import container_status
+
+        captured: list[str] = []
+
+        def capture_task(coro):
+            captured.append(coro.__qualname__)
+            coro.close()
+
+        fake_ecs = AsyncMock()
+        fake_ecs.resolve_running_container = AsyncMock(
+            return_value=({"service_name": "svc", "status": "running", "substatus": None}, "10.0.1.5")
+        )
+        failed_repo = MagicMock(get=AsyncMock(return_value=SimpleNamespace(status="failed")))
+        with (
+            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.resolve_owner_id", return_value="user_x"),
+            patch(
+                "routers.container.get_gateway_pool",
+                return_value=SimpleNamespace(is_user_connected=lambda _u: True),
+            ),
+            patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=failed_repo),
+            patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
+            patch("routers.container.asyncio.create_task", side_effect=capture_task),
+        ):
+            result = await container_status(_personal_auth())
+
+        assert result["teams_status"] == "failed"
+        assert captured == ["_noop_ensure_user_ready"], (
+            f"a personal owner with a failed seed must re-dispatch ensure_user_ready, got {captured}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_personal_running_container_with_healthy_seed_does_not_redispatch(self):
+        """The happy path stays free of a per-poll re-seed: a PERSONAL owner whose
+        Teams seed is healthy (teams_status None) must NOT re-dispatch
+        ensure_user_ready on the running-container poll."""
+        from routers.container import container_status
+
+        captured: list[str] = []
+
+        def capture_task(coro):
+            captured.append(coro.__qualname__)
+            coro.close()
+
+        fake_ecs = AsyncMock()
+        fake_ecs.resolve_running_container = AsyncMock(
+            return_value=({"service_name": "svc", "status": "running", "substatus": None}, "10.0.1.5")
+        )
+        active_repo = MagicMock(get=AsyncMock(return_value=SimpleNamespace(status="active")))
+        with (
+            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.resolve_owner_id", return_value="user_x"),
+            patch(
+                "routers.container.get_gateway_pool",
+                return_value=SimpleNamespace(is_user_connected=lambda _u: True),
+            ),
+            patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=active_repo),
+            patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
+            patch("routers.container.asyncio.create_task", side_effect=capture_task),
+        ):
+            result = await container_status(_personal_auth())
+
+        assert "teams_status" not in result
+        assert captured == [], f"a healthy personal seed must not re-dispatch, got {captured}"
 
 
 class TestProvisionTaskObservability:

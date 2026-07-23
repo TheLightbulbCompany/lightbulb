@@ -121,7 +121,7 @@ GET /container/status (unchanged trigger)
    │     exit 11 / SIGKILL / launch failure / States.Timeout,    │
    │       attempt < 3      → MarkRetrying (native DDB UpdateItem│
    │                          substatus=error_retrying,          │
-   │                          claim-conditioned) → Wait(30s·2ⁿ)  │
+   │                          claim-conditioned) → Wait(60s)     │
    │                          → RunProvisioner                   │
    │       attempt ≥ 3      → MarkFailed (retryable=true) → Fail │
    └────────────────────────────────────────────────────────────┘
@@ -399,6 +399,23 @@ Flag: `PROVISION_EXECUTOR = "inline" | "sfn"` (settings, per-env).
    3. The step-2 validation scenarios below run green, including the two
       added for this design: transient-failure-with-tab-open and the raw
       provisioner-command smoke.
+   4. The same-claim retry hazard resolved (claude-review on the PR): the
+      machine's retry loop reuses one `claim_id` across attempts, so a
+      straggler task from a timed-out attempt (SFN's `.sync` cancellation is
+      best-effort — §11) could run CONCURRENTLY with the next attempt while
+      holding the IDENTICAL fencing token, which the token model cannot
+      fence — the interleaved-mint incident class. Cannot fire while dark.
+      Candidate fixes, each with a known constraint the flip PR must design
+      around: (a) fresh claim per attempt — but a bare in-machine rotation
+      cannot refresh the epoch `provision_claimed_at` (SFN has no epoch
+      intrinsic), breaks Branch A's name↔claim self-consistency, and
+      invalidates the SFN backstop writes' `:cid` condition; a runner-side
+      `--takeover` flag on attempt>0 stamps epoch correctly but weakens the
+      SIGKILL backstop for retry attempts; (b) an explicit `ecs:StopTask`
+      double-tap (wait-for-stopped) state before each re-run; (c) verify
+      AWS's actual Timeout-cancellation behavior is strong enough that the
+      residual window (ECS control-plane stop failure) is accepted and
+      documented. Pick one deliberately; do not flip before this is closed.
 2. **Dev flip:** `sfn` in dev. Validate: fresh signup, error-retry (inject a
    transient), deterministic failure (bad config), deploy-during-provision
    (the headline scenario — kill/deploy the backend mid-provision and watch

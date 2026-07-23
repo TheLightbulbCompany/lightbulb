@@ -387,9 +387,9 @@ Flag: `PROVISION_EXECUTOR = "inline" | "sfn"` (settings, per-env).
    must pass.
 
    **Flip prerequisites — ALL must hold before step 2:**
-   1. PR #1385 (honest-failure-state) merged AND this branch rebased on it,
-      with the classifier consolidated (`is_retryable_provision_error` folded
-      into `classify_provision_error`). Without #1385's retryable gate in the
+   1. ✅ SATISFIED (2026-07-23): PR #1385 (honest-failure-state) merged, this
+      branch rebased on it, classifier consolidated into
+      `classify_provision_error`. Without #1385's retryable gate in the
       router, `MarkFailedDeterministic`'s `retryable=false` is inert and
       deterministic failures re-dispatch forever — each cycle now costing a
       Fargate launch + a Failed execution, not just a swallowed asyncio task.

@@ -642,6 +642,31 @@ export function ProvisioningStepper({
     }
   }, [phase]);
 
+  // Poll watchdog. SWR drives /container/status via a SELF-RESCHEDULING
+  // refreshInterval chain: each revalidation schedules the next only after it
+  // resolves. When Chrome throttles a backgrounded OR merely occlusion-throttled
+  // tab, a single dropped tick ends that chain permanently — the configured 3s
+  // cadence simply stops firing and the tab makes near-zero /container/status
+  // fetches. revalidateOnFocus can't heal a VISIBLE-but-throttled tab either: it
+  // never gets a focus TRANSITION to fire on. Verified live on dev, twice: a
+  // throttled-but-visible tab managed ~1 status poll in 3+ minutes, funnel and
+  // stepper frozen on stale data while the backend already answered
+  // onboarded/ready. The elapsed timer's 1s setInterval below provably SURVIVES
+  // that throttling — its on-screen counter kept counting through the freeze —
+  // so we ride it: fire refresh() at most once / 10s while a pre-ready cold-start
+  // card is displayed. It is a SEPARATE timer issuing an out-of-band mutate(), so
+  // it is not subject to the dead SWR chain — the only self-heal that reaches a
+  // visible-but-throttled tab.
+  //
+  // Cost: during a HEALTHY cold start the live 3s poll is still running and SWR's
+  // dedupingInterval collapses most overlaps, so this adds ~1 extra request / 10s
+  // against a cheap endpoint for at most a few minutes; once the chain is
+  // throttle-killed the watchdog is the ONLY thing still asking. Seeded to mount
+  // time inside the effect below (not here) so Date.now() is never called during
+  // render; first fire lands ~10s in, never an immediate double-fetch on the
+  // first poll.
+  const lastWatchdogRef = useRef<number | null>(null);
+
   useEffect(() => {
     if (
       phase !== "container" &&
@@ -654,17 +679,39 @@ export function ProvisioningStepper({
     if (provisioningStartRef.current === null) {
       provisioningStartRef.current = Date.now();
     }
+    // Seed the watchdog clock on first cold-start entry (kept out of render to
+    // stay pure). Deliberately NOT reset on sub-phase transitions, so the 10s
+    // cadence holds across container -> gateway -> channels-sidecars -> agent.
+    if (lastWatchdogRef.current === null) {
+      lastWatchdogRef.current = Date.now();
+    }
     const tick = () => {
       const start = provisioningStartRef.current;
       if (start === null) return;
       const ms = Date.now() - start;
       setElapsedMs(ms);
       if (ms > TIMEOUT_MS) setTimedOut(true);
+      // Poll watchdog (see lastWatchdogRef above), throttled to once / 10s. The
+      // phase guard already scopes us to the pre-ready cold-start cards; we
+      // further require a normal gate — never re-poll a blocked / team-pending /
+      // needs-signup state, which owns the hook's 5s/30s cadence and whose 30s
+      // backoff a 10s re-bump would defeat — and a non-terminal container (the
+      // Setup-failed card is not a live cold start).
+      const lastWatchdog = lastWatchdogRef.current;
+      if (
+        lastWatchdog !== null &&
+        gatePhase === "normal" &&
+        !isTerminalError &&
+        Date.now() - lastWatchdog > 10_000
+      ) {
+        lastWatchdogRef.current = Date.now();
+        refresh();
+      }
     };
     tick();
     const interval = setInterval(tick, 1000);
     return () => clearInterval(interval);
-  }, [phase]);
+  }, [phase, gatePhase, isTerminalError, refresh]);
 
   // First-run funnel: whoever first reaches a ready company — trial_local
   // free-tier signup or an org owner/member — describes the business here

@@ -1205,3 +1205,124 @@ describe("ProvisioningStepper cold-start poll re-arming (derived from phase)", (
     expect(lastOptions()).toMatchObject({ revalidateOnFocus: true });
   });
 });
+
+describe("ProvisioningStepper poll watchdog (throttle-killed SWR self-recovery)", () => {
+  // SWR's refreshInterval is a self-rescheduling chain: a single tick dropped
+  // while Chrome throttles a backgrounded OR merely occlusion-throttled tab ends
+  // it permanently, and the tab makes near-zero /container/status fetches
+  // thereafter. revalidateOnFocus can't heal a VISIBLE-but-throttled tab — it
+  // never gets a focus TRANSITION. The stepper's 1s elapsed-timer setInterval
+  // provably SURVIVES that throttling (its on-screen counter kept counting in
+  // the frozen dev tab), so the watchdog rides it and fires refresh() at most
+  // once / 10s while a pre-ready cold-start card is displayed — the only
+  // self-heal that reaches a visible-but-throttled tab. Verified live on dev,
+  // twice: ~1 status poll in 3+ minutes, funnel/stepper frozen over
+  // onboarded:true, until this out-of-band refresh unsticks it.
+  beforeEach(() => {
+    useProvMock.mockReset();
+    apiPost.mockClear();
+    apiGet.mockClear();
+    apiPut.mockClear();
+    apiDel.mockClear();
+    billingMockIsSubscribed = true;
+    billingMockAccount = { provider_choice: "bedrock_claude" };
+    billingMockRefresh = vi.fn();
+    billingMockStartTeamCheckout.mockClear();
+    clerkMockUser = null;
+    clerkMockIsLoaded = true;
+    gatewayHealthData = null;
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    apiGet.mockResolvedValue({});
+  });
+
+  // A provisioning container that resolves to a pre-ready cold-start phase
+  // ("container"): status="provisioning" + substatus="service_created".
+  const coldStart = {
+    status: "provisioning",
+    phase: "provisioning",
+    substatus: "service_created",
+  };
+
+  it("fires refresh() ~10s in while a pre-ready cold-start phase is displayed (never on mount)", () => {
+    const refresh = vi.fn();
+    useProvMock.mockReturnValue({
+      phase: "normal",
+      container: coldStart,
+      blocked: null,
+      refreshInterval: 3000,
+      refresh,
+    });
+
+    render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+
+    // lastWatchdogRef is seeded to mount time, so the first watchdog fire is
+    // ~10s in — never an immediate double-fetch on top of the first poll.
+    expect(refresh).not.toHaveBeenCalled();
+
+    // RED against the pre-watchdog branch: no timer ever calls refresh().
+    act(() => {
+      vi.advanceTimersByTime(11_000);
+    });
+    expect(refresh).toHaveBeenCalled();
+  });
+
+  it("throttles to ~once / 10s (not once / 1s) across a 60s freeze", () => {
+    const refresh = vi.fn();
+    useProvMock.mockReturnValue({
+      phase: "normal",
+      container: coldStart,
+      blocked: null,
+      refreshInterval: 3000,
+      refresh,
+    });
+
+    render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+
+    act(() => {
+      vi.advanceTimersByTime(60_000);
+    });
+
+    // 60s under a 10s throttle => 5 fires (t=11,22,33,44,55s), categorically
+    // NOT the 60 the raw 1s interval would produce if it fired every tick.
+    const calls = refresh.mock.calls.length;
+    expect(calls).toBeGreaterThanOrEqual(5);
+    expect(calls).toBeLessThanOrEqual(6);
+  });
+
+  it("never fires the watchdog once the container is ready (workspace displayed)", () => {
+    const refresh = vi.fn();
+    useProvMock.mockReturnValue({
+      phase: "normal",
+      container: { status: "running", phase: "ready", onboarded: true },
+      blocked: null,
+      refreshInterval: 0,
+      refresh,
+    });
+
+    render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+
+    act(() => {
+      vi.advanceTimersByTime(60_000);
+    });
+
+    // phase="ready" is not a pre-ready cold-start card — the watchdog's guard
+    // (same as the elapsed timer's) never arms, so refresh stays untouched.
+    expect(refresh).not.toHaveBeenCalled();
+  });
+});

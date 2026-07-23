@@ -33,6 +33,9 @@ describe("FirstRunFunnel", () => {
     mockPost.mockReset().mockResolvedValue({ status: "staged" });
     mockUpdate.mockClear();
     mockSignOut.mockClear();
+    // Reset to a clean first-time user so tests that seed stale prior-cycle
+    // firstRun flags don't leak into the others (mockUser is shared).
+    mockUser.unsafeMetadata = {};
   });
 
   it("submits the new-business idea and stamps briefSubmitted", async () => {
@@ -54,9 +57,51 @@ describe("FirstRunFunnel", () => {
         detail: undefined,
       }),
     );
+    // A brief submit STARTS A NEW first-run cycle, so it clears started/completed
+    // in the SAME write (web PR #1397): stale flags from a prior provision would
+    // otherwise survive the writeFirstRun merge and suppress the new kickoff.
     await waitFor(() =>
       expect(mockUpdate).toHaveBeenCalledWith({
-        unsafeMetadata: { firstRun: { briefSubmitted: true, path: "new" } },
+        unsafeMetadata: {
+          firstRun: {
+            briefSubmitted: true,
+            started: false,
+            completed: false,
+            path: "new",
+          },
+        },
+      }),
+    );
+  });
+
+  it("resets stale started/completed from a prior provision so the new cycle's kickoff isn't suppressed", async () => {
+    // Cross-provision staleness, verified live on dev (web PR #1397): the user
+    // completed a PREVIOUS first-run cycle (started/completed both true), then
+    // their account/container was wiped and rebuilt. Clerk metadata is per-user
+    // forever, so those flags survive — while the gate (keying off the fresh
+    // container's onboarded:false) correctly re-shows this funnel. A brief
+    // submit STARTS A NEW cycle, so it must clear the stale flags in the same
+    // write; otherwise useFirstRunKickoff hard-skips on completed:true and the
+    // new cycle's kickoff is permanently suppressed.
+    mockUser.unsafeMetadata = {
+      firstRun: { briefSubmitted: true, started: true, completed: true },
+    };
+    const u = userEvent.setup();
+    await render(<FirstRunFunnel />);
+
+    await u.press(screen.getByRole("button", { name: "Grow my business" }));
+    await u.type(screen.getByPlaceholderText("yourcompany.com"), "example.com");
+    await u.press(screen.getByRole("button", { name: "Continue →" }));
+
+    await waitFor(() =>
+      expect(mockUpdate).toHaveBeenCalledWith({
+        unsafeMetadata: {
+          firstRun: expect.objectContaining({
+            briefSubmitted: true,
+            started: false,
+            completed: false,
+          }),
+        },
       }),
     );
   });

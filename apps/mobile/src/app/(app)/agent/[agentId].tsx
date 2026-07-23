@@ -663,6 +663,13 @@ function AgentChat() {
     agentId: agentId ?? null,
     defaultId: rosterData?.defaultId ?? null,
     isConnected: gateway.isConnected,
+    // Reconcile the `started` latch against the real thread (web parity): a
+    // kickoff whose send died in flight leaves started=true over an empty
+    // default thread — history done loading + zero rendered items means it
+    // never landed, so re-fire. historyEmpty mirrors allItems.length === 0
+    // (seeded history + live items), inlined since allItems is derived below.
+    historyLoaded: !historyLoading,
+    historyEmpty: historyItems.length === 0 && items.length === 0,
     send: dispatchText,
   });
 

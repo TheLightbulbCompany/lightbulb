@@ -781,9 +781,10 @@ async def test_ensure_paperclip_for_owner_records_duplicate_422_without_reraisin
     recorded-FAILURE path — NOT re-raise it (which hard-fails the seed on every
     ~3s /container/status poll through the generic seed-error handler) and NOT
     swallow it as success (which would report Teams ready over a broken/absent
-    workspace). provision_org's own _mark_failed persists the failed row
-    (surfaced via /container/status); the guard emits a duplicate-specific
-    metric and returns without raising."""
+    workspace). provision_org's own _mark_failed persists a durable ``failed``
+    marker (put-if-absent when no row exists), which is what surfaces the
+    failure — /teams → 503, teams_status="failed" on /container/status; the
+    guard emits a duplicate-specific metric and returns without raising."""
     from core.services.paperclip_admin_client import PaperclipApiError
 
     fake_provisioning = MagicMock()

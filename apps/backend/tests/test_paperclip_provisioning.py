@@ -308,13 +308,15 @@ async def test_provision_org_seed_agent_failure_is_not_fatal(repo):
     assert row.company_id == "co_acme"
 
 
-async def test_provision_org_signup_failure_does_not_fabricate_poisoned_row(repo):
+async def test_provision_org_signup_failure_writes_durable_failed_marker(repo):
     """A pre-company failure — here sign-up itself fails, so no provisioning row
-    was written yet — must NOT leave a fabricated placeholder row carrying an
-    empty paperclip_user_id. That empty id poisoned the row and wedged every
-    retry (can't adopt → re-sign-up → re-422 forever). provision_org still
-    RAISES so the caller records the failure (log + metric); no row is
-    persisted, so a clean retry re-signs-up from scratch."""
+    was written yet — must leave ONE durable ``failed`` marker so ``/teams``
+    gives an honest 503 instead of the eternal 202 spinner a MISSING row
+    produces. The marker carries NO fabricated paperclip_user_id: an empty id
+    was the old poison (blocked adoption → re-sign-up → re-422 forever; clobbered
+    a real id on a stale read), so the field is left ABSENT and the marker is
+    written put-if-absent (durable-visibility only, not adoptable). provision_org
+    still RAISES so the caller records the failure."""
     admin = _make_admin_mock()
     admin.sign_up_user = AsyncMock(side_effect=PaperclipApiError("auth disabled", status_code=403, body="forbidden"))
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
@@ -326,8 +328,13 @@ async def test_provision_org_signup_failure_does_not_fabricate_poisoned_row(repo
             owner_email="owner@acme.test",
         )
 
-    # No poisoned placeholder row — the field is left absent, not zeroed.
-    assert await repo.get("user_owner") is None
+    marker = await repo.get("user_owner")
+    assert marker is not None, "a durable failed marker must exist (honest 503, not eternal spinner)"
+    assert marker.status == "failed"
+    # The raw item carries NO paperclip_user_id attribute at all — absent, not ""
+    # — the exact distinction from the old poisoned empty-id placeholder.
+    raw = repo._table().get_item(Key={"user_id": "user_owner"})["Item"]
+    assert "paperclip_user_id" not in raw
 
 
 async def test_provision_org_create_company_failure_marks_failed(repo):
@@ -498,13 +505,13 @@ async def test_provision_member_idempotent_on_second_call(repo):
     assert admin.create_invite.await_count == 1
 
 
-async def test_provision_member_signup_failure_does_not_fabricate_poisoned_row(repo):
-    """Member sign-up failing net-new (no provisioning row written yet) must NOT
-    fabricate a placeholder row carrying an empty paperclip_user_id — even
-    though the company_id is known from the org lookup, there is no member
-    account id to record, and writing "" would wedge every retry. provision_member
-    still RAISES; the caller records the failure (and the guard treats a 409/422
-    duplicate as recorded-failure, not success)."""
+async def test_provision_member_signup_failure_writes_durable_failed_marker(repo):
+    """Member sign-up failing net-new (no provisioning row written yet) must
+    leave ONE durable ``failed`` marker for the member — carrying the known
+    company_id but NO fabricated paperclip_user_id (an empty id was the old
+    poison that wedged every retry). This surfaces the honest failure (/teams →
+    503, teams_status="failed") instead of an eternal spinner. provision_member
+    still RAISES; the marker is put-if-absent (never clobbers a real row)."""
     await _seed_owner(repo)
     admin = _make_admin_mock()
     admin.sign_up_user = AsyncMock(side_effect=PaperclipApiError("dup email", status_code=422, body="unprocessable"))
@@ -516,8 +523,12 @@ async def test_provision_member_signup_failure_does_not_fabricate_poisoned_row(r
             email="member@acme.test",
             owner_email="owner@acme.test",
         )
-    # No poisoned placeholder row fabricated for the member.
-    assert await repo.get("user_member") is None
+    # Durable failed marker for the member — company_id known, but no fabricated id.
+    marker = await repo.get("user_member")
+    assert marker is not None and marker.status == "failed"
+    assert marker.company_id == "co_acme"
+    raw = repo._table().get_item(Key={"user_id": "user_member"})["Item"]
+    assert "paperclip_user_id" not in raw
 
 
 async def test_provision_member_invite_failure_marks_failed(repo):

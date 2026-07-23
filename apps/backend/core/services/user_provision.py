@@ -500,14 +500,17 @@ async def _ensure_paperclip_for_owner(
                 # (re)provision the company — e.g. an orphaned Better Auth user
                 # whose password was wiped, so it can neither adopt (no stored
                 # password) nor re-sign-up. This is NOT success: provision_org's
-                # own _mark_failed records the failed row, surfaced via
-                # /container/status. We swallow the exception here (a duplicate is
-                # an EXPECTED terminal outcome, not a transient error worth
-                # re-raising on every poll) but record it as a FAILURE — never a
-                # success no-op, so nothing reports Teams as ready over a broken
-                # workspace. Full orphan RECOVERY (adopt/reset the Better Auth
-                # user) needs a Paperclip user-delete the platform doesn't
-                # expose — out of scope for this fix.
+                # own _mark_failed writes a durable ``failed`` marker (via
+                # put-if-absent when no row exists), which is what surfaces the
+                # failure — /teams → 503 and teams_status="failed" on
+                # /container/status — instead of an eternal provisioning spinner.
+                # We swallow the exception here (a duplicate is an EXPECTED
+                # terminal outcome, not a transient error worth re-raising on
+                # every poll) but record it as a FAILURE — never a success no-op,
+                # so nothing reports Teams as ready over a broken workspace. Full
+                # orphan RECOVERY (adopt/reset the Better Auth user) needs a
+                # Paperclip user-delete the platform doesn't expose — out of
+                # scope for this fix.
                 logger.warning(
                     "ensure_user_ready (owner): %s paperclip duplicate-email 422 — "
                     "recorded failure; Teams degraded (orphaned Better Auth account)",
@@ -545,14 +548,21 @@ async def _ensure_paperclip_for_member(
     that helper means the owner's company is either missing or not yet
     active — indistinguishable for our purposes (both → return gracefully).
 
-    Idempotent on duplicate-add: ``provision_member`` calls
-    ``sign_up_user`` for the joining member; on a duplicate
-    (member already in Paperclip from a previous successful add)
-    Paperclip's Better Auth returns 409 and ``sign_up_user`` raises
-    ``PaperclipApiError(status_code=409)``. /container/status is the
-    canonical poll trigger and may fire this helper on every member
-    poll, so duplicate calls must no-op. We catch the 409 and return —
-    other PaperclipApiError statuses re-raise.
+    Two DISTINCT duplicate outcomes, same request body, opposite verdicts —
+    ``/container/status`` is the canonical poll trigger and may fire this helper
+    on every member poll, so both must be handled:
+
+    * **409 = join/concurrency path (idempotent no-op).** A concurrent
+      member-join is mid-flight, or the member was already added by a prior
+      successful run. Paperclip returns 409; we swallow and return success.
+    * **422 = sign-up duplicate email (recorded FAILURE).** Better Auth returns
+      422 (NOT 409) when the member's email already exists as an account it
+      can't (re)provision. This is NOT success: ``provision_member``'s own
+      ``_mark_failed`` records a durable ``failed`` marker, which is what
+      surfaces the failure (``/teams`` → 503, ``teams_status="failed"`` on
+      ``/container/status``) — no longer merely a log line. We swallow (don't
+      re-raise on every poll) but record it as a failure. Other
+      PaperclipApiError statuses re-raise.
     """
     provisioning = await build_paperclip_provisioning()
     try:
@@ -616,9 +626,11 @@ async def _ensure_paperclip_for_member(
                 # Better Auth returns 422 (NOT 409) for a duplicate email — same
                 # recorded-failure semantics as the owner guard: the account
                 # already exists but the member could not be (re)provisioned. NOT
-                # success; provision_member's own _mark_failed records the row,
-                # surfaced via /container/status. Swallow (don't re-raise on every
-                # poll) but record it as a FAILURE, never a success no-op.
+                # success; provision_member's own _mark_failed writes a durable
+                # ``failed`` marker (put-if-absent when no row exists), which
+                # surfaces it — /teams → 503, teams_status="failed" — not a mere
+                # log line. Swallow (don't re-raise on every poll) but record it
+                # as a FAILURE, never a success no-op.
                 logger.warning(
                     "ensure_user_ready (member): %s paperclip duplicate-email 422 for org=%s — "
                     "recorded failure; Teams degraded",

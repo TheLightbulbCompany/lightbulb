@@ -798,6 +798,30 @@ class _StatefulRepo:
     async def get_org_company_id(self, _owner_id: str):
         return self._company_id
 
+    async def put_failed_marker_if_absent(self, *, user_id: str, org_id: str, reason: str, company_id: str = ""):
+        # Conditional put-if-absent: only creates when the key is free (never
+        # clobbers a real row). Marker carries NO credential fields.
+        if user_id in self._rows:
+            return False
+        from datetime import datetime, timezone
+
+        from core.repositories.paperclip_repo import PaperclipCompany
+
+        now = datetime.now(timezone.utc)
+        self._rows[user_id] = PaperclipCompany(
+            user_id=user_id,
+            org_id=org_id,
+            company_id=company_id,
+            paperclip_user_id="",  # absent at the DDB level; get() defaults to ""
+            paperclip_password_encrypted="",
+            service_token_encrypted="",
+            status="failed",
+            created_at=now,
+            updated_at=now,
+            last_error=reason,
+        )
+        return True
+
 
 @pytest.mark.asyncio
 async def test_mark_failed_does_not_downgrade_active_row(monkeypatch):
@@ -1088,32 +1112,36 @@ async def test_provision_org_survives_agent_email_mint_failure(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_mark_failed_no_existing_row_does_not_fabricate_empty_id(monkeypatch):
-    """_mark_failed must NEVER persist a row carrying ``paperclip_user_id=""``.
-
-    Writing an empty id wedges every retry: the next poll's provision_org sees a
-    row whose id is falsy, so ``adopting_existing`` is False and it re-signs-up
-    (→ Better Auth 422 against the now-existing account) forever; worse, an
-    eventually-consistent ``get()`` that missed a JUST-written provisioning row
-    would clobber its real id with "". With no existing row there is no id to
-    record, so the failure is logged only — any real row a later poll may adopt
-    is left untouched, rather than poisoned."""
+async def test_mark_failed_no_existing_row_writes_conditional_marker(monkeypatch):
+    """With NO prior row, _mark_failed writes ONE durable ``failed`` marker via
+    the repo's CONDITIONAL put-if-absent — NOT a full row carrying a fabricated
+    ``paperclip_user_id`` (the old poison that blocked adoption and clobbered a
+    real id on a stale read), and NOT an unconditional put. The marker restores
+    the honest 503 on /teams (a MISSING row is an eternal 202 spinner) without
+    the clobber risk, because put-if-absent can only ever create."""
     from core.services.paperclip_provisioning import PaperclipProvisioning
 
     repo = MagicMock()
     repo.get = AsyncMock(return_value=None)  # no prior row
     repo.put = AsyncMock()
     repo.update_status = AsyncMock(return_value=True)
+    repo.put_failed_marker_if_absent = AsyncMock(return_value=True)
 
     svc = PaperclipProvisioning(admin_client=MagicMock(), repo=repo, env_name="dev")
-    await svc._mark_failed(user_id="user_orphan", owner_id="org_x", reason="signup 422 duplicate")
+    await svc._mark_failed(user_id="user_orphan", owner_id="org_x", reason="signup 422 duplicate", company_id="co_x")
 
-    # No fabricated placeholder row carrying an empty paperclip_user_id.
-    for call in repo.put.await_args_list:
-        persisted = call.args[0]
-        assert persisted.paperclip_user_id != "", (
-            "empty paperclip_user_id poisons the row (blocks adoption / clobbers a real id)"
-        )
+    # The durable marker went through the conditional put-if-absent, keyed on the
+    # polling owner's own user_id, carrying org_id/company_id/reason.
+    repo.put_failed_marker_if_absent.assert_awaited_once()
+    kwargs = repo.put_failed_marker_if_absent.await_args.kwargs
+    assert kwargs["user_id"] == "user_orphan"
+    assert kwargs["org_id"] == "org_x"
+    assert kwargs["company_id"] == "co_x"
+    assert kwargs["reason"], "the failure cause must be recorded on the marker"
+    # No fabricated id: the marker method takes no paperclip_user_id at all, and
+    # no full-row put() is made (that path is what carried the empty-id poison).
+    assert "paperclip_user_id" not in kwargs
+    repo.put.assert_not_awaited()
 
 
 @pytest.mark.asyncio

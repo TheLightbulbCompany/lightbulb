@@ -31,14 +31,18 @@ Three entry points (all async, all idempotent on user_id / owner_id):
   access). The ``purge`` cron entrypoint hard-deletes after the grace
   window.
 
-Failure semantics: a failure mid-provisioning calls ``_mark_failed``,
-which downgrades the EXISTING row to ``status="failed"`` + ``last_error``
-(preserving paperclip_user_id + password so a retry can ADOPT), then
-re-raises. When no row exists yet it does NOT fabricate a placeholder — a
-zeroed paperclip_user_id poisoned the row and wedged every retry — so the
-failure is recorded via log/metric instead. Subsequent retries with the
-same args are safe — the ``status="active"`` short-circuit is the only path
-that skips work.
+Failure semantics: a failure mid-provisioning calls ``_mark_failed``, which
+leaves exactly ONE durable ``status="failed"`` marker. When a row already
+exists it downgrades that row in place (preserving paperclip_user_id +
+password so a retry can ADOPT), guarded so it never clobbers a row a
+concurrent attempt completed to ``active``. When NO row exists yet it writes
+a durable marker via a CONDITIONAL put-if-absent (carrying NO fabricated
+paperclip_user_id — a zeroed id poisoned the row — and never overwriting a
+real row): this keeps the net-new / orphan-422 failure honestly visible
+(``/teams`` → 503, ``teams_status="failed"``) instead of an eternal
+provisioning spinner. Then it re-raises. Subsequent retries with the same
+args are safe — the ``status="active"`` short-circuit is the only path that
+skips work.
 """
 
 from __future__ import annotations
@@ -1161,24 +1165,28 @@ class PaperclipProvisioning:
         reason: str,
         company_id: str = "",
     ) -> None:
-        """Persist ``status="failed"`` + ``last_error`` on an EXISTING row.
+        """Persist ONE durable ``status="failed"`` marker for this seed failure.
 
-        If a prior row exists we update it in place (preserving immutables
-        like paperclip_user_id + password so the next attempt can ADOPT).
-        Truncates the reason to a sane length to keep the DynamoDB item small.
+        Two paths, both leaving exactly one honest failed record:
 
-        When NO prior row exists we deliberately do NOT fabricate a placeholder
-        row: there is no paperclip_user_id to record (the failure happened
-        before/at sign-up), and writing ``paperclip_user_id=""`` poisoned the
-        row — it wedged every retry (``adopting_existing`` is False on an empty
-        id, so the next poll re-signs-up → Better Auth 422 forever) and, on an
-        eventually-consistent read that MISSED a just-written provisioning row,
-        clobbered that row's real id with "". Leaving the field absent instead
-        preserves any real row a later poll may adopt; the failure is still
-        observable via the log below and the caller's metric.
+        * A prior row exists → update it in place (preserving immutables like
+          paperclip_user_id + password so the next attempt can ADOPT), guarded
+          so it never downgrades a row a concurrent attempt already completed to
+          ``active``.
+        * NO prior row → write a durable marker via a CONDITIONAL put-if-absent
+          (``put_failed_marker_if_absent``). This restores the honest 503 on
+          ``/teams`` (and ``teams_status="failed"`` on ``/container/status``) for
+          the net-new / orphan-422 case: without it the row is MISSING, and the
+          consumer maps a missing row → 202 "provisioning" (an eternal spinner),
+          only a ``failed`` row → 503. The marker carries NO fabricated
+          paperclip_user_id — that is the OLD poison (an empty id blocked
+          adoption and, on a stale read, clobbered a real id) — and, being
+          conditional, can never overwrite a real row a concurrent provision
+          wrote in the gap. The marker is durable-visibility only, not adoptable.
 
-        The DDB column ``org_id`` is fed from the ``owner_id`` kwarg —
-        the rename is at the call boundary, not the storage layer.
+        Truncates the reason to keep the DynamoDB item small. The DDB column
+        ``org_id`` is fed from the ``owner_id`` kwarg — the rename is at the call
+        boundary, not the storage layer.
         """
         truncated = reason[:1000]
         existing = await self._repo.get(user_id)
@@ -1204,16 +1212,32 @@ class PaperclipProvisioning:
                 )
             return
 
-        # No prior row: do NOT fabricate a placeholder carrying an empty
-        # paperclip_user_id (see docstring — it poisons the row / clobbers a
-        # real id a stale read missed). Record the failure via log only; the
-        # caller also emits a metric.
-        logger.warning(
-            "paperclip_provisioning._mark_failed: no existing row for user %s "
-            "(owner_id %s, company_id %r) — recording failure via log only, not "
-            "fabricating an empty-id placeholder row: %s",
-            user_id,
-            owner_id,
-            company_id,
-            truncated,
+        # No prior row: write a durable ``failed`` marker via a CONDITIONAL
+        # put-if-absent — NOT the poisoned empty-id placeholder, and NOT an
+        # unconditional put. This makes the failure durably visible (honest 503
+        # on /teams, teams_status="failed" on /container/status) instead of the
+        # eternal 202 spinner a missing row produces. The conditional no-ops if a
+        # real row appeared concurrently (never clobbers it); the marker carries
+        # no fabricated paperclip_user_id (durable visibility only, not adoptable).
+        landed = await self._repo.put_failed_marker_if_absent(
+            user_id=user_id,
+            org_id=owner_id,
+            reason=truncated,
+            company_id=company_id,
         )
+        if landed:
+            logger.warning(
+                "paperclip_provisioning._mark_failed: no existing row for user %s "
+                "(owner_id %s, company_id %r) — wrote durable failed marker: %s",
+                user_id,
+                owner_id,
+                company_id,
+                truncated,
+            )
+        else:
+            logger.info(
+                "paperclip_provisioning._mark_failed: no marker written for user %s "
+                "(owner_id %s) — a real row appeared concurrently (put-if-absent no-op)",
+                user_id,
+                owner_id,
+            )

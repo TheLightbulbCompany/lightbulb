@@ -727,7 +727,28 @@ class EcsManager:
     # ------------------------------------------------------------------
 
     async def _update_container(self, user_id: str, **fields) -> None:
-        """Update container fields via the DynamoDB container repo."""
+        """Update container fields via the DynamoDB container repo.
+
+        SINGLE-OWNER RULE (guarded): this generic provision-path setter must
+        NEVER write a ``status="error"`` transition. That transition is owned
+        solely by the claim-fenced ``container_repo.release_provision_to_error``
+        (fired from ``provision_user_container``'s except), which lands the
+        cause — ``retryable`` + ``last_error`` — atomically with the flip.
+        Eight scattered pre-emptive ``status="error"`` writes used to smuggle
+        through here and pre-empt that release (its ``status = provisioning``
+        condition then no-op'd, so the cause never landed — the T3 Critical);
+        they were removed, and this guard keeps them from creeping back. Other
+        status values (e.g. ``provisioning`` on the resize path) are fine —
+        only the ``error`` terminal transition is reserved. The one legitimate
+        non-release ``status="error"`` writer, ``_await_running_transition``'s
+        rolloutState=FAILED path, writes through ``container_repo.update_fields``
+        DIRECTLY (fire-and-forget, no outer release to defer to) and so is
+        intentionally not routed through this helper."""
+        if fields.get("status") == "error":
+            raise AssertionError(
+                "status='error' must not be written through _update_container — "
+                "the claim-fenced release_provision_to_error owns that transition"
+            )
         await container_repo.update_fields(user_id, fields)
 
     # ------------------------------------------------------------------
@@ -754,7 +775,9 @@ class EcsManager:
         3. Registers a per-user task definition revision -> substatus=task_registered
         4. Creates the ECS service -> substatus=service_created
 
-        On failure, sets status=error, substatus=None, and rolls back AWS resources.
+        On failure, rolls back AWS resources and re-raises WITHOUT flipping the
+        row to status=error — that transition is owned solely by the outer
+        claim-fenced release_provision_to_error (see the except blocks below).
 
         Args:
             user_id: Clerk user ID.
@@ -935,12 +958,15 @@ class EcsManager:
             raise
         except EcsManagerError:
             put_metric("container.error_state")
-            # Mark container as error in DB
-            try:
-                await self._update_container(user_id, status="error", substatus=None)
-            except Exception:
-                logger.error("Failed to mark container as error for user %s", user_id)
-            # Rollback already-created AWS resources
+            # NO status="error" write here (single-owner rule): the outer
+            # claim-fenced release_provision_to_error owns the provision-path
+            # error transition. A pre-emptive flip here pre-empted that release
+            # (its `status = provisioning` condition then no-op'd), so
+            # retryable/last_error never landed — the T3 Critical. Roll back the
+            # AWS resources we created and re-raise so the outer release records
+            # the cause. (Dev-only routers/debug.py also calls this directly; on
+            # its failure the row simply stays provisioning and the next status
+            # poll re-dispatches — see report.)
             if task_def_arn:
                 self._deregister_task_definition(task_def_arn)
             if access_point_id:
@@ -948,12 +974,9 @@ class EcsManager:
             raise
         except Exception as e:
             put_metric("container.error_state")
-            # Mark container as error in DB
-            try:
-                await self._update_container(user_id, status="error", substatus=None)
-            except Exception:
-                logger.error("Failed to mark container as error for user %s", user_id)
-            # Rollback already-created AWS resources
+            # No status="error" write — see the EcsManagerError branch above;
+            # the outer release owns the transition. Roll back + re-raise as
+            # EcsManagerError so the cause is classified by the outer release.
             if task_def_arn:
                 self._deregister_task_definition(task_def_arn)
             if access_point_id:
@@ -2277,14 +2300,17 @@ class EcsManager:
                         # poller; we bypassed it, so do it here.
                         asyncio.create_task(self._await_running_transition(user_id))
                     except EcsManagerError:
+                        # Metrics only — the outer claim-fenced
+                        # release_provision_to_error owns the status="error"
+                        # transition (single-owner rule); flipping it here
+                        # pre-empted that release so retryable/last_error never
+                        # landed (T3 Critical). Re-raise for the outer release.
                         put_metric("container.provision", dimensions={"status": "error"})
                         put_metric("container.error_state")
-                        await self._update_container(user_id, status="error", substatus=None)
                         raise
                     except Exception as e:
                         put_metric("container.provision", dimensions={"status": "error"})
                         put_metric("container.error_state")
-                        await self._update_container(user_id, status="error", substatus=None)
                         raise EcsManagerError(
                             f"Failed to restart service with refreshed task def: {e}",
                             user_id,
@@ -2296,9 +2322,9 @@ class EcsManager:
                     try:
                         await self.start_user_service(user_id, force=True)
                     except EcsManagerError:
+                        # Metrics only; outer release owns status="error".
                         put_metric("container.provision", dimensions={"status": "error"})
                         put_metric("container.error_state")
-                        await self._update_container(user_id, status="error", substatus=None)
                         raise
 
                 put_metric("container.provision", dimensions={"status": "ok"})
@@ -2328,9 +2354,13 @@ class EcsManager:
                         deploymentConfiguration=SINGLE_WRITER_DEPLOYMENT_CONFIG,
                     )
                 except Exception as e:
+                    # Metrics only; outer release owns status="error". (This
+                    # branch already flipped the row to "provisioning" above, so
+                    # the release's status-condition lands the error transition
+                    # here — now carrying retryable + last_error, which the old
+                    # inner flip dropped.)
                     put_metric("container.provision", dimensions={"status": "error"})
                     put_metric("container.error_state")
-                    await self._update_container(user_id, status="error", substatus=None)
                     raise EcsManagerError(f"Failed to force redeploy: {e}", user_id)
 
                 put_metric("container.provision", dimensions={"status": "ok"})
@@ -2433,9 +2463,9 @@ class EcsManager:
         except ProvisionSuperseded:
             raise
         except Exception as e:
+            # Metrics only; outer release owns status="error".
             put_metric("container.provision", dimensions={"status": "error"})
             put_metric("container.error_state")
-            await self._update_container(user_id, status="error", substatus=None)
             raise EcsManagerError(f"Failed to write configs for user {user_id}: {e}", user_id)
 
         # Step 4: Start the container.
@@ -2454,9 +2484,9 @@ class EcsManager:
         try:
             await self.start_user_service(user_id, force=True)
         except EcsManagerError:
+            # Metrics only; outer release owns status="error".
             put_metric("container.provision", dimensions={"status": "error"})
             put_metric("container.error_state")
-            await self._update_container(user_id, status="error", substatus=None)
             raise
 
         put_metric("container.provision", dimensions={"status": "ok"})

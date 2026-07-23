@@ -285,6 +285,16 @@ async def release_provision_to_error(
     re-claimable, and the status poll's existing error auto-retry re-dispatches,
     so a failed provision self-heals on the next ~3s poll.
 
+    SINGLE OWNER of the provision-path ``status="error"`` transition. Every
+    synchronous provision failure funnels here (``provision_user_container``'s
+    except); the scattered pre-emptive ``status="error"`` writes inside
+    ``ecs_manager`` that used to fire first — and no-op this release's
+    ``status = provisioning`` condition, dropping the cause — were removed, and
+    ``_update_container`` now rejects a ``status="error"`` field to keep it that
+    way. The lone deliberate exception is the fire-and-forget
+    ``_await_running_transition`` rolloutState=FAILED write, which has no outer
+    release to defer to.
+
     Records the failure CAUSE on the same atomic transition so the status
     endpoint can tell a transient failure (silently retried) from a
     deterministic one (surfaced to the owner instead of looped):

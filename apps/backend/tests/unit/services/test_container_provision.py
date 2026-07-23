@@ -478,3 +478,47 @@ async def test_background_provision_validation_error_is_not_retryable():
 
     assert release.await_args.kwargs["retryable"] is False
     assert release.await_args.kwargs["last_error"]
+
+class TestIsRetryableProvisionError:
+    """Exit-code classifier for the one-shot provision runner."""
+
+    def test_retryable_attr_true_wins(self):
+        from core.services.container_provision import is_retryable_provision_error
+
+        exc = Exception("anything")
+        exc.retryable = True
+        assert is_retryable_provision_error(exc) is True
+
+    def test_retryable_attr_false_wins(self):
+        from core.services.container_provision import is_retryable_provision_error
+
+        # Even a message with no deterministic marker: self-classification rules.
+        exc = Exception("ThrottlingException")
+        exc.retryable = False
+        assert is_retryable_provision_error(exc) is False
+
+    def test_paperclip_429_is_retryable(self):
+        from core.services.container_provision import is_retryable_provision_error
+        from core.services.paperclip_admin_client import PaperclipApiError
+
+        exc = PaperclipApiError("rate limited", status_code=429, body=None)
+        assert is_retryable_provision_error(exc) is True
+
+    def test_paperclip_422_is_deterministic(self):
+        from core.services.container_provision import is_retryable_provision_error
+        from core.services.paperclip_admin_client import PaperclipApiError
+
+        exc = PaperclipApiError("unprocessable", status_code=422, body=None)
+        assert is_retryable_provision_error(exc) is False
+
+    def test_deterministic_marker_message(self):
+        from core.services.container_provision import is_retryable_provision_error
+
+        exc = Exception("byo_provider is required when provider_choice == 'byo_key'")
+        assert is_retryable_provision_error(exc) is False
+
+    def test_plain_throttle_defaults_retryable(self):
+        from core.services.container_provision import is_retryable_provision_error
+
+        exc = Exception("ECS ThrottlingException")
+        assert is_retryable_provision_error(exc) is True

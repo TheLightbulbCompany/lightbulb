@@ -47,12 +47,14 @@ def provider_choice_from_row(row: dict | None) -> tuple[str, str | None]:
 def is_retryable_provision_error(exc: BaseException) -> bool:
     """Transient (retry helps: ECS 5xx, throttle, Spot, network) vs
     deterministic (retry cannot help: bad config, unknown provider, 4xx).
+    An exception's own ``retryable`` self-classification takes precedence
+    (e.g. PaperclipApiError: 5xx/429 retryable, other 4xx not — same
+    convention update_service's retry pass trusts).
     Defaults to retryable — attempts are bounded by the state machine, and
     surfacing a transient as terminal is the worse failure mode."""
-    from core.services.paperclip_admin_client import PaperclipApiError
-
-    if isinstance(exc, PaperclipApiError):
-        return not (400 <= (exc.status_code or 0) < 500)
+    retryable_attr = getattr(exc, "retryable", None)
+    if retryable_attr is not None:
+        return bool(retryable_attr)
     message = str(exc).lower()
     deterministic_markers = (
         "byo_provider is required",

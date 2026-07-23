@@ -1,11 +1,25 @@
 """Tests for core.services.atlas_seed.pre_stage_atlas."""
 
+import re
+from datetime import datetime
 from unittest.mock import MagicMock
 
 import pytest
 
 from core.services import atlas_seed
 from core.services.atlas_seed import pre_stage_atlas
+
+# JS-canonical ISO-8601: exactly 3 fractional digits + literal ``Z`` — the only
+# shape OpenClaw 7.2's workspace-state migration accepts. Python's
+# ``.isoformat()`` (6-digit micros + ``+00:00``) is rejected and bricks agent runs.
+_JS_ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
+
+
+def _assert_js_canonical_roundtrip(ts: str) -> None:
+    assert _JS_ISO_RE.match(ts), f"{ts!r} is not JS-canonical (YYYY-MM-DDTHH:MM:SS.mmmZ)"
+    parsed = datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S.%fZ")
+    reformatted = parsed.strftime("%Y-%m-%dT%H:%M:%S.") + f"{parsed.microsecond // 1000:03d}Z"
+    assert reformatted == ts
 
 
 @pytest.fixture
@@ -125,6 +139,23 @@ async def test_state_file_written_first(workspace_stub, fake_files_dir):
     await pre_stage_atlas(owner_id="user_x", paperclip_agents=agents, workspace=workspace_stub)
     paths = [p for (_u, p) in workspace_stub.calls]
     assert paths[0] == "workspace-uuid-atlas/.openclaw/workspace-state.json", f"state first, got: {paths}"
+
+
+@pytest.mark.asyncio
+async def test_state_file_timestamps_are_js_canonical(captured_ws, fake_files_dir):
+    """Atlas's seeded workspace-state.json timestamps must be JS-canonical
+    (``YYYY-MM-DDTHH:MM:SS.mmmZ``) so OpenClaw 7.2's boot migration accepts them.
+    Python's ``.isoformat()`` (6-digit micros + ``+00:00``) is rejected — the
+    migration aborts and every agent run throws ``Legacy workspace setup state
+    requires migration``."""
+    import json as _json
+
+    agents = [{"id": "uuid-atlas", "role": "general", "name": "Atlas"}]
+    await pre_stage_atlas(owner_id="user_x", paperclip_agents=agents, workspace=captured_ws)
+
+    state = _json.loads(captured_ws.written["workspace-uuid-atlas/.openclaw/workspace-state.json"])
+    _assert_js_canonical_roundtrip(state["bootstrapSeededAt"])
+    _assert_js_canonical_roundtrip(state["setupCompletedAt"])
 
 
 @pytest.mark.asyncio

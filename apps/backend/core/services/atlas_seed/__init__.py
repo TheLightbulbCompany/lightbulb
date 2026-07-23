@@ -27,12 +27,12 @@ substituted/augmented copies survive).
 
 import json
 import logging
-from datetime import datetime, timezone
 from pathlib import Path
 
 from core.config import settings
 from core.containers.workspace import Workspace
 from core.observability.metrics import put_metric
+from core.services.friday_identity import js_iso_now
 
 logger = logging.getLogger(__name__)
 
@@ -205,7 +205,7 @@ async def pre_stage_atlas(
 
     # Pre-mark setup complete first so OpenClaw's boot reconcile doesn't rm
     # BOOTSTRAP.md when it sees Atlas's customized IDENTITY/SOUL/USER files.
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = js_iso_now()
     state_rel = f"workspace-{atlas_uuid}/.openclaw/workspace-state.json"
     state = {"version": 1, "bootstrapSeededAt": now_iso, "setupCompletedAt": now_iso}
     try:

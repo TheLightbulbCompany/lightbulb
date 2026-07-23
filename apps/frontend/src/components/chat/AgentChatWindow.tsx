@@ -340,7 +340,18 @@ export function AgentChatWindow({
   const activeAgent = agents.find((a) => a.id === agentId);
   const agentName = activeAgent?.identity?.name ?? activeAgent?.name ?? agentId ?? undefined;
 
-  useFirstRunKickoff({ user, agentId, defaultId, isConnected, sendMessage });
+  useFirstRunKickoff({
+    user,
+    agentId,
+    defaultId,
+    isConnected,
+    // Reconcile the `started` latch against the real thread: a kickoff whose
+    // send died in flight leaves started=true with an empty default thread —
+    // history loaded + zero rendered items means it never landed, so re-fire.
+    historyLoaded: !isLoadingHistory,
+    historyEmpty: renderItems.length === 0,
+    sendMessage,
+  });
 
   const api = useApi();
   const [isUploading, setIsUploading] = useState(false);

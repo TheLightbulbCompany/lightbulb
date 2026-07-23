@@ -83,7 +83,7 @@ FROM ghcr.io/isol8ai/agent:2026.7.2-isol8.1
 # plugins pin to the latest PUBLISHED plugin dist of the FROM tag's release
 # line on npm. The FROM tag is on the 2026.7.2 line, which is BETA-only upstream
 # — its latest published dist is 2026.7.2-beta.3 (npm `beta` dist-tag; no stable
-# 2026.7.2 dist exists yet), so all seven baked plugins pin to 2026.7.2-beta.3 to
+# 2026.7.2 dist exists yet), so all eight baked plugins pin to 2026.7.2-beta.3 to
 # stay in lockstep with the 7.2 host (this base rolls to DEV only). Keep these
 # pins in lockstep with the FROM tag on every base bump: the 7.1 line moved the
 # channel inbound-dispatch contract (turn-adoption ack), so a stale channel
@@ -333,6 +333,38 @@ RUN set -eux; \
     rm -rf /app/dist/extensions/parallel/node_modules/@openclaw/parallel-plugin; \
     rm -rf /opt/stage-parallel; \
     chown -R root:root /app/dist/extensions/parallel
+
+# ---- Layer 12c: externalized web-fetch fallback provider (firecrawl) ----
+# OpenClaw's keyless Firecrawl fetch provider is the Readability-failure
+# fallback that tools.web.fetch selects: core/containers/config.py sets
+# tools.web.fetch.provider="firecrawl" + plugins.entries.firecrawl.enabled on
+# every container. Like the parallel provider above, firecrawl is externalized
+# out of the base image — but it also ships ONLY on the npm `beta` dist-tag (no
+# stable release-line dist), which is the spec OpenClaw's doctor resolves for
+# this plugin id. With firecrawl configured but absent from every discovery
+# root, OpenClaw 7.2's doctor-on-boot npm-installs
+# `@openclaw/firecrawl-plugin@beta` into the per-user EFS plugin root on EVERY
+# cold start — measured +2-4 min of dead boot time (dev log gap: `Installed
+# missing configured plugin "firecrawl" from @openclaw/firecrawl-plugin@beta`).
+# Baking it root-owned into the stock plugin root makes the doctor find the
+# plugin id already present and skip the install fleet-wide (the loader rejects
+# any plugin dir not owned by uid 0; it auto-activates from
+# plugins.entries.firecrawl.enabled). The npm package is
+# `@openclaw/firecrawl-plugin`; its plugin id + discovery dir are `firecrawl`.
+# `@beta` resolves to 2026.7.2-beta.3 today — the same dist every other baked
+# plugin pins to on this 7.2 base — so it stays in lockstep with the FROM tag;
+# re-resolve `npm view @openclaw/firecrawl-plugin@beta version` on each base
+# bump. Bake it root-owned, same as the layers above.
+RUN set -eux; \
+    mkdir -p /opt/stage-firecrawl; \
+    npm install --prefix /opt/stage-firecrawl "@openclaw/firecrawl-plugin@2026.7.2-beta.3"; \
+    mkdir -p /app/dist/extensions/firecrawl; \
+    cp -R /opt/stage-firecrawl/node_modules/@openclaw/firecrawl-plugin/. /app/dist/extensions/firecrawl/; \
+    mkdir -p /app/dist/extensions/firecrawl/node_modules; \
+    cp -R /opt/stage-firecrawl/node_modules/. /app/dist/extensions/firecrawl/node_modules/; \
+    rm -rf /app/dist/extensions/firecrawl/node_modules/@openclaw/firecrawl-plugin; \
+    rm -rf /opt/stage-firecrawl; \
+    chown -R root:root /app/dist/extensions/firecrawl
 
 # ---- Layer 13: externalized ACP runtime backend (acpx) ----
 # acpx is the official ACP runtime plugin that lets a native OpenClaw agent

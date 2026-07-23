@@ -1053,15 +1053,17 @@ describe("ProvisioningStepper per-container onboarding gate", () => {
   });
 });
 
-describe("ProvisioningStepper cold-start poll re-arming (latch regression)", () => {
+describe("ProvisioningStepper cold-start poll re-arming (derived from phase)", () => {
   // These tests assert on the OPTIONS the stepper passes into
   // useProvisioningState across renders — captured via the mock's call log.
-  // `reachedReady` is a one-way latch that zeroes the cold-start poll interval
-  // once the container is ready (the WS is the live channel then). The prod
-  // freeze: a tab that has EVER seen ready never re-arms polling when the
-  // backend regresses to a cold start (reprovision / wipe / scale-to-zero), so
-  // it renders the cold-start UI with refreshInterval 0 and freezes on the last
-  // stale pre-ready snapshot forever.
+  // Polling cadence is DERIVED from the current backend phase (not latched):
+  // 3s while pre-ready, 0 at ready/parked (the WS is the live channel then).
+  // The prod freeze these guard against belonged to the deleted one-way
+  // `reachedReady` latch: it zeroed the interval on the first ready and never
+  // re-armed, so a tab whose backend later regressed to a cold start
+  // (reprovision / wipe / scale-to-zero) rendered the cold-start UI with
+  // refreshInterval 0 and froze on the last stale pre-ready snapshot forever.
+  // Deriving from the live phase re-arms automatically.
   const lastOptions = () => {
     const calls = useProvMock.mock.calls;
     return calls[calls.length - 1]?.[0] as
@@ -1085,7 +1087,7 @@ describe("ProvisioningStepper cold-start poll re-arming (latch regression)", () 
   });
 
   it("re-arms cold-start polling (refreshInterval 3000) when the backend phase regresses from ready back to a cold start", () => {
-    // FREEZE REPRO — fails against the pre-fix one-way latch.
+    // FREEZE REPRO — fails against the deleted one-way latch.
     const base = {
       phase: "normal" as const,
       blocked: null,
@@ -1093,7 +1095,7 @@ describe("ProvisioningStepper cold-start poll re-arming (latch regression)", () 
       refreshInterval: 0,
     };
 
-    // 1. Container reaches ready — the latch trips and polling goes quiet.
+    // 1. Container reaches ready — the derived cadence goes quiet (0).
     useProvMock.mockReturnValue({
       ...base,
       container: { status: "running", phase: "ready" },
@@ -1103,13 +1105,13 @@ describe("ProvisioningStepper cold-start poll re-arming (latch regression)", () 
         <div>children</div>
       </ProvisioningStepper>,
     );
-    // Sanity: the latch did its job while ready.
+    // Sanity: polling is quiet while ready.
     expect(lastOptions()).toMatchObject({ refreshInterval: 0 });
 
     // 2. Owner reprovision / scale-to-zero: the backend regresses to a
     //    pre-ready cold start. The stepper is now displaying the cold-start UI
-    //    again, so it MUST resume the 3s poller. A latched tab leaves this at
-    //    0 forever and freezes on the last stale snapshot.
+    //    again, so it MUST resume the 3s poller. The old latch left this at 0
+    //    forever and froze on the last stale snapshot.
     useProvMock.mockReturnValue({
       ...base,
       container: { status: "running", phase: "starting" },
@@ -1123,8 +1125,9 @@ describe("ProvisioningStepper cold-start poll re-arming (latch regression)", () 
     expect(lastOptions()).toMatchObject({ refreshInterval: 3000 });
   });
 
-  it("keeps polling quiet (refreshInterval 0) once the container is steadily ready — the latch's original purpose", () => {
-    // REGRESSION GUARD — the fix must not defeat the latch on a healthy box.
+  it("keeps polling quiet (refreshInterval 0) once the container is steadily ready", () => {
+    // REGRESSION GUARD — deriving from phase must still stop polling on a
+    // healthy (ready) box; the WS is the live channel there.
     useProvMock.mockReturnValue({
       phase: "normal",
       blocked: null,
@@ -1141,9 +1144,15 @@ describe("ProvisioningStepper cold-start poll re-arming (latch regression)", () 
     expect(lastOptions()).toMatchObject({ refreshInterval: 0 });
   });
 
-  it("does not un-latch on a transient container:null blip (SWR key swap / error) — a ready workspace keeps polling off", () => {
-    // REGRESSION GUARD — `p !== undefined` must guard the no-data blip so a
-    // brief container:null does not resume polling over live chat.
+  it("re-arms polling (refreshInterval 3000) on a transient container:null blip after ready — null counts as pre-ready (deliberate change from the latch)", () => {
+    // INTENTIONAL SEMANTICS CHANGE vs the deleted `reachedReady` latch. The
+    // latch special-cased `container:null` (SWR key swap / loading blip) so a
+    // ready workspace kept polling OFF through the blip. The derived version
+    // treats a null container as pre-ready: `backendPhaseNow === undefined`,
+    // which is neither "ready" nor "parked", so polling re-arms. This is the
+    // safer default — polling is the ONLY way back out of a no-data state, and
+    // a few extra /container/status requests during a brief blip over live chat
+    // are harmless (see shouldPollContainer's comment in ProvisioningStepper).
     const base = {
       phase: "normal" as const,
       blocked: null,
@@ -1173,11 +1182,13 @@ describe("ProvisioningStepper cold-start poll re-arming (latch regression)", () 
       </ProvisioningStepper>,
     );
 
-    expect(lastOptions()).toMatchObject({ refreshInterval: 0 });
+    expect(lastOptions()).toMatchObject({ refreshInterval: 3000 });
   });
 
-  it("passes revalidateOnFocus: true from the stepper's call site so a latched/hidden tab self-heals on focus", () => {
-    // Also RED against pre-fix code — the call site passed no revalidateOnFocus.
+  it("passes revalidateOnFocus: true from the stepper's call site so a quiet/backgrounded tab self-heals on focus", () => {
+    // Event-driven heal for throttle-killed SWR chains: the call site passed no
+    // revalidateOnFocus before, so a tab that went quiet at ready couldn't pull
+    // a fresh /container/status on refocus.
     useProvMock.mockReturnValue({
       phase: "normal",
       blocked: null,

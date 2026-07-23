@@ -32,21 +32,46 @@ type UserResource = NonNullable<ReturnType<typeof useUser>["user"]>;
  * `started` is already persisted a reload would permanently skip the kickoff.
  * Gating on the connection defers the whole attempt until a durable dispatch
  * is possible; the effect re-runs when `isConnected` flips true.
+ *
+ * The connection gate narrows that lost-send window but cannot close it (a tab
+ * closed mid-flight, a socket that dies after the local resolve), so `started`
+ * is NOT trusted as proof the kickoff landed. It is a cache of the thread; the
+ * thread is ground truth. When a mount finds `started && !completed` but the
+ * default agent's history is confirmed loaded AND empty, the kickoff was lost
+ * and is re-fired once (`historyLoaded`/`historyEmpty` from the caller's chat
+ * state). The write-before-send order is kept — the re-fire's write is
+ * idempotent — so the duplicate-kickoff race the ordering guards against stays
+ * closed.
  */
 export function useFirstRunKickoff(opts: {
   user: UserResource | null | undefined;
   agentId: string | null;
   defaultId: string | null | undefined;
   isConnected: boolean;
+  historyLoaded: boolean;
+  historyEmpty: boolean;
   sendMessage: (message: string) => Promise<void>;
 }) {
-  const { user, agentId, defaultId, isConnected, sendMessage } = opts;
+  const { user, agentId, defaultId, isConnected, historyLoaded, historyEmpty, sendMessage } = opts;
   const fired = React.useRef(false);
   React.useEffect(() => {
     if (fired.current || !user) return;
     if (!isConnected) return;
     const fr = readFirstRun(user);
-    if (!fr.briefSubmitted || fr.started) return;
+    if (!fr.briefSubmitted) return;
+    if (fr.started) {
+      // Lost-kickoff reconciliation: `started` is written BEFORE the send
+      // (Clerk read-modify-write races force that order), so a send that
+      // dies in flight (tab closed, WS queue death) leaves started=true
+      // with no message ever delivered — and the kickoff would be skipped
+      // forever (verified prod incident: started=true, empty thread, no
+      // bootstrap run). The thread is ground truth: only skip when the
+      // kickoff is completed OR the history actually shows messages.
+      if (fr.completed) return;
+      if (!historyLoaded) return; // don't judge an unloaded thread
+      if (!historyEmpty) return; // messages exist — kickoff really ran
+      // started && !completed && confirmed-empty thread → re-fire below.
+    }
     if (!agentId || !defaultId || agentId !== defaultId) return;
     fired.current = true;
     void (async () => {
@@ -59,5 +84,5 @@ export function useFirstRunKickoff(opts: {
         fired.current = false;
       }
     })();
-  }, [user, agentId, defaultId, isConnected, sendMessage]);
+  }, [user, agentId, defaultId, isConnected, historyLoaded, historyEmpty, sendMessage]);
 }

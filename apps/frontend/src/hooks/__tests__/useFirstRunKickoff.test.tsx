@@ -31,7 +31,15 @@ describe("useFirstRunKickoff", () => {
     const sendMessage = vi.fn().mockResolvedValue(undefined);
     const user = fakeUser({ briefSubmitted: true });
     const { rerender } = renderHook(() =>
-      useFirstRunKickoff({ user, agentId: "a1", defaultId: "a1", isConnected: true, sendMessage }),
+      useFirstRunKickoff({
+        user,
+        agentId: "a1",
+        defaultId: "a1",
+        isConnected: true,
+        historyLoaded: true,
+        historyEmpty: true,
+        sendMessage,
+      }),
     );
     await waitFor(() => expect(sendMessage).toHaveBeenCalledWith(FIRST_RUN_PROMPT));
     rerender();
@@ -74,7 +82,15 @@ describe("useFirstRunKickoff", () => {
 
     const { rerender } = renderHook(
       ({ sendMessage }) =>
-        useFirstRunKickoff({ user, agentId: "a1", defaultId: "a1", isConnected: true, sendMessage }),
+        useFirstRunKickoff({
+          user,
+          agentId: "a1",
+          defaultId: "a1",
+          isConnected: true,
+          historyLoaded: true,
+          historyEmpty: true,
+          sendMessage,
+        }),
       { initialProps: { sendMessage: sendMessage1 } },
     );
     await waitFor(() => expect(sendMessage1).toHaveBeenCalledWith(FIRST_RUN_PROMPT));
@@ -93,15 +109,6 @@ describe("useFirstRunKickoff", () => {
     await flushMicrotasks();
   });
 
-  it("does nothing when already started", () => {
-    const sendMessage = vi.fn();
-    const user = fakeUser({ briefSubmitted: true, started: true });
-    renderHook(() =>
-      useFirstRunKickoff({ user, agentId: "a1", defaultId: "a1", isConnected: true, sendMessage }),
-    );
-    expect(sendMessage).not.toHaveBeenCalled();
-  });
-
   it("waits for a live connection before firing, then fires once connected", async () => {
     // While disconnected, the kickoff must NOT run — marking `started` before
     // a durable dispatch is possible would lose the prompt to the in-memory
@@ -110,7 +117,15 @@ describe("useFirstRunKickoff", () => {
     const user = fakeUser({ briefSubmitted: true });
     const { rerender } = renderHook(
       ({ isConnected }) =>
-        useFirstRunKickoff({ user, agentId: "a1", defaultId: "a1", isConnected, sendMessage }),
+        useFirstRunKickoff({
+          user,
+          agentId: "a1",
+          defaultId: "a1",
+          isConnected,
+          historyLoaded: true,
+          historyEmpty: true,
+          sendMessage,
+        }),
       { initialProps: { isConnected: false } },
     );
     await flushMicrotasks();
@@ -126,7 +141,15 @@ describe("useFirstRunKickoff", () => {
     const sendMessage = vi.fn();
     const user = fakeUser({ briefSubmitted: true });
     renderHook(() =>
-      useFirstRunKickoff({ user, agentId: "a2", defaultId: "a1", isConnected: true, sendMessage }),
+      useFirstRunKickoff({
+        user,
+        agentId: "a2",
+        defaultId: "a1",
+        isConnected: true,
+        historyLoaded: true,
+        historyEmpty: true,
+        sendMessage,
+      }),
     );
     expect(sendMessage).not.toHaveBeenCalled();
   });
@@ -138,7 +161,15 @@ describe("useFirstRunKickoff", () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
     renderHook(() =>
-      useFirstRunKickoff({ user, agentId: "a1", defaultId: "a1", isConnected: true, sendMessage }),
+      useFirstRunKickoff({
+        user,
+        agentId: "a1",
+        defaultId: "a1",
+        isConnected: true,
+        historyLoaded: true,
+        historyEmpty: true,
+        sendMessage,
+      }),
     );
 
     // Wait a tick for the rejected write's catch handler to run.
@@ -149,5 +180,118 @@ describe("useFirstRunKickoff", () => {
     expect(capture).not.toHaveBeenCalled();
 
     errorSpy.mockRestore();
+  });
+
+  it("reconciles a lost kickoff: started but thread confirmed empty → re-fires", async () => {
+    // Verified prod incident: `started` is written BEFORE the send, so a send
+    // that dies in flight (tab closed, WS queue death) leaves started=true with
+    // an empty thread and no bootstrap run — stranding the aha flow forever.
+    // A mount that confirms the default thread is loaded AND empty must treat
+    // the latch as lost and fire the kickoff once more.
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    const user = fakeUser({ briefSubmitted: true, started: true });
+    renderHook(() =>
+      useFirstRunKickoff({
+        user,
+        agentId: "a1",
+        defaultId: "a1",
+        isConnected: true,
+        historyLoaded: true,
+        historyEmpty: true,
+        sendMessage,
+      }),
+    );
+    await waitFor(() => expect(sendMessage).toHaveBeenCalledWith(FIRST_RUN_PROMPT));
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not re-fire once the kickoff is completed, even on an empty thread", async () => {
+    // `completed` is the terminal truth — a compacted/cleared session can be
+    // legitimately empty after a completed kickoff. Never re-fire past it.
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    const user = fakeUser({ briefSubmitted: true, started: true, completed: true });
+    renderHook(() =>
+      useFirstRunKickoff({
+        user,
+        agentId: "a1",
+        defaultId: "a1",
+        isConnected: true,
+        historyLoaded: true,
+        historyEmpty: true,
+        sendMessage,
+      }),
+    );
+    await flushMicrotasks();
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("does not re-fire when started and the thread already has messages", async () => {
+    // started=true with a NON-empty thread means the kickoff really landed —
+    // the latch is confirmed by the thread, so it must be trusted.
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    const user = fakeUser({ briefSubmitted: true, started: true });
+    renderHook(() =>
+      useFirstRunKickoff({
+        user,
+        agentId: "a1",
+        defaultId: "a1",
+        isConnected: true,
+        historyLoaded: true,
+        historyEmpty: false,
+        sendMessage,
+      }),
+    );
+    await flushMicrotasks();
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("defers while history is still loading: no re-fire and no metadata write", async () => {
+    // An unloaded thread is not evidence of a lost kickoff — judging it empty
+    // would re-fire against a thread that may already hold the bootstrap run.
+    // Defer: no send AND no (idempotent) started write until history settles.
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    const update = vi.fn().mockResolvedValue(undefined);
+    const user = fakeUser({ briefSubmitted: true, started: true }, update);
+    renderHook(() =>
+      useFirstRunKickoff({
+        user,
+        agentId: "a1",
+        defaultId: "a1",
+        isConnected: true,
+        historyLoaded: false,
+        historyEmpty: true,
+        sendMessage,
+      }),
+    );
+    await flushMicrotasks();
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("fresh kickoff writes started:true before sending", async () => {
+    // Regression: the not-started path is unchanged by reconciliation — it
+    // still persists `started` (write-before-send) and then sends.
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    const update = vi.fn().mockResolvedValue(undefined);
+    const user = fakeUser({ briefSubmitted: true }, update);
+    renderHook(() =>
+      useFirstRunKickoff({
+        user,
+        agentId: "a1",
+        defaultId: "a1",
+        isConnected: true,
+        historyLoaded: true,
+        historyEmpty: true,
+        sendMessage,
+      }),
+    );
+    await waitFor(() => expect(sendMessage).toHaveBeenCalledWith(FIRST_RUN_PROMPT));
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        unsafeMetadata: expect.objectContaining({
+          firstRun: expect.objectContaining({ started: true }),
+        }),
+      }),
+    );
   });
 });

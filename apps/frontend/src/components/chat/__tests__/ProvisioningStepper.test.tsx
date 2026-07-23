@@ -673,11 +673,16 @@ describe("ProvisioningStepper blocked-state rendering", () => {
 
 describe("ProvisioningStepper per-container onboarding gate", () => {
   // Every test here needs a loaded Clerk user (the funnel branch is a
-  // no-op when `user` is null — see the other describe block's default),
-  // with the per-user firstRun marker unset, and a `normal` gate phase so
-  // the gate's own preconditions are met. Whether the funnel shows is then
-  // decided by `container.onboarded`, which rides on the /container/status
-  // poll the hook already returns — no separate request.
+  // no-op when `user` is null — see the other describe block's default)
+  // and a `normal` gate phase so the gate's own preconditions are met.
+  // Whether the funnel shows is then decided by `container.onboarded`, the
+  // AUTHORITATIVE per-container fact (reset on wipe/reprovision), which rides
+  // on the /container/status poll the hook already returns — no separate
+  // request. `firstRun.briefSubmitted` is durable Clerk metadata that nothing
+  // clears, so it is NOT a gate; it only bridges this session's submit to the
+  // next poll (a false->true edge WHILE MOUNTED dismisses the funnel without a
+  // flash). A stale `true` already present at mount must NOT suppress the
+  // funnel — that was the "returning owner never re-onboards" bug.
   const renderWith = (container: Record<string, unknown>) => {
     useProvMock.mockReturnValue({
       phase: "normal",
@@ -736,17 +741,104 @@ describe("ProvisioningStepper per-container onboarding gate", () => {
     expect(screen.getByText("children")).toBeInTheDocument();
   });
 
-  it("does not show the funnel once the per-user marker is set, even before the poll flips onboarded", () => {
-    // The instant local latch: right after this user submits, the funnel
-    // must not flash back over the working session while the next poll is
-    // still catching up to onboarded:true.
+  it("shows the funnel when onboarded is false even if a STALE durable briefSubmitted is already true at mount (the returning-owner bug)", () => {
+    // The bug this fix targets: `briefSubmitted` is durable Clerk metadata that
+    // survives a container wipe/reprovision and nothing ever clears it. A
+    // returning owner whose container was reprovisioned has
+    // `container.onboarded === false` (fresh, authoritative) but a STALE
+    // `briefSubmitted === true`. Reading the stale flag as a gate suppressed
+    // the funnel permanently, so a legitimately reprovisioned org never
+    // re-onboarded. `container.onboarded` is authoritative — the funnel MUST
+    // show. (A `true` present at first mount is treated as stale: the baseline
+    // captures it and never arms the same-session latch.)
     clerkMockUser = {
       id: "user_1",
       unsafeMetadata: { firstRun: { briefSubmitted: true } },
     };
     renderWith({ status: "running", phase: "ready", onboarded: false });
 
+    expect(screen.getByText(/get started/i)).toBeInTheDocument();
+    expect(screen.queryByText("children")).not.toBeInTheDocument();
+  });
+
+  it("suppresses the funnel after THIS session's submit (no flash) even before the poll flips onboarded", () => {
+    // Same-session flash-bridge. The funnel is mounted with briefSubmitted
+    // unset, so it shows. Then the user submits: FirstRunFunnel's
+    // writeFirstRun sets briefSubmitted:true in Clerk metadata, re-rendering
+    // useUser. That false->true edge WHILE MOUNTED arms the in-memory latch,
+    // dismissing the funnel immediately instead of leaving it up until the
+    // next /container/status poll flips onboarded:true — while onboarded is
+    // still false. This is the ONLY thing briefSubmitted is allowed to do
+    // (contrast the stale-at-mount test above).
+    clerkMockUser = { id: "user_1", unsafeMetadata: {} };
+    const container = { status: "running", phase: "ready", onboarded: false };
+    useProvMock.mockReturnValue({
+      phase: "normal",
+      container,
+      blocked: null,
+      refreshInterval: 3000,
+      refresh: vi.fn(),
+    });
+    const { rerender } = render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+    // Funnel shows: onboarded false, no submit yet this session.
+    expect(screen.getByText(/get started/i)).toBeInTheDocument();
+
+    // This session's submit lands: briefSubmitted flips false -> true.
+    clerkMockUser = {
+      id: "user_1",
+      unsafeMetadata: { firstRun: { briefSubmitted: true } },
+    };
+    rerender(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+
+    // Latch armed -> funnel dismissed at once, even though onboarded is still false.
     expect(screen.queryByText(/get started/i)).not.toBeInTheDocument();
     expect(screen.getByText("children")).toBeInTheDocument();
+  });
+
+  it("does not show the funnel when the gate is blocked, even with a loaded user and onboarded false", () => {
+    // The `gatePhase === "normal"` guard is load-bearing: a blocked /
+    // needs-signup / team-pending state must win over the funnel. Even with
+    // the funnel's own preconditions met (user loaded, onboarded false, no
+    // this-session submit), a blocked gate shows the blocked card, never the
+    // funnel.
+    clerkMockUser = { id: "user_1", unsafeMetadata: {} };
+    useProvMock.mockReturnValue({
+      phase: "blocked",
+      container: { status: "provisioning", phase: "provisioning", onboarded: false },
+      blocked: {
+        code: "credits_required",
+        title: "Top up Claude credits to start your container",
+        message: "Top up some Claude credits to start your Bedrock container.",
+        action: {
+          kind: "link",
+          label: "Top up now",
+          href: "/settings/billing#credits",
+          admin_only: false,
+        },
+        owner_role: "admin",
+      },
+      refreshInterval: 5000,
+      refresh: vi.fn(),
+    });
+
+    render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+
+    // Funnel absent; the blocked card is shown instead.
+    expect(screen.queryByText(/get started/i)).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/Top up Claude credits to start your container/),
+    ).toBeInTheDocument();
   });
 });

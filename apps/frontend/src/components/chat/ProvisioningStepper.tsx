@@ -636,16 +636,48 @@ export function ProvisioningStepper({
   // once anyone on this container completes the funnel, no one on it sees
   // the funnel again — including a second org member whose own per-user
   // marker is empty. No extra request: it rides on the poll we already do.
-  // `firstRun.briefSubmitted` stays only as an instant local latch, so the
-  // submitter doesn't see a flash between submitting and the next poll
-  // flipping `onboarded`.
+  // `container.onboarded` is the SOLE durable authority for "have we
+  // onboarded?": the backend resets it when a container is wiped/reprovisioned,
+  // so a legitimately reprovisioned owner re-onboards. `firstRun.briefSubmitted`
+  // is DURABLE Clerk metadata (`user.unsafeMetadata`) that survives a container
+  // wipe and that nothing ever clears — so reading it as a gate suppressed the
+  // funnel FOREVER for any owner who onboarded once: a returning owner whose
+  // container was reprovisioned has `container.onboarded === false` (fresh) but
+  // a stale `briefSubmitted === true`, and the funnel never showed again. That
+  // is the "returning owner never re-onboards" bug; `briefSubmitted` is NOT a
+  // durable suppressor.
+  //
+  // It survives here only as a SAME-SESSION flash-bridge: when the funnel's
+  // submit writes `briefSubmitted: true`, `useUser` re-renders and we arm an
+  // in-memory latch on that false->true edge, dismissing the funnel at once
+  // instead of leaving it up until the next /container/status poll flips
+  // `onboarded` true. `briefBaselineRef` captures the flag's value at the first
+  // loaded Clerk user, so the async user-load (undefined -> loaded) is never
+  // mistaken for a submit and a stale `true` already present at mount does NOT
+  // arm the latch — the funnel shows for a reprovisioned container, and
+  // `container.onboarded` reasserts durable suppression on the next poll. The
+  // refs are read/written during render (not via an effect, which would land a
+  // commit late and flash the funnel for one frame) — same idiom as
+  // `previousBackendPhaseRef` above.
   const firstRun = readFirstRun(user);
   const containerOnboarded = container?.onboarded === true;
+  const briefSubmittedNow = !!user && firstRun.briefSubmitted === true;
+  const briefBaselineRef = useRef<boolean | null>(null);
+  const sessionBriefSubmittedRef = useRef(false);
+  // eslint-disable-next-line react-hooks/refs
+  if (user && briefBaselineRef.current === null) {
+    briefBaselineRef.current = briefSubmittedNow;
+    // eslint-disable-next-line react-hooks/refs
+  } else if (briefSubmittedNow && briefBaselineRef.current === false) {
+    // eslint-disable-next-line react-hooks/refs
+    sessionBriefSubmittedRef.current = true;
+  }
   if (
     !!user &&
     gatePhase === "normal" &&
     !containerOnboarded &&
-    !firstRun.briefSubmitted
+    // eslint-disable-next-line react-hooks/refs
+    !sessionBriefSubmittedRef.current
   ) {
     return <FirstRunFunnel />;
   }

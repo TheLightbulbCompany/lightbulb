@@ -61,12 +61,25 @@ async def resolve_company_id_for_owner(*, owner_id: str, repo: PaperclipRepo) ->
     For personal users (owner_id = user_id): repo.get(user_id).company_id
     For orgs (owner_id = org_id): repo.get_org_company_id(org_id)
 
-    Returns None if no company exists yet (provisioning hasn't run).
+    Returns None when no company exists yet (provisioning hasn't run) OR the
+    only row is a ``failed`` marker. A net-new failure persists a ``failed``
+    row carrying ``company_id=""`` (the company was never created), so a bare
+    lookup hands back ``""`` — and every caller here guards with
+    ``if company_id is None`` (paperclip_agent_lifecycle, marketplace_listings,
+    company_deploy_service, agent_export), so ``""`` slips past that guard into
+    a doomed Paperclip call with an empty id. Treat an empty company_id — and
+    any ``failed``-status row — as "no company" so those callers take their
+    clean no-company branch instead.
     """
     if _is_org_owner_id(owner_id):
-        return await repo.get_org_company_id(owner_id)
+        # get_org_company_id returns the raw stored value, which is "" for a
+        # net-new failed marker (the company was never created). Coerce empty
+        # to None so the ``is None`` callers above branch correctly.
+        return await repo.get_org_company_id(owner_id) or None
     row = await repo.get(owner_id)
-    return row.company_id if row else None
+    if row is None or row.status == "failed" or not row.company_id:
+        return None
+    return row.company_id
 
 
 async def fetch_paperclip_agents_for_owner(

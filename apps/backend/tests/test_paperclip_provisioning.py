@@ -381,6 +381,57 @@ async def test_provision_org_retries_after_failure(repo):
     assert row.company_id == "co_acme"
 
 
+async def test_provision_org_reconciles_failed_company_without_reminting(repo):
+    """A persistent Friday(CEO)-seed outage must retry the seed against the
+    SAME company — never mint a new orphan company on each poll.
+
+    provision_org persists a non-active ``failed`` row carrying the real
+    company_id when the required Friday seed doesn't land (a CEO-less company
+    must never be marked active). The ``status=="active"`` short-circuit never
+    fires for that row, so before this reconcile every ``/container/status``
+    poll re-ran the full create + invite/accept/approve chain and — because
+    Paperclip ignores our ``Idempotency-Key`` — minted a brand-new company each
+    time. The reconcile adopts the stored company_id and resumes at the seed.
+    """
+    admin = _make_admin_mock()
+    admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "_session_cookie": "owner-session-1"})
+    admin.sign_in_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "_session_cookie": "owner-session-2"})
+    # A DISTINCT id per create_company call, so a second create (the bug) would
+    # be observable as a different company_id on the reconciled row.
+    admin.create_company = AsyncMock(side_effect=[{"id": "co_first"}, {"id": "co_second"}])
+    # Friday (+ Atlas) seed fails on every attempt — a persistent outage.
+    admin.create_agent = AsyncMock(side_effect=PaperclipApiError("friday create failed", status_code=500, body="boom"))
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+
+    first = await prov.provision_org(owner_id="org_acme", owner_user_id="user_owner", owner_email="owner@acme.test")
+    # First attempt created the company but couldn't seed Friday -> non-active
+    # row carrying the real company_id.
+    assert first.status == "failed"
+    assert first.company_id == "co_first"
+    assert admin.create_company.await_count == 1
+
+    second = await prov.provision_org(owner_id="org_acme", owner_user_id="user_owner", owner_email="owner@acme.test")
+
+    # The reconcile ADOPTED the existing company: create_company was NOT called
+    # a second time, no second invite was issued, and the row still carries the
+    # ORIGINAL company_id (never "co_second").
+    assert admin.create_company.await_count == 1
+    assert admin.create_invite.await_count == 1  # only the first attempt invited
+    assert second.company_id == "co_first"
+    assert second.status == "failed"  # Friday still down -> still non-active, same company
+
+    # Adoption signed IN (with the stored credential) rather than re-signing-up,
+    # which would 422 against the now-existing Better Auth user.
+    admin.sign_in_user.assert_awaited()
+    assert admin.sign_up_user.await_count == 1
+
+    # Persisted row confirms no new company was minted across the two polls.
+    fetched = await repo.get("user_owner")
+    assert fetched is not None
+    assert fetched.company_id == "co_first"
+    assert fetched.status == "failed"
+
+
 # ----------------------------------------------------------------------
 # provision_member
 # ----------------------------------------------------------------------

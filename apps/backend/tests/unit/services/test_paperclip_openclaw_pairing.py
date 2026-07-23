@@ -12,6 +12,7 @@ from core.services.paperclip_openclaw_pairing import (
     fetch_paperclip_agents_for_owner,
     pair_with_openclaw,
     register_paperclip_agent_devices,
+    resolve_company_id_for_owner,
 )
 
 
@@ -222,6 +223,47 @@ async def test_fetch_for_org_with_no_company_returns_empty():
 
     assert result == []
     admin_client.list_agents.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_resolve_company_id_none_for_personal_failed_marker():
+    """A personal owner whose only row is a net-new ``failed`` marker
+    (``company_id=""``) resolves to None — NOT the empty string. Every caller
+    guards with ``if company_id is None``, so an "" would slip through into a
+    doomed Paperclip call with an empty company id."""
+    repo = MagicMock()
+    repo.get = AsyncMock(return_value=MagicMock(status="failed", company_id=""))
+
+    assert await resolve_company_id_for_owner(owner_id="user_abc", repo=repo) is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_company_id_none_for_personal_failed_row_with_company():
+    """Even a ``failed`` row that happens to carry a company_id resolves to
+    None: a failed provision is treated as "no company" for pairing/lifecycle."""
+    repo = MagicMock()
+    repo.get = AsyncMock(return_value=MagicMock(status="failed", company_id="co_partial"))
+
+    assert await resolve_company_id_for_owner(owner_id="user_abc", repo=repo) is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_company_id_none_for_org_failed_marker_empty():
+    """An org whose only row is a net-new ``failed`` marker makes
+    get_org_company_id return "" — coerce that empty string to None."""
+    repo = MagicMock()
+    repo.get_org_company_id = AsyncMock(return_value="")
+
+    assert await resolve_company_id_for_owner(owner_id="org_abc", repo=repo) is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_company_id_returns_id_for_active_personal_row():
+    """Regression guard: a healthy active row still resolves to its company_id."""
+    repo = MagicMock()
+    repo.get = AsyncMock(return_value=MagicMock(status="active", company_id="co_live"))
+
+    assert await resolve_company_id_for_owner(owner_id="user_abc", repo=repo) == "co_live"
 
 
 @pytest.mark.asyncio

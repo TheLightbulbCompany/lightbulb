@@ -2498,6 +2498,14 @@ class EcsManager:
 
         return service_name
 
+    async def wait_for_running(self, user_id: str) -> None:
+        """Public foreground wait for the provisioning -> running transition.
+
+        The one-shot provision runner awaits this so the transition is owned
+        by a process the state machine supervises, instead of a detached
+        create_task that dies with its host process."""
+        await self._await_running_transition(user_id)
+
     async def _await_running_transition(
         self,
         user_id: str,

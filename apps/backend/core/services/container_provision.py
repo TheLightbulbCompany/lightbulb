@@ -44,6 +44,26 @@ def provider_choice_from_row(row: dict | None) -> tuple[str, str | None]:
     return provider_choice, byo_provider
 
 
+def is_retryable_provision_error(exc: BaseException) -> bool:
+    """Transient (retry helps: ECS 5xx, throttle, Spot, network) vs
+    deterministic (retry cannot help: bad config, unknown provider, 4xx).
+    Defaults to retryable — attempts are bounded by the state machine, and
+    surfacing a transient as terminal is the worse failure mode."""
+    from core.services.paperclip_admin_client import PaperclipApiError
+
+    if isinstance(exc, PaperclipApiError):
+        return not (400 <= (exc.status_code or 0) < 500)
+    message = str(exc).lower()
+    deterministic_markers = (
+        "byo_provider is required",
+        "unknown provider_choice",
+        "validationexception",
+        "invalidparameter",
+        "accessdenied",
+    )
+    return not any(marker in message for marker in deterministic_markers)
+
+
 async def resolve_provider_choice(owner_id: str) -> tuple[str, str | None]:
     """Look up the owner's provider_choice (+ byo_provider) from billing_repo.
 

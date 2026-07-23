@@ -775,6 +775,91 @@ async def test_ensure_paperclip_for_owner_reraises_non_409_paperclip_error():
 
 
 @pytest.mark.asyncio
+async def test_ensure_paperclip_for_owner_records_duplicate_422_without_reraising(_stub_trial_default):
+    """Better Auth returns 422 (NOT 409) for a duplicate email. The owner guard
+    must classify that as "user already exists" and route it to the
+    recorded-FAILURE path — NOT re-raise it (which hard-fails the seed on every
+    ~3s /container/status poll through the generic seed-error handler) and NOT
+    swallow it as success (which would report Teams ready over a broken/absent
+    workspace). provision_org's own _mark_failed persists the failed row
+    (surfaced via /container/status); the guard emits a duplicate-specific
+    metric and returns without raising."""
+    from core.services.paperclip_admin_client import PaperclipApiError
+
+    fake_provisioning = MagicMock()
+    fake_provisioning.provision_org = AsyncMock(
+        side_effect=PaperclipApiError(
+            "POST /api/auth/sign-up/email -> 422",
+            status_code=422,
+            body='{"message":"User already exists"}',
+        ),
+    )
+    with (
+        patch(
+            "core.services.user_provision.build_paperclip_provisioning",
+            new=AsyncMock(return_value=fake_provisioning),
+        ),
+        patch(
+            "core.services.user_provision.close_paperclip_provisioning",
+            new=AsyncMock(),
+        ),
+        patch("core.services.user_provision.put_metric") as mock_metric,
+    ):
+        # MUST NOT raise — a duplicate is an expected terminal outcome, not an
+        # error to escalate every poll.
+        await _ensure_paperclip_for_owner(
+            owner_id="user_123",
+            owner_user_id="user_123",
+            owner_email="u@example.com",
+            org_id=None,
+        )
+    fake_provisioning.provision_org.assert_awaited_once()
+    # Recorded as a duplicate FAILURE — distinct from the 409 success no-op
+    # (which emits no metric); proves the 422 is not swallowed as success.
+    mock_metric.assert_any_call("paperclip.seed.duplicate_email", dimensions={"path": "owner"})
+
+
+@pytest.mark.asyncio
+async def test_ensure_paperclip_for_member_records_duplicate_422_without_reraising():
+    """Symmetric to the owner guard (self-review NEW-1): a member-join 422 —
+    Better Auth duplicate email — is a recorded failure, NOT re-raised and NOT
+    swallowed as success. Only the 409 concurrent-create race is the idempotent
+    success no-op; 422 (the account already exists but we cannot re-provision)
+    routes to the recorded-failure path."""
+    from core.services.paperclip_admin_client import PaperclipApiError
+
+    fake_company = MagicMock(status="active", company_id="co_x", user_id="user_owner")
+    fake_provisioning = MagicMock()
+    fake_provisioning.find_org_owner = AsyncMock(return_value=fake_company)
+    fake_provisioning.provision_member = AsyncMock(
+        side_effect=PaperclipApiError(
+            "POST /api/auth/sign-up/email -> 422",
+            status_code=422,
+            body='{"message":"User already exists"}',
+        ),
+    )
+    with (
+        patch(
+            "core.services.user_provision.lookup_owner_email",
+            new=AsyncMock(return_value="o@example.com"),
+        ),
+        patch(
+            "core.services.user_provision.build_paperclip_provisioning",
+            new=AsyncMock(return_value=fake_provisioning),
+        ),
+        patch(
+            "core.services.user_provision.close_paperclip_provisioning",
+            new=AsyncMock(),
+        ),
+        patch("core.services.user_provision.put_metric") as mock_metric,
+    ):
+        # MUST NOT raise.
+        await _ensure_paperclip_for_member(org_id="org_456", member_user_id="user_456", member_email="m@example.com")
+    fake_provisioning.provision_member.assert_awaited_once()
+    mock_metric.assert_any_call("paperclip.seed.duplicate_email", dimensions={"path": "member"})
+
+
+@pytest.mark.asyncio
 async def test_member_joins_company_but_does_not_dispatch_container():
     """Org member → paperclip join runs, but NO container dispatch (members
     ride the org admin's shared container; they never spin one up)."""

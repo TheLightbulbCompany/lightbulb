@@ -333,8 +333,9 @@ async def _ensure_paperclip_for_org(
         create here would seed Friday/Atlas pointing at a container members
         can't provision, leaving a company-without-container window.
 
-    The underlying helpers treat a duplicate-409 as idempotent success, so
-    this is safe to call on every /container/status poll.
+    The underlying helpers treat a concurrent-create 409 as idempotent
+    success and a duplicate-email 422 (Better Auth) as a recorded failure —
+    neither re-raises — so this is safe to call on every /container/status poll.
     """
     async with _org_provision_locks[org_id]:
         provisioning = await build_paperclip_provisioning()
@@ -483,19 +484,36 @@ async def _ensure_paperclip_for_owner(
                 owner_email=owner_email,
             )
         except PaperclipApiError as exc:
-            # Duplicate-owner 409: race condition — the previous
-            # /container/status poll already kicked off a provision_org
-            # for this owner that hasn't yet written the
-            # ``status="active"`` DDB row. /container/status is the
-            # canonical poll trigger; provision_org may fire on every
-            # ~3s poll until ECS creates the container row, so duplicate
-            # calls must no-op. Mirrors the member-path pattern in
+            # 409: a CONCURRENT provision_org (the previous ~3s
+            # /container/status poll) is mid-flight and hasn't written the
+            # ``status="active"`` row yet. Benign idempotent no-op — the next
+            # poll finds the active row. Mirrors the member-path pattern in
             # ``_ensure_paperclip_for_member``.
             if exc.status_code == 409:
                 logger.info(
-                    "ensure_user_ready (owner): %s already in paperclip — no-op (sign_up_user 409)",
+                    "ensure_user_ready (owner): %s paperclip provision already in flight — no-op (409)",
                     owner_id,
                 )
+            elif exc.status_code == 422:
+                # Better Auth returns 422 (NOT 409) for a duplicate email: the
+                # Paperclip account already exists but provision_org could not
+                # (re)provision the company — e.g. an orphaned Better Auth user
+                # whose password was wiped, so it can neither adopt (no stored
+                # password) nor re-sign-up. This is NOT success: provision_org's
+                # own _mark_failed records the failed row, surfaced via
+                # /container/status. We swallow the exception here (a duplicate is
+                # an EXPECTED terminal outcome, not a transient error worth
+                # re-raising on every poll) but record it as a FAILURE — never a
+                # success no-op, so nothing reports Teams as ready over a broken
+                # workspace. Full orphan RECOVERY (adopt/reset the Better Auth
+                # user) needs a Paperclip user-delete the platform doesn't
+                # expose — out of scope for this fix.
+                logger.warning(
+                    "ensure_user_ready (owner): %s paperclip duplicate-email 422 — "
+                    "recorded failure; Teams degraded (orphaned Better Auth account)",
+                    owner_id,
+                )
+                put_metric("paperclip.seed.duplicate_email", dimensions={"path": "owner"})
             else:
                 raise
     finally:
@@ -584,16 +602,30 @@ async def _ensure_paperclip_for_member(
                 owner_email=owner_email,
             )
         except PaperclipApiError as exc:
-            # Duplicate-member 409: the member was already added in a
-            # prior successful run. /container/status is the canonical
-            # poll trigger and may fire this on every member poll, so
-            # treat as idempotent success. Any other status re-raises.
+            # 409: a concurrent member-join is mid-flight (or the member was
+            # already added by a prior successful run). /container/status is the
+            # canonical poll trigger and may fire this on every member poll, so
+            # treat as an idempotent no-op success.
             if exc.status_code == 409:
                 logger.debug(
-                    "ensure_user_ready (member): %s already in paperclip company for org=%s — no-op (sign_up_user 409)",
+                    "ensure_user_ready (member): %s already in paperclip company for org=%s — no-op (409)",
                     member_user_id,
                     org_id,
                 )
+            elif exc.status_code == 422:
+                # Better Auth returns 422 (NOT 409) for a duplicate email — same
+                # recorded-failure semantics as the owner guard: the account
+                # already exists but the member could not be (re)provisioned. NOT
+                # success; provision_member's own _mark_failed records the row,
+                # surfaced via /container/status. Swallow (don't re-raise on every
+                # poll) but record it as a FAILURE, never a success no-op.
+                logger.warning(
+                    "ensure_user_ready (member): %s paperclip duplicate-email 422 for org=%s — "
+                    "recorded failure; Teams degraded",
+                    member_user_id,
+                    org_id,
+                )
+                put_metric("paperclip.seed.duplicate_email", dimensions={"path": "member"})
             else:
                 raise
     finally:

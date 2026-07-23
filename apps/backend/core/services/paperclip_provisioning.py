@@ -31,11 +31,14 @@ Three entry points (all async, all idempotent on user_id / owner_id):
   access). The ``purge`` cron entrypoint hard-deletes after the grace
   window.
 
-Failure semantics: any failure mid-provisioning calls
-``_mark_failed`` to leave a row with ``status="failed"`` and
-``last_error`` set so the caller (or a retry path) can observe it,
-then re-raises. Subsequent retries with the same args are safe — the
-``status="active"`` short-circuit is the only path that skips work.
+Failure semantics: a failure mid-provisioning calls ``_mark_failed``,
+which downgrades the EXISTING row to ``status="failed"`` + ``last_error``
+(preserving paperclip_user_id + password so a retry can ADOPT), then
+re-raises. When no row exists yet it does NOT fabricate a placeholder — a
+zeroed paperclip_user_id poisoned the row and wedged every retry — so the
+failure is recorded via log/metric instead. Subsequent retries with the
+same args are safe — the ``status="active"`` short-circuit is the only path
+that skips work.
 """
 
 from __future__ import annotations
@@ -272,7 +275,7 @@ class PaperclipProvisioning:
         # idempotency check let fall through, or a prior ``failed`` row
         # (``_mark_failed`` preserves paperclip_user_id + password) — is
         # adopted by signing in with their stored password rather than
-        # re-signing-up (which would 409 and corrupt the row). We hold the
+        # re-signing-up (which would 422 and corrupt the row). We hold the
         # password, and Paperclip has no user-delete/reset. The final
         # ``repo.put`` re-points the row at this org.
         adopting_existing = existing is not None and bool(existing.paperclip_user_id)
@@ -299,7 +302,7 @@ class PaperclipProvisioning:
                 # the chain (mirrors provision_member). If a later step
                 # fails, _mark_failed updates this row in place — preserving
                 # paperclip_user_id + password — so the next attempt ADOPTS
-                # via sign-in instead of re-signing-up, which would 409
+                # via sign-in instead of re-signing-up, which would 422
                 # against the now-existing Better Auth user and strand it as
                 # an unadoptable orphan (observed live 2026-06-11: a failure
                 # after sign-up left a row with an empty paperclip_user_id,
@@ -528,6 +531,18 @@ class PaperclipProvisioning:
             # 8. Persist. The DDB column is still ``org_id`` — that's a
             #    Paperclip-side stored concept; we just feed it from the
             #    new ``owner_id`` kwarg.
+            #
+            #    Only mark ``active`` if the REQUIRED CEO seed (Friday) actually
+            #    landed. Friday's seed is best-effort above, but a company with
+            #    no CEO is both unusable AND poisonous: the ``status=="active"``
+            #    idempotency short-circuit (top of this method) would freeze it —
+            #    every later poll returns the CEO-less row unchanged and never
+            #    re-seeds. When Friday is missing we persist a non-active
+            #    ``failed`` row instead, carrying the full adoptable credential
+            #    (paperclip_user_id + password) so a later poll signs IN and
+            #    reconciles rather than re-signing-up. Atlas stays optional — its
+            #    absence alone does NOT block ``active``.
+            seed_ok = friday_agent_id is not None
             now = datetime.now(timezone.utc)
             row = PaperclipCompany(
                 user_id=owner_user_id,
@@ -536,18 +551,32 @@ class PaperclipProvisioning:
                 paperclip_user_id=paperclip_user_id,
                 paperclip_password_encrypted=encrypt(password),
                 service_token_encrypted=encrypt(svc_token),
-                status="active",
+                status="active" if seed_ok else "failed",
                 created_at=now,
                 updated_at=now,
                 seeded_agent_ids=seeded_agent_ids or None,
+                last_error=(
+                    None
+                    if seed_ok
+                    else "provision_org: required CEO seed (Friday) did not land — "
+                    "company left non-active for a later poll to reconcile"
+                ),
             )
             await self._repo.put(row)
-            logger.info(
-                "paperclip_provisioning.provision_org: owner_id %s active (company=%s, owner=%s)",
-                owner_id,
-                company_id,
-                owner_user_id,
-            )
+            if seed_ok:
+                logger.info(
+                    "paperclip_provisioning.provision_org: owner_id %s active (company=%s, owner=%s)",
+                    owner_id,
+                    company_id,
+                    owner_user_id,
+                )
+            else:
+                logger.warning(
+                    "paperclip_provisioning.provision_org: owner_id %s company=%s created but CEO "
+                    "seed (Friday) missing — persisted status=failed for a later poll to reconcile",
+                    owner_id,
+                    company_id,
+                )
             return row
 
         except Exception as e:
@@ -636,7 +665,7 @@ class PaperclipProvisioning:
         # org-scoped idempotency check above intentionally let fall through,
         # or a prior attempt that left a ``failed`` row (``_mark_failed``
         # preserves paperclip_user_id + password) — is ADOPTED by signing in
-        # with their stored password. Re-signing-up would 409 (email already
+        # with their stored password. Re-signing-up would 422 (email already
         # in Better Auth) and corrupt their existing row via ``_mark_failed``;
         # Paperclip exposes no user-delete/reset, but we hold the account's
         # password, so sign-in is the clean path and also recovers a
@@ -1132,13 +1161,21 @@ class PaperclipProvisioning:
         reason: str,
         company_id: str = "",
     ) -> None:
-        """Persist ``status="failed"`` + ``last_error``.
+        """Persist ``status="failed"`` + ``last_error`` on an EXISTING row.
 
-        If a prior row exists we update in place (preserving
-        immutables like paperclip_user_id); otherwise we write a fresh
-        placeholder row so subsequent admin tooling can see the
-        failure. Truncates the reason to a sane length to keep the
-        DynamoDB item small.
+        If a prior row exists we update it in place (preserving immutables
+        like paperclip_user_id + password so the next attempt can ADOPT).
+        Truncates the reason to a sane length to keep the DynamoDB item small.
+
+        When NO prior row exists we deliberately do NOT fabricate a placeholder
+        row: there is no paperclip_user_id to record (the failure happened
+        before/at sign-up), and writing ``paperclip_user_id=""`` poisoned the
+        row — it wedged every retry (``adopting_existing`` is False on an empty
+        id, so the next poll re-signs-up → Better Auth 422 forever) and, on an
+        eventually-consistent read that MISSED a just-written provisioning row,
+        clobbered that row's real id with "". Leaving the field absent instead
+        preserves any real row a later poll may adopt; the failure is still
+        observable via the log below and the caller's metric.
 
         The DDB column ``org_id`` is fed from the ``owner_id`` kwarg —
         the rename is at the call boundary, not the storage layer.
@@ -1167,18 +1204,16 @@ class PaperclipProvisioning:
                 )
             return
 
-        now = datetime.now(timezone.utc)
-        await self._repo.put(
-            PaperclipCompany(
-                user_id=user_id,
-                org_id=owner_id,
-                company_id=company_id,
-                paperclip_user_id="",
-                paperclip_password_encrypted="",
-                service_token_encrypted="",
-                status="failed",
-                created_at=now,
-                updated_at=now,
-                last_error=truncated,
-            )
+        # No prior row: do NOT fabricate a placeholder carrying an empty
+        # paperclip_user_id (see docstring — it poisons the row / clobbers a
+        # real id a stale read missed). Record the failure via log only; the
+        # caller also emits a metric.
+        logger.warning(
+            "paperclip_provisioning._mark_failed: no existing row for user %s "
+            "(owner_id %s, company_id %r) — recording failure via log only, not "
+            "fabricating an empty-id placeholder row: %s",
+            user_id,
+            owner_id,
+            company_id,
+            truncated,
         )

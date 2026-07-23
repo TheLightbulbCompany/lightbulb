@@ -286,7 +286,16 @@ async def test_provision_org_seed_agent_failure_is_not_fatal(repo):
     admin = _make_admin_mock()
     admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "_session_cookie": "tok"})
     admin.create_company = AsyncMock(return_value={"id": "co_acme"})
-    admin.create_agent = AsyncMock(side_effect=PaperclipApiError("agent create failed", status_code=500, body="boom"))
+    # Friday (the REQUIRED CEO) lands; the OPTIONAL Atlas seed fails. An
+    # optional-seed failure is best-effort and must NOT block the active
+    # company. (A FAILED Friday, by contrast, leaves the company non-active —
+    # covered by the NEW-2 unit test in tests/unit/services.)
+    admin.create_agent = AsyncMock(
+        side_effect=[
+            {"id": "agent_friday"},
+            PaperclipApiError("atlas create failed", status_code=500, body="boom"),
+        ]
+    )
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
 
     row = await prov.provision_org(
@@ -294,12 +303,18 @@ async def test_provision_org_seed_agent_failure_is_not_fatal(repo):
         owner_user_id="user_owner",
         owner_email="owner@acme.test",
     )
-    # Company is still active; the agent seeding is best-effort.
+    # Company is still active; the optional (Atlas) agent seed is best-effort.
     assert row.status == "active"
     assert row.company_id == "co_acme"
 
 
-async def test_provision_org_signup_failure_marks_failed(repo):
+async def test_provision_org_signup_failure_does_not_fabricate_poisoned_row(repo):
+    """A pre-company failure — here sign-up itself fails, so no provisioning row
+    was written yet — must NOT leave a fabricated placeholder row carrying an
+    empty paperclip_user_id. That empty id poisoned the row and wedged every
+    retry (can't adopt → re-sign-up → re-422 forever). provision_org still
+    RAISES so the caller records the failure (log + metric); no row is
+    persisted, so a clean retry re-signs-up from scratch."""
     admin = _make_admin_mock()
     admin.sign_up_user = AsyncMock(side_effect=PaperclipApiError("auth disabled", status_code=403, body="forbidden"))
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
@@ -311,13 +326,8 @@ async def test_provision_org_signup_failure_marks_failed(repo):
             owner_email="owner@acme.test",
         )
 
-    # Failed-state row persisted for observability
-    failed_row = await repo.get("user_owner")
-    assert failed_row is not None
-    assert failed_row.status == "failed"
-    assert "provision_org failed" in (failed_row.last_error or "")
-    # company_id is empty since we never got that far
-    assert failed_row.company_id == ""
+    # No poisoned placeholder row — the field is left absent, not zeroed.
+    assert await repo.get("user_owner") is None
 
 
 async def test_provision_org_create_company_failure_marks_failed(repo):
@@ -488,10 +498,16 @@ async def test_provision_member_idempotent_on_second_call(repo):
     assert admin.create_invite.await_count == 1
 
 
-async def test_provision_member_signup_failure_marks_failed(repo):
+async def test_provision_member_signup_failure_does_not_fabricate_poisoned_row(repo):
+    """Member sign-up failing net-new (no provisioning row written yet) must NOT
+    fabricate a placeholder row carrying an empty paperclip_user_id — even
+    though the company_id is known from the org lookup, there is no member
+    account id to record, and writing "" would wedge every retry. provision_member
+    still RAISES; the caller records the failure (and the guard treats a 409/422
+    duplicate as recorded-failure, not success)."""
     await _seed_owner(repo)
     admin = _make_admin_mock()
-    admin.sign_up_user = AsyncMock(side_effect=PaperclipApiError("dup email", status_code=409, body="conflict"))
+    admin.sign_up_user = AsyncMock(side_effect=PaperclipApiError("dup email", status_code=422, body="unprocessable"))
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
     with pytest.raises(PaperclipApiError):
         await prov.provision_member(
@@ -500,12 +516,8 @@ async def test_provision_member_signup_failure_marks_failed(repo):
             email="member@acme.test",
             owner_email="owner@acme.test",
         )
-    failed = await repo.get("user_member")
-    assert failed is not None
-    assert failed.status == "failed"
-    # company_id IS known here (from the org lookup) so it's persisted
-    assert failed.company_id == "co_acme"
-    assert "provision_member failed" in (failed.last_error or "")
+    # No poisoned placeholder row fabricated for the member.
+    assert await repo.get("user_member") is None
 
 
 async def test_provision_member_invite_failure_marks_failed(repo):

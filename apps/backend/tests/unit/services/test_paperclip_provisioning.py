@@ -39,7 +39,11 @@ def _build_provision_org_doubles(monkeypatch):
     admin.create_invite = AsyncMock(return_value={"token": "invtok"})
     admin.accept_invite = AsyncMock(return_value={"id": "req_1"})
     admin.approve_join_request = AsyncMock()
-    admin.create_agent = AsyncMock()
+    # Default the seed calls to a successful dict-with-id (mirrors the moto
+    # suite's _make_admin_mock). Friday landing is what gates status="active",
+    # so tests that don't care about the seed still complete to an active row;
+    # tests exercising a seed FAILURE override create_agent with a side_effect.
+    admin.create_agent = AsyncMock(return_value={"id": "seed-agent-default"})
 
     repo = MagicMock()
     repo.get = AsyncMock(return_value=None)
@@ -163,11 +167,11 @@ async def test_provision_org_atlas_failure_does_not_block_friday_seed(monkeypatc
 
     admin, repo = _build_provision_org_doubles(monkeypatch)
 
-    # Friday succeeds; Atlas raises a 500 — mirrors a transient
-    # Paperclip outage on the second seed call.
+    # Friday succeeds (returns its id — required for status="active"); Atlas
+    # raises a 500 — mirrors a transient Paperclip outage on the second seed.
     admin.create_agent = AsyncMock(
         side_effect=[
-            None,
+            {"id": "agent-friday"},
             PaperclipApiError("atlas create failed", status_code=500, body="boom"),
         ]
     )
@@ -185,7 +189,8 @@ async def test_provision_org_atlas_failure_does_not_block_friday_seed(monkeypatc
     # short-circuit the Atlas attempt) ...
     assert admin.create_agent.await_count == 2
     # ... and the row was still persisted (provision_org completed):
-    # early adoptable credential row + final active row.
+    # early adoptable credential row + final active row. Friday landed, so
+    # the company is active despite the optional Atlas seed failing.
     assert repo.put.await_count == 2
     assert repo.put.await_args.args[0].status == "active"
 
@@ -358,8 +363,10 @@ async def test_provision_org_persists_seeded_agent_ids(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_provision_org_seeded_ids_none_when_seeds_fail(monkeypatch):
-    """If both seeds fail, no ids are captured and the field stays None
-    (best-effort — the company is still persisted and usable)."""
+    """If both seeds fail, no ids are captured and the field stays None. Because
+    the REQUIRED CEO seed (Friday) did not land, the company is persisted as
+    non-active (NEW-2) — a CEO-less company must not be marked active or
+    idempotency would freeze it."""
     from core.services.paperclip_provisioning import PaperclipProvisioning
 
     admin, repo = _build_provision_org_doubles(monkeypatch)
@@ -379,6 +386,7 @@ async def test_provision_org_seeded_ids_none_when_seeds_fail(monkeypatch):
 
     persisted = repo.put.await_args.args[0]
     assert persisted.seeded_agent_ids is None
+    assert persisted.status != "active"
 
 
 @pytest.mark.asyncio
@@ -500,7 +508,7 @@ async def test_provision_member_does_not_short_circuit_on_other_org_row(monkeypa
 @pytest.mark.asyncio
 async def test_provision_member_adopts_existing_account_instead_of_resignup(monkeypatch):
     """A user who already has a Paperclip account (e.g. a personal row) must
-    be ADOPTED via sign-in — NOT re-signed-up (which would 409 and corrupt
+    be ADOPTED via sign-in — NOT re-signed-up (which would 422 and corrupt
     their row). The member row is then re-pointed at this org."""
     from core.encryption import encrypt
     from core.services import service_token
@@ -646,7 +654,7 @@ async def test_provision_org_partial_failure_after_signup_leaves_adoptable_row(m
     """A brand-new owner whose provision fails AFTER sign-up must leave a
     stored row carrying the freshly created paperclip_user_id + password,
     so the next attempt ADOPTS via sign-in instead of re-signing-up (which
-    would 409 against the now-existing Better Auth user and wedge every
+    would 422 against the now-existing Better Auth user and wedge every
     retry — the live 2026-06-11 failure mode: the failed row had an empty
     paperclip_user_id because provision_org persisted nothing until final
     success)."""
@@ -1077,3 +1085,65 @@ async def test_provision_org_survives_agent_email_mint_failure(monkeypatch):
 
     assert row.status == "active"
     repo.put.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_mark_failed_no_existing_row_does_not_fabricate_empty_id(monkeypatch):
+    """_mark_failed must NEVER persist a row carrying ``paperclip_user_id=""``.
+
+    Writing an empty id wedges every retry: the next poll's provision_org sees a
+    row whose id is falsy, so ``adopting_existing`` is False and it re-signs-up
+    (→ Better Auth 422 against the now-existing account) forever; worse, an
+    eventually-consistent ``get()`` that missed a JUST-written provisioning row
+    would clobber its real id with "". With no existing row there is no id to
+    record, so the failure is logged only — any real row a later poll may adopt
+    is left untouched, rather than poisoned."""
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    repo = MagicMock()
+    repo.get = AsyncMock(return_value=None)  # no prior row
+    repo.put = AsyncMock()
+    repo.update_status = AsyncMock(return_value=True)
+
+    svc = PaperclipProvisioning(admin_client=MagicMock(), repo=repo, env_name="dev")
+    await svc._mark_failed(user_id="user_orphan", owner_id="org_x", reason="signup 422 duplicate")
+
+    # No fabricated placeholder row carrying an empty paperclip_user_id.
+    for call in repo.put.await_args_list:
+        persisted = call.args[0]
+        assert persisted.paperclip_user_id != "", (
+            "empty paperclip_user_id poisons the row (blocks adoption / clobbers a real id)"
+        )
+
+
+@pytest.mark.asyncio
+async def test_provision_org_required_ceo_seed_failure_not_marked_active(monkeypatch):
+    """NEW-2: when the required CEO seed (Friday) does not land, provision_org
+    must NOT persist ``status="active"``. An active company with no CEO is
+    frozen by the ``status=="active"`` idempotency short-circuit and can never
+    re-seed; it must instead record a non-active status a later poll can
+    reconcile (keeping the adoptable credential row so the retry signs IN rather
+    than re-signing-up)."""
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    admin, repo = _build_provision_org_doubles(monkeypatch)
+    # Friday's seed raises; Atlas would land — but a company with no CEO must
+    # not be marked active on the strength of Atlas alone.
+    admin.create_agent = AsyncMock(
+        side_effect=[
+            PaperclipApiError("friday seed failed", status_code=500, body="boom"),
+            {"id": "agent-atlas"},
+        ]
+    )
+
+    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    row = await svc.provision_org(
+        owner_id="org_xyz",
+        owner_user_id="user_owner",
+        owner_email="owner@example.com",
+    )
+
+    # Neither the returned row nor any persisted row may claim status="active".
+    assert row.status != "active"
+    for call in repo.put.await_args_list:
+        assert call.args[0].status != "active", "must not mark a CEO-less company active"

@@ -130,6 +130,10 @@ def _make_admin_mock() -> MagicMock:
     # to an empty roster so nothing is deleted unless a test opts in.
     admin.list_agents = AsyncMock(return_value=[])
     admin.delete_agent = AsyncMock(return_value={})
+    # The purge deletes a victim's assigned routines before the agent (Paperclip
+    # 409s the agent delete otherwise). Default to no routines.
+    admin.list_routines = AsyncMock(return_value=[])
+    admin.delete_routine = AsyncMock(return_value={})
     admin.create_invite = AsyncMock(return_value={"token": "invite-token-default"})
     # accept_invite returns the join request flat — see access.ts:3604
     # (toJoinRequestResponse spreads the row, so ``id`` is top-level).

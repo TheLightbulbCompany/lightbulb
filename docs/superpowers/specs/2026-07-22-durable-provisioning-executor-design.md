@@ -385,11 +385,31 @@ Flag: `PROVISION_EXECUTOR = "inline" | "sfn"` (settings, per-env).
    `cdklocal`; local keeps `inline` regardless (§11 LocalStack caveat).
    PR-1's contract tests become the shared conformance suite both executors
    must pass.
+
+   **Flip prerequisites — ALL must hold before step 2:**
+   1. PR #1385 (honest-failure-state) merged AND this branch rebased on it,
+      with the classifier consolidated (`is_retryable_provision_error` folded
+      into `classify_provision_error`). Without #1385's retryable gate in the
+      router, `MarkFailedDeterministic`'s `retryable=false` is inert and
+      deterministic failures re-dispatch forever — each cycle now costing a
+      Fargate launch + a Failed execution, not just a swallowed asyncio task.
+   2. The provision alarms' actions wired to the page topic
+      (`alertPageTopicArn` already exists in service-stack); alarms with no
+      action are dashboards, not pages.
+   3. The step-2 validation scenarios below run green, including the two
+      added for this design: transient-failure-with-tab-open and the raw
+      provisioner-command smoke.
 2. **Dev flip:** `sfn` in dev. Validate: fresh signup, error-retry (inject a
    transient), deterministic failure (bad config), deploy-during-provision
    (the headline scenario — kill/deploy the backend mid-provision and watch
    the execution complete anyway), parked-trial wake, deliberate door
-   supersede (door wins, runner exits superseded).
+   supersede (door wins, runner exits superseded), transient failure with
+   the owner's tab open polling (~3s polls against a row reading
+   error/error_retrying — exercises the Branch-A error-row dedupe: exactly
+   ONE execution must exist afterwards), and a raw provisioner-command smoke
+   (`aws ecs run-task` with the provisioner task-def + the exact command
+   override the dispatcher emits, or equivalent — proves the `uv run python
+   -m scripts.provision_runner` transport outside the state machine).
 3. **Prod flip** after a multi-day dev soak. Rollback = flip the flag back —
    the inline path stays intact until the deletion pass, and both paths speak
    the same lease protocol so they can coexist across the flip instant.
@@ -456,6 +476,16 @@ re-litigate without re-checking the source:
 - **`Overrides.ContainerOverrides[].Command`** accepts values from state input
   (JSONata/JSONPath), which is how `--owner`/`--claim` reach the runner
   (connect-ecs, "Passing Data to an Amazon ECS Task").
+- **CDK deploy mid-execution replaces the provisioner task-def revision.** An
+  in-flight execution is pinned (at StartExecution) to the definition that
+  references the old revision, which CloudFormation deregisters on update —
+  so that execution's RETRY attempts fail RunTask and exhaust via the
+  States.ALL catch (`MarkFailedExhausted`, retryable=true), healing through
+  a fresh execution on the next poll against the new revision. The
+  already-running provisioner task itself survives the deploy (RunTask tasks
+  are not part of any service rollout); only not-yet-started retry attempts
+  are affected. Accepted: deploys are frequent but mid-retry windows are
+  seconds wide, and the failure self-heals through the normal poll path.
 
 Not yet verified (flagged for PR-A, not assumed): LocalStack's SFN provider
 coverage of `ecs:runTask.sync` — the local stage keeps

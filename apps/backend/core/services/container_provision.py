@@ -62,6 +62,12 @@ def is_retryable_provision_error(exc: BaseException) -> bool:
         "unknown provider_choice",
         "validationexception",
         "invalidparameter",
+        # KNOWN MISCLASSIFICATION: IAM-propagation AccessDenied — the owner
+        # role/AIP was minted seconds earlier and hasn't propagated yet — is a
+        # transient that this marker calls deterministic. Revisit when this
+        # function is folded into classify_provision_error (the planned
+        # honest-failure-state classifier consolidation); behavior change
+        # belongs there, not here.
         "accessdenied",
     )
     return not any(marker in message for marker in deterministic_markers)

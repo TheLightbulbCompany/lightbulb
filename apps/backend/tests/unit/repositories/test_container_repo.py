@@ -477,6 +477,30 @@ def test_classify_provision_error_unknown_defaults_retryable():
 
 
 @pytest.mark.asyncio
+async def test_try_claim_provision_stamps_execution_name(dynamodb_table):
+    from core.repositories import container_repo
+
+    claim = await container_repo.try_claim_provision(
+        "user_abc", claim_id="fixed-claim-uuid", execution_name="provision-user_abc-fixedcla"
+    )
+    assert claim == "fixed-claim-uuid"
+    row = await container_repo.get_by_owner_id("user_abc")
+    assert row["provision_execution_name"] == "provision-user_abc-fixedcla"
+    assert row["provision_claim_id"] == "fixed-claim-uuid"
+    assert row["status"] == "provisioning"
+
+
+@pytest.mark.asyncio
+async def test_try_claim_provision_without_name_leaves_field_absent(dynamodb_table):
+    from core.repositories import container_repo
+
+    claim = await container_repo.try_claim_provision("user_def")
+    assert claim is not None
+    row = await container_repo.get_by_owner_id("user_def")
+    assert "provision_execution_name" not in row
+
+
+@pytest.mark.asyncio
 async def test_stamp_stop_reason_trial_idle_sets_parked_at(dynamodb_table):
     from core.repositories import container_repo
 

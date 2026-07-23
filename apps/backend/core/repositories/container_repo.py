@@ -127,7 +127,12 @@ async def upsert(owner_id: str, fields: dict) -> dict:
     return item
 
 
-async def try_claim_provision(owner_id: str) -> str | None:
+async def try_claim_provision(
+    owner_id: str,
+    *,
+    claim_id: str | None = None,
+    execution_name: str | None = None,
+) -> str | None:
     """Atomically claim the right to provision this owner's container. Returns
     the fencing token (``provision_claim_id``) iff THIS caller won; None when a
     provision is already in flight.
@@ -161,36 +166,45 @@ async def try_claim_provision(owner_id: str) -> str | None:
     normal status transitions: failure paths flip the row to ``error``
     (immediately re-claimable, and the status poll's existing error auto-retry
     re-dispatches), success ends at ``running``.
+
+    The SFN dispatcher passes ``claim_id`` + ``execution_name`` so the
+    execution name is stamped in the same atomic write as the claim — a crash
+    between claim and StartExecution is healable by name.
     """
     table = _get_table()
-    claim_id = str(uuid.uuid4())
+    claim_id = claim_id or str(uuid.uuid4())
     now_epoch = int(time.time())
     now_iso = utc_now_iso()
+    update_expr = (
+        "SET #s = :prov, substatus = :sub, provision_claim_id = :cid, "
+        "provision_claimed_at = :now, updated_at = :iso, "
+        "id = if_not_exists(id, :newid), created_at = if_not_exists(created_at, :iso)"
+    )
+    values = {
+        ":prov": "provisioning",
+        ":sub": "claimed",
+        ":cid": claim_id,
+        ":now": now_epoch,
+        ":iso": now_iso,
+        ":newid": str(uuid.uuid4()),
+        ":error": "error",
+        ":stopped": "stopped",
+        ":stale": now_epoch - PROVISION_CLAIM_STALE_S,
+    }
+    if execution_name is not None:
+        update_expr += ", provision_execution_name = :ename"
+        values[":ename"] = execution_name
     try:
         await run_in_thread(
             table.update_item,
             Key={"owner_id": owner_id},
-            UpdateExpression=(
-                "SET #s = :prov, substatus = :sub, provision_claim_id = :cid, "
-                "provision_claimed_at = :now, updated_at = :iso, "
-                "id = if_not_exists(id, :newid), created_at = if_not_exists(created_at, :iso)"
-            ),
+            UpdateExpression=update_expr,
             ConditionExpression=(
                 "attribute_not_exists(owner_id) OR #s = :error OR #s = :stopped "
                 "OR (#s = :prov AND (attribute_not_exists(provision_claimed_at) OR provision_claimed_at < :stale))"
             ),
             ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues={
-                ":prov": "provisioning",
-                ":sub": "claimed",
-                ":cid": claim_id,
-                ":now": now_epoch,
-                ":iso": now_iso,
-                ":newid": str(uuid.uuid4()),
-                ":error": "error",
-                ":stopped": "stopped",
-                ":stale": now_epoch - PROVISION_CLAIM_STALE_S,
-            },
+            ExpressionAttributeValues=values,
         )
         return claim_id
     except ClientError as e:

@@ -347,16 +347,33 @@ describe("ServiceStack — provisioning executor (state machine, dark)", () => {
     // path throws States.Runtime, Choice states cannot Catch, and the
     // execution dies with the row stuck at "provisioning" — so ClassifyFailure
     // MUST guard on IsPresent and route the no-exit-code case to the retry
-    // loop before any numeric comparison.
+    // loop before any numeric comparison. ORDER is the load-bearing property
+    // (Choice rules evaluate in order), so assert ordinally: the IsPresent
+    // guard exists, precedes the numeric rules, and its Next targets the
+    // retry gate (AttemptsRemain) within the same Choices region.
     expect(flat).toContain(
       '"Variable":"$.cause.Containers[0].ExitCode","IsPresent":true',
     );
+    const isPresentIdx = flat.indexOf('"IsPresent":true');
+    const exit20Idx = flat.indexOf('"NumericEquals":20');
+    expect(isPresentIdx).toBeGreaterThanOrEqual(0);
+    expect(exit20Idx).toBeGreaterThanOrEqual(0);
+    expect(isPresentIdx).toBeLessThan(exit20Idx);
+    const guardNextIdx = flat.indexOf('"Next":"AttemptsRemain"', isPresentIdx);
+    expect(guardNextIdx).toBeGreaterThan(isPresentIdx);
+    expect(guardNextIdx).toBeLessThan(exit20Idx);
     // (c) Exit-code ABI routing: 20 superseded, 10 deterministic.
     expect(flat).toContain(
       '"Variable":"$.cause.Containers[0].ExitCode","NumericEquals":20',
     );
     expect(flat).toContain(
       '"Variable":"$.cause.Containers[0].ExitCode","NumericEquals":10',
+    );
+    // (d) Terminal-write backstop resilience: the DDB writes retry transient
+    // failures, with the fencing signal (ConditionalCheckFailed) excluded
+    // FIRST so a taken-over row falls to the Superseded catch, never a retry.
+    expect(flat).toContain(
+      '"ErrorEquals":["DynamoDB.ConditionalCheckFailedException"],"MaxAttempts":0',
     );
   });
 

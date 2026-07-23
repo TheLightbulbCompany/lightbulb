@@ -1360,7 +1360,7 @@ export class ServiceStack extends cdk.Stack {
       // us.posthog.com is the API host for US Cloud (our project lives
       // there). Project ID is public — visible in the PostHog dashboard
       // URL for the Default project. Personal API key comes in via the
-      // secrets: block below.
+      // backendContainerSecrets const below.
       POSTHOG_HOST: "https://us.posthog.com",
       POSTHOG_PROJECT_ID: "380894",
       // PostHog project (phc_) INGESTION key for the server-side billing
@@ -1369,7 +1369,7 @@ export class ServiceStack extends cdk.Stack {
       // Write-only / public — the same key the frontend ships as
       // NEXT_PUBLIC_POSTHOG_KEY (PostHog: "Safe to use in public apps"), so
       // it lives in the plain env block, NOT secrets. Distinct from the
-      // POSTHOG_PROJECT_API_KEY personal read key in the secrets: block.
+      // POSTHOG_PROJECT_API_KEY personal read key in backendContainerSecrets.
       POSTHOG_PROJECT_WRITE_KEY: "phc_nzqnGGPwHfrKycptH3TViSAo3uaxT8CHAXovvHnBGEma",
       // Observability: page topic ARN for backend-initiated SNS alerts.
       // Populated after first deploy via Fn.importValue from ObservabilityStack.
@@ -1593,8 +1593,8 @@ export class ServiceStack extends cdk.Stack {
     // "provisioning" alone would fail every write after attempt 1 and kill
     // the retry loop. Rows at "running"/"stopped", or under a different
     // claim, are never touched (routes to Superseded via the catch below).
-    const ddbWrite = (id: string, updateExpr: string, values: Record<string, tasks.DynamoAttributeValue>) =>
-      new tasks.DynamoUpdateItem(this, id, {
+    const ddbWrite = (id: string, updateExpr: string, values: Record<string, tasks.DynamoAttributeValue>) => {
+      const write = new tasks.DynamoUpdateItem(this, id, {
         table: props.database.containersTable,
         key: {
           owner_id: tasks.DynamoAttributeValue.fromString(sfn.JsonPath.stringAt("$.owner_id")),
@@ -1610,6 +1610,24 @@ export class ServiceStack extends cdk.Stack {
         },
         resultPath: sfn.JsonPath.DISCARD,
       });
+      // These writes are the SIGKILL backstop — without a Retry policy a
+      // single DDB throttle fails the whole execution and the row wedges at
+      // "provisioning". Retriers evaluate IN ORDER, so the fencing signal
+      // (ConditionalCheckFailed = the row was taken over) is excluded FIRST
+      // with maxAttempts 0 — it must fall through to the Superseded catch,
+      // never be retried; every other error is transient and retried.
+      write.addRetry({
+        errors: ["DynamoDB.ConditionalCheckFailedException"],
+        maxAttempts: 0,
+      });
+      write.addRetry({
+        errors: ["States.ALL"],
+        interval: cdk.Duration.seconds(2),
+        backoffRate: 2,
+        maxAttempts: 3,
+      });
+      return write;
+    };
 
     const markFailedDeterministic = ddbWrite(
       "MarkFailedDeterministic",

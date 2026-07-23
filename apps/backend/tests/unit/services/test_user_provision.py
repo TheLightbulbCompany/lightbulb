@@ -7,6 +7,9 @@ import pytest
 from core.auth import AuthContext
 from core.services.provision_gate import has_always_on_entitlement
 from core.services.user_provision import (
+    _ensure_paperclip_for_member,
+    _ensure_paperclip_for_org,
+    _ensure_paperclip_for_owner,
     _maybe_arm_nightly_ceo,
     ensure_personal_trial_default,
     ensure_user_ready,
@@ -301,7 +304,13 @@ async def test_org_admin_create_claim_lost_skips_paperclip_create():
 async def test_org_admin_create_failure_releases_claim():
     """If provision_org raises after we won the claim, the claim must be
     RELEASED so a retry (this instance or another) can re-acquire it —
-    otherwise a crash/error would strand the org's company forever."""
+    otherwise a crash/error would strand the org's company forever.
+
+    Exercises the helper directly. ensure_user_ready now wraps the seed in a
+    best-effort guard (records + swallows so the container still dispatches —
+    see test_seed_failure_does_not_block_container_dispatch), so the raise is
+    observed at the _ensure_paperclip_for_org boundary, which is where the
+    claim-release contract actually lives."""
     fake_provisioning = MagicMock()
     fake_provisioning.find_org_owner = AsyncMock(return_value=None)
     fake_provisioning.try_acquire_org_create_claim = AsyncMock(return_value=True)
@@ -310,15 +319,15 @@ async def test_org_admin_create_failure_releases_claim():
     fake_provisioning.provision_org = AsyncMock(side_effect=boom)
 
     with (
-        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
         patch(
             "core.services.user_provision.build_paperclip_provisioning", new=AsyncMock(return_value=fake_provisioning)
         ),
         patch("core.services.user_provision.close_paperclip_provisioning", new=AsyncMock()),
-        patch("core.services.user_provision.asyncio.create_task", side_effect=lambda c: c.close()),
     ):
         with pytest.raises(RuntimeError):
-            await ensure_user_ready(_org_admin_auth("user_admin", "org_xyz", "a@example.com"))
+            await _ensure_paperclip_for_org(
+                org_id="org_xyz", user_id="user_admin", email="a@example.com", is_admin=True
+            )
     fake_provisioning.release_org_create_claim.assert_awaited_once_with("org_xyz", holder="user_admin")
 
 
@@ -627,10 +636,15 @@ async def test_ensure_paperclip_for_member_idempotent_on_duplicate_409():
 
 @pytest.mark.asyncio
 async def test_ensure_paperclip_for_member_reraises_non_409_paperclip_error():
-    """Non-409 PaperclipApiError (e.g. 500 from sign_up_user) must
-    propagate — only the duplicate-409 case is treated as idempotent
-    success. A blanket swallow would mask transient Paperclip errors
-    from operator visibility."""
+    """Non-409 PaperclipApiError (e.g. 500 from sign_up_user) must propagate
+    OUT OF THE HELPER — only the duplicate-409 case is treated as idempotent
+    success. A blanket swallow would mask transient Paperclip errors from
+    operator visibility.
+
+    Exercises the helper directly. ensure_user_ready now catches this at its
+    own seed boundary (best-effort — see
+    test_seed_failure_does_not_block_container_dispatch); the 409-vs-non-409
+    distinction this test guards lives in _ensure_paperclip_for_member."""
     from core.services.paperclip_admin_client import PaperclipApiError
 
     fake_company = MagicMock(status="active", company_id="co_x", user_id="user_owner")
@@ -645,10 +659,6 @@ async def test_ensure_paperclip_for_member_reraises_non_409_paperclip_error():
 
     with (
         patch(
-            "core.services.user_provision.evaluate_provision_gate",
-            new=AsyncMock(return_value=None),
-        ),
-        patch(
             "core.services.user_provision.lookup_owner_email",
             new=AsyncMock(return_value="o@example.com"),
         ),
@@ -662,7 +672,9 @@ async def test_ensure_paperclip_for_member_reraises_non_409_paperclip_error():
         ),
     ):
         with pytest.raises(PaperclipApiError) as exc:
-            await ensure_user_ready(_org_member_auth())
+            await _ensure_paperclip_for_member(
+                org_id="org_456", member_user_id="user_456", member_email="m@example.com"
+            )
     assert exc.value.status_code == 500
 
 
@@ -722,13 +734,16 @@ async def test_ensure_paperclip_for_owner_idempotent_on_duplicate_409(_stub_tria
 
 
 @pytest.mark.asyncio
-async def test_ensure_paperclip_for_owner_reraises_non_409_paperclip_error(_stub_trial_default):
-    """Non-409 PaperclipApiError must propagate — only the duplicate-409
-    race is treated as idempotent. A blanket swallow would mask transient
-    5xx and credential errors from operator visibility (e.g. a Paperclip
-    outage would silently fall through to the container background
-    dispatch, which would then crash later in ECS without a clean signal
-    of why)."""
+async def test_ensure_paperclip_for_owner_reraises_non_409_paperclip_error():
+    """Non-409 PaperclipApiError must propagate OUT OF THE HELPER — only the
+    duplicate-409 race is treated as idempotent. A blanket swallow would mask
+    transient 5xx and credential errors from operator visibility.
+
+    Exercises the helper directly. ensure_user_ready now catches this at its
+    own seed boundary and continues to the container dispatch (best-effort —
+    see test_personal_seed_failure_does_not_block_container_dispatch); the
+    409-vs-non-409 distinction this test guards lives in
+    _ensure_paperclip_for_owner."""
     from core.services.paperclip_admin_client import PaperclipApiError
 
     fake_provisioning = MagicMock()
@@ -741,9 +756,90 @@ async def test_ensure_paperclip_for_owner_reraises_non_409_paperclip_error(_stub
     )
     with (
         patch(
-            "core.services.user_provision.evaluate_provision_gate",
-            new=AsyncMock(return_value=None),
+            "core.services.user_provision.build_paperclip_provisioning",
+            new=AsyncMock(return_value=fake_provisioning),
         ),
+        patch(
+            "core.services.user_provision.close_paperclip_provisioning",
+            new=AsyncMock(),
+        ),
+    ):
+        with pytest.raises(PaperclipApiError) as exc:
+            await _ensure_paperclip_for_owner(
+                owner_id="user_123",
+                owner_user_id="user_123",
+                owner_email="u@example.com",
+                org_id=None,
+            )
+    assert exc.value.status_code == 502
+
+
+@pytest.mark.asyncio
+async def test_ensure_paperclip_for_owner_records_duplicate_422_without_reraising(_stub_trial_default):
+    """Better Auth returns 422 (NOT 409) for a duplicate email. The owner guard
+    must classify that as "user already exists" and route it to the
+    recorded-FAILURE path — NOT re-raise it (which hard-fails the seed on every
+    ~3s /container/status poll through the generic seed-error handler) and NOT
+    swallow it as success (which would report Teams ready over a broken/absent
+    workspace). provision_org's own _mark_failed persists a durable ``failed``
+    marker (put-if-absent when no row exists), which is what surfaces the
+    failure — /teams → 503, teams_status="failed" on /container/status; the
+    guard emits a duplicate-specific metric and returns without raising."""
+    from core.services.paperclip_admin_client import PaperclipApiError
+
+    fake_provisioning = MagicMock()
+    fake_provisioning.provision_org = AsyncMock(
+        side_effect=PaperclipApiError(
+            "POST /api/auth/sign-up/email -> 422",
+            status_code=422,
+            body='{"message":"User already exists"}',
+        ),
+    )
+    with (
+        patch(
+            "core.services.user_provision.build_paperclip_provisioning",
+            new=AsyncMock(return_value=fake_provisioning),
+        ),
+        patch(
+            "core.services.user_provision.close_paperclip_provisioning",
+            new=AsyncMock(),
+        ),
+        patch("core.services.user_provision.put_metric") as mock_metric,
+    ):
+        # MUST NOT raise — a duplicate is an expected terminal outcome, not an
+        # error to escalate every poll.
+        await _ensure_paperclip_for_owner(
+            owner_id="user_123",
+            owner_user_id="user_123",
+            owner_email="u@example.com",
+            org_id=None,
+        )
+    fake_provisioning.provision_org.assert_awaited_once()
+    # Recorded as a duplicate FAILURE — distinct from the 409 success no-op
+    # (which emits no metric); proves the 422 is not swallowed as success.
+    mock_metric.assert_any_call("paperclip.seed.duplicate_email", dimensions={"path": "owner"})
+
+
+@pytest.mark.asyncio
+async def test_ensure_paperclip_for_member_records_duplicate_422_without_reraising():
+    """Symmetric to the owner guard (self-review NEW-1): a member-join 422 —
+    Better Auth duplicate email — is a recorded failure, NOT re-raised and NOT
+    swallowed as success. Only the 409 concurrent-create race is the idempotent
+    success no-op; 422 (the account already exists but we cannot re-provision)
+    routes to the recorded-failure path."""
+    from core.services.paperclip_admin_client import PaperclipApiError
+
+    fake_company = MagicMock(status="active", company_id="co_x", user_id="user_owner")
+    fake_provisioning = MagicMock()
+    fake_provisioning.find_org_owner = AsyncMock(return_value=fake_company)
+    fake_provisioning.provision_member = AsyncMock(
+        side_effect=PaperclipApiError(
+            "POST /api/auth/sign-up/email -> 422",
+            status_code=422,
+            body='{"message":"User already exists"}',
+        ),
+    )
+    with (
         patch(
             "core.services.user_provision.lookup_owner_email",
             new=AsyncMock(return_value="o@example.com"),
@@ -756,10 +852,12 @@ async def test_ensure_paperclip_for_owner_reraises_non_409_paperclip_error(_stub
             "core.services.user_provision.close_paperclip_provisioning",
             new=AsyncMock(),
         ),
+        patch("core.services.user_provision.put_metric") as mock_metric,
     ):
-        with pytest.raises(PaperclipApiError) as exc:
-            await ensure_user_ready(_personal_auth())
-    assert exc.value.status_code == 502
+        # MUST NOT raise.
+        await _ensure_paperclip_for_member(org_id="org_456", member_user_id="user_456", member_email="m@example.com")
+    fake_provisioning.provision_member.assert_awaited_once()
+    mock_metric.assert_any_call("paperclip.seed.duplicate_email", dimensions={"path": "member"})
 
 
 @pytest.mark.asyncio
@@ -847,6 +945,81 @@ async def test_metronome_failure_does_not_block_provisioning(_mock_ensure_metron
     _mock_ensure_metronome_customer.assert_awaited_once_with(owner_id="user_p")
     fake_provisioning.provision_org.assert_awaited_once()
     assert captured == ["background_provision"]
+
+
+@pytest.mark.asyncio
+async def test_seed_failure_does_not_block_container_dispatch():
+    """Org-admin path: a Paperclip (Teams) seed failure is best-effort — it
+    must NOT abort provisioning. background_provision is STILL dispatched (the
+    box boots and ecs_manager falls back to the legacy `main` agent when no
+    company exists) and the failure is recorded via put_metric, never swallowed
+    as success. Mirrors test_metronome_failure_does_not_block_provisioning."""
+    from core.services.paperclip_admin_client import PaperclipApiError
+
+    seed_error = PaperclipApiError(
+        "POST /api/auth/sign-up/email -> 422",
+        status_code=422,
+        body='{"message":"unprocessable"}',
+    )
+    dispatched: list = []
+
+    with (
+        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+        patch(
+            "core.services.user_provision._ensure_paperclip_for_org",
+            new=AsyncMock(side_effect=seed_error),
+        ) as mock_seed,
+        patch("core.services.user_provision.background_provision", new=MagicMock()) as mock_bg,
+        patch(
+            "core.services.user_provision.asyncio.create_task",
+            side_effect=lambda coro: dispatched.append(coro),
+        ),
+        patch("core.services.user_provision.put_metric") as mock_metric,
+    ):
+        # Must NOT raise despite the seed 422 — that is the whole point.
+        await ensure_user_ready(_org_admin_auth("user_admin", "org_xyz", "a@example.com"))
+
+    mock_seed.assert_awaited_once()
+    # Container dispatched despite the 422, keyed on the ORG owner_id.
+    mock_bg.assert_called_once_with("org_xyz", "user_admin")
+    assert len(dispatched) == 1
+    # Failure recorded — not silently swallowed as success.
+    mock_metric.assert_any_call("paperclip.seed.error")
+
+
+@pytest.mark.asyncio
+async def test_personal_seed_failure_does_not_block_container_dispatch(_stub_trial_default):
+    """Personal path: the same best-effort contract for _ensure_paperclip_for_owner.
+    A seed failure records the metric and still reaches the container dispatch,
+    keyed on the personal owner_id (== user_id)."""
+    from core.services.paperclip_admin_client import PaperclipApiError
+
+    seed_error = PaperclipApiError(
+        "POST /api/auth/sign-up/email -> 502",
+        status_code=502,
+        body='{"message":"bad gateway"}',
+    )
+    dispatched: list = []
+
+    with (
+        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+        patch(
+            "core.services.user_provision._ensure_paperclip_for_owner",
+            new=AsyncMock(side_effect=seed_error),
+        ) as mock_seed,
+        patch("core.services.user_provision.background_provision", new=MagicMock()) as mock_bg,
+        patch(
+            "core.services.user_provision.asyncio.create_task",
+            side_effect=lambda coro: dispatched.append(coro),
+        ),
+        patch("core.services.user_provision.put_metric") as mock_metric,
+    ):
+        await ensure_user_ready(_personal_auth("user_p", "p@example.com"))
+
+    mock_seed.assert_awaited_once()
+    mock_bg.assert_called_once_with("user_p", "user_p")
+    assert len(dispatched) == 1
+    mock_metric.assert_any_call("paperclip.seed.error")
 
 
 @pytest.mark.asyncio

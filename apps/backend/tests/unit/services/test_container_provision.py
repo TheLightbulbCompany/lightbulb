@@ -349,7 +349,12 @@ async def test_background_provision_failure_releases_the_lease_to_error():
         repo.get_by_owner_id = AsyncMock(return_value={"subscription_status": "trial_local"})
         await background_provision("user_1", "user_1")  # must not raise (create_task target)
 
-    release.assert_awaited_once_with("user_1", "claim-123")
+    release.assert_awaited_once()
+    assert release.await_args.args == ("user_1", "claim-123")
+    # The release now also carries a classified failure cause. RuntimeError is
+    # unclassified, so it defaults to retryable=True with a non-empty cause.
+    assert release.await_args.kwargs["retryable"] is True
+    assert release.await_args.kwargs["last_error"]
 
 
 @pytest.mark.asyncio
@@ -378,3 +383,98 @@ async def test_background_provision_superseded_writes_nothing():
         await background_provision("user_1", "user_1")
 
     release.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# background_provision — failure-cause classification. On the error transition
+# the release records last_error (a short human-readable cause) + retryable, so
+# the status endpoint can tell a transient failure (silently re-dispatched by
+# the poll) from a deterministic one (surfaced to the owner instead of looped).
+
+
+def _run_failing_provision(side_effect):
+    """Drive background_provision to its error path with a given side effect on
+    provision_user_container, returning the (patched) release mock so the test
+    can assert the classified cause it was called with."""
+    manager = MagicMock()
+    manager.provision_user_container = AsyncMock(side_effect=side_effect)
+    release = AsyncMock()
+    ctx = (
+        patch(
+            "core.services.container_provision.container_repo.try_claim_provision",
+            new=AsyncMock(return_value="claim-123"),
+        ),
+        patch(
+            "core.services.container_provision.container_repo.release_provision_to_error",
+            new=release,
+        ),
+        patch("core.services.container_provision.get_ecs_manager", return_value=manager),
+        patch("core.services.container_provision.billing_repo"),
+    )
+    return release, ctx
+
+
+@pytest.mark.asyncio
+async def test_background_provision_deterministic_4xx_is_not_retryable():
+    """A 4xx PaperclipApiError is deterministic -- re-running the identical
+    provision fails identically -- so it records retryable=False + a cause,
+    letting the status endpoint surface it instead of looping the poll."""
+    from core.services.container_provision import background_provision
+    from core.services.paperclip_admin_client import PaperclipApiError
+
+    release, (c1, c2, c3, c4) = _run_failing_provision(PaperclipApiError("bad company slug", 400, {"error": "bad"}))
+    with c1, c2, c3, c4 as repo:
+        repo.get_by_owner_id = AsyncMock(return_value={"subscription_status": "trial_local"})
+        await background_provision("user_1", "user_1")
+
+    assert release.await_args.args == ("user_1", "claim-123")
+    assert release.await_args.kwargs["retryable"] is False
+    assert release.await_args.kwargs["last_error"]  # non-empty cause string
+
+
+@pytest.mark.asyncio
+async def test_background_provision_transient_5xx_is_retryable():
+    """A 5xx PaperclipApiError is transient -- retryable=True so the poll
+    silently re-dispatches, no owner-facing error for a self-healing failure."""
+    from core.services.container_provision import background_provision
+    from core.services.paperclip_admin_client import PaperclipApiError
+
+    release, (c1, c2, c3, c4) = _run_failing_provision(PaperclipApiError("paperclip unavailable", 503, {}))
+    with c1, c2, c3, c4 as repo:
+        repo.get_by_owner_id = AsyncMock(return_value={"subscription_status": "trial_local"})
+        await background_provision("user_1", "user_1")
+
+    assert release.await_args.kwargs["retryable"] is True
+    assert release.await_args.kwargs["last_error"]
+
+
+@pytest.mark.asyncio
+async def test_background_provision_ecs_infra_error_is_retryable():
+    """EcsManagerError wraps AWS Spot-reclamation / throttle / capacity
+    ClientErrors -- transient infra, retryable=True."""
+    from core.containers.ecs_manager import EcsManagerError
+    from core.services.container_provision import background_provision
+
+    release, (c1, c2, c3, c4) = _run_failing_provision(
+        EcsManagerError("Failed to create ECS service: ThrottlingException", "user_1")
+    )
+    with c1, c2, c3, c4 as repo:
+        repo.get_by_owner_id = AsyncMock(return_value={"subscription_status": "trial_local"})
+        await background_provision("user_1", "user_1")
+
+    assert release.await_args.kwargs["retryable"] is True
+    assert release.await_args.kwargs["last_error"]
+
+
+@pytest.mark.asyncio
+async def test_background_provision_validation_error_is_not_retryable():
+    """A ValueError is a deterministic config/shape bug -- retryable=False."""
+    from core.services.container_provision import background_provision
+
+    release, (c1, c2, c3, c4) = _run_failing_provision(ValueError("bad provider_choice"))
+    with c1, c2, c3, c4 as repo:
+        repo.get_by_owner_id = AsyncMock(return_value={"subscription_status": "trial_local"})
+        await background_provision("user_1", "user_1")
+
+    assert release.await_args.kwargs["retryable"] is False
+    assert release.await_args.kwargs["last_error"]

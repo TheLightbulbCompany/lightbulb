@@ -528,7 +528,8 @@ class TestCreateUserService:
 
     @pytest.mark.asyncio
     async def test_ecs_failure_raises_and_rolls_back(self, manager, mock_ecs_client, mock_efs_client):
-        """ECS API failure raises EcsManagerError, sets error status, and rolls back AWS resources."""
+        """ECS API failure raises EcsManagerError and rolls back AWS resources —
+        WITHOUT pre-empting the outer release with a status='error' write."""
         with patch("core.containers.ecs_manager.container_repo") as mock_repo:
             mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
             mock_repo.update_fields = AsyncMock(return_value=_make_container_dict())
@@ -541,9 +542,11 @@ class TestCreateUserService:
             with pytest.raises(EcsManagerError, match="Failed to create ECS service"):
                 await manager.create_user_service("user_test_123", "token")
 
-            # Error status set via update_fields
+            # NO status='error' write: create_user_service no longer pre-empts
+            # the claim-fenced release (single-owner rule). It rolls back + raises;
+            # release_provision_to_error owns the transition (+ retryable/last_error).
             error_calls = [c for c in mock_repo.update_fields.call_args_list if c[0][1].get("status") == "error"]
-            assert len(error_calls) >= 1
+            assert error_calls == [], "create_user_service must not write status='error' (outer release owns it)"
 
             # Rollback: task def deregistered and access point deleted
             mock_ecs_client.deregister_task_definition.assert_called_once()
@@ -551,7 +554,8 @@ class TestCreateUserService:
 
     @pytest.mark.asyncio
     async def test_access_point_failure_raises(self, manager, mock_efs_client, mock_ecs_client):
-        """EFS access point creation failure raises EcsManagerError and sets error status."""
+        """EFS access point creation failure raises EcsManagerError WITHOUT
+        pre-empting the outer release with a status='error' write."""
         with patch("core.containers.ecs_manager.container_repo") as mock_repo:
             mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
             mock_repo.update_fields = AsyncMock(return_value=_make_container_dict())
@@ -564,9 +568,9 @@ class TestCreateUserService:
             with pytest.raises(EcsManagerError, match="Failed to create EFS access point"):
                 await manager.create_user_service("user_test_123", "token")
 
-            # Error status set
+            # NO status='error' write (single-owner rule) — the outer release owns it.
             error_calls = [c for c in mock_repo.update_fields.call_args_list if c[0][1].get("status") == "error"]
-            assert len(error_calls) >= 1
+            assert error_calls == [], "create_user_service must not write status='error' (outer release owns it)"
 
             # No AWS rollback needed -- nothing was created yet
             mock_ecs_client.create_service.assert_not_called()
@@ -574,7 +578,8 @@ class TestCreateUserService:
 
     @pytest.mark.asyncio
     async def test_task_def_failure_rolls_back_access_point(self, manager, mock_ecs_client, mock_efs_client):
-        """Task definition failure rolls back the access point and sets error status."""
+        """Task definition failure rolls back the access point WITHOUT pre-empting
+        the outer release with a status='error' write."""
         with patch("core.containers.ecs_manager.container_repo") as mock_repo:
             mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
             mock_repo.update_fields = AsyncMock(return_value=_make_container_dict())
@@ -587,9 +592,9 @@ class TestCreateUserService:
             with pytest.raises(EcsManagerError, match="Failed to register per-user task definition"):
                 await manager.create_user_service("user_test_123", "token")
 
-            # Error status set
+            # NO status='error' write (single-owner rule) — the outer release owns it.
             error_calls = [c for c in mock_repo.update_fields.call_args_list if c[0][1].get("status") == "error"]
-            assert len(error_calls) >= 1
+            assert error_calls == [], "create_user_service must not write status='error' (outer release owns it)"
 
             # Access point should be cleaned up
             mock_efs_client.delete_access_point.assert_called_once_with(AccessPointId="fsap-user123")
@@ -3148,3 +3153,178 @@ class TestProvisionLeaseFencing:
         )
         manager._ecs.describe_services = MagicMock(side_effect=RuntimeError("ecs down"))
         assert await manager.has_live_service("u") is True
+
+
+class TestProvisionFailureClassification:
+    """provision_user_container's own except block records the failure CAUSE
+    (last_error + retryable) on the error transition. This is the release that
+    actually lands on the common inner-failure path (it fires before
+    background_provision's, which then no-ops on the flipped status), and it is
+    the ONLY release for the deliberate doors (conversion / recover / admin)
+    that never pass through background_provision — so classification must happen
+    here or a deterministic 4xx would loop forever as retryable."""
+
+    @pytest.mark.asyncio
+    async def test_deterministic_inner_failure_records_not_retryable(self, manager, monkeypatch):
+        """A 4xx PaperclipApiError from the inner provision is deterministic —
+        the row's error transition records retryable=False + a cause, and the
+        exception still propagates."""
+        from core.services.paperclip_admin_client import PaperclipApiError
+
+        monkeypatch.setattr(
+            manager,
+            "_provision_user_container_inner",
+            AsyncMock(side_effect=PaperclipApiError("bad company slug", 400, {})),
+        )
+        release = AsyncMock()
+        monkeypatch.setattr("core.repositories.container_repo.release_provision_to_error", release)
+
+        with pytest.raises(PaperclipApiError):
+            await manager.provision_user_container("user_1", provider_choice="bedrock_claude", claim_id="claim-x")
+
+        assert release.await_args.args == ("user_1", "claim-x")
+        assert release.await_args.kwargs["retryable"] is False
+        assert release.await_args.kwargs["last_error"]
+
+    @pytest.mark.asyncio
+    async def test_transient_inner_failure_records_retryable(self, manager, monkeypatch):
+        """An EcsManagerError (AWS Spot / throttle / capacity) is transient
+        infra — retryable=True so the poll silently re-dispatches."""
+        monkeypatch.setattr(
+            manager,
+            "_provision_user_container_inner",
+            AsyncMock(side_effect=EcsManagerError("Failed to create ECS service: ThrottlingException", "user_1")),
+        )
+        release = AsyncMock()
+        monkeypatch.setattr("core.repositories.container_repo.release_provision_to_error", release)
+
+        with pytest.raises(EcsManagerError):
+            await manager.provision_user_container("user_1", provider_choice="bedrock_claude", claim_id="claim-x")
+
+        assert release.await_args.kwargs["retryable"] is True
+        assert release.await_args.kwargs["last_error"]
+
+    @pytest.mark.asyncio
+    async def test_superseded_inner_failure_does_not_release(self, manager, monkeypatch):
+        """A superseded run is caught by its own branch BEFORE the generic
+        handler — it must NOT release to error (the row belongs to the
+        superseding run). Guards that wiring the classifier into the generic
+        except didn't disturb the ProvisionSuperseded path."""
+        from core.repositories.container_repo import ProvisionSuperseded
+
+        monkeypatch.setattr(
+            manager,
+            "_provision_user_container_inner",
+            AsyncMock(side_effect=ProvisionSuperseded("taken over")),
+        )
+        release = AsyncMock()
+        monkeypatch.setattr("core.repositories.container_repo.release_provision_to_error", release)
+
+        with pytest.raises(ProvisionSuperseded):
+            await manager.provision_user_container("user_1", provider_choice="bedrock_claude", claim_id="claim-x")
+
+        release.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_real_inner_ecs_failure_lands_error_with_cause(self, manager, mock_ecs_client, monkeypatch):
+        """END-TO-END through the REAL inner path (the false-green the sibling
+        tests above miss by mocking ``_provision_user_container_inner`` wholesale).
+
+        A deterministic AWS failure raised INSIDE ``create_user_service``
+        (create_service ClientError) must leave the row ``status="error"`` WITH
+        ``retryable`` AND ``last_error`` populated — proving the eight scattered
+        pre-emptive ``status="error"`` writes no longer pre-empt the outer
+        claim-fenced ``release_provision_to_error``. Fails against pre-consolidation
+        code: an inner site flips ``status="error"`` first, so the release's
+        ``status = provisioning`` condition no-ops and the cause never lands."""
+
+        class _FakeContainerStore:
+            """Stateful container_repo stand-in that models the ONE behaviour the
+            consolidation turns on: release_provision_to_error lands the error
+            transition (+ retryable + last_error) only while the row is still
+            ``provisioning`` under the held claim. A pre-emptive inner
+            ``status="error"`` flip makes it no-op — exactly the T3 Critical."""
+
+            def __init__(self):
+                self.row = {
+                    "owner_id": "user_1",
+                    "id": "id-1",
+                    "created_at": "t0",
+                    "status": "provisioning",
+                    "substatus": "claimed",
+                    "provision_claim_id": "claim-x",
+                }
+
+            async def get_by_owner_id(self, owner_id):
+                return dict(self.row) if self.row is not None else None
+
+            async def upsert(self, owner_id, fields):
+                self.row.update(fields)
+                self.row["owner_id"] = owner_id
+                return dict(self.row)
+
+            async def update_fields(self, owner_id, fields):
+                if self.row is None:
+                    return None
+                self.row.update(fields)
+                return dict(self.row)
+
+            async def update_status(self, owner_id, status, substatus=None):
+                return await self.update_fields(owner_id, {"status": status, "substatus": substatus})
+
+            async def update_container_leased(self, owner_id, claim_id, fields=None):
+                from core.repositories.container_repo import ProvisionSuperseded
+
+                if self.row is None or self.row.get("provision_claim_id") != claim_id:
+                    raise ProvisionSuperseded("lease lost")
+                if fields:
+                    self.row.update(fields)
+
+            async def release_provision_to_error(self, owner_id, claim_id, *, last_error=None, retryable=True):
+                # Faithful mirror of the real conditional write: fencing token
+                # AND status == "provisioning", else a silent no-op.
+                if self.row is None or self.row.get("provision_claim_id") != claim_id:
+                    return
+                if self.row.get("status") != "provisioning":
+                    return
+                self.row["status"] = "error"
+                self.row["substatus"] = "provision_failed"
+                self.row["retryable"] = retryable
+                if last_error is not None:
+                    self.row["last_error"] = str(last_error)[:500]
+
+        store = _FakeContainerStore()
+
+        # No pre-existing service -> full-provisioning path -> create_user_service.
+        mock_ecs_client.describe_services.return_value = {"services": []}
+        # Deterministic AWS failure inside create_user_service's create_service.
+        mock_ecs_client.create_service.side_effect = ClientError(
+            {"Error": {"Code": "ClusterNotFoundException", "Message": "not found"}},
+            "CreateService",
+        )
+
+        # Wire the store into BOTH bindings the provision path uses, and let the
+        # REAL classifier run. Overrides the autouse _provision_lease_stub, which
+        # replaces release/leased with inert AsyncMocks.
+        monkeypatch.setattr("core.containers.ecs_manager.container_repo", store)
+        monkeypatch.setattr("core.repositories.container_repo.update_container_leased", store.update_container_leased)
+        monkeypatch.setattr(
+            "core.repositories.container_repo.release_provision_to_error", store.release_provision_to_error
+        )
+        # byo_key path: only key_service.get_secret_arn needs stubbing (no gate
+        # token machinery); the per-owner role shell mint is stubbed autouse.
+        monkeypatch.setattr(
+            "core.services.key_service.get_secret_arn",
+            AsyncMock(return_value="arn:aws:secretsmanager:us-east-1:123:secret:isol8/dev/user-keys/user_1/openai-A"),
+        )
+
+        with pytest.raises(EcsManagerError, match="Failed to create ECS service"):
+            await manager.provision_user_container(
+                "user_1", provider_choice="byo_key", byo_provider="openai", claim_id="claim-x"
+            )
+
+        # The fenced release genuinely landed the terminal transition AND the cause.
+        assert store.row["status"] == "error"
+        assert store.row.get("retryable") is True, "retryable must land on the row (release owns the transition)"
+        assert store.row.get("last_error"), "last_error cause must land on the row"
+        assert "Failed to create ECS service" in store.row["last_error"]

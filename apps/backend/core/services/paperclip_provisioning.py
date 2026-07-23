@@ -31,11 +31,18 @@ Three entry points (all async, all idempotent on user_id / owner_id):
   access). The ``purge`` cron entrypoint hard-deletes after the grace
   window.
 
-Failure semantics: any failure mid-provisioning calls
-``_mark_failed`` to leave a row with ``status="failed"`` and
-``last_error`` set so the caller (or a retry path) can observe it,
-then re-raises. Subsequent retries with the same args are safe — the
-``status="active"`` short-circuit is the only path that skips work.
+Failure semantics: a failure mid-provisioning calls ``_mark_failed``, which
+leaves exactly ONE durable ``status="failed"`` marker. When a row already
+exists it downgrades that row in place (preserving paperclip_user_id +
+password so a retry can ADOPT), guarded so it never clobbers a row a
+concurrent attempt completed to ``active``. When NO row exists yet it writes
+a durable marker via a CONDITIONAL put-if-absent (carrying NO fabricated
+paperclip_user_id — a zeroed id poisoned the row — and never overwriting a
+real row): this keeps the net-new / orphan-422 failure honestly visible
+(``/teams`` → 503, ``teams_status="failed"``) instead of an eternal
+provisioning spinner. Then it re-raises. Subsequent retries with the same
+args are safe — the ``status="active"`` short-circuit is the only path that
+skips work.
 """
 
 from __future__ import annotations
@@ -234,12 +241,17 @@ class PaperclipProvisioning:
         personal owners.
 
         Idempotent: if a row already exists for ``owner_user_id`` with
-        ``status="active"``, return it unchanged. Other statuses redo
-        the chain — Paperclip's Better Auth sign-up is NOT idempotent,
-        so retrying after a partial failure will hit "user already
-        exists" at sign_up_user. The proxy's failed-row handler
-        redirects back to /chat for explicit re-handshake instead of
-        looping autoprovisions.
+        ``status="active"``, return it unchanged. A non-active row that
+        already carries a ``company_id`` (the Friday-partial case: the
+        company WAS created, only the required CEO seed failed) is
+        RECONCILED — we adopt that company (sign in with the stored
+        credential, skip the create + invite/accept/approve chain) and
+        retry the seed against it, so a persistent seed outage never mints
+        a new orphan company on each poll. A non-active row with NO
+        company_id (a pre-create failure) redoes the full chain, adopting
+        the user via sign-in — Paperclip's Better Auth sign-up is NOT
+        idempotent, so ``_mark_failed`` preserves the credential to make
+        that retry a sign-in rather than a re-422'ing sign-up.
         """
         existing = await self._repo.get(owner_user_id)
         # Idempotency must be org-scoped: rows are keyed per-user, so a user
@@ -272,10 +284,25 @@ class PaperclipProvisioning:
         # idempotency check let fall through, or a prior ``failed`` row
         # (``_mark_failed`` preserves paperclip_user_id + password) — is
         # adopted by signing in with their stored password rather than
-        # re-signing-up (which would 409 and corrupt the row). We hold the
+        # re-signing-up (which would 422 and corrupt the row). We hold the
         # password, and Paperclip has no user-delete/reset. The final
         # ``repo.put`` re-points the row at this org.
         adopting_existing = existing is not None and bool(existing.paperclip_user_id)
+        # Reconcile a Friday-partial company instead of reminting one. When a
+        # prior attempt CREATED the company but the REQUIRED Friday (CEO) seed
+        # didn't land, step 8 persists a NON-active ``failed`` row carrying the
+        # real ``company_id`` (a CEO-less company must never be marked active).
+        # The ``status=="active"`` short-circuit above never fires for it, so
+        # without adopting that company here the next /container/status poll
+        # re-runs the full create + invite/accept/approve chain — and because
+        # Paperclip ignores our ``Idempotency-Key``, MINTS A NEW ORPHAN COMPANY
+        # on every ~3s poll for as long as the seed outage lasts. When a
+        # non-active row already carries a company_id we ADOPT it: skip the
+        # create + invite/accept/approve chain and resume at the seed step,
+        # retrying Friday/Atlas against the SAME company. A net-new failure with
+        # NO company_id (the orphan-422 / pre-create marker) is deliberately
+        # excluded — its ``company_id`` is "" and it re-runs the full chain.
+        reconciling_company = existing is not None and existing.status != "active" and bool(existing.company_id)
         password = decrypt(existing.paperclip_password_encrypted) if adopting_existing else secrets.token_urlsafe(32)
         try:
             # 1. Obtain the owner's Better Auth account + session — signup for
@@ -299,7 +326,7 @@ class PaperclipProvisioning:
                 # the chain (mirrors provision_member). If a later step
                 # fails, _mark_failed updates this row in place — preserving
                 # paperclip_user_id + password — so the next attempt ADOPTS
-                # via sign-in instead of re-signing-up, which would 409
+                # via sign-in instead of re-signing-up, which would 422
                 # against the now-existing Better Auth user and strand it as
                 # an unadoptable orphan (observed live 2026-06-11: a failure
                 # after sign-up left a row with an empty paperclip_user_id,
@@ -322,50 +349,71 @@ class PaperclipProvisioning:
                     )
                 )
 
-            # The company name is user-visible and editable afterwards, so
-            # generate a real one. Falling back to the owner's email keeps
-            # the previous behaviour if naming fails — never abort here.
-            try:
-                company_name = await generate_company_name(
-                    org_id=owner_id if is_org_owner_id(owner_id) else None,
-                    owner_email=owner_email,
-                )
-            except Exception as e:  # noqa: BLE001 — naming must not fail provisioning
-                logger.warning(
-                    "paperclip_provisioning.provision_org: name generation failed for owner_id %s: %s",
-                    owner_id,
-                    e,
-                )
+            # 2. Reconcile-or-create the company. On the RECONCILE path (a prior
+            #    non-active row already carries a real company_id — see the
+            #    ``reconciling_company`` note above) we ADOPT that company and
+            #    skip both the create and the invite/accept/approve chain,
+            #    dropping straight to the seed retry below. The user is already
+            #    an approved owner of it from the first attempt. Otherwise the
+            #    ADMIN creates the company (admin becomes the initial owner via
+            #    Paperclip's auto-ensureMembership in ``routes/companies.ts:273``).
+            if reconciling_company:
+                company_id = existing.company_id
+                # Only used as the slug-derivation fallback below; the adopted
+                # company already has its real, user-visible name from the first
+                # attempt, so we don't re-generate (or re-create) it.
                 company_name = owner_email
-
-            # 2. ADMIN creates the company. Admin becomes the initial
-            #    owner via Paperclip's auto-ensureMembership in
-            #    ``routes/companies.ts:273``.
-            try:
-                company = await self._admin.create_company(
-                    name=company_name,
-                    description="Isol8 Teams workspace",
-                    session_cookie=admin_cookie,
-                    idempotency_key=owner_user_id,
+                logger.info(
+                    "paperclip_provisioning.provision_org: adopting existing company %s for "
+                    "owner_id %s (prior non-active row) — skipping create/invite, retrying seed",
+                    company_id,
+                    owner_id,
                 )
-            except PaperclipApiError as e:
-                if e.status_code == 401:
-                    # Admin session expired; retry once with fresh token.
-                    invalidate_admin_session()
-                    admin_cookie = await get_admin_session_cookie(self._admin._http)
+            else:
+                # The company name is user-visible and editable afterwards, so
+                # generate a real one. Falling back to the owner's email keeps
+                # the previous behaviour if naming fails — never abort here.
+                try:
+                    company_name = await generate_company_name(
+                        org_id=owner_id if is_org_owner_id(owner_id) else None,
+                        owner_email=owner_email,
+                    )
+                except Exception as e:  # noqa: BLE001 — naming must not fail provisioning
+                    logger.warning(
+                        "paperclip_provisioning.provision_org: name generation failed for owner_id %s: %s",
+                        owner_id,
+                        e,
+                    )
+                    company_name = owner_email
+
+                try:
                     company = await self._admin.create_company(
                         name=company_name,
                         description="Isol8 Teams workspace",
                         session_cookie=admin_cookie,
                         idempotency_key=owner_user_id,
                     )
-                else:
-                    raise
-            company_id = company["id"]
+                except PaperclipApiError as e:
+                    if e.status_code == 401:
+                        # Admin session expired; retry once with fresh token.
+                        invalidate_admin_session()
+                        admin_cookie = await get_admin_session_cookie(self._admin._http)
+                        company = await self._admin.create_company(
+                            name=company_name,
+                            description="Isol8 Teams workspace",
+                            session_cookie=admin_cookie,
+                            idempotency_key=owner_user_id,
+                        )
+                    else:
+                        raise
+                company_id = company["id"]
 
             # Reserve the platform-unique slug the agent's email address will
             # later be built from. Best-effort: an owner without a slug simply
-            # has no address minted yet.
+            # has no address minted yet. Idempotent per-owner (allocate returns
+            # any existing reservation), so it also runs on the reconcile path —
+            # a retry that finally lands Friday can then mint the address the
+            # failed first attempt couldn't.
             company_slug: str | None = None
             try:
                 company_slug = await allocate_company_slug(owner_id=owner_id, name=company_name)
@@ -376,7 +424,10 @@ class PaperclipProvisioning:
                     e,
                 )
 
-            # 3. ADMIN creates a one-shot invite for the new user.
+            # 3+4+5. ADMIN creates a one-shot invite for the new user, who
+            #    accepts it, and the join request is ensured approved — leaving
+            #    the user an active owner of the company. Skipped entirely on the
+            #    reconcile path (the adopted company already has this membership).
             #    ``human_role="owner"`` is critical: Paperclip's
             #    ``resolveHumanInviteRole`` defaults a missing role to
             #    ``"operator"``, and ``grantsForHumanRole("operator")``
@@ -387,25 +438,24 @@ class PaperclipProvisioning:
             #    assumes single-tenant orgs, so granting the new user
             #    ``"owner"`` matches the Clerk-side org-owner concept;
             #    multi-tenant role distinctions can be revisited later.
-            invite = await self._admin.create_invite(
-                session_cookie=admin_cookie,
-                company_id=company_id,
-                email=owner_email,
-                human_role="owner",
-            )
-            invite_token = invite["token"]
+            #    (Paperclip auto-approves human accepts, so the standalone
+            #    approve inside _accept_invite_and_ensure_approved only fires as
+            #    a fallback.)
+            if not reconciling_company:
+                invite = await self._admin.create_invite(
+                    session_cookie=admin_cookie,
+                    company_id=company_id,
+                    email=owner_email,
+                    human_role="owner",
+                )
+                invite_token = invite["token"]
 
-            # 4+5. New user accepts the invite; the join request is
-            #    ensured approved (Paperclip auto-approves human accepts,
-            #    so the standalone approve only fires as a fallback — see
-            #    _accept_invite_and_ensure_approved). User is now an
-            #    active owner of the company.
-            await self._accept_invite_and_ensure_approved(
-                member_session_cookie=new_user_session_cookie,
-                approver_session_cookie=admin_cookie,
-                company_id=company_id,
-                invite_token=invite_token,
-            )
+                await self._accept_invite_and_ensure_approved(
+                    member_session_cookie=new_user_session_cookie,
+                    approver_session_cookie=admin_cookie,
+                    company_id=company_id,
+                    invite_token=invite_token,
+                )
 
             # 6. Mint a long-lived OpenClaw service-token JWT. Baked
             #    into the seeded Main Agent's adapter config so the
@@ -528,6 +578,18 @@ class PaperclipProvisioning:
             # 8. Persist. The DDB column is still ``org_id`` — that's a
             #    Paperclip-side stored concept; we just feed it from the
             #    new ``owner_id`` kwarg.
+            #
+            #    Only mark ``active`` if the REQUIRED CEO seed (Friday) actually
+            #    landed. Friday's seed is best-effort above, but a company with
+            #    no CEO is both unusable AND poisonous: the ``status=="active"``
+            #    idempotency short-circuit (top of this method) would freeze it —
+            #    every later poll returns the CEO-less row unchanged and never
+            #    re-seeds. When Friday is missing we persist a non-active
+            #    ``failed`` row instead, carrying the full adoptable credential
+            #    (paperclip_user_id + password) so a later poll signs IN and
+            #    reconciles rather than re-signing-up. Atlas stays optional — its
+            #    absence alone does NOT block ``active``.
+            seed_ok = friday_agent_id is not None
             now = datetime.now(timezone.utc)
             row = PaperclipCompany(
                 user_id=owner_user_id,
@@ -536,18 +598,32 @@ class PaperclipProvisioning:
                 paperclip_user_id=paperclip_user_id,
                 paperclip_password_encrypted=encrypt(password),
                 service_token_encrypted=encrypt(svc_token),
-                status="active",
+                status="active" if seed_ok else "failed",
                 created_at=now,
                 updated_at=now,
                 seeded_agent_ids=seeded_agent_ids or None,
+                last_error=(
+                    None
+                    if seed_ok
+                    else "provision_org: required CEO seed (Friday) did not land — "
+                    "company left non-active for a later poll to reconcile"
+                ),
             )
             await self._repo.put(row)
-            logger.info(
-                "paperclip_provisioning.provision_org: owner_id %s active (company=%s, owner=%s)",
-                owner_id,
-                company_id,
-                owner_user_id,
-            )
+            if seed_ok:
+                logger.info(
+                    "paperclip_provisioning.provision_org: owner_id %s active (company=%s, owner=%s)",
+                    owner_id,
+                    company_id,
+                    owner_user_id,
+                )
+            else:
+                logger.warning(
+                    "paperclip_provisioning.provision_org: owner_id %s company=%s created but CEO "
+                    "seed (Friday) missing — persisted status=failed for a later poll to reconcile",
+                    owner_id,
+                    company_id,
+                )
             return row
 
         except Exception as e:
@@ -636,7 +712,7 @@ class PaperclipProvisioning:
         # org-scoped idempotency check above intentionally let fall through,
         # or a prior attempt that left a ``failed`` row (``_mark_failed``
         # preserves paperclip_user_id + password) — is ADOPTED by signing in
-        # with their stored password. Re-signing-up would 409 (email already
+        # with their stored password. Re-signing-up would 422 (email already
         # in Better Auth) and corrupt their existing row via ``_mark_failed``;
         # Paperclip exposes no user-delete/reset, but we hold the account's
         # password, so sign-in is the clean path and also recovers a
@@ -1132,16 +1208,28 @@ class PaperclipProvisioning:
         reason: str,
         company_id: str = "",
     ) -> None:
-        """Persist ``status="failed"`` + ``last_error``.
+        """Persist ONE durable ``status="failed"`` marker for this seed failure.
 
-        If a prior row exists we update in place (preserving
-        immutables like paperclip_user_id); otherwise we write a fresh
-        placeholder row so subsequent admin tooling can see the
-        failure. Truncates the reason to a sane length to keep the
-        DynamoDB item small.
+        Two paths, both leaving exactly one honest failed record:
 
-        The DDB column ``org_id`` is fed from the ``owner_id`` kwarg —
-        the rename is at the call boundary, not the storage layer.
+        * A prior row exists → update it in place (preserving immutables like
+          paperclip_user_id + password so the next attempt can ADOPT), guarded
+          so it never downgrades a row a concurrent attempt already completed to
+          ``active``.
+        * NO prior row → write a durable marker via a CONDITIONAL put-if-absent
+          (``put_failed_marker_if_absent``). This restores the honest 503 on
+          ``/teams`` (and ``teams_status="failed"`` on ``/container/status``) for
+          the net-new / orphan-422 case: without it the row is MISSING, and the
+          consumer maps a missing row → 202 "provisioning" (an eternal spinner),
+          only a ``failed`` row → 503. The marker carries NO fabricated
+          paperclip_user_id — that is the OLD poison (an empty id blocked
+          adoption and, on a stale read, clobbered a real id) — and, being
+          conditional, can never overwrite a real row a concurrent provision
+          wrote in the gap. The marker is durable-visibility only, not adoptable.
+
+        Truncates the reason to keep the DynamoDB item small. The DDB column
+        ``org_id`` is fed from the ``owner_id`` kwarg — the rename is at the call
+        boundary, not the storage layer.
         """
         truncated = reason[:1000]
         existing = await self._repo.get(user_id)
@@ -1167,18 +1255,32 @@ class PaperclipProvisioning:
                 )
             return
 
-        now = datetime.now(timezone.utc)
-        await self._repo.put(
-            PaperclipCompany(
-                user_id=user_id,
-                org_id=owner_id,
-                company_id=company_id,
-                paperclip_user_id="",
-                paperclip_password_encrypted="",
-                service_token_encrypted="",
-                status="failed",
-                created_at=now,
-                updated_at=now,
-                last_error=truncated,
-            )
+        # No prior row: write a durable ``failed`` marker via a CONDITIONAL
+        # put-if-absent — NOT the poisoned empty-id placeholder, and NOT an
+        # unconditional put. This makes the failure durably visible (honest 503
+        # on /teams, teams_status="failed" on /container/status) instead of the
+        # eternal 202 spinner a missing row produces. The conditional no-ops if a
+        # real row appeared concurrently (never clobbers it); the marker carries
+        # no fabricated paperclip_user_id (durable visibility only, not adoptable).
+        landed = await self._repo.put_failed_marker_if_absent(
+            user_id=user_id,
+            org_id=owner_id,
+            reason=truncated,
+            company_id=company_id,
         )
+        if landed:
+            logger.warning(
+                "paperclip_provisioning._mark_failed: no existing row for user %s "
+                "(owner_id %s, company_id %r) — wrote durable failed marker: %s",
+                user_id,
+                owner_id,
+                company_id,
+                truncated,
+            )
+        else:
+            logger.info(
+                "paperclip_provisioning._mark_failed: no marker written for user %s "
+                "(owner_id %s) — a real row appeared concurrently (put-if-absent no-op)",
+                user_id,
+                owner_id,
+            )

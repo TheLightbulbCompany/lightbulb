@@ -72,6 +72,81 @@ _TRIAL_REFUSAL_GATES = {
 router = APIRouter()
 
 
+def _watch_provision_task(task: "asyncio.Task") -> None:
+    """Done-callback for the detached ``ensure_user_ready`` dispatches.
+
+    ``ensure_user_ready`` is fired with ``asyncio.create_task`` from the status
+    poll and never awaited, so a raised exception would otherwise be a silent
+    "Task exception was never retrieved" — invisible to the W1
+    provision-error alarm. Surface it: log the task's traceback and emit the
+    SAME ``container.provision`` ``{status: error}`` metric the synchronous
+    provision path emits (see ``container_provision._emit_provision_metric``),
+    so a dispatch-path failure lands on the exact CloudWatch stream that alarm
+    already watches. A cancelled task carries no failure. Best-effort
+    throughout — a done-callback must never raise.
+    """
+    try:
+        exc = task.exception()
+    except asyncio.CancelledError:
+        return
+    if exc is None:
+        return
+    logger.error("Background ensure_user_ready task failed", exc_info=exc)
+    try:
+        put_metric("container.provision", dimensions={"status": "error"})
+    except Exception:  # noqa: BLE001 — telemetry must never raise in a callback
+        logger.debug("container.provision metric emission failed", exc_info=True)
+
+
+def _dispatch_watched(coro) -> None:
+    """Fire-and-forget a provisioning coroutine with the exception-surfacing
+    done-callback attached (Part A observability for the ``ensure_user_ready``
+    dispatches).
+
+    ``add_done_callback`` is a real-``asyncio.Task`` method; unit tests patch
+    ``asyncio.create_task`` and may hand back a non-Task (``None``, a bare
+    coroutine, or a ``MagicMock``), so attach the callback only when a genuine
+    Task came back. In production ``create_task`` always returns a Task.
+    """
+    task = asyncio.create_task(coro)
+    if isinstance(task, asyncio.Task):
+        task.add_done_callback(_watch_provision_task)
+
+
+async def _resolve_teams_status(user_id: str) -> str | None:
+    """Best-effort read of the polling user's Paperclip-company seed state.
+
+    Returns ``"failed"`` when the user's ``paperclip-companies`` row is in the
+    failed state — Friday/Atlas seeding failed, recorded by
+    ``paperclip_provisioning._mark_failed`` — else ``None`` (the field is then
+    omitted from the response). This is a NON-BLOCKING degraded signal: the
+    seed failing does not stop the container from serving chat, so the caller
+    surfaces ``teams_status="failed"`` alongside a normal ``phase`` (e.g.
+    ``"ready"``) and the client shows a "Teams needs attention / retry"
+    affordance rather than a hard block.
+
+    Keyed on the polling user's OWN ``user_id`` — ``paperclip-companies`` rows
+    are per-user (keyed by Clerk ``user_id``), matching how the Teams BFF reads
+    company state. For a personal owner ``user_id == owner_id`` (the
+    provisioner row that ``_mark_failed`` downgrades). For an org member it
+    reflects that member's own Teams provisioning, which is coherent: a member
+    cannot be ``active`` against a company whose seed failed.
+
+    Any read failure returns ``None`` — a degraded hint must never break
+    ``/container/status``.
+    """
+    try:
+        from core.repositories.paperclip_repo import PaperclipRepo
+
+        company = await PaperclipRepo(table_name="paperclip-companies").get(user_id)
+    except Exception:  # noqa: BLE001 — degraded signal must never break /status
+        logger.info("teams_status read failed for user %s", user_id, exc_info=True)
+        return None
+    if company is not None and company.status == "failed":
+        return "failed"
+    return None
+
+
 def _resolve_cold_start_phase(container: dict, gateway_pool, owner_id: str) -> str:
     """Map (DDB container.status, gateway pool connection state) -> phase.
 
@@ -224,7 +299,7 @@ async def container_status(
         # gracefully. Surface 202 so the frontend renders "workspace
         # pending" rather than a generic loading state.
         if auth.is_org_context and not auth.is_org_admin:
-            asyncio.create_task(ensure_user_ready(auth))
+            _dispatch_watched(ensure_user_ready(auth))
             raise HTTPException(
                 status_code=202,
                 detail="team workspace pending",
@@ -234,7 +309,7 @@ async def container_status(
         # provisioning response. Shape mirrors the existing 200-OK return
         # below so the frontend's phase=="provisioning" UI handles this
         # without schema drift.
-        asyncio.create_task(ensure_user_ready(auth))
+        _dispatch_watched(ensure_user_ready(auth))
         return {
             "service_name": None,
             "status": "provisioning",
@@ -296,6 +371,14 @@ async def container_status(
     #     rate-limited to at most once per guard window.
     conversion_active = await maybe_resume_stuck_conversion(owner_id, container)
 
+    # Degraded Teams signal (non-blocking): if this user's Paperclip company
+    # seed failed, a running container still serves chat — surface
+    # teams_status="failed" alongside the normal phase so the client can render
+    # a "Teams needs attention / retry" affordance instead of a hard block.
+    # Best-effort (wrapped); never gates. Computed once here so every
+    # _status_response return below carries it.
+    teams_status = await _resolve_teams_status(auth.user_id)
+
     # Auto-retry: if container is in a failed/stuck state AND the owner can
     # currently afford to provision, trigger re-provisioning in the
     # background. The same gate as /provision (audit C1) — bare
@@ -341,56 +424,72 @@ async def container_status(
         except HTTPException:
             pass
         else:
-            # Wake-on-intent gate — applies ONLY to a healthy parked trial box
-            # (status=stopped + stop_reason=trial_idle + trial_local +
-            # !conversion_pending). Error rows, stale leases, killswitch and
-            # admin stops all fail the predicate and keep the unconditional
-            # poll-driven self-heal below; gates above already 402'd capped or
-            # expired owners, so parked can never mask a limit card.
-            parked = await wake_policy.is_parked_trial(owner_id, container)
-            if parked and wake == "0":
-                # Read-only poll from a presence-aware client: report the
-                # parked state, start nothing.
-                wake_policy.note_wake_suppressed(owner_id, container, door="status_poll", reason="gated")
-                return _status_response(container, owner_id, parked=True)
-            if parked and wake is None:
-                # Legacy client (pre-gate bundle, never reloaded): preserve
-                # wake-on-read but bound it to the daily budget so a zombie
-                # tab can't run the container around the clock.
-                if not await wake_policy.legacy_wake_allowed(owner_id):
-                    wake_policy.note_wake_suppressed(owner_id, container, door="status_legacy", reason="budget")
-                    # Legacy-shaped response: old bundles get today's field
-                    # set (plain stopped), never the new parked fields.
-                    return _status_response(container, owner_id)
-                wake_policy.note_wake_dispatched(door="status_legacy", intent="poll")
-            elif parked:
-                wake_policy.note_wake_dispatched(door="status_poll", intent="explicit")
+            if container.get("status") == "error":
+                # Honest error reporting — never mask a failed provision as
+                # "provisioning". T3 records the cause on the row:
+                #   retryable=True  (transient infra: Spot reclaim / throttle /
+                #     5xx) → still auto-dispatch the re-provision, but SAY so:
+                #     status stays "error", substatus="error_retrying", and
+                #     last_error is carried through by _status_response. The
+                #     client shows "hit a problem, retrying" — no timer needed.
+                #   retryable=False (deterministic: 4xx / config / validation)
+                #     → do NOT re-dispatch; the recorded status + last_error
+                #     render the error card immediately.
+                # Default True keeps a cause-less legacy error row self-healing
+                # (the pre-T3 auto-retry behaviour).
+                if container.get("retryable", True):
+                    asyncio.create_task(_background_provision(owner_id, auth.user_id))
+                    container["substatus"] = "error_retrying"
             else:
-                wake_policy.note_wake_dispatched(door="status_poll", intent="self_heal")
-            # No status pre-write here: background_provision's atomic lease
-            # claim IS the transition to "provisioning". A pre-write would (a)
-            # race concurrent polls into double-dispatch (the exact incident
-            # this closes) and (b) flip the row to "provisioning" with a stale
-            # lease, which the claim's stale-clause could then mis-time. The
-            # local dict mutation below only shapes THIS response; the row
-            # flips ~ms later when the dispatched task wins its claim.
-            asyncio.create_task(_background_provision(owner_id, auth.user_id))
-            container["status"] = "provisioning"
-            container["substatus"] = "auto_retry"
+                # stopped / stale-provisioning lease: UNCHANGED silent auto-wake.
+                # Wake-on-intent gate — applies ONLY to a healthy parked trial
+                # box (status=stopped + stop_reason=trial_idle + trial_local +
+                # !conversion_pending). Stale leases, killswitch and admin stops
+                # all fail the predicate and keep the unconditional poll-driven
+                # self-heal below; gates above already 402'd capped or expired
+                # owners, so parked can never mask a limit card.
+                parked = await wake_policy.is_parked_trial(owner_id, container)
+                if parked and wake == "0":
+                    # Read-only poll from a presence-aware client: report the
+                    # parked state, start nothing.
+                    wake_policy.note_wake_suppressed(owner_id, container, door="status_poll", reason="gated")
+                    return _status_response(container, owner_id, parked=True, teams_status=teams_status)
+                if parked and wake is None:
+                    # Legacy client (pre-gate bundle, never reloaded): preserve
+                    # wake-on-read but bound it to the daily budget so a zombie
+                    # tab can't run the container around the clock.
+                    if not await wake_policy.legacy_wake_allowed(owner_id):
+                        wake_policy.note_wake_suppressed(owner_id, container, door="status_legacy", reason="budget")
+                        # Legacy-shaped response: old bundles get today's field
+                        # set (plain stopped), never the new parked fields.
+                        return _status_response(container, owner_id, teams_status=teams_status)
+                    wake_policy.note_wake_dispatched(door="status_legacy", intent="poll")
+                elif parked:
+                    wake_policy.note_wake_dispatched(door="status_poll", intent="explicit")
+                else:
+                    wake_policy.note_wake_dispatched(door="status_poll", intent="self_heal")
+                # No status pre-write here: background_provision's atomic lease
+                # claim IS the transition to "provisioning". A pre-write would (a)
+                # race concurrent polls into double-dispatch (the exact incident
+                # this closes) and (b) flip the row to "provisioning" with a stale
+                # lease, which the claim's stale-clause could then mis-time. The
+                # local dict mutation below only shapes THIS response; the row
+                # flips ~ms later when the dispatched task wins its claim.
+                asyncio.create_task(_background_provision(owner_id, auth.user_id))
+                container["status"] = "provisioning"
+                container["substatus"] = "auto_retry"
 
-    # Org members (and admins): their paperclip-membership-add doesn't fall
-    # out of the missing-container branch above when the org's container
-    # already exists (e.g., a co-admin or member joins an org that's already
-    # provisioned). The "missing container" branch is the canonical
-    # paperclip-add trigger, but anyone sharing the existing container
-    # resolves to a container row here and skips it. Fire ensure_user_ready
-    # idempotently for EVERY org-context user — excluding admins here was the
-    # /teams "team workspace not provisioned" bug for multi-admin orgs.
-    # provision_container=False because the container is already running:
-    # ensure_user_ready must NOT trigger provision_user_container, which
-    # force-restarts a running service (ecs_manager docstring scenario 3).
-    if auth.is_org_context:
-        asyncio.create_task(ensure_user_ready(auth, provision_container=False))
+    # Re-dispatch ensure_user_ready(provision_container=False) on the running-container
+    # poll for: (a) EVERY org-context user — idempotent paperclip-membership-add (a
+    # co-admin/member joining an already-provisioned org resolves to a container row
+    # here and would otherwise skip the add); and (b) a PERSONAL owner whose Teams seed
+    # is currently failed — T1 made a seed failure non-fatal to the container, so without
+    # this a transient personal seed blip stays teams_status="failed" forever with no
+    # self-heal. Gating personal on teams_status=="failed" keeps the happy path free of a
+    # per-poll re-seed. provision_container=False: the container is already running and
+    # provision_user_container would force-restart it (ecs_manager scenario 3).
+    if auth.is_org_context or teams_status == "failed":
+        _dispatch_watched(ensure_user_ready(auth, provision_container=False))
 
     # phase "ready" requires THIS task's in-memory pool to hold the user's
     # gateway connection — but the pool is per-process. After a rolling deploy
@@ -413,16 +512,27 @@ async def container_status(
         _self_heal_last_dial[owner_id] = time.monotonic()
         asyncio.create_task(_pool_self_heal_connect(owner_id, container_ip, container["gateway_token"]))
 
-    return _status_response(container, owner_id)
+    return _status_response(container, owner_id, teams_status=teams_status)
 
 
-def _status_response(container: dict, owner_id: str, *, parked: bool = False) -> dict:
+def _status_response(
+    container: dict,
+    owner_id: str,
+    *,
+    parked: bool = False,
+    teams_status: str | None = None,
+) -> dict:
     """The one 200 shape for /container/status.
 
     ``parked=True`` is additive: same base fields (so no consumer schema
     drift) plus ``parked``/``wake_retry_after_s`` and ``phase="parked"`` —
     the phase every stepper consumer must treat as ready-equivalent (a parked
     box is healthy and one intent away from running, not mid-provision).
+
+    ``teams_status`` is additive too: a NON-BLOCKING degraded signal. When the
+    owner's Paperclip company seed failed it is ``"failed"`` (surfaced ALONGSIDE
+    a healthy ``phase`` — chat still works); otherwise it is omitted entirely,
+    so unaffected containers keep today's exact field set.
     """
     body = {
         "service_name": container.get("service_name"),
@@ -447,6 +557,8 @@ def _status_response(container: dict, owner_id: str, *, parked: bool = False) ->
         body["phase"] = "parked"
         body["parked"] = True
         body["wake_retry_after_s"] = 30
+    if teams_status is not None:
+        body["teams_status"] = teams_status
     return body
 
 

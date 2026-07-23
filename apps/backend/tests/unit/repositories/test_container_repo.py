@@ -391,6 +391,92 @@ async def test_record_wake_debit_missing_row_returns_zero(dynamodb_table):
 
 
 @pytest.mark.asyncio
+async def test_release_provision_to_error_records_cause(dynamodb_table):
+    """The error transition records WHY it failed -- last_error (a short
+    human-readable cause) and retryable (transient vs deterministic) -- so the
+    status endpoint can tell a failure to silently retry from one to surface."""
+    from core.repositories import container_repo
+
+    claim_id = await container_repo.try_claim_provision("user_err")
+    assert claim_id is not None
+
+    await container_repo.release_provision_to_error(
+        "user_err", claim_id, last_error="Paperclip 400: bad company slug", retryable=False
+    )
+    row = await container_repo.get_by_owner_id("user_err")
+    assert row["status"] == "error"
+    assert row["substatus"] == "provision_failed"
+    assert row["last_error"] == "Paperclip 400: bad company slug"
+    assert row["retryable"] is False
+
+
+@pytest.mark.asyncio
+async def test_release_provision_to_error_records_retryable_transient(dynamodb_table):
+    """A transient cause is recorded retryable=True."""
+    from core.repositories import container_repo
+
+    claim_id = await container_repo.try_claim_provision("user_err2")
+    await container_repo.release_provision_to_error("user_err2", claim_id, last_error="ECS throttled", retryable=True)
+    row = await container_repo.get_by_owner_id("user_err2")
+    assert row["retryable"] is True
+    assert row["last_error"] == "ECS throttled"
+
+
+@pytest.mark.asyncio
+async def test_release_provision_to_error_cause_stays_token_conditioned(dynamodb_table):
+    """The cause params are ADDITIVE -- the write stays conditioned on the
+    fencing token AND status=provisioning exactly as before. A stale/wrong token
+    must NOT clobber the row nor write a cause onto it."""
+    from core.repositories import container_repo
+
+    claim_id = await container_repo.try_claim_provision("user_err3")
+    assert claim_id is not None
+
+    await container_repo.release_provision_to_error(
+        "user_err3", "wrong-token", last_error="should not land", retryable=False
+    )
+    row = await container_repo.get_by_owner_id("user_err3")
+    assert row["status"] == "provisioning"  # unchanged -- wrong token no-ops
+    assert "last_error" not in row
+    assert "retryable" not in row
+
+
+def test_classify_provision_error_paperclip_reuses_retryable():
+    """PaperclipApiError already auto-classifies retryability off its status
+    code — the classifier reuses .retryable verbatim (4xx deterministic, 5xx/429
+    transient)."""
+    from core.repositories import container_repo
+    from core.services.paperclip_admin_client import PaperclipApiError
+
+    det_cause, det_retryable = container_repo.classify_provision_error(PaperclipApiError("bad slug", 400, {}))
+    assert det_retryable is False
+    assert "400" in det_cause
+
+    _, transient_retryable = container_repo.classify_provision_error(PaperclipApiError("down", 503, {}))
+    assert transient_retryable is True
+
+
+def test_classify_provision_error_validation_is_deterministic():
+    """ValueError / TypeError / KeyError are deterministic config/shape bugs."""
+    from core.repositories import container_repo
+
+    for exc in (ValueError("bad"), TypeError("wrong type"), KeyError("missing")):
+        _, retryable = container_repo.classify_provision_error(exc)
+        assert retryable is False
+
+
+def test_classify_provision_error_unknown_defaults_retryable():
+    """An unrecognised failure (incl. EcsManagerError wrapping AWS
+    Spot/throttle/capacity) defaults retryable=True — a needless retry is
+    cheaper than a wrongly-surfaced permanent error."""
+    from core.repositories import container_repo
+
+    cause, retryable = container_repo.classify_provision_error(RuntimeError("mystery"))
+    assert retryable is True
+    assert "RuntimeError" in cause
+
+
+@pytest.mark.asyncio
 async def test_stamp_stop_reason_trial_idle_sets_parked_at(dynamodb_table):
     from core.repositories import container_repo
 

@@ -12,6 +12,7 @@ from core.services.paperclip_openclaw_pairing import (
     fetch_paperclip_agents_for_owner,
     pair_with_openclaw,
     register_paperclip_agent_devices,
+    resolve_company_id_for_owner,
 )
 
 
@@ -180,13 +181,14 @@ async def test_fetch_for_personal_user_returns_their_company_agents(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_fetch_for_org_uses_get_org_company_id(monkeypatch):
+async def test_fetch_for_org_uses_list_by_org_id(monkeypatch):
     """Org owner (owner_id starts with 'org_') resolves company via
-    repo.get_org_company_id, NOT repo.get."""
+    repo.list_by_org_id (the org's ACTIVE row), NOT repo.get and NOT
+    repo.get_org_company_id (which would return a failed row's id)."""
     pc_uuid = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
     repo = MagicMock()
     repo.get = AsyncMock()  # should NOT be called
-    repo.get_org_company_id = AsyncMock(return_value="co_xyz")
+    repo.list_by_org_id = AsyncMock(return_value=[{"status": "active", "company_id": "co_xyz"}])
     admin_client = MagicMock()
     admin_client.list_agents = AsyncMock(return_value=[{"id": pc_uuid, "name": "Friday", "role": "ceo"}])
 
@@ -203,15 +205,15 @@ async def test_fetch_for_org_uses_get_org_company_id(monkeypatch):
 
     assert len(result) == 1
     repo.get.assert_not_awaited()
-    repo.get_org_company_id.assert_awaited_once_with("org_xyz")
+    repo.list_by_org_id.assert_awaited_once_with("org_xyz")
 
 
 @pytest.mark.asyncio
 async def test_fetch_for_org_with_no_company_returns_empty():
-    """Org never had Paperclip provisioned -> return []. Container provision
-    falls back to 'main'."""
+    """Org never had Paperclip provisioned (no active row) -> return [].
+    Container provision falls back to 'main'."""
     repo = MagicMock()
-    repo.get_org_company_id = AsyncMock(return_value=None)
+    repo.list_by_org_id = AsyncMock(return_value=[])
     admin_client = MagicMock()
 
     result = await fetch_paperclip_agents_for_owner(
@@ -222,6 +224,75 @@ async def test_fetch_for_org_with_no_company_returns_empty():
 
     assert result == []
     admin_client.list_agents.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_resolve_company_id_none_for_personal_failed_marker():
+    """A personal owner whose only row is a net-new ``failed`` marker
+    (``company_id=""``) resolves to None — NOT the empty string. Every caller
+    guards with ``if company_id is None``, so an "" would slip through into a
+    doomed Paperclip call with an empty company id."""
+    repo = MagicMock()
+    repo.get = AsyncMock(return_value=MagicMock(status="failed", company_id=""))
+
+    assert await resolve_company_id_for_owner(owner_id="user_abc", repo=repo) is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_company_id_none_for_personal_failed_row_with_company():
+    """Even a ``failed`` row that happens to carry a company_id resolves to
+    None: a failed provision is treated as "no company" for pairing/lifecycle."""
+    repo = MagicMock()
+    repo.get = AsyncMock(return_value=MagicMock(status="failed", company_id="co_partial"))
+
+    assert await resolve_company_id_for_owner(owner_id="user_abc", repo=repo) is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_company_id_none_for_org_failed_marker_empty():
+    """An org whose only row is a net-new ``failed`` marker (empty company_id)
+    resolves to None: list_by_org_id has no active row."""
+    repo = MagicMock()
+    repo.list_by_org_id = AsyncMock(return_value=[{"status": "failed", "company_id": ""}])
+
+    assert await resolve_company_id_for_owner(owner_id="org_abc", repo=repo) is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_company_id_returns_id_for_active_personal_row():
+    """Regression guard: a healthy active row still resolves to its company_id."""
+    repo = MagicMock()
+    repo.get = AsyncMock(return_value=MagicMock(status="active", company_id="co_live"))
+
+    assert await resolve_company_id_for_owner(owner_id="user_abc", repo=repo) == "co_live"
+
+
+@pytest.mark.asyncio
+async def test_resolve_company_id_none_for_org_failed_row_with_company():
+    """An ORG whose only row is ``failed`` but carries a REAL adopted company_id
+    (the reconcile Friday-partial case) must resolve to None — a deliberately-
+    failed workspace must not leak its id to the ``if company_id is None``
+    callers. ``get_org_company_id`` is mocked to prove the OLD path returned the
+    id (the bug this fixes); the fix routes org resolution through
+    ``list_by_org_id`` and requires an ACTIVE row, so both are stubbed and the
+    result is None regardless of which the implementation calls."""
+    repo = MagicMock()
+    repo.get_org_company_id = AsyncMock(return_value="co_partial")  # old path returned the id
+    repo.list_by_org_id = AsyncMock(return_value=[{"status": "failed", "company_id": "co_partial"}])
+
+    assert await resolve_company_id_for_owner(owner_id="org_abc", repo=repo) is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_company_id_returns_id_for_active_org_row():
+    """Regression guard: an ORG with an ``active`` row still resolves to its
+    company_id. Green before and after the fix — the happy org path's outcome is
+    unchanged, only the lookup mechanism (get_org_company_id → list_by_org_id)."""
+    repo = MagicMock()
+    repo.get_org_company_id = AsyncMock(return_value="co_live")
+    repo.list_by_org_id = AsyncMock(return_value=[{"status": "active", "company_id": "co_live"}])
+
+    assert await resolve_company_id_for_owner(owner_id="org_abc", repo=repo) == "co_live"
 
 
 @pytest.mark.asyncio

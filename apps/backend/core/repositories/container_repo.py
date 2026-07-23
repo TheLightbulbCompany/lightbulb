@@ -274,12 +274,39 @@ async def update_container_leased(owner_id: str, claim_id: str, fields: dict | N
         raise
 
 
-async def release_provision_to_error(owner_id: str, claim_id: str) -> None:
+async def release_provision_to_error(
+    owner_id: str,
+    claim_id: str,
+    *,
+    last_error: str | None = None,
+    retryable: bool = True,
+) -> None:
     """Release a held lease by flipping the row to ``error`` — immediately
     re-claimable, and the status poll's existing error auto-retry re-dispatches,
     so a failed provision self-heals on the next ~3s poll.
 
-    Doubly conditioned, silent no-op on either miss:
+    SINGLE OWNER of the provision-path ``status="error"`` transition. Every
+    synchronous provision failure funnels here (``provision_user_container``'s
+    except); the scattered pre-emptive ``status="error"`` writes inside
+    ``ecs_manager`` that used to fire first — and no-op this release's
+    ``status = provisioning`` condition, dropping the cause — were removed, and
+    ``_update_container`` now rejects a ``status="error"`` field to keep it that
+    way. The lone deliberate exception is the fire-and-forget
+    ``_await_running_transition`` rolloutState=FAILED write, which has no outer
+    release to defer to.
+
+    Records the failure CAUSE on the same atomic transition so the status
+    endpoint can tell a transient failure (silently retried) from a
+    deterministic one (surfaced to the owner instead of looped):
+    - ``last_error`` — a short human-readable cause (truncated). Omitted from
+      the write when None, so a bare release still lands a clean error row.
+    - ``retryable`` — transient (True: retry) vs deterministic (False: surface).
+      Always written; defaults to True so a cause-less caller leaves the row in
+      the safe self-healing state (the pre-existing behaviour).
+
+    Both fields are ADDITIVE — the write stays conditioned on the fencing token
+    AND ``status = "provisioning"`` exactly as before, a silent no-op on either
+    miss:
     - on the fencing token — if the lease was taken over, the row belongs to
       the superseding run and must not be clobbered with error;
     - on ``status = "provisioning"`` — a failed DELIBERATE reprovision of a
@@ -288,24 +315,72 @@ async def release_provision_to_error(owner_id: str, claim_id: str) -> None:
       error write would send the status poll into a needless reprovision loop.
     """
     table = _get_table()
+    # `retryable` and `last_error` are aliased (ExpressionAttributeNames) purely
+    # for reserved-word safety, matching the `#s`=status precedent above.
+    set_parts = ["#s = :err", "substatus = :sub", "updated_at = :iso", "#rt = :retryable"]
+    names = {"#s": "status", "#rt": "retryable"}
+    values: dict = {
+        ":err": "error",
+        ":sub": "provision_failed",
+        ":cid": claim_id,
+        ":prov": "provisioning",
+        ":iso": utc_now_iso(),
+        ":retryable": retryable,
+    }
+    if last_error is not None:
+        set_parts.append("#le = :lasterr")
+        names["#le"] = "last_error"
+        values[":lasterr"] = str(last_error)[:500]
     try:
         await run_in_thread(
             table.update_item,
             Key={"owner_id": owner_id},
-            UpdateExpression="SET #s = :err, substatus = :sub, updated_at = :iso",
+            UpdateExpression="SET " + ", ".join(set_parts),
             ConditionExpression="provision_claim_id = :cid AND #s = :prov",
-            ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues={
-                ":err": "error",
-                ":sub": "provision_failed",
-                ":cid": claim_id,
-                ":prov": "provisioning",
-                ":iso": utc_now_iso(),
-            },
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues=values,
         )
     except ClientError as e:
         if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
             raise
+
+
+def classify_provision_error(exc: BaseException) -> tuple[str, bool]:
+    """Map a caught provision failure to ``(last_error, retryable)`` for
+    ``release_provision_to_error``.
+
+    Lives here (not in a service) because it is shared by both callers of that
+    release — ``services.container_provision.background_provision`` (the
+    poll-driven path) and ``containers.ecs_manager.provision_user_container``
+    (the deliberate-reprovision doors) — and this repository already owns the
+    error transition + fields, so both can import it without an import cycle.
+
+    ``retryable`` answers whether re-running the identical provision could
+    plausibly succeed: a transient infra failure (ECS Spot-reclamation,
+    throttling, 5xx, ENI-attach) self-heals on the poll's next ~3s auto-retry,
+    while a deterministic one (a 4xx Paperclip / config / validation error)
+    fails identically forever and must be surfaced instead of looped.
+
+    - ``PaperclipApiError`` already auto-classifies retryability off its status
+      code (5xx/429 transient, 4xx deterministic) — reuse ``.retryable`` verbatim.
+    - ``ValueError`` / ``TypeError`` / ``KeyError`` are deterministic
+      config/shape bugs — a retry can't fix a malformed value.
+    - Everything else — notably ``EcsManagerError``, which wraps AWS
+      Spot/throttle/capacity ``ClientError``s as a string, plus any unrecognised
+      failure — defaults to retryable: a needless retry is cheaper than a
+      wrongly-surfaced permanent error.
+    """
+    # Lazy import: keep this repository module free of the paperclip client's
+    # import graph at load time (matches the function-local import style used
+    # for cross-layer references elsewhere in the provision path).
+    from core.services.paperclip_admin_client import PaperclipApiError
+
+    cause = f"{type(exc).__name__}: {exc}"
+    if isinstance(exc, PaperclipApiError):
+        return f"Paperclip {exc.status_code}: {exc}", exc.retryable
+    if isinstance(exc, (ValueError, TypeError, KeyError)):
+        return cause, False
+    return cause, True
 
 
 def is_provision_claim_stale(container: dict | None) -> bool:

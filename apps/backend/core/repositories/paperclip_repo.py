@@ -204,13 +204,19 @@ class PaperclipRepo:
         if "Item" not in resp:
             return None
         item = resp["Item"]
+        # The credential trio defaults to "" rather than strict-indexing: a
+        # durable ``failed`` marker (put_failed_marker_if_absent) deliberately
+        # carries NO credentials — its only job is to make a net-new seed
+        # failure visible (so /teams returns an honest 503) — and get() must
+        # still read it back as a status="failed" row rather than KeyError.
+        # Real provisioned rows always carry all three (put() writes them).
         return PaperclipCompany(
             user_id=item["user_id"],
             org_id=item["org_id"],
             company_id=item["company_id"],
-            paperclip_user_id=item["paperclip_user_id"],
-            paperclip_password_encrypted=item["paperclip_password_encrypted"],
-            service_token_encrypted=item["service_token_encrypted"],
+            paperclip_user_id=item.get("paperclip_user_id", ""),
+            paperclip_password_encrypted=item.get("paperclip_password_encrypted", ""),
+            service_token_encrypted=item.get("service_token_encrypted", ""),
             status=item["status"],
             created_at=datetime.fromisoformat(item["created_at"]),
             updated_at=datetime.fromisoformat(item["updated_at"]),
@@ -369,6 +375,56 @@ class PaperclipRepo:
         table = self._table()
         try:
             await run_in_thread(table.update_item, **kwargs)
+            return True
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            return False
+
+    async def put_failed_marker_if_absent(
+        self,
+        *,
+        user_id: str,
+        org_id: str,
+        reason: str,
+        company_id: str = "",
+    ) -> bool:
+        """Durably record "a seed failed here" when NO row exists yet, via a
+        CONDITIONAL put-if-absent (``attribute_not_exists(user_id)``).
+
+        Returns True iff the marker landed (the key was free); False when a real
+        row already exists — a concurrent provision wrote it in the gap after the
+        caller's ``get()`` returned None, and the conditional REFUSES to clobber
+        it. That refusal is the whole point: the old unconditional empty-id put
+        overwrote a just-written provisioning row's real ``paperclip_user_id``
+        with "" on an eventually-consistent stale read, wedging adoption. A
+        put-if-absent can only ever create, never overwrite.
+
+        Deliberately carries NO credential fields — ``paperclip_user_id`` /
+        ``paperclip_password_encrypted`` / ``service_token_encrypted`` are ABSENT,
+        not "". The marker's only job is durable visibility of the failure so
+        ``/teams`` returns an honest 503 (and ``/container/status`` surfaces
+        ``teams_status="failed"``) instead of the 202 spinner a MISSING row
+        produces. It is NOT adoptable: the net-new / orphan-422 failures that
+        reach the no-row branch (Better Auth user may already exist with an
+        unknown id) cannot self-heal a retry, and a truthful failed row is the
+        honest terminal outcome. ``get()`` tolerates the absent credentials.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        item = {
+            "user_id": user_id,
+            "org_id": org_id,
+            "company_id": company_id,
+            "status": "failed",
+            "last_error": reason,
+            "created_at": now,
+            "updated_at": now,
+        }
+        table = self._table()
+        try:
+            await run_in_thread(
+                table.put_item,
+                Item=item,
+                ConditionExpression="attribute_not_exists(user_id)",
+            )
             return True
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             return False

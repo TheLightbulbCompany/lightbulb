@@ -102,8 +102,12 @@ class TestWakeGate:
     async def test_error_row_self_heal_ignores_wake0(self):
         row = {"service_name": "s", "status": "error"}
         body, dispatch, _ = await _call("0", _patches(row, parked=False))
+        # The self-heal still fires (dispatch called) regardless of wake=0 —
+        # but the status is now reported HONESTLY: a retryable error is
+        # error/error_retrying, never masked as "provisioning" (Part B).
         dispatch.assert_called_once()
-        assert body["status"] == "provisioning"
+        assert body["status"] == "error"
+        assert body["substatus"] == "error_retrying"
 
     @pytest.mark.asyncio
     async def test_trial_gate_fires_before_parked_logic(self):

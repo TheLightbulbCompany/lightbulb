@@ -1,5 +1,6 @@
 """Tests for container endpoints: GET /status and POST /gateway/restart."""
 
+import asyncio
 import contextlib
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -79,6 +80,19 @@ def _stub_personal_trial_default():
     ordering relative to the gate."""
     with patch("routers.container.ensure_personal_trial_default", new=AsyncMock()) as stub:
         yield stub
+
+
+@pytest.fixture(autouse=True)
+def _stub_teams_status_repo():
+    """The status path now reads the polling user's paperclip-companies seed
+    state to surface a NON-BLOCKING teams_status (Part C). Stub PaperclipRepo to
+    an empty read by default so this file's tests exercise the real
+    _resolve_teams_status without hitting DynamoDB; the Part C tests re-patch
+    PaperclipRepo inline (an active/failed row, or a raising read)."""
+    repo = MagicMock()
+    repo.get = AsyncMock(return_value=None)
+    with patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo):
+        yield repo
 
 
 class TestColdStartPhaseResolver:
@@ -1797,3 +1811,321 @@ class TestContainerProvisionStartGuards:
 
         ecs.start_user_service.assert_awaited_once_with("user_x")
         assert result["status"] == "provisioning"
+
+
+class TestContainerStatusHonestError:
+    """GET /container/status must tell the truth about a FAILED provision
+    (Part B). An `error` row is no longer masked as `provisioning`/`auto_retry`:
+    it reports status=`error` + last_error, and the row's `retryable` flag
+    (written by container_repo.release_provision_to_error) decides whether a
+    re-provision is auto-dispatched (transient) or the terminal error card is
+    shown (deterministic). `stopped` keeps its silent auto-wake, and the
+    stale-lease liveness recovery is untouched.
+    """
+
+    @staticmethod
+    def _ecs(row, *, has_live=False):
+        """error/stopped/provisioning rows resolve via get_service_status;
+        resolve_running_container returns (None, None) for a non-running row."""
+        return MagicMock(
+            resolve_running_container=AsyncMock(return_value=(None, None)),
+            get_service_status=AsyncMock(return_value=row),
+            has_live_service=AsyncMock(return_value=has_live),
+        )
+
+    @classmethod
+    def _patches(cls, row, *, captured, has_live=False):
+        """Gate clear, not capped, phase stubbed, conversion inert. Records
+        each create_task dispatch's qualname into `captured`."""
+
+        def capture_task(coro):
+            captured.append(coro.__qualname__)
+            coro.close()
+            return MagicMock()
+
+        return (
+            patch("routers.container.get_ecs_manager", return_value=cls._ecs(row, has_live=has_live)),
+            patch("routers.container.resolve_owner_id", return_value="user_x"),
+            patch("routers.container.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+            patch("core.services.trial_cap.trial_block_reason", new=AsyncMock(return_value=None)),
+            patch("routers.container._safe_phase", return_value="provisioning"),
+            patch("routers.container.asyncio.create_task", side_effect=capture_task),
+        )
+
+    @pytest.mark.asyncio
+    async def test_error_retryable_false_surfaces_error_and_does_not_redispatch(self):
+        """Deterministic failure (retryable=False): report status=error +
+        last_error, and do NOT auto re-provision."""
+        from routers.container import container_status
+
+        row = {
+            "service_name": "svc",
+            "status": "error",
+            "substatus": "provision_failed",
+            "last_error": "ValueError: bad config",
+            "retryable": False,
+        }
+        captured: list[str] = []
+        with contextlib.ExitStack() as stack:
+            for p in self._patches(row, captured=captured):
+                stack.enter_context(p)
+            result = await container_status(_personal_auth())
+
+        assert result["status"] == "error"
+        assert result["last_error"] == "ValueError: bad config"
+        assert "background_provision" not in captured, f"deterministic error must not re-dispatch, got {captured}"
+        assert captured == []
+
+    @pytest.mark.asyncio
+    async def test_error_retryable_true_reports_error_retrying_and_redispatches(self):
+        """Transient failure (retryable=True): still auto re-provision, but
+        report honestly — status=error, substatus=error_retrying (NEVER
+        provisioning), last_error carried through."""
+        from routers.container import container_status
+
+        row = {
+            "service_name": "svc",
+            "status": "error",
+            "substatus": "provision_failed",
+            "last_error": "EcsManagerError: spot reclaimed",
+            "retryable": True,
+        }
+        captured: list[str] = []
+        with contextlib.ExitStack() as stack:
+            for p in self._patches(row, captured=captured):
+                stack.enter_context(p)
+            result = await container_status(_personal_auth())
+
+        assert result["status"] == "error"
+        assert result["substatus"] == "error_retrying"
+        assert result["substatus"] != "provisioning", "an error must never be masked as provisioning"
+        assert result["last_error"] == "EcsManagerError: spot reclaimed"
+        assert captured == ["background_provision"], f"transient error must re-dispatch, got {captured}"
+
+    @pytest.mark.asyncio
+    async def test_error_defaults_to_retryable_when_flag_absent(self):
+        """A legacy error row with no `retryable` field keeps the pre-T3
+        self-healing behaviour: auto re-dispatch, reported as error_retrying."""
+        from routers.container import container_status
+
+        row = {"service_name": "svc", "status": "error", "substatus": None, "last_error": None}
+        captured: list[str] = []
+        with contextlib.ExitStack() as stack:
+            for p in self._patches(row, captured=captured):
+                stack.enter_context(p)
+            result = await container_status(_personal_auth())
+
+        assert result["status"] == "error"
+        assert result["substatus"] == "error_retrying"
+        assert captured == ["background_provision"]
+
+    @pytest.mark.asyncio
+    async def test_stopped_row_still_auto_wakes_as_provisioning(self):
+        """Regression guard: `stopped` (healthy scaled-to-zero) keeps its silent
+        auto-wake — dispatch + status=provisioning/substatus=auto_retry —
+        untouched by the error split."""
+        from routers.container import container_status
+
+        row = {"service_name": "svc", "status": "stopped", "substatus": None}
+        captured: list[str] = []
+        with contextlib.ExitStack() as stack:
+            for p in self._patches(row, captured=captured):
+                stack.enter_context(p)
+            result = await container_status(_personal_auth())
+
+        assert result["status"] == "provisioning"
+        assert result["substatus"] == "auto_retry"
+        assert captured == ["background_provision"]
+
+    @pytest.mark.asyncio
+    async def test_stale_provisioning_lease_still_reclaims(self):
+        """Liveness path intact: a `provisioning` row whose lease has gone stale
+        AND has no live ECS service still re-claims (dispatches a provision) and
+        reports provisioning/auto_retry — the SIGKILL'd-worker recovery the
+        error split must not disturb."""
+        import time as _time
+
+        from core.repositories.container_repo import PROVISION_CLAIM_STALE_S
+        from routers.container import container_status
+
+        row = {
+            "service_name": "svc",
+            "status": "provisioning",
+            "substatus": None,
+            "provision_claimed_at": int(_time.time()) - PROVISION_CLAIM_STALE_S - 100,
+        }
+        captured: list[str] = []
+        with contextlib.ExitStack() as stack:
+            for p in self._patches(row, captured=captured, has_live=False):
+                stack.enter_context(p)
+            result = await container_status(_personal_auth())
+
+        assert captured == ["background_provision"], f"stale lease must re-claim, got {captured}"
+        assert result["status"] == "provisioning"
+        assert result["substatus"] == "auto_retry"
+
+
+class TestContainerStatusTeamsStatus:
+    """GET /container/status surfaces a failed Paperclip seed as a NON-BLOCKING
+    teams_status (Part C). A running container with a failed company seed still
+    serves chat — phase stays "ready" — while teams_status="failed" tells the
+    client to show a "Teams needs attention / retry" affordance. The paperclip
+    read is best-effort: any failure omits the field, never breaks /status.
+    """
+
+    @pytest.mark.asyncio
+    async def test_resolve_teams_status_returns_failed_for_failed_row(self):
+        from routers.container import _resolve_teams_status
+
+        repo = MagicMock(get=AsyncMock(return_value=SimpleNamespace(status="failed")))
+        with patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo):
+            assert await _resolve_teams_status("user_x") == "failed"
+
+    @pytest.mark.asyncio
+    async def test_resolve_teams_status_returns_none_for_active_row(self):
+        from routers.container import _resolve_teams_status
+
+        repo = MagicMock(get=AsyncMock(return_value=SimpleNamespace(status="active")))
+        with patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo):
+            assert await _resolve_teams_status("user_x") is None
+
+    @pytest.mark.asyncio
+    async def test_resolve_teams_status_returns_none_when_no_row(self):
+        from routers.container import _resolve_teams_status
+
+        repo = MagicMock(get=AsyncMock(return_value=None))
+        with patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo):
+            assert await _resolve_teams_status("user_x") is None
+
+    @pytest.mark.asyncio
+    async def test_resolve_teams_status_swallows_read_error(self):
+        """A paperclip read failure must NOT break /status — it returns None."""
+        from routers.container import _resolve_teams_status
+
+        repo = MagicMock(get=AsyncMock(side_effect=RuntimeError("ddb down")))
+        with patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo):
+            assert await _resolve_teams_status("user_x") is None  # must not raise
+
+    @pytest.mark.asyncio
+    async def test_running_container_with_failed_seed_is_ready_plus_teams_failed(self):
+        """The core Part C case: a running container whose company seed failed
+        reports phase=ready (chat works) AND teams_status=failed (degraded)."""
+        from routers.container import container_status
+
+        fake_ecs = AsyncMock()
+        fake_ecs.resolve_running_container = AsyncMock(
+            return_value=({"service_name": "svc", "status": "running", "substatus": None}, "10.0.1.5")
+        )
+        failed_repo = MagicMock(get=AsyncMock(return_value=SimpleNamespace(status="failed")))
+        with (
+            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.resolve_owner_id", return_value="user_x"),
+            patch(
+                "routers.container.get_gateway_pool",
+                return_value=SimpleNamespace(is_user_connected=lambda _u: True),
+            ),
+            patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=failed_repo),
+        ):
+            result = await container_status(_personal_auth())
+
+        assert result["phase"] == "ready", "a failed seed must NOT block chat"
+        assert result["teams_status"] == "failed"
+
+    @pytest.mark.asyncio
+    async def test_running_container_with_healthy_seed_omits_teams_status(self):
+        """Additive: an unaffected container keeps today's exact field set —
+        teams_status is omitted, not present-and-null."""
+        from routers.container import container_status
+
+        fake_ecs = AsyncMock()
+        fake_ecs.resolve_running_container = AsyncMock(
+            return_value=({"service_name": "svc", "status": "running", "substatus": None}, "10.0.1.5")
+        )
+        active_repo = MagicMock(get=AsyncMock(return_value=SimpleNamespace(status="active")))
+        with (
+            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.resolve_owner_id", return_value="user_x"),
+            patch(
+                "routers.container.get_gateway_pool",
+                return_value=SimpleNamespace(is_user_connected=lambda _u: True),
+            ),
+            patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=active_repo),
+        ):
+            result = await container_status(_personal_auth())
+
+        assert result["phase"] == "ready"
+        assert "teams_status" not in result
+
+
+class TestProvisionTaskObservability:
+    """Part A: the detached ensure_user_ready dispatches carry a done-callback
+    so a raised exception is surfaced (metric + log) instead of vanishing as a
+    silent "Task exception was never retrieved"."""
+
+    @pytest.mark.asyncio
+    async def test_watch_provision_task_emits_metric_on_failure(self):
+        from routers.container import _watch_provision_task
+
+        async def boom():
+            raise ValueError("boom")
+
+        task = asyncio.get_running_loop().create_task(boom())
+        await asyncio.gather(task, return_exceptions=True)
+        with patch("routers.container.put_metric") as mock_metric:
+            _watch_provision_task(task)
+        mock_metric.assert_called_once_with("container.provision", dimensions={"status": "error"})
+
+    @pytest.mark.asyncio
+    async def test_watch_provision_task_no_metric_on_success(self):
+        from routers.container import _watch_provision_task
+
+        async def ok():
+            return None
+
+        task = asyncio.get_running_loop().create_task(ok())
+        await asyncio.gather(task, return_exceptions=True)
+        with patch("routers.container.put_metric") as mock_metric:
+            _watch_provision_task(task)
+        mock_metric.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_watch_provision_task_ignores_cancelled(self):
+        from routers.container import _watch_provision_task
+
+        async def sleeper():
+            await asyncio.sleep(10)
+
+        task = asyncio.get_running_loop().create_task(sleeper())
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        with patch("routers.container.put_metric") as mock_metric:
+            _watch_provision_task(task)  # must not raise, must not emit
+        mock_metric.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_dispatch_watched_surfaces_raising_task(self):
+        """End-to-end wiring: a coroutine dispatched through _dispatch_watched
+        that raises fires the provision-error metric via the attached
+        done-callback (proves the site attaches it to a real Task)."""
+        from routers.container import _dispatch_watched
+
+        holder: dict = {}
+
+        def cap(coro):
+            task = asyncio.get_running_loop().create_task(coro)
+            holder["task"] = task
+            return task
+
+        async def boom():
+            raise ValueError("boom")
+
+        with (
+            patch("routers.container.asyncio.create_task", side_effect=cap),
+            patch("routers.container.put_metric") as mock_metric,
+        ):
+            _dispatch_watched(boom())
+            await asyncio.gather(holder["task"], return_exceptions=True)
+            await asyncio.sleep(0)  # let the done-callback fire
+
+        mock_metric.assert_called_once_with("container.provision", dimensions={"status": "error"})

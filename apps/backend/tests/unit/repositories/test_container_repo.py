@@ -491,6 +491,27 @@ async def test_try_claim_provision_stamps_execution_name(dynamodb_table):
 
 
 @pytest.mark.asyncio
+async def test_try_claim_provision_losing_claim_leaves_stamp_unchanged(dynamodb_table):
+    # A losing claim (fresh provisioning lease held by another claim) is one
+    # atomic conditional write: the loser's claim_id AND execution_name must
+    # both be rejected together — a half-applied stamp would point the winner's
+    # row at an execution that will never run.
+    from core.repositories import container_repo
+
+    won = await container_repo.try_claim_provision(
+        "user_ghi", claim_id="winner-claim", execution_name="provision-user_ghi-winnercl"
+    )
+    assert won == "winner-claim"
+    lost = await container_repo.try_claim_provision(
+        "user_ghi", claim_id="loser-claim", execution_name="provision-user_ghi-losercla"
+    )
+    assert lost is None
+    row = await container_repo.get_by_owner_id("user_ghi")
+    assert row["provision_claim_id"] == "winner-claim"
+    assert row["provision_execution_name"] == "provision-user_ghi-winnercl"
+
+
+@pytest.mark.asyncio
 async def test_try_claim_provision_without_name_leaves_field_absent(dynamodb_table):
     from core.repositories import container_repo
 

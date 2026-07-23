@@ -1,11 +1,16 @@
 """Tests for scripts/provision_runner.py exit-code mapping."""
 
+import subprocess
+import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from core.repositories.container_repo import ProvisionSuperseded
 from scripts import provision_runner
+
+BACKEND_ROOT = Path(__file__).resolve().parents[3]
 
 
 @pytest.fixture
@@ -26,9 +31,33 @@ def _row(monkeypatch, row):
     monkeypatch.setattr(provision_runner, "_get_row", AsyncMock(return_value=row))
 
 
+def test_module_is_invocable_as_dash_m():
+    # Transport smoke: the state machine launches the runner as
+    # `uv run python -m scripts.provision_runner …` from the backend root.
+    # Pins that the module resolves under -m with argparse wired — a rename
+    # or import-time crash fails here, not at the first real dispatch.
+    result = subprocess.run(
+        [sys.executable, "-m", "scripts.provision_runner", "--help"],
+        cwd=BACKEND_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 async def test_running_row_exits_zero(monkeypatch, manager):
     _row(monkeypatch, {"status": "running"})
     assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_OK
+    # The claim_id pass-through is the fencing seam: the runner must thread
+    # the machine's claim into provision_user_container unchanged, or the
+    # leased checkpoints fence out the machine's own run.
+    manager.provision_user_container.assert_awaited_once_with(
+        "user_a",
+        provider_choice="bedrock_claude",
+        byo_provider=None,
+        owner_type="personal",
+        claim_id="claim",
+    )
     manager.wait_for_running.assert_awaited_once_with("user_a")
 
 

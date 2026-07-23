@@ -20,7 +20,9 @@ import boto3
 from botocore.exceptions import ClientError
 
 from core.config import settings
+from core.observability.logging import bind_log_context
 from core.repositories import container_repo
+from core.services.container_provision import _emit_provision_metric
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +47,12 @@ def execution_input(owner_id: str, claim_id: str) -> str:
         {
             "attempt": 0,
             "claim_id": claim_id,
+            # The backend image has no ENTRYPOINT/PATH venv setup — its deps
+            # live in a uv-managed venv (the image's own CMD is `uv run …`),
+            # so a bare `python` cannot import the app. `uv run` is mandatory.
             "command": [
+                "uv",
+                "run",
                 "python",
                 "-m",
                 "scripts.provision_runner",
@@ -65,6 +72,9 @@ async def dispatch_provision(owner_id: str) -> None:
     """Start (or idempotently re-start) the provisioning state machine for
     this owner. Never raises — dispatch failure releases the claim to
     ``error`` so the status poll's normal retry re-dispatches."""
+    # Re-bind correlation ids: like background_provision, this can run in a
+    # detached task where the HTTP-middleware binds did not propagate.
+    bind_log_context(user_id=owner_id)
     try:
         await _dispatch_inner(owner_id)
     except Exception:  # noqa: BLE001 — dispatch must never take down the caller
@@ -74,17 +84,29 @@ async def dispatch_provision(owner_id: str) -> None:
 async def _dispatch_inner(owner_id: str) -> None:
     row = await container_repo.get_by_owner_id(owner_id)
 
-    # Branch A: a provisioning row with a self-consistent stamped execution
-    # name. Re-issue StartExecution with the SAME name+input: running → same
-    # ARN (cross-instance single-flight); never-started (crash between claim
-    # and start) → starts now; closed → ExecutionAlreadyExists, benign (the
-    # row reconciles via the runner's writes or the stale clause).
-    if row and row.get("status") == "provisioning":
+    # Branch A (design §3): a row with a self-consistent stamped execution
+    # name, in a status the machine legitimately owns. That is "provisioning"
+    # OR "error" — during in-machine retries the runner/SFN honestly writes
+    # error + error_retrying, and treating that as fresh-dispatch would mint a
+    # SECOND concurrent execution whose stale twin re-runs the AIP/role/
+    # gate-token mint (a rotation — the duplicate-mint prod incident class).
+    # Re-issue StartExecution with the SAME name+input:
+    #   • RUNNING → idempotent success, same ARN (cross-instance single-flight)
+    #   • never started (crash between claim and start) → starts now
+    #   • CLOSED → ExecutionAlreadyExists → fall through to Branch B (the
+    #     design's "execution CLOSED → mint fresh claim" leg; without it a
+    #     "provisioning" row whose execution closed without a terminal row
+    #     write is wedged forever). Branch B's claim conditions bound this:
+    #     a fresh provisioning lease refuses, error/stale rows admit.
+    if row and row.get("status") in ("provisioning", "error"):
         stamped = row.get("provision_execution_name")
         claim = row.get("provision_claim_id")
         if stamped and claim and stamped == execution_name(owner_id, claim):
-            await _start(owner_id, claim, healing=True)
-        return
+            outcome = await _start(owner_id, claim)
+            if outcome != "closed":
+                # "ok" → done. "failed" → return WITHOUT touching the row:
+                # the claim is not ours to release, and a later poll retries.
+                return
 
     # Branch B: fresh dispatch — mint claim + name in one atomic write.
     claim = str(uuid.uuid4())
@@ -92,16 +114,30 @@ async def _dispatch_inner(owner_id: str) -> None:
     won = await container_repo.try_claim_provision(owner_id, claim_id=claim, execution_name=name)
     if won is None:
         logger.info("dispatch_provision: claim lost for owner %s — standing down", owner_id)
+        _emit_provision_metric("claim_lost")
         return
-    started = await _start(owner_id, claim, healing=False)
-    if not started:
-        try:
-            await container_repo.release_provision_to_error(owner_id, claim)
-        except Exception:  # noqa: BLE001 — release is best-effort
-            logger.exception("dispatch_provision: release failed for owner %s", owner_id)
+    outcome = await _start(owner_id, claim)
+    if outcome == "ok":
+        return
+    # "failed": transient StartExecution error. "closed": an 8-hex name
+    # collision on a FRESH claim — the name embeds claim_id[:8], so a closed
+    # execution already holds it and this claim can never run. Either way,
+    # release to error so the next poll mints a new claim (and name).
+    try:
+        await container_repo.release_provision_to_error(owner_id, claim)
+    except Exception:  # noqa: BLE001 — release is best-effort
+        logger.exception("dispatch_provision: release failed for owner %s", owner_id)
+    _emit_provision_metric("error")
 
 
-async def _start(owner_id: str, claim_id: str, *, healing: bool) -> bool:
+async def _start(owner_id: str, claim_id: str) -> str:
+    """StartExecution with the deterministic name+input for this claim.
+
+    Returns one of:
+      • "ok"     — started, or idempotently matched a RUNNING execution
+      • "closed" — ExecutionAlreadyExists: a CLOSED execution holds the name
+      • "failed" — transient StartExecution failure
+    """
     name = execution_name(owner_id, claim_id)
     try:
         await asyncio.to_thread(
@@ -110,18 +146,13 @@ async def _start(owner_id: str, claim_id: str, *, healing: bool) -> bool:
             name=name,
             input=execution_input(owner_id, claim_id),
         )
-        return True
+        return "ok"
     except ClientError as exc:
         if exc.response["Error"]["Code"] == "ExecutionAlreadyExists":
-            # Closed execution with this name: it already ran to completion.
-            logger.info(
-                "dispatch_provision: execution %s already closed (healing=%s) — no-op",
-                name,
-                healing,
-            )
-            return True
+            logger.info("dispatch_provision: execution %s already closed", name)
+            return "closed"
         logger.exception("dispatch_provision: StartExecution failed for %s", name)
-        return False
+        return "failed"
     except Exception:  # noqa: BLE001 — dispatch must never take down the caller
         logger.exception("dispatch_provision: StartExecution failed for %s", name)
-        return False
+        return "failed"

@@ -789,10 +789,42 @@ export function ProvisioningStepper({
   // requires a loaded user, so a not-yet-onboarded container would otherwise
   // flash `children` (or the stepper) for a frame before the funnel takes over
   // once `user` loads. Only matters where the funnel COULD show — a
-  // normal-gate, not-yet-onboarded, non-terminal container. A loaded-but-
-  // signed-out user (isLoaded true, user null) is NOT a loading state and
-  // falls straight through; a terminal error still routes to its card below.
+  // normal-gate, not-yet-onboarded, non-terminal container. A terminal error
+  // still routes to its card below.
   if (!userLoaded && gatePhase === "normal" && !containerOnboarded && !isTerminalError) {
+    return (
+      <div className="flex-1 flex items-center justify-center">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  // A ready-but-not-onboarded container BELONGS to the first-run funnel above,
+  // whatever the owner type (trial_local OR paid, personal OR org) — the funnel
+  // is keyed on `container.onboarded === false`, the authoritative per-container
+  // fact, NOT on the plan. But the funnel needs a truthy Clerk `user` (its
+  // submit writes user.unsafeMetadata), so its gate is `!!user`. When the
+  // container is already warm-ready while `user` is still resolving — the
+  // {isLoaded:true, user:null} window useUser returns right after an org
+  // `setActive` JWT refresh, which is exactly the paid-org-owner path (the
+  // personal path resolves `user` inline in useOnboardingGate, so it never hits
+  // this) — the funnel gate is skipped, the `!userLoaded` loader above is also
+  // skipped (Clerk reports loaded), and `phase === "ready"` below would hand
+  // straight off to the dockable workspace. That early ready-return beating the
+  // funnel IS the bug: a paid org owner is booted into a contextless workspace,
+  // the brief is never submitted, and Friday starts with zero goals/projects.
+  // Hold a neutral loader until `user` resolves so the funnel — not the dock —
+  // wins. On the auth-gated chat surface `user === null` is never "signed out"
+  // (WorkspaceShell / ChatLayout only mount this once isSignedIn), so it always
+  // resolves; an onboarded or this-session-submitted container falls through to
+  // children below.
+  if (
+    phase === "ready" &&
+    !user &&
+    !containerOnboarded &&
+    // eslint-disable-next-line react-hooks/refs
+    !sessionBriefSubmittedRef.current
+  ) {
     return (
       <div className="flex-1 flex items-center justify-center">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />

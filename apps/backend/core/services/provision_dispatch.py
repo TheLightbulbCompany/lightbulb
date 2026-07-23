@@ -65,6 +65,13 @@ async def dispatch_provision(owner_id: str) -> None:
     """Start (or idempotently re-start) the provisioning state machine for
     this owner. Never raises — dispatch failure releases the claim to
     ``error`` so the status poll's normal retry re-dispatches."""
+    try:
+        await _dispatch_inner(owner_id)
+    except Exception:  # noqa: BLE001 — dispatch must never take down the caller
+        logger.exception("dispatch_provision: dispatch failed for owner %s", owner_id)
+
+
+async def _dispatch_inner(owner_id: str) -> None:
     row = await container_repo.get_by_owner_id(owner_id)
 
     # Branch A: a provisioning row with a self-consistent stamped execution

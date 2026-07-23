@@ -89,3 +89,15 @@ async def test_start_failure_releases_claim_to_error(monkeypatch, sfn):
     )
     await provision_dispatch.dispatch_provision("user_abc")
     release.assert_awaited_once()
+
+
+async def test_ddb_read_failure_is_swallowed_and_starts_nothing(monkeypatch, sfn):
+    monkeypatch.setattr(
+        provision_dispatch.container_repo,
+        "get_by_owner_id",
+        AsyncMock(
+            side_effect=ClientError({"Error": {"Code": "ThrottlingException", "Message": "slow down"}}, "GetItem")
+        ),
+    )
+    await provision_dispatch.dispatch_provision("user_abc")  # must not raise
+    sfn.start_execution.assert_not_called()

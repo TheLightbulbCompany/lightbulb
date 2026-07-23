@@ -51,8 +51,21 @@ export function IssuesPanel({
   // client-side on `assigneeAgentId` (the inbox does the same).
   const agentFilter = agentFilterProp ?? null;
 
+  // Self-healing backstop for a board that can otherwise go silently stale.
+  // The event-driven fast path stays primary: TeamsEventsProvider maps
+  // `teams.activity.logged` (the BFF emits it with action "issue.created")
+  // onto this `/teams/issues` key. But that signal rides a replay-less,
+  // multi-hop Paperclip→gateway bridge — an agent creating tasks during a run
+  // (e.g. Friday at onboarding) can emit its `issue.created` events before this
+  // client is subscribed, and Paperclip has no cursor to replay them. With
+  // `revalidateOnFocus` off globally (SwrProvider) and dock panels hidden (not
+  // unmounted) on switch, nothing else revalidates this key — the board stayed
+  // "No tasks yet" for minutes while GET /issues already returned the rows.
+  // A 30s poll + focus revalidation heals it cheaply, mirroring the
+  // ProvisioningStepper's event-fast-path-plus-polling backstop.
   const { data, isLoading, error, mutate } = read<{ issues: Issue[] }>(
     "/issues",
+    { refreshInterval: 30_000, revalidateOnFocus: true },
   );
   // NewIssueDialog renders Project + Assignee pickers only when these arrays
   // are non-empty (its defaults are []). TasksList also resolves assignee /

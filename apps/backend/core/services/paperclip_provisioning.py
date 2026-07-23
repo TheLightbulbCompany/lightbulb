@@ -1269,12 +1269,26 @@ class PaperclipProvisioning:
         on the reconcile path: an already-purged company lists only Friday/Atlas
         (both in ``seeded_agent_ids``), so nothing is deleted.
 
-        Each builtin starter ships with an assigned ROUTINE
-        (``routines.assigneeAgentId``), and Paperclip refuses (409) to delete an
-        agent while a routine still references it — so a victim's assigned
-        routines are deleted FIRST, then the agent. Routine cleanup is itself
-        best-effort: a failure is logged + metered and the agent delete is still
-        attempted (it then 409s and is swallowed per-agent, same as before).
+        HARD LIMIT — Paperclip's built-in agents are UNDELETABLE. The starters
+        (Reflection Coach, Summarizer) carry a built-in marker in their metadata,
+        and the deployed BFF's ``DELETE /api/agents/{id}`` answers 409
+        ``built_in_agent_undeletable`` ("Built-in agents cannot be deleted; pause
+        them instead") BEFORE touching the DB — there is no force/override, so no
+        backend call can remove them from the roster against this Paperclip
+        version. They are created ``status="paused"`` with disabled triggers, so
+        they never run; the residue is cosmetic. This purge therefore attempts
+        each non-seeded delete (which cleanly removes any genuine stray — the BFF
+        deletes a deletable agent's own assigned routines inside the same delete
+        transaction, so there is no ``routines.assigneeAgentId`` FK for us to
+        pre-clear) and treats the built-in-undeletable 409 as an EXPECTED no-op it
+        logs and steps past. Every OTHER delete failure stays a logged + metered
+        warning, and the whole purge stays best-effort (never fatal).
+
+        (A prior revision pre-listed and pre-deleted each victim's routines on the
+        theory the 409 was a ``routines.assigneeAgentId`` FK. It was not — the FK
+        is handled BFF-side and the 409 is the built-in guard — so that inert step
+        was removed; verified against the pinned Paperclip commit's agents-service
+        ``remove`` + routines-list route.)
         """
         keep = set(seeded_agent_ids or ())
         try:
@@ -1301,45 +1315,15 @@ class PaperclipProvisioning:
         else:
             agents = []
 
-        # Map each agent id -> its assigned routine ids. Paperclip 409s an agent
-        # delete while a routine still references it (routines.assigneeAgentId
-        # FK), so a victim's routines are deleted before the agent (below).
-        # Company-scoped list — Paperclip exposes no per-agent routine endpoint,
-        # so filter client-side on ``assigneeAgentId``. Best-effort: a list
-        # failure just skips routine-deletion (the agent delete is still
-        # attempted, then 409s + is swallowed per-agent), never fatal.
-        routines_by_agent: dict[str, list[str]] = {}
-        try:
-            listed_routines = await self._admin.list_routines(
-                session_cookie=session_cookie,
-                company_id=company_id,
-            )
-        except Exception as e:  # noqa: BLE001 — purge must never fail provisioning
-            logger.warning(
-                "paperclip_provisioning: builtin-agent purge could not list routines for company %s: %s",
-                company_id,
-                e,
-            )
-            put_metric("paperclip.provision.builtin_purge_error")
-            listed_routines = []
-
-        # ``list_routines`` is typed ``dict`` but returns a bare list in practice;
-        # accept both (same normalization as agent_routine_provisioning).
-        if isinstance(listed_routines, dict):
-            routine_items = listed_routines.get("routines") or listed_routines.get("items") or []
-        elif isinstance(listed_routines, list):
-            routine_items = listed_routines
-        else:
-            routine_items = []
-        for routine in routine_items:
-            if not isinstance(routine, dict):
-                continue
-            assignee_id = routine.get("assigneeAgentId")
-            routine_id = routine.get("id")
-            if assignee_id and routine_id:
-                routines_by_agent.setdefault(assignee_id, []).append(routine_id)
-
+        # Attempt to delete every non-seeded agent. A genuine stray is removed
+        # cleanly (the BFF clears a deletable agent's own assigned routines in the
+        # same delete transaction — there is no routines.assigneeAgentId FK for us
+        # to pre-clear). Paperclip's built-in managed agents answer 409
+        # ``built_in_agent_undeletable`` and cannot be removed at all; that is the
+        # EXPECTED outcome, logged and stepped past — NOT a purge error. Any other
+        # failure is a logged + metered warning. The purge is never fatal.
         purged: list[str] = []
+        undeletable_builtins: list[str] = []
         for agent in agents:
             if not isinstance(agent, dict):
                 continue
@@ -1347,33 +1331,25 @@ class PaperclipProvisioning:
             if not agent_id or agent_id in keep:
                 continue
             agent_name = agent.get("name")
-            # Delete this victim's assigned routines first — Paperclip 409s the
-            # agent delete while a routine still references it. Best-effort per
-            # routine; a failure is logged + metered and the agent delete is
-            # still attempted below.
-            for routine_id in routines_by_agent.get(agent_id, ()):
-                try:
-                    await self._admin.delete_routine(
-                        session_cookie=session_cookie,
-                        routine_id=routine_id,
-                    )
-                except Exception as e:  # noqa: BLE001 — routine cleanup must not fail provisioning
-                    logger.warning(
-                        "paperclip_provisioning: builtin-agent purge failed to delete routine %s "
-                        "for agent %r (%s) in company %s: %s",
-                        routine_id,
-                        agent_name,
-                        agent_id,
-                        company_id,
-                        e,
-                    )
-                    put_metric("paperclip.provision.builtin_purge_error")
             try:
                 await self._admin.delete_agent(
                     session_cookie=session_cookie,
                     agent_id=agent_id,
                 )
                 purged.append(f"{agent_name!r}({agent_id})")
+            except PaperclipApiError as e:
+                if e.status_code == 409 and "built_in_agent_undeletable" in str(e.body or ""):
+                    # Undeletable Paperclip built-in (already paused) — expected.
+                    undeletable_builtins.append(f"{agent_name!r}({agent_id})")
+                    continue
+                logger.warning(
+                    "paperclip_provisioning: builtin-agent purge failed to delete agent %r (%s) in company %s: %s",
+                    agent_name,
+                    agent_id,
+                    company_id,
+                    e,
+                )
+                put_metric("paperclip.provision.builtin_purge_error")
             except Exception as e:  # noqa: BLE001 — one delete failing must not fail provisioning
                 logger.warning(
                     "paperclip_provisioning: builtin-agent purge failed to delete agent %r (%s) in company %s: %s",
@@ -1386,10 +1362,18 @@ class PaperclipProvisioning:
 
         if purged:
             logger.info(
-                "paperclip_provisioning: purged %d Paperclip builtin starter agent(s) from company %s: %s",
+                "paperclip_provisioning: purged %d non-seeded Paperclip agent(s) from company %s: %s",
                 len(purged),
                 company_id,
                 ", ".join(purged),
+            )
+        if undeletable_builtins:
+            logger.info(
+                "paperclip_provisioning: %d Paperclip built-in agent(s) are undeletable in this "
+                "BFF version and were left in place (created already-paused) for company %s: %s",
+                len(undeletable_builtins),
+                company_id,
+                ", ".join(undeletable_builtins),
             )
 
     async def _mark_failed(

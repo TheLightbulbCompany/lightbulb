@@ -1,10 +1,27 @@
 """Unit tests for friday_identity.pre_stage_friday_identity."""
 
+import re
+from datetime import datetime
 from unittest.mock import MagicMock
 
 import pytest
 
 from core.services import friday_identity
+
+# JS-canonical ISO-8601: exactly 3 fractional digits and a literal ``Z`` —
+# what OpenClaw 7.2's workspace-state migration accepts (``new Date(v).
+# toISOString() === v``). Python's ``.isoformat()`` (6-digit micros + ``+00:00``)
+# does NOT match this and is rejected by the migration.
+_JS_ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
+
+
+def _assert_js_canonical_roundtrip(ts: str) -> None:
+    """The timestamp is JS-canonical AND survives a strptime→strftime round-trip
+    byte-identically (3-digit millis preserved, literal ``Z``)."""
+    assert _JS_ISO_RE.match(ts), f"{ts!r} is not JS-canonical (YYYY-MM-DDTHH:MM:SS.mmmZ)"
+    parsed = datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S.%fZ")
+    reformatted = parsed.strftime("%Y-%m-%dT%H:%M:%S.") + f"{parsed.microsecond // 1000:03d}Z"
+    assert reformatted == ts
 
 
 @pytest.mark.asyncio
@@ -268,6 +285,52 @@ async def test_state_file_written_first_with_setup_completed(monkeypatch):
     assert state["setupCompletedAt"]
     assert isinstance(state["bootstrapSeededAt"], str)
     assert state["bootstrapSeededAt"]
+
+
+def test_js_iso_now_is_js_canonical_and_roundtrips():
+    """The shared helper emits ``YYYY-MM-DDTHH:MM:SS.mmmZ`` — byte-identical to
+    JS ``Date.prototype.toISOString`` — so OpenClaw 7.2's workspace-state
+    migration (``new Date(v).toISOString() === v``) accepts it."""
+    _assert_js_canonical_roundtrip(friday_identity.js_iso_now())
+
+
+@pytest.mark.asyncio
+async def test_state_file_timestamps_are_js_canonical(monkeypatch):
+    """Friday's seeded workspace-state.json timestamps must be JS-canonical.
+
+    OpenClaw 7.2 migrates this legacy file into its SQLite state store and
+    validates each timestamp with JS ``new Date(v).toISOString() === v`` —
+    exactly 3 fractional digits + literal ``Z``. Python's ``.isoformat()``
+    (6-digit micros + ``+00:00``) fails that round-trip: the boot doctor logs
+    ``Failed reading legacy workspace state: legacy workspace setup bootstrap
+    timestamp is invalid``, the migration aborts, and every agent run then
+    throws ``Legacy workspace setup state requires migration``.
+    """
+    import json as _json
+
+    workspace = MagicMock()
+    workspace.write_file_if_missing = MagicMock(return_value=True)
+
+    async def fake_resolve(owner_id):
+        return {
+            "kind": "personal",
+            "owner_display": "Sam",
+            "first_name_or_fallback": "Sam",
+            "full_name": "Sam Rivers",
+            "email": "sam@example.com",
+        }
+
+    monkeypatch.setattr(friday_identity, "_resolve_owner_profile", fake_resolve)
+
+    await friday_identity.pre_stage_friday_identity(
+        owner_id="user_abc",
+        paperclip_agents=[{"id": "uuid-1", "role": "ceo"}],
+        workspace=workspace,
+    )
+
+    state = _json.loads(workspace.write_file_if_missing.call_args_list[0].args[2])
+    _assert_js_canonical_roundtrip(state["bootstrapSeededAt"])
+    _assert_js_canonical_roundtrip(state["setupCompletedAt"])
 
 
 @pytest.mark.asyncio

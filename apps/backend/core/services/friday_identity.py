@@ -36,6 +36,25 @@ from core.observability.metrics import put_metric
 logger = logging.getLogger(__name__)
 
 
+def js_iso_now() -> str:
+    """JS-canonical ISO-8601 UTC timestamp (``2026-07-23T06:36:32.300Z``).
+
+    OpenClaw 7.2 migrates our seeded ``workspace-state.json`` into its SQLite
+    state store and validates every timestamp with JS
+    ``new Date(v).toISOString() === v`` — exactly 3 fractional digits and a
+    literal ``Z``. Python's ``.isoformat()`` (6-digit microseconds, ``+00:00``)
+    fails that round-trip, the boot doctor logs ``Failed reading legacy
+    workspace state: legacy workspace setup bootstrap timestamp is invalid``,
+    the migration aborts, and every agent run then throws ``Legacy workspace
+    setup state requires migration``. Keep this format byte-identical to
+    ``Date.prototype.toISOString``.
+
+    Shared by both workspace-state seed sites (here and ``atlas_seed``).
+    """
+    now = datetime.now(timezone.utc)
+    return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
+
+
 # ---------------------------------------------------------------------------
 # Templates
 # ---------------------------------------------------------------------------
@@ -842,7 +861,7 @@ async def pre_stage_friday_identity(
     # still leaves OpenClaw in a "treat as completed" state — it'll fill any
     # missing customized files with its own neutral templates rather than
     # running the bootstrap wizard. Idempotent via write_file_if_missing.
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = js_iso_now()
     state_rel_path = f"workspace-{friday_uuid}/.openclaw/workspace-state.json"
     workspace_state = {
         "version": 1,

@@ -20,8 +20,10 @@
  * change_provider rejects with 409 `byo_key_missing` unless the key is
  * already saved, so key-first is the designed sequence.
  */
-import { useState } from "react";
+import { useCallback, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { ApiError, useApi } from "@/lib/api";
+import { replaceSearchParams } from "@/lib/shellNav";
 
 type Provider = "openai" | "anthropic";
 type Props = {
@@ -124,10 +126,23 @@ const PRIMARY_BUTTON =
 
 export function ByoKeyStep({ onComplete }: Props) {
   const api = useApi();
+  const searchParams = useSearchParams();
   const [provider, setProvider] = useState<Provider>("openai");
   const [apiKey, setApiKey] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // The stepper's only "go back" mechanism is the `?provider=` URL param:
+  // stripping it exits the provider step and re-enters the main flow (the
+  // provider picker for a not-yet-subscribed owner, normal provisioning
+  // otherwise). Mirrors CreditsStep.chooseDifferentProvider so other params
+  // survive — without it a user who picked BYO by mistake is stranded on this
+  // form with no way back to the other providers.
+  const chooseDifferentProvider = useCallback(() => {
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("provider");
+    replaceSearchParams(params);
+  }, [searchParams]);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -230,6 +245,16 @@ export function ByoKeyStep({ onComplete }: Props) {
         style={SANS_FONT}
       >
         {submitting ? "Validating…" : "Save key"}
+      </button>
+
+      <button
+        type="button"
+        onClick={chooseDifferentProvider}
+        disabled={submitting}
+        className="text-xs text-[#8a8578] underline hover:text-[#1a1a1a] disabled:opacity-50"
+        style={SANS_FONT}
+      >
+        Choose a different provider
       </button>
     </form>
   );

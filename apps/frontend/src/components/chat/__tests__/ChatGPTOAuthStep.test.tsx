@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { ChatGPTOAuthStep } from "../ChatGPTOAuthStep";
 import type { OAuthState } from "@/hooks/useChatGPTOAuth";
 
@@ -17,13 +17,44 @@ function initialState(): MockHookValue {
   return { state: { status: "idle" }, start: startMock, disconnect: vi.fn() };
 }
 
+function pendingState(expiresAt: number): MockHookValue {
+  return {
+    state: {
+      status: "pending",
+      userCode: "ABCD-1234",
+      verificationUri: "https://chatgpt.com/auth/device",
+      expiresAt,
+    },
+    start: startMock,
+    disconnect: vi.fn(),
+  };
+}
+
 vi.mock("@/hooks/useChatGPTOAuth", () => ({
   useChatGPTOAuth: () => stateRef.current,
 }));
 
+// The step now reads useSearchParams (for the cancel/back escape). Mirror the
+// CreditsStep test's next/navigation mock so useSearchParams resolves.
+let searchParams = new URLSearchParams();
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ replace: vi.fn(), push: vi.fn() }),
+  useSearchParams: () => searchParams,
+}));
+
+// Copy-to-clipboard uses navigator.clipboard, absent in jsdom.
+const writeTextMock = vi.fn().mockResolvedValue(undefined);
+Object.defineProperty(navigator, "clipboard", {
+  value: { writeText: writeTextMock },
+  configurable: true,
+  writable: true,
+});
+
 describe("ChatGPTOAuthStep", () => {
   beforeEach(() => {
     startMock.mockReset();
+    writeTextMock.mockClear();
+    searchParams = new URLSearchParams();
     stateRef.current = initialState();
   });
 
@@ -66,5 +97,43 @@ describe("ChatGPTOAuthStep", () => {
     const onComplete = vi.fn();
     render(<ChatGPTOAuthStep onComplete={onComplete} />);
     await waitFor(() => expect(onComplete).toHaveBeenCalled());
+  });
+
+  it("copies the user code to the clipboard", async () => {
+    stateRef.current = pendingState(Date.now() + 600_000);
+    render(<ChatGPTOAuthStep onComplete={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: /copy code/i }));
+    await waitFor(() => expect(writeTextMock).toHaveBeenCalledWith("ABCD-1234"));
+    // Visible feedback flips to "Copied".
+    expect(await screen.findByText("Copied")).toBeInTheDocument();
+  });
+
+  it("shows a live expiry countdown while the code is valid", () => {
+    stateRef.current = pendingState(Date.now() + 600_000);
+    render(<ChatGPTOAuthStep onComplete={vi.fn()} />);
+    expect(screen.getByText(/code expires in/i)).toBeInTheDocument();
+    expect(screen.queryByText(/this code expired/i)).not.toBeInTheDocument();
+  });
+
+  it("shows an expired affordance and re-requests a code when the device code has expired", () => {
+    stateRef.current = pendingState(Date.now() - 1000);
+    render(<ChatGPTOAuthStep onComplete={vi.fn()} />);
+    expect(screen.getByText(/this code expired/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /get a new code/i }));
+    expect(startMock).toHaveBeenCalled();
+  });
+
+  it("strips ?provider= when cancelling, preserving other params", () => {
+    const replaceStateSpy = vi.spyOn(window.history, "replaceState");
+    searchParams = new URLSearchParams({ provider: "chatgpt_oauth", checkout: "success" });
+    stateRef.current = pendingState(Date.now() + 600_000);
+    render(<ChatGPTOAuthStep onComplete={vi.fn()} />);
+    fireEvent.click(
+      screen.getByRole("button", { name: /cancel and choose a different provider/i }),
+    );
+    const target = replaceStateSpy.mock.calls.at(-1)?.[2] as string;
+    expect(target).not.toMatch(/provider=/);
+    expect(target).toMatch(/checkout=success/);
+    replaceStateSpy.mockRestore();
   });
 });

@@ -182,8 +182,10 @@ export function ProvisioningStepper({
   const isOrg = !!organization;
   const { userId: clerkUserId } = useAuth();
   // Clerk user object — the first-run funnel branch below reads (and its
-  // component writes) user.unsafeMetadata.firstRun.
-  const { user } = useUser();
+  // component writes) user.unsafeMetadata.firstRun. `isLoaded` distinguishes
+  // "Clerk still resolving" (hold a loader) from "loaded, signed out"
+  // (user === null) — see the flash guard before the ready branch.
+  const { user, isLoaded: userLoaded } = useUser();
   // Per-OWNER activation-marker key so a shared/QA browser doesn't let the first
   // account's activation suppress onboarding_ready for a later account's real
   // first cold start. The event is a person-level denominator (PostHog is
@@ -700,6 +702,21 @@ export function ProvisioningStepper({
     !sessionBriefSubmittedRef.current
   ) {
     return <FirstRunFunnel />;
+  }
+
+  // Hold a neutral loader until Clerk resolves `user`. The funnel branch above
+  // requires a loaded user, so a not-yet-onboarded container would otherwise
+  // flash `children` (or the stepper) for a frame before the funnel takes over
+  // once `user` loads. Only matters where the funnel COULD show — a
+  // normal-gate, not-yet-onboarded, non-terminal container. A loaded-but-
+  // signed-out user (isLoaded true, user null) is NOT a loading state and
+  // falls straight through; a terminal error still routes to its card below.
+  if (!userLoaded && gatePhase === "normal" && !containerOnboarded && !isTerminalError) {
+    return (
+      <div className="flex-1 flex items-center justify-center">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
   }
 
   // Ready — render children. `teams_status: "failed"` is a TOP-LEVEL,

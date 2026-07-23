@@ -38,6 +38,9 @@ let clerkMockUser: {
   id: string;
   unsafeMetadata: { firstRun?: { briefSubmitted?: boolean } };
 } | null = null;
+// Configurable so the user-flash test can exercise the "Clerk still resolving"
+// (isLoaded=false) branch; every other test keeps the default `true`.
+let clerkMockIsLoaded = true;
 vi.mock("@clerk/nextjs", () => ({
   useOrganization: () => ({ organization: null, membership: null, isLoaded: true }),
   // Components in the stepper tree (useApi consumers) read useAuth/useUser.
@@ -45,7 +48,7 @@ vi.mock("@clerk/nextjs", () => ({
     getToken: vi.fn().mockResolvedValue("test-token"),
     isSignedIn: true,
   }),
-  useUser: () => ({ user: clerkMockUser, isLoaded: true }),
+  useUser: () => ({ user: clerkMockUser, isLoaded: clerkMockIsLoaded }),
 }));
 
 // ``lib/analytics`` re-exports PostHogProvider as ``Provider`` at module
@@ -167,6 +170,7 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     billingMockRefresh = vi.fn();
     billingMockStartTeamCheckout.mockClear();
     clerkMockUser = null;
+    clerkMockIsLoaded = true;
   });
 
   afterEach(() => {
@@ -814,6 +818,7 @@ describe("ProvisioningStepper per-container onboarding gate", () => {
     billingMockRefresh = vi.fn();
     billingMockStartTeamCheckout.mockClear();
     clerkMockUser = { id: "user_1", unsafeMetadata: {} };
+    clerkMockIsLoaded = true;
   });
 
   afterEach(() => {
@@ -975,5 +980,19 @@ describe("ProvisioningStepper per-container onboarding gate", () => {
     expect(screen.getByText(/Setup failed/i)).toBeInTheDocument();
     // The funnel must NOT preempt the terminal error card.
     expect(screen.queryByText(/get started/i)).not.toBeInTheDocument();
+  });
+
+  it("holds a neutral loader (not children) until Clerk resolves the user on a not-yet-onboarded ready container", () => {
+    // The funnel branch requires a loaded user; without the guard a
+    // not-onboarded ready container would flash `children` (the app) for a
+    // frame before the funnel takes over once `user` loads. isLoaded=false +
+    // not onboarded => neutral loader, neither children nor the funnel.
+    clerkMockIsLoaded = false;
+    clerkMockUser = null;
+    const { container } = renderWith({ status: "running", phase: "ready", onboarded: false });
+
+    expect(screen.queryByText("children")).not.toBeInTheDocument();
+    expect(screen.queryByText(/get started/i)).not.toBeInTheDocument();
+    expect(container.querySelector(".animate-spin")).toBeInTheDocument();
   });
 });

@@ -14,20 +14,22 @@
  * `pollIntervalFor`). Classification (contract §B1/§B3):
  *
  *   ready       — 200 with phase === "ready" (openclaw responsive)
- *   starting    — 200 with phase !== "ready" (cold start / provisioning), OR a
- *                 NON-terminal error the backend is auto-retrying (see below)
+ *   starting    — 200 with phase !== "ready" (cold start / provisioning), OR
+ *                 the ONE non-terminal error shape: status === "error" with
+ *                 substatus === "error_retrying" (backend is auto-retrying)
  *   parked      — 200 with phase === "parked" (deliberately-asleep trial box)
- *   error       — 200 with raw status === "error" AND substatus ===
- *                 "provision_failed" (a TERMINAL provision failure — PR3
- *                 honest-contract consumption). CRITICAL: `phase` still
- *                 resolves to "provisioning" for a dead container too, so
- *                 terminal-vs-transient is keyed off `substatus`, NEVER
- *                 `phase` — keying off phase would render a dead container as a
- *                 perpetual stepper. Every OTHER error (substatus
- *                 "error_retrying", or an untagged error row) is the backend
- *                 still auto-retrying, so it stays `starting` (keep the
- *                 progress surface, which is also what keeps the recovery poll
- *                 running). Matches web's ProvisioningStepper terminal check.
+ *   error       — 200 with raw status === "error" and ANY substatus other than
+ *                 "error_retrying" — provision_failed, deployment_failed (the
+ *                 ECS rollout circuit breaker), a bare error with no substatus
+ *                 (auto-retry gated / standing down), or any unknown value —
+ *                 i.e. a TERMINAL failure (PR3 honest-contract consumption).
+ *                 CRITICAL: `phase` still resolves to "provisioning" for a dead
+ *                 container too, so terminal-ness is keyed off `substatus`,
+ *                 NEVER `phase` — keying off phase would render a dead
+ *                 container as a perpetual stepper. Only the explicit
+ *                 "error_retrying" signal keeps it in `starting`; every other
+ *                 error is terminal (restores the pre-#1383 catch-all's
+ *                 coverage). Matches web's ProvisioningStepper terminal check.
  *   teamPending — 202 (org member waiting on admin's workspace)
  *   blocked     — 402 (provision gate fired; carries code + action.href + admin_only)
  *   needsSignup — 404 (admin never started signup)
@@ -82,10 +84,11 @@ export type ContainerStatus =
     }
   | { kind: "parked" }
   /**
-   * TERMINAL container failure — raw `status === "error"` AND `substatus ===
-   * "provision_failed"` (PR3 honest-contract). A transient/auto-retrying error
-   * is classified as `starting` instead (keep progress), so this kind is the
-   * one that earns the blocking "Setup failed" interstitial. Keyed off
+   * TERMINAL container failure — raw `status === "error"` with any substatus
+   * OTHER than "error_retrying" (provision_failed, deployment_failed, a bare
+   * error with no substatus, or any unknown value — PR3 honest-contract). Only
+   * the explicit auto-retry signal ("error_retrying") stays `starting`;
+   * everything else earns the blocking "Setup failed" interstitial. Keyed off
    * substatus, NEVER phase (a dead container still reports phase
    * "provisioning").
    */
@@ -208,22 +211,26 @@ function fromClassified(
       // Honest failure states (PR3), checked BEFORE the phase branches: the
       // backend reports phase="provisioning" for a failed container too, so an
       // error read AFTER the phase checks would misrender as a perpetual
-      // spinner. Terminal-vs-transient is keyed off `substatus`, NEVER `phase`
-      // (the landmine): only `provision_failed` is terminal → the blocking
-      // interstitial. Every other error (error_retrying, or an untagged error
-      // row) is the backend still auto-retrying — stay `starting` so the
-      // progress surface stays up AND the recovery poll keeps running.
+      // spinner. Terminal-ness is keyed off `substatus`, NEVER `phase` (the
+      // landmine). The ONLY non-terminal error is the explicit auto-retry
+      // signal "error_retrying" — keep it `starting` so progress stays up AND
+      // the recovery poll keeps running. EVERY other error shape is TERMINAL
+      // (provision_failed, deployment_failed's ECS rollout circuit breaker, a
+      // bare error with no substatus when auto-retry is gated / standing down,
+      // or any unknown value) → the Setup-failed interstitial, never an endless
+      // stepper. This inverts an earlier provision_failed-only check that
+      // silently downgraded deployment_failed / bare-error rows to `starting`.
       if (info.status === "error") {
-        if (info.substatus === "provision_failed") {
-          return { kind: "error" };
+        if (info.substatus === "error_retrying") {
+          return {
+            kind: "starting",
+            phase: info.phase,
+            substatus: info.substatus,
+            onboarded: info.onboarded,
+            teamsStatus,
+          };
         }
-        return {
-          kind: "starting",
-          phase: info.phase,
-          substatus: info.substatus ?? undefined,
-          onboarded: info.onboarded,
-          teamsStatus,
-        };
+        return { kind: "error" };
       }
       // phase absent (older backend / plain running box) → treat as ready.
       if (info.phase == null || info.phase === "ready") {

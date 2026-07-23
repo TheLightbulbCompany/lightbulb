@@ -334,20 +334,20 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
     );
   }
 
-  // Container failed (mobile onboarding-parity Slice 1): the backend
-  // reports phase="provisioning" for a failed container too, so without
-  // this check `status.kind` would read "starting" forever — the gap this
-  // slice closes. Unifies with web's ProvisioningStepper "Setup failed"
-  // card, which keys on the same raw `container.status === "error"`. A
-  // blocking interstitial (there is no working chat behind a failed
-  // container) with Retry + sign-out, mirroring the other blocked states —
-  // no outbound link, since there's nothing to manage on isol8.co for this
-  // one (retrying re-provisioning is the only lever either surface offers).
+  // Container failed TERMINALLY (mobile onboarding-parity Slice 1 + PR3): the
+  // backend reports phase="provisioning" for a failed container too, so this
+  // keys off `status.kind === "error"` (classified from substatus, NEVER
+  // phase) — otherwise it would read "starting" forever. Unifies with web's
+  // ProvisioningStepper "Setup failed" card. A blocking interstitial (there is
+  // no working chat behind a failed container) with Retry + sign-out, and no
+  // outbound link — there's nothing to manage on isol8.co for this one. The
+  // copy is honest that this is a REAL failure: Retry only re-checks status
+  // (recovery needs an admin reprovision), so it does not promise "temporary".
   if (status.kind === "error") {
     return (
       <Interstitial
         headline="Setup failed"
-        body="Something went wrong while setting up your workspace. This is usually temporary — try again in a moment."
+        body="Something went wrong setting up your workspace, and it needs attention. Retry to re-check, or contact support if it keeps failing."
         onRetry={onRetry}
         retrying={false}
       />

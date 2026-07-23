@@ -317,6 +317,53 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
 
 });
 
+describe("ServiceStack — provisioning executor (state machine, dark)", () => {
+  const template = SERVICE_TEMPLATE_DEV;
+
+  test("provision state machine and provisioner task-def exist", () => {
+    template.resourceCountIs("AWS::StepFunctions::StateMachine", 1);
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      Family: "isol8-dev-provisioner",
+    });
+  });
+
+  test("backend task role may start provision executions", () => {
+    // The task role's inline default policy is at CloudFormation's ~10 KB
+    // ceiling, so statements added late in the constructor spill into a
+    // TaskRoleOverflowPolicy ManagedPolicy attached to the same role (see the
+    // overflow-packing comment at the companySlugsTable grant in
+    // service-stack.ts). Functionally identical either way, so this assertion
+    // accepts the statement in EITHER the inline AWS::IAM::Policy or an
+    // AWS::IAM::ManagedPolicy — but if it's in a ManagedPolicy, that policy
+    // must be attached to the task role.
+    const wantedActions = [
+      "states:StartExecution",
+      "states:DescribeExecution",
+      "states:StopExecution",
+    ];
+    const hasDispatchStatement = (doc: any): boolean =>
+      (doc?.Statement ?? []).some(
+        (s: any) =>
+          s.Sid === "ProvisionStateMachineDispatch" &&
+          JSON.stringify(s.Action) === JSON.stringify(wantedActions),
+      );
+
+    const inline = Object.values(
+      template.findResources("AWS::IAM::Policy"),
+    ).some((r: any) => hasDispatchStatement(r.Properties?.PolicyDocument));
+    const managed = Object.values(
+      template.findResources("AWS::IAM::ManagedPolicy"),
+    ).some(
+      (r: any) =>
+        hasDispatchStatement(r.Properties?.PolicyDocument) &&
+        (r.Properties?.Roles ?? []).some(
+          (role: any) => typeof role?.Ref === "string" && role.Ref.startsWith("TaskRole"),
+        ),
+    );
+    expect(inline || managed).toBe(true);
+  });
+});
+
 describe("ServiceStack — Metronome lifecycle env split", () => {
   test("dev runs the lifecycle live against the sandbox rate card", () => {
     // Dev's runbook is done (sandbox token + rate card + webhook secret), so

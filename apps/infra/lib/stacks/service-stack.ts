@@ -1,6 +1,7 @@
 import * as path from "path";
 import * as fs from "fs";
 import * as cdk from "aws-cdk-lib";
+import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import { DockerImageAsset, Platform } from "aws-cdk-lib/aws-ecr-assets";
 import * as ecs from "aws-cdk-lib/aws-ecs";
@@ -13,6 +14,8 @@ import * as s3 from "aws-cdk-lib/aws-s3";
 import * as s3deploy from "aws-cdk-lib/aws-s3-deployment";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as servicediscovery from "aws-cdk-lib/aws-servicediscovery";
+import * as sfn from "aws-cdk-lib/aws-stepfunctions";
+import * as tasks from "aws-cdk-lib/aws-stepfunctions-tasks";
 import { Construct } from "constructs";
 
 // openclaw-version.json is the single source of truth for the pinned OpenClaw
@@ -1512,6 +1515,236 @@ export class ServiceStack extends cdk.Stack {
       ),
     };
 
+    // ---------------------------------------------------------------------
+    // Provisioning executor: one-shot provisioner task + state machine.
+    // Same image / roles / env / SG as the backend so provision_user_container
+    // runs with identical capability, but OUTSIDE the deployable web process.
+    // serviceSg is mandatory: the per-user container 18789 ingress rule
+    // (ContainerFromServiceIngress above) is keyed to it.
+    // ---------------------------------------------------------------------
+    const provisionerTaskDef = new ecs.FargateTaskDefinition(this, "ProvisionerTaskDef", {
+      family: `isol8-${env}-provisioner`,
+      cpu: 1024,
+      memoryLimitMiB: 2048,
+      taskRole: this.taskRole,
+      executionRole: taskExecutionRole,
+    });
+    provisionerTaskDef.addVolume({
+      name: "efs-users",
+      efsVolumeConfiguration: {
+        fileSystemId: props.container.efsFileSystem.fileSystemId,
+        transitEncryption: "ENABLED",
+        authorizationConfig: { iam: "ENABLED" },
+      },
+    });
+    const provisionerContainer = provisionerTaskDef.addContainer("provisioner", {
+      image: ecs.ContainerImage.fromDockerImageAsset(backendImage),
+      // Run as root, exactly like the backend container: provisioning writes
+      // EFS user directories and chowns them to UID 1000 (workspace.py), and
+      // the image's default USER appuser cannot. Dropping this silently
+      // breaks every EFS write the runner performs.
+      user: "0:0",
+      environment: backendContainerEnvironment,
+      secrets: backendContainerSecrets,
+      // No healthCheck and no port mappings: a batch job must not be killed
+      // for not serving HTTP. Command is overridden per-execution by the
+      // state machine ($.command).
+      logging: ecs.LogDrivers.awsLogs({ streamPrefix: "provisioner", logGroup }),
+    });
+    provisionerContainer.addMountPoints({
+      containerPath: "/mnt/efs",
+      sourceVolume: "efs-users",
+      readOnly: false,
+    });
+
+    const runProvisioner = new tasks.EcsRunTask(this, "RunProvisioner", {
+      integrationPattern: sfn.IntegrationPattern.RUN_JOB,
+      cluster: props.container.cluster,
+      taskDefinition: provisionerTaskDef,
+      launchTarget: new tasks.EcsFargateLaunchTarget({
+        platformVersion: ecs.FargatePlatformVersion.VERSION1_4, // EFS requires >= 1.4
+      }),
+      subnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+      securityGroups: [serviceSg],
+      assignPublicIp: false,
+      containerOverrides: [
+        {
+          containerDefinition: provisionerContainer,
+          command: sfn.JsonPath.listAt("$.command"),
+        },
+      ],
+      resultPath: sfn.JsonPath.DISCARD,
+      taskTimeout: sfn.Timeout.duration(cdk.Duration.minutes(30)),
+    });
+
+    const succeedProvisioned = new sfn.Succeed(this, "Provisioned");
+    const succeedSuperseded = new sfn.Succeed(this, "Superseded");
+    const failProvision = new sfn.Fail(this, "ProvisionFailed", {
+      error: "ProvisionFailed",
+      cause: "provisioner exhausted retries or failed deterministically",
+    });
+
+    // Claim-conditioned row writes — the SIGKILL backstop. On a clean runner
+    // exit the runner already wrote these values; these writes are idempotent
+    // re-assertions that also cover the case where the runner died mid-write.
+    // Condition accepts BOTH "provisioning" (runner died before its own
+    // release) AND "error" (runner released cleanly, this re-asserts) — a
+    // clean transient failure leaves the row at "error", and conditioning on
+    // "provisioning" alone would fail every write after attempt 1 and kill
+    // the retry loop. Rows at "running"/"stopped", or under a different
+    // claim, are never touched (routes to Superseded via the catch below).
+    const ddbWrite = (id: string, updateExpr: string, values: Record<string, tasks.DynamoAttributeValue>) =>
+      new tasks.DynamoUpdateItem(this, id, {
+        table: props.database.containersTable,
+        key: {
+          owner_id: tasks.DynamoAttributeValue.fromString(sfn.JsonPath.stringAt("$.owner_id")),
+        },
+        updateExpression: updateExpr,
+        conditionExpression: "provision_claim_id = :cid AND (#s = :prov OR #s = :err)",
+        expressionAttributeNames: { "#s": "status" },
+        expressionAttributeValues: {
+          ...values,
+          ":cid": tasks.DynamoAttributeValue.fromString(sfn.JsonPath.stringAt("$.claim_id")),
+          ":prov": tasks.DynamoAttributeValue.fromString("provisioning"),
+          ":ts": tasks.DynamoAttributeValue.fromString(sfn.JsonPath.stringAt("$$.State.EnteredTime")),
+        },
+        resultPath: sfn.JsonPath.DISCARD,
+      });
+
+    const markFailedDeterministic = ddbWrite(
+      "MarkFailedDeterministic",
+      "SET #s = :err, substatus = :sub, retryable = :r, updated_at = :ts",
+      {
+        ":err": tasks.DynamoAttributeValue.fromString("error"),
+        ":sub": tasks.DynamoAttributeValue.fromString("provision_failed"),
+        ":r": tasks.DynamoAttributeValue.fromBoolean(false),
+      },
+    );
+    const markFailedExhausted = ddbWrite(
+      "MarkFailedExhausted",
+      "SET #s = :err, substatus = :sub, retryable = :r, updated_at = :ts",
+      {
+        ":err": tasks.DynamoAttributeValue.fromString("error"),
+        ":sub": tasks.DynamoAttributeValue.fromString("provision_failed"),
+        ":r": tasks.DynamoAttributeValue.fromBoolean(true),
+      },
+    );
+    const markRetrying = ddbWrite(
+      "MarkRetrying",
+      "SET #s = :err, substatus = :sub, retryable = :r, updated_at = :ts",
+      {
+        ":err": tasks.DynamoAttributeValue.fromString("error"),
+        ":sub": tasks.DynamoAttributeValue.fromString("error_retrying"),
+        ":r": tasks.DynamoAttributeValue.fromBoolean(true),
+      },
+    );
+    // ConditionalCheckFailed on any write means a deliberate reprovision took
+    // the row over — stop quietly, exactly the runner's superseded rule.
+    // (Optimized-integration exception prefix is "DynamoDB", uppercase DB.)
+    for (const write of [markFailedDeterministic, markFailedExhausted, markRetrying]) {
+      write.addCatch(succeedSuperseded, {
+        errors: ["DynamoDB.ConditionalCheckFailedException"],
+        resultPath: sfn.JsonPath.DISCARD,
+      });
+    }
+    markFailedDeterministic.next(failProvision);
+    markFailedExhausted.next(failProvision);
+
+    const bumpAttempt = new sfn.Pass(this, "BumpAttempt", {
+      parameters: {
+        "attempt.$": "States.MathAdd($.attempt, 1)",
+        "claim_id.$": "$.claim_id",
+        "command.$": "$.command",
+        "owner_id.$": "$.owner_id",
+      },
+    });
+    const wait60 = new sfn.Wait(this, "WaitBeforeRetry", {
+      time: sfn.WaitTime.duration(cdk.Duration.seconds(60)),
+    });
+    markRetrying.next(wait60);
+    wait60.next(bumpAttempt);
+    bumpAttempt.next(runProvisioner);
+
+    const transientGate = new sfn.Choice(this, "AttemptsRemain")
+      .when(sfn.Condition.numberLessThan("$.attempt", 2), markRetrying)
+      .otherwise(markFailedExhausted);
+
+    // Non-TaskFailed catches (timeout, launch failure): the Cause is not the
+    // ECS task JSON, so skip parsing and treat as transient.
+    const shapeForRetry = new sfn.Pass(this, "ShapeForRetry", {
+      parameters: {
+        "attempt.$": "$.attempt",
+        "claim_id.$": "$.claim_id",
+        "command.$": "$.command",
+        "owner_id.$": "$.owner_id",
+      },
+    });
+    shapeForRetry.next(transientGate);
+
+    // TaskFailed: Cause is the stringified ECS task object — parse it and
+    // classify on the container exit code (design doc §11: a non-zero
+    // essential-container exit fails the .sync state with States.TaskFailed).
+    const parseCause = new sfn.Pass(this, "ParseFailureCause", {
+      parameters: {
+        "attempt.$": "$.attempt",
+        "cause.$": "States.StringToJson($.error.Cause)",
+        "claim_id.$": "$.claim_id",
+        "command.$": "$.command",
+        "owner_id.$": "$.owner_id",
+      },
+    });
+    const classify = new sfn.Choice(this, "ClassifyFailure")
+      .when(sfn.Condition.numberEquals("$.cause.Containers[0].ExitCode", 20), succeedSuperseded)
+      .when(sfn.Condition.numberEquals("$.cause.Containers[0].ExitCode", 10), markFailedDeterministic)
+      .otherwise(transientGate); // 11, SIGKILL (no exit code), Spot reclaim
+    parseCause.next(classify);
+
+    runProvisioner.addCatch(shapeForRetry, {
+      errors: ["States.Timeout"],
+      resultPath: "$.error",
+    });
+    runProvisioner.addCatch(parseCause, {
+      errors: ["States.TaskFailed"],
+      resultPath: "$.error",
+    });
+    runProvisioner.addCatch(shapeForRetry, {
+      errors: ["States.ALL"], // AmazonECS.Unknown launch failures etc.
+      resultPath: "$.error",
+    });
+
+    const provisionStateMachine = new sfn.StateMachine(this, "ProvisionStateMachine", {
+      stateMachineName: `isol8-${env}-provision`,
+      definitionBody: sfn.DefinitionBody.fromChainable(runProvisioner.next(succeedProvisioned)),
+      timeout: cdk.Duration.hours(2), // hard ceiling across all attempts
+    });
+
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "ProvisionStateMachineDispatch",
+        actions: ["states:StartExecution", "states:DescribeExecution", "states:StopExecution"],
+        resources: [
+          provisionStateMachine.stateMachineArn,
+          // DescribeExecution/StopExecution operate on execution ARNs.
+          `arn:aws:states:${this.region}:${this.account}:execution:isol8-${env}-provision:*`,
+        ],
+      }),
+    );
+
+    new cloudwatch.Alarm(this, "ProvisionExecutionsFailedAlarm", {
+      alarmName: `isol8-${env}-provision-executions-failed`,
+      metric: provisionStateMachine.metricFailed({ period: cdk.Duration.minutes(5) }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    new cloudwatch.Alarm(this, "ProvisionExecutionsTimedOutAlarm", {
+      alarmName: `isol8-${env}-provision-executions-timedout`,
+      metric: provisionStateMachine.metricTimedOut({ period: cdk.Duration.minutes(5) }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+
     const taskDef = new ecs.FargateTaskDefinition(this, "TaskDef", {
       family: `isol8-${env}-backend`,
       cpu: env === "prod" ? 2048 : 1024,
@@ -1536,7 +1769,14 @@ export class ServiceStack extends cdk.Stack {
       // Run as root — backend writes to EFS user directories
       user: "0:0",
       portMappings: [{ containerPort: 8000 }],
-      environment: backendContainerEnvironment,
+      environment: {
+        ...backendContainerEnvironment,
+        // Provisioning executor flag: "inline" until the per-env flip
+        // (dev first, then prod) documented in the durable-provisioning
+        // design doc. The state machine deploys dark alongside it.
+        PROVISION_EXECUTOR: "inline",
+        PROVISION_STATE_MACHINE_ARN: provisionStateMachine.stateMachineArn,
+      },
       secrets: backendContainerSecrets,
       healthCheck: {
         command: [

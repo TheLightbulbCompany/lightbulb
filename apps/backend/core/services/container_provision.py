@@ -45,34 +45,6 @@ def provider_choice_from_row(row: dict | None) -> tuple[str, str | None]:
     return provider_choice, byo_provider
 
 
-def is_retryable_provision_error(exc: BaseException) -> bool:
-    """Transient (retry helps: ECS 5xx, throttle, Spot, network) vs
-    deterministic (retry cannot help: bad config, unknown provider, 4xx).
-    An exception's own ``retryable`` self-classification takes precedence
-    (e.g. PaperclipApiError: 5xx/429 retryable, other 4xx not — same
-    convention update_service's retry pass trusts).
-    Defaults to retryable — attempts are bounded by the state machine, and
-    surfacing a transient as terminal is the worse failure mode."""
-    retryable_attr = getattr(exc, "retryable", None)
-    if retryable_attr is not None:
-        return bool(retryable_attr)
-    message = str(exc).lower()
-    deterministic_markers = (
-        "byo_provider is required",
-        "unknown provider_choice",
-        "validationexception",
-        "invalidparameter",
-        # KNOWN MISCLASSIFICATION: IAM-propagation AccessDenied — the owner
-        # role/AIP was minted seconds earlier and hasn't propagated yet — is a
-        # transient that this marker calls deterministic. Revisit when this
-        # function is folded into classify_provision_error (the planned
-        # honest-failure-state classifier consolidation); behavior change
-        # belongs there, not here.
-        "accessdenied",
-    )
-    return not any(marker in message for marker in deterministic_markers)
-
-
 async def resolve_provider_choice(owner_id: str) -> tuple[str, str | None]:
     """Look up the owner's provider_choice (+ byo_provider) from billing_repo.
 
@@ -129,7 +101,7 @@ async def background_provision(owner_id: str, clerk_user_id: str) -> None:
     claim_id = await container_repo.try_claim_provision(owner_id)
     if claim_id is None:
         logger.info("Provision already in flight for owner %s — standing down", owner_id)
-        _emit_provision_metric("claim_lost")
+        emit_provision_metric("claim_lost")
         return
 
     try:
@@ -151,7 +123,7 @@ async def background_provision(owner_id: str, clerk_user_id: str) -> None:
         # to it now — stop quietly, write nothing (an error write here would
         # clobber the superseding run's state).
         logger.info("Provision for owner %s superseded by a deliberate reprovision — standing down", owner_id)
-        _emit_provision_metric("superseded")
+        emit_provision_metric("superseded")
     except Exception as exc:
         logger.exception("Background provisioning failed for owner %s", owner_id)
         # Classify WHY it failed so the status endpoint can tell a transient
@@ -178,10 +150,10 @@ async def background_provision(owner_id: str, clerk_user_id: str) -> None:
         # dimension-key set, so a `phase` dim here would create a separate
         # stream that NO alarm watches — defeating the point. The dispatch-vs-
         # sync distinction lives in the logger.exception above instead.)
-        _emit_provision_metric("error")
+        emit_provision_metric("error")
 
 
-def _emit_provision_metric(status: str) -> None:
+def emit_provision_metric(status: str) -> None:
     """Best-effort ``container.provision`` metric — a metrics outage must never
     turn the swallow-all task into a raise. Same single dimension key (status)
     as the synchronous ecs_manager emissions, so every value lands on the one

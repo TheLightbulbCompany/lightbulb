@@ -476,6 +476,32 @@ def test_classify_provision_error_unknown_defaults_retryable():
     assert "RuntimeError" in cause
 
 
+def test_classify_provision_error_deterministic_markers():
+    """Known provider-config failures raise as plain Exception — the
+    deterministic message markers catch them before the retryable default."""
+    from core.repositories import container_repo
+
+    _, retryable = container_repo.classify_provision_error(
+        Exception("byo_provider is required when provider_choice == 'byo_key'")
+    )
+    assert retryable is False
+
+    _, retryable = container_repo.classify_provision_error(Exception("Unknown provider_choice: 'bogus'"))
+    assert retryable is False
+
+
+def test_classify_provision_error_retryable_attr_beats_markers():
+    """An exception's own retryable self-classification takes precedence —
+    it is checked before the message markers, so a marker-free throttle
+    message with retryable=False still classifies deterministic."""
+    from core.repositories import container_repo
+
+    exc = Exception("ThrottlingException")
+    exc.retryable = False
+    _, retryable = container_repo.classify_provision_error(exc)
+    assert retryable is False
+
+
 @pytest.mark.asyncio
 async def test_try_claim_provision_stamps_execution_name(dynamodb_table):
     from core.repositories import container_repo

@@ -150,6 +150,8 @@ async def test_fresh_claim_name_collision_releases_to_error(monkeypatch, sfn):
     sfn.start_execution.side_effect = _already_exists_error()
     await provision_dispatch.dispatch_provision("user_abc")
     release.assert_awaited_once()
+    kwargs = release.await_args.kwargs
+    assert kwargs == {"last_error": "provision dispatch: execution name collision", "retryable": True}
 
 
 async def test_start_failure_releases_claim_to_error(monkeypatch, sfn):
@@ -166,6 +168,8 @@ async def test_start_failure_releases_claim_to_error(monkeypatch, sfn):
     )
     await provision_dispatch.dispatch_provision("user_abc")
     release.assert_awaited_once()
+    kwargs = release.await_args.kwargs
+    assert kwargs == {"last_error": "provision dispatch: StartExecution failed", "retryable": True}
 
 
 async def test_ddb_read_failure_is_swallowed_and_starts_nothing(monkeypatch, sfn):

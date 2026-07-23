@@ -80,7 +80,7 @@ def _watch_provision_task(task: "asyncio.Task") -> None:
     "Task exception was never retrieved" — invisible to the W1
     provision-error alarm. Surface it: log the task's traceback and emit the
     SAME ``container.provision`` ``{status: error}`` metric the synchronous
-    provision path emits (see ``container_provision._emit_provision_metric``),
+    provision path emits (see ``container_provision.emit_provision_metric``),
     so a dispatch-path failure lands on the exact CloudWatch stream that alarm
     already watches. A cancelled task carries no failure. Best-effort
     throughout — a done-callback must never raise.

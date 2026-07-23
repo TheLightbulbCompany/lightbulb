@@ -22,7 +22,7 @@ from botocore.exceptions import ClientError
 from core.config import settings
 from core.observability.logging import bind_log_context
 from core.repositories import container_repo
-from core.services.container_provision import _emit_provision_metric
+from core.services.container_provision import emit_provision_metric
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +114,7 @@ async def _dispatch_inner(owner_id: str) -> None:
     won = await container_repo.try_claim_provision(owner_id, claim_id=claim, execution_name=name)
     if won is None:
         logger.info("dispatch_provision: claim lost for owner %s — standing down", owner_id)
-        _emit_provision_metric("claim_lost")
+        emit_provision_metric("claim_lost")
         return
     outcome = await _start(owner_id, claim)
     if outcome == "ok":
@@ -122,12 +122,18 @@ async def _dispatch_inner(owner_id: str) -> None:
     # "failed": transient StartExecution error. "closed": an 8-hex name
     # collision on a FRESH claim — the name embeds claim_id[:8], so a closed
     # execution already holds it and this claim can never run. Either way,
-    # release to error so the next poll mints a new claim (and name).
+    # release to error (retryable — the next poll mints a new claim and name)
+    # with a cause naming which dispatch leg failed.
+    last_error = (
+        "provision dispatch: execution name collision"
+        if outcome == "closed"
+        else "provision dispatch: StartExecution failed"
+    )
     try:
-        await container_repo.release_provision_to_error(owner_id, claim)
+        await container_repo.release_provision_to_error(owner_id, claim, last_error=last_error, retryable=True)
     except Exception:  # noqa: BLE001 — release is best-effort
         logger.exception("dispatch_provision: release failed for owner %s", owner_id)
-    _emit_provision_metric("error")
+    emit_provision_metric("error")
 
 
 async def _start(owner_id: str, claim_id: str) -> str:

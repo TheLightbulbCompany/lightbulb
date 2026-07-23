@@ -47,8 +47,7 @@ async def _get_row(owner_id: str):
 async def run(owner_id: str, claim_id: str) -> int:
     from core.auth import is_org_owner_id
     from core.observability.logging import bind_log_context
-    from core.repositories.container_repo import ProvisionSuperseded
-    from core.services.container_provision import is_retryable_provision_error
+    from core.repositories.container_repo import ProvisionSuperseded, classify_provision_error
 
     bind_log_context(user_id=owner_id)
     manager = _get_manager()
@@ -68,9 +67,11 @@ async def run(owner_id: str, claim_id: str) -> int:
         return EXIT_SUPERSEDED
     except Exception as exc:  # noqa: BLE001 — classified into the exit-code ABI
         # provision_user_container already released the lease to error with
-        # cause fields; the exit code only tells the machine whether to retry.
+        # cause fields (via the same shared classifier); the exit code only
+        # tells the machine whether to retry.
         logger.exception("provision failed for owner %s", owner_id)
-        return EXIT_TRANSIENT if is_retryable_provision_error(exc) else EXIT_DETERMINISTIC
+        _, retryable = classify_provision_error(exc)
+        return EXIT_TRANSIENT if retryable else EXIT_DETERMINISTIC
 
     row = await _get_row(owner_id)
     status = (row or {}).get("status")

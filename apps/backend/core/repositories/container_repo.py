@@ -375,10 +375,14 @@ def classify_provision_error(exc: BaseException) -> tuple[str, bool]:
     while a deterministic one (a 4xx Paperclip / config / validation error)
     fails identically forever and must be surfaced instead of looped.
 
-    - ``PaperclipApiError`` already auto-classifies retryability off its status
-      code (5xx/429 transient, 4xx deterministic) — reuse ``.retryable`` verbatim.
+    - An exception's own ``retryable`` self-classification takes precedence
+      over everything below — ``PaperclipApiError`` sets it off its status
+      code (5xx/429 transient, 4xx deterministic) and is reused verbatim.
     - ``ValueError`` / ``TypeError`` / ``KeyError`` are deterministic
       config/shape bugs — a retry can't fix a malformed value.
+    - A small set of known-deterministic message markers (provider-config
+      failures that raise as plain ``Exception``) are matched case-insensitively
+      after the attr/type checks, so they still classify deterministic.
     - Everything else — notably ``EcsManagerError``, which wraps AWS
       Spot/throttle/capacity ``ClientError``s as a string, plus any unrecognised
       failure — defaults to retryable: a needless retry is cheaper than a
@@ -392,7 +396,13 @@ def classify_provision_error(exc: BaseException) -> tuple[str, bool]:
     cause = f"{type(exc).__name__}: {exc}"
     if isinstance(exc, PaperclipApiError):
         return f"Paperclip {exc.status_code}: {exc}", exc.retryable
+    retryable_attr = getattr(exc, "retryable", None)
+    if retryable_attr is not None:
+        return cause, bool(retryable_attr)
     if isinstance(exc, (ValueError, TypeError, KeyError)):
+        return cause, False
+    message = str(exc).lower()
+    if "byo_provider is required" in message or "unknown provider_choice" in message:
         return cause, False
     return cause, True
 

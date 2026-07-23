@@ -79,7 +79,30 @@ export function FirstRunFunnel() {
           });
           const status = (resp as { status?: string } | null)?.status;
           if (status === "staged" || status === "already_submitted") {
-            await writeFirstRun(user, { briefSubmitted: true, path: path ?? undefined });
+            // A brief submit STARTS A NEW first-run cycle, so stale
+            // started/completed from a PREVIOUS provision (account wipe /
+            // reprovision) must be cleared in this same write (web parity, PR
+            // #1397). Clerk metadata is per-user forever, but the
+            // company/container it described is wiped and re-created; the gate
+            // re-shows this funnel against the fresh container's
+            // onboarded:false, yet writeFirstRun MERGES, so a prior cycle's
+            // completed:true would otherwise survive and permanently suppress
+            // the new cycle's kickoff (useFirstRunKickoff hard-skips on
+            // completed:true — thread reconciliation can't rescue it). Verified
+            // live on dev.
+            //
+            // "already_submitted" (the per-company DynamoDB claim was already
+            // taken by another org member — there is no new goal/project to
+            // react to) re-arms started:true afterward so this user's own
+            // useFirstRunKickoff treats it as already fired instead of
+            // replaying the whole runbook against an already-onboarded company.
+            await writeFirstRun(user, {
+              briefSubmitted: true,
+              started: false,
+              completed: false,
+              path: path ?? undefined,
+              ...(status === "already_submitted" ? { started: true } : {}),
+            });
             return;
           }
           if (attempt < MAX_RETRIES) {

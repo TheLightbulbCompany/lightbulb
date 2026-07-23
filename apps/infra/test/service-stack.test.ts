@@ -327,6 +327,39 @@ describe("ServiceStack — provisioning executor (state machine, dark)", () => {
     });
   });
 
+  test("state machine definition pins the load-bearing ASL (claim condition, missing-exit-code guard, exit-code routing)", () => {
+    const stateMachines = Object.values(
+      template.findResources("AWS::StepFunctions::StateMachine"),
+    );
+    expect(stateMachines).toHaveLength(1);
+    const def = (stateMachines[0] as any).Properties?.DefinitionString;
+    // DefinitionString synthesizes as an Fn::Join of literal strings and Refs;
+    // flatten the literal parts to assert on the ASL content.
+    const flat = (def?.["Fn::Join"]?.[1] ?? [def])
+      .map((part: any) => (typeof part === "string" ? part : ""))
+      .join("");
+    // (a) Claim-conditioned DDB writes — the superseded/SIGKILL backstop rule.
+    expect(flat).toContain(
+      "provision_claim_id = :cid AND (#s = :prov OR #s = :err)",
+    );
+    // (b) A task that never started (EFS mount / image-pull failure) stops
+    // with NO exit code in the Cause. A Choice rule referencing the missing
+    // path throws States.Runtime, Choice states cannot Catch, and the
+    // execution dies with the row stuck at "provisioning" — so ClassifyFailure
+    // MUST guard on IsPresent and route the no-exit-code case to the retry
+    // loop before any numeric comparison.
+    expect(flat).toContain(
+      '"Variable":"$.cause.Containers[0].ExitCode","IsPresent":true',
+    );
+    // (c) Exit-code ABI routing: 20 superseded, 10 deterministic.
+    expect(flat).toContain(
+      '"Variable":"$.cause.Containers[0].ExitCode","NumericEquals":20',
+    );
+    expect(flat).toContain(
+      '"Variable":"$.cause.Containers[0].ExitCode","NumericEquals":10',
+    );
+  });
+
   test("backend task role may start provision executions", () => {
     // The task role's inline default policy is at CloudFormation's ~10 KB
     // ceiling, so statements added late in the constructor spill into a
@@ -345,7 +378,16 @@ describe("ServiceStack — provisioning executor (state machine, dark)", () => {
       (doc?.Statement ?? []).some(
         (s: any) =>
           s.Sid === "ProvisionStateMachineDispatch" &&
-          JSON.stringify(s.Action) === JSON.stringify(wantedActions),
+          JSON.stringify(s.Action) === JSON.stringify(wantedActions) &&
+          // Pin the Resource scope: exactly the state machine ARN (a Ref to
+          // the SM resource) plus the execution-ARN pattern — a future
+          // widening to "*" must fail this test.
+          Array.isArray(s.Resource) &&
+          s.Resource.length === 2 &&
+          typeof s.Resource[0]?.Ref === "string" &&
+          s.Resource[0].Ref.startsWith("ProvisionStateMachine") &&
+          s.Resource[1] ===
+            "arn:aws:states:us-east-1:877352799272:execution:isol8-dev-provision:*",
       );
 
     const inline = Object.values(

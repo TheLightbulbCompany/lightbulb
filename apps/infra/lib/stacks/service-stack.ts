@@ -1694,9 +1694,19 @@ export class ServiceStack extends cdk.Stack {
       },
     });
     const classify = new sfn.Choice(this, "ClassifyFailure")
+      // MUST be the FIRST rule: a task that never started (EFS mount /
+      // image-pull ResourceInitializationError) stops with NO exitCode in the
+      // Cause, and a Choice rule referencing a missing path throws
+      // States.Runtime — which Choice states cannot Catch, killing the
+      // execution with no DDB write (row stuck at "provisioning"). That is
+      // exactly the transient case the retry loop exists for.
+      .when(
+        sfn.Condition.not(sfn.Condition.isPresent("$.cause.Containers[0].ExitCode")),
+        transientGate, // task never started (EFS mount / image pull) — no exit code, retry
+      )
       .when(sfn.Condition.numberEquals("$.cause.Containers[0].ExitCode", 20), succeedSuperseded)
       .when(sfn.Condition.numberEquals("$.cause.Containers[0].ExitCode", 10), markFailedDeterministic)
-      .otherwise(transientGate); // 11, SIGKILL (no exit code), Spot reclaim
+      .otherwise(transientGate); // 11, SIGKILL-after-start (137), Spot reclaim
     parseCause.next(classify);
 
     runProvisioner.addCatch(shapeForRetry, {

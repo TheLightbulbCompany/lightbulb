@@ -289,11 +289,33 @@ export function ProvisioningStepper({
     refresh,
   } = useProvisioningState({
     refreshInterval: shouldPollContainer ? 3000 : 0,
+    // Self-heal latched/backgrounded tabs: an offline->online or
+    // background->foreground focus revalidates /container/status, so a tab
+    // that missed the instant-ready WS push (or regressed while hidden)
+    // recovers on the next focus instead of freezing. Only THIS call site
+    // opts in — the hook default stays false so other consumers
+    // (useSystemHealth etc.) keep their own chosen semantics. All instances
+    // share the SWR key, so this one revalidating instance heals every reader.
+    revalidateOnFocus: true,
   });
 
   useEffect(() => {
     const p = container?.phase;
     if ((p === "ready" || p === "parked") && !reachedReady) setReachedReady(true);
+    // Regression edge: the backend says we are back in a cold start
+    // (reprovision / wipe / scale-to-zero). Re-arm polling — a latched tab
+    // otherwise renders the cold-start UI with refreshInterval 0 and freezes on
+    // whatever stale pre-ready snapshot landed last (verified prod incident:
+    // stepper stuck 15+ min on "finishing touches" while /container/status
+    // answered phase:"ready"). `p !== undefined` guards the transient
+    // no-data/loading blip (SWR key swap / error) so a brief container:null
+    // doesn't un-latch a healthy workspace and resume polling over live chat.
+    // This is the POLLING side of a regression; the render-time
+    // `isRegressingFromReady` detector below owns the DISPLAY side — kept
+    // deliberately separate.
+    if (p !== undefined && p !== "ready" && p !== "parked" && reachedReady) {
+      setReachedReady(false);
+    }
   }, [container?.phase, reachedReady]);
 
   // Instant-ready: the backend's connection pool pushes

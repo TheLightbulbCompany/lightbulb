@@ -12,7 +12,7 @@
  * openAuthSessionAsync, which would wait forever for a return URL).
  */
 import { useAuth } from "@clerk/clerk-expo";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as WebBrowser from "expo-web-browser";
@@ -21,6 +21,32 @@ import { createApiClient, useChatGPTOAuth } from "@isol8/shared";
 import { colors, fonts, radii, spacing } from "../../config/theme";
 import { makeAdapter } from "../../lib/adapter";
 import { Wordmark } from "./Wordmark";
+
+/**
+ * Whole seconds until `expiresAt` (epoch ms), re-derived once a second, or
+ * `null` when there's no live code. The device code silently dies at ~15 min
+ * (useChatGPTOAuth sets `Date.now() + expires_in * 1000`); without surfacing
+ * this the user only learns it expired via a later poll error. It's a plain
+ * numeric text tick — no Animated/transform — so there's nothing here to gate
+ * on reduced motion (a once-a-second digit change isn't vestibular motion).
+ */
+function useSecondsRemaining(expiresAt: number | null): number | null {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (expiresAt == null) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [expiresAt]);
+  if (expiresAt == null) return null;
+  return Math.max(0, Math.ceil((expiresAt - now) / 1000));
+}
+
+/** Whole seconds → "M:SS". */
+function formatCountdown(totalSeconds: number): string {
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
 
 interface Props {
   /** Fired once state.status flips to "completed" so the gate re-polls. */
@@ -38,6 +64,13 @@ export function ChatGPTConnectScreen({ onConnected }: Props) {
   );
 
   const { state, start } = useChatGPTOAuth(api);
+
+  // ~15-min device-code lifetime, surfaced so the user isn't typing a code
+  // that already died. Only "pending" carries an expiry; every other status
+  // passes null and the hook idles.
+  const secondsRemaining = useSecondsRemaining(
+    state.status === "pending" ? state.expiresAt : null,
+  );
 
   // This is a full-screen takeover with no other navigation — a wrong-account
   // or otherwise-stuck user needs an escape hatch. Same confirm-then-signOut
@@ -70,8 +103,27 @@ export function ChatGPTConnectScreen({ onConnected }: Props) {
           then enter this code.
         </Text>
         <View style={styles.codeBox}>
-          <Text style={styles.code}>{state.userCode}</Text>
+          {/* selectable → long-press exposes the OS "Copy" affordance. There's
+              no expo-clipboard binary in this build and adding one would break
+              OTA delivery, so this is the copy fix — the verification page
+              opens in a modal that covers this screen, so the user must be
+              able to lift the code without retyping it. */}
+          <Text style={styles.code} selectable>
+            {state.userCode}
+          </Text>
         </View>
+        {secondsRemaining !== null ? (
+          <Text
+            style={[
+              styles.expiry,
+              secondsRemaining === 0 && styles.expiryExpired,
+            ]}
+          >
+            {secondsRemaining > 0
+              ? `Code expires in ${formatCountdown(secondsRemaining)}`
+              : "Code expired — tap Try again"}
+          </Text>
+        ) : null}
         <Pressable
           style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}
           onPress={openVerificationUrl}
@@ -179,6 +231,16 @@ const styles = StyleSheet.create({
     fontSize: 20,
     letterSpacing: 2,
     color: colors.ink,
+  },
+  expiry: {
+    fontFamily: fonts.dmSans,
+    fontSize: 12,
+    lineHeight: 16,
+    color: colors.mute,
+    textAlign: "center",
+  },
+  expiryExpired: {
+    color: colors.warn,
   },
   primaryButton: {
     alignSelf: "stretch",

@@ -14,13 +14,22 @@
  * `pollIntervalFor`). Classification (contract §B1/§B3):
  *
  *   ready       — 200 with phase === "ready" (openclaw responsive)
- *   starting    — 200 with phase !== "ready" (cold start / provisioning)
+ *   starting    — 200 with phase !== "ready" (cold start / provisioning), OR
+ *                 the ONE non-terminal error shape: status === "error" with
+ *                 substatus === "error_retrying" (backend is auto-retrying)
  *   parked      — 200 with phase === "parked" (deliberately-asleep trial box)
- *   error       — 200 with raw status === "error" (mobile onboarding-parity
- *                 Slice 1 — the backend reports phase="provisioning" for a
- *                 failed container too, so this check runs BEFORE the phase
- *                 branches; matches web's ProvisioningStepper `container.status
- *                 === "error"` check)
+ *   error       — 200 with raw status === "error" and ANY substatus other than
+ *                 "error_retrying" — provision_failed, deployment_failed (the
+ *                 ECS rollout circuit breaker), a bare error with no substatus
+ *                 (auto-retry gated / standing down), or any unknown value —
+ *                 i.e. a TERMINAL failure (PR3 honest-contract consumption).
+ *                 CRITICAL: `phase` still resolves to "provisioning" for a dead
+ *                 container too, so terminal-ness is keyed off `substatus`,
+ *                 NEVER `phase` — keying off phase would render a dead
+ *                 container as a perpetual stepper. Only the explicit
+ *                 "error_retrying" signal keeps it in `starting`; every other
+ *                 error is terminal (restores the pre-#1383 catch-all's
+ *                 coverage). Matches web's ProvisioningStepper terminal check.
  *   teamPending — 202 (org member waiting on admin's workspace)
  *   blocked     — 402 (provision gate fired; carries code + action.href + admin_only)
  *   needsSignup — 404 (admin never started signup)
@@ -58,13 +67,31 @@ import { isPresent } from "./presence";
 
 export type ContainerStatus =
   | { kind: "loading" }
-  | { kind: "ready"; onboarded?: boolean }
-  | { kind: "starting"; phase?: string; substatus?: string; onboarded?: boolean }
+  | { kind: "ready"; onboarded?: boolean; teamsStatus?: string }
+  | {
+      kind: "starting";
+      phase?: string;
+      substatus?: string;
+      onboarded?: boolean;
+      /**
+       * Top-level `teams_status` from the body (PR3 honest-contract), surfaced
+       * on `ready`/`starting` alongside `onboarded` so ProvisionGate can render
+       * the non-blocking Teams-degraded affordance. `"failed"` is the only
+       * value acted on today; undefined on an old backend (never a false
+       * alarm).
+       */
+      teamsStatus?: string;
+    }
   | { kind: "parked" }
-  /** Backend-reported container failure (mobile onboarding-parity Slice 1 —
-   * mobile previously had no surface for this and showed `starting` forever;
-   * unifies with web's "Setup failed" card, which keys on the same raw
-   * `status === "error"`). */
+  /**
+   * TERMINAL container failure — raw `status === "error"` with any substatus
+   * OTHER than "error_retrying" (provision_failed, deployment_failed, a bare
+   * error with no substatus, or any unknown value — PR3 honest-contract). Only
+   * the explicit auto-retry signal ("error_retrying") stays `starting`;
+   * everything else earns the blocking "Setup failed" interstitial. Keyed off
+   * substatus, NEVER phase (a dead container still reports phase
+   * "provisioning").
+   */
   | { kind: "error" }
   | { kind: "teamPending" }
   | {
@@ -177,16 +204,37 @@ function fromClassified(
       // pre-Slice-1 behavior. The classifier's `ContainerStatusBody` type
       // isn't nullable, but that's a type-level claim, not a runtime one.
       const info = classified.body ?? ({} as ContainerStatusBody);
-      // Checked BEFORE the phase branches below: the backend reports
-      // phase="provisioning" for a failed container too, so an error read
-      // AFTER the phase checks would misrender as a perpetual "starting"
-      // spinner (the exact gap this slice closes — see module docstring).
+      // `teams_status` isn't a declared field on the shared body type (it rides
+      // the index signature), so narrow it to a string before surfacing.
+      const teamsStatus =
+        typeof info.teams_status === "string" ? info.teams_status : undefined;
+      // Honest failure states (PR3), checked BEFORE the phase branches: the
+      // backend reports phase="provisioning" for a failed container too, so an
+      // error read AFTER the phase checks would misrender as a perpetual
+      // spinner. Terminal-ness is keyed off `substatus`, NEVER `phase` (the
+      // landmine). The ONLY non-terminal error is the explicit auto-retry
+      // signal "error_retrying" — keep it `starting` so progress stays up AND
+      // the recovery poll keeps running. EVERY other error shape is TERMINAL
+      // (provision_failed, deployment_failed's ECS rollout circuit breaker, a
+      // bare error with no substatus when auto-retry is gated / standing down,
+      // or any unknown value) → the Setup-failed interstitial, never an endless
+      // stepper. This inverts an earlier provision_failed-only check that
+      // silently downgraded deployment_failed / bare-error rows to `starting`.
       if (info.status === "error") {
+        if (info.substatus === "error_retrying") {
+          return {
+            kind: "starting",
+            phase: info.phase,
+            substatus: info.substatus,
+            onboarded: info.onboarded,
+            teamsStatus,
+          };
+        }
         return { kind: "error" };
       }
       // phase absent (older backend / plain running box) → treat as ready.
       if (info.phase == null || info.phase === "ready") {
-        return { kind: "ready", onboarded: info.onboarded };
+        return { kind: "ready", onboarded: info.onboarded, teamsStatus };
       }
       if (info.phase === "parked") {
         // Deliberately-asleep trial box (wake-gated). Distinct from a cold
@@ -200,6 +248,7 @@ function fromClassified(
         phase: info.phase,
         substatus: info.substatus ?? undefined,
         onboarded: info.onboarded,
+        teamsStatus,
       };
     }
   }

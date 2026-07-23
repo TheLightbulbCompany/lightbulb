@@ -210,6 +210,43 @@ function blockedCopy(status: Extract<ContainerStatus, { kind: "blocked" }>): {
 }
 
 // ---------------------------------------------------------------------------
+// Non-blocking Teams-degraded affordance
+// ---------------------------------------------------------------------------
+
+/**
+ * Teams (Paperclip) seeding failed while the container itself is healthy and
+ * chat works (`teams_status: "failed"` on a `ready` body — PR3 honest
+ * contract). NON-blocking by contract: a thin banner OVER the live children,
+ * never an interstitial that replaces chat. Rendered as a FIXED-index sibling
+ * above <ProvisioningStepper/> (same static two-child-array rule the stepper
+ * documents for its own banner) so toggling it never remounts the tab
+ * navigator underneath. Retry re-probes /container/status — the only lever the
+ * app has (D1: the mobile app never reimplements billing/seeding flows).
+ */
+function TeamsDegradedBanner({ onRetry }: { onRetry: () => void }) {
+  const insets = useSafeAreaInsets();
+  return (
+    <View style={[styles.teamsBanner, { paddingTop: insets.top }]}>
+      <View style={styles.teamsBannerRow}>
+        <Text style={styles.teamsBannerText} numberOfLines={2}>
+          Teams setup didn’t finish. Your agents still work — retry to finish
+          setting up your team workspace.
+        </Text>
+        <Pressable
+          onPress={onRetry}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel="Retry Teams setup"
+          style={({ pressed }) => [pressed && styles.pressed]}
+        >
+          <Text style={styles.teamsBannerAction}>Retry</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Gate
 // ---------------------------------------------------------------------------
 
@@ -297,20 +334,20 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
     );
   }
 
-  // Container failed (mobile onboarding-parity Slice 1): the backend
-  // reports phase="provisioning" for a failed container too, so without
-  // this check `status.kind` would read "starting" forever — the gap this
-  // slice closes. Unifies with web's ProvisioningStepper "Setup failed"
-  // card, which keys on the same raw `container.status === "error"`. A
-  // blocking interstitial (there is no working chat behind a failed
-  // container) with Retry + sign-out, mirroring the other blocked states —
-  // no outbound link, since there's nothing to manage on isol8.co for this
-  // one (retrying re-provisioning is the only lever either surface offers).
+  // Container failed TERMINALLY (mobile onboarding-parity Slice 1 + PR3): the
+  // backend reports phase="provisioning" for a failed container too, so this
+  // keys off `status.kind === "error"` (classified from substatus, NEVER
+  // phase) — otherwise it would read "starting" forever. Unifies with web's
+  // ProvisioningStepper "Setup failed" card. A blocking interstitial (there is
+  // no working chat behind a failed container) with Retry + sign-out, and no
+  // outbound link — there's nothing to manage on isol8.co for this one. The
+  // copy is honest that this is a REAL failure: Retry only re-checks status
+  // (recovery needs an admin reprovision), so it does not promise "temporary".
   if (status.kind === "error") {
     return (
       <Interstitial
         headline="Setup failed"
-        body="Something went wrong while setting up your workspace. This is usually temporary — try again in a moment."
+        body="Something went wrong setting up your workspace, and it needs attention. Retry to re-check, or contact support if it keeps failing."
         onRetry={onRetry}
         retrying={false}
       />
@@ -341,9 +378,19 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
   // poll (mobile onboarding-parity Slice 2).
   return (
     <ContainerStatusContext.Provider value={status}>
-      <ProvisioningStepper status={status} onRetry={onRetry}>
-        {children}
-      </ProvisioningStepper>
+      <View style={styles.gateRoot}>
+        {/* Non-blocking Teams-degraded banner over the live children. Fixed
+            index (0) above the stepper (1) — see TeamsDegradedBanner — so it
+            never remounts the tab navigator. Gated on `ready` only: a
+            container that isn't up yet has no working chat to sit this over,
+            and `teams_status` is only meaningful once the container is fine. */}
+        {status.kind === "ready" && status.teamsStatus === "failed" ? (
+          <TeamsDegradedBanner onRetry={onRetry} />
+        ) : null}
+        <ProvisioningStepper status={status} onRetry={onRetry}>
+          {children}
+        </ProvisioningStepper>
+      </View>
     </ContainerStatusContext.Provider>
   );
 }
@@ -441,4 +488,35 @@ const styles = StyleSheet.create({
     color: colors.mute,
   },
   pressed: { opacity: 0.6 },
+
+  // Non-blocking host: children fill, the Teams banner (when present) sits
+  // above them at a fixed index so the tab navigator never remounts.
+  gateRoot: { flex: 1 },
+  // Teams-degraded banner — same amber "needs attention" tokens as the
+  // stepper's disconnected/starting banner so the two read as one language.
+  teamsBanner: {
+    backgroundColor: colors.bannerBg,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.bannerBorder,
+  },
+  teamsBannerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+  },
+  teamsBannerText: {
+    flex: 1,
+    fontFamily: fonts.dmSans,
+    fontSize: 13,
+    lineHeight: 18,
+    color: colors.bannerText,
+  },
+  teamsBannerAction: {
+    fontFamily: fonts.dmSansMedium,
+    fontSize: 13,
+    lineHeight: 18,
+    color: colors.forest,
+  },
 });

@@ -139,36 +139,119 @@ describe("useContainerStatus onboarded field", () => {
   });
 });
 
-// mobile onboarding-parity Slice 1: the one behavior gap this slice closes.
-// The backend reports phase="provisioning" for a container whose raw
-// status is "error" too, so before this slice mobile showed "starting"
-// forever for a failed container. Unifies with web's ProvisioningStepper
-// `container.status === "error"` check ("Setup failed" card).
+// PR3 honest-contract consumption (INVERTED per Codex review). A
+// `status:"error"` row is TERMINAL by default — it earns web's "Setup failed"
+// interstitial — UNLESS its substatus is the one explicit auto-retry signal,
+// "error_retrying" (backend still standing the container back up), which stays
+// `starting`. LANDMINE: `phase` resolves to "provisioning" for a dead
+// container too, so terminal-ness is read from substatus, NEVER phase —
+// otherwise a dead container renders as an endless stepper. Keying terminal off
+// `provision_failed` ALONE (the earlier mistake) silently downgraded
+// deployment_failed and bare-error rows to a perpetual spinner; the catch-all
+// restores their coverage.
 describe("useContainerStatus status=error", () => {
   beforeEach(() => {
     mockFetch.mockReset();
     setActive("active");
   });
 
-  it("classifies a raw status of 'error' as kind 'error', not 'starting'", async () => {
+  it("classifies a provision_failed error as terminal kind 'error'", async () => {
     mockFetch.mockResolvedValue({
       status: 200,
-      body: { status: "error", phase: "provisioning", last_error: "ECS task failed to start" },
+      body: {
+        status: "error",
+        substatus: "provision_failed",
+        phase: "provisioning",
+        last_error: "ECS task failed to start",
+      },
     });
     const { result } = await renderHook(() => useContainerStatus());
     await waitFor(() => expect(result.current.status.kind).toBe("error"));
   });
 
-  it("classifies status='error' as 'error' even when phase is absent", async () => {
+  // NEW: the ECS rollout circuit breaker. The provision_failed-only check
+  // silently downgraded this to a perpetual "starting" spinner.
+  it("classifies a deployment_failed error as terminal kind 'error' (ECS rollout circuit breaker)", async () => {
+    // Also proves terminal-ness is read from substatus, not phase — the body
+    // still reports phase="provisioning" for this dead container.
+    mockFetch.mockResolvedValue({
+      status: 200,
+      body: { status: "error", substatus: "deployment_failed", phase: "provisioning" },
+    });
+    const { result } = await renderHook(() => useContainerStatus());
+    await waitFor(() => expect(result.current.status.kind).toBe("error"));
+  });
+
+  // NEW (reverses the earlier "untagged → starting" mistake): when auto-retry
+  // is gated / standing down the backend emits a bare error with no substatus.
+  // That is a real, terminal failure — it must show the interstitial, not spin.
+  it("classifies a bare error with no substatus as terminal kind 'error'", async () => {
     mockFetch.mockResolvedValue({ status: 200, body: { status: "error" } });
     const { result } = await renderHook(() => useContainerStatus());
     await waitFor(() => expect(result.current.status.kind).toBe("error"));
+  });
+
+  // NEW: any unknown substatus is terminal too — the catch-all is what makes
+  // this robust against future error shapes the app hasn't been taught.
+  it("classifies an unknown error substatus as terminal kind 'error'", async () => {
+    mockFetch.mockResolvedValue({
+      status: 200,
+      body: { status: "error", substatus: "something_unrecognized" },
+    });
+    const { result } = await renderHook(() => useContainerStatus());
+    await waitFor(() => expect(result.current.status.kind).toBe("error"));
+  });
+
+  it("treats error_retrying as 'starting' — the ONE non-terminal error (keep progress + poll)", async () => {
+    // The backend is auto-retrying; keep showing progress (the stepper), never
+    // a terminal "Setup failed" card. substatus rides through so the surface
+    // can optionally note "retrying".
+    mockFetch.mockResolvedValue({
+      status: 200,
+      body: { status: "error", substatus: "error_retrying", phase: "provisioning" },
+    });
+    const { result } = await renderHook(() => useContainerStatus());
+    await waitFor(() => expect(result.current.status.kind).toBe("starting"));
+    const status = result.current.status;
+    if (status.kind !== "starting") throw new Error(`expected starting, got ${status.kind}`);
+    expect(status.substatus).toBe("error_retrying");
   });
 
   it("does NOT classify a non-error status as 'error' (regression guard)", async () => {
     mockFetch.mockResolvedValue({ status: 200, body: { status: "running", phase: "ready" } });
     const { result } = await renderHook(() => useContainerStatus());
     await waitFor(() => expect(result.current.status.kind).toBe("ready"));
+  });
+});
+
+// PR3 honest-contract: top-level `teams_status` (Paperclip seeding health)
+// rides through on the ready/starting variants like `onboarded`, so
+// ProvisionGate can render its non-blocking Teams-degraded affordance.
+describe("useContainerStatus teams_status field", () => {
+  beforeEach(() => {
+    mockFetch.mockReset();
+    setActive("active");
+  });
+
+  it("surfaces teams_status='failed' on the ready status", async () => {
+    mockFetch.mockResolvedValue({
+      status: 200,
+      body: { phase: "ready", teams_status: "failed" },
+    });
+    const { result } = await renderHook(() => useContainerStatus());
+    await waitFor(() => expect(result.current.status.kind).toBe("ready"));
+    const status = result.current.status;
+    if (status.kind !== "ready") throw new Error(`expected ready, got ${status.kind}`);
+    expect(status.teamsStatus).toBe("failed");
+  });
+
+  it("leaves teamsStatus undefined when teams_status is absent (old backend, no false alarm)", async () => {
+    mockFetch.mockResolvedValue({ status: 200, body: { phase: "ready" } });
+    const { result } = await renderHook(() => useContainerStatus());
+    await waitFor(() => expect(result.current.status.kind).toBe("ready"));
+    const status = result.current.status;
+    if (status.kind !== "ready") throw new Error(`expected ready, got ${status.kind}`);
+    expect(status.teamsStatus).toBeUndefined();
   });
 });
 
@@ -262,16 +345,17 @@ describe("useContainerStatus poll cadence", () => {
     return { ...rendered, initialCalls: mockFetch.mock.calls.length };
   }
 
-  // REGRESSION GUARD (whole-branch review, Important #2), and a REGRESSION vs
-  // origin/main specifically: before `error` was its own kind, a body with
-  // status:"error" classified as `starting` and polled every 5s. That poll is
-  // the backend's ONLY auto-retry trigger for a failed container
-  // (routers/container.py: `retryable_states = ("error", "stopped")` — "This
-  // poll is the only thing that runs again, so it re-dispatches"). Adding the
-  // surface without the cadence meant "Setup failed" sat there forever unless
-  // the user tapped Retry or backgrounded the app.
-  it("keeps polling a failed container at the fast cadence — the backend's only auto-retry trigger", async () => {
-    mockFetch.mockResolvedValue({ status: 200, body: { status: "error" } });
+  // The terminal-error kind keeps its fast cadence (unchanged from when it was
+  // the auto-retry trigger). Even a `provision_failed` box re-probes: an admin
+  // reprovision (or a backend recovery) then clears the interstitial on its
+  // own instead of stranding the user until they tap Retry. The transient
+  // auto-retry case is now `starting` (see the status=error suite) and is
+  // covered by the starting-cadence test below.
+  it("keeps polling a terminal (provision_failed) container at the fast cadence so a re-provision recovers", async () => {
+    mockFetch.mockResolvedValue({
+      status: 200,
+      body: { status: "error", substatus: "provision_failed" },
+    });
     const { initialCalls } = await mountSettled("error");
 
     await act(async () => {

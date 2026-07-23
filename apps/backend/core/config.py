@@ -51,6 +51,11 @@ class Settings(BaseSettings):
     ECS_SUBNETS: str = os.getenv("ECS_SUBNETS", "")  # comma-separated
     ECS_SECURITY_GROUP_ID: str = os.getenv("ECS_SECURITY_GROUP_ID", "")
 
+    # Provisioning executor: "inline" (asyncio task in this process, default)
+    # or "sfn" (dispatch to the isol8-{env}-provision state machine).
+    PROVISION_EXECUTOR: str = os.getenv("PROVISION_EXECUTOR", "inline")
+    PROVISION_STATE_MACHINE_ARN: str = os.getenv("PROVISION_STATE_MACHINE_ARN", "")
+
     # --- Cloud Map ---
     CLOUD_MAP_SERVICE_ARN: str = os.getenv("CLOUD_MAP_SERVICE_ARN", "")
     CLOUD_MAP_NAMESPACE_NAME: str = os.getenv("CLOUD_MAP_NAMESPACE_NAME", "")

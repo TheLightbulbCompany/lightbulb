@@ -266,8 +266,13 @@ export function ProvisioningStepper({
     return () => clearTimeout(timer);
   }, [providerStepDone]);
 
-  const [reachedReady, setReachedReady] = useState(false);
-  const shouldPollContainer = (isSubscribed || isTrialLocal) && !reachedReady;
+  // Whether the canonical /container/status poller is running, mirrored into
+  // state so SWR's number-typed refreshInterval can consume it. The cadence we
+  // want depends on the container THIS hook returns (a one-hook input<->output
+  // cycle that can't be passed inline), so we converge this mirror during
+  // render right after the hook — see shouldPollContainer below. Pure function
+  // of the live phase: no effect, no lag, auto-re-arming.
+  const [pollActive, setPollActive] = useState(true);
 
   // Single canonical /container/status poller. Gate-driven cadence
   // wins when blocked (5s/30s); cold-start polling at 3s otherwise so
@@ -288,13 +293,37 @@ export function ProvisioningStepper({
     container,
     refresh,
   } = useProvisioningState({
-    refreshInterval: shouldPollContainer ? 3000 : 0,
+    refreshInterval: pollActive ? 3000 : 0,
+    // Self-heal latched/backgrounded tabs: an offline->online or
+    // background->foreground focus revalidates /container/status, so a tab
+    // that missed the instant-ready WS push (or regressed while hidden)
+    // recovers on the next focus instead of freezing. Only THIS call site
+    // opts in — the hook default stays false so other consumers
+    // (useSystemHealth etc.) keep their own chosen semantics. All instances
+    // share the SWR key, so this one revalidating instance heals every reader.
+    revalidateOnFocus: true,
   });
 
-  useEffect(() => {
-    const p = container?.phase;
-    if ((p === "ready" || p === "parked") && !reachedReady) setReachedReady(true);
-  }, [container?.phase, reachedReady]);
+  // Poll /container/status while the CURRENT phase is pre-ready. Derived, not
+  // latched: an earlier one-way `reachedReady` latch turned polling off forever
+  // after the first ready — so a later regression (reprovision / wipe /
+  // scale-to-zero) rendered the cold-start UI with polling permanently dead
+  // (verified prod incident: frozen 15+ min over a ready backend). Deriving
+  // from the live phase re-arms automatically on regression and stops at
+  // ready/parked (the WS is the live channel there). `container == null`
+  // (first mount, transient blips) counts as pre-ready: polling is the only
+  // way out of that state, and a few extra requests over live chat during a
+  // blip are harmless.
+  const backendPhaseNow = container?.phase;
+  const shouldPollContainer =
+    (isSubscribed || isTrialLocal) &&
+    backendPhaseNow !== "ready" &&
+    backendPhaseNow !== "parked";
+  // Converge the poll-active mirror during render (React's adjust-state-in-
+  // render — the same pattern useProvisioningState uses internally). Zero-lag:
+  // the hook re-runs synchronously with the new interval before commit, so
+  // polling re-arms in the very render the regression lands — no dead-poll gap.
+  if (pollActive !== shouldPollContainer) setPollActive(shouldPollContainer);
 
   // Instant-ready: the backend's connection pool pushes
   // status_change("HEALTHY") over the WebSocket at the exact moment the

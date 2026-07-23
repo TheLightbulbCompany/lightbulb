@@ -333,18 +333,23 @@ export function ProvisioningStepper({
 
   // Honest /container/status error contract (all additive): status="error" is
   // a REAL failure — previously masked as "provisioning" so a dead container
-  // spun a stepper forever. `substatus` discriminates the two error shapes, and
-  // it is what the UI keys off — NEVER `phase`, which still resolves to a
-  // cold-start value (e.g. "container") for an error row, so a phase-keyed
-  // check could never tell a dead container from a live one:
-  //   - "provision_failed" = TERMINAL → the "Setup failed" card (Retry + support).
-  //   - "error_retrying"   = transient, backend auto-retrying → keep the
-  //     provisioning stepper (still working), with only a subtle "retrying" line.
-  // `last_error` carries the reason string on either shape.
-  const isTerminalError =
-    container?.status === "error" && container?.substatus === "provision_failed";
+  // spun a stepper forever. The UI keys off `substatus`, NEVER `phase` (which
+  // still resolves to a cold-start value like "container" for an error row, so
+  // it could never tell a dead container from a live one).
+  //
+  // Error is TERMINAL by DEFAULT — `error_retrying` is the ONLY non-terminal
+  // exception. Keying "terminal" off a specific substatus (e.g. only
+  // `provision_failed`) is too narrow: the backend also emits terminal rows
+  // with `deployment_failed` (rollout circuit breaker) and a bare
+  // `status:"error"` with NO substatus (auto-retry gated / standing down), and
+  // those would fall through to the plain spinner with no Retry/Support CTA —
+  // the exact endless-spinner bug this contract exists to kill. Treating any
+  // non-retrying error as terminal restores the old catch-all's coverage and
+  // absorbs any future terminal substatus. `last_error` carries the reason.
   const isRetryingError =
     container?.status === "error" && container?.substatus === "error_retrying";
+  const isTerminalError =
+    container?.status === "error" && !isRetryingError;
 
   // Poll gateway health every 3s once container looks ready
   const { data: gatewayHealth } = useGatewayRpc<Record<string, unknown>>(
@@ -1195,11 +1200,13 @@ export function ProvisioningStepper({
     return <ProviderPicker isOrg={isOrg} orgName={organization?.name} />;
   }
 
-  // Terminal provision failure — status="error" + substatus="provision_failed".
-  // Keyed off the substatus, NOT `phase` (which resolves to "container" for an
-  // error row). A retrying error (substatus="error_retrying") deliberately does
-  // NOT match: it falls through to the provisioning stepper below, which shows a
-  // subtle "retrying" note instead of this terminal card.
+  // Terminal error — any status="error" that isn't `error_retrying` (see
+  // isTerminalError above). Keyed off substatus, NOT `phase` (which resolves to
+  // "container" for an error row). A retrying error deliberately does NOT match:
+  // it falls through to the provisioning stepper below with a subtle "retrying"
+  // note instead of this terminal card. Copy is honest about a real failure —
+  // no "usually temporary" reassurance — since the container will not recover
+  // on its own; Retry re-checks, but support is the real path if it persists.
   if (isTerminalError) {
     return (
       <div className="flex-1 flex items-center justify-center bg-[#faf7f2]">
@@ -1210,8 +1217,8 @@ export function ProvisioningStepper({
             <h2 className="text-lg font-medium text-[#1a1a1a]">Setup failed</h2>
             <p className="text-sm text-[#8a8578]">
               {isOrg
-                ? `Something went wrong while setting up the container for ${organization.name}. This is usually temporary.`
-                : "Something went wrong while setting up your container. This is usually temporary."}
+                ? `We couldn't finish setting up the container for ${organization.name}. Retry below — if it keeps failing, contact support and we'll get it sorted.`
+                : "We couldn't finish setting up your container. Retry below — if it keeps failing, contact support and we'll get it sorted."}
             </p>
           </div>
           <div className="flex gap-3 justify-center">

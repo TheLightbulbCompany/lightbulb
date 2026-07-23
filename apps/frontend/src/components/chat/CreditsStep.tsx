@@ -42,8 +42,15 @@ const TEXT_INPUT =
  * when the payment collects and the same balance poll advances the wizard.
  */
 export function CreditsStep({ onComplete }: Props) {
-  const { balance, lifecycleEnabled, autoChargeEnabled, refresh, startTopUp, startTopUpCheckout } =
-    useCredits();
+  const {
+    balance,
+    lifecycleEnabled,
+    autoChargeEnabled,
+    refresh,
+    startTopUp,
+    rotateRequestId,
+    startTopUpCheckout,
+  } = useCredits();
   const [amount, setAmount] = useState<number>(2000);
   const [submitting, setSubmitting] = useState(false);
   const [requested, setRequested] = useState(false);
@@ -82,17 +89,24 @@ export function CreditsStep({ onComplete }: Props) {
   // surface a retryable error. Pure client-side backstop: a precise decline
   // reason would need a backend charge-status field, but this alone kills the
   // stuck-forever state.
+  //
+  // Rotate the idempotency token FIRST: this timeout means the prior attempt is
+  // presumed dead, so the next click must be a NEW top-up intent. Reusing the
+  // token would replay the accepted-but-uncollected commit (or 409 on an
+  // idempotency/body conflict if the amount changed), re-sticking the user in
+  // the same failed cycle.
   useEffect(() => {
     if (!requested) return;
     const t = setTimeout(() => {
       if (advancedRef.current) return;
+      rotateRequestId();
       setRequested(false);
       setError(
         "That's taking longer than expected — the charge may not have gone through. You can try again.",
       );
     }, REQUESTED_TIMEOUT_MS);
     return () => clearTimeout(t);
-  }, [requested]);
+  }, [requested, rotateRequestId]);
 
   // The stepper's only "go back" mechanism is the `?provider=` URL param:
   // stripping it exits the provider step and re-enters the main flow (the

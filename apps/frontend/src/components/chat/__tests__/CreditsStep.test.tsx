@@ -14,6 +14,7 @@ const mockBalance = vi.fn();
 const mockStartTopUp = vi.fn();
 const mockStartTopUpCheckout = vi.fn();
 const mockRefresh = vi.fn();
+const mockRotateRequestId = vi.fn();
 // The one-click submit path only renders for owners who previously opted in
 // (autoChargeEnabled); everyone else gets the Stripe Checkout hand-off.
 // Tests flip this per-case to target the path under test.
@@ -27,6 +28,7 @@ vi.mock("@/hooks/useCredits", () => ({
       lifecycleEnabled: balance ? balance.lifecycle_enabled !== false : undefined,
       autoChargeEnabled: mockAutoChargeEnabled,
       startTopUp: mockStartTopUp,
+      rotateRequestId: mockRotateRequestId,
       startTopUpCheckout: mockStartTopUpCheckout,
       refresh: mockRefresh,
     };
@@ -39,6 +41,7 @@ describe("CreditsStep", () => {
     mockStartTopUp.mockReset();
     mockStartTopUpCheckout.mockReset();
     mockRefresh.mockReset();
+    mockRotateRequestId.mockReset();
     mockAutoChargeEnabled = false;
     replaceMock.mockReset();
     searchParams = new URLSearchParams();
@@ -101,6 +104,9 @@ describe("CreditsStep", () => {
       });
       expect(screen.getByText(/taking longer than expected/i)).toBeInTheDocument();
       expect(screen.getByRole("button", { name: /^add \$20$/i })).not.toBeDisabled();
+      // The retry is a NEW intent, so the idempotency token was rotated first —
+      // otherwise the next click replays the dead accepted-but-uncollected commit.
+      expect(mockRotateRequestId).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
     }

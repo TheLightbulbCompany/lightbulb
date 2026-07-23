@@ -705,6 +705,62 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     expect(screen.queryByText("children")).not.toBeInTheDocument();
   });
 
+  it("shows the Setup-failed card for a TERMINAL error with substatus=deployment_failed (rollout circuit breaker)", () => {
+    // Terminal is any status="error" that isn't error_retrying — NOT just
+    // provision_failed. The rollout circuit breaker emits deployment_failed;
+    // it must show the card, not fall through to the plain spinner with no CTA.
+    useProvMock.mockReturnValue({
+      phase: "normal",
+      container: {
+        status: "error",
+        substatus: "deployment_failed",
+        phase: "provisioning",
+        last_error: "deployment rolled back",
+      },
+      blocked: null,
+      refreshInterval: 3000,
+      refresh: vi.fn(),
+    });
+
+    render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+
+    expect(screen.getByText(/Setup failed/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Retry/i })).toBeInTheDocument();
+    expect(screen.queryByText("children")).not.toBeInTheDocument();
+  });
+
+  it("shows the Setup-failed card for a bare status=error with NO substatus (auto-retry gated / standing down)", () => {
+    // When auto-retry is gated or standing down the backend emits a bare
+    // status="error" with substatus=null. That is terminal by default and must
+    // show the card — the exact endless-spinner regression the invert fixes.
+    useProvMock.mockReturnValue({
+      phase: "normal",
+      container: {
+        status: "error",
+        substatus: null,
+        phase: "provisioning",
+        last_error: "retries exhausted",
+      },
+      blocked: null,
+      refreshInterval: 3000,
+      refresh: vi.fn(),
+    });
+
+    render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+
+    expect(screen.getByText(/Setup failed/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Retry/i })).toBeInTheDocument();
+    expect(screen.queryByText("children")).not.toBeInTheDocument();
+  });
+
   it("keeps the provisioning stepper (NOT the Setup-failed card) for a RETRYING error", () => {
     // status="error" + substatus="error_retrying" is transient — the backend is
     // auto-retrying. The stepper must keep showing progress with a calm

@@ -96,6 +96,11 @@ const ALL_KEYS = [
   ]),
 ];
 
+// Cadence of the board keeper (see the keeper effect for the full rationale).
+// 20s trades a small, deduped BFF cost for a hard ceiling on how long a
+// throttle-killed board can sit stale with data already present.
+const BOARD_KEEPER_INTERVAL_MS = 20_000;
+
 /**
  * Event-driven revalidation is throttled per cache key, mirroring the gateway
  * RPC path (`useGatewayRpc` in @isol8/shared, which throttles the same way and
@@ -344,6 +349,43 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
       unsub();
     };
   }, [onEvent, mutateKeyPrefix, mutateEntitySubtree, throttledMutate, user]);
+
+  // ── Board keeper ──────────────────────────────────────────────────────────
+  // A raw setInterval backstop that revalidates the board keys every 20s while
+  // the tab is visible. It exists because the two mechanisms that are supposed
+  // to keep a board fresh both have a hole a merely-occluded tab falls through:
+  //
+  //   • The panels' own SWR `refreshInterval` (IssuesPanel = 30s, etc.) is a
+  //     SELF-RESCHEDULING setTimeout chain — each revalidation schedules the
+  //     next only after it resolves. Chrome's occlusion throttling (a visible
+  //     tab fully covered by another window) can drop a tick, and because the
+  //     chain only schedules forward, ONE dropped tick ends it PERMANENTLY: the
+  //     poll never fires again, even after the tab is uncovered.
+  //   • `revalidateOnFocus` can't heal that tab either — it needs a focus
+  //     TRANSITION (blur→focus) to fire on, and an occluded-but-never-blurred
+  //     tab never gets one. (It's off globally in SwrProvider anyway; the panels
+  //     that opt back in still depend on the transition that never comes.)
+  //
+  // Verified live on dev, twice today: 3 issues in the DB, GET /issues returning
+  // them, the Tasks board stuck on "No tasks yet" for 60s+ — through a real
+  // click into the page — because the panel's 30s chain was throttle-killed and
+  // no focus transition ever came. A raw setInterval is NOT a self-rescheduling
+  // chain (a dropped/delayed tick does not cancel the next one), so it survives
+  // the throttle — the same reason ProvisioningStepper's poll watchdog uses one.
+  //
+  // Cost: reuses ALL_KEYS (the very reconcile set the resubscribe / stream-
+  // resume paths already use), and `mutate(predicate)` only refetches keys
+  // already in cache — so on a board view this is ~3 cheap BFF list calls per
+  // 20s while visible: the insurance premium. useTeamsApi's 15s
+  // `dedupingInterval` still collapses any overlap with a panel poll that IS
+  // firing. Skipped entirely while hidden so backgrounded tabs don't spin.
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      for (const key of ALL_KEYS) mutateKeyPrefix(key);
+    }, BOARD_KEEPER_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [mutateKeyPrefix]);
 
   return <>{children}</>;
 }

@@ -663,6 +663,80 @@ describe("TeamsEventsProvider revalidation throttle", () => {
   });
 });
 
+/**
+ * Board keeper. A raw setInterval that revalidates the board keys every 20s
+ * while the tab is visible — the central backstop for the failure mode where a
+ * panel's self-rescheduling SWR `refreshInterval` chain is throttle-killed by
+ * Chrome occlusion and `revalidateOnFocus` never gets its focus transition, so
+ * the board sits stale with data already present. A raw interval survives the
+ * throttle where the SWR chain does not (same reason ProvisioningStepper's
+ * watchdog uses one).
+ */
+describe("TeamsEventsProvider board keeper", () => {
+  // Mirrors BOARD_KEEPER_INTERVAL_MS in the provider — a local literal (like
+  // REVALIDATE_WINDOW_MS above) so a change to the cadence has to be made here
+  // too, deliberately, rather than silently redefining what these assert.
+  const KEEPER_INTERVAL_MS = 20_000;
+
+  // The keeper reads document.visibilityState on every tick. jsdom exposes it
+  // as a prototype getter; we shadow it with an instance property so each test
+  // controls it, then remove the override in afterEach.
+  let visibility: DocumentVisibilityState = "visible";
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    visibility = "visible";
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => visibility,
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    delete (document as unknown as { visibilityState?: unknown }).visibilityState;
+  });
+
+  it("revalidates the board keys after 20s while the tab is visible", () => {
+    gatewayState.isConnected = true;
+    render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
+    mutateMock.mockClear(); // drop the first-subscribe reconcile
+
+    // Timer-driven, not mount-driven: nothing fires before the interval elapses.
+    expect(mutateMock).not.toHaveBeenCalled();
+
+    act(() => {
+      vi.advanceTimersByTime(KEEPER_INTERVAL_MS);
+    });
+
+    // The keeper reconciles the same board keys the provider already manages
+    // (ALL_KEYS) — issues + goals + projects + inbox/dashboard among them.
+    const keys = invalidatedKeys();
+    expect(keys).toEqual(
+      expect.arrayContaining([
+        "/teams/issues",
+        "/teams/goals",
+        "/teams/projects",
+        "/teams/inbox",
+        "/teams/dashboard",
+      ]),
+    );
+  });
+
+  it("does NOT revalidate while the tab is hidden (background tabs must not spin)", () => {
+    visibility = "hidden";
+    gatewayState.isConnected = true;
+    render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
+    mutateMock.mockClear(); // drop the first-subscribe reconcile
+
+    act(() => {
+      vi.advanceTimersByTime(KEEPER_INTERVAL_MS * 3);
+    });
+
+    expect(mutateMock).not.toHaveBeenCalled();
+  });
+});
+
 describe("EVENT_KEY_MAP triage wiring", () => {
   it("activity.logged invalidates approvals", () => {
     expect(EVENT_KEY_MAP["teams.activity.logged"]).toContain("/teams/approvals");

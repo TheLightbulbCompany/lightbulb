@@ -1886,12 +1886,11 @@ class TestContainerStatusTeamsStatus:
             result = await container_status(_personal_auth())
 
         # CLIENT-HOOK removed the flat teams_status field; the contract's
-        # teams_state carries it now. Bootstrap dispatch (spec PR-6) also fires
-        # on every ready-phase poll -- its own guards (funnel not submitted
-        # here) make it a cheap no-op, but the fire-and-forget task is still
-        # scheduled alongside the failed-seed ensure_user_ready re-dispatch.
+        # teams_state carries it now. Bootstrap dispatch is call-site-gated on
+        # funnel_state=="submitted", which this seed stub is not, so only the
+        # failed-seed ensure_user_ready re-dispatch is scheduled here.
         assert result["teams_state"] == "failed"
-        assert captured == ["_noop_ensure_user_ready", "maybe_dispatch_bootstrap"], (
+        assert captured == ["_noop_ensure_user_ready"], (
             f"a personal owner with a failed seed must re-dispatch ensure_user_ready, got {captured}"
         )
 
@@ -1927,13 +1926,11 @@ class TestContainerStatusTeamsStatus:
             result = await container_status(_personal_auth())
 
         # CLIENT-HOOK: healthy seed surfaces teams_state=="active" (the flat
-        # teams_status field is gone). Bootstrap dispatch (spec PR-6) still
-        # fires unconditionally on every ready-phase poll; ensure_user_ready is
-        # what stays gated on teams_state=="failed" (the assertion this guards).
+        # teams_status field is gone). Bootstrap dispatch is call-site-gated on
+        # funnel_state=="submitted" (not the case here), and ensure_user_ready
+        # stays gated on teams_state=="failed" -- so nothing is dispatched.
         assert result["teams_state"] == "active"
-        assert captured == ["maybe_dispatch_bootstrap"], (
-            f"a healthy personal seed must not re-dispatch ensure_user_ready, got {captured}"
-        )
+        assert captured == [], f"a healthy personal seed must not re-dispatch, got {captured}"
 
     @pytest.mark.asyncio
     async def test_ready_poll_reads_paperclip_companies_exactly_once(self):
@@ -1982,6 +1979,48 @@ class TestContainerStatusTeamsStatus:
         # poll -- compute_status's internal composition AND the dispatch
         # hook share it.
         repo.get_onboarding_state.assert_awaited_once_with("user_x")
+        dispatch_mock.assert_awaited_once_with("user_x", onboarding=onboarding_state)
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_dispatches_while_starting_not_only_when_ready(self):
+        """Deadlock fix (#1418 P1): during onboarding the funnel hides chat, so
+        no chat RPC opens a gateway connection and runtime_phase never reaches
+        "ready". The dispatcher OPENS its own connection, so the gate is the
+        container being RUNNING ("starting" is enough) -- gating on "ready"
+        would strand funnel_state=submitted / bootstrap_state=not_started
+        forever."""
+        from routers.container import container_status
+
+        dispatch_mock = AsyncMock()
+        fake_ecs = AsyncMock()
+        fake_ecs.resolve_running_container = AsyncMock(
+            return_value=({"service_name": "svc", "status": "running", "substatus": None}, "10.0.1.5")
+        )
+        onboarding_state = _onboarding_state_stub("active")
+        onboarding_state["onboarding_generation"] = "01G"
+        onboarding_state["funnel_state"] = "submitted"
+        onboarding_state["bootstrap_state"] = "not_started"
+        onboarding_state["user_id"] = "creator_1"
+        repo = MagicMock()
+        repo.get = AsyncMock(return_value=SimpleNamespace(status="active"))
+        repo.get_onboarding_state = AsyncMock(return_value=onboarding_state)
+        with (
+            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.resolve_owner_id", return_value="user_x"),
+            # Gateway NOT connected -> runtime_phase == "starting", NOT "ready".
+            patch(
+                "core.services.connection_service.is_gateway_connected",
+                new=AsyncMock(return_value=False),
+            ),
+            patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
+            patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
+            patch("routers.container.maybe_dispatch_bootstrap", new=dispatch_mock),
+        ):
+            result = await container_status(_personal_auth())
+            await asyncio.sleep(0)
+
+        assert result["runtime_phase"] == "starting"
+        # Dispatch STILL fires despite not being "ready" -- this is the fix.
         dispatch_mock.assert_awaited_once_with("user_x", onboarding=onboarding_state)
 
 

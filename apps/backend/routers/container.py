@@ -456,16 +456,26 @@ async def container_status(
     if auth.is_org_context or contract["teams_state"] == "failed":
         _dispatch_watched(ensure_user_ready(auth, provision_container=False))
 
-    # Server-owned bootstrap dispatch (INV-5, spec PR-6): every poll already
-    # observes runtime-phase transitions, so this is the "next lifecycle ->
-    # ready transition" the funnel-submitted-while-cold case waits for
-    # instead of storing a stale handoff token. maybe_dispatch_bootstrap's
-    # own guards (funnel_state == "submitted", bootstrap_state ==
-    # "not_started") make this a cheap no-op on every poll where there's
-    # nothing to dispatch -- the overwhelming majority. Passing the SAME
-    # `onboarding` dict compute_status already consumed above means this
-    # costs zero extra paperclip-companies reads on that majority.
-    if contract["runtime_phase"] == "ready":
+    # Server-owned bootstrap dispatch (INV-5, spec PR-6). Gate on the container
+    # being RUNNING ("starting" OR "ready"), NOT on "ready" alone: "ready"
+    # requires a live gateway connection, but during onboarding the funnel hides
+    # the chat surface so no chat RPC ever opens one -- gating on "ready" would
+    # DEADLOCK (funnel_state=submitted, bootstrap_state=not_started, forever,
+    # because the only thing that would open the connection is this dispatch).
+    # maybe_dispatch_bootstrap OPENS its own connection (resolve_running_container
+    # + ensure_connection) to send Friday's kickoff, so it only needs a running
+    # container; a "starting" attempt before OpenClaw is listening fails
+    # gracefully and retries on the next poll, and the connection it establishes
+    # is what flips the next poll to "ready". The funnel_state/bootstrap_state
+    # pre-check (mirroring the dispatcher's own guards, off the SAME `onboarding`
+    # dict compute_status already consumed -- zero extra reads) keeps the
+    # overwhelming majority of polls from even scheduling a no-op task; the
+    # dispatcher's atomic claim remains the real single-fire fence (INV-5).
+    if (
+        contract["runtime_phase"] in ("starting", "ready")
+        and onboarding.get("funnel_state") == "submitted"
+        and (onboarding.get("bootstrap_state") or "not_started") == "not_started"
+    ):
         asyncio.create_task(maybe_dispatch_bootstrap(owner_id, onboarding=onboarding))
 
     # Gateway liveness now lives on the connection-service DDB table (see

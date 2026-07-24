@@ -22,6 +22,14 @@ jest.mock("../../../providers/gateway", () => ({
   useGateway: () => ({ isConnected: true, error: null, sendReq: mockSendReq }),
 }));
 
+// Container status drives the first-run redirect's durable stand-down gate
+// (`onboarded`). null = no ready status yet (the default; first-run users see
+// onboarded=false and get redirected once).
+let mockContainerStatus: unknown = null;
+jest.mock("../../../lib/containerStatusContext", () => ({
+  useContainerStatusContext: () => mockContainerStatus,
+}));
+
 jest.mock("@isol8/shared", () => ({
   ...jest.requireActual("@isol8/shared"),
   useGatewayRpc: () => ({
@@ -47,6 +55,7 @@ describe("Chat roster", () => {
     routerPush.mockClear();
     mockSendReq.mockClear();
     mockSessionsPayload = { sessions: [] };
+    mockContainerStatus = null;
   });
 
   it("renders the agent grid and the New task action", async () => {
@@ -74,6 +83,17 @@ describe("Chat roster", () => {
       }),
     );
     expect(routerPush).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT redirect a returning user who already onboarded", async () => {
+    // briefSubmitted is permanently sticky; the durable `onboarded` fact is
+    // what stands the redirect down once the backend reports funnel complete.
+    // Without this gate the user gets yanked into Friday on every roster mount.
+    mockClerkUser = { unsafeMetadata: { firstRun: { briefSubmitted: true } } };
+    mockContainerStatus = { kind: "ready", onboarded: true };
+    await render(<Chat />);
+    expect(screen.getByText("Friday")).toBeTruthy();
+    expect(routerPush).not.toHaveBeenCalled();
   });
 
   describe("per-agent sessions (long-press)", () => {

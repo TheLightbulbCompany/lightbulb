@@ -1095,6 +1095,82 @@ def test_http_handoff_active_row_readiness_is_org_scoped(monkeypatch, row_org_id
         assert calls == []
 
 
+def test_http_handoff_token_wins_over_stale_session_cookie(monkeypatch):
+    """A ?__t= handoff token must drive the auth context even when the
+    browser still holds a valid session cookie from a previous visit. The
+    cookie carries no org claims, so letting it win would run the container
+    guard, the org-scoped readiness check, and the autoprovision dispatch
+    under the stale personal identity — the exact context switch (personal
+    Teams visit → org handoff) the handshake exists to serve."""
+    from types import SimpleNamespace
+
+    from fastapi.testclient import TestClient
+
+    import routers.paperclip_proxy as proxy_mod
+
+    monkeypatch.setattr(proxy_mod.settings, "PAPERCLIP_SERVICE_TOKEN_KEY", "test-secret-32-bytes-min-len-x")
+    monkeypatch.setattr(proxy_mod.settings, "FRONTEND_URL", "https://dev.isol8.co")
+
+    # A VALID cookie from a previous personal-context visit.
+    stale_cookie = proxy_mod._mint_paperclip_session(user_id="user_org_member", email="m@example.com")
+
+    async def _fake_decode(token: str):
+        # The fresh handoff JWT is org-context.
+        return {
+            "sub": "user_org_member",
+            "email": "m@example.com",
+            "o": {"id": "org_acme", "rol": "member"},
+        }
+
+    monkeypatch.setattr(proxy_mod, "_decode_token", _fake_decode)
+
+    container_lookups = []
+
+    async def _fake_get_container(owner_id: str):
+        container_lookups.append(owner_id)
+        return {"owner_id": owner_id, "status": "running"}
+
+    monkeypatch.setattr(proxy_mod.container_repo, "get_by_owner_id", _fake_get_container)
+
+    class _FakeRepo:
+        def __init__(self, table_name: str) -> None:
+            pass
+
+        async def get(self, _user_id: str):
+            # Active PERSONAL row — must not suppress the org dispatch.
+            return SimpleNamespace(status="active", org_id="user_org_member")
+
+    monkeypatch.setattr(proxy_mod, "PaperclipRepo", _FakeRepo)
+
+    calls = []
+
+    def _fake_ensure_user_ready(auth, *, provision_container=True):
+        calls.append((auth.user_id, auth.org_id, provision_container))
+
+        async def _noop():
+            return None
+
+        return _noop()
+
+    monkeypatch.setattr(proxy_mod, "ensure_user_ready", _fake_ensure_user_ready)
+
+    app = _build_http_app()
+    client = TestClient(app)
+
+    resp = client.get(
+        "/some/path?__t=valid.clerk.jwt",
+        cookies={"isol8_paperclip": stale_cookie},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 302
+
+    # The handshake ran under the TOKEN's org context, not the cookie's
+    # personal one: container looked up by org_id, and the org-scoped
+    # readiness check dispatched the repair.
+    assert container_lookups == ["org_acme"]
+    assert calls == [("user_org_member", "org_acme", False)]
+
+
 # ---------------------------------------------------------------------------
 # Agent-secret redaction — the proxy fronts the native Paperclip agent routes,
 # which echo the full record incl. the openclaw_gateway adapterConfig (device

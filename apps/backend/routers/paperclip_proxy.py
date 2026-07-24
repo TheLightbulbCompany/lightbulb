@@ -678,9 +678,22 @@ async def _get_paperclip_user(request: Request) -> AuthContext:
     """Resolve the caller from the proxy session cookie OR a Bearer token.
 
     Order:
-      1. ``isol8_paperclip`` cookie — fastest, no network roundtrip, set by
+      1. ``?__t=`` handoff token, when present — an initial-handshake
+         request. It must WIN over any existing session cookie: the token
+         was just minted by the Teams entry point in the user's CURRENT
+         Clerk context (including org claims), while a leftover cookie
+         from a previous visit can encode a stale personal/other-org
+         identity (the cookie carries no org claims at all). Honoring the
+         stale cookie would run the whole handshake — the container
+         guard, the org-scoped readiness check, and the autoprovision
+         dispatch — under the WRONG owner context and 302 the user into
+         the wrong workspace. An invalid/expired handoff token
+         deliberately does NOT fall back to the cookie: for a browser
+         nav, ``proxy()`` upgrades the 401 to a redirect that restarts
+         the handshake with a fresh token.
+      2. ``isol8_paperclip`` cookie — fastest, no network roundtrip, set by
          the handshake endpoint after a successful Clerk validation.
-      2. ``Authorization: Bearer <clerk_jwt>`` — programmatic clients
+      3. ``Authorization: Bearer <clerk_jwt>`` — programmatic clients
          (Postman, curl, the handshake endpoint itself, post-deploy
          smoke tests). Validated via Clerk's JWKS.
 
@@ -688,16 +701,20 @@ async def _get_paperclip_user(request: Request) -> AuthContext:
     cookie expired) gets a 401 here; ``proxy()`` upgrades that to a
     bootstrap HTML response when the request looks like a top-level nav.
     """
-    # 1. Proxy session cookie
-    session_cookie = request.cookies.get(_PAPERCLIP_SESSION_COOKIE)
-    if session_cookie:
-        try:
-            claims = _verify_paperclip_session(session_cookie)
-            return AuthContext(user_id=claims["sub"], email=claims.get("email"))
-        except pyjwt.InvalidTokenError as e:
-            # Expired or tampered — fall through to Bearer/handoff; caller
-            # gets a fresh cookie if either succeeds.
-            logger.info("paperclip_proxy: session cookie rejected: %s", e)
+    handoff_token = request.query_params.get("__t") or None
+
+    # 1. Proxy session cookie — skipped when an explicit handoff token is
+    #    present (the token is the fresher context; see docstring).
+    if not handoff_token:
+        session_cookie = request.cookies.get(_PAPERCLIP_SESSION_COOKIE)
+        if session_cookie:
+            try:
+                claims = _verify_paperclip_session(session_cookie)
+                return AuthContext(user_id=claims["sub"], email=claims.get("email"))
+            except pyjwt.InvalidTokenError as e:
+                # Expired or tampered — fall through to Bearer/handoff;
+                # caller gets a fresh cookie if either succeeds.
+                logger.info("paperclip_proxy: session cookie rejected: %s", e)
 
     # 2. Bearer header (programmatic clients)
     # 3. ?__t= query-param (browser nav from dev.isol8.co Teams click — top-
@@ -709,7 +726,7 @@ async def _get_paperclip_user(request: Request) -> AuthContext:
     if auth_header.lower().startswith("bearer "):
         token = auth_header.split(" ", 1)[1].strip() or None
     if not token:
-        token = request.query_params.get("__t") or None
+        token = handoff_token
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
 

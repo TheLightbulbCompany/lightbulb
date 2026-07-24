@@ -11,12 +11,14 @@ container's provider switch silently stood down: the dispatched provision
 lost the claim, ``provision_user_container`` was never reached, and the row
 was left untouched — even though the caller was told ``restart: True``.
 
-The fix (spec PR-11): the cold path now calls
-``ecs_manager.reprovision_for_user``, which scales the service to 0 and
-waits for it to drain BEFORE dispatching ``background_provision`` — mirroring
-the admin container-reprovision action. That lands the dispatch on the
-scale-from-zero branch (the only one that rewrites configs / re-registers the
-task def) instead of racing a still-"running" row and losing.
+The fix (spec PR-11): the cold path now awaits ``stop_user_service`` (one
+fast, fail-loud ECS call) and then dispatches
+``ecs_manager.reprovision_for_user`` as a background task — reprovision
+re-issues the (now no-op) stop, waits for the drain (up to 90s, which is why
+it must not be awaited on the request path), and only then dispatches
+``background_provision``. That lands the dispatch on the scale-from-zero
+branch (the only one that rewrites configs / re-registers the task def)
+instead of racing a still-"running" row and losing.
 
 These tests drive the REAL conditional write (moto) end-to-end through
 change_provider to pin the FIXED behavior:
@@ -26,6 +28,10 @@ change_provider to pin the FIXED behavior:
     ``provision_user_container``.
   * STOPPED row  -> control. Already claimable; behaves the same as before —
     proving the running-row fix isn't a stubbing artifact.
+  * NO row / NO ECS service -> the stop is idempotent success (nothing to
+    stop) and the dispatch falls through to background_provision's
+    create-from-scratch path — a subscribed-but-never-provisioned owner's
+    provider change must not 500 after committing the choice.
 """
 
 import os
@@ -33,6 +39,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import boto3
 import pytest
+from botocore.exceptions import ClientError
 from moto import mock_aws
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
@@ -84,9 +91,7 @@ def _real_manager() -> EcsManager:
     """
     manager = EcsManager.__new__(EcsManager)
     manager._ecs = MagicMock()
-    manager._ecs.describe_services.return_value = {
-        "services": [{"runningCount": 0, "pendingCount": 0}]
-    }
+    manager._ecs.describe_services.return_value = {"services": [{"runningCount": 0, "pendingCount": 0}]}
     manager._cluster = "arn:aws:ecs:us-east-1:1:cluster/test"
     return manager
 
@@ -144,15 +149,17 @@ def cold_change_env(containers_table):
         patch("core.services.owner_facts.write_owner_facts", new=AsyncMock()),
         patch.object(billing_service, "put_metric", new=MagicMock()),
         # change_provider's cold path now lazily imports get_ecs_manager from
-        # core.containers and calls .reprovision_for_user(owner_id) — hand it
-        # a real EcsManager (ECS client mocked, see _real_manager) so the
-        # stop-first fix's stop -> drain -> dispatch sequence genuinely runs.
+        # core.containers, awaits .stop_user_service, and dispatches
+        # .reprovision_for_user(owner_id) as a task — hand it a real
+        # EcsManager (ECS client mocked, see _real_manager) so the stop-first
+        # fix's stop -> drain -> dispatch sequence genuinely runs.
         patch("core.containers.get_ecs_manager", return_value=real_manager),
-        # Capture the background_provision task reprovision_for_user
-        # dispatches, instead of scheduling it, so the test can await it
-        # deterministically. ecs_manager.py does `import asyncio` at module
-        # scope, so this patches the SAME create_task reprovision_for_user
-        # calls.
+        # Capture BOTH dispatched tasks instead of scheduling them, so the
+        # test can await them deterministically: billing_service dispatches
+        # reprovision_for_user (created[0]) and, inside it, ecs_manager
+        # dispatches background_provision (created[1]). Both modules do
+        # `import asyncio` at module scope — the SAME module object — so one
+        # patch of asyncio.create_task covers both call sites.
         patch.object(
             ecs_manager_module.asyncio,
             "create_task",
@@ -162,7 +169,13 @@ def cold_change_env(containers_table):
         patch("core.services.container_provision.get_ecs_manager", return_value=fake_ecs),
         patch("core.services.container_provision._emit_provision_metric", new=metrics),
     ):
-        yield {"ecs": fake_ecs, "manager": real_manager, "created": created, "metrics": metrics, "table": containers_table}
+        yield {
+            "ecs": fake_ecs,
+            "manager": real_manager,
+            "created": created,
+            "metrics": metrics,
+            "table": containers_table,
+        }
 
 
 @pytest.mark.asyncio
@@ -170,9 +183,7 @@ async def test_cold_provider_change_on_running_container_reprovisions(cold_chang
     """F1 fix: a RUNNING row is stopped first, so the SAME dispatch wins the
     claim and applies the new provider — no more silent stand-down."""
     env = cold_change_env
-    env["table"].put_item(
-        Item={"owner_id": "user_cold", "status": "running", "service_name": "openclaw-user_cold-abc"}
-    )
+    env["table"].put_item(Item={"owner_id": "user_cold", "status": "running", "service_name": "openclaw-user_cold-abc"})
 
     result = await _run_cold_change(env["created"])
 
@@ -184,14 +195,22 @@ async def test_cold_provider_change_on_running_container_reprovisions(cold_chang
         "restart": True,
     }
 
-    # reprovision_for_user scaled the service to 0 (real container_repo write
-    # against the moto table) BEFORE dispatching background_provision.
-    env["manager"]._ecs.update_service.assert_called_once()
+    # The stop was AWAITED on the request path (real container_repo write
+    # against the moto table flipped the row to "stopped") — by the time
+    # change_provider returned, the old-provider container was draining.
+    env["manager"]._ecs.update_service.assert_called()
     assert env["manager"]._ecs.update_service.call_args.kwargs["desiredCount"] == 0
+    row = env["table"].get_item(Key={"owner_id": "user_cold"}).get("Item")
+    assert row["status"] == "stopped"
 
-    # Actually run the dispatched background_provision to completion.
-    assert len(env["created"]) == 1, "expected exactly one background_provision dispatch"
+    # The drain-wait + provision dispatch ran OFF the request path: exactly
+    # one reprovision_for_user task was dispatched. Run it — it re-issues the
+    # (no-op) stop, sees the drained service, and dispatches
+    # background_provision (created[1]). Then run that to completion.
+    assert len(env["created"]) == 1, "expected exactly one reprovision_for_user dispatch"
     await env["created"][0]
+    assert len(env["created"]) == 2, "expected reprovision to dispatch background_provision"
+    await env["created"][1]
 
     # Stop-first means the row was "stopped" by the time the claim ran: the
     # claim is WON, and provision_user_container is reached with the new
@@ -223,6 +242,8 @@ async def test_cold_provider_change_on_stopped_container_applies_new_provider(co
 
     assert len(env["created"]) == 1
     await env["created"][0]
+    assert len(env["created"]) == 2
+    await env["created"][1]
 
     env["ecs"].provision_user_container.assert_awaited_once()
     kwargs = env["ecs"].provision_user_container.await_args.kwargs
@@ -233,3 +254,44 @@ async def test_cold_provider_change_on_stopped_container_applies_new_provider(co
     row = env["table"].get_item(Key={"owner_id": "user_cold"}).get("Item")
     assert row["status"] == "provisioning"
     assert row["provision_claim_id"] == kwargs["claim_id"]
+
+
+@pytest.mark.asyncio
+async def test_cold_provider_change_with_no_container_still_provisions(cold_change_env):
+    """A subscribed owner with NO container row and NO ECS service (e.g.
+    post-checkout before the first /container/status provision, or a legacy
+    owner falling back from the hot path) must not 500 after committing the
+    provider choice: the stop treats service-not-found as idempotent success
+    and the dispatch falls through to background_provision's
+    create-from-scratch path."""
+    env = cold_change_env
+    # No container row put_item — the table is empty for this owner.
+    env["manager"]._ecs.update_service.side_effect = ClientError(
+        {"Error": {"Code": "ServiceNotFoundException", "Message": "Service not found."}},
+        "UpdateService",
+    )
+    env["manager"]._ecs.describe_services.return_value = {
+        "services": [],
+        "failures": [{"reason": "MISSING"}],
+    }
+
+    result = await _run_cold_change(env["created"])
+    assert result["restart"] is True
+
+    # Both dispatches still happen: reprovision_for_user, then
+    # background_provision from inside it.
+    assert len(env["created"]) == 1
+    await env["created"][0]
+    assert len(env["created"]) == 2
+    await env["created"][1]
+
+    # The no-row claim path (attribute_not_exists) is won and the provision
+    # executor runs with the NEW provider — the container is created from
+    # scratch, exactly what the pre-F1 bare dispatch did for this case.
+    env["ecs"].provision_user_container.assert_awaited_once()
+    kwargs = env["ecs"].provision_user_container.await_args.kwargs
+    assert kwargs["provider_choice"] == "byo_key"
+    assert kwargs["byo_provider"] == "anthropic"
+
+    row = env["table"].get_item(Key={"owner_id": "user_cold"}).get("Item")
+    assert row is not None and row["status"] == "provisioning"

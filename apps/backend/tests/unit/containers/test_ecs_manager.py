@@ -711,14 +711,38 @@ class TestStopUserService:
 
     @pytest.mark.asyncio
     async def test_stop_ecs_failure_raises(self, manager, mock_ecs_client):
-        """ECS API failure raises EcsManagerError."""
+        """A genuine ECS API failure raises EcsManagerError."""
         mock_ecs_client.update_service.side_effect = ClientError(
-            {"Error": {"Code": "ServiceNotFoundException", "Message": "not found"}},
+            {"Error": {"Code": "ClusterNotFoundException", "Message": "no cluster"}},
             "UpdateService",
         )
 
         with pytest.raises(EcsManagerError, match="Failed to stop ECS service"):
             await manager.stop_user_service("user_test_123")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("code", ["ServiceNotFoundException", "ServiceNotActiveException"])
+    async def test_stop_missing_service_is_idempotent_success(self, manager, mock_ecs_client, code):
+        """A service that doesn't exist (or is already INACTIVE) is idempotent
+        success — "stopped" is already true. The row (if any) is still marked
+        stopped, so a drifted "running" row regains claim/wake eligibility.
+        This is what lets a cold provider change on a
+        subscribed-but-never-provisioned owner fall through to
+        background_provision's create-from-scratch path instead of 500ing."""
+        mock_ecs_client.update_service.side_effect = ClientError(
+            {"Error": {"Code": code, "Message": "gone"}},
+            "UpdateService",
+        )
+
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="running"))
+            mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="stopped"))
+            mock_repo.stamp_stop_reason = AsyncMock()
+
+            await manager.stop_user_service("user_test_123")
+
+            mock_repo.update_status.assert_called_once_with("user_test_123", "stopped")
+            mock_repo.stamp_stop_reason.assert_awaited_once_with("user_test_123", "manual")
 
 
 # ---------------------------------------------------------------------------

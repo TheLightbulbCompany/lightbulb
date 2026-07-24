@@ -1005,7 +1005,13 @@ class EcsManager:
                 parked box.
 
         Raises:
-            EcsManagerError: If the ECS update_service call fails.
+            EcsManagerError: If the ECS update_service call fails. A service
+                that doesn't exist (or is already INACTIVE) is idempotent
+                success, not an error — "stopped" is already true, and the
+                callers that can hit it (a provider change or reprovision on
+                a subscribed-but-never-provisioned owner, a killswitch on an
+                already-deleted box) all want to proceed, mirroring
+                delete_user_service's not-found handling below.
         """
         service_name = self._service_name(user_id)
         put_metric(
@@ -1020,6 +1026,22 @@ class EcsManager:
                     service=service_name,
                     desiredCount=0,
                 )
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code", "")
+            if code in ("ServiceNotFoundException", "ServiceNotActiveException"):
+                logger.info(
+                    "stop_user_service: service %s for user %s doesn't exist — nothing to stop",
+                    service_name,
+                    user_id,
+                )
+            else:
+                logger.error(
+                    "Failed to stop ECS service %s for user %s: %s",
+                    service_name,
+                    user_id,
+                    e,
+                )
+                raise EcsManagerError(f"Failed to stop ECS service: {e}", user_id)
         except Exception as e:
             logger.error(
                 "Failed to stop ECS service %s for user %s: %s",

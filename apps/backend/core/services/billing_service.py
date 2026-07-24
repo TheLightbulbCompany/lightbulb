@@ -1,5 +1,6 @@
 """Service for Stripe billing operations — flat-fee model."""
 
+import asyncio
 import hashlib
 import logging
 import os
@@ -1195,9 +1196,26 @@ async def change_provider(
     # scale-from-zero branch instead of racing (and losing to) the still-
     # running row. Mirrors the admin container-reprovision action
     # (routers/admin.py) — see EcsManager.reprovision_for_user's docstring.
+    #
+    # Split across the request boundary: the stop is awaited (one fast ECS
+    # call — fail-loud, and it guarantees the old-provider container is
+    # already draining by the time we answer ``restart: True``), but the
+    # drain-wait + provision dispatch run as a background task —
+    # ``_wait_for_service_drained`` polls for up to 90s, which would hang
+    # the ``/billing/provider`` request past ALB/client timeouts and, if
+    # the handler were cancelled mid-drain, strand the owner stopped with
+    # no provision dispatched. Once the row is "stopped", the sequence is
+    # self-healing: even if this task dies, the next /container/status
+    # poll's wake path wins the claim and applies the committed provider.
+    # (stop_user_service treats a missing ECS service as idempotent
+    # success, so a subscribed-but-never-provisioned owner falls through
+    # to background_provision's create-from-scratch path.)
     from core.containers import get_ecs_manager
 
-    await get_ecs_manager().reprovision_for_user(owner_id)
+    manager = get_ecs_manager()
+    await manager.stop_user_service(owner_id, reason="reprovision")
+    # The task re-issues the (now no-op) stop before draining — harmless.
+    asyncio.create_task(manager.reprovision_for_user(owner_id))
 
     return {
         "status": "ok",

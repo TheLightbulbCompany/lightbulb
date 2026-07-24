@@ -1035,8 +1035,6 @@ class TestStartUserServiceGuards:
 
         mock_ecs_client.update_service.assert_called_once()
 
-        mock_ecs_client.update_service.assert_called_once()
-
     @pytest.mark.asyncio
     async def test_conversion_in_flight_is_refused(self, manager, mock_ecs_client, monkeypatch):
         """The corruption door. Note substatus is None, not "converting": the

@@ -23,18 +23,23 @@ legitimately claim the exposed "stopped" row first, and a second stop would
 clobber its "provisioning" status back to claimable and let a second
 executor start (see the poll-claim race test).
 
-These tests drive the REAL conditional write (moto) end-to-end through
-change_provider to pin the FIXED behavior:
+Post-SFN (spec §7 PR-10), ``background_provision`` funnels to the durable
+Step Functions executor (``provision_dispatch``): once the single-flight claim
+is won against the row, its only side effect is ``StartExecution``; the actual
+``provision_user_container`` runs in a SEPARATE one-shot ECS task
+(``scripts.provision_runner``), out of process, which reads the (already
+committed) provider off the billing row. So these tests drive the REAL
+conditional write (moto) end-to-end through change_provider and pin the FIXED
+behavior at the dispatch boundary (``start_execution``):
 
   * RUNNING row  -> stop-first flips the row to "stopped", the SAME dispatch
-    then wins the claim and applies the new provider via
-    ``provision_user_container``.
+    then wins the claim and STARTS a provision execution (the runner applies
+    the new provider) — no more silent stand-down.
   * STOPPED row  -> control. Already claimable; behaves the same as before —
     proving the running-row fix isn't a stubbing artifact.
-  * NO row / NO ECS service -> the stop is idempotent success (nothing to
-    stop) and the dispatch falls through to background_provision's
-    create-from-scratch path — a subscribed-but-never-provisioned owner's
-    provider change must not 500 after committing the choice.
+  * NO row / NO ECS service -> nothing to stop; the dispatch falls through to
+    the create-from-scratch claim path — a subscribed-but-never-provisioned
+    owner's provider change must not 500 after committing the choice.
 """
 
 import os
@@ -119,11 +124,22 @@ def cold_change_env(containers_table):
     so one patch serves change_provider's guard read AND
     background_provision's resolve_provider_choice read.
     """
-    fake_ecs = MagicMock()
-    fake_ecs.provision_user_container = AsyncMock(return_value="svc-name")
+    # Post-SFN, provisioning is a durable Step Functions execution: the
+    # dispatched background_provision funnels to provision_dispatch, whose only
+    # side effect (once the single-flight claim is won against the real moto
+    # row) is StartExecution. provision_user_container now runs in a SEPARATE
+    # one-shot ECS task (scripts.provision_runner) -- out of process -- so the
+    # dispatch boundary this test pins is start_execution, not an in-process
+    # provision_user_container call. The NEW provider is applied by the runner
+    # off the (already-committed) billing row; the test asserts the dispatch
+    # fired + the row committed the new choice.
+    fake_sfn = MagicMock()
+    fake_sfn.start_execution.return_value = {
+        "executionArn": "arn:aws:states:us-east-1:1:execution/prov/exec-1",
+        "startDate": 0,
+    }
     real_manager = _real_manager()
     created: list = []
-    metrics = MagicMock()
     row = _billing_row()
 
     async def _commit_choice(owner_id, *, provider_choice, byo_provider, connector_user_id=None):
@@ -169,16 +185,16 @@ def cold_change_env(containers_table):
             "create_task",
             new=lambda coro: created.append(coro) or MagicMock(),
         ),
-        # The provision executor: reached ONLY if the claim is won.
-        patch("core.services.container_provision.get_ecs_manager", return_value=fake_ecs),
-        patch("core.services.container_provision._emit_provision_metric", new=metrics),
+        # The SFN dispatch boundary: start_execution is reached ONLY if the
+        # single-flight claim is won against the real moto row.
+        patch("core.services.provision_dispatch._client", return_value=fake_sfn),
     ):
         yield {
-            "ecs": fake_ecs,
+            "sfn": fake_sfn,
             "manager": real_manager,
             "created": created,
-            "metrics": metrics,
             "table": containers_table,
+            "row": row,
         }
 
 
@@ -218,19 +234,18 @@ async def test_cold_provider_change_on_running_container_reprovisions(cold_chang
     await env["created"][1]
 
     # Stop-first means the row was "stopped" by the time the claim ran: the
-    # claim is WON, and provision_user_container is reached with the new
-    # provider — the fix's whole point.
-    env["metrics"].assert_not_called()
-    env["ecs"].provision_user_container.assert_awaited_once()
-    kwargs = env["ecs"].provision_user_container.await_args.kwargs
-    assert kwargs["provider_choice"] == "byo_key"
-    assert kwargs["byo_provider"] == "anthropic"
-    assert kwargs["claim_id"]  # the won lease's fencing token
+    # claim is WON and an SFN provision execution is dispatched (StartExecution)
+    # — the runner applies the committed new provider off the billing row. The
+    # fix's whole point: the running-row change is no longer a silent no-op.
+    env["sfn"].start_execution.assert_called_once()
 
-    # The row reflects a genuinely-applied reprovision, not a silent no-op.
+    # The row reflects a genuinely-claimed reprovision, not a silent stand-down:
+    # try_claim_provision stamped it "provisioning" with a real fencing token.
     row = env["table"].get_item(Key={"owner_id": "user_cold"}).get("Item")
     assert row["status"] == "provisioning"
-    assert row["provision_claim_id"] == kwargs["claim_id"]
+    assert row["provision_claim_id"]
+    # The new provider is committed on the billing row the runner reads.
+    assert result["provider_choice"] == "byo_key"
 
 
 @pytest.mark.asyncio
@@ -250,15 +265,12 @@ async def test_cold_provider_change_on_stopped_container_applies_new_provider(co
     assert len(env["created"]) == 2
     await env["created"][1]
 
-    env["ecs"].provision_user_container.assert_awaited_once()
-    kwargs = env["ecs"].provision_user_container.await_args.kwargs
-    assert kwargs["provider_choice"] == "byo_key"
-    assert kwargs["byo_provider"] == "anthropic"
-    assert kwargs["claim_id"]  # the won lease's fencing token
+    env["sfn"].start_execution.assert_called_once()
 
     row = env["table"].get_item(Key={"owner_id": "user_cold"}).get("Item")
     assert row["status"] == "provisioning"
-    assert row["provision_claim_id"] == kwargs["claim_id"]
+    assert row["provision_claim_id"]
+    assert result["provider_choice"] == "byo_key"
 
 
 @pytest.mark.asyncio
@@ -290,16 +302,14 @@ async def test_cold_provider_change_with_no_container_still_provisions(cold_chan
     assert len(env["created"]) == 2
     await env["created"][1]
 
-    # The no-row claim path (attribute_not_exists) is won and the provision
-    # executor runs with the NEW provider — the container is created from
-    # scratch, exactly what the pre-F1 bare dispatch did for this case.
-    env["ecs"].provision_user_container.assert_awaited_once()
-    kwargs = env["ecs"].provision_user_container.await_args.kwargs
-    assert kwargs["provider_choice"] == "byo_key"
-    assert kwargs["byo_provider"] == "anthropic"
+    # The no-row claim path (attribute_not_exists) is won and an SFN execution
+    # is dispatched — the container is created from scratch by the runner with
+    # the NEW provider, exactly what the pre-F1 bare dispatch did for this case.
+    env["sfn"].start_execution.assert_called_once()
 
     row = env["table"].get_item(Key={"owner_id": "user_cold"}).get("Item")
     assert row is not None and row["status"] == "provisioning"
+    assert result["provider_choice"] == "byo_key"
 
 
 @pytest.mark.asyncio
@@ -327,8 +337,9 @@ async def test_poll_claim_between_stop_and_drain_task_is_not_clobbered(cold_chan
     assert len(env["created"]) == 2
     await env["created"][1]
 
-    env["ecs"].provision_user_container.assert_not_awaited()
-    env["metrics"].assert_called_once_with("claim_lost")
+    # The drain task's dispatch LOST the lease to the poll's claim: no SFN
+    # execution started (single-flight — exactly one executor).
+    env["sfn"].start_execution.assert_not_called()
 
     # The poll's claim survived untouched — still provisioning, same token.
     row = env["table"].get_item(Key={"owner_id": "user_cold"}).get("Item")
@@ -378,10 +389,33 @@ async def test_cold_provider_change_stop_failure_reverts_commit_and_retry_works(
     assert len(env["created"]) == 2
     await env["created"][1]
 
-    env["ecs"].provision_user_container.assert_awaited_once()
-    kwargs = env["ecs"].provision_user_container.await_args.kwargs
-    assert kwargs["provider_choice"] == "byo_key"
-    assert kwargs["byo_provider"] == "anthropic"
+    env["sfn"].start_execution.assert_called_once()
+    assert result["provider_choice"] == "byo_key"
+
+
+@pytest.mark.asyncio
+async def test_stop_failure_reverts_legacy_row_to_default_not_stuck(cold_change_env):
+    """A LEGACY billing row carries no provider_choice (resolves to
+    bedrock_claude). On a genuine stop failure after the commit, the revert
+    must restore the effective default rather than skip — otherwise the row
+    keeps the newly-committed provider and a retry hits the no-op fast path,
+    stranding the still-running container on the old provider forever."""
+    env = cold_change_env
+    del env["row"]["provider_choice"]  # legacy: never chose a provider
+    env["table"].put_item(Item={"owner_id": "user_cold", "status": "running", "service_name": "openclaw-user_cold-abc"})
+    env["manager"]._ecs.update_service.side_effect = ClientError(
+        {"Error": {"Code": "ClusterNotFoundException", "Message": "throttled"}},
+        "UpdateService",
+    )
+
+    with pytest.raises(billing_service.ChangeProviderError):
+        await _run_cold_change(env["created"])
+
+    # Reverted to the resolved legacy default -- NOT left on the requested
+    # byo_key (which would no-op the retry), NOT left absent (repo rejects None).
+    account = await billing_service.billing_repo.get_by_owner_id("user_cold")
+    assert account["provider_choice"] == "bedrock_claude"
+    assert env["created"] == []  # nothing dispatched
 
 
 @pytest.mark.asyncio
@@ -414,8 +448,8 @@ async def test_cold_change_fences_out_in_flight_poll_wake_claim(cold_change_env)
     await env["created"][0]
     assert len(env["created"]) == 2
     await env["created"][1]
-    env["ecs"].provision_user_container.assert_awaited_once()
-    assert env["ecs"].provision_user_container.await_args.kwargs["provider_choice"] == "byo_key"
+    env["sfn"].start_execution.assert_called_once()
+    assert result["provider_choice"] == "byo_key"
 
 
 @pytest.mark.asyncio

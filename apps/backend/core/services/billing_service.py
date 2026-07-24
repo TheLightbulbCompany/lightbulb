@@ -1253,10 +1253,20 @@ async def change_provider(
         # create-from-scratch path for never-provisioned owners.
         from core.repositories import container_repo as _container_repo
 
+        # Stop ONLY when a row exists (whose lease we just took over). With no
+        # row there is nothing to stop, and issuing the stop anyway opens a
+        # TOCTOU: a concurrent /container/status poll can win a first-time
+        # provision (creating the row) between this check and the stop, and
+        # stop_user_service's unconditional update_status get→put would then
+        # stamp that freshly-claimed row "stopped" with no lease fence —
+        # resurrecting the double-provision class this path exists to prevent.
+        # The no-row case falls straight through to the drain-only dispatch,
+        # whose try_claim_provision creates-from-scratch (or stands down behind
+        # the poll's claim) under the single-flight lease.
         if await _container_repo.get_by_owner_id(owner_id) is not None:
             await _container_repo.takeover_provision(owner_id)
-        stop_issued = True
-        await manager.stop_user_service(owner_id, reason="reprovision")
+            stop_issued = True
+            await manager.stop_user_service(owner_id, reason="reprovision")
     except Exception as e:
         # Any stop-path failure, not just the wrapped ECS call
         # (EcsManagerError): stop_user_service's row writes after the ECS
@@ -1304,17 +1314,27 @@ async def change_provider(
                 await container_repo.update_status(owner_id, "stopped")
             except Exception:  # noqa: BLE001 — best-effort by design
                 logger.warning("change_provider: best-effort stopped re-stamp failed for %s", owner_id)
-        if current_choice is not None:
-            await billing_repo.set_provider_choice(
-                owner_id,
-                provider_choice=current_choice,
-                byo_provider=current_byo,
-                connector_user_id=recorded_connector if current_choice == "chatgpt_oauth" else None,
-            )
-            await write_owner_facts(
-                owner_id,
-                account_overrides={"provider_choice": current_choice, "byo_provider": current_byo},
-            )
+        # Restore the pre-commit provider so a retry re-runs the full switch
+        # instead of hitting the no-op fast path. A LEGACY row carried no
+        # provider_choice (current_choice is None) and the repo rejects a None
+        # write, so restore the resolved legacy default "bedrock_claude" -- the
+        # exact value resolve_provider_choice (container_provision.py) derives
+        # for a None row, i.e. the provider the container was actually running.
+        # This both preserves the effective state AND un-no-ops a
+        # switch-to-non-bedrock retry (row now explicitly bedrock_claude, which
+        # differs from the requested provider). current_byo stays None for a
+        # legacy row.
+        restore_choice = current_choice or "bedrock_claude"
+        await billing_repo.set_provider_choice(
+            owner_id,
+            provider_choice=restore_choice,
+            byo_provider=current_byo,
+            connector_user_id=recorded_connector if restore_choice == "chatgpt_oauth" else None,
+        )
+        await write_owner_facts(
+            owner_id,
+            account_overrides={"provider_choice": restore_choice, "byo_provider": current_byo},
+        )
         raise ChangeProviderError(
             "reprovision_stop_failed",
             "Could not restart the container to apply the new provider. No changes were made — try again.",

@@ -713,10 +713,12 @@ async def test_change_provider_into_bedrock_takes_cold_path(monkeypatch):
 
     hot.assert_not_awaited()  # hot path skipped for bedrock target
     assert result["restart"] is True
-    # Stop-first: the stop was AWAITED on the request path, then the
-    # drain+provision sequence was dispatched off-request for the owner —
-    # drain-only, no second stop (which would clobber a poll-claimed row).
-    fake_manager.stop_user_service.assert_awaited_once_with("user_x", reason="reprovision")
+    # No container row: there is nothing to stop, and issuing the stop anyway
+    # would open a TOCTOU (a poll creating the row between the fence read and
+    # the stop would get an unfenced "stopped" stamp). So the stop is SKIPPED
+    # and the cold path falls straight through to the drain-only dispatch,
+    # whose create-from-scratch claim provisions the owner.
+    fake_manager.stop_user_service.assert_not_awaited()
     fake_manager.drain_then_dispatch_provision.assert_called_once_with("user_x")
     assert len(created) == 1
 

@@ -810,7 +810,16 @@ class PaperclipRepo:
             chosen = next((it for it in items if it.get("seeded_agent_ids")), None) or min(items, key=_sort_key)
         else:
             return None
-        return await self.get(chosen["user_id"])
+        # Hydrate straight from the GSI query item -- the by-org-id index is
+        # ProjectionType.ALL, so `chosen` already carries every attribute
+        # _item_to_company needs (that helper was factored out of get() for
+        # exactly this). Avoids a second base-table read on the hot
+        # /container/status org poll (get_onboarding_state calls this on every
+        # ~3s poll). Same eventual-consistency tier the base get() had on the
+        # org path (the GSI can't be a consistent read anyway -- see
+        # resolve_owner_row); the brief-flow CAS write fences on generation, so
+        # a briefly-stale read can't corrupt the claim.
+        return self._item_to_company(chosen)
 
     async def resolve_owner_row(
         self, owner_id: str, *, consistent_read: bool = False, include_inactive: bool = False

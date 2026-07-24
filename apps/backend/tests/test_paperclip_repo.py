@@ -399,6 +399,21 @@ async def test_resolve_owner_row_org_finds_creator_row_via_gsi(repo):
     assert resolved.onboarding_generation == "01CREATOR"
 
 
+async def test_find_owner_row_hydrates_from_gsi_without_a_second_get(repo):
+    """The by-org-id GSI is ProjectionType.ALL, so find_owner_row must build the
+    row from the query item -- NOT do a second base-table get() -- keeping the
+    hot /container/status org poll to a single physical read."""
+    from unittest.mock import patch
+
+    now = datetime.now(timezone.utc)
+    await repo.put(_make_company(user_id="user_creator", org_id="org_acme", created_at=now))
+
+    with patch.object(repo, "get", side_effect=AssertionError("find_owner_row must not call get()")) as spy:
+        resolved = await repo.find_owner_row("org_acme")
+    spy.assert_not_called()
+    assert resolved is not None and resolved.user_id == "user_creator"
+
+
 async def test_resolve_owner_row_org_skips_non_active_rows(repo):
     """A provisioning/failed/disabled row is not sign-in-able and must never
     be picked over a genuinely active one, even if it's older."""

@@ -980,3 +980,59 @@ async def test_rearm_bootstrap_dispatch_never_downgrades_a_resolved_dispatch(rep
     fetched = await repo.get("u1")
     assert fetched.bootstrap_state == "delivered"
     assert fetched.funnel_state == "complete"
+
+
+# ---------------------------------------------------------------------------
+# reset_bootstrap_for_retry
+# ---------------------------------------------------------------------------
+
+
+async def test_reset_bootstrap_for_retry_lands_on_failed_row(repo):
+    """Admin retry re-arms a failed kickoff: bootstrap_state back to
+    not_started, attempts zeroed (so MAX_BOOTSTRAP_ATTEMPTS re-arms),
+    dispatch_id REMOVEd -- while bootstrap_last_error is kept as history
+    and the funnel stays submitted for the next dispatch claim."""
+    await repo.put(
+        _make_company(
+            user_id="u1", onboarding_generation="01G", funnel_state="submitted", bootstrap_state="not_started"
+        )
+    )
+    _, dispatch_id = await repo.claim_bootstrap_dispatch("u1", onboarding_generation="01G")
+    await repo.mark_bootstrap_failed(
+        "u1", onboarding_generation="01G", dispatch_id=dispatch_id, reason="container unreachable"
+    )
+
+    ok = await repo.reset_bootstrap_for_retry("u1", onboarding_generation="01G")
+
+    assert ok is True
+    fetched = await repo.get("u1")
+    assert fetched.bootstrap_state == "not_started"
+    assert fetched.bootstrap_attempts == 0
+    assert fetched.bootstrap_dispatch_id is None
+    assert fetched.bootstrap_last_error == "container unreachable"
+    assert fetched.funnel_state == "submitted"
+
+
+async def test_reset_bootstrap_for_retry_returns_false_on_condition_fail(repo):
+    """The fence: only a genuinely failed bootstrap on the SAME generation
+    the operator read may be reset -- a mid-flight dispatch or a superseded
+    generation is a no-op (False)."""
+    await repo.put(
+        _make_company(
+            user_id="u1", onboarding_generation="01G", funnel_state="submitted", bootstrap_state="not_started"
+        )
+    )
+    _, dispatch_id = await repo.claim_bootstrap_dispatch("u1", onboarding_generation="01G")
+
+    # Still dispatched (not failed): must not yank a live kickoff.
+    assert await repo.reset_bootstrap_for_retry("u1", onboarding_generation="01G") is False
+    assert (await repo.get("u1")).bootstrap_state == "dispatched"
+
+    await repo.mark_bootstrap_failed("u1", onboarding_generation="01G", dispatch_id=dispatch_id, reason="boom")
+
+    # Failed, but the operator is holding a stale generation: no-op.
+    assert await repo.reset_bootstrap_for_retry("u1", onboarding_generation="01STALE") is False
+    fetched = await repo.get("u1")
+    assert fetched.bootstrap_state == "failed"
+    assert fetched.bootstrap_attempts == 1
+    assert fetched.bootstrap_dispatch_id == dispatch_id

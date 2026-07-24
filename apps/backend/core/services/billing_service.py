@@ -1210,6 +1210,17 @@ async def change_provider(
     # (stop_user_service treats a missing ECS service as idempotent
     # success, so a subscribed-but-never-provisioned owner falls through
     # to background_provision's create-from-scratch path.)
+    #
+    # Accepted race — a status-poll wake DURING the drain window: the
+    # poll's retryable-state dispatch can claim the stopped row before
+    # reprovision_for_user's own delayed dispatch does. Benign by design:
+    # the single-flight lease admits exactly one executor (the loser
+    # stands down), both executors would apply the SAME committed
+    # provider, and task overlap on EFS is fenced one layer down —
+    # SINGLE_WRITER_DEPLOYMENT_CONFIG (maximumPercent=100) keeps ECS from
+    # starting the new task until the draining one has fully stopped, so
+    # the drain-wait is defense-in-depth, not the single-writer fence.
+    # The same window has always existed on the admin reprovision path.
     from core.containers import get_ecs_manager
 
     manager = get_ecs_manager()

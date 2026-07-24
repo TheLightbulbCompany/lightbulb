@@ -316,3 +316,82 @@ async def test_count_live_chat_connections_unknown_owner_returns_zero(ddb_table_
     svc = ConnectionService(table_name=ddb_table_with_owner_gsi, region_name="us-east-1")
     count = await svc.count_live_chat_connections("nobody")
     assert count == 0
+
+
+# ---------------------------------------------------------------------------
+# Gateway-liveness lease: refresh while alive + freshness check on read
+# (COMPOSER P2 — a one-shot ttl let a live long-lived connection's row get
+# TTL-swept, and let an expired-but-unswept row read as connected).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_is_gateway_connected_true_when_fresh(plain_ddb_table):
+    svc = ConnectionService(table_name=plain_ddb_table, region_name="us-east-1")
+    await svc.mark_gateway_connected("owner_1")  # stamps lastPingAt = now
+    assert await svc.is_gateway_connected("owner_1") is True
+
+
+@pytest.mark.asyncio
+async def test_is_gateway_connected_false_when_stale(plain_ddb_table):
+    """A row whose lastPingAt is older than the freshness window reads as NOT
+    connected even though it still exists (TTL sweep lag / dead gateway whose
+    refresh loop stopped) -- fail toward cold-start, never a false ready."""
+    from core.services.connection_service import _LIVENESS_STALE_SECONDS, _gateway_liveness_key
+
+    client = boto3.client("dynamodb", region_name="us-east-1")
+    svc = ConnectionService(table_name=plain_ddb_table, region_name="us-east-1")
+    await svc.mark_gateway_connected("owner_1")
+    stale = int(time.time()) - _LIVENESS_STALE_SECONDS - 5
+    client.update_item(
+        TableName=plain_ddb_table,
+        Key={"connectionId": {"S": _gateway_liveness_key("owner_1")}},
+        UpdateExpression="SET lastPingAt = :p",
+        ExpressionAttributeValues={":p": {"N": str(stale)}},
+    )
+    assert await svc.is_gateway_connected("owner_1") is False
+
+
+@pytest.mark.asyncio
+async def test_is_gateway_connected_false_when_absent(plain_ddb_table):
+    svc = ConnectionService(table_name=plain_ddb_table, region_name="us-east-1")
+    assert await svc.is_gateway_connected("owner_nope") is False
+
+
+@pytest.mark.asyncio
+async def test_refresh_gateway_liveness_bumps_last_ping_when_present(plain_ddb_table):
+    from core.services.connection_service import _gateway_liveness_key
+
+    client = boto3.client("dynamodb", region_name="us-east-1")
+    svc = ConnectionService(table_name=plain_ddb_table, region_name="us-east-1")
+    await svc.mark_gateway_connected("owner_1")
+    # Backdate the stamp, then refresh -- lastPingAt must jump forward.
+    old = int(time.time()) - 120
+    client.update_item(
+        TableName=plain_ddb_table,
+        Key={"connectionId": {"S": _gateway_liveness_key("owner_1")}},
+        UpdateExpression="SET lastPingAt = :p",
+        ExpressionAttributeValues={":p": {"N": str(old)}},
+    )
+    await svc.refresh_gateway_liveness("owner_1")
+    item = client.get_item(
+        TableName=plain_ddb_table,
+        Key={"connectionId": {"S": _gateway_liveness_key("owner_1")}},
+    )["Item"]
+    assert int(item["lastPingAt"]["N"]) > old
+
+
+@pytest.mark.asyncio
+async def test_refresh_gateway_liveness_does_not_resurrect_absent_row(plain_ddb_table):
+    """Conditional on the row existing: a refresh tick racing just after a
+    disconnect (row deleted) must NOT recreate a liveness marker."""
+    from core.services.connection_service import _gateway_liveness_key
+
+    client = boto3.client("dynamodb", region_name="us-east-1")
+    svc = ConnectionService(table_name=plain_ddb_table, region_name="us-east-1")
+    await svc.refresh_gateway_liveness("owner_gone")  # no row exists
+    resp = client.get_item(
+        TableName=plain_ddb_table,
+        Key={"connectionId": {"S": _gateway_liveness_key("owner_gone")}},
+    )
+    assert "Item" not in resp

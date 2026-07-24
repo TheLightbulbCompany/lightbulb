@@ -499,6 +499,35 @@ async def test_claim_funnel_submission_concurrent_leaves_row_consistent(repo):
     assert row.funnel_submitted_at is not None
 
 
+async def test_get_onboarding_state_surfaces_failed_org_seed(repo):
+    """COMPOSER P2: an org whose Paperclip seed FAILED has only a
+    status="failed" owner row. get_onboarding_state must still resolve it (via
+    include_inactive) so teams_state="failed" surfaces -- the active-only
+    sign-in resolver would drop it and hide the Teams-degraded affordance."""
+    await repo.put(
+        _make_company(
+            user_id="creator",
+            org_id="org_x",
+            status="failed",
+            seeded_agent_ids=["friday_id"],
+            onboarding_generation="01G",
+            funnel_state="not_started",
+        )
+    )
+    state = await repo.get_onboarding_state("org_x")
+    assert state["teams_state"] == "failed"
+    assert state["onboarding_generation"] == "01G"
+
+
+async def test_find_owner_row_include_inactive_returns_failed_provisioner(repo):
+    await repo.put(_make_company(user_id="creator", org_id="org_y", status="failed", seeded_agent_ids=["friday_id"]))
+    # Default (sign-in) resolver hides the non-active row...
+    assert await repo.find_owner_row("org_y") is None
+    # ...but the status reader can still resolve it.
+    row = await repo.find_owner_row("org_y", include_inactive=True)
+    assert row is not None and row.status == "failed"
+
+
 async def test_claim_funnel_submission_stale_generation_is_a_silent_no_op(repo):
     """A caller fencing on a SUPERSEDED generation (e.g. the company was
     reprovisioned underneath it) gets STALE_GENERATION, not

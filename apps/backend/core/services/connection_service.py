@@ -42,6 +42,17 @@ logger = logging.getLogger(__name__)
 # it if $disconnect is never called (crashed tab, dropped connection, etc).
 _TTL_WINDOW_SECONDS = 7200  # 2 hours
 
+# Gateway-liveness freshness window: a gateway-liveness row counts as
+# "connected" only if a live GatewayConnection refreshed its lease
+# (``refresh_gateway_liveness``) within this window. Must be comfortably
+# larger than the connection's refresh cadence (``_LIVENESS_REFRESH_SECONDS``
+# in connection_pool, 60s) so a couple of missed/slow refreshes don't flap a
+# healthy connection to "not connected", but small enough that a dead or
+# crashed gateway (whose refresh loop stopped) reads as disconnected quickly
+# rather than lingering as a false "ready" until the ttl sweep. 3 missed
+# refreshes.
+_LIVENESS_STALE_SECONDS = 180
+
 # touch_connection in-process throttle: skip the DynamoDB write if the same
 # connection_id was touched more recently than this. The frontend pings
 # every ~30s, so this collapses roughly every other ping into a no-op.
@@ -629,26 +640,88 @@ class ConnectionService:
                 e.response["Error"]["Message"],
             )
 
+    async def refresh_gateway_liveness(self, owner_id: str) -> None:
+        """Refresh the gateway-liveness lease (``lastPingAt`` + ``ttl``) while
+        the connection stays alive.
+
+        Called on a periodic tick by ``GatewayConnection`` for as long as its
+        ``is_alive`` is True (active, idle-open, OR parked). Without this the
+        row's ttl -- stamped ONCE at connect -- would let DynamoDB's TTL sweep
+        delete the only liveness marker under a healthy long-lived connection
+        (a false ``starting``), and the read side would have no way to tell a
+        genuinely-fresh row from an expired-but-not-yet-swept one (a false
+        ``ready`` after a missed disconnect / backend crash).
+
+        CONDITIONAL on the row existing (``attribute_exists``): a disconnect
+        deletes the row, and a refresh tick that races just after it must NOT
+        recreate a liveness marker for a gateway that is gone. Best-effort:
+        a write failure (or the conditional miss) is swallowed -- the next
+        tick retries, and a permanently-absent row simply reads as not
+        connected.
+        """
+        now_epoch = int(time.time())
+
+        def _refresh() -> None:
+            self._client.update_item(
+                TableName=self.table_name,
+                Key={"connectionId": {"S": _gateway_liveness_key(owner_id)}},
+                UpdateExpression="SET lastPingAt = :p, #ttl = :t",
+                ConditionExpression="attribute_exists(connectionId)",
+                ExpressionAttributeNames={"#ttl": "ttl"},
+                ExpressionAttributeValues={
+                    ":p": {"N": str(now_epoch)},
+                    ":t": {"N": str(now_epoch + _TTL_WINDOW_SECONDS)},
+                },
+            )
+
+        try:
+            await asyncio.to_thread(_refresh)
+        except ClientError as e:
+            # ConditionalCheckFailed (row gone) is the expected benign race;
+            # any other error is also swallowed (best-effort, next tick retries).
+            if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                logger.warning(
+                    "refresh_gateway_liveness failed for owner %s (best-effort, swallowed): %s",
+                    owner_id,
+                    e.response["Error"]["Message"],
+                )
+
     async def is_gateway_connected(self, owner_id: str) -> bool:
-        """Whether the gateway-liveness row for ``owner_id`` exists.
+        """Whether the gateway-liveness row for ``owner_id`` is present AND
+        fresh.
 
         The sole read side of the R4 kill -- consumed by
         ``core.services.readiness_state.compute_status`` (and its
         ``_safe_phase``-equivalent fallback) instead of the old in-process
-        ``GatewayConnectionPool.is_user_connected``. A read failure is
-        logged and treated as "not connected" (fail toward showing the
-        cold-start UI rather than a false "ready", mirroring the
-        fail-closed posture of the rest of the gate machinery in this
-        codebase).
+        ``GatewayConnectionPool.is_user_connected``.
+
+        Freshness matters because DynamoDB's TTL sweep is best-effort and can
+        lag hours: an expired row (crashed/uncleanly-torn-down gateway whose
+        refresh loop stopped) can linger and would otherwise read as
+        connected. So a row counts as connected only if its ``lastPingAt`` is
+        within ``_LIVENESS_STALE_SECONDS`` -- i.e. a live ``GatewayConnection``
+        has refreshed the lease recently. Row missing OR stale OR read failure
+        all read as "not connected" (fail toward the cold-start UI rather than
+        a false ``ready``, mirroring the fail-closed posture of the rest of
+        the gate machinery in this codebase).
         """
+        now_epoch = int(time.time())
 
         def _get() -> bool:
             resp = self._client.get_item(
                 TableName=self.table_name,
                 Key={"connectionId": {"S": _gateway_liveness_key(owner_id)}},
-                ProjectionExpression="connectionId",
+                ProjectionExpression="lastPingAt",
             )
-            return "Item" in resp
+            item = resp.get("Item")
+            if item is None:
+                return False
+            last_ping_raw = item.get("lastPingAt", {}).get("N")
+            if last_ping_raw is None:
+                # A row with no lastPingAt predates the lease refresh -- treat
+                # as fresh-enough-if-present is unsafe, so require the stamp.
+                return False
+            return (now_epoch - int(last_ping_raw)) < _LIVENESS_STALE_SECONDS
 
         try:
             return await asyncio.to_thread(_get)

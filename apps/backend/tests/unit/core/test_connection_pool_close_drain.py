@@ -13,9 +13,25 @@ class _FakeWS:
         self.closed = True
 
 
+class _NoopConnSvc:
+    """Stand-in for ConnectionService: close() fires the (best-effort) DDB
+    gateway-liveness clear via _note_gateway_liveness; these __new__-built
+    partial connections don't wire a real service, so no-op it."""
+
+    async def mark_gateway_connected(self, owner_id):
+        pass
+
+    async def mark_gateway_disconnected(self, owner_id):
+        pass
+
+    async def refresh_gateway_liveness(self, owner_id):
+        pass
+
+
 def _make_conn():
     conn = cp.GatewayConnection.__new__(cp.GatewayConnection)
     conn.user_id = "u1"
+    conn.owner_id = "u1"
     conn._closed = False
     conn._ws = _FakeWS()
     conn._pending_rpcs = {}
@@ -27,6 +43,8 @@ def _make_conn():
     conn._active_runs = {}
     conn._parked = False
     conn._emit_status_change = lambda *a, **k: None
+    conn._liveness_refresh_task = None
+    conn._conn_svc = _NoopConnSvc()
     return conn
 
 

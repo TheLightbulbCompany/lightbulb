@@ -373,7 +373,11 @@ class PaperclipRepo:
         default -- never raises (read failures are the caller's
         responsibility to guard, matching every other method here).
         """
-        company = await self.resolve_owner_row(owner_id)
+        # include_inactive=True: a status reader must still resolve a
+        # FAILED org seed row so teams_state="failed" surfaces (the sign-in
+        # resolver's active-only filter would hide it). Personal owners already
+        # resolve via a status-agnostic get.
+        company = await self.resolve_owner_row(owner_id, include_inactive=True)
         if company is None:
             return {
                 "onboarding_generation": None,
@@ -749,7 +753,7 @@ class PaperclipRepo:
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             pass
 
-    async def find_owner_row(self, org_id: str) -> Optional[PaperclipCompany]:
+    async def find_owner_row(self, org_id: str, *, include_inactive: bool = False) -> Optional[PaperclipCompany]:
         """Find the ORG owner row (oldest ACTIVE ``created_at`` for this org_id).
 
         Deliberately a separate, repo-level implementation of the same
@@ -765,7 +769,17 @@ class PaperclipRepo:
         ``find_org_owner``: a disabled/provisioning/failed row is not
         sign-in-able and must never be selected over a genuinely active one.
 
-        Returns None if the org has no active rows.
+        ``include_inactive`` (default False) relaxes that for onboarding/teams
+        STATUS readers (``get_onboarding_state``): an org whose Paperclip seed
+        FAILED has only a ``status="failed"`` owner row, and the caller needs
+        it to surface ``teams_state="failed"`` (the Teams-degraded affordance).
+        When no active row exists and ``include_inactive`` is set, the
+        provisioner's row (the one carrying ``seeded_agent_ids``, else the
+        oldest) is returned regardless of status. The sign-in path leaves this
+        False so a non-active row is never selected over an active one.
+
+        Returns None if the org has no rows (or no active row when
+        ``include_inactive`` is False).
         """
         items: list[dict] = []
         last_evaluated_key: Optional[dict] = None
@@ -783,17 +797,24 @@ class PaperclipRepo:
             if not last_evaluated_key:
                 break
 
-        active_items = [it for it in items if it.get("status") == "active"]
-        if not active_items:
-            return None
-
         def _sort_key(it: dict) -> str:
             return it.get("created_at", "")
 
-        oldest = min(active_items, key=_sort_key)
-        return await self.get(oldest["user_id"])
+        active_items = [it for it in items if it.get("status") == "active"]
+        if active_items:
+            chosen = min(active_items, key=_sort_key)
+        elif include_inactive and items:
+            # No active row -- return the provisioner's row (carries
+            # seeded_agent_ids) if present, else the oldest, so a failed-seed
+            # org still resolves to a row carrying its onboarding/teams truth.
+            chosen = next((it for it in items if it.get("seeded_agent_ids")), None) or min(items, key=_sort_key)
+        else:
+            return None
+        return await self.get(chosen["user_id"])
 
-    async def resolve_owner_row(self, owner_id: str, *, consistent_read: bool = False) -> Optional[PaperclipCompany]:
+    async def resolve_owner_row(
+        self, owner_id: str, *, consistent_read: bool = False, include_inactive: bool = False
+    ) -> Optional[PaperclipCompany]:
         """Resolve an ``owner_id`` (Clerk org_id for orgs, Clerk user_id for
         personal owners) to the paperclip-companies OWNER row that carries
         onboarding truth.
@@ -823,7 +844,7 @@ class PaperclipRepo:
         (base-table ``get``) path.
         """
         if is_org_owner_id(owner_id):
-            return await self.find_owner_row(owner_id)
+            return await self.find_owner_row(owner_id, include_inactive=include_inactive)
         return await self.get(owner_id, consistent_read=consistent_read)
 
     async def claim_funnel_submission(self, user_id: str, *, onboarding_generation: str) -> FunnelClaimResult:

@@ -98,6 +98,15 @@ _AUTH_BACKOFF_CAP_S = 300
 # vs-slow-turn signal is greppable in CloudWatch Insights.
 _RUN_LONG_IDLE_S = 300
 
+# Cadence at which a live GatewayConnection re-stamps its DDB gateway-liveness
+# lease (``ConnectionService.refresh_gateway_liveness``) so the row stays fresh
+# for as long as the connection is alive -- active, idle-open, OR parked (a
+# parked connection keeps is_alive True while it presumes the container alive).
+# Must be well under connection_service._LIVENESS_STALE_SECONDS (180s) so the
+# read side never flaps a healthy connection to "not connected", and well under
+# the row's ttl window so DDB's TTL sweep never deletes a live marker.
+_LIVENESS_REFRESH_SECONDS = 60
+
 # TTL for the per-connection agents.list name cache backing push-notification
 # titles. Names change rarely; a short TTL keeps run-completion pushes off a
 # fresh RPC per reply without letting a rename stay stale for long.
@@ -255,6 +264,11 @@ class GatewayConnection:
         # without any event, the watchdog escalates parked → dead so a
         # genuinely-deadlocked OpenClaw process can't leak state forever.
         self._parked_watchdog_task: Optional[asyncio.Task] = None
+        # Periodic lease-refresh for the DDB gateway-liveness row: runs while
+        # this connection is alive so the row's ttl never lapses under a
+        # long-lived connection (and the read side can tell fresh from
+        # expired-but-unswept). Started/cancelled in _note_gateway_liveness.
+        self._liveness_refresh_task: Optional[asyncio.Task] = None
 
     def _note_gateway_liveness(self, *, connected: bool) -> None:
         """Fire-and-forget the DDB liveness write (readiness store R4's
@@ -265,6 +279,11 @@ class GatewayConnection:
         Never awaited inline: this must not add a DDB round-trip to the
         connect/close/park hot path. Each service method swallows its own
         errors, so the fire-and-forget task can never raise.
+
+        Also owns the lifecycle of the periodic lease-refresh loop: connect
+        (and reopen, which re-enters connect) starts it; every disconnect /
+        park-escalation / close stops it -- so the lease is refreshed for
+        exactly as long as ``is_alive`` holds.
         """
         coro = (
             self._conn_svc.mark_gateway_connected(self.owner_id)
@@ -272,6 +291,38 @@ class GatewayConnection:
             else self._conn_svc.mark_gateway_disconnected(self.owner_id)
         )
         asyncio.create_task(coro)
+        if connected:
+            self._start_liveness_refresh()
+        else:
+            self._cancel_liveness_refresh()
+
+    def _start_liveness_refresh(self) -> None:
+        """Start the periodic gateway-liveness lease refresh (idempotent)."""
+        if self._liveness_refresh_task is not None and not self._liveness_refresh_task.done():
+            return
+        self._liveness_refresh_task = asyncio.create_task(self._liveness_refresh_loop())
+
+    def _cancel_liveness_refresh(self) -> None:
+        if self._liveness_refresh_task is not None and not self._liveness_refresh_task.done():
+            self._liveness_refresh_task.cancel()
+        self._liveness_refresh_task = None
+
+    async def _liveness_refresh_loop(self) -> None:
+        """Re-stamp the DDB gateway-liveness lease every
+        ``_LIVENESS_REFRESH_SECONDS`` while this connection is alive.
+
+        ``refresh_gateway_liveness`` is conditional on the row still existing,
+        so a tick that races just after a disconnect can't resurrect a dead
+        marker. Errors are swallowed inside the service call; this loop only
+        exits on cancellation.
+        """
+        try:
+            while True:
+                await asyncio.sleep(_LIVENESS_REFRESH_SECONDS)
+                if self.is_alive:
+                    await self._conn_svc.refresh_gateway_liveness(self.owner_id)
+        except asyncio.CancelledError:
+            raise
 
     def _emit_status_change(self, state: str, reason: str) -> None:
         """Push a status_change event to all connected frontend WebSockets."""

@@ -1035,6 +1035,42 @@ class TestHasAlwaysOnEntitlement:
 
 
 @pytest.mark.asyncio
+async def test_probe_provision_gate_skips_metric_emission(monkeypatch):
+    """probe_provision_gate returns the same Gate as evaluate_provision_gate
+    but must NOT emit provision.gate.blocked (the W64 alarm stream)."""
+    from core.services import provision_gate
+
+    sentinel = provision_gate.Gate(
+        code="subscription_required",
+        title="t",
+        message="m",
+        action_label="a",
+        action_href="/settings/billing",
+        action_admin_only=False,
+        owner_role="admin",
+    )
+
+    async def fake_inner(*, owner_id, is_admin):
+        return sentinel
+
+    emitted = []
+    monkeypatch.setattr(provision_gate, "_evaluate_provision_gate_inner", fake_inner)
+    # Record every telemetry path evaluate_provision_gate would have taken:
+    # put_metric (the W64 alarm stream + coded breakdown) and the PostHog
+    # trial_expired capture. The probe must touch neither.
+    monkeypatch.setattr(provision_gate, "put_metric", lambda *a, **kw: emitted.append(("put_metric", a, kw)))
+    monkeypatch.setattr(
+        provision_gate,
+        "capture_once_per_owner_per_day",
+        lambda *a, **kw: emitted.append(("capture", a, kw)),
+    )
+
+    gate = await provision_gate.probe_provision_gate(owner_id="user_x")
+    assert gate is sentinel
+    assert emitted == []
+
+
+@pytest.mark.asyncio
 async def test_has_oauth_tokens_uses_state_check_not_decrypt():
     """The connected-check must not decrypt the token blob — it only needs to
     know an active, owner-bound row exists."""

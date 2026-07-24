@@ -422,6 +422,16 @@ async def evaluate_provision_gate(
     return gate
 
 
+async def probe_provision_gate(*, owner_id: str, is_admin: bool = True) -> Gate | None:
+    """Metric-free gate evaluation for diagnostic reads (the admin surface).
+
+    ``evaluate_provision_gate``'s blocked-metric stream feeds the W64
+    spike alarm; an operator inspecting an owner must not inflate it.
+    Same decision logic, no emission.
+    """
+    return await _evaluate_provision_gate_inner(owner_id=owner_id, is_admin=is_admin)
+
+
 async def _evaluate_provision_gate_inner(
     *,
     owner_id: str,

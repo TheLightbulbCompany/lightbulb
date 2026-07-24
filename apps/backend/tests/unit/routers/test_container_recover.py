@@ -22,6 +22,7 @@ class TestContainerRecover:
     def mock_container_repo(self):
         with patch("routers.container_recover.container_repo") as mock_repo:
             mock_repo.update_error = AsyncMock(return_value=None)
+            mock_repo.update_status = AsyncMock(return_value=None)
             yield mock_repo
 
     @pytest.fixture
@@ -135,6 +136,33 @@ class TestContainerRecover:
         assert response.status_code == 200
         data = response.json()
         assert data["action"] == "reprovision"
+        # The row must be flipped to "error" BEFORE the dispatch — the
+        # dispatch's claim admits only missing/error/stopped/stale rows, so
+        # dispatching against the still-"running" row would silently lose
+        # the claim and start nothing.
+        mock_container_repo.update_status.assert_called_once_with("user_test_123", "error")
+        mock_dispatch_provision.assert_called_once_with("user_test_123")
+
+    @pytest.mark.asyncio
+    async def test_recover_running_but_no_ip_flips_to_error_then_reprovisions(
+        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
+    ):
+        """A "running" row whose task is gone (no IP) must be flipped to
+        "error" before the dispatch, or the dispatch's claim stands down
+        against the running status and /recover answers "reprovision" while
+        starting nothing."""
+        container = {
+            "owner_id": "user_test_123",
+            "gateway_token": "test-token",
+            "status": "running",
+        }
+        mock_ecs_manager.resolve_running_container = AsyncMock(return_value=(container, None))
+
+        response = await async_client.post("/api/v1/container/recover")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["action"] == "reprovision"
+        mock_container_repo.update_status.assert_called_once_with("user_test_123", "error")
         mock_dispatch_provision.assert_called_once_with("user_test_123")
 
     # --- HEALTHY: no-op ---

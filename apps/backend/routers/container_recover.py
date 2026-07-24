@@ -150,6 +150,14 @@ async def container_recover(
         if trial_gate is not None:
             raise HTTPException(status_code=402, detail=trial_gate.to_payload())
         logger.warning("Owner %s: running container but no IP, reprovisioning", owner_id)
+        # Make the row claimable BEFORE dispatching: the dispatch's claim
+        # (try_claim_provision) admits only missing/error/stopped/stale
+        # rows — a "running" row would lose the claim and no execution
+        # would start, while this endpoint still answered "reprovision".
+        # The row IS in an error state (task gone / unreachable), so the
+        # honest write is also the enabling one.
+        await container_repo.update_status(owner_id, "error")
+        await container_repo.update_error(owner_id, "Container running but unreachable")
         await dispatch_provision(owner_id)
         return {
             "action": "reprovision",
@@ -180,6 +188,10 @@ async def container_recover(
         }
     except Exception:
         logger.warning("Owner %s: gateway restart failed, escalating to reprovision", owner_id)
+        # Status flip first — same claimability requirement as the no-IP
+        # branch above (update_error writes only last_error fields; a
+        # "running" row would make the dispatch's claim stand down).
+        await container_repo.update_status(owner_id, "error")
         await container_repo.update_error(owner_id, "Gateway restart failed — reprovisioning")
         await dispatch_provision(owner_id)
         return {

@@ -2042,6 +2042,10 @@ class TestWaitForRunningFencedWrites:
             assert call.args[2]["status"] == "running"
             assert call.kwargs["generation"] == "gen-1"
             assert call.kwargs["attempt_token"] == "tok-1"
+            # Terminal success releases the lease with the same write, so
+            # residual claims can't misclassify later wake/resize rows as
+            # SFN-owned in the boot reconcile.
+            assert call.kwargs["release_lease"] is True
 
     @pytest.mark.asyncio
     async def test_claim_id_present_rollout_failed_writes_through_release_provision_to_error(

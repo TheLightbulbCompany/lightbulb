@@ -2765,8 +2765,20 @@ class EcsManager:
                         "task_arn": task_arn,
                     }
                     if claim_id is not None:
+                        # Terminal SUCCESS: atomically RELEASE the lease with
+                        # the running write, so "provisioning row carries a
+                        # claim" stays a reliable active-SFN-work signal —
+                        # residual claims from completed provisions would
+                        # make the boot reconcile misclassify a later
+                        # interrupted wake/resize as SFN-owned and skip
+                        # resuming its poller.
                         await container_repo.update_container_leased(
-                            user_id, claim_id, running_fields, generation=generation, attempt_token=attempt_token
+                            user_id,
+                            claim_id,
+                            running_fields,
+                            generation=generation,
+                            attempt_token=attempt_token,
+                            release_lease=True,
                         )
                     else:
                         await container_repo.update_fields(user_id, running_fields)

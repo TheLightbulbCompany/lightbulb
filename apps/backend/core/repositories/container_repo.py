@@ -321,6 +321,7 @@ async def update_container_leased(
     *,
     generation: str | None = None,
     attempt_token: str | None = None,
+    release_lease: bool = False,
 ) -> None:
     """Scoped, fenced row write: applies ``fields`` (may be empty — a pure
     lease-refresh checkpoint) and refreshes the lease stamp, conditioned on
@@ -347,6 +348,17 @@ async def update_container_leased(
       SFN per-retry-attempt hazard (see ``claim_attempt`` docstring): a
       straggler from a superseded attempt carries a stale token and is
       rejected here.
+
+    ``release_lease``: set on the TERMINAL SUCCESS write (the fenced
+    status="running" transition) to atomically REMOVE the lease fields with
+    it. This makes "provisioning row carries a claim" a reliable
+    active-SFN-work signal — the boot reconcile in main.py keys on exactly
+    that to decide which stuck-provisioning rows are its to resume, and
+    residual claims from a COMPLETED provision would otherwise misclassify
+    a later interrupted wake/resize as SFN-owned forever. NOT used on error
+    releases: in-machine retries legitimately sit at status="error" with
+    the stamped claim/execution-name, which dispatch Branch A needs intact
+    to re-issue the same execution.
     """
     table = _get_table()
     names: dict[str, str] = {}
@@ -357,7 +369,8 @@ async def update_container_leased(
         names[alias] = key
         set_parts.append(f"{alias} = :v{i}")
         values[f":v{i}"] = value
-    set_parts.append("provision_claimed_at = :now")
+    if not release_lease:
+        set_parts.append("provision_claimed_at = :now")
     set_parts.append("updated_at = :iso")
     condition = "provision_claim_id = :cid"
     values[":cid"] = claim_id
@@ -367,13 +380,18 @@ async def update_container_leased(
     if attempt_token is not None:
         condition += " AND (attribute_not_exists(provision_attempt_token) OR provision_attempt_token = :atok)"
         values[":atok"] = attempt_token
+    update_expr = "SET " + ", ".join(set_parts)
+    if release_lease:
+        update_expr += (
+            " REMOVE provision_claim_id, provision_claimed_at, provision_attempt_token, provision_execution_name"
+        )
     kwargs: dict = {
         "Key": {"owner_id": owner_id},
-        "UpdateExpression": "SET " + ", ".join(set_parts),
+        "UpdateExpression": update_expr,
         "ConditionExpression": condition,
         "ExpressionAttributeValues": {
             **values,
-            ":now": int(time.time()),
+            **({} if release_lease else {":now": int(time.time())}),
             ":iso": utc_now_iso(),
         },
     }

@@ -293,6 +293,42 @@ async def test_try_claim_provision_stamps_execution_name_and_attempt_token(dynam
 
 
 @pytest.mark.asyncio
+async def test_release_lease_removes_all_lease_fields_on_success_write(dynamodb_table):
+    """The terminal SUCCESS write (status="running", release_lease=True)
+    atomically removes every lease field — so a "provisioning row carrying a
+    claim" stays a reliable active-SFN-work signal for the boot reconcile,
+    and a later interrupted wake/resize (which never touches lease fields)
+    is not misclassified as SFN-owned."""
+    from core.repositories import container_repo
+
+    claim = await container_repo.try_claim_provision(
+        "user_rel", claim_id="claim-rel", execution_name="provision-user_rel-claimrel"
+    )
+    assert claim == "claim-rel"
+
+    await container_repo.update_container_leased(
+        "user_rel",
+        "claim-rel",
+        {"status": "running", "substatus": "gateway_healthy"},
+        release_lease=True,
+    )
+
+    row = _row(dynamodb_table, "user_rel")
+    assert row["status"] == "running"
+    for lease_field in (
+        "provision_claim_id",
+        "provision_claimed_at",
+        "provision_attempt_token",
+        "provision_execution_name",
+    ):
+        assert lease_field not in row
+
+    # The lease is genuinely gone: a fresh claim on the running row must
+    # REFUSE (running is not claimable) rather than see a stale lease.
+    assert await container_repo.try_claim_provision("user_rel") is None
+
+
+@pytest.mark.asyncio
 async def test_try_claim_provision_losing_claim_leaves_stamp_unchanged(dynamodb_table):
     # A losing claim (fresh provisioning lease held by another claim) is one
     # atomic conditional write: the loser's claim_id AND execution_name must

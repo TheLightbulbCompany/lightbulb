@@ -1020,7 +1020,17 @@ async def proxy(path: str, request: Request) -> Response:
         # provision_container=False — this call seeds Paperclip only.
         repo = PaperclipRepo(table_name="paperclip-companies")
         existing = await repo.get(auth.user_id)
-        if existing is None or existing.status != "active":
+        # "Already provisioned" must be org-scoped, not status-only — the
+        # same idempotency predicate provision_org's short-circuit uses.
+        # Rows are keyed per-user, so an org member whose row still points
+        # at a personal (or a previous org's) company IS "active", just not
+        # for THIS owner context; a status-only check would suppress the
+        # dispatch, and the cookie minted below would sign them into the
+        # stale workspace with nothing ever repairing the row from this
+        # path. ensure_user_ready is idempotent (provision_org short-
+        # circuits on an active row whose org_id matches), so dispatching
+        # on a mismatched-but-active row is safe.
+        if existing is None or existing.status != "active" or existing.org_id != owner_id:
             asyncio.create_task(ensure_user_ready(auth, provision_container=False))
 
         # Mint cookie + 302 to clean URL.

@@ -883,6 +883,9 @@ def test_http_handoff_token_via_query_param(monkeypatch):
         async def get(self, _user_id: str):
             class _Co:
                 status = "active"
+                # Personal rows carry org_id == user_id — matching the
+                # handoff's org-scoped readiness check.
+                org_id = "user_handoff"
 
             return _Co()
 
@@ -1008,6 +1011,88 @@ def test_http_handoff_autoprovision_routes_through_canonical_trigger(monkeypatch
     # the handoff already verified the container exists, so this call must
     # seed Paperclip only, never re-dispatch container provisioning.
     assert calls == [("user_trigger_fold", False)]
+
+
+@pytest.mark.parametrize(
+    ("row_org_id", "expect_dispatch"),
+    [
+        # Active row still pointing at the member's PERSONAL company (or a
+        # previous org's) — "active" is true, but not for THIS owner
+        # context, so the handoff must still dispatch the canonical trigger
+        # to join/repair; suppressing it would sign the member into the
+        # stale workspace with nothing on this path ever fixing the row.
+        ("user_org_member", True),
+        # Active row already pointing at THIS org — genuinely provisioned;
+        # no dispatch (the pre-existing fast path).
+        ("org_acme", False),
+    ],
+)
+def test_http_handoff_active_row_readiness_is_org_scoped(monkeypatch, row_org_id, expect_dispatch):
+    """The handoff's "already provisioned" check must use the same
+    org-scoped predicate as provision_org's idempotency short-circuit
+    (active AND org_id == resolved owner), not status alone."""
+    from types import SimpleNamespace
+
+    from fastapi.testclient import TestClient
+
+    import routers.paperclip_proxy as proxy_mod
+
+    monkeypatch.setattr(proxy_mod.settings, "PAPERCLIP_SERVICE_TOKEN_KEY", "test-secret-32-bytes-min-len-x")
+    monkeypatch.setattr(proxy_mod.settings, "FRONTEND_URL", "https://dev.isol8.co")
+
+    async def _fake_decode(token: str):
+        # Org-context Clerk JWT: resolve_owner_id(auth) → "org_acme".
+        return {
+            "sub": "user_org_member",
+            "email": "m@example.com",
+            "o": {"id": "org_acme", "rol": "member"},
+        }
+
+    monkeypatch.setattr(proxy_mod, "_decode_token", _fake_decode)
+
+    async def _fake_get_container(owner_id: str):
+        # The org's shared container exists (keyed on org_id).
+        assert owner_id == "org_acme"
+        return {"owner_id": owner_id, "status": "running"}
+
+    monkeypatch.setattr(proxy_mod.container_repo, "get_by_owner_id", _fake_get_container)
+
+    class _FakeRepo:
+        def __init__(self, table_name: str) -> None:
+            pass
+
+        async def get(self, _user_id: str):
+            return SimpleNamespace(status="active", org_id=row_org_id)
+
+    monkeypatch.setattr(proxy_mod, "PaperclipRepo", _FakeRepo)
+
+    calls = []
+
+    def _fake_ensure_user_ready(auth, *, provision_container=True):
+        calls.append((auth.user_id, auth.org_id, provision_container))
+
+        async def _noop():
+            return None
+
+        return _noop()
+
+    monkeypatch.setattr(proxy_mod, "ensure_user_ready", _fake_ensure_user_ready)
+
+    app = _build_http_app()
+    client = TestClient(app)
+
+    resp = client.get(
+        "/some/path?__t=valid.clerk.jwt",
+        follow_redirects=False,
+    )
+    # Both cases still hand off — the cookie is minted regardless; only the
+    # repair dispatch is conditional.
+    assert resp.status_code == 302
+
+    if expect_dispatch:
+        assert calls == [("user_org_member", "org_acme", False)]
+    else:
+        assert calls == []
 
 
 # ---------------------------------------------------------------------------

@@ -295,3 +295,45 @@ async def test_cold_provider_change_with_no_container_still_provisions(cold_chan
 
     row = env["table"].get_item(Key={"owner_id": "user_cold"}).get("Item")
     assert row is not None and row["status"] == "provisioning"
+
+
+@pytest.mark.asyncio
+async def test_cold_provider_change_stop_failure_reverts_commit_and_retry_works(cold_change_env):
+    """A GENUINE ECS stop failure (not service-not-found) after the provider
+    commit must revert the billing row, so a retry re-runs the full switch
+    instead of hitting the no-op fast-path and silently dispatching nothing
+    — the running container would otherwise keep the old provider forever
+    (running rows are neither poll-retryable nor claimable)."""
+    env = cold_change_env
+    env["table"].put_item(Item={"owner_id": "user_cold", "status": "running", "service_name": "openclaw-user_cold-abc"})
+    env["manager"]._ecs.update_service.side_effect = ClientError(
+        {"Error": {"Code": "ClusterNotFoundException", "Message": "throttled"}},
+        "UpdateService",
+    )
+
+    with pytest.raises(billing_service.ChangeProviderError) as exc:
+        await _run_cold_change(env["created"])
+    assert exc.value.code == "reprovision_stop_failed"
+
+    # The commit was REVERTED — the shared row-mirror reflects the old
+    # provider again — and no reprovision task was dispatched.
+    account = await billing_service.billing_repo.get_by_owner_id("user_cold")
+    assert account["provider_choice"] == "bedrock_claude"
+    assert env["created"] == []
+
+    # Retry once ECS recovers: NOT a noop — the full switch re-runs and the
+    # provision executor applies the new provider.
+    env["manager"]._ecs.update_service.side_effect = None
+    result = await _run_cold_change(env["created"])
+    assert result["status"] == "ok"
+    assert result["restart"] is True
+
+    assert len(env["created"]) == 1
+    await env["created"][0]
+    assert len(env["created"]) == 2
+    await env["created"][1]
+
+    env["ecs"].provision_user_container.assert_awaited_once()
+    kwargs = env["ecs"].provision_user_container.await_args.kwargs
+    assert kwargs["provider_choice"] == "byo_key"
+    assert kwargs["byo_provider"] == "anthropic"

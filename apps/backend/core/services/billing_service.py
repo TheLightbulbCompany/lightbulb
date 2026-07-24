@@ -1222,9 +1222,43 @@ async def change_provider(
     # the drain-wait is defense-in-depth, not the single-writer fence.
     # The same window has always existed on the admin reprovision path.
     from core.containers import get_ecs_manager
+    from core.containers.ecs_manager import EcsManagerError
 
     manager = get_ecs_manager()
-    await manager.stop_user_service(owner_id, reason="reprovision")
+    try:
+        await manager.stop_user_service(owner_id, reason="reprovision")
+    except EcsManagerError as e:
+        # A genuine ECS failure (throttle, cluster outage — not-found is
+        # already idempotent success inside stop_user_service). The new
+        # provider is committed but the container was NOT stopped, so
+        # nothing will converge it: a running row is neither poll-retryable
+        # nor claimable, and a retry of this call would hit the no-op
+        # fast-path above (row already matches the request) and dispatch
+        # nothing. REVERT the commit so the retry re-runs the full switch
+        # instead of silently no-oping. The old provider's credentials may
+        # already be gone (the cleanup block above is fire-and-forget by
+        # design); that fork is user-recoverable — the provision gate /
+        # prerequisite checks drive re-auth — whereas a poisoned no-op is
+        # not. A legacy row with no prior provider_choice can't be written
+        # back (the repo validates the value); its retry-noop exposure
+        # requires that compound (never-chosen provider AND ECS failing)
+        # so it is accepted.
+        if current_choice is not None:
+            await billing_repo.set_provider_choice(
+                owner_id,
+                provider_choice=current_choice,
+                byo_provider=current_byo,
+                connector_user_id=recorded_connector if current_choice == "chatgpt_oauth" else None,
+            )
+            await write_owner_facts(
+                owner_id,
+                account_overrides={"provider_choice": current_choice, "byo_provider": current_byo},
+            )
+        raise ChangeProviderError(
+            "reprovision_stop_failed",
+            "Could not restart the container to apply the new provider. No changes were made — try again.",
+            status_code=502,
+        ) from e
     # The task re-issues the (now no-op) stop before draining — harmless.
     asyncio.create_task(manager.reprovision_for_user(owner_id))
 

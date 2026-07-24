@@ -330,6 +330,17 @@ class GatewayConnection:
                 await self._conn_svc.mark_gateway_connected(self.owner_id, conn_token=self._liveness_token)
             else:
                 await self._conn_svc.mark_gateway_disconnected(self.owner_id, conn_token=self._liveness_token)
+        # A liveness flip moves a fact compute_status composes (runtime_phase /
+        # chat_available read is_gateway_connected), yet the DDB write above is
+        # NOT one of the repo write sites publish_status_changed rides. Without
+        # this nudge a ready tab whose /container/status poller has backed off
+        # only learns of a gateway death/recovery on a slow backstop or focus
+        # revalidation. Fired OUTSIDE the lock (best-effort, never awaited into
+        # the write) so it can't extend the serialized hot path. INV-1: nudge
+        # only -- compute_status stays the sole composer.
+        from core.services.status_events import publish_status_changed
+
+        publish_status_changed(self.owner_id)
 
     def _start_liveness_refresh(self) -> None:
         """Start the periodic gateway-liveness lease refresh (idempotent)."""

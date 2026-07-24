@@ -233,3 +233,38 @@ async def test_claim_funnel_submission_does_not_publish_when_already_submitted(p
         result = await paperclip_repo.claim_funnel_submission("owner_1", onboarding_generation="01G")
     assert result is FunnelClaimResult.ALREADY_SUBMITTED
     mocked.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_record_onboarding_ids_publishes_status_changed(paperclip_repo):
+    """The goal/project ids land AFTER claim_funnel_submission's nudge and are
+    themselves composed by compute_status -- so this later write must nudge
+    again, or a tab that revalidated off the early 'submitted' event sits on a
+    contract missing the ids."""
+    await paperclip_repo.put(_make_company(onboarding_generation="01G", funnel_state="submitted"))
+    with patch("core.repositories.paperclip_repo.publish_status_changed") as mocked:
+        await paperclip_repo.record_onboarding_ids(
+            "owner_1", onboarding_generation="01G", goal_id="goal_1", project_id="proj_1"
+        )
+    mocked.assert_called_once_with("owner_1")
+
+
+@pytest.mark.asyncio
+async def test_revert_funnel_submission_publishes_on_landed_revert(paperclip_repo):
+    """A landed rollback moves funnel_state back and drops the ids -- all
+    composed facts -- so the tab that saw the optimistic 'submitted' gets a
+    nudge to re-fetch the reverted contract."""
+    await paperclip_repo.put(_make_company(onboarding_generation="01G", funnel_state="submitted"))
+    with patch("core.repositories.paperclip_repo.publish_status_changed") as mocked:
+        await paperclip_repo.revert_funnel_submission("owner_1", onboarding_generation="01G")
+    mocked.assert_called_once_with("owner_1")
+
+
+@pytest.mark.asyncio
+async def test_revert_funnel_submission_does_not_publish_on_guard_failure(paperclip_repo):
+    """No standing claim (funnel already advanced/reverted) -> swallowed guard
+    failure -> no write -> no nudge."""
+    await paperclip_repo.put(_make_company(onboarding_generation="01G", funnel_state="complete"))
+    with patch("core.repositories.paperclip_repo.publish_status_changed") as mocked:
+        await paperclip_repo.revert_funnel_submission("owner_1", onboarding_generation="01G")
+    mocked.assert_not_called()

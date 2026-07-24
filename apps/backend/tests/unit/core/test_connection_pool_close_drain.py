@@ -105,6 +105,29 @@ async def test_liveness_write_put_noops_after_disconnect():
 
 
 @pytest.mark.asyncio
+async def test_liveness_write_nudges_status_on_flip(monkeypatch):
+    """A liveness connect/disconnect moves is_gateway_connected, which
+    compute_status composes -- so each LANDED write fires the realtime nudge.
+    The dead-gated connect no-op writes nothing, so it must NOT nudge."""
+    from core.services import status_events
+
+    nudged = []
+    monkeypatch.setattr(status_events, "publish_status_changed", lambda oid: nudged.append(oid))
+
+    conn = _make_conn()
+    conn._conn_svc = _RecordingConnSvc([])
+
+    await conn._write_liveness(connected=True)  # landed put
+    await conn._write_liveness(connected=False)  # landed delete
+    assert nudged == ["u1", "u1"]
+
+    # Dead-gated connect: returns before writing -> no nudge.
+    conn._liveness_dead = True
+    await conn._write_liveness(connected=True)
+    assert nudged == ["u1", "u1"]
+
+
+@pytest.mark.asyncio
 async def test_unresolved_rpc_rejected_after_drain_timeout(monkeypatch):
     monkeypatch.setattr(cp, "_RPC_DRAIN_TIMEOUT", 0.1)
     conn = _make_conn()

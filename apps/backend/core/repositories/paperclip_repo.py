@@ -951,6 +951,13 @@ class PaperclipRepo:
                 ":submitted": "submitted",
             },
         )
+        # These ids are the LAST onboarding fields to land, and compute_status
+        # returns them. claim_funnel_submission already nudged on funnel_state ->
+        # submitted, but a tab that revalidated off that early event read a
+        # contract missing goal/project; without this second nudge nothing
+        # repairs it promptly (ready-state polling is no longer frequent). See
+        # publish_status_changed's module docstring (INV-1: nudge only).
+        publish_status_changed(user_id)
 
     async def revert_funnel_submission(self, user_id: str, *, onboarding_generation: str) -> None:
         """Best-effort rollback: ``funnel_state: submitted -> not_started``,
@@ -986,7 +993,13 @@ class PaperclipRepo:
                 },
             )
         except table.meta.client.exceptions.ConditionalCheckFailedException:
-            pass
+            return
+        # The revert moved funnel_state back to not_started and dropped the
+        # goal/project ids -- all facts compute_status composes. Nudge so a tab
+        # that saw the optimistic "submitted" doesn't sit on a stale contract
+        # after the seed failed and rolled back. Only reached when the write
+        # actually landed (the swallowed guard-failure returns above).
+        publish_status_changed(user_id)
 
     async def scan_purge_due(self, now: datetime) -> list[PaperclipCompany]:
         """Return disabled rows whose ``scheduled_purge_at <= now`` via the GSI.

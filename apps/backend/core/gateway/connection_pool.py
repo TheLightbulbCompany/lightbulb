@@ -308,14 +308,24 @@ class GatewayConnection:
         Also owns the lifecycle of the periodic lease-refresh loop: connect
         (and reopen, which re-enters connect) starts it; every disconnect /
         park-escalation / close stops it -- so the lease is refreshed for
-        exactly as long as ``is_alive`` holds.
+        exactly as long as ``is_alive`` holds. NB: the refresh loop is NOT
+        cancelled here on disconnect. Cancelling a task caught inside
+        ``refresh_gateway_liveness`` raises ``CancelledError`` at the ``await``
+        but does NOT stop the boto3 write already running in the to_thread
+        pool; that write would then land AFTER the terminal delete and, via the
+        refresh's ``attribute_not_exists`` recovery path, resurrect a dead
+        marker (read as ``ready`` for the freshness window). Cancellation is
+        therefore deferred to ``_write_liveness``'s delete branch, which runs
+        only after the delete has serialized behind any in-flight refresh
+        under ``_liveness_lock`` -- catching the refresh loop in its sleep,
+        never mid-write. ``_liveness_dead`` (flipped synchronously here) stops
+        the loop from issuing any further write in the meantime.
         """
         if connected:
             self._liveness_dead = False
             self._start_liveness_refresh()
         else:
             self._liveness_dead = True
-            self._cancel_liveness_refresh()
         asyncio.create_task(self._write_liveness(connected=connected))
 
     async def _write_liveness(self, *, connected: bool) -> None:
@@ -330,6 +340,15 @@ class GatewayConnection:
                 await self._conn_svc.mark_gateway_connected(self.owner_id, conn_token=self._liveness_token)
             else:
                 await self._conn_svc.mark_gateway_disconnected(self.owner_id, conn_token=self._liveness_token)
+        if not connected:
+            # Terminal delete has now landed on the server STRICTLY AFTER any
+            # in-flight refresh (the refresh holds _liveness_lock across its
+            # boto3 write, so acquiring the lock above waited for that write to
+            # finish). Only now is it safe to stop the refresh loop: it is
+            # sleeping between ticks, so cancellation can't interrupt a write.
+            # Deferring the cancel to here (instead of _note_gateway_liveness)
+            # is what closes the resurrect-after-delete race.
+            self._cancel_liveness_refresh()
 
     def _start_liveness_refresh(self) -> None:
         """Start the periodic gateway-liveness lease refresh (idempotent)."""

@@ -105,6 +105,52 @@ async def test_liveness_write_put_noops_after_disconnect():
 
 
 @pytest.mark.asyncio
+async def test_disconnect_serializes_delete_behind_inflight_refresh_then_cancels():
+    """Round-7 resurrection race: cancelling the refresh loop mid-write releases
+    _liveness_lock WITHOUT stopping the boto3 write already running, so the
+    terminal delete could land first and the still-running refresh then recreate
+    a dead marker via its absent-row recovery path. The fix: the delete must
+    serialize behind the in-flight refresh (wait for the lock), and the refresh
+    task is cancelled ONLY AFTER the delete lands -- catching it in sleep."""
+    order = []
+
+    class _OrderedSvc:
+        async def mark_gateway_disconnected(self, owner_id, *, conn_token=None):
+            order.append("delete")
+
+    conn = _make_conn()
+    conn._conn_svc = _OrderedSvc()
+
+    # A stand-in refresh task we can observe. It parks (as the real loop does
+    # between ticks); the disconnect must cancel it, but only after the delete.
+    async def _parked_refresh():
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            order.append("refresh-cancelled")
+            raise
+
+    conn._liveness_refresh_task = asyncio.create_task(_parked_refresh())
+    await asyncio.sleep(0)
+
+    # Simulate a refresh mid-write: it holds the lock, its server write not yet
+    # done. The disconnect note must NOT synchronously cancel the refresh, and
+    # its delete must block on the lock.
+    await conn._liveness_lock.acquire()
+    conn._note_gateway_liveness(connected=False)
+    await asyncio.sleep(0.02)
+    assert conn._liveness_dead is True
+    assert "delete" not in order  # delete is queued behind the held lock
+    assert not conn._liveness_refresh_task.done()  # not cancelled mid-write
+
+    # In-flight refresh finishes and releases the lock -> delete lands, THEN the
+    # (now-parked) refresh task is cancelled.
+    conn._liveness_lock.release()
+    await asyncio.sleep(0.02)
+    assert order == ["delete", "refresh-cancelled"]
+
+
+@pytest.mark.asyncio
 async def test_unresolved_rpc_rejected_after_drain_timeout(monkeypatch):
     monkeypatch.setattr(cp, "_RPC_DRAIN_TIMEOUT", 0.1)
     conn = _make_conn()

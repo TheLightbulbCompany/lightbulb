@@ -348,7 +348,24 @@ class PaperclipProvisioning:
         # retrying Friday/Atlas against the SAME company. A net-new failure with
         # NO company_id (the orphan-422 / pre-create marker) is deliberately
         # excluded — its ``company_id`` is "" and it re-runs the full chain.
-        reconciling_company = existing is not None and existing.status != "active" and bool(existing.company_id)
+        #
+        # The ``org_id == owner_id`` guard is own-side defense-in-depth (L3):
+        # rows are keyed per-user, so a seat-only ex-member re-entering
+        # PERSONAL context (owner_id == their own user_id) can still find
+        # their OWN row still carrying the ORG's company_id from a prior
+        # membership. Without this guard that row would be adopted here,
+        # re-pointing a personal provision at someone else's company.
+        # Cross-tenant access is separately fenced by Paperclip authz (the
+        # re-signed-in session isn't a member of that company), so the real
+        # damage is a silently dropped 30-day purge timer on the row, not a
+        # data leak — this closes it at the source instead of relying on the
+        # downstream fence.
+        reconciling_company = (
+            existing is not None
+            and existing.status != "active"
+            and bool(existing.company_id)
+            and existing.org_id == owner_id
+        )
         password = decrypt(existing.paperclip_password_encrypted) if adopting_existing else secrets.token_urlsafe(32)
         try:
             # 1. Obtain the owner's Better Auth account + session — signup for

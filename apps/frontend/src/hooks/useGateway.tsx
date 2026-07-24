@@ -87,6 +87,24 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
     };
   }, [onEvent, onChatMessage]);
 
+  // ---- Realtime status invalidation (spec PR-7) ----
+  //
+  // core/services/status_events.py's publish_status_changed pushes this
+  // content-free event to every open tab right after a durable write
+  // compute_status composes (containers / billing / paperclip-companies).
+  // The ONLY reaction is a revalidate of the shared /container/status SWR
+  // key — INV-1 keeps compute_status the sole composer, so this never
+  // carries or reconstructs state itself. (CLIENT-HOOK's useOnboardingStatus
+  // is expected to replace "/container/status" with its own shared key; see
+  // that session's coordination note if this hasn't landed yet.)
+  useEffect(() => {
+    return onEvent((event) => {
+      if (event === "onboarding_status_changed") {
+        void mutate("/container/status");
+      }
+    });
+  }, [onEvent]);
+
   useEffect(() => {
     const HIDDEN_PARK_MS = 2 * 60_000;
     const VISIBLE_IDLE_PARK_MS = 10 * 60_000;

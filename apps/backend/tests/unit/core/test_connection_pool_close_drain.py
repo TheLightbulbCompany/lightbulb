@@ -37,6 +37,7 @@ def _make_conn():
     conn._pending_rpcs = {}
     conn._billing_tasks = set()
     conn._push_tasks = set()
+    conn._run_completion_tasks = set()
     conn._grace_task = None
     conn._parked_watchdog_task = None
     conn._reader_task = None

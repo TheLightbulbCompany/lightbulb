@@ -36,6 +36,11 @@ def conn():
     c._side_run_ids = {}
     c._parked = False
     c._parked_watchdog_task = None
+    # Run-completion observer registry (INV-5 bootstrap dispatcher). Not
+    # exercised by these billing tests, but _handle_message's TRUE-terminal
+    # branch always pops from it now.
+    c._run_completion_callbacks = {}
+    c._run_completion_tasks = set()
     return c
 
 

@@ -223,10 +223,6 @@ function BillingPanel() {
   // the free-tier framing with a Subscribe CTA instead of Manage Payment
   // (trial_local rows have no Stripe customer, so the portal would fail).
   const isTrialLocal = subscriptionStatus === "trial_local";
-  // Display mapping for the status chip — the raw enum must never render
-  // ("trial_local" would capitalize to "Trial_local"). Other statuses keep
-  // the capitalize treatment.
-  const statusChipLabel = isTrialLocal ? "Free tier" : subscriptionStatus;
   const trialEndLabel =
     account?.trial_end != null
       ? new Date(account.trial_end * 1000).toLocaleDateString(undefined, {
@@ -235,6 +231,26 @@ function BillingPanel() {
           year: "numeric",
         })
       : null;
+  // trial_local's `trial_end` is the OVERALL free-tier window expiry — stamped
+  // locally at signup as created + 3 days (backend trial_cap._is_expired), NOT
+  // the daily $3 reset boundary (which resets at UTC midnight and is tracked
+  // separately). Once it elapses the backend blocks usage outright
+  // (trial_block_reason -> TRIAL_EXPIRED) WITHOUT flipping subscription_status,
+  // so isTrialLocal stays true. Detect the elapsed window here so the card
+  // stops promising "$3/day of included usage" and instead shows the paused
+  // state — while keeping the Subscribe CTA as the owner's path forward.
+  const isTrialExpired =
+    isTrialLocal &&
+    account?.trial_end != null &&
+    account.trial_end * 1000 < Date.now();
+  // Display mapping for the status chip — the raw enum must never render
+  // ("trial_local" would capitalize to "Trial_local"). Other statuses keep
+  // the capitalize treatment.
+  const statusChipLabel = isTrialExpired
+    ? "Free tier ended"
+    : isTrialLocal
+      ? "Free tier"
+      : subscriptionStatus;
 
   // Org context: Teams billing is per-seat, not the flat $50/mo personal
   // plan, so org admins get TeamBillingCard instead of the personal card
@@ -375,7 +391,9 @@ function BillingPanel() {
                   ? `Free trial — full access until ${trialEndLabel}, then $50/mo. Cancel anytime before then.`
                   : "Free trial — full access now, then $50/mo. Cancel anytime."
                 : isTrialLocal
-                  ? "Free tier — $3/day of included usage. Subscribe for the full plan."
+                  ? isTrialExpired
+                    ? `Free tier ended${trialEndLabel ? ` on ${trialEndLabel}` : ""} — usage is paused. Subscribe for the full plan.`
+                    : "Free tier — $3/day of included usage. Subscribe for the full plan."
                   : isSubscribed
                     ? "Active subscription"
                     : "No active subscription"}

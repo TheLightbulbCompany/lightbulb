@@ -259,6 +259,75 @@ describe("BillingPanel — personal free tier (trial_local)", () => {
     expect(billing.startTrialCheckout).toHaveBeenCalledTimes(1);
   });
 
+  it("non-expired trial_local with a future trial_end keeps the unchanged Free-tier copy", () => {
+    // A trial_local whose 3-day window is still open (trial_end in the
+    // future) must render exactly the same Free-tier framing as before —
+    // the expired-state swap must not trip early.
+    billing.isSubscribed = false;
+    billing.account = {
+      is_subscribed: false,
+      current_spend: 0.5,
+      lifetime_spend: 0.5,
+      subscription_status: "trial_local",
+      // ~1 day in the future (epoch seconds, matching the backend stamp).
+      trial_end: Math.floor(Date.now() / 1000) + 86_400,
+      provider_choice: null,
+      byo_provider: null,
+      seat_count: null,
+      team_seat_price_usd: null,
+      is_seat_subscription: false,
+    };
+
+    render(<SettingsPage />);
+
+    expect(screen.getByText("Isol8 — Free tier")).toBeInTheDocument();
+    expect(screen.getByText("Free tier")).toBeInTheDocument();
+    expect(screen.getByText(/\$3\/day of included usage/)).toBeInTheDocument();
+    // The expired framing must NOT appear while the window is open.
+    expect(screen.queryByText(/free tier ended/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /subscribe — \$50\/mo/i })).toBeInTheDocument();
+  });
+
+  it("EXPIRED trial_local swaps the $3/day promise for a paused state but keeps the Subscribe CTA", () => {
+    // trial_end is the OVERALL free-tier window expiry (created + 3 days).
+    // Once it's in the past, the backend blocks usage outright WITHOUT
+    // flipping subscription_status off trial_local — so the card must stop
+    // promising "$3/day of included usage" and show the paused state, while
+    // still offering Subscribe as the path forward.
+    billing.isSubscribed = false;
+    billing.account = {
+      is_subscribed: false,
+      current_spend: 3,
+      lifetime_spend: 3,
+      subscription_status: "trial_local",
+      // ~1 day in the past (epoch seconds).
+      trial_end: Math.floor(Date.now() / 1000) - 86_400,
+      provider_choice: null,
+      byo_provider: null,
+      seat_count: null,
+      team_seat_price_usd: null,
+      is_seat_subscription: false,
+    };
+
+    render(<SettingsPage />);
+
+    // Expired framing: chip + description reflect that the free tier ended
+    // and usage is paused. The chip is the exact "Free tier ended" string.
+    expect(screen.getByText("Free tier ended")).toBeInTheDocument();
+    expect(screen.getByText(/free tier ended.*usage is paused/i)).toBeInTheDocument();
+
+    // The misleading "$3/day of included usage" promise is gone.
+    expect(screen.queryByText(/\$3\/day of included usage/)).not.toBeInTheDocument();
+    // Still not the paid "Active subscription" copy, and the raw enum never renders.
+    expect(screen.queryByText("Active subscription")).not.toBeInTheDocument();
+    expect(screen.queryByText(/trial_local/i)).not.toBeInTheDocument();
+
+    // The Subscribe CTA remains the path forward (no Manage Payment — no
+    // Stripe customer exists for a trial_local row).
+    expect(screen.queryByRole("button", { name: /manage payment/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /subscribe — \$50\/mo/i })).toBeInTheDocument();
+  });
+
   it("active personal subscription keeps the unchanged paid card", () => {
     billing.isSubscribed = true;
     billing.account = {

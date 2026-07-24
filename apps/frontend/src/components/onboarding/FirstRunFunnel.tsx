@@ -20,6 +20,36 @@ type Path = "new" | "grow";
 type Mode = "idea" | "noIdea";
 const RETRY_MS = 3000;
 const MAX_RETRIES = 5;
+// After this many CONSECUTIVE failed submits carrying the same upstream
+// error, the generic "Couldn't save that just yet. Retry" line — which
+// implies a transient problem — gives way to a persistent error state that
+// shows the upstream detail and points at support. A different error (or a
+// success) resets the streak.
+const PERSISTENT_FAILURE_THRESHOLD = 3;
+
+/** Best-effort upstream detail for a failed submit: FastAPI's body.detail,
+ * else the error message, else the HTTP status. */
+function extractErrorDetail(err: unknown): string {
+  if (err && typeof err === "object") {
+    const body = (err as { body?: unknown }).body;
+    if (body && typeof body === "object") {
+      const detail = (body as { detail?: unknown }).detail;
+      if (typeof detail === "string" && detail.length > 0) return detail;
+      if (detail !== undefined && detail !== null) {
+        try {
+          return JSON.stringify(detail);
+        } catch {
+          /* fall through */
+        }
+      }
+    }
+    const message = (err as { message?: unknown }).message;
+    if (typeof message === "string" && message.length > 0) return message;
+    const status = (err as { status?: unknown }).status;
+    if (typeof status === "number") return `HTTP ${status}`;
+  }
+  return "Unknown error";
+}
 
 // Brand-primary recipe used across the app (see ProviderPicker / landing
 // .ld-btn): forest fill (#06402B), cream text, pill, hover #0a5138.
@@ -43,6 +73,17 @@ export function FirstRunFunnel() {
   // explicitly into submit() rather than read from here — this state only
   // exists to survive the round trip to the Retry button.
   const [mode, setMode] = React.useState<Mode>("idea");
+  // Consecutive-failure tracking for the persistent-error switch. One
+  // completed submit() that lands in state "error" == one failure; the
+  // streak only grows while the upstream detail stays the same.
+  const [failure, setFailure] = React.useState<{ detail: string; streak: number } | null>(null);
+  const recordFailure = React.useCallback((detail: string) => {
+    setFailure((prev) =>
+      prev && prev.detail === detail
+        ? { detail, streak: prev.streak + 1 }
+        : { detail, streak: 1 },
+    );
+  }, []);
 
   const submit = React.useCallback(
     async (submitMode: Mode) => {
@@ -68,6 +109,7 @@ export function FirstRunFunnel() {
           // else (including that 202 shape) is retried via the same loop.
           const status = (resp as { status?: string } | null)?.status;
           if (status === "staged" || status === "already_submitted") {
+            setFailure(null);
             // "staged" and "already_submitted" both dismiss the funnel for
             // THIS user. The kickoff itself is server-owned now (spec PR-6,
             // BOOTSTRAP): the backend dispatches Friday's first-run kickoff
@@ -99,6 +141,11 @@ export function FirstRunFunnel() {
             await new Promise((r) => setTimeout(r, RETRY_MS));
             continue;
           }
+          recordFailure(
+            typeof (resp as { detail?: unknown } | null)?.detail === "string"
+              ? ((resp as { detail: string }).detail)
+              : `Unexpected response: ${JSON.stringify(resp) ?? "empty"}`,
+          );
           setState("error");
           return;
         } catch (err) {
@@ -108,12 +155,13 @@ export function FirstRunFunnel() {
             await new Promise((r) => setTimeout(r, RETRY_MS));
             continue;
           }
+          recordFailure(extractErrorDetail(err));
           setState("error");
           return;
         }
       }
     },
-    [api, user, path, input, detail],
+    [api, user, path, input, detail, recordFailure],
   );
 
   const busy = state === "submitting" || state === "waiting";
@@ -205,14 +253,30 @@ export function FirstRunFunnel() {
                 </div>
               )}
             </div>
-            {state === "error" && (
-              <p className="text-sm text-[#b32424]">
-                Couldn&apos;t save that just yet.{" "}
-                <button className="underline" onClick={() => submit(mode)}>
-                  Retry
-                </button>
-              </p>
-            )}
+            {state === "error" &&
+              (failure && failure.streak >= PERSISTENT_FAILURE_THRESHOLD ? (
+                // Persistent failure: the same upstream error N times in a
+                // row is not transient — stop implying a retry will fix it.
+                // Show the upstream detail and route to support instead.
+                <div className="space-y-1.5 text-sm text-[#b32424]">
+                  <p>We couldn&apos;t save your brief.</p>
+                  <p className="break-words text-xs text-[#8a8578]">{failure.detail}</p>
+                  <p>
+                    Please{" "}
+                    <a className="underline" href="mailto:support@isol8.co">
+                      contact support
+                    </a>{" "}
+                    and we&apos;ll get it sorted.
+                  </p>
+                </div>
+              ) : (
+                <p className="text-sm text-[#b32424]">
+                  Couldn&apos;t save that just yet.{" "}
+                  <button className="underline" onClick={() => submit(mode)}>
+                    Retry
+                  </button>
+                </p>
+              ))}
           </div>
         )}
       </div>

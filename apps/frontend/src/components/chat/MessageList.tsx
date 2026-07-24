@@ -1,6 +1,7 @@
 import * as React from "react";
 import { cn } from "@/lib/utils";
 import { linkifyFilePaths, isWorkspaceFileLink, extractFilePath } from "@/lib/filePathDetection";
+import { stripExternalContentMarkers } from "@/lib/externalContentMarkers";
 import { Copy, RefreshCw, Share2, ChevronDown, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useScrollToBottom } from "@/hooks/useScrollToBottom";
@@ -154,7 +155,13 @@ const MarkdownContent = React.memo(function MarkdownContent({
   content: string;
   onOpenFile?: (path: string) => void;
 }) {
-  const processedContent = React.useMemo(() => linkifyFilePaths(content), [content]);
+  // Sentinel strip BEFORE linkify: the injection-defense markers are
+  // internal plumbing wherever they surface (echoed into assistant prose,
+  // folded history text) — see externalContentMarkers.ts.
+  const processedContent = React.useMemo(
+    () => linkifyFilePaths(stripExternalContentMarkers(content)),
+    [content],
+  );
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
@@ -388,7 +395,10 @@ function ToolPill({ tool }: { tool: ToolPillState }) {
   // app-tool-stream's single entry.output: the result phase only overwrites the
   // streamed output when it's non-empty, so streamed output survives when no
   // real result lands (e.g. an aborted exec or a stream-only tool).
-  const output = renderToolOutput(tool.result) ?? (tool.progressText ?? null);
+  // Untrusted-content sentinels are stripped even inside the pill expansion —
+  // they are model-facing plumbing on any surface.
+  const rawOutput = renderToolOutput(tool.result) ?? (tool.progressText ?? null);
+  const output = rawOutput === null ? null : stripExternalContentMarkers(rawOutput) || null;
   const hasArgs = !!(
     tool.args &&
     typeof tool.args === "object" &&

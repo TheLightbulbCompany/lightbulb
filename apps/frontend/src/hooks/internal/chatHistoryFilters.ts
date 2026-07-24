@@ -6,6 +6,7 @@
 // re-sync if upstream's filter logic evolves.
 
 import type { HistoryMessage } from "./types";
+import { mergeStandaloneToolResults } from "./toolResultMerge";
 
 const SILENT_REPLY_TOKEN = "NO_REPLY";
 const HEARTBEAT_OK_TOKEN = "HEARTBEAT_OK";
@@ -95,5 +96,11 @@ export function shouldHideHistoryMessage(m: HistoryMessage): boolean {
 export function projectChatHistoryMessages(
   messages: HistoryMessage[],
 ): HistoryMessage[] {
-  return messages.filter((m) => !shouldHideHistoryMessage(m));
+  // Filter first (synthetic repair tool-results are dropped outright), then
+  // fold the surviving standalone toolResult-role rows into tool_result
+  // blocks on their assistant messages so they render as tool pills, never
+  // as raw prose — see toolResultMerge.ts.
+  return mergeStandaloneToolResults(
+    messages.filter((m) => !shouldHideHistoryMessage(m)),
+  );
 }

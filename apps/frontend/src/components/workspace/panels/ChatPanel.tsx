@@ -41,8 +41,15 @@ export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.Re
 
   const title = useMemo(() => {
     const agent = agents.find((a) => a.id === resolvedId);
-    return agent ? agentDisplayName(agent) : raw === DEFAULT_AGENT_SENTINEL ? "Chat" : raw;
-  }, [agents, resolvedId, raw]);
+    if (agent) return agentDisplayName(agent);
+    if (raw === DEFAULT_AGENT_SENTINEL) return "Chat";
+    // Roster not settled yet (e.g. onboarding, gateway still connecting):
+    // a raw agent UUID as the tab title reads as a bug — hold the neutral
+    // "Chat" and let the memo re-resolve to the agent name once the roster
+    // arrives (this memo is reactive to `agents`). Once settled, an unknown
+    // id falls through to the agent-gone state below anyway.
+    return isSettled ? raw : "Chat";
+  }, [agents, resolvedId, raw, isSettled]);
 
   // Stable identity: MessageList's memoized bubble tree compares onOpenFile
   // by reference — an inline arrow here would defeat the bail-outs whenever

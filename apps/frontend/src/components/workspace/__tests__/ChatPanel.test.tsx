@@ -106,6 +106,28 @@ describe("ChatPanel", () => {
     expect(win.getAttribute("data-agent-id")).toBe("ghost");
   });
 
+  it("holds a neutral 'Chat' title while the roster is unsettled, then re-resolves to the agent name", () => {
+    // Onboarding window: the roster is latched empty/unsettled, so a raw
+    // agent UUID must never surface as the tab title.
+    agentsState = { agents: [], defaultId: undefined, isSettled: false };
+    const props = makeProps("64ac920b-1111-2222-3333-444455556666");
+    const { rerender } = render(<ChatPanel {...props} />);
+
+    expect(props.api.setTitle).not.toHaveBeenCalledWith(
+      "64ac920b-1111-2222-3333-444455556666",
+    );
+    expect(props.api.title).toBe("Chat");
+
+    // Roster arrives — the title memo is reactive and re-resolves.
+    agentsState = {
+      agents: [{ id: "64ac920b-1111-2222-3333-444455556666", identity: { name: "Friday" } }],
+      defaultId: "64ac920b-1111-2222-3333-444455556666",
+      isSettled: true,
+    };
+    rerender(<ChatPanel {...props} />);
+    expect(props.api.setTitle).toHaveBeenCalledWith("Friday");
+  });
+
   it("shows agent-gone ONLY once settled with an unknown id, and closes on click", () => {
     agentsState = {
       agents: [{ id: "real", name: "Real" }],

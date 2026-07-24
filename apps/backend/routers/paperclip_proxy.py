@@ -818,11 +818,37 @@ async def handshake(request: Request) -> Response:
     if not user_id:
         raise HTTPException(status_code=401, detail="Token missing subject")
     email = payload.get("email")
+    org = _extract_org_claims(payload)
+    auth = AuthContext(
+        user_id=user_id,
+        email=email,
+        org_id=org["org_id"],
+        org_role=org["org_role"],
+        org_slug=org["org_slug"],
+        org_permissions=org["org_permissions"],
+    )
+
+    # Same org-scoped readiness dispatch as the ?__t= handoff. This route
+    # is the OTHER cookie mint site (the bootstrap HTML's XHR), and the
+    # cookie it mints carries the org context — so a user whose per-user
+    # row is missing, non-active, or points at a different owner context
+    # would land straight on the established-session repair stub, which
+    # deliberately never re-spawns. Without dispatching here, an entry
+    # through this path (direct nav, no ?__t=) would spin on the stub
+    # with no repair in flight. Best-effort and idempotent, same as the
+    # handoff; needs the email claim (Better Auth signup).
+    if email:
+        repo = PaperclipRepo(table_name="paperclip-companies")
+        existing = await repo.get(user_id)
+        if existing is None or existing.status != "active" or existing.org_id != resolve_owner_id(auth):
+            from routers.container import _dispatch_watched
+
+            _dispatch_watched(ensure_user_ready(auth, provision_container=False))
 
     session_jwt = _mint_paperclip_session(
         user_id=user_id,
         email=email,
-        org_id=_extract_org_claims(payload)["org_id"],
+        org_id=auth.org_id,
     )
     response = Response(status_code=204)
     # No Domain= attribute → host-scoped to whatever public host this request

@@ -752,8 +752,38 @@ def test_paperclip_session_rejects_wrong_kind(monkeypatch):
         proxy_mod._verify_paperclip_session(fake_service_token)
 
 
+def _stub_handshake_repo_and_dispatch(monkeypatch, row):
+    """Stub the /__handshake__ readiness check's repo row + the dispatch;
+    returns the list the dispatch stub records (user_id, org_id,
+    provision_container) into."""
+    import routers.paperclip_proxy as proxy_mod
+
+    class _FakeRepo:
+        def __init__(self, table_name: str) -> None:
+            pass
+
+        async def get(self, _user_id: str):
+            return row
+
+    monkeypatch.setattr(proxy_mod, "PaperclipRepo", _FakeRepo)
+
+    calls: list = []
+
+    def _fake_ensure_user_ready(auth, *, provision_container=True):
+        calls.append((auth.user_id, auth.org_id, provision_container))
+
+        async def _noop():
+            return None
+
+        return _noop()
+
+    monkeypatch.setattr(proxy_mod, "ensure_user_ready", _fake_ensure_user_ready)
+    return calls
+
+
 def test_handshake_validates_clerk_jwt_and_sets_cookie(monkeypatch):
-    """POST /__handshake__ with valid Clerk Bearer → 204 + Set-Cookie."""
+    """POST /__handshake__ with valid Clerk Bearer → 204 + Set-Cookie, and
+    (no Paperclip row yet) the readiness dispatch fires."""
     from fastapi.testclient import TestClient
 
     import routers.paperclip_proxy as proxy_mod
@@ -763,6 +793,7 @@ def test_handshake_validates_clerk_jwt_and_sets_cookie(monkeypatch):
 
     monkeypatch.setattr(proxy_mod, "_decode_token", _fake_decode)
     monkeypatch.setattr(proxy_mod.settings, "PAPERCLIP_SERVICE_TOKEN_KEY", "test-secret-32-bytes-min-len-x")
+    calls = _stub_handshake_repo_and_dispatch(monkeypatch, row=None)
 
     app = _build_http_app()
     client = TestClient(app)
@@ -783,6 +814,83 @@ def test_handshake_validates_clerk_jwt_and_sets_cookie(monkeypatch):
     claims = proxy_mod._verify_paperclip_session(cookie_val)
     assert claims["sub"] == "user_handshake"
     assert claims["email"] == "h@example.com"
+
+    # No row yet → the same canonical readiness dispatch the ?__t= handoff
+    # uses fired here too (personal context, paperclip-seed only).
+    assert calls == [("user_handshake", None, False)]
+
+
+def test_handshake_org_context_dispatches_repair_for_mismatched_row(monkeypatch):
+    """An org-context /__handshake__ whose per-user row still points at a
+    personal/previous-org company must dispatch the org join/repair BEFORE
+    minting the org-scoped cookie — otherwise the very next request lands
+    on the repair stub (which never re-spawns) with no repair in flight."""
+    from types import SimpleNamespace
+
+    from fastapi.testclient import TestClient
+
+    import routers.paperclip_proxy as proxy_mod
+
+    async def _fake_decode(token: str):
+        return {
+            "sub": "user_org_member",
+            "email": "m@example.com",
+            "o": {"id": "org_acme", "rol": "member"},
+        }
+
+    monkeypatch.setattr(proxy_mod, "_decode_token", _fake_decode)
+    monkeypatch.setattr(proxy_mod.settings, "PAPERCLIP_SERVICE_TOKEN_KEY", "test-secret-32-bytes-min-len-x")
+    calls = _stub_handshake_repo_and_dispatch(
+        monkeypatch, row=SimpleNamespace(status="active", org_id="user_org_member")
+    )
+
+    app = _build_http_app()
+    client = TestClient(app)
+
+    resp = client.post(
+        "/__handshake__",
+        headers={"Authorization": "Bearer valid.clerk.jwt"},
+    )
+    assert resp.status_code == 204
+
+    # The repair was dispatched under the org context...
+    assert calls == [("user_org_member", "org_acme", False)]
+
+    # ...and the minted cookie carries that same org context.
+    set_cookie = resp.headers.get("set-cookie", "")
+    cookie_val = set_cookie.split("isol8_paperclip=", 1)[1].split(";", 1)[0]
+    claims = proxy_mod._verify_paperclip_session(cookie_val)
+    assert claims["org_id"] == "org_acme"
+
+
+def test_handshake_matched_active_row_skips_dispatch(monkeypatch):
+    """Control: an already-provisioned row for THIS owner context mints the
+    cookie without any dispatch — handshakes must stay cheap for the
+    common re-entry case."""
+    from types import SimpleNamespace
+
+    from fastapi.testclient import TestClient
+
+    import routers.paperclip_proxy as proxy_mod
+
+    async def _fake_decode(token: str):
+        return {"sub": "user_handshake", "email": "h@example.com"}
+
+    monkeypatch.setattr(proxy_mod, "_decode_token", _fake_decode)
+    monkeypatch.setattr(proxy_mod.settings, "PAPERCLIP_SERVICE_TOKEN_KEY", "test-secret-32-bytes-min-len-x")
+    calls = _stub_handshake_repo_and_dispatch(
+        monkeypatch, row=SimpleNamespace(status="active", org_id="user_handshake")
+    )
+
+    app = _build_http_app()
+    client = TestClient(app)
+
+    resp = client.post(
+        "/__handshake__",
+        headers={"Authorization": "Bearer valid.clerk.jwt"},
+    )
+    assert resp.status_code == 204
+    assert calls == []
 
 
 def test_handshake_rejects_missing_bearer():

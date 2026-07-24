@@ -256,6 +256,23 @@ class GatewayConnection:
         # genuinely-deadlocked OpenClaw process can't leak state forever.
         self._parked_watchdog_task: Optional[asyncio.Task] = None
 
+    def _note_gateway_liveness(self, *, connected: bool) -> None:
+        """Fire-and-forget the DDB liveness write (readiness store R4's
+        replacement -- see ``core.services.connection_service.
+        mark_gateway_connected`` / ``mark_gateway_disconnected`` and
+        ``core.services.readiness_state``).
+
+        Never awaited inline: this must not add a DDB round-trip to the
+        connect/close/park hot path. Each service method swallows its own
+        errors, so the fire-and-forget task can never raise.
+        """
+        coro = (
+            self._conn_svc.mark_gateway_connected(self.owner_id)
+            if connected
+            else self._conn_svc.mark_gateway_disconnected(self.owner_id)
+        )
+        asyncio.create_task(coro)
+
     def _emit_status_change(self, state: str, reason: str) -> None:
         """Push a status_change event to all connected frontend WebSockets."""
         from datetime import timezone
@@ -581,6 +598,9 @@ class GatewayConnection:
         await self._subscribe_session_events()
         put_metric("gateway.connection", dimensions={"event": "connect"})
         self._emit_status_change("HEALTHY", "Gateway connected")
+        # Durable liveness signal (R4 kill) -- covers both a fresh connect()
+        # and a reopen() (which calls connect() internally).
+        self._note_gateway_liveness(connected=True)
         total_ms = int((time.monotonic() - connect_started) * 1000)
         logger.info(
             "Gateway connection established user=%s ip=%s total_ms=%d ws_upgrade_ms=%d handshake_ms=%d verify_ms=%d",
@@ -1856,6 +1876,9 @@ class GatewayConnection:
             type(exc).__name__,
         )
         self._emit_status_change("GATEWAY_DOWN_DEAD", "Gateway connection lost")
+        # Durable liveness signal (R4 kill): the reader loop died with no
+        # active runs, so is_alive is now False.
+        self._note_gateway_liveness(connected=False)
         for req_id, future in list(self._pending_rpcs.items()):
             if not future.done():
                 future.set_exception(RuntimeError("Gateway connection lost"))
@@ -1913,6 +1936,9 @@ class GatewayConnection:
                     "GATEWAY_DOWN_DEAD",
                     "Agent appears stuck — try restarting the gateway",
                 )
+                # Durable liveness signal (R4 kill): escalating past parked
+                # to dead is the other path is_alive can flip False.
+                self._note_gateway_liveness(connected=False)
                 for req_id, future in list(self._pending_rpcs.items()):
                     if not future.done():
                         future.set_exception(RuntimeError("Gateway connection lost"))
@@ -1959,6 +1985,9 @@ class GatewayConnection:
     async def close(self) -> None:
         """Shut down: drain in-flight RPCs, cancel reader, close WebSocket."""
         self._emit_status_change("GATEWAY_DOWN_DEAD", "Gateway connection closed")
+        # Durable liveness signal (R4 kill): an explicit close always ends
+        # in is_alive == False, whether or not runs were in flight.
+        self._note_gateway_liveness(connected=False)
         self._closed = True
         # Wait for in-flight billing-resolver tasks so teardown doesn't drop usage events.
         if self._billing_tasks:

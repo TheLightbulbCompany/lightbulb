@@ -1,0 +1,427 @@
+"""core.services.readiness_state.compute_status — the sole readiness+
+onboarding composer (spec PR-5, COMPOSER; INV-1).
+
+Every lifecycle scenario the COMPOSER task lists (blocked,
+provider_selection_required, cold-start [provisioning/starting], error,
+parked, ready) plus INV-6 (onboarding status never gates chat) is pinned
+here. `team_pending` is deliberately NOT a `compute_status` scenario — it's
+a CALLER-ROLE fact (org member vs admin polling about the SAME owner),
+which `compute_status(owner_id)` cannot see from `owner_id` alone; it's
+covered at the router layer (test_container_status_role_blind_dispatch.py
+et al.) and the shared TS `deriveUIPhase` (statusContract.test.ts).
+
+The `TestTeamsState` class ports the four `_resolve_teams_status` unit
+tests that lived in tests/unit/routers/test_container_status.py before
+this PR moved that logic into the composer.
+"""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from core.services import readiness_state
+
+
+def _account(**overrides) -> dict:
+    base = {"subscription_status": "active", "provider_choice": "bedrock_claude"}
+    base.update(overrides)
+    return base
+
+
+async def _compute(
+    owner_id: str,
+    *,
+    container: dict | None,
+    account: dict | None,
+    gateway_connected: bool = False,
+    paperclip_repo: MagicMock | None = None,
+    parked: bool = False,
+) -> dict:
+    if paperclip_repo is None:
+        paperclip_repo = MagicMock()
+        paperclip_repo.get_onboarding_state = AsyncMock(return_value=None)
+        # get_onboarding_state's real implementation never returns None —
+        # it returns the all-defaults dict. Callers below that don't care
+        # about paperclip state pass a repo whose method returns exactly
+        # that shape.
+        paperclip_repo.get_onboarding_state = AsyncMock(
+            return_value={
+                "onboarding_generation": None,
+                "funnel_state": "not_started",
+                "funnel_submitted_at": None,
+                "funnel_completed_at": None,
+                "onboarding_goal_id": None,
+                "onboarding_project_id": None,
+                "bootstrap_state": "not_started",
+                "bootstrap_dispatch_id": None,
+                "bootstrap_dispatched_at": None,
+                "bootstrap_delivered_at": None,
+                "bootstrap_attempts": 0,
+                "bootstrap_last_error": None,
+                "teams_state": None,
+                "company_id": None,
+                "paperclip_user_id": None,
+            }
+        )
+    with (
+        patch("core.repositories.billing_repo.get_by_owner_id", new=AsyncMock(return_value=account)),
+        patch("core.services.connection_service.is_gateway_connected", new=AsyncMock(return_value=gateway_connected)),
+        patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=paperclip_repo),
+        patch("core.services.wake_policy.is_parked_trial", new=AsyncMock(return_value=parked)),
+    ):
+        return await readiness_state.compute_status(owner_id, container=container)
+
+
+class TestResolveRuntimePhase:
+    """Pure (container, gateway_connected) -> runtime_phase mapping —
+    the ONLY input to chat availability (INV-6)."""
+
+    @pytest.mark.parametrize("status", ["provisioning", "stopped", "error", None, ""])
+    def test_anything_not_running_is_provisioning(self, status):
+        container = {"status": status} if status is not None else {}
+        assert readiness_state.resolve_runtime_phase(container, True) == "provisioning"
+        assert readiness_state.resolve_runtime_phase(container, False) == "provisioning"
+
+    def test_running_without_gateway_liveness_is_starting(self):
+        assert readiness_state.resolve_runtime_phase({"status": "running"}, False) == "starting"
+
+    def test_running_with_gateway_liveness_is_ready(self):
+        assert readiness_state.resolve_runtime_phase({"status": "running"}, True) == "ready"
+
+    def test_none_container_is_provisioning(self):
+        assert readiness_state.resolve_runtime_phase(None, True) == "provisioning"
+
+
+class TestComputeStatusLifecycleScenarios:
+    @pytest.mark.asyncio
+    async def test_needs_signup_personal_no_billing_row(self):
+        contract = await _compute("user_x", container=None, account=None)
+        assert contract["lifecycle"] == "needs_signup"
+        assert contract["runtime_phase"] == "provisioning"
+        assert contract["chat_available"] is False
+
+    @pytest.mark.asyncio
+    async def test_blocked_org_no_billing_row(self):
+        contract = await _compute("org_xyz", container=None, account=None)
+        assert contract["lifecycle"] == "blocked"
+        assert contract["chat_available"] is False
+
+    @pytest.mark.asyncio
+    async def test_provider_selection_required_org_active_no_provider(self):
+        """Orgs have NO free tier — an org with an active per-seat
+        subscription but no provider_choice sits here, distinct from
+        personal's trial_local path."""
+        account = _account(subscription_status="active", provider_choice=None)
+        contract = await _compute("org_xyz", container=None, account=account)
+        assert contract["lifecycle"] == "provider_selection_required"
+        assert contract["chat_available"] is False
+
+    @pytest.mark.asyncio
+    async def test_no_provider_selection_required_for_trial_local_personal(self):
+        """trial_local is personal-only and never needs a provider choice —
+        the free tier's provider is a config-path mode, not a stored
+        provider_choice."""
+        account = _account(subscription_status="trial_local", provider_choice=None)
+        contract = await _compute("user_x", container=None, account=account)
+        assert contract["lifecycle"] != "provider_selection_required"
+
+    @pytest.mark.asyncio
+    async def test_cold_start_provisioning(self):
+        container = {"status": "provisioning", "substatus": None}
+        contract = await _compute("user_x", container=container, account=_account())
+        assert contract["lifecycle"] == "provisioning"
+        assert contract["runtime_phase"] == "provisioning"
+        assert contract["chat_available"] is False
+
+    @pytest.mark.asyncio
+    async def test_cold_start_starting(self):
+        container = {"status": "running", "substatus": None}
+        contract = await _compute("user_x", container=container, account=_account(), gateway_connected=False)
+        assert contract["lifecycle"] == "starting"
+        assert contract["runtime_phase"] == "starting"
+        assert contract["chat_available"] is False
+
+    @pytest.mark.asyncio
+    async def test_error(self):
+        container = {"status": "error", "substatus": "provision_failed", "last_error": "boom"}
+        contract = await _compute("user_x", container=container, account=_account())
+        assert contract["lifecycle"] == "error"
+        assert contract["runtime_phase"] == "provisioning"
+        assert contract["chat_available"] is False
+        assert contract["last_error"] == "boom"
+
+    @pytest.mark.asyncio
+    async def test_parked(self):
+        container = {"status": "stopped", "stop_reason": "trial_idle"}
+        contract = await _compute(
+            "user_x", container=container, account=_account(subscription_status="trial_local"), parked=True
+        )
+        assert contract["lifecycle"] == "parked"
+        assert contract["parked"] is True
+        assert contract["runtime_phase"] == "provisioning"
+        assert contract["chat_available"] is False
+
+    @pytest.mark.asyncio
+    async def test_ready(self):
+        container = {"status": "running", "substatus": None}
+        contract = await _compute("user_x", container=container, account=_account(), gateway_connected=True)
+        assert contract["lifecycle"] == "ready"
+        assert contract["runtime_phase"] == "ready"
+        assert contract["chat_available"] is True
+
+
+class TestInvariant6ChatAvailabilitySolelyRuntimePhase:
+    """INV-6: onboarding status never gates chat — a degraded/awaiting-brief
+    owner whose runtime is ready still gets chat_available=True."""
+
+    @pytest.mark.asyncio
+    async def test_failed_teams_seed_over_ready_runtime_is_still_chat_available(self):
+        repo = MagicMock()
+        repo.get_onboarding_state = AsyncMock(
+            return_value={
+                "onboarding_generation": None,
+                "funnel_state": "not_started",
+                "funnel_submitted_at": None,
+                "funnel_completed_at": None,
+                "onboarding_goal_id": None,
+                "onboarding_project_id": None,
+                "bootstrap_state": "not_started",
+                "bootstrap_dispatch_id": None,
+                "bootstrap_dispatched_at": None,
+                "bootstrap_delivered_at": None,
+                "bootstrap_attempts": 0,
+                "bootstrap_last_error": None,
+                "teams_state": "failed",
+                "company_id": "co_1",
+                "paperclip_user_id": "pc_1",
+            }
+        )
+        container = {"status": "running", "substatus": None}
+        contract = await _compute(
+            "user_x", container=container, account=_account(), gateway_connected=True, paperclip_repo=repo
+        )
+        assert contract["teams_state"] == "failed"
+        assert contract["lifecycle"] == "ready"
+        assert contract["runtime_phase"] == "ready"
+        assert contract["chat_available"] is True
+
+    @pytest.mark.asyncio
+    async def test_not_yet_submitted_funnel_over_ready_runtime_is_still_chat_available(self):
+        container = {"status": "running", "substatus": None}
+        contract = await _compute("user_x", container=container, account=_account(), gateway_connected=True)
+        assert contract["funnel"]["state"] == "not_started"
+        assert contract["chat_available"] is True
+
+    @pytest.mark.asyncio
+    async def test_paperclip_read_failure_never_breaks_status(self):
+        repo = MagicMock()
+        repo.get_onboarding_state = AsyncMock(side_effect=RuntimeError("ddb down"))
+        container = {"status": "running", "substatus": None}
+        contract = await _compute(
+            "user_x", container=container, account=_account(), gateway_connected=True, paperclip_repo=repo
+        )
+        assert contract["chat_available"] is True
+        assert contract["teams_state"] is None
+
+    @pytest.mark.asyncio
+    async def test_billing_read_failure_never_breaks_status(self):
+        container = {"status": "running", "substatus": None}
+        paperclip_repo = MagicMock()
+        paperclip_repo.get_onboarding_state = AsyncMock(
+            return_value={
+                "onboarding_generation": None,
+                "funnel_state": "not_started",
+                "funnel_submitted_at": None,
+                "funnel_completed_at": None,
+                "onboarding_goal_id": None,
+                "onboarding_project_id": None,
+                "bootstrap_state": "not_started",
+                "bootstrap_dispatch_id": None,
+                "bootstrap_dispatched_at": None,
+                "bootstrap_delivered_at": None,
+                "bootstrap_attempts": 0,
+                "bootstrap_last_error": None,
+                "teams_state": None,
+                "company_id": None,
+                "paperclip_user_id": None,
+            }
+        )
+        with (
+            patch(
+                "core.repositories.billing_repo.get_by_owner_id", new=AsyncMock(side_effect=RuntimeError("ddb down"))
+            ),
+            patch("core.services.connection_service.is_gateway_connected", new=AsyncMock(return_value=True)),
+            patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=paperclip_repo),
+            patch("core.services.wake_policy.is_parked_trial", new=AsyncMock(return_value=False)),
+        ):
+            contract = await readiness_state.compute_status("user_x", container=container)
+        assert contract["chat_available"] is True
+
+    @pytest.mark.asyncio
+    async def test_gateway_liveness_read_failure_defaults_to_not_connected(self):
+        """A DDB liveness read failure must never raise, and must fail
+        toward "not ready" (starting), never a false "ready"."""
+        container = {"status": "running", "substatus": None}
+        paperclip_repo = MagicMock()
+        paperclip_repo.get_onboarding_state = AsyncMock(
+            return_value={
+                "onboarding_generation": None,
+                "funnel_state": "not_started",
+                "funnel_submitted_at": None,
+                "funnel_completed_at": None,
+                "onboarding_goal_id": None,
+                "onboarding_project_id": None,
+                "bootstrap_state": "not_started",
+                "bootstrap_dispatch_id": None,
+                "bootstrap_dispatched_at": None,
+                "bootstrap_delivered_at": None,
+                "bootstrap_attempts": 0,
+                "bootstrap_last_error": None,
+                "teams_state": None,
+                "company_id": None,
+                "paperclip_user_id": None,
+            }
+        )
+        with (
+            patch("core.repositories.billing_repo.get_by_owner_id", new=AsyncMock(return_value=_account())),
+            patch(
+                "core.services.connection_service.is_gateway_connected",
+                new=AsyncMock(side_effect=RuntimeError("ddb down")),
+            ),
+            patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=paperclip_repo),
+            patch("core.services.wake_policy.is_parked_trial", new=AsyncMock(return_value=False)),
+        ):
+            contract = await readiness_state.compute_status("user_x", container=container)
+        assert contract["runtime_phase"] == "starting"
+        assert contract["chat_available"] is False
+
+
+class TestTeamsState:
+    """Ported from tests/unit/routers/test_container_status.py's
+    TestContainerStatusTeamsStatus (pre-COMPOSER _resolve_teams_status
+    direct unit tests) — the read now lives in
+    paperclip_repo.get_onboarding_state, composed by compute_status."""
+
+    @pytest.mark.asyncio
+    async def test_failed_row_surfaces_failed(self):
+        repo = MagicMock(get=AsyncMock(return_value=SimpleNamespace(status="failed")))
+        contract = await _compute(
+            "user_x",
+            container={"status": "running"},
+            account=_account(),
+            gateway_connected=True,
+            paperclip_repo=_repo_from_get(repo),
+        )
+        assert contract["teams_state"] == "failed"
+
+    @pytest.mark.asyncio
+    async def test_active_row_surfaces_active_not_none(self):
+        """Unlike the pre-COMPOSER wire contract (which omitted the field
+        for anything but "failed"), the COMPOSER's own teams_state carries
+        the raw status — routers/container.py's _status_response is what
+        re-applies the omit-unless-failed wire contract."""
+        repo = MagicMock(get=AsyncMock(return_value=SimpleNamespace(status="active")))
+        contract = await _compute(
+            "user_x",
+            container={"status": "running"},
+            account=_account(),
+            gateway_connected=True,
+            paperclip_repo=_repo_from_get(repo),
+        )
+        assert contract["teams_state"] == "active"
+
+    @pytest.mark.asyncio
+    async def test_no_row_surfaces_none(self):
+        repo = MagicMock(get=AsyncMock(return_value=None))
+        contract = await _compute(
+            "user_x",
+            container={"status": "running"},
+            account=_account(),
+            gateway_connected=True,
+            paperclip_repo=_repo_from_get(repo),
+        )
+        assert contract["teams_state"] is None
+
+    @pytest.mark.asyncio
+    async def test_read_error_swallowed_surfaces_none(self):
+        repo = MagicMock(get=AsyncMock(side_effect=RuntimeError("ddb down")))
+        contract = await _compute(
+            "user_x",
+            container={"status": "running"},
+            account=_account(),
+            gateway_connected=True,
+            paperclip_repo=_repo_from_get(repo),
+        )
+        assert contract["teams_state"] is None
+
+
+def _repo_from_get(get_mock_repo: MagicMock) -> MagicMock:
+    """Wrap a bare `.get`-configured repo double into one whose
+    `get_onboarding_state` calls through to the REAL implementation logic
+    (getattr-defensive projection) against whatever `.get` returns — the
+    same relationship the real PaperclipRepo.get_onboarding_state has to
+    PaperclipRepo.get for a personal (non-org) owner_id."""
+    from core.repositories.paperclip_repo import PaperclipRepo
+
+    real = PaperclipRepo(table_name="paperclip-companies")
+    real.get = get_mock_repo.get
+    return real
+
+
+class TestGenerationThreading:
+    @pytest.mark.asyncio
+    async def test_provision_generation_flows_from_container_row(self):
+        container = {"status": "running", "provision_generation": "01J_PROVISION_GEN"}
+        contract = await _compute("user_x", container=container, account=_account(), gateway_connected=True)
+        assert contract["generations"]["provision_generation"] == "01J_PROVISION_GEN"
+
+    @pytest.mark.asyncio
+    async def test_onboarding_generation_flows_from_paperclip_row(self):
+        repo = MagicMock()
+        repo.get_onboarding_state = AsyncMock(
+            return_value={
+                "onboarding_generation": "01J_ONBOARDING_GEN",
+                "funnel_state": "complete",
+                "funnel_submitted_at": "2026-07-01T00:00:00Z",
+                "funnel_completed_at": "2026-07-01T00:01:00Z",
+                "onboarding_goal_id": "goal_1",
+                "onboarding_project_id": "proj_1",
+                "bootstrap_state": "delivered",
+                "bootstrap_dispatch_id": "disp_1",
+                "bootstrap_dispatched_at": "2026-07-01T00:01:01Z",
+                "bootstrap_delivered_at": "2026-07-01T00:01:30Z",
+                "bootstrap_attempts": 1,
+                "bootstrap_last_error": None,
+                "teams_state": "active",
+                "company_id": "co_1",
+                "paperclip_user_id": "pc_1",
+            }
+        )
+        container = {"status": "running"}
+        contract = await _compute(
+            "user_x", container=container, account=_account(), gateway_connected=True, paperclip_repo=repo
+        )
+        assert contract["generations"]["onboarding_generation"] == "01J_ONBOARDING_GEN"
+        assert contract["funnel"]["state"] == "complete"
+        assert contract["bootstrap"]["state"] == "delivered"
+        # RECONCILE-WITH-ONBOARD: once a real onboarding_generation exists,
+        # `onboarded` follows funnel_state == "complete", not the legacy
+        # per-container onboarded_at stamp.
+        assert contract["onboarded"] is True
+
+    @pytest.mark.asyncio
+    async def test_onboarded_falls_back_to_legacy_onboarded_at_when_no_onboarding_generation_yet(self):
+        """Transitional shim: until ONBOARD's writers ship,
+        onboarding_generation is always None on a fresh branch, so
+        `onboarded` must keep reading the legacy per-container
+        `onboarded_at` stamp rather than going permanently False."""
+        container = {"status": "running", "onboarded_at": "2026-07-01T00:00:00Z"}
+        contract = await _compute("user_x", container=container, account=_account(), gateway_connected=True)
+        assert contract["onboarded"] is True
+
+        container_fresh = {"status": "running"}
+        contract2 = await _compute("user_x", container=container_fresh, account=_account(), gateway_connected=True)
+        assert contract2["onboarded"] is False

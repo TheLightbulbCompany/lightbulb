@@ -57,6 +57,23 @@ _LIVE_WINDOW_SECONDS = 120
 # memory flat across a long-running process life.
 _TOUCH_THROTTLE_MAX_ENTRIES = 10_000
 
+# Synthetic connectionId namespace for the gateway-liveness rows (see
+# mark_gateway_connected). One row per owner_id, keyed
+# "gateway#{owner_id}" so it can never collide with a real API Gateway
+# connectionId (those are opaque IDs API Gateway mints, never containing
+# "#"). This is readiness store R4's replacement: the per-process
+# GatewayConnectionPool.is_user_connected read (core/gateway/connection_pool.py)
+# moved here so ANY backend instance -- not just the one currently holding
+# the WS to the user's OpenClaw container -- can answer "is the gateway
+# connected" durably. See
+# docs/superpowers/specs/2026-07-24-onboarding-architecture-design.md §2
+# (Readiness composition) and core/services/readiness_state.py.
+_GATEWAY_LIVENESS_PREFIX = "gateway#"
+
+
+def _gateway_liveness_key(owner_id: str) -> str:
+    return f"{_GATEWAY_LIVENESS_PREFIX}{owner_id}"
+
 
 class ConnectionServiceError(Exception):
     """Base exception for connection service errors."""
@@ -544,6 +561,105 @@ class ConnectionService:
                 f"Failed to delete connection {connection_id}: {e.response['Error']['Message']}"
             ) from e
 
+    async def mark_gateway_connected(self, owner_id: str) -> None:
+        """Record a live, handshake-verified OpenClaw gateway connection for
+        ``owner_id`` -- the durable (cross-instance) liveness signal that
+        replaces the in-process ``GatewayConnectionPool.is_user_connected``
+        read (readiness store R4). Called by ``GatewayConnection`` at every
+        point its own ``is_alive`` flips True: initial ``connect()``
+        success and a successful ``reopen()`` (which calls ``connect()``
+        internally).
+
+        Best-effort: a DDB write failure is logged and swallowed -- this
+        must never break the gateway connect path itself. The next
+        ``is_gateway_connected`` read simply sees stale (absent/expired)
+        state until the write succeeds.
+        """
+        now = int(time.time())
+        item = {
+            "connectionId": {"S": _gateway_liveness_key(owner_id)},
+            "userId": {"S": owner_id},
+            "orgId": {"S": ""},
+            "ownerId": {"S": owner_id},
+            "connectedAt": {"S": datetime.now(timezone.utc).isoformat()},
+            "connectionType": {"S": "gateway"},
+            "lastPingAt": {"N": str(now)},
+            "ttl": {"N": str(now + _TTL_WINDOW_SECONDS)},
+        }
+
+        def _put() -> None:
+            self._client.put_item(TableName=self.table_name, Item=item)
+
+        try:
+            await asyncio.to_thread(_put)
+        except ClientError as e:
+            logger.warning(
+                "mark_gateway_connected failed for owner %s (best-effort, swallowed): %s",
+                owner_id,
+                e.response["Error"]["Message"],
+            )
+
+    async def mark_gateway_disconnected(self, owner_id: str) -> None:
+        """Clear the gateway-liveness row for ``owner_id``.
+
+        Called by ``GatewayConnection`` at every point its own ``is_alive``
+        flips False: the dead branch of ``_on_reader_loop_exit`` (reader
+        loop died with no active runs), the parked-watchdog's long-idle
+        escalation to dead, and ``close()``. Deliberately NOT called when a
+        connection merely parks (``is_alive`` stays True while parked with
+        active runs -- see ``GatewayConnection.is_alive``) so a transient
+        ping-timeout mid-turn doesn't flip ``/container/status`` back to
+        "starting" underneath a live chat.
+
+        Best-effort, same swallow posture as ``mark_gateway_connected``.
+        """
+
+        def _delete() -> None:
+            self._client.delete_item(
+                TableName=self.table_name,
+                Key={"connectionId": {"S": _gateway_liveness_key(owner_id)}},
+            )
+
+        try:
+            await asyncio.to_thread(_delete)
+        except ClientError as e:
+            logger.warning(
+                "mark_gateway_disconnected failed for owner %s (best-effort, swallowed): %s",
+                owner_id,
+                e.response["Error"]["Message"],
+            )
+
+    async def is_gateway_connected(self, owner_id: str) -> bool:
+        """Whether the gateway-liveness row for ``owner_id`` exists.
+
+        The sole read side of the R4 kill -- consumed by
+        ``core.services.readiness_state.compute_status`` (and its
+        ``_safe_phase``-equivalent fallback) instead of the old in-process
+        ``GatewayConnectionPool.is_user_connected``. A read failure is
+        logged and treated as "not connected" (fail toward showing the
+        cold-start UI rather than a false "ready", mirroring the
+        fail-closed posture of the rest of the gate machinery in this
+        codebase).
+        """
+
+        def _get() -> bool:
+            resp = self._client.get_item(
+                TableName=self.table_name,
+                Key={"connectionId": {"S": _gateway_liveness_key(owner_id)}},
+                ProjectionExpression="connectionId",
+            )
+            return "Item" in resp
+
+        try:
+            return await asyncio.to_thread(_get)
+        except ClientError as e:
+            logger.warning(
+                "is_gateway_connected read failed for owner %s (defaulting False): %s",
+                owner_id,
+                e.response["Error"]["Message"],
+            )
+            return False
+
 
 # ---------------------------------------------------------------------------
 # Module-level singleton + thin async wrappers
@@ -573,3 +689,13 @@ async def delete_all_for_user(user_id: str) -> int:
 async def count_for_user(user_id: str) -> int:
     """Module-level helper: count every WS connection row for ``user_id``."""
     return await _get_singleton().count_for_user(user_id)
+
+
+async def is_gateway_connected(owner_id: str) -> bool:
+    """Module-level helper: the readiness composer's liveness read.
+
+    ``core.services.readiness_state`` imports this rather than
+    instantiating its own ``ConnectionService`` so it shares the one
+    process-wide singleton (and its boto3 client) with every other caller.
+    """
+    return await _get_singleton().is_gateway_connected(owner_id)

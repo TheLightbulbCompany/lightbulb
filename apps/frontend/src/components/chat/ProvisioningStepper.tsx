@@ -35,6 +35,8 @@ import {
   PROVISION_IDEA_ROTATION_MS as IDEA_ROTATION_MS,
   PROVISION_TIMEOUT_MS as TIMEOUT_MS,
   formatProvisionElapsed as formatElapsed,
+  deriveUIPhase,
+  type StatusContract,
 } from "@isol8/shared";
 
 // Frontend stepper phases. The cold-start "container", "gateway",
@@ -411,11 +413,28 @@ export function ProvisioningStepper({
   // eslint-disable-next-line react-hooks/refs
   previousBackendPhaseRef.current = container?.phase;
 
+  // Readiness decision (backend phase="provisioning"/"starting"/"ready"/
+  // "parked"/error) is now sourced from the ONE shared deriveUIPhase
+  // (packages/shared/src/hooks/statusContract.ts) instead of being
+  // reconstructed here — the useMemo ladder this replaced was the
+  // web-specific half of the byte-forked duplicate mobile's
+  // containerStatus.ts carried (mobile onboarding-parity Slice 1/COMPOSER).
+  // `/container/status`'s 200 body carries the full StatusContract
+  // additively (see routers/container.py::_status_response), so the SWR
+  // hook's `container` value already IS one, modulo the cast below (the
+  // hook's own `ContainerInfo` type predates the composer and is
+  // deliberately loose — `[key: string]: unknown` — so this is a narrowing
+  // cast, not a shape change).
+  const derived = container ? deriveUIPhase(container as unknown as StatusContract) : null;
+
   // Derive phase purely from data. The cold-start window (backend
-  // phase="starting", roughly ECS RUNNING through gateway-pool-connected)
+  // runtimePhase="starting", roughly ECS RUNNING through gateway-connected)
   // is split into three visible UI sub-phases by elapsed time so the
   // user sees concrete progress through what is currently a 5+min wait
-  // in upstream's sidecars.channels.
+  // in upstream's sidecars.channels. That elapsed-time sub-stepping is a
+  // presentation-only refinement of ONE composer-decided phase
+  // ("cold_start") — not itself a readiness decision — so it stays here
+  // rather than in the shared deriveUIPhase.
   const phase: Phase = useMemo(() => {
     // Just regressed from ready -> not-ready? Force the conservative
     // early step until the reset effect clears stale timing state.
@@ -430,38 +449,34 @@ export function ProvisioningStepper({
     // Provider-specific signup step runs before container provision.
     if (needsProviderStep) return "provider";
 
-    // Trust the backend's phase field when it's present; fall back to
-    // the legacy status check for older backends still in flight.
-    const backendPhase = container?.phase;
-
-    if (!container) return "container";
+    if (!container || !derived) return "container";
     // Parked (wake-gated trial box, deliberately asleep): render the app —
     // content stays readable, and any interaction / message send wakes it.
     // Checked BEFORE the error/status branches: a parked row's status is
     // "stopped", which the legacy checks would misread as a cold start.
-    if (backendPhase === "parked") return resolvePostAgentPhase();
-    if (container.status === "error") return "container";
-    if (backendPhase === "provisioning") {
+    if (derived.phase === "parked") return resolvePostAgentPhase();
+    if (derived.phase === "error") return "container";
+    if (derived.runtimePhase === "provisioning") {
       // substatus "task_running" = the ECS task is RUNNING with an IP but
       // the gateway port hasn't opened yet (image pulled, OpenClaw
       // booting) — the real "gateway" window.
       return container.substatus === "task_running" ? "gateway" : "container";
     }
-    if (backendPhase === undefined && !containerReady) return "container";
+    if (!containerReady && derived.runtimePhase !== "starting") return "container";
 
-    if (backendPhase === "starting" || (backendPhase === undefined && !gatewayHealth)) {
-      // phase="starting" means the gateway port answered the TCP probe:
-      // the gateway is up and OpenClaw is loading channels/sidecars.
+    if (derived.runtimePhase === "starting" || (!derived.chatAvailable && !gatewayHealth)) {
+      // runtimePhase="starting" means the gateway port answered the TCP
+      // probe: the gateway is up and OpenClaw is loading channels/sidecars.
       // Once the health RPC answers, only the pool handshake remains —
       // the "agent" step. Every transition here is a real signal.
       return gatewayHealth ? "agent" : "channels-sidecars";
     }
 
-    // backend phase="ready" (or legacy: gatewayHealth present) — chat is
-    // ready. Channel setup is no longer forced here; it is nudged via the
-    // Get Started guide and lives in Settings → Channels.
+    // derived.runtimePhase === "ready" (chatAvailable) — chat is ready.
+    // Channel setup is no longer forced here; it is nudged via the Get
+    // Started guide and lives in Settings → Channels.
     return resolvePostAgentPhase();
-  }, [trigger, isSubscribed, isTrialLocal, container, containerReady, gatewayHealth, needsProviderStep, isRegressingFromReady]);
+  }, [trigger, isSubscribed, isTrialLocal, container, derived, containerReady, gatewayHealth, needsProviderStep, isRegressingFromReady]);
 
   // Analytics: fire `onboarding_step_completed` (step LEFT) + `onboarding_step_entered`
   // (step ARRIVED) per phase transition.

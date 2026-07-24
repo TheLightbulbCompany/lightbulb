@@ -57,9 +57,11 @@ import { AppState } from "react-native";
 import {
   ApiError,
   classifyContainerStatus,
+  deriveUIPhase,
   fetchJsonWithStatus,
   type ClassifiedStatus,
   type ContainerStatusBody,
+  type StatusContract,
 } from "@isol8/shared";
 
 import { makeAdapter } from "./adapter";
@@ -208,18 +210,13 @@ function fromClassified(
       // the index signature), so narrow it to a string before surfacing.
       const teamsStatus =
         typeof info.teams_status === "string" ? info.teams_status : undefined;
-      // Honest failure states (PR3), checked BEFORE the phase branches: the
-      // backend reports phase="provisioning" for a failed container too, so an
-      // error read AFTER the phase checks would misrender as a perpetual
-      // spinner. Terminal-ness is keyed off `substatus`, NEVER `phase` (the
-      // landmine). The ONLY non-terminal error is the explicit auto-retry
-      // signal "error_retrying" — keep it `starting` so progress stays up AND
-      // the recovery poll keeps running. EVERY other error shape is TERMINAL
-      // (provision_failed, deployment_failed's ECS rollout circuit breaker, a
-      // bare error with no substatus when auto-retry is gated / standing down,
-      // or any unknown value) → the Setup-failed interstitial, never an endless
-      // stepper. This inverts an earlier provision_failed-only check that
-      // silently downgraded deployment_failed / bare-error rows to `starting`.
+
+      // Honest failure states (PR3), checked BEFORE deriveUIPhase: the
+      // backend reports phase/lifecycle="provisioning" for a failed
+      // container too (terminal-ness is keyed off `substatus`, NEVER
+      // `phase`/`lifecycle` — the landmine), and the ONE non-terminal error
+      // shape ("error_retrying") needs its own substatus surfaced on the
+      // `starting` kind, which the generic mapping below doesn't carry.
       if (info.status === "error") {
         if (info.substatus === "error_retrying") {
           return {
@@ -232,24 +229,44 @@ function fromClassified(
         }
         return { kind: "error" };
       }
-      // phase absent (older backend / plain running box) → treat as ready.
-      if (info.phase == null || info.phase === "ready") {
-        return { kind: "ready", onboarded: info.onboarded, teamsStatus };
+
+      // Every other 200 body is the composed StatusContract (additive wire
+      // fields — see routers/container.py::_status_response). ONE shared
+      // classifier (packages/shared/src/hooks/statusContract.ts) decides
+      // the phase here instead of this file's own ladder (mobile
+      // onboarding-parity: the byte-forked twin of web's ProvisioningStepper
+      // useMemo, now retired in favor of one implementation both call).
+      const derived = deriveUIPhase(info as unknown as StatusContract);
+      switch (derived.phase) {
+        case "parked":
+          // Deliberately-asleep trial box (wake-gated). Distinct from a cold
+          // start: it's healthy, one intent away from running, so it must NOT
+          // render as a perpetual "starting…" spinner. Foregrounding already
+          // fired a wake in parallel (gateway provider), so this is transient.
+          return { kind: "parked" };
+        case "ready":
+          return { kind: "ready", onboarded: info.onboarded, teamsStatus };
+        case "error":
+          // Defensive: deriveUIPhase can only reach "error" via
+          // lifecycle==="error", which the info.status==="error" branch
+          // above already handled — kept for exhaustiveness, not a live path.
+          return { kind: "error" };
+        // "cold_start" (provisioning | starting) is the common case; the
+        // pre-container states (blocked/provider_selection_required/
+        // needs_signup/team_pending) are NOT reachable from a 200 body in
+        // today's wiring (the gate raises 402/404/202 before a container
+        // response is ever built) — fall through to "starting" defensively
+        // rather than crash on a lifecycle this endpoint doesn't actually
+        // emit at 200 yet.
+        default:
+          return {
+            kind: "starting",
+            phase: info.phase,
+            substatus: info.substatus ?? undefined,
+            onboarded: info.onboarded,
+            teamsStatus,
+          };
       }
-      if (info.phase === "parked") {
-        // Deliberately-asleep trial box (wake-gated). Distinct from a cold
-        // start: it's healthy, one intent away from running, so it must NOT
-        // render as a perpetual "starting…" spinner. Foregrounding already
-        // fired a wake in parallel (gateway provider), so this is transient.
-        return { kind: "parked" };
-      }
-      return {
-        kind: "starting",
-        phase: info.phase,
-        substatus: info.substatus ?? undefined,
-        onboarded: info.onboarded,
-        teamsStatus,
-      };
     }
   }
 }

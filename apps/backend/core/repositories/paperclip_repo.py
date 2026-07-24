@@ -155,6 +155,34 @@ class PaperclipCompany:
     name ``Atlas`` is never mistaken for a seeded one, and renaming a
     seeded agent never drops its protection."""
 
+    # -------------------------------------------------------------------
+    # RECONCILE-WITH-ONBOARD: onboarding fields co-located on this row.
+    #
+    # These 11 additive, defaulted fields mirror the attributes the sibling
+    # ONBOARD PR (spec PR-4 / ONBOARD-TABLE session) is landing on this same
+    # paperclip-companies row -- see
+    # docs/superpowers/specs/2026-07-24-onboarding-architecture-design.md §2.
+    # ONBOARD owns minting `onboarding_generation` (event G2, in
+    # `provision_org`'s fresh-create branch) and every write to the fields
+    # below; this PR (COMPOSER) only READS them, via `get_onboarding_state`.
+    # Whichever of ONBOARD/COMPOSER merges second should reconcile this
+    # dataclass against ONBOARD's real field set (names here are the
+    # COMPOSER/ONBOARD interface contract's spec-fixed keys, so they should
+    # already match) and delete this note.
+    # -------------------------------------------------------------------
+    onboarding_generation: Optional[str] = None
+    funnel_state: str = "not_started"
+    funnel_submitted_at: Optional[str] = None
+    funnel_completed_at: Optional[str] = None
+    onboarding_goal_id: Optional[str] = None
+    onboarding_project_id: Optional[str] = None
+    bootstrap_state: str = "not_started"
+    bootstrap_dispatch_id: Optional[str] = None
+    bootstrap_dispatched_at: Optional[str] = None
+    bootstrap_delivered_at: Optional[str] = None
+    bootstrap_attempts: int = 0
+    bootstrap_last_error: Optional[str] = None
+
 
 class PaperclipRepo:
     """Async repository for the paperclip-companies DynamoDB table.
@@ -203,13 +231,24 @@ class PaperclipRepo:
         )
         if "Item" not in resp:
             return None
-        item = resp["Item"]
-        # The credential trio defaults to "" rather than strict-indexing: a
-        # durable ``failed`` marker (put_failed_marker_if_absent) deliberately
-        # carries NO credentials — its only job is to make a net-new seed
-        # failure visible (so /teams returns an honest 503) — and get() must
-        # still read it back as a status="failed" row rather than KeyError.
-        # Real provisioned rows always carry all three (put() writes them).
+        return self._item_to_company(resp["Item"])
+
+    @staticmethod
+    def _item_to_company(item: dict) -> PaperclipCompany:
+        """Raw DDB item -> ``PaperclipCompany``. Factored out of ``get`` so
+        ``get_onboarding_state``'s org-owner fallback (which resolves the
+        provisioner's row via the ``by-org-id`` GSI's ``ProjectionType=ALL``
+        query results, not a base-table ``get_item``) can build the same
+        dataclass from a GSI-projected item without a second base-table
+        read.
+
+        The credential trio defaults to "" rather than strict-indexing: a
+        durable ``failed`` marker (put_failed_marker_if_absent) deliberately
+        carries NO credentials — its only job is to make a net-new seed
+        failure visible (so /teams returns an honest 503) — and this must
+        still read it back as a status="failed" row rather than KeyError.
+        Real provisioned rows always carry all three (put() writes them).
+        """
         return PaperclipCompany(
             user_id=item["user_id"],
             org_id=item["org_id"],
@@ -225,7 +264,110 @@ class PaperclipRepo:
                 datetime.fromisoformat(item["scheduled_purge_at"]) if item.get("scheduled_purge_at") else None
             ),
             seeded_agent_ids=(list(item["seeded_agent_ids"]) if item.get("seeded_agent_ids") else None),
+            # RECONCILE-WITH-ONBOARD: read-only, defaulted -- a row written
+            # before ONBOARD's writers land (or a row ONBOARD never touched,
+            # e.g. a member row) simply has none of these attributes, and
+            # every default below is the "genuinely never started" value.
+            onboarding_generation=item.get("onboarding_generation"),
+            funnel_state=item.get("funnel_state", "not_started"),
+            funnel_submitted_at=item.get("funnel_submitted_at"),
+            funnel_completed_at=item.get("funnel_completed_at"),
+            onboarding_goal_id=item.get("onboarding_goal_id"),
+            onboarding_project_id=item.get("onboarding_project_id"),
+            bootstrap_state=item.get("bootstrap_state", "not_started"),
+            bootstrap_dispatch_id=item.get("bootstrap_dispatch_id"),
+            bootstrap_dispatched_at=item.get("bootstrap_dispatched_at"),
+            bootstrap_delivered_at=item.get("bootstrap_delivered_at"),
+            bootstrap_attempts=int(item.get("bootstrap_attempts", 0)),
+            bootstrap_last_error=item.get("bootstrap_last_error"),
         )
+
+    async def get_onboarding_state(self, owner_id: str) -> dict:
+        """RECONCILE-WITH-ONBOARD: read-only accessor for the
+        COMPOSER/ONBOARD interface contract.
+
+        Returns the 11 spec-fixed onboarding keys (see the dataclass note
+        above) PLUS three additive keys -- ``teams_state`` (this row's raw
+        ``status``), ``company_id``, and ``paperclip_user_id`` -- so
+        ``core.services.readiness_state.compute_status`` gets everything it
+        needs from the paperclip-companies row in exactly ONE physical read
+        rather than a second `get_item` just for onboarding fields. See
+        docs/superpowers/specs/2026-07-24-onboarding-architecture-design.md
+        §2 ("one read, not two").
+
+        ``owner_id`` is the CONTAINER owner (org_id for an org, else the
+        user_id) -- NOT necessarily a row key. This table's PK is a Clerk
+        user_id (see module docstring): for a personal owner
+        (user_id == owner_id) ``self.get(owner_id)`` already resolves the
+        right row directly (the common case, ONE physical read). For an
+        ORG owner (``owner_id`` is an ``org_`` id) there is no row keyed by
+        org_id itself, so this falls back to the ``by-org-id`` GSI (also
+        ONE physical read -- ``ProjectionType=ALL``, no base-table chain
+        read needed) and returns the PROVISIONER's row -- the one row
+        ``seeded_agent_ids`` was stamped on at provision time -- since
+        onboarding facts (funnel/bootstrap) are company-wide, not
+        per-member. Falls back to the first row if none carries
+        ``seeded_agent_ids`` (defensive; shouldn't happen for an
+        actively-provisioned org).
+
+        RECONCILE-WITH-ONBOARD: if ONBOARD's real implementation resolves
+        the owner row differently (e.g. a dedicated org_id-keyed
+        attribute/table), align this against it.
+
+        A row that doesn't exist yet, or that predates ONBOARD's writers,
+        returns every onboarding field at its "genuinely not started"
+        default -- never raises (read failures are the caller's
+        responsibility to guard, matching every other method here).
+        """
+        company: Optional[PaperclipCompany]
+        if owner_id.startswith("org_"):
+            rows = await self.list_by_org_id(owner_id)
+            item = next((r for r in rows if r.get("seeded_agent_ids")), None) or (rows[0] if rows else None)
+            company = self._item_to_company(item) if item is not None else None
+        else:
+            company = await self.get(owner_id)
+        if company is None:
+            return {
+                "onboarding_generation": None,
+                "funnel_state": "not_started",
+                "funnel_submitted_at": None,
+                "funnel_completed_at": None,
+                "onboarding_goal_id": None,
+                "onboarding_project_id": None,
+                "bootstrap_state": "not_started",
+                "bootstrap_dispatch_id": None,
+                "bootstrap_dispatched_at": None,
+                "bootstrap_delivered_at": None,
+                "bootstrap_attempts": 0,
+                "bootstrap_last_error": None,
+                "teams_state": None,
+                "company_id": None,
+                "paperclip_user_id": None,
+            }
+        # getattr(..., default) rather than direct attribute access: real
+        # PaperclipCompany instances always have every field (defaulted by
+        # the dataclass), but a handful of existing test doubles construct
+        # a bare SimpleNamespace(status=...) standing in for `repo.get`'s
+        # return value -- getattr keeps this method correct against both
+        # without forcing every such test double to be rewritten into a
+        # full PaperclipCompany just to add a status field.
+        return {
+            "onboarding_generation": getattr(company, "onboarding_generation", None),
+            "funnel_state": getattr(company, "funnel_state", "not_started"),
+            "funnel_submitted_at": getattr(company, "funnel_submitted_at", None),
+            "funnel_completed_at": getattr(company, "funnel_completed_at", None),
+            "onboarding_goal_id": getattr(company, "onboarding_goal_id", None),
+            "onboarding_project_id": getattr(company, "onboarding_project_id", None),
+            "bootstrap_state": getattr(company, "bootstrap_state", "not_started"),
+            "bootstrap_dispatch_id": getattr(company, "bootstrap_dispatch_id", None),
+            "bootstrap_dispatched_at": getattr(company, "bootstrap_dispatched_at", None),
+            "bootstrap_delivered_at": getattr(company, "bootstrap_delivered_at", None),
+            "bootstrap_attempts": getattr(company, "bootstrap_attempts", 0),
+            "bootstrap_last_error": getattr(company, "bootstrap_last_error", None),
+            "teams_state": getattr(company, "status", None),
+            "company_id": getattr(company, "company_id", None),
+            "paperclip_user_id": getattr(company, "paperclip_user_id", None),
+        }
 
     async def get_org_company_id(self, org_id: str) -> Optional[str]:
         """Return the shared ``company_id`` for any one user in this org.

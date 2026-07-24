@@ -17,7 +17,6 @@ import {
 import { WS_URL } from "@/lib/api";
 import { readDesktopPermissionGrant } from "@/lib/desktopPermissions";
 import { subscribeDesktopPermissions } from "@/lib/desktopPermissionsSubscribe";
-import { mutate } from "swr";
 
 import { lastInputAgeMs } from "@/lib/presence";
 import { useContainerWake } from "@/hooks/useContainerWake";
@@ -127,10 +126,11 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
     const onReturn = () => {
       unpark();
       void requestWake("interaction");
-      // requestWake revalidates /container/status itself, but it can be a
-      // cooldown no-op — revalidate here too so the stepper always re-syncs
-      // on return (the reachedReady latch zeroes its own poll interval).
-      void mutate("/container/status");
+      // No manual /container/status revalidation here anymore (spec PR-9,
+      // CLIENT-HOOK deleted the wake/unpark/container_waking manual-mutate
+      // trio) — the shared `useOnboardingStatus` bounded loop re-polls
+      // within its declared <=15s ceiling regardless of requestWake's
+      // outcome (including a cooldown no-op).
     };
     // `click`, NOT `pointerdown`: a touch-scroll fires pointerdown on first
     // contact, which would unpark + wake a box the mobile user only meant to

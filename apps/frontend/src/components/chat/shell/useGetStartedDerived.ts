@@ -32,21 +32,23 @@ export function useGetStartedDerived(): GetStartedDerivedSignals & { chatReady: 
   // off to surfaces that don't exist yet (empty agents[], hidden composer)
   // and burning the one-time `seen: true` flag before the user can act.
   //
-  // The canonical "chat is live" signal is the backend-reported cold-start
-  // phase reaching "ready" — the exact gate the sibling ProvisioningStepper
-  // uses to stop its loader and render the chat `children` (it shares the
-  // `/container/status` SWR cache via the same `useProvisioningState` key, so
-  // `container.phase` here flips to "ready" in the same render the stepper
-  // does). It is strictly stronger than `phase === "normal"`: a non-null
-  // `container` already implies a 200 ("normal"), and `.phase === "ready"`
-  // additionally requires the gateway pool to have connected.
+  // The canonical "chat is live" signal is the backend-reported
+  // `runtime_phase` reaching "ready" — the exact gate the sibling
+  // ProvisioningStepper uses to stop its loader and render the chat
+  // `children` (it shares the `/container/status` SWR cache via the same
+  // `useProvisioningState` -> `useOnboardingStatus` key, so
+  // `container.runtime_phase` here flips to "ready" in the same render the
+  // stepper does). It is strictly stronger than `phase === "normal"`: a
+  // non-null `container` already implies a 200 ("normal"), and
+  // `.runtime_phase === "ready"` additionally requires the gateway pool to
+  // have connected.
   const { container } = useProvisioningState();
   // Ready-equivalent for the derived UI state: a parked box is a healthy,
   // completed onboarding — the "chat" step must not un-complete when it
   // sleeps. The sessions.list RPC below can't fire against a parked socket,
   // but useGatewayRpc nulls its own key while parked (freezing the last
   // cached value), so chatStarted stays correct across a park.
-  const chatReady = container?.phase === "ready" || container?.phase === "parked";
+  const chatReady = container?.runtime_phase === "ready" || container?.lifecycle === "parked";
 
   // `channel` complete = the user has actually connected a channel: ANY
   // provider has at least one bot a member has paired their identity to

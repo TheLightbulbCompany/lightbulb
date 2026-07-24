@@ -201,7 +201,7 @@ class TestContainerStatusPhaseField:
 
         response = await async_client.get("/api/v1/container/status")
         assert response.status_code == 200
-        assert response.json()["phase"] == "starting"
+        assert response.json()["runtime_phase"] == "starting"
 
     @pytest.mark.asyncio
     @patch("core.services.connection_service.is_gateway_connected", new_callable=AsyncMock)
@@ -224,7 +224,7 @@ class TestContainerStatusPhaseField:
 
         response = await async_client.get("/api/v1/container/status")
         assert response.status_code == 200
-        assert response.json()["phase"] == "ready"
+        assert response.json()["runtime_phase"] == "ready"
 
 
 class TestContainerStatus:
@@ -257,8 +257,8 @@ class TestContainerStatus:
         assert response.status_code == 200
         data = response.json()
         assert data["service_name"] == "openclaw-abc123"
-        assert data["status"] == "running"
-        assert data["substatus"] is None
+        assert data["container_status"] == "running"
+        assert data["container_substatus"] is None
         assert data["region"] == "us-east-1"
         assert "created_at" in data
         assert "updated_at" in data
@@ -373,8 +373,8 @@ class TestContainerStatus:
         response = await async_client.get("/api/v1/container/status")
         assert response.status_code == 200
         body = response.json()
-        assert body["status"] == "provisioning"
-        assert body["phase"] == "provisioning"
+        assert body["container_status"] == "provisioning"
+        assert body["runtime_phase"] == "provisioning"
         mock_create_task.assert_called_once()
 
 
@@ -461,9 +461,9 @@ class TestContainerStatusGate:
         ):
             result = await container_status(auth=_personal_auth())
 
-        assert result["status"] == "provisioning"
-        assert result["phase"] == "provisioning"
-        assert result["substatus"] == "ensure_user_ready"
+        assert result["container_status"] == "provisioning"
+        assert result["runtime_phase"] == "provisioning"
+        assert result["container_substatus"] == "ensure_user_ready"
         assert len(captured) == 1
 
     @pytest.mark.asyncio
@@ -494,7 +494,7 @@ class TestContainerStatusGate:
         ):
             result = await container_status(auth=_personal_auth())
 
-        assert result["status"] == "provisioning"
+        assert result["container_status"] == "provisioning"
         assert result["onboarded"] is True  # NOT re-funneled
 
     @pytest.mark.asyncio
@@ -541,7 +541,7 @@ class TestContainerStatusGate:
         # (cancel/resubscribe) shouldn't 402 a user with a live container.
         mock_gate.assert_not_called()
         assert result["service_name"] == "openclaw-existing"
-        assert result["status"] == "running"
+        assert result["container_status"] == "running"
 
     @pytest.mark.asyncio
     async def test_revoked_zombie_running_row_returns_the_limit_card_not_a_spinner(self):
@@ -622,7 +622,7 @@ class TestContainerStatusGate:
             result = await container_status(auth=_personal_auth())
 
         assert result["service_name"] == "openclaw-paid"
-        assert result["status"] == "running"
+        assert result["container_status"] == "running"
 
     @pytest.mark.asyncio
     async def test_admin_signup_required_returns_404_for_picker(self):
@@ -707,8 +707,8 @@ class TestContainerStatusGate:
             result = await container_status(_personal_auth())
 
         assert order == ["trial", "gate"], f"trial must be created before the gate, got {order}"
-        assert result["status"] == "provisioning"
-        assert result["phase"] == "provisioning"
+        assert result["container_status"] == "provisioning"
+        assert result["runtime_phase"] == "provisioning"
 
     @pytest.mark.asyncio
     async def test_org_admin_no_billing_returns_team_billing_required_402(self):
@@ -901,8 +901,8 @@ class TestContainerStatusEnsureUserReadyDispatch:
             ),
         ):
             result = await container_status(_personal_auth())
-        assert result["status"] == "provisioning"
-        assert result["phase"] == "provisioning"
+        assert result["container_status"] == "provisioning"
+        assert result["runtime_phase"] == "provisioning"
         assert captured == ["_noop_ensure_user_ready"], f"expected ensure_user_ready dispatched, got {captured}"
 
     @pytest.mark.asyncio
@@ -936,8 +936,8 @@ class TestContainerStatusEnsureUserReadyDispatch:
             patch("routers.container.asyncio.create_task", side_effect=capture_task),
         ):
             result = await container_status(_org_admin_auth("user_admin", "org_xyz", "a@example.com"))
-        assert result["status"] == "provisioning"
-        assert result["phase"] == "provisioning"
+        assert result["container_status"] == "provisioning"
+        assert result["runtime_phase"] == "provisioning"
         # Org-context owner_id (org_xyz) also triggers the fire-and-forget
         # seat reconcile (Task 8), dispatched before ensure_user_ready.
         assert captured == ["sync_team_seat_quantity", "_noop_ensure_user_ready"], (
@@ -1047,7 +1047,7 @@ class TestContainerStatusOrgMemberDispatchOnExisting:
         ):
             result = await container_status(_org_member_auth())
 
-        assert result["status"] == "running"
+        assert result["container_status"] == "running"
         # Org-context owner_id also triggers the fire-and-forget seat
         # reconcile (Task 8), dispatched before ensure_user_ready.
         assert captured == ["sync_team_seat_quantity", "_noop_ensure_user_ready"], (
@@ -1303,7 +1303,7 @@ class TestContainerStatusTrialConversion:
 
         repo.update_status.assert_not_awaited()
         assert captured == [], f"a converting row must not dispatch a provision, got {captured}"
-        assert result["substatus"] == "converting"
+        assert result["container_substatus"] == "converting"
 
     @pytest.mark.asyncio
     async def test_draining_row_with_clobbered_substatus_is_not_auto_retried(self):
@@ -1350,8 +1350,8 @@ class TestContainerStatusTrialConversion:
         # only dispatches and shapes its own response.
         repo.update_status.assert_not_awaited()
         assert captured == ["background_provision"], f"expected the ordinary auto-retry, got {captured}"
-        assert result["status"] == "provisioning"
-        assert result["substatus"] == "auto_retry"
+        assert result["container_status"] == "provisioning"
+        assert result["container_substatus"] == "auto_retry"
 
     @pytest.mark.asyncio
     async def test_stuck_conversion_redispatches_at_most_once_per_guard_window(self):
@@ -1468,7 +1468,7 @@ class TestContainerStatusTrialBedrockRestore:
         restore.assert_awaited_once_with("user_x")
         assert row["bedrock_revoked"] is False
         assert captured == ["background_provision"], f"expected auto-retry to still fire, got {captured}"
-        assert result["status"] == "provisioning"
+        assert result["container_status"] == "provisioning"
 
     @pytest.mark.asyncio
     async def test_not_revoked_row_makes_no_billing_call_for_restore(self):
@@ -1499,7 +1499,7 @@ class TestContainerStatusTrialBedrockRestore:
             result = await container_status(_personal_auth())
 
         restore.assert_not_awaited()
-        assert result["status"] == "running"
+        assert result["container_status"] == "running"
 
     @pytest.mark.asyncio
     async def test_restore_failure_does_not_break_the_status_poll(self):
@@ -1536,7 +1536,7 @@ class TestContainerStatusTrialBedrockRestore:
             result = await container_status(_personal_auth())  # must not raise
 
         assert row["bedrock_revoked"] is True  # restore never landed
-        assert result["status"] == "provisioning"  # the poll still answers normally
+        assert result["container_status"] == "provisioning"  # the poll still answers normally
 
 
 class TestContainerProvisionStartGuards:
@@ -1685,7 +1685,7 @@ class TestContainerStatusHonestError:
                 stack.enter_context(p)
             result = await container_status(_personal_auth())
 
-        assert result["status"] == "error"
+        assert result["container_status"] == "error"
         assert result["last_error"] == "ValueError: bad config"
         assert "background_provision" not in captured, f"deterministic error must not re-dispatch, got {captured}"
         assert captured == []
@@ -1710,9 +1710,9 @@ class TestContainerStatusHonestError:
                 stack.enter_context(p)
             result = await container_status(_personal_auth())
 
-        assert result["status"] == "error"
-        assert result["substatus"] == "error_retrying"
-        assert result["substatus"] != "provisioning", "an error must never be masked as provisioning"
+        assert result["container_status"] == "error"
+        assert result["container_substatus"] == "error_retrying"
+        assert result["container_substatus"] != "provisioning", "an error must never be masked as provisioning"
         assert result["last_error"] == "EcsManagerError: spot reclaimed"
         assert captured == ["background_provision"], f"transient error must re-dispatch, got {captured}"
 
@@ -1729,8 +1729,8 @@ class TestContainerStatusHonestError:
                 stack.enter_context(p)
             result = await container_status(_personal_auth())
 
-        assert result["status"] == "error"
-        assert result["substatus"] == "error_retrying"
+        assert result["container_status"] == "error"
+        assert result["container_substatus"] == "error_retrying"
         assert captured == ["background_provision"]
 
     @pytest.mark.asyncio
@@ -1747,8 +1747,8 @@ class TestContainerStatusHonestError:
                 stack.enter_context(p)
             result = await container_status(_personal_auth())
 
-        assert result["status"] == "provisioning"
-        assert result["substatus"] == "auto_retry"
+        assert result["container_status"] == "provisioning"
+        assert result["container_substatus"] == "auto_retry"
         assert captured == ["background_provision"]
 
     @pytest.mark.asyncio
@@ -1775,8 +1775,8 @@ class TestContainerStatusHonestError:
             result = await container_status(_personal_auth())
 
         assert captured == ["background_provision"], f"stale lease must re-claim, got {captured}"
-        assert result["status"] == "provisioning"
-        assert result["substatus"] == "auto_retry"
+        assert result["container_status"] == "provisioning"
+        assert result["container_substatus"] == "auto_retry"
 
 
 class TestContainerStatusTeamsStatus:
@@ -1821,13 +1821,14 @@ class TestContainerStatusTeamsStatus:
         ):
             result = await container_status(_personal_auth())
 
-        assert result["phase"] == "ready", "a failed seed must NOT block chat"
-        assert result["teams_status"] == "failed"
+        assert result["runtime_phase"] == "ready", "a failed seed must NOT block chat"
+        assert result["teams_state"] == "failed"
 
     @pytest.mark.asyncio
-    async def test_running_container_with_healthy_seed_omits_teams_status(self):
-        """Additive: an unaffected container keeps today's exact field set —
-        teams_status is omitted, not present-and-null."""
+    async def test_running_container_with_healthy_seed_reports_teams_state_active(self):
+        """teams_state carries the raw underlying value always -- no more
+        conditional field presence now that the legacy additive teams_status
+        flat duplicate is gone (spec PR-9, CLIENT-HOOK)."""
         from routers.container import container_status
 
         fake_ecs = AsyncMock()
@@ -1846,8 +1847,8 @@ class TestContainerStatusTeamsStatus:
         ):
             result = await container_status(_personal_auth())
 
-        assert result["phase"] == "ready"
-        assert "teams_status" not in result
+        assert result["runtime_phase"] == "ready"
+        assert result["teams_state"] == "active"
 
     @pytest.mark.asyncio
     async def test_personal_running_container_with_failed_seed_redispatches_ensure_user_ready(self):
@@ -1884,10 +1885,12 @@ class TestContainerStatusTeamsStatus:
         ):
             result = await container_status(_personal_auth())
 
-        assert result["teams_status"] == "failed"
-        # Bootstrap dispatch (spec PR-6) also fires on every ready-phase poll
-        # now -- its own guards (funnel not submitted here) make it a cheap
-        # no-op, but the fire-and-forget task is still scheduled.
+        # CLIENT-HOOK removed the flat teams_status field; the contract's
+        # teams_state carries it now. Bootstrap dispatch (spec PR-6) also fires
+        # on every ready-phase poll -- its own guards (funnel not submitted
+        # here) make it a cheap no-op, but the fire-and-forget task is still
+        # scheduled alongside the failed-seed ensure_user_ready re-dispatch.
+        assert result["teams_state"] == "failed"
         assert captured == ["_noop_ensure_user_ready", "maybe_dispatch_bootstrap"], (
             f"a personal owner with a failed seed must re-dispatch ensure_user_ready, got {captured}"
         )
@@ -1923,10 +1926,11 @@ class TestContainerStatusTeamsStatus:
         ):
             result = await container_status(_personal_auth())
 
-        assert "teams_status" not in result
-        # Bootstrap dispatch (spec PR-6) fires unconditionally on every
-        # ready-phase poll -- ensure_user_ready is what stays gated on
-        # teams_status=="failed" (the assertion this test guards).
+        # CLIENT-HOOK: healthy seed surfaces teams_state=="active" (the flat
+        # teams_status field is gone). Bootstrap dispatch (spec PR-6) still
+        # fires unconditionally on every ready-phase poll; ensure_user_ready is
+        # what stays gated on teams_state=="failed" (the assertion this guards).
+        assert result["teams_state"] == "active"
         assert captured == ["maybe_dispatch_bootstrap"], (
             f"a healthy personal seed must not re-dispatch ensure_user_ready, got {captured}"
         )
@@ -1971,7 +1975,9 @@ class TestContainerStatusTeamsStatus:
             # so the scheduled task actually runs before asserting on it.
             await asyncio.sleep(0)
 
-        assert result["phase"] == "ready"
+        # CLIENT-HOOK removed the flat `phase`; the contract's runtime_phase
+        # carries it now.
+        assert result["runtime_phase"] == "ready"
         # ONE physical read of the paperclip-companies row for this whole
         # poll -- compute_status's internal composition AND the dispatch
         # hook share it.

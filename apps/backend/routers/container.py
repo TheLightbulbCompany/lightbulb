@@ -422,8 +422,10 @@ async def container_status(
                     # tab can't run the container around the clock.
                     if not await wake_policy.legacy_wake_allowed(owner_id):
                         wake_policy.note_wake_suppressed(owner_id, container, door="status_legacy", reason="budget")
-                        # Legacy-shaped response: old bundles get today's field
-                        # set (plain stopped), never the new parked fields.
+                        # No explicit-wake client is polling here (this is the
+                        # `wake is None` branch), so report the contract as-is
+                        # -- no `wake_retry_after_s` override -- rather than
+                        # forcing the explicit-wake shape via `parked=True`.
                         return _status_response(contract)
                     wake_policy.note_wake_dispatched(door="status_legacy", intent="poll")
                 elif parked:
@@ -506,57 +508,49 @@ def _sync_contract_with_container(contract: dict, container: dict) -> dict:
 
 
 def _status_response(contract: dict, *, parked: bool = False) -> dict:
-    """The one 200 shape for /container/status, built from the composed
-    ``StatusContract`` (see core/services/readiness_state.compute_status).
+    """The ONE 200 shape for /container/status: the composed
+    ``StatusContract`` (see core/services/readiness_state.compute_status),
+    verbatim -- no legacy flat duplicates (spec PR-9, CLIENT-HOOK). Prior
+    revisions of this function emitted BOTH the clean contract fields AND
+    duplicate flat ones (``phase``=runtime_phase, ``status``/``substatus``
+    =container_status/container_substatus, ``teams_status``=teams_state==
+    "failed"); those are deleted here -- there are no users and no
+    backward-compat requirement, and every reader (web + mobile) now reads
+    the contract fields directly via ``deriveUIPhase``
+    (packages/shared/src/hooks/statusContract.ts).
 
-    ``parked=True`` is additive: same base fields (so no consumer schema
-    drift) plus ``parked``/``wake_retry_after_s`` and ``phase="parked"`` —
-    the phase every stepper consumer must treat as ready-equivalent (a parked
-    box is healthy and one intent away from running, not mid-provision).
-    Explicit caller-supplied flag (not read off ``contract["parked"]``) so
-    the legacy-wake-denied caller can render the OLD plain-stopped shape
-    even when the contract itself already knows the box is parked.
-
-    ``teams_status`` is additive too: a NON-BLOCKING degraded signal. When the
-    owner's Paperclip company seed failed it is ``"failed"`` (surfaced ALONGSIDE
-    a healthy ``phase`` — chat still works); otherwise it is omitted entirely,
-    so unaffected containers keep today's exact field set.
-
-    The legacy flat fields above (``phase``/``status``/``onboarded``/
-    ``teams_status``) are joined by the composed ``StatusContract`` proper
-    (``lifecycle``/``runtime_phase``/``chat_available``/``funnel``/
-    ``bootstrap``/``generations``/``teams_state``/``provider``), additive
-    and untouched by ``parked`` overrides, so web/mobile's
-    ``deriveUIPhase`` (packages/shared/src/hooks/statusContract.ts) has a
-    real wire payload to render from — not just an internal Python shape.
-    Old bundles that only read the legacy flat fields are unaffected.
+    ``parked=True`` represents the deliberately-asleep, wake-gated trial box
+    via ``lifecycle="parked"`` + ``parked=True`` + ``wake_retry_after_s`` --
+    NOT the old ``phase="parked"`` string (``phase`` no longer exists on the
+    wire; ``runtime_phase`` stays "provisioning", per INV-6, since a parked
+    box has no live runtime). Explicit caller-supplied flag (not read off
+    ``contract["parked"]``) because the wake-gated-over-budget caller
+    (``routers/container.py``'s legacy-wake branch) wants the box reported
+    as parked without the ``wake_retry_after_s`` hint (no explicit-wake
+    client is polling); the composed contract's own ``parked``/``lifecycle``
+    already agree in every real case (both derive from the same
+    ``wake_policy.is_parked_trial`` check) -- this override exists for the
+    one call site that wants ``wake_retry_after_s`` added on top.
     """
     body = {
         "service_name": contract.get("service_name"),
-        "status": contract.get("container_status"),
-        "substatus": contract.get("container_substatus"),
         "created_at": contract.get("created_at"),
         "updated_at": contract.get("updated_at"),
         "region": settings.AWS_REGION,
         "last_error": contract.get("last_error"),
         "last_error_at": contract.get("last_error_at"),
-        # Cold-start phase for the frontend stepper -- sourced from the
-        # composed contract's runtime_phase (INV-6: SOLELY runtime, never
-        # onboarding/funnel/teams state). See
-        # core.services.readiness_state.resolve_runtime_phase.
-        "phase": contract.get("runtime_phase"),
         # Per-CONTAINER onboarding fact. RECONCILE-WITH-ONBOARD: this was
         # `container.get("onboarded_at") is not None` before this PR; the
         # composer now derives it as `funnel_state == "complete"` once
         # ONBOARD's writers exist, falling back to the legacy onboarded_at
         # stamp until then -- see readiness_state.compute_status.
         "onboarded": contract.get("onboarded", False),
-        # --- StatusContract proper (additive) ---
         "lifecycle": contract.get("lifecycle"),
         "runtime_phase": contract.get("runtime_phase"),
         "chat_available": contract.get("chat_available"),
         "container_status": contract.get("container_status"),
         "container_substatus": contract.get("container_substatus"),
+        "parked": bool(contract.get("parked", False)),
         "generations": contract.get("generations"),
         "funnel": contract.get("funnel"),
         "bootstrap": contract.get("bootstrap"),
@@ -564,16 +558,9 @@ def _status_response(contract: dict, *, parked: bool = False) -> dict:
         "teams_state": contract.get("teams_state"),
     }
     if parked:
-        body["phase"] = "parked"
+        body["lifecycle"] = "parked"
         body["parked"] = True
         body["wake_retry_after_s"] = 30
-    # Wire contract preserved EXACTLY: `teams_status` is surfaced only when
-    # the seed genuinely failed, never for "active"/"provisioning"/etc, so
-    # an unaffected container keeps today's exact field set even though the
-    # composed contract's own `teams_state` now always carries the raw
-    # underlying value.
-    if contract.get("teams_state") == "failed":
-        body["teams_status"] = "failed"
     return body
 
 

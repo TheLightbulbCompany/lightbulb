@@ -12,7 +12,6 @@
 // for the next trigger. Status polling owns the UX either way.
 
 import { useCallback } from "react";
-import { mutate } from "swr";
 
 import { useApi } from "@/lib/api";
 import { isPresent } from "@/lib/presence";
@@ -44,13 +43,12 @@ export function useContainerWake(): { requestWake: (reason: WakeReason) => Promi
         // Soft-fail by design — see module comment.
       } finally {
         inFlight = false;
-        // Revalidate status regardless of outcome. The SWR key is stable by
-        // design, so this reaches every useProvisioningState consumer — on
-        // success the stepper sees provisioning->ready promptly; on a 402
-        // the fetcher surfaces the limit card. Without this, a tab whose
-        // reachedReady latch already zeroed its poll interval would render
-        // stale ready/parked state forever after a rejected wake.
-        void mutate("/container/status");
+        // No manual /container/status revalidation here anymore (spec
+        // PR-9, CLIENT-HOOK deleted the wake/unpark/container_waking
+        // manual-mutate trio) — every useProvisioningState consumer now
+        // shares the ONE `useOnboardingStatus` bounded loop, which sends
+        // its own `wake` query param on every attempt and re-polls within
+        // its declared <=15s ceiling regardless of this call's outcome.
       }
     },
     [api],

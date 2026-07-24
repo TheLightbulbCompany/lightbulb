@@ -1,67 +1,111 @@
 import { act, renderHook, waitFor } from "@testing-library/react-native";
 import { AppState } from "react-native";
 
-// Spy created INSIDE the factory (jest hoists jest.mock above imports, so an
-// outer const would be in the TDZ when the factory runs) and retrieved via
-// jest.requireMock below.
+/**
+ * `useContainerStatus` is now a PURE READER over the ONE shared
+ * `useOnboardingStatus` hook (spec PR-9, CLIENT-HOOK) — the same hook web's
+ * `useProvisioningState` delegates to. This file therefore mocks
+ * `useOnboardingStatus` itself (not the network seam) and tests ONLY what
+ * this file still owns: mapping a `ClassifiedStatus` into this file's richer
+ * `ContainerStatus`, and wiring `wake`/`visibility` correctly. The shared
+ * hook's own fetch/cadence/backstop-loop/AbortController machinery is tested
+ * once, at the source, in
+ * packages/shared/src/hooks/useOnboardingStatus.test.ts — re-mocking
+ * `fetchJsonWithStatus` here (the pre-CLIENT-HOOK strategy) no longer
+ * intercepts anything: the shared hook imports it from its own internal
+ * `../api/client`, not the `@isol8/shared` barrel this file's mock used to
+ * patch.
+ */
 jest.mock("@clerk/clerk-expo", () => ({
   useAuth: () => ({ getToken: jest.fn(async () => "tok") }),
 }));
-// Exercise the REAL shared module — the actual `classifyContainerStatus` and
-// the actual `ApiError` — and stub ONLY the network seam. A hand-rolled copy of
-// the classifier here would defeat the point of having extracted one shared
-// classifier: mobile would be testing a mirror that can silently drift from the
-// implementation it is supposed to be sharing. This is also the dominant
-// convention in this app (12 of the 15 mobile suites that mock @isol8/shared
-// already spread requireActual).
 jest.mock("@isol8/shared", () => ({
   ...jest.requireActual("@isol8/shared"),
-  fetchJsonWithStatus: jest.fn(),
+  useOnboardingStatus: jest.fn(),
 }));
 jest.mock("../adapter", () => ({ makeAdapter: () => ({}) }));
 
 import { useContainerStatus } from "../containerStatus";
 
-const { fetchJsonWithStatus: mockFetch, ApiError: MockApiError } = jest.requireMock(
+const { useOnboardingStatus: mockUseOnboardingStatus } = jest.requireMock(
   "@isol8/shared",
 ) as {
-  fetchJsonWithStatus: jest.Mock;
-  ApiError: new (status: number, body: unknown) => Error;
+  useOnboardingStatus: jest.Mock;
 };
 
 function setActive(state: string) {
   (AppState as unknown as { currentState: string }).currentState = state;
 }
 
-describe("useContainerStatus parked + wake param", () => {
+/** Shapes a mock return value the way the real `useOnboardingStatus` would
+ * for a classified 200 "container" body. */
+function containerResult(body: Record<string, unknown>, refresh: jest.Mock = jest.fn()) {
+  return {
+    classified: { kind: "container" as const, body },
+    derived: null,
+    networkError: undefined,
+    isLoading: false,
+    refresh,
+  };
+}
+
+function loadingResult() {
+  return {
+    classified: null,
+    derived: null,
+    networkError: undefined,
+    isLoading: true,
+    refresh: jest.fn(),
+  };
+}
+
+function networkErrorResult(message: string) {
+  return {
+    classified: null,
+    derived: null,
+    networkError: new Error(message),
+    isLoading: false,
+    refresh: jest.fn(),
+  };
+}
+
+describe("useContainerStatus parked + wake wiring", () => {
   beforeEach(() => {
-    mockFetch.mockReset();
+    mockUseOnboardingStatus.mockReset();
     setActive("active");
   });
 
-  it("classifies phase=parked as a distinct 'parked' kind (not starting)", async () => {
-    mockFetch.mockResolvedValue({ status: 200, body: { status: "stopped", phase: "parked" } });
+  it("classifies runtime_phase-derived lifecycle=parked as a distinct 'parked' kind (not starting)", async () => {
+    mockUseOnboardingStatus.mockReturnValue(
+      containerResult({ container_status: "stopped", lifecycle: "parked", runtime_phase: "provisioning", parked: true }),
+    );
     const { result } = await renderHook(() => useContainerStatus());
     await waitFor(() => expect(result.current.status.kind).toBe("parked"));
   });
 
-  it("sends wake=1 when foregrounded (present)", async () => {
-    mockFetch.mockResolvedValue({ status: 200, body: { phase: "ready" } });
+  it("passes a `wake` function reflecting presence (AppState active) to the shared hook", async () => {
+    mockUseOnboardingStatus.mockReturnValue(containerResult({ runtime_phase: "ready", lifecycle: "ready" }));
+    setActive("active");
     await renderHook(() => useContainerStatus());
-    await waitFor(() => expect(mockFetch).toHaveBeenCalled());
-    expect(String(mockFetch.mock.calls[0][1])).toContain("wake=1");
-  });
+    const options = mockUseOnboardingStatus.mock.calls[0][0];
+    expect(options.wake()).toBe(true);
 
-  it("sends wake=0 when backgrounded", async () => {
     setActive("background");
-    mockFetch.mockResolvedValue({ status: 200, body: { phase: "ready" } });
-    await renderHook(() => useContainerStatus());
-    await waitFor(() => expect(mockFetch).toHaveBeenCalled());
-    expect(String(mockFetch.mock.calls[0][1])).toContain("wake=0");
+    expect(options.wake()).toBe(false);
   });
 
-  it("still treats phase=ready as ready", async () => {
-    mockFetch.mockResolvedValue({ status: 200, body: { phase: "ready" } });
+  it("passes a `visibility` adapter wired to AppState", async () => {
+    mockUseOnboardingStatus.mockReturnValue(containerResult({ runtime_phase: "ready", lifecycle: "ready" }));
+    await renderHook(() => useContainerStatus());
+    const options = mockUseOnboardingStatus.mock.calls[0][0];
+    setActive("active");
+    expect(options.visibility.isVisible()).toBe(true);
+    setActive("background");
+    expect(options.visibility.isVisible()).toBe(false);
+  });
+
+  it("still treats runtime_phase=ready as ready", async () => {
+    mockUseOnboardingStatus.mockReturnValue(containerResult({ runtime_phase: "ready", lifecycle: "ready" }));
     const { result } = await renderHook(() => useContainerStatus());
     await waitFor(() => expect(result.current.status.kind).toBe("ready"));
   });
@@ -72,20 +116,16 @@ describe("useContainerStatus parked + wake param", () => {
 // `ready` (and `starting`) ContainerStatus variants — FirstRunGate's
 // funnel-eligibility decision reads the READY one straight off this hook's
 // status via ContainerStatusContext (see containerStatusContext.test.tsx).
-// The `starting` case below is the parse staying faithful to the body, not a
-// second eligibility signal: FirstRunGate deliberately ignores it so the
-// funnel can't open behind a container the stepper may still take over.
 describe("useContainerStatus onboarded field", () => {
   beforeEach(() => {
-    mockFetch.mockReset();
+    mockUseOnboardingStatus.mockReset();
     setActive("active");
   });
 
   it("surfaces onboarded:false on the ready status", async () => {
-    mockFetch.mockResolvedValue({
-      status: 200,
-      body: { phase: "ready", onboarded: false },
-    });
+    mockUseOnboardingStatus.mockReturnValue(
+      containerResult({ runtime_phase: "ready", lifecycle: "ready", onboarded: false }),
+    );
     const { result } = await renderHook(() => useContainerStatus());
     await waitFor(() => expect(result.current.status.kind).toBe("ready"));
     const status = result.current.status;
@@ -94,10 +134,9 @@ describe("useContainerStatus onboarded field", () => {
   });
 
   it("surfaces onboarded:true on the ready status", async () => {
-    mockFetch.mockResolvedValue({
-      status: 200,
-      body: { phase: "ready", onboarded: true },
-    });
+    mockUseOnboardingStatus.mockReturnValue(
+      containerResult({ runtime_phase: "ready", lifecycle: "ready", onboarded: true }),
+    );
     const { result } = await renderHook(() => useContainerStatus());
     await waitFor(() => expect(result.current.status.kind).toBe("ready"));
     const status = result.current.status;
@@ -105,20 +144,8 @@ describe("useContainerStatus onboarded field", () => {
     expect(status.onboarded).toBe(true);
   });
 
-  it("surfaces onboarded:true on the implicit-ready status (phase absent, old backend)", async () => {
-    mockFetch.mockResolvedValue({
-      status: 200,
-      body: { onboarded: true },
-    });
-    const { result } = await renderHook(() => useContainerStatus());
-    await waitFor(() => expect(result.current.status.kind).toBe("ready"));
-    const status = result.current.status;
-    if (status.kind !== "ready") throw new Error(`expected ready, got ${status.kind}`);
-    expect(status.onboarded).toBe(true);
-  });
-
-  it("leaves onboarded undefined when the field is absent from the body (old backend, no false negative)", async () => {
-    mockFetch.mockResolvedValue({ status: 200, body: { phase: "ready" } });
+  it("leaves onboarded undefined when the field is absent from the body (no false negative)", async () => {
+    mockUseOnboardingStatus.mockReturnValue(containerResult({ runtime_phase: "ready", lifecycle: "ready" }));
     const { result } = await renderHook(() => useContainerStatus());
     await waitFor(() => expect(result.current.status.kind).toBe("ready"));
     const status = result.current.status;
@@ -127,89 +154,110 @@ describe("useContainerStatus onboarded field", () => {
   });
 
   it("also surfaces onboarded on the starting status", async () => {
-    mockFetch.mockResolvedValue({
-      status: 200,
-      body: { phase: "agent", onboarded: false },
-    });
+    mockUseOnboardingStatus.mockReturnValue(
+      containerResult({ runtime_phase: "starting", lifecycle: "starting", onboarded: false }),
+    );
     const { result } = await renderHook(() => useContainerStatus());
     await waitFor(() => expect(result.current.status.kind).toBe("starting"));
     const status = result.current.status;
     if (status.kind !== "starting") throw new Error(`expected starting, got ${status.kind}`);
     expect(status.onboarded).toBe(false);
   });
+
+  // L4 regression guard, mobile half — "mobile never re-onboards" dies by
+  // construction now that useContainerStatus is a PURE READER with no
+  // client-side latch: a wipe/reprovision that flips the backend's
+  // `onboarded` back to false must be reflected immediately, on the very
+  // next classified update, with no stale "already onboarded" memory
+  // surviving the transition.
+  it("re-onboards after a reprovision: onboarded flips true -> false on the next update with no stale latch", async () => {
+    mockUseOnboardingStatus.mockReturnValue(
+      containerResult({ runtime_phase: "ready", lifecycle: "ready", onboarded: true }),
+    );
+    const { result, rerender } = await renderHook(() => useContainerStatus());
+    await waitFor(() => expect(result.current.status.kind).toBe("ready"));
+    const before = result.current.status;
+    if (before.kind !== "ready") throw new Error(`expected ready, got ${before.kind}`);
+    expect(before.onboarded).toBe(true);
+
+    // Owner wipes + reprovisions: a fresh container/company row comes back
+    // with onboarded:false on the very next poll.
+    mockUseOnboardingStatus.mockReturnValue(
+      containerResult({ runtime_phase: "ready", lifecycle: "ready", onboarded: false }),
+    );
+    await act(async () => {
+      rerender(undefined);
+    });
+
+    await waitFor(() => {
+      const status = result.current.status;
+      if (status.kind !== "ready") throw new Error(`expected ready, got ${status.kind}`);
+      expect(status.onboarded).toBe(false);
+    });
+  });
 });
 
 // PR3 honest-contract consumption (INVERTED per Codex review). A
-// `status:"error"` row is TERMINAL by default — it earns web's "Setup failed"
-// interstitial — UNLESS its substatus is the one explicit auto-retry signal,
-// "error_retrying" (backend still standing the container back up), which stays
-// `starting`. LANDMINE: `phase` resolves to "provisioning" for a dead
-// container too, so terminal-ness is read from substatus, NEVER phase —
-// otherwise a dead container renders as an endless stepper. Keying terminal off
-// `provision_failed` ALONE (the earlier mistake) silently downgraded
-// deployment_failed and bare-error rows to a perpetual spinner; the catch-all
-// restores their coverage.
-describe("useContainerStatus status=error", () => {
+// `container_status:"error"` row is TERMINAL by default — it earns web's
+// "Setup failed" interstitial — UNLESS its substatus is the one explicit
+// auto-retry signal, "error_retrying" (backend still standing the container
+// back up), which stays `starting`. LANDMINE: `runtime_phase` resolves to
+// "provisioning" for a dead container too, so terminal-ness is read from
+// `container_substatus`, NEVER `runtime_phase` — otherwise a dead container
+// renders as an endless stepper.
+describe("useContainerStatus container_status=error", () => {
   beforeEach(() => {
-    mockFetch.mockReset();
+    mockUseOnboardingStatus.mockReset();
     setActive("active");
   });
 
   it("classifies a provision_failed error as terminal kind 'error'", async () => {
-    mockFetch.mockResolvedValue({
-      status: 200,
-      body: {
-        status: "error",
-        substatus: "provision_failed",
-        phase: "provisioning",
+    mockUseOnboardingStatus.mockReturnValue(
+      containerResult({
+        container_status: "error",
+        container_substatus: "provision_failed",
+        runtime_phase: "provisioning",
         last_error: "ECS task failed to start",
-      },
-    });
+      }),
+    );
     const { result } = await renderHook(() => useContainerStatus());
     await waitFor(() => expect(result.current.status.kind).toBe("error"));
   });
 
-  // NEW: the ECS rollout circuit breaker. The provision_failed-only check
-  // silently downgraded this to a perpetual "starting" spinner.
   it("classifies a deployment_failed error as terminal kind 'error' (ECS rollout circuit breaker)", async () => {
-    // Also proves terminal-ness is read from substatus, not phase — the body
-    // still reports phase="provisioning" for this dead container.
-    mockFetch.mockResolvedValue({
-      status: 200,
-      body: { status: "error", substatus: "deployment_failed", phase: "provisioning" },
-    });
+    mockUseOnboardingStatus.mockReturnValue(
+      containerResult({
+        container_status: "error",
+        container_substatus: "deployment_failed",
+        runtime_phase: "provisioning",
+      }),
+    );
     const { result } = await renderHook(() => useContainerStatus());
     await waitFor(() => expect(result.current.status.kind).toBe("error"));
   });
 
-  // NEW (reverses the earlier "untagged → starting" mistake): when auto-retry
-  // is gated / standing down the backend emits a bare error with no substatus.
-  // That is a real, terminal failure — it must show the interstitial, not spin.
   it("classifies a bare error with no substatus as terminal kind 'error'", async () => {
-    mockFetch.mockResolvedValue({ status: 200, body: { status: "error" } });
+    mockUseOnboardingStatus.mockReturnValue(containerResult({ container_status: "error" }));
     const { result } = await renderHook(() => useContainerStatus());
     await waitFor(() => expect(result.current.status.kind).toBe("error"));
   });
 
-  // NEW: any unknown substatus is terminal too — the catch-all is what makes
-  // this robust against future error shapes the app hasn't been taught.
   it("classifies an unknown error substatus as terminal kind 'error'", async () => {
-    mockFetch.mockResolvedValue({
-      status: 200,
-      body: { status: "error", substatus: "something_unrecognized" },
-    });
+    mockUseOnboardingStatus.mockReturnValue(
+      containerResult({ container_status: "error", container_substatus: "something_unrecognized" }),
+    );
     const { result } = await renderHook(() => useContainerStatus());
     await waitFor(() => expect(result.current.status.kind).toBe("error"));
   });
 
   it("treats error_retrying as 'starting' — the ONE non-terminal error (keep progress + poll)", async () => {
-    // The backend is auto-retrying; keep showing progress (the stepper), never
-    // a terminal "Setup failed" card. substatus rides through so the surface
-    // can optionally note "retrying".
-    mockFetch.mockResolvedValue({
-      status: 200,
-      body: { status: "error", substatus: "error_retrying", phase: "provisioning" },
-    });
+    mockUseOnboardingStatus.mockReturnValue(
+      containerResult({
+        container_status: "error",
+        container_substatus: "error_retrying",
+        runtime_phase: "provisioning",
+      }),
+    );
     const { result } = await renderHook(() => useContainerStatus());
     await waitFor(() => expect(result.current.status.kind).toBe("starting"));
     const status = result.current.status;
@@ -218,26 +266,30 @@ describe("useContainerStatus status=error", () => {
   });
 
   it("does NOT classify a non-error status as 'error' (regression guard)", async () => {
-    mockFetch.mockResolvedValue({ status: 200, body: { status: "running", phase: "ready" } });
+    mockUseOnboardingStatus.mockReturnValue(
+      containerResult({ container_status: "running", runtime_phase: "ready", lifecycle: "ready" }),
+    );
     const { result } = await renderHook(() => useContainerStatus());
     await waitFor(() => expect(result.current.status.kind).toBe("ready"));
   });
 });
 
-// PR3 honest-contract: top-level `teams_status` (Paperclip seeding health)
-// rides through on the ready/starting variants like `onboarded`, so
-// ProvisionGate can render its non-blocking Teams-degraded affordance.
-describe("useContainerStatus teams_status field", () => {
+// PR3 honest-contract: the composed contract's `teams_state` (Paperclip
+// seeding health) rides through on the ready/starting variants like
+// `onboarded`, so ProvisionGate can render its non-blocking Teams-degraded
+// affordance. No legacy `teams_status` flat duplicate anymore (spec PR-9,
+// CLIENT-HOOK deleted it from `_status_response` — there are no users and no
+// backward-compat requirement).
+describe("useContainerStatus teams_state field", () => {
   beforeEach(() => {
-    mockFetch.mockReset();
+    mockUseOnboardingStatus.mockReset();
     setActive("active");
   });
 
-  it("surfaces teams_status='failed' on the ready status", async () => {
-    mockFetch.mockResolvedValue({
-      status: 200,
-      body: { phase: "ready", teams_status: "failed" },
-    });
+  it("surfaces teams_state='failed' on the ready status", async () => {
+    mockUseOnboardingStatus.mockReturnValue(
+      containerResult({ runtime_phase: "ready", lifecycle: "ready", teams_state: "failed" }),
+    );
     const { result } = await renderHook(() => useContainerStatus());
     await waitFor(() => expect(result.current.status.kind).toBe("ready"));
     const status = result.current.status;
@@ -245,8 +297,8 @@ describe("useContainerStatus teams_status field", () => {
     expect(status.teamsStatus).toBe("failed");
   });
 
-  it("leaves teamsStatus undefined when teams_status is absent (old backend, no false alarm)", async () => {
-    mockFetch.mockResolvedValue({ status: 200, body: { phase: "ready" } });
+  it("leaves teamsStatus undefined when teams_state is absent (no false alarm)", async () => {
+    mockUseOnboardingStatus.mockReturnValue(containerResult({ runtime_phase: "ready", lifecycle: "ready" }));
     const { result } = await renderHook(() => useContainerStatus());
     await waitFor(() => expect(result.current.status.kind).toBe("ready"));
     const status = result.current.status;
@@ -255,23 +307,16 @@ describe("useContainerStatus teams_status field", () => {
   });
 });
 
-// mobile onboarding-parity Slice 1: coverage for the classification paths
-// this file's pre-Slice-1 version exercised only indirectly (via
-// ProvisionGate.test.tsx mocking useContainerStatus outright). Now that
-// classification runs through the shared classifier, these pin the
-// rewired useContainerStatus's OWN mapping of each ClassifiedStatus kind.
 describe("useContainerStatus blocked / needsSignup / teamPending / unreachable", () => {
   beforeEach(() => {
-    mockFetch.mockReset();
+    mockUseOnboardingStatus.mockReset();
     setActive("active");
   });
 
-  it("maps a 402 with a top-level blocked payload (no detail envelope) to kind 'blocked'", async () => {
-    // This is the fallback mobile's pre-Slice-1 hand-rolled parse had
-    // silently dropped (it only ever read err.body.detail.blocked) —
-    // unifying on the shared classifier is what restores it here.
-    mockFetch.mockRejectedValue(
-      new MockApiError(402, {
+  it("maps a classified 'blocked' outcome to kind 'blocked'", async () => {
+    mockUseOnboardingStatus.mockReturnValue({
+      classified: {
+        kind: "blocked" as const,
         blocked: {
           code: "credits_required",
           title: "Top up Claude credits",
@@ -279,8 +324,12 @@ describe("useContainerStatus blocked / needsSignup / teamPending / unreachable",
           action: { kind: "link", label: "Top up now", href: "/settings/billing#credits", admin_only: false },
           owner_role: "admin",
         },
-      }),
-    );
+      },
+      derived: null,
+      networkError: undefined,
+      isLoading: false,
+      refresh: jest.fn(),
+    });
     const { result } = await renderHook(() => useContainerStatus());
     await waitFor(() => expect(result.current.status.kind).toBe("blocked"));
     const status = result.current.status;
@@ -290,127 +339,72 @@ describe("useContainerStatus blocked / needsSignup / teamPending / unreachable",
     expect(status.ownerRole).toBe("admin");
   });
 
-  it("maps a 404 to kind 'needsSignup'", async () => {
-    mockFetch.mockRejectedValue(new MockApiError(404, { detail: "No container found" }));
+  it("maps a classified 'needs-signup' outcome to kind 'needsSignup'", async () => {
+    mockUseOnboardingStatus.mockReturnValue({
+      classified: { kind: "needs-signup" as const },
+      derived: null,
+      networkError: undefined,
+      isLoading: false,
+      refresh: jest.fn(),
+    });
     const { result } = await renderHook(() => useContainerStatus());
     await waitFor(() => expect(result.current.status.kind).toBe("needsSignup"));
   });
 
-  it("maps a 202 to kind 'teamPending'", async () => {
-    mockFetch.mockResolvedValue({ status: 202, body: { detail: "team workspace pending" } });
+  it("maps a classified 'team-pending' outcome to kind 'teamPending'", async () => {
+    mockUseOnboardingStatus.mockReturnValue({
+      classified: { kind: "team-pending" as const, detail: "team workspace pending" },
+      derived: null,
+      networkError: undefined,
+      isLoading: false,
+      refresh: jest.fn(),
+    });
     const { result } = await renderHook(() => useContainerStatus());
     await waitFor(() => expect(result.current.status.kind).toBe("teamPending"));
   });
 
-  it("maps an unrecognized status (e.g. 500) to kind 'unreachable'", async () => {
-    mockFetch.mockRejectedValue(new MockApiError(500, { detail: "boom" }));
+  it("maps a classified 'unrecognized' outcome (e.g. 500) to kind 'unreachable'", async () => {
+    mockUseOnboardingStatus.mockReturnValue({
+      classified: { kind: "unrecognized" as const, status: 500 },
+      derived: null,
+      networkError: undefined,
+      isLoading: false,
+      refresh: jest.fn(),
+    });
     const { result } = await renderHook(() => useContainerStatus());
     await waitFor(() => expect(result.current.status.kind).toBe("unreachable"));
   });
 
-  it("maps a 402 with no recognizable blocked payload to kind 'unreachable' (defensive; not a real backend shape)", async () => {
-    mockFetch.mockRejectedValue(new MockApiError(402, { detail: "not a gate payload" }));
+  it("maps a genuine network error (no classified outcome yet) to kind 'unreachable'", async () => {
+    mockUseOnboardingStatus.mockReturnValue(networkErrorResult("Network request failed"));
     const { result } = await renderHook(() => useContainerStatus());
     await waitFor(() => expect(result.current.status.kind).toBe("unreachable"));
+    const status = result.current.status;
+    if (status.kind !== "unreachable") throw new Error(`expected unreachable, got ${status.kind}`);
+    expect(status.message).toBe("Network request failed");
+  });
+
+  it("maps the initial (neither classified nor errored) state to kind 'loading'", async () => {
+    mockUseOnboardingStatus.mockReturnValue(loadingResult());
+    const { result } = await renderHook(() => useContainerStatus());
+    expect(result.current.status.kind).toBe("loading");
   });
 });
 
-// WHICH kinds keep polling — the behavior nothing covered until the
-// whole-branch review found `error` had been given a surface but no cadence.
-// Fake timers throughout: the cadence is the assertion, so the interval has
-// to be driven deterministically rather than waited on.
-describe("useContainerStatus poll cadence", () => {
+describe("useContainerStatus refetch", () => {
   beforeEach(() => {
-    mockFetch.mockReset();
+    mockUseOnboardingStatus.mockReset();
     setActive("active");
-    jest.useFakeTimers();
   });
 
-  afterEach(() => {
-    jest.useRealTimers();
-  });
-
-  /**
-   * Mount, wait for the initial probe to land on `expectedKind`, and hand back
-   * the fetch count so far as the baseline. waitFor is fake-timer aware (it
-   * advances by its 50ms interval per iteration), so settling here costs a
-   * couple hundred ms of fake clock at most — nowhere near the 5s/30s cadences
-   * the cases below measure.
-   */
-  async function mountSettled(expectedKind: string) {
-    const rendered = await renderHook(() => useContainerStatus());
-    await waitFor(() =>
-      expect(rendered.result.current.status.kind).toBe(expectedKind),
+  it("refetch delegates to the shared hook's refresh()", async () => {
+    const refresh = jest.fn();
+    mockUseOnboardingStatus.mockReturnValue(
+      containerResult({ runtime_phase: "ready", lifecycle: "ready" }, refresh),
     );
-    return { ...rendered, initialCalls: mockFetch.mock.calls.length };
-  }
-
-  // The terminal-error kind keeps its fast cadence (unchanged from when it was
-  // the auto-retry trigger). Even a `provision_failed` box re-probes: an admin
-  // reprovision (or a backend recovery) then clears the interstitial on its
-  // own instead of stranding the user until they tap Retry. The transient
-  // auto-retry case is now `starting` (see the status=error suite) and is
-  // covered by the starting-cadence test below.
-  it("keeps polling a terminal (provision_failed) container at the fast cadence so a re-provision recovers", async () => {
-    mockFetch.mockResolvedValue({
-      status: 200,
-      body: { status: "error", substatus: "provision_failed" },
-    });
-    const { initialCalls } = await mountSettled("error");
-
-    await act(async () => {
-      jest.advanceTimersByTime(5_000);
-    });
-    expect(mockFetch).toHaveBeenCalledTimes(initialCalls + 1);
-
-    await act(async () => {
-      jest.advanceTimersByTime(5_000);
-    });
-    expect(mockFetch).toHaveBeenCalledTimes(initialCalls + 2);
-  });
-
-  it("keeps polling a starting container at the fast cadence", async () => {
-    mockFetch.mockResolvedValue({ status: 200, body: { phase: "provisioning" } });
-    const { initialCalls } = await mountSettled("starting");
-
-    await act(async () => {
-      jest.advanceTimersByTime(5_000);
-    });
-    expect(mockFetch).toHaveBeenCalledTimes(initialCalls + 1);
-  });
-
-  // A gate can clear entirely server-side (an admin finishes the ChatGPT
-  // device-code flow on the web, credits land, a subscription reactivates),
-  // and ChatGPTConnectScreen's terminal state has no Retry at all — so a
-  // blocked status that never re-probed could strand a user on a screen whose
-  // only other control is Sign out. Slow cadence, though: nothing about a
-  // gate is urgent.
-  it("polls a blocked gate on the slow cadence, not the fast one", async () => {
-    mockFetch.mockRejectedValue(
-      new MockApiError(402, {
-        blocked: { code: "oauth_required", title: "Sign in with ChatGPT" },
-      }),
-    );
-    const { initialCalls } = await mountSettled("blocked");
-
-    await act(async () => {
-      jest.advanceTimersByTime(5_000);
-    });
-    expect(mockFetch).toHaveBeenCalledTimes(initialCalls);
-
-    await act(async () => {
-      jest.advanceTimersByTime(25_000);
-    });
-    expect(mockFetch).toHaveBeenCalledTimes(initialCalls + 1);
-  });
-
-  it("stops polling once ready — a settled container is not a poll loop", async () => {
-    mockFetch.mockResolvedValue({ status: 200, body: { phase: "ready" } });
-    const { initialCalls } = await mountSettled("ready");
-
-    await act(async () => {
-      jest.advanceTimersByTime(120_000);
-    });
-    expect(mockFetch).toHaveBeenCalledTimes(initialCalls);
+    const { result } = await renderHook(() => useContainerStatus());
+    await waitFor(() => expect(result.current.status.kind).toBe("ready"));
+    result.current.refetch();
+    expect(refresh).toHaveBeenCalledTimes(1);
   });
 });

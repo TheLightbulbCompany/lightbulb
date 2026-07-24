@@ -25,6 +25,7 @@ function baseContract(overrides: Partial<StatusContract> = {}): StatusContract {
     service_name: "openclaw-user_x-abcd",
     created_at: "2026-07-01T00:00:00Z",
     updated_at: "2026-07-20T00:00:00Z",
+    region: "us-east-1",
     generations: {
       provision_generation: "01J000000000000000000000",
       onboarding_generation: "01J000000000000000000001",

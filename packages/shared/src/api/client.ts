@@ -109,12 +109,19 @@ async function parseJsonBody(response: Response): Promise<unknown> {
  * get path returns the body for any 2xx status, swallowing the
  * status code.
  *
+ * `signal` is optional (spec PR-9, CLIENT-HOOK): `useOnboardingStatus`'s
+ * fetcher passes an `AbortController` timeout so a genuinely hung request
+ * — the research's actual root cause for a throttled-but-visible tab
+ * freezing, not a dropped SWR tick — can't wedge the shared bounded loop
+ * forever. Omitted by every other caller, matching today's behavior.
+ *
  * Returns { status, body }. Throws ApiError on non-2xx, matching
  * the client's error shape (including the body.detail → message extraction).
  */
 export async function fetchJsonWithStatus(
   config: ApiClientConfig,
   url: string,
+  signal?: AbortSignal,
 ): Promise<{ status: number; body: unknown }> {
   const token = await config.getToken();
   if (!token) {
@@ -126,6 +133,7 @@ export async function fetchJsonWithStatus(
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
     },
+    signal,
   });
 
   const requestId = response.headers.get(REQUEST_ID_HEADER);

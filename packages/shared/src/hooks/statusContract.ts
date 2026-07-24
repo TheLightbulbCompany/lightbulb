@@ -65,6 +65,9 @@ export interface StatusContract {
   service_name?: string | null;
   created_at: string | null;
   updated_at: string | null;
+  /** AWS region the container runs in (`settings.AWS_REGION`) — always set,
+   * never derived from any of the other composed inputs. */
+  region: string;
   generations: {
     provision_generation: string | null;
     onboarding_generation: string | null;
@@ -91,10 +94,11 @@ export interface StatusContract {
     subscription_status?: string | null;
   };
   teams_state: string | null;
-  // Tolerates additive backend fields (and the legacy flat wire shape —
-  // `phase`/`status`/`substatus`/`onboarded`/`teams_status` — a caller may
-  // still read directly off the raw /container/status body) without
-  // narrowing every unlisted field to `unknown` project-wide.
+  // Tolerates additive backend fields without narrowing every unlisted
+  // field to `unknown` project-wide. No legacy flat duplicates exist on
+  // the wire anymore (CLIENT-HOOK deleted `phase`/`status`/`substatus`/
+  // `teams_status` from `_status_response` — the contract fields above are
+  // the ONLY wire shape) — do not reintroduce a fallback read of them here.
   [k: string]: unknown;
 }
 

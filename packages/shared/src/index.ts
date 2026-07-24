@@ -45,6 +45,12 @@ export {
   PROVISION_TIMEOUT_MS,
   formatProvisionElapsed,
 } from "./hooks/provisioningCopy";
+export { useOnboardingStatus } from "./hooks/useOnboardingStatus";
+export type {
+  UseOnboardingStatusOptions,
+  UseOnboardingStatusResult,
+  VisibilityAdapter,
+} from "./hooks/useOnboardingStatus";
 
 export { ApiError } from "./api/error";
 export { deriveWebSocketUrl } from "./api/url";

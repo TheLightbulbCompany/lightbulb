@@ -5,13 +5,17 @@
  * backend answers with a benign error frame `{code:"container_waking"}` instead
  * of the misleading "No container provisioned. Please subscribe." copy. The hook
  * must:
- *   1. Fire exactly ONE revalidation of the `/container/status` SWR key (the key
- *      useProvisioningState owns) per waking frame, so the sibling
- *      ProvisioningStepper flips to its cold-start UI and the box wakes.
- *   2. Render the message as CALM plain text — no errorCode (so MessageList does
+ *   1. Render the message as CALM plain text — no errorCode (so MessageList does
  *      not upgrade it to a red ChatErrorCard) and no top-level error banner.
- *   3. Still release the busy gate, exactly like any other no-runId transport
+ *   2. Still release the busy gate, exactly like any other no-runId transport
  *      error.
+ *
+ * No manual `/container/status` SWR revalidation anymore (spec PR-9,
+ * CLIENT-HOOK deleted the wake/unpark/container_waking manual-mutate trio):
+ * the sibling ProvisioningStepper's `useProvisioningState` now shares the ONE
+ * `useOnboardingStatus` bounded loop, which re-polls on its own within its
+ * declared <=15s ceiling regardless of this hook poking it — see that hook's
+ * module doc.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -20,16 +24,6 @@ import type { ChatIncomingMessage } from "@/hooks/useGateway";
 import type { ChatRenderItem, HistoryMessage } from "@/hooks/useAgentChat";
 
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
-
-// Spy on the shared SWR revalidation the hook triggers via useSWRConfig().
-// Referenced inside the (lazily-run) vi.mock factory — safe because the factory
-// only executes when "swr" is first imported (when useAgentChat is dynamically
-// imported inside each test), well after this const initializes.
-const mutate = vi.fn();
-vi.mock("swr", async () => {
-  const actual = await vi.importActual<typeof import("swr")>("swr");
-  return { ...actual, useSWRConfig: () => ({ mutate }) };
-});
 
 let chatHandlers: Array<(msg: ChatIncomingMessage) => void> = [];
 let eventHandlers: Array<(name: string, data: unknown) => void> = [];
@@ -82,11 +76,10 @@ describe("useAgentChat — container_waking self-heal", () => {
     sendReq.mockReset().mockResolvedValue({});
     sendChat.mockReset();
     send.mockReset().mockReturnValue(true);
-    mutate.mockReset();
     vi.resetModules();
   });
 
-  it("revalidates /container/status exactly once and renders a calm, code-less notice", async () => {
+  it("renders a calm, code-less notice and releases the busy gate", async () => {
     const { useAgentChat } = await import("@/hooks/useAgentChat");
     const { result } = renderHook(() => useAgentChat("agent-X", "session-1"));
 
@@ -105,10 +98,6 @@ describe("useAgentChat — container_waking self-heal", () => {
       } as ChatIncomingMessage),
     );
 
-    // Exactly one revalidation of the shared /container/status key.
-    expect(mutate).toHaveBeenCalledTimes(1);
-    expect(mutate).toHaveBeenCalledWith("/container/status");
-
     // Calm rendering: the notice is plain text (no "Error: " prefix), carries
     // NO errorCode (so MessageList keeps it as markdown, not a red card), and
     // the top-level error banner stays clear.
@@ -121,7 +110,7 @@ describe("useAgentChat — container_waking self-heal", () => {
     expect(result.current.isStreaming).toBe(false);
   });
 
-  it("does NOT revalidate for an ordinary terminal error", async () => {
+  it("an ordinary terminal error keeps the Error: prefix (not the calm waking copy)", async () => {
     const { useAgentChat } = await import("@/hooks/useAgentChat");
     const { result } = renderHook(() => useAgentChat("agent-X", "session-1"));
 
@@ -137,7 +126,6 @@ describe("useAgentChat — container_waking self-heal", () => {
       } as ChatIncomingMessage),
     );
 
-    expect(mutate).not.toHaveBeenCalled();
     // Ordinary error keeps the "Error: " prefix in the transcript bubble (there
     // is no top-level banner — an error must never swap the panel layout).
     const ordinary = assistantMessages(result.current.renderItems);
@@ -148,7 +136,7 @@ describe("useAgentChat — container_waking self-heal", () => {
     });
   });
 
-  it("fires exactly one revalidation per waking frame (no stuck loop)", async () => {
+  it("handles repeated waking frames without erroring (no stuck loop)", async () => {
     const { useAgentChat } = await import("@/hooks/useAgentChat");
     const { result } = renderHook(() => useAgentChat("agent-X", "session-1"));
 
@@ -166,8 +154,8 @@ describe("useAgentChat — container_waking self-heal", () => {
     act(() => dispatch(waking));
     act(() => dispatch(waking));
 
-    expect(mutate).toHaveBeenCalledTimes(2);
-    expect(mutate).toHaveBeenNthCalledWith(1, "/container/status");
-    expect(mutate).toHaveBeenNthCalledWith(2, "/container/status");
+    const msgs = assistantMessages(result.current.renderItems);
+    expect(msgs).toHaveLength(2);
+    expect(msgs.every((m) => m.errorCode === undefined)).toBe(true);
   });
 });

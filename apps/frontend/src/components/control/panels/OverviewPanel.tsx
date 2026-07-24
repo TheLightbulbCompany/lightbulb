@@ -139,9 +139,7 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
     mutate: refreshHealth,
   } = useGatewayRpc<HealthResponse>("health", undefined, { refreshInterval: 10000 });
 
-  const { container, isLoading: statusLoading, error: statusError } = useProvisioningState({
-    revalidateOnFocus: true,
-  });
+  const { container, isLoading: statusLoading, error: statusError } = useProvisioningState();
   const { account } = useBilling();
   const subscriptionStatus = account?.subscription_status ?? null;
 
@@ -268,8 +266,14 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
             <InfoRow
               icon={<Activity className="h-3.5 w-3.5" />}
               label="Status"
-              value={container?.status ?? "\u2014"}
-              badge={container?.status === "running" ? "green" : container?.status === "provisioning" ? "yellow" : "red"}
+              value={container?.container_status ?? "\u2014"}
+              badge={
+                container?.container_status === "running"
+                  ? "green"
+                  : container?.container_status === "provisioning"
+                    ? "yellow"
+                    : "red"
+              }
             />
             <InfoRow
               icon={<Server className="h-3.5 w-3.5" />}

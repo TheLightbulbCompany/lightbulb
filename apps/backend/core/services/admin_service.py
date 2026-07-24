@@ -365,7 +365,8 @@ def _narrow_container(row: dict | None) -> dict | None:
 
 def _narrow_paperclip(company: Any) -> dict | None:
     """PaperclipCompany -> allowlisted onboarding/teams fields (drops the
-    encrypted-credential trio)."""
+    encrypted-credential pair: ``paperclip_password_encrypted`` and
+    ``service_token_encrypted``)."""
     if company is None:
         return None
     return {k: _iso(getattr(company, k, None)) for k in _PAPERCLIP_PROVISION_FIELDS}
@@ -403,6 +404,14 @@ async def get_provisioning(user_id: str) -> dict:
     and the ``container`` field in the returned payload keeps the raw
     sentinel (distinguishable from a genuinely absent row, which is
     ``None``) so an operator can tell "read failed" from "no row" apart.
+
+    The Paperclip company read and the SFN execution read get the identical
+    treatment via the same ``_read_failed`` sentinel check: ``_narrow_paperclip``
+    and ``_narrow_execution`` only special-case ``None`` (genuinely no row), so
+    threading a failed-read sentinel through them unnarrowed would produce an
+    all-``None`` fields dict that looks exactly like a present-but-empty row.
+    The ``paperclip``/``sfn_execution`` fields keep the raw sentinel on a failed
+    read, same convention as ``container``.
     """
     owner_id, org_context = await resolve_admin_owner_id(user_id)
 
@@ -415,25 +424,27 @@ async def get_provisioning(user_id: str) -> dict:
         _with_timeout(_paperclip_repo().get(owner_id), "ddb_paperclip"),
         _with_timeout(probe_provision_gate(owner_id=owner_id), "provision_gate"),
     )
+    paperclip_read_failed = _read_failed(paperclip_row, label="ddb_paperclip")
 
     sfn = None
     claim_id = (container or {}).get("provision_claim_id")
     if claim_id and (container or {}).get("provision_execution_name"):
         sfn = await _with_timeout(describe_dispatch_execution(owner_id, claim_id), "sfn_execution")
+    sfn_read_failed = _read_failed(sfn, label="sfn_execution")
 
     return {
         "owner_id": owner_id,
         "org": org_context,
         "status_contract": status_contract,
         "container": container_raw if container_read_failed else _narrow_container(container),
-        "paperclip": _narrow_paperclip(paperclip_row),
+        "paperclip": paperclip_row if paperclip_read_failed else _narrow_paperclip(paperclip_row),
         # isinstance guard, not a truthiness check: on timeout/error
         # _with_timeout hands back an {"error", "source"} dict rather than
         # None, and that dict is truthy — a bare `if gate else None` would
         # call .to_payload() on it and crash (AttributeError) on exactly the
         # degraded-upstream case this composer exists to survive.
         "gate": gate.to_payload()["blocked"] if isinstance(gate, Gate) else None,
-        "sfn_execution": _narrow_execution(sfn),
+        "sfn_execution": sfn if sfn_read_failed else _narrow_execution(sfn),
     }
 
 

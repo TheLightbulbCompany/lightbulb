@@ -416,9 +416,31 @@ export interface AdminProvisioning {
     bootstrap_last_error?: string | null;
     bootstrap_dispatched_at?: string | null;
     bootstrap_delivered_at?: string | null;
+    /**
+     * Present INSTEAD of the fields above when the backend's Paperclip-company
+     * read itself failed (DDB timeout) — distinguishable from `paperclip ===
+     * null` (no row at all). Mirrors the `container` read-failure idiom above.
+     */
+    error?: string;
+    source?: string;
   } | null;
   gate: { code?: string; title?: string; message?: string } | null;
-  sfn_execution: { name?: string; status?: string; start_date?: string; stop_date?: string } | null;
+  sfn_execution:
+    | {
+        name?: string;
+        status?: string;
+        start_date?: string;
+        stop_date?: string;
+        /**
+         * Present INSTEAD of the fields above when the backend's SFN
+         * DescribeExecution read itself failed — distinguishable from
+         * `sfn_execution === null` (no execution stamped at all). Mirrors the
+         * `container` read-failure idiom above.
+         */
+        error?: string;
+        source?: string;
+      }
+    | null;
 }
 
 export async function getProvisioning(

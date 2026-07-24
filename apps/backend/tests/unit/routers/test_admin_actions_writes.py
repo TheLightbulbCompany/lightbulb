@@ -498,7 +498,7 @@ class TestContainerReapplyConfig:
 
 
 # ===========================================================================
-# Provisioning actions (read: Task 4 — retry + reset-bootstrap levers)
+# Provisioning actions (read + retry/reset-bootstrap levers)
 # ===========================================================================
 
 

@@ -428,6 +428,13 @@ async def probe_provision_gate(*, owner_id: str, is_admin: bool = True) -> Gate 
     ``evaluate_provision_gate``'s blocked-metric stream feeds the W64
     spike alarm; an operator inspecting an owner must not inflate it.
     Same decision logic, no emission.
+
+    Metric-free is not the same as side-effect-free: for a ``bedrock_claude``
+    owner this still calls ``metronome_gate.is_owner_blocked``, and a stale
+    fast-gate row there triggers the same lazy ``getNetBalance`` refresh (cache
+    rewrite + enforcement re-assert + pull-based Bedrock restore) that any
+    other owner poll would — an admin read can self-heal an owner's gate state
+    as a side effect of merely looking at it.
     """
     return await _evaluate_provision_gate_inner(owner_id=owner_id, is_admin=is_admin)
 

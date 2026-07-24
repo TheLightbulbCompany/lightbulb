@@ -64,7 +64,16 @@ export default async function AdminUserProvisioningPage({ params }: PageProps) {
   // `{error, source}` failure sentinel).
   const containerRow = containerReadError ? null : container;
   const paperclip = data.paperclip;
-  const seededAgentIds = paperclip?.seeded_agent_ids ?? [];
+  const paperclipReadError = paperclip?.error ?? null;
+  // Present exactly when a real Paperclip-company row was read (not `null`,
+  // not the `{error, source}` failure sentinel).
+  const paperclipRow = paperclipReadError ? null : paperclip;
+  const seededAgentIds = paperclipRow?.seeded_agent_ids ?? [];
+  const sfnExecution = data.sfn_execution;
+  const sfnReadError = sfnExecution?.error ?? null;
+  // Present exactly when a real DescribeExecution response was read (not
+  // `null`, not the `{error, source}` failure sentinel).
+  const sfnRow = sfnReadError ? null : sfnExecution;
 
   return (
     <div className="space-y-6">
@@ -169,22 +178,30 @@ export default async function AdminUserProvisioningPage({ params }: PageProps) {
       </Card>
 
       {/* 4. Paperclip company */}
-      {paperclip ? (
+      {paperclipReadError ? (
+        <Card title="Paperclip company">
+          <ErrorBanner
+            error={`Paperclip company read failed: ${paperclipReadError}`}
+            source={paperclip?.source ?? "ddb_paperclip"}
+            variant="error"
+          />
+        </Card>
+      ) : paperclipRow ? (
         <Card
           title="Paperclip company"
-          action={<StatusChip status={paperclip.status ?? "unknown"} />}
+          action={<StatusChip status={paperclipRow.status ?? "unknown"} />}
         >
           <dl className="grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
-            <DefRow label="Company ID" value={paperclip.company_id ?? "—"} mono />
+            <DefRow label="Company ID" value={paperclipRow.company_id ?? "—"} mono />
             <DefRow
               label="Paperclip user ID"
-              value={paperclip.paperclip_user_id ?? "—"}
+              value={paperclipRow.paperclip_user_id ?? "—"}
               mono
             />
-            <DefRow label="Last error" value={paperclip.last_error ?? "—"} />
+            <DefRow label="Last error" value={paperclipRow.last_error ?? "—"} />
             <DefRow
               label="Scheduled purge at"
-              value={<RelativeTimestamp value={paperclip.scheduled_purge_at} />}
+              value={<RelativeTimestamp value={paperclipRow.scheduled_purge_at} />}
               mono
             />
           </dl>
@@ -221,30 +238,30 @@ export default async function AdminUserProvisioningPage({ params }: PageProps) {
         <dl className="grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
           <DefRow
             label="Funnel state"
-            value={<StatusChip status={paperclip?.funnel_state ?? "unknown"} />}
+            value={<StatusChip status={paperclipRow?.funnel_state ?? "unknown"} />}
           />
           <DefRow
             label="Bootstrap state"
-            value={<StatusChip status={paperclip?.bootstrap_state ?? "unknown"} />}
+            value={<StatusChip status={paperclipRow?.bootstrap_state ?? "unknown"} />}
           />
           <DefRow
             label="Bootstrap attempts"
-            value={paperclip?.bootstrap_attempts?.toString() ?? "—"}
+            value={paperclipRow?.bootstrap_attempts?.toString() ?? "—"}
           />
-          <DefRow label="Bootstrap last error" value={paperclip?.bootstrap_last_error ?? "—"} />
+          <DefRow label="Bootstrap last error" value={paperclipRow?.bootstrap_last_error ?? "—"} />
           <DefRow
             label="Dispatched at"
-            value={<RelativeTimestamp value={paperclip?.bootstrap_dispatched_at} />}
+            value={<RelativeTimestamp value={paperclipRow?.bootstrap_dispatched_at} />}
             mono
           />
           <DefRow
             label="Delivered at"
-            value={<RelativeTimestamp value={paperclip?.bootstrap_delivered_at} />}
+            value={<RelativeTimestamp value={paperclipRow?.bootstrap_delivered_at} />}
             mono
           />
           <DefRow
             label="Onboarding generation"
-            value={paperclip?.onboarding_generation ?? "—"}
+            value={paperclipRow?.onboarding_generation ?? "—"}
             mono
           />
         </dl>
@@ -269,18 +286,24 @@ export default async function AdminUserProvisioningPage({ params }: PageProps) {
           <div className="mb-2 text-xs uppercase tracking-wide text-zinc-500">
             SFN execution
           </div>
-          {data.sfn_execution ? (
+          {sfnReadError ? (
+            <ErrorBanner
+              error={`SFN execution read failed: ${sfnReadError}`}
+              source={sfnExecution?.source ?? "sfn_execution"}
+              variant="error"
+            />
+          ) : sfnRow ? (
             <dl className="grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
-              <DefRow label="Name" value={data.sfn_execution.name ?? "—"} mono />
-              <DefRow label="Status" value={data.sfn_execution.status ?? "—"} />
+              <DefRow label="Name" value={sfnRow.name ?? "—"} mono />
+              <DefRow label="Status" value={sfnRow.status ?? "—"} />
               <DefRow
                 label="Start"
-                value={<RelativeTimestamp value={data.sfn_execution.start_date} />}
+                value={<RelativeTimestamp value={sfnRow.start_date} />}
                 mono
               />
               <DefRow
                 label="Stop"
-                value={<RelativeTimestamp value={data.sfn_execution.stop_date} />}
+                value={<RelativeTimestamp value={sfnRow.stop_date} />}
                 mono
               />
             </dl>
@@ -293,7 +316,7 @@ export default async function AdminUserProvisioningPage({ params }: PageProps) {
       {/* 7. Levers */}
       <ProvisioningActionsPanel
         userId={id}
-        bootstrapState={paperclip?.bootstrap_state ?? null}
+        bootstrapState={paperclipRow?.bootstrap_state ?? null}
         containerStatus={containerRow?.status ?? null}
       />
     </div>

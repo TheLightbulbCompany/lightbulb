@@ -359,6 +359,99 @@ async def test_get_provisioning_container_read_failure_isolated_from_compute_sta
 
 
 @pytest.mark.asyncio
+async def test_get_provisioning_paperclip_read_failure_not_mistaken_for_empty_row():
+    """A failing/timed-out _paperclip_repo().get() flows through _with_timeout
+    as an {"error", "source"} sentinel -- not None, and not a real
+    PaperclipCompany. _narrow_paperclip only special-cases `company is None`;
+    threading the sentinel through it unnarrowed would silently fabricate a
+    present-but-all-None paperclip row (every allowlisted field None) instead
+    of surfacing that the read itself failed -- the admin UI would then
+    wrongly assert a Paperclip company row exists during a degraded-read
+    window. The composer must surface the raw sentinel in the `paperclip`
+    field, distinguishable from "no row" (which is None)."""
+    from core.services import admin_service
+
+    failing_repo = MagicMock()
+    failing_repo.get = AsyncMock(side_effect=RuntimeError("ddb_blip"))
+
+    with (
+        patch(
+            "core.services.admin_service.resolve_admin_owner_id",
+            new=AsyncMock(return_value=("owner_1", None)),
+        ),
+        patch(
+            "core.services.admin_service.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "core.services.admin_service.compute_status",
+            new=AsyncMock(return_value={"lifecycle": "needs_signup"}),
+        ),
+        patch(
+            "core.services.admin_service._paperclip_repo",
+            return_value=failing_repo,
+        ),
+        patch("core.services.admin_service.probe_provision_gate", new=AsyncMock(return_value=None)),
+        patch("core.services.admin_service.describe_dispatch_execution", new=AsyncMock(return_value=None)),
+    ):
+        result = await admin_service.get_provisioning("user_1")  # must not raise
+
+    assert result["paperclip"] == {"error": "ddb_blip", "source": "ddb_paperclip"}
+    # Distinguishable from the genuinely-no-row case, which is bare None —
+    # asserted separately by test_get_provisioning_no_rows_degrades_to_nones.
+    assert result["paperclip"] is not None
+
+
+@pytest.mark.asyncio
+async def test_get_provisioning_sfn_read_failure_not_mistaken_for_no_execution():
+    """A failing/timed-out describe_dispatch_execution flows through
+    _with_timeout as an {"error", "source"} sentinel -- not None, and not a
+    real DescribeExecution response. _narrow_execution only special-cases a
+    falsy `resp`; threading the sentinel through it unnarrowed would silently
+    fabricate a present-but-all-None execution row instead of surfacing that
+    the read itself failed. The composer must surface the raw sentinel in the
+    `sfn_execution` field, distinguishable from "no execution stamped" (which
+    is None)."""
+    from core.services import admin_service
+
+    container_row = {
+        "status": "provisioning",
+        "provision_claim_id": "claim-123",
+        "provision_execution_name": "provision-owner_1-claim123",
+    }
+
+    with (
+        patch(
+            "core.services.admin_service.resolve_admin_owner_id",
+            new=AsyncMock(return_value=("owner_1", None)),
+        ),
+        patch(
+            "core.services.admin_service.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value=container_row),
+        ),
+        patch(
+            "core.services.admin_service.compute_status",
+            new=AsyncMock(return_value={"lifecycle": "provisioning"}),
+        ),
+        patch(
+            "core.services.admin_service._paperclip_repo",
+            return_value=_paperclip_repo_returning(None),
+        ),
+        patch("core.services.admin_service.probe_provision_gate", new=AsyncMock(return_value=None)),
+        patch(
+            "core.services.admin_service.describe_dispatch_execution",
+            new=AsyncMock(side_effect=RuntimeError("sfn_blip")),
+        ),
+    ):
+        result = await admin_service.get_provisioning("user_1")  # must not raise
+
+    assert result["sfn_execution"] == {"error": "sfn_blip", "source": "sfn_execution"}
+    # Distinguishable from the genuinely-no-execution case, which is bare
+    # None — asserted separately by test_get_provisioning_no_rows_degrades_to_nones.
+    assert result["sfn_execution"] is not None
+
+
+@pytest.mark.asyncio
 async def test_get_provisioning_narrows_sfn_response():
     """The SFN DescribeExecution response is boto3-shaped (datetimes +
     ResponseMetadata); only name/status/start_date/stop_date should survive,

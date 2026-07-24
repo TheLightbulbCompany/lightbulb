@@ -519,7 +519,7 @@ async def admin_container_reapply_config(
 
 
 # ---------------------------------------------------------------------------
-# Provisioning (Task 4: 1 read + 2 levers)
+# Provisioning (read + retry/reset-bootstrap levers)
 # ---------------------------------------------------------------------------
 
 

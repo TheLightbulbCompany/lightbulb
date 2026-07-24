@@ -89,6 +89,56 @@ async def test_upsert_preserves_id_and_created_at(dynamodb_table):
 
 
 @pytest.mark.asyncio
+async def test_upsert_mints_distinct_provision_generation_per_call(dynamodb_table):
+    """create_user_service (the sole caller of upsert) mints a fresh
+    provision_generation on every row-creating write -- this repo function
+    itself has no opinion on the value, it just writes whatever's handed to
+    it. Two upserts carrying different provision_generation values land
+    exactly what was written (no server-side preservation of this field)."""
+    from core.repositories import container_repo
+
+    first = await container_repo.upsert(
+        "user_gen",
+        {"gateway_token": "tok_abc", "status": "provisioning", "provision_generation": "gen_1"},
+    )
+    assert first["provision_generation"] == "gen_1"
+
+    second = await container_repo.upsert(
+        "user_gen",
+        {"gateway_token": "tok_abc", "status": "provisioning", "provision_generation": "gen_2"},
+    )
+    assert second["provision_generation"] == "gen_2"
+
+
+@pytest.mark.asyncio
+async def test_update_fields_preserves_provision_generation(dynamodb_table):
+    """INV-2: restart/redeploy/hot-swap/revoke-restore/conversion all write
+    through update_fields's get->put merge, never through upsert -- so an
+    existing provision_generation must survive a field-scoped update_fields
+    write untouched, even though that write doesn't mention the field at
+    all."""
+    from core.repositories import container_repo
+
+    await container_repo.upsert(
+        "user_restart",
+        {"gateway_token": "tok_abc", "status": "provisioning", "provision_generation": "gen_original"},
+    )
+
+    # Simulate a restart-path write (e.g. force-redeploy): a scoped field
+    # update that says nothing about provision_generation.
+    updated = await container_repo.update_fields(
+        "user_restart",
+        {"status": "running", "substatus": None},
+    )
+
+    assert updated["provision_generation"] == "gen_original"
+
+    # And the persisted row, independently re-read, agrees.
+    fetched = await container_repo.get_by_owner_id("user_restart")
+    assert fetched["provision_generation"] == "gen_original"
+
+
+@pytest.mark.asyncio
 async def test_get_by_owner_id(dynamodb_table):
     from core.repositories import container_repo
 

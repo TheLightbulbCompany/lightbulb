@@ -837,10 +837,23 @@ async def handshake(request: Request) -> Response:
     # through this path (direct nav, no ?__t=) would spin on the stub
     # with no repair in flight. Best-effort and idempotent, same as the
     # handoff; needs the email claim (Better Auth signup).
+    #
+    # Container guard, also mirroring the handoff: an owner with NO
+    # container must not have a Paperclip company seeded from here — the
+    # seeded agents' gateway adapter would point at a nonexistent
+    # OpenClaw, and (worse) the now-active row would let the established-
+    # session path forward into a dead Teams. This XHR can't redirect the
+    # way the handoff does, so it simply declines to seed; the
+    # unprovisioned-entry stub the user then sees is the pre-existing
+    # behavior for this path, resolved by normal /chat usage (whose
+    # status poll provisions the container and seeds Paperclip).
     if email:
+        container = await container_repo.get_by_owner_id(resolve_owner_id(auth))
         repo = PaperclipRepo(table_name="paperclip-companies")
         existing = await repo.get(user_id)
-        if existing is None or existing.status != "active" or existing.org_id != resolve_owner_id(auth):
+        if container is not None and (
+            existing is None or existing.status != "active" or existing.org_id != resolve_owner_id(auth)
+        ):
             from routers.container import _dispatch_watched
 
             _dispatch_watched(ensure_user_ready(auth, provision_container=False))

@@ -752,11 +752,16 @@ def test_paperclip_session_rejects_wrong_kind(monkeypatch):
         proxy_mod._verify_paperclip_session(fake_service_token)
 
 
-def _stub_handshake_repo_and_dispatch(monkeypatch, row):
-    """Stub the /__handshake__ readiness check's repo row + the dispatch;
-    returns the list the dispatch stub records (user_id, org_id,
-    provision_container) into."""
+def _stub_handshake_repo_and_dispatch(monkeypatch, row, container=True):
+    """Stub the /__handshake__ readiness check's container lookup + repo row
+    + the dispatch; returns the list the dispatch stub records (user_id,
+    org_id, provision_container) into."""
     import routers.paperclip_proxy as proxy_mod
+
+    async def _fake_get_container(owner_id: str):
+        return {"owner_id": owner_id, "status": "running"} if container else None
+
+    monkeypatch.setattr(proxy_mod.container_repo, "get_by_owner_id", _fake_get_container)
 
     class _FakeRepo:
         def __init__(self, table_name: str) -> None:
@@ -861,6 +866,36 @@ def test_handshake_org_context_dispatches_repair_for_mismatched_row(monkeypatch)
     cookie_val = set_cookie.split("isol8_paperclip=", 1)[1].split(";", 1)[0]
     claims = proxy_mod._verify_paperclip_session(cookie_val)
     assert claims["org_id"] == "org_acme"
+
+
+def test_handshake_no_container_skips_dispatch(monkeypatch):
+    """An owner with NO container must not get a Paperclip company seeded
+    from the handshake — the seeded agents would point at a nonexistent
+    OpenClaw, and the active row would let the established-session path
+    forward into a dead Teams. Mirrors the ?__t= handoff's container
+    guard (which redirects; this XHR just declines to seed)."""
+    from fastapi.testclient import TestClient
+
+    import routers.paperclip_proxy as proxy_mod
+
+    async def _fake_decode(token: str):
+        return {"sub": "user_handshake", "email": "h@example.com"}
+
+    monkeypatch.setattr(proxy_mod, "_decode_token", _fake_decode)
+    monkeypatch.setattr(proxy_mod.settings, "PAPERCLIP_SERVICE_TOKEN_KEY", "test-secret-32-bytes-min-len-x")
+    calls = _stub_handshake_repo_and_dispatch(monkeypatch, row=None, container=False)
+
+    app = _build_http_app()
+    client = TestClient(app)
+
+    resp = client.post(
+        "/__handshake__",
+        headers={"Authorization": "Bearer valid.clerk.jwt"},
+    )
+    # Cookie still minted (the page reload shows the pre-existing
+    # unprovisioned-entry stub); no seed dispatched.
+    assert resp.status_code == 204
+    assert calls == []
 
 
 def test_handshake_matched_active_row_skips_dispatch(monkeypatch):

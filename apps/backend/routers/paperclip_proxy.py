@@ -1135,6 +1135,28 @@ async def proxy(path: str, request: Request) -> Response:
     # ---- Established-session path: forward request to Paperclip ----
     repo = PaperclipRepo(table_name="paperclip-companies")
     company = await repo.get(auth.user_id)
+    if company is not None and auth.org_id is None and company.org_id not in (None, auth.user_id):
+        # The row belongs to an ORG owner context but this session carries
+        # no org claims. Two ways here: a legacy cookie minted before
+        # org_id rode the session (an org member's live session for up to
+        # the cookie TTL after deploy), or a genuinely personal session
+        # whose row still points at an org (ex-member). Either way this
+        # process cannot know the user's real context — a stub would spin
+        # with no repair in flight (the personal-context dispatch is
+        # correctly fenced from adopting org rows), so bounce out to /chat:
+        # a fresh Teams entry re-handshakes with real Clerk claims, and
+        # /chat's canonical /container/status trigger repairs the row.
+        from fastapi.responses import RedirectResponse
+
+        logger.info(
+            "paperclip_proxy: org-less session for user=%s over org row %s; redirecting for re-handshake",
+            auth.user_id,
+            company.org_id,
+        )
+        return RedirectResponse(
+            f"{_frontend_url()}/chat?from=teams",
+            status_code=302,
+        )
     if company is None or company.status == "provisioning" or company.org_id != resolve_owner_id(auth):
         # Either: (a) handshake just spawned ensure_user_ready and the row
         # hasn't been written yet (typical first visit), or (b) it's

@@ -1407,6 +1407,41 @@ def test_established_session_redirects_on_own_terminal_row(monkeypatch):
     assert "need=reprovision" in resp.headers["location"]
 
 
+def test_established_session_orgless_cookie_over_org_row_redirects_for_rehandshake(monkeypatch):
+    """A session with NO org claims (legacy pre-org_id cookie, or a genuine
+    personal session) sitting on a row that points at an ORG must redirect
+    out to /chat for a fresh handshake — not spin on the stub (no repair is
+    in flight: the personal-context dispatch is correctly fenced from
+    adopting org rows) and not forward into the org workspace blind."""
+    from types import SimpleNamespace
+
+    from fastapi.testclient import TestClient
+
+    import routers.paperclip_proxy as proxy_mod
+
+    monkeypatch.setattr(proxy_mod.settings, "PAPERCLIP_SERVICE_TOKEN_KEY", "test-secret-32-bytes-min-len-x")
+    monkeypatch.setattr(proxy_mod.settings, "FRONTEND_URL", "https://dev.isol8.co")
+
+    # Legacy-shaped cookie: no org_id claim.
+    cookie = proxy_mod._mint_paperclip_session(user_id="user_org_member", email="m@example.com")
+
+    class _FakeRepo:
+        def __init__(self, table_name: str) -> None:
+            pass
+
+        async def get(self, _user_id: str):
+            return SimpleNamespace(status="active", org_id="org_acme")
+
+    monkeypatch.setattr(proxy_mod, "PaperclipRepo", _FakeRepo)
+
+    app = _build_http_app()
+    client = TestClient(app)
+    resp = client.get("/some/path", cookies={"isol8_paperclip": cookie}, follow_redirects=False)
+
+    assert resp.status_code == 302
+    assert "/chat?from=teams" in resp.headers["location"]
+
+
 def test_established_session_forwards_on_org_matched_active_row(monkeypatch):
     """Control: the same org-context session with a row already pointing at
     THIS org proceeds past the stub into the forward path — proving the

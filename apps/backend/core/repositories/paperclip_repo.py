@@ -793,7 +793,7 @@ class PaperclipRepo:
         oldest = min(active_items, key=_sort_key)
         return await self.get(oldest["user_id"])
 
-    async def resolve_owner_row(self, owner_id: str) -> Optional[PaperclipCompany]:
+    async def resolve_owner_row(self, owner_id: str, *, consistent_read: bool = False) -> Optional[PaperclipCompany]:
         """Resolve an ``owner_id`` (Clerk org_id for orgs, Clerk user_id for
         personal owners) to the paperclip-companies OWNER row that carries
         onboarding truth.
@@ -809,10 +809,22 @@ class PaperclipRepo:
         (``routers/onboarding.py``, ``routers/container.py``'s ``onboarded``
         computation) should use, so "which row is THE owner row" has one
         answer.
+
+        ``consistent_read`` defaults to False (eventually-consistent). The
+        HOT caller is ``get_onboarding_state`` on every ``/container/status``
+        poll (~3s/owner), where ``onboarded`` is best-effort and a briefly
+        stale ``False`` is harmless -- a strong read there would double the
+        ``paperclip-companies`` RCU cost fleet-wide for a field that flips
+        once. The one caller that needs strong consistency is
+        ``POST /onboarding/brief`` (the funnel claim reads then writes the
+        SAME row); it passes ``consistent_read=True``. NOTE: the org path
+        goes through the ``by-org-id`` GSI, which is eventually consistent by
+        construction -- ``consistent_read`` only strengthens the personal
+        (base-table ``get``) path.
         """
         if is_org_owner_id(owner_id):
             return await self.find_owner_row(owner_id)
-        return await self.get(owner_id, consistent_read=True)
+        return await self.get(owner_id, consistent_read=consistent_read)
 
     async def claim_funnel_submission(self, user_id: str, *, onboarding_generation: str) -> FunnelClaimResult:
         """Conditional ``funnel_state: not_started -> submitted``, fenced on
@@ -829,33 +841,58 @@ class PaperclipRepo:
         out -- mirrors the old ``release_onboarding_claim`` contract.
         """
         table = self._table()
-        now = datetime.now(timezone.utc).isoformat()
-        try:
-            await run_in_thread(
-                table.update_item,
-                Key={"user_id": user_id},
-                UpdateExpression="SET funnel_state = :submitted, funnel_submitted_at = :t, updated_at = :u",
-                ConditionExpression="onboarding_generation = :gen AND funnel_state = :not_started",
-                ExpressionAttributeValues={
-                    ":submitted": "submitted",
-                    ":not_started": "not_started",
-                    ":gen": onboarding_generation,
-                    ":t": now,
-                    ":u": now,
-                },
-            )
-            return FunnelClaimResult.WON
-        except table.meta.client.exceptions.ConditionalCheckFailedException:
-            pass
+        # Bounded retry loop: the CAS itself is the serialization point, but a
+        # peer can WIN the claim and then ``revert_funnel_submission`` it back
+        # to ``not_started`` on the SAME generation if its downstream seed
+        # fails. A single re-read that only distinguished generation-mismatch
+        # from "not not_started" would then report ALREADY_SUBMITTED to a
+        # racing caller even though the row is claimable again -- leaving the
+        # client believing onboarding is done while the company has no
+        # goal/project and no recovery path. So on a CAS failure we re-read
+        # and, if the row is back at ``not_started`` on our generation, RETRY
+        # the claim instead of mislabeling it. Bounded so a pathologically
+        # flapping peer can't spin here forever.
+        for _attempt in range(3):
+            now = datetime.now(timezone.utc).isoformat()
+            try:
+                await run_in_thread(
+                    table.update_item,
+                    Key={"user_id": user_id},
+                    UpdateExpression="SET funnel_state = :submitted, funnel_submitted_at = :t, updated_at = :u",
+                    ConditionExpression="onboarding_generation = :gen AND funnel_state = :not_started",
+                    ExpressionAttributeValues={
+                        ":submitted": "submitted",
+                        ":not_started": "not_started",
+                        ":gen": onboarding_generation,
+                        ":t": now,
+                        ":u": now,
+                    },
+                )
+                return FunnelClaimResult.WON
+            except table.meta.client.exceptions.ConditionalCheckFailedException:
+                pass
 
-        current = await self.get(user_id, consistent_read=True)
-        if current is None or current.onboarding_generation != onboarding_generation:
-            # Superseded generation (or the row vanished) -- per INV-4 a
-            # silent no-op from the caller's point of view; the caller was
-            # holding a stale view of the company, not colliding with a
-            # duplicate submit.
-            return FunnelClaimResult.STALE_GENERATION
-        return FunnelClaimResult.ALREADY_SUBMITTED
+            current = await self.get(user_id, consistent_read=True)
+            if current is None or current.onboarding_generation != onboarding_generation:
+                # Superseded generation (or the row vanished) -- per INV-4 a
+                # silent no-op from the caller's point of view; the caller was
+                # holding a stale view of the company, not colliding with a
+                # duplicate submit.
+                return FunnelClaimResult.STALE_GENERATION
+            if current.funnel_state == "not_started":
+                # A peer won then reverted (failed seed): the row is claimable
+                # again on this same generation. Retry rather than reporting a
+                # false ALREADY_SUBMITTED.
+                continue
+            # funnel_state is submitted/complete on our generation -- a peer's
+            # submission genuinely won and is still standing.
+            return FunnelClaimResult.ALREADY_SUBMITTED
+
+        # Exhausted retries -- a peer is actively claim/revert-thrashing (its
+        # seed keeps failing). Report STALE_GENERATION so the caller retries
+        # (409 -> re-poll) rather than a false ALREADY_SUBMITTED that would
+        # strand the client on an empty company.
+        return FunnelClaimResult.STALE_GENERATION
 
     async def record_onboarding_ids(
         self, user_id: str, *, onboarding_generation: str, goal_id: str, project_id: str

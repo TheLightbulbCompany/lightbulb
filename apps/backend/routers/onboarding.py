@@ -111,7 +111,11 @@ async def submit_brief(
     # admin-only gate was rejected because an org whose admin never opens
     # the app would be permanently stuck with no self-service recovery.
     repo = PaperclipRepo(table_name="paperclip-companies")
-    owner_row = await repo.resolve_owner_row(ctx.owner_id)
+    # Strong read: this path reads the owner row then conditionally writes the
+    # SAME row (the funnel claim), so it must see the latest onboarding_generation
+    # / funnel_state. (get_onboarding_state's per-poll reads stay eventually
+    # consistent -- see resolve_owner_row.)
+    owner_row = await repo.resolve_owner_row(ctx.owner_id, consistent_read=True)
     if owner_row is None or not owner_row.onboarding_generation:
         # No owner row yet, or it predates the onboarding_generation fence
         # (should not happen post-G2 for any row provision_org just wrote —

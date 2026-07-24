@@ -443,6 +443,35 @@ async def test_claim_funnel_submission_second_caller_gets_already_submitted(repo
     assert result is FunnelClaimResult.ALREADY_SUBMITTED
 
 
+async def test_claim_funnel_submission_retries_when_peer_reverts(repo):
+    """Revert-race regression: a peer WON then reverted its claim (failed
+    downstream seed) back to ``not_started`` on the SAME generation. A racing
+    caller whose first CAS lost must RETRY and win -- NOT be mislabeled
+    ALREADY_SUBMITTED, which would strand its client believing onboarding is
+    done while the company has no goal/project.
+
+    The row starts ``submitted`` so the first CAS fails; the patched re-read
+    simulates the peer's revert (flips the real row back to ``not_started``)
+    so the bounded retry's next CAS wins.
+    """
+    await repo.put(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="submitted"))
+    real_get = repo.get
+    flipped = {"done": False}
+
+    async def flipping_get(user_id, *, consistent_read=False):
+        if not flipped["done"]:
+            flipped["done"] = True
+            # The peer reverts its failed claim between our CAS failure and re-read.
+            await repo.put(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="not_started"))
+        return await real_get(user_id, consistent_read=consistent_read)
+
+    with patch.object(repo, "get", flipping_get):
+        result = await repo.claim_funnel_submission("u1", onboarding_generation="01G")
+
+    assert result is FunnelClaimResult.WON
+    assert (await repo.get("u1")).funnel_state == "submitted"
+
+
 async def test_claim_funnel_submission_concurrent_leaves_row_consistent(repo):
     """Two tabs submitting at once — the CAS write itself is the
     serialization point (no separate claim item, no stale-steal window).

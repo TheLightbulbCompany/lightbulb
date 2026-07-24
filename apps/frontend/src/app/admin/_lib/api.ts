@@ -361,6 +361,78 @@ export async function getOverview(
   return adminFetch<UserOverview>(token, `/admin/users/${encodeURIComponent(userId)}/overview`);
 }
 
+export interface AdminProvisioning {
+  owner_id: string;
+  org: unknown;
+  status_contract:
+    | ({
+        runtime_phase?: string;
+        lifecycle?: string;
+        chat_available?: boolean;
+        teams_state?: string | null;
+      } & Record<string, unknown>)
+    | null;
+  container: {
+    status?: string;
+    substatus?: string | null;
+    last_error?: string | null;
+    last_error_at?: string | null;
+    retryable?: boolean | null;
+    claim_stale?: boolean;
+    provision_generation?: string | null;
+    provision_claim_id?: string | null;
+    provision_claimed_at?: number | null;
+    provision_attempt_token?: string | null;
+    provision_execution_name?: string | null;
+    onboarded_at?: string | null;
+    bedrock_revoked?: boolean | null;
+    stop_reason?: string | null;
+    service_name?: string | null;
+    created_at?: string | null;
+    updated_at?: string | null;
+    /**
+     * Present INSTEAD of the fields above when the backend's containers-row
+     * read itself failed (DDB timeout) — distinguishable from `container ===
+     * null` (no row at all). Mirrors the `error`/`source` idiom already used
+     * on `AgentDetail`/`LogsPage`/etc. in this file.
+     */
+    error?: string;
+    source?: string;
+  } | null;
+  paperclip: {
+    status?: string | null;
+    company_id?: string | null;
+    org_id?: string | null;
+    paperclip_user_id?: string | null;
+    last_error?: string | null;
+    seeded_agent_ids?: string[] | null;
+    scheduled_purge_at?: string | null;
+    onboarding_generation?: string | null;
+    funnel_state?: string | null;
+    funnel_submitted_at?: string | null;
+    funnel_completed_at?: string | null;
+    bootstrap_state?: string | null;
+    bootstrap_attempts?: number | null;
+    bootstrap_last_error?: string | null;
+    bootstrap_dispatched_at?: string | null;
+    bootstrap_delivered_at?: string | null;
+  } | null;
+  gate: { code?: string; title?: string; message?: string } | null;
+  sfn_execution: { name?: string; status?: string; start_date?: string; stop_date?: string } | null;
+}
+
+export async function getProvisioning(
+  token: string,
+  userId: string,
+): Promise<AdminProvisioning | null> {
+  const { ok, data } = await adminHttp({
+    method: "GET",
+    path: `/admin/users/${encodeURIComponent(userId)}/provisioning`,
+    token,
+  });
+  return ok ? (data as AdminProvisioning) : null;
+}
+
 export async function listAgents(
   token: string,
   userId: string,

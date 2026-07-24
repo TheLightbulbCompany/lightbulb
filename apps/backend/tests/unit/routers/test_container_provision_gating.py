@@ -130,9 +130,6 @@ async def test_provision_allows_bedrock_with_positive_balance():
     """bedrock_claude with credits topped up -> provisions normally."""
     from routers.container import container_provision
 
-    fake_ecs = MagicMock()
-    fake_ecs.provision_user_container = AsyncMock(return_value="openclaw-foo")
-
     with (
         patch(
             "routers.container.container_repo.get_by_owner_id",
@@ -154,10 +151,11 @@ async def test_provision_allows_bedrock_with_positive_balance():
             "core.services.metronome_gate.is_owner_blocked",
             new=AsyncMock(return_value=False),
         ),
-        patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+        patch("routers.container.dispatch_provision", new_callable=AsyncMock) as mock_dispatch,
     ):
         result = await container_provision(auth=_auth())
     assert result["status"] == "provisioning"
+    mock_dispatch.assert_called_once_with("user_paid")
 
 
 @pytest.mark.asyncio
@@ -166,9 +164,6 @@ async def test_provision_skips_balance_check_for_non_bedrock(provider_choice):
     """chatgpt_oauth / byo_key never need a credit balance — their LLM
     costs land on the user's own provider account."""
     from routers.container import container_provision
-
-    fake_ecs = MagicMock()
-    fake_ecs.provision_user_container = AsyncMock(return_value="openclaw-foo")
 
     # Pre-import oauth_service so we can patch its function attribute directly,
     # which beats sys.modules-swapping for cross-test isolation (the lazy
@@ -202,7 +197,7 @@ async def test_provision_skips_balance_check_for_non_bedrock(provider_choice):
             new_callable=AsyncMock,
             return_value=True,
         ),
-        patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+        patch("routers.container.dispatch_provision", new_callable=AsyncMock),
     ):
         result = await container_provision(auth=_auth())
     assert result["status"] == "provisioning"
@@ -220,9 +215,6 @@ async def test_provision_allows_legacy_row_with_subscription_id_but_no_status():
     behavior.
     """
     from routers.container import container_provision
-
-    fake_ecs = MagicMock()
-    fake_ecs.provision_user_container = AsyncMock(return_value="openclaw-foo")
 
     from core.services import oauth_service  # noqa: F401
 
@@ -248,7 +240,7 @@ async def test_provision_allows_legacy_row_with_subscription_id_but_no_status():
             new_callable=AsyncMock,
             return_value=True,
         ),
-        patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+        patch("routers.container.dispatch_provision", new_callable=AsyncMock),
     ):
         result = await container_provision(auth=_auth())
     assert result["status"] == "provisioning"

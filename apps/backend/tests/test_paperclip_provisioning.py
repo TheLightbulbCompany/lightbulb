@@ -495,6 +495,65 @@ async def test_provision_org_reconciles_failed_company_without_reminting(repo):
     assert fetched.status == "failed"
 
 
+async def test_provision_org_cross_org_row_does_not_reconcile(repo):
+    """L3 own-side defense: a seat-only ex-member re-entering PERSONAL
+    context must never adopt an org's company_id off their own leftover
+    row. Rows are keyed per-user, so a user whose row still carries a
+    DISABLED former-org membership (org_id="org_prev") hits the same
+    ``repo.get(owner_user_id)`` lookup as the legit Friday-partial-reconcile
+    case above. Without the ``existing.org_id == owner_id`` guard the
+    reconcile predicate would adopt ``org_prev``'s company here; with it,
+    a personal provision_org call (owner_id == owner_user_id) must mint a
+    BRAND NEW company instead of re-pointing at the org's.
+    """
+    admin = _make_admin_mock()
+    admin.sign_in_user = AsyncMock(return_value={"user": {"id": "pc_user_ex"}, "_session_cookie": "session-personal"})
+    admin.create_company = AsyncMock(return_value={"id": "co_personal_new"})
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+
+    # Leftover row from a since-departed org membership: disabled, still
+    # carrying the ORG's company_id and a real credential.
+    from core.encryption import encrypt
+
+    now = datetime.now(timezone.utc)
+    await repo.put(
+        PaperclipCompany(
+            user_id="user_ex_member",
+            org_id="org_prev",
+            company_id="co_org_prev",
+            paperclip_user_id="pc_user_ex",
+            paperclip_password_encrypted=encrypt("ex-member-password-plain"),
+            service_token_encrypted=encrypt("svc-token"),
+            status="disabled",
+            created_at=now,
+            updated_at=now,
+        )
+    )
+
+    row = await prov.provision_org(
+        owner_id="user_ex_member",  # personal context: owner_id == user_id
+        owner_user_id="user_ex_member",
+        owner_email="ex@acme.test",
+    )
+
+    # A NEW company was created — the org's company_id was NOT adopted.
+    admin.create_company.assert_awaited_once()
+    assert row.company_id == "co_personal_new"
+    assert row.company_id != "co_org_prev"
+    assert row.org_id == "user_ex_member"
+    assert row.status == "active"
+
+    # The credential WAS adopted via sign-in (own-side identity is fine to
+    # reuse) — only the cross-org COMPANY adoption is fenced.
+    admin.sign_in_user.assert_awaited()
+    assert admin.sign_up_user.await_count == 0
+
+    fetched = await repo.get("user_ex_member")
+    assert fetched is not None
+    assert fetched.company_id == "co_personal_new"
+    assert fetched.org_id == "user_ex_member"
+
+
 # ----------------------------------------------------------------------
 # Onboarding: G2 mint + writer safety (spec PR-4 / ONBOARD-TABLE)
 #

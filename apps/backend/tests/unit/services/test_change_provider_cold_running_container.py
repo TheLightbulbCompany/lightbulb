@@ -2,28 +2,33 @@
 
 change_provider's cold path (BYO involved on either side, or targeting
 bedrock_claude) dispatches ``background_provision`` and answers
-``restart: True`` (billing_service.py:1187-1196). background_provision's
-FIRST act is the single-flight lease claim (container_provision.py:90-94),
-and ``try_claim_provision``'s ConditionExpression admits only
-no-row / error / stopped / stale-provisioning — ``running`` is NOT claimable
-(container_repo.py:157-199).
+``restart: True`` (billing_service.py:1187-1196). ``background_provision`` is
+a pure pass-through to ``core.services.provision_dispatch.dispatch_provision``
+(the SFN executor, no flag — spec §7 PR-10); dispatch's FIRST act is the
+SAME single-flight lease claim (``container_repo.try_claim_provision``), and
+its ConditionExpression admits only no-row / error / stopped /
+stale-provisioning — ``running`` is NOT claimable (container_repo.py).
 
 These tests drive the REAL conditional write (moto) end-to-end through
-change_provider to pin the resulting behavior:
+change_provider to pin the resulting behavior, stubbing only the SFN
+``StartExecution`` boundary (the actual ``provision_user_container`` call now
+runs in a SEPARATE one-shot ECS task under ``scripts.provision_runner`` — see
+``tests/unit/scripts/test_provision_runner.py`` for that layer):
 
   * RUNNING row  -> the dispatched provision loses the claim and stands down;
-    ``provision_user_container`` is NEVER reached; the row is untouched; the
-    caller was nevertheless told ``restart: True``. The new provider lands on
-    the billing row only — the live container keeps its old task-def + config.
-  * STOPPED row  -> the claim wins and the SAME dispatch applies the new
-    provider via ``provision_user_container`` (the desired==0 branch is the
-    only one that rewrites configs / re-registers the task-def).
+    StartExecution is NEVER called; the row is untouched; the caller was
+    nevertheless told ``restart: True``. The new provider lands on the
+    billing row only — the live container keeps its old task-def + config.
+  * STOPPED row  -> the claim wins and dispatch starts an SFN execution
+    (the runner ECS task — not exercised here — is what actually applies the
+    new provider via ``provision_user_container``).
 
 The asymmetry is the finding: the cold provider change only actually applies
 when the container happens to be down — for the always-on paid fleet (the
 only population allowed to call change_provider) it silently no-ops.
 """
 
+import json
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -83,18 +88,13 @@ def cold_change_env(containers_table):
 
     billing_repo is the SAME module object in billing_service and
     container_provision (both `from core.repositories import billing_repo`),
-    so one patch serves change_provider's guard read AND
-    background_provision's resolve_provider_choice read.
+    so one patch serves change_provider's guard read.
     """
-    fake_ecs = MagicMock()
-    fake_ecs.provision_user_container = AsyncMock(return_value="svc-name")
+    sfn_client = MagicMock()
     created: list = []
-    metrics = MagicMock()
     row = _billing_row()
 
     async def _commit_choice(owner_id, *, provider_choice, byo_provider, connector_user_id=None):
-        # Mirror billing_repo.set_provider_choice: the dispatched
-        # background_provision re-reads the row and must see the NEW choice.
         row["provider_choice"] = provider_choice
         row["byo_provider"] = byo_provider
 
@@ -124,19 +124,18 @@ def cold_change_env(containers_table):
             "create_task",
             new=lambda coro: created.append(coro) or MagicMock(),
         ),
-        # The provision executor: reached ONLY if the claim is won.
-        patch("core.services.container_provision.get_ecs_manager", return_value=fake_ecs),
-        patch("core.services.container_provision._emit_provision_metric", new=metrics),
+        # The SFN boundary: StartExecution is the only AWS call dispatch
+        # makes now (provision_user_container runs in a separate ECS task —
+        # not reachable from this process, see module docstring).
+        patch("core.services.provision_dispatch._client", return_value=sfn_client),
     ):
-        yield {"ecs": fake_ecs, "created": created, "metrics": metrics, "table": containers_table}
+        yield {"sfn": sfn_client, "created": created, "table": containers_table}
 
 
 @pytest.mark.asyncio
 async def test_cold_provider_change_on_running_container_silently_stands_down(cold_change_env):
     env = cold_change_env
-    env["table"].put_item(
-        Item={"owner_id": "user_cold", "status": "running", "service_name": "openclaw-user_cold-abc"}
-    )
+    env["table"].put_item(Item={"owner_id": "user_cold", "status": "running", "service_name": "openclaw-user_cold-abc"})
 
     result = await _run_cold_change(env["created"])
 
@@ -152,10 +151,9 @@ async def test_cold_provider_change_on_running_container_silently_stands_down(co
     assert len(env["created"]) == 1, "expected exactly one background_provision dispatch"
     await env["created"][0]
 
-    # The claim lost against status="running": the provision executor was
-    # NEVER reached — no config rewrite, no task-def re-register, no restart.
-    env["ecs"].provision_user_container.assert_not_awaited()
-    env["metrics"].assert_called_once_with("claim_lost")
+    # The claim lost against status="running": dispatch never reaches
+    # StartExecution — no SFN execution, no config rewrite, no restart.
+    env["sfn"].start_execution.assert_not_called()
 
     # The container row is untouched: still "running", no lease stamped, no
     # provisioning flip — so the status poll will never show the change either.
@@ -166,11 +164,12 @@ async def test_cold_provider_change_on_running_container_silently_stands_down(co
 
 
 @pytest.mark.asyncio
-async def test_cold_provider_change_on_stopped_container_applies_new_provider(cold_change_env):
+async def test_cold_provider_change_on_stopped_container_starts_execution(cold_change_env):
     """Control: the identical call against a STOPPED row wins the claim and
-    reaches provision_user_container with the NEW provider — proving the
-    running-row stand-down above is a state-dependent hole, not a stubbing
-    artifact."""
+    dispatch starts an SFN execution — proving the running-row stand-down
+    above is a state-dependent hole, not a stubbing artifact. Whether the NEW
+    provider is actually applied is the runner's job, covered separately in
+    tests/unit/scripts/test_provision_runner.py."""
     env = cold_change_env
     env["table"].put_item(Item={"owner_id": "user_cold", "status": "stopped"})
 
@@ -180,12 +179,13 @@ async def test_cold_provider_change_on_stopped_container_applies_new_provider(co
     assert len(env["created"]) == 1
     await env["created"][0]
 
-    env["ecs"].provision_user_container.assert_awaited_once()
-    kwargs = env["ecs"].provision_user_container.await_args.kwargs
-    assert kwargs["provider_choice"] == "byo_key"
-    assert kwargs["byo_provider"] == "anthropic"
-    assert kwargs["claim_id"]  # the won lease's fencing token
+    env["sfn"].start_execution.assert_called_once()
+    kwargs = env["sfn"].start_execution.call_args.kwargs
+    payload = json.loads(kwargs["input"])
+    assert payload["owner_id"] == "user_cold"
+    assert payload["command"][:5] == ["uv", "run", "python", "-m", "scripts.provision_runner"]
 
     row = env["table"].get_item(Key={"owner_id": "user_cold"}).get("Item")
     assert row["status"] == "provisioning"
-    assert row["provision_claim_id"] == kwargs["claim_id"]
+    assert row["provision_claim_id"] == payload["claim_id"]
+    assert row["provision_execution_name"] == kwargs["name"]

@@ -9,11 +9,8 @@ from __future__ import annotations
 
 import logging
 
-from core.containers import get_ecs_manager
 from core.containers.config import BEDROCK_TRIAL_CHOICE
-from core.observability.logging import bind_log_context
-from core.repositories import billing_repo, container_repo
-from core.repositories.container_repo import ProvisionSuperseded
+from core.repositories import billing_repo
 
 logger = logging.getLogger(__name__)
 
@@ -56,93 +53,35 @@ async def resolve_provider_choice(owner_id: str) -> tuple[str, str | None]:
 
 
 async def background_provision(owner_id: str, clerk_user_id: str) -> None:
-    """Run container provisioning in the background.
+    """Run container provisioning via the PROVISION Step Functions executor.
 
     ``owner_id`` is the container scope (org_id in org context, user_id
     in personal). ``clerk_user_id`` is kept for caller compatibility;
-    the function reads provider_choice from billing_repo by owner_id
-    and does not consult clerk_user_id directly.
+    the function does not consult it directly.
 
-    Catches and logs all exceptions — never raises. This function is an
+    THE single funnel: every existing ``asyncio.create_task(background_provision(...))``
+    call site (the status poll's auto-retry/wake, ``ensure_user_ready``,
+    ``reprovision_for_user``, ``container_wake``, ``change_provider``'s cold
+    path) rides the SFN executor unchanged. There is no inline in-process
+    fallback and no flag (spec §7, PR-10) — provisioning is a durable,
+    process-death-proof Step Functions execution dispatched by
+    ``core.services.provision_dispatch.dispatch_provision``, never run
+    in-process here. ``dispatch_provision`` never raises (its own
+    try/except), so this wrapper is a pure pass-through and is itself an
     asyncio.create_task target.
 
-    SINGLE-FLIGHT: the FIRST act — before any side effect, before even the
-    provider-choice read — is an atomic lease claim on the container row
-    (``container_repo.try_claim_provision``). The frontend polls
-    /container/status every ~3s and each no-row/error/stopped poll dispatches
-    this task, so under a page refresh several instances run concurrently;
-    exactly one wins the claim and provisions, the rest stand down here. This
-    is what prevents two interleaved provisions from minting duplicate Bedrock
-    inference profiles and splitting them across the container config and the
-    IAM policy (the prod incident). Deliberate reprovision doors (conversion,
-    /recover, admin, provider change) do NOT come through here — they call
-    provision_user_container directly, which takes over the lease and fences
-    this path out at its next checkpoint.
+    The three SYNCHRONOUS doors that used to call
+    ``ecs_manager.provision_user_container`` directly (``POST /provision``,
+    ``POST /retry``, ``POST /recover``) route through ``dispatch_provision``
+    too now — see those routers — so two provisioning systems (this poll-
+    driven path and a direct ECS call) are never live at once.
     """
-    from core.auth import is_org_owner_id
+    from core.services.provision_dispatch import dispatch_provision
 
-    # Re-bind correlation ids onto the log contextvars: this runs in a detached
-    # asyncio task, so the HTTP-middleware binds did not propagate here. Bind
-    # owner_id as user_id so provisioning log lines are queryable by the same
-    # field as the rest of the owner's flows. (See bind_log_context docstring.)
-    bind_log_context(user_id=owner_id)
-
-    claim_id = await container_repo.try_claim_provision(owner_id)
-    if claim_id is None:
-        logger.info("Provision already in flight for owner %s — standing down", owner_id)
-        _emit_provision_metric("claim_lost")
-        return
-
-    try:
-        provider_choice, byo_provider = await resolve_provider_choice(owner_id)
-        # owner_type drives org-specific config (e.g. gateway.nodes.browser.mode
-        # = "manual" for orgs vs "auto" for personal). It's derivable from the
-        # owner_id prefix, so a re-provision regenerates the SAME org/personal
-        # config rather than silently defaulting to personal.
-        owner_type = "org" if is_org_owner_id(owner_id) else "personal"
-        await get_ecs_manager().provision_user_container(
-            owner_id,
-            provider_choice=provider_choice,
-            byo_provider=byo_provider,
-            owner_type=owner_type,
-            claim_id=claim_id,
-        )
-    except ProvisionSuperseded:
-        # A deliberate reprovision took the lease over mid-run. The row belongs
-        # to it now — stop quietly, write nothing (an error write here would
-        # clobber the superseding run's state).
-        logger.info("Provision for owner %s superseded by a deliberate reprovision — standing down", owner_id)
-        _emit_provision_metric("superseded")
-    except Exception as exc:
-        logger.exception("Background provisioning failed for owner %s", owner_id)
-        # Classify WHY it failed so the status endpoint can tell a transient
-        # failure (silently retried by the poll) from a deterministic one
-        # (surfaced to the owner instead of looped forever). Shared classifier
-        # lives in container_repo alongside the error transition it feeds.
-        last_error, retryable = container_repo.classify_provision_error(exc)
-        # Release the lease into "error": immediately re-claimable, and the
-        # status poll's existing error auto-retry re-dispatches — a failed
-        # provision self-heals on the next ~3s poll instead of wedging the
-        # owner behind a lease that only expires by staleness. Token-
-        # conditioned, so if the lease was meanwhile taken over this no-ops.
-        try:
-            await container_repo.release_provision_to_error(
-                owner_id, claim_id, last_error=last_error, retryable=retryable
-            )
-        except Exception:  # noqa: BLE001 — release is best-effort
-            logger.exception("Failed to release provision lease to error for owner %s", owner_id)
-        # This fire-and-forget task swallows exceptions, so its failures are
-        # otherwise invisible to alarms. Emit the SAME metric+dimension set the
-        # synchronous ecs_manager path uses on failure — {status: "error"}, no
-        # extra dims — so it lands on the exact CloudWatch stream the W1
-        # provision-error-rate alarm queries. (EMF publishes one stream per full
-        # dimension-key set, so a `phase` dim here would create a separate
-        # stream that NO alarm watches — defeating the point. The dispatch-vs-
-        # sync distinction lives in the logger.exception above instead.)
-        _emit_provision_metric("error")
+    await dispatch_provision(owner_id)
 
 
-def _emit_provision_metric(status: str) -> None:
+def emit_provision_metric(status: str) -> None:
     """Best-effort ``container.provision`` metric — a metrics outage must never
     turn the swallow-all task into a raise. Same single dimension key (status)
     as the synchronous ecs_manager emissions, so every value lands on the one

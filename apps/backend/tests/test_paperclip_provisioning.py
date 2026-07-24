@@ -292,6 +292,59 @@ async def test_provision_org_idempotent_on_second_call(repo):
     assert first.company_id == second.company_id == "co_acme"
 
 
+async def test_reprovision_with_company_preserved_funnel_stays_complete_no_reprompt(repo):
+    """L1, end to end: a container-only reprovision (e.g. `DELETE
+    /debug/provision` then `POST /debug/provision`, or the periodic
+    /container/status poll re-running the Paperclip seed step) NEVER mints a
+    new company — it hits provision_org's ``status=="active"`` idempotency
+    short-circuit, which returns the EXISTING row completely unchanged (ZERO
+    writes). A funnel that already reached "complete" therefore survives a
+    container recreation by construction, and the owner is never re-shown
+    the first-run funnel."""
+    admin = _make_admin_mock()
+    admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "_session_cookie": "tok"})
+    admin.create_company = AsyncMock(return_value={"id": "co_acme"})
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+
+    provisioned = await prov.provision_org(
+        owner_id="org_acme", owner_user_id="user_owner", owner_email="owner@acme.test"
+    )
+    generation = provisioned.onboarding_generation
+
+    # Simulate the funnel having reached "complete" (a later PR's bootstrap
+    # dispatcher would set this on observed chat.final; direct write here
+    # isolates this test from that machinery).
+    await repo.claim_funnel_submission("user_owner", onboarding_generation=generation)
+    await repo.record_onboarding_ids(
+        "user_owner", onboarding_generation=generation, goal_id="goal-1", project_id="proj-1"
+    )
+    table = repo._table()
+    table.update_item(
+        Key={"user_id": "user_owner"},
+        UpdateExpression="SET funnel_state = :c",
+        ExpressionAttributeValues={":c": "complete"},
+    )
+    assert (await repo.get("user_owner")).funnel_state == "complete"
+
+    # A container-only recreation (G1) never touches this table at all — the
+    # part of the flow THIS test proves is the Paperclip-side leg that DOES
+    # run again on every /container/status poll (_ensure_paperclip_for_owner
+    # calls provision_org unconditionally, best-effort). It must be a no-op.
+    reprovisioned = await prov.provision_org(
+        owner_id="org_acme", owner_user_id="user_owner", owner_email="owner@acme.test"
+    )
+
+    assert admin.sign_up_user.await_count == 1  # no re-signup
+    assert admin.create_company.await_count == 1  # no new company
+    assert reprovisioned.onboarding_generation == generation
+    assert reprovisioned.funnel_state == "complete"  # unchanged — no re-prompt
+    assert reprovisioned.onboarding_goal_id == "goal-1"
+
+    fetched = await repo.get("user_owner")
+    assert fetched.funnel_state == "complete"
+    assert fetched.onboarding_generation == generation
+
+
 async def test_provision_org_seed_agent_failure_is_not_fatal(repo):
     admin = _make_admin_mock()
     admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "_session_cookie": "tok"})
@@ -440,6 +493,204 @@ async def test_provision_org_reconciles_failed_company_without_reminting(repo):
     assert fetched is not None
     assert fetched.company_id == "co_first"
     assert fetched.status == "failed"
+
+
+async def test_provision_org_cross_org_row_does_not_reconcile(repo):
+    """L3 own-side defense: a seat-only ex-member re-entering PERSONAL
+    context must never adopt an org's company_id off their own leftover
+    row. Rows are keyed per-user, so a user whose row still carries a
+    DISABLED former-org membership (org_id="org_prev") hits the same
+    ``repo.get(owner_user_id)`` lookup as the legit Friday-partial-reconcile
+    case above. Without the ``existing.org_id == owner_id`` guard the
+    reconcile predicate would adopt ``org_prev``'s company here; with it,
+    a personal provision_org call (owner_id == owner_user_id) must mint a
+    BRAND NEW company instead of re-pointing at the org's.
+    """
+    admin = _make_admin_mock()
+    admin.sign_in_user = AsyncMock(return_value={"user": {"id": "pc_user_ex"}, "_session_cookie": "session-personal"})
+    admin.create_company = AsyncMock(return_value={"id": "co_personal_new"})
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+
+    # Leftover row from a since-departed org membership: disabled, still
+    # carrying the ORG's company_id and a real credential.
+    from core.encryption import encrypt
+
+    now = datetime.now(timezone.utc)
+    await repo.put(
+        PaperclipCompany(
+            user_id="user_ex_member",
+            org_id="org_prev",
+            company_id="co_org_prev",
+            paperclip_user_id="pc_user_ex",
+            paperclip_password_encrypted=encrypt("ex-member-password-plain"),
+            service_token_encrypted=encrypt("svc-token"),
+            status="disabled",
+            created_at=now,
+            updated_at=now,
+        )
+    )
+
+    row = await prov.provision_org(
+        owner_id="user_ex_member",  # personal context: owner_id == user_id
+        owner_user_id="user_ex_member",
+        owner_email="ex@acme.test",
+    )
+
+    # A NEW company was created — the org's company_id was NOT adopted.
+    admin.create_company.assert_awaited_once()
+    assert row.company_id == "co_personal_new"
+    assert row.company_id != "co_org_prev"
+    assert row.org_id == "user_ex_member"
+    assert row.status == "active"
+
+    # The credential WAS adopted via sign-in (own-side identity is fine to
+    # reuse) — only the cross-org COMPANY adoption is fenced.
+    admin.sign_in_user.assert_awaited()
+    assert admin.sign_up_user.await_count == 0
+
+    fetched = await repo.get("user_ex_member")
+    assert fetched is not None
+    assert fetched.company_id == "co_personal_new"
+    assert fetched.org_id == "user_ex_member"
+
+
+# ----------------------------------------------------------------------
+# Onboarding: G2 mint + writer safety (spec PR-4 / ONBOARD-TABLE)
+#
+# See docs/superpowers/specs/2026-07-24-onboarding-architecture-design.md
+# §2's "load-bearing safety requirement": onboarding_generation is minted
+# EXACTLY ONCE at G2 (fresh company only, INV-3), and every later whole-item
+# put on the same row (notably the reconcile-adopt retry path) must carry
+# those fields forward untouched (INV-4) or co-location reintroduces the
+# clobber a dedicated table would have avoided.
+# ----------------------------------------------------------------------
+
+
+async def test_provision_org_fresh_create_mints_onboarding_generation_at_g2(repo):
+    """A genuinely-new company (Friday seed lands on the FIRST attempt) mints
+    a fresh onboarding_generation and initializes funnel/bootstrap state on
+    the SAME write that persists the active row (INV-3)."""
+    admin = _make_admin_mock()
+    admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "_session_cookie": "tok"})
+    admin.create_company = AsyncMock(return_value={"id": "co_acme"})
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+
+    row = await prov.provision_org(owner_id="org_acme", owner_user_id="user_owner", owner_email="owner@acme.test")
+
+    assert row.status == "active"
+    assert row.onboarding_generation is not None
+    assert row.funnel_state == "not_started"
+    assert row.bootstrap_state == "not_started"
+    # Repo round-trip — not just the in-memory return value.
+    fetched = await repo.get("user_owner")
+    assert fetched.onboarding_generation == row.onboarding_generation
+    assert fetched.funnel_state == "not_started"
+    assert fetched.bootstrap_state == "not_started"
+
+
+async def test_provision_org_reconcile_adopt_does_not_clobber_onboarding_fields(repo):
+    """THE writer-safety proof (spec PR-4's hardest requirement): a
+    reconcile-adopt retry (Friday seed failed on attempt 1, succeeds on
+    attempt 2, same company_id) must NOT reset onboarding_generation or
+    funnel_state/bootstrap_state -- even though the row's whole-item `put`
+    is called again on the retry. If this test fails, co-location just
+    reintroduced the exact clobber bug the dedicated-table alternative would
+    have structurally avoided.
+    """
+    admin = _make_admin_mock()
+    admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "_session_cookie": "owner-session-1"})
+    admin.sign_in_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "_session_cookie": "owner-session-2"})
+    admin.create_company = AsyncMock(return_value={"id": "co_acme"})
+    # Friday fails on the first attempt (company created, seed not landed).
+    admin.create_agent = AsyncMock(side_effect=PaperclipApiError("friday create failed", status_code=500, body="x"))
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+
+    first = await prov.provision_org(owner_id="org_acme", owner_user_id="user_owner", owner_email="owner@acme.test")
+    assert first.status == "failed"
+    original_generation = first.onboarding_generation
+    assert original_generation is not None  # minted on THIS (fresh-create) attempt
+
+    # Simulate that some onboarding progress had already landed on this
+    # generation before the retry (proves the FULL set of onboarding fields
+    # survives, not just the generation id) — a real caller would get here
+    # via claim_funnel_submission / record_onboarding_ids; we write directly
+    # to isolate this test from that machinery.
+    await repo.claim_funnel_submission("user_owner", onboarding_generation=original_generation)
+    await repo.record_onboarding_ids(
+        "user_owner", onboarding_generation=original_generation, goal_id="goal-1", project_id="proj-1"
+    )
+    pre_reconcile = await repo.get("user_owner")
+    assert pre_reconcile.funnel_state == "submitted"
+    assert pre_reconcile.onboarding_goal_id == "goal-1"
+
+    # Second attempt: Friday now succeeds. This is the RECONCILE-ADOPT path
+    # (reconciling_company=True) -- create_company must NOT be called again,
+    # and the row's whole-item put must carry the onboarding fields forward.
+    admin.create_agent = AsyncMock(side_effect=[{"id": "agent_friday"}, {"id": "agent_atlas"}])
+    second = await prov.provision_org(owner_id="org_acme", owner_user_id="user_owner", owner_email="owner@acme.test")
+
+    assert admin.create_company.await_count == 1  # no new company minted
+    assert second.status == "active"
+    assert second.onboarding_generation == original_generation  # NOT re-minted
+    assert second.funnel_state == "submitted"  # NOT reset to not_started
+    assert second.onboarding_goal_id == "goal-1"  # NOT wiped
+    assert second.onboarding_project_id == "proj-1"
+
+    # Repo round-trip — the actual persisted item, not just the return value.
+    fetched = await repo.get("user_owner")
+    assert fetched.onboarding_generation == original_generation
+    assert fetched.funnel_state == "submitted"
+    assert fetched.onboarding_goal_id == "goal-1"
+    assert fetched.onboarding_project_id == "proj-1"
+
+
+async def test_provision_org_company_recreated_mints_a_new_onboarding_generation(repo):
+    """A genuinely NEW company for the same owner_user_id (e.g. after an
+    atomic wipe deleted the old row) mints a FRESH onboarding_generation --
+    the funnel resets, it does not inherit the deleted company's state."""
+    admin = _make_admin_mock()
+    admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "_session_cookie": "tok"})
+    admin.create_company = AsyncMock(return_value={"id": "co_first"})
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+
+    first = await prov.provision_org(owner_id="org_acme", owner_user_id="user_owner", owner_email="owner@acme.test")
+    first_generation = first.onboarding_generation
+    await repo.claim_funnel_submission("user_owner", onboarding_generation=first_generation)
+    await repo.record_onboarding_ids(
+        "user_owner", onboarding_generation=first_generation, goal_id="goal-1", project_id="proj-1"
+    )
+
+    # Atomic wipe: the row (and the Aurora company) is gone.
+    await repo.delete("user_owner")
+
+    # Fresh provision for the SAME owner_user_id -- a genuinely new company.
+    admin.create_company = AsyncMock(return_value={"id": "co_second"})
+    second = await prov.provision_org(owner_id="org_acme", owner_user_id="user_owner", owner_email="owner@acme.test")
+
+    assert second.company_id == "co_second"
+    assert second.onboarding_generation is not None
+    assert second.onboarding_generation != first_generation
+    assert second.funnel_state == "not_started"
+    assert second.onboarding_goal_id is None
+    assert second.onboarding_project_id is None
+
+
+async def test_provision_member_does_not_mint_onboarding_generation(repo):
+    """INV-3: a seat-join (provision_member) is NEVER a generation bump --
+    the member's own row carries no onboarding fields at all."""
+    admin = _make_admin_mock()
+    owner_row = await _seed_owner(repo)
+    admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_member"}, "_session_cookie": "tok"})
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+
+    member = await prov.provision_member(
+        owner_id="org_acme", user_id="user_member", email="member@acme.test", owner_email="owner@acme.test"
+    )
+
+    assert member.onboarding_generation is None
+    assert member.funnel_state is None
+    # The owner row (fetched independently) is untouched by the member join.
+    assert (await repo.get(owner_row.user_id)).onboarding_generation is None  # owner row was never minted either
 
 
 # ----------------------------------------------------------------------

@@ -60,6 +60,7 @@ from core.encryption import decrypt, encrypt
 from core.observability.metrics import put_metric
 from core.repositories.paperclip_repo import PaperclipCompany, PaperclipRepo
 from core.services import service_token
+from core.services.generation_ids import bump_onboarding_generation
 from core.services.agent_email import mint_agent_email_address
 from core.services.company_identity import allocate_company_slug, generate_company_name
 from core.services.paperclip_adapter_config import OPENCLAW_GATEWAY_TYPE, synthesize_openclaw_adapter
@@ -87,6 +88,50 @@ ATLAS_CAPABILITIES = (
     "or general work itself, and never publishes to the marketplace (the "
     "owner publishes via the seller wizard)."
 )
+
+
+# The onboarding attribute names carried on ``PaperclipCompany`` -- the exact
+# set of ``PaperclipCompany`` fields listed under "Onboarding" in
+# ``core/repositories/paperclip_repo.py``. Kept as a tuple (not re-derived
+# via dataclasses.fields()) so it stays an explicit, reviewable list: every
+# whole-item ``repo.put`` writer-safety fix in this module reads this same
+# set, and drift between "what the dataclass carries" and "what a put
+# preserves" is exactly the bug class this PR exists to close.
+_ONBOARDING_FIELD_NAMES = (
+    "onboarding_generation",
+    "funnel_state",
+    "funnel_submitted_at",
+    "funnel_completed_at",
+    "onboarding_goal_id",
+    "onboarding_project_id",
+    "bootstrap_state",
+    "bootstrap_dispatch_id",
+    "bootstrap_dispatched_at",
+    "bootstrap_delivered_at",
+    "bootstrap_attempts",
+    "bootstrap_last_error",
+)
+
+
+def _carry_forward_onboarding_fields(existing: Optional[PaperclipCompany]) -> dict:
+    """Read-merge helper for every whole-item ``repo.put`` in this module.
+
+    ``PaperclipRepo.put`` is a raw ``PutItem`` — any onboarding field not
+    set on the ``PaperclipCompany`` passed to it is simply ABSENT from the
+    new item, silently wiping a previously-written value. Every put site in
+    this module that is NOT the deliberate G2 mint (provision_org's
+    fresh-create branch) must carry the row's existing onboarding fields
+    forward through this helper, or reconcile/adopt/re-point writes would
+    reintroduce the exact clobber the co-located design's "load-bearing
+    safety requirement" exists to prevent.
+
+    Returns ``{}`` (no onboarding kwargs at all) when ``existing`` is None —
+    there is nothing to preserve, and ``PaperclipCompany``'s onboarding
+    fields already default to None.
+    """
+    if existing is None:
+        return {}
+    return {name: getattr(existing, name) for name in _ONBOARDING_FIELD_NAMES}
 
 
 async def build_paperclip_provisioning() -> "PaperclipProvisioning":
@@ -303,7 +348,24 @@ class PaperclipProvisioning:
         # retrying Friday/Atlas against the SAME company. A net-new failure with
         # NO company_id (the orphan-422 / pre-create marker) is deliberately
         # excluded — its ``company_id`` is "" and it re-runs the full chain.
-        reconciling_company = existing is not None and existing.status != "active" and bool(existing.company_id)
+        #
+        # The ``org_id == owner_id`` guard is own-side defense-in-depth (L3):
+        # rows are keyed per-user, so a seat-only ex-member re-entering
+        # PERSONAL context (owner_id == their own user_id) can still find
+        # their OWN row still carrying the ORG's company_id from a prior
+        # membership. Without this guard that row would be adopted here,
+        # re-pointing a personal provision at someone else's company.
+        # Cross-tenant access is separately fenced by Paperclip authz (the
+        # re-signed-in session isn't a member of that company), so the real
+        # damage is a silently dropped 30-day purge timer on the row, not a
+        # data leak — this closes it at the source instead of relying on the
+        # downstream fence.
+        reconciling_company = (
+            existing is not None
+            and existing.status != "active"
+            and bool(existing.company_id)
+            and existing.org_id == owner_id
+        )
         password = decrypt(existing.paperclip_password_encrypted) if adopting_existing else secrets.token_urlsafe(32)
         try:
             # 1. Obtain the owner's Better Auth account + session — signup for
@@ -335,6 +397,20 @@ class PaperclipProvisioning:
                 # point in the org flow; adoption only needs the credential
                 # pair. Net-new only: an adopted row already carries its
                 # credential and must not be overwritten to "provisioning".
+                #
+                # WRITER SAFETY (whole-item put #1 of the audited 4 — see
+                # architecture spec §2's "load-bearing safety requirement"):
+                # this branch only runs when ``adopting_existing`` is False,
+                # which implies ``reconciling_company`` is also False (a
+                # company_id can only exist on a row that also carries
+                # paperclip_user_id — the credential pair is written together
+                # below, and ``_mark_failed``'s put-if-absent marker never
+                # carries a company_id either). So there is normally nothing
+                # to preserve here. Read-merge ``existing`` anyway, purely
+                # defensively: a residual row from an unrelated prior
+                # incarnation (the personal->org L6 edge case, out of scope
+                # per the 2026-07-24 decisions) could in principle carry
+                # onboarding fields this write would otherwise silently wipe.
                 now = datetime.now(timezone.utc)
                 await self._repo.put(
                     PaperclipCompany(
@@ -347,6 +423,7 @@ class PaperclipProvisioning:
                         status="provisioning",
                         created_at=now,
                         updated_at=now,
+                        **_carry_forward_onboarding_fields(existing),
                     )
                 )
 
@@ -630,6 +707,36 @@ class PaperclipProvisioning:
             #    absence alone does NOT block ``active``.
             seed_ok = friday_agent_id is not None
             now = datetime.now(timezone.utc)
+
+            # ---- Onboarding fields (G2 mint / writer-safety — INV-3, INV-4) ----
+            # WRITER SAFETY (whole-item put #2 of the audited 4): this is THE
+            # row-creating write for the company, so it is also the ONLY place
+            # onboarding_generation is minted (G2). Two cases:
+            #
+            # * ``reconciling_company`` (RECONCILE-ADOPT of an existing,
+            #   non-active row's real company_id — see the docstring above):
+            #   this is a RETRY of the SAME onboarding attempt, not a new one.
+            #   The generation (and whatever funnel/bootstrap progress exists)
+            #   was already established on ``existing`` by the ORIGINAL
+            #   create — carry it forward untouched. This is the exact case
+            #   the architecture spec's "load-bearing safety requirement"
+            #   warns about: skipping this carry-forward would silently reset
+            #   a company's funnel/bootstrap state on every reconcile retry.
+            # * fresh create (``not reconciling_company``): a genuinely-new
+            #   Paperclip company was just confirmed (``create_company`` ran
+            #   above, unconditionally in this branch). Mint a fresh
+            #   onboarding_generation and reset funnel/bootstrap to their
+            #   initial states, atomically on this same write — never on
+            #   ``provision_member`` (org seat), per INV-3.
+            if reconciling_company:
+                onboarding_fields = _carry_forward_onboarding_fields(existing)
+            else:
+                onboarding_fields = {
+                    "onboarding_generation": bump_onboarding_generation(),
+                    "funnel_state": "not_started",
+                    "bootstrap_state": "not_started",
+                }
+
             row = PaperclipCompany(
                 user_id=owner_user_id,
                 org_id=owner_id,
@@ -647,6 +754,7 @@ class PaperclipProvisioning:
                     else "provision_org: required CEO seed (Friday) did not land — "
                     "company left non-active for a later poll to reconcile"
                 ),
+                **onboarding_fields,
             )
             await self._repo.put(row)
             if seed_ok:
@@ -785,6 +893,21 @@ class PaperclipProvisioning:
                 # paperclip_user_id + password). Only for net-new members:
                 # an adopted row already carries its credential and must not
                 # be overwritten to "provisioning".
+                #
+                # WRITER SAFETY (whole-item put #3 of the audited 4):
+                # deliberately carries NO onboarding fields, and per INV-3
+                # never mints onboarding_generation here (a seat-join is not
+                # a generation bump). Onboarding truth lives ONLY on the
+                # OWNER row (see PaperclipRepo.resolve_owner_row) — a member
+                # row is never read for it, so this is safe by construction,
+                # not by omission. The one accepted residual: if THIS row
+                # previously belonged to the member's own personal company
+                # (the sign-up-or-ADOPT re-point noted above), that row's
+                # personal onboarding fields are wiped here rather than
+                # carried forward — orphaning them is the explicitly
+                # out-of-scope personal->org L6 cleanup (2026-07-24 decision:
+                # "no live path in the main app today"), not a new gap this
+                # PR introduces.
                 now = datetime.now(timezone.utc)
                 await self._repo.put(
                     PaperclipCompany(
@@ -848,6 +971,16 @@ class PaperclipProvisioning:
             # 7. Persist the member row. DDB column stays ``org_id`` —
             #    that's a Paperclip-side stored concept; we just feed it
             #    from the new ``owner_id`` kwarg.
+            #
+            # WRITER SAFETY (whole-item put #4 of the audited 4): same
+            # reasoning as put #3 above — a member row deliberately carries
+            # NO onboarding fields and never mints onboarding_generation
+            # (INV-3). Unlike ``seeded_agent_ids`` (replicated below so the
+            # delete-protection survives even if the owner row is purged),
+            # onboarding truth is NOT replicated onto member rows: it has
+            # exactly one home (the owner row, via
+            # ``PaperclipRepo.resolve_owner_row``), and a member's own row is
+            # structurally never consulted for it.
             now = datetime.now(timezone.utc)
             row = PaperclipCompany(
                 user_id=user_id,

@@ -35,6 +35,7 @@ from core.containers.config import (
 from core.containers.workspace import get_workspace
 from core.repositories import billing_repo, container_repo
 from core.repositories.container_repo import ProvisionSuperseded
+from core.services.generation_ids import new_provision_generation
 
 logger = logging.getLogger(__name__)
 
@@ -768,6 +769,7 @@ class EcsManager:
         bedrock_aip_arns: dict[str, str] | None = None,
         bedrock_gate_token_hash: str | None = None,
         claim_id: str | None = None,
+        attempt_token: str | None = None,
     ) -> str:
         """Create an ECS Service for a user with per-user EFS isolation.
 
@@ -804,6 +806,8 @@ class EcsManager:
             bedrock_aip_arns: Optional per-owner AIP map ({tier: aip_arn}) for
                 the ``bedrock_claude`` path. Persisted onto the containers row
                 as ``bedrock_aip_arns`` by the upsert below.
+            attempt_token: Optional additional checkpoint fence — see
+                ``container_repo.claim_attempt`` docstring (spec §7 hazard 1).
 
         Returns:
             The ECS service name.
@@ -826,6 +830,16 @@ class EcsManager:
             "status": "provisioning",
             "substatus": None,
             "owner_type": owner_type,
+            # The container-incarnation fence (INV-2). THE single mint point
+            # for provision_generation, system-wide — see
+            # core.services.generation_ids.new_provision_generation. Every
+            # other containers-row write path (scale-from-zero, force-redeploy,
+            # restart, provider hot-swap, Bedrock revoke/restore, Stripe
+            # conversion) goes through container_repo.update_fields /
+            # update_status / other scoped writers, none of which touch this
+            # field, so it survives all of them untouched. This PR is inert:
+            # no consumer reads it yet.
+            "provision_generation": new_provision_generation(),
         }
         if hook_token:
             upsert_fields["hook_token"] = hook_token
@@ -866,7 +880,7 @@ class EcsManager:
         # upsert deliberately preserves the NEW owner's lease fields, so without
         # this fence the zombie's write would sail straight through.
         if claim_id is not None:
-            await self._provision_checkpoint(user_id, claim_id)
+            await self._provision_checkpoint(user_id, claim_id, attempt_token=attempt_token)
         await container_repo.upsert(user_id, upsert_fields)
 
         try:
@@ -929,7 +943,7 @@ class EcsManager:
             # window where a superseded run could stand up a service built from
             # its own task definition/role.
             if claim_id is not None:
-                await self._provision_checkpoint(user_id, claim_id)
+                await self._provision_checkpoint(user_id, claim_id, attempt_token=attempt_token)
             try:
                 self._ecs.create_service(**create_kwargs)
             except ClientError as e:
@@ -1174,7 +1188,15 @@ class EcsManager:
             put_metric("container.start.refused", dimensions={"reason": reason})
             raise ContainerStartRefused(reason, user_id, _TRIAL_REFUSAL_COPY[reason])
 
-    async def start_user_service(self, user_id: str, *, force: bool = False) -> None:
+    async def start_user_service(
+        self,
+        user_id: str,
+        *,
+        force: bool = False,
+        claim_id: str | None = None,
+        generation: str | None = None,
+        attempt_token: str | None = None,
+    ) -> None:
         """Scale a user's ECS service to 1 (running).
 
         THE START CHOKEPOINT. Unless ``force``, every start runs
@@ -1184,7 +1206,16 @@ class EcsManager:
         Fires _await_running_transition afterwards so the provisioning -> running
         transition happens eventually even if the user disconnects before the
         ECS task finishes warming up. Without this, cold-start restart rows
-        get stuck at status=provisioning forever.
+        get stuck at status=provisioning forever. EXCEPT when ``claim_id`` is
+        given: that means the caller is ``_provision_user_container_inner``'s
+        own fresh-provision path, whose only production caller
+        (``scripts.provision_runner``) already awaits
+        ``wait_for_running(user_id, claim_id=...)`` in the FOREGROUND right
+        after ``provision_user_container`` returns — firing a second detached
+        poller here would duplicate ECS API calls against the same row for no
+        upside. Every OTHER caller (wake-from-stopped, the admin break-glass
+        start, /debug/provision) passes no ``claim_id`` and keeps the
+        detached poller exactly as before.
 
         Does NOT pass forceNewDeployment=True. The historical use case here was
         a stopped service (desiredCount=0) — `desiredCount=1` alone is enough
@@ -1244,6 +1275,11 @@ class EcsManager:
             await container_repo.update_status(user_id, "provisioning")
 
         logger.info("Started ECS service %s for user %s", service_name, user_id)
+
+        if claim_id is not None:
+            # Fenced fresh-provision caller — its own foreground
+            # wait_for_running owns the transition; see docstring.
+            return
 
         # Fire the durable poller. Any code path that sets status=provisioning
         # MUST ensure a transition poller is running, otherwise a slow ECS
@@ -1694,8 +1730,22 @@ class EcsManager:
         """Look up a user's container and discover its task IP.
 
         Accepts containers in "provisioning" or "running" status.
-        If a provisioning container's task is healthy, automatically
-        transitions the status to "running".
+
+        READ-ONLY on the row's status/substatus (L2 fix, spec §7): this used
+        to opportunistically write status="running" the moment a
+        "provisioning" row's task became reachable — a second, unfenced
+        writer of the exact transition ``_await_running_transition`` also
+        owns, and the dead-reckoning branch the SFN reshape needed to close
+        (an in-flight fenced run's row could be raced by a GET-triggered
+        write with no claim/generation check at all). SFN (via
+        ``wait_for_running``, foreground-awaited by
+        ``scripts.provision_runner``) is now the SOLE writer of the
+        provisioning -> running transition; this method only ever READS
+        current state + probes reachability. A container whose task is
+        already healthy but whose row hasn't caught up yet simply reports
+        ``status="provisioning"`` for one more poll tick until the runner's
+        own write lands — a minor, acceptable latency, not a correctness
+        gap (the runner is the same process watching the same task).
 
         Args:
             user_id: Clerk user ID.
@@ -1738,46 +1788,9 @@ class EcsManager:
                 container.get("last_gateway_handshake_at") or "never",
             )
 
-        # Auto-transition provisioning -> running once the task is reachable.
-        # Also opportunistically capture the task ARN if we don't already have
-        # one on the row — previously this field was silently missing on every
-        # container row because no code path wrote it.
-        if container.get("status") == "provisioning" and self.is_healthy(ip):
-            try:
-                fields = {
-                    "substatus": "gateway_healthy",
-                    "status": "running",
-                }
-                if not container.get("task_arn"):
-                    try:
-                        list_resp = self._ecs.list_tasks(
-                            cluster=self._cluster,
-                            serviceName=container["service_name"],
-                            desiredStatus="RUNNING",
-                        )
-                        task_arns = list_resp.get("taskArns", [])
-                        if task_arns:
-                            fields["task_arn"] = task_arns[0]
-                    except Exception:
-                        # Task ARN is a nice-to-have for observability,
-                        # not load-bearing for the transition itself.
-                        pass
-                await container_repo.update_fields(user_id, fields)
-                logger.info(
-                    "Container %s for user %s transitioned to running",
-                    container["service_name"],
-                    user_id,
-                )
-                # Update local dict to reflect changes
-                container["status"] = "running"
-                container["substatus"] = "gateway_healthy"
-                if "task_arn" in fields:
-                    container["task_arn"] = fields["task_arn"]
-            except Exception:
-                logger.warning(
-                    "Failed to persist running status for user %s, will retry on next poll",
-                    user_id,
-                )
+        # No write here — see the docstring. SFN's wait_for_running (or, for
+        # the non-provisioning-flow callers, _await_running_transition's
+        # unfenced path) is the sole writer of provisioning -> running.
 
         return container, ip
 
@@ -1796,18 +1809,36 @@ class EcsManager:
     # Full provisioning flow
     # ------------------------------------------------------------------
 
-    def _service_exists(self, service_name: str) -> dict | None:
-        """Check if an ECS service exists and return its description, or None."""
+    def _service_exists(self, service_name: str, user_id: str = "") -> dict | None:
+        """Check if an ECS service exists and return its description, or None
+        iff it genuinely does not exist (never created, or INACTIVE after a
+        prior delete).
+
+        Raises ``EcsManagerError`` on a ``describe_services`` API failure
+        (throttle, transient network, auth blip) — that is NOT the same as
+        "no service". The caller (``_provision_user_container_inner``) uses a
+        ``None`` return to route into the full-provision branch
+        (``create_service``); silently swallowing a describe_services error
+        and returning ``None`` used to risk attempting to CREATE a second
+        service over one that is actually ACTIVE — an ECS "already exists"
+        error, misclassified as a generic retryable failure, papering over
+        the real state instead of surfacing what actually went wrong (L2 fix,
+        spec §7 / ecs_manager.py:1751-1753 in the original report). Letting
+        this propagate routes it through the normal
+        ``container_repo.classify_provision_error`` path instead, where an
+        ``EcsManagerError`` correctly defaults to retryable=True (a
+        describe_services blip IS transient).
+        """
         try:
             resp = self._ecs.describe_services(
                 cluster=self._cluster,
                 services=[service_name],
             )
-            services = resp.get("services", [])
-            if services and services[0].get("status") != "INACTIVE":
-                return services[0]
-        except Exception:
-            pass
+        except Exception as e:
+            raise EcsManagerError(f"describe_services failed for {service_name}: {e}", user_id) from e
+        services = resp.get("services", [])
+        if services and services[0].get("status") != "INACTIVE":
+            return services[0]
         return None
 
     async def _build_byo_secrets_for_user(
@@ -1902,19 +1933,40 @@ class EcsManager:
         byo_provider: str | None = None,
         owner_type: str = "personal",
         claim_id: str | None = None,
+        generation: str | None = None,
+        attempt_token: str | None = None,
     ) -> str:
         """Fenced entry point for every container provision.
 
         ``claim_id`` is the provision lease's fencing token
-        (container_repo.try_claim_provision). The poll-driven path
-        (background_provision) claims before calling and passes its token here.
-        A DIRECT call with no token is, by definition, a DELIBERATE reprovision
-        (trial->paid conversion, /container/recover, admin force-apply, provider
-        change, debug) — it takes the lease over unconditionally, which fences
-        any in-flight poll provision out at that run's next checkpoint. So
-        deliberate doors are never blocked, and two provisions can never
-        interleave their writes: at most one holds the lease, and the loser
-        stops before its next side effect (ProvisionSuperseded).
+        (container_repo.try_claim_provision). The SOLE production caller —
+        ``scripts.provision_runner`` (the SFN executor's one-shot ECS task) —
+        always claims before calling and passes its token here. A DIRECT call
+        with no token is, by definition, a DELIBERATE unconditional takeover
+        (used by direct/debug/test callers only; the three synchronous doors
+        that used to call this directly — /provision, /retry, /recover — now
+        route through ``core.services.provision_dispatch.dispatch_provision``
+        instead, spec §7) — it takes the lease over unconditionally, which
+        fences any in-flight poll provision out at that run's next checkpoint.
+        So a deliberate takeover is never blocked, and two provisions can
+        never interleave their writes: at most one holds the lease, and the
+        loser stops before its next side effect (ProvisionSuperseded).
+
+        ``generation`` / ``attempt_token`` are optional additional fences
+        threaded to every checkpoint (see ``container_repo.update_container_leased``
+        / ``claim_attempt`` docstrings) — the runner passes both; other
+        callers default to None (no extra condition, unchanged behavior).
+
+        POLLER SUPPRESSION is keyed on whether the CALLER supplied
+        ``claim_id`` — not merely on whether it ends up non-None. A takeover
+        (``claim_id`` argument None) mints its own claim internally but has
+        NO runner awaiting ``wait_for_running`` afterward, so it must still
+        get the detached poller `_provision_user_container_inner` /
+        `create_user_service` / `start_user_service` would otherwise fire;
+        only a caller that supplied its own ``claim_id`` (in production,
+        exclusively ``scripts.provision_runner``) is trusted to own the
+        foreground wait itself. Recording this BEFORE the takeover
+        reassignment below is what makes the distinction possible.
 
         On any failure the lease is released to ``error`` (token- and
         status-conditioned, see release_provision_to_error), which the status
@@ -1927,6 +1979,7 @@ class EcsManager:
         # and is stubbed at the source module instead.
         from core.repositories import container_repo as _lease_repo
 
+        caller_supplied_claim = claim_id is not None
         if claim_id is None:
             claim_id = await _lease_repo.takeover_provision(user_id)
             logger.info("Provision lease takeover for owner %s (deliberate reprovision)", user_id)
@@ -1937,6 +1990,9 @@ class EcsManager:
                 byo_provider=byo_provider,
                 owner_type=owner_type,
                 claim_id=claim_id,
+                suppress_transition_poller=caller_supplied_claim,
+                generation=generation,
+                attempt_token=attempt_token,
             )
         except ProvisionSuperseded:
             # A newer run owns the row now; write nothing over its state.
@@ -1952,7 +2008,12 @@ class EcsManager:
             last_error, retryable = _lease_repo.classify_provision_error(exc)
             try:
                 await _lease_repo.release_provision_to_error(
-                    user_id, claim_id, last_error=last_error, retryable=retryable
+                    user_id,
+                    claim_id,
+                    last_error=last_error,
+                    retryable=retryable,
+                    generation=generation,
+                    attempt_token=attempt_token,
                 )
             except Exception:  # noqa: BLE001 — release is best-effort
                 logger.exception("Failed to release provision lease for owner %s", user_id)
@@ -1995,14 +2056,24 @@ class EcsManager:
         primary = next((d for d in svc.get("deployments", []) if d.get("status") == "PRIMARY"), None)
         return bool(primary and primary.get("rolloutState") == "IN_PROGRESS")
 
-    async def _provision_checkpoint(self, user_id: str, claim_id: str) -> None:
+    async def _provision_checkpoint(
+        self,
+        user_id: str,
+        claim_id: str,
+        *,
+        generation: str | None = None,
+        attempt_token: str | None = None,
+    ) -> None:
         """Verify this run still holds the provision lease and refresh its
         stamp. Placed immediately before non-idempotent writes (service create,
         config write) so a superseded run stops BEFORE poisoning the winner's
-        artifacts — this is what makes the fencing token real."""
+        artifacts — this is what makes the fencing token real.
+
+        ``generation`` / ``attempt_token``, when given, add the additional
+        fences described in ``container_repo.update_container_leased``."""
         from core.repositories import container_repo as _lease_repo
 
-        await _lease_repo.update_container_leased(user_id, claim_id)
+        await _lease_repo.update_container_leased(user_id, claim_id, generation=generation, attempt_token=attempt_token)
 
     async def _provision_user_container_inner(
         self,
@@ -2012,6 +2083,9 @@ class EcsManager:
         byo_provider: str | None = None,
         owner_type: str = "personal",
         claim_id: str,
+        suppress_transition_poller: bool = False,
+        generation: str | None = None,
+        attempt_token: str | None = None,
     ) -> str:
         """Provision or recover a user's container.
 
@@ -2214,12 +2288,17 @@ class EcsManager:
         service_name = self._service_name(user_id)
 
         # Check current state (`existing` was read above, before the mint).
-        svc = self._service_exists(service_name)
+        # Raises EcsManagerError (never silently None) on a describe_services
+        # API failure — see _service_exists docstring: a swallowed error here
+        # used to silently divert into the "no service exists" full-provision
+        # branch below, which could then race a create_service call against
+        # an ACTUALLY-active service (L2 fix).
+        svc = self._service_exists(service_name, user_id)
 
         # CHECKPOINT: the AIP/role mint above is done. Verify the lease is
         # still ours (and refresh it) before any ECS/EFS side effect — a run
         # superseded during the mint stops here.
-        await self._provision_checkpoint(user_id, claim_id)
+        await self._provision_checkpoint(user_id, claim_id, generation=generation, attempt_token=attempt_token)
 
         # --- Scenario: Service exists (ACTIVE or DRAINING) ---
         if svc and svc.get("status") == "ACTIVE":
@@ -2271,7 +2350,9 @@ class EcsManager:
                     # CHECKPOINT before the config write — the poison write in
                     # the double-provision incident. A superseded run must not
                     # overwrite the winner's openclaw.json.
-                    await self._provision_checkpoint(user_id, claim_id)
+                    await self._provision_checkpoint(
+                        user_id, claim_id, generation=generation, attempt_token=attempt_token
+                    )
                     # Reuse the existing (or freshly-minted) hook_token so the
                     # rendered openclaw.json placeholder resolves at boot
                     # against the env var we layer back onto the new task-def
@@ -2355,8 +2436,17 @@ class EcsManager:
                                     e,
                                 )
                         # start_user_service normally fires the running-transition
-                        # poller; we bypassed it, so do it here.
-                        asyncio.create_task(self._await_running_transition(user_id))
+                        # poller as a detached task; we bypassed it. When this
+                        # branch is reached via the SFN runner
+                        # (suppress_transition_poller=True — the caller
+                        # explicitly supplied claim_id and will foreground-await
+                        # wait_for_running right after this returns), firing a
+                        # second detached poller here would duplicate ECS API
+                        # calls against the same row for no upside. A deliberate
+                        # takeover (claim minted internally, no runner awaiting
+                        # the transition) still needs it.
+                        if not suppress_transition_poller:
+                            asyncio.create_task(self._await_running_transition(user_id))
                     except EcsManagerError:
                         # Metrics only — the outer claim-fenced
                         # release_provision_to_error owns the status="error"
@@ -2377,8 +2467,19 @@ class EcsManager:
                     # No access point on record (shouldn't happen for an
                     # ACTIVE service but fall back to the simple start path).
                     # force: this IS a provision — see the Step 4 comment below.
+                    # claim_id passed only when suppress_transition_poller
+                    # (a caller-supplied claim, i.e. the SFN runner) — see
+                    # start_user_service's docstring; a deliberate takeover
+                    # (claim minted internally, no runner awaiting the
+                    # transition) still needs its own poller.
                     try:
-                        await self.start_user_service(user_id, force=True)
+                        await self.start_user_service(
+                            user_id,
+                            force=True,
+                            claim_id=claim_id if suppress_transition_poller else None,
+                            generation=generation,
+                            attempt_token=attempt_token,
+                        )
                     except EcsManagerError:
                         # Metrics only; outer release owns status="error".
                         put_metric("container.provision", dimensions={"status": "error"})
@@ -2422,10 +2523,11 @@ class EcsManager:
                     raise EcsManagerError(f"Failed to force redeploy: {e}", user_id)
 
                 put_metric("container.provision", dimensions={"status": "ok"})
-                # New deployment forces a fresh task; fire the poller so the
-                # row transitions back to status=running once the new task is
-                # healthy.
-                asyncio.create_task(self._await_running_transition(user_id))
+                # New deployment forces a fresh task; fire the poller UNLESS
+                # the SFN runner will foreground-await the transition itself
+                # — see the comment on the sibling branch above.
+                if not suppress_transition_poller:
+                    asyncio.create_task(self._await_running_transition(user_id))
                 return service_name
 
             else:
@@ -2444,12 +2546,11 @@ class EcsManager:
                             "substatus": "starting",
                         },
                     )
-                    # We just flipped status to provisioning -- fire the poller.
-                    # If status was already provisioning, an earlier poller is
-                    # already running (or the startup reconciler will pick it up
-                    # on next deploy), so firing another would just double the
-                    # ECS API traffic for no gain.
-                    asyncio.create_task(self._await_running_transition(user_id))
+                    # Fire the poller UNLESS the SFN runner will
+                    # foreground-await the transition itself — see the
+                    # comment on the sibling branches above.
+                    if not suppress_transition_poller:
+                        asyncio.create_task(self._await_running_transition(user_id))
                 return service_name
 
         # --- Scenario: No service exists -- full provisioning ---
@@ -2500,7 +2601,22 @@ class EcsManager:
             bedrock_aip_arns=bedrock_aip_arns,
             bedrock_gate_token_hash=bedrock_gate_token_hash,
             claim_id=claim_id,
+            attempt_token=attempt_token,
         )
+
+        # create_user_service's upsert MINTED a fresh provision_generation
+        # (the single mint point — a full create IS a new incarnation).
+        # A caller-supplied ``generation`` predates that mint (the SFN
+        # runner reads it off the row at startup), so without refreshing it
+        # here every generation-fenced checkpoint below would compare
+        # stale-vs-new and raise ProvisionSuperseded against THIS SAME run
+        # — the task would exit "superseded" with resources created and the
+        # row wedged in "provisioning". Safe to adopt blindly: claim_id
+        # (and attempt_token) remain the primary fences on every write, so
+        # a genuinely superseded run still stops at its next checkpoint.
+        if generation is not None:
+            refreshed_row = await container_repo.get_by_owner_id(user_id)
+            generation = (refreshed_row or {}).get("provision_generation")
 
         # Step 3: Write configs to EFS
         try:
@@ -2508,7 +2624,7 @@ class EcsManager:
             # double-provision incident: this is exactly where the losing run
             # historically overwrote the winner's openclaw.json with an AIP ARN
             # the IAM policy did not allow.
-            await self._provision_checkpoint(user_id, claim_id)
+            await self._provision_checkpoint(user_id, claim_id, generation=generation, attempt_token=attempt_token)
             await self.write_user_configs(
                 user_id,
                 gateway_token,
@@ -2540,7 +2656,17 @@ class EcsManager:
         #     trial_daily_cap gate for an over-cap trial owner) or is a
         #     deliberate system/operator reprovision.
         try:
-            await self.start_user_service(user_id, force=True)
+            # claim_id passed only when suppress_transition_poller (a
+            # caller-supplied claim, i.e. the SFN runner) -- see
+            # start_user_service's docstring; a deliberate takeover still
+            # needs its own poller since nothing else awaits the transition.
+            await self.start_user_service(
+                user_id,
+                force=True,
+                claim_id=claim_id if suppress_transition_poller else None,
+                generation=generation,
+                attempt_token=attempt_token,
+            )
         except EcsManagerError:
             # Metrics only; outer release owns status="error".
             put_metric("container.provision", dimensions={"status": "error"})
@@ -2550,17 +2676,45 @@ class EcsManager:
         put_metric("container.provision", dimensions={"status": "ok"})
         logger.info("Provisioned container %s for user %s", service_name, user_id)
 
-        # No poller fired here: start_user_service above already fired one.
-        # Firing again would double list_tasks/describe_services traffic and
-        # race two tasks to write the provisioning -> running transition.
+        # Poller fired by start_user_service above UNLESS
+        # suppress_transition_poller (SFN runner owns the wait itself via
+        # wait_for_running in the foreground).
 
         return service_name
+
+    async def wait_for_running(
+        self,
+        user_id: str,
+        *,
+        claim_id: str | None = None,
+        generation: str | None = None,
+        attempt_token: str | None = None,
+    ) -> None:
+        """Public foreground wait for the provisioning -> running transition.
+
+        The one-shot provision runner (scripts.provision_runner) awaits this
+        so the transition is owned by a process the state machine supervises,
+        instead of a detached create_task that dies with its host process.
+        Passing ``claim_id`` (always set by the runner) makes
+        ``_await_running_transition`` write through the FENCED helpers
+        (``update_container_leased`` / ``release_provision_to_error``)
+        instead of a bare ``update_fields`` — see that method's docstring.
+        Propagates ``ProvisionSuperseded`` when the fenced write loses its
+        race (a straggler from a superseded attempt, or a deliberate
+        takeover) — the runner's caller classifies that as EXIT_SUPERSEDED.
+        """
+        await self._await_running_transition(
+            user_id, claim_id=claim_id, generation=generation, attempt_token=attempt_token
+        )
 
     async def _await_running_transition(
         self,
         user_id: str,
         *,
         interval_s: float = 10.0,
+        claim_id: str | None = None,
+        generation: str | None = None,
+        attempt_token: str | None = None,
     ) -> None:
         """Durable background poller that drives provisioning -> running.
 
@@ -2577,6 +2731,9 @@ class EcsManager:
 
         No fixed timeout. The container can take 10s or 10 minutes to become
         healthy -- the poller keeps going until one of the above happens.
+        (The SFN caller — ``wait_for_running`` — is itself bounded by the
+        state machine's own per-attempt task timeout; this loop has no
+        opinion about that.)
 
         Forced-redeploy paths (resize, forceNewDeployment) have an OLD healthy
         task while the NEW deployment rolls out. The poller filters tasks to
@@ -2590,6 +2747,18 @@ class EcsManager:
         multi-GB image does NOT trigger this) for SPOT_PLACEMENT_FALLBACK_S,
         flip the service to on-demand once and keep polling. The flip only
         runs when the service is empty, so it can never kill a live task.
+
+        ``claim_id`` / ``generation`` / ``attempt_token``: when ``claim_id``
+        is given (the SFN runner's foreground call via ``wait_for_running``),
+        the two terminal writes below (running / error) go through the
+        FENCED helpers (``update_container_leased`` /
+        ``release_provision_to_error``) instead of a bare ``update_fields`` —
+        this is the L2 fix: SFN becomes the sole, fenced writer of the
+        running/error transition, and a straggler from a superseded attempt
+        is rejected instead of racing its write against the winner's. When
+        ``claim_id`` is None (every OTHER caller — wake-from-stopped,
+        resize — neither of which holds or needs a provision lease), the
+        writes are the original bare ``update_fields`` calls, UNCHANGED.
         """
         no_placement_since: float | None = None
         spot_fallback_done = False
@@ -2612,13 +2781,23 @@ class EcsManager:
                     continue
 
                 if primary.get("rolloutState") == "FAILED":
-                    await container_repo.update_fields(
-                        user_id,
-                        {
-                            "status": "error",
-                            "substatus": "deployment_failed",
-                        },
-                    )
+                    if claim_id is not None:
+                        await container_repo.release_provision_to_error(
+                            user_id,
+                            claim_id,
+                            last_error="Deployment circuit breaker tripped (rolloutState=FAILED)",
+                            retryable=False,
+                            generation=generation,
+                            attempt_token=attempt_token,
+                        )
+                    else:
+                        await container_repo.update_fields(
+                            user_id,
+                            {
+                                "status": "error",
+                                "substatus": "deployment_failed",
+                            },
+                        )
                     logger.error(
                         "Deployment circuit breaker tripped for container %s (user=%s); marking error",
                         service_name,
@@ -2638,14 +2817,29 @@ class EcsManager:
                         spot_fallback_done = True
                         self._fallback_service_to_on_demand(service_name, user_id)
                 if task_arn and ip and self.is_healthy(ip):
-                    await container_repo.update_fields(
-                        user_id,
-                        {
-                            "status": "running",
-                            "substatus": "gateway_healthy",
-                            "task_arn": task_arn,
-                        },
-                    )
+                    running_fields = {
+                        "status": "running",
+                        "substatus": "gateway_healthy",
+                        "task_arn": task_arn,
+                    }
+                    if claim_id is not None:
+                        # Terminal SUCCESS: atomically RELEASE the lease with
+                        # the running write, so "provisioning row carries a
+                        # claim" stays a reliable active-SFN-work signal —
+                        # residual claims from completed provisions would
+                        # make the boot reconcile misclassify a later
+                        # interrupted wake/resize as SFN-owned and skip
+                        # resuming its poller.
+                        await container_repo.update_container_leased(
+                            user_id,
+                            claim_id,
+                            running_fields,
+                            generation=generation,
+                            attempt_token=attempt_token,
+                            release_lease=True,
+                        )
+                    else:
+                        await container_repo.update_fields(user_id, running_fields)
                     logger.info(
                         "Transitioned container %s to running (user=%s, task=%s)",
                         service_name,
@@ -2660,12 +2854,27 @@ class EcsManager:
                     # stepper can render a real phase for it instead of a
                     # time-based guess. Guarded on the fetched row so it
                     # writes once, not once per poll iteration.
-                    await container_repo.update_fields(
-                        user_id,
-                        {"substatus": "task_running"},
-                    )
+                    if claim_id is not None:
+                        await container_repo.update_container_leased(
+                            user_id,
+                            claim_id,
+                            {"substatus": "task_running"},
+                            generation=generation,
+                            attempt_token=attempt_token,
+                        )
+                    else:
+                        await container_repo.update_fields(
+                            user_id,
+                            {"substatus": "task_running"},
+                        )
 
             except asyncio.CancelledError:
+                raise
+            except ProvisionSuperseded:
+                # Fenced write lost the race (straggler / takeover) — the
+                # SFN caller (wait_for_running -> provision_runner) must stop
+                # entirely, same as any other checkpoint. Non-fenced callers
+                # (claim_id is None) never hit this branch.
                 raise
             except Exception:
                 logger.exception(

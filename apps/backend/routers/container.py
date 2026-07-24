@@ -23,10 +23,8 @@ from core.services import container_wake, wake_policy
 from core.services.management_api_client import ManagementApiClientError
 from core.observability.metrics import put_metric, timing
 from core.repositories import container_repo
-from core.services.container_provision import (
-    resolve_provider_choice as _resolve_provider_choice,
-    background_provision as _background_provision,
-)
+from core.services.container_provision import background_provision as _background_provision
+from core.services.provision_dispatch import dispatch_provision
 from core.services.provision_gate import (
     evaluate_provision_gate,
     maybe_restore_trial_bedrock,
@@ -80,7 +78,7 @@ def _watch_provision_task(task: "asyncio.Task") -> None:
     "Task exception was never retrieved" — invisible to the W1
     provision-error alarm. Surface it: log the task's traceback and emit the
     SAME ``container.provision`` ``{status: error}`` metric the synchronous
-    provision path emits (see ``container_provision._emit_provision_metric``),
+    provision path emits (see ``container_provision.emit_provision_metric``),
     so a dispatch-path failure lands on the exact CloudWatch stream that alarm
     already watches. A cancelled task carries no failure. Best-effort
     throughout — a done-callback must never raise.
@@ -145,6 +143,35 @@ async def _resolve_teams_status(user_id: str) -> str | None:
     if company is not None and company.status == "failed":
         return "failed"
     return None
+
+
+async def _resolve_onboarded(owner_id: str) -> bool:
+    """Best-effort read of whether the first-run funnel is DONE for this
+    owner (per architecture spec §2 -- supersedes the old
+    ``containers.onboarded_at`` stamp, S2).
+
+    ``True`` iff the paperclip-companies OWNER row's ``funnel_state`` is
+    ``"complete"``. Resolved via ``PaperclipRepo.resolve_owner_row``
+    (``owner_id`` for personal owners, the by-org-id GSI owner lookup for
+    orgs) — NOT the calling user's own row, and NOT the ``containers`` row:
+    onboarding is company-scoped, so every member of an org sees the SAME
+    answer regardless of which member's tab wins the /brief claim.
+
+    Deliberately does NOT read ``funnel_state == "submitted"`` as onboarded:
+    a submitted-but-not-yet-delivered funnel still shows the "your brief was
+    received" UI (client-side), and "complete" is what stops the funnel from
+    being offered again. Any read failure returns ``False`` (the safe
+    default -- worst case a returning owner sees the funnel prompt once more
+    rather than a degraded signal breaking ``/container/status``).
+    """
+    try:
+        from core.repositories.paperclip_repo import PaperclipRepo
+
+        owner_row = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
+    except Exception:  # noqa: BLE001 — degraded signal must never break /status
+        logger.info("onboarded read failed for owner %s", owner_id, exc_info=True)
+        return False
+    return owner_row is not None and owner_row.funnel_state == "complete"
 
 
 def _resolve_cold_start_phase(container: dict, gateway_pool, owner_id: str) -> str:
@@ -378,6 +405,7 @@ async def container_status(
     # Best-effort (wrapped); never gates. Computed once here so every
     # _status_response return below carries it.
     teams_status = await _resolve_teams_status(auth.user_id)
+    onboarded = await _resolve_onboarded(owner_id)
 
     # Auto-retry: if container is in a failed/stuck state AND the owner can
     # currently afford to provision, trigger re-provisioning in the
@@ -453,7 +481,9 @@ async def container_status(
                     # Read-only poll from a presence-aware client: report the
                     # parked state, start nothing.
                     wake_policy.note_wake_suppressed(owner_id, container, door="status_poll", reason="gated")
-                    return _status_response(container, owner_id, parked=True, teams_status=teams_status)
+                    return _status_response(
+                        container, owner_id, parked=True, teams_status=teams_status, onboarded=onboarded
+                    )
                 if parked and wake is None:
                     # Legacy client (pre-gate bundle, never reloaded): preserve
                     # wake-on-read but bound it to the daily budget so a zombie
@@ -462,7 +492,7 @@ async def container_status(
                         wake_policy.note_wake_suppressed(owner_id, container, door="status_legacy", reason="budget")
                         # Legacy-shaped response: old bundles get today's field
                         # set (plain stopped), never the new parked fields.
-                        return _status_response(container, owner_id, teams_status=teams_status)
+                        return _status_response(container, owner_id, teams_status=teams_status, onboarded=onboarded)
                     wake_policy.note_wake_dispatched(door="status_legacy", intent="poll")
                 elif parked:
                     wake_policy.note_wake_dispatched(door="status_poll", intent="explicit")
@@ -512,7 +542,7 @@ async def container_status(
         _self_heal_last_dial[owner_id] = time.monotonic()
         asyncio.create_task(_pool_self_heal_connect(owner_id, container_ip, container["gateway_token"]))
 
-    return _status_response(container, owner_id, teams_status=teams_status)
+    return _status_response(container, owner_id, teams_status=teams_status, onboarded=onboarded)
 
 
 def _status_response(
@@ -521,6 +551,7 @@ def _status_response(
     *,
     parked: bool = False,
     teams_status: str | None = None,
+    onboarded: bool = False,
 ) -> dict:
     """The one 200 shape for /container/status.
 
@@ -546,12 +577,15 @@ def _status_response(
         # Cold-start phase for the frontend stepper. See
         # _resolve_cold_start_phase for the (status, pool) -> phase map.
         "phase": _safe_phase(container, owner_id),
-        # Per-CONTAINER onboarding fact: stamped by the /onboarding/brief
-        # route when the first-run funnel is completed for this container.
-        # An org shares one container, so this is the whole org's "funnel
-        # done" signal -- the frontend gates the funnel on it, so a second
-        # org member never re-sees it. No extra read: it lives on the row.
-        "onboarded": container.get("onboarded_at") is not None,
+        # Per-COMPANY onboarding fact (architecture spec §2 -- supersedes the
+        # old containers.onboarded_at stamp, S2): funnel_state == "complete"
+        # on the paperclip-companies OWNER row, resolved by
+        # _resolve_onboarded and passed in by the caller. An org shares one
+        # owner row, so this is the whole org's "funnel done" signal -- the
+        # frontend gates the funnel on it, so a second org member never
+        # re-sees it. A container-only recreation never touches this row
+        # (G1 vs G2 fencing), so it survives reprovisioning by construction.
+        "onboarded": onboarded,
     }
     if parked:
         body["phase"] = "parked"
@@ -753,26 +787,24 @@ async def container_provision(
         is_admin=auth.is_org_admin if auth.is_org_context else True,
     )
 
-    # Provision new container — read the owner's saved provider_choice so the
-    # container is configured for the right LLM path (OAuth / BYO key /
-    # bedrock_claude). Keyed on owner_id via billing_repo.
-    try:
-        provider_choice, byo_provider = await _resolve_provider_choice(owner_id)
-        service_name = await get_ecs_manager().provision_user_container(
-            owner_id,
-            provider_choice=provider_choice,
-            byo_provider=byo_provider,
-        )
-        logger.info("Provisioned container %s for owner %s", service_name, owner_id)
-        return {
-            "status": "provisioning",
-            "service_name": service_name,
-            "owner_id": owner_id,
-            "already_existed": False,
-        }
-    except EcsManagerError as e:
-        logger.error("Provisioning failed for owner %s: %s", owner_id, e)
-        raise HTTPException(status_code=503, detail=str(e))
+    # Provision new container via the PROVISION Step Functions executor (spec
+    # §7 / PR-10) — the SOLE provisioning executor, no flag. dispatch_provision
+    # is a fast StartExecution call (the actual provider_choice read + ECS
+    # work happens inside scripts.provision_runner, a separate one-shot ECS
+    # task the state machine supervises) and never raises: a StartExecution
+    # failure releases the row to status="error" instead, picked up by this
+    # owner's next GET /container/status poll. Two provisioning systems must
+    # never be live at once, so this door no longer calls
+    # ecs_manager.provision_user_container directly.
+    await dispatch_provision(owner_id)
+    row = await container_repo.get_by_owner_id(owner_id)
+    logger.info("Dispatched provision for owner %s", owner_id)
+    return {
+        "status": (row or {}).get("status", "provisioning"),
+        "service_name": (row or {}).get("service_name"),
+        "owner_id": owner_id,
+        "already_existed": False,
+    }
 
 
 @router.post(
@@ -810,15 +842,9 @@ async def container_retry(
             detail=f"Container is in '{container.get('status')}' state, not retryable",
         )
 
-    try:
-        provider_choice, byo_provider = await _resolve_provider_choice(owner_id)
-        service_name = await ecs_manager.provision_user_container(
-            owner_id,
-            provider_choice=provider_choice,
-            byo_provider=byo_provider,
-        )
-    except EcsManagerError as e:
-        logger.error("Retry provisioning failed for owner %s: %s", owner_id, e)
-        raise HTTPException(status_code=502, detail="Provisioning failed")
-
-    return {"ok": True, "service_name": service_name}
+    # Route through the PROVISION executor (spec §7) — see /provision above
+    # for why this no longer calls ecs_manager.provision_user_container
+    # directly. dispatch_provision never raises.
+    await dispatch_provision(owner_id)
+    row = await container_repo.get_by_owner_id(owner_id)
+    return {"ok": True, "service_name": (row or {}).get("service_name")}

@@ -98,6 +98,7 @@ from core.services.paperclip_session_cookie import (
     is_trusted,
     set_session_on_response,
 )
+from core.services.user_provision import ensure_user_ready
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -222,7 +223,7 @@ def _provisioning_in_progress_response() -> Response:
 
     Shown when ``proxy()`` finds the user authenticated but their
     paperclip-companies row is missing or status != "active". Typical
-    case: handshake just spawned a background ``_autoprovision`` task
+    case: handshake just spawned a background ``ensure_user_ready`` task
     that hasn't completed yet (5–10s). ``<meta http-equiv="refresh">``
     polls every 2s with no JS; once provisioning lands and the proxy
     returns the actual Paperclip page, the browser stops auto-refreshing.
@@ -508,9 +509,16 @@ def _decode_clerk_publishable_key(pk: str) -> str | None:
     return decoded.rstrip("$").rstrip("/") or None
 
 
-def _mint_paperclip_session(user_id: str, email: str | None) -> str:
+def _mint_paperclip_session(user_id: str, email: str | None, org_id: str | None = None) -> str:
     """HS256 JWT for the proxy session cookie. Same secret as service tokens
     but with a distinct ``kind`` claim so the verifier can refuse cross-use.
+
+    ``org_id`` preserves the OWNER CONTEXT the handshake was validated
+    under (from the Clerk JWT's org claims). Without it, every
+    established-session request degrades to personal context, and the
+    org-scoped readiness check can't tell a repaired row from a stale one
+    — the user would be forwarded into the wrong workspace while the org
+    join/repair is still in flight.
     """
     if not settings.PAPERCLIP_SERVICE_TOKEN_KEY:
         raise RuntimeError("PAPERCLIP_SERVICE_TOKEN_KEY not configured")
@@ -523,6 +531,8 @@ def _mint_paperclip_session(user_id: str, email: str | None) -> str:
     }
     if email:
         payload["email"] = email
+    if org_id:
+        payload["org_id"] = org_id
     return pyjwt.encode(payload, settings.PAPERCLIP_SERVICE_TOKEN_KEY, algorithm="HS256")
 
 
@@ -677,9 +687,22 @@ async def _get_paperclip_user(request: Request) -> AuthContext:
     """Resolve the caller from the proxy session cookie OR a Bearer token.
 
     Order:
-      1. ``isol8_paperclip`` cookie — fastest, no network roundtrip, set by
+      1. ``?__t=`` handoff token, when present — an initial-handshake
+         request. It must WIN over any existing session cookie: the token
+         was just minted by the Teams entry point in the user's CURRENT
+         Clerk context (including org claims), while a leftover cookie
+         from a previous visit can encode a stale personal/other-org
+         identity (the cookie carries no org claims at all). Honoring the
+         stale cookie would run the whole handshake — the container
+         guard, the org-scoped readiness check, and the autoprovision
+         dispatch — under the WRONG owner context and 302 the user into
+         the wrong workspace. An invalid/expired handoff token
+         deliberately does NOT fall back to the cookie: for a browser
+         nav, ``proxy()`` upgrades the 401 to a redirect that restarts
+         the handshake with a fresh token.
+      2. ``isol8_paperclip`` cookie — fastest, no network roundtrip, set by
          the handshake endpoint after a successful Clerk validation.
-      2. ``Authorization: Bearer <clerk_jwt>`` — programmatic clients
+      3. ``Authorization: Bearer <clerk_jwt>`` — programmatic clients
          (Postman, curl, the handshake endpoint itself, post-deploy
          smoke tests). Validated via Clerk's JWKS.
 
@@ -687,16 +710,26 @@ async def _get_paperclip_user(request: Request) -> AuthContext:
     cookie expired) gets a 401 here; ``proxy()`` upgrades that to a
     bootstrap HTML response when the request looks like a top-level nav.
     """
-    # 1. Proxy session cookie
-    session_cookie = request.cookies.get(_PAPERCLIP_SESSION_COOKIE)
-    if session_cookie:
-        try:
-            claims = _verify_paperclip_session(session_cookie)
-            return AuthContext(user_id=claims["sub"], email=claims.get("email"))
-        except pyjwt.InvalidTokenError as e:
-            # Expired or tampered — fall through to Bearer/handoff; caller
-            # gets a fresh cookie if either succeeds.
-            logger.info("paperclip_proxy: session cookie rejected: %s", e)
+    handoff_token = request.query_params.get("__t") or None
+
+    # 1. Proxy session cookie — skipped when an explicit handoff token is
+    #    present (the token is the fresher context; see docstring).
+    if not handoff_token:
+        session_cookie = request.cookies.get(_PAPERCLIP_SESSION_COOKIE)
+        if session_cookie:
+            try:
+                claims = _verify_paperclip_session(session_cookie)
+                # org_id restores the owner context the handshake was
+                # validated under — see _mint_paperclip_session.
+                return AuthContext(
+                    user_id=claims["sub"],
+                    email=claims.get("email"),
+                    org_id=claims.get("org_id"),
+                )
+            except pyjwt.InvalidTokenError as e:
+                # Expired or tampered — fall through to Bearer/handoff;
+                # caller gets a fresh cookie if either succeeds.
+                logger.info("paperclip_proxy: session cookie rejected: %s", e)
 
     # 2. Bearer header (programmatic clients)
     # 3. ?__t= query-param (browser nav from dev.isol8.co Teams click — top-
@@ -708,7 +741,7 @@ async def _get_paperclip_user(request: Request) -> AuthContext:
     if auth_header.lower().startswith("bearer "):
         token = auth_header.split(" ", 1)[1].strip() or None
     if not token:
-        token = request.query_params.get("__t") or None
+        token = handoff_token
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
@@ -785,8 +818,51 @@ async def handshake(request: Request) -> Response:
     if not user_id:
         raise HTTPException(status_code=401, detail="Token missing subject")
     email = payload.get("email")
+    org = _extract_org_claims(payload)
+    auth = AuthContext(
+        user_id=user_id,
+        email=email,
+        org_id=org["org_id"],
+        org_role=org["org_role"],
+        org_slug=org["org_slug"],
+        org_permissions=org["org_permissions"],
+    )
 
-    session_jwt = _mint_paperclip_session(user_id=user_id, email=email)
+    # Same org-scoped readiness dispatch as the ?__t= handoff. This route
+    # is the OTHER cookie mint site (the bootstrap HTML's XHR), and the
+    # cookie it mints carries the org context — so a user whose per-user
+    # row is missing, non-active, or points at a different owner context
+    # would land straight on the established-session repair stub, which
+    # deliberately never re-spawns. Without dispatching here, an entry
+    # through this path (direct nav, no ?__t=) would spin on the stub
+    # with no repair in flight. Best-effort and idempotent, same as the
+    # handoff; needs the email claim (Better Auth signup).
+    #
+    # Container guard, also mirroring the handoff: an owner with NO
+    # container must not have a Paperclip company seeded from here — the
+    # seeded agents' gateway adapter would point at a nonexistent
+    # OpenClaw, and (worse) the now-active row would let the established-
+    # session path forward into a dead Teams. This XHR can't redirect the
+    # way the handoff does, so it simply declines to seed; the
+    # unprovisioned-entry stub the user then sees is the pre-existing
+    # behavior for this path, resolved by normal /chat usage (whose
+    # status poll provisions the container and seeds Paperclip).
+    if email:
+        container = await container_repo.get_by_owner_id(resolve_owner_id(auth))
+        repo = PaperclipRepo(table_name="paperclip-companies")
+        existing = await repo.get(user_id)
+        if container is not None and (
+            existing is None or existing.status != "active" or existing.org_id != resolve_owner_id(auth)
+        ):
+            from routers.container import _dispatch_watched
+
+            _dispatch_watched(ensure_user_ready(auth, provision_container=False))
+
+    session_jwt = _mint_paperclip_session(
+        user_id=user_id,
+        email=email,
+        org_id=auth.org_id,
+    )
     response = Response(status_code=204)
     # No Domain= attribute → host-scoped to whatever public host this request
     # arrived at (e.g. company-dev.isol8.co). HttpOnly so JS can't exfiltrate;
@@ -915,48 +991,6 @@ def _frontend_url() -> str:
     return (settings.FRONTEND_URL or "").rstrip("/") or "https://dev.isol8.co"
 
 
-async def _autoprovision(auth: AuthContext) -> None:
-    """Synchronously create a personal Paperclip company for ``auth``.
-
-    Mirrors what the Clerk org.created webhook does, but passes
-    ``user_id`` as the ``owner_id`` since for personal owners
-    ``owner_id == clerk_user_id``. Idempotent — provision_org
-    short-circuits if a row already exists with status="active".
-    Raises HTTPException(502) on failure.
-    """
-    if not auth.email:
-        raise HTTPException(
-            status_code=400,
-            detail="Email claim missing from auth token; cannot create Paperclip account",
-        )
-    from core.services.paperclip_admin_client import PaperclipAdminClient
-    from core.services.paperclip_provisioning import PaperclipProvisioning
-
-    repo = PaperclipRepo(table_name="paperclip-companies")
-    async with httpx.AsyncClient(
-        base_url=settings.PAPERCLIP_INTERNAL_URL,
-        timeout=30.0,
-    ) as http:
-        admin = PaperclipAdminClient(http_client=http)
-        provisioning = PaperclipProvisioning(admin, repo, env_name=settings.ENVIRONMENT)
-        try:
-            await provisioning.provision_org(
-                owner_id=auth.user_id,
-                owner_user_id=auth.user_id,
-                owner_email=auth.email,
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.exception(
-                "paperclip_proxy: autoprovision failed for user=%s: %s",
-                auth.user_id,
-                e,
-            )
-            raise HTTPException(
-                status_code=502,
-                detail=f"Provisioning failed: {type(e).__name__}",
-            )
-
-
 @router.api_route(
     "/{path:path}",
     methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"],
@@ -1010,13 +1044,13 @@ async def proxy(path: str, request: Request) -> Response:
         # one that may not exist.
         from fastapi.responses import RedirectResponse
 
-        # Email guard: _autoprovision needs auth.email to call Better
-        # Auth signup. If the Clerk JWT is missing the email claim
-        # (older template, misconfigured org), spawning the task would
-        # raise immediately and asyncio would swallow the exception —
-        # the row would stay None forever and the user would loop in
-        # the setting-up stub. Surface the error explicitly via /chat
-        # instead.
+        # Email guard: ensure_user_ready's paperclip seed step needs
+        # auth.email to call Better Auth signup. If the Clerk JWT is
+        # missing the email claim (older template, misconfigured org),
+        # ensure_user_ready would best-effort no-op the seed (it logs
+        # and returns rather than raising) — the row would stay None
+        # forever and the user would loop in the setting-up stub.
+        # Surface the error explicitly via /chat instead.
         if not auth.email:
             logger.warning(
                 "paperclip_proxy: handoff blocked for user=%s — no email claim on JWT",
@@ -1048,13 +1082,44 @@ async def proxy(path: str, request: Request) -> Response:
         # the raw Clerk JWT in the address bar for only ~50ms instead of
         # the full provisioning duration. provision_org is idempotent so
         # a fast double-click is safe.
+        #
+        # Routed through the SAME canonical owner_id-keyed trigger
+        # GET /container/status uses (ensure_user_ready) rather than a
+        # second, proxy-local door that called provision_org directly
+        # keyed on user_id — there is exactly one autoprovision trigger
+        # family (INV-11). This also makes the dispatch org-aware for
+        # free: an org member hitting Teams now correctly JOINS the
+        # org's shared company instead of a personal-only provision_org
+        # call attempting to CREATE one keyed on their own user_id. The
+        # container already exists (checked above), so
+        # provision_container=False — this call seeds Paperclip only.
         repo = PaperclipRepo(table_name="paperclip-companies")
         existing = await repo.get(auth.user_id)
-        if existing is None or existing.status != "active":
-            asyncio.create_task(_autoprovision(auth))
+        # "Already provisioned" must be org-scoped, not status-only — the
+        # same idempotency predicate provision_org's short-circuit uses.
+        # Rows are keyed per-user, so an org member whose row still points
+        # at a personal (or a previous org's) company IS "active", just not
+        # for THIS owner context; a status-only check would suppress the
+        # dispatch, and the cookie minted below would sign them into the
+        # stale workspace with nothing ever repairing the row from this
+        # path. ensure_user_ready is idempotent (provision_org short-
+        # circuits on an active row whose org_id matches), so dispatching
+        # on a mismatched-but-active row is safe.
+        if existing is None or existing.status != "active" or existing.org_id != owner_id:
+            # Watched dispatch (same wrapper as /container/status): a bare
+            # create_task swallows exceptions raised before the coroutine's
+            # own logging (gate/billing/DDB failures) as "Task exception
+            # was never retrieved" — the watcher logs them and emits the
+            # provision-error metric.
+            from routers.container import _dispatch_watched
 
-        # Mint cookie + 302 to clean URL.
-        session_jwt = _mint_paperclip_session(user_id=auth.user_id, email=auth.email)
+            _dispatch_watched(ensure_user_ready(auth, provision_container=False))
+
+        # Mint cookie + 302 to clean URL. The cookie carries the org
+        # context the handshake was validated under, so the established-
+        # session path below can keep applying the org-scoped readiness
+        # check instead of degrading to personal context.
+        session_jwt = _mint_paperclip_session(user_id=auth.user_id, email=auth.email, org_id=auth.org_id)
         response = RedirectResponse(_strip_handoff_param(request), status_code=302)
         response.set_cookie(
             key=_PAPERCLIP_SESSION_COOKIE,
@@ -1070,21 +1135,59 @@ async def proxy(path: str, request: Request) -> Response:
     # ---- Established-session path: forward request to Paperclip ----
     repo = PaperclipRepo(table_name="paperclip-companies")
     company = await repo.get(auth.user_id)
-    if company is None or company.status == "provisioning":
-        # Either: (a) handshake just spawned _autoprovision and the row
+    if company is not None and auth.org_id is None and company.org_id not in (None, auth.user_id):
+        # The row belongs to an ORG owner context but this session carries
+        # no org claims. Two ways here: a legacy cookie minted before
+        # org_id rode the session (an org member's live session for up to
+        # the cookie TTL after deploy), or a genuinely personal session
+        # whose row still points at an org (ex-member). Either way this
+        # process cannot know the user's real context — a stub would spin
+        # with no repair in flight (the personal-context dispatch is
+        # correctly fenced from adopting org rows), so bounce out to /chat:
+        # a fresh Teams entry re-handshakes with real Clerk claims, and
+        # /chat's canonical /container/status trigger repairs the row.
+        from fastapi.responses import RedirectResponse
+
+        logger.info(
+            "paperclip_proxy: org-less session for user=%s over org row %s; redirecting for re-handshake",
+            auth.user_id,
+            company.org_id,
+        )
+        return RedirectResponse(
+            f"{_frontend_url()}/chat?from=teams",
+            status_code=302,
+        )
+    if company is None or company.status == "provisioning" or company.org_id != resolve_owner_id(auth):
+        # Either: (a) handshake just spawned ensure_user_ready and the row
         # hasn't been written yet (typical first visit), or (b) it's
-        # actively in-flight. Show the auto-refresh stub; do NOT
-        # re-spawn from this path — the stub reloads every 2s and a
+        # actively in-flight, or (c) the row belongs to a DIFFERENT owner
+        # context than this session's (org member whose row still points
+        # at a personal/previous-org company — the handshake that minted
+        # this session's cookie dispatched the join/repair, and the row
+        # re-points when it lands). All three converge via the
+        # auto-refresh stub; forwarding on (c) would drop the user into
+        # the WRONG workspace mid-repair. (c) deliberately ignores the
+        # stale row's status: a "failed"/"disabled" verdict recorded for
+        # ANOTHER workspace says nothing about THIS owner's provision, so
+        # it must read as repair-pending here, not fall through to the
+        # terminal-status redirect below and abort the handoff. If no
+        # repair is in flight for (c) — a long-lived cookie navigating
+        # here directly — the app's canonical /container/status trigger
+        # repairs the row the next time /chat is open; a setting-up stub
+        # is strictly better than silently browsing the wrong company. Do
+        # NOT re-spawn from this path — the stub reloads every 2s and a
         # re-spawn each cycle would queue duplicate concurrent provision
-        # runs that race against each other (provision_org is only
-        # safely idempotent for already-active rows; concurrent failed
-        # retries can flip a successful row back to "failed"). If the
-        # initial spawn somehow died silently, the user will eventually
-        # close the tab and re-handshake — that's the recovery path,
-        # NOT auto-respawn.
+        # runs that race against each other (provision_org is only safely
+        # idempotent for already-active rows; concurrent failed retries
+        # can flip a successful row back to "failed"). If the initial
+        # spawn somehow died silently, the user will eventually close the
+        # tab and re-handshake — that's the recovery path, NOT
+        # auto-respawn.
         return _provisioning_in_progress_response()
     if company.status != "active":
-        # status="failed" or status="disabled". Both require user to
+        # status="failed" or status="disabled" — and, per the org-scope
+        # check above, recorded for THIS owner context (a mismatched
+        # terminal row already returned the stub). Both require user to
         # re-enter via /chat: failed needs an explicit retry trigger
         # (re-handshake spawns a fresh provision attempt with no
         # concurrent races), disabled requires admin/billing to clear.

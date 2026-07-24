@@ -1,13 +1,20 @@
-"""Unit tests for the extracted background_provision helper."""
+"""Unit tests for the extracted background_provision helper.
+
+background_provision is a pure pass-through to
+core.services.provision_dispatch.dispatch_provision (the SFN executor, no
+flag — spec §7 PR-10). Its own claim/provide/release logic moved into
+dispatch_provision + scripts.provision_runner — see
+tests/unit/services/test_provision_dispatch.py and
+tests/unit/scripts/test_provision_runner.py for that behavior."""
 
 from typing import get_args
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from core.containers.config import BEDROCK_TRIAL_CHOICE
 from core.containers.ecs_manager import EcsManager
-from core.services.container_provision import background_provision, resolve_provider_choice
+from core.services.container_provision import resolve_provider_choice
 
 
 # ---------------------------------------------------------------------------
@@ -112,153 +119,6 @@ async def test_resolve_provider_choice_no_row_defaults_to_bedrock():
     assert result == ("bedrock_claude", None)
 
 
-@pytest.fixture(autouse=True)
-def _claim_always_wins():
-    """background_provision's FIRST act is the single-flight lease claim.
-    Default it to a won claim so the pre-existing dispatch tests exercise the
-    provision path; the claim-semantics tests below override this patch with
-    their own (innermost patch wins)."""
-    with (
-        patch(
-            "core.services.container_provision.container_repo.try_claim_provision",
-            new=AsyncMock(return_value="claim-fixture"),
-        ),
-        patch(
-            "core.services.container_provision.container_repo.release_provision_to_error",
-            new=AsyncMock(),
-        ),
-    ):
-        yield
-
-
-@pytest.mark.asyncio
-async def test_background_provision_resolves_provider_and_dispatches():
-    """background_provision reads provider_choice from billing_repo
-    via _resolve_provider_choice and calls ecs.provision_user_container
-    with the resolved values."""
-    fake_ecs = MagicMock()
-    fake_ecs.provision_user_container = AsyncMock(return_value="svc-name")
-    with (
-        patch(
-            "core.services.container_provision.resolve_provider_choice",
-            new=AsyncMock(return_value=("bedrock_claude", None)),
-        ),
-        patch(
-            "core.services.container_provision.get_ecs_manager",
-            return_value=fake_ecs,
-        ),
-    ):
-        await background_provision("user_123", "user_123")
-    fake_ecs.provision_user_container.assert_awaited_once_with(
-        "user_123",
-        provider_choice="bedrock_claude",
-        byo_provider=None,
-        owner_type="personal",
-        claim_id="claim-fixture",
-    )
-
-
-@pytest.mark.asyncio
-async def test_background_provision_passes_org_owner_type():
-    """An org owner_id (org_*) must reprovision with owner_type='org' — config
-    generation keys org-specific behavior (e.g. gateway browser mode) off it,
-    so defaulting to 'personal' would silently rewrite an org's config."""
-    fake_ecs = MagicMock()
-    fake_ecs.provision_user_container = AsyncMock(return_value="svc-name")
-    with (
-        patch(
-            "core.services.container_provision.resolve_provider_choice",
-            new=AsyncMock(return_value=("chatgpt_oauth", None)),
-        ),
-        patch(
-            "core.services.container_provision.get_ecs_manager",
-            return_value=fake_ecs,
-        ),
-    ):
-        await background_provision("org_abc", "user_admin")
-    fake_ecs.provision_user_container.assert_awaited_once_with(
-        "org_abc",
-        provider_choice="chatgpt_oauth",
-        byo_provider=None,
-        owner_type="org",
-        claim_id="claim-fixture",
-    )
-
-
-@pytest.mark.asyncio
-async def test_background_provision_swallows_exceptions():
-    """Exceptions are logged, not raised. The helper is an
-    asyncio.create_task target; raising would create unhandled
-    task exceptions."""
-    fake_ecs = MagicMock()
-    fake_ecs.provision_user_container = AsyncMock(side_effect=RuntimeError("boom"))
-    with (
-        patch(
-            "core.services.container_provision.resolve_provider_choice",
-            new=AsyncMock(return_value=("bedrock_claude", None)),
-        ),
-        patch(
-            "core.services.container_provision.get_ecs_manager",
-            return_value=fake_ecs,
-        ),
-    ):
-        # Should NOT raise.
-        await background_provision("user_123", "user_123")
-
-
-@pytest.mark.asyncio
-async def test_background_provision_emits_error_metric_on_failure():
-    """On failure, the swallowed exception must still be alarmable: emit
-    container.provision{status=error} — the SAME metric+dimension set the
-    synchronous ecs_manager failure path uses, so it lands on the exact
-    CloudWatch stream the W1 provision-error-rate alarm queries. (No `phase`
-    dim: EMF publishes one stream per full dimension-key set, so an extra dim
-    would create a stream no alarm watches.)"""
-    fake_ecs = MagicMock()
-    fake_ecs.provision_user_container = AsyncMock(side_effect=RuntimeError("boom"))
-    with (
-        patch(
-            "core.services.container_provision.resolve_provider_choice",
-            new=AsyncMock(return_value=("bedrock_claude", None)),
-        ),
-        patch(
-            "core.services.container_provision.get_ecs_manager",
-            return_value=fake_ecs,
-        ),
-        patch("core.observability.metrics.put_metric") as mock_put,
-    ):
-        # Should NOT raise even though provisioning failed.
-        await background_provision("user_123", "user_123")
-
-    error_calls = [c for c in mock_put.call_args_list if c.args and c.args[0] == "container.provision"]
-    assert len(error_calls) == 1, f"expected one container.provision emission, got {error_calls}"
-    assert error_calls[0].kwargs.get("dimensions") == {"status": "error"}
-
-
-@pytest.mark.asyncio
-async def test_background_provision_metric_failure_does_not_raise():
-    """A metrics outage in the except handler must not turn the swallow into a
-    raise (the task is fire-and-forget)."""
-    fake_ecs = MagicMock()
-    fake_ecs.provision_user_container = AsyncMock(side_effect=RuntimeError("boom"))
-    with (
-        patch(
-            "core.services.container_provision.resolve_provider_choice",
-            new=AsyncMock(return_value=("bedrock_claude", None)),
-        ),
-        patch(
-            "core.services.container_provision.get_ecs_manager",
-            return_value=fake_ecs,
-        ),
-        patch(
-            "core.observability.metrics.put_metric",
-            side_effect=RuntimeError("cloudwatch down"),
-        ),
-    ):
-        # Should NOT raise.
-        await background_provision("user_123", "user_123")
-
-
 async def test_pre_stage_oauth_reads_connector_writes_owner():
     """The token READ key (connector / workspace owner) is decoupled from
     the EFS WRITE key (container owner / org_id). For an org, tokens live
@@ -282,199 +142,39 @@ async def test_pre_stage_oauth_reads_connector_writes_owner():
 
 
 # ---------------------------------------------------------------------------
-# background_provision — single-flight dispatch. The claim is the FIRST act;
-# concurrent dispatches (the refresh-driven poll storm) stand down, failures
-# release the lease to error (self-healing via the poll's auto-retry), and a
-# superseded run writes nothing over the superseding run's state.
+# background_provision — THE single funnel, now a pure delegate to the SFN
+# executor (spec §7 PR-10). No flag, no inline fallback: every call site
+# (status-poll auto-retry, ensure_user_ready, reprovision_for_user,
+# container_wake, change_provider's cold path) rides dispatch_provision
+# unchanged.
 
 
-@pytest.mark.asyncio
-async def test_background_provision_loser_stands_down_without_provisioning():
-    from core.services.container_provision import background_provision
+async def test_background_provision_delegates_to_dispatch_provision():
+    from core.services import container_provision
 
-    with (
-        patch(
-            "core.services.container_provision.container_repo.try_claim_provision",
-            new=AsyncMock(return_value=None),
-        ),
-        patch("core.services.container_provision.get_ecs_manager") as ecs_factory,
-        patch("core.services.container_provision.billing_repo") as repo,
-    ):
-        await background_provision("user_1", "user_1")
-
-    ecs_factory.assert_not_called()
-    repo.get_by_owner_id.assert_not_called()  # stands down before ANY side read
+    dispatched = AsyncMock()
+    with patch("core.services.provision_dispatch.dispatch_provision", dispatched):
+        await container_provision.background_provision("user_a", "user_a")
+    dispatched.assert_awaited_once_with("user_a")
 
 
-@pytest.mark.asyncio
-async def test_background_provision_winner_threads_the_fencing_token():
-    from core.services.container_provision import background_provision
+async def test_background_provision_ignores_clerk_user_id_kept_for_compat():
+    """clerk_user_id is accepted for caller-signature compatibility only —
+    dispatch_provision is called with owner_id alone."""
+    from core.services import container_provision
 
-    manager = MagicMock()
-    manager.provision_user_container = AsyncMock(return_value="svc-1")
-    with (
-        patch(
-            "core.services.container_provision.container_repo.try_claim_provision",
-            new=AsyncMock(return_value="claim-123"),
-        ),
-        patch("core.services.container_provision.get_ecs_manager", return_value=manager),
-        patch("core.services.container_provision.billing_repo") as repo,
-    ):
-        repo.get_by_owner_id = AsyncMock(return_value={"subscription_status": "trial_local"})
-        await background_provision("user_1", "user_1")
-
-    kwargs = manager.provision_user_container.await_args.kwargs
-    assert kwargs["claim_id"] == "claim-123"
+    dispatched = AsyncMock()
+    with patch("core.services.provision_dispatch.dispatch_provision", dispatched):
+        await container_provision.background_provision("org_abc", "user_admin_totally_different")
+    dispatched.assert_awaited_once_with("org_abc")
 
 
-@pytest.mark.asyncio
-async def test_background_provision_failure_releases_the_lease_to_error():
-    from core.services.container_provision import background_provision
+async def test_background_provision_never_calls_ecs_manager_directly():
+    """Regression guard for the de-flag: background_provision must not
+    import/call get_ecs_manager or provision_user_container itself anymore —
+    that work moved entirely into scripts.provision_runner, a separate
+    process the backend never invokes in-process."""
+    from core.services import container_provision
 
-    manager = MagicMock()
-    manager.provision_user_container = AsyncMock(side_effect=RuntimeError("mint blew up"))
-    release = AsyncMock()
-    with (
-        patch(
-            "core.services.container_provision.container_repo.try_claim_provision",
-            new=AsyncMock(return_value="claim-123"),
-        ),
-        patch(
-            "core.services.container_provision.container_repo.release_provision_to_error",
-            new=release,
-        ),
-        patch("core.services.container_provision.get_ecs_manager", return_value=manager),
-        patch("core.services.container_provision.billing_repo") as repo,
-    ):
-        repo.get_by_owner_id = AsyncMock(return_value={"subscription_status": "trial_local"})
-        await background_provision("user_1", "user_1")  # must not raise (create_task target)
-
-    release.assert_awaited_once()
-    assert release.await_args.args == ("user_1", "claim-123")
-    # The release now also carries a classified failure cause. RuntimeError is
-    # unclassified, so it defaults to retryable=True with a non-empty cause.
-    assert release.await_args.kwargs["retryable"] is True
-    assert release.await_args.kwargs["last_error"]
-
-
-@pytest.mark.asyncio
-async def test_background_provision_superseded_writes_nothing():
-    """A deliberate reprovision took over mid-run: the poll run must stop
-    quietly — releasing to error here would clobber the superseding run."""
-    from core.repositories.container_repo import ProvisionSuperseded
-    from core.services.container_provision import background_provision
-
-    manager = MagicMock()
-    manager.provision_user_container = AsyncMock(side_effect=ProvisionSuperseded("taken over"))
-    release = AsyncMock()
-    with (
-        patch(
-            "core.services.container_provision.container_repo.try_claim_provision",
-            new=AsyncMock(return_value="claim-123"),
-        ),
-        patch(
-            "core.services.container_provision.container_repo.release_provision_to_error",
-            new=release,
-        ),
-        patch("core.services.container_provision.get_ecs_manager", return_value=manager),
-        patch("core.services.container_provision.billing_repo") as repo,
-    ):
-        repo.get_by_owner_id = AsyncMock(return_value={"subscription_status": "trial_local"})
-        await background_provision("user_1", "user_1")
-
-    release.assert_not_awaited()
-
-
-# ---------------------------------------------------------------------------
-# background_provision — failure-cause classification. On the error transition
-# the release records last_error (a short human-readable cause) + retryable, so
-# the status endpoint can tell a transient failure (silently re-dispatched by
-# the poll) from a deterministic one (surfaced to the owner instead of looped).
-
-
-def _run_failing_provision(side_effect):
-    """Drive background_provision to its error path with a given side effect on
-    provision_user_container, returning the (patched) release mock so the test
-    can assert the classified cause it was called with."""
-    manager = MagicMock()
-    manager.provision_user_container = AsyncMock(side_effect=side_effect)
-    release = AsyncMock()
-    ctx = (
-        patch(
-            "core.services.container_provision.container_repo.try_claim_provision",
-            new=AsyncMock(return_value="claim-123"),
-        ),
-        patch(
-            "core.services.container_provision.container_repo.release_provision_to_error",
-            new=release,
-        ),
-        patch("core.services.container_provision.get_ecs_manager", return_value=manager),
-        patch("core.services.container_provision.billing_repo"),
-    )
-    return release, ctx
-
-
-@pytest.mark.asyncio
-async def test_background_provision_deterministic_4xx_is_not_retryable():
-    """A 4xx PaperclipApiError is deterministic -- re-running the identical
-    provision fails identically -- so it records retryable=False + a cause,
-    letting the status endpoint surface it instead of looping the poll."""
-    from core.services.container_provision import background_provision
-    from core.services.paperclip_admin_client import PaperclipApiError
-
-    release, (c1, c2, c3, c4) = _run_failing_provision(PaperclipApiError("bad company slug", 400, {"error": "bad"}))
-    with c1, c2, c3, c4 as repo:
-        repo.get_by_owner_id = AsyncMock(return_value={"subscription_status": "trial_local"})
-        await background_provision("user_1", "user_1")
-
-    assert release.await_args.args == ("user_1", "claim-123")
-    assert release.await_args.kwargs["retryable"] is False
-    assert release.await_args.kwargs["last_error"]  # non-empty cause string
-
-
-@pytest.mark.asyncio
-async def test_background_provision_transient_5xx_is_retryable():
-    """A 5xx PaperclipApiError is transient -- retryable=True so the poll
-    silently re-dispatches, no owner-facing error for a self-healing failure."""
-    from core.services.container_provision import background_provision
-    from core.services.paperclip_admin_client import PaperclipApiError
-
-    release, (c1, c2, c3, c4) = _run_failing_provision(PaperclipApiError("paperclip unavailable", 503, {}))
-    with c1, c2, c3, c4 as repo:
-        repo.get_by_owner_id = AsyncMock(return_value={"subscription_status": "trial_local"})
-        await background_provision("user_1", "user_1")
-
-    assert release.await_args.kwargs["retryable"] is True
-    assert release.await_args.kwargs["last_error"]
-
-
-@pytest.mark.asyncio
-async def test_background_provision_ecs_infra_error_is_retryable():
-    """EcsManagerError wraps AWS Spot-reclamation / throttle / capacity
-    ClientErrors -- transient infra, retryable=True."""
-    from core.containers.ecs_manager import EcsManagerError
-    from core.services.container_provision import background_provision
-
-    release, (c1, c2, c3, c4) = _run_failing_provision(
-        EcsManagerError("Failed to create ECS service: ThrottlingException", "user_1")
-    )
-    with c1, c2, c3, c4 as repo:
-        repo.get_by_owner_id = AsyncMock(return_value={"subscription_status": "trial_local"})
-        await background_provision("user_1", "user_1")
-
-    assert release.await_args.kwargs["retryable"] is True
-    assert release.await_args.kwargs["last_error"]
-
-
-@pytest.mark.asyncio
-async def test_background_provision_validation_error_is_not_retryable():
-    """A ValueError is a deterministic config/shape bug -- retryable=False."""
-    from core.services.container_provision import background_provision
-
-    release, (c1, c2, c3, c4) = _run_failing_provision(ValueError("bad provider_choice"))
-    with c1, c2, c3, c4 as repo:
-        repo.get_by_owner_id = AsyncMock(return_value={"subscription_status": "trial_local"})
-        await background_provision("user_1", "user_1")
-
-    assert release.await_args.kwargs["retryable"] is False
-    assert release.await_args.kwargs["last_error"]
+    assert not hasattr(container_provision, "get_ecs_manager")
+    assert not hasattr(container_provision, "container_repo")

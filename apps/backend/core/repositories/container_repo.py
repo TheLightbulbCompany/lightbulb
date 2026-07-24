@@ -99,11 +99,17 @@ async def scan_all() -> list[dict]:
 async def upsert(owner_id: str, fields: dict) -> dict:
     """Create or update a container record. Preserves id and created_at on existing items.
 
-    Also preserves the provision lease (``provision_claim_id`` +
-    ``provision_claimed_at``): this put_item REPLACES the whole item, and
+    Also preserves the FULL provision lease (``provision_claim_id`` +
+    ``provision_claimed_at`` + ``provision_attempt_token`` +
+    ``provision_execution_name``): this put_item REPLACES the whole item, and
     create_user_service upserts mid-provision — dropping the lease here would
     make the in-flight provision look stale/unowned and re-claimable while it
-    is still running. (PR 2 replaces this whole-item write with a scoped
+    is still running. The SFN fields matter just as much as the claim:
+    dropping ``provision_execution_name`` blinds Branch-A redispatch to the
+    live execution, and dropping ``provision_attempt_token`` makes every
+    attempt-token fence permissive (they all allow
+    ``attribute_not_exists``), letting a superseded straggler pass its next
+    checkpoint. (PR 2 replaces this whole-item write with a scoped
     UpdateItem, which removes the need to preserve anything.)
     """
     table = _get_table()
@@ -117,7 +123,12 @@ async def upsert(owner_id: str, fields: dict) -> dict:
         "updated_at": now,
         **fields,
     }
-    for lease_field in ("provision_claim_id", "provision_claimed_at"):
+    for lease_field in (
+        "provision_claim_id",
+        "provision_claimed_at",
+        "provision_attempt_token",
+        "provision_execution_name",
+    ):
         if existing and lease_field in existing and lease_field not in fields:
             item[lease_field] = existing[lease_field]
     # Ensure owner_id is not overridden by fields
@@ -127,7 +138,12 @@ async def upsert(owner_id: str, fields: dict) -> dict:
     return item
 
 
-async def try_claim_provision(owner_id: str) -> str | None:
+async def try_claim_provision(
+    owner_id: str,
+    *,
+    claim_id: str | None = None,
+    execution_name: str | None = None,
+) -> str | None:
     """Atomically claim the right to provision this owner's container. Returns
     the fencing token (``provision_claim_id``) iff THIS caller won; None when a
     provision is already in flight.
@@ -161,41 +177,105 @@ async def try_claim_provision(owner_id: str) -> str | None:
     normal status transitions: failure paths flip the row to ``error``
     (immediately re-claimable, and the status poll's existing error auto-retry
     re-dispatches), success ends at ``running``.
+
+    The SFN dispatcher (``core.services.provision_dispatch``) passes
+    ``claim_id`` + ``execution_name`` so the execution name is stamped in the
+    same atomic write as the claim — a crash between claim and StartExecution
+    is healable by name (see ``provision_dispatch`` module docstring, Branch
+    A). It also stamps ``provision_attempt_token = claim_id`` -- attempt 0's
+    fencing token. A retried SFN attempt (``BumpAttempt`` in the state
+    machine) mints a FRESH attempt token via ``claim_attempt`` below; that is
+    what fences a straggler from a still-running previous attempt out at its
+    next checkpoint, while the claim/execution name stay stable across
+    retries (see ``claim_attempt`` docstring).
     """
     table = _get_table()
-    claim_id = str(uuid.uuid4())
+    claim_id = claim_id or str(uuid.uuid4())
     now_epoch = int(time.time())
     now_iso = utc_now_iso()
+    update_expr = (
+        "SET #s = :prov, substatus = :sub, provision_claim_id = :cid, "
+        "provision_attempt_token = :cid, "
+        "provision_claimed_at = :now, updated_at = :iso, "
+        "id = if_not_exists(id, :newid), created_at = if_not_exists(created_at, :iso)"
+    )
+    values = {
+        ":prov": "provisioning",
+        ":sub": "claimed",
+        ":cid": claim_id,
+        ":now": now_epoch,
+        ":iso": now_iso,
+        ":newid": str(uuid.uuid4()),
+        ":error": "error",
+        ":stopped": "stopped",
+        ":stale": now_epoch - PROVISION_CLAIM_STALE_S,
+    }
+    if execution_name is not None:
+        update_expr += ", provision_execution_name = :ename"
+        values[":ename"] = execution_name
     try:
         await run_in_thread(
             table.update_item,
             Key={"owner_id": owner_id},
-            UpdateExpression=(
-                "SET #s = :prov, substatus = :sub, provision_claim_id = :cid, "
-                "provision_claimed_at = :now, updated_at = :iso, "
-                "id = if_not_exists(id, :newid), created_at = if_not_exists(created_at, :iso)"
-            ),
+            UpdateExpression=update_expr,
             ConditionExpression=(
                 "attribute_not_exists(owner_id) OR #s = :error OR #s = :stopped "
                 "OR (#s = :prov AND (attribute_not_exists(provision_claimed_at) OR provision_claimed_at < :stale))"
             ),
             ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues={
-                ":prov": "provisioning",
-                ":sub": "claimed",
-                ":cid": claim_id,
-                ":now": now_epoch,
-                ":iso": now_iso,
-                ":newid": str(uuid.uuid4()),
-                ":error": "error",
-                ":stopped": "stopped",
-                ":stale": now_epoch - PROVISION_CLAIM_STALE_S,
-            },
+            ExpressionAttributeValues=values,
         )
         return claim_id
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
             return None
+        raise
+
+
+async def claim_attempt(owner_id: str, claim_id: str, attempt_token: str) -> None:
+    """Stamp a fresh per-SFN-retry ``provision_attempt_token`` onto an
+    already-claimed lease. Called by ``scripts/provision_runner`` as its
+    FIRST action, every attempt (including attempt 0, where it is a
+    same-value no-op re-assertion).
+
+    THE HAZARD THIS CLOSES: the state machine's per-attempt task timeout does
+    NOT guarantee the previous attempt's ECS task is dead (a network
+    partition can leave SFN's wait timing out while the task keeps running).
+    A naive retry that reused the SAME fencing value for both the straggler
+    and the new attempt would let both concurrently pass
+    ``update_container_leased``'s checkpoint and interleave their writes --
+    exactly the double-provision class this whole lease design exists to
+    prevent. Re-stamping here, conditioned ONLY on ``provision_claim_id``
+    (not on the previous attempt token), immediately invalidates the
+    straggler's in-memory token: its NEXT checkpoint call now carries a stale
+    ``attempt_token`` that no longer matches the row, so
+    ``update_container_leased`` raises ``ProvisionSuperseded`` and the
+    straggler stops before its next side effect.
+
+    Deliberately conditioned on claim_id ONLY, not on attempt_token: this is
+    the write that ESTABLISHES the new attempt as current, so it cannot
+    itself require the new attempt's own (not-yet-written) token to match.
+    Raises ``ProvisionSuperseded`` iff the CLAIM itself was taken over
+    (a deliberate reprovision door) -- the runner must stop entirely in that
+    case, same as any other checkpoint.
+    """
+    table = _get_table()
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET provision_attempt_token = :tok, provision_claimed_at = :now, updated_at = :iso",
+            ConditionExpression="provision_claim_id = :cid",
+            ExpressionAttributeValues={
+                ":tok": attempt_token,
+                ":cid": claim_id,
+                ":now": int(time.time()),
+                ":iso": utc_now_iso(),
+            },
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            raise ProvisionSuperseded(f"provision lease for {owner_id} no longer held") from e
         raise
 
 
@@ -218,7 +298,7 @@ async def takeover_provision(owner_id: str) -> str:
         table.update_item,
         Key={"owner_id": owner_id},
         UpdateExpression=(
-            "SET provision_claim_id = :cid, provision_claimed_at = :now, "
+            "SET provision_claim_id = :cid, provision_attempt_token = :cid, provision_claimed_at = :now, "
             "updated_at = :iso, #s = if_not_exists(#s, :prov), "
             "id = if_not_exists(id, :newid), created_at = if_not_exists(created_at, :iso)"
         ),
@@ -234,14 +314,52 @@ async def takeover_provision(owner_id: str) -> str:
     return claim_id
 
 
-async def update_container_leased(owner_id: str, claim_id: str, fields: dict | None = None) -> None:
+async def update_container_leased(
+    owner_id: str,
+    claim_id: str,
+    fields: dict | None = None,
+    *,
+    generation: str | None = None,
+    attempt_token: str | None = None,
+    release_lease: bool = False,
+) -> None:
     """Scoped, fenced row write: applies ``fields`` (may be empty — a pure
     lease-refresh checkpoint) and refreshes the lease stamp, conditioned on
     this run still holding the lease. Raises ``ProvisionSuperseded`` when it
     does not — the caller must stop before its next side effect. These are the
     CHECKPOINTS that make the fencing token real: a zombie provision is stopped
     here, before it can write config or IAM content over the superseding
-    run's."""
+    run's.
+
+    ``generation`` and ``attempt_token`` are OPTIONAL additional fences, both
+    off by default (preserving every existing non-SFN caller's behavior
+    unchanged):
+
+    - ``generation`` -- when given, additionally requires the row's
+      ``provision_generation`` (the container-incarnation fence, minted once
+      at G1 -- see ``core.services.generation_ids``) to match or be absent.
+      Belt-and-suspenders against a very late straggler from a PRIOR
+      container incarnation (a full delete+recreate, not merely a lease
+      retake) writing onto a newer incarnation's row; ``claim_id`` alone
+      already fences this in practice since a new incarnation always mints a
+      fresh claim, so this is defense-in-depth, not the primary fence.
+    - ``attempt_token`` -- when given, additionally requires the row's
+      ``provision_attempt_token`` to match. THIS is the primary fence for the
+      SFN per-retry-attempt hazard (see ``claim_attempt`` docstring): a
+      straggler from a superseded attempt carries a stale token and is
+      rejected here.
+
+    ``release_lease``: set on the TERMINAL SUCCESS write (the fenced
+    status="running" transition) to atomically REMOVE the lease fields with
+    it. This makes "provisioning row carries a claim" a reliable
+    active-SFN-work signal — the boot reconcile in main.py keys on exactly
+    that to decide which stuck-provisioning rows are its to resume, and
+    residual claims from a COMPLETED provision would otherwise misclassify
+    a later interrupted wake/resize as SFN-owned forever. NOT used on error
+    releases: in-machine retries legitimately sit at status="error" with
+    the stamped claim/execution-name, which dispatch Branch A needs intact
+    to re-issue the same execution.
+    """
     table = _get_table()
     names: dict[str, str] = {}
     set_parts: list[str] = []
@@ -251,16 +369,29 @@ async def update_container_leased(owner_id: str, claim_id: str, fields: dict | N
         names[alias] = key
         set_parts.append(f"{alias} = :v{i}")
         values[f":v{i}"] = value
-    set_parts.append("provision_claimed_at = :now")
+    if not release_lease:
+        set_parts.append("provision_claimed_at = :now")
     set_parts.append("updated_at = :iso")
+    condition = "provision_claim_id = :cid"
+    values[":cid"] = claim_id
+    if generation is not None:
+        condition += " AND (attribute_not_exists(provision_generation) OR provision_generation = :gen)"
+        values[":gen"] = generation
+    if attempt_token is not None:
+        condition += " AND (attribute_not_exists(provision_attempt_token) OR provision_attempt_token = :atok)"
+        values[":atok"] = attempt_token
+    update_expr = "SET " + ", ".join(set_parts)
+    if release_lease:
+        update_expr += (
+            " REMOVE provision_claim_id, provision_claimed_at, provision_attempt_token, provision_execution_name"
+        )
     kwargs: dict = {
         "Key": {"owner_id": owner_id},
-        "UpdateExpression": "SET " + ", ".join(set_parts),
-        "ConditionExpression": "provision_claim_id = :cid",
+        "UpdateExpression": update_expr,
+        "ConditionExpression": condition,
         "ExpressionAttributeValues": {
             **values,
-            ":cid": claim_id,
-            ":now": int(time.time()),
+            **({} if release_lease else {":now": int(time.time())}),
             ":iso": utc_now_iso(),
         },
     }
@@ -280,6 +411,8 @@ async def release_provision_to_error(
     *,
     last_error: str | None = None,
     retryable: bool = True,
+    generation: str | None = None,
+    attempt_token: str | None = None,
 ) -> None:
     """Release a held lease by flipping the row to ``error`` — immediately
     re-claimable, and the status poll's existing error auto-retry re-dispatches,
@@ -291,9 +424,10 @@ async def release_provision_to_error(
     ``ecs_manager`` that used to fire first — and no-op this release's
     ``status = provisioning`` condition, dropping the cause — were removed, and
     ``_update_container`` now rejects a ``status="error"`` field to keep it that
-    way. The lone deliberate exception is the fire-and-forget
-    ``_await_running_transition`` rolloutState=FAILED write, which has no outer
-    release to defer to.
+    way. ``_await_running_transition``'s rolloutState=FAILED write now ALSO
+    routes through here (when called with a ``claim_id``, i.e. the runner's
+    foreground ``wait_for_running`` call) rather than writing ``status="error"``
+    directly — closing the historical single-owner-rule exception.
 
     Records the failure CAUSE on the same atomic transition so the status
     endpoint can tell a transient failure (silently retried) from a
@@ -303,6 +437,9 @@ async def release_provision_to_error(
     - ``retryable`` — transient (True: retry) vs deterministic (False: surface).
       Always written; defaults to True so a cause-less caller leaves the row in
       the safe self-healing state (the pre-existing behaviour).
+    - ``generation`` / ``attempt_token`` — optional additional fences, same
+      semantics as ``update_container_leased`` (see its docstring). Off by
+      default so every existing non-SFN caller is unchanged.
 
     Both fields are ADDITIVE — the write stays conditioned on the fencing token
     AND ``status = "provisioning"`` exactly as before, a silent no-op on either
@@ -331,12 +468,19 @@ async def release_provision_to_error(
         set_parts.append("#le = :lasterr")
         names["#le"] = "last_error"
         values[":lasterr"] = str(last_error)[:500]
+    condition = "provision_claim_id = :cid AND #s = :prov"
+    if generation is not None:
+        condition += " AND (attribute_not_exists(provision_generation) OR provision_generation = :gen)"
+        values[":gen"] = generation
+    if attempt_token is not None:
+        condition += " AND (attribute_not_exists(provision_attempt_token) OR provision_attempt_token = :atok)"
+        values[":atok"] = attempt_token
     try:
         await run_in_thread(
             table.update_item,
             Key={"owner_id": owner_id},
             UpdateExpression="SET " + ", ".join(set_parts),
-            ConditionExpression="provision_claim_id = :cid AND #s = :prov",
+            ConditionExpression=condition,
             ExpressionAttributeNames=names,
             ExpressionAttributeValues=values,
         )
@@ -361,10 +505,14 @@ def classify_provision_error(exc: BaseException) -> tuple[str, bool]:
     while a deterministic one (a 4xx Paperclip / config / validation error)
     fails identically forever and must be surfaced instead of looped.
 
-    - ``PaperclipApiError`` already auto-classifies retryability off its status
-      code (5xx/429 transient, 4xx deterministic) — reuse ``.retryable`` verbatim.
+    - An exception's own ``retryable`` self-classification takes precedence
+      over everything below — ``PaperclipApiError`` sets it off its status
+      code (5xx/429 transient, 4xx deterministic) and is reused verbatim.
     - ``ValueError`` / ``TypeError`` / ``KeyError`` are deterministic
       config/shape bugs — a retry can't fix a malformed value.
+    - A small set of known-deterministic message markers (provider-config
+      failures that raise as plain ``Exception``) are matched case-insensitively
+      after the attr/type checks, so they still classify deterministic.
     - Everything else — notably ``EcsManagerError``, which wraps AWS
       Spot/throttle/capacity ``ClientError``s as a string, plus any unrecognised
       failure — defaults to retryable: a needless retry is cheaper than a
@@ -378,7 +526,13 @@ def classify_provision_error(exc: BaseException) -> tuple[str, bool]:
     cause = f"{type(exc).__name__}: {exc}"
     if isinstance(exc, PaperclipApiError):
         return f"Paperclip {exc.status_code}: {exc}", exc.retryable
+    retryable_attr = getattr(exc, "retryable", None)
+    if retryable_attr is not None:
+        return cause, bool(retryable_attr)
     if isinstance(exc, (ValueError, TypeError, KeyError)):
+        return cause, False
+    message = str(exc).lower()
+    if "byo_provider is required" in message or "unknown provider_choice" in message:
         return cause, False
     return cause, True
 
@@ -388,7 +542,23 @@ def is_provision_claim_stale(container: dict | None) -> bool:
     for PROVISION_CLAIM_STALE_S — the process running it is dead. Used by the
     status poll's stale-recovery branch (which additionally checks ECS for a
     live service before re-dispatching, so a slow-but-healthy post-start boot
-    is never re-provisioned on top of)."""
+    is never re-provisioned on top of).
+
+    INTERIM BRIDGE, not deleted by the SFN cutover (PR-10): dispatching
+    through ``core.services.provision_dispatch.dispatch_provision`` when this
+    fires is now SAFE unconditionally (StartExecution is idempotent by
+    execution name, Branch A of the dispatcher), but it only catches a wedge
+    when SOMETHING re-polls a stale-lease row. The design's real fix for the
+    "SFN execution closed without a terminal row write" case is the
+    ``reconciliation_worker`` (SWEEP, not yet built — see
+    ``core.services.provision_dispatch`` module docstring) actively
+    disambiguating via ``DescribeExecution``. Until SWEEP lands, deleting this
+    wall-clock heuristic would leave that wedge with NO automatic recovery
+    path at all (only a manual ``/retry`` or ``/recover``) — a net regression
+    with no replacement — so it stays, on a wall-clock timer, doing the same
+    job it did for the inline executor. Superseded (not merely duplicated) by
+    SWEEP once that lands; remove this heuristic then.
+    """
     if not container or container.get("status") != "provisioning":
         return False
     claimed_at = container.get("provision_claimed_at")

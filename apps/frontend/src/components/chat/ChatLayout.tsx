@@ -270,11 +270,12 @@ export function ChatLayout({
             </div>
           </div>
 
-          {/* Health Indicator — hidden until the user has a subscription. The
-              indicator reports the state of an existing per-user container; if
-              the user hasn't subscribed there's no container to indicate, and
-              "Starting..." is misleading. */}
-          {isSubscribed && (
+          {/* Health Indicator — hidden until the user has a container to
+              report on; for a pre-signup user "Starting..." is misleading.
+              isSubscribed is the PAID predicate (false for the free tier),
+              but trial_local owners have a real container too, so they keep
+              the indicator. */}
+          {(isSubscribed || subscriptionStatus === "trial_local") && (
             <HealthIndicator onRecoveryReprovision={() => setRecoveryTriggered(true)} />
           )}
 

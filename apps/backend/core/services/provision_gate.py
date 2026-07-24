@@ -7,8 +7,8 @@ disagree about the gate state.
 
 This module also owns the pure billing-state predicates that
 ``evaluate_provision_gate`` (and several callers outside the gate) need:
-``is_subscription_active``, ``is_trial_blocked``, and
-``has_always_on_entitlement``. They live here so every site that asks
+``is_subscription_active``, ``is_paid_subscription``, ``is_trial_blocked``,
+and ``has_always_on_entitlement``. They live here so every site that asks
 "is this billing account currently usable?" (or "is it paid?") hits
 the same code path — see the call sites in ``core.gateway.connection_pool``,
 ``routers.config``, ``routers.hooks_proxy``, and ``routers.billing``.
@@ -102,26 +102,28 @@ def is_subscription_active(account: Mapping[str, Any] | None) -> bool:
     return status is None and bool(account.get("stripe_subscription_id"))
 
 
-# Statuses that carry the PAID always-on entitlement. Deliberately excludes
+# Statuses that carry a PAID subscription. Deliberately excludes
 # "trial_local" — the no-card local trial grants platform use (see
-# ``_ACTIVE_STATUSES``) but never always-on autonomy.
+# ``_ACTIVE_STATUSES``) but is not a subscription.
 _ENTITLED_STATUSES = frozenset({"active", "trialing"})
 
 
-def has_always_on_entitlement(account: Mapping[str, Any] | None) -> bool:
-    """Paid-only predicate for ALWAYS-ON features (webhooks, channels,
-    Paperclip routines, autonomous heartbeats).
+def is_paid_subscription(account: Mapping[str, Any] | None) -> bool:
+    """PAID predicate — whether this row is on a real (or legacy-implied)
+    Stripe subscription.
 
-    Distinct axis from ``is_subscription_active``: ``trial_local`` owners
-    ARE subscription-active (interactive chat and interactive Teams are
-    part of the free tier) but are NEVER always-on entitled — autonomy is
-    what the $50/mo subscription buys. Fail-closed: no row = not entitled.
+    Distinct axis from ``is_subscription_active`` (platform use):
+    ``trial_local`` owners ARE subscription-active — chat and interactive
+    Teams are part of the free tier — but they have NOT subscribed. The
+    /billing/account ``is_subscribed`` wire field keys off this predicate
+    so billing surfaces render the free tier as "not subscribed" (Subscribe
+    CTA), never as "Active subscription". Fail-closed: no row = not paid.
 
     The legacy fallback mirrors ``is_subscription_active`` exactly:
     it only applies while ``subscription_status`` is None (rows whose
     status hasn't been backfilled yet), so an explicit non-paid status —
     ``trial_local``, ``canceled``, ``past_due`` — can never ride a stale
-    ``stripe_subscription_id`` into entitlement.
+    ``stripe_subscription_id`` into paid status.
     """
     if not account:
         return False
@@ -129,6 +131,19 @@ def has_always_on_entitlement(account: Mapping[str, Any] | None) -> bool:
     if status in _ENTITLED_STATUSES:
         return True
     return status is None and bool(account.get("stripe_subscription_id"))
+
+
+def has_always_on_entitlement(account: Mapping[str, Any] | None) -> bool:
+    """Paid-only predicate for ALWAYS-ON features (webhooks, channels,
+    Paperclip routines, autonomous heartbeats).
+
+    Autonomy is what the $50/mo subscription buys, so this is exactly the
+    paid predicate: a ``trial_local`` owner is NEVER always-on entitled.
+    Kept as a distinct name because entitlement-to-autonomy and
+    rendered-billing-state are different questions that merely share an
+    answer today — call sites should keep saying which one they mean.
+    """
+    return is_paid_subscription(account)
 
 
 def is_trial_blocked(account: Mapping[str, Any] | None) -> bool:

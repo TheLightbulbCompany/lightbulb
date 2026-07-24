@@ -28,7 +28,7 @@ from core.services.stripe_webhook_handlers import STRIPE_WEBHOOK_HANDLERS
 from core.services.provision_gate import (
     LIVE_SUBSCRIPTION_STATUSES,
     TRIAL_BLOCKED_STATUSES,
-    is_subscription_active,
+    is_paid_subscription,
     is_trial_blocked,
 )
 from core.services.usage_service import get_usage_summary
@@ -113,12 +113,14 @@ async def get_billing_account(
     subscription_status = account.get("subscription_status") if account else None
     trial_end = account.get("trial_end") if account else None
 
-    # is_subscribed shares the same predicate every gate site (chat,
-    # provision, channel-binding) consults — see
-    # ``core.services.provision_gate.is_subscription_active``. Single
-    # source of truth so the response shape and the gates can never
-    # disagree about whether a billing row counts as subscribed.
-    is_subscribed = is_subscription_active(account)
+    # is_subscribed is the PAID predicate (``is_paid_subscription``), NOT
+    # the platform-use predicate the chat/provision gates consult
+    # (``is_subscription_active``). The two diverge exactly on trial_local:
+    # a free-tier owner may use the platform but has not subscribed, and
+    # rendering them as "Active subscription — $50/month" with no Subscribe
+    # CTA (the old wiring) left them no path to pay. Gate call sites keep
+    # platform-use semantics untouched.
+    is_subscribed = is_paid_subscription(account)
 
     # Teams per-seat billing. seat_count echoes the LIVE Clerk member count
     # for org owners — not the stored Stripe quantity — so the paywall can

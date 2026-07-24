@@ -641,6 +641,9 @@ async def test_change_provider_trial_local_refuses_use_trial_checkout(monkeypatc
     fake_manager.stop_user_service = AsyncMock()
     fake_manager.drain_then_dispatch_provision = MagicMock()
     monkeypatch.setattr("core.containers.get_ecs_manager", lambda: fake_manager)
+    # The cold path's takeover fence reads the container row lazily from the
+    # real repo module - no row here, so the fence is skipped.
+    monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))
 
     with pytest.raises(billing_service.ChangeProviderError) as exc:
         await billing_service.change_provider(
@@ -691,6 +694,9 @@ async def test_change_provider_into_bedrock_takes_cold_path(monkeypatch):
     fake_manager.stop_user_service = AsyncMock()
     fake_manager.drain_then_dispatch_provision = MagicMock()
     monkeypatch.setattr("core.containers.get_ecs_manager", lambda: fake_manager)
+    # The cold path's takeover fence reads the container row lazily from the
+    # real repo module - no row here, so the fence is skipped.
+    monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))
     created: list = []
     monkeypatch.setattr(
         billing_service.asyncio,
@@ -770,6 +776,9 @@ async def test_change_provider_refreshes_owner_facts(monkeypatch):
     fake_manager.stop_user_service = AsyncMock()
     fake_manager.drain_then_dispatch_provision = MagicMock()
     monkeypatch.setattr("core.containers.get_ecs_manager", lambda: fake_manager)
+    # The cold path's takeover fence reads the container row lazily from the
+    # real repo module - no row here, so the fence is skipped.
+    monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))
     monkeypatch.setattr(
         billing_service.asyncio,
         "create_task",

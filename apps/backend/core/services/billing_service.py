@@ -1229,6 +1229,26 @@ async def change_provider(
     manager = get_ecs_manager()
     try:
         await manager.stop_user_service(owner_id, reason="reprovision")
+        # Fence out any IN-FLIGHT provision before exposing the stopped
+        # row: a status-poll wake that claimed BEFORE the provider commit
+        # resolved the OLD provider and would keep passing its leased
+        # checkpoints (the stop's row write preserves its claim), finish
+        # with the old config, and leave our delayed dispatch standing
+        # down — restart: True with the switch silently unapplied.
+        # takeover_provision supersedes that lease so the stale run stops
+        # at its next checkpoint; our own dispatch then claims the stopped
+        # row normally. This is the same deliberate-door fencing that
+        # conversion, /recover, and admin reprovision already do — the
+        # cold provider change is the same class of door. Guarded on row
+        # existence: with NO row there is no in-flight run to fence (a
+        # poll claim would have created one), and takeover on an absent
+        # row would CREATE it as provisioning with a fresh lease — which
+        # the dispatch's own claim then refuses, breaking the
+        # create-from-scratch path for never-provisioned owners.
+        from core.repositories import container_repo as _container_repo
+
+        if await _container_repo.get_by_owner_id(owner_id) is not None:
+            await _container_repo.takeover_provision(owner_id)
     except Exception as e:
         # Any stop-path failure, not just the wrapped ECS call
         # (EcsManagerError): stop_user_service's row writes after the ECS

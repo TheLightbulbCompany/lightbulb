@@ -385,6 +385,40 @@ async def test_cold_provider_change_stop_failure_reverts_commit_and_retry_works(
 
 
 @pytest.mark.asyncio
+async def test_cold_change_fences_out_in_flight_poll_wake_claim(cold_change_env):
+    """A poll wake that claimed BEFORE the provider commit resolved the OLD
+    provider; without a fence it would keep passing its leased checkpoints
+    (the stop's row write preserves its claim) and finish with the old
+    config while our delayed dispatch stands down. The cold path now
+    takeover_provision's after the stop — same deliberate-door fencing as
+    conversion //recover/admin — so the stale run dies at its next
+    checkpoint and OUR dispatch applies the new provider."""
+    from core.repositories import container_repo
+    from core.repositories.container_repo import ProvisionSuperseded
+
+    env = cold_change_env
+    env["table"].put_item(Item={"owner_id": "user_cold", "status": "stopped"})
+    poll_claim = await container_repo.try_claim_provision("user_cold")
+    assert poll_claim, "poll wake should win the claim on the stopped row"
+
+    result = await _run_cold_change(env["created"])
+    assert result["restart"] is True
+
+    # The in-flight poll run is SUPERSEDED: its next checkpoint raises
+    # instead of letting it write the pre-commit provider's config.
+    with pytest.raises(ProvisionSuperseded):
+        await container_repo.update_container_leased("user_cold", poll_claim, {"substatus": "poison"})
+
+    # Our own dispatch proceeds end-to-end with the NEW provider.
+    assert len(env["created"]) == 1
+    await env["created"][0]
+    assert len(env["created"]) == 2
+    await env["created"][1]
+    env["ecs"].provision_user_container.assert_awaited_once()
+    assert env["ecs"].provision_user_container.await_args.kwargs["provider_choice"] == "byo_key"
+
+
+@pytest.mark.asyncio
 async def test_stop_row_write_failure_also_reverts_commit(cold_change_env):
     """The revert must cover the WHOLE stop path, not just the wrapped ECS
     call: stop_user_service's row writes after desiredCount=0 (update_status /

@@ -147,6 +147,36 @@ async def ensure_user_ready(auth: AuthContext, *, provision_container: bool = Tr
         is_admin=auth.is_org_admin if auth.is_org_context else True,
     )
     if gate is not None:
+        # A provision gate speaks to CONTAINER-provisioning (and company-
+        # CREATE) economics; it must NOT swallow an org-context caller's
+        # idempotent membership-add to an already-active shared company.
+        # Root cause of the silent orphan-member incident: an org whose
+        # Bedrock credits hit zero fires ``credits_required`` on every
+        # poll, and this early return used to no-op the membership-add at
+        # DEBUG level forever — the joining member could reach the running
+        # shared container (which made them LOOK joined) while every Teams
+        # surface 401'd on the missing Paperclip membership, with zero
+        # log lines carrying their user id. Join-only by construction:
+        # ``_ensure_paperclip_for_member`` never creates a company (it
+        # returns gracefully when no ACTIVE company exists), so company
+        # CREATE stays behind the gate — an admin bootstrapping a brand-new
+        # org still needs the gate clear.
+        if auth.is_org_context:
+            try:
+                await _ensure_paperclip_for_member(
+                    org_id=auth.org_id,
+                    member_user_id=auth.user_id,
+                    member_email=auth.email or "",
+                )
+            except Exception:
+                put_metric("paperclip.seed.error")
+                logger.exception(
+                    "ensure_user_ready: paperclip membership-add failed for "
+                    "owner=%s user=%s (gate=%s) — will retry on next poll",
+                    owner_id,
+                    auth.user_id,
+                    gate.code,
+                )
         logger.debug(
             "ensure_user_ready: gate up for owner=%s code=%s — no-op",
             owner_id,
@@ -531,6 +561,11 @@ async def _ensure_paperclip_for_member(
 ) -> None:
     """Add the org member to the org's existing Paperclip company.
 
+    JOIN-ONLY: this helper never creates a company, which is why
+    ``ensure_user_ready``'s gate-up branch may call it directly for any
+    org-context caller — a provision gate (credits, oauth, billing) must
+    not orphan a joining member, but company CREATE stays gated.
+
     Returns gracefully if the owner's company row doesn't exist or
     isn't active yet. The pending state is implicit ("Clerk-membership
     exists, paperclip-membership doesn't") and resolves on the
@@ -570,10 +605,12 @@ async def _ensure_paperclip_for_member(
         if owner_company is None:
             logger.info(
                 "ensure_user_ready (member): owner's paperclip company "
-                "for org=%s not active yet — skipping; will retry on "
-                "member's next /container/status poll",
+                "for org=%s not active yet — skipping membership-add for "
+                "user=%s; will retry on member's next /container/status poll",
                 org_id,
+                member_user_id,
             )
+            put_metric("paperclip.member_add", dimensions={"outcome": "no_company"})
             return
 
         if not member_email:
@@ -587,6 +624,7 @@ async def _ensure_paperclip_for_member(
                 "ensure_user_ready.no_email",
                 dimensions={"path": "member"},
             )
+            put_metric("paperclip.member_add", dimensions={"outcome": "no_email"})
             return
 
         # ``lookup_owner_email`` short-circuits to None when
@@ -604,6 +642,16 @@ async def _ensure_paperclip_for_member(
             or ""
         )
 
+        # Membership-add observability (the orphan-member incident was a
+        # SILENT skip): one INFO on dispatch and one INFO/WARNING on the
+        # outcome, both carrying org + user ids, plus the bounded-outcome
+        # ``paperclip.member_add`` metric — so "no member-add ever ran for
+        # this user" is a log search away, and its absence is alarmable.
+        logger.info(
+            "ensure_user_ready (member): dispatching paperclip membership-add org=%s user=%s",
+            org_id,
+            member_user_id,
+        )
         try:
             await provisioning.provision_member(
                 owner_id=org_id,
@@ -617,11 +665,12 @@ async def _ensure_paperclip_for_member(
             # canonical poll trigger and may fire this on every member poll, so
             # treat as an idempotent no-op success.
             if exc.status_code == 409:
-                logger.debug(
+                logger.info(
                     "ensure_user_ready (member): %s already in paperclip company for org=%s — no-op (409)",
                     member_user_id,
                     org_id,
                 )
+                put_metric("paperclip.member_add", dimensions={"outcome": "already_active"})
             elif exc.status_code == 422:
                 # Better Auth returns 422 (NOT 409) for a duplicate email — same
                 # recorded-failure semantics as the owner guard: the account
@@ -638,7 +687,30 @@ async def _ensure_paperclip_for_member(
                     org_id,
                 )
                 put_metric("paperclip.seed.duplicate_email", dimensions={"path": "member"})
+                put_metric("paperclip.member_add", dimensions={"outcome": "duplicate_email"})
             else:
+                logger.warning(
+                    "ensure_user_ready (member): paperclip membership-add failed org=%s user=%s status=%s",
+                    org_id,
+                    member_user_id,
+                    exc.status_code,
+                )
+                put_metric("paperclip.member_add", dimensions={"outcome": "error"})
                 raise
+        except Exception:
+            logger.warning(
+                "ensure_user_ready (member): paperclip membership-add failed org=%s user=%s",
+                org_id,
+                member_user_id,
+            )
+            put_metric("paperclip.member_add", dimensions={"outcome": "error"})
+            raise
+        else:
+            logger.info(
+                "ensure_user_ready (member): paperclip membership-add ok org=%s user=%s",
+                org_id,
+                member_user_id,
+            )
+            put_metric("paperclip.member_add", dimensions={"outcome": "ok"})
     finally:
         await close_paperclip_provisioning(provisioning)

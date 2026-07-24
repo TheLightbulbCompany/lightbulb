@@ -348,6 +348,45 @@ def trial_expired_gate(owner_role: str) -> Gate:
     )
 
 
+async def _first_touch_pending_invitation(owner_id: str) -> bool:
+    """Whether this PERSONAL owner's first touch should block on a pending
+    Clerk org invitation.
+
+    Called only from the no-billing-row personal branch of the gate, so
+    ``owner_id`` IS the Clerk user_id. The Clerk lookup runs first: it is
+    the common-case short-circuit (returns ``[]`` immediately when there are
+    no invitations, and ``clerk_admin`` stubs it to ``[]`` without creds or
+    on any Clerk error — fail-open, a Clerk blip must never wedge a
+    legitimate signup). The containers read runs only when an invitation
+    actually exists, guarding the "no existing personal world" half of the
+    predicate: a user who somehow has a container but lost their billing
+    row must keep the existing signup_required routing, not be walled off
+    behind their invitation. Note the caller path re-runs this on every
+    ~3s poll while the user sits invitation-blocked — the same cadence
+    ``ensure_personal_trial_default``'s own Gate-B Clerk lookup already
+    runs at in that state; accepted (bounded by how many users sit on an
+    unaccepted invitation at once).
+    """
+    from core.services import clerk_admin
+
+    if not await clerk_admin.list_pending_invitations_for_user(owner_id):
+        return False
+
+    from core.repositories import container_repo
+
+    try:
+        if await container_repo.get_by_owner_id(owner_id):
+            return False
+    except Exception:  # noqa: BLE001 — fail-open: never block signup on a read blip
+        logger.warning(
+            "invitation gate: containers read failed for owner %s — not blocking",
+            owner_id,
+            exc_info=True,
+        )
+        return False
+    return True
+
+
 async def evaluate_provision_gate(
     *,
     owner_id: str,
@@ -412,6 +451,35 @@ async def _evaluate_provision_gate_inner(
             # Teams-billing paywall off (rather than the personal provider
             # picker).
             return _team_billing_required_gate(owner_role)
+        # FIRST-TOUCH invitation check: a fresh personal signup whose email
+        # holds a PENDING org invitation must not be funneled into the
+        # personal signup path (signup_required → ProviderPicker →
+        # trial_local world) — they are meant to accept the invite and
+        # become a seat, and the personal world built in the meantime is
+        # instant junk (container + billing row + a throwaway Paperclip
+        # company). Only fires on a genuine first touch — no billing row
+        # (this branch) AND no container row — so an established personal
+        # owner who is later invited to an org is untouched (their org/
+        # personal routing is the onboarding gate's job, not this one's).
+        # KNOWN LIMITATION: Clerk matches invitations to VERIFIED emails
+        # only, so an unverified-email signup — and an OAuth signup whose
+        # primary email differs from the invited address — still reads as
+        # a plain personal signup here. This closes the common path, not
+        # every path.
+        if await _first_touch_pending_invitation(owner_id):
+            return Gate(
+                code="invitation_pending",
+                title="You have a pending team invitation",
+                message=(
+                    "Your email has a pending invitation to join a team. "
+                    "Accept it to join your team's workspace instead of "
+                    "starting a personal one."
+                ),
+                action_label="View invitation",
+                action_href="/onboarding",
+                action_admin_only=False,
+                owner_role=owner_role,
+            )
         # Personal owner, no row. Surfaced separately from the inactive
         # cases so /container/status can route to the ProviderPicker (which
         # calls POST /billing/trial-checkout — the only way to create the

@@ -52,6 +52,135 @@ async def test_no_billing_org_owner_returns_team_billing_required():
     assert gate.action_admin_only is True
 
 
+# ---------------------------------------------------------------------------
+# First-touch pending-invitation gate
+# ---------------------------------------------------------------------------
+#
+# A fresh personal signup (no billing row, no container row) whose email
+# holds a PENDING Clerk org invitation must be blocked with a structured
+# invitation_pending card instead of being funneled into the personal
+# signup path — otherwise a full personal trial world (container + billing
+# + throwaway Paperclip company) is built for a user who is about to
+# become an org seat. Known limitation (documented at the gate): Clerk only
+# matches invitations to VERIFIED emails, so unverified-email signups still
+# read as plain personal signups.
+
+
+@pytest.mark.asyncio
+async def test_pending_invitation_first_touch_returns_invitation_pending():
+    """No billing row + no container row + a pending org invitation →
+    invitation_pending, routed to /onboarding to accept the invite."""
+    with (
+        patch("core.services.provision_gate.billing_repo") as repo,
+        patch("core.services.trial_cap.billing_repo", repo),
+        patch(
+            "core.services.clerk_admin.list_pending_invitations_for_user",
+            new=AsyncMock(return_value=[{"id": "orginv_1"}]),
+        ),
+        patch(
+            "core.repositories.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value=None),
+        ),
+    ):
+        repo.get_by_owner_id = AsyncMock(return_value=None)
+        gate = await evaluate_provision_gate(owner_id="user_x")
+    assert gate is not None
+    assert gate.code == "invitation_pending"
+    assert gate.action_href == "/onboarding"
+    assert gate.action_admin_only is False
+
+
+@pytest.mark.asyncio
+async def test_pending_invitation_with_existing_container_keeps_signup_required():
+    """A user who already HAS a personal world (container row present, even
+    with the billing row gone) is not walled off behind their invitation —
+    the existing signup_required routing stands. No regression for personal
+    users later invited to orgs."""
+    with (
+        patch("core.services.provision_gate.billing_repo") as repo,
+        patch("core.services.trial_cap.billing_repo", repo),
+        patch(
+            "core.services.clerk_admin.list_pending_invitations_for_user",
+            new=AsyncMock(return_value=[{"id": "orginv_1"}]),
+        ),
+        patch(
+            "core.repositories.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"owner_id": "user_x", "status": "running"}),
+        ),
+    ):
+        repo.get_by_owner_id = AsyncMock(return_value=None)
+        gate = await evaluate_provision_gate(owner_id="user_x")
+    assert gate is not None
+    assert gate.code == "signup_required"
+
+
+@pytest.mark.asyncio
+async def test_no_pending_invitation_keeps_signup_required_without_container_read():
+    """No invitations → the common case: signup_required, and the containers
+    read is never spent (Clerk-first ordering — the container check only
+    guards the rare invitation-exists path)."""
+    container_read = AsyncMock(return_value=None)
+    with (
+        patch("core.services.provision_gate.billing_repo") as repo,
+        patch("core.services.trial_cap.billing_repo", repo),
+        patch(
+            "core.services.clerk_admin.list_pending_invitations_for_user",
+            new=AsyncMock(return_value=[]),
+        ),
+        patch("core.repositories.container_repo.get_by_owner_id", container_read),
+    ):
+        repo.get_by_owner_id = AsyncMock(return_value=None)
+        gate = await evaluate_provision_gate(owner_id="user_x")
+    assert gate is not None
+    assert gate.code == "signup_required"
+    container_read.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_existing_billing_row_never_reaches_the_invitation_check():
+    """An established owner (billing row present) is untouched: the
+    invitation lookup must not run — this gate is FIRST-TOUCH only, and a
+    per-poll Clerk call for every active owner would be a regression."""
+    invites = AsyncMock(return_value=[{"id": "orginv_1"}])
+    with (
+        patch("core.services.provision_gate.billing_repo") as repo,
+        patch("core.services.trial_cap.billing_repo", repo),
+        patch("core.services.clerk_admin.list_pending_invitations_for_user", invites),
+    ):
+        repo.get_by_owner_id = AsyncMock(
+            return_value={
+                "subscription_status": "active",
+                "provider_choice": "byo_key",
+                "byo_provider": "anthropic",
+            },
+        )
+        gate = await evaluate_provision_gate(owner_id="user_x")
+    assert gate is None
+    invites.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_invitation_container_read_failure_fails_open_to_signup_required():
+    """A containers-read blip must never wedge a legitimate signup — the
+    gate falls open to the normal signup_required routing."""
+    with (
+        patch("core.services.provision_gate.billing_repo") as repo,
+        patch("core.services.trial_cap.billing_repo", repo),
+        patch(
+            "core.services.clerk_admin.list_pending_invitations_for_user",
+            new=AsyncMock(return_value=[{"id": "orginv_1"}]),
+        ),
+        patch(
+            "core.repositories.container_repo.get_by_owner_id",
+            new=AsyncMock(side_effect=RuntimeError("ddb down")),
+        ),
+    ):
+        repo.get_by_owner_id = AsyncMock(return_value=None)
+        gate = await evaluate_provision_gate(owner_id="user_x")
+    assert gate is not None
+    assert gate.code == "signup_required"
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "status",

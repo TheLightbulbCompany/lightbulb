@@ -133,6 +133,170 @@ async def test_ensure_user_ready_no_op_when_gate_blocks(_stub_trial_default):
     mock_container.assert_not_awaited()
 
 
+# ---------------------------------------------------------------------------
+# Gate-up org-context membership-add (the orphan-member incident)
+# ---------------------------------------------------------------------------
+#
+# A provision gate (credits_required, oauth_required, …) blocks CONTAINER
+# provisioning and company CREATE — it must NOT swallow an org-context
+# caller's idempotent membership-add to an already-active shared company.
+# Before this branch existed, an org whose Bedrock credits hit zero silently
+# orphaned every joining member: the 200-path dispatch from
+# /container/status ran, hit the gate, and returned at DEBUG level with the
+# member-add never attempted.
+
+
+def _up_gate(code: str = "credits_required") -> MagicMock:
+    gate = MagicMock()
+    gate.code = code
+    return gate
+
+
+@pytest.mark.asyncio
+async def test_gate_up_org_member_still_gets_membership_add():
+    """Gate up + org member + active company → provision_member still runs
+    (join-only), and no container is ever dispatched."""
+    fake_owner_row = MagicMock(status="active", company_id="co_1", user_id="user_owner")
+    fake_provisioning = MagicMock()
+    fake_provisioning.find_org_owner = AsyncMock(return_value=fake_owner_row)
+    fake_provisioning.provision_member = AsyncMock()
+    captured: list[str] = []
+
+    def capture_task(coro):
+        captured.append(coro.__qualname__)
+        coro.close()
+
+    with (
+        patch(
+            "core.services.user_provision.evaluate_provision_gate",
+            new=AsyncMock(return_value=_up_gate()),
+        ),
+        patch("core.services.user_provision.lookup_owner_email", new=AsyncMock(return_value="o@example.com")),
+        patch(
+            "core.services.user_provision.build_paperclip_provisioning", new=AsyncMock(return_value=fake_provisioning)
+        ),
+        patch("core.services.user_provision.close_paperclip_provisioning", new=AsyncMock()),
+        patch("core.services.user_provision.asyncio.create_task", side_effect=capture_task),
+    ):
+        await ensure_user_ready(_org_member_auth("user_m", "org_o", "m@example.com"), provision_container=False)
+    fake_provisioning.provision_member.assert_awaited_once_with(
+        owner_id="org_o",
+        user_id="user_m",
+        email="m@example.com",
+        owner_email="o@example.com",
+    )
+    assert captured == [], f"gate up must never dispatch a container, got {captured}"
+
+
+@pytest.mark.asyncio
+async def test_gate_up_org_admin_join_only_never_creates_company():
+    """Gate up + org ADMIN + no company yet → NOTHING is created. The gate-up
+    branch is join-only (_ensure_paperclip_for_member returns gracefully when
+    no active company exists); company CREATE stays behind the gate."""
+    fake_provisioning = MagicMock()
+    fake_provisioning.find_org_owner = AsyncMock(return_value=None)
+    fake_provisioning.provision_org = AsyncMock()
+    fake_provisioning.provision_member = AsyncMock()
+    fake_provisioning.try_acquire_org_create_claim = AsyncMock(return_value=True)
+
+    with (
+        patch(
+            "core.services.user_provision.evaluate_provision_gate",
+            new=AsyncMock(return_value=_up_gate("team_billing_required")),
+        ),
+        patch(
+            "core.services.user_provision.build_paperclip_provisioning", new=AsyncMock(return_value=fake_provisioning)
+        ),
+        patch("core.services.user_provision.close_paperclip_provisioning", new=AsyncMock()),
+    ):
+        await ensure_user_ready(_org_admin_auth("user_admin", "org_xyz", "a@example.com"))
+    fake_provisioning.provision_org.assert_not_awaited()
+    fake_provisioning.try_acquire_org_create_claim.assert_not_awaited()
+    fake_provisioning.provision_member.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_gate_up_membership_add_409_is_idempotent_no_op():
+    """Repeat polls while the gate is up: provision_member's 409 (already
+    added / concurrent join) is swallowed — the gate-up membership-add is as
+    idempotent as the normal-path one."""
+    from core.services.paperclip_admin_client import PaperclipApiError
+
+    fake_owner_row = MagicMock(status="active", company_id="co_1", user_id="user_owner")
+    fake_provisioning = MagicMock()
+    fake_provisioning.find_org_owner = AsyncMock(return_value=fake_owner_row)
+    fake_provisioning.provision_member = AsyncMock(
+        side_effect=PaperclipApiError("409", status_code=409, body="dup"),
+    )
+
+    with (
+        patch(
+            "core.services.user_provision.evaluate_provision_gate",
+            new=AsyncMock(return_value=_up_gate()),
+        ),
+        patch("core.services.user_provision.lookup_owner_email", new=AsyncMock(return_value="o@example.com")),
+        patch(
+            "core.services.user_provision.build_paperclip_provisioning", new=AsyncMock(return_value=fake_provisioning)
+        ),
+        patch("core.services.user_provision.close_paperclip_provisioning", new=AsyncMock()),
+    ):
+        # Should NOT raise.
+        await ensure_user_ready(_org_member_auth("user_m", "org_o", "m@example.com"), provision_container=False)
+    fake_provisioning.provision_member.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_gate_up_membership_add_failure_is_swallowed_and_metered():
+    """A non-409 failure inside the gate-up membership-add must not escape
+    ensure_user_ready (the status poll keeps answering); it is recorded via
+    the paperclip.seed.error metric and retried on the next poll."""
+    from core.services.paperclip_admin_client import PaperclipApiError
+
+    fake_owner_row = MagicMock(status="active", company_id="co_1", user_id="user_owner")
+    fake_provisioning = MagicMock()
+    fake_provisioning.find_org_owner = AsyncMock(return_value=fake_owner_row)
+    fake_provisioning.provision_member = AsyncMock(
+        side_effect=PaperclipApiError("500", status_code=500, body="boom"),
+    )
+
+    with (
+        patch(
+            "core.services.user_provision.evaluate_provision_gate",
+            new=AsyncMock(return_value=_up_gate()),
+        ),
+        patch("core.services.user_provision.lookup_owner_email", new=AsyncMock(return_value="o@example.com")),
+        patch(
+            "core.services.user_provision.build_paperclip_provisioning", new=AsyncMock(return_value=fake_provisioning)
+        ),
+        patch("core.services.user_provision.close_paperclip_provisioning", new=AsyncMock()),
+        patch("core.services.user_provision.put_metric") as mock_metric,
+    ):
+        # Should NOT raise.
+        await ensure_user_ready(_org_member_auth("user_m", "org_o", "m@example.com"), provision_container=False)
+    mock_metric.assert_any_call("paperclip.seed.error")
+
+
+@pytest.mark.asyncio
+async def test_gate_up_personal_owner_stays_a_pure_no_op():
+    """The gate-up membership-add is org-context only — a gated PERSONAL
+    owner must not touch Paperclip at all (no company exists to join, and
+    the personal seed is create-shaped, which stays gated)."""
+    fake_provisioning = MagicMock()
+    build = AsyncMock(return_value=fake_provisioning)
+    with (
+        patch(
+            "core.services.user_provision.evaluate_provision_gate",
+            new=AsyncMock(return_value=_up_gate("signup_required")),
+        ),
+        patch("core.services.user_provision.ensure_personal_trial_default", new=AsyncMock()),
+        patch("core.services.user_provision.build_paperclip_provisioning", new=build),
+        patch("core.services.user_provision.background_provision", new=AsyncMock()) as mock_container,
+    ):
+        await ensure_user_ready(_personal_auth())
+    build.assert_not_awaited()
+    mock_container.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_ensure_paperclip_for_owner_personal_calls_provision_org(_stub_trial_default):
     """Personal user → provision_org with owner_id == user_id."""

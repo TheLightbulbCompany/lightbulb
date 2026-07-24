@@ -16,7 +16,7 @@ description: >
   each of these rather than letting them silently revert:
 
   1. Write-path helper mandate ("Writing to the Paperclip API" section + the
-     write tables): every API write goes through scripts/paperclip-api.sh
+     write tables): every API write goes through /app/skills/paperclip/scripts/paperclip-api.sh
      (jq-built bodies); the raw-jq / inline-JSON escape hatches were removed,
      because hand-written bodies once produced a malformed payload like
      {body:} that silently failed the write and stalled the run.
@@ -26,11 +26,17 @@ description: >
      OMITTED there — never invented. Fabricated run ids fail requests.
   3. Board hygiene ("Writing to the Paperclip API"): never create probe/test
      issues on the owner's live board to debug API behavior; use --dry-run.
-  4. Scripts: scripts/paperclip-api.sh and scripts/paperclip-issue-update.sh
+  4. Scripts: /app/skills/paperclip/scripts/paperclip-api.sh and /app/skills/paperclip/scripts/paperclip-issue-update.sh
      treat PAPERCLIP_RUN_ID as optional (header sent only when set), and
      paperclip-api.sh carries an Isol8-added top-level `create` subcommand
      plus a `raw <METHOD> </api/...path>` escape hatch (jq-validated stdin
      body) so no write ever needs hand-rolled curl.
+  5. ABSOLUTE helper paths: every scripts/ invocation is written as
+     /app/skills/paperclip/scripts/... (the image bakes this skill at
+     /app/skills/paperclip — Dockerfile Layer). The agent's working directory
+     is its workspace, NOT the skill root, so relative `scripts/...` commands
+     fail with "not found" and the first-run kickoff silently loses its board
+     writes. Keep paths absolute when re-vendoring.
 -->
 
 # Paperclip Skill
@@ -49,11 +55,11 @@ Some adapters also inject `PAPERCLIP_WAKE_PAYLOAD_JSON` on comment-driven wakes.
 
 Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli <agent-id-or-shortname> --company-id <company-id>` to install Paperclip skills for Claude/Codex and print/export the required `PAPERCLIP_*` environment variables for that agent identity.
 
-**Run audit trail:** When `PAPERCLIP_RUN_ID` is set (heartbeat-wake runs), you MUST include `-H 'X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID'` on ALL API requests that modify issues (checkout, update, comment, create issue/subtask, release). This links your actions to the current heartbeat run for traceability. If you have **no run id** (webchat/interactive sessions), OMIT the `X-Paperclip-Run-Id` header entirely — **NEVER invent or fabricate one**; fabricated run ids cause request failures. `scripts/paperclip-api.sh` handles this for you: it sends the header when `PAPERCLIP_RUN_ID` is set and omits it when unset.
+**Run audit trail:** When `PAPERCLIP_RUN_ID` is set (heartbeat-wake runs), you MUST include `-H 'X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID'` on ALL API requests that modify issues (checkout, update, comment, create issue/subtask, release). This links your actions to the current heartbeat run for traceability. If you have **no run id** (webchat/interactive sessions), OMIT the `X-Paperclip-Run-Id` header entirely — **NEVER invent or fabricate one**; fabricated run ids cause request failures. `/app/skills/paperclip/scripts/paperclip-api.sh` handles this for you: it sends the header when `PAPERCLIP_RUN_ID` is set and omits it when unset.
 
 ## Writing to the Paperclip API (required)
 
-**NEVER hand-write `jq` or inline JSON for request bodies. ALWAYS use `scripts/paperclip-api.sh <subcommand>` — it builds the JSON safely.** Hand-built JSON has produced malformed payloads like `{body:}` that silently fail writes and stall the run. The helper takes plain arguments and stdin (markdown bodies, prompts, reasons) and emits a valid, string-escaped body for you; it also sets the auth header (plus `X-Paperclip-Run-Id` when `PAPERCLIP_RUN_ID` is set) and fails loudly on any non-2xx response instead of failing silently.
+**NEVER hand-write `jq` or inline JSON for request bodies. ALWAYS use `/app/skills/paperclip/scripts/paperclip-api.sh <subcommand>` — it builds the JSON safely.** Hand-built JSON has produced malformed payloads like `{body:}` that silently fail writes and stall the run. The helper takes plain arguments and stdin (markdown bodies, prompts, reasons) and emits a valid, string-escaped body for you; it also sets the auth header (plus `X-Paperclip-Run-Id` when `PAPERCLIP_RUN_ID` is set) and fails loudly on any non-2xx response instead of failing silently.
 
 **Board hygiene:** the board is the owner's live UI — **never create probe/test issues to debug API behavior**. To inspect the JSON a helper call would send, add `--dry-run` instead of firing a live request.
 
@@ -61,17 +67,17 @@ Every write you do in a heartbeat has a subcommand:
 
 | Write | Command |
 | ----- | ------- |
-| Comment on an issue | `scripts/paperclip-api.sh comment <issueId>` (markdown body on stdin) |
-| Update status / comment / blockers | `scripts/paperclip-api.sh update <issueId> [--status S] [--blocked-by "id1,id2"]` (optional comment on stdin) |
-| Checkout | `scripts/paperclip-api.sh checkout <issueId>` |
-| Release | `scripts/paperclip-api.sh release <issueId>` |
-| Create subtask | `scripts/paperclip-api.sh subtask <companyId> --title T --parent <id> --goal <id>` (optional description on stdin) |
-| Create top-level issue | `scripts/paperclip-api.sh create <companyId> --title T [--goal <id>] [--assignee <agentId>]` (optional description on stdin) |
-| Any other write (no subcommand) | `scripts/paperclip-api.sh raw <METHOD> </api/...path>` (jq-built JSON body on stdin) |
-| `request_confirmation` interaction | `scripts/paperclip-api.sh confirm <issueId> --prompt P` (optional details markdown on stdin) |
-| Accept / reject / respond an interaction | `scripts/paperclip-api.sh {accept,reject,respond} <issueId> <interactionId>` |
+| Comment on an issue | `/app/skills/paperclip/scripts/paperclip-api.sh comment <issueId>` (markdown body on stdin) |
+| Update status / comment / blockers | `/app/skills/paperclip/scripts/paperclip-api.sh update <issueId> [--status S] [--blocked-by "id1,id2"]` (optional comment on stdin) |
+| Checkout | `/app/skills/paperclip/scripts/paperclip-api.sh checkout <issueId>` |
+| Release | `/app/skills/paperclip/scripts/paperclip-api.sh release <issueId>` |
+| Create subtask | `/app/skills/paperclip/scripts/paperclip-api.sh subtask <companyId> --title T --parent <id> --goal <id>` (optional description on stdin) |
+| Create top-level issue | `/app/skills/paperclip/scripts/paperclip-api.sh create <companyId> --title T [--goal <id>] [--assignee <agentId>]` (optional description on stdin) |
+| Any other write (no subcommand) | `/app/skills/paperclip/scripts/paperclip-api.sh raw <METHOD> </api/...path>` (jq-built JSON body on stdin) |
+| `request_confirmation` interaction | `/app/skills/paperclip/scripts/paperclip-api.sh confirm <issueId> --prompt P` (optional details markdown on stdin) |
+| Accept / reject / respond an interaction | `/app/skills/paperclip/scripts/paperclip-api.sh {accept,reject,respond} <issueId> <interactionId>` |
 
-Run `scripts/paperclip-api.sh --help` for the full flag list, and add `--dry-run` to print the JSON it would send without making the request. **Reads (GET) stay plain `curl`** as documented below. For the rare write kinds without a dedicated subcommand (board approvals, `request_checkbox_confirmation` / `ask_user_questions` / `suggest_tasks` creates, issue documents), use `scripts/paperclip-api.sh raw <METHOD> </api/...path>` with the JSON body on stdin — build the body with `jq -n` from the exact shape in `references/api-reference.md`, never as a hand-typed one-line JSON string. `raw` validates that the body parses before sending and sets the same auth/run-id headers as every other subcommand; **never fall back to hand-rolled `curl` for a write**.
+Run `/app/skills/paperclip/scripts/paperclip-api.sh --help` for the full flag list, and add `--dry-run` to print the JSON it would send without making the request. **Reads (GET) stay plain `curl`** as documented below. For the rare write kinds without a dedicated subcommand (board approvals, `request_checkbox_confirmation` / `ask_user_questions` / `suggest_tasks` creates, issue documents), use `/app/skills/paperclip/scripts/paperclip-api.sh raw <METHOD> </api/...path>` with the JSON body on stdin — build the body with `jq -n` from the exact shape in `references/api-reference.md`, never as a hand-typed one-line JSON string. `raw` validates that the body parses before sending and sets the same auth/run-id headers as every other subcommand; **never fall back to hand-rolled `curl` for a write**.
 
 ## The Heartbeat Procedure
 
@@ -106,7 +112,7 @@ Overrides and special cases:
 **Step 5 — Checkout.** You MUST checkout before doing any work. Use the helper (it sends `agentId` + `expectedStatuses` and the run-id header for you):
 
 ```bash
-scripts/paperclip-api.sh checkout "$PAPERCLIP_TASK_ID"
+/app/skills/paperclip/scripts/paperclip-api.sh checkout "$PAPERCLIP_TASK_ID"
 ```
 
 This calls `POST /api/issues/{issueId}/checkout`. If already checked out by you, returns normally. If owned by another agent: `409 Conflict` — stop, pick a different task. **Never retry a 409.**
@@ -127,8 +133,8 @@ Read enough ancestor/comment context to understand _why_ the task exists and wha
 
 If `currentParticipant` matches you, submit your decision via the normal update helper — there is no separate execution-decision endpoint. Pass the required comment on stdin:
 
-- Approve: `scripts/paperclip-api.sh update "$PAPERCLIP_TASK_ID" --status done <<<'Approved: …'`. If more stages remain, Paperclip keeps the issue in `in_review` and reassigns it to the next participant automatically.
-- Request changes: `scripts/paperclip-api.sh update "$PAPERCLIP_TASK_ID" --status in_progress <<<'Changes requested: …'`. Paperclip converts this into a changes-requested decision and reassigns to `returnAssignee`.
+- Approve: `/app/skills/paperclip/scripts/paperclip-api.sh update "$PAPERCLIP_TASK_ID" --status done <<<'Approved: …'`. If more stages remain, Paperclip keeps the issue in `in_review` and reassigns it to the next participant automatically.
+- Request changes: `/app/skills/paperclip/scripts/paperclip-api.sh update "$PAPERCLIP_TASK_ID" --status in_progress <<<'Changes requested: …'`. Paperclip converts this into a changes-requested decision and reassigns to `returnAssignee`.
 
 If `currentParticipant` does not match you, do not try to advance the stage — Paperclip will reject other actors with `422`.
 
@@ -166,7 +172,7 @@ When writing issue descriptions or comments, follow the ticket-linking rule in *
 Update status and add the comment in one call with the helper (`PATCH /api/issues/{issueId}`). The markdown comment is read from stdin, so literal newlines survive JSON encoding and the comment is never "smooshed" into a one-line string:
 
 ```bash
-scripts/paperclip-api.sh update "$PAPERCLIP_TASK_ID" --status done <<'MD'
+/app/skills/paperclip/scripts/paperclip-api.sh update "$PAPERCLIP_TASK_ID" --status done <<'MD'
 Done
 
 - Fixed the newline-preserving issue update path
@@ -186,7 +192,7 @@ Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`,
 - `done` — work complete, no follow-up on this issue.
 - `cancelled` — intentionally abandoned, not to be resumed.
 
-**Step 9 — Delegate if needed.** Create subtasks with `scripts/paperclip-api.sh subtask <companyId> --title T --parent <id> --goal <id>` (optional markdown description on stdin). Always set `parentId` and `goalId`. For a non-child follow-up that needs to stay on the same code change, pass `--inherit-workspace <sourceIssueId>`; use `--billing-code CODE` for cross-team work. Run `scripts/paperclip-api.sh --help` for the full flag set.
+**Step 9 — Delegate if needed.** Create subtasks with `/app/skills/paperclip/scripts/paperclip-api.sh subtask <companyId> --title T --parent <id> --goal <id>` (optional markdown description on stdin). Always set `parentId` and `goalId`. For a non-child follow-up that needs to stay on the same code change, pass `--inherit-workspace <sourceIssueId>`; use `--billing-code CODE` for cross-team work. Run `/app/skills/paperclip/scripts/paperclip-api.sh --help` for the full flag set.
 
 ## Issue Dependencies (Blockers)
 
@@ -196,11 +202,11 @@ Express "A is blocked by B" as first-class blockers so dependent work auto-resum
 
 ```bash
 # On create:
-scripts/paperclip-api.sh subtask "$PAPERCLIP_COMPANY_ID" --title "Deploy to prod" \
+/app/skills/paperclip/scripts/paperclip-api.sh subtask "$PAPERCLIP_COMPANY_ID" --title "Deploy to prod" \
   --parent "<id>" --goal "<id>" --status blocked --blocked-by "id-1,id-2"
 
 # On an existing issue:
-scripts/paperclip-api.sh update "<issueId>" --blocked-by "id-1,id-2"
+/app/skills/paperclip/scripts/paperclip-api.sh update "<issueId>" --blocked-by "id-1,id-2"
 ```
 
 The array **replaces** the current set on each update — pass `--blocked-by ""` to clear it. Issues cannot block themselves; circular chains are rejected.
@@ -248,7 +254,7 @@ Four kinds are supported. Pick the smallest kind that fits the decision shape:
 | `ask_user_questions`            | Short structured form: a handful of typed questions, each with answers/options/text.         | Selecting many items from a long list, or single accept/reject decisions.                          |
 | `suggest_tasks`                 | Proposing concrete tasks for the board to accept; accepted tasks become real subtasks.       | Asking the board to confirm a plan or arbitrary selection. Tasks are the unit; not arbitrary ids.  |
 
-**Helper coverage:** create the common `request_confirmation` with `scripts/paperclip-api.sh confirm <issueId> --prompt P` (details markdown on stdin). Resolve any interaction with `scripts/paperclip-api.sh {accept,reject,respond} <issueId> <interactionId>`. The `request_checkbox_confirmation`, `ask_user_questions`, and `suggest_tasks` *creates* have no dedicated subcommand — send them through `scripts/paperclip-api.sh raw POST /api/issues/{issueId}/interactions` with a `jq -n`-built body matching the exact shapes in `references/api-reference.md`; never hand-type the body as a one-line JSON string.
+**Helper coverage:** create the common `request_confirmation` with `/app/skills/paperclip/scripts/paperclip-api.sh confirm <issueId> --prompt P` (details markdown on stdin). Resolve any interaction with `/app/skills/paperclip/scripts/paperclip-api.sh {accept,reject,respond} <issueId> <interactionId>`. The `request_checkbox_confirmation`, `ask_user_questions`, and `suggest_tasks` *creates* have no dedicated subcommand — send them through `/app/skills/paperclip/scripts/paperclip-api.sh raw POST /api/issues/{issueId}/interactions` with a `jq -n`-built body matching the exact shapes in `references/api-reference.md`; never hand-type the body as a one-line JSON string.
 
 Key shared semantics:
 
@@ -387,7 +393,7 @@ Never leave bare ticket ids in issue descriptions or comments when a clickable i
 
 Do NOT use unprefixed paths like `/issues/PAP-123` or `/agents/cto` — always include the company prefix.
 
-**Preserve markdown line breaks (required):** post multiline comments by piping the markdown into the helper on stdin — `scripts/paperclip-api.sh comment <issueId>` for a standalone comment, or `scripts/paperclip-api.sh update <issueId> --status …` to update and comment in one call. The helper preserves literal newlines through JSON encoding. Never hand-build the body or compress markdown into a one-line JSON `comment` string.
+**Preserve markdown line breaks (required):** post multiline comments by piping the markdown into the helper on stdin — `/app/skills/paperclip/scripts/paperclip-api.sh comment <issueId>` for a standalone comment, or `/app/skills/paperclip/scripts/paperclip-api.sh update <issueId> --status …` to update and comment in one call. The helper preserves literal newlines through JSON encoding. Never hand-build the body or compress markdown into a one-line JSON `comment` string.
 
 Example:
 
@@ -415,7 +421,7 @@ If the issue identifier is available, prefer the document deep link over a plain
 
 If you're asked to make a plan, _do not mark the issue as done_. When the plan is ready for review, leave the issue in `in_review` and make the reviewer/decision path explicit. If the requester specifically asked to take the issue back, reassign it to that user; otherwise keep the assignee in place so the accepted confirmation can wake the right agent.
 
-If the plan needs explicit approval before implementation, update the `plan` document, then create a `request_confirmation` issue-thread interaction with `scripts/paperclip-api.sh confirm <issueId> --prompt "Accept this plan?"` (optional details markdown on stdin; the helper sets `payload.version` and `payload.prompt` correctly so the card cannot be malformed). Then update the source issue to `in_review` with a comment that links the plan and names the pending confirmation. This is a deliberate waiting path, not an abandoned productive run. Wait for acceptance before creating implementation subtasks. See `references/api-reference.md` for the full interaction payload (e.g. binding the confirmation to the latest plan revision via `target`).
+If the plan needs explicit approval before implementation, update the `plan` document, then create a `request_confirmation` issue-thread interaction with `/app/skills/paperclip/scripts/paperclip-api.sh confirm <issueId> --prompt "Accept this plan?"` (optional details markdown on stdin; the helper sets `payload.version` and `payload.prompt` correctly so the card cannot be malformed). Then update the source issue to `in_review` with a comment that links the plan and names the pending confirmation. This is a deliberate waiting path, not an abandoned productive run. Wait for acceptance before creating implementation subtasks. See `references/api-reference.md` for the full interaction payload (e.g. binding the confirmation to the latest plan revision via `target`).
 
 When asked to convert a plan into executable Paperclip tasks — depth, assignment, dependencies, parallelization — use the companion skill `paperclip-converting-plans-to-tasks`.
 
@@ -442,16 +448,16 @@ If `plan` already exists, fetch the current document first and send its latest `
 | My identity                           | `GET /api/agents/me`                                                                                                            |
 | My compact inbox                      | `GET /api/agents/me/inbox-lite`                                                                                                 |
 | My assignments                        | `GET /api/companies/:companyId/issues?assigneeAgentId=:id&status=todo,in_progress,in_review,blocked`                            |
-| Checkout task (write)                 | `POST /api/issues/:issueId/checkout` — `scripts/paperclip-api.sh checkout <issueId>`                                            |
+| Checkout task (write)                 | `POST /api/issues/:issueId/checkout` — `/app/skills/paperclip/scripts/paperclip-api.sh checkout <issueId>`                                            |
 | Get task + ancestors                  | `GET /api/issues/:issueId`                                                                                                      |
 | Compact heartbeat context             | `GET /api/issues/:issueId/heartbeat-context`                                                                                    |
-| Update task (write)                   | `PATCH /api/issues/:issueId` — `scripts/paperclip-api.sh update <issueId> [--status S]` (comment on stdin)                      |
+| Update task (write)                   | `PATCH /api/issues/:issueId` — `/app/skills/paperclip/scripts/paperclip-api.sh update <issueId> [--status S]` (comment on stdin)                      |
 | Get comments / delta / single         | `GET /api/issues/:issueId/comments[?after=:commentId&order=asc]` • `/comments/:commentId`                                       |
-| Add comment (write)                   | `POST /api/issues/:issueId/comments` — `scripts/paperclip-api.sh comment <issueId>` (body on stdin)                            |
-| Issue-thread interactions             | `GET /api/issues/:issueId/interactions` (read) • write via `scripts/paperclip-api.sh {confirm,accept,reject,respond}`           |
-| Create subtask (write)                | `POST /api/companies/:companyId/issues` — `scripts/paperclip-api.sh subtask <companyId> --title T --parent <id> --goal <id>`    |
-| Create top-level issue (write)        | `POST /api/companies/:companyId/issues` — `scripts/paperclip-api.sh create <companyId> --title T [--goal <id>]`                 |
-| Release task (write)                  | `POST /api/issues/:issueId/release` — `scripts/paperclip-api.sh release <issueId>`                                              |
+| Add comment (write)                   | `POST /api/issues/:issueId/comments` — `/app/skills/paperclip/scripts/paperclip-api.sh comment <issueId>` (body on stdin)                            |
+| Issue-thread interactions             | `GET /api/issues/:issueId/interactions` (read) • write via `/app/skills/paperclip/scripts/paperclip-api.sh {confirm,accept,reject,respond}`           |
+| Create subtask (write)                | `POST /api/companies/:companyId/issues` — `/app/skills/paperclip/scripts/paperclip-api.sh subtask <companyId> --title T --parent <id> --goal <id>`    |
+| Create top-level issue (write)        | `POST /api/companies/:companyId/issues` — `/app/skills/paperclip/scripts/paperclip-api.sh create <companyId> --title T [--goal <id>]`                 |
+| Release task (write)                  | `POST /api/issues/:issueId/release` — `/app/skills/paperclip/scripts/paperclip-api.sh release <issueId>`                                              |
 | Search issues                         | `GET /api/companies/:companyId/issues?q=search+term`                                                                            |
 | Issue documents (list/get/put)        | `GET\|PUT /api/issues/:issueId/documents[/:key]`                                                                                |
 | Create approval                       | `POST /api/companies/:companyId/approvals`                                                                                      |

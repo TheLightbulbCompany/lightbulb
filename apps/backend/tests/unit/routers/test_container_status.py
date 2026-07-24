@@ -84,13 +84,17 @@ def _stub_personal_trial_default():
 
 @pytest.fixture(autouse=True)
 def _stub_teams_status_repo():
-    """The status path now reads the polling user's paperclip-companies seed
-    state to surface a NON-BLOCKING teams_status (Part C). Stub PaperclipRepo to
-    an empty read by default so this file's tests exercise the real
-    _resolve_teams_status without hitting DynamoDB; the Part C tests re-patch
-    PaperclipRepo inline (an active/failed row, or a raising read)."""
+    """The status path reads the polling user's paperclip-companies seed
+    state to surface a NON-BLOCKING teams_status (Part C), AND (spec PR-4 /
+    ONBOARD-TABLE) resolves the owner row to surface `onboarded` (funnel_state
+    == "complete"). Stub PaperclipRepo to an empty read by default (no row ->
+    teams_status=None, onboarded=False) so this file's tests exercise the real
+    _resolve_teams_status / _resolve_onboarded without hitting DynamoDB; tests
+    that care re-patch PaperclipRepo inline (an active/failed row, a
+    funnel_state=="complete" row, or a raising read)."""
     repo = MagicMock()
     repo.get = AsyncMock(return_value=None)
+    repo.resolve_owner_row = AsyncMock(return_value=None)
     with patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo):
         yield repo
 
@@ -2135,6 +2139,103 @@ class TestContainerStatusTeamsStatus:
 
         assert "teams_status" not in result
         assert captured == [], f"a healthy personal seed must not re-dispatch, got {captured}"
+
+
+class TestContainerStatusOnboarded:
+    """GET /container/status surfaces `onboarded` from the paperclip-companies
+    OWNER row's funnel_state (spec PR-4 / ONBOARD-TABLE — supersedes the old
+    containers.onboarded_at stamp, S2). Resolved via
+    PaperclipRepo.resolve_owner_row(owner_id), NOT the calling user's own row
+    and NOT the containers row -- see _resolve_onboarded's docstring.
+    """
+
+    @pytest.mark.asyncio
+    async def test_resolve_onboarded_true_when_funnel_complete(self):
+        from routers.container import _resolve_onboarded
+
+        repo = MagicMock(resolve_owner_row=AsyncMock(return_value=SimpleNamespace(funnel_state="complete")))
+        with patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo):
+            assert await _resolve_onboarded("owner_x") is True
+
+    @pytest.mark.asyncio
+    async def test_resolve_onboarded_false_when_funnel_submitted_not_complete(self):
+        """Submitted-but-not-yet-delivered must NOT read as onboarded --
+        only "complete" stops the funnel from being offered again."""
+        from routers.container import _resolve_onboarded
+
+        repo = MagicMock(resolve_owner_row=AsyncMock(return_value=SimpleNamespace(funnel_state="submitted")))
+        with patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo):
+            assert await _resolve_onboarded("owner_x") is False
+
+    @pytest.mark.asyncio
+    async def test_resolve_onboarded_false_when_no_owner_row(self):
+        from routers.container import _resolve_onboarded
+
+        repo = MagicMock(resolve_owner_row=AsyncMock(return_value=None))
+        with patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo):
+            assert await _resolve_onboarded("owner_x") is False
+
+    @pytest.mark.asyncio
+    async def test_resolve_onboarded_swallows_read_error(self):
+        """A paperclip read failure must NOT break /status — it returns False."""
+        from routers.container import _resolve_onboarded
+
+        repo = MagicMock(resolve_owner_row=AsyncMock(side_effect=RuntimeError("ddb down")))
+        with patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo):
+            assert await _resolve_onboarded("owner_x") is False  # must not raise
+
+    @pytest.mark.asyncio
+    async def test_running_container_with_complete_funnel_reports_onboarded_true(self):
+        from routers.container import container_status
+
+        fake_ecs = AsyncMock()
+        fake_ecs.resolve_running_container = AsyncMock(
+            return_value=({"service_name": "svc", "status": "running", "substatus": None}, "10.0.1.5")
+        )
+        repo = MagicMock(
+            get=AsyncMock(return_value=SimpleNamespace(status="active")),
+            resolve_owner_row=AsyncMock(return_value=SimpleNamespace(funnel_state="complete")),
+        )
+        with (
+            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.resolve_owner_id", return_value="user_x"),
+            patch(
+                "routers.container.get_gateway_pool",
+                return_value=SimpleNamespace(is_user_connected=lambda _u: True),
+            ),
+            patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
+        ):
+            result = await container_status(_personal_auth())
+
+        assert result["onboarded"] is True
+
+    @pytest.mark.asyncio
+    async def test_running_container_with_no_owner_row_reports_onboarded_false(self):
+        """Additive, safe default: no row yet (fresh signup) reports
+        onboarded=False, not a missing/omitted field -- unlike teams_status,
+        `onboarded` is part of the base response shape every consumer reads."""
+        from routers.container import container_status
+
+        fake_ecs = AsyncMock()
+        fake_ecs.resolve_running_container = AsyncMock(
+            return_value=({"service_name": "svc", "status": "running", "substatus": None}, "10.0.1.5")
+        )
+        repo = MagicMock(
+            get=AsyncMock(return_value=None),
+            resolve_owner_row=AsyncMock(return_value=None),
+        )
+        with (
+            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.resolve_owner_id", return_value="user_x"),
+            patch(
+                "routers.container.get_gateway_pool",
+                return_value=SimpleNamespace(is_user_connected=lambda _u: True),
+            ),
+            patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
+        ):
+            result = await container_status(_personal_auth())
+
+        assert result["onboarded"] is False
 
 
 class TestProvisionTaskObservability:

@@ -1,6 +1,5 @@
 """Service for Stripe billing operations — flat-fee model."""
 
-import asyncio
 import hashlib
 import logging
 import os
@@ -1184,9 +1183,21 @@ async def change_provider(
         },
     )
 
-    from core.services.container_provision import background_provision
+    # Stop-first (F1). A bare background_provision dispatch's FIRST act is
+    # the single-flight provision claim, whose ConditionExpression admits
+    # only no-row/error/stopped/stale-provisioning — a "running" row is NOT
+    # claimable, so the dispatch loses the claim and stands down silently:
+    # provision_user_container (the only branch that re-registers the task
+    # def + rewrites openclaw.json) is never reached, yet we'd still tell
+    # the caller ``restart: True``. reprovision_for_user fixes this by
+    # scaling the service to 0 and waiting for it to drain BEFORE
+    # dispatching background_provision, so the dispatch lands on the
+    # scale-from-zero branch instead of racing (and losing to) the still-
+    # running row. Mirrors the admin container-reprovision action
+    # (routers/admin.py) — see EcsManager.reprovision_for_user's docstring.
+    from core.containers import get_ecs_manager
 
-    asyncio.create_task(background_provision(owner_id, clerk_user_id))
+    await get_ecs_manager().reprovision_for_user(owner_id)
 
     return {
         "status": "ok",

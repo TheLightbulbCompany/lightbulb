@@ -637,14 +637,9 @@ async def test_change_provider_trial_local_refuses_use_trial_checkout(monkeypatc
     # Guards must fire before either of these does any work.
     set_choice = AsyncMock()
     monkeypatch.setattr(billing_service.billing_repo, "set_provider_choice", set_choice)
-    bg = AsyncMock()
-    monkeypatch.setattr("core.services.container_provision.background_provision", bg)
-    created: list = []
-    monkeypatch.setattr(
-        billing_service.asyncio,
-        "create_task",
-        lambda coro: created.append(coro) or MagicMock(),
-    )
+    fake_manager = MagicMock()
+    fake_manager.reprovision_for_user = AsyncMock(return_value={"status": "reprovisioning"})
+    monkeypatch.setattr("core.containers.get_ecs_manager", lambda: fake_manager)
 
     with pytest.raises(billing_service.ChangeProviderError) as exc:
         await billing_service.change_provider(
@@ -658,15 +653,14 @@ async def test_change_provider_trial_local_refuses_use_trial_checkout(monkeypatc
     assert exc.value.status_code == 409
     # No provider write, no reprovision dispatch.
     set_choice.assert_not_awaited()
-    bg.assert_not_called()
-    assert created == []
+    fake_manager.reprovision_for_user.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_change_provider_into_bedrock_takes_cold_path(monkeypatch):
     """A switch INTO bedrock_claude must NOT take the hot path (which would
     call build_provider_block(bedrock, aip_arns=None) and raise), and must
-    NOT raise — it dispatches background_provision (cold path)."""
+    NOT raise — it stop-first reprovisions (cold path, F1 fix)."""
     # No prior provider_choice -> none of the OLD-provider side-effect cleanup
     # blocks (oauth, byo) fire, keeping the test free of oauth/key I/O while
     # still exercising the bedrock hot-vs-cold selector.
@@ -686,14 +680,12 @@ async def test_change_provider_into_bedrock_takes_cold_path(monkeypatch):
     monkeypatch.setattr(billing_service.billing_repo, "set_provider_choice", AsyncMock())
     hot = AsyncMock()
     monkeypatch.setattr(billing_service, "_hot_swap_provider", hot)
-    bg = AsyncMock()
-    monkeypatch.setattr("core.services.container_provision.background_provision", bg)
-    created = []
-    monkeypatch.setattr(
-        billing_service.asyncio,
-        "create_task",
-        lambda coro: created.append(coro) or MagicMock(),
-    )
+    # change_provider's cold path lazily imports get_ecs_manager from
+    # core.containers and calls .reprovision_for_user(owner_id) (F1 fix) —
+    # patch it at its source module.
+    fake_manager = MagicMock()
+    fake_manager.reprovision_for_user = AsyncMock(return_value={"status": "reprovisioning"})
+    monkeypatch.setattr("core.containers.get_ecs_manager", lambda: fake_manager)
 
     result = await billing_service.change_provider(
         owner_id="user_x",
@@ -704,10 +696,8 @@ async def test_change_provider_into_bedrock_takes_cold_path(monkeypatch):
 
     hot.assert_not_awaited()  # hot path skipped for bedrock target
     assert result["restart"] is True
-    # background_provision (cold path) was scheduled.
-    assert created, "expected background_provision to be dispatched"
-    for coro in created:
-        coro.close()
+    # Stop-first reprovision (cold path) was dispatched for the owner.
+    fake_manager.reprovision_for_user.assert_awaited_once_with("user_x")
 
 
 @pytest.mark.asyncio
@@ -761,13 +751,9 @@ async def test_change_provider_refreshes_owner_facts(monkeypatch):
     monkeypatch.setattr(billing_service.billing_repo, "set_provider_choice", AsyncMock())
     facts_mock = AsyncMock()
     monkeypatch.setattr("core.services.owner_facts.write_owner_facts", facts_mock)
-    monkeypatch.setattr("core.services.container_provision.background_provision", AsyncMock())
-    created = []
-    monkeypatch.setattr(
-        billing_service.asyncio,
-        "create_task",
-        lambda coro: created.append(coro) or MagicMock(),
-    )
+    fake_manager = MagicMock()
+    fake_manager.reprovision_for_user = AsyncMock(return_value={"status": "reprovisioning"})
+    monkeypatch.setattr("core.containers.get_ecs_manager", lambda: fake_manager)
 
     await billing_service.change_provider(
         owner_id="user_x",
@@ -780,8 +766,6 @@ async def test_change_provider_refreshes_owner_facts(monkeypatch):
         "user_x",
         account_overrides={"provider_choice": "bedrock_claude", "byo_provider": None},
     )
-    for coro in created:
-        coro.close()
 
 
 @pytest.mark.asyncio

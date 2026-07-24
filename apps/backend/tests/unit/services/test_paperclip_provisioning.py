@@ -1097,7 +1097,15 @@ class _StatefulRepo:
     async def put(self, row):
         self._rows[row.user_id] = row
 
-    async def update_status(self, user_id: str, *, status: str, last_error: str = "", not_if_status: str | None = None):
+    async def update_status(
+        self,
+        user_id: str,
+        *,
+        status: str,
+        last_error: str = "",
+        not_if_status: str | None = None,
+        owner_id: str | None = None,
+    ):
         row = self._rows[user_id]
         if not_if_status is not None and row.status == not_if_status:
             return False  # guarded — skip (e.g. don't downgrade an active row)

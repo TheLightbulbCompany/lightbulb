@@ -1150,6 +1150,7 @@ class PaperclipProvisioning:
             user_id,
             status="disabled",
             scheduled_purge_at=purge_at,
+            owner_id=existing.org_id,
         )
         logger.info(
             "paperclip_provisioning.archive_member: user %s archived (company=%s, member=%s, purge_at=%s)",
@@ -1177,6 +1178,7 @@ class PaperclipProvisioning:
             user_id,
             status="disabled",
             scheduled_purge_at=purge_at,
+            owner_id=existing.org_id,
         )
         logger.info(
             "paperclip_provisioning.disable: user %s scheduled for purge at %s",
@@ -1555,6 +1557,7 @@ class PaperclipProvisioning:
                 status="failed",
                 last_error=truncated,
                 not_if_status="active",
+                owner_id=existing.org_id,
             )
             if not landed:
                 logger.info(

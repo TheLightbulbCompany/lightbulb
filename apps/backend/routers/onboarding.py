@@ -125,7 +125,12 @@ async def submit_brief(
         raise HTTPException(status_code=409, detail="not_ready")
     generation = owner_row.onboarding_generation
 
-    claim_result = await repo.claim_funnel_submission(owner_row.user_id, onboarding_generation=generation)
+    # owner_row.user_id is the paperclip row PK (the org CREATOR's id for an
+    # org); ctx.owner_id is the broadcast key the org's tabs register under, so
+    # the realtime nudge must ride that, not the row PK. See paperclip_repo.
+    claim_result = await repo.claim_funnel_submission(
+        owner_row.user_id, onboarding_generation=generation, owner_id=ctx.owner_id
+    )
     if claim_result is FunnelClaimResult.ALREADY_SUBMITTED:
         # Durable: the row is still on the generation we just read, but
         # funnel_state had already moved past not_started -- a peer's
@@ -223,7 +228,11 @@ async def submit_brief(
         # loses the guard raises here instead and never stages anything (see
         # the except block's cleanup).
         await repo.record_onboarding_ids(
-            owner_row.user_id, onboarding_generation=generation, goal_id=goal_id, project_id=project_id
+            owner_row.user_id,
+            onboarding_generation=generation,
+            goal_id=goal_id,
+            project_id=project_id,
+            owner_id=ctx.owner_id,
         )
 
         # No board seeding here: the first run is Friday's own research
@@ -301,7 +310,9 @@ async def submit_brief(
         # (mirrors the old sentinel's stale-steal caveat); best-effort is
         # the accepted posture, not a guarantee.
         try:
-            await repo.revert_funnel_submission(owner_row.user_id, onboarding_generation=generation)
+            await repo.revert_funnel_submission(
+                owner_row.user_id, onboarding_generation=generation, owner_id=ctx.owner_id
+            )
         except Exception as cleanup_err:
             logger.error(
                 "onboarding: failed to revert funnel claim for company %s after post-seed failure: %s",

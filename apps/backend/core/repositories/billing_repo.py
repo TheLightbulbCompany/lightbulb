@@ -9,6 +9,7 @@ from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
 
 from core.dynamodb import get_table, run_in_thread, utc_now_iso
+from core.services.status_events import publish_status_changed
 
 logger = logging.getLogger(__name__)
 
@@ -430,6 +431,7 @@ async def set_subscription(
 
     table = _get_table()
     await run_in_thread(table.put_item, Item=existing)
+    publish_status_changed(owner_id)
     return existing
 
 
@@ -460,6 +462,7 @@ async def set_team_subscription(
 
     table = _get_table()
     await run_in_thread(table.put_item, Item=existing)
+    publish_status_changed(owner_id)
     return existing
 
 
@@ -530,6 +533,7 @@ async def set_provider_choice(
         ExpressionAttributeValues=values,
         ReturnValues="ALL_NEW",
     )
+    publish_status_changed(owner_id)
     return response["Attributes"]
 
 

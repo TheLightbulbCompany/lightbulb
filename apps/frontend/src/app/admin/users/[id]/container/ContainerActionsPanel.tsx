@@ -246,8 +246,8 @@ export function ContainerActionsPanel({
           </h3>
           <p className="text-xs text-zinc-400">
             Forces the ECS service to roll its task definition back to the
-            owner's plan-sized profile (standard 1 vCPU / 4 GB; Ultra Pro
-            2 vCPU / 8 GB). Use as a recovery action when a container is
+            owner&apos;s plan-sized profile (standard 1 vCPU / 4 GB; Ultra
+            Pro 2 vCPU / 8 GB). Use as a recovery action when a container is
             wedged on a stale task def.
           </p>
           <ConfirmActionDialog

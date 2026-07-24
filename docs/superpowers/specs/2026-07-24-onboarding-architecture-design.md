@@ -28,21 +28,27 @@ C won 2 of 3 judge lenses because it is the only candidate that answers the actu
 
 ## 2. State model
 
-**Two generation ids, each minted at exactly one code point, plus one new durable row; Clerk demoted to a write-only presentation cache.**
+**Two generation ids, each minted at exactly one code point; onboarding facts folded onto the `paperclip-companies` owner row (which isol8 owns in DynamoDB — no new table); Clerk demoted to a write-only presentation cache.**
+
+> **Decision (2026-07-24, owner):** onboarding state lives on the existing `paperclip-companies` owner row, not a dedicated table. Two benefits: `compute_status` already reads that row (for `teams_state`), so this adds **zero** extra reads; and atomic-wipe gets simpler (onboarding dies with the company row). The cost — and the load-bearing requirement of the ONBOARD PR — is that the row's existing **whole-item `put` writers** (`provision_org`'s `repo.put`) must be converted to field-scoped / onboarding-preserving writes, or the co-located onboarding fields would be clobbered on reconcile (the very clobber a dedicated table would have dodged). This is mandatory, not optional.
 
 ### `containers` (PK `owner_id`) — add `provision_generation` (ULID)
 The **container-incarnation fence**. Minted exactly once, inside `create_user_service`'s row-creating write (event **G1**, single mint point). **Preserved** by scale-from-zero, force-redeploy, restart, provider hot-swap, Bedrock revoke/restore, and Stripe conversion — those are the same runtime waking up. Threaded through the PROVISION executor as `--generation`; every provisioning DDB write is conditioned on it. Owns runtime/execution facts (status, substatus, lease) and **never** onboarding facts. **`onboarded_at` is retired** — this deletes S2 and the entire L1 restamp special-case.
 
-### `onboarding-state` (NEW table, PK `owner_id`) — one row per owner
-The **company-incarnation fence**. Fields: `onboarding_generation` (ULID), `company_id`, `friday_agent_id`, `funnel_state` (`not_started|submitted|complete`), `funnel_submitted_at`, `funnel_completed_at`, `onboarding_goal_id`, `onboarding_project_id`, `bootstrap_state` (`not_started|dispatched|delivered|failed`), `bootstrap_dispatch_id` (fencing token), `bootstrap_dispatched_at`, `bootstrap_delivered_at`, `bootstrap_attempts`, `bootstrap_last_error`, `updated_at`.
+### `paperclip-companies` owner row (PK `owner_id`) — add the onboarding fields
+The **company-incarnation fence** lives on the row isol8 already owns. New attributes: `onboarding_generation` (ULID), `funnel_state` (`not_started|submitted|complete`), `funnel_submitted_at`, `funnel_completed_at`, `onboarding_goal_id`, `onboarding_project_id`, `bootstrap_state` (`not_started|dispatched|delivered|failed`), `bootstrap_dispatch_id` (fencing token), `bootstrap_dispatched_at`, `bootstrap_delivered_at`, `bootstrap_attempts`, `bootstrap_last_error`. (`company_id` and `friday_agent_id` already exist on this row.) DynamoDB is schemaless, so this is just new attributes — no CDK table to create.
 
-`onboarding_generation` is minted **exactly once**, in `provision_org`'s fresh-create branch *after a genuinely-new Paperclip company is confirmed* (event **G2**) — **NOT** on reconcile-adopt of an existing `company_id`, and **NOT** on `provision_member` (an org seat). The mint atomically resets the row. Because the row owns its own generation and resets it atomically with recording the company, **there is no separate pointer to diverge from**: a container-only recreation (G1) never touches this row, so `funnel=complete` / `bootstrap=delivered` survive by construction. Writers use **generation-conditioned `UpdateItem`s** — a write against a superseded `onboarding_generation` is a silent no-op, never a lost update or a resurrection. This row replaces **S1** (Clerk `firstRun`), **S2** (`onboarded_at`), **S3** (`__onboarded__` sentinel), and **S4** (thread-emptiness inference — bootstrap completion is now the observed `chat.final`, recorded once).
+`onboarding_generation` is minted **exactly once**, in `provision_org`'s fresh-create branch *after a genuinely-new Paperclip company is confirmed* (event **G2**) — **NOT** on reconcile-adopt of an existing `company_id`, and **NOT** on `provision_member` (an org seat). The mint atomically sets the new generation and resets `funnel_state=not_started` / `bootstrap_state=not_started` on the same write that records the fresh company. A container-only recreation (G1) never touches this row, so `funnel=complete` / `bootstrap=delivered` survive by construction.
+
+**The load-bearing safety requirement:** onboarding fields are written via **generation-conditioned `UpdateItem`s** (a write against a superseded `onboarding_generation` is a silent no-op), AND the row's existing **whole-item `put` writers must be made onboarding-preserving** — `provision_org`'s reconcile-adopt / status-flip `repo.put` must not clobber the onboarding attributes (convert to a scoped `UpdateItem`, or read-merge the onboarding fields before the put). Without this, co-location reintroduces the clobber a dedicated table would have avoided. The funnel-claim (one-shot seed) that the `__onboarded__` sentinel provided is replaced by a conditional `funnel_state: not_started → submitted` write fenced on the generation — the loser gets `ConditionalCheckFailed` (already submitted), same guarantee, no separate sentinel item.
+
+This replaces **S1** (Clerk `firstRun`), **S2** (`onboarded_at`), **S3** (`__onboarded__` sentinel), and **S4** (thread-emptiness inference — bootstrap completion is now the observed `chat.final`, recorded once).
 
 ### Clerk `unsafeMetadata` — demoted to a write-only presentation cache
 The frontend *may* write `firstRun`/`getStarted` for an optimistic pre-first-poll paint, but **no backend code and no client gating logic reads it as authority** (enforced by a CI grep/architecture check). A forged or stale value produces at most a one-frame paint flicker, never a wrong gate. Justified by verification: Clerk `unsafeMetadata` is last-writer-wins (no conditional write) and user-forgeable by design.
 
 ### Readiness composition
-`compute_status(owner_id)` in a new `core/services/readiness_state.py` is the **sole** reader of all five inputs — containers row, billing-accounts row, gateway liveness (moved **off** the in-process pool onto the connection-service DDB table, killing R4 and the PR #1364 self-heal dial), paperclip-companies `teams_state`, and the generation-fenced `onboarding-state` row — emitting one `StatusContract` (shared type in `packages/shared`) that both clients render via `deriveUIPhase`.
+`compute_status(owner_id)` in a new `core/services/readiness_state.py` is the **sole** reader of all five inputs — containers row, billing-accounts row, gateway liveness (moved **off** the in-process pool onto the connection-service DDB table, killing R4 and the PR #1364 self-heal dial), and the `paperclip-companies` owner row (which now carries both `teams_state` and the generation-fenced onboarding fields — one read, not two) — emitting one `StatusContract` (shared type in `packages/shared`) that both clients render via `deriveUIPhase`.
 
 ---
 
@@ -66,10 +72,9 @@ flowchart TD
 
   subgraph durable["DURABLE STATE"]
     CROW[("containers<br/>provision_generation (G1)")]
-    OROW[("onboarding-state<br/>onboarding_generation (G2)<br/>funnel + bootstrap")]
+    PCROW[("paperclip-companies owner row<br/>teams_state + onboarding_generation (G2)<br/>+ funnel + bootstrap")]
     CONN[("connection-service<br/>gateway liveness")]
     BILL[("billing-accounts")]
-    PCROW[("paperclip-companies")]
   end
 
   subgraph exec["PROVISIONING EXECUTOR"]
@@ -85,7 +90,6 @@ flowchart TD
   HOOK --> STATUS
   STATUS --> COMPOSE
   COMPOSE --> CROW
-  COMPOSE --> OROW
   COMPOSE --> CONN
   COMPOSE --> BILL
   COMPOSE --> PCROW
@@ -97,19 +101,19 @@ flowchart TD
   STATUS -.->|funnel submitted + runtime up| DISPATCH
   DISPATCH -->|chat.send FIRST_RUN_PROMPT| FRIDAY
   FRIDAY -.->|chat.final observed| DISPATCH
-  DISPATCH --> OROW
+  DISPATCH --> PCROW
 
   STATUS -.->|no row / stale claim| SFN
   SFN --> RUN
   RUN --> CROW
   RUN --> ORG
-  ORG --> OROW
+  ORG --> PCROW
   ORG --> FRIDAY
 
   SWEEP -.->|stale dispatch retry| DISPATCH
   SWEEP -.->|DescribeExecution wedge| SFN
   CROW --> PUBLISH
-  OROW --> PUBLISH
+  PCROW --> PUBLISH
 ```
 
 ---
@@ -121,13 +125,13 @@ flowchart TD
 | INV-1 | `compute_status(owner_id)` is the sole composer of readiness+onboarding truth; no router/hook/gate re-derives it | `readiness_state.py` | startup assertion + import-linter test (no module imports >1 of the 5 input stores) |
 | INV-2 | `provision_generation` minted exactly once at G1; preserved by restart/redeploy/hot-swap/conversion | `create_user_service` | single mint point + integration test (restart doesn't change it, fresh service does) |
 | INV-3 | `onboarding_generation` minted exactly once at G2 (fresh company only); not on reconcile-adopt, not on seat-join | `provision_org` | integration test: container-only recreation + seat-join non-bump |
-| INV-4 | Every onboarding fact is generation-scoped; superseded reads absent/fresh, superseded writes are no-ops | `onboarding_repo` | generation-conditioned `UpdateItem` (`ConditionalCheckFailed` = superseded) |
+| INV-4 | Every onboarding fact is generation-scoped; superseded reads absent/fresh, superseded writes are no-ops | `paperclip_repo` (paperclip-companies row) | generation-conditioned `UpdateItem` (`ConditionalCheckFailed` = superseded); existing whole-item puts made onboarding-preserving |
 | INV-5 | Bootstrap kickoff dispatched at most once per `onboarding_generation`, server-side, no browser tab required | bootstrap dispatcher | conditional `pending→dispatched` write; only the claimer sends |
 | INV-6 | Onboarding status never gates chat; chat availability is decided solely by runtime phase | `compute_status`/gate | integration test: a degraded/awaiting_brief status still yields a live chat surface |
 | INV-7 | Clerk `unsafeMetadata` is a write-only presentation cache; no `core/` or gating hook reads it as authority | frontend/backend boundary | CI grep gate (no `firstRun` read in `core/` or in any status-contract hook) |
-| INV-8 | The PROVISION executor guarantees bounded time-to-terminal-state independent of FastAPI liveness | PROVISION Step Functions | SFN timeout/failed alarms + kill-backend-mid-provision dev-soak CI gate |
+| INV-8 | The PROVISION executor guarantees bounded time-to-terminal-state independent of FastAPI liveness | PROVISION Step Functions | SFN timeout/failed alarms + unit/ASL assertions; validated by turning it on in real dev |
 | INV-9 | Every backend async op that can outlive a request is claim/generation-fenced and recovered by exactly one sweep worker | `reconciliation_worker.py` | integration test: kill mid-provision and mid-bootstrap; next worker tick resolves both |
-| INV-10 | A full wipe deletes container row + Paperclip company + onboarding-state row atomically; partial recreation refused | atomic-wipe endpoint | integration test: no orphan remains |
+| INV-10 | A full wipe deletes container row + Paperclip company (Aurora) + the `paperclip-companies` owner row (onboarding rides with it) atomically; partial recreation refused | atomic-wipe endpoint | integration test: no orphan remains |
 | INV-11 | Exactly one autoprovision trigger family, all keyed on `owner_id` | `ensure_user_ready` | integration test: proxy path routes through the canonical trigger |
 | INV-12 | A Paperclip behavior isol8 depends on lives in fork source where cheaper than compensating; a compensation stays only while its fork gap is open | fork + #1409 | FORK-1/FORK-2 gate the compensation-deletion PRs |
 
@@ -160,7 +164,7 @@ Ordered so no PR depends on a later one. Rollback is `git revert`. The fork PRs 
 | 1 | **FORK-1** Paperclip honors `Idempotency-Key` on company/agent create | (enables) | reconcile-adopt, Atlas-skip, 409-as-success (later) |
 | 2 | **FORK-2** Paperclip hard user-delete/reset endpoint | (enables L7) | adopt-via-signin, 422-terminal, `recover_orphan…`, raw Aurora DELETE (later) |
 | 3 | Two generation ids (additive, inert — no consumer reads yet) | — | — |
-| 4 | `onboarding-state` table + G2 + atomic wipe | **L1** | `onboarded_at` (S2), `__onboarded__` sentinel (S3), old debug DELETE doors |
+| 4 | onboarding fields on `paperclip-companies` row + G2 + writer-safety (convert whole-item puts) + atomic wipe | **L1** | `onboarded_at` (S2), `__onboarded__` sentinel (S3), old debug DELETE doors |
 | 5 | `compute_status()` composer + `StatusContract` + liveness→DDB | **L4** | PR #1364 self-heal dial, R4, stepper `useMemo` ladder + forked mobile classifier |
 | 6 | Server-owned bootstrap dispatch + client cutover (**one atomic PR**) | **L5** | `useFirstRunKickoff` (both), Clerk `started/completed` writers, #1391 reconcile, BOOTSTRAP.md seeding |
 | 7 | Realtime invalidation + `config.changed` + severed `health` event | — (latency) | — |
@@ -180,17 +184,17 @@ PR 6's atomicity is load-bearing: shipping the server dispatcher and the client 
 
 **ADOPT, de-flagged, confined to provisioning only.** #1388's Step Functions core (RunProvisioner via `ecs:runTask.sync` with a foreground health-wait, Catch/Classify, native-DDB terminal writes, bounded retry) is the right shape for the *one* place a durable bound is load-bearing: the minutes-long, side-effecting provisioning path where the in-process asyncio executor cannot promise bounded time-to-terminal-state independent of FastAPI liveness (today's 6 stacked compensating layers). But — per design A's analysis every judge credited — **SFN fixes zero of L1–L7/F1 directly**; those are duplicated-truth/missing-identifier bugs fixed by the generation model, not the executor. So SFN is explicitly **not** the SSOT fix and is **not** extended to bootstrap (a sub-minute RPC with a natural `chat.final` completion signal; SFN there would be ceremony and add a task-token-staleness failure mode).
 
-**Required reshape before merge (PR-10):** (1) remove `PROVISION_EXECUTOR` and the inline default entirely — no flag, no dual-run window (no-users makes same-PR activation safe); (2) close the PR's two open hazards *in this PR* — fresh per-retry attempt token with a stable execution name (fences stragglers, keeps Branch-A idempotency), and hand the Branch-B closed-without-terminal-write case to the `reconciliation_worker` via `DescribeExecution`; (3) pull the three synchronous doors (`/provision`, `/retry`, `/recover`) and the doors' supersede-deletion into the same wave so two provisioning systems are never live simultaneously; (4) thread `provision_generation` through the runner and condition every DDB write on it. **Merge gate:** a hard CI dev-soak suite (deploy-mid-provision, kill-backend-mid-provision, 20-concurrent-signup burst) that also proves LocalStack SFN emulation works.
+**Required reshape before merge (PR-10):** (1) remove `PROVISION_EXECUTOR` and the inline default entirely — no flag, no dual-run window (no-users makes same-PR activation safe); (2) close the PR's two open hazards *in this PR* — fresh per-retry attempt token with a stable execution name (fences stragglers, keeps Branch-A idempotency), and hand the Branch-B closed-without-terminal-write case to the `reconciliation_worker` via `DescribeExecution`; (3) pull the three synchronous doors (`/provision`, `/retry`, `/recover`) and the doors' supersede-deletion into the same wave so two provisioning systems are never live simultaneously; (4) thread `provision_generation` through the runner and condition every DDB write on it. **Validation:** unit tests + ASL/CDK assertions in CI, then turn it on in real dev and iterate — no LocalStack emulation, no dev-soak gate, no flag (owner decision 2026-07-24: "we're just turning it on").
 
-**Explicit fallback:** if the org judges the unbounded-hang bound *not* load-bearing, drop PR-10 and let the `reconciliation_worker` (needed regardless) absorb provisioning retry too — at the cost of reinstating the unbounded-hang possibility. The generation model, contract, and client collapse do not depend on this decision.
+**Decision (2026-07-24):** Step Functions adopted — the fallback (in-process only) is not taken. No LocalStack, no dev-soak gate, no flag; validation is CI unit/ASL assertions then turning it on in real dev.
 
 ---
 
 ## 8. Open questions (need owner input)
 
 1. **L6 full cleanup:** the design makes the orphaned personal company *inert*, not deleted. Is inert-orphan acceptable at GA, or must conversion proactively delete/archive the old personal company/goal/Friday? (Follow-up PR, enabled by FORK-2 + atomic wipe.)
-2. **Per-member org first-run:** `onboarding-state` is keyed per owner (= `org_id` for orgs), and `provision_member` is deliberately not a bump. Does a newly-added org member need their own funnel/kickoff, or is org-level onboarding sufficient? (Current design assumes org-level.)
-3. **LocalStack SFN emulation** under `cdklocal` is unverified even for one machine (per #1388's own doc). PR-10's dev-soak gate must prove it; if unworkable, provisioning SFN dev-testing needs a real AWS dev-account path or the lighter in-process fallback.
+2. **Per-member org first-run:** onboarding lives on the paperclip-companies row keyed per owner (= `org_id` for orgs), and `provision_member` is deliberately not a bump. Does a newly-added org member need their own funnel/kickoff, or is org-level onboarding sufficient? (Current design assumes org-level.)
+3. ~~LocalStack SFN emulation~~ — RESOLVED (owner, 2026-07-24): no LocalStack, no dev-soak gate. Step Functions is turned on in real dev and iterated on. Deleted as a concern.
 4. **Server-initiated kickoff `chat.send`** is a telemetry assumption change — any client instrumentation assuming the client always initiates the first send needs a look before PR-6.
 5. **Delivered-while-away kickoff UX** (user opens the app long after the backend delivered the kickoff) relies on `chat.history` refetch-on-mount — rated healthy by the sync research but not load-tested for this case; add a dev scenario before PR-6.
 6. **`_purge_builtin_agents` removal** stays blocked on coverage that doesn't exist yet (no CDK test pinning `PAPERCLIP_SKIP_BUILTIN_AGENTS`, no `roster_drift` metric). PR-14 adds both; decision needed on whether to keep the belt-and-suspenders layer indefinitely or set a removal trigger once the metric exists.

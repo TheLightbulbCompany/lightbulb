@@ -328,7 +328,7 @@ async def test_count_live_chat_connections_unknown_owner_returns_zero(ddb_table_
 @pytest.mark.asyncio
 async def test_is_gateway_connected_true_when_fresh(plain_ddb_table):
     svc = ConnectionService(table_name=plain_ddb_table, region_name="us-east-1")
-    await svc.mark_gateway_connected("owner_1")  # stamps lastPingAt = now
+    await svc.mark_gateway_connected("owner_1", conn_token="t1")
     assert await svc.is_gateway_connected("owner_1") is True
 
 
@@ -341,7 +341,7 @@ async def test_is_gateway_connected_false_when_stale(plain_ddb_table):
 
     client = boto3.client("dynamodb", region_name="us-east-1")
     svc = ConnectionService(table_name=plain_ddb_table, region_name="us-east-1")
-    await svc.mark_gateway_connected("owner_1")
+    await svc.mark_gateway_connected("owner_1", conn_token="t1")
     stale = int(time.time()) - _LIVENESS_STALE_SECONDS - 5
     client.update_item(
         TableName=plain_ddb_table,
@@ -370,7 +370,7 @@ async def test_mark_gateway_connected_is_an_upsert_that_recovers_a_missing_row(p
     svc = ConnectionService(table_name=plain_ddb_table, region_name="us-east-1")
     key = _gateway_liveness_key("owner_1")
     # Absent -> created.
-    await svc.mark_gateway_connected("owner_1")
+    await svc.mark_gateway_connected("owner_1", conn_token="t1")
     first = int(client.get_item(TableName=plain_ddb_table, Key={"connectionId": {"S": key}})["Item"]["lastPingAt"]["N"])
     # Backdate then re-put (a refresh tick) -- lastPingAt jumps forward.
     client.update_item(
@@ -379,8 +379,32 @@ async def test_mark_gateway_connected_is_an_upsert_that_recovers_a_missing_row(p
         UpdateExpression="SET lastPingAt = :p",
         ExpressionAttributeValues={":p": {"N": str(first - 120)}},
     )
-    await svc.mark_gateway_connected("owner_1")
+    await svc.mark_gateway_connected("owner_1", conn_token="t1")
     second = int(
         client.get_item(TableName=plain_ddb_table, Key={"connectionId": {"S": key}})["Item"]["lastPingAt"]["N"]
     )
     assert second >= first
+
+
+@pytest.mark.asyncio
+async def test_mark_gateway_disconnected_only_deletes_own_token(plain_ddb_table):
+    """Replacement safety: when a stale connection is replaced (or backend
+    instances overlap on a rolling deploy), the replacement writes the row with
+    ITS token. The old connection's disconnect, conditioned on the old token,
+    must NOT remove the replacement's live marker -- otherwise a healthy gateway
+    reads `starting` until the next refresh."""
+    from core.services.connection_service import _gateway_liveness_key
+
+    client = boto3.client("dynamodb", region_name="us-east-1")
+    svc = ConnectionService(table_name=plain_ddb_table, region_name="us-east-1")
+    key = _gateway_liveness_key("owner_1")
+
+    # The replacement connection owns the row now (token t2).
+    await svc.mark_gateway_connected("owner_1", conn_token="t2")
+    # The OLD connection (token t1) disconnects -- conditional no-op.
+    await svc.mark_gateway_disconnected("owner_1", conn_token="t1")
+    assert "Item" in client.get_item(TableName=plain_ddb_table, Key={"connectionId": {"S": key}})
+
+    # The owning connection's own disconnect DOES clear it.
+    await svc.mark_gateway_disconnected("owner_1", conn_token="t2")
+    assert "Item" not in client.get_item(TableName=plain_ddb_table, Key={"connectionId": {"S": key}})

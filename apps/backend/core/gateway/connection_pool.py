@@ -282,6 +282,14 @@ class GatewayConnection:
         # on (re)connect. Checked INSIDE the lock so there is no TOCTOU with a
         # concurrently-enqueued delete.
         self._liveness_dead = False
+        # Per-instance identity stamped on this connection's gateway-liveness
+        # row. Makes the terminal delete owner-safe ACROSS connections: a
+        # replacement connection (stale-conn swap, rolling-deploy overlap) writes
+        # its own token, so this connection's delete -- conditioned on the token
+        # -- can't remove the replacement's live marker. The per-connection
+        # _liveness_lock only orders writes WITHIN one connection; the token is
+        # what orders them across connection replacement (and across instances).
+        self._liveness_token = uuid.uuid4().hex
 
     def _note_gateway_liveness(self, *, connected: bool) -> None:
         """Record the durable (cross-instance) DDB liveness transition (readiness
@@ -319,9 +327,9 @@ class GatewayConnection:
             if connected:
                 if self._liveness_dead:
                     return
-                await self._conn_svc.mark_gateway_connected(self.owner_id)
+                await self._conn_svc.mark_gateway_connected(self.owner_id, conn_token=self._liveness_token)
             else:
-                await self._conn_svc.mark_gateway_disconnected(self.owner_id)
+                await self._conn_svc.mark_gateway_disconnected(self.owner_id, conn_token=self._liveness_token)
 
     def _start_liveness_refresh(self) -> None:
         """Start the periodic gateway-liveness lease refresh (idempotent)."""

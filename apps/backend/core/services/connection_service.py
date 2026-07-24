@@ -572,7 +572,7 @@ class ConnectionService:
                 f"Failed to delete connection {connection_id}: {e.response['Error']['Message']}"
             ) from e
 
-    async def mark_gateway_connected(self, owner_id: str) -> None:
+    async def mark_gateway_connected(self, owner_id: str, *, conn_token: str) -> None:
         """Record a live, handshake-verified OpenClaw gateway connection for
         ``owner_id`` -- the durable (cross-instance) liveness signal that
         replaces the in-process ``GatewayConnectionPool.is_user_connected``
@@ -581,10 +581,17 @@ class ConnectionService:
         success and a successful ``reopen()`` (which calls ``connect()``
         internally).
 
+        ``conn_token`` is the owning ``GatewayConnection``'s per-instance
+        identity. It is stamped on the row so ``mark_gateway_disconnected``
+        can delete ONLY the marker this connection wrote: when a stale
+        connection is replaced (or two backend instances overlap during a
+        rolling deploy), the replacement's fresh row carries a DIFFERENT
+        token, and the old connection's terminal delete -- conditioned on the
+        token -- no-ops instead of removing the live marker. An unconditional
+        put here is correct: the newest connect claims ownership of the row.
+
         Best-effort: a DDB write failure is logged and swallowed -- this
-        must never break the gateway connect path itself. The next
-        ``is_gateway_connected`` read simply sees stale (absent/expired)
-        state until the write succeeds.
+        must never break the gateway connect path itself.
         """
         now = int(time.time())
         item = {
@@ -594,6 +601,7 @@ class ConnectionService:
             "ownerId": {"S": owner_id},
             "connectedAt": {"S": datetime.now(timezone.utc).isoformat()},
             "connectionType": {"S": "gateway"},
+            "connToken": {"S": conn_token},
             "lastPingAt": {"N": str(now)},
             "ttl": {"N": str(now + _TTL_WINDOW_SECONDS)},
         }
@@ -610,8 +618,8 @@ class ConnectionService:
                 e.response["Error"]["Message"],
             )
 
-    async def mark_gateway_disconnected(self, owner_id: str) -> None:
-        """Clear the gateway-liveness row for ``owner_id``.
+    async def mark_gateway_disconnected(self, owner_id: str, *, conn_token: str) -> None:
+        """Clear THIS connection's gateway-liveness row for ``owner_id``.
 
         Called by ``GatewayConnection`` at every point its own ``is_alive``
         flips False: the dead branch of ``_on_reader_loop_exit`` (reader
@@ -622,6 +630,12 @@ class ConnectionService:
         ping-timeout mid-turn doesn't flip ``/container/status`` back to
         "starting" underneath a live chat.
 
+        CONDITIONED on ``connToken == conn_token``: a replacement connection
+        (or a rolling-deploy overlap) will have already written the row with
+        ITS token, and this old connection's delete must NOT remove that live
+        marker -- the condition makes it a no-op. A missing row (already
+        cleared) also fails the condition and is swallowed.
+
         Best-effort, same swallow posture as ``mark_gateway_connected``.
         """
 
@@ -629,16 +643,21 @@ class ConnectionService:
             self._client.delete_item(
                 TableName=self.table_name,
                 Key={"connectionId": {"S": _gateway_liveness_key(owner_id)}},
+                ConditionExpression="connToken = :t",
+                ExpressionAttributeValues={":t": {"S": conn_token}},
             )
 
         try:
             await asyncio.to_thread(_delete)
         except ClientError as e:
-            logger.warning(
-                "mark_gateway_disconnected failed for owner %s (best-effort, swallowed): %s",
-                owner_id,
-                e.response["Error"]["Message"],
-            )
+            # ConditionalCheckFailed = a newer connection owns the row (or it's
+            # already gone) -- the expected benign case, not worth a warning.
+            if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                logger.warning(
+                    "mark_gateway_disconnected failed for owner %s (best-effort, swallowed): %s",
+                    owner_id,
+                    e.response["Error"]["Message"],
+                )
 
     async def is_gateway_connected(self, owner_id: str) -> bool:
         """Whether the gateway-liveness row for ``owner_id`` is present AND

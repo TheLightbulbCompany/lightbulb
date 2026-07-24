@@ -1227,21 +1227,27 @@ async def change_provider(
     from core.containers import get_ecs_manager
 
     manager = get_ecs_manager()
+    stop_issued = False
     try:
-        await manager.stop_user_service(owner_id, reason="reprovision")
-        # Fence out any IN-FLIGHT provision before exposing the stopped
-        # row: a status-poll wake that claimed BEFORE the provider commit
+        # Fence FIRST, stop SECOND — the order is load-bearing. A
+        # status-poll wake that claimed BEFORE the provider commit
         # resolved the OLD provider and would keep passing its leased
-        # checkpoints (the stop's row write preserves its claim), finish
-        # with the old config, and leave our delayed dispatch standing
-        # down — restart: True with the switch silently unapplied.
-        # takeover_provision supersedes that lease so the stale run stops
-        # at its next checkpoint; our own dispatch then claims the stopped
-        # row normally. This is the same deliberate-door fencing that
-        # conversion, /recover, and admin reprovision already do — the
-        # cold provider change is the same class of door. Guarded on row
-        # existence: with NO row there is no in-flight run to fence (a
-        # poll claim would have created one), and takeover on an absent
+        # checkpoints, finish with the old config, and leave our delayed
+        # dispatch standing down — restart: True with the switch silently
+        # unapplied. takeover_provision supersedes that lease so the
+        # stale run stops at its next checkpoint (the same deliberate-
+        # door fencing conversion, /recover, and admin reprovision use —
+        # the cold provider change is the same class of door). Taking
+        # over BEFORE the stop also closes the ordering race the other
+        # way around: with stop-then-takeover, a poll could claim the
+        # freshly-exposed stopped row in the await gap, the takeover
+        # would preserve its "provisioning" status, and our dispatch
+        # couldn't claim — wedging the row until the stale-lease timeout.
+        # Takeover-first leaves no such gap: a poll can't claim a
+        # still-running row, and once the stop lands our dispatch always
+        # claims the stopped row (stopped is claimable regardless of the
+        # takeover's fresh lease). Guarded on row existence: with NO row
+        # there is no in-flight run to fence, and takeover on an absent
         # row would CREATE it as provisioning with a fresh lease — which
         # the dispatch's own claim then refuses, breaking the
         # create-from-scratch path for never-provisioned owners.
@@ -1249,6 +1255,8 @@ async def change_provider(
 
         if await _container_repo.get_by_owner_id(owner_id) is not None:
             await _container_repo.takeover_provision(owner_id)
+        stop_issued = True
+        await manager.stop_user_service(owner_id, reason="reprovision")
     except Exception as e:
         # Any stop-path failure, not just the wrapped ECS call
         # (EcsManagerError): stop_user_service's row writes after the ECS
@@ -1287,7 +1295,11 @@ async def change_provider(
         from core.containers.ecs_manager import EcsManagerError
         from core.repositories import container_repo
 
-        if not isinstance(e, EcsManagerError):
+        # stop_issued gates the stamp: a failure BEFORE the stop call (the
+        # takeover fence's row read/write) must not mark a genuinely-
+        # running container "stopped" — that would trigger a pointless
+        # poll-wake restart cycle on a transient DDB blip.
+        if stop_issued and not isinstance(e, EcsManagerError):
             try:
                 await container_repo.update_status(owner_id, "stopped")
             except Exception:  # noqa: BLE001 — best-effort by design

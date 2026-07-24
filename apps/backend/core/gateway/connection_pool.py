@@ -346,20 +346,22 @@ class GatewayConnection:
         """Re-stamp the DDB gateway-liveness lease every
         ``_LIVENESS_REFRESH_SECONDS`` while this connection is alive.
 
-        Each tick re-dispatches the serialized full put (``_write_liveness``),
-        which is an UPSERT: besides refreshing ttl/lastPingAt it RECREATES the
-        row if the initial ``mark_gateway_connected`` was throttled or hit a
-        transient error (otherwise a healthy gateway whose first put was lost
-        would read ``starting`` forever, now that the self-heal dial is gone).
-        The ``_liveness_dead`` gate inside ``_write_liveness`` keeps a tick that
-        races a disconnect from resurrecting the row. Errors are swallowed
-        inside the service call; this loop only exits on cancellation.
+        Each tick calls ``refresh_gateway_liveness`` (a CONDITIONAL upsert:
+        absent OR still owned by this connection's token). Unlike the
+        unconditional ``mark_gateway_connected`` claim, it RECREATES a lost row
+        (missed-connect recovery) yet cannot steal ownership back from a
+        replacement connection that already claimed the row with a newer token
+        (rolling-deploy overlap). Serialized under ``_liveness_lock`` and gated
+        on ``_liveness_dead`` (both inside the lock) so a tick racing a
+        disconnect can neither resurrect nor re-own the row. Errors are
+        swallowed inside the service call; this loop only exits on cancellation.
         """
         try:
             while True:
                 await asyncio.sleep(_LIVENESS_REFRESH_SECONDS)
-                if self.is_alive and not self._liveness_dead:
-                    await self._write_liveness(connected=True)
+                async with self._liveness_lock:
+                    if self.is_alive and not self._liveness_dead:
+                        await self._conn_svc.refresh_gateway_liveness(self.owner_id, conn_token=self._liveness_token)
         except asyncio.CancelledError:
             raise
 

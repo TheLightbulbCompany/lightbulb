@@ -24,7 +24,7 @@ class _NoopConnSvc:
     async def mark_gateway_disconnected(self, owner_id, *, conn_token=None):
         pass
 
-    async def refresh_gateway_liveness(self, owner_id):
+    async def refresh_gateway_liveness(self, owner_id, *, conn_token=None):
         pass
 
 

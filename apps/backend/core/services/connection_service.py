@@ -659,6 +659,55 @@ class ConnectionService:
                     e.response["Error"]["Message"],
                 )
 
+    async def refresh_gateway_liveness(self, owner_id: str, *, conn_token: str) -> None:
+        """Extend THIS connection's gateway-liveness lease (lastPingAt + ttl) on
+        the periodic tick, WITHOUT stealing ownership.
+
+        Distinct from ``mark_gateway_connected`` (an unconditional put that
+        CLAIMS the row -- the newest connect wins): a refresh is conditioned on
+        the row being ABSENT or still owned by ``conn_token``. That gives two
+        properties at once:
+          * missed-connect recovery -- if the initial put was throttled/lost the
+            row is absent, so the upsert recreates it as ours; and
+          * replacement safety -- a stale-but-still-alive connection (rolling
+            deploy overlap) whose refresh fires AFTER a replacement claimed the
+            row (newer token) is a conditional no-op, so it can't overwrite the
+            row back to the old token and then delete the live replacement's
+            marker.
+
+        Best-effort: ConditionalCheckFailed (a newer connection owns it) is the
+        expected benign case; other errors are swallowed (next tick retries).
+        """
+        now = int(time.time())
+
+        def _refresh() -> None:
+            self._client.update_item(
+                TableName=self.table_name,
+                Key={"connectionId": {"S": _gateway_liveness_key(owner_id)}},
+                UpdateExpression=(
+                    "SET lastPingAt = :p, #ttl = :t, connToken = :tok, connectionType = :ct, ownerId = :o, userId = :o"
+                ),
+                ConditionExpression="attribute_not_exists(connToken) OR connToken = :tok",
+                ExpressionAttributeNames={"#ttl": "ttl"},
+                ExpressionAttributeValues={
+                    ":p": {"N": str(now)},
+                    ":t": {"N": str(now + _TTL_WINDOW_SECONDS)},
+                    ":tok": {"S": conn_token},
+                    ":ct": {"S": "gateway"},
+                    ":o": {"S": owner_id},
+                },
+            )
+
+        try:
+            await asyncio.to_thread(_refresh)
+        except ClientError as e:
+            if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                logger.warning(
+                    "refresh_gateway_liveness failed for owner %s (best-effort, swallowed): %s",
+                    owner_id,
+                    e.response["Error"]["Message"],
+                )
+
     async def is_gateway_connected(self, owner_id: str) -> bool:
         """Whether the gateway-liveness row for ``owner_id`` is present AND
         fresh.

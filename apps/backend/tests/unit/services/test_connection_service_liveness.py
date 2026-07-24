@@ -408,3 +408,30 @@ async def test_mark_gateway_disconnected_only_deletes_own_token(plain_ddb_table)
     # The owning connection's own disconnect DOES clear it.
     await svc.mark_gateway_disconnected("owner_1", conn_token="t2")
     assert "Item" not in client.get_item(TableName=plain_ddb_table, Key={"connectionId": {"S": key}})
+
+
+@pytest.mark.asyncio
+async def test_refresh_recovers_missing_but_never_steals_a_newer_token(plain_ddb_table):
+    """The refresh loop uses the CONDITIONAL refresh (absent OR own token), not
+    the unconditional claim. So a lost initial connect recovers, but a
+    stale-but-alive connection's refresh can't overwrite a replacement's newer
+    token (which its own token-conditioned delete would then wrongly clear)."""
+    from core.services.connection_service import _gateway_liveness_key
+
+    client = boto3.client("dynamodb", region_name="us-east-1")
+    svc = ConnectionService(table_name=plain_ddb_table, region_name="us-east-1")
+    key = _gateway_liveness_key("owner_1")
+
+    # Missing row (initial connect put was lost): refresh recreates it as ours.
+    await svc.refresh_gateway_liveness("owner_1", conn_token="t1")
+    assert (
+        client.get_item(TableName=plain_ddb_table, Key={"connectionId": {"S": key}})["Item"]["connToken"]["S"] == "t1"
+    )
+
+    # A replacement claims the row with a newer token.
+    await svc.mark_gateway_connected("owner_1", conn_token="t2")
+    # The OLD connection's refresh (t1) must be a conditional no-op.
+    await svc.refresh_gateway_liveness("owner_1", conn_token="t1")
+    assert (
+        client.get_item(TableName=plain_ddb_table, Key={"connectionId": {"S": key}})["Item"]["connToken"]["S"] == "t2"
+    )

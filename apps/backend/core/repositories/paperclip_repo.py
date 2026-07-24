@@ -48,6 +48,7 @@ from boto3.dynamodb.conditions import Key
 
 from core.auth import is_org_owner_id
 from core.dynamodb import get_table, run_in_thread
+from core.services.status_events import publish_status_changed
 
 logger = logging.getLogger(__name__)
 
@@ -269,6 +270,7 @@ class PaperclipRepo:
         if company.bootstrap_last_error is not None:
             item["bootstrap_last_error"] = company.bootstrap_last_error
         await run_in_thread(self._table().put_item, Item=item)
+        publish_status_changed(company.user_id)
 
     async def get(self, user_id: str, *, consistent_read: bool = False) -> Optional[PaperclipCompany]:
         resp = await run_in_thread(
@@ -580,6 +582,7 @@ class PaperclipRepo:
         table = self._table()
         try:
             await run_in_thread(table.update_item, **kwargs)
+            publish_status_changed(user_id)
             return True
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             return False
@@ -889,6 +892,7 @@ class PaperclipRepo:
                         ":u": now,
                     },
                 )
+                publish_status_changed(user_id)
                 return FunnelClaimResult.WON
             except table.meta.client.exceptions.ConditionalCheckFailedException:
                 pass

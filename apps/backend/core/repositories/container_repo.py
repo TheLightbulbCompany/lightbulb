@@ -7,6 +7,7 @@ from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
 from core.dynamodb import get_table, run_in_thread, utc_now_iso
+from core.services.status_events import publish_status_changed
 
 # How long a provision lease (provision_claim_id + provision_claimed_at) stays
 # exclusive with no checkpoint refresh before it is considered abandoned. Every
@@ -135,6 +136,7 @@ async def upsert(owner_id: str, fields: dict) -> dict:
     item["owner_id"] = owner_id
 
     await run_in_thread(table.put_item, Item=item)
+    publish_status_changed(owner_id)
     return item
 
 
@@ -582,6 +584,7 @@ async def update_fields(owner_id: str, fields: dict) -> dict | None:
 
     table = _get_table()
     await run_in_thread(table.put_item, Item=existing)
+    publish_status_changed(owner_id)
     return existing
 
 

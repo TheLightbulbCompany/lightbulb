@@ -328,7 +328,7 @@ async def test_count_live_chat_connections_unknown_owner_returns_zero(ddb_table_
 @pytest.mark.asyncio
 async def test_is_gateway_connected_true_when_fresh(plain_ddb_table):
     svc = ConnectionService(table_name=plain_ddb_table, region_name="us-east-1")
-    await svc.mark_gateway_connected("owner_1")  # stamps lastPingAt = now
+    await svc.mark_gateway_connected("owner_1", conn_token="t1")
     assert await svc.is_gateway_connected("owner_1") is True
 
 
@@ -341,7 +341,7 @@ async def test_is_gateway_connected_false_when_stale(plain_ddb_table):
 
     client = boto3.client("dynamodb", region_name="us-east-1")
     svc = ConnectionService(table_name=plain_ddb_table, region_name="us-east-1")
-    await svc.mark_gateway_connected("owner_1")
+    await svc.mark_gateway_connected("owner_1", conn_token="t1")
     stale = int(time.time()) - _LIVENESS_STALE_SECONDS - 5
     client.update_item(
         TableName=plain_ddb_table,
@@ -359,39 +359,79 @@ async def test_is_gateway_connected_false_when_absent(plain_ddb_table):
 
 
 @pytest.mark.asyncio
-async def test_refresh_gateway_liveness_bumps_last_ping_when_present(plain_ddb_table):
+async def test_mark_gateway_connected_is_an_upsert_that_recovers_a_missing_row(plain_ddb_table):
+    """The refresh loop re-dispatches mark_gateway_connected (a full put), so a
+    connection whose INITIAL connect put was lost (throttled / transient error)
+    recovers on the next tick rather than reading `starting` forever. Verifies
+    the put creates the row from absent AND bumps lastPingAt on a repeat."""
     from core.services.connection_service import _gateway_liveness_key
 
     client = boto3.client("dynamodb", region_name="us-east-1")
     svc = ConnectionService(table_name=plain_ddb_table, region_name="us-east-1")
-    await svc.mark_gateway_connected("owner_1")
-    # Backdate the stamp, then refresh -- lastPingAt must jump forward.
-    old = int(time.time()) - 120
+    key = _gateway_liveness_key("owner_1")
+    # Absent -> created.
+    await svc.mark_gateway_connected("owner_1", conn_token="t1")
+    first = int(client.get_item(TableName=plain_ddb_table, Key={"connectionId": {"S": key}})["Item"]["lastPingAt"]["N"])
+    # Backdate then re-put (a refresh tick) -- lastPingAt jumps forward.
     client.update_item(
         TableName=plain_ddb_table,
-        Key={"connectionId": {"S": _gateway_liveness_key("owner_1")}},
+        Key={"connectionId": {"S": key}},
         UpdateExpression="SET lastPingAt = :p",
-        ExpressionAttributeValues={":p": {"N": str(old)}},
+        ExpressionAttributeValues={":p": {"N": str(first - 120)}},
     )
-    await svc.refresh_gateway_liveness("owner_1")
-    item = client.get_item(
-        TableName=plain_ddb_table,
-        Key={"connectionId": {"S": _gateway_liveness_key("owner_1")}},
-    )["Item"]
-    assert int(item["lastPingAt"]["N"]) > old
+    await svc.mark_gateway_connected("owner_1", conn_token="t1")
+    second = int(
+        client.get_item(TableName=plain_ddb_table, Key={"connectionId": {"S": key}})["Item"]["lastPingAt"]["N"]
+    )
+    assert second >= first
 
 
 @pytest.mark.asyncio
-async def test_refresh_gateway_liveness_does_not_resurrect_absent_row(plain_ddb_table):
-    """Conditional on the row existing: a refresh tick racing just after a
-    disconnect (row deleted) must NOT recreate a liveness marker."""
+async def test_mark_gateway_disconnected_only_deletes_own_token(plain_ddb_table):
+    """Replacement safety: when a stale connection is replaced (or backend
+    instances overlap on a rolling deploy), the replacement writes the row with
+    ITS token. The old connection's disconnect, conditioned on the old token,
+    must NOT remove the replacement's live marker -- otherwise a healthy gateway
+    reads `starting` until the next refresh."""
     from core.services.connection_service import _gateway_liveness_key
 
     client = boto3.client("dynamodb", region_name="us-east-1")
     svc = ConnectionService(table_name=plain_ddb_table, region_name="us-east-1")
-    await svc.refresh_gateway_liveness("owner_gone")  # no row exists
-    resp = client.get_item(
-        TableName=plain_ddb_table,
-        Key={"connectionId": {"S": _gateway_liveness_key("owner_gone")}},
+    key = _gateway_liveness_key("owner_1")
+
+    # The replacement connection owns the row now (token t2).
+    await svc.mark_gateway_connected("owner_1", conn_token="t2")
+    # The OLD connection (token t1) disconnects -- conditional no-op.
+    await svc.mark_gateway_disconnected("owner_1", conn_token="t1")
+    assert "Item" in client.get_item(TableName=plain_ddb_table, Key={"connectionId": {"S": key}})
+
+    # The owning connection's own disconnect DOES clear it.
+    await svc.mark_gateway_disconnected("owner_1", conn_token="t2")
+    assert "Item" not in client.get_item(TableName=plain_ddb_table, Key={"connectionId": {"S": key}})
+
+
+@pytest.mark.asyncio
+async def test_refresh_recovers_missing_but_never_steals_a_newer_token(plain_ddb_table):
+    """The refresh loop uses the CONDITIONAL refresh (absent OR own token), not
+    the unconditional claim. So a lost initial connect recovers, but a
+    stale-but-alive connection's refresh can't overwrite a replacement's newer
+    token (which its own token-conditioned delete would then wrongly clear)."""
+    from core.services.connection_service import _gateway_liveness_key
+
+    client = boto3.client("dynamodb", region_name="us-east-1")
+    svc = ConnectionService(table_name=plain_ddb_table, region_name="us-east-1")
+    key = _gateway_liveness_key("owner_1")
+
+    # Missing row (initial connect put was lost): refresh recreates it as ours.
+    await svc.refresh_gateway_liveness("owner_1", conn_token="t1")
+    assert (
+        client.get_item(TableName=plain_ddb_table, Key={"connectionId": {"S": key}})["Item"]["connToken"]["S"] == "t1"
     )
-    assert "Item" not in resp
+
+    # A replacement claims the row with a newer token.
+    await svc.mark_gateway_connected("owner_1", conn_token="t2")
+    # The OLD connection's refresh (t1) must be a conditional no-op.
+    await svc.refresh_gateway_liveness("owner_1", conn_token="t1")
+    assert (
+        client.get_item(TableName=plain_ddb_table, Key={"connectionId": {"S": key}})["Item"]["connToken"]["S"] == "t2"
+    )

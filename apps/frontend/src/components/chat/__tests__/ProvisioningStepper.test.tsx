@@ -939,6 +939,23 @@ describe("ProvisioningStepper per-container onboarding gate", () => {
     expect(screen.getByText("children")).toBeInTheDocument();
   });
 
+  it("dismisses the funnel once the brief is SUBMITTED, before onboarding completes (Option B: watch Friday work)", () => {
+    // The funnel owns the screen only until funnel_state advances off
+    // "not_started". A container that is ready + NOT yet onboarded but whose
+    // brief has been submitted drops straight into Friday's chat (children) so
+    // the user watches the server-dispatched kickoff stream live, rather than
+    // holding a "Setting things up…" state until the kickoff completes.
+    renderWith({
+      container_status: "running",
+      runtime_phase: "ready",
+      onboarded: false,
+      funnel: { state: "submitted" },
+    });
+
+    expect(screen.queryByText(/get started/i)).not.toBeInTheDocument();
+    expect(screen.getByText("children")).toBeInTheDocument();
+  });
+
   it("shows the funnel when onboarded is false even if a STALE durable briefSubmitted is already true at mount (the returning-owner bug)", () => {
     // The bug this fix targets: `briefSubmitted` is durable Clerk metadata that
     // survives a container wipe/reprovision and nothing ever clears it. A

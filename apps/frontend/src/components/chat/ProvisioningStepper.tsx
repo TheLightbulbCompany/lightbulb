@@ -687,15 +687,33 @@ export function ProvisioningStepper({
   // onboarded?": the backend resets it when a container is wiped/
   // reprovisioned, so a legitimately reprovisioned owner re-onboards.
   //
-  // No SAME-SESSION flash-bridge anymore (spec PR-9, CLIENT-HOOK deleted
-  // the `briefBaselineRef`/`sessionBriefSubmittedRef` latch): the funnel
-  // dismisses purely on the backend's own `container.onboarded` flipping
-  // true on the next shared bounded-loop poll (<=5s while unsettled, per
-  // `useOnboardingStatus`'s cadence) rather than an in-memory guess at
-  // Clerk's `firstRun.briefSubmitted` re-render. `FirstRunFunnel` itself
-  // stays in its "submitting"/"waiting" busy state across that short
-  // window, so there is no flash back to the empty form.
+  // No SAME-SESSION flash-bridge (spec PR-9, CLIENT-HOOK deleted the
+  // `briefBaselineRef`/`sessionBriefSubmittedRef` latch): the funnel dismisses
+  // purely on the backend's own per-generation `funnel_state` advancing off
+  // "not_started" on the next shared bounded-loop poll (~1-2s via the realtime
+  // nudge, 5s backstop), rather than an in-memory guess at Clerk's
+  // `firstRun.briefSubmitted` re-render. NOTE (Option B, "watch Friday work"):
+  // the dismiss trigger is funnel SUBMISSION, not onboarding COMPLETION — see
+  // `awaitingBrief` below. `container.onboarded` is still the SOLE durable
+  // authority for the reprovision guard (a legacy row onboarded via the old
+  // onboarded_at, with funnel_state "not_started", must never re-show the
+  // funnel), which is why `awaitingBrief` keeps the `!containerOnboarded` term.
   const containerOnboarded = container?.onboarded === true;
+  // Option B ("watch Friday work"): the funnel owns the screen only until the
+  // brief is SUBMITTED — not until onboarding COMPLETES. The moment the backend
+  // funnel_state advances past "not_started", we drop straight into Friday's
+  // chat so the user watches the server-dispatched first-run kickoff stream in
+  // live (goal/project/tasks appearing as she works), matching mobile's
+  // submit -> roster -> Friday redirect. `funnel_state` is the per-generation
+  // backend signal (resets to "not_started" when a container is recreated), so
+  // this keeps the reprovision safety `container.onboarded` gave; and the
+  // `!containerOnboarded` guard means a legacy-onboarded container (onboarded
+  // via the old onboarded_at, funnel_state still "not_started") never re-shows
+  // the funnel. Propagation from submit is ~1-2s via the realtime nudge (5s
+  // poll backstop), during which FirstRunFunnel shows its own "submitting" state
+  // — a brief confirmation, then live chat.
+  const funnelState = container?.funnel?.state ?? "not_started";
+  const awaitingBrief = !containerOnboarded && funnelState === "not_started";
   if (
     !!user &&
     gatePhase === "normal" &&
@@ -704,7 +722,7 @@ export function ProvisioningStepper({
     // dead end. (A retrying error is NOT terminal, so it still shows the
     // funnel/provisioning UI like any live cold start.)
     !isTerminalError &&
-    !containerOnboarded
+    awaitingBrief
   ) {
     return <FirstRunFunnel />;
   }
@@ -715,7 +733,7 @@ export function ProvisioningStepper({
   // once `user` loads. Only matters where the funnel COULD show — a
   // normal-gate, not-yet-onboarded, non-terminal container. A terminal error
   // still routes to its card below.
-  if (!userLoaded && gatePhase === "normal" && !containerOnboarded && !isTerminalError) {
+  if (!userLoaded && gatePhase === "normal" && awaitingBrief && !isTerminalError) {
     return (
       <div className="flex-1 flex items-center justify-center">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
@@ -741,7 +759,7 @@ export function ProvisioningStepper({
   // wins. On the auth-gated chat surface `user === null` is never "signed out"
   // (WorkspaceShell / ChatLayout only mount this once isSignedIn), so it always
   // resolves; an onboarded container falls through to children below.
-  if (phase === "ready" && !user && !containerOnboarded) {
+  if (phase === "ready" && !user && awaitingBrief) {
     return (
       <div className="flex-1 flex items-center justify-center">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />

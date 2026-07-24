@@ -359,39 +359,28 @@ async def test_is_gateway_connected_false_when_absent(plain_ddb_table):
 
 
 @pytest.mark.asyncio
-async def test_refresh_gateway_liveness_bumps_last_ping_when_present(plain_ddb_table):
+async def test_mark_gateway_connected_is_an_upsert_that_recovers_a_missing_row(plain_ddb_table):
+    """The refresh loop re-dispatches mark_gateway_connected (a full put), so a
+    connection whose INITIAL connect put was lost (throttled / transient error)
+    recovers on the next tick rather than reading `starting` forever. Verifies
+    the put creates the row from absent AND bumps lastPingAt on a repeat."""
     from core.services.connection_service import _gateway_liveness_key
 
     client = boto3.client("dynamodb", region_name="us-east-1")
     svc = ConnectionService(table_name=plain_ddb_table, region_name="us-east-1")
+    key = _gateway_liveness_key("owner_1")
+    # Absent -> created.
     await svc.mark_gateway_connected("owner_1")
-    # Backdate the stamp, then refresh -- lastPingAt must jump forward.
-    old = int(time.time()) - 120
+    first = int(client.get_item(TableName=plain_ddb_table, Key={"connectionId": {"S": key}})["Item"]["lastPingAt"]["N"])
+    # Backdate then re-put (a refresh tick) -- lastPingAt jumps forward.
     client.update_item(
         TableName=plain_ddb_table,
-        Key={"connectionId": {"S": _gateway_liveness_key("owner_1")}},
+        Key={"connectionId": {"S": key}},
         UpdateExpression="SET lastPingAt = :p",
-        ExpressionAttributeValues={":p": {"N": str(old)}},
+        ExpressionAttributeValues={":p": {"N": str(first - 120)}},
     )
-    await svc.refresh_gateway_liveness("owner_1")
-    item = client.get_item(
-        TableName=plain_ddb_table,
-        Key={"connectionId": {"S": _gateway_liveness_key("owner_1")}},
-    )["Item"]
-    assert int(item["lastPingAt"]["N"]) > old
-
-
-@pytest.mark.asyncio
-async def test_refresh_gateway_liveness_does_not_resurrect_absent_row(plain_ddb_table):
-    """Conditional on the row existing: a refresh tick racing just after a
-    disconnect (row deleted) must NOT recreate a liveness marker."""
-    from core.services.connection_service import _gateway_liveness_key
-
-    client = boto3.client("dynamodb", region_name="us-east-1")
-    svc = ConnectionService(table_name=plain_ddb_table, region_name="us-east-1")
-    await svc.refresh_gateway_liveness("owner_gone")  # no row exists
-    resp = client.get_item(
-        TableName=plain_ddb_table,
-        Key={"connectionId": {"S": _gateway_liveness_key("owner_gone")}},
+    await svc.mark_gateway_connected("owner_1")
+    second = int(
+        client.get_item(TableName=plain_ddb_table, Key={"connectionId": {"S": key}})["Item"]["lastPingAt"]["N"]
     )
-    assert "Item" not in resp
+    assert second >= first

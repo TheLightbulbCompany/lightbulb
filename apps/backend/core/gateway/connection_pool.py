@@ -99,8 +99,10 @@ _AUTH_BACKOFF_CAP_S = 300
 _RUN_LONG_IDLE_S = 300
 
 # Cadence at which a live GatewayConnection re-stamps its DDB gateway-liveness
-# lease (``ConnectionService.refresh_gateway_liveness``) so the row stays fresh
-# for as long as the connection is alive -- active, idle-open, OR parked (a
+# lease (a serialized full ``mark_gateway_connected`` upsert via
+# ``_write_liveness``) so the row stays fresh -- and is recreated if the initial
+# connect put was lost -- for as long as the connection is alive: active,
+# idle-open, OR parked (a
 # parked connection keeps is_alive True while it presumes the container alive).
 # Must be well under connection_service._LIVENESS_STALE_SECONDS (180s) so the
 # read side never flaps a healthy connection to "not connected", and well under
@@ -269,32 +271,57 @@ class GatewayConnection:
         # long-lived connection (and the read side can tell fresh from
         # expired-but-unswept). Started/cancelled in _note_gateway_liveness.
         self._liveness_refresh_task: Optional[asyncio.Task] = None
+        # Serializes every gateway-liveness write for this connection so their
+        # ORDER matches the true is_alive transition order -- independent
+        # create_tasks don't preserve completion order, so a connect put racing
+        # a disconnect delete could otherwise land delete-first and then the
+        # put recreates a dead marker (false "ready" for the freshness window).
+        self._liveness_lock = asyncio.Lock()
+        # Terminal marker: once a disconnect is noted, no put (initial or a
+        # refresh tick already in flight) may recreate the liveness row. Cleared
+        # on (re)connect. Checked INSIDE the lock so there is no TOCTOU with a
+        # concurrently-enqueued delete.
+        self._liveness_dead = False
 
     def _note_gateway_liveness(self, *, connected: bool) -> None:
-        """Fire-and-forget the DDB liveness write (readiness store R4's
-        replacement -- see ``core.services.connection_service.
+        """Record the durable (cross-instance) DDB liveness transition (readiness
+        store R4's replacement -- see ``core.services.connection_service.
         mark_gateway_connected`` / ``mark_gateway_disconnected`` and
         ``core.services.readiness_state``).
 
-        Never awaited inline: this must not add a DDB round-trip to the
-        connect/close/park hot path. Each service method swallows its own
-        errors, so the fire-and-forget task can never raise.
+        The actual DDB write is dispatched through ``_write_liveness`` (never
+        awaited inline: this must not add a round-trip to the connect/close/park
+        hot path) and SERIALIZED behind ``_liveness_lock`` so a connect put and
+        a disconnect delete can't complete out of order. The ``_liveness_dead``
+        terminal flag is flipped synchronously here (before the delete task is
+        even created) so any put still in flight no-ops instead of resurrecting
+        a dead marker.
 
         Also owns the lifecycle of the periodic lease-refresh loop: connect
         (and reopen, which re-enters connect) starts it; every disconnect /
         park-escalation / close stops it -- so the lease is refreshed for
         exactly as long as ``is_alive`` holds.
         """
-        coro = (
-            self._conn_svc.mark_gateway_connected(self.owner_id)
-            if connected
-            else self._conn_svc.mark_gateway_disconnected(self.owner_id)
-        )
-        asyncio.create_task(coro)
         if connected:
+            self._liveness_dead = False
             self._start_liveness_refresh()
         else:
+            self._liveness_dead = True
             self._cancel_liveness_refresh()
+        asyncio.create_task(self._write_liveness(connected=connected))
+
+    async def _write_liveness(self, *, connected: bool) -> None:
+        """Serialized DDB liveness write. Puts are gated on ``_liveness_dead``
+        (checked INSIDE the lock) so a put that lost the race to a disconnect
+        can't recreate the row; the delete always applies (it is the terminal
+        transition). Errors are swallowed inside the service methods."""
+        async with self._liveness_lock:
+            if connected:
+                if self._liveness_dead:
+                    return
+                await self._conn_svc.mark_gateway_connected(self.owner_id)
+            else:
+                await self._conn_svc.mark_gateway_disconnected(self.owner_id)
 
     def _start_liveness_refresh(self) -> None:
         """Start the periodic gateway-liveness lease refresh (idempotent)."""
@@ -311,16 +338,20 @@ class GatewayConnection:
         """Re-stamp the DDB gateway-liveness lease every
         ``_LIVENESS_REFRESH_SECONDS`` while this connection is alive.
 
-        ``refresh_gateway_liveness`` is conditional on the row still existing,
-        so a tick that races just after a disconnect can't resurrect a dead
-        marker. Errors are swallowed inside the service call; this loop only
-        exits on cancellation.
+        Each tick re-dispatches the serialized full put (``_write_liveness``),
+        which is an UPSERT: besides refreshing ttl/lastPingAt it RECREATES the
+        row if the initial ``mark_gateway_connected`` was throttled or hit a
+        transient error (otherwise a healthy gateway whose first put was lost
+        would read ``starting`` forever, now that the self-heal dial is gone).
+        The ``_liveness_dead`` gate inside ``_write_liveness`` keeps a tick that
+        races a disconnect from resurrecting the row. Errors are swallowed
+        inside the service call; this loop only exits on cancellation.
         """
         try:
             while True:
                 await asyncio.sleep(_LIVENESS_REFRESH_SECONDS)
-                if self.is_alive:
-                    await self._conn_svc.refresh_gateway_liveness(self.owner_id)
+                if self.is_alive and not self._liveness_dead:
+                    await self._write_liveness(connected=True)
         except asyncio.CancelledError:
             raise
 

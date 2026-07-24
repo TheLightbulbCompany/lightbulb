@@ -640,52 +640,6 @@ class ConnectionService:
                 e.response["Error"]["Message"],
             )
 
-    async def refresh_gateway_liveness(self, owner_id: str) -> None:
-        """Refresh the gateway-liveness lease (``lastPingAt`` + ``ttl``) while
-        the connection stays alive.
-
-        Called on a periodic tick by ``GatewayConnection`` for as long as its
-        ``is_alive`` is True (active, idle-open, OR parked). Without this the
-        row's ttl -- stamped ONCE at connect -- would let DynamoDB's TTL sweep
-        delete the only liveness marker under a healthy long-lived connection
-        (a false ``starting``), and the read side would have no way to tell a
-        genuinely-fresh row from an expired-but-not-yet-swept one (a false
-        ``ready`` after a missed disconnect / backend crash).
-
-        CONDITIONAL on the row existing (``attribute_exists``): a disconnect
-        deletes the row, and a refresh tick that races just after it must NOT
-        recreate a liveness marker for a gateway that is gone. Best-effort:
-        a write failure (or the conditional miss) is swallowed -- the next
-        tick retries, and a permanently-absent row simply reads as not
-        connected.
-        """
-        now_epoch = int(time.time())
-
-        def _refresh() -> None:
-            self._client.update_item(
-                TableName=self.table_name,
-                Key={"connectionId": {"S": _gateway_liveness_key(owner_id)}},
-                UpdateExpression="SET lastPingAt = :p, #ttl = :t",
-                ConditionExpression="attribute_exists(connectionId)",
-                ExpressionAttributeNames={"#ttl": "ttl"},
-                ExpressionAttributeValues={
-                    ":p": {"N": str(now_epoch)},
-                    ":t": {"N": str(now_epoch + _TTL_WINDOW_SECONDS)},
-                },
-            )
-
-        try:
-            await asyncio.to_thread(_refresh)
-        except ClientError as e:
-            # ConditionalCheckFailed (row gone) is the expected benign race;
-            # any other error is also swallowed (best-effort, next tick retries).
-            if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
-                logger.warning(
-                    "refresh_gateway_liveness failed for owner %s (best-effort, swallowed): %s",
-                    owner_id,
-                    e.response["Error"]["Message"],
-                )
-
     async def is_gateway_connected(self, owner_id: str) -> bool:
         """Whether the gateway-liveness row for ``owner_id`` is present AND
         fresh.

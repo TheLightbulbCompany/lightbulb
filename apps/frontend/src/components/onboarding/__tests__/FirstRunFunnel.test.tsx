@@ -196,6 +196,66 @@ describe("FirstRunFunnel", () => {
     }
   });
 
+  it("switches to a persistent error with upstream detail after 3 identical failures", async () => {
+    // Non-409 failures skip the internal retry loop, so each submit is one
+    // recorded failure. Same upstream detail three times in a row ⇒ the
+    // implied-transient "Retry" line gives way to a persistent state that
+    // surfaces the detail and routes to support.
+    post.mockRejectedValue({ status: 500, body: { detail: "paperclip exploded" } });
+    render(<FirstRunFunnel />);
+    enterGrowPathAndSubmit();
+
+    // Failure 1 — generic transient copy with Retry.
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(screen.getByText(/couldn.t save that just yet/i)).toBeInTheDocument(),
+    );
+
+    // Failure 2 — still generic.
+    fireEvent.click(screen.getByRole("button", { name: /retry/i }));
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(screen.getByText(/couldn.t save that just yet/i)).toBeInTheDocument(),
+    );
+
+    // Failure 3 — persistent: upstream detail + support, no Retry.
+    fireEvent.click(screen.getByRole("button", { name: /retry/i }));
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(3));
+    await waitFor(() =>
+      expect(screen.getByText(/we couldn.t save your brief/i)).toBeInTheDocument(),
+    );
+    expect(screen.getByText("paperclip exploded")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /retry/i })).toBeNull();
+    const support = screen.getByRole("link", { name: /contact support/i });
+    expect(support.getAttribute("href")).toBe("mailto:support@isol8.co");
+  });
+
+  it("a different upstream error resets the failure streak", async () => {
+    post.mockRejectedValueOnce({ status: 500, body: { detail: "error A" } });
+    post.mockRejectedValueOnce({ status: 500, body: { detail: "error A" } });
+    post.mockRejectedValueOnce({ status: 500, body: { detail: "error B" } });
+    render(<FirstRunFunnel />);
+    enterGrowPathAndSubmit();
+
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(screen.getByText(/couldn.t save that just yet/i)).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /retry/i }));
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(screen.getByText(/couldn.t save that just yet/i)).toBeInTheDocument(),
+    );
+    // Third failure carries a DIFFERENT detail — streak resets to 1, so the
+    // generic transient copy (with Retry) stays.
+    fireEvent.click(screen.getByRole("button", { name: /retry/i }));
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(3));
+    await waitFor(() =>
+      expect(screen.getByText(/couldn.t save that just yet/i)).toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/we couldn.t save your brief/i)).toBeNull();
+  });
+
   it("offers no skip — the funnel is the committed onboarding front door", () => {
     render(<FirstRunFunnel />);
     // Path-picker screen: no skip.

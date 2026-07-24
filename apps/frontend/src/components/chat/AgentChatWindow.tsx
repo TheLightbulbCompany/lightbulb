@@ -324,7 +324,12 @@ export function AgentChatWindow({
 
   const { agents } = useAgents();
   const activeAgent = agents.find((a) => a.id === agentId);
-  const agentName = activeAgent?.identity?.name ?? activeAgent?.name ?? agentId ?? undefined;
+  // No raw-UUID fallback: until the roster resolves this agent (e.g. during
+  // the onboarding window, when agents.list is still latched empty), let
+  // MessageList's AgentHead render its neutral "Assistant" default instead
+  // of an agent UUID masquerading as a name. Reactive: flips to the real
+  // name the moment the roster arrives.
+  const agentName = activeAgent?.identity?.name ?? activeAgent?.name ?? undefined;
 
   const api = useApi();
   const [isUploading, setIsUploading] = useState(false);

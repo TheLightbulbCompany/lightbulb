@@ -43,6 +43,9 @@ export interface HistoryMessage {
   tool_call_id?: string;
   toolName?: string;
   tool_name?: string;
+  /** Standalone toolResult-role rows (OpenClaw session store) carry error
+   *  state at message level. */
+  isError?: boolean;
   errorCode?: string;
   __openclaw?: { kind?: string };
 }

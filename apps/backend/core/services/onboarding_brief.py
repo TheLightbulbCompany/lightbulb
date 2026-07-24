@@ -6,8 +6,10 @@ writeFileIfMissing honors pre-written files):
 
   - ``BRIEF.md``      — the user's funnel input, verbatim + identity context.
                         Written unconditionally. The one-shot marker for the
-                        whole flow is the company-scoped onboarding claim in
-                        paperclip_repo.py, not BRIEF.md's existence.
+                        whole flow is the generation-fenced ``funnel_state``
+                        on the paperclip-companies owner row (see
+                        ``paperclip_repo.claim_funnel_submission``), not
+                        BRIEF.md's existence.
   - ``BOOTSTRAP.md``  — the first-run variant, unconditionally overwritten.
                         Ordering note: friday_identity seeds the standard
                         BOOTSTRAP with write_file_if_missing, so whichever
@@ -367,11 +369,12 @@ def stage_first_run_files(
     """Write BRIEF.md + the first-run BOOTSTRAP.md, both unconditionally.
 
     BRIEF.md used to be written write-if-missing because its existence WAS
-    the one-shot marker for the flow. The company-scoped onboarding claim is
-    that marker now, and holding it already proves this is the first run —
-    so a BRIEF.md left behind by an attempt that failed partway is stale
-    state to overwrite, not a reason to stop. Stopping there would strand the
-    goal and project the caller seeded moments earlier.
+    the one-shot marker for the flow. The generation-fenced ``funnel_state``
+    claim on the paperclip-companies owner row is that marker now, and
+    winning it already proves this is the first run — so a BRIEF.md left
+    behind by an attempt that failed partway is stale state to overwrite,
+    not a reason to stop. Stopping there would strand the goal and project
+    the caller seeded moments earlier.
     """
     base = f"workspace-{friday_agent_id}"
     workspace.write_file(owner_id, f"{base}/BRIEF.md", brief_md)

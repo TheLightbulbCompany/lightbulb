@@ -5,9 +5,10 @@ router layer in Phase C.
 """
 
 import asyncio
+import json
 import os
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -197,6 +198,258 @@ async def test_get_overview_reads_current_month_usage_period():
         await admin_service.get_overview("u1")
 
     usage_mock.assert_awaited_with("u1", expected_period)
+
+
+# ---- get_provisioning -------------------------------------------------------
+
+
+def _paperclip_repo_returning(company) -> MagicMock:
+    """A fake ``_paperclip_repo()`` return value whose ``.get`` resolves to
+    ``company`` (a PaperclipCompany instance or None)."""
+    repo = MagicMock()
+    repo.get = AsyncMock(return_value=company)
+    return repo
+
+
+@pytest.mark.asyncio
+async def test_get_provisioning_narrows_and_excludes_secrets():
+    """CEO admin-provisioning-tab: secrets on both the containers row
+    (gateway_token) and the paperclip-companies row
+    (paperclip_password_encrypted / service_token_encrypted) must never
+    reach the composed payload, even though both source rows carry them."""
+    from core.repositories.paperclip_repo import PaperclipCompany
+    from core.services import admin_service
+
+    now = datetime.now(timezone.utc)
+    container_row = {
+        "owner_id": "owner_1",
+        "status": "error",
+        "substatus": "provision_failed",
+        "last_error": "boom",
+        "last_error_at": now.isoformat(),
+        "retryable": True,
+        "gateway_token": "SECRET-GW",
+        "service_name": "openclaw-owner_1-abc123",
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat(),
+    }
+    paperclip_company = PaperclipCompany(
+        user_id="user_1",
+        org_id="",
+        company_id="company_1",
+        paperclip_user_id="pc_user_1",
+        paperclip_password_encrypted="SECRET-PW",
+        service_token_encrypted="SECRET-ST",
+        status="active",
+        created_at=now,
+        updated_at=now,
+        funnel_state="submitted",
+        bootstrap_state="failed",
+    )
+
+    with (
+        patch(
+            "core.services.admin_service.resolve_admin_owner_id",
+            new=AsyncMock(return_value=("owner_1", None)),
+        ),
+        patch(
+            "core.services.admin_service.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value=container_row),
+        ),
+        patch(
+            "core.services.admin_service.compute_status",
+            new=AsyncMock(return_value={"lifecycle": "error"}),
+        ),
+        patch(
+            "core.services.admin_service._paperclip_repo",
+            return_value=_paperclip_repo_returning(paperclip_company),
+        ),
+        patch("core.services.admin_service.probe_provision_gate", new=AsyncMock(return_value=None)),
+        patch("core.services.admin_service.describe_dispatch_execution", new=AsyncMock(return_value=None)),
+    ):
+        result = await admin_service.get_provisioning("user_1")
+
+    flat = json.dumps(result)
+    assert "SECRET-GW" not in flat
+    assert "SECRET-PW" not in flat
+    assert "SECRET-ST" not in flat
+    assert result["container"]["status"] == "error"
+    assert result["container"]["last_error"] == "boom"
+    assert result["container"]["claim_stale"] in (True, False)
+    assert result["paperclip"]["funnel_state"] == "submitted"
+    assert result["paperclip"]["bootstrap_state"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_get_provisioning_no_rows_degrades_to_nones():
+    """A brand-new owner with no containers row, no paperclip-companies row,
+    no gate block, and no SFN execution must still answer 200 with every
+    optional panel null — not raise, not 500."""
+    from core.services import admin_service
+
+    with (
+        patch(
+            "core.services.admin_service.resolve_admin_owner_id",
+            new=AsyncMock(return_value=("owner_1", None)),
+        ),
+        patch(
+            "core.services.admin_service.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "core.services.admin_service.compute_status",
+            new=AsyncMock(return_value={"lifecycle": "needs_signup"}),
+        ),
+        patch(
+            "core.services.admin_service._paperclip_repo",
+            return_value=_paperclip_repo_returning(None),
+        ),
+        patch("core.services.admin_service.probe_provision_gate", new=AsyncMock(return_value=None)),
+        patch("core.services.admin_service.describe_dispatch_execution", new=AsyncMock(return_value=None)),
+    ):
+        result = await admin_service.get_provisioning("user_1")
+
+    assert result["container"] is None
+    assert result["paperclip"] is None
+    assert result["gate"] is None
+    assert result["sfn_execution"] is None
+    assert result["status_contract"] is not None  # composer answers even with no row
+
+
+@pytest.mark.asyncio
+async def test_get_provisioning_narrows_sfn_response():
+    """The SFN DescribeExecution response is boto3-shaped (datetimes +
+    ResponseMetadata); only name/status/start_date/stop_date should survive,
+    with dates ISO-serialized and ResponseMetadata dropped."""
+    from core.services import admin_service
+
+    container_row = {
+        "status": "provisioning",
+        "provision_claim_id": "claim-123",
+        "provision_execution_name": "provision-owner_1-claim123",
+    }
+    start = datetime(2026, 7, 24, 12, 0, 0, tzinfo=timezone.utc)
+    stop = datetime(2026, 7, 24, 12, 5, 0, tzinfo=timezone.utc)
+    sfn_response = {
+        "executionArn": "arn:aws:states:us-east-1:123456789012:execution:x:y",
+        "name": "provision-owner_1-claim123",
+        "status": "RUNNING",
+        "startDate": start,
+        "stopDate": stop,
+        "input": "{}",
+        "ResponseMetadata": {"HTTPStatusCode": 200},
+    }
+    describe_mock = AsyncMock(return_value=sfn_response)
+
+    with (
+        patch(
+            "core.services.admin_service.resolve_admin_owner_id",
+            new=AsyncMock(return_value=("owner_1", None)),
+        ),
+        patch(
+            "core.services.admin_service.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value=container_row),
+        ),
+        patch(
+            "core.services.admin_service.compute_status",
+            new=AsyncMock(return_value={"lifecycle": "provisioning"}),
+        ),
+        patch(
+            "core.services.admin_service._paperclip_repo",
+            return_value=_paperclip_repo_returning(None),
+        ),
+        patch("core.services.admin_service.probe_provision_gate", new=AsyncMock(return_value=None)),
+        patch("core.services.admin_service.describe_dispatch_execution", new=describe_mock),
+    ):
+        result = await admin_service.get_provisioning("user_1")
+
+    describe_mock.assert_awaited_once_with("owner_1", "claim-123")
+    assert set(result["sfn_execution"]) == {"name", "status", "start_date", "stop_date"}
+    assert result["sfn_execution"]["name"] == "provision-owner_1-claim123"
+    assert result["sfn_execution"]["status"] == "RUNNING"
+    assert result["sfn_execution"]["start_date"] == start.isoformat()
+    assert result["sfn_execution"]["stop_date"] == stop.isoformat()
+
+
+@pytest.mark.asyncio
+async def test_get_provisioning_gate_payload_shape():
+    """A blocked gate narrows to exactly Gate.to_payload()["blocked"] — the
+    same structured shape /container/status already returns on 402, so the
+    admin tab and the owner-facing blocked card render identically."""
+    from core.services import admin_service
+    from core.services.provision_gate import Gate
+
+    gate = Gate(
+        code="subscription_required",
+        title="Subscription not active",
+        message="Reactivate your subscription to start your container.",
+        action_label="Manage subscription",
+        action_href="/settings/billing",
+        action_admin_only=True,
+        owner_role="admin",
+    )
+
+    with (
+        patch(
+            "core.services.admin_service.resolve_admin_owner_id",
+            new=AsyncMock(return_value=("owner_1", None)),
+        ),
+        patch(
+            "core.services.admin_service.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "core.services.admin_service.compute_status",
+            new=AsyncMock(return_value={"lifecycle": "blocked"}),
+        ),
+        patch(
+            "core.services.admin_service._paperclip_repo",
+            return_value=_paperclip_repo_returning(None),
+        ),
+        patch("core.services.admin_service.probe_provision_gate", new=AsyncMock(return_value=gate)),
+        patch("core.services.admin_service.describe_dispatch_execution", new=AsyncMock(return_value=None)),
+    ):
+        result = await admin_service.get_provisioning("user_1")
+
+    assert result["gate"]["code"] == "subscription_required"
+    assert result["gate"] == gate.to_payload()["blocked"]
+
+
+@pytest.mark.asyncio
+async def test_get_provisioning_gate_probe_failure_degrades_to_none_not_crash():
+    """A failing/timed-out probe_provision_gate flows through _with_timeout as
+    an {"error", "source"} dict, not None or a Gate — asserting `if gate` would
+    treat that dict as truthy and crash calling .to_payload() on it. The
+    composer must degrade to gate=None instead of raising, same as any other
+    degraded upstream in this composition."""
+    from core.services import admin_service
+
+    with (
+        patch(
+            "core.services.admin_service.resolve_admin_owner_id",
+            new=AsyncMock(return_value=("owner_1", None)),
+        ),
+        patch(
+            "core.services.admin_service.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "core.services.admin_service.compute_status",
+            new=AsyncMock(return_value={"lifecycle": "needs_signup"}),
+        ),
+        patch(
+            "core.services.admin_service._paperclip_repo",
+            return_value=_paperclip_repo_returning(None),
+        ),
+        patch(
+            "core.services.admin_service.probe_provision_gate",
+            new=AsyncMock(side_effect=RuntimeError("ddb_blip")),
+        ),
+        patch("core.services.admin_service.describe_dispatch_execution", new=AsyncMock(return_value=None)),
+    ):
+        result = await admin_service.get_provisioning("user_1")  # must not raise
+
+    assert result["gate"] is None
 
 
 # ---- list_user_agents -----------------------------------------------------

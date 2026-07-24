@@ -1663,8 +1663,8 @@ def build_openclaw_config_dict(
             # gated Bedrock margins).
             "snapshotDefaults": {"mode": "efficient"},
             # Upstream tab defaults (8 tabs / 120m idle) are desktop-sized;
-            # on a 0.5 vCPU / 2 GB Fargate task live Chromium tabs are the
-            # OOM budget, so close idle ones aggressively.
+            # on a 1 vCPU / 4 GB Fargate task live Chromium tabs are still
+            # a resource constraint, so close idle ones aggressively.
             "tabCleanup": {"idleMinutes": 30, "maxTabsPerSession": 4},
             # Required because the gateway runs as root inside the
             # per-user ECS container (for oom-score-adj and EFS perms),

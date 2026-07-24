@@ -165,15 +165,28 @@ async def _resolve_onboarded(owner_id: str) -> bool:
     being offered again. Any read failure returns ``False`` (the safe
     default -- worst case a returning owner sees the funnel prompt once more
     rather than a degraded signal breaking ``/container/status``).
+
+    LEGACY FALLBACK: rows written before the ONBOARD migration carry no
+    ``funnel_state`` at all (it is only stamped by post-migration
+    ``provision_org`` writes; there is no backfill). For those — and for a
+    missing/purged owner row — fall back to the old durable marker,
+    ``containers.onboarded_at``: without this, every owner who completed
+    the OLD flow reads ``onboarded: false`` after deploy, is re-shown the
+    first-run funnel, and then ``/onboarding/brief``'s no-generation guard
+    409s forever. A post-migration row with any non-null ``funnel_state``
+    never consults the legacy stamp — the new state machine owns it.
     """
     try:
         from core.repositories.paperclip_repo import PaperclipRepo
 
         owner_row = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
+        if owner_row is not None and owner_row.funnel_state is not None:
+            return owner_row.funnel_state == "complete"
+        legacy = await container_repo.get_by_owner_id(owner_id)
+        return bool(legacy and legacy.get("onboarded_at"))
     except Exception:  # noqa: BLE001 — degraded signal must never break /status
         logger.info("onboarded read failed for owner %s", owner_id, exc_info=True)
         return False
-    return owner_row is not None and owner_row.funnel_state == "complete"
 
 
 def _resolve_cold_start_phase(container: dict, gateway_pool, owner_id: str) -> str:
@@ -349,10 +362,13 @@ async def container_status(
             "last_error": None,
             "last_error_at": None,
             "phase": "provisioning",
-            # Still provisioning -> definitionally not onboarded yet. The
-            # first-run funnel gates on this; a container mid-provision has
-            # no goal/project, so the funnel should show once it's ready.
-            "onboarded": False,
+            # Resolved, NOT hardcoded False: onboarding is company-scoped
+            # (G2), the container is infrastructure (G1). A completed
+            # company whose container row is temporarily missing (container-
+            # only recreation/cleanup) must not re-open the first-run
+            # funnel while the box reprovisions. A genuinely-new owner has
+            # no owner row and no legacy stamp -> resolves False as before.
+            "onboarded": await _resolve_onboarded(owner_id),
         }
 
     # Daily Bedrock restore: a capped-out (or previously-expired-and-now-

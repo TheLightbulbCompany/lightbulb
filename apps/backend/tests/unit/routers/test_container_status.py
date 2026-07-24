@@ -2172,8 +2172,63 @@ class TestContainerStatusOnboarded:
         from routers.container import _resolve_onboarded
 
         repo = MagicMock(resolve_owner_row=AsyncMock(return_value=None))
-        with patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo):
+        with (
+            patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
+            patch("routers.container.container_repo") as mock_containers,
+        ):
+            mock_containers.get_by_owner_id = AsyncMock(return_value=None)
             assert await _resolve_onboarded("owner_x") is False
+
+    @pytest.mark.asyncio
+    async def test_resolve_onboarded_legacy_row_falls_back_to_onboarded_at(self):
+        """Pre-migration rows carry NO funnel_state (only post-migration
+        provision_org stamps it; there is no backfill). The old durable
+        marker containers.onboarded_at must keep those owners onboarded —
+        without it every pre-migration owner is re-shown the first-run
+        funnel and /brief's no-generation guard 409s forever."""
+        from routers.container import _resolve_onboarded
+
+        repo = MagicMock(resolve_owner_row=AsyncMock(return_value=SimpleNamespace(funnel_state=None)))
+        with (
+            patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
+            patch("routers.container.container_repo") as mock_containers,
+        ):
+            mock_containers.get_by_owner_id = AsyncMock(return_value={"onboarded_at": "2026-06-01T00:00:00Z"})
+            assert await _resolve_onboarded("owner_x") is True
+
+            mock_containers.get_by_owner_id = AsyncMock(return_value={"status": "running"})
+            assert await _resolve_onboarded("owner_x") is False
+
+    @pytest.mark.asyncio
+    async def test_resolve_onboarded_post_migration_row_never_reads_legacy_stamp(self):
+        """Any non-null funnel_state means the NEW state machine owns the
+        answer — a lingering legacy onboarded_at must not short-circuit a
+        genuinely un-onboarded post-migration company."""
+        from routers.container import _resolve_onboarded
+
+        repo = MagicMock(resolve_owner_row=AsyncMock(return_value=SimpleNamespace(funnel_state="not_started")))
+        with (
+            patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
+            patch("routers.container.container_repo") as mock_containers,
+        ):
+            mock_containers.get_by_owner_id = AsyncMock(return_value={"onboarded_at": "2026-06-01T00:00:00Z"})
+            assert await _resolve_onboarded("owner_x") is False
+            mock_containers.get_by_owner_id.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_resolve_onboarded_purged_owner_row_falls_back_to_legacy_stamp(self):
+        """A purged/missing owner row (e.g. org creator's row archived and
+        purged) still resolves onboarded for owners the legacy stamp
+        covers, instead of re-funneling the whole org."""
+        from routers.container import _resolve_onboarded
+
+        repo = MagicMock(resolve_owner_row=AsyncMock(return_value=None))
+        with (
+            patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
+            patch("routers.container.container_repo") as mock_containers,
+        ):
+            mock_containers.get_by_owner_id = AsyncMock(return_value={"onboarded_at": "2026-06-01T00:00:00Z"})
+            assert await _resolve_onboarded("org_acme") is True
 
     @pytest.mark.asyncio
     async def test_resolve_onboarded_swallows_read_error(self):

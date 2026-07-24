@@ -124,17 +124,22 @@ export default function Chat() {
   } | null>(null);
   const [sessionsOpen, setSessionsOpen] = useState(false);
 
-  // First-run aha: right after the funnel brief is submitted (and until the
-  // kickoff fires — `started` stays false), walk the user straight into the
-  // default agent's (Friday's) chat, where useFirstRunKickoff sends the
-  // visible kickoff prompt. Web needs no redirect (its main surface IS the
+  // First-run aha: right after the funnel brief is submitted, walk the user
+  // straight into the default agent's (Friday's) chat so they land on the
+  // live kickoff the backend server-dispatches (spec PR-6, BOOTSTRAP) rather
+  // than the roster. Web needs no redirect (its main surface IS the
   // default-agent chat); the roster is the mobile equivalent's front door.
+  // One-shot per mount via redirectedRef — briefSubmitted itself stays true
+  // across remounts (it's the durable Clerk-cached signal), so there is no
+  // `started` latch to also gate on any more: the kickoff is server-owned
+  // and fenced on the backend's own onboarding_generation, not on whether
+  // this screen has redirected before.
   const { user } = useUser();
   const redirectedRef = useRef(false);
   useEffect(() => {
     if (redirectedRef.current || !user || !data?.defaultId) return;
     const fr = readFirstRun(user);
-    if (!fr.briefSubmitted || fr.started) return;
+    if (!fr.briefSubmitted) return;
     const agent = data.agents?.find((a) => a.id === data.defaultId);
     if (!agent) return;
     redirectedRef.current = true;

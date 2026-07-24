@@ -1,10 +1,6 @@
 import { useAuth, useUser } from "@clerk/clerk-expo";
 import Feather from "@expo/vector-icons/Feather";
-import {
-  accumulateStreamText,
-  useGatewayRpc,
-  type AgentsListResponse,
-} from "@isol8/shared";
+import { accumulateStreamText } from "@isol8/shared";
 import { randomUUID } from "expo-crypto";
 import * as DocumentPicker from "expo-document-picker";
 import * as ImagePicker from "expo-image-picker";
@@ -35,7 +31,6 @@ import { SessionsSheet } from "../../../components/chat/SessionsSheet";
 import { TimelineSkeleton } from "../../../components/chat/TimelineSkeleton";
 import { ToolPill, type ToolPillStatus } from "../../../components/chat/ToolPill";
 import { usePulse } from "../../../components/chat/usePulse";
-import { useFirstRunKickoff } from "../../../components/onboarding/useFirstRunKickoff";
 import { colors, fonts, radii, spacing } from "../../../config/theme";
 import { setCurrentAgentId } from "../../../lib/activeAgent";
 import {
@@ -46,7 +41,6 @@ import {
   type PendingAttachment,
 } from "../../../lib/attachments";
 import { projectHistoryToChatItems } from "../../../lib/chatHistory";
-import { readFirstRun, writeFirstRun } from "../../../lib/firstRun";
 import { useNavParamConsumer } from "../../../lib/useNavParamConsumer";
 import { buildChatSessionKey } from "../../../lib/sessionKey";
 import { useGateway } from "../../../providers/gateway";
@@ -126,11 +120,6 @@ function AgentChat() {
   // fetches wait for Clerk to load it.
   const { user } = useUser();
   const userId = user?.id ?? null;
-  // Ref twin for the frame handler's run_ended branch — the subscription
-  // effect's deps stay [gateway, agentId], so it must read the CURRENT user
-  // (Clerk hands out a new object per render) to see fresh firstRun flags.
-  const userRef = useRef(user);
-  userRef.current = user;
   // Clerk hands out a NEW getToken reference every render (teamsData.ts
   // lesson) — pin it in a ref so the upload path always reads the current one
   // without threading getToken through any dependency array.
@@ -290,18 +279,6 @@ function AgentChat() {
         );
         activeRunIdRef.current = null;
         setBusy(false);
-        // First-run show completion (web AgentChatWindow parity): `started`
-        // is only ever true when the kickoff hook fired it, so any completed
-        // run here closes out the first-run show.
-        const currentUser = userRef.current;
-        if (currentUser) {
-          const fr = readFirstRun(currentUser);
-          if (fr.started && !fr.completed) {
-            void writeFirstRun(currentUser, { completed: true }).catch((err) =>
-              console.error("first-run completion write failed", err),
-            );
-          }
-        }
       }
     });
   }, [gateway, agentId]);
@@ -649,29 +626,6 @@ function AgentChat() {
       ]);
     }
   }, [gateway, agentId, activeSessionId]);
-
-  // First-run kickoff (web useFirstRunKickoff parity): once the funnel brief
-  // is submitted and this screen shows the DEFAULT agent (Friday) over a live
-  // socket, auto-send the visible kickoff prompt exactly once. agents.list is
-  // SWR-cached, so this shares the roster screen's fetch.
-  const { data: rosterData } = useGatewayRpc<AgentsListResponse>(
-    gateway,
-    "agents.list",
-  );
-  useFirstRunKickoff({
-    user,
-    agentId: agentId ?? null,
-    defaultId: rosterData?.defaultId ?? null,
-    isConnected: gateway.isConnected,
-    // Reconcile the `started` latch against the real thread (web parity): a
-    // kickoff whose send died in flight leaves started=true over an empty
-    // default thread — history done loading + zero rendered items means it
-    // never landed, so re-fire. historyEmpty mirrors allItems.length === 0
-    // (seeded history + live items), inlined since allItems is derived below.
-    historyLoaded: !historyLoading,
-    historyEmpty: historyItems.length === 0 && items.length === 0,
-    send: dispatchText,
-  });
 
   const agentName = name || agentId || "Agent";
 

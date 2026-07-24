@@ -76,14 +76,6 @@ describe("Chat roster", () => {
     expect(routerPush).toHaveBeenCalledTimes(1);
   });
 
-  it("does not redirect once the kickoff has started", async () => {
-    mockClerkUser = {
-      unsafeMetadata: { firstRun: { briefSubmitted: true, started: true } },
-    };
-    await render(<Chat />);
-    await waitFor(() => expect(routerPush).not.toHaveBeenCalled());
-  });
-
   describe("per-agent sessions (long-press)", () => {
     const NAMED = {
       key: "agent:agent_a:user_x:11111111-1111-4111-8111-111111111111",

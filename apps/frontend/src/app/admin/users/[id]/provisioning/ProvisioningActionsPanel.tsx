@@ -16,7 +16,13 @@ export interface ProvisioningActionsPanelProps {
   userId: string;
   /** `paperclip.bootstrap_state` from the provisioning payload; gates the Reset bootstrap button. */
   bootstrapState: string | null;
-  /** `container.status`; `null` for both "no row" and the container-read error sentinel. */
+  /**
+   * `container.status`; `null` for both "no row" and the container-read
+   * error sentinel. Not currently read by this component — kept in the
+   * props contract per the plan (callers already compute it for the page's
+   * own "Container row" card) so it's available if a future lever needs it,
+   * without widening the signature again.
+   */
   containerStatus: string | null;
 }
 
@@ -29,7 +35,6 @@ export interface ProvisioningActionsPanelProps {
 export function ProvisioningActionsPanel({
   userId,
   bootstrapState,
-  containerStatus,
 }: ProvisioningActionsPanelProps) {
   const router = useRouter();
   const [error, setError] = React.useState<string | null>(null);
@@ -77,7 +82,7 @@ export function ProvisioningActionsPanel({
           </h3>
           <p className="text-xs text-zinc-400">
             Re-dispatches provisioning through the Step Functions executor.
-            Safe for error rows and for &quot;provisioning&quot; rows with a
+            Safe for error rows and for &apos;provisioning&apos; rows with a
             stale claim (wedge rescue); refuses (409) while a fresh attempt
             is in flight.
           </p>
@@ -100,7 +105,7 @@ export function ProvisioningActionsPanel({
             Re-arms a failed onboarding kickoff (attempts exhausted or
             chat.error). The kickoff re-dispatches on the user&apos;s next
             /container/status poll — delivery needs their chat surface
-            online{containerStatus ? ` (current container status: ${containerStatus})` : ""}.
+            online.
           </p>
           <ConfirmActionDialog
             confirmText={userId}

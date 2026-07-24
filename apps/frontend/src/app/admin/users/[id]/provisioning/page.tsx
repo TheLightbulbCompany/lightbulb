@@ -198,7 +198,7 @@ export default async function AdminUserProvisioningPage({ params }: PageProps) {
                   <li key={agentId} className="flex items-baseline gap-2">
                     <span className="truncate font-mono text-zinc-200">{agentId}</span>
                     {index === 0 ? (
-                      <span className="text-xs text-zinc-500">(Friday (CEO))</span>
+                      <span className="text-xs text-zinc-500">Friday (CEO)</span>
                     ) : null}
                   </li>
                 ))}

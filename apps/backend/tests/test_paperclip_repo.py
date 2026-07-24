@@ -305,6 +305,67 @@ async def test_org_create_claim_sentinel_invisible_to_org_gsi_queries(repo):
 
 
 # ---------------------------------------------------------------------------
+# Per-owner seed claim (provision_org's cross-instance fresh-create fence)
+# ---------------------------------------------------------------------------
+
+
+async def test_seed_claim_fresh_wins_then_second_caller_loses(repo):
+    """First caller wins the put-if-absent; a concurrent second caller loses
+    while the claim is non-stale — the fence that stops two backend
+    instances from both running the full Paperclip seed."""
+    assert await repo.try_acquire_seed_claim("u1", org_id="u1", claim_id="a") is True
+    assert await repo.try_acquire_seed_claim("u1", org_id="u1", claim_id="b") is False
+
+
+async def test_seed_claim_row_reads_back_as_bare_seeding_row(repo):
+    """The claim row must be readable via get() — the loser polls it and the
+    status readers surface it — so _item_to_company must tolerate the bare
+    shape (status="seeding", company_id="", NO credential attributes)."""
+    await repo.try_acquire_seed_claim("u1", org_id="org_a", claim_id="a")
+    row = await repo.get("u1")
+    assert row is not None
+    assert row.status == "seeding"
+    assert row.company_id == ""
+    assert row.paperclip_user_id == ""
+    # Credentials are ABSENT (not ""), same discipline as the failed marker.
+    raw = repo._table().get_item(Key={"user_id": "u1"})["Item"]
+    assert "paperclip_user_id" not in raw
+
+
+async def test_seed_claim_never_overwrites_a_real_row(repo):
+    """provisioning/active/failed rows are real state — never claimable nor
+    stealable, even with a stale threshold of 0. Only a bare seeding claim
+    can ever be replaced."""
+    for status in ("provisioning", "active", "failed"):
+        user = f"user_{status}"
+        await repo.put(_make_company(user_id=user, status=status))
+        won = await repo.try_acquire_seed_claim(user, org_id=f"org_{user}", claim_id="x", stale_after_seconds=0)
+        assert won is False
+        assert (await repo.get(user)).status == status  # untouched
+
+
+async def test_seed_claim_steals_only_when_stale(repo):
+    """A holder that crashed hard before any durable progress leaves a bare
+    seeding row; once claimed_at is past the stale window it is re-claimable
+    so the owner isn't stranded forever."""
+    assert await repo.try_acquire_seed_claim("u1", org_id="u1", claim_id="a") is True
+    # Non-stale → loses.
+    assert await repo.try_acquire_seed_claim("u1", org_id="u1", claim_id="b", stale_after_seconds=120) is False
+    # stale_after_seconds=0 → any existing claim is stale → steal succeeds.
+    assert await repo.try_acquire_seed_claim("u1", org_id="u1", claim_id="b", stale_after_seconds=0) is True
+
+
+async def test_seed_claim_visible_to_status_reader_but_not_signin_resolver(repo):
+    """Unlike the org-create sentinel (synthetic PK, invisible everywhere),
+    the seed claim IS the real row: the active-only sign-in resolver must
+    skip it, while the status reader surfaces the in-flight state."""
+    await repo.try_acquire_seed_claim("creator", org_id="org_x", claim_id="a")
+    assert await repo.find_owner_row("org_x") is None  # not sign-in-able
+    state = await repo.get_onboarding_state("org_x")
+    assert state["teams_state"] == "seeding"
+
+
+# ---------------------------------------------------------------------------
 # Onboarding: put/get round-trip (writer safety depends on this exact shape).
 # ---------------------------------------------------------------------------
 
@@ -822,3 +883,100 @@ async def test_mark_bootstrap_failed_fenced_on_dispatch_id(repo):
     fetched = await repo.get("u1")
     assert fetched.bootstrap_state == "not_started"
     assert fetched.bootstrap_last_error is None
+
+
+# ---------------------------------------------------------------------------
+# rearm_bootstrap_dispatch (transient-failure retry path)
+# ---------------------------------------------------------------------------
+
+
+async def test_rearm_bootstrap_dispatch_returns_row_to_not_started(repo):
+    """The TRANSIENT counterpart to mark_bootstrap_failed: state back to
+    not_started so the next poll re-dispatches, attempts KEPT (they bound the
+    total dispatches), reason recorded, funnel untouched (still submitted —
+    that's what makes the row re-dispatchable)."""
+    await repo.put(
+        _make_company(
+            user_id="u1", onboarding_generation="01G", funnel_state="submitted", bootstrap_state="not_started"
+        )
+    )
+    _, dispatch_id = await repo.claim_bootstrap_dispatch("u1", onboarding_generation="01G")
+    await repo.rearm_bootstrap_dispatch(
+        "u1", onboarding_generation="01G", dispatch_id=dispatch_id, reason="[Errno 111] Connect call failed"
+    )
+    fetched = await repo.get("u1")
+    assert fetched.bootstrap_state == "not_started"
+    assert fetched.bootstrap_attempts == 1  # kept, not reset
+    assert fetched.bootstrap_last_error == "[Errno 111] Connect call failed"
+    assert fetched.funnel_state == "submitted"
+
+
+async def test_rearm_then_next_claim_wins_and_increments_attempts(repo):
+    """The whole point of the re-arm: a later /container/status poll's claim
+    must WIN again on the same generation, minting a fresh dispatch_id and
+    counting the new attempt."""
+    await repo.put(
+        _make_company(
+            user_id="u1", onboarding_generation="01G", funnel_state="submitted", bootstrap_state="not_started"
+        )
+    )
+    first, first_id = await repo.claim_bootstrap_dispatch("u1", onboarding_generation="01G")
+    await repo.rearm_bootstrap_dispatch("u1", onboarding_generation="01G", dispatch_id=first_id, reason="boot race")
+    second, second_id = await repo.claim_bootstrap_dispatch("u1", onboarding_generation="01G")
+    assert first is BootstrapClaimResult.WON
+    assert second is BootstrapClaimResult.WON
+    assert second_id != first_id
+    fetched = await repo.get("u1")
+    assert fetched.bootstrap_state == "dispatched"
+    assert fetched.bootstrap_dispatch_id == second_id
+    assert fetched.bootstrap_attempts == 2
+
+
+async def test_rearm_bootstrap_dispatch_fenced_on_dispatch_id(repo):
+    """A stale re-arm from a superseded dispatch attempt must not yank a
+    LATER attempt's in-flight dispatched state back to not_started."""
+    await repo.put(
+        _make_company(
+            user_id="u1", onboarding_generation="01G", funnel_state="submitted", bootstrap_state="not_started"
+        )
+    )
+    _, dispatch_id = await repo.claim_bootstrap_dispatch("u1", onboarding_generation="01G")
+    await repo.rearm_bootstrap_dispatch(
+        "u1", onboarding_generation="01G", dispatch_id="stale-dispatch-id", reason="boom"
+    )
+    fetched = await repo.get("u1")
+    assert fetched.bootstrap_state == "dispatched"  # untouched
+    assert fetched.bootstrap_dispatch_id == dispatch_id
+    assert fetched.bootstrap_last_error is None
+
+
+async def test_rearm_bootstrap_dispatch_is_a_noop_against_a_superseded_generation(repo):
+    await repo.put(
+        _make_company(
+            user_id="u1", onboarding_generation="01OLD", funnel_state="submitted", bootstrap_state="not_started"
+        )
+    )
+    _, dispatch_id = await repo.claim_bootstrap_dispatch("u1", onboarding_generation="01OLD")
+    # Company reprovisioned mid-flight: new generation, fresh not_started state.
+    await repo.put(_make_company(user_id="u1", onboarding_generation="01NEW", funnel_state="not_started"))
+    await repo.rearm_bootstrap_dispatch("u1", onboarding_generation="01OLD", dispatch_id=dispatch_id, reason="boom")
+    fetched = await repo.get("u1")
+    assert fetched.onboarding_generation == "01NEW"
+    assert fetched.bootstrap_state is None  # the fresh row untouched
+
+
+async def test_rearm_bootstrap_dispatch_never_downgrades_a_resolved_dispatch(repo):
+    """A dispatch that already resolved (delivered) is fenced on
+    bootstrap_state=="dispatched" — a late transient classifier from the same
+    dispatch (e.g. a raced completion) must not un-deliver it."""
+    await repo.put(
+        _make_company(
+            user_id="u1", onboarding_generation="01G", funnel_state="submitted", bootstrap_state="not_started"
+        )
+    )
+    _, dispatch_id = await repo.claim_bootstrap_dispatch("u1", onboarding_generation="01G")
+    await repo.mark_bootstrap_delivered("u1", onboarding_generation="01G", dispatch_id=dispatch_id)
+    await repo.rearm_bootstrap_dispatch("u1", onboarding_generation="01G", dispatch_id=dispatch_id, reason="late")
+    fetched = await repo.get("u1")
+    assert fetched.bootstrap_state == "delivered"
+    assert fetched.funnel_state == "complete"

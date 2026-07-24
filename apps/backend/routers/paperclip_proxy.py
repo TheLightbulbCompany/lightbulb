@@ -1157,7 +1157,9 @@ async def proxy(path: str, request: Request) -> Response:
             f"{_frontend_url()}/chat?from=teams",
             status_code=302,
         )
-    if company is None or company.status == "provisioning" or company.org_id != resolve_owner_id(auth):
+    # "seeding" = provision_org's pre-side-effect seed-claim row — an
+    # in-flight provision exactly like "provisioning" for this check.
+    if company is None or company.status in ("seeding", "provisioning") or company.org_id != resolve_owner_id(auth):
         # Either: (a) handshake just spawned ensure_user_ready and the row
         # hasn't been written yet (typical first visit), or (b) it's
         # actively in-flight, or (c) the row belongs to a DIFFERENT owner

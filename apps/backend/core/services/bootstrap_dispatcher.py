@@ -87,11 +87,31 @@ return. This module dispatches chat.send exactly the way
 ``routers/websocket_chat.py`` does (``ensure_connection`` +
 ``mark_run_active`` + ``send_rpc``), so that forwarding path is unaffected.
 
-There is no retry/backoff loop in THIS PR -- that is the generalized
-``reconciliation_worker`` (spec PR-8), which retries a dispatched-but-
-undelivered (or failed) bootstrap on its own sweep. This PR only implements
-the correct-path single dispatch + its own completion observer, bounded by
-``bootstrap_attempts`` so a runaway caller can't spin forever.
+Failure handling is TWO-TIERED (both bounded by ``bootstrap_attempts``):
+
+* **In-dispatch connect retry.** The container row goes ``running`` when
+  the ECS task starts, but OpenClaw's gateway can take 1-3 more minutes to
+  actually listen on its port -- a dispatch fired in that window used to
+  die on the first ``[Errno 111]`` connect refusal and mark the bootstrap
+  failed (observed live 2026-07-24). Connection-level failures on the
+  gateway WebSocket connect (``OSError``/timeouts -- NEVER chat-level
+  errors) are therefore retried in place with backoff
+  (``_CONNECT_RETRY_DELAYS_S``, ~3-4 min total budget), all within the ONE
+  dispatch this caller claimed -- the claim/dispatch_id fencing is
+  untouched, and concurrent pollers keep no-oping on
+  ``bootstrap_state="dispatched"`` while we wait.
+* **Cross-poll re-arm.** When even that budget is exhausted (or a
+  transient error escapes past the connect), the failure is CLASSIFIED:
+  TRANSIENT (connection errors/timeouts) re-arms the row via
+  ``PaperclipRepo.rearm_bootstrap_dispatch`` (``bootstrap_state`` back to
+  ``not_started``, attempts + last_error kept) so the next
+  ``/container/status`` poll re-dispatches -- but only while
+  ``bootstrap_attempts`` is under ``MAX_BOOTSTRAP_ATTEMPTS``; at the cap,
+  or for any DETERMINISTIC failure (agent-run errors, auth rejections,
+  anything that would fail identically on a retry), it marks ``failed``
+  for real, exactly as before. Without the re-arm, ``failed`` was terminal
+  (``claim_bootstrap_dispatch`` admits only ``not_started``) and one boot
+  race killed the onboarding forever.
 
 If the runtime is not up yet (no running container / no task IP), this
 function does NOTHING -- no dispatch, no partial write, no stale handoff
@@ -103,6 +123,7 @@ re-evaluates the same guards from scratch and dispatches then.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from uuid import uuid4
 
@@ -117,13 +138,32 @@ FIRST_RUN_PROMPT = (
     "I'm watching."
 )
 
-# A caller checks this BEFORE claiming (not the repo's CAS itself, which has
-# no retry loop in this PR -- see module docstring). Bounds how many times a
-# stuck/failed dispatch can be re-claimed once the generalized
-# reconciliation_worker (spec PR-8) starts resetting bootstrap_state back to
-# not_started for a retry. A small number: a genuinely stuck dispatch needs
-# investigation, not an unbounded retry storm against Friday's session.
-MAX_BOOTSTRAP_ATTEMPTS = 3
+# A caller checks this BEFORE claiming (the repo's CAS itself carries no
+# attempts guard). Bounds the total number of dispatches a transient re-arm
+# (``rearm_bootstrap_dispatch`` -- see module docstring) can produce: each
+# claim increments ``bootstrap_attempts``, the re-arm keeps it, and the
+# failure classifier marks ``failed`` for real once the attempt that just
+# died was the MAX_BOOTSTRAP_ATTEMPTS-th. A small number: a dispatch still
+# failing after five spaced-out attempts (each with its own multi-minute
+# connect-retry budget) needs investigation, not an unbounded retry storm
+# against Friday's session.
+MAX_BOOTSTRAP_ATTEMPTS = 5
+
+# Backoff schedule (seconds) for connection-level failures on the gateway
+# WebSocket connect, all inside ONE claimed dispatch. The ECS task reports
+# RUNNING 1-3 minutes before OpenClaw's gateway listens on its port; this
+# ladder (~3 min of waiting across 9 connect attempts) is sized to outlast
+# that boot window so a normal cold boot never burns a bootstrap attempt.
+_CONNECT_RETRY_DELAYS_S: tuple[float, ...] = (5, 10, 20, 30, 30, 30, 30, 30)
+
+# Failure classes the dispatcher treats as TRANSIENT: connection-level
+# failures (``OSError`` covers ConnectionRefusedError/ConnectionResetError/
+# the raw [Errno 111] connect refusal) and timeouts (``asyncio.TimeoutError``
+# IS ``TimeoutError`` on >=3.11). Everything else -- including
+# ``GatewayConnectAuthError`` (a RuntimeError: same credentials cannot
+# succeed on retry) and chat-level errors -- is DETERMINISTIC and marks the
+# bootstrap failed for real.
+_TRANSIENT_DISPATCH_ERRORS: tuple[type[BaseException], ...] = (OSError, TimeoutError)
 
 
 def _paperclip_repo():
@@ -134,6 +174,37 @@ def _paperclip_repo():
     from core.repositories.paperclip_repo import PaperclipRepo
 
     return PaperclipRepo(table_name="paperclip-companies")
+
+
+async def _ensure_connection_with_retry(pool, owner_id: str, ip: str, token: str) -> None:
+    """Bounded connect-retry around the gateway WebSocket connect.
+
+    Retries ONLY connection-level failures (``_TRANSIENT_DISPATCH_ERRORS``)
+    on the backoff ladder in ``_CONNECT_RETRY_DELAYS_S`` -- the "container
+    row says running but OpenClaw isn't listening yet" boot window. Any
+    other exception (auth rejections, chat-level errors -- which can't even
+    occur here, but the principle holds) propagates immediately, as does the
+    final connection failure once the ladder is exhausted; the caller's
+    failure classifier then decides re-arm vs. failed. Runs inside one
+    claimed dispatch: the row sits at ``bootstrap_state="dispatched"`` the
+    whole time, so concurrent pollers no-op rather than pile on.
+    """
+    for attempt, delay_s in enumerate(_CONNECT_RETRY_DELAYS_S, start=1):
+        try:
+            await pool.ensure_connection(owner_id, ip, token)
+            return
+        except _TRANSIENT_DISPATCH_ERRORS as e:
+            logger.info(
+                "bootstrap_dispatcher: gateway connect failed for %s (attempt %d/%d, retrying in %.0fs): %s",
+                owner_id,
+                attempt,
+                len(_CONNECT_RETRY_DELAYS_S) + 1,
+                delay_s,
+                e,
+            )
+            await asyncio.sleep(delay_s)
+    # Last attempt: let whatever it raises propagate to the classifier.
+    await pool.ensure_connection(owner_id, ip, token)
 
 
 async def _resolve_default_agent_id(owner_id: str) -> str | None:
@@ -187,9 +258,12 @@ async def maybe_dispatch_bootstrap(owner_id: str, *, onboarding: dict | None = N
         # not_started: nothing to dispatch yet. complete: already delivered.
         return
     if (onboarding.get("bootstrap_state") or "not_started") != "not_started":
-        # Already dispatched/delivered/failed by a prior attempt -- this PR
-        # dispatches at most once per onboarding_generation (INV-5); a later
-        # PR's reconciliation_worker owns retrying a stuck/failed dispatch.
+        # dispatched: a peer holds the claim (possibly mid connect-retry).
+        # delivered: done. failed: DETERMINISTIC terminal (or the attempts
+        # cap) -- transient failures never park here, they re-arm back to
+        # not_started (see the failure classifier below), so "failed" means
+        # a retry would fail identically and needs investigation, not a
+        # re-dispatch.
         return
     if (onboarding.get("bootstrap_attempts") or 0) >= MAX_BOOTSTRAP_ATTEMPTS:
         logger.warning(
@@ -273,7 +347,9 @@ async def maybe_dispatch_bootstrap(owner_id: str, *, onboarding: dict | None = N
 
     registered = False
     try:
-        await pool.ensure_connection(owner_id, ip, container["gateway_token"])
+        # Connection-level boot races retry in place (see module docstring);
+        # everything past this line fails fast into the classifier below.
+        await _ensure_connection_with_retry(pool, owner_id, ip, container["gateway_token"])
         # Register the completion observer BEFORE mark_run_active/send_rpc so
         # a terminal that arrives immediately after send_rpc returns (fast
         # container) can never race past an unregistered callback.
@@ -310,9 +386,27 @@ async def maybe_dispatch_bootstrap(owner_id: str, *, onboarding: dict | None = N
             # is torn down. Unregister it explicitly, mirroring the
             # clear_active_run cleanup on the line above.
             pool.unregister_run_completion_callback(owner_id, run_id)
+        # Classify the failure (see module docstring). ``bootstrap_attempts``
+        # on the onboarding dict is the PRE-claim value; the claim this
+        # dispatch just won incremented it on the row, so the attempt that
+        # just died is number pre+1.
+        transient = isinstance(e, _TRANSIENT_DISPATCH_ERRORS)
+        attempt_number = (onboarding.get("bootstrap_attempts") or 0) + 1
         try:
-            await repo.mark_bootstrap_failed(
-                row_user_id, onboarding_generation=generation, dispatch_id=dispatch_id, reason=str(e)
-            )
+            if transient and attempt_number < MAX_BOOTSTRAP_ATTEMPTS:
+                logger.info(
+                    "bootstrap_dispatcher: transient dispatch failure for %s "
+                    "(attempt %d/%d) — re-arming for the next /status poll",
+                    owner_id,
+                    attempt_number,
+                    MAX_BOOTSTRAP_ATTEMPTS,
+                )
+                await repo.rearm_bootstrap_dispatch(
+                    row_user_id, onboarding_generation=generation, dispatch_id=dispatch_id, reason=str(e)
+                )
+            else:
+                await repo.mark_bootstrap_failed(
+                    row_user_id, onboarding_generation=generation, dispatch_id=dispatch_id, reason=str(e)
+                )
         except Exception:  # noqa: BLE001 — best-effort failure recording
             logger.exception("bootstrap_dispatcher: failed to record dispatch failure for %s", owner_id)

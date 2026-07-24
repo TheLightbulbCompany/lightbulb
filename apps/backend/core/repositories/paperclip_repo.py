@@ -134,7 +134,7 @@ class BootstrapClaimResult(str, Enum):
     caller's point of view."""
 
 
-PaperclipCompanyStatus = Literal["provisioning", "active", "failed", "disabled"]
+PaperclipCompanyStatus = Literal["seeding", "provisioning", "active", "failed", "disabled"]
 FunnelState = Literal["not_started", "submitted", "complete"]
 BootstrapState = Literal["not_started", "dispatched", "delivered", "failed"]
 
@@ -839,6 +839,122 @@ class PaperclipRepo:
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             pass
 
+    async def try_acquire_seed_claim(
+        self,
+        user_id: str,
+        *,
+        org_id: str,
+        claim_id: str,
+        stale_after_seconds: int = 300,
+    ) -> bool:
+        """Strongly-consistent "I am seeding this owner's company" claim on
+        the REAL row PK — the fresh-create fence for ``provision_org``.
+
+        Returns True iff THIS caller now holds the claim — by winning a fresh
+        put-if-absent, or by stealing a bare ``status="seeding"`` claim whose
+        holder went silent for longer than ``stale_after_seconds``. Returns
+        False when the row exists in any other state (a peer's seed is in
+        flight, already landed, or already failed — the caller decides what
+        to do by re-reading).
+
+        Why this exists: ``provision_org``'s idempotency used to be
+        check-then-act on this row — two concurrent calls on DIFFERENT
+        backend instances could both read "no row" and both run the full
+        Paperclip seed (Better-Auth sign-up, company create, Friday+Atlas),
+        minting duplicate same-email users + duplicate companies (observed
+        live on dev 2026-07-24, twice, 102ms and 358ms apart). Like
+        ``try_acquire_org_create_claim`` this is a PK conditional write, so
+        it is strongly consistent and cross-instance-safe — but it fences
+        the PERSONAL-owner path too (the org-create claim only covers orgs),
+        and it lives on the real row so the loser can simply poll it.
+
+        Claim-row shape: ``status="seeding"`` + ``seeding_claim_id`` +
+        ``seeding_claimed_at``, with ``company_id=""`` and deliberately NO
+        credential fields (``get()`` tolerates that, same as the failed
+        marker). A ``status="seeding"`` row is BY CONSTRUCTION always this
+        bare claim: the winner's very next durable write (the post-sign-up
+        credential put) replaces it wholesale with ``status="provisioning"``,
+        and every failure path downgrades it to ``failed`` — nothing else
+        ever writes ``seeding``. That is what makes the stale-steal below a
+        safe whole-item put: it can only ever replace a bare claim.
+
+        Steal threshold rationale (mirrors ``try_acquire_org_create_claim``):
+        a live ``provision_org`` chain is ~9 awaited Paperclip HTTP calls,
+        each bounded by the provisioning client's 15s timeout, and any
+        timeout RAISES — which downgrades the row via ``_mark_failed``. So a
+        row still ``seeding`` past ~300s can only be a holder that crashed
+        hard (SIGKILL) between the claim and its first durable write; the
+        steal is fenced on ``seeding_claimed_at`` being unchanged since our
+        read so two concurrent stealers can't both win.
+        """
+        now = datetime.now(timezone.utc)
+        item = {
+            "user_id": user_id,
+            "org_id": org_id,
+            "company_id": "",
+            "status": "seeding",
+            "seeding_claim_id": claim_id,
+            "seeding_claimed_at": now.isoformat(),
+            "created_at": now.isoformat(),
+            "updated_at": now.isoformat(),
+        }
+        table = self._table()
+
+        # 1. Fresh claim — wins iff no row exists yet.
+        try:
+            await run_in_thread(
+                table.put_item,
+                Item=item,
+                ConditionExpression="attribute_not_exists(user_id)",
+            )
+            return True
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            pass
+
+        # 2. A row exists — strongly-consistent read, then steal only a BARE
+        #    seeding claim whose holder has gone stale. Any other status
+        #    (provisioning/active/failed/disabled) is a real row the caller
+        #    must handle by re-reading, never by overwriting here.
+        resp = await run_in_thread(table.get_item, Key={"user_id": user_id}, ConsistentRead=True)
+        existing = resp.get("Item")
+        if existing is None:
+            # Deleted between our put and get — try one fresh claim.
+            try:
+                await run_in_thread(
+                    table.put_item,
+                    Item=item,
+                    ConditionExpression="attribute_not_exists(user_id)",
+                )
+                return True
+            except table.meta.client.exceptions.ConditionalCheckFailedException:
+                return False
+
+        if existing.get("status") != "seeding":
+            return False
+
+        prev_claimed_at = existing.get("seeding_claimed_at", "")
+        try:
+            age = (now - datetime.fromisoformat(prev_claimed_at)).total_seconds()
+        except (ValueError, TypeError):
+            age = float("inf")  # unparseable timestamp → treat as stale
+        if age < stale_after_seconds:
+            return False
+
+        # Steal — fenced on BOTH the status (still a bare claim) and the
+        # claimed_at we read, so a concurrent winner's progress or a rival
+        # stealer's win makes this a clean loss.
+        try:
+            await run_in_thread(
+                table.put_item,
+                Item=item,
+                ConditionExpression="#s = :seeding AND seeding_claimed_at = :prev",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={":seeding": "seeding", ":prev": prev_claimed_at},
+            )
+            return True
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            return False
+
     async def find_owner_row(self, org_id: str, *, include_inactive: bool = False) -> Optional[PaperclipCompany]:
         """Find the ORG owner row (oldest ACTIVE ``created_at`` for this org_id).
 
@@ -1080,6 +1196,53 @@ class PaperclipRepo:
                 ),
                 ExpressionAttributeValues={
                     ":failed": "failed",
+                    ":err": reason,
+                    ":u": datetime.now(timezone.utc).isoformat(),
+                    ":gen": onboarding_generation,
+                    ":did": dispatch_id,
+                    ":dispatched": "dispatched",
+                },
+            )
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            pass
+
+    async def rearm_bootstrap_dispatch(
+        self, user_id: str, *, onboarding_generation: str, dispatch_id: str, reason: str
+    ) -> None:
+        """Conditional ``bootstrap_state: dispatched -> not_started``, fenced
+        the same way as ``mark_bootstrap_delivered``/``mark_bootstrap_failed``
+        (generation + dispatch_id + still-``dispatched``).
+
+        The TRANSIENT counterpart to ``mark_bootstrap_failed``: a dispatch
+        that died on a connection-level failure (OpenClaw's gateway not
+        listening yet during boot, a connect timeout) is RE-ARMED so the next
+        ``/container/status`` poll re-dispatches it — ``mark_bootstrap_failed``
+        alone made ``failed`` terminal (``claim_bootstrap_dispatch`` admits
+        only ``not_started``), which turned a boot-window blip into a dead
+        onboarding. ``bootstrap_attempts`` (already incremented by this
+        dispatch's claim) is deliberately KEPT, and *reason* is recorded on
+        ``bootstrap_last_error``, so the dispatcher's pre-claim attempts cap
+        still bounds the total number of dispatches and the last failure
+        stays observable. ``bootstrap_dispatch_id``/``bootstrap_dispatched_at``
+        also stay (the record of the last attempt; the next claim overwrites
+        them). Does NOT touch ``funnel_state`` — the standing ``submitted``
+        funnel is what makes the row re-dispatchable at all.
+
+        Guard-fail is swallowed for the same reason as the two marks above:
+        a stale caller from a superseded generation/dispatch has nothing
+        further to do.
+        """
+        table = self._table()
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key={"user_id": user_id},
+                UpdateExpression=("SET bootstrap_state = :not_started, bootstrap_last_error = :err, updated_at = :u"),
+                ConditionExpression=(
+                    "onboarding_generation = :gen AND bootstrap_dispatch_id = :did AND bootstrap_state = :dispatched"
+                ),
+                ExpressionAttributeValues={
+                    ":not_started": "not_started",
                     ":err": reason,
                     ":u": datetime.now(timezone.utc).isoformat(),
                     ":gen": onboarding_generation,

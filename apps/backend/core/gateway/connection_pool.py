@@ -2663,6 +2663,34 @@ class GatewayConnectionPool:
             if user_id in self._connections:
                 self._grace_tasks[user_id] = asyncio.create_task(self._grace_close(user_id))
 
+    def broadcast_to_owner(self, owner_id: str, event: str, payload: dict) -> None:
+        """Push a generic ``{type: "event"}`` frame to every frontend WS
+        registered for *owner_id*.
+
+        Pool-level (keyed off ``_frontend_connections`` only) rather than
+        routed through a ``GatewayConnection`` — deliberately independent of
+        whether an OpenClaw gateway connection exists yet, since a billing or
+        Paperclip write (e.g. ``needs_signup`` -> ``provisioning``) can land
+        before the container itself is up. Mirrors
+        ``GatewayConnection._emit_status_change``'s enqueue shape but fans out
+        to the whole owner rather than one connection's own frontend set.
+
+        Never raises: ``FrameSender.enqueue`` never raises, and a Gone
+        recipient is pruned via ``on_gone`` the same way every other
+        pool-level push handles it. See ``core.services.status_events.
+        publish_status_changed`` for the primary caller.
+        """
+        message = {"type": "event", "event": event, "payload": payload}
+
+        async def _on_gone(conn_id: str) -> None:
+            fcs = self._frontend_connections.get(owner_id)
+            if fcs:
+                fcs.discard(conn_id)
+            put_metric("gateway.frontend.prune")
+
+        for conn_id in list(self._frontend_connections.get(owner_id, ())):
+            self._sender.enqueue(conn_id, message, on_gone=_on_gone)
+
     async def _grace_close(self, user_id: str) -> None:
         """Wait the grace period, then close the gateway connection if still idle.
 

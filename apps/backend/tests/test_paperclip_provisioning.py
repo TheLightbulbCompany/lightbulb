@@ -314,7 +314,7 @@ async def test_reprovision_with_company_preserved_funnel_stays_complete_no_repro
     # Simulate the funnel having reached "complete" (a later PR's bootstrap
     # dispatcher would set this on observed chat.final; direct write here
     # isolates this test from that machinery).
-    await repo.claim_funnel_submission("user_owner", onboarding_generation=generation)
+    await repo.claim_funnel_submission("user_owner", onboarding_generation=generation, submitted_by="user_owner")
     await repo.record_onboarding_ids(
         "user_owner", onboarding_generation=generation, goal_id="goal-1", project_id="proj-1"
     )
@@ -615,7 +615,9 @@ async def test_provision_org_reconcile_adopt_does_not_clobber_onboarding_fields(
     # survives, not just the generation id) — a real caller would get here
     # via claim_funnel_submission / record_onboarding_ids; we write directly
     # to isolate this test from that machinery.
-    await repo.claim_funnel_submission("user_owner", onboarding_generation=original_generation)
+    await repo.claim_funnel_submission(
+        "user_owner", onboarding_generation=original_generation, submitted_by="user_owner"
+    )
     await repo.record_onboarding_ids(
         "user_owner", onboarding_generation=original_generation, goal_id="goal-1", project_id="proj-1"
     )
@@ -655,7 +657,7 @@ async def test_provision_org_company_recreated_mints_a_new_onboarding_generation
 
     first = await prov.provision_org(owner_id="org_acme", owner_user_id="user_owner", owner_email="owner@acme.test")
     first_generation = first.onboarding_generation
-    await repo.claim_funnel_submission("user_owner", onboarding_generation=first_generation)
+    await repo.claim_funnel_submission("user_owner", onboarding_generation=first_generation, submitted_by="user_owner")
     await repo.record_onboarding_ids(
         "user_owner", onboarding_generation=first_generation, goal_id="goal-1", project_id="proj-1"
     )

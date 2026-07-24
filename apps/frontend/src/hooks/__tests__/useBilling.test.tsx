@@ -100,6 +100,32 @@ describe("useBilling", () => {
     Object.defineProperty(window, "location", { value: orig, writable: true });
   });
 
+  it("startTrialCheckout POSTs /billing/trial-checkout with bedrock_claude and redirects", async () => {
+    const orig = window.location;
+    Object.defineProperty(window, "location", { value: { href: "" }, writable: true });
+    global.fetch = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ checkout_url: "https://checkout/flat" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+    const { result } = renderHook(() => useBilling(), { wrapper });
+    await result.current.startTrialCheckout();
+    const call = (global.fetch as ReturnType<typeof vi.fn>).mock.calls.find((c) =>
+      String(c[0]).includes("/billing/trial-checkout"),
+    );
+    expect(call).toBeTruthy();
+    // The free tier already runs Bedrock-managed Claude — the upgrade keeps
+    // that provider path.
+    expect(JSON.parse((call![1] as RequestInit).body as string)).toEqual({
+      provider_choice: "bedrock_claude",
+    });
+    expect(window.location.href).toBe("https://checkout/flat");
+    Object.defineProperty(window, "location", { value: orig, writable: true });
+  });
+
   it("upgradeToUltra POSTs /billing/ultra-checkout and redirects when a checkout_url is returned", async () => {
     // Fresh-checkout path (free-tier / no live sub): the endpoint returns a
     // Checkout URL and the hook must redirect the browser to Stripe.

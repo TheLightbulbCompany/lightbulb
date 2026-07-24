@@ -128,8 +128,13 @@ export function WorkspaceSidebar({ onRecoveryReprovision }: WorkspaceSidebarProp
         </div>
       </div>
 
-      {/* Health Indicator — hidden until the user has a subscription. */}
-      {isSubscribed && <HealthIndicator onRecoveryReprovision={onRecoveryReprovision} />}
+      {/* Health Indicator — hidden until the user has a container to report
+          on. isSubscribed is the PAID predicate (false for the free tier),
+          but trial_local owners have a real container too, so they keep the
+          indicator. */}
+      {(isSubscribed || subscriptionStatus === "trial_local") && (
+        <HealthIndicator onRecoveryReprovision={onRecoveryReprovision} />
+      )}
 
       {/* Node Status */}
       {nodeConnected && (

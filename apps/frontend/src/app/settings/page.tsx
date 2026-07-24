@@ -170,11 +170,14 @@ function BillingPanel() {
     isSubscribed,
     openPortal,
     startTeamCheckout,
+    startTrialCheckout,
     upgradeToUltra,
   } = useBilling();
   const { membership } = useOrganization();
 
   const [portalLoading, setPortalLoading] = useState(false);
+  const [subscribeLoading, setSubscribeLoading] = useState(false);
+  const [subscribeError, setSubscribeError] = useState<string | null>(null);
 
   const handlePortal = useCallback(async () => {
     capture("billing_portal_opened");
@@ -185,6 +188,22 @@ function BillingPanel() {
       setPortalLoading(false);
     }
   }, [openPortal]);
+
+  // Free-tier upgrade: redirect to Stripe Checkout via the same
+  // /billing/trial-checkout client path the signup ProviderPicker uses.
+  // On success the browser leaves for Stripe, so loading only clears on
+  // failure.
+  const handleSubscribe = useCallback(async () => {
+    capture("subscription_checkout_started", { source: "settings_billing" });
+    setSubscribeError(null);
+    setSubscribeLoading(true);
+    try {
+      await startTrialCheckout();
+    } catch {
+      setSubscribeError("Couldn't start checkout. Please try again.");
+      setSubscribeLoading(false);
+    }
+  }, [startTrialCheckout]);
 
   if (isLoading) {
     return (
@@ -199,6 +218,11 @@ function BillingPanel() {
   }
 
   const subscriptionStatus = account?.subscription_status ?? null;
+  // No-card free tier. is_subscribed is FALSE for these rows (paid
+  // predicate) even though the platform is usable — the card below renders
+  // the free-tier framing with a Subscribe CTA instead of Manage Payment
+  // (trial_local rows have no Stripe customer, so the portal would fail).
+  const isTrialLocal = subscriptionStatus === "trial_local";
   const trialEndLabel =
     account?.trial_end != null
       ? new Date(account.trial_end * 1000).toLocaleDateString(undefined, {
@@ -207,6 +231,26 @@ function BillingPanel() {
           year: "numeric",
         })
       : null;
+  // trial_local's `trial_end` is the OVERALL free-tier window expiry — stamped
+  // locally at signup as created + 3 days (backend trial_cap._is_expired), NOT
+  // the daily $3 reset boundary (which resets at UTC midnight and is tracked
+  // separately). Once it elapses the backend blocks usage outright
+  // (trial_block_reason -> TRIAL_EXPIRED) WITHOUT flipping subscription_status,
+  // so isTrialLocal stays true. Detect the elapsed window here so the card
+  // stops promising "$3/day of included usage" and instead shows the paused
+  // state — while keeping the Subscribe CTA as the owner's path forward.
+  const isTrialExpired =
+    isTrialLocal &&
+    account?.trial_end != null &&
+    account.trial_end * 1000 < Date.now();
+  // Display mapping for the status chip — the raw enum must never render
+  // ("trial_local" would capitalize to "Trial_local"). Other statuses keep
+  // the capitalize treatment.
+  const statusChipLabel = isTrialExpired
+    ? "Free tier ended"
+    : isTrialLocal
+      ? "Free tier"
+      : subscriptionStatus;
 
   // Org context: Teams billing is per-seat, not the flat $50/mo personal
   // plan, so org admins get TeamBillingCard instead of the personal card
@@ -333,11 +377,11 @@ function BillingPanel() {
         <div className="settings-card-header">
           <div>
             <div className="settings-card-title">
-              Isol8 — $50 / month
-              {subscriptionStatus && (
-                <span style={{ display: "inline-flex", alignItems: "center", gap: 4, marginLeft: 8, fontSize: 11, fontWeight: 600, color: "#06402B", background: "rgba(6,64,43,.08)", padding: "2px 8px", borderRadius: 999, textTransform: "capitalize" }}>
+              {isTrialLocal ? "Isol8 — Free tier" : "Isol8 — $50 / month"}
+              {statusChipLabel && (
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 4, marginLeft: 8, fontSize: 11, fontWeight: 600, color: "#06402B", background: "rgba(6,64,43,.08)", padding: "2px 8px", borderRadius: 999, textTransform: isTrialLocal ? undefined : "capitalize" }}>
                   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-                  {subscriptionStatus}
+                  {statusChipLabel}
                 </span>
               )}
             </div>
@@ -346,9 +390,13 @@ function BillingPanel() {
                 ? trialEndLabel
                   ? `Free trial — full access until ${trialEndLabel}, then $50/mo. Cancel anytime before then.`
                   : "Free trial — full access now, then $50/mo. Cancel anytime."
-                : isSubscribed
-                  ? "Active subscription"
-                  : "No active subscription"}
+                : isTrialLocal
+                  ? isTrialExpired
+                    ? `Free tier ended${trialEndLabel ? ` on ${trialEndLabel}` : ""} — usage is paused. Subscribe for the full plan.`
+                    : "Free tier — $3/day of included usage. Subscribe for the full plan."
+                  : isSubscribed
+                    ? "Active subscription"
+                    : "No active subscription"}
             </div>
           </div>
           {isSubscribed ? (
@@ -356,14 +404,28 @@ function BillingPanel() {
               {portalLoading && <span className="settings-spinner" style={{ width: 14, height: 14, borderWidth: 2, marginRight: 6, display: "inline-block", verticalAlign: "middle" }} />}
               Manage Payment
             </button>
+          ) : isTrialLocal ? (
+            // Free-tier upgrade CTA — starts the flat-fee Stripe Checkout
+            // and redirects to it. No Manage Payment here: a trial_local
+            // row has no Stripe customer, so the portal would fail.
+            <button type="button" className="settings-btn-save" onClick={handleSubscribe} disabled={subscribeLoading}>
+              {subscribeLoading && <span className="settings-spinner" style={{ width: 14, height: 14, borderWidth: 2, marginRight: 6, display: "inline-block", verticalAlign: "middle" }} />}
+              Subscribe — $50/mo
+            </button>
           ) : (
             <Link href="/chat" className="settings-btn-save">
               Sign up
             </Link>
           )}
         </div>
+        {subscribeError && (
+          <div className="settings-alert settings-alert-error" style={{ marginTop: 8 }}>
+            {subscribeError}
+          </div>
+        )}
         {/* Ultra upgrade hangs off the paid card for a subscribed owner only —
-            an unsubscribed / Sign-up owner must pick the base plan first. */}
+            an unsubscribed / Sign-up / free-tier owner must pick the base plan
+            first. */}
         {isSubscribed && (
           <UltraUpgradeRow plan={account?.plan} upgradeToUltra={upgradeToUltra} />
         )}

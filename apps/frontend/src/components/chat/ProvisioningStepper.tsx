@@ -202,11 +202,12 @@ export function ProvisioningStepper({
     refresh: refreshBilling,
     startTeamCheckout,
   } = useBilling();
-  // Free-tier discriminator: trial_local accounts are already is_subscribed
-  // (the backend added trial_local to _ACTIVE_STATUSES) but never set
-  // provider_choice — there is no provider to pick for the free tier. Used
-  // below to keep these users off the payment short-circuit, the poll gate,
-  // and — the actually-broken case — the ProviderPicker fallback.
+  // Free-tier discriminator: trial_local accounts are NOT is_subscribed
+  // (is_subscribed is the PAID predicate; the free tier grants platform use
+  // without a subscription) and never set provider_choice — there is no
+  // provider to pick for the free tier. Used below to keep these users off
+  // the payment short-circuit, the poll gate, and — the actually-broken
+  // case — the ProviderPicker fallback.
   const isTrialLocal = account?.subscription_status === "trial_local";
   // Set when we first enter the container/gateway phase — _not_ at component
   // mount. Time spent on the pre-provision steps (provider choice, billing
@@ -1226,12 +1227,12 @@ export function ProvisioningStepper({
   //      `account.provider_choice` is set but `isSubscribed` is false.
   //      They MUST see the picker again to restart checkout.
   //
-  //   3. trial_local (free-tier) owner: is_subscribed is TRUE (backend
-  //      treats trial_local as an active subscription) but provider_choice
-  //      is never set — there's no provider to pick on the free tier. The
-  //      `isTrialLocal` guard keeps these users off the picker so they flow
-  //      straight into container/gateway/ready instead of being shown a
-  //      payment step they don't need.
+  //   3. trial_local (free-tier) owner: is_subscribed is FALSE (it's the
+  //      PAID predicate — the free tier is usable but not subscribed) and
+  //      provider_choice is never set — there's no provider to pick on the
+  //      free tier. The `isTrialLocal` guard keeps these users off the
+  //      picker so they flow straight into container/gateway/ready instead
+  //      of being shown a payment step they don't need.
   //   4. A provisioning container (200 from /container/status) means the
   //      backend already gated this user in. For a fresh personal signup the
   //      trial_local row is created there, and /billing/account may not have

@@ -120,7 +120,10 @@ async def resolve_teams_context(
                 raise TeamsContextError(status_code=402, detail=blocked)
             raise TeamsContextError(status_code=202, detail="team workspace provisioning")
         raise TeamsContextError(status_code=409, detail="team workspace not provisioned")
-    if company.status == "provisioning":
+    # "seeding" is the pre-side-effect claim row provision_org's
+    # cross-instance fence writes (see PaperclipRepo.try_acquire_seed_claim)
+    # — same "keep polling" verdict as mid-chain "provisioning".
+    if company.status in ("seeding", "provisioning"):
         raise TeamsContextError(status_code=202, detail="team workspace provisioning")
     if company.status == "failed":
         raise TeamsContextError(status_code=503, detail="team workspace provisioning failed")

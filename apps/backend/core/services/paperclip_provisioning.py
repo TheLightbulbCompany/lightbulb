@@ -47,10 +47,12 @@ skips work.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from uuid import uuid4
 
 import httpx
 
@@ -111,6 +113,17 @@ _ONBOARDING_FIELD_NAMES = (
     "bootstrap_attempts",
     "bootstrap_last_error",
 )
+
+
+# Loser-side wait for a concurrent seed (the ``try_acquire_seed_claim``
+# fence in ``provision_org``). ~6s of 1s polls covers the typical 2-3s
+# winner chain; on timeout the loser raises the same 409-shaped in-flight
+# error ``_ensure_paperclip_for_owner`` already treats as a benign no-op,
+# and the next /container/status poll adopts the winner's active row.
+# Module-level (not kwargs) so tests can shrink the interval without
+# threading knobs through provision_org's signature.
+_SEED_WAIT_ATTEMPTS = 6
+_SEED_WAIT_INTERVAL_S = 1.0
 
 
 def _carry_forward_onboarding_fields(existing: Optional[PaperclipCompany]) -> dict:
@@ -286,6 +299,24 @@ class PaperclipProvisioning:
         token's ``sub`` matches the routing key for both org and
         personal owners.
 
+        Idempotent — AND fenced across backend instances. The read-then-act
+        idempotency below is not enough on its own: two concurrent calls on
+        different backend tasks could both read "no row" and both run the
+        full seed chain (duplicate same-email Better Auth users + duplicate
+        companies, observed live 2026-07-24). So the fresh-create path first
+        claims the row itself via ``repo.try_acquire_seed_claim`` (a
+        strongly-consistent conditional put of a bare ``status="seeding"``
+        row) BEFORE any Paperclip side effect; only the winner proceeds, and
+        its later writes (the post-sign-up credential put, then the final
+        active/failed put) replace that claim row in place. A loser waits
+        briefly for the winner's active row and adopts it, or raises the
+        same 409-shaped in-flight error the caller already tolerates (see
+        ``_await_concurrent_seed``). A winner that fails mid-chain releases
+        the claim via the ordinary ``_mark_failed`` in-place downgrade
+        (``seeding`` -> ``failed``), and a winner that crashed hard before
+        any durable progress leaves a bare ``seeding`` row that goes stale
+        and is re-claimable after ~5 minutes.
+
         Idempotent: if a row already exists for ``owner_user_id`` with
         ``status="active"``, return it unchanged. A non-active row that
         already carries a ``company_id`` (the Friday-partial case: the
@@ -324,6 +355,41 @@ class PaperclipProvisioning:
         # Acquire admin session up front so we fail loudly if the
         # bootstrap secret is missing (rather than failing 4 steps in).
         admin_cookie = await get_admin_session_cookie(self._admin._http)
+
+        # ---- Cross-instance seed fence (fresh-create path) ----------------
+        # Claim the row BEFORE the first Paperclip side effect (the sign-up
+        # below). Fenced cases:
+        #   * ``existing is None`` — the genuine fresh create. The claim's
+        #     put-if-absent elects exactly one winner across backend
+        #     instances; the loser adopts-or-defers in _await_concurrent_seed.
+        #   * ``existing.status == "seeding"`` — a leftover bare claim. If it
+        #     is a live peer's (non-stale), we are the loser; if its holder
+        #     crashed hard before any durable progress (stale, ~5 min), we
+        #     steal it and run the full chain ourselves.
+        # Every OTHER existing state deliberately bypasses the fence and
+        # keeps today's semantics: an active row already short-circuited
+        # above, and the adopt (credential-bearing) / reconcile (company_id-
+        # bearing) / failed-marker retry paths operate on a row whose
+        # existence already blocks fresh claimants — their (rarer)
+        # concurrent-retry races are accepted as before.
+        #
+        # Placed AFTER the admin-cookie fetch on purpose: everything from
+        # here on runs inside the try below, whose failure path downgrades
+        # the claim row via _mark_failed (seeding -> failed) so a later poll
+        # retries promptly instead of waiting out the stale window.
+        if existing is None or existing.status == "seeding":
+            seed_claim_id = uuid4().hex
+            claimed = await self._repo.try_acquire_seed_claim(
+                owner_user_id,
+                org_id=owner_id,
+                claim_id=seed_claim_id,
+            )
+            if not claimed:
+                put_metric("paperclip.provision.seed_claim_lost")
+                return await self._await_concurrent_seed(
+                    owner_id=owner_id,
+                    owner_user_id=owner_user_id,
+                )
 
         # Sign-up-or-ADOPT (same rationale as provision_member): a user who
         # already has a Paperclip account — a personal row that the org-scoped
@@ -1320,6 +1386,55 @@ class PaperclipProvisioning:
 
         oldest = min(active_items, key=_sort_key)
         return await self._repo.get(oldest["user_id"])
+
+    async def _await_concurrent_seed(
+        self,
+        *,
+        owner_id: str,
+        owner_user_id: str,
+    ) -> PaperclipCompany:
+        """Loser side of the ``try_acquire_seed_claim`` fence in
+        ``provision_org``: a peer on another backend instance is running the
+        seed chain RIGHT NOW. Wait briefly for its active row and ADOPT it —
+        the exact same "already provisioned" semantics as the ``status ==
+        "active"`` short-circuit — instead of running a second full seed.
+
+        Strongly-consistent polls (the row was just written cross-instance;
+        an eventually-consistent read could miss the winner's final put for
+        the entire window). Two non-adopt outcomes, both deliberate:
+
+        * The winner FAILED (``status="failed"`` observed): stop waiting and
+          raise the in-flight 409 below — the NEXT poll's ordinary retry
+          path (adopt/reconcile/full-rerun, depending on what the failed row
+          carries) owns recovery; this loser must not start a competing
+          chain against a row a peer just downgraded.
+        * Timeout (winner still mid-chain): raise a 409-shaped
+          ``PaperclipApiError`` — the exact error class + status the caller
+          (``_ensure_paperclip_for_owner``) already treats as "provision
+          already in flight — no-op", so the poll loop simply comes back
+          and finds the active row.
+        """
+        for _ in range(_SEED_WAIT_ATTEMPTS):
+            await asyncio.sleep(_SEED_WAIT_INTERVAL_S)
+            row = await self._repo.get(owner_user_id, consistent_read=True)
+            if row is not None and row.status == "active" and row.org_id == owner_id:
+                logger.info(
+                    "paperclip_provisioning.provision_org: adopted concurrent seed for "
+                    "owner_id %s (owner=%s) — a peer instance won the seed claim",
+                    owner_id,
+                    owner_user_id,
+                )
+                return row
+            if row is not None and row.status == "failed":
+                # The winner failed; recovery belongs to the next poll's
+                # ordinary retry path against the downgraded row.
+                break
+        raise PaperclipApiError(
+            f"concurrent provision_org seed in flight for owner {owner_id} "
+            f"(owner_user_id={owner_user_id}) — lost the seed claim; retry on next poll",
+            status_code=409,
+            body=None,
+        )
 
     async def _accept_invite_and_ensure_approved(
         self,

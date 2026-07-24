@@ -43,6 +43,7 @@ def _fake_repo(*, claim_result=BootstrapClaimResult.WON, dispatch_id="dispatch-1
     )
     repo.mark_bootstrap_delivered = AsyncMock()
     repo.mark_bootstrap_failed = AsyncMock()
+    repo.rearm_bootstrap_dispatch = AsyncMock()
     return repo
 
 
@@ -372,6 +373,145 @@ async def test_registration_failure_marks_failed_without_sending():
 
     pool.send_rpc.assert_not_awaited()
     repo.mark_bootstrap_failed.assert_awaited_once()
+
+
+# --- connect retry (boot window) + transient/deterministic classification ---
+
+
+@pytest.mark.asyncio
+async def test_connect_refused_during_boot_retries_then_dispatches(monkeypatch):
+    """The ECS task can be RUNNING 1-3 minutes before OpenClaw's gateway
+    listens on its port. A connect refusal in that window must be retried
+    in place (within the ONE claimed dispatch), not marked failed."""
+    monkeypatch.setattr(bootstrap_dispatcher, "_CONNECT_RETRY_DELAYS_S", (0, 0, 0))
+    onboarding = _onboarding()
+    repo = _fake_repo(onboarding=onboarding)
+    pool = _fake_pool()
+    pool.ensure_connection = AsyncMock(
+        side_effect=[
+            ConnectionRefusedError(111, "Connect call failed"),
+            ConnectionRefusedError(111, "Connect call failed"),
+            None,
+        ]
+    )
+    _, _, pool, _ = await _run(onboarding, repo=repo, pool=pool)
+
+    assert pool.ensure_connection.await_count == 3
+    pool.send_rpc.assert_awaited_once()
+    # The retries all happen inside ONE claimed dispatch — no re-claim.
+    repo.claim_bootstrap_dispatch.assert_awaited_once()
+    repo.mark_bootstrap_failed.assert_not_awaited()
+    repo.rearm_bootstrap_dispatch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_connect_retry_exhaustion_rearms_for_next_poll(monkeypatch):
+    """TRANSIENT after the in-dispatch budget: bootstrap_state goes back to
+    not_started (attempts kept on the row) so the next /container/status
+    poll re-dispatches — NOT the terminal mark_bootstrap_failed."""
+    monkeypatch.setattr(bootstrap_dispatcher, "_CONNECT_RETRY_DELAYS_S", (0,))
+    onboarding = _onboarding()
+    repo = _fake_repo(onboarding=onboarding)
+    pool = _fake_pool()
+    pool.ensure_connection = AsyncMock(side_effect=ConnectionRefusedError(111, "Connect call failed"))
+    _, _, pool, _ = await _run(onboarding, repo=repo, pool=pool)
+
+    assert pool.ensure_connection.await_count == 2  # ladder (1) + final attempt
+    pool.send_rpc.assert_not_awaited()
+    repo.rearm_bootstrap_dispatch.assert_awaited_once()
+    rearm = repo.rearm_bootstrap_dispatch.call_args
+    assert rearm.args[0] == "creator_1"  # the ROW's PK, like every DDB write here
+    assert rearm.kwargs["onboarding_generation"] == "01G"
+    assert rearm.kwargs["dispatch_id"] == "dispatch-1"
+    assert "Connect call failed" in rearm.kwargs["reason"]
+    repo.mark_bootstrap_failed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_transient_failure_at_attempts_cap_marks_failed_for_real(monkeypatch):
+    """The re-arm is bounded: the attempt that just died is pre-claim
+    attempts + 1, and at MAX_BOOTSTRAP_ATTEMPTS even a transient failure
+    becomes the terminal failed — no unbounded retry storm."""
+    monkeypatch.setattr(bootstrap_dispatcher, "_CONNECT_RETRY_DELAYS_S", ())
+    onboarding = _onboarding(bootstrap_attempts=bootstrap_dispatcher.MAX_BOOTSTRAP_ATTEMPTS - 1)
+    repo = _fake_repo(onboarding=onboarding)
+    pool = _fake_pool()
+    pool.ensure_connection = AsyncMock(side_effect=ConnectionRefusedError(111, "Connect call failed"))
+    _, _, pool, _ = await _run(onboarding, repo=repo, pool=pool)
+
+    repo.mark_bootstrap_failed.assert_awaited_once()
+    repo.rearm_bootstrap_dispatch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_deterministic_connect_failure_neither_retries_nor_rearms():
+    """Non-connection errors (auth backoff/reconnect-floor RuntimeErrors,
+    GatewayConnectAuthError) would fail identically on a retry — no connect
+    retry, and the terminal mark_bootstrap_failed, exactly as before."""
+    onboarding = _onboarding()
+    repo = _fake_repo(onboarding=onboarding)
+    pool = _fake_pool()
+    pool.ensure_connection = AsyncMock(side_effect=RuntimeError("auth backoff active"))
+    _, _, pool, _ = await _run(onboarding, repo=repo, pool=pool)
+
+    assert pool.ensure_connection.await_count == 1
+    repo.mark_bootstrap_failed.assert_awaited_once()
+    repo.rearm_bootstrap_dispatch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_post_connect_send_rpc_reset_marks_failed_not_rearm():
+    """P1 (Codex, PR #1433): a connection-level failure AFTER a successful
+    connect is AMBIGUOUS -- the chat.send socket write may already have
+    landed and OpenClaw may already have ACCEPTED the run. Re-arming would
+    mint a fresh run_id/idempotencyKey the next poll and could double-run
+    Friday, so a post-connect failure is DELIBERATELY terminal: mark failed,
+    never re-arm. Cleanup (clear_active_run + unregister) is unchanged."""
+    onboarding = _onboarding()
+    repo = _fake_repo(onboarding=onboarding)
+    pool = _fake_pool()
+    pool.send_rpc = AsyncMock(side_effect=OSError(104, "Connection reset by peer"))
+    _, _, pool, _ = await _run(onboarding, repo=repo, pool=pool)
+
+    pool.clear_active_run.assert_called_once()
+    pool.unregister_run_completion_callback.assert_called_once()
+    repo.mark_bootstrap_failed.assert_awaited_once()
+    assert "Connection reset by peer" in repo.mark_bootstrap_failed.call_args.kwargs["reason"]
+    repo.rearm_bootstrap_dispatch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_post_connect_send_rpc_ack_timeout_marks_failed_not_rearm():
+    """The precise P1 scenario: the connect SUCCEEDED, chat.send was written,
+    then the ack wait TIMED OUT (connection_pool.send_rpc raises TimeoutError
+    while OpenClaw may already be running the kickoff). A TimeoutError is a
+    transient TYPE, but occurring post-connect it must NOT re-arm -- it marks
+    failed, because a new run_id on retry cannot be deduped by OpenClaw."""
+    onboarding = _onboarding()
+    repo = _fake_repo(onboarding=onboarding)
+    pool = _fake_pool()
+    pool.send_rpc = AsyncMock(side_effect=TimeoutError("ack timed out"))
+    _, _, pool, _ = await _run(onboarding, repo=repo, pool=pool)
+
+    repo.mark_bootstrap_failed.assert_awaited_once()
+    repo.rearm_bootstrap_dispatch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_post_connect_mark_run_active_failure_marks_failed_not_rearm():
+    """Any post-connect failure is terminal, not just send_rpc: if
+    mark_run_active raised a transient-typed error after the connect
+    succeeded, the classifier must still refuse to re-arm (the connect is the
+    pivot, not the specific call that raised)."""
+    onboarding = _onboarding()
+    repo = _fake_repo(onboarding=onboarding)
+    pool = _fake_pool()
+    pool.mark_run_active = MagicMock(side_effect=OSError(104, "reset"))
+    _, _, pool, _ = await _run(onboarding, repo=repo, pool=pool)
+
+    pool.send_rpc.assert_not_awaited()
+    repo.mark_bootstrap_failed.assert_awaited_once()
+    repo.rearm_bootstrap_dispatch.assert_not_awaited()
 
 
 @pytest.mark.asyncio

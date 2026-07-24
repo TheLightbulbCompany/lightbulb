@@ -15,7 +15,7 @@ need no decorator.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import boto3
@@ -416,6 +416,162 @@ async def test_provision_org_create_company_failure_marks_failed(repo):
     failed_row = await repo.get("user_owner")
     assert failed_row is not None
     assert failed_row.status == "failed"
+
+
+# ----------------------------------------------------------------------
+# provision_org — cross-instance seed fence (try_acquire_seed_claim)
+# ----------------------------------------------------------------------
+
+
+def _active_row_for(user_id: str, org_id: str) -> PaperclipCompany:
+    now = datetime.now(timezone.utc)
+    return PaperclipCompany(
+        user_id=user_id,
+        org_id=org_id,
+        company_id="co_peer",
+        paperclip_user_id="pc_user_peer",
+        paperclip_password_encrypted="enc-pwd",
+        service_token_encrypted="enc-tok",
+        status="active",
+        created_at=now,
+        updated_at=now,
+        seeded_agent_ids=["agent_friday", "agent_atlas"],
+    )
+
+
+async def test_provision_org_fresh_create_claims_fence_before_any_side_effect(repo, monkeypatch):
+    """The fence is only a fence if it lands BEFORE the first Paperclip side
+    effect: at claim time neither the Better-Auth sign-up nor the company
+    create may have run yet."""
+    admin = _make_admin_mock()
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    observed = {}
+    real_claim = repo.try_acquire_seed_claim
+
+    async def spy_claim(user_id, **kwargs):
+        observed["signups_at_claim_time"] = admin.sign_up_user.await_count
+        observed["companies_at_claim_time"] = admin.create_company.await_count
+        return await real_claim(user_id, **kwargs)
+
+    monkeypatch.setattr(repo, "try_acquire_seed_claim", spy_claim)
+
+    row = await prov.provision_org(owner_id="user_owner", owner_user_id="user_owner", owner_email="owner@solo.test")
+
+    assert observed == {"signups_at_claim_time": 0, "companies_at_claim_time": 0}
+    assert row.status == "active"
+
+
+async def test_provision_org_loser_adopts_winners_active_row(repo, monkeypatch):
+    """Two backend instances race a fresh create (the exact 2026-07-24 dev
+    incident, 102ms apart). The loser must run ZERO Paperclip side effects —
+    no second sign-up, no second company — and adopt the winner's active row
+    once its final put lands."""
+    import core.services.paperclip_provisioning as prov_mod
+
+    monkeypatch.setattr(prov_mod, "_SEED_WAIT_INTERVAL_S", 0)
+
+    # The "winner" (another instance) already holds the claim...
+    assert await repo.try_acquire_seed_claim("user_owner", org_id="user_owner", claim_id="peer") is True
+
+    # ...and finishes its seed while the loser is polling: the loser's FIRST
+    # read (the `existing` check) sees the seeding claim, the poll reads see
+    # the winner's active row.
+    real_get = repo.get
+    calls = {"n": 0}
+
+    async def flipping_get(user_id, *, consistent_read=False):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            await repo.put(_active_row_for("user_owner", "user_owner"))
+        return await real_get(user_id, consistent_read=consistent_read)
+
+    monkeypatch.setattr(repo, "get", flipping_get)
+
+    admin = _make_admin_mock()
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    row = await prov.provision_org(owner_id="user_owner", owner_user_id="user_owner", owner_email="owner@solo.test")
+
+    assert row.status == "active"
+    assert row.company_id == "co_peer"  # the WINNER's company, adopted
+    admin.sign_up_user.assert_not_awaited()  # no duplicate Better-Auth user
+    admin.create_company.assert_not_awaited()  # no duplicate company
+
+
+async def test_provision_org_loser_times_out_with_in_flight_409(repo, monkeypatch):
+    """A loser whose wait window closes before the winner finishes raises the
+    SAME 409-shaped error _ensure_paperclip_for_owner already treats as
+    "provision already in flight — no-op"; the next poll adopts."""
+    import core.services.paperclip_provisioning as prov_mod
+
+    monkeypatch.setattr(prov_mod, "_SEED_WAIT_INTERVAL_S", 0)
+    monkeypatch.setattr(prov_mod, "_SEED_WAIT_ATTEMPTS", 3)
+
+    assert await repo.try_acquire_seed_claim("user_owner", org_id="user_owner", claim_id="peer") is True
+
+    admin = _make_admin_mock()
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    with pytest.raises(PaperclipApiError) as excinfo:
+        await prov.provision_org(owner_id="user_owner", owner_user_id="user_owner", owner_email="owner@solo.test")
+
+    assert excinfo.value.status_code == 409
+    admin.sign_up_user.assert_not_awaited()
+    admin.create_company.assert_not_awaited()
+    # The loser never touched the winner's claim row.
+    assert (await repo.get("user_owner")).status == "seeding"
+
+
+async def test_provision_org_steals_stale_seed_claim_and_seeds(repo):
+    """A claim whose holder crashed hard (SIGKILL) before any durable
+    progress leaves a bare seeding row. Past the stale window a later poll
+    re-claims it and runs the full chain — the owner is never stranded."""
+    stale = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+    repo._table().put_item(
+        Item={
+            "user_id": "user_owner",
+            "org_id": "user_owner",
+            "company_id": "",
+            "status": "seeding",
+            "seeding_claim_id": "dead-holder",
+            "seeding_claimed_at": stale,
+            "created_at": stale,
+            "updated_at": stale,
+        }
+    )
+
+    admin = _make_admin_mock()
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    row = await prov.provision_org(owner_id="user_owner", owner_user_id="user_owner", owner_email="owner@solo.test")
+
+    admin.sign_up_user.assert_awaited_once()
+    admin.create_company.assert_awaited_once()
+    assert row.status == "active"
+    assert (await repo.get("user_owner")).status == "active"
+
+
+async def test_provision_org_winner_failure_releases_claim_for_prompt_retry(repo):
+    """A winner that fails pre-sign-up must not leave the row parked at
+    "seeding" (that would make every retry wait out the 5-minute stale
+    window): _mark_failed downgrades the claim row in place to "failed", and
+    the NEXT poll's ordinary retry path succeeds immediately."""
+    admin = _make_admin_mock()
+    admin.sign_up_user = AsyncMock(side_effect=PaperclipApiError("paperclip 503", status_code=503, body="down"))
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+
+    with pytest.raises(PaperclipApiError):
+        await prov.provision_org(owner_id="user_owner", owner_user_id="user_owner", owner_email="owner@solo.test")
+
+    downgraded = await repo.get("user_owner")
+    assert downgraded is not None
+    assert downgraded.status == "failed"  # NOT "seeding" — no stale-window wait
+
+    # The retry (next /container/status poll) re-runs the full chain and lands.
+    admin_retry = _make_admin_mock()
+    prov_retry = PaperclipProvisioning(admin_client=admin_retry, repo=repo, env_name="dev")
+    row = await prov_retry.provision_org(
+        owner_id="user_owner", owner_user_id="user_owner", owner_email="owner@solo.test"
+    )
+    assert row.status == "active"
+    admin_retry.sign_up_user.assert_awaited_once()
 
 
 async def test_provision_org_retries_after_failure(repo):

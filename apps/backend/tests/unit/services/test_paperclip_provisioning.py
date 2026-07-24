@@ -55,6 +55,10 @@ def _build_provision_org_doubles(monkeypatch):
     repo = MagicMock()
     repo.get = AsyncMock(return_value=None)
     repo.put = AsyncMock()
+    # Fresh-create fence (see PaperclipRepo.try_acquire_seed_claim): the
+    # doubles play the WINNER by default so the chain proceeds; fence-losing
+    # behavior is exercised end-to-end in the moto suite.
+    repo.try_acquire_seed_claim = AsyncMock(return_value=True)
 
     # Stub admin-session helper imported lazily inside provision_org.
     import core.services.paperclip_provisioning as mod
@@ -1091,11 +1095,36 @@ class _StatefulRepo:
         self._rows: dict[str, object] = {}
         self._company_id = company_id
 
-    async def get(self, user_id: str):
+    async def get(self, user_id: str, *, consistent_read: bool = False):
         return self._rows.get(user_id)
 
     async def put(self, row):
         self._rows[row.user_id] = row
+
+    async def try_acquire_seed_claim(self, user_id: str, *, org_id: str, claim_id: str, stale_after_seconds: int = 300):
+        # Fresh put-if-absent only — enough for the winner-path scenarios this
+        # double serves; loser/steal behavior is pinned by the moto suites.
+        # Mirrors the real claim's bare seeding row (no credentials), which the
+        # winner's later puts replace wholesale.
+        if user_id in self._rows:
+            return False
+        from datetime import datetime, timezone
+
+        from core.repositories.paperclip_repo import PaperclipCompany
+
+        now = datetime.now(timezone.utc)
+        self._rows[user_id] = PaperclipCompany(
+            user_id=user_id,
+            org_id=org_id,
+            company_id="",
+            paperclip_user_id="",
+            paperclip_password_encrypted="",
+            service_token_encrypted="",
+            status="seeding",
+            created_at=now,
+            updated_at=now,
+        )
+        return True
 
     async def update_status(
         self,

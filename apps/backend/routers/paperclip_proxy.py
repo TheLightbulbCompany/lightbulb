@@ -509,9 +509,16 @@ def _decode_clerk_publishable_key(pk: str) -> str | None:
     return decoded.rstrip("$").rstrip("/") or None
 
 
-def _mint_paperclip_session(user_id: str, email: str | None) -> str:
+def _mint_paperclip_session(user_id: str, email: str | None, org_id: str | None = None) -> str:
     """HS256 JWT for the proxy session cookie. Same secret as service tokens
     but with a distinct ``kind`` claim so the verifier can refuse cross-use.
+
+    ``org_id`` preserves the OWNER CONTEXT the handshake was validated
+    under (from the Clerk JWT's org claims). Without it, every
+    established-session request degrades to personal context, and the
+    org-scoped readiness check can't tell a repaired row from a stale one
+    — the user would be forwarded into the wrong workspace while the org
+    join/repair is still in flight.
     """
     if not settings.PAPERCLIP_SERVICE_TOKEN_KEY:
         raise RuntimeError("PAPERCLIP_SERVICE_TOKEN_KEY not configured")
@@ -524,6 +531,8 @@ def _mint_paperclip_session(user_id: str, email: str | None) -> str:
     }
     if email:
         payload["email"] = email
+    if org_id:
+        payload["org_id"] = org_id
     return pyjwt.encode(payload, settings.PAPERCLIP_SERVICE_TOKEN_KEY, algorithm="HS256")
 
 
@@ -710,7 +719,13 @@ async def _get_paperclip_user(request: Request) -> AuthContext:
         if session_cookie:
             try:
                 claims = _verify_paperclip_session(session_cookie)
-                return AuthContext(user_id=claims["sub"], email=claims.get("email"))
+                # org_id restores the owner context the handshake was
+                # validated under — see _mint_paperclip_session.
+                return AuthContext(
+                    user_id=claims["sub"],
+                    email=claims.get("email"),
+                    org_id=claims.get("org_id"),
+                )
             except pyjwt.InvalidTokenError as e:
                 # Expired or tampered — fall through to Bearer/handoff;
                 # caller gets a fresh cookie if either succeeds.
@@ -804,7 +819,11 @@ async def handshake(request: Request) -> Response:
         raise HTTPException(status_code=401, detail="Token missing subject")
     email = payload.get("email")
 
-    session_jwt = _mint_paperclip_session(user_id=user_id, email=email)
+    session_jwt = _mint_paperclip_session(
+        user_id=user_id,
+        email=email,
+        org_id=_extract_org_claims(payload)["org_id"],
+    )
     response = Response(status_code=204)
     # No Domain= attribute → host-scoped to whatever public host this request
     # arrived at (e.g. company-dev.isol8.co). HttpOnly so JS can't exfiltrate;
@@ -1050,8 +1069,11 @@ async def proxy(path: str, request: Request) -> Response:
         if existing is None or existing.status != "active" or existing.org_id != owner_id:
             asyncio.create_task(ensure_user_ready(auth, provision_container=False))
 
-        # Mint cookie + 302 to clean URL.
-        session_jwt = _mint_paperclip_session(user_id=auth.user_id, email=auth.email)
+        # Mint cookie + 302 to clean URL. The cookie carries the org
+        # context the handshake was validated under, so the established-
+        # session path below can keep applying the org-scoped readiness
+        # check instead of degrading to personal context.
+        session_jwt = _mint_paperclip_session(user_id=auth.user_id, email=auth.email, org_id=auth.org_id)
         response = RedirectResponse(_strip_handoff_param(request), status_code=302)
         response.set_cookie(
             key=_PAPERCLIP_SESSION_COOKIE,
@@ -1067,18 +1089,31 @@ async def proxy(path: str, request: Request) -> Response:
     # ---- Established-session path: forward request to Paperclip ----
     repo = PaperclipRepo(table_name="paperclip-companies")
     company = await repo.get(auth.user_id)
-    if company is None or company.status == "provisioning":
+    if (
+        company is None
+        or company.status == "provisioning"
+        or (company.status == "active" and company.org_id != resolve_owner_id(auth))
+    ):
         # Either: (a) handshake just spawned ensure_user_ready and the row
         # hasn't been written yet (typical first visit), or (b) it's
-        # actively in-flight. Show the auto-refresh stub; do NOT
-        # re-spawn from this path — the stub reloads every 2s and a
-        # re-spawn each cycle would queue duplicate concurrent provision
-        # runs that race against each other (provision_org is only
-        # safely idempotent for already-active rows; concurrent failed
-        # retries can flip a successful row back to "failed"). If the
-        # initial spawn somehow died silently, the user will eventually
-        # close the tab and re-handshake — that's the recovery path,
-        # NOT auto-respawn.
+        # actively in-flight, or (c) the row is active for a DIFFERENT
+        # owner context than this session's (org member whose row still
+        # points at a personal/previous-org company — the handshake that
+        # minted this session's cookie dispatched the join/repair, and
+        # the row re-points when it lands). All three converge via the
+        # auto-refresh stub; forwarding on (c) would drop the user into
+        # the WRONG workspace mid-repair. If no repair is in flight for
+        # (c) — a long-lived cookie navigating here directly — the app's
+        # canonical /container/status trigger repairs the row the next
+        # time /chat is open; a setting-up stub is strictly better than
+        # silently browsing the wrong company. Do NOT re-spawn from this
+        # path — the stub reloads every 2s and a re-spawn each cycle
+        # would queue duplicate concurrent provision runs that race
+        # against each other (provision_org is only safely idempotent
+        # for already-active rows; concurrent failed retries can flip a
+        # successful row back to "failed"). If the initial spawn somehow
+        # died silently, the user will eventually close the tab and
+        # re-handshake — that's the recovery path, NOT auto-respawn.
         return _provisioning_in_progress_response()
     if company.status != "active":
         # status="failed" or status="disabled". Both require user to

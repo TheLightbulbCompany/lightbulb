@@ -1170,6 +1170,80 @@ def test_http_handoff_token_wins_over_stale_session_cookie(monkeypatch):
     assert container_lookups == ["org_acme"]
     assert calls == [("user_org_member", "org_acme", False)]
 
+    # And the freshly minted cookie PRESERVES the org context, so the
+    # established-session requests that follow keep resolving the org
+    # owner (see the org-scoped stub tests below).
+    import re as _re
+
+    cookie_match = _re.search(r"isol8_paperclip=([^;]+)", resp.headers.get("set-cookie", ""))
+    assert cookie_match
+    claims = proxy_mod._verify_paperclip_session(cookie_match.group(1))
+    assert claims["org_id"] == "org_acme"
+
+
+def _org_cookie_session_env(monkeypatch, row_org_id):
+    """Shared setup for the established-session org-scope tests: a session
+    cookie carrying org context + an ACTIVE per-user row pointing at
+    ``row_org_id``."""
+    from types import SimpleNamespace
+
+    import routers.paperclip_proxy as proxy_mod
+
+    monkeypatch.setattr(proxy_mod.settings, "PAPERCLIP_SERVICE_TOKEN_KEY", "test-secret-32-bytes-min-len-x")
+    monkeypatch.setattr(proxy_mod.settings, "FRONTEND_URL", "https://dev.isol8.co")
+
+    cookie = proxy_mod._mint_paperclip_session(user_id="user_org_member", email="m@example.com", org_id="org_acme")
+
+    class _FakeRepo:
+        def __init__(self, table_name: str) -> None:
+            pass
+
+        async def get(self, _user_id: str):
+            return SimpleNamespace(
+                status="active",
+                org_id=row_org_id,
+                paperclip_password_encrypted="irrelevant",
+            )
+
+    monkeypatch.setattr(proxy_mod, "PaperclipRepo", _FakeRepo)
+    return proxy_mod, cookie
+
+
+def test_established_session_stubs_on_org_mismatched_active_row(monkeypatch):
+    """An org-context session whose per-user row is still active for a
+    DIFFERENT owner (personal or previous org) must get the setting-up
+    stub, not a forward into the stale workspace — the handshake that
+    minted this cookie dispatched the join/repair, and the row re-points
+    when it lands."""
+    from fastapi.testclient import TestClient
+
+    proxy_mod, cookie = _org_cookie_session_env(monkeypatch, row_org_id="user_org_member")
+
+    app = _build_http_app()
+    client = TestClient(app)
+    resp = client.get("/some/path", cookies={"isol8_paperclip": cookie})
+
+    assert "Setting up your workspace" in resp.text
+
+
+def test_established_session_forwards_on_org_matched_active_row(monkeypatch):
+    """Control: the same org-context session with a row already pointing at
+    THIS org proceeds past the stub into the forward path — proving the
+    mismatch stub above isn't suppressing legitimate org sessions."""
+    from fastapi.testclient import TestClient
+
+    proxy_mod, cookie = _org_cookie_session_env(monkeypatch, row_org_id="org_acme")
+
+    def _sentinel(cookies, uid):
+        raise RuntimeError("forward-path-reached")
+
+    monkeypatch.setattr(proxy_mod, "is_trusted", _sentinel)
+
+    app = _build_http_app()
+    client = TestClient(app)
+    with pytest.raises(RuntimeError, match="forward-path-reached"):
+        client.get("/some/path", cookies={"isol8_paperclip": cookie})
+
 
 # ---------------------------------------------------------------------------
 # Agent-secret redaction — the proxy fronts the native Paperclip agent routes,

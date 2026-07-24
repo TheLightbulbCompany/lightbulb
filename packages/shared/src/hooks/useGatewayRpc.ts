@@ -9,6 +9,36 @@ export type GatewayRpcSource = Pick<
   "sendReq" | "onEvent" | "isParked"
 >;
 
+/**
+ * Event -> method-prefix aliases for revalidation matching (spec PR-7's two
+ * free event wins).
+ *
+ *  - `status_change`: the surviving gateway connect/disconnect push (see
+ *    GatewayConnection._emit_status_change) — restores the `health`
+ *    event/method mapping severed when #245 stopped forwarding OpenClaw's
+ *    raw `health` heartbeat to the frontend.
+ *  - `config.changed`: already raw-forwarded to every browser today and
+ *    consumed by nobody — this one line gives every `config.get` mount real
+ *    push freshness.
+ *
+ * The exact/prefix match below (`method === event || method.startsWith(event
+ * + ".")`) still runs unaliased for every other event; this table only adds
+ * extra event names a method should ALSO revalidate on.
+ */
+const EVENT_METHOD_ALIASES: Record<string, string[]> = {
+  status_change: ["health"],
+  "config.changed": ["config.get"],
+};
+
+function eventMatchesMethod(method: string, event: string): boolean {
+  if (method === event || method.startsWith(event + ".")) return true;
+  const aliasTargets = EVENT_METHOD_ALIASES[event];
+  if (!aliasTargets) return false;
+  return aliasTargets.some(
+    (target) => method === target || method.startsWith(target + "."),
+  );
+}
+
 export interface RpcResult<T = unknown> {
   data: T | undefined;
   error: Error | undefined;
@@ -101,7 +131,7 @@ export function useGatewayRpc<T = unknown>(
   useEffect(() => {
     if (!method) return;
     return onEvent((event) => {
-      if (method === event || method.startsWith(event + ".")) {
+      if (eventMatchesMethod(method, event)) {
         const now = Date.now();
         if (now - lastRevalidateRef.current < 10_000) return;
         lastRevalidateRef.current = now;

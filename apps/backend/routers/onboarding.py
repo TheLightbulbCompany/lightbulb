@@ -1,28 +1,51 @@
 """First-run onboarding endpoints.
 
-POST /api/v1/onboarding/brief stages the funnel input as OpenClaw
-primitives (BRIEF.md + first-run BOOTSTRAP.md in Friday's workspace,
-pre-boot) and seeds a company-level goal + project for Friday to work
-against. One-shot per COMPANY: a PK-conditional onboarding claim in
-``paperclip-companies`` (not BRIEF.md existence) is the marker, so a
-second member of the same org submitting concurrently cannot seed a
-duplicate pair. Open to any org member, not just admins — see
+POST /api/v1/onboarding/brief stages the funnel input as an OpenClaw
+primitive (BRIEF.md in Friday's workspace, pre-boot) and seeds a
+company-level goal + project for Friday to work against. One-shot per
+COMPANY: a generation-fenced conditional ``funnel_state: not_started ->
+submitted`` write on the paperclip-companies OWNER row (see
+``core.repositories.paperclip_repo.claim_funnel_submission``) is the
+marker, so a second member of the same org submitting concurrently cannot
+seed a duplicate pair. Open to any org member, not just admins — see
 ``submit_brief`` for why an admin-only gate was rejected.
 
-Whether the funnel shows at all is a per-CONTAINER fact, not per-user: an
-org shares one container, so onboarding happens once for the whole org.
-On success this stamps ``onboarded_at`` on the container row, which
-``GET /container/status`` (already polled by the frontend) surfaces as
-``onboarded`` — so once anyone in the org completes the funnel, no one on
-that container sees it again. There is no separate onboarding-status
-endpoint; the container the fact belongs to already carries it.
+Onboarding truth is company-scoped, not per-container and not per-user: an
+org shares one container AND one owner row, so onboarding happens once for
+the whole org regardless of which member's tab wins the claim. ``ctx.owner_id``
+resolves to the OWNER row via ``PaperclipRepo.resolve_owner_row`` — the row
+``provision_org`` wrote and fenced with ``onboarding_generation`` at G2 — so
+every member submitting against the same company writes the SAME row, even
+though each member has their own separate paperclip-companies row for
+credentials/session purposes.
+
+Per the 2026-07-24 architecture decision (see
+``docs/superpowers/specs/2026-07-24-onboarding-architecture-design.md`` §2),
+this replaces the old ``containers.onboarded_at`` stamp (S2) and the
+``__onboarded__`` sentinel (S3) entirely: ``GET /container/status`` now
+reads ``funnel_state == "complete"`` off the SAME owner row instead. A
+successful ``/brief`` submit here only advances the funnel to
+``submitted`` — ``complete`` is set once the server-owned bootstrap
+dispatcher (``core.services.bootstrap_dispatcher``) observes Friday's
+first-run kickoff actually deliver (``chat.final``). This endpoint kicks
+that dispatch off in the common case (the funnel UI only renders inside a
+live chat surface, so the container has almost always already provisioned
+by the time someone submits it); ``GET /container/status`` is the fallback
+that dispatches once the runtime comes up if it was still cold here.
+
+There is no first-run BOOTSTRAP.md any more — OpenClaw's boot-time
+reconcile (``reconcileWorkspaceBootstrapCompletionState``) never surfaces a
+seeded BOOTSTRAP.md into Friday's context once ``setupCompletedAt`` is
+pre-marked (see ``core/services/friday_identity.py``'s docstring and
+research §5 of the architecture doc's companion) — the file was inert.
+The server-dispatched ``chat.send`` above replaces it as a first-class,
+observed operation instead of a file Friday is guaranteed never to read.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
-import uuid
-from datetime import datetime, timezone
 from typing import Literal
 
 import httpx
@@ -32,15 +55,13 @@ from pydantic import BaseModel, Field, model_validator
 from core.auth import AuthContext, get_current_user
 from core.containers import get_workspace
 from core.observability.product_analytics import capture_product_event
-from core.repositories import container_repo
-from core.repositories.paperclip_repo import OnboardingClaimResult, PaperclipRepo
-from core.services.agent_mail_token import mint_first_contact_token
+from core.repositories.paperclip_repo import FunnelClaimResult, PaperclipRepo
+from core.services.bootstrap_dispatcher import maybe_dispatch_bootstrap
 from core.services.paperclip_admin_client import PaperclipApiError
 from core.services.onboarding_brief import (
     derive_goal_title,
     project_name_for,
     render_brief_md,
-    render_first_run_bootstrap,
     seed_goal_and_project,
     stage_first_run_files,
 )
@@ -84,21 +105,17 @@ def _first_name(auth: AuthContext) -> str:
     return local.replace(".", " ").title() or "there"
 
 
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
 @router.post("/brief")
 async def submit_brief(
     body: BriefBody,
     auth: AuthContext = Depends(get_current_user),
     ctx=Depends(_ctx),
 ):
-    # One-shot per COMPANY, not per user: the paperclip-companies table is
-    # keyed per-user, so an org's second member has their own unmarked row
-    # and would otherwise be served the funnel and seed a duplicate pair.
-    # A PK conditional write also means two tabs submitting at once cannot
-    # both seed — exactly one wins.
+    # One-shot per COMPANY, not per user: onboarding truth lives on the
+    # paperclip-companies OWNER row (resolved from ctx.owner_id — org_id for
+    # orgs, the personal user_id for personal owners), not on the calling
+    # member's own row. A generation-fenced conditional write also means two
+    # tabs submitting at once cannot both win the claim — exactly one does.
     #
     # Open to ANY org member, not just admins: the claim already prevents
     # duplicates, so the only consequence of a non-admin winning the race is
@@ -107,37 +124,48 @@ async def submit_brief(
     # admin-only gate was rejected because an org whose admin never opens
     # the app would be permanently stuck with no self-service recovery.
     repo = PaperclipRepo(table_name="paperclip-companies")
-    # Fresh per request, not per user: a user retrying twice must be
-    # distinguishable from themselves for the holder-guarded release below
-    # to mean anything -- see claim_onboarding's docstring for the race this
-    # closes (a stalled original holder releasing a claim a stealer since
-    # took over).
-    holder = uuid.uuid4().hex
-    claim_result = await repo.claim_onboarding(ctx.company_id, holder=holder)
-    if claim_result is OnboardingClaimResult.SEEDED:
-        # Durably done: seeded_at is set on a claim that was NOT rolled back
-        # (the rollback path deletes the goal/project and releases the claim,
-        # so a released claim never reports SEEDED). The goal + project exist,
-        # so a peer here walks into a finished company.
-        #
-        # There is a narrow, self-healing window: a peer can read seeded_at in
-        # the few hundred ms between record_onboarding_ids and a failing
-        # caller's rollback-release, and be told already_submitted for a
-        # company about to be emptied. Accepted deliberately -- it needs a
-        # staging failure AND a concurrent submit in that window, the
-        # container never gets stamped onboarded so any other member still
-        # onboards it, and the alternative (gating this on the container stamp)
-        # turns a swallowed onboarded_at write-failure into a permanent
-        # org-wide 409 lockout, which is strictly worse.
-        return {"status": "already_submitted"}
-    if claim_result is OnboardingClaimResult.IN_FLIGHT:
-        # A peer holds a fresh (non-stale) claim right now. This is
-        # transient, not done -- treating it as already_submitted would
-        # wave THIS caller into a company that may end up with no goal or
-        # project at all if the peer's own submit later fails. The client
-        # already retries on 409, same as the other not_ready cases below.
+    # Strong read: this path reads the owner row then conditionally writes the
+    # SAME row (the funnel claim), so it must see the latest onboarding_generation
+    # / funnel_state. (get_onboarding_state's per-poll reads stay eventually
+    # consistent -- see resolve_owner_row.)
+    owner_row = await repo.resolve_owner_row(ctx.owner_id, consistent_read=True)
+    if owner_row is None or not owner_row.onboarding_generation:
+        # No owner row yet, or it predates the onboarding_generation fence
+        # (should not happen post-G2 for any row provision_org just wrote —
+        # defensive). Either way there is nothing to fence a claim against
+        # yet; the client already retries on 409, same as the other
+        # not-ready cases below.
         raise HTTPException(status_code=409, detail="not_ready")
-    # claim_result is WON (fresh claim or a stale-steal takeover) -- proceed.
+    generation = owner_row.onboarding_generation
+
+    # owner_row.user_id is the paperclip row PK (the org CREATOR's id for an
+    # org). ctx.owner_id is the broadcast key the org's tabs register under, so
+    # the realtime nudge must ride that, not the row PK. submitted_by is the
+    # actual member POSTing /brief -- a non-creator org member can win the claim,
+    # and the bootstrap kickoff must address THEIR session, not the creator's.
+    # See paperclip_repo.
+    claim_result = await repo.claim_funnel_submission(
+        owner_row.user_id,
+        onboarding_generation=generation,
+        submitted_by=auth.user_id,
+        owner_id=ctx.owner_id,
+    )
+    if claim_result is FunnelClaimResult.ALREADY_SUBMITTED:
+        # Durable: the row is still on the generation we just read, but
+        # funnel_state had already moved past not_started -- a peer's
+        # submission won (or the funnel already completed). No narrow
+        # self-healing window to reason about here (unlike the old
+        # sentinel): funnel_state is a single attribute on the row itself,
+        # so there is no separate "record" step whose failure could leave a
+        # peer seeing SEEDED-but-empty.
+        return {"status": "already_submitted"}
+    if claim_result is FunnelClaimResult.STALE_GENERATION:
+        # The company was reprovisioned (new onboarding_generation) between
+        # our read and our write -- our view of the owner row is stale, not
+        # a duplicate submit. Retry: the client already retries on 409, same
+        # as the other not_ready cases below.
+        raise HTTPException(status_code=409, detail="not_ready")
+    # claim_result is WON -- proceed.
 
     # Set once seed_goal_and_project returns -- used by the except block
     # below to decide whether the Paperclip rows need to be rolled back.
@@ -165,9 +193,10 @@ async def submit_brief(
 
         first_name = _first_name(auth)
 
-        # Seed BEFORE staging the instruction files: BOOTSTRAP.md tells
-        # Friday to go to work, so the rows must exist before it lands or
-        # she can wake into a company with no project.
+        # Seed BEFORE staging the instruction files: the server-dispatched
+        # kickoff (core.services.bootstrap_dispatcher) tells Friday to go to
+        # work, so the rows must exist before it dispatches or she wakes
+        # into a company with no project.
         try:
             goal_id, project_id = await seed_goal_and_project(
                 admin=admin,
@@ -188,61 +217,45 @@ async def submit_brief(
             display_name=first_name,
             email=auth.email or "",
         )
-        # Mint Friday's first-contact token before rendering BOOTSTRAP.md so
-        # the instruction can embed it. This is inert-safe by construction:
-        # mint_first_contact_token never raises and returns None whenever
-        # agent email is inactive or the owner has no active address yet,
-        # in which case render_first_run_bootstrap renders with no email
-        # step at all. There is no company name in scope yet at this point
-        # in the flow (Friday names the company herself, later in the
-        # session this same BOOTSTRAP.md kicks off) -- a warm generic
-        # subject is the honest choice here, not a placeholder to fix later.
-        first_contact_token = await mint_first_contact_token(
-            owner_id=ctx.owner_id,
-            owner_email=auth.email or "",
-            subject="A first look at your business",
-        )
-        bootstrap_md = render_first_run_bootstrap(
-            first_name=first_name,
-            goal_id=goal_id,
-            project_id=project_id,
-            first_contact_token=first_contact_token,
-        )
 
         # Recorded BEFORE staging the workspace files, not after: this is
-        # the holder-guarded write that actually decides who wins the steal
-        # window. Staging is a visible side effect on Friday's NEXT boot --
-        # if a stalled holder A staged first and only THEN lost the record
-        # guard to stealer B, A's BOOTSTRAP.md (baked with A's now-deleted
-        # ids) would already be on disk, and Friday could boot against dead
-        # ids until B's own staging happened to overwrite it (a race, not a
-        # guarantee -- B might boot first). Recording first means only the
-        # caller whose record_onboarding_ids actually lands ever reaches
-        # the staging call below; a caller that loses the record guard
-        # raises here instead and never stages anything (see the except
-        # block's cleanup).
-        await repo.record_onboarding_ids(ctx.company_id, goal_id=goal_id, project_id=project_id, holder=holder)
+        # the generation-fenced write that actually decides who wins.
+        # Staging is a visible side effect on Friday's NEXT boot -- if this
+        # write raced a reprovision (generation moved on) and staging ran
+        # first anyway, Friday could boot against dead goal/project ids.
+        # Recording first means only the caller whose record_onboarding_ids
+        # actually lands ever reaches the staging call below; a caller that
+        # loses the guard raises here instead and never stages anything (see
+        # the except block's cleanup).
+        await repo.record_onboarding_ids(
+            owner_row.user_id,
+            onboarding_generation=generation,
+            goal_id=goal_id,
+            project_id=project_id,
+            owner_id=ctx.owner_id,
+        )
 
         # No board seeding here: the first run is Friday's own research
         # session, and the board fills at the END of it with the three
-        # next-move tasks she proposes (BOOTSTRAP step 7). Each of those
-        # runs later as its own session when the owner picks it.
+        # next-move tasks she proposes (the server-dispatched kickoff tells
+        # her to). Each of those runs later as its own session when the
+        # owner picks it.
         stage_first_run_files(
             workspace=get_workspace(),
             owner_id=ctx.owner_id,
             friday_agent_id=friday_id,
             brief_md=brief_md,
-            bootstrap_md=bootstrap_md,
         )
     except BaseException:
         # BaseException, not Exception: asyncio.CancelledError (client
         # disconnect mid-flight) inherits from BaseException, not Exception.
-        # Skipping the release here would strand the claim: FIX 2 gives it a
-        # stale-steal safety net (claim_onboarding takes over a >60s-old
-        # claim with no seeded_at), but releasing promptly still lets an
-        # immediate retry re-enter instead of waiting out that window. The
-        # bare `raise` below still re-raises, so cancellation and interrupts
-        # propagate as before — this only adds the cleanup.
+        # Skipping the revert here would strand the claim in ``submitted``
+        # forever (there is no stale-steal safety net anymore -- the
+        # generation fence replaces it, and a stuck ``submitted`` funnel
+        # would permanently block the SAME generation from ever being
+        # re-submitted). The bare `raise` below still re-raises, so
+        # cancellation and interrupts propagate as before — this only adds
+        # the cleanup.
         #
         # If seed_goal_and_project already returned ids, both Paperclip rows
         # exist but the failure happened during recording them against the
@@ -254,22 +267,22 @@ async def submit_brief(
         # fresh claim and seed a SECOND goal/project pair for the same
         # company.
         #
-        # The same path also catches the case where THIS caller stalled past
-        # the stale window, got stolen from, and only now finished seeding:
-        # record_onboarding_ids is holder-guarded, so its write fails
-        # (ConditionalCheckFailedException) instead of stamping this
-        # caller's ids over the new holder's claim. That routes us here with
-        # OUR OWN goal_id/project_id -- the ones to roll back -- while the
-        # new holder's claim and in-progress seed are untouched (our release
-        # below carries our own now-stale `holder`, so it no-ops against
-        # theirs).
+        # The same path also catches the case where the company was
+        # reprovisioned mid-flight (a new onboarding_generation minted
+        # underneath us): record_onboarding_ids is generation-fenced, so its
+        # write fails (ConditionalCheckFailedException) instead of stamping
+        # this caller's ids onto the new generation's fresh row. That
+        # routes us here with OUR OWN goal_id/project_id -- the ones to roll
+        # back -- while revert_funnel_submission below is ALSO
+        # generation-fenced and simply no-ops against the new generation
+        # (nothing of ours to revert on a row that's already moved on).
         #
-        # Roll both back: delete the project, then the goal, then release
-        # the claim. Each step runs independently of the others' success —
-        # a failure deleting the project must not skip the goal delete or
-        # the claim release — and none of them may raise past this block,
-        # or a cleanup failure would replace the ORIGINAL error instead of
-        # the caller seeing it.
+        # Roll both back: delete the project, then the goal, then revert the
+        # claim. Each step runs independently of the others' success — a
+        # failure deleting the project must not skip the goal delete or the
+        # claim revert — and none of them may raise past this block, or a
+        # cleanup failure would replace the ORIGINAL error instead of the
+        # caller seeing it.
         if goal_id is not None and project_id is not None:
             try:
                 await admin.delete_project(session_cookie=ctx.session_cookie, project_id=project_id)
@@ -291,34 +304,63 @@ async def submit_brief(
                 )
 
         # Caveat: awaiting inside a cancellation handler is not guaranteed
-        # to complete — this release (and the deletes above) can themselves
-        # be cancelled (e.g. on a hard shutdown). This makes recovery
-        # usually happen instead of never; it is not a guarantee, and no
-        # shielded/retried cleanup is attempted here on purpose — FIX 2's
-        # stale-steal safety net covers what doesn't complete.
+        # to complete — this revert (and the deletes above) can themselves
+        # be cancelled (e.g. on a hard shutdown). A stuck ``submitted``
+        # funnel with no goal/project has no self-service recovery today
+        # (mirrors the old sentinel's stale-steal caveat); best-effort is
+        # the accepted posture, not a guarantee.
         try:
-            await repo.release_onboarding_claim(ctx.company_id, holder=holder)
+            await repo.revert_funnel_submission(
+                owner_row.user_id, onboarding_generation=generation, owner_id=ctx.owner_id
+            )
         except Exception as cleanup_err:
             logger.error(
-                "onboarding: failed to release claim for company %s after post-seed failure: %s",
+                "onboarding: failed to revert funnel claim for company %s after post-seed failure: %s",
                 ctx.company_id,
                 cleanup_err,
             )
         raise
 
-    # Mark the CONTAINER onboarded (not the user): an org shares one
-    # container, so this is the per-org "the funnel is done" fact that
-    # GET /container/status surfaces as `onboarded`, keeping the funnel from
-    # ever showing again to anyone on this container -- including a second
-    # org member whose own per-user marker is empty. ctx.owner_id is the
-    # container owner (org owner for orgs), so the flag lands on the shared
-    # row. Best-effort: the seed already succeeded, and if this write fails
-    # the only fallback is that another member sees the funnel once more and
-    # gets a harmless `already_submitted` (the claim blocks a duplicate seed).
-    try:
-        await container_repo.update_fields(ctx.owner_id, {"onboarded_at": _now_iso()})
-    except Exception as e:
-        logger.warning("onboarding: failed to stamp onboarded_at for %s: %s", ctx.owner_id, e)
+    # funnel_state is already "submitted" (the claim above). It does NOT
+    # advance to "complete" here -- that transition belongs to the bootstrap
+    # dispatcher, which sets it once Friday's first-run kickoff is OBSERVED
+    # to deliver (chat.final), not merely staged. GET /container/status's
+    # `onboarded` field reads funnel_state=="complete" off this same owner
+    # row.
+    #
+    # Kick the dispatch off now, in case the runtime is ALREADY up (the
+    # common case: the funnel UI only renders inside a live chat surface,
+    # so by the time someone submits it the container has almost always
+    # already provisioned). Fire-and-forget: maybe_dispatch_bootstrap never
+    # raises, and if the runtime is still cold it does nothing -- the next
+    # GET /container/status poll that observes the runtime come up
+    # re-evaluates and dispatches then (see that module's docstring).
+    #
+    # Pass the onboarding dict we already know rather than letting the
+    # dispatcher re-read the row: `owner_row` was read (consistent) BEFORE
+    # the claim above, and the claim's own CAS is the ONLY thing that
+    # changed since -- funnel_state -> "submitted" and
+    # onboarding_submitted_by -> auth.user_id, exactly the two fields
+    # claim_funnel_submission's UpdateExpression sets. bootstrap_state/
+    # bootstrap_attempts are untouched by the claim, so owner_row's
+    # pre-claim values for those are still accurate. This is the
+    # `submitted_by` the dispatcher needs to address the kickoff at the
+    # ACTUAL submitter (not the row's PK, which for an org is the creator —
+    # see bootstrap_dispatcher's module docstring) without a second
+    # paperclip-companies read.
+    asyncio.create_task(
+        maybe_dispatch_bootstrap(
+            ctx.owner_id,
+            onboarding={
+                "onboarding_generation": generation,
+                "funnel_state": "submitted",
+                "bootstrap_state": owner_row.bootstrap_state or "not_started",
+                "bootstrap_attempts": owner_row.bootstrap_attempts or 0,
+                "user_id": owner_row.user_id,
+                "onboarding_submitted_by": auth.user_id,
+            },
+        )
+    )
 
     capture_product_event(
         distinct_id=auth.user_id,

@@ -8,35 +8,46 @@
  * docs/superpowers/plans/2026-07-21-mobile-onboarding-parity.md.
  *
  * Deliberately NOT here: readiness / polling / rendering decisions. The 200
- * body is passed through UNTOUCHED — `phase`, `status`, `onboarded`, etc.
- * are each platform's own binding's job to interpret (e.g. `phase ===
- * "parked"` is ready-equivalent on web's stepper but "keep polling, show a
- * banner" on mobile — a rendering/polling call, not a parse). This module
- * never fetches and never throws: callers pass the SUCCESS `{status, body}`
- * from `fetchJsonWithStatus` for 2xx responses, and `{status: err.status,
- * body: err.body}` (from the `ApiError` they caught) for non-2xx — both
- * funnel through the same status-code table below.
+ * body is passed through UNTOUCHED — `runtime_phase`, `lifecycle`,
+ * `container_status`, `onboarded`, etc. are each platform's own binding's
+ * job to interpret (e.g. `lifecycle === "parked"` is ready-equivalent on
+ * web's stepper but "keep polling, show a banner" on mobile — a
+ * rendering/polling call, not a parse). This module never fetches and never
+ * throws: callers pass the SUCCESS `{status, body}` from `fetchJsonWithStatus`
+ * for 2xx responses, and `{status: err.status, body: err.body}` (from the
+ * `ApiError` they caught) for non-2xx — both funnel through the same
+ * status-code table below.
  */
 
 /**
- * The 200 body. Two shapes exist on the wire (both handled identically
- * here — the classifier doesn't care which): the normal container row
- * (`_status_response` in `routers/container.py`) and a synthetic
- * "provisioning just kicked off" body for a fresh owner with no container
- * row yet (same file, `substatus: "ensure_user_ready"`). Optional fields
- * default to `undefined` (never a false negative) on an old backend that
- * predates them.
+ * The 200 body — the composed `StatusContract` (see `statusContract.ts` and
+ * `core/services/readiness_state.compute_status`/
+ * `routers/container.py::_status_response`). Two shapes exist on the wire
+ * (both handled identically here — the classifier doesn't care which): the
+ * normal container row and a synthetic "provisioning just kicked off" body
+ * for a fresh owner with no container row yet (`container_substatus:
+ * "ensure_user_ready"`). No legacy flat duplicates (`phase`/`status`/
+ * `substatus`/`teams_status`) — CLIENT-HOOK deleted those from
+ * `_status_response`; there are no users and no backward-compat
+ * requirement.
  */
 export interface ContainerStatusBody {
   service_name: string | null;
-  status: string | null;
-  substatus: string | null;
-  /** Cold-start phase — see `_resolve_cold_start_phase` in `routers/container.py`. */
-  phase?: "provisioning" | "starting" | "ready" | "parked";
-  /** Per-container onboarding fact (`container.onboarded_at is not None`) — an org shares one container. */
+  container_status: string | null;
+  container_substatus: string | null;
+  /** Composer's runtime phase — see `readiness_state.resolve_runtime_phase`. */
+  runtime_phase?: "provisioning" | "starting" | "ready";
+  /** Composer's onboarding-inclusive lifecycle bucket (broader than
+   * `runtime_phase` — folds in parked/error/pre-container states). */
+  lifecycle?: string;
+  /** Per-container onboarding fact (funnel `state === "complete"`, or the
+   * legacy `onboarded_at` fallback) — an org shares one container. */
   onboarded?: boolean;
-  /** Set alongside `phase: "parked"` on a deliberately-asleep, wake-gated trial box. */
+  /** Set alongside `lifecycle: "parked"` on a deliberately-asleep, wake-gated trial box. */
   parked?: boolean;
+  /** Non-blocking Paperclip (Teams) seed health — `"failed"` is the only
+   * value any binding acts on today. */
+  teams_state?: string | null;
   last_error?: string | null;
   // Tolerates both 200 shapes plus any field a caller reads that isn't
   // named above, without narrowing it to `unknown` project-wide.

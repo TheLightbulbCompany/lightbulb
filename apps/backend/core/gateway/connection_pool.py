@@ -14,7 +14,7 @@ import json
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Set
+from typing import Any, Awaitable, Callable, Dict, Optional, Set
 
 from websockets import connect as ws_connect
 
@@ -97,6 +97,17 @@ _AUTH_BACKOFF_CAP_S = 300
 # emit `gateway.run.long_idle` metrics + structured logs so the deadlock-
 # vs-slow-turn signal is greppable in CloudWatch Insights.
 _RUN_LONG_IDLE_S = 300
+
+# Cadence at which a live GatewayConnection re-stamps its DDB gateway-liveness
+# lease (a serialized full ``mark_gateway_connected`` upsert via
+# ``_write_liveness``) so the row stays fresh -- and is recreated if the initial
+# connect put was lost -- for as long as the connection is alive: active,
+# idle-open, OR parked (a
+# parked connection keeps is_alive True while it presumes the container alive).
+# Must be well under connection_service._LIVENESS_STALE_SECONDS (180s) so the
+# read side never flaps a healthy connection to "not connected", and well under
+# the row's ttl window so DDB's TTL sweep never deletes a live marker.
+_LIVENESS_REFRESH_SECONDS = 60
 
 # TTL for the per-connection agents.list name cache backing push-notification
 # titles. Names change rarely; a short TTL keeps run-completion pushes off a
@@ -212,6 +223,18 @@ class GatewayConnection:
         # Fire-and-forget run-completion push tasks (mirrors _billing_tasks):
         # tracked so close() can drain them instead of cancelling a send.
         self._push_tasks: Set[asyncio.Task] = set()
+        # One-shot completion observers keyed by runId (== chat.send's
+        # idempotencyKey, which OpenClaw echoes as `runId` on every event for
+        # the run — chat.ts:2450). Registered via
+        # ``register_run_completion_callback`` by a caller that needs to
+        # observe a SPECIFIC dispatched run's terminal (final/error/aborted)
+        # without being the browser tab that sent it — e.g. the server-owned
+        # bootstrap dispatcher (INV-5, spec PR-6). Consumed (popped) exactly
+        # once, from the same TRUE-terminal gate ``_dispatch_push_notification``
+        # uses, then dropped — never re-fires for a re-delivered/duplicate
+        # terminal.
+        self._run_completion_callbacks: Dict[str, Callable[[str, dict], Awaitable[None]]] = {}
+        self._run_completion_tasks: Set[asyncio.Task] = set()
         # agent_id -> display name, TTL-cached from agents.list for push titles.
         # None until first resolve; _agent_names_at is the monotonic stamp.
         self._agent_names: Optional[Dict[str, str]] = None
@@ -255,6 +278,134 @@ class GatewayConnection:
         # without any event, the watchdog escalates parked → dead so a
         # genuinely-deadlocked OpenClaw process can't leak state forever.
         self._parked_watchdog_task: Optional[asyncio.Task] = None
+        # Periodic lease-refresh for the DDB gateway-liveness row: runs while
+        # this connection is alive so the row's ttl never lapses under a
+        # long-lived connection (and the read side can tell fresh from
+        # expired-but-unswept). Started/cancelled in _note_gateway_liveness.
+        self._liveness_refresh_task: Optional[asyncio.Task] = None
+        # Serializes every gateway-liveness write for this connection so their
+        # ORDER matches the true is_alive transition order -- independent
+        # create_tasks don't preserve completion order, so a connect put racing
+        # a disconnect delete could otherwise land delete-first and then the
+        # put recreates a dead marker (false "ready" for the freshness window).
+        self._liveness_lock = asyncio.Lock()
+        # Terminal marker: once a disconnect is noted, no put (initial or a
+        # refresh tick already in flight) may recreate the liveness row. Cleared
+        # on (re)connect. Checked INSIDE the lock so there is no TOCTOU with a
+        # concurrently-enqueued delete.
+        self._liveness_dead = False
+        # Per-instance identity stamped on this connection's gateway-liveness
+        # row. Makes the terminal delete owner-safe ACROSS connections: a
+        # replacement connection (stale-conn swap, rolling-deploy overlap) writes
+        # its own token, so this connection's delete -- conditioned on the token
+        # -- can't remove the replacement's live marker. The per-connection
+        # _liveness_lock only orders writes WITHIN one connection; the token is
+        # what orders them across connection replacement (and across instances).
+        self._liveness_token = uuid.uuid4().hex
+
+    def _note_gateway_liveness(self, *, connected: bool) -> None:
+        """Record the durable (cross-instance) DDB liveness transition (readiness
+        store R4's replacement -- see ``core.services.connection_service.
+        mark_gateway_connected`` / ``mark_gateway_disconnected`` and
+        ``core.services.readiness_state``).
+
+        The actual DDB write is dispatched through ``_write_liveness`` (never
+        awaited inline: this must not add a round-trip to the connect/close/park
+        hot path) and SERIALIZED behind ``_liveness_lock`` so a connect put and
+        a disconnect delete can't complete out of order. The ``_liveness_dead``
+        terminal flag is flipped synchronously here (before the delete task is
+        even created) so any put still in flight no-ops instead of resurrecting
+        a dead marker.
+
+        Also owns the lifecycle of the periodic lease-refresh loop: connect
+        (and reopen, which re-enters connect) starts it; every disconnect /
+        park-escalation / close stops it -- so the lease is refreshed for
+        exactly as long as ``is_alive`` holds. NB: the refresh loop is NOT
+        cancelled here on disconnect. Cancelling a task caught inside
+        ``refresh_gateway_liveness`` raises ``CancelledError`` at the ``await``
+        but does NOT stop the boto3 write already running in the to_thread
+        pool; that write would then land AFTER the terminal delete and, via the
+        refresh's ``attribute_not_exists`` recovery path, resurrect a dead
+        marker (read as ``ready`` for the freshness window). Cancellation is
+        therefore deferred to ``_write_liveness``'s delete branch, which runs
+        only after the delete has serialized behind any in-flight refresh
+        under ``_liveness_lock`` -- catching the refresh loop in its sleep,
+        never mid-write. ``_liveness_dead`` (flipped synchronously here) stops
+        the loop from issuing any further write in the meantime.
+        """
+        if connected:
+            self._liveness_dead = False
+            self._start_liveness_refresh()
+        else:
+            self._liveness_dead = True
+        asyncio.create_task(self._write_liveness(connected=connected))
+
+    async def _write_liveness(self, *, connected: bool) -> None:
+        """Serialized DDB liveness write. Puts are gated on ``_liveness_dead``
+        (checked INSIDE the lock) so a put that lost the race to a disconnect
+        can't recreate the row; the delete always applies (it is the terminal
+        transition). Errors are swallowed inside the service methods."""
+        async with self._liveness_lock:
+            if connected:
+                if self._liveness_dead:
+                    return
+                await self._conn_svc.mark_gateway_connected(self.owner_id, conn_token=self._liveness_token)
+            else:
+                await self._conn_svc.mark_gateway_disconnected(self.owner_id, conn_token=self._liveness_token)
+        if not connected:
+            # Terminal delete has now landed on the server STRICTLY AFTER any
+            # in-flight refresh (the refresh holds _liveness_lock across its
+            # boto3 write, so acquiring the lock above waited for that write to
+            # finish). Only now is it safe to stop the refresh loop: it is
+            # sleeping between ticks, so cancellation can't interrupt a write.
+            # Deferring the cancel to here (instead of _note_gateway_liveness)
+            # is what closes the resurrect-after-delete race.
+            self._cancel_liveness_refresh()
+        # A liveness flip moves a fact compute_status composes (runtime_phase /
+        # chat_available read is_gateway_connected), yet the DDB write above is
+        # NOT one of the repo write sites publish_status_changed rides. Without
+        # this nudge a ready tab whose /container/status poller has backed off
+        # only learns of a gateway death/recovery on a slow backstop or focus
+        # revalidation. Fired OUTSIDE the lock (best-effort, never awaited into
+        # the write) so it can't extend the serialized hot path. INV-1: nudge
+        # only -- compute_status stays the sole composer.
+        from core.services.status_events import publish_status_changed
+
+        publish_status_changed(self.owner_id)
+
+    def _start_liveness_refresh(self) -> None:
+        """Start the periodic gateway-liveness lease refresh (idempotent)."""
+        if self._liveness_refresh_task is not None and not self._liveness_refresh_task.done():
+            return
+        self._liveness_refresh_task = asyncio.create_task(self._liveness_refresh_loop())
+
+    def _cancel_liveness_refresh(self) -> None:
+        if self._liveness_refresh_task is not None and not self._liveness_refresh_task.done():
+            self._liveness_refresh_task.cancel()
+        self._liveness_refresh_task = None
+
+    async def _liveness_refresh_loop(self) -> None:
+        """Re-stamp the DDB gateway-liveness lease every
+        ``_LIVENESS_REFRESH_SECONDS`` while this connection is alive.
+
+        Each tick calls ``refresh_gateway_liveness`` (a CONDITIONAL upsert:
+        absent OR still owned by this connection's token). Unlike the
+        unconditional ``mark_gateway_connected`` claim, it RECREATES a lost row
+        (missed-connect recovery) yet cannot steal ownership back from a
+        replacement connection that already claimed the row with a newer token
+        (rolling-deploy overlap). Serialized under ``_liveness_lock`` and gated
+        on ``_liveness_dead`` (both inside the lock) so a tick racing a
+        disconnect can neither resurrect nor re-own the row. Errors are
+        swallowed inside the service call; this loop only exits on cancellation.
+        """
+        try:
+            while True:
+                await asyncio.sleep(_LIVENESS_REFRESH_SECONDS)
+                async with self._liveness_lock:
+                    if self.is_alive and not self._liveness_dead:
+                        await self._conn_svc.refresh_gateway_liveness(self.owner_id, conn_token=self._liveness_token)
+        except asyncio.CancelledError:
+            raise
 
     def _emit_status_change(self, state: str, reason: str) -> None:
         """Push a status_change event to all connected frontend WebSockets."""
@@ -581,6 +732,9 @@ class GatewayConnection:
         await self._subscribe_session_events()
         put_metric("gateway.connection", dimensions={"event": "connect"})
         self._emit_status_change("HEALTHY", "Gateway connected")
+        # Durable liveness signal (R4 kill) -- covers both a fresh connect()
+        # and a reopen() (which calls connect() internally).
+        self._note_gateway_liveness(connected=True)
         total_ms = int((time.monotonic() - connect_started) * 1000)
         logger.info(
             "Gateway connection established user=%s ip=%s total_ms=%d ws_upgrade_ms=%d handshake_ms=%d verify_ms=%d",
@@ -1146,6 +1300,63 @@ class GatewayConnection:
         self._push_tasks.add(task)
         task.add_done_callback(self._push_tasks.discard)
 
+    def register_run_completion_callback(self, run_id: str, callback: Callable[[str, dict], Awaitable[None]]) -> None:
+        """One-shot observer for *run_id*'s TRUE terminal chat event.
+
+        *callback* is invoked ``await callback(state, payload)`` where
+        ``state`` is ``"final" | "error" | "aborted"`` and ``payload`` is the
+        raw terminal event body. Fired from ``_handle_message``'s TRUE-terminal
+        branch — the same gate ``_dispatch_push_notification`` uses, so an
+        interim `final` that only closes a tool-approval bracket (the run
+        continues as a separate follow-up) does NOT resolve this callback.
+        Overwrites any prior registration for the same *run_id* (callers mint
+        a fresh run_id per dispatch, so a collision would only happen on a
+        genuine retry, where "latest wins" is correct).
+        """
+        self._run_completion_callbacks[run_id] = callback
+
+    def unregister_run_completion_callback(self, run_id: str) -> None:
+        """Withdraw a registration made by ``register_run_completion_callback``
+        without waiting for a terminal event to arrive and consume it.
+
+        For a caller whose dispatch failed AFTER registering (e.g. chat.send
+        itself raised, so the run never reached OpenClaw and no terminal
+        event will EVER arrive for this *run_id*) — without this the entry
+        (and its closure, which can hold references back to a repo/pool)
+        leaks in ``_run_completion_callbacks`` until this ``GatewayConnection``
+        is torn down. Idempotent — popping a *run_id* with nothing
+        registered (already consumed, or never registered) is a silent
+        no-op.
+        """
+        self._run_completion_callbacks.pop(run_id, None)
+
+    def _dispatch_run_completion(self, run_id: str, state: str, payload: dict) -> None:
+        """Pop and fire *run_id*'s registered completion callback, if any.
+
+        Fire-and-forget (mirrors ``_dispatch_push_notification``): the
+        callback runs as a tracked background task so a slow/failing
+        observer (a DDB write) can never delay or break frame delivery to
+        the browser. No-op when nothing is registered for *run_id* (the
+        overwhelming common case — most runs have no observer).
+        """
+        callback = self._run_completion_callbacks.pop(run_id, None)
+        if callback is None:
+            return
+
+        async def _run() -> None:
+            try:
+                await callback(state, payload)
+            except Exception:
+                logger.exception(
+                    "Run-completion callback failed for user %s run_id=%s",
+                    self.user_id,
+                    run_id,
+                )
+
+        task = asyncio.create_task(_run())
+        self._run_completion_tasks.add(task)
+        task.add_done_callback(self._run_completion_tasks.discard)
+
     async def _resolve_member_from_session(self, parsed: dict) -> str:
         """Map a parsed session key to the Clerk member_id.
 
@@ -1640,6 +1851,13 @@ class GatewayConnection:
                 # separate follow-up run), so a paused-on-approval session never
                 # drains early.
                 if is_true_terminal:
+                    # Server-side completion observers (INV-5) — independent of
+                    # frame forwarding below and of whether any browser tab is
+                    # even watching. Fires for every TRUE terminal state
+                    # (final/error/aborted), not just "final" (unlike the push
+                    # dispatch, which is success-only).
+                    self._dispatch_run_completion(run_id, state, payload)
+
                     run_ended: dict = {
                         "type": "run_ended",
                         "runId": run_id,
@@ -1856,6 +2074,9 @@ class GatewayConnection:
             type(exc).__name__,
         )
         self._emit_status_change("GATEWAY_DOWN_DEAD", "Gateway connection lost")
+        # Durable liveness signal (R4 kill): the reader loop died with no
+        # active runs, so is_alive is now False.
+        self._note_gateway_liveness(connected=False)
         for req_id, future in list(self._pending_rpcs.items()):
             if not future.done():
                 future.set_exception(RuntimeError("Gateway connection lost"))
@@ -1913,6 +2134,9 @@ class GatewayConnection:
                     "GATEWAY_DOWN_DEAD",
                     "Agent appears stuck — try restarting the gateway",
                 )
+                # Durable liveness signal (R4 kill): escalating past parked
+                # to dead is the other path is_alive can flip False.
+                self._note_gateway_liveness(connected=False)
                 for req_id, future in list(self._pending_rpcs.items()):
                     if not future.done():
                         future.set_exception(RuntimeError("Gateway connection lost"))
@@ -1959,6 +2183,9 @@ class GatewayConnection:
     async def close(self) -> None:
         """Shut down: drain in-flight RPCs, cancel reader, close WebSocket."""
         self._emit_status_change("GATEWAY_DOWN_DEAD", "Gateway connection closed")
+        # Durable liveness signal (R4 kill): an explicit close always ends
+        # in is_alive == False, whether or not runs were in flight.
+        self._note_gateway_liveness(connected=False)
         self._closed = True
         # Wait for in-flight billing-resolver tasks so teardown doesn't drop usage events.
         if self._billing_tasks:
@@ -1977,6 +2204,17 @@ class GatewayConnection:
             except Exception:
                 logger.exception(
                     "Error waiting for push tasks during close for user %s",
+                    self.user_id,
+                )
+        # Drain in-flight run-completion observer tasks (INV-5 bootstrap
+        # dispatcher) too, so teardown doesn't cancel a DDB completion write
+        # mid-flight -- mirrors the push-dispatch drain above.
+        if self._run_completion_tasks:
+            try:
+                await asyncio.wait(self._run_completion_tasks, timeout=5.0)
+            except Exception:
+                logger.exception(
+                    "Error waiting for run-completion tasks during close for user %s",
                     self.user_id,
                 )
         # Graceful RPC drain: the reader loop is still alive here, so in-flight
@@ -2146,6 +2384,35 @@ class GatewayConnectionPool:
         if conn is None:
             return
         conn.mark_side_run(run_id)
+
+    def register_run_completion_callback(
+        self, user_id: str, run_id: str, callback: Callable[[str, dict], Awaitable[None]]
+    ) -> bool:
+        """Public entry point for a caller that needs to observe a specific
+        dispatched run's TRUE terminal (final/error/aborted) without being
+        the browser tab that sent it — e.g. the server-owned bootstrap
+        dispatcher (INV-5, spec PR-6).
+
+        Returns False (registers nothing) when no connection exists for
+        *user_id*. Callers should call ``ensure_connection`` first (mirrors
+        ``mark_run_active``'s own contract) so this only returns False if the
+        connection vanished between the two calls.
+        """
+        conn = self._connections.get(user_id)
+        if conn is None:
+            return False
+        conn.register_run_completion_callback(run_id, callback)
+        return True
+
+    def unregister_run_completion_callback(self, user_id: str, run_id: str) -> None:
+        """Public entry point mirroring ``register_run_completion_callback`` —
+        see ``GatewayConnection.unregister_run_completion_callback``. Silently
+        no-ops when no connection exists for *user_id* (nothing to withdraw).
+        """
+        conn = self._connections.get(user_id)
+        if conn is None:
+            return
+        conn.unregister_run_completion_callback(run_id)
 
     async def gate_chat(self, *, user_id: str, owner_id: str, session_key: str) -> dict:
         """Pre-chat hard-stop for card-3 (bedrock_claude) users and the
@@ -2582,6 +2849,34 @@ class GatewayConnectionPool:
             # gateway connection actually exists to tear down.
             if user_id in self._connections:
                 self._grace_tasks[user_id] = asyncio.create_task(self._grace_close(user_id))
+
+    def broadcast_to_owner(self, owner_id: str, event: str, payload: dict) -> None:
+        """Push a generic ``{type: "event"}`` frame to every frontend WS
+        registered for *owner_id*.
+
+        Pool-level (keyed off ``_frontend_connections`` only) rather than
+        routed through a ``GatewayConnection`` — deliberately independent of
+        whether an OpenClaw gateway connection exists yet, since a billing or
+        Paperclip write (e.g. ``needs_signup`` -> ``provisioning``) can land
+        before the container itself is up. Mirrors
+        ``GatewayConnection._emit_status_change``'s enqueue shape but fans out
+        to the whole owner rather than one connection's own frontend set.
+
+        Never raises: ``FrameSender.enqueue`` never raises, and a Gone
+        recipient is pruned via ``on_gone`` the same way every other
+        pool-level push handles it. See ``core.services.status_events.
+        publish_status_changed`` for the primary caller.
+        """
+        message = {"type": "event", "event": event, "payload": payload}
+
+        async def _on_gone(conn_id: str) -> None:
+            fcs = self._frontend_connections.get(owner_id)
+            if fcs:
+                fcs.discard(conn_id)
+            put_metric("gateway.frontend.prune")
+
+        for conn_id in list(self._frontend_connections.get(owner_id, ())):
+            self._sender.enqueue(conn_id, message, on_gone=_on_gone)
 
     async def _grace_close(self, user_id: str) -> None:
         """Wait the grace period, then close the gateway connection if still idle.

@@ -129,7 +129,11 @@ export function reduceChatFrame(
 }
 
 const TEAMS_WORKING_STATUSES = new Set(["queued", "running", "scheduled_retry"]);
-const TEAMS_FAILURE_STATUSES = new Set(["failed", "timed_out"]);
+// `interrupted` is the terminal status published on a graceful BFF shutdown
+// (spec PR-7) -- without it here a run stuck mid-flight when the BFF
+// restarts falls through to `return []` below and leaves its "working"
+// toast at a stuck Infinity duration forever.
+const TEAMS_FAILURE_STATUSES = new Set(["failed", "timed_out", "interrupted"]);
 
 function readString(v: unknown): string | undefined {
   return typeof v === "string" && v ? v : undefined;

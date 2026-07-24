@@ -4,27 +4,44 @@ Pattern mirrors tests/unit/routers/teams/test_work.py: override the
 TeamsContext dependency, monkeypatch _admin() with a MagicMock carrying
 AsyncMock methods, and monkeypatch get_workspace with a MagicMock.
 
-Onboarding is now one-shot per COMPANY (not per personal/trial owner):
-the ``PaperclipRepo`` onboarding claim gates the seed, so ``client.claim``
-/ ``client.release`` / ``client.record`` stand in for
-``claim_onboarding`` / ``release_onboarding_claim`` / ``record_onboarding_ids``.
+Onboarding is one-shot per COMPANY, fenced by the paperclip-companies OWNER
+row's ``onboarding_generation`` (spec PR-4 / ONBOARD-TABLE) -- ``client.claim``
+/ ``client.revert`` / ``client.record`` stand in for
+``claim_funnel_submission`` / ``revert_funnel_submission`` /
+``record_onboarding_ids``. This replaces the old ``__onboarded__`` sentinel's
+``claim_onboarding`` / ``release_onboarding_claim`` / ``record_onboarding_ids``
+vocabulary entirely.
 """
 
 from types import SimpleNamespace
-from unittest.mock import ANY, AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
 
 from main import app
 from core.auth import AuthContext, get_current_user
-from core.repositories.paperclip_repo import OnboardingClaimResult
+from core.repositories.paperclip_repo import FunnelClaimResult
 from core.services.paperclip_admin_client import PaperclipApiError
 import routers.onboarding as onboarding_mod
 from routers.teams import agents as agents_mod
 
 FRIDAY = {"id": "friday-uuid", "role": "ceo", "name": "Friday"}
 ATLAS = {"id": "atlas-uuid", "role": "recruiter", "name": "Atlas"}
+
+# The owner row resolve_owner_row(ctx.owner_id) returns. ``user_id`` is
+# deliberately DIFFERENT from ctx.owner_id ("user_abc") to catch any code
+# path that accidentally keys the claim/record/revert calls on ctx.owner_id
+# instead of owner_row.user_id -- for an org, those two are genuinely
+# different values (see PaperclipRepo.resolve_owner_row's docstring).
+# bootstrap_state/bootstrap_attempts are read by submit_brief when it builds
+# the onboarding dict passed to maybe_dispatch_bootstrap (see that call site).
+OWNER_ROW = SimpleNamespace(
+    user_id="owner-row-user",
+    onboarding_generation="01GEN",
+    bootstrap_state="not_started",
+    bootstrap_attempts=0,
+)
 
 
 def _personal_auth():
@@ -59,22 +76,19 @@ def client(ctx, monkeypatch):
     monkeypatch.setattr(onboarding_mod, "get_workspace", lambda: ws)
 
     repo = MagicMock()
-    repo.claim_onboarding = AsyncMock(return_value=OnboardingClaimResult.WON)
-    repo.release_onboarding_claim = AsyncMock()
+    repo.resolve_owner_row = AsyncMock(return_value=OWNER_ROW)
+    repo.claim_funnel_submission = AsyncMock(return_value=FunnelClaimResult.WON)
+    repo.revert_funnel_submission = AsyncMock()
     repo.record_onboarding_ids = AsyncMock()
-    repo.get_onboarding = AsyncMock(return_value=None)
     monkeypatch.setattr(onboarding_mod, "PaperclipRepo", lambda **kwargs: repo)
 
-    # The success path stamps onboarded_at on the container row (the
-    # per-container funnel-done marker /container/status surfaces).
-    mark_onboarded = AsyncMock()
-    monkeypatch.setattr(onboarding_mod.container_repo, "update_fields", mark_onboarded)
-
-    # Default: no first-contact token (agent email inactive / no active
-    # address yet) -- the inert-safe default so existing tests are
-    # unaffected. Individual tests override this to exercise the wiring.
-    mint_first_contact = AsyncMock(return_value=None)
-    monkeypatch.setattr(onboarding_mod, "mint_first_contact_token", mint_first_contact)
+    # The post-submit bootstrap-dispatch kickoff is fire-and-forget
+    # (asyncio.create_task) -- close the coroutine instead of letting it run
+    # against real DDB/gateway state in these router-level tests. Individual
+    # tests that care about the dispatch call assert directly against
+    # dispatch_bootstrap below.
+    dispatch_bootstrap = AsyncMock()
+    monkeypatch.setattr(onboarding_mod, "maybe_dispatch_bootstrap", dispatch_bootstrap)
 
     app.dependency_overrides[get_current_user] = _personal_auth
     app.dependency_overrides[onboarding_mod._ctx] = lambda: ctx
@@ -82,30 +96,13 @@ def client(ctx, monkeypatch):
         c.admin = admin
         c.ws = ws
         c.repo = repo
-        c.claim = repo.claim_onboarding
-        c.release = repo.release_onboarding_claim
+        c.resolve_owner_row = repo.resolve_owner_row
+        c.claim = repo.claim_funnel_submission
+        c.revert = repo.revert_funnel_submission
         c.record = repo.record_onboarding_ids
-        c.get_onboarding = repo.get_onboarding
-        c.mark_onboarded = mark_onboarded
-        c.mint_first_contact = mint_first_contact
+        c.dispatch_bootstrap = dispatch_bootstrap
         yield c
     app.dependency_overrides.clear()
-
-
-def test_success_stamps_onboarded_on_the_container(client):
-    """The per-container funnel-done marker: stamped on the owner's container
-    row so /container/status can report onboarded and the funnel never shows
-    to a second org member on the same container."""
-    resp = client.post(
-        "/api/v1/onboarding/brief",
-        json={"path": "new", "input": "An agency for restaurants"},
-    )
-
-    assert resp.status_code == 200
-    client.mark_onboarded.assert_awaited_once()
-    call = client.mark_onboarded.await_args
-    assert call.args[0] == "user_abc"  # ctx.owner_id (container owner)
-    assert "onboarded_at" in call.args[1]
 
 
 def test_fresh_submit_stages_files_without_seeding_a_board_issue(client):
@@ -121,13 +118,26 @@ def test_fresh_submit_stages_files_without_seeding_a_board_issue(client):
     assert body["project_id"] == "proj-1"
 
     brief_call = client.ws.write_file.call_args_list[0]
-    assert brief_call.args[0] == "user_abc"
+    assert brief_call.args[0] == "user_abc"  # ctx.owner_id — the workspace path
     assert brief_call.args[1] == "workspace-friday-uuid/BRIEF.md"
     assert "https://acme.com" in brief_call.args[2]
 
     # The board is no longer seeded on submit — Friday fills it at the END of
     # her research session with the three next-move tasks she proposes.
     client.admin.create_issue.assert_not_called()
+
+
+def test_success_does_not_touch_the_containers_table(client):
+    """S2 (containers.onboarded_at) is deleted entirely -- a successful
+    submit only advances funnel_state on the paperclip-companies owner row.
+    There is no container_repo import left in the router to monkeypatch, so
+    this asserts the module attribute is simply gone."""
+    resp = client.post(
+        "/api/v1/onboarding/brief",
+        json={"path": "new", "input": "An agency for restaurants"},
+    )
+    assert resp.status_code == 200
+    assert not hasattr(onboarding_mod, "container_repo")
 
 
 def test_no_friday_yet_returns_409(client):
@@ -212,7 +222,7 @@ def test_too_short_input_still_rejected(client):
     client.ws.write_file.assert_not_called()
 
 
-# --- Company-scoped onboarding claim + goal/project seeding ------------------
+# --- Owner-row resolution + generation-fenced claim ---------------------------
 
 
 def test_org_admin_is_no_longer_rejected(client, monkeypatch):
@@ -235,24 +245,56 @@ def test_seeds_goal_and_project_before_staging_files(client):
     client.admin.create_project.assert_awaited_once()
 
 
-def test_same_holder_threads_through_claim_and_record(client):
-    """The route generates one holder per request and must pass the SAME
-    value to claim_onboarding and record_onboarding_ids -- record's guard
-    (attribute_exists(user_id) AND holder = :h) would reject even the
-    happy path if these ever drifted apart."""
+def test_claim_and_record_use_the_owner_rows_user_id_and_generation(client):
+    """The route must fence claim/record on owner_row.user_id +
+    owner_row.onboarding_generation -- NOT ctx.owner_id (which, for an org,
+    is a DIFFERENT value: the Clerk org_id, not the row's PK) and NOT
+    ctx.company_id (the old sentinel's key, no longer relevant)."""
     resp = client.post("/api/v1/onboarding/brief", json={"path": "new", "input": "An agency"})
 
     assert resp.status_code == 200
-    claim_holder = client.claim.await_args.kwargs["holder"]
-    record_holder = client.record.await_args.kwargs["holder"]
-    assert claim_holder == record_holder
-    client.record.assert_awaited_once_with("comp-1", goal_id="goal-1", project_id="proj-1", holder=claim_holder)
+    # Strong read on the claim path (read-then-write the same row); the
+    # per-poll get_onboarding_state path stays eventually consistent.
+    client.resolve_owner_row.assert_awaited_once_with("user_abc", consistent_read=True)  # ctx.owner_id
+    # DDB key is owner_row.user_id; submitted_by is auth.user_id (the ACTUAL
+    # submitting member); the realtime nudge rides owner_id=ctx.owner_id (the
+    # org broadcast key). For an org all three are genuinely distinct values;
+    # in this personal-owner fixture submitted_by == owner_id == "user_abc".
+    client.claim.assert_awaited_once_with(
+        "owner-row-user", onboarding_generation="01GEN", submitted_by="user_abc", owner_id="user_abc"
+    )
+    client.record.assert_awaited_once_with(
+        "owner-row-user", onboarding_generation="01GEN", goal_id="goal-1", project_id="proj-1", owner_id="user_abc"
+    )
+
+
+def test_no_owner_row_yet_returns_409(client):
+    """No paperclip-companies row for this owner yet -- nothing to fence a
+    claim against. The client already retries on 409."""
+    client.resolve_owner_row.return_value = None
+
+    resp = client.post("/api/v1/onboarding/brief", json={"path": "new", "input": "An agency"})
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "not_ready"
+    client.claim.assert_not_awaited()
+
+
+def test_owner_row_without_onboarding_generation_returns_409(client):
+    """Defensive: a row that predates G2 (should not happen post-ONBOARD-TABLE
+    for any row provision_org just wrote) is treated the same as no row."""
+    client.resolve_owner_row.return_value = SimpleNamespace(user_id="owner-row-user", onboarding_generation=None)
+
+    resp = client.post("/api/v1/onboarding/brief", json={"path": "new", "input": "An agency"})
+
+    assert resp.status_code == 409
+    client.claim.assert_not_awaited()
 
 
 def test_second_submit_for_same_company_is_a_noop(client):
-    """SEEDED is a durably-done company (seeded_at on a non-rolled-back claim)
-    -- the goal + project exist, so a peer here is already_submitted."""
-    client.claim.return_value = OnboardingClaimResult.SEEDED
+    """ALREADY_SUBMITTED means a peer's claim already won (or the funnel
+    already completed) on the SAME generation this caller just read."""
+    client.claim.return_value = FunnelClaimResult.ALREADY_SUBMITTED
 
     resp = client.post("/api/v1/onboarding/brief", json={"path": "new", "input": "An agency"})
 
@@ -261,13 +303,14 @@ def test_second_submit_for_same_company_is_a_noop(client):
     client.ws.write_file.assert_not_called()
 
 
-def test_in_flight_claim_is_a_retryable_409_not_already_submitted(client):
-    """A peer's claim being merely in-flight (not yet SEEDED) must NOT be
-    reported as already_submitted -- that peer's own submit could still
-    fail, and this caller would then be permanently waved into a company
-    with no goal or project. It must be a retryable 409 instead, matching
-    the other not_ready cases the client already retries on."""
-    client.claim.return_value = OnboardingClaimResult.IN_FLIGHT
+def test_stale_generation_claim_is_a_retryable_409_not_already_submitted(client):
+    """A superseded onboarding_generation (the company was reprovisioned
+    between this caller's read and its write) must NOT be reported as
+    already_submitted -- the caller was holding a stale view of the company,
+    not colliding with a duplicate submit. It must be a retryable 409
+    instead, matching the other not_ready cases the client already retries
+    on."""
+    client.claim.return_value = FunnelClaimResult.STALE_GENERATION
 
     resp = client.post("/api/v1/onboarding/brief", json={"path": "new", "input": "An agency"})
 
@@ -275,37 +318,37 @@ def test_in_flight_claim_is_a_retryable_409_not_already_submitted(client):
     assert resp.json()["detail"] == "not_ready"
     client.admin.create_goal.assert_not_awaited()
     client.ws.write_file.assert_not_called()
-    # Not the caller's claim to release -- it never held one.
-    client.release.assert_not_awaited()
+    # Not this caller's claim to revert -- it never won one.
+    client.revert.assert_not_awaited()
 
 
-def test_paperclip_not_ready_releases_the_claim(client):
+def test_paperclip_not_ready_reverts_the_claim(client):
     client.admin.list_agents = AsyncMock(side_effect=PaperclipApiError("boom", status_code=503, body=None))
 
     resp = client.post("/api/v1/onboarding/brief", json={"path": "new", "input": "An agency"})
 
     assert resp.status_code == 409
-    client.release.assert_awaited_once_with("comp-1", holder=ANY)
+    client.revert.assert_awaited_once_with("owner-row-user", onboarding_generation="01GEN", owner_id="user_abc")
 
 
-def test_seed_failure_releases_the_claim(client):
+def test_seed_failure_reverts_the_claim(client):
     client.admin.create_goal = AsyncMock(side_effect=RuntimeError("upstream down"))
 
     resp = client.post("/api/v1/onboarding/brief", json={"path": "new", "input": "An agency"})
 
     assert resp.status_code == 409
-    client.release.assert_awaited_once_with("comp-1", holder=ANY)
+    client.revert.assert_awaited_once_with("owner-row-user", onboarding_generation="01GEN", owner_id="user_abc")
     client.ws.write_file.assert_not_called()
 
 
 # --- Post-seed failure rolls back both seeded rows (FIX 1) -------------------
 
 
-def test_post_seed_failure_rolls_back_goal_and_project_then_releases_claim(client):
+def test_post_seed_failure_rolls_back_goal_and_project_then_reverts_claim(client):
     """Once seed_goal_and_project has returned ids, a later failure (e.g. a
     DynamoDB throttle on record_onboarding_ids, which is NOT in the caught
     (PaperclipApiError, httpx.HTTPError, RuntimeError) set and so escapes as
-    a raw 500) must delete both seeded Paperclip rows before releasing the
+    a raw 500) must delete both seeded Paperclip rows before reverting the
     claim. Otherwise a client retry wins a fresh claim and seeds a SECOND
     goal/project pair for the same company."""
     client.record.side_effect = Exception("dynamodb throttled")
@@ -315,12 +358,12 @@ def test_post_seed_failure_rolls_back_goal_and_project_then_releases_claim(clien
 
     client.admin.delete_project.assert_awaited_once_with(session_cookie="cookie", project_id="proj-1")
     client.admin.delete_goal.assert_awaited_once_with(session_cookie="cookie", goal_id="goal-1")
-    client.release.assert_awaited_once_with("comp-1", holder=ANY)
+    client.revert.assert_awaited_once_with("owner-row-user", onboarding_generation="01GEN", owner_id="user_abc")
 
 
 def test_post_seed_cleanup_is_failure_tolerant_and_preserves_the_original_error(client):
     """A failure deleting the project must not skip the goal delete or the
-    claim release, and the cleanup failure itself must not mask the
+    claim revert, and the cleanup failure itself must not mask the
     ORIGINAL error the caller sees."""
     client.record.side_effect = Exception("dynamodb throttled")
     client.admin.delete_project.side_effect = Exception("project delete also failed")
@@ -329,56 +372,46 @@ def test_post_seed_cleanup_is_failure_tolerant_and_preserves_the_original_error(
         client.post("/api/v1/onboarding/brief", json={"path": "new", "input": "An agency"})
 
     client.admin.delete_goal.assert_awaited_once_with(session_cookie="cookie", goal_id="goal-1")
-    client.release.assert_awaited_once_with("comp-1", holder=ANY)
+    client.revert.assert_awaited_once_with("owner-row-user", onboarding_generation="01GEN", owner_id="user_abc")
 
 
-# --- Friday's first email (first-contact token wiring) -----------------------
+# --- Server-owned bootstrap dispatch kickoff (spec PR-6, BOOTSTRAP) ----------
 
 
-def test_mints_first_contact_token_with_owner_id_and_email(client):
-    """owner_id/owner_email come from ctx/auth, already in scope here."""
+def test_successful_submit_kicks_off_bootstrap_dispatch(client):
+    """A successful /brief submit dispatches the bootstrap kickoff in the
+    background, in case the runtime is ALREADY up -- see
+    core.services.bootstrap_dispatcher's module docstring. Fire-and-forget:
+    the response doesn't wait on it, but the coroutine is scheduled with
+    ctx.owner_id AND the onboarding dict built from the post-claim state --
+    so the dispatcher never re-reads the row (see the call site's comment)."""
     resp = client.post(
         "/api/v1/onboarding/brief",
         json={"path": "new", "input": "An agency"},
     )
     assert resp.status_code == 200
-    client.mint_first_contact.assert_awaited_once()
-    kwargs = client.mint_first_contact.await_args.kwargs
-    assert kwargs["owner_id"] == "user_abc"  # ctx.owner_id
-    assert kwargs["owner_email"] == "max@acme.com"  # auth.email
-    assert isinstance(kwargs["subject"], str) and kwargs["subject"]
-
-
-def test_bootstrap_carries_the_first_contact_token_when_minted(client):
-    client.mint_first_contact.return_value = "TOKEN_XYZ"
-
-    resp = client.post(
-        "/api/v1/onboarding/brief",
-        json={"path": "new", "input": "An agency"},
+    client.dispatch_bootstrap.assert_awaited_once_with(
+        "user_abc",  # ctx.owner_id
+        onboarding={
+            "onboarding_generation": "01GEN",
+            "funnel_state": "submitted",
+            "bootstrap_state": "not_started",
+            "bootstrap_attempts": 0,
+            "user_id": "owner-row-user",
+            "onboarding_submitted_by": "user_abc",  # auth.user_id -- the actual submitter
+        },
     )
-    assert resp.status_code == 200
-
-    bootstrap_call = client.ws.write_file.call_args_list[1]
-    assert bootstrap_call.args[1] == "workspace-friday-uuid/BOOTSTRAP.md"
-    assert "TOKEN_XYZ" in bootstrap_call.args[2]
-    assert "scripts/isol8-mail.sh" in bootstrap_call.args[2]
 
 
-def test_bootstrap_omits_email_step_when_no_token_minted(client):
-    """Inert-safe default: mint_first_contact_token returning None (agent
-    email inactive, or no active address yet) must leave BOOTSTRAP.md with
-    no email step at all."""
-    client.mint_first_contact.return_value = None
+def test_already_submitted_does_not_kick_off_bootstrap_dispatch(client):
+    """No fresh claim, no new dispatch to kick off -- the container/status
+    poll path is what handles a bootstrap for an already-submitted funnel."""
+    client.claim.return_value = FunnelClaimResult.ALREADY_SUBMITTED
 
-    resp = client.post(
-        "/api/v1/onboarding/brief",
-        json={"path": "new", "input": "An agency"},
-    )
-    assert resp.status_code == 200
+    resp = client.post("/api/v1/onboarding/brief", json={"path": "new", "input": "An agency"})
 
-    bootstrap_call = client.ws.write_file.call_args_list[1]
-    assert bootstrap_call.args[1] == "workspace-friday-uuid/BOOTSTRAP.md"
-    assert "scripts/isol8-mail.sh" not in bootstrap_call.args[2]
+    assert resp.json() == {"status": "already_submitted"}
+    client.dispatch_bootstrap.assert_not_awaited()
 
 
 def test_seed_only_failure_does_not_attempt_rollback(client):

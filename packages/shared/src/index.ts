@@ -29,12 +29,28 @@ export type {
   ClassifiedStatus,
   ContainerStatusBody,
 } from "./hooks/containerStatus";
+export { deriveUIPhase } from "./hooks/statusContract";
+export type {
+  BootstrapState,
+  DerivedUIPhase,
+  FunnelState,
+  Lifecycle,
+  RuntimePhase,
+  StatusContract,
+  UIPhase,
+} from "./hooks/statusContract";
 export {
   PROVISION_IDEAS,
   PROVISION_IDEA_ROTATION_MS,
   PROVISION_TIMEOUT_MS,
   formatProvisionElapsed,
 } from "./hooks/provisioningCopy";
+export { useOnboardingStatus } from "./hooks/useOnboardingStatus";
+export type {
+  UseOnboardingStatusOptions,
+  UseOnboardingStatusResult,
+  VisibilityAdapter,
+} from "./hooks/useOnboardingStatus";
 
 export { ApiError } from "./api/error";
 export { deriveWebSocketUrl } from "./api/url";

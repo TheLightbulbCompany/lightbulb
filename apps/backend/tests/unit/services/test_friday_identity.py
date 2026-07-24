@@ -86,15 +86,15 @@ async def test_personal_owner_writes_four_files(monkeypatch):
         workspace=workspace,
     )
 
-    # Seven files written under the right path: 6 markdown templates + the
+    # Six files written under the right path: 5 markdown templates + the
     # .openclaw/workspace-state.json marker that prevents OpenClaw's boot-time
-    # reconcile from deleting BOOTSTRAP.md.
-    assert workspace.write_file_if_missing.call_count == 7
+    # reconcile from treating the customized persona files as a stale,
+    # uncompleted setup wizard.
+    assert workspace.write_file_if_missing.call_count == 6
     paths = [call.args[1] for call in workspace.write_file_if_missing.call_args_list]
     assert all(p.startswith("workspace-f47ac10b-58cc-4372-a567-0e02b2c3d479/") for p in paths)
     assert sorted(p.rsplit("/", 1)[-1] for p in paths) == [
         "AGENTS.md",
-        "BOOTSTRAP.md",
         "IDENTITY.md",
         "MEMORY.md",
         "SOUL.md",
@@ -109,7 +109,12 @@ async def test_personal_owner_writes_four_files(monkeypatch):
     assert "Friday" in contents_by_name["IDENTITY.md"]
     assert "Sam's AI company" in contents_by_name["SOUL.md"]
     assert "sam@example.com" in contents_by_name["USER.md"]
-    assert "Sam" in contents_by_name["BOOTSTRAP.md"]
+
+    # No BOOTSTRAP.md — deleted (spec PR-6, BOOTSTRAP): OpenClaw's boot-time
+    # reconcile never surfaces a seeded BOOTSTRAP.md into Friday's context
+    # (verified inert against the pinned fork), so the file was written but
+    # never read. The kickoff is a server-dispatched chat.send instead.
+    assert "BOOTSTRAP.md" not in contents_by_name
 
     # MEMORY.md is seeded as a structured durable-memory scaffold so every
     # Friday starts with a place to record decisions / preferences / facts.
@@ -119,19 +124,6 @@ async def test_personal_owner_writes_four_files(monkeypatch):
     assert "## Operating Decisions" in memory_md
     assert "## Known Issues & Workarounds" in memory_md
     assert "## Lessons Learned" in memory_md
-
-    # BOOTSTRAP.md must explicitly forbid tool use on the opening turn — the
-    # earlier template said "Delete this file" and frontier models would
-    # interpret that as an actionable task ahead of greeting the user.
-    bootstrap_md = contents_by_name["BOOTSTRAP.md"].lower()
-    assert "text only" in bootstrap_md
-    assert "do not run any tools" in bootstrap_md
-    assert "do not try to delete this file" in bootstrap_md
-
-    # BOOTSTRAP greeting must plant the orchestration seed when the user
-    # describes a goal — telegraphs Friday's concierge capability so users
-    # know to hand her multi-step work.
-    assert "orchestrate" in bootstrap_md or "specialists" in bootstrap_md
 
     # AGENTS.md is the orchestration playbook. Friday's coordination now goes
     # through the bundled `paperclip` skill (curl-based REST), NOT the MCP — so
@@ -236,16 +228,16 @@ async def test_skipped_existing_when_files_already_present(monkeypatch):
         workspace=workspace,
     )
 
-    # Still attempted all seven writes (6 markdown + 1 state file);
+    # Still attempted all six writes (5 markdown + 1 state file);
     # write_file_if_missing handles the skip.
-    assert workspace.write_file_if_missing.call_count == 7
+    assert workspace.write_file_if_missing.call_count == 6
 
 
 @pytest.mark.asyncio
 async def test_state_file_written_first_with_setup_completed(monkeypatch):
     """workspace-state.json:
     - is the FIRST write (so a partial template-write failure still leaves
-      OpenClaw in setup-completed state and BOOTSTRAP.md isn't deleted)
+      OpenClaw in setup-completed state)
     - lives under .openclaw/ at the right path
     - contains setupCompletedAt (the field upstream's reconcile checks)
     """
@@ -339,8 +331,8 @@ async def test_state_file_failure_does_not_block_template_writes(monkeypatch):
     still write (best-effort: state file is the floor, not the ceiling)."""
     workspace = MagicMock()
 
-    # First call (state file) raises; subsequent calls (6 templates) succeed.
-    side_effects = [OSError("disk full")] + [True] * 6
+    # First call (state file) raises; subsequent calls (5 templates) succeed.
+    side_effects = [OSError("disk full")] + [True] * 5
     workspace.write_file_if_missing = MagicMock(side_effect=side_effects)
 
     async def fake_resolve(owner_id):
@@ -361,10 +353,10 @@ async def test_state_file_failure_does_not_block_template_writes(monkeypatch):
         workspace=workspace,
     )
 
-    # 1 state-file attempt (failed) + 6 template writes = 7 calls.
-    assert workspace.write_file_if_missing.call_count == 7
+    # 1 state-file attempt (failed) + 5 template writes = 6 calls.
+    assert workspace.write_file_if_missing.call_count == 6
     template_names = sorted(c.args[1].rsplit("/", 1)[-1] for c in workspace.write_file_if_missing.call_args_list[1:])
-    assert template_names == ["AGENTS.md", "BOOTSTRAP.md", "IDENTITY.md", "MEMORY.md", "SOUL.md", "USER.md"]
+    assert template_names == ["AGENTS.md", "IDENTITY.md", "MEMORY.md", "SOUL.md", "USER.md"]
 
 
 @pytest.mark.asyncio

@@ -299,6 +299,17 @@ describe("reduceTeamsRunEvent", () => {
     ).toEqual([]);
   });
 
+  it("maps interrupted (graceful BFF shutdown) to failure, same as failed/timed_out", () => {
+    // Regression: interrupted was a terminal status with no case in the
+    // reducer, so it fell through to `return []` and left the "working"
+    // toast stuck at its Infinity duration forever.
+    const s = createRunToastState();
+    reduceTeamsRunEvent(s, "teams.heartbeat.run.queued", { runId: "t8", agentId: "pa1" }, bgCtx);
+    expect(
+      reduceTeamsRunEvent(s, "teams.heartbeat.run.status", { runId: "t8", agentId: "pa1", status: "interrupted" }, bgCtx),
+    ).toEqual([{ kind: "failure", key: "teams:t8", agentId: "pa1", source: "teams" }]);
+  });
+
   it("ignores other teams events and malformed payloads", () => {
     const s = createRunToastState();
     expect(reduceTeamsRunEvent(s, "teams.activity.logged", { runId: "x" }, bgCtx)).toEqual([]);

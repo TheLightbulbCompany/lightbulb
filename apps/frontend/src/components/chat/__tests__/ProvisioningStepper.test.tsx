@@ -194,7 +194,11 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     };
     useProvMock.mockReturnValue({
       ...base,
-      container: { status: "provisioning", phase: "provisioning", substatus: "task_running" },
+      container: {
+        container_status: "provisioning",
+        runtime_phase: "provisioning",
+        container_substatus: "task_running",
+      },
     });
     const { rerender, unmount } = render(
       <ProvisioningStepper>
@@ -206,7 +210,11 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     // Earlier provisioning (no task yet) stays on the container step.
     useProvMock.mockReturnValue({
       ...base,
-      container: { status: "provisioning", phase: "provisioning", substatus: "service_created" },
+      container: {
+        container_status: "provisioning",
+        runtime_phase: "provisioning",
+        container_substatus: "service_created",
+      },
     });
     rerender(
       <ProvisioningStepper>
@@ -219,7 +227,11 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     // OpenClaw is booting channels/sidecars.
     useProvMock.mockReturnValue({
       ...base,
-      container: { status: "running", phase: "starting", substatus: "gateway_healthy" },
+      container: {
+        container_status: "running",
+        runtime_phase: "starting",
+        container_substatus: "gateway_healthy",
+      },
     });
     rerender(
       <ProvisioningStepper>
@@ -234,7 +246,11 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     gatewayHealthData = { ok: true };
     useProvMock.mockReturnValue({
       ...base,
-      container: { status: "running", phase: "starting", substatus: "gateway_healthy" },
+      container: {
+        container_status: "running",
+        runtime_phase: "starting",
+        container_substatus: "gateway_healthy",
+      },
     });
     render(
       <ProvisioningStepper>
@@ -254,7 +270,7 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     const refresh = vi.fn();
     useProvMock.mockReturnValue({
       phase: "normal",
-      container: { status: "running", phase: "starting" },
+      container: { container_status: "running", runtime_phase: "starting" },
       blocked: null,
       refreshInterval: 3000,
       refresh,
@@ -465,7 +481,7 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     billingMockAccount = null;
     useProvMock.mockReturnValue({
       phase: "normal",
-      container: { status: "provisioning", phase: "provisioning" },
+      container: { container_status: "provisioning", runtime_phase: "provisioning" },
       blocked: null,
       refreshInterval: 3000,
       refresh: vi.fn(),
@@ -555,7 +571,11 @@ describe("ProvisioningStepper blocked-state rendering", () => {
       blocked: null,
       refreshInterval: 3000,
       refresh: vi.fn(),
-      container: { status: "provisioning", phase: "provisioning", substatus: "service_created" },
+      container: {
+        container_status: "provisioning",
+        runtime_phase: "provisioning",
+        container_substatus: "service_created",
+      },
     });
 
     render(
@@ -686,9 +706,9 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     useProvMock.mockReturnValue({
       phase: "normal",
       container: {
-        status: "error",
-        substatus: "provision_failed",
-        phase: "provisioning",
+        container_status: "error",
+        container_substatus: "provision_failed",
+        runtime_phase: "provisioning",
         last_error: "ECS task failed to start",
       },
       blocked: null,
@@ -716,9 +736,9 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     useProvMock.mockReturnValue({
       phase: "normal",
       container: {
-        status: "error",
-        substatus: "deployment_failed",
-        phase: "provisioning",
+        container_status: "error",
+        container_substatus: "deployment_failed",
+        runtime_phase: "provisioning",
         last_error: "deployment rolled back",
       },
       blocked: null,
@@ -744,9 +764,9 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     useProvMock.mockReturnValue({
       phase: "normal",
       container: {
-        status: "error",
-        substatus: null,
-        phase: "provisioning",
+        container_status: "error",
+        container_substatus: null,
+        runtime_phase: "provisioning",
         last_error: "retries exhausted",
       },
       blocked: null,
@@ -774,9 +794,9 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     useProvMock.mockReturnValue({
       phase: "normal",
       container: {
-        status: "error",
-        substatus: "error_retrying",
-        phase: "provisioning",
+        container_status: "error",
+        container_substatus: "error_retrying",
+        runtime_phase: "provisioning",
         last_error: "transient image pull error",
       },
       blocked: null,
@@ -795,14 +815,20 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     expect(screen.getByText(/retrying automatically/i)).toBeInTheDocument();
   });
 
-  it("renders the ready app plus a non-blocking Teams-degraded notice when teams_status=failed", () => {
-    // teams_status is a TOP-LEVEL, non-blocking signal: Teams seeding failed but
-    // the container is healthy and chat works. The app (children) must render,
+  it("renders the ready app plus a non-blocking Teams-degraded notice when teams_state=failed", () => {
+    // teams_state is a contract field carrying a NON-BLOCKING signal: Teams
+    // seeding failed but the container is healthy and chat works. The app
+    // (children) must render,
     // with a small dismissible "Teams needs attention" affordance over it —
     // never a blocking interstitial.
     useProvMock.mockReturnValue({
       phase: "normal",
-      container: { status: "running", phase: "ready", onboarded: true, teams_status: "failed" },
+      container: {
+        container_status: "running",
+        runtime_phase: "ready",
+        onboarded: true,
+        teams_state: "failed",
+      },
       blocked: null,
       refreshInterval: 3000,
       refresh: vi.fn(),
@@ -823,7 +849,7 @@ describe("ProvisioningStepper blocked-state rendering", () => {
   it("does not render the Teams-degraded notice on a healthy ready container", () => {
     useProvMock.mockReturnValue({
       phase: "normal",
-      container: { status: "running", phase: "ready", onboarded: true },
+      container: { container_status: "running", runtime_phase: "ready", onboarded: true },
       blocked: null,
       refreshInterval: 3000,
       refresh: vi.fn(),
@@ -888,7 +914,7 @@ describe("ProvisioningStepper per-container onboarding gate", () => {
   });
 
   it("shows the funnel when the container is not onboarded and the per-user marker is unset", () => {
-    renderWith({ status: "running", phase: "ready", onboarded: false });
+    renderWith({ container_status: "running", runtime_phase: "ready", onboarded: false });
 
     expect(screen.getByText(/get started/i)).toBeInTheDocument();
     expect(screen.queryByText("children")).not.toBeInTheDocument();
@@ -897,7 +923,7 @@ describe("ProvisioningStepper per-container onboarding gate", () => {
   it("shows the funnel when `onboarded` is absent (older backend / new container)", () => {
     // A backend that doesn't send the field, or a brand-new container, must
     // still show the funnel — absence is not "onboarded".
-    renderWith({ status: "running", phase: "ready" });
+    renderWith({ container_status: "running", runtime_phase: "ready" });
 
     expect(screen.getByText(/get started/i)).toBeInTheDocument();
     expect(screen.queryByText("children")).not.toBeInTheDocument();
@@ -907,7 +933,7 @@ describe("ProvisioningStepper per-container onboarding gate", () => {
     // The whole point of the per-container flag: a second org member on an
     // already-onboarded container (their own per-user marker still empty)
     // goes straight to the app.
-    renderWith({ status: "running", phase: "ready", onboarded: true });
+    renderWith({ container_status: "running", runtime_phase: "ready", onboarded: true });
 
     expect(screen.queryByText(/get started/i)).not.toBeInTheDocument();
     expect(screen.getByText("children")).toBeInTheDocument();
@@ -921,29 +947,28 @@ describe("ProvisioningStepper per-container onboarding gate", () => {
     // `briefSubmitted === true`. Reading the stale flag as a gate suppressed
     // the funnel permanently, so a legitimately reprovisioned org never
     // re-onboarded. `container.onboarded` is authoritative — the funnel MUST
-    // show. (A `true` present at first mount is treated as stale: the baseline
-    // captures it and never arms the same-session latch.)
+    // show regardless of Clerk metadata (spec PR-9, CLIENT-HOOK deleted the
+    // same-session flash-bridge entirely, so there is no bridge state to
+    // even consider a stale value stale — `onboarded` is the SOLE input).
     clerkMockUser = {
       id: "user_1",
       unsafeMetadata: { firstRun: { briefSubmitted: true } },
     };
-    renderWith({ status: "running", phase: "ready", onboarded: false });
+    renderWith({ container_status: "running", runtime_phase: "ready", onboarded: false });
 
     expect(screen.getByText(/get started/i)).toBeInTheDocument();
     expect(screen.queryByText("children")).not.toBeInTheDocument();
   });
 
-  it("suppresses the funnel after THIS session's submit (no flash) even before the poll flips onboarded", () => {
-    // Same-session flash-bridge. The funnel is mounted with briefSubmitted
-    // unset, so it shows. Then the user submits: FirstRunFunnel's
-    // writeFirstRun sets briefSubmitted:true in Clerk metadata, re-rendering
-    // useUser. That false->true edge WHILE MOUNTED arms the in-memory latch,
-    // dismissing the funnel immediately instead of leaving it up until the
-    // next /container/status poll flips onboarded:true — while onboarded is
-    // still false. This is the ONLY thing briefSubmitted is allowed to do
-    // (contrast the stale-at-mount test above).
+  it("keeps the funnel up on a Clerk-metadata-only change — no same-session flash-bridge anymore", () => {
+    // spec PR-9, CLIENT-HOOK deleted the `briefBaselineRef`/
+    // `sessionBriefSubmittedRef` same-session flash-bridge. The funnel now
+    // dismisses SOLELY on the backend's own `container.onboarded` flipping
+    // true (on the next shared bounded-loop poll) — a Clerk `firstRun`
+    // metadata write alone (with `onboarded` still false on the mocked
+    // hook result) must NOT dismiss it.
     clerkMockUser = { id: "user_1", unsafeMetadata: {} };
-    const container = { status: "running", phase: "ready", onboarded: false };
+    const container = { container_status: "running", runtime_phase: "ready", onboarded: false };
     useProvMock.mockReturnValue({
       phase: "normal",
       container,
@@ -959,7 +984,8 @@ describe("ProvisioningStepper per-container onboarding gate", () => {
     // Funnel shows: onboarded false, no submit yet this session.
     expect(screen.getByText(/get started/i)).toBeInTheDocument();
 
-    // This session's submit lands: briefSubmitted flips false -> true.
+    // Clerk metadata alone flips (briefSubmitted:true) — but the composed
+    // contract's `onboarded` is UNCHANGED (still false).
     clerkMockUser = {
       id: "user_1",
       unsafeMetadata: { firstRun: { briefSubmitted: true } },
@@ -970,7 +996,24 @@ describe("ProvisioningStepper per-container onboarding gate", () => {
       </ProvisioningStepper>,
     );
 
-    // Latch armed -> funnel dismissed at once, even though onboarded is still false.
+    // No flash-bridge left to dismiss it early — the funnel stays up until
+    // the backend's own `onboarded` flips true.
+    expect(screen.getByText(/get started/i)).toBeInTheDocument();
+    expect(screen.queryByText("children")).not.toBeInTheDocument();
+
+    // The next shared-loop poll reports onboarded:true — NOW it dismisses.
+    useProvMock.mockReturnValue({
+      phase: "normal",
+      container: { ...container, onboarded: true },
+      blocked: null,
+      refreshInterval: 3000,
+      refresh: vi.fn(),
+    });
+    rerender(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
     expect(screen.queryByText(/get started/i)).not.toBeInTheDocument();
     expect(screen.getByText("children")).toBeInTheDocument();
   });
@@ -984,7 +1027,7 @@ describe("ProvisioningStepper per-container onboarding gate", () => {
     clerkMockUser = { id: "user_1", unsafeMetadata: {} };
     useProvMock.mockReturnValue({
       phase: "blocked",
-      container: { status: "provisioning", phase: "provisioning", onboarded: false },
+      container: { container_status: "provisioning", runtime_phase: "provisioning", onboarded: false },
       blocked: {
         code: "credits_required",
         title: "Top up Claude credits to start your container",
@@ -1022,9 +1065,9 @@ describe("ProvisioningStepper per-container onboarding gate", () => {
     useProvMock.mockReturnValue({
       phase: "normal",
       container: {
-        status: "error",
-        substatus: "provision_failed",
-        phase: "provisioning",
+        container_status: "error",
+        container_substatus: "provision_failed",
+        runtime_phase: "provisioning",
         onboarded: false,
         last_error: "ECS task failed to start",
       },
@@ -1051,7 +1094,7 @@ describe("ProvisioningStepper per-container onboarding gate", () => {
     // not onboarded => neutral loader, neither children nor the funnel.
     clerkMockIsLoaded = false;
     clerkMockUser = null;
-    const { container } = renderWith({ status: "running", phase: "ready", onboarded: false });
+    const { container } = renderWith({ container_status: "running", runtime_phase: "ready", onboarded: false });
 
     expect(screen.queryByText("children")).not.toBeInTheDocument();
     expect(screen.queryByText(/get started/i)).not.toBeInTheDocument();
@@ -1070,7 +1113,7 @@ describe("ProvisioningStepper per-container onboarding gate", () => {
     // authoritative: hold a loader, never the dock, until `user` resolves.
     clerkMockUser = null; // loaded-but-null (isLoaded stays the default true)
     clerkMockIsLoaded = true;
-    const { container } = renderWith({ status: "running", phase: "ready", onboarded: false });
+    const { container } = renderWith({ container_status: "running", runtime_phase: "ready", onboarded: false });
 
     expect(screen.queryByText("children")).not.toBeInTheDocument();
     expect(screen.queryByText(/get started/i)).not.toBeInTheDocument();
@@ -1083,7 +1126,7 @@ describe("ProvisioningStepper per-container onboarding gate", () => {
     // never permanently stuck on the loader, and never leaks the dock.
     clerkMockUser = null;
     clerkMockIsLoaded = true;
-    const container = { status: "running", phase: "ready", onboarded: false };
+    const container = { container_status: "running", runtime_phase: "ready", onboarded: false };
     useProvMock.mockReturnValue({
       phase: "normal",
       container,
@@ -1121,7 +1164,7 @@ describe("ProvisioningStepper per-container onboarding gate", () => {
     clerkMockOrganization = { id: "org_1", name: "Acme" };
     billingMockIsSubscribed = true;
     billingMockAccount = { provider_choice: "bedrock_claude" };
-    renderWith({ status: "running", phase: "ready", onboarded: false });
+    renderWith({ container_status: "running", runtime_phase: "ready", onboarded: false });
 
     expect(screen.getByText(/get started/i)).toBeInTheDocument();
     expect(screen.queryByText("children")).not.toBeInTheDocument();
@@ -1134,283 +1177,27 @@ describe("ProvisioningStepper per-container onboarding gate", () => {
     clerkMockUser = { id: "user_1", unsafeMetadata: {} };
     billingMockIsSubscribed = true;
     billingMockAccount = { provider_choice: null, subscription_status: "trial_local" };
-    renderWith({ status: "running", phase: "ready", onboarded: false });
+    renderWith({ container_status: "running", runtime_phase: "ready", onboarded: false });
 
     expect(screen.getByText(/get started/i)).toBeInTheDocument();
     expect(screen.queryByText("children")).not.toBeInTheDocument();
   });
 });
 
-describe("ProvisioningStepper cold-start poll re-arming (derived from phase)", () => {
-  // These tests assert on the OPTIONS the stepper passes into
-  // useProvisioningState across renders — captured via the mock's call log.
-  // Polling cadence is DERIVED from the current backend phase (not latched):
-  // 3s while pre-ready, 0 at ready/parked (the WS is the live channel then).
-  // The prod freeze these guard against belonged to the deleted one-way
-  // `reachedReady` latch: it zeroed the interval on the first ready and never
-  // re-armed, so a tab whose backend later regressed to a cold start
-  // (reprovision / wipe / scale-to-zero) rendered the cold-start UI with
-  // refreshInterval 0 and froze on the last stale pre-ready snapshot forever.
-  // Deriving from the live phase re-arms automatically.
-  const lastOptions = () => {
-    const calls = useProvMock.mock.calls;
-    return calls[calls.length - 1]?.[0] as
-      | { refreshInterval?: number; revalidateOnFocus?: boolean }
-      | undefined;
-  };
-
-  beforeEach(() => {
-    useProvMock.mockReset();
-    apiPost.mockClear();
-    apiGet.mockClear();
-    apiPut.mockClear();
-    apiDel.mockClear();
-    billingMockIsSubscribed = true;
-    billingMockAccount = { provider_choice: "bedrock_claude" };
-    billingMockRefresh = vi.fn();
-    billingMockStartTeamCheckout.mockClear();
-    clerkMockUser = null;
-    clerkMockIsLoaded = true;
-    gatewayHealthData = null;
-  });
-
-  it("re-arms cold-start polling (refreshInterval 3000) when the backend phase regresses from ready back to a cold start", () => {
-    // FREEZE REPRO — fails against the deleted one-way latch.
-    const base = {
-      phase: "normal" as const,
-      blocked: null,
-      refresh: vi.fn(),
-      refreshInterval: 0,
-    };
-
-    // 1. Container reaches ready — the derived cadence goes quiet (0).
-    useProvMock.mockReturnValue({
-      ...base,
-      container: { status: "running", phase: "ready" },
-    });
-    const { rerender } = render(
-      <ProvisioningStepper>
-        <div>children</div>
-      </ProvisioningStepper>,
-    );
-    // Sanity: polling is quiet while ready.
-    expect(lastOptions()).toMatchObject({ refreshInterval: 0 });
-
-    // 2. Owner reprovision / scale-to-zero: the backend regresses to a
-    //    pre-ready cold start. The stepper is now displaying the cold-start UI
-    //    again, so it MUST resume the 3s poller. The old latch left this at 0
-    //    forever and froze on the last stale snapshot.
-    useProvMock.mockReturnValue({
-      ...base,
-      container: { status: "running", phase: "starting" },
-    });
-    rerender(
-      <ProvisioningStepper>
-        <div>children</div>
-      </ProvisioningStepper>,
-    );
-
-    expect(lastOptions()).toMatchObject({ refreshInterval: 3000 });
-  });
-
-  it("keeps polling quiet (refreshInterval 0) once the container is steadily ready", () => {
-    // REGRESSION GUARD — deriving from phase must still stop polling on a
-    // healthy (ready) box; the WS is the live channel there.
-    useProvMock.mockReturnValue({
-      phase: "normal",
-      blocked: null,
-      refresh: vi.fn(),
-      refreshInterval: 0,
-      container: { status: "running", phase: "ready" },
-    });
-    render(
-      <ProvisioningStepper>
-        <div>children</div>
-      </ProvisioningStepper>,
-    );
-
-    expect(lastOptions()).toMatchObject({ refreshInterval: 0 });
-  });
-
-  it("re-arms polling (refreshInterval 3000) on a transient container:null blip after ready — null counts as pre-ready (deliberate change from the latch)", () => {
-    // INTENTIONAL SEMANTICS CHANGE vs the deleted `reachedReady` latch. The
-    // latch special-cased `container:null` (SWR key swap / loading blip) so a
-    // ready workspace kept polling OFF through the blip. The derived version
-    // treats a null container as pre-ready: `backendPhaseNow === undefined`,
-    // which is neither "ready" nor "parked", so polling re-arms. This is the
-    // safer default — polling is the ONLY way back out of a no-data state, and
-    // a few extra /container/status requests during a brief blip over live chat
-    // are harmless (see shouldPollContainer's comment in ProvisioningStepper).
-    const base = {
-      phase: "normal" as const,
-      blocked: null,
-      refresh: vi.fn(),
-      refreshInterval: 0,
-    };
-    useProvMock.mockReturnValue({
-      ...base,
-      container: { status: "running", phase: "ready" },
-    });
-    const { rerender } = render(
-      <ProvisioningStepper>
-        <div>children</div>
-      </ProvisioningStepper>,
-    );
-    expect(lastOptions()).toMatchObject({ refreshInterval: 0 });
-
-    // Transient no-data blip: container becomes null (phase undefined).
-    useProvMock.mockReturnValue({
-      ...base,
-      phase: "loading",
-      container: null,
-    });
-    rerender(
-      <ProvisioningStepper>
-        <div>children</div>
-      </ProvisioningStepper>,
-    );
-
-    expect(lastOptions()).toMatchObject({ refreshInterval: 3000 });
-  });
-
-  it("passes revalidateOnFocus: true from the stepper's call site so a quiet/backgrounded tab self-heals on focus", () => {
-    // Event-driven heal for throttle-killed SWR chains: the call site passed no
-    // revalidateOnFocus before, so a tab that went quiet at ready couldn't pull
-    // a fresh /container/status on refocus.
-    useProvMock.mockReturnValue({
-      phase: "normal",
-      blocked: null,
-      refresh: vi.fn(),
-      refreshInterval: 0,
-      container: { status: "running", phase: "starting" },
-    });
-    render(
-      <ProvisioningStepper>
-        <div>children</div>
-      </ProvisioningStepper>,
-    );
-
-    expect(lastOptions()).toMatchObject({ revalidateOnFocus: true });
-  });
-});
-
-describe("ProvisioningStepper poll watchdog (throttle-killed SWR self-recovery)", () => {
-  // SWR's refreshInterval is a self-rescheduling chain: a single tick dropped
-  // while Chrome throttles a backgrounded OR merely occlusion-throttled tab ends
-  // it permanently, and the tab makes near-zero /container/status fetches
-  // thereafter. revalidateOnFocus can't heal a VISIBLE-but-throttled tab — it
-  // never gets a focus TRANSITION. The stepper's 1s elapsed-timer setInterval
-  // provably SURVIVES that throttling (its on-screen counter kept counting in
-  // the frozen dev tab), so the watchdog rides it and fires refresh() at most
-  // once / 10s while a pre-ready cold-start card is displayed — the only
-  // self-heal that reaches a visible-but-throttled tab. Verified live on dev,
-  // twice: ~1 status poll in 3+ minutes, funnel/stepper frozen over
-  // onboarded:true, until this out-of-band refresh unsticks it.
-  beforeEach(() => {
-    useProvMock.mockReset();
-    apiPost.mockClear();
-    apiGet.mockClear();
-    apiPut.mockClear();
-    apiDel.mockClear();
-    billingMockIsSubscribed = true;
-    billingMockAccount = { provider_choice: "bedrock_claude" };
-    billingMockRefresh = vi.fn();
-    billingMockStartTeamCheckout.mockClear();
-    clerkMockUser = null;
-    clerkMockIsLoaded = true;
-    gatewayHealthData = null;
-    vi.useFakeTimers();
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-    apiGet.mockResolvedValue({});
-  });
-
-  // A provisioning container that resolves to a pre-ready cold-start phase
-  // ("container"): status="provisioning" + substatus="service_created".
-  const coldStart = {
-    status: "provisioning",
-    phase: "provisioning",
-    substatus: "service_created",
-  };
-
-  it("fires refresh() ~10s in while a pre-ready cold-start phase is displayed (never on mount)", () => {
-    const refresh = vi.fn();
-    useProvMock.mockReturnValue({
-      phase: "normal",
-      container: coldStart,
-      blocked: null,
-      refreshInterval: 3000,
-      refresh,
-    });
-
-    render(
-      <ProvisioningStepper>
-        <div>children</div>
-      </ProvisioningStepper>,
-    );
-
-    // lastWatchdogRef is seeded to mount time, so the first watchdog fire is
-    // ~10s in — never an immediate double-fetch on top of the first poll.
-    expect(refresh).not.toHaveBeenCalled();
-
-    // RED against the pre-watchdog branch: no timer ever calls refresh().
-    act(() => {
-      vi.advanceTimersByTime(11_000);
-    });
-    expect(refresh).toHaveBeenCalled();
-  });
-
-  it("throttles to ~once / 10s (not once / 1s) across a 60s freeze", () => {
-    const refresh = vi.fn();
-    useProvMock.mockReturnValue({
-      phase: "normal",
-      container: coldStart,
-      blocked: null,
-      refreshInterval: 3000,
-      refresh,
-    });
-
-    render(
-      <ProvisioningStepper>
-        <div>children</div>
-      </ProvisioningStepper>,
-    );
-
-    act(() => {
-      vi.advanceTimersByTime(60_000);
-    });
-
-    // 60s under a 10s throttle => 5 fires (t=11,22,33,44,55s), categorically
-    // NOT the 60 the raw 1s interval would produce if it fired every tick.
-    const calls = refresh.mock.calls.length;
-    expect(calls).toBeGreaterThanOrEqual(5);
-    expect(calls).toBeLessThanOrEqual(6);
-  });
-
-  it("never fires the watchdog once the container is ready (workspace displayed)", () => {
-    const refresh = vi.fn();
-    useProvMock.mockReturnValue({
-      phase: "normal",
-      container: { status: "running", phase: "ready", onboarded: true },
-      blocked: null,
-      refreshInterval: 0,
-      refresh,
-    });
-
-    render(
-      <ProvisioningStepper>
-        <div>children</div>
-      </ProvisioningStepper>,
-    );
-
-    act(() => {
-      vi.advanceTimersByTime(60_000);
-    });
-
-    // phase="ready" is not a pre-ready cold-start card — the watchdog's guard
-    // (same as the elapsed timer's) never arms, so refresh stays untouched.
-    expect(refresh).not.toHaveBeenCalled();
-  });
-});
+// The former "cold-start poll re-arming (derived from phase)" and "poll
+// watchdog (throttle-killed SWR self-recovery)" describe blocks are DELETED
+// here (spec PR-9, CLIENT-HOOK). Both tested mechanisms this stepper used
+// to own directly: a consumer-supplied `refreshInterval`/`revalidateOnFocus`
+// passed into `useProvisioningState` (derived from the live phase to re-arm
+// a 3s cold-start poll and go quiet at ready), and a 1s-interval watchdog
+// that fired an out-of-band `refresh()` at most once/10s to route around a
+// throttled SWR chain. Both are superseded by the ONE shared bounded loop
+// behind `useOnboardingStatus` (visibility-gated cadence: 5s while unsettled
+// and within the first 60s, 15s after, 0 once ready; PLUS a raw
+// `setInterval` backstop independent of SWR's own scheduling; PLUS a
+// fetch-timeout AbortController so a genuinely hung request — the actual
+// occlusion-throttling kill vector per the CLIENT-HOOK research — can't
+// wedge it either). That cadence/backstop/timeout behavior is covered once,
+// at the shared-hook level, in
+// packages/shared/src/hooks/useOnboardingStatus.test.ts — not re-tested per
+// consumer here.

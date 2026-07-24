@@ -9,14 +9,9 @@ with the outbound relay (Plan 3), which is the sole decoder.
 """
 
 import json
-import logging
 from typing import TypedDict
 
-from core.config import settings
 from core.encryption import decrypt, encrypt  # use the real names from core/encryption.py
-from core.repositories import agent_email_repo
-
-logger = logging.getLogger(__name__)
 
 
 class ReplyContext(TypedDict):
@@ -54,36 +49,3 @@ def decode_reply_token(token: str) -> ReplyContext | None:
         if not isinstance(payload.get(key), str):
             return None
     return payload  # type: ignore[return-value]
-
-
-async def mint_first_contact_token(*, owner_id: str, owner_email: str, subject: str) -> str | None:
-    """A one-recipient token that lets Friday send ONE proactive first email to
-    the owner. Returns None when agent email is inactive (AGENT_EMAIL_DOMAIN
-    unset) or the owner has no active agent-email address yet — so this is
-    inert-safe. The recipient is baked in (owner_email) and the agent is the
-    owner's active Friday address row, so the token cannot email anyone else.
-
-    Never raises: any lookup/encoding failure is logged and folds into a
-    None return, same contract as ``send_reply`` -- a first-email mint must
-    never take down the onboarding brief request that triggers it.
-    """
-    try:
-        if not settings.AGENT_EMAIL_DOMAIN.strip():
-            return None
-        rows = await agent_email_repo.query_by_owner(owner_id)
-        active = next((row for row in rows if row.get("status") == "active"), None)
-        if active is None:
-            return None
-        agent_id = active["agent_id"]
-        return encode_reply_token(
-            {
-                "owner_id": owner_id,
-                "agent_id": agent_id,
-                "reply_to": owner_email,
-                "in_reply_to": "",
-                "subject": subject,
-            }
-        )
-    except Exception:
-        logger.exception("mint_first_contact_token failed for owner_id=%s", owner_id)
-        return None

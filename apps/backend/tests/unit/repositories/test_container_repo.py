@@ -89,6 +89,91 @@ async def test_upsert_preserves_id_and_created_at(dynamodb_table):
 
 
 @pytest.mark.asyncio
+async def test_upsert_preserves_full_sfn_provision_lease(dynamodb_table):
+    """create_user_service upserts MID-provision, and upsert's put_item
+    replaces the whole item — it must carry the ENTIRE lease through, not
+    just claim_id/claimed_at. Dropping provision_execution_name blinds
+    Branch-A redispatch to the live execution; dropping
+    provision_attempt_token makes every attempt-token fence permissive
+    (they all allow attribute_not_exists), letting a superseded straggler
+    pass its next checkpoint."""
+    from core.repositories import container_repo
+
+    claim = await container_repo.try_claim_provision(
+        "user_lease",
+        claim_id="claim-uuid-1",
+        execution_name="provision-user_lease-claimuui",
+    )
+    assert claim == "claim-uuid-1"
+
+    # The mid-provision upsert (create_user_service's row-creating write).
+    row = await container_repo.upsert(
+        "user_lease",
+        {"gateway_token": "tok_abc", "status": "provisioning"},
+    )
+
+    assert row["provision_claim_id"] == "claim-uuid-1"
+    assert row["provision_attempt_token"] == "claim-uuid-1"
+    assert row["provision_execution_name"] == "provision-user_lease-claimuui"
+    assert "provision_claimed_at" in row
+
+    # And the persisted item, independently re-read, agrees.
+    fetched = await container_repo.get_by_owner_id("user_lease")
+    assert fetched["provision_attempt_token"] == "claim-uuid-1"
+    assert fetched["provision_execution_name"] == "provision-user_lease-claimuui"
+
+
+@pytest.mark.asyncio
+async def test_upsert_mints_distinct_provision_generation_per_call(dynamodb_table):
+    """create_user_service (the sole caller of upsert) mints a fresh
+    provision_generation on every row-creating write -- this repo function
+    itself has no opinion on the value, it just writes whatever's handed to
+    it. Two upserts carrying different provision_generation values land
+    exactly what was written (no server-side preservation of this field)."""
+    from core.repositories import container_repo
+
+    first = await container_repo.upsert(
+        "user_gen",
+        {"gateway_token": "tok_abc", "status": "provisioning", "provision_generation": "gen_1"},
+    )
+    assert first["provision_generation"] == "gen_1"
+
+    second = await container_repo.upsert(
+        "user_gen",
+        {"gateway_token": "tok_abc", "status": "provisioning", "provision_generation": "gen_2"},
+    )
+    assert second["provision_generation"] == "gen_2"
+
+
+@pytest.mark.asyncio
+async def test_update_fields_preserves_provision_generation(dynamodb_table):
+    """INV-2: restart/redeploy/hot-swap/revoke-restore/conversion all write
+    through update_fields's get->put merge, never through upsert -- so an
+    existing provision_generation must survive a field-scoped update_fields
+    write untouched, even though that write doesn't mention the field at
+    all."""
+    from core.repositories import container_repo
+
+    await container_repo.upsert(
+        "user_restart",
+        {"gateway_token": "tok_abc", "status": "provisioning", "provision_generation": "gen_original"},
+    )
+
+    # Simulate a restart-path write (e.g. force-redeploy): a scoped field
+    # update that says nothing about provision_generation.
+    updated = await container_repo.update_fields(
+        "user_restart",
+        {"status": "running", "substatus": None},
+    )
+
+    assert updated["provision_generation"] == "gen_original"
+
+    # And the persisted row, independently re-read, agrees.
+    fetched = await container_repo.get_by_owner_id("user_restart")
+    assert fetched["provision_generation"] == "gen_original"
+
+
+@pytest.mark.asyncio
 async def test_get_by_owner_id(dynamodb_table):
     from core.repositories import container_repo
 
@@ -474,6 +559,32 @@ def test_classify_provision_error_unknown_defaults_retryable():
     cause, retryable = container_repo.classify_provision_error(RuntimeError("mystery"))
     assert retryable is True
     assert "RuntimeError" in cause
+
+
+def test_classify_provision_error_deterministic_markers():
+    """Known provider-config failures raise as plain Exception — the
+    deterministic message markers catch them before the retryable default."""
+    from core.repositories import container_repo
+
+    _, retryable = container_repo.classify_provision_error(
+        Exception("byo_provider is required when provider_choice == 'byo_key'")
+    )
+    assert retryable is False
+
+    _, retryable = container_repo.classify_provision_error(Exception("Unknown provider_choice: 'bogus'"))
+    assert retryable is False
+
+
+def test_classify_provision_error_retryable_attr_beats_markers():
+    """An exception's own retryable self-classification takes precedence —
+    it is checked before the message markers, so a marker-free throttle
+    message with retryable=False still classifies deterministic."""
+    from core.repositories import container_repo
+
+    exc = Exception("ThrottlingException")
+    exc.retryable = False
+    _, retryable = container_repo.classify_provision_error(exc)
+    assert retryable is False
 
 
 @pytest.mark.asyncio

@@ -1,23 +1,36 @@
-"""Pre-stage Friday's IDENTITY / SOUL / USER / BOOTSTRAP files on EFS.
+"""Pre-stage Friday's IDENTITY / SOUL / USER / AGENTS / MEMORY files on EFS.
 
 Friday is the seeded CEO agent in Paperclip (`role="ceo"`). When her
-container provisions, we write four customized markdown files to her
-EFS workspace dir BEFORE the container boots. OpenClaw's lazy
+container provisions, we write customized markdown files to her EFS
+workspace dir BEFORE the container boots. OpenClaw's lazy
 ``ensureAgentWorkspace`` runs on first chat as today, but
 ``writeFileIfMissing`` honors any file we wrote first — so OpenClaw
-fills only the gaps we don't seed (``TOOLS.md``, ``HEARTBEAT.md``). We
-seed ``MEMORY.md`` ourselves with a durable-memory scaffold so every
-Friday starts with structured long-term memory.
+fills only the gaps we don't seed (``TOOLS.md``, ``HEARTBEAT.md``,
+``BOOTSTRAP.md`` -- see below). We seed ``MEMORY.md`` ourselves with a
+durable-memory scaffold so every Friday starts with structured long-term
+memory.
 
-We also write ``.openclaw/workspace-state.json`` with
-``setupCompletedAt`` set. OpenClaw upstream (``src/agents/workspace.ts``
-``reconcileWorkspaceBootstrapCompletionState``) deletes BOOTSTRAP.md
-on boot when it sees customized IDENTITY/SOUL/USER files but no state
-marker — it interprets "already-customized profile" as evidence that
-the workspace bootstrap wizard has already completed and the file is
-stale. Pre-marking setup complete makes that reconcile early-return
-before reaching ``fs.rm(bootstrapPath)``, so BOOTSTRAP.md survives to
-be auto-loaded into Friday's first-chat context.
+There used to also be a customized ``BOOTSTRAP.md`` (opening-message
+guidance for a fresh conversation) seeded here. It was deleted (spec
+PR-6, BOOTSTRAP) once verified inert: OpenClaw's boot-time reconcile
+(``reconcileWorkspaceBootstrapCompletionState``, ``src/agents/
+workspace.ts``) never surfaces a seeded BOOTSTRAP.md into Friday's
+context once ``setupCompletedAt`` is set (see below) — the file was
+written but never read, on ANY turn, not just the first. Research §5 of
+``docs/superpowers/specs/2026-07-24-onboarding-architecture-design.md``'s
+companion has the full two-gate trace.
+
+We still write ``.openclaw/workspace-state.json`` with
+``setupCompletedAt`` set, for two REMAINING reasons unrelated to
+BOOTSTRAP.md content: (1) it stops the same boot-time reconcile from
+treating our already-customized IDENTITY/SOUL/USER as evidence of a
+stale, uncompleted setup wizard and reacting to that (best-effort
+belt-and-suspenders — ``write_file_if_missing`` already protects the
+files themselves from being overwritten); (2) OpenClaw 7.2 migrates this
+legacy file into its SQLite state store on every boot, and a MISSING (not
+just incomplete) legacy file is a different code path than a malformed
+one — see ``js_iso_now``'s docstring for the byte-exact timestamp
+contract that migration validates.
 
 Best-effort throughout: failures log + emit metrics, never raise. The
 caller (``ecs_manager.write_user_configs``) wraps this in try/except
@@ -218,72 +231,6 @@ you go._
 
 Don't pretend to know more about a person than they've told you. When in doubt,
 ask.
-"""
-
-
-_BOOTSTRAP_TEMPLATE = """\
-# BOOTSTRAP.md — How to open a fresh conversation
-
-This file is guidance for the **opening message** of a brand-new conversation
-with {owner_display}. It's not a task list, it's not a checklist, and it's
-**not telling you to do anything with tools or files**. It's about how to land
-the first reply.
-
-## On your very first reply: text only
-
-When the conversation has no prior messages from you, your reply must be a
-single, plain-text greeting. No `exec`, no `apply_patch`, no shell commands,
-no file edits, no `git`, no reads of other files — none. The IDENTITY.md,
-SOUL.md, and USER.md files are already loaded into your context; you don't
-need to fetch anything to know who you are or who you're talking to.
-
-Your opening should:
-
-1. Greet {first_name_or_fallback} by name. Warm, short, no corporate energy.
-2. Mention you're Friday and you just came online — one line.
-3. **Respond to what they actually said.** If they asked a question, answer
-   it after the brief intro. If they said "hi" or "hey", greet them back and
-   ask what they're working on. Never deliver a scripted intro on top of
-   their actual message.
-4. **When the moment fits, plant the seed that you orchestrate.** If
-   {first_name_or_fallback} is describing a project, a goal, or anything
-   with moving parts, mention you can break it up and line up the right
-   specialists. Don't pitch — just open the door. For casual "hey"
-   greetings, skip this; bring it up when they tell you what they're
-   working on.
-
-Example shape for a casual hello (your voice, not verbatim):
-
-> "Hey {first_name_or_fallback} — Friday here, just came online. What
-> are you working on?"
-
-Example shape when they describe a goal:
-
-> "Hey {first_name_or_fallback} — Friday here. If this has moving parts,
-> I can line up the right agents and brief you on the plan before anyone
-> starts. <answer or brief follow-up here>."
-
-## What NOT to do on the opening turn
-
-- **Do not run any tools.** Cleanup, organizing, or "let me set things up"
-  are stalling — they push your real reply behind tool approvals and confuse
-  the person waiting on you.
-- **Do not try to delete this file.** It is not a chore. Subsequent turns
-  ignore the directives above on their own — this file becomes background
-  information, not an action item.
-- **Do not narrate the bootstrap.** {first_name_or_fallback} doesn't need to
-  hear about IDENTITY.md, SOUL.md, or any internal scaffolding. Just be
-  Friday.
-
-## After the opening turn
-
-This file becomes descriptive, not prescriptive. It's just notes on how
-opening messages work. Use IDENTITY.md, SOUL.md, USER.md, and your MEMORY.md
-as your real working context.
-
----
-
-_You're the CEO. Lead with presence, not chores._
 """
 
 
@@ -708,20 +655,25 @@ def _migrate_add_nightly_section(workspace: Workspace, owner_id: str, agent_uuid
 def _render_templates(profile: dict) -> dict[str, str]:
     """Render the seed files from a resolved profile dict.
 
-    Returns: {filename: rendered_content} for
-    IDENTITY/SOUL/USER/BOOTSTRAP/AGENTS/MEMORY. Profile shape varies by
-    `kind`: 'personal' uses USER_TEMPLATE_PERSONAL, 'org' uses
-    USER_TEMPLATE_ORG. SOUL/IDENTITY/BOOTSTRAP/AGENTS/MEMORY share fields
-    across both kinds.
+    Returns: {filename: rendered_content} for IDENTITY/SOUL/USER/AGENTS/
+    MEMORY. Profile shape varies by `kind`: 'personal' uses
+    USER_TEMPLATE_PERSONAL, 'org' uses USER_TEMPLATE_ORG. SOUL/IDENTITY/
+    AGENTS/MEMORY share fields across both kinds.
+
+    There used to also be a BOOTSTRAP.md here (opening-message guidance for
+    a fresh conversation). It was deleted (spec PR-6, BOOTSTRAP) once
+    verified inert: OpenClaw's boot-time reconcile
+    (``reconcileWorkspaceBootstrapCompletionState``) never surfaces a seeded
+    BOOTSTRAP.md into Friday's context once ``setupCompletedAt`` is
+    pre-marked (see this module's docstring, and research §5 of
+    ``docs/superpowers/specs/2026-07-24-onboarding-architecture-design.md``'s
+    companion) — the file was written but never read on ANY turn, not just
+    the first.
     """
     identity = _IDENTITY_TEMPLATE.format(owner_display=profile["owner_display"])
     soul = _SOUL_TEMPLATE.format(owner_display=profile["owner_display"])
     agents = _AGENTS_TEMPLATE.format(owner_display=profile["owner_display"])
     memory = _MEMORY_TEMPLATE.format(owner_display=profile["owner_display"])
-    bootstrap = _BOOTSTRAP_TEMPLATE.format(
-        owner_display=profile["owner_display"],
-        first_name_or_fallback=profile["first_name_or_fallback"],
-    )
     if profile["kind"] == "org":
         user_md = _USER_TEMPLATE_ORG.format(
             org_name=profile["org_name"],
@@ -737,7 +689,6 @@ def _render_templates(profile: dict) -> dict[str, str]:
         "IDENTITY.md": identity,
         "SOUL.md": soul,
         "USER.md": user_md,
-        "BOOTSTRAP.md": bootstrap,
         "AGENTS.md": agents,
         "MEMORY.md": memory,
     }
@@ -827,10 +778,10 @@ async def pre_stage_friday_identity(
     paperclip_agents: list[dict],
     workspace: Workspace,
 ) -> None:
-    """Seed Friday's IDENTITY/SOUL/USER/BOOTSTRAP files on EFS.
+    """Seed Friday's IDENTITY/SOUL/USER/AGENTS/MEMORY files on EFS.
 
     Resolves Friday's UUID from `paperclip_agents` (the entry with
-    role == "ceo"). Writes four files using write-if-missing semantics
+    role == "ceo"). Writes five files using write-if-missing semantics
     so subsequent (re)provisions don't clobber Friday's evolved persona.
 
     Best-effort: emits metrics + logs on failure but never raises.
@@ -856,11 +807,14 @@ async def pre_stage_friday_identity(
     files = _render_templates(profile)
 
     # Pre-mark OpenClaw setup complete so its boot-time reconcile doesn't
-    # rm BOOTSTRAP.md when it sees our customized IDENTITY/SOUL/USER. Written
-    # FIRST (before the template loop) so a partial template-write failure
-    # still leaves OpenClaw in a "treat as completed" state — it'll fill any
-    # missing customized files with its own neutral templates rather than
-    # running the bootstrap wizard. Idempotent via write_file_if_missing.
+    # treat our customized IDENTITY/SOUL/USER as evidence of a stale,
+    # uncompleted setup wizard (see the module docstring's two REMAINING
+    # reasons -- BOOTSTRAP.md is no longer one of them, it isn't seeded).
+    # Written FIRST (before the template loop) so a partial template-write
+    # failure still leaves OpenClaw in a "treat as completed" state — it'll
+    # fill any missing customized files with its own neutral templates
+    # rather than running the bootstrap wizard. Idempotent via
+    # write_file_if_missing.
     now_iso = js_iso_now()
     state_rel_path = f"workspace-{friday_uuid}/.openclaw/workspace-state.json"
     workspace_state = {
@@ -873,8 +827,7 @@ async def pre_stage_friday_identity(
     except Exception as exc:  # noqa: BLE001 — best-effort, log + continue
         put_metric("friday_identity.seed.state_error")
         logger.warning(
-            "friday_identity: workspace-state.json write failed for owner=%s: %s. "
-            "BOOTSTRAP.md may be deleted by OpenClaw on boot.",
+            "friday_identity: workspace-state.json write failed for owner=%s: %s.",
             owner_id,
             exc,
         )

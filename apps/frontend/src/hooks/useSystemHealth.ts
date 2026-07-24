@@ -52,25 +52,17 @@ interface RecoverResponse {
 
 const MAX_RECONNECT = 10;
 
-// Poll cadences for the two backstop reads behind the health dot.
+// Poll cadence for the gateway health RPC backstop read behind the health
+// dot. Not the PRIMARY degradation signal: the backend pushes `status_change`
+// over the WS (handled below), and `isConnected` / `reconnectAttempt` flip
+// client-side the instant the socket drops — both are immediate and cost
+// nothing. Polling only covers a degradation that produced neither.
 //
-// Neither poll is the PRIMARY degradation signal. The backend pushes
-// `status_change` over the WS (handled below), and `isConnected` /
-// `reconnectAttempt` flip client-side the instant the socket drops — both are
-// immediate and cost nothing. Polling only covers a degradation that produced
-// neither, so in the steady state it runs at a slow backstop cadence. The
-// moment any input looks off we return to the fast cadence, which is also what
-// makes a recovery show up promptly: a degraded box is re-checked every few
-// seconds until it reports healthy again.
-//
-// Cold start needs no fast poll here either: ProvisioningStepper mounts
-// alongside this hook's consumers and polls the SAME `/container/status` SWR
-// key at 3s until the container reaches ready, so phase transitions land in
-// shared cache for free. This hook previously duplicated that poll for the
-// whole session — SWR's polling timer is per-hook-instance, so the two were
-// additive, and unlike the stepper this one never latched off.
-const STATUS_POLL_STEADY = 60_000;
-const STATUS_POLL_DEGRADED = 10_000;
+// `/container/status` itself is no longer polled by this hook (spec PR-9,
+// CLIENT-HOOK) — `useProvisioningState` now delegates to the ONE shared
+// `useOnboardingStatus` bounded loop, so every consumer (this hook,
+// ProvisioningStepper, OverviewPanel) rides the same single cadence for
+// free instead of each running its own SWR poll against the same key.
 const HEALTH_POLL_STEADY = 60_000;
 const HEALTH_POLL_DEGRADED = 5_000;
 
@@ -83,15 +75,12 @@ export function useSystemHealth(): SystemHealth {
   const pushTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const api = useApi();
 
-  // Gateway health RPC — only when WS connected. Declared before the status
-  // poll so its result can feed that poll's cadence. A probe reporting
-  // `ok: false` pulls the cadence in. A rejection pulls it in too, by one of
-  // two routes: a generic rejection surfaces as `healthError` (retried at a
-  // fixed 3s by useGatewayRpc's onErrorRetry), while the specific "No
-  // container" rejection is swallowed to `undefined` data with NO error by
-  // useGatewayRpc's 404-equivalent path — so a vanished container shows up as
-  // `health === undefined`, caught in looksDegraded below.
-  const { data: health, error: healthError } = useGatewayRpc<HealthData>(
+  // Gateway health RPC — only when WS connected. A rejection is retried at a
+  // fixed 3s by useGatewayRpc's onErrorRetry; the specific "No container"
+  // rejection is swallowed to `undefined` data with NO error by
+  // useGatewayRpc's 404-equivalent path — so a vanished container shows up
+  // as `health === undefined`, caught in the state ladder below.
+  const { data: health } = useGatewayRpc<HealthData>(
     isConnected ? "health" : null,
     undefined,
     {
@@ -100,25 +89,7 @@ export function useSystemHealth(): SystemHealth {
     },
   );
 
-  // Every input that can take the dot off green, evaluated before the status
-  // poll is configured. A park is deliberate sleep, not a degradation, so it
-  // is excluded — otherwise every idle trial box would fast-poll forever.
-  const looksDegraded =
-    (!isConnected && !isParked) ||
-    reconnectAttempt > 0 ||
-    health?.ok === false ||
-    healthError !== undefined ||
-    // Connected but the health probe has produced no positive result — either
-    // it hasn't resolved yet (startup) or a vanished container was swallowed to
-    // undefined (see the health RPC comment above). Both warrant the fast
-    // cadence; parked boxes are excluded because isConnected is false there.
-    (isConnected && health === undefined) ||
-    (pushState !== null && pushState.state !== "HEALTHY");
-
-  const { container } = useProvisioningState({
-    refreshInterval: looksDegraded ? STATUS_POLL_DEGRADED : STATUS_POLL_STEADY,
-    enabled: true,
-  });
+  const { container } = useProvisioningState();
 
   // Listen for push status_change events via WS.
   // Backend sends event name "status_change" with payload {state, reason}.
@@ -172,8 +143,8 @@ export function useSystemHealth(): SystemHealth {
   if (pushState) {
     state = pushState.state as HealthState;
     reason = pushState.reason;
-  } else if (isParked || container?.phase === "parked") {
-    // Client-driven park (isParked) OR backend-reflected park (phase).
+  } else if (isParked || container?.lifecycle === "parked") {
+    // Client-driven park (isParked) OR backend-reflected park (lifecycle).
     // isParked leads by ~3min: between the client closing its socket and
     // the backend's disconnect-armed teardown flipping the row to
     // stopped/parked, isConnected is false with reconnectAttempt=0, which
@@ -185,19 +156,19 @@ export function useSystemHealth(): SystemHealth {
   } else if (!container) {
     state = "STARTING";
     reason = "Loading container status...";
-  } else if (container.status === "provisioning") {
+  } else if (container.container_status === "provisioning") {
     state = "STARTING";
-    reason = container.substatus === "auto_retry"
+    reason = container.container_substatus === "auto_retry"
       ? "Restarting container..."
       : "Container provisioning — waiting for ECS task";
-  } else if (container.status === "stopped" || container.status === "error") {
+  } else if (container.container_status === "stopped" || container.container_status === "error") {
     state = "CONTAINER_DOWN";
     reason = container.last_error
-      ?? `Container is ${container.status}`;
+      ?? `Container is ${container.container_status}`;
   } else if (!isConnected && reconnectAttempt > 0 && reconnectAttempt < MAX_RECONNECT) {
     state = "RECOVERING";
     reason = `Reconnecting... attempt ${reconnectAttempt} of ${MAX_RECONNECT}`;
-  } else if (!isConnected && container.status === "running") {
+  } else if (!isConnected && container.container_status === "running") {
     state = "GATEWAY_DOWN_DEAD";
     reason = "Gateway not responding";
   } else if (isConnected && health && !health.ok) {

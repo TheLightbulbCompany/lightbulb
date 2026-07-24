@@ -21,6 +21,7 @@ import { AgentPickerSheet } from "../../components/chat/AgentPickerSheet";
 import { SessionsSheet } from "../../components/chat/SessionsSheet";
 import { usePulse } from "../../components/chat/usePulse";
 import { readFirstRun } from "../../lib/firstRun";
+import { useContainerStatusContext } from "../../lib/containerStatusContext";
 import { useGateway } from "../../providers/gateway";
 
 // Slim connection-state row above the roster (web HealthIndicator, spec §5).
@@ -124,17 +125,28 @@ export default function Chat() {
   } | null>(null);
   const [sessionsOpen, setSessionsOpen] = useState(false);
 
-  // First-run aha: right after the funnel brief is submitted (and until the
-  // kickoff fires — `started` stays false), walk the user straight into the
-  // default agent's (Friday's) chat, where useFirstRunKickoff sends the
-  // visible kickoff prompt. Web needs no redirect (its main surface IS the
+  // First-run aha: right after the funnel brief is submitted, walk the user
+  // straight into the default agent's (Friday's) chat so they land on the
+  // live kickoff the backend server-dispatches (spec PR-6, BOOTSTRAP) rather
+  // than the roster. Web needs no redirect (its main surface IS the
   // default-agent chat); the roster is the mobile equivalent's front door.
+  //
+  // Gated on the DURABLE server-owned `onboarded` fact (funnel_state ==
+  // "complete", surfaced on every ready status body), NOT on `briefSubmitted`
+  // alone. `briefSubmitted` is a permanently-sticky Clerk flag that is never
+  // reset, and `redirectedRef` only survives a single mount -- so gating on
+  // those two would re-yank a user who onboarded weeks ago into Friday on
+  // every roster mount (cold start, relaunch, any remount). Once the backend
+  // reports `onboarded`, the first-run window is over and we stand down.
   const { user } = useUser();
+  const containerStatus = useContainerStatusContext();
+  const onboarded =
+    containerStatus?.kind === "ready" && containerStatus.onboarded === true;
   const redirectedRef = useRef(false);
   useEffect(() => {
     if (redirectedRef.current || !user || !data?.defaultId) return;
     const fr = readFirstRun(user);
-    if (!fr.briefSubmitted || fr.started) return;
+    if (!fr.briefSubmitted || onboarded) return;
     const agent = data.agents?.find((a) => a.id === data.defaultId);
     if (!agent) return;
     redirectedRef.current = true;
@@ -142,7 +154,7 @@ export default function Chat() {
       pathname: "/(app)/agent/[agentId]",
       params: { agentId: agent.id, name: agentDisplayName(agent) },
     });
-  }, [user, data]);
+  }, [user, data, onboarded]);
 
   let body: ReactElement;
   if (error) {

@@ -1,0 +1,247 @@
+/**
+ * `useOnboardingStatus` — the ONE client hook over `GET /container/status`
+ * (spec PR-9, CLIENT-HOOK). Collapses the historical per-platform freshness
+ * stack (web: 3s SWR poll + `revalidateOnFocus` + a 1s watchdog timer +
+ * `useSystemHealth`'s own poll + an OverviewPanel focus opt-in + 3 manual
+ * `mutate("/container/status")` call sites; mobile: its own hand-rolled
+ * `useState` + raw `setInterval` + `AppState` loop) into a single SWR key
+ * fetched through ONE fetcher, with ONE bounded backstop loop belt-and-
+ * suspenders behind SWR's own scheduling. See
+ * docs/superpowers/specs/2026-07-24-onboarding-architecture-design.md §3/§9
+ * and docs/superpowers/research/2026-07-24-onboarding-current-state.md §7.
+ *
+ * Two independent fixes, per the research's root-cause finding that the
+ * real kill vector for a throttled-but-visible tab is a HUNG FETCHER or a
+ * REJECTED revalidate — not a dropped SWR tick:
+ *
+ *   1. **Root fix** — the fetcher below is timeout-bounded (AbortController,
+ *      `FETCH_TIMEOUT_MS`) and REJECTION-SAFE: it never throws. Every
+ *      outcome (success, HTTP error, network failure, abort) resolves to a
+ *      typed `Outcome`, so SWR's internal revalidation promise always
+ *      settles via its success path — the `.then(next)`-with-no-catch
+ *      landmine documented in the research can't fire because there is
+ *      nothing left to reject.
+ *   2. **Belt-and-suspenders backstop** — a RAW `setInterval`, independent of
+ *      SWR's self-rescheduling `refreshInterval` chain, that force-mutates
+ *      whenever the last fetch ATTEMPT is older than the active cadence +
+ *      slack. Because it's a fresh interval rather than a chain of promise-
+ *      chained timeouts, it survives whatever mechanism killed the chain.
+ *
+ * Cadence: 5s while unsettled and within the first 60s of the CURRENT
+ * unsettled streak, 15s after that, 0 (off) once `deriveUIPhase` reports
+ * `phase === "ready"`. Deliberately NOT off at "parked": a parked (wake-
+ * gated trial) container needs the poll's own `wake` query param to drive
+ * itself parked -> starting -> ready (see the `wake` option below) — this is
+ * what lets CLIENT-HOOK delete the old wake/unpark/container_waking manual
+ * `mutate()` trio: the next bounded-loop tick (<=15s away) picks up the
+ * transition on its own.
+ *
+ * Visibility-gated: the backstop (and the resume-on-visible kick) pause
+ * while `visibility.isVisible()` is false (genuinely hidden/backgrounded).
+ * Chrome's occlusion throttling covers a VISIBLE-but-covered tab, which
+ * never flips visibility — so the backstop keeps ticking through exactly
+ * the scenario the research verified live (a throttled-but-visible tab
+ * making ~1 request in 3+ minutes).
+ *
+ * Reads the CLEAN `StatusContract` fields only (`runtime_phase`,
+ * `lifecycle`, `container_status`, `container_substatus`, `teams_state`,
+ * `chat_available`, `onboarded`, `funnel`, `bootstrap`, `generations`) via
+ * `deriveUIPhase` — never the legacy flat duplicates. INV-1: this hook is a
+ * PURE READER of the composer's contract; it never re-derives readiness
+ * itself.
+ */
+import { useCallback, useEffect, useRef } from "react";
+import useSWR from "swr";
+
+import { fetchJsonWithStatus, type ApiClientConfig } from "../api/client";
+import { ApiError } from "../api/error";
+import { classifyContainerStatus, type ClassifiedStatus } from "./containerStatus";
+import { deriveUIPhase, type DerivedUIPhase, type StatusContract } from "./statusContract";
+
+const FAST_POLL_MS = 5_000;
+const SLOW_POLL_MS = 15_000;
+const FAST_WINDOW_MS = 60_000;
+/** AbortController timeout — the root fix for a hung fetcher (see module doc). */
+const FETCH_TIMEOUT_MS = 10_000;
+/** Raw backstop tick — independent of SWR's own scheduling. */
+const BACKSTOP_TICK_MS = 5_000;
+/** Grace before the backstop decides a fetch is overdue and force-mutates. */
+const BACKSTOP_SLACK_MS = 3_000;
+
+/** Platform seam for visibility/foreground state — web wraps
+ * `document.visibilityState`, mobile wraps React Native's `AppState`. The
+ * shared package compiles with no DOM lib, so this MUST be injected. */
+export interface VisibilityAdapter {
+  isVisible: () => boolean;
+  /** Subscribe to visibility transitions; returns an unsubscribe function. */
+  subscribe: (onChange: () => void) => () => void;
+}
+
+export interface UseOnboardingStatusOptions {
+  /** Auth + base URL for the underlying fetch. */
+  api: ApiClientConfig;
+  /** False disables fetching entirely (e.g. signed out) — nulls the SWR key. */
+  enabled: boolean;
+  /** SWR key / endpoint path. Defaults to "/container/status". */
+  swrKey?: string;
+  /** Computed fresh at each fetch ATTEMPT and appended as `?wake=0|1`. Omit
+   * to never send the param (an old backend simply ignores it). */
+  wake?: () => boolean;
+  /** Omit to never gate/pause — the hook then always treats itself as visible. */
+  visibility?: VisibilityAdapter;
+}
+
+export interface UseOnboardingStatusResult {
+  /** Raw status-code + payload-shape classification. Null before the first
+   * settled fetch (loading) or while disabled. */
+  classified: ClassifiedStatus | null;
+  /** `deriveUIPhase` output when `classified.kind === "container"`; null
+   * otherwise (202/402/404/unrecognized/not-yet-loaded all have no contract
+   * body to derive from). */
+  derived: DerivedUIPhase | null;
+  /** A genuine transport failure (network error, or the AbortController
+   * timeout firing) — never set for a classified 402/404/202/unrecognized,
+   * which are valid, non-throwing outcomes the caller reads via `classified`. */
+  networkError: Error | undefined;
+  isLoading: boolean;
+  /** Forces an immediate revalidation and resets the fast-poll window. */
+  refresh: () => void;
+}
+
+type Outcome =
+  | { kind: "classified"; classified: ClassifiedStatus }
+  | { kind: "network-error"; error: Error };
+
+function derivePhaseFromOutcome(outcome: Outcome | undefined): DerivedUIPhase | null {
+  if (!outcome || outcome.kind !== "classified" || outcome.classified.kind !== "container") {
+    return null;
+  }
+  // Defensive: an empty/malformed 200 body parses to `null` (see
+  // fetchJsonWithStatus's catch-and-null-out on a JSON parse failure) —
+  // treat it as "no contract to derive from" rather than crashing.
+  const body = outcome.classified.body;
+  if (!body || typeof body !== "object") return null;
+  return deriveUIPhase(body as unknown as StatusContract);
+}
+
+function isSettledReady(outcome: Outcome | undefined): boolean {
+  return derivePhaseFromOutcome(outcome)?.phase === "ready";
+}
+
+function cadenceFor(ready: boolean, windowStartedAt: number, now: number): number {
+  if (ready) return 0;
+  return now - windowStartedAt < FAST_WINDOW_MS ? FAST_POLL_MS : SLOW_POLL_MS;
+}
+
+export function useOnboardingStatus(
+  options: UseOnboardingStatusOptions,
+): UseOnboardingStatusResult {
+  const { api, enabled, swrKey = "/container/status", wake, visibility } = options;
+
+  // Timestamp of the most recent fetch ATTEMPT (not completion) — read by
+  // the backstop to decide whether the SWR chain looks stalled.
+  const lastAttemptRef = useRef<number>(0);
+  // Start of the CURRENT unsettled streak, for the 60s fast->slow cadence
+  // step. Reset on mount, on a ready->not-ready regression, and on refresh().
+  const windowStartRef = useRef<number>(Date.now());
+  const prevReadyRef = useRef(false);
+
+  const fetcher = useCallback(async (): Promise<Outcome> => {
+    lastAttemptRef.current = Date.now();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    try {
+      const wakeFlag = wake ? (wake() ? "1" : "0") : undefined;
+      const sep = swrKey.includes("?") ? "&" : "?";
+      const url = wakeFlag !== undefined ? `${swrKey}${sep}wake=${wakeFlag}` : swrKey;
+      const { status, body } = await fetchJsonWithStatus(api, url, controller.signal);
+      return { kind: "classified", classified: classifyContainerStatus({ status, body }) };
+    } catch (err) {
+      if (err instanceof ApiError) {
+        return {
+          kind: "classified",
+          classified: classifyContainerStatus({ status: err.status, body: err.body }),
+        };
+      }
+      // Rejection-safe (see module doc): NEVER throw out of the fetcher.
+      // Covers a real network failure and the AbortController firing
+      // (DOMException "AbortError") — both resolve to a typed outcome
+      // instead of an uncaught rejection, so SWR's promise chain always
+      // takes its success path and keeps rescheduling.
+      const message = err instanceof Error ? err.message : "Request failed";
+      return { kind: "network-error", error: new Error(message) };
+    } finally {
+      clearTimeout(timer);
+    }
+  }, [api, swrKey, wake]);
+
+  const key = enabled ? swrKey : null;
+
+  const { data, mutate, isLoading } = useSWR<Outcome>(key, fetcher, {
+    // Visibility resume is handled explicitly below (uniformly across web +
+    // mobile via the injected adapter) instead of SWR's own DOM-coupled
+    // revalidateOnFocus, which mobile has no equivalent of.
+    revalidateOnFocus: false,
+    refreshInterval: (latest) => {
+      const ready = isSettledReady(latest);
+      return cadenceFor(ready, windowStartRef.current, Date.now());
+    },
+  });
+
+  const ready = isSettledReady(data);
+
+  // Rising edge INTO "not ready" (including first mount) restarts the fast
+  // window. Derived during render (the same "adjust state from props"
+  // pattern used throughout this codebase's freshness code) so it applies
+  // in the SAME render — no one-frame lag through an effect.
+  if (ready !== prevReadyRef.current) {
+    prevReadyRef.current = ready;
+    if (!ready) windowStartRef.current = Date.now();
+  }
+
+  const refresh = useCallback(() => {
+    windowStartRef.current = Date.now();
+    void mutate();
+  }, [mutate]);
+
+  // Raw setInterval backstop (see module doc) — a completely separate timer
+  // from SWR's self-rescheduling chain, so a stalled chain (whatever the
+  // cause) doesn't leave the loop dead. Visibility-gated: skipped while
+  // genuinely hidden; an occluded-but-visible tab is NOT hidden, so this
+  // keeps ticking through exactly the throttling scenario the research
+  // verified live.
+  useEffect(() => {
+    if (!key) return;
+    const id = setInterval(() => {
+      if (visibility && !visibility.isVisible()) return;
+      const cadence = cadenceFor(ready, windowStartRef.current, Date.now());
+      if (cadence === 0) return; // settled ready — backstop has nothing to do
+      if (Date.now() - lastAttemptRef.current > cadence + BACKSTOP_SLACK_MS) {
+        void mutate();
+      }
+    }, BACKSTOP_TICK_MS);
+    return () => clearInterval(id);
+  }, [key, mutate, visibility, ready]);
+
+  // Resume-on-visible: an immediate revalidation the instant the tab/app
+  // transitions to visible. Covers a genuinely hidden->visible transition —
+  // a merely-occluded tab never fires this (visibility never changed there),
+  // which is exactly what the backstop above is for.
+  useEffect(() => {
+    if (!key || !visibility) return;
+    return visibility.subscribe(() => {
+      if (visibility.isVisible()) void mutate();
+    });
+  }, [key, visibility, mutate]);
+
+  const classified = data?.kind === "classified" ? data.classified : null;
+  const networkError = data?.kind === "network-error" ? data.error : undefined;
+
+  return {
+    classified,
+    derived: derivePhaseFromOutcome(data),
+    networkError,
+    isLoading,
+    refresh,
+  };
+}

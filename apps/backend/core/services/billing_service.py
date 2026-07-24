@@ -1184,9 +1184,167 @@ async def change_provider(
         },
     )
 
-    from core.services.container_provision import background_provision
+    # Stop-first (F1). A bare background_provision dispatch's FIRST act is
+    # the single-flight provision claim, whose ConditionExpression admits
+    # only no-row/error/stopped/stale-provisioning — a "running" row is NOT
+    # claimable, so the dispatch loses the claim and stands down silently:
+    # provision_user_container (the only branch that re-registers the task
+    # def + rewrites openclaw.json) is never reached, yet we'd still tell
+    # the caller ``restart: True``. reprovision_for_user fixes this by
+    # scaling the service to 0 and waiting for it to drain BEFORE
+    # dispatching background_provision, so the dispatch lands on the
+    # scale-from-zero branch instead of racing (and losing to) the still-
+    # running row. Mirrors the admin container-reprovision action
+    # (routers/admin.py) — see EcsManager.reprovision_for_user's docstring.
+    #
+    # Split across the request boundary: the stop is awaited (one fast ECS
+    # call — fail-loud, and it guarantees the old-provider container is
+    # already draining by the time we answer ``restart: True``), but the
+    # drain-wait + provision dispatch run as a background task —
+    # ``_wait_for_service_drained`` polls for up to 90s, which would hang
+    # the ``/billing/provider`` request past ALB/client timeouts and, if
+    # the handler were cancelled mid-drain, strand the owner stopped with
+    # no provision dispatched. Once the row is "stopped", the sequence is
+    # self-healing: even if this task dies, the next /container/status
+    # poll's wake path wins the claim and applies the committed provider.
+    # (stop_user_service treats a missing ECS service as idempotent
+    # success, so a subscribed-but-never-provisioned owner falls through
+    # to background_provision's create-from-scratch path.)
+    #
+    # Accepted race — a status-poll wake DURING the drain window: the
+    # poll's retryable-state dispatch can claim the stopped row before
+    # the drain-only task's delayed dispatch does. Benign by design: the
+    # single-flight lease admits exactly one executor (the loser stands
+    # down), both executors would apply the SAME committed provider, and
+    # task overlap on EFS is fenced one layer down —
+    # SINGLE_WRITER_DEPLOYMENT_CONFIG (maximumPercent=100) keeps ECS from
+    # starting the new task until the draining one has fully stopped, so
+    # the drain-wait is defense-in-depth, not the single-writer fence.
+    # The same window has always existed on the admin reprovision path.
+    # Load-bearing detail: the task below must NOT re-stop (see
+    # drain_then_dispatch_provision) or it would clobber the poll's claim
+    # and break exactly this guarantee.
+    from core.containers import get_ecs_manager
 
-    asyncio.create_task(background_provision(owner_id, clerk_user_id))
+    manager = get_ecs_manager()
+    stop_issued = False
+    try:
+        # Fence FIRST, stop SECOND — the order is load-bearing. A
+        # status-poll wake that claimed BEFORE the provider commit
+        # resolved the OLD provider and would keep passing its leased
+        # checkpoints, finish with the old config, and leave our delayed
+        # dispatch standing down — restart: True with the switch silently
+        # unapplied. takeover_provision supersedes that lease so the
+        # stale run stops at its next checkpoint (the same deliberate-
+        # door fencing conversion, /recover, and admin reprovision use —
+        # the cold provider change is the same class of door). Taking
+        # over BEFORE the stop also closes the ordering race the other
+        # way around: with stop-then-takeover, a poll could claim the
+        # freshly-exposed stopped row in the await gap, the takeover
+        # would preserve its "provisioning" status, and our dispatch
+        # couldn't claim — wedging the row until the stale-lease timeout.
+        # Takeover-first leaves no such gap: a poll can't claim a
+        # still-running row, and once the stop lands our dispatch always
+        # claims the stopped row (stopped is claimable regardless of the
+        # takeover's fresh lease). Guarded on row existence: with NO row
+        # there is no in-flight run to fence, and takeover on an absent
+        # row would CREATE it as provisioning with a fresh lease — which
+        # the dispatch's own claim then refuses, breaking the
+        # create-from-scratch path for never-provisioned owners.
+        from core.repositories import container_repo as _container_repo
+
+        # Stop ONLY when a row exists (whose lease we just took over). With no
+        # row there is nothing to stop, and issuing the stop anyway opens a
+        # TOCTOU: a concurrent /container/status poll can win a first-time
+        # provision (creating the row) between this check and the stop, and
+        # stop_user_service's unconditional update_status get→put would then
+        # stamp that freshly-claimed row "stopped" with no lease fence —
+        # resurrecting the double-provision class this path exists to prevent.
+        # The no-row case falls straight through to the drain-only dispatch,
+        # whose try_claim_provision creates-from-scratch (or stands down behind
+        # the poll's claim) under the single-flight lease.
+        if await _container_repo.get_by_owner_id(owner_id) is not None:
+            await _container_repo.takeover_provision(owner_id)
+            stop_issued = True
+            await manager.stop_user_service(owner_id, reason="reprovision")
+    except Exception as e:
+        # Any stop-path failure, not just the wrapped ECS call
+        # (EcsManagerError): stop_user_service's row writes after the ECS
+        # call (update_status / stamp_stop_reason) propagate raw DDB
+        # exceptions, and skipping the revert for those would leave the
+        # provider row committed with no dispatch and no convergence path
+        # — the exact poisoned-no-op state the revert exists to prevent.
+        # A genuine ECS failure (throttle, cluster outage — not-found is
+        # already idempotent success inside stop_user_service). The new
+        # provider is committed but the container was NOT stopped, so
+        # nothing will converge it: a running row is neither poll-retryable
+        # nor claimable, and a retry of this call would hit the no-op
+        # fast-path above (row already matches the request) and dispatch
+        # nothing. REVERT the commit so the retry re-runs the full switch
+        # instead of silently no-oping. The old provider's credentials may
+        # already be gone (the cleanup block above is fire-and-forget by
+        # design); that fork is user-recoverable — the provision gate /
+        # prerequisite checks drive re-auth — whereas a poisoned no-op is
+        # not. A legacy row with no prior provider_choice can't be written
+        # back (the repo validates the value); its retry-noop exposure
+        # requires that compound (never-chosen provider AND ECS failing)
+        # so it is accepted.
+        #
+        # Partial-stop shape: a raw (non-EcsManagerError) exception means
+        # the ECS call SUCCEEDED and only the row write after it failed —
+        # the service is scaling to 0 while the row still says "running",
+        # which neither the poll nor a claim can heal. Best-effort
+        # re-stamp "stopped" so the wake path restores the (reverted) old
+        # provider. An EcsManagerError means the stop was NOT applied, so
+        # no stamp (stamping a genuinely-running container would trigger
+        # a pointless restart cycle on a transient ECS throttle). If the
+        # re-stamp also fails (the same DDB that just failed),
+        # convergence still exists via /recover's no-IP branch; a fuller
+        # partial-stop state machine is not worth its weight for a
+        # compound transient.
+        from core.containers.ecs_manager import EcsManagerError
+        from core.repositories import container_repo
+
+        # stop_issued gates the stamp: a failure BEFORE the stop call (the
+        # takeover fence's row read/write) must not mark a genuinely-
+        # running container "stopped" — that would trigger a pointless
+        # poll-wake restart cycle on a transient DDB blip.
+        if stop_issued and not isinstance(e, EcsManagerError):
+            try:
+                await container_repo.update_status(owner_id, "stopped")
+            except Exception:  # noqa: BLE001 — best-effort by design
+                logger.warning("change_provider: best-effort stopped re-stamp failed for %s", owner_id)
+        # Restore the pre-commit provider so a retry re-runs the full switch
+        # instead of hitting the no-op fast path. A LEGACY row carried no
+        # provider_choice (current_choice is None) and the repo rejects a None
+        # write, so restore the resolved legacy default "bedrock_claude" -- the
+        # exact value resolve_provider_choice (container_provision.py) derives
+        # for a None row, i.e. the provider the container was actually running.
+        # This both preserves the effective state AND un-no-ops a
+        # switch-to-non-bedrock retry (row now explicitly bedrock_claude, which
+        # differs from the requested provider). current_byo stays None for a
+        # legacy row.
+        restore_choice = current_choice or "bedrock_claude"
+        await billing_repo.set_provider_choice(
+            owner_id,
+            provider_choice=restore_choice,
+            byo_provider=current_byo,
+            connector_user_id=recorded_connector if restore_choice == "chatgpt_oauth" else None,
+        )
+        await write_owner_facts(
+            owner_id,
+            account_overrides={"provider_choice": restore_choice, "byo_provider": current_byo},
+        )
+        raise ChangeProviderError(
+            "reprovision_stop_failed",
+            "Could not restart the container to apply the new provider. No changes were made — try again.",
+            status_code=502,
+        ) from e
+    # Drain-only continuation — deliberately NOT reprovision_for_user,
+    # whose leading re-stop would clobber a poll-claimed "provisioning"
+    # row back to "stopped" and let a second executor claim it (see
+    # drain_then_dispatch_provision's docstring).
+    asyncio.create_task(manager.drain_then_dispatch_provision(owner_id))
 
     return {
         "status": "ok",

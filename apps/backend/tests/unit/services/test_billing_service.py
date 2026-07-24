@@ -637,14 +637,13 @@ async def test_change_provider_trial_local_refuses_use_trial_checkout(monkeypatc
     # Guards must fire before either of these does any work.
     set_choice = AsyncMock()
     monkeypatch.setattr(billing_service.billing_repo, "set_provider_choice", set_choice)
-    bg = AsyncMock()
-    monkeypatch.setattr("core.services.container_provision.background_provision", bg)
-    created: list = []
-    monkeypatch.setattr(
-        billing_service.asyncio,
-        "create_task",
-        lambda coro: created.append(coro) or MagicMock(),
-    )
+    fake_manager = MagicMock()
+    fake_manager.stop_user_service = AsyncMock()
+    fake_manager.drain_then_dispatch_provision = MagicMock()
+    monkeypatch.setattr("core.containers.get_ecs_manager", lambda: fake_manager)
+    # The cold path's takeover fence reads the container row lazily from the
+    # real repo module - no row here, so the fence is skipped.
+    monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))
 
     with pytest.raises(billing_service.ChangeProviderError) as exc:
         await billing_service.change_provider(
@@ -656,17 +655,17 @@ async def test_change_provider_trial_local_refuses_use_trial_checkout(monkeypatc
 
     assert exc.value.code == "use_trial_checkout"
     assert exc.value.status_code == 409
-    # No provider write, no reprovision dispatch.
+    # No provider write, no stop, no reprovision dispatch.
     set_choice.assert_not_awaited()
-    bg.assert_not_called()
-    assert created == []
+    fake_manager.stop_user_service.assert_not_awaited()
+    fake_manager.drain_then_dispatch_provision.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_change_provider_into_bedrock_takes_cold_path(monkeypatch):
     """A switch INTO bedrock_claude must NOT take the hot path (which would
     call build_provider_block(bedrock, aip_arns=None) and raise), and must
-    NOT raise — it dispatches background_provision (cold path)."""
+    NOT raise — it stop-first reprovisions (cold path, F1 fix)."""
     # No prior provider_choice -> none of the OLD-provider side-effect cleanup
     # blocks (oauth, byo) fire, keeping the test free of oauth/key I/O while
     # still exercising the bedrock hot-vs-cold selector.
@@ -686,9 +685,19 @@ async def test_change_provider_into_bedrock_takes_cold_path(monkeypatch):
     monkeypatch.setattr(billing_service.billing_repo, "set_provider_choice", AsyncMock())
     hot = AsyncMock()
     monkeypatch.setattr(billing_service, "_hot_swap_provider", hot)
-    bg = AsyncMock()
-    monkeypatch.setattr("core.services.container_provision.background_provision", bg)
-    created = []
+    # change_provider's cold path lazily imports get_ecs_manager from
+    # core.containers, awaits .stop_user_service, and dispatches
+    # .drain_then_dispatch_provision(owner_id) as a background task (F1
+    # fix) — patch at the source module, and capture the dispatched task
+    # instead of scheduling it so nothing outlives the test loop.
+    fake_manager = MagicMock()
+    fake_manager.stop_user_service = AsyncMock()
+    fake_manager.drain_then_dispatch_provision = MagicMock()
+    monkeypatch.setattr("core.containers.get_ecs_manager", lambda: fake_manager)
+    # The cold path's takeover fence reads the container row lazily from the
+    # real repo module - no row here, so the fence is skipped.
+    monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))
+    created: list = []
     monkeypatch.setattr(
         billing_service.asyncio,
         "create_task",
@@ -704,10 +713,14 @@ async def test_change_provider_into_bedrock_takes_cold_path(monkeypatch):
 
     hot.assert_not_awaited()  # hot path skipped for bedrock target
     assert result["restart"] is True
-    # background_provision (cold path) was scheduled.
-    assert created, "expected background_provision to be dispatched"
-    for coro in created:
-        coro.close()
+    # No container row: there is nothing to stop, and issuing the stop anyway
+    # would open a TOCTOU (a poll creating the row between the fence read and
+    # the stop would get an unfenced "stopped" stamp). So the stop is SKIPPED
+    # and the cold path falls straight through to the drain-only dispatch,
+    # whose create-from-scratch claim provisions the owner.
+    fake_manager.stop_user_service.assert_not_awaited()
+    fake_manager.drain_then_dispatch_provision.assert_called_once_with("user_x")
+    assert len(created) == 1
 
 
 @pytest.mark.asyncio
@@ -761,12 +774,17 @@ async def test_change_provider_refreshes_owner_facts(monkeypatch):
     monkeypatch.setattr(billing_service.billing_repo, "set_provider_choice", AsyncMock())
     facts_mock = AsyncMock()
     monkeypatch.setattr("core.services.owner_facts.write_owner_facts", facts_mock)
-    monkeypatch.setattr("core.services.container_provision.background_provision", AsyncMock())
-    created = []
+    fake_manager = MagicMock()
+    fake_manager.stop_user_service = AsyncMock()
+    fake_manager.drain_then_dispatch_provision = MagicMock()
+    monkeypatch.setattr("core.containers.get_ecs_manager", lambda: fake_manager)
+    # The cold path's takeover fence reads the container row lazily from the
+    # real repo module - no row here, so the fence is skipped.
+    monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))
     monkeypatch.setattr(
         billing_service.asyncio,
         "create_task",
-        lambda coro: created.append(coro) or MagicMock(),
+        lambda coro: MagicMock(),
     )
 
     await billing_service.change_provider(
@@ -780,8 +798,6 @@ async def test_change_provider_refreshes_owner_facts(monkeypatch):
         "user_x",
         account_overrides={"provider_choice": "bedrock_claude", "byo_provider": None},
     )
-    for coro in created:
-        coro.close()
 
 
 @pytest.mark.asyncio

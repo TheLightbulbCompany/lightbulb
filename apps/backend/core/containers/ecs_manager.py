@@ -272,6 +272,7 @@ class EcsManagerError(Exception):
 START_REFUSED_CAP = "trial_daily_cap"
 START_REFUSED_EXPIRED = "trial_expired"
 START_REFUSED_CONVERTING = "conversion_in_flight"
+START_REFUSED_REPROVISIONING = "reprovision_in_flight"
 
 # Copy for each trial refusal. Keyed by the reason ``trial_cap.trial_block_reason``
 # returns, so a new reason cannot be added without giving the owner words.
@@ -1019,7 +1020,13 @@ class EcsManager:
                 parked box.
 
         Raises:
-            EcsManagerError: If the ECS update_service call fails.
+            EcsManagerError: If the ECS update_service call fails. A service
+                that doesn't exist (or is already INACTIVE) is idempotent
+                success, not an error — "stopped" is already true, and the
+                callers that can hit it (a provider change or reprovision on
+                a subscribed-but-never-provisioned owner, a killswitch on an
+                already-deleted box) all want to proceed, mirroring
+                delete_user_service's not-found handling below.
         """
         service_name = self._service_name(user_id)
         put_metric(
@@ -1034,6 +1041,22 @@ class EcsManager:
                     service=service_name,
                     desiredCount=0,
                 )
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code", "")
+            if code in ("ServiceNotFoundException", "ServiceNotActiveException"):
+                logger.info(
+                    "stop_user_service: service %s for user %s doesn't exist — nothing to stop",
+                    service_name,
+                    user_id,
+                )
+            else:
+                logger.error(
+                    "Failed to stop ECS service %s for user %s: %s",
+                    service_name,
+                    user_id,
+                    e,
+                )
+                raise EcsManagerError(f"Failed to stop ECS service: {e}", user_id)
         except Exception as e:
             logger.error(
                 "Failed to stop ECS service %s for user %s: %s",
@@ -1136,6 +1159,25 @@ class EcsManager:
                 START_REFUSED_CONVERTING,
                 user_id,
                 "A subscription upgrade is reprovisioning this container; it will come back on its own.",
+            )
+
+        # 3. PROVIDER-CHANGE REPROVISION IN FLIGHT. change_provider's cold
+        #    path stops the container (stop_reason="reprovision") and then
+        #    drains before dispatching the provision. A direct start inside
+        #    that window (POST /container/provision's restart door) would
+        #    set desiredCount=1 on the STALE task def, and the later
+        #    provision claim would then see a desired/running service and
+        #    take the branch that rewrites nothing — silently dropping the
+        #    provider switch. Refusing here is safe: the status poll's wake
+        #    path dispatches background_provision (force=True internally),
+        #    bypasses this guard, and applies the switch properly — so the
+        #    row always converges even if the drain task died.
+        if container and container.get("status") == "stopped" and container.get("stop_reason") == "reprovision":
+            put_metric("container.start.refused", dimensions={"reason": START_REFUSED_REPROVISIONING})
+            raise ContainerStartRefused(
+                START_REFUSED_REPROVISIONING,
+                user_id,
+                "A provider change is reprovisioning this container; it will come back on its own.",
             )
 
         # ONE read covering both ways a free-tier owner runs out of runway.
@@ -1457,20 +1499,36 @@ class EcsManager:
         has fully drained (single EFS SQLite writer — see the drain-wait
         below); EFS, gateway token, and access point are all preserved.
         """
-        from core.services.container_provision import background_provision
-
         # Drop to desiredCount=0 so the dispatched provision takes the
         # scale-from-zero branch (re-register + write_user_configs), not the
         # running force-redeploy branch.
         await self.stop_user_service(user_id, reason="reprovision")
 
-        # Block until the old task is fully stopped before provisioning the new
-        # one. stop_user_service only issues desiredCount=0 and returns at once;
-        # ECS then takes up to the task's stop-timeout to actually kill it. The
-        # per-owner state lives in WAL-mode SQLite on EFS, which corrupts if the
-        # draining old task and the new task hold it open together (the same
-        # reason SINGLE_WRITER_DEPLOYMENT_CONFIG pins max=100). Waiting here
-        # guarantees a single writer across the reprovision.
+        return await self.drain_then_dispatch_provision(user_id)
+
+    async def drain_then_dispatch_provision(self, user_id: str) -> dict:
+        """Drain-wait + provision dispatch for a service that has ALREADY
+        been stopped by the caller. Deliberately does NOT re-issue the stop:
+        a status-poll wake can legitimately claim the exposed "stopped" row
+        before this runs, flipping it to "provisioning" — a second
+        stop_user_service here would clobber that back to "stopped" via
+        update_status's get→put, making the row claimable AGAIN and letting
+        this method's own dispatch start a second executor against the
+        poll's in-flight one. Skipping the stop keeps the single-flight
+        guarantee: if the poll's claim won, the dispatch below simply loses
+        the lease and stands down.
+
+        Block until the old task is fully stopped before provisioning the
+        new one. stop_user_service only issues desiredCount=0 and returns at
+        once; ECS then takes up to the task's stop-timeout to actually kill
+        it. The per-owner state lives in WAL-mode SQLite on EFS, which
+        corrupts if the draining old task and the new task hold it open
+        together (the same reason SINGLE_WRITER_DEPLOYMENT_CONFIG pins
+        max=100). Waiting here guarantees a single writer across the
+        reprovision.
+        """
+        from core.services.container_provision import background_provision
+
         await self._wait_for_service_drained(user_id)
 
         # clerk_user_id is unused by the reprovision path: provision reads

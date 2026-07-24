@@ -317,6 +317,48 @@ async def test_get_provisioning_no_rows_degrades_to_nones():
 
 
 @pytest.mark.asyncio
+async def test_get_provisioning_container_read_failure_isolated_from_compute_status():
+    """A failing/timed-out container_repo.get_by_owner_id flows through
+    _with_timeout as an {"error", "source"} sentinel -- not None, and not a
+    real row. compute_status's container= contract (readiness_state.py:
+    169-176) only anticipates an already-fetched row or an explicit None;
+    threading the sentinel through as if it were a real row would silently
+    fabricate a plausible-but-wrong lifecycle instead of surfacing that the
+    read itself failed. The composer must (a) pass compute_status
+    container=None on a failed read, and (b) surface the read failure in the
+    `container` field distinguishably from "row genuinely absent" (which is
+    None) so an operator can tell the two apart."""
+    from core.services import admin_service
+
+    compute_status_mock = AsyncMock(return_value={"lifecycle": "needs_signup"})
+
+    with (
+        patch(
+            "core.services.admin_service.resolve_admin_owner_id",
+            new=AsyncMock(return_value=("owner_1", None)),
+        ),
+        patch(
+            "core.services.admin_service.container_repo.get_by_owner_id",
+            new=AsyncMock(side_effect=RuntimeError("ddb_blip")),
+        ),
+        patch("core.services.admin_service.compute_status", new=compute_status_mock),
+        patch(
+            "core.services.admin_service._paperclip_repo",
+            return_value=_paperclip_repo_returning(None),
+        ),
+        patch("core.services.admin_service.probe_provision_gate", new=AsyncMock(return_value=None)),
+        patch("core.services.admin_service.describe_dispatch_execution", new=AsyncMock(return_value=None)),
+    ):
+        result = await admin_service.get_provisioning("user_1")  # must not raise
+
+    compute_status_mock.assert_awaited_once_with("owner_1", container=None)
+    assert result["container"] == {"error": "ddb_blip", "source": "ddb_containers"}
+    # Distinguishable from the genuinely-no-row case, which is bare None —
+    # asserted separately by test_get_provisioning_no_rows_degrades_to_nones.
+    assert result["container"] is not None
+
+
+@pytest.mark.asyncio
 async def test_get_provisioning_narrows_sfn_response():
     """The SFN DescribeExecution response is boto3-shaped (datetimes +
     ResponseMetadata); only name/status/start_date/stop_date should survive,

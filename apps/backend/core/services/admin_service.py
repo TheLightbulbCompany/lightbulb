@@ -335,6 +335,25 @@ def _iso(value: Any) -> Any:
     return value.isoformat() if hasattr(value, "isoformat") else value
 
 
+def _read_failed(value: Any, *, label: str) -> bool:
+    """True iff ``value`` is the ``{"error", "source"}`` sentinel
+    ``_with_timeout`` returns on a timeout/exception for THIS specific
+    ``label`` -- as opposed to a genuine result (for every caller here that's
+    ``dict | None``, never a two-key dict whose ``source`` happens to equal
+    the label we passed).
+
+    Same class of fix as the ``isinstance(gate, Gate)`` guard below:
+    ``_with_timeout``'s failure sentinel is truthy, so a bare ``if value``
+    can't tell "row exists" from "read failed". For the container read
+    specifically, threading the sentinel into ``compute_status`` as if it
+    were a real row would silently fabricate a plausible-looking
+    ``lifecycle`` instead of surfacing that the read itself failed -- on
+    exactly the diagnostic tool built for investigating provisioning
+    problems.
+    """
+    return isinstance(value, dict) and "error" in value and value.get("source") == label
+
+
 def _narrow_container(row: dict | None) -> dict | None:
     """containers row -> allowlisted provisioning fields (drops gateway_token)."""
     if not row:
@@ -377,11 +396,20 @@ async def get_provisioning(user_id: str) -> dict:
 
     The containers row is read once and threaded into ``compute_status`` as
     its documented ``container=`` override (``readiness_state.py:169-176``)
-    so this doesn't issue a second DDB read for the same row.
+    so this doesn't issue a second DDB read for the same row. That override
+    contract only anticipates an already-fetched row OR an explicit ``None``
+    -- never ``_with_timeout``'s failure sentinel -- so a failed/timed-out
+    container read is translated to ``None`` before being threaded through,
+    and the ``container`` field in the returned payload keeps the raw
+    sentinel (distinguishable from a genuinely absent row, which is
+    ``None``) so an operator can tell "read failed" from "no row" apart.
     """
     owner_id, org_context = await resolve_admin_owner_id(user_id)
 
-    container = await _with_timeout(container_repo.get_by_owner_id(owner_id), "ddb_containers")
+    container_raw = await _with_timeout(container_repo.get_by_owner_id(owner_id), "ddb_containers")
+    container_read_failed = _read_failed(container_raw, label="ddb_containers")
+    container = None if container_read_failed else container_raw
+
     status_contract, paperclip_row, gate = await asyncio.gather(
         _with_timeout(compute_status(owner_id, container=container), "readiness_status"),
         _with_timeout(_paperclip_repo().get(owner_id), "ddb_paperclip"),
@@ -397,7 +425,7 @@ async def get_provisioning(user_id: str) -> dict:
         "owner_id": owner_id,
         "org": org_context,
         "status_contract": status_contract,
-        "container": _narrow_container(container),
+        "container": container_raw if container_read_failed else _narrow_container(container),
         "paperclip": _narrow_paperclip(paperclip_row),
         # isinstance guard, not a truthiness check: on timeout/error
         # _with_timeout hands back an {"error", "source"} dict rather than

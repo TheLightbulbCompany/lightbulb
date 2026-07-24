@@ -63,17 +63,17 @@ describe("FirstRunFunnel", () => {
     });
   });
 
-  it("resets stale started/completed from a prior provision so the new cycle's kickoff isn't suppressed", async () => {
-    // Cross-provision staleness, verified live on dev: the user completed a
-    // PREVIOUS first-run cycle (started/completed both true), then their
-    // account/container was wiped and rebuilt. Clerk metadata is per-user
-    // forever, so those flags survive — while the gate (keying off the fresh
-    // container's onboarded:false) correctly re-shows this funnel. A brief
-    // submit STARTS A NEW cycle, so it must clear the stale flags in the same
-    // write; otherwise useFirstRunKickoff hard-skips on completed:true and the
-    // new cycle's kickoff is permanently suppressed (thread reconciliation
-    // can't rescue a completed-latched run).
-    unsafeMetadata = { firstRun: { briefSubmitted: true, started: true, completed: true } };
+  it("re-arms briefSubmitted from a prior provision (account wipe / reprovision)", async () => {
+    // Cross-provision staleness: the user completed a PREVIOUS first-run
+    // cycle, then their account/container was wiped and rebuilt. Clerk
+    // metadata is per-user forever, so `briefSubmitted` from that prior
+    // cycle survives — while the gate (keying off the fresh container's
+    // onboarded:false / funnel_state on the backend) correctly re-shows this
+    // funnel. A brief submit re-arms `briefSubmitted` for the NEW cycle. The
+    // kickoff itself is server-owned now (spec PR-6) and fenced on the
+    // backend's own onboarding_generation, so there is no client-side
+    // started/completed latch left to reset here.
+    unsafeMetadata = { firstRun: { briefSubmitted: true } };
     post.mockResolvedValue({ status: "staged", friday_agent_id: "f1" });
     render(<FirstRunFunnel />);
 
@@ -82,8 +82,7 @@ describe("FirstRunFunnel", () => {
     await waitFor(() => {
       const meta = update.mock.calls[0][0].unsafeMetadata.firstRun;
       expect(meta.briefSubmitted).toBe(true);
-      expect(meta.started).toBe(false);
-      expect(meta.completed).toBe(false);
+      expect(meta.path).toBe("grow");
     });
   });
 

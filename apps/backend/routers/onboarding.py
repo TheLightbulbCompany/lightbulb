@@ -1,14 +1,14 @@
 """First-run onboarding endpoints.
 
-POST /api/v1/onboarding/brief stages the funnel input as OpenClaw
-primitives (BRIEF.md + first-run BOOTSTRAP.md in Friday's workspace,
-pre-boot) and seeds a company-level goal + project for Friday to work
-against. One-shot per COMPANY: a generation-fenced conditional
-``funnel_state: not_started -> submitted`` write on the paperclip-companies
-OWNER row (see ``core.repositories.paperclip_repo.claim_funnel_submission``)
-is the marker, so a second member of the same org submitting concurrently
-cannot seed a duplicate pair. Open to any org member, not just admins —
-see ``submit_brief`` for why an admin-only gate was rejected.
+POST /api/v1/onboarding/brief stages the funnel input as an OpenClaw
+primitive (BRIEF.md in Friday's workspace, pre-boot) and seeds a
+company-level goal + project for Friday to work against. One-shot per
+COMPANY: a generation-fenced conditional ``funnel_state: not_started ->
+submitted`` write on the paperclip-companies OWNER row (see
+``core.repositories.paperclip_repo.claim_funnel_submission``) is the
+marker, so a second member of the same org submitting concurrently cannot
+seed a duplicate pair. Open to any org member, not just admins — see
+``submit_brief`` for why an admin-only gate was rejected.
 
 Onboarding truth is company-scoped, not per-container and not per-user: an
 org shares one container AND one owner row, so onboarding happens once for
@@ -25,12 +25,26 @@ this replaces the old ``containers.onboarded_at`` stamp (S2) and the
 ``__onboarded__`` sentinel (S3) entirely: ``GET /container/status`` now
 reads ``funnel_state == "complete"`` off the SAME owner row instead. A
 successful ``/brief`` submit here only advances the funnel to
-``submitted`` — ``complete`` is set once the bootstrap dispatcher (a later
-PR) observes Friday's first-run kickoff actually deliver.
+``submitted`` — ``complete`` is set once the server-owned bootstrap
+dispatcher (``core.services.bootstrap_dispatcher``) observes Friday's
+first-run kickoff actually deliver (``chat.final``). This endpoint kicks
+that dispatch off in the common case (the funnel UI only renders inside a
+live chat surface, so the container has almost always already provisioned
+by the time someone submits it); ``GET /container/status`` is the fallback
+that dispatches once the runtime comes up if it was still cold here.
+
+There is no first-run BOOTSTRAP.md any more — OpenClaw's boot-time
+reconcile (``reconcileWorkspaceBootstrapCompletionState``) never surfaces a
+seeded BOOTSTRAP.md into Friday's context once ``setupCompletedAt`` is
+pre-marked (see ``core/services/friday_identity.py``'s docstring and
+research §5 of the architecture doc's companion) — the file was inert.
+The server-dispatched ``chat.send`` above replaces it as a first-class,
+observed operation instead of a file Friday is guaranteed never to read.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Literal
 
@@ -42,13 +56,12 @@ from core.auth import AuthContext, get_current_user
 from core.containers import get_workspace
 from core.observability.product_analytics import capture_product_event
 from core.repositories.paperclip_repo import FunnelClaimResult, PaperclipRepo
-from core.services.agent_mail_token import mint_first_contact_token
+from core.services.bootstrap_dispatcher import maybe_dispatch_bootstrap
 from core.services.paperclip_admin_client import PaperclipApiError
 from core.services.onboarding_brief import (
     derive_goal_title,
     project_name_for,
     render_brief_md,
-    render_first_run_bootstrap,
     seed_goal_and_project,
     stage_first_run_files,
 )
@@ -192,26 +205,6 @@ async def submit_brief(
             display_name=first_name,
             email=auth.email or "",
         )
-        # Mint Friday's first-contact token before rendering BOOTSTRAP.md so
-        # the instruction can embed it. This is inert-safe by construction:
-        # mint_first_contact_token never raises and returns None whenever
-        # agent email is inactive or the owner has no active address yet,
-        # in which case render_first_run_bootstrap renders with no email
-        # step at all. There is no company name in scope yet at this point
-        # in the flow (Friday names the company herself, later in the
-        # session this same BOOTSTRAP.md kicks off) -- a warm generic
-        # subject is the honest choice here, not a placeholder to fix later.
-        first_contact_token = await mint_first_contact_token(
-            owner_id=ctx.owner_id,
-            owner_email=auth.email or "",
-            subject="A first look at your business",
-        )
-        bootstrap_md = render_first_run_bootstrap(
-            first_name=first_name,
-            goal_id=goal_id,
-            project_id=project_id,
-            first_contact_token=first_contact_token,
-        )
 
         # Recorded BEFORE staging the workspace files, not after: this is
         # the generation-fenced write that actually decides who wins.
@@ -228,14 +221,14 @@ async def submit_brief(
 
         # No board seeding here: the first run is Friday's own research
         # session, and the board fills at the END of it with the three
-        # next-move tasks she proposes (BOOTSTRAP step 7). Each of those
-        # runs later as its own session when the owner picks it.
+        # next-move tasks she proposes (the server-dispatched kickoff tells
+        # her to). Each of those runs later as its own session when the
+        # owner picks it.
         stage_first_run_files(
             workspace=get_workspace(),
             owner_id=ctx.owner_id,
             friday_agent_id=friday_id,
             brief_md=brief_md,
-            bootstrap_md=bootstrap_md,
         )
     except BaseException:
         # BaseException, not Exception: asyncio.CancelledError (client
@@ -312,10 +305,19 @@ async def submit_brief(
 
     # funnel_state is already "submitted" (the claim above). It does NOT
     # advance to "complete" here -- that transition belongs to the bootstrap
-    # dispatcher (a later PR), which sets it once Friday's first-run kickoff
-    # is OBSERVED to deliver (chat.final), not merely staged. GET
-    # /container/status's `onboarded` field reads funnel_state=="complete"
-    # off this same owner row.
+    # dispatcher, which sets it once Friday's first-run kickoff is OBSERVED
+    # to deliver (chat.final), not merely staged. GET /container/status's
+    # `onboarded` field reads funnel_state=="complete" off this same owner
+    # row.
+    #
+    # Kick the dispatch off now, in case the runtime is ALREADY up (the
+    # common case: the funnel UI only renders inside a live chat surface,
+    # so by the time someone submits it the container has almost always
+    # already provisioned). Fire-and-forget: maybe_dispatch_bootstrap never
+    # raises, and if the runtime is still cold it does nothing -- the next
+    # GET /container/status poll that observes the runtime come up
+    # re-evaluates and dispatches then (see that module's docstring).
+    asyncio.create_task(maybe_dispatch_bootstrap(ctx.owner_id))
 
     capture_product_event(
         distinct_id=auth.user_id,

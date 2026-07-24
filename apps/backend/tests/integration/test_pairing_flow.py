@@ -97,8 +97,8 @@ async def test_provision_then_chat_create_yields_single_uuid_per_agent():
 
 @pytest.mark.asyncio
 async def test_friday_identity_files_seeded_at_workspace_path(monkeypatch, tmp_path):
-    """End-to-end: pre_stage_friday_identity drops IDENTITY/SOUL/USER/BOOTSTRAP
-    at /{owner_id}/workspace-<friday_uuid>/ on EFS with the right content."""
+    """End-to-end: pre_stage_friday_identity drops IDENTITY/SOUL/USER at
+    /{owner_id}/workspace-<friday_uuid>/ on EFS with the right content."""
     from core.config import settings
     from core.containers.workspace import Workspace
     from core.services import friday_identity
@@ -133,7 +133,10 @@ async def test_friday_identity_files_seeded_at_workspace_path(monkeypatch, tmp_p
     assert (base / "IDENTITY.md").exists()
     assert (base / "SOUL.md").exists()
     assert (base / "USER.md").exists()
-    assert (base / "BOOTSTRAP.md").exists()
+    # No BOOTSTRAP.md — deleted (spec PR-6, BOOTSTRAP): verified inert
+    # against the pinned OpenClaw fork (never surfaced into Friday's
+    # context). The kickoff is a server-dispatched chat.send instead.
+    assert not (base / "BOOTSTRAP.md").exists()
 
     # Sanity-check the substantive content.
     soul = (base / "SOUL.md").read_text()

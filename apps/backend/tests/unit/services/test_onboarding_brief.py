@@ -14,7 +14,6 @@ from core.services.onboarding_brief import (
     derive_goal_title,
     project_name_for,
     render_brief_md,
-    render_first_run_bootstrap,
     seed_goal_and_project,
     stage_first_run_files,
 )
@@ -67,128 +66,6 @@ def test_render_brief_md_no_idea_tells_friday_to_pick_one():
     assert "do not stall" in md
     # Never render a Python None into the brief.
     assert "None" not in md
-
-
-def test_render_first_run_bootstrap_tells_friday_to_pick_when_no_idea():
-    md = render_first_run_bootstrap(first_name="Max", goal_id="goal-1", project_id="proj-1")
-    assert "no idea yet" in md
-    # The pick happens BEFORE the research step, not after.
-    assert md.index("picking one is your first job") < md.index("Understand the business")
-
-
-def test_render_first_run_bootstrap_researches_before_proposing_tasks():
-    md = render_first_run_bootstrap(first_name="Max", goal_id="goal-1", project_id="proj-1")
-    assert "BRIEF.md" in md
-    assert "Max" in md
-    # New ordering (spec §4.D): understand the business + write the docs FIRST,
-    # then propose the three next-move tasks as the session's closing output.
-    # Anchor on step 7's unique "three best next" (the full phrase wraps a line).
-    assert md.index("MISSION.md") < md.index("three best next")
-    # Task proposals are path-aware: a website-first move for a NEW business,
-    # growth moves for a GROW one (they already have a site).
-    assert "NEW business" in md
-    assert "GROW" in md
-    assert "Build [company] website" in md  # the NEW-path first task
-    assert "GROWTH moves" in md  # the GROW-path branch
-    assert "building a website from scratch" in md  # grow must NOT do that
-    # The proposed tasks are for later separate-session runs, not executed now.
-    assert "do NOT start them" in md
-    # No Set-up-issue claim/seed in the new flow (the board fills at the end).
-    assert "check out the issue" not in md
-
-
-def test_bootstrap_names_before_researching():
-    md = render_first_run_bootstrap(first_name="Max", goal_id="goal-1", project_id="proj-1")
-    assert md.index("Name the company") < md.index("web_search")
-
-
-def test_bootstrap_carries_the_ids():
-    md = render_first_run_bootstrap(first_name="Max", goal_id="goal-1", project_id="proj-1")
-    assert "goal-1" in md
-    assert "proj-1" in md
-
-
-def test_bootstrap_files_tasks_into_the_project():
-    md = render_first_run_bootstrap(first_name="Max", goal_id="goal-1", project_id="proj-1")
-    assert "projectId" in md
-
-
-def test_bootstrap_renders_with_braces_intact():
-    """JSON braces in the template must survive str.format()."""
-    md = render_first_run_bootstrap(first_name="Max", goal_id="goal-1", project_id="proj-1")
-    assert '"projectId"' in md
-    assert "{{" not in md
-
-
-# --- Friday's first email (first_contact_token) ------------------------------
-
-
-def test_bootstrap_omits_email_step_when_token_is_none():
-    """Email gated inert -- when no token is available (email inactive or no
-    active address yet), the bootstrap renders exactly as it did before this
-    feature existed: no email step at all."""
-    md = render_first_run_bootstrap(first_name="Max", goal_id="goal-1", project_id="proj-1")
-    assert "isol8-mail.sh" not in md
-    assert "first email" not in md.lower()
-
-    # Passing the new param explicitly as None must be identical to omitting it.
-    md_explicit_none = render_first_run_bootstrap(
-        first_name="Max", goal_id="goal-1", project_id="proj-1", first_contact_token=None
-    )
-    assert md_explicit_none == md
-
-
-def test_bootstrap_includes_email_step_when_token_present():
-    md = render_first_run_bootstrap(
-        first_name="Max",
-        goal_id="goal-1",
-        project_id="proj-1",
-        first_contact_token="TOKEN_ABC123",
-    )
-    assert "first email" in md.lower()
-    assert "scripts/isol8-mail.sh" in md
-    # The actual token must be embedded verbatim so it can be run as-is.
-    assert '"TOKEN_ABC123"' in md
-    assert "Max" in md.split("## Send your first email", 1)[1]
-
-
-def test_bootstrap_email_step_comes_after_the_research_and_docs_work():
-    """The instruction is to send the email only after she's read BRIEF.md and
-    researched the business -- it must appear after the research/docs steps,
-    not stapled onto the very front of the file."""
-    md = render_first_run_bootstrap(
-        first_name="Max",
-        goal_id="goal-1",
-        project_id="proj-1",
-        first_contact_token="TOKEN_ABC123",
-    )
-    assert md.index("MISSION.md") < md.index("## Send your first email")
-    assert md.index("three best next") < md.index("## Send your first email")
-
-
-def test_bootstrap_email_step_emphasizes_warmth_and_specificity():
-    md = render_first_run_bootstrap(
-        first_name="Max",
-        goal_id="goal-1",
-        project_id="proj-1",
-        first_contact_token="TOKEN_ABC123",
-    )
-    section = md.split("## Send your first email", 1)[1]
-    assert "warm" in section.lower()
-    assert "specific" in section.lower()
-    assert "reply" in section.lower()
-    assert "generic" in section.lower()
-
-
-def test_bootstrap_email_step_run_command_pipes_body_through_stdin():
-    md = render_first_run_bootstrap(
-        first_name="Max",
-        goal_id="goal-1",
-        project_id="proj-1",
-        first_contact_token="TOKEN_ABC123",
-    )
-    assert "printf '%s' \"" in md
-    assert '| scripts/isol8-mail.sh "TOKEN_ABC123"' in md
 
 
 def test_goal_title_new_path_uses_their_words():
@@ -323,8 +200,7 @@ def test_staging_overwrites_a_partial_prior_attempt():
         owner_id="user_abc",
         friday_agent_id="friday-uuid",
         brief_md="brief",
-        bootstrap_md="bootstrap",
     )
 
-    assert ws.write_file.call_count == 2
+    assert ws.write_file.call_count == 1
     ws.write_file_if_missing.assert_not_called()

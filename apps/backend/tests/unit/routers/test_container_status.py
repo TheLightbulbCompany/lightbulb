@@ -1883,7 +1883,10 @@ class TestContainerStatusTeamsStatus:
             result = await container_status(_personal_auth())
 
         assert result["teams_status"] == "failed"
-        assert captured == ["_noop_ensure_user_ready"], (
+        # Bootstrap dispatch (spec PR-6) also fires on every ready-phase poll
+        # now -- its own guards (funnel not submitted here) make it a cheap
+        # no-op, but the fire-and-forget task is still scheduled.
+        assert captured == ["_noop_ensure_user_ready", "maybe_dispatch_bootstrap"], (
             f"a personal owner with a failed seed must re-dispatch ensure_user_ready, got {captured}"
         )
 
@@ -1919,7 +1922,12 @@ class TestContainerStatusTeamsStatus:
             result = await container_status(_personal_auth())
 
         assert "teams_status" not in result
-        assert captured == [], f"a healthy personal seed must not re-dispatch, got {captured}"
+        # Bootstrap dispatch (spec PR-6) fires unconditionally on every
+        # ready-phase poll -- ensure_user_ready is what stays gated on
+        # teams_status=="failed" (the assertion this test guards).
+        assert captured == ["maybe_dispatch_bootstrap"], (
+            f"a healthy personal seed must not re-dispatch ensure_user_ready, got {captured}"
+        )
 
 
 def _onboarding_state_with(

@@ -20,6 +20,7 @@ from core.containers.ecs_manager import (
 )
 from core.services import container_wake, wake_policy
 from core.services import readiness_state
+from core.services.bootstrap_dispatcher import maybe_dispatch_bootstrap
 from core.services.management_api_client import ManagementApiClientError
 from core.observability.metrics import put_metric, timing
 from core.repositories import container_repo
@@ -444,6 +445,16 @@ async def container_status(
     # provision_user_container would force-restart it (ecs_manager scenario 3).
     if auth.is_org_context or contract["teams_state"] == "failed":
         _dispatch_watched(ensure_user_ready(auth, provision_container=False))
+
+    # Server-owned bootstrap dispatch (INV-5, spec PR-6): every poll already
+    # observes runtime-phase transitions, so this is the "next lifecycle ->
+    # ready transition" the funnel-submitted-while-cold case waits for
+    # instead of storing a stale handoff token. maybe_dispatch_bootstrap's
+    # own guards (funnel_state == "submitted", bootstrap_state ==
+    # "not_started") make this a cheap one-DDB-read no-op on every poll
+    # where there's nothing to dispatch -- the overwhelming majority.
+    if contract["runtime_phase"] == "ready":
+        asyncio.create_task(maybe_dispatch_bootstrap(owner_id))
 
     # Gateway liveness now lives on the connection-service DDB table (see
     # core/services/connection_service.py's mark_gateway_connected /

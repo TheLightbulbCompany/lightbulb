@@ -1244,6 +1244,21 @@ class GatewayConnection:
         """
         self._run_completion_callbacks[run_id] = callback
 
+    def unregister_run_completion_callback(self, run_id: str) -> None:
+        """Withdraw a registration made by ``register_run_completion_callback``
+        without waiting for a terminal event to arrive and consume it.
+
+        For a caller whose dispatch failed AFTER registering (e.g. chat.send
+        itself raised, so the run never reached OpenClaw and no terminal
+        event will EVER arrive for this *run_id*) — without this the entry
+        (and its closure, which can hold references back to a repo/pool)
+        leaks in ``_run_completion_callbacks`` until this ``GatewayConnection``
+        is torn down. Idempotent — popping a *run_id* with nothing
+        registered (already consumed, or never registered) is a silent
+        no-op.
+        """
+        self._run_completion_callbacks.pop(run_id, None)
+
     def _dispatch_run_completion(self, run_id: str, state: str, payload: dict) -> None:
         """Pop and fire *run_id*'s registered completion callback, if any.
 
@@ -2317,6 +2332,16 @@ class GatewayConnectionPool:
             return False
         conn.register_run_completion_callback(run_id, callback)
         return True
+
+    def unregister_run_completion_callback(self, user_id: str, run_id: str) -> None:
+        """Public entry point mirroring ``register_run_completion_callback`` —
+        see ``GatewayConnection.unregister_run_completion_callback``. Silently
+        no-ops when no connection exists for *user_id* (nothing to withdraw).
+        """
+        conn = self._connections.get(user_id)
+        if conn is None:
+            return
+        conn.unregister_run_completion_callback(run_id)
 
     async def gate_chat(self, *, user_id: str, owner_id: str, session_key: str) -> dict:
         """Pre-chat hard-stop for card-3 (bedrock_claude) users and the

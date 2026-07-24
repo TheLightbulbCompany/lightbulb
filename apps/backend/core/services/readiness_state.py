@@ -110,13 +110,30 @@ def _paperclip_repo():
     return PaperclipRepo(table_name="paperclip-companies")
 
 
-async def _get_onboarding_state(owner_id: str) -> dict:
+async def resolve_onboarding_state(owner_id: str) -> dict:
     """Best-effort wrapper over ``paperclip_repo.get_onboarding_state``.
 
     A read failure here must never break ``/container/status`` -- mirrors
     the pre-COMPOSER ``_resolve_teams_status``'s degrade-to-None posture.
     Returns the same all-defaults shape ``get_onboarding_state`` returns
     for a genuinely absent row.
+
+    PUBLIC (not underscore-prefixed): callers that need the raw onboarding
+    dict for something OTHER than composing it into the StatusContract --
+    e.g. ``routers/container.py`` threading it into
+    ``core.services.bootstrap_dispatcher.maybe_dispatch_bootstrap`` so the
+    dispatcher doesn't re-query the paperclip-companies row a second time on
+    every ~3s ready poll -- call this directly, then pass the SAME dict into
+    ``compute_status(..., onboarding=...)`` below so IT doesn't re-fetch
+    either. This does NOT weaken INV-1: the composer is still the only
+    place readiness+onboarding facts are COMBINED into a verdict: this
+    function returns one store's raw facts, untouched, and
+    ``routers/container.py`` is deliberately not composing anything itself
+    with the result the way this same file's INV-1 architecture test
+    forbids -- it only re-threads it to the two functions that already
+    accept a pre-fetched onboarding dict/row (compute_status,
+    maybe_dispatch_bootstrap), and only reads via this readiness_state
+    accessor, never ``paperclip_repo`` directly.
     """
     try:
         return await _paperclip_repo().get_onboarding_state(owner_id)
@@ -129,6 +146,7 @@ async def _get_onboarding_state(owner_id: str) -> dict:
             "funnel_completed_at": None,
             "onboarding_goal_id": None,
             "onboarding_project_id": None,
+            "onboarding_submitted_by": None,
             "bootstrap_state": "not_started",
             "bootstrap_dispatch_id": None,
             "bootstrap_dispatched_at": None,
@@ -138,10 +156,11 @@ async def _get_onboarding_state(owner_id: str) -> dict:
             "teams_state": None,
             "company_id": None,
             "paperclip_user_id": None,
+            "user_id": None,
         }
 
 
-async def compute_status(owner_id: str, *, container: Any = _NOT_GIVEN) -> dict[str, Any]:
+async def compute_status(owner_id: str, *, container: Any = _NOT_GIVEN, onboarding: Any = _NOT_GIVEN) -> dict[str, Any]:
     """Compose the four readiness inputs into one ``StatusContract`` dict.
 
     Args:
@@ -155,6 +174,12 @@ async def compute_status(owner_id: str, *, container: Any = _NOT_GIVEN) -> dict[
             the contract reflect same-request local mutations a fresh read
             wouldn't see yet. Omit it (the default) to have this function
             read the row itself.
+        onboarding: an already-fetched ``resolve_onboarding_state(owner_id)``
+            dict. Pass this when the caller already read it (e.g.
+            ``routers/container.py`` threading it into
+            ``maybe_dispatch_bootstrap`` too) to skip a redundant
+            paperclip-companies read. Omit it (the default) to have this
+            function read it itself.
 
     Returns a plain dict shaped like the shared ``StatusContract`` TS type
     in ``packages/shared/src/hooks/statusContract.ts`` -- keep the two in
@@ -173,7 +198,8 @@ async def compute_status(owner_id: str, *, container: Any = _NOT_GIVEN) -> dict[
         logger.warning("readiness_state: billing read failed for owner %s", owner_id, exc_info=True)
         account = None
 
-    onboarding = await _get_onboarding_state(owner_id)
+    if onboarding is _NOT_GIVEN:
+        onboarding = await resolve_onboarding_state(owner_id)
     try:
         gateway_connected = await connection_service.is_gateway_connected(owner_id)
     except Exception:  # noqa: BLE001 — liveness read must never break /status

@@ -34,7 +34,14 @@ ATLAS = {"id": "atlas-uuid", "role": "recruiter", "name": "Atlas"}
 # path that accidentally keys the claim/record/revert calls on ctx.owner_id
 # instead of owner_row.user_id -- for an org, those two are genuinely
 # different values (see PaperclipRepo.resolve_owner_row's docstring).
-OWNER_ROW = SimpleNamespace(user_id="owner-row-user", onboarding_generation="01GEN")
+# bootstrap_state/bootstrap_attempts are read by submit_brief when it builds
+# the onboarding dict passed to maybe_dispatch_bootstrap (see that call site).
+OWNER_ROW = SimpleNamespace(
+    user_id="owner-row-user",
+    onboarding_generation="01GEN",
+    bootstrap_state="not_started",
+    bootstrap_attempts=0,
+)
 
 
 def _personal_auth():
@@ -249,7 +256,9 @@ def test_claim_and_record_use_the_owner_rows_user_id_and_generation(client):
     # Strong read on the claim path (read-then-write the same row); the
     # per-poll get_onboarding_state path stays eventually consistent.
     client.resolve_owner_row.assert_awaited_once_with("user_abc", consistent_read=True)  # ctx.owner_id
-    client.claim.assert_awaited_once_with("owner-row-user", onboarding_generation="01GEN")
+    client.claim.assert_awaited_once_with(
+        "owner-row-user", onboarding_generation="01GEN", submitted_by="user_abc"
+    )  # auth.user_id -- the ACTUAL submitting member, not the row's PK
     client.record.assert_awaited_once_with(
         "owner-row-user", onboarding_generation="01GEN", goal_id="goal-1", project_id="proj-1"
     )
@@ -370,13 +379,24 @@ def test_successful_submit_kicks_off_bootstrap_dispatch(client):
     background, in case the runtime is ALREADY up -- see
     core.services.bootstrap_dispatcher's module docstring. Fire-and-forget:
     the response doesn't wait on it, but the coroutine is scheduled with
-    ctx.owner_id."""
+    ctx.owner_id AND the onboarding dict built from the post-claim state --
+    so the dispatcher never re-reads the row (see the call site's comment)."""
     resp = client.post(
         "/api/v1/onboarding/brief",
         json={"path": "new", "input": "An agency"},
     )
     assert resp.status_code == 200
-    client.dispatch_bootstrap.assert_awaited_once_with("user_abc")  # ctx.owner_id
+    client.dispatch_bootstrap.assert_awaited_once_with(
+        "user_abc",  # ctx.owner_id
+        onboarding={
+            "onboarding_generation": "01GEN",
+            "funnel_state": "submitted",
+            "bootstrap_state": "not_started",
+            "bootstrap_attempts": 0,
+            "user_id": "owner-row-user",
+            "onboarding_submitted_by": "user_abc",  # auth.user_id -- the actual submitter
+        },
+    )
 
 
 def test_already_submitted_does_not_kick_off_bootstrap_dispatch(client):

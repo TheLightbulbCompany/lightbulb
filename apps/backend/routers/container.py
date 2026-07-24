@@ -330,7 +330,15 @@ async def container_status(
     # `contract["teams_state"] == "failed"` surfaces alongside a normal
     # phase so the client can render a "Teams needs attention / retry"
     # affordance instead of a hard block. Never gates.
-    contract = await readiness_state.compute_status(owner_id, container=container)
+    #
+    # Fetched once, here, and threaded into BOTH compute_status and the
+    # bootstrap-dispatch hook below — resolve_onboarding_state is the same
+    # paperclip-companies read compute_status would otherwise do internally
+    # (a by-org-id GSI query for an org owner), so without this every
+    # ~3s ready poll fleet-wide would pay it TWICE: once here (implicitly,
+    # inside compute_status) and once again inside maybe_dispatch_bootstrap.
+    onboarding = await readiness_state.resolve_onboarding_state(owner_id)
+    contract = await readiness_state.compute_status(owner_id, container=container, onboarding=onboarding)
 
     # Auto-retry: if container is in a failed/stuck state AND the owner can
     # currently afford to provision, trigger re-provisioning in the
@@ -451,10 +459,12 @@ async def container_status(
     # ready transition" the funnel-submitted-while-cold case waits for
     # instead of storing a stale handoff token. maybe_dispatch_bootstrap's
     # own guards (funnel_state == "submitted", bootstrap_state ==
-    # "not_started") make this a cheap one-DDB-read no-op on every poll
-    # where there's nothing to dispatch -- the overwhelming majority.
+    # "not_started") make this a cheap no-op on every poll where there's
+    # nothing to dispatch -- the overwhelming majority. Passing the SAME
+    # `onboarding` dict compute_status already consumed above means this
+    # costs zero extra paperclip-companies reads on that majority.
     if contract["runtime_phase"] == "ready":
-        asyncio.create_task(maybe_dispatch_bootstrap(owner_id))
+        asyncio.create_task(maybe_dispatch_bootstrap(owner_id, onboarding=onboarding))
 
     # Gateway liveness now lives on the connection-service DDB table (see
     # core/services/connection_service.py's mark_gateway_connected /

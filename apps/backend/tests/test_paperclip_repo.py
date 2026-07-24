@@ -434,17 +434,48 @@ async def test_resolve_owner_row_returns_none_for_unprovisioned_org(repo):
 
 async def test_claim_funnel_submission_wins_fresh(repo):
     await repo.put(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="not_started"))
-    result = await repo.claim_funnel_submission("u1", onboarding_generation="01G")
+    result = await repo.claim_funnel_submission("u1", onboarding_generation="01G", submitted_by="member_1")
     assert result is FunnelClaimResult.WON
     fetched = await repo.get("u1")
     assert fetched.funnel_state == "submitted"
     assert fetched.funnel_submitted_at is not None
+    assert fetched.onboarding_submitted_by == "member_1"
+
+
+async def test_claim_funnel_submission_submitted_by_can_differ_from_row_user_id(repo):
+    """The row's PK (user_id) is the ORG CREATOR for an org owner; the
+    submitting member can be a DIFFERENT org member entirely -- the whole
+    point of this field (see paperclip_repo.claim_funnel_submission's
+    docstring)."""
+    await repo.put(_make_company(user_id="creator_1", onboarding_generation="01G", funnel_state="not_started"))
+    result = await repo.claim_funnel_submission(
+        "creator_1", onboarding_generation="01G", submitted_by="member_not_the_creator"
+    )
+    assert result is FunnelClaimResult.WON
+    fetched = await repo.get("creator_1")
+    assert fetched.user_id == "creator_1"
+    assert fetched.onboarding_submitted_by == "member_not_the_creator"
+
+
+async def test_revert_funnel_submission_clears_onboarding_submitted_by(repo):
+    await repo.put(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="not_started"))
+    await repo.claim_funnel_submission("u1", onboarding_generation="01G", submitted_by="member_1")
+    await repo.revert_funnel_submission("u1", onboarding_generation="01G")
+    fetched = await repo.get("u1")
+    assert fetched.onboarding_submitted_by is None
+    # A fresh claim by a DIFFERENT member can now win and re-stamp it.
+    result = await repo.claim_funnel_submission("u1", onboarding_generation="01G", submitted_by="member_2")
+    assert result is FunnelClaimResult.WON
+    assert (await repo.get("u1")).onboarding_submitted_by == "member_2"
 
 
 async def test_claim_funnel_submission_second_caller_gets_already_submitted(repo):
     await repo.put(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="not_started"))
-    assert await repo.claim_funnel_submission("u1", onboarding_generation="01G") is FunnelClaimResult.WON
-    result = await repo.claim_funnel_submission("u1", onboarding_generation="01G")
+    assert (
+        await repo.claim_funnel_submission("u1", onboarding_generation="01G", submitted_by="member_1")
+        is FunnelClaimResult.WON
+    )
+    result = await repo.claim_funnel_submission("u1", onboarding_generation="01G", submitted_by="member_1")
     assert result is FunnelClaimResult.ALREADY_SUBMITTED
 
 
@@ -471,7 +502,7 @@ async def test_claim_funnel_submission_retries_when_peer_reverts(repo):
         return await real_get(user_id, consistent_read=consistent_read)
 
     with patch.object(repo, "get", flipping_get):
-        result = await repo.claim_funnel_submission("u1", onboarding_generation="01G")
+        result = await repo.claim_funnel_submission("u1", onboarding_generation="01G", submitted_by="member_1")
 
     assert result is FunnelClaimResult.WON
     assert (await repo.get("u1")).funnel_state == "submitted"
@@ -494,8 +525,8 @@ async def test_claim_funnel_submission_concurrent_leaves_row_consistent(repo):
     ``submitted`` state (no lost update, never stuck at not_started)."""
     await repo.put(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="not_started"))
     results = await asyncio.gather(
-        repo.claim_funnel_submission("u1", onboarding_generation="01G"),
-        repo.claim_funnel_submission("u1", onboarding_generation="01G"),
+        repo.claim_funnel_submission("u1", onboarding_generation="01G", submitted_by="member_1"),
+        repo.claim_funnel_submission("u1", onboarding_generation="01G", submitted_by="member_1"),
     )
     assert FunnelClaimResult.WON in results
     assert set(results) <= {FunnelClaimResult.WON, FunnelClaimResult.ALREADY_SUBMITTED}
@@ -524,6 +555,35 @@ async def test_get_onboarding_state_surfaces_failed_org_seed(repo):
     assert state["onboarding_generation"] == "01G"
 
 
+async def test_get_onboarding_state_surfaces_row_user_id_and_submitted_by(repo):
+    """The bridge dict must carry the resolved row's OWN PK (user_id --
+    the org creator for an org owner, distinct from owner_id/org_id) and
+    onboarding_submitted_by, so a caller (bootstrap_dispatcher, threaded
+    through readiness_state.resolve_onboarding_state) can address a write
+    at the correct row and the correct gateway session without a second
+    read."""
+    await repo.put(
+        _make_company(
+            user_id="creator_2",
+            org_id="org_z",
+            seeded_agent_ids=["friday_id"],
+            onboarding_generation="01G",
+            funnel_state="not_started",
+        )
+    )
+    await repo.claim_funnel_submission("creator_2", onboarding_generation="01G", submitted_by="member_x")
+
+    state = await repo.get_onboarding_state("org_z")
+    assert state["user_id"] == "creator_2"
+    assert state["onboarding_submitted_by"] == "member_x"
+
+
+async def test_get_onboarding_state_defaults_user_id_and_submitted_by_to_none(repo):
+    state = await repo.get_onboarding_state("org_never_provisioned")
+    assert state["user_id"] is None
+    assert state["onboarding_submitted_by"] is None
+
+
 async def test_find_owner_row_include_inactive_returns_failed_provisioner(repo):
     await repo.put(_make_company(user_id="creator", org_id="org_y", status="failed", seeded_agent_ids=["friday_id"]))
     # Default (sign-in) resolver hides the non-active row...
@@ -539,20 +599,22 @@ async def test_claim_funnel_submission_stale_generation_is_a_silent_no_op(repo):
     ALREADY_SUBMITTED -- INV-4: superseded writes are a no-op, not a
     duplicate-submit report."""
     await repo.put(_make_company(user_id="u1", onboarding_generation="01NEW", funnel_state="not_started"))
-    result = await repo.claim_funnel_submission("u1", onboarding_generation="01OLD")
+    result = await repo.claim_funnel_submission("u1", onboarding_generation="01OLD", submitted_by="member_1")
     assert result is FunnelClaimResult.STALE_GENERATION
     # The row itself is untouched.
     assert (await repo.get("u1")).funnel_state == "not_started"
 
 
 async def test_claim_funnel_submission_missing_row_is_stale_generation(repo):
-    result = await repo.claim_funnel_submission("user_never_provisioned", onboarding_generation="01G")
+    result = await repo.claim_funnel_submission(
+        "user_never_provisioned", onboarding_generation="01G", submitted_by="member_1"
+    )
     assert result is FunnelClaimResult.STALE_GENERATION
 
 
 async def test_record_onboarding_ids_then_read_back(repo):
     await repo.put(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="not_started"))
-    await repo.claim_funnel_submission("u1", onboarding_generation="01G")
+    await repo.claim_funnel_submission("u1", onboarding_generation="01G", submitted_by="member_1")
     await repo.record_onboarding_ids("u1", onboarding_generation="01G", goal_id="goal-1", project_id="proj-1")
     fetched = await repo.get("u1")
     assert fetched.onboarding_goal_id == "goal-1"
@@ -569,13 +631,13 @@ async def test_record_onboarding_ids_without_claim_raises(repo):
 
 async def test_revert_funnel_submission_allows_reclaim(repo):
     await repo.put(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="not_started"))
-    await repo.claim_funnel_submission("u1", onboarding_generation="01G")
+    await repo.claim_funnel_submission("u1", onboarding_generation="01G", submitted_by="member_1")
     await repo.revert_funnel_submission("u1", onboarding_generation="01G")
     fetched = await repo.get("u1")
     assert fetched.funnel_state == "not_started"
     assert fetched.funnel_submitted_at is None
     # A fresh claim can now win again.
-    result = await repo.claim_funnel_submission("u1", onboarding_generation="01G")
+    result = await repo.claim_funnel_submission("u1", onboarding_generation="01G", submitted_by="member_1")
     assert result is FunnelClaimResult.WON
 
 

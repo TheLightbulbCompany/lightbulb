@@ -138,7 +138,9 @@ async def submit_brief(
         raise HTTPException(status_code=409, detail="not_ready")
     generation = owner_row.onboarding_generation
 
-    claim_result = await repo.claim_funnel_submission(owner_row.user_id, onboarding_generation=generation)
+    claim_result = await repo.claim_funnel_submission(
+        owner_row.user_id, onboarding_generation=generation, submitted_by=auth.user_id
+    )
     if claim_result is FunnelClaimResult.ALREADY_SUBMITTED:
         # Durable: the row is still on the generation we just read, but
         # funnel_state had already moved past not_started -- a peer's
@@ -182,9 +184,10 @@ async def submit_brief(
 
         first_name = _first_name(auth)
 
-        # Seed BEFORE staging the instruction files: BOOTSTRAP.md tells
-        # Friday to go to work, so the rows must exist before it lands or
-        # she can wake into a company with no project.
+        # Seed BEFORE staging the instruction files: the server-dispatched
+        # kickoff (core.services.bootstrap_dispatcher) tells Friday to go to
+        # work, so the rows must exist before it dispatches or she wakes
+        # into a company with no project.
         try:
             goal_id, project_id = await seed_goal_and_project(
                 admin=admin,
@@ -317,7 +320,32 @@ async def submit_brief(
     # raises, and if the runtime is still cold it does nothing -- the next
     # GET /container/status poll that observes the runtime come up
     # re-evaluates and dispatches then (see that module's docstring).
-    asyncio.create_task(maybe_dispatch_bootstrap(ctx.owner_id))
+    #
+    # Pass the onboarding dict we already know rather than letting the
+    # dispatcher re-read the row: `owner_row` was read (consistent) BEFORE
+    # the claim above, and the claim's own CAS is the ONLY thing that
+    # changed since -- funnel_state -> "submitted" and
+    # onboarding_submitted_by -> auth.user_id, exactly the two fields
+    # claim_funnel_submission's UpdateExpression sets. bootstrap_state/
+    # bootstrap_attempts are untouched by the claim, so owner_row's
+    # pre-claim values for those are still accurate. This is the
+    # `submitted_by` the dispatcher needs to address the kickoff at the
+    # ACTUAL submitter (not the row's PK, which for an org is the creator —
+    # see bootstrap_dispatcher's module docstring) without a second
+    # paperclip-companies read.
+    asyncio.create_task(
+        maybe_dispatch_bootstrap(
+            ctx.owner_id,
+            onboarding={
+                "onboarding_generation": generation,
+                "funnel_state": "submitted",
+                "bootstrap_state": owner_row.bootstrap_state or "not_started",
+                "bootstrap_attempts": owner_row.bootstrap_attempts or 0,
+                "user_id": owner_row.user_id,
+                "onboarding_submitted_by": auth.user_id,
+            },
+        )
+    )
 
     capture_product_event(
         distinct_id=auth.user_id,

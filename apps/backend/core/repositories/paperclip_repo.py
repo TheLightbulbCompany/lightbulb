@@ -211,6 +211,20 @@ class PaperclipCompany:
     onboarding_goal_id: Optional[str] = None
     onboarding_project_id: Optional[str] = None
 
+    onboarding_submitted_by: Optional[str] = None
+    """The Clerk MEMBER ID of whoever actually POSTed ``/onboarding/brief``
+    -- written by ``claim_funnel_submission`` on the SAME write as the
+    claim, alongside ``funnel_submitted_at``. Distinct from ``user_id``
+    (this row's PK, the ORG CREATOR for an org owner — see
+    ``resolve_owner_row``): ``/onboarding/brief`` is open to any org
+    member, so a non-creator can win the claim. The bootstrap dispatcher
+    (``core.services.bootstrap_dispatcher``) addresses Friday's kickoff
+    session at THIS id, not ``user_id``, so the actual submitter — not the
+    creator — sees the live kickoff and its ``chat.history``. For a
+    personal owner this always equals ``user_id`` (there is only one
+    member). Cleared by ``revert_funnel_submission`` alongside the other
+    claim-scoped fields."""
+
     bootstrap_state: Optional[BootstrapState] = None
     """``not_started`` (set at G2) -> ``dispatched`` -> ``delivered`` |
     ``failed``. Written by the bootstrap dispatcher (a later PR) — this PR
@@ -287,6 +301,8 @@ class PaperclipRepo:
             item["onboarding_goal_id"] = company.onboarding_goal_id
         if company.onboarding_project_id is not None:
             item["onboarding_project_id"] = company.onboarding_project_id
+        if company.onboarding_submitted_by is not None:
+            item["onboarding_submitted_by"] = company.onboarding_submitted_by
         if company.bootstrap_state is not None:
             item["bootstrap_state"] = company.bootstrap_state
         if company.bootstrap_dispatch_id is not None:
@@ -352,6 +368,7 @@ class PaperclipRepo:
             ),
             onboarding_goal_id=item.get("onboarding_goal_id"),
             onboarding_project_id=item.get("onboarding_project_id"),
+            onboarding_submitted_by=item.get("onboarding_submitted_by"),
             bootstrap_state=item.get("bootstrap_state"),
             bootstrap_dispatch_id=item.get("bootstrap_dispatch_id"),
             bootstrap_dispatched_at=(
@@ -370,12 +387,19 @@ class PaperclipRepo:
         """RECONCILE-WITH-ONBOARD: read-only accessor for the
         COMPOSER/ONBOARD interface contract.
 
-        Returns the 11 spec-fixed onboarding keys (see the dataclass note
-        above) PLUS three additive keys -- ``teams_state`` (this row's raw
-        ``status``), ``company_id``, and ``paperclip_user_id`` -- so
-        ``core.services.readiness_state.compute_status`` gets everything it
-        needs from the paperclip-companies row in exactly ONE physical read
-        rather than a second `get_item` just for onboarding fields. See
+        Returns the 12 spec-fixed onboarding keys (see the dataclass note
+        above, including ``onboarding_submitted_by``) PLUS four additive
+        keys -- ``teams_state`` (this row's raw ``status``), ``company_id``,
+        ``paperclip_user_id``, and ``user_id`` (this ROW's PK -- the org
+        CREATOR for an org owner, NOT necessarily ``owner_id``; callers that
+        need to address a write at this specific row, e.g. the bootstrap
+        dispatcher's ``claim_bootstrap_dispatch``, need this since
+        ``owner_id`` alone is the wrong key for an org) -- so
+        ``core.services.readiness_state.compute_status`` (and, by threading
+        this same dict through, ``core.services.bootstrap_dispatcher``) gets
+        everything needed from the paperclip-companies row in exactly ONE
+        physical read rather than a second `get_item` just for onboarding
+        fields. See
         docs/superpowers/specs/2026-07-24-onboarding-architecture-design.md
         §2 ("one read, not two").
 
@@ -417,6 +441,7 @@ class PaperclipRepo:
                 "funnel_completed_at": None,
                 "onboarding_goal_id": None,
                 "onboarding_project_id": None,
+                "onboarding_submitted_by": None,
                 "bootstrap_state": "not_started",
                 "bootstrap_dispatch_id": None,
                 "bootstrap_dispatched_at": None,
@@ -426,6 +451,7 @@ class PaperclipRepo:
                 "teams_state": None,
                 "company_id": None,
                 "paperclip_user_id": None,
+                "user_id": None,
             }
 
         # getattr(..., default) rather than direct attribute access: real
@@ -452,6 +478,7 @@ class PaperclipRepo:
             "funnel_completed_at": _iso(getattr(company, "funnel_completed_at", None)),
             "onboarding_goal_id": getattr(company, "onboarding_goal_id", None),
             "onboarding_project_id": getattr(company, "onboarding_project_id", None),
+            "onboarding_submitted_by": getattr(company, "onboarding_submitted_by", None),
             "bootstrap_state": getattr(company, "bootstrap_state", None) or "not_started",
             "bootstrap_dispatch_id": getattr(company, "bootstrap_dispatch_id", None),
             "bootstrap_dispatched_at": _iso(getattr(company, "bootstrap_dispatched_at", None)),
@@ -461,6 +488,7 @@ class PaperclipRepo:
             "teams_state": getattr(company, "status", None),
             "company_id": getattr(company, "company_id", None),
             "paperclip_user_id": getattr(company, "paperclip_user_id", None),
+            "user_id": getattr(company, "user_id", None),
         }
 
     async def get_org_company_id(self, org_id: str) -> Optional[str]:
@@ -1026,7 +1054,9 @@ class PaperclipRepo:
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             pass
 
-    async def claim_funnel_submission(self, user_id: str, *, onboarding_generation: str) -> FunnelClaimResult:
+    async def claim_funnel_submission(
+        self, user_id: str, *, onboarding_generation: str, submitted_by: str
+    ) -> FunnelClaimResult:
         """Conditional ``funnel_state: not_started -> submitted``, fenced on
         ``onboarding_generation`` (INV-4). Replaces the ``__onboarded__``
         sentinel's ``claim_onboarding`` -- see ``FunnelClaimResult`` for why
@@ -1035,6 +1065,20 @@ class PaperclipRepo:
         conditional write already serializes concurrent submitters, and the
         two ways to lose (superseded generation vs. already submitted) are
         distinguished by one strongly-consistent re-read on failure.
+
+        ``submitted_by`` is the CLERK MEMBER ID of whoever is actually
+        POSTing ``/onboarding/brief`` -- NOT necessarily ``user_id`` (this
+        row's PK, which for an org is the ORG CREATOR who provisioned it —
+        see ``resolve_owner_row``). ``/onboarding/brief`` is open to any org
+        member, so a non-creator member can win this claim. Stamped onto
+        ``onboarding_submitted_by`` on the SAME write so the bootstrap
+        dispatcher (``core.services.bootstrap_dispatcher``) can address
+        Friday's kickoff session at the ACTUAL submitter, not the creator —
+        otherwise a non-creator submitter's live kickoff (and its
+        `chat.history`) lands in the creator's session instead of the
+        submitter's, who never sees the "I'm watching" prompt answered. For
+        a personal owner ``submitted_by == user_id`` always (there is only
+        one member), so this is a no-op change in that case.
 
         Callers MUST ``revert_funnel_submission`` on a later failure (before
         ``record_onboarding_ids`` lands) so a retry isn't permanently locked
@@ -1058,12 +1102,16 @@ class PaperclipRepo:
                 await run_in_thread(
                     table.update_item,
                     Key={"user_id": user_id},
-                    UpdateExpression="SET funnel_state = :submitted, funnel_submitted_at = :t, updated_at = :u",
+                    UpdateExpression=(
+                        "SET funnel_state = :submitted, funnel_submitted_at = :t, "
+                        "onboarding_submitted_by = :sub, updated_at = :u"
+                    ),
                     ConditionExpression="onboarding_generation = :gen AND funnel_state = :not_started",
                     ExpressionAttributeValues={
                         ":submitted": "submitted",
                         ":not_started": "not_started",
                         ":gen": onboarding_generation,
+                        ":sub": submitted_by,
                         ":t": now,
                         ":u": now,
                     },
@@ -1099,9 +1147,10 @@ class PaperclipRepo:
     ) -> None:
         """Record the seeded goal/project ids on the row. Written LAST (same
         ordering rationale as the old sentinel's ``record_onboarding_ids``):
-        BOOTSTRAP.md tells Friday to go to work, so both Paperclip rows must
-        exist and be linked here before it lands, or she wakes into a
-        company with no project.
+        the server-dispatched kickoff (``core.services.bootstrap_dispatcher``)
+        tells Friday to go to work, so both Paperclip rows must exist and be
+        linked here before it dispatches, or she wakes into a company with
+        no project.
 
         Guarded on ``onboarding_generation = :gen AND funnel_state =
         :submitted`` -- this can only ever land against the SAME claim this
@@ -1150,7 +1199,8 @@ class PaperclipRepo:
                 Key={"user_id": user_id},
                 UpdateExpression=(
                     "SET funnel_state = :not_started, updated_at = :u "
-                    "REMOVE funnel_submitted_at, onboarding_goal_id, onboarding_project_id"
+                    "REMOVE funnel_submitted_at, onboarding_goal_id, onboarding_project_id, "
+                    "onboarding_submitted_by"
                 ),
                 ConditionExpression="onboarding_generation = :gen AND funnel_state = :submitted",
                 ExpressionAttributeValues={

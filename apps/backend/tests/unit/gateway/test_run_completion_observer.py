@@ -164,3 +164,64 @@ def test_pool_register_run_completion_callback_delegates_to_connection():
 
     assert pool.register_run_completion_callback("owner_1", "run-1", cb) is True
     assert conn._run_completion_callbacks["run-1"] is cb
+
+
+# --- unregister_run_completion_callback (a dispatcher's own send failed AFTER
+# registering, so no terminal will ever arrive to consume it -- see
+# bootstrap_dispatcher.maybe_dispatch_bootstrap's except block) -------------
+
+
+def test_unregister_withdraws_a_registered_callback():
+    conn = _make_terminal_conn()
+
+    async def cb(state, payload):
+        pass
+
+    conn.register_run_completion_callback("run-1", cb)
+    assert "run-1" in conn._run_completion_callbacks
+
+    conn.unregister_run_completion_callback("run-1")
+    assert "run-1" not in conn._run_completion_callbacks
+
+
+def test_unregister_is_idempotent_on_an_unregistered_run_id():
+    conn = _make_terminal_conn()
+    # Must not raise -- nothing was ever registered for this run_id.
+    conn.unregister_run_completion_callback("never-registered")
+
+
+@pytest.mark.asyncio
+async def test_unregistered_callback_does_not_fire_on_a_later_terminal():
+    """The whole point: after unregister, a terminal event for that run_id
+    must NOT invoke the (withdrawn) callback."""
+    conn = _make_terminal_conn()
+    seen: list[str] = []
+
+    async def cb(state, payload):
+        seen.append(state)
+
+    conn.register_run_completion_callback("run-1", cb)
+    conn.unregister_run_completion_callback("run-1")
+    await _drive_terminal(conn, state="final", run_id="run-1")
+
+    assert seen == []
+
+
+def test_pool_unregister_run_completion_callback_no_connection_is_a_noop():
+    pool = GatewayConnectionPool.__new__(GatewayConnectionPool)
+    pool._connections = {}
+    # Must not raise.
+    pool.unregister_run_completion_callback("owner_1", "run-1")
+
+
+def test_pool_unregister_run_completion_callback_delegates_to_connection():
+    pool = GatewayConnectionPool.__new__(GatewayConnectionPool)
+    conn = _make_terminal_conn(owner_id="owner_1")
+    pool._connections = {"owner_1": conn}
+
+    async def cb(state, payload):
+        pass
+
+    pool.register_run_completion_callback("owner_1", "run-1", cb)
+    pool.unregister_run_completion_callback("owner_1", "run-1")
+    assert "run-1" not in conn._run_completion_callbacks

@@ -98,6 +98,7 @@ from core.services.paperclip_session_cookie import (
     is_trusted,
     set_session_on_response,
 )
+from core.services.user_provision import ensure_user_ready
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -222,7 +223,7 @@ def _provisioning_in_progress_response() -> Response:
 
     Shown when ``proxy()`` finds the user authenticated but their
     paperclip-companies row is missing or status != "active". Typical
-    case: handshake just spawned a background ``_autoprovision`` task
+    case: handshake just spawned a background ``ensure_user_ready`` task
     that hasn't completed yet (5–10s). ``<meta http-equiv="refresh">``
     polls every 2s with no JS; once provisioning lands and the proxy
     returns the actual Paperclip page, the browser stops auto-refreshing.
@@ -915,48 +916,6 @@ def _frontend_url() -> str:
     return (settings.FRONTEND_URL or "").rstrip("/") or "https://dev.isol8.co"
 
 
-async def _autoprovision(auth: AuthContext) -> None:
-    """Synchronously create a personal Paperclip company for ``auth``.
-
-    Mirrors what the Clerk org.created webhook does, but passes
-    ``user_id`` as the ``owner_id`` since for personal owners
-    ``owner_id == clerk_user_id``. Idempotent — provision_org
-    short-circuits if a row already exists with status="active".
-    Raises HTTPException(502) on failure.
-    """
-    if not auth.email:
-        raise HTTPException(
-            status_code=400,
-            detail="Email claim missing from auth token; cannot create Paperclip account",
-        )
-    from core.services.paperclip_admin_client import PaperclipAdminClient
-    from core.services.paperclip_provisioning import PaperclipProvisioning
-
-    repo = PaperclipRepo(table_name="paperclip-companies")
-    async with httpx.AsyncClient(
-        base_url=settings.PAPERCLIP_INTERNAL_URL,
-        timeout=30.0,
-    ) as http:
-        admin = PaperclipAdminClient(http_client=http)
-        provisioning = PaperclipProvisioning(admin, repo, env_name=settings.ENVIRONMENT)
-        try:
-            await provisioning.provision_org(
-                owner_id=auth.user_id,
-                owner_user_id=auth.user_id,
-                owner_email=auth.email,
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.exception(
-                "paperclip_proxy: autoprovision failed for user=%s: %s",
-                auth.user_id,
-                e,
-            )
-            raise HTTPException(
-                status_code=502,
-                detail=f"Provisioning failed: {type(e).__name__}",
-            )
-
-
 @router.api_route(
     "/{path:path}",
     methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"],
@@ -1010,13 +969,13 @@ async def proxy(path: str, request: Request) -> Response:
         # one that may not exist.
         from fastapi.responses import RedirectResponse
 
-        # Email guard: _autoprovision needs auth.email to call Better
-        # Auth signup. If the Clerk JWT is missing the email claim
-        # (older template, misconfigured org), spawning the task would
-        # raise immediately and asyncio would swallow the exception —
-        # the row would stay None forever and the user would loop in
-        # the setting-up stub. Surface the error explicitly via /chat
-        # instead.
+        # Email guard: ensure_user_ready's paperclip seed step needs
+        # auth.email to call Better Auth signup. If the Clerk JWT is
+        # missing the email claim (older template, misconfigured org),
+        # ensure_user_ready would best-effort no-op the seed (it logs
+        # and returns rather than raising) — the row would stay None
+        # forever and the user would loop in the setting-up stub.
+        # Surface the error explicitly via /chat instead.
         if not auth.email:
             logger.warning(
                 "paperclip_proxy: handoff blocked for user=%s — no email claim on JWT",
@@ -1048,10 +1007,21 @@ async def proxy(path: str, request: Request) -> Response:
         # the raw Clerk JWT in the address bar for only ~50ms instead of
         # the full provisioning duration. provision_org is idempotent so
         # a fast double-click is safe.
+        #
+        # Routed through the SAME canonical owner_id-keyed trigger
+        # GET /container/status uses (ensure_user_ready) rather than a
+        # second, proxy-local door that called provision_org directly
+        # keyed on user_id — there is exactly one autoprovision trigger
+        # family (INV-11). This also makes the dispatch org-aware for
+        # free: an org member hitting Teams now correctly JOINS the
+        # org's shared company instead of a personal-only provision_org
+        # call attempting to CREATE one keyed on their own user_id. The
+        # container already exists (checked above), so
+        # provision_container=False — this call seeds Paperclip only.
         repo = PaperclipRepo(table_name="paperclip-companies")
         existing = await repo.get(auth.user_id)
         if existing is None or existing.status != "active":
-            asyncio.create_task(_autoprovision(auth))
+            asyncio.create_task(ensure_user_ready(auth, provision_container=False))
 
         # Mint cookie + 302 to clean URL.
         session_jwt = _mint_paperclip_session(user_id=auth.user_id, email=auth.email)
@@ -1071,7 +1041,7 @@ async def proxy(path: str, request: Request) -> Response:
     repo = PaperclipRepo(table_name="paperclip-companies")
     company = await repo.get(auth.user_id)
     if company is None or company.status == "provisioning":
-        # Either: (a) handshake just spawned _autoprovision and the row
+        # Either: (a) handshake just spawned ensure_user_ready and the row
         # hasn't been written yet (typical first visit), or (b) it's
         # actively in-flight. Show the auto-refresh stub; do NOT
         # re-spawn from this path — the stub reloads every 2s and a

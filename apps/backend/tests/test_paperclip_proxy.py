@@ -942,6 +942,74 @@ def test_http_handoff_redirects_to_chat_when_no_container(monkeypatch):
     assert "isol8_paperclip=" not in resp.headers.get("set-cookie", "")
 
 
+def test_http_handoff_autoprovision_routes_through_canonical_trigger(monkeypatch):
+    """INV-11: the proxy's handoff no longer has its own second, undocumented
+    autoprovision door (the deleted ``_autoprovision`` helper, which called
+    ``provision_org`` directly, keyed on ``user_id``). It must dispatch the
+    SAME ``owner_id``-keyed ``ensure_user_ready`` that ``GET /container/status``
+    uses — exactly one autoprovision trigger family.
+    """
+    from fastapi.testclient import TestClient
+
+    import routers.paperclip_proxy as proxy_mod
+
+    monkeypatch.setattr(proxy_mod.settings, "PAPERCLIP_SERVICE_TOKEN_KEY", "test-secret-32-bytes-min-len-x")
+    monkeypatch.setattr(proxy_mod.settings, "FRONTEND_URL", "https://dev.isol8.co")
+
+    async def _fake_decode(token: str):
+        return {"sub": "user_trigger_fold", "email": "t@example.com"}
+
+    monkeypatch.setattr(proxy_mod, "_decode_token", _fake_decode)
+
+    async def _fake_get_container(owner_id: str):
+        return {"owner_id": owner_id, "status": "running"}
+
+    monkeypatch.setattr(proxy_mod.container_repo, "get_by_owner_id", _fake_get_container)
+
+    # No active Paperclip row yet → the handoff must spawn autoprovision.
+    class _FakeRepo:
+        def __init__(self, table_name: str) -> None:
+            pass
+
+        async def get(self, _user_id: str):
+            return None
+
+    monkeypatch.setattr(proxy_mod, "PaperclipRepo", _FakeRepo)
+
+    calls = []
+
+    def _fake_ensure_user_ready(auth, *, provision_container=True):
+        # Regular (non-async) stub so the call args are recorded
+        # synchronously — exactly when the real ``asyncio.create_task(...)``
+        # call site evaluates ``ensure_user_ready(auth, provision_container=...)``
+        # to produce the coroutine it schedules — independent of whether the
+        # background task actually gets a turn on the loop before the test
+        # inspects the response.
+        calls.append((auth.user_id, provision_container))
+
+        async def _noop():
+            return None
+
+        return _noop()
+
+    monkeypatch.setattr(proxy_mod, "ensure_user_ready", _fake_ensure_user_ready)
+
+    app = _build_http_app()
+    client = TestClient(app)
+
+    resp = client.get(
+        "/some/path?__t=valid.clerk.jwt",
+        follow_redirects=False,
+    )
+    assert resp.status_code == 302
+
+    # Dispatched through the canonical trigger, keyed on owner_id (personal
+    # context here: owner_id == user_id), with provision_container=False —
+    # the handoff already verified the container exists, so this call must
+    # seed Paperclip only, never re-dispatch container provisioning.
+    assert calls == [("user_trigger_fold", False)]
+
+
 # ---------------------------------------------------------------------------
 # Agent-secret redaction — the proxy fronts the native Paperclip agent routes,
 # which echo the full record incl. the openclaw_gateway adapterConfig (device

@@ -425,12 +425,10 @@ export async function getProvisioning(
   token: string,
   userId: string,
 ): Promise<AdminProvisioning | null> {
-  const { ok, data } = await adminHttp({
-    method: "GET",
-    path: `/admin/users/${encodeURIComponent(userId)}/provisioning`,
+  return adminFetch<AdminProvisioning>(
     token,
-  });
-  return ok ? (data as AdminProvisioning) : null;
+    `/admin/users/${encodeURIComponent(userId)}/provisioning`,
+  );
 }
 
 export async function listAgents(

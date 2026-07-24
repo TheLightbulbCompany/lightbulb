@@ -34,7 +34,14 @@ ATLAS = {"id": "atlas-uuid", "role": "recruiter", "name": "Atlas"}
 # path that accidentally keys the claim/record/revert calls on ctx.owner_id
 # instead of owner_row.user_id -- for an org, those two are genuinely
 # different values (see PaperclipRepo.resolve_owner_row's docstring).
-OWNER_ROW = SimpleNamespace(user_id="owner-row-user", onboarding_generation="01GEN")
+# bootstrap_state/bootstrap_attempts are read by submit_brief when it builds
+# the onboarding dict passed to maybe_dispatch_bootstrap (see that call site).
+OWNER_ROW = SimpleNamespace(
+    user_id="owner-row-user",
+    onboarding_generation="01GEN",
+    bootstrap_state="not_started",
+    bootstrap_attempts=0,
+)
 
 
 def _personal_auth():
@@ -75,11 +82,13 @@ def client(ctx, monkeypatch):
     repo.record_onboarding_ids = AsyncMock()
     monkeypatch.setattr(onboarding_mod, "PaperclipRepo", lambda **kwargs: repo)
 
-    # Default: no first-contact token (agent email inactive / no active
-    # address yet) -- the inert-safe default so existing tests are
-    # unaffected. Individual tests override this to exercise the wiring.
-    mint_first_contact = AsyncMock(return_value=None)
-    monkeypatch.setattr(onboarding_mod, "mint_first_contact_token", mint_first_contact)
+    # The post-submit bootstrap-dispatch kickoff is fire-and-forget
+    # (asyncio.create_task) -- close the coroutine instead of letting it run
+    # against real DDB/gateway state in these router-level tests. Individual
+    # tests that care about the dispatch call assert directly against
+    # dispatch_bootstrap below.
+    dispatch_bootstrap = AsyncMock()
+    monkeypatch.setattr(onboarding_mod, "maybe_dispatch_bootstrap", dispatch_bootstrap)
 
     app.dependency_overrides[get_current_user] = _personal_auth
     app.dependency_overrides[onboarding_mod._ctx] = lambda: ctx
@@ -91,7 +100,7 @@ def client(ctx, monkeypatch):
         c.claim = repo.claim_funnel_submission
         c.revert = repo.revert_funnel_submission
         c.record = repo.record_onboarding_ids
-        c.mint_first_contact = mint_first_contact
+        c.dispatch_bootstrap = dispatch_bootstrap
         yield c
     app.dependency_overrides.clear()
 
@@ -247,9 +256,13 @@ def test_claim_and_record_use_the_owner_rows_user_id_and_generation(client):
     # Strong read on the claim path (read-then-write the same row); the
     # per-poll get_onboarding_state path stays eventually consistent.
     client.resolve_owner_row.assert_awaited_once_with("user_abc", consistent_read=True)  # ctx.owner_id
-    # DDB key is owner_row.user_id; the realtime nudge rides owner_id=ctx.owner_id
-    # (the org's broadcast key -- for an org these two are genuinely different).
-    client.claim.assert_awaited_once_with("owner-row-user", onboarding_generation="01GEN", owner_id="user_abc")
+    # DDB key is owner_row.user_id; submitted_by is auth.user_id (the ACTUAL
+    # submitting member); the realtime nudge rides owner_id=ctx.owner_id (the
+    # org broadcast key). For an org all three are genuinely distinct values;
+    # in this personal-owner fixture submitted_by == owner_id == "user_abc".
+    client.claim.assert_awaited_once_with(
+        "owner-row-user", onboarding_generation="01GEN", submitted_by="user_abc", owner_id="user_abc"
+    )
     client.record.assert_awaited_once_with(
         "owner-row-user", onboarding_generation="01GEN", goal_id="goal-1", project_id="proj-1", owner_id="user_abc"
     )
@@ -362,53 +375,43 @@ def test_post_seed_cleanup_is_failure_tolerant_and_preserves_the_original_error(
     client.revert.assert_awaited_once_with("owner-row-user", onboarding_generation="01GEN", owner_id="user_abc")
 
 
-# --- Friday's first email (first-contact token wiring) -----------------------
+# --- Server-owned bootstrap dispatch kickoff (spec PR-6, BOOTSTRAP) ----------
 
 
-def test_mints_first_contact_token_with_owner_id_and_email(client):
-    """owner_id/owner_email come from ctx/auth, already in scope here."""
+def test_successful_submit_kicks_off_bootstrap_dispatch(client):
+    """A successful /brief submit dispatches the bootstrap kickoff in the
+    background, in case the runtime is ALREADY up -- see
+    core.services.bootstrap_dispatcher's module docstring. Fire-and-forget:
+    the response doesn't wait on it, but the coroutine is scheduled with
+    ctx.owner_id AND the onboarding dict built from the post-claim state --
+    so the dispatcher never re-reads the row (see the call site's comment)."""
     resp = client.post(
         "/api/v1/onboarding/brief",
         json={"path": "new", "input": "An agency"},
     )
     assert resp.status_code == 200
-    client.mint_first_contact.assert_awaited_once()
-    kwargs = client.mint_first_contact.await_args.kwargs
-    assert kwargs["owner_id"] == "user_abc"  # ctx.owner_id
-    assert kwargs["owner_email"] == "max@acme.com"  # auth.email
-    assert isinstance(kwargs["subject"], str) and kwargs["subject"]
-
-
-def test_bootstrap_carries_the_first_contact_token_when_minted(client):
-    client.mint_first_contact.return_value = "TOKEN_XYZ"
-
-    resp = client.post(
-        "/api/v1/onboarding/brief",
-        json={"path": "new", "input": "An agency"},
+    client.dispatch_bootstrap.assert_awaited_once_with(
+        "user_abc",  # ctx.owner_id
+        onboarding={
+            "onboarding_generation": "01GEN",
+            "funnel_state": "submitted",
+            "bootstrap_state": "not_started",
+            "bootstrap_attempts": 0,
+            "user_id": "owner-row-user",
+            "onboarding_submitted_by": "user_abc",  # auth.user_id -- the actual submitter
+        },
     )
-    assert resp.status_code == 200
-
-    bootstrap_call = client.ws.write_file.call_args_list[1]
-    assert bootstrap_call.args[1] == "workspace-friday-uuid/BOOTSTRAP.md"
-    assert "TOKEN_XYZ" in bootstrap_call.args[2]
-    assert "scripts/isol8-mail.sh" in bootstrap_call.args[2]
 
 
-def test_bootstrap_omits_email_step_when_no_token_minted(client):
-    """Inert-safe default: mint_first_contact_token returning None (agent
-    email inactive, or no active address yet) must leave BOOTSTRAP.md with
-    no email step at all."""
-    client.mint_first_contact.return_value = None
+def test_already_submitted_does_not_kick_off_bootstrap_dispatch(client):
+    """No fresh claim, no new dispatch to kick off -- the container/status
+    poll path is what handles a bootstrap for an already-submitted funnel."""
+    client.claim.return_value = FunnelClaimResult.ALREADY_SUBMITTED
 
-    resp = client.post(
-        "/api/v1/onboarding/brief",
-        json={"path": "new", "input": "An agency"},
-    )
-    assert resp.status_code == 200
+    resp = client.post("/api/v1/onboarding/brief", json={"path": "new", "input": "An agency"})
 
-    bootstrap_call = client.ws.write_file.call_args_list[1]
-    assert bootstrap_call.args[1] == "workspace-friday-uuid/BOOTSTRAP.md"
-    assert "scripts/isol8-mail.sh" not in bootstrap_call.args[2]
+    assert resp.json() == {"status": "already_submitted"}
+    client.dispatch_bootstrap.assert_not_awaited()
 
 
 def test_seed_only_failure_does_not_attempt_rollback(client):

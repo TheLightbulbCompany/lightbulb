@@ -57,16 +57,14 @@ describe("FirstRunFunnel", () => {
         detail: undefined,
       }),
     );
-    // A brief submit STARTS A NEW first-run cycle, so it clears started/completed
-    // in the SAME write (web PR #1397): stale flags from a prior provision would
-    // otherwise survive the writeFirstRun merge and suppress the new kickoff.
+    // briefSubmitted is a write-only optimistic pre-poll paint cache (spec
+    // PR-6, BOOTSTRAP) — the kickoff itself is server-dispatched now, so
+    // there is no started/completed client latch to write any more.
     await waitFor(() =>
       expect(mockUpdate).toHaveBeenCalledWith({
         unsafeMetadata: {
           firstRun: {
             briefSubmitted: true,
-            started: false,
-            completed: false,
             path: "new",
           },
         },
@@ -74,17 +72,18 @@ describe("FirstRunFunnel", () => {
     );
   });
 
-  it("resets stale started/completed from a prior provision so the new cycle's kickoff isn't suppressed", async () => {
-    // Cross-provision staleness, verified live on dev (web PR #1397): the user
-    // completed a PREVIOUS first-run cycle (started/completed both true), then
-    // their account/container was wiped and rebuilt. Clerk metadata is per-user
-    // forever, so those flags survive — while the gate (keying off the fresh
-    // container's onboarded:false) correctly re-shows this funnel. A brief
-    // submit STARTS A NEW cycle, so it must clear the stale flags in the same
-    // write; otherwise useFirstRunKickoff hard-skips on completed:true and the
-    // new cycle's kickoff is permanently suppressed.
+  it("re-arms briefSubmitted from a prior provision (account wipe / reprovision)", async () => {
+    // Cross-provision staleness: the user completed a PREVIOUS first-run
+    // cycle, then their account/container was wiped and rebuilt. Clerk
+    // metadata is per-user forever, so `briefSubmitted` from that prior
+    // cycle survives — while the gate (keying off the fresh container's
+    // onboarded:false / funnel_state on the backend) correctly re-shows
+    // this funnel. A brief submit re-arms `briefSubmitted` for the NEW
+    // cycle. The kickoff itself is server-owned now (spec PR-6) and fenced
+    // on the backend's own onboarding_generation, so there is no
+    // started/completed client latch left to reset here.
     mockUser.unsafeMetadata = {
-      firstRun: { briefSubmitted: true, started: true, completed: true },
+      firstRun: { briefSubmitted: true },
     };
     const u = userEvent.setup();
     await render(<FirstRunFunnel />);
@@ -98,8 +97,6 @@ describe("FirstRunFunnel", () => {
         unsafeMetadata: {
           firstRun: expect.objectContaining({
             briefSubmitted: true,
-            started: false,
-            completed: false,
           }),
         },
       }),

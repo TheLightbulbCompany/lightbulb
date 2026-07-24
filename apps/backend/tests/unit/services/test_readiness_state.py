@@ -55,6 +55,7 @@ async def _compute(
                 "funnel_completed_at": None,
                 "onboarding_goal_id": None,
                 "onboarding_project_id": None,
+                "onboarding_submitted_by": None,
                 "bootstrap_state": "not_started",
                 "bootstrap_dispatch_id": None,
                 "bootstrap_dispatched_at": None,
@@ -64,6 +65,7 @@ async def _compute(
                 "teams_state": None,
                 "company_id": None,
                 "paperclip_user_id": None,
+                "user_id": None,
             }
         )
     with (
@@ -188,6 +190,7 @@ class TestInvariant6ChatAvailabilitySolelyRuntimePhase:
                 "funnel_completed_at": None,
                 "onboarding_goal_id": None,
                 "onboarding_project_id": None,
+                "onboarding_submitted_by": None,
                 "bootstrap_state": "not_started",
                 "bootstrap_dispatch_id": None,
                 "bootstrap_dispatched_at": None,
@@ -197,6 +200,7 @@ class TestInvariant6ChatAvailabilitySolelyRuntimePhase:
                 "teams_state": "failed",
                 "company_id": "co_1",
                 "paperclip_user_id": "pc_1",
+                "user_id": "creator_1",
             }
         )
         container = {"status": "running", "substatus": None}
@@ -238,6 +242,7 @@ class TestInvariant6ChatAvailabilitySolelyRuntimePhase:
                 "funnel_completed_at": None,
                 "onboarding_goal_id": None,
                 "onboarding_project_id": None,
+                "onboarding_submitted_by": None,
                 "bootstrap_state": "not_started",
                 "bootstrap_dispatch_id": None,
                 "bootstrap_dispatched_at": None,
@@ -247,6 +252,7 @@ class TestInvariant6ChatAvailabilitySolelyRuntimePhase:
                 "teams_state": None,
                 "company_id": None,
                 "paperclip_user_id": None,
+                "user_id": None,
             }
         )
         with (
@@ -274,6 +280,7 @@ class TestInvariant6ChatAvailabilitySolelyRuntimePhase:
                 "funnel_completed_at": None,
                 "onboarding_goal_id": None,
                 "onboarding_project_id": None,
+                "onboarding_submitted_by": None,
                 "bootstrap_state": "not_started",
                 "bootstrap_dispatch_id": None,
                 "bootstrap_dispatched_at": None,
@@ -283,6 +290,7 @@ class TestInvariant6ChatAvailabilitySolelyRuntimePhase:
                 "teams_state": None,
                 "company_id": None,
                 "paperclip_user_id": None,
+                "user_id": None,
             }
         )
         with (
@@ -371,6 +379,112 @@ def _repo_from_get(get_mock_repo: MagicMock) -> MagicMock:
     return real
 
 
+class TestResolveOnboardingStateThreading:
+    """resolve_onboarding_state (public) + compute_status's onboarding=
+    kwarg -- the P2 fix that lets a caller (routers/container.py, threading
+    into maybe_dispatch_bootstrap too) fetch the paperclip-companies row
+    ONCE and share it, instead of compute_status re-fetching internally."""
+
+    @pytest.mark.asyncio
+    async def test_compute_status_does_not_refetch_when_onboarding_given(self):
+        paperclip_repo = MagicMock()
+        paperclip_repo.get_onboarding_state = AsyncMock(
+            side_effect=AssertionError("compute_status must not re-fetch onboarding when given")
+        )
+        container = {"status": "running", "substatus": None}
+        onboarding = {
+            "onboarding_generation": "01G",
+            "funnel_state": "submitted",
+            "funnel_submitted_at": None,
+            "funnel_completed_at": None,
+            "onboarding_goal_id": None,
+            "onboarding_project_id": None,
+            "onboarding_submitted_by": "member_1",
+            "bootstrap_state": "not_started",
+            "bootstrap_dispatch_id": None,
+            "bootstrap_dispatched_at": None,
+            "bootstrap_delivered_at": None,
+            "bootstrap_attempts": 0,
+            "bootstrap_last_error": None,
+            "teams_state": "active",
+            "company_id": "co_1",
+            "paperclip_user_id": "pc_1",
+            "user_id": "creator_1",
+        }
+        with (
+            patch("core.repositories.billing_repo.get_by_owner_id", new=AsyncMock(return_value=_account())),
+            patch("core.services.connection_service.is_gateway_connected", new=AsyncMock(return_value=True)),
+            patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=paperclip_repo),
+            patch("core.services.wake_policy.is_parked_trial", new=AsyncMock(return_value=False)),
+        ):
+            contract = await readiness_state.compute_status("user_x", container=container, onboarding=onboarding)
+        paperclip_repo.get_onboarding_state.assert_not_awaited()
+        assert contract["generations"]["onboarding_generation"] == "01G"
+        assert contract["funnel"]["state"] == "submitted"
+        assert contract["teams_state"] == "active"
+
+    @pytest.mark.asyncio
+    async def test_compute_status_fetches_onboarding_itself_when_omitted(self):
+        """The default (omitted) posture is unchanged -- this is the
+        existing behavior every other test in this file already relies on,
+        pinned explicitly here alongside the given-onboarding case above."""
+        paperclip_repo = MagicMock()
+        paperclip_repo.get_onboarding_state = AsyncMock(
+            return_value={
+                "onboarding_generation": "01G",
+                "funnel_state": "submitted",
+                "funnel_submitted_at": None,
+                "funnel_completed_at": None,
+                "onboarding_goal_id": None,
+                "onboarding_project_id": None,
+                "onboarding_submitted_by": None,
+                "bootstrap_state": "not_started",
+                "bootstrap_dispatch_id": None,
+                "bootstrap_dispatched_at": None,
+                "bootstrap_delivered_at": None,
+                "bootstrap_attempts": 0,
+                "bootstrap_last_error": None,
+                "teams_state": None,
+                "company_id": None,
+                "paperclip_user_id": None,
+                "user_id": "creator_1",
+            }
+        )
+        container = {"status": "running", "substatus": None}
+        with (
+            patch("core.repositories.billing_repo.get_by_owner_id", new=AsyncMock(return_value=_account())),
+            patch("core.services.connection_service.is_gateway_connected", new=AsyncMock(return_value=True)),
+            patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=paperclip_repo),
+            patch("core.services.wake_policy.is_parked_trial", new=AsyncMock(return_value=False)),
+        ):
+            contract = await readiness_state.compute_status("user_x", container=container)
+        paperclip_repo.get_onboarding_state.assert_awaited_once_with("user_x")
+        assert contract["generations"]["onboarding_generation"] == "01G"
+
+    @pytest.mark.asyncio
+    async def test_resolve_onboarding_state_delegates_to_the_repo(self):
+        paperclip_repo = MagicMock()
+        paperclip_repo.get_onboarding_state = AsyncMock(return_value={"onboarding_generation": "01G"})
+        with patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=paperclip_repo):
+            result = await readiness_state.resolve_onboarding_state("user_x")
+        assert result == {"onboarding_generation": "01G"}
+        paperclip_repo.get_onboarding_state.assert_awaited_once_with("user_x")
+
+    @pytest.mark.asyncio
+    async def test_resolve_onboarding_state_degrades_to_defaults_on_read_failure(self):
+        """A read failure here must never raise -- mirrors compute_status's
+        own degrade-to-defaults posture for every other input."""
+        paperclip_repo = MagicMock()
+        paperclip_repo.get_onboarding_state = AsyncMock(side_effect=RuntimeError("ddb down"))
+        with patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=paperclip_repo):
+            result = await readiness_state.resolve_onboarding_state("user_x")
+        assert result["onboarding_generation"] is None
+        assert result["funnel_state"] == "not_started"
+        assert result["bootstrap_state"] == "not_started"
+        assert result["user_id"] is None
+        assert result["onboarding_submitted_by"] is None
+
+
 class TestGenerationThreading:
     @pytest.mark.asyncio
     async def test_provision_generation_flows_from_container_row(self):
@@ -389,6 +503,7 @@ class TestGenerationThreading:
                 "funnel_completed_at": "2026-07-01T00:01:00Z",
                 "onboarding_goal_id": "goal_1",
                 "onboarding_project_id": "proj_1",
+                "onboarding_submitted_by": "member_1",
                 "bootstrap_state": "delivered",
                 "bootstrap_dispatch_id": "disp_1",
                 "bootstrap_dispatched_at": "2026-07-01T00:01:01Z",
@@ -398,6 +513,7 @@ class TestGenerationThreading:
                 "teams_state": "active",
                 "company_id": "co_1",
                 "paperclip_user_id": "pc_1",
+                "user_id": "creator_1",
             }
         )
         container = {"status": "running"}

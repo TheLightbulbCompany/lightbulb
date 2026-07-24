@@ -1,20 +1,24 @@
 /**
  * First-run ("onboarding aha") UI-flow state.
  *
- * Flags live in Clerk user.unsafeMetadata.firstRun as a SIBLING of the
- * existing `onboarded` and `getStarted` keys — every writer here (and
- * useGetStarted.ts:143) spreads unsafeMetadata, so siblings survive.
- * The brief CONTENT never lives here — it is BRIEF.md in Friday's
- * workspace (backend POST /onboarding/brief).
+ * Per the 2026-07-24 architecture decision (spec PR-6, BOOTSTRAP), Clerk
+ * `unsafeMetadata` is a WRITE-ONLY presentation cache — it may be written
+ * for an optimistic pre-first-poll paint, but no backend code and no client
+ * gating logic may read it as authority (a forged/stale value must produce
+ * at most a one-frame paint flicker, never a wrong gate). `briefSubmitted`
+ * is the one surviving field: FirstRunFunnel writes it on submit so the
+ * funnel dismisses THIS session without waiting for the next
+ * `/container/status` poll to catch up; ProvisioningStepper's same-session
+ * "flash bridge" reads it for exactly that. The durable authority for "has
+ * this owner submitted the funnel" is the backend's `funnel.state` on the
+ * `StatusContract` (`GET /container/status`), not this.
  *
- * FIRST_RUN_PROMPT is the visible kickoff message auto-sent to Friday
- * (spec §4.C). Its runbook counterpart is the BOOTSTRAP.md first-run
- * variant in apps/backend/core/services/onboarding_brief.py — keep the
- * two in sync: research the business, write the market-research + mission
- * docs, THEN propose three next-move tasks as the closing output (not
- * up-front). The tasks are path-aware — website-first for a NEW business,
- * growth moves for a GROW one — but that branching lives in the BOOTSTRAP,
- * so this visible prompt stays generic for both paths.
+ * `started`/`completed` (the client-side first-run-kickoff latch) were
+ * deleted in the same PR: the kickoff itself is server-dispatched now
+ * (`core/services/bootstrap_dispatcher.py`), and its completion is the
+ * backend's own observed `chat.final` (`bootstrap.state` on the
+ * StatusContract), not a client write. The brief CONTENT never lived here —
+ * it is BRIEF.md in Friday's workspace (backend POST /onboarding/brief).
  */
 import type { useUser } from "@clerk/nextjs";
 
@@ -26,8 +30,6 @@ type UserResource = NonNullable<ReturnType<typeof useUser>["user"]>;
 
 export interface FirstRunMeta {
   briefSubmitted?: boolean;
-  started?: boolean;
-  completed?: boolean;
   path?: "new" | "grow";
 }
 
@@ -47,10 +49,3 @@ export async function writeFirstRun(
     },
   });
 }
-
-export const FIRST_RUN_PROMPT = [
-  "Friday — I just set up my company. Read BRIEF.md, then really dig into my business and",
-  "market and write up what you learn (a market-research doc and a mission doc). Once you",
-  "get it, put my three best next moves on the board as tasks. Talk me through it as you go —",
-  "I'm watching.",
-].join(" ");

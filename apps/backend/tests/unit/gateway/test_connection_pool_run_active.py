@@ -134,6 +134,11 @@ async def test_mixed_case_session_key_clears_on_lowercased_terminal_event(monkey
     conn._run_state = {}
     conn._side_run_ids = {}
     conn._push_tasks = set()
+    # Run-completion observer registry (INV-5 bootstrap dispatcher). Not
+    # exercised by this test, but _handle_message's TRUE-terminal branch
+    # always pops from it now.
+    conn._run_completion_callbacks = {}
+    conn._run_completion_tasks = set()
 
     async def fake_forward(message, target_member_id=None):
         return None

@@ -14,7 +14,7 @@ import json
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Set
+from typing import Any, Awaitable, Callable, Dict, Optional, Set
 
 from websockets import connect as ws_connect
 
@@ -223,6 +223,18 @@ class GatewayConnection:
         # Fire-and-forget run-completion push tasks (mirrors _billing_tasks):
         # tracked so close() can drain them instead of cancelling a send.
         self._push_tasks: Set[asyncio.Task] = set()
+        # One-shot completion observers keyed by runId (== chat.send's
+        # idempotencyKey, which OpenClaw echoes as `runId` on every event for
+        # the run — chat.ts:2450). Registered via
+        # ``register_run_completion_callback`` by a caller that needs to
+        # observe a SPECIFIC dispatched run's terminal (final/error/aborted)
+        # without being the browser tab that sent it — e.g. the server-owned
+        # bootstrap dispatcher (INV-5, spec PR-6). Consumed (popped) exactly
+        # once, from the same TRUE-terminal gate ``_dispatch_push_notification``
+        # uses, then dropped — never re-fires for a re-delivered/duplicate
+        # terminal.
+        self._run_completion_callbacks: Dict[str, Callable[[str, dict], Awaitable[None]]] = {}
+        self._run_completion_tasks: Set[asyncio.Task] = set()
         # agent_id -> display name, TTL-cached from agents.list for push titles.
         # None until first resolve; _agent_names_at is the monotonic stamp.
         self._agent_names: Optional[Dict[str, str]] = None
@@ -1288,6 +1300,63 @@ class GatewayConnection:
         self._push_tasks.add(task)
         task.add_done_callback(self._push_tasks.discard)
 
+    def register_run_completion_callback(self, run_id: str, callback: Callable[[str, dict], Awaitable[None]]) -> None:
+        """One-shot observer for *run_id*'s TRUE terminal chat event.
+
+        *callback* is invoked ``await callback(state, payload)`` where
+        ``state`` is ``"final" | "error" | "aborted"`` and ``payload`` is the
+        raw terminal event body. Fired from ``_handle_message``'s TRUE-terminal
+        branch — the same gate ``_dispatch_push_notification`` uses, so an
+        interim `final` that only closes a tool-approval bracket (the run
+        continues as a separate follow-up) does NOT resolve this callback.
+        Overwrites any prior registration for the same *run_id* (callers mint
+        a fresh run_id per dispatch, so a collision would only happen on a
+        genuine retry, where "latest wins" is correct).
+        """
+        self._run_completion_callbacks[run_id] = callback
+
+    def unregister_run_completion_callback(self, run_id: str) -> None:
+        """Withdraw a registration made by ``register_run_completion_callback``
+        without waiting for a terminal event to arrive and consume it.
+
+        For a caller whose dispatch failed AFTER registering (e.g. chat.send
+        itself raised, so the run never reached OpenClaw and no terminal
+        event will EVER arrive for this *run_id*) — without this the entry
+        (and its closure, which can hold references back to a repo/pool)
+        leaks in ``_run_completion_callbacks`` until this ``GatewayConnection``
+        is torn down. Idempotent — popping a *run_id* with nothing
+        registered (already consumed, or never registered) is a silent
+        no-op.
+        """
+        self._run_completion_callbacks.pop(run_id, None)
+
+    def _dispatch_run_completion(self, run_id: str, state: str, payload: dict) -> None:
+        """Pop and fire *run_id*'s registered completion callback, if any.
+
+        Fire-and-forget (mirrors ``_dispatch_push_notification``): the
+        callback runs as a tracked background task so a slow/failing
+        observer (a DDB write) can never delay or break frame delivery to
+        the browser. No-op when nothing is registered for *run_id* (the
+        overwhelming common case — most runs have no observer).
+        """
+        callback = self._run_completion_callbacks.pop(run_id, None)
+        if callback is None:
+            return
+
+        async def _run() -> None:
+            try:
+                await callback(state, payload)
+            except Exception:
+                logger.exception(
+                    "Run-completion callback failed for user %s run_id=%s",
+                    self.user_id,
+                    run_id,
+                )
+
+        task = asyncio.create_task(_run())
+        self._run_completion_tasks.add(task)
+        task.add_done_callback(self._run_completion_tasks.discard)
+
     async def _resolve_member_from_session(self, parsed: dict) -> str:
         """Map a parsed session key to the Clerk member_id.
 
@@ -1782,6 +1851,13 @@ class GatewayConnection:
                 # separate follow-up run), so a paused-on-approval session never
                 # drains early.
                 if is_true_terminal:
+                    # Server-side completion observers (INV-5) — independent of
+                    # frame forwarding below and of whether any browser tab is
+                    # even watching. Fires for every TRUE terminal state
+                    # (final/error/aborted), not just "final" (unlike the push
+                    # dispatch, which is success-only).
+                    self._dispatch_run_completion(run_id, state, payload)
+
                     run_ended: dict = {
                         "type": "run_ended",
                         "runId": run_id,
@@ -2130,6 +2206,17 @@ class GatewayConnection:
                     "Error waiting for push tasks during close for user %s",
                     self.user_id,
                 )
+        # Drain in-flight run-completion observer tasks (INV-5 bootstrap
+        # dispatcher) too, so teardown doesn't cancel a DDB completion write
+        # mid-flight -- mirrors the push-dispatch drain above.
+        if self._run_completion_tasks:
+            try:
+                await asyncio.wait(self._run_completion_tasks, timeout=5.0)
+            except Exception:
+                logger.exception(
+                    "Error waiting for run-completion tasks during close for user %s",
+                    self.user_id,
+                )
         # Graceful RPC drain: the reader loop is still alive here, so in-flight
         # RPCs can still receive their `res` and resolve. Wait (bounded) for the
         # pending set to settle BEFORE tearing down the transport, instead of
@@ -2297,6 +2384,35 @@ class GatewayConnectionPool:
         if conn is None:
             return
         conn.mark_side_run(run_id)
+
+    def register_run_completion_callback(
+        self, user_id: str, run_id: str, callback: Callable[[str, dict], Awaitable[None]]
+    ) -> bool:
+        """Public entry point for a caller that needs to observe a specific
+        dispatched run's TRUE terminal (final/error/aborted) without being
+        the browser tab that sent it — e.g. the server-owned bootstrap
+        dispatcher (INV-5, spec PR-6).
+
+        Returns False (registers nothing) when no connection exists for
+        *user_id*. Callers should call ``ensure_connection`` first (mirrors
+        ``mark_run_active``'s own contract) so this only returns False if the
+        connection vanished between the two calls.
+        """
+        conn = self._connections.get(user_id)
+        if conn is None:
+            return False
+        conn.register_run_completion_callback(run_id, callback)
+        return True
+
+    def unregister_run_completion_callback(self, user_id: str, run_id: str) -> None:
+        """Public entry point mirroring ``register_run_completion_callback`` —
+        see ``GatewayConnection.unregister_run_completion_callback``. Silently
+        no-ops when no connection exists for *user_id* (nothing to withdraw).
+        """
+        conn = self._connections.get(user_id)
+        if conn is None:
+            return
+        conn.unregister_run_completion_callback(run_id)
 
     async def gate_chat(self, *, user_id: str, owner_id: str, session_key: str) -> dict:
         """Pre-chat hard-stop for card-3 (bedrock_claude) users and the

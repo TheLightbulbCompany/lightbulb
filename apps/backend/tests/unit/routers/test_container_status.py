@@ -98,6 +98,7 @@ def _onboarding_state_stub(status: str | None = None) -> dict:
         "funnel_completed_at": None,
         "onboarding_goal_id": None,
         "onboarding_project_id": None,
+        "onboarding_submitted_by": None,
         "bootstrap_state": "not_started",
         "bootstrap_dispatch_id": None,
         "bootstrap_dispatched_at": None,
@@ -107,6 +108,7 @@ def _onboarding_state_stub(status: str | None = None) -> dict:
         "teams_state": status,
         "company_id": None,
         "paperclip_user_id": None,
+        "user_id": None,
     }
 
 
@@ -1883,7 +1885,10 @@ class TestContainerStatusTeamsStatus:
             result = await container_status(_personal_auth())
 
         assert result["teams_status"] == "failed"
-        assert captured == ["_noop_ensure_user_ready"], (
+        # Bootstrap dispatch (spec PR-6) also fires on every ready-phase poll
+        # now -- its own guards (funnel not submitted here) make it a cheap
+        # no-op, but the fire-and-forget task is still scheduled.
+        assert captured == ["_noop_ensure_user_ready", "maybe_dispatch_bootstrap"], (
             f"a personal owner with a failed seed must re-dispatch ensure_user_ready, got {captured}"
         )
 
@@ -1919,7 +1924,59 @@ class TestContainerStatusTeamsStatus:
             result = await container_status(_personal_auth())
 
         assert "teams_status" not in result
-        assert captured == [], f"a healthy personal seed must not re-dispatch, got {captured}"
+        # Bootstrap dispatch (spec PR-6) fires unconditionally on every
+        # ready-phase poll -- ensure_user_ready is what stays gated on
+        # teams_status=="failed" (the assertion this test guards).
+        assert captured == ["maybe_dispatch_bootstrap"], (
+            f"a healthy personal seed must not re-dispatch ensure_user_ready, got {captured}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_ready_poll_reads_paperclip_companies_exactly_once(self):
+        """P2 fix: compute_status and maybe_dispatch_bootstrap must share ONE
+        paperclip-companies read on the hot ready-poll path, not two --
+        container_status fetches `onboarding` via
+        readiness_state.resolve_onboarding_state ONCE and threads the SAME
+        dict into both, rather than letting maybe_dispatch_bootstrap
+        independently re-query the by-org-id GSI on every ~3s poll."""
+        from routers.container import container_status
+
+        dispatch_mock = AsyncMock()
+        fake_ecs = AsyncMock()
+        fake_ecs.resolve_running_container = AsyncMock(
+            return_value=({"service_name": "svc", "status": "running", "substatus": None}, "10.0.1.5")
+        )
+        onboarding_state = _onboarding_state_stub("active")
+        onboarding_state["onboarding_generation"] = "01G"
+        onboarding_state["funnel_state"] = "submitted"
+        onboarding_state["user_id"] = "creator_1"
+        onboarding_state["onboarding_submitted_by"] = "member_1"
+        repo = MagicMock()
+        repo.get = AsyncMock(return_value=SimpleNamespace(status="active"))
+        repo.get_onboarding_state = AsyncMock(return_value=onboarding_state)
+        with (
+            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.resolve_owner_id", return_value="user_x"),
+            patch(
+                "core.services.connection_service.is_gateway_connected",
+                new=AsyncMock(return_value=True),
+            ),
+            patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
+            patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
+            patch("routers.container.maybe_dispatch_bootstrap", new=dispatch_mock),
+        ):
+            result = await container_status(_personal_auth())
+            # maybe_dispatch_bootstrap is fired via asyncio.create_task
+            # (fire-and-forget, not patched out in this test) -- yield once
+            # so the scheduled task actually runs before asserting on it.
+            await asyncio.sleep(0)
+
+        assert result["phase"] == "ready"
+        # ONE physical read of the paperclip-companies row for this whole
+        # poll -- compute_status's internal composition AND the dispatch
+        # hook share it.
+        repo.get_onboarding_state.assert_awaited_once_with("user_x")
+        dispatch_mock.assert_awaited_once_with("user_x", onboarding=onboarding_state)
 
 
 def _onboarding_state_with(

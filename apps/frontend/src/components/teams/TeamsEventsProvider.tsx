@@ -2,10 +2,7 @@
 
 import { useCallback, useEffect, useRef } from "react";
 import { useSWRConfig } from "swr";
-import { useUser } from "@clerk/nextjs";
 import { useGateway } from "@/hooks/useGateway";
-import { capture } from "@/lib/analytics";
-import { readFirstRun } from "@/lib/firstRun";
 import {
   acquireTeamsEvents,
   releaseTeamsEvents,
@@ -193,7 +190,6 @@ export function activityTargets(data: unknown): {
 export function TeamsEventsProvider({ children }: { children: React.ReactNode }) {
   const { isConnected, send, onEvent } = useGateway();
   const { mutate } = useSWRConfig();
-  const { user } = useUser();
   // null = never observed; false = observed disconnected; true = observed connected.
   // Full invalidation fires on any transition INTO connected — both the first
   // subscribe (null→true) and a reconnect (false→true) — but never on a
@@ -318,13 +314,6 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
         return;
       }
       if (event === "teams.activity.logged") {
-        // Prod telemetry proxy for "a board pulse reached this client"
-        // during an active first-run show (spec §4.G gate 1). True e2e
-        // latency needs a BFF-side emit timestamp, which activity.logged
-        // payloads don't carry — a follow-up if pulse counts look wrong.
-        const { started, completed } = readFirstRun(user);
-        if (started && !completed) capture("first_run_board_pulse");
-
         // Keep the OPEN detail panel live. Without this the unconditional
         // list keys below refresh but the row's own key never does, so an
         // agent changing a task/routine/project/goal (or another user editing
@@ -348,7 +337,7 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
     return () => {
       unsub();
     };
-  }, [onEvent, mutateKeyPrefix, mutateEntitySubtree, throttledMutate, user]);
+  }, [onEvent, mutateKeyPrefix, mutateEntitySubtree, throttledMutate]);
 
   // ── Board keeper ──────────────────────────────────────────────────────────
   // A raw setInterval backstop that revalidates the board keys every 20s while

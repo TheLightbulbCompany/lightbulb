@@ -1,24 +1,27 @@
 """First-run brief staging — the onboarding aha's OpenClaw-primitive layer.
 
-Writes two files into Friday's agent workspace on EFS BEFORE her container
-boots (same pre-boot window friday_identity.py uses; OpenClaw's
-writeFileIfMissing honors pre-written files):
+Writes ``BRIEF.md`` into Friday's agent workspace on EFS BEFORE her
+container boots (same pre-boot window friday_identity.py uses; OpenClaw's
+writeFileIfMissing honors pre-written files): the user's funnel input,
+verbatim + identity context. Written unconditionally. The one-shot marker
+for the whole flow is the generation-fenced ``funnel_state`` on the
+paperclip-companies owner row (see
+``paperclip_repo.claim_funnel_submission``), not BRIEF.md's existence.
 
-  - ``BRIEF.md``      — the user's funnel input, verbatim + identity context.
-                        Written unconditionally. The one-shot marker for the
-                        whole flow is the generation-fenced ``funnel_state``
-                        on the paperclip-companies owner row (see
-                        ``paperclip_repo.claim_funnel_submission``), not
-                        BRIEF.md's existence.
-  - ``BOOTSTRAP.md``  — the first-run variant, unconditionally overwritten.
-                        Ordering note: friday_identity seeds the standard
-                        BOOTSTRAP with write_file_if_missing, so whichever
-                        of (seed, brief-submit) runs first, the first-run
-                        variant wins — no race.
+There used to also be a first-run ``BOOTSTRAP.md`` variant staged here,
+telling Friday to read BRIEF.md and go to work. It was deleted (spec PR-6,
+BOOTSTRAP) once verified inert: OpenClaw's boot-time reconcile
+(``reconcileWorkspaceBootstrapCompletionState``) never surfaces a seeded
+BOOTSTRAP.md into Friday's context once ``setupCompletedAt`` is pre-marked
+(see ``core/services/friday_identity.py``, and research §5 of
+``docs/superpowers/specs/2026-07-24-onboarding-architecture-design.md``'s
+companion) — the file was written but never read. The kickoff is now a
+server-dispatched ``chat.send`` (``core/services/bootstrap_dispatcher.py``),
+an observed operation instead of a file with no code path to Friday's
+context.
 
 The spec is docs/superpowers/specs/2026-07-12-onboarding-aha-first-run-design.md
-(§4.B, §4.D). The visible auto-prompt lives in the frontend
-(apps/frontend/src/lib/firstRun.ts) — keep the two in sync.
+(§4.B). BRIEF.md's content contract is unchanged by PR-6.
 """
 
 from __future__ import annotations
@@ -64,123 +67,6 @@ chose and why. If the trail was cold, say so honestly and back your own
 judgment anyway — do not stall waiting for them to answer.
 """
 
-_FIRST_RUN_BOOTSTRAP_TEMPLATE = """\
-# BOOTSTRAP.md — Your first session is a working session
-
-{first_name} just set up their company and is WATCHING you work: your
-chat stream is on the left of their screen, the task board on the right.
-A kickoff message (sent on their behalf) opens this conversation. Unlike
-a normal first chat, you SHOULD use tools this session — that is the
-point. Narrate briefly as you go so they can follow along.
-
-This session is about UNDERSTANDING their business and leaving them with a
-clear set of next moves. You do the research and the docs live; you do NOT
-execute the follow-up work here. Each next-move task you propose is run
-later as its own separate session, when {first_name} chooses.
-
-Load your Paperclip identity first (see AGENTS.md — the export block for
-`paperclip-claimed-api-key.json`), then follow this order strictly:
-
-1. Greet {first_name} by name in ONE line, then start working. Narrate
-   briefly as you go — no walls of text between actions.
-2. Read BRIEF.md (this workspace) to learn what business you're running. If
-   it says they have no idea yet, picking one is your first job — look them
-   up (their email is in the brief), commit to a single business you can
-   argue for, and say what you chose and why. Then carry on below as though
-   it had been their idea all along.
-3. **Name the company.** Their company and project are both currently
-   named after them as a placeholder — pick a real name for the business
-   from what you just read, then set it in ONE go before anything else.
-   This is the first thing {first_name} sees change, so do it now, not at
-   the end.
-
-   ```
-   PATCH /api/companies/$PAPERCLIP_COMPANY_ID   {{"name": "<the name>"}}
-   PATCH /api/projects/{project_id}             {{"name": "<the name>"}}
-   ```
-
-   If the company PATCH 403s, keep going — the project rename is the one
-   that matters and the rest of the session is unaffected.
-4. Understand the business: research it and its market with web_search —
-   on the grow path, fetch their website first. This is the heart of the
-   session; actually understand who they serve and what they're up against.
-5. Write what you learned as durable docs — this is the visible output of
-   the research: `research/market-research.md` (market, competitors,
-   positioning) and `MISSION.md` (what this company is, who it serves,
-   where it's headed). Fold the mission's essence into USER.md's Context
-   section and append durable facts to MEMORY.md — your permanent context.
-6. **Write the mission onto the goal.** The company goal currently holds
-   their raw words. Replace it with the mission you just wrote:
-
-   ```
-   PATCH /api/goals/{goal_id}
-   {{"title": "<one-line mission>", "description": "<2-3 sentences>"}}
-   ```
-
-   Do NOT change its status or delete it — it is the company's north star
-   and everything else hangs off it.
-7. ONLY NOW, as the session's closing OUTPUT, propose their three best next
-   moves as tasks on the board. Create each with `"projectId": "{project_id}"`
-   so it lands in their project and inherits the company goal. You do not
-   need to set `goalId` — the board resolves it from the project. Create
-   them; do NOT start them — each is a task {first_name} will run later, in
-   its own session. Branch on the Path you read in BRIEF.md:
-     - NEW business (starting from scratch): the FIRST task is ALWAYS a
-       website — create a "Build [company] website" task for a landing page,
-       noting that running it produces the site in this workspace and going
-       live means connecting their own GitHub + Vercel. Choose the other two
-       from launch moves your research points to — customer outreach, a first
-       lead list, a content/social starter, or pricing.
-     - GROW (they already have a business, usually a live site): do NOT
-       propose building a website from scratch — they have one. Propose the
-       three highest-leverage GROWTH moves your research surfaced — e.g.
-       sharpening their existing site/conversion, customer outreach, a
-       content engine, lead research, or a pricing review — whichever you
-       found weakest or with the most upside for THIS business.
-   Give each a short specific title and a one-line description.
-8. Close in chat: recap what you learned about their business, name the
-   three tasks you queued, and invite them to pick one and hit run —
-   "I'll do it while you watch." If they want things running while they're
-   away, that's a plan upgrade — say so plainly, don't sell.
-
-Keep the whole session under ~10 minutes of work. If the browser tab
-closed mid-run (no one is replying), finish the docs and the three
-proposed tasks anyway — they are durable and {first_name} will see them
-on return.
-
-## After this session
-
-This file becomes descriptive, not prescriptive. BRIEF.md stays as the
-founding record. Your real working context is IDENTITY.md, SOUL.md,
-USER.md, MISSION.md, and MEMORY.md.
-"""
-
-# Appended after the main template, ONLY when a first-contact token was
-# minted (agent email active + an active address already provisioned for
-# this owner). Sits between the closing chat recap and "## After this
-# session" -- it is the session's very last piece of OUTPUT, after the
-# research and the docs are already written.
-_FIRST_CONTACT_EMAIL_BLOCK = """\
-## Send your first email
-
-Before you wrap up, send {first_name} a first email of your own — a
-proactive note, not a reply to anything. Introduce yourself, show them
-you already understand their business (reference something specific from
-what you just researched — their market, their competitors, what you
-found), and give them one concrete first take or plan. Keep it warm and
-short: specific to THEIR business, never generic. Close by inviting them
-to just reply if they want to talk it through.
-
-Send it exactly like this — the token below is yours alone, it can only
-reach {first_name}, and only for this one email:
-
-```
-printf '%s' "<your email, written out>" | scripts/isol8-mail.sh "{first_contact_token}"
-```\
-"""
-
-_SECTION_MARKER = "\n\n## After this session"
-
 
 def render_brief_md(
     *,
@@ -200,33 +86,6 @@ def render_brief_md(
         display_name=display_name,
         email=email,
     )
-
-
-def render_first_run_bootstrap(
-    *,
-    first_name: str,
-    goal_id: str,
-    project_id: str,
-    first_contact_token: str | None = None,
-) -> str:
-    """Render BOOTSTRAP.md. ``first_contact_token`` is None when agent email
-    is inactive or the owner has no active agent-email address yet
-    (``mint_first_contact_token``'s inert-safe cases) — in that case the
-    rendered file is byte-identical to before this feature existed: no
-    email step at all.
-    """
-    rendered = _FIRST_RUN_BOOTSTRAP_TEMPLATE.format(
-        first_name=first_name,
-        goal_id=goal_id,
-        project_id=project_id,
-    )
-    if first_contact_token is None:
-        return rendered
-    email_section = _FIRST_CONTACT_EMAIL_BLOCK.format(
-        first_name=first_name,
-        first_contact_token=first_contact_token,
-    )
-    return rendered.replace(_SECTION_MARKER, f"\n\n{email_section}{_SECTION_MARKER}", 1)
 
 
 _MAX_GOAL_TITLE = 120
@@ -364,18 +223,16 @@ def stage_first_run_files(
     owner_id: str,
     friday_agent_id: str,
     brief_md: str,
-    bootstrap_md: str,
 ) -> None:
-    """Write BRIEF.md + the first-run BOOTSTRAP.md, both unconditionally.
+    """Write BRIEF.md, unconditionally.
 
-    BRIEF.md used to be written write-if-missing because its existence WAS
-    the one-shot marker for the flow. The generation-fenced ``funnel_state``
-    claim on the paperclip-companies owner row is that marker now, and
-    winning it already proves this is the first run — so a BRIEF.md left
-    behind by an attempt that failed partway is stale state to overwrite,
-    not a reason to stop. Stopping there would strand the goal and project
-    the caller seeded moments earlier.
+    Used to be write-if-missing because its existence WAS the one-shot
+    marker for the flow. The generation-fenced ``funnel_state`` claim on the
+    paperclip-companies owner row is that marker now, and winning it already
+    proves this is the first run — so a BRIEF.md left behind by an attempt
+    that failed partway is stale state to overwrite, not a reason to stop.
+    Stopping there would strand the goal and project the caller seeded
+    moments earlier.
     """
     base = f"workspace-{friday_agent_id}"
     workspace.write_file(owner_id, f"{base}/BRIEF.md", brief_md)
-    workspace.write_file(owner_id, f"{base}/BOOTSTRAP.md", bootstrap_md)

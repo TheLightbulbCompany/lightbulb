@@ -43,6 +43,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Literal, Optional
+from uuid import uuid4
 
 from boto3.dynamodb.conditions import Key
 
@@ -101,6 +102,36 @@ class FunnelClaimResult(str, Enum):
     view of the company (e.g. a reprovision minted a new generation
     underneath it); it should re-resolve the owner row and retry, not treat
     this as a duplicate submit."""
+
+
+class BootstrapClaimResult(str, Enum):
+    """What ``claim_bootstrap_dispatch`` decided, for the caller to act on.
+
+    Mirrors ``FunnelClaimResult``'s vocabulary, but the losing side has only
+    two outcomes: a bootstrap dispatch has no revert/retry-on-same-generation
+    escape hatch in THIS PR (see ``claim_bootstrap_dispatch``'s docstring —
+    that's the generalized ``reconciliation_worker``'s job, a later PR), so
+    "not my turn" (peer already dispatched/delivered/failed it, or the
+    funnel isn't submitted) collapses into one ``NOT_READY`` case; only a
+    superseded generation gets its own value, since that means the caller
+    is holding a stale view of the company and should re-resolve.
+    """
+
+    WON = "won"
+    """This caller's write landed: bootstrap_state flipped not_started ->
+    dispatched under the caller's onboarding_generation. Send chat.send."""
+
+    NOT_READY = "not_ready"
+    """The row is on the SAME onboarding_generation the caller fenced on,
+    but the conditional write didn't land -- either bootstrap_state was
+    already something other than not_started (a peer already claimed this
+    dispatch), or funnel_state was no longer submitted. Not an error: this
+    caller simply has nothing to do."""
+
+    STALE_GENERATION = "stale_generation"
+    """The row's onboarding_generation no longer matches what the caller
+    fenced on (or the row vanished) -- per INV-4 a silent no-op from the
+    caller's point of view."""
 
 
 PaperclipCompanyStatus = Literal["provisioning", "active", "failed", "disabled"]
@@ -197,6 +228,20 @@ class PaperclipCompany:
     onboarding_goal_id: Optional[str] = None
     onboarding_project_id: Optional[str] = None
 
+    onboarding_submitted_by: Optional[str] = None
+    """The Clerk MEMBER ID of whoever actually POSTed ``/onboarding/brief``
+    -- written by ``claim_funnel_submission`` on the SAME write as the
+    claim, alongside ``funnel_submitted_at``. Distinct from ``user_id``
+    (this row's PK, the ORG CREATOR for an org owner — see
+    ``resolve_owner_row``): ``/onboarding/brief`` is open to any org
+    member, so a non-creator can win the claim. The bootstrap dispatcher
+    (``core.services.bootstrap_dispatcher``) addresses Friday's kickoff
+    session at THIS id, not ``user_id``, so the actual submitter — not the
+    creator — sees the live kickoff and its ``chat.history``. For a
+    personal owner this always equals ``user_id`` (there is only one
+    member). Cleared by ``revert_funnel_submission`` alongside the other
+    claim-scoped fields."""
+
     bootstrap_state: Optional[BootstrapState] = None
     """``not_started`` (set at G2) -> ``dispatched`` -> ``delivered`` |
     ``failed``. Written by the bootstrap dispatcher (a later PR) — this PR
@@ -273,6 +318,8 @@ class PaperclipRepo:
             item["onboarding_goal_id"] = company.onboarding_goal_id
         if company.onboarding_project_id is not None:
             item["onboarding_project_id"] = company.onboarding_project_id
+        if company.onboarding_submitted_by is not None:
+            item["onboarding_submitted_by"] = company.onboarding_submitted_by
         if company.bootstrap_state is not None:
             item["bootstrap_state"] = company.bootstrap_state
         if company.bootstrap_dispatch_id is not None:
@@ -339,6 +386,7 @@ class PaperclipRepo:
             ),
             onboarding_goal_id=item.get("onboarding_goal_id"),
             onboarding_project_id=item.get("onboarding_project_id"),
+            onboarding_submitted_by=item.get("onboarding_submitted_by"),
             bootstrap_state=item.get("bootstrap_state"),
             bootstrap_dispatch_id=item.get("bootstrap_dispatch_id"),
             bootstrap_dispatched_at=(
@@ -357,12 +405,19 @@ class PaperclipRepo:
         """RECONCILE-WITH-ONBOARD: read-only accessor for the
         COMPOSER/ONBOARD interface contract.
 
-        Returns the 11 spec-fixed onboarding keys (see the dataclass note
-        above) PLUS three additive keys -- ``teams_state`` (this row's raw
-        ``status``), ``company_id``, and ``paperclip_user_id`` -- so
-        ``core.services.readiness_state.compute_status`` gets everything it
-        needs from the paperclip-companies row in exactly ONE physical read
-        rather than a second `get_item` just for onboarding fields. See
+        Returns the 12 spec-fixed onboarding keys (see the dataclass note
+        above, including ``onboarding_submitted_by``) PLUS four additive
+        keys -- ``teams_state`` (this row's raw ``status``), ``company_id``,
+        ``paperclip_user_id``, and ``user_id`` (this ROW's PK -- the org
+        CREATOR for an org owner, NOT necessarily ``owner_id``; callers that
+        need to address a write at this specific row, e.g. the bootstrap
+        dispatcher's ``claim_bootstrap_dispatch``, need this since
+        ``owner_id`` alone is the wrong key for an org) -- so
+        ``core.services.readiness_state.compute_status`` (and, by threading
+        this same dict through, ``core.services.bootstrap_dispatcher``) gets
+        everything needed from the paperclip-companies row in exactly ONE
+        physical read rather than a second `get_item` just for onboarding
+        fields. See
         docs/superpowers/specs/2026-07-24-onboarding-architecture-design.md
         §2 ("one read, not two").
 
@@ -404,6 +459,7 @@ class PaperclipRepo:
                 "funnel_completed_at": None,
                 "onboarding_goal_id": None,
                 "onboarding_project_id": None,
+                "onboarding_submitted_by": None,
                 "bootstrap_state": "not_started",
                 "bootstrap_dispatch_id": None,
                 "bootstrap_dispatched_at": None,
@@ -413,6 +469,7 @@ class PaperclipRepo:
                 "teams_state": None,
                 "company_id": None,
                 "paperclip_user_id": None,
+                "user_id": None,
             }
 
         # getattr(..., default) rather than direct attribute access: real
@@ -439,6 +496,7 @@ class PaperclipRepo:
             "funnel_completed_at": _iso(getattr(company, "funnel_completed_at", None)),
             "onboarding_goal_id": getattr(company, "onboarding_goal_id", None),
             "onboarding_project_id": getattr(company, "onboarding_project_id", None),
+            "onboarding_submitted_by": getattr(company, "onboarding_submitted_by", None),
             "bootstrap_state": getattr(company, "bootstrap_state", None) or "not_started",
             "bootstrap_dispatch_id": getattr(company, "bootstrap_dispatch_id", None),
             "bootstrap_dispatched_at": _iso(getattr(company, "bootstrap_dispatched_at", None)),
@@ -448,6 +506,7 @@ class PaperclipRepo:
             "teams_state": getattr(company, "status", None),
             "company_id": getattr(company, "company_id", None),
             "paperclip_user_id": getattr(company, "paperclip_user_id", None),
+            "user_id": getattr(company, "user_id", None),
         }
 
     async def get_org_company_id(self, org_id: str) -> Optional[str]:
@@ -883,8 +942,156 @@ class PaperclipRepo:
             return await self.find_owner_row(owner_id, include_inactive=include_inactive)
         return await self.get(owner_id, consistent_read=consistent_read)
 
+    async def claim_bootstrap_dispatch(
+        self, user_id: str, *, onboarding_generation: str
+    ) -> tuple[BootstrapClaimResult, Optional[str]]:
+        """Conditional ``bootstrap_state: not_started -> dispatched``, fenced
+        on ``onboarding_generation`` AND ``funnel_state == "submitted"``
+        (INV-5: the bootstrap kickoff is dispatched at most once per
+        generation, server-side, no browser tab required). Mints a fresh
+        ``bootstrap_dispatch_id`` -- the fencing token
+        ``mark_bootstrap_delivered``/``mark_bootstrap_failed`` condition
+        their writes on, so a stale completion observer from a superseded
+        attempt can never resolve a later one -- and increments
+        ``bootstrap_attempts`` on the same write.
+
+        Only the caller whose conditional write lands ever calls chat.send.
+        A caller that loses the race (concurrent ``/status`` poll and
+        ``/brief`` submit, two backend instances, two overlapping polls)
+        gets ``NOT_READY`` and does nothing further.
+
+        Unlike ``claim_funnel_submission`` this has NO retry loop: the
+        funnel claim can be reverted and re-claimed on the SAME generation
+        by a caller whose downstream seed failed, but a bootstrap dispatch
+        has no such same-request rollback -- a stuck ``dispatched`` (chat.send
+        issued but no terminal observed) or a recorded ``failed`` is retried
+        by resetting ``bootstrap_state`` back to ``not_started``, which is
+        the generalized ``reconciliation_worker``'s job (spec PR-8), not
+        this method's.
+
+        Returns ``(BootstrapClaimResult.WON, dispatch_id)`` on success, else
+        ``(<NOT_READY|STALE_GENERATION>, None)``.
+        """
+        dispatch_id = str(uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        table = self._table()
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key={"user_id": user_id},
+                UpdateExpression=(
+                    "SET bootstrap_state = :dispatched, bootstrap_dispatch_id = :did, "
+                    "bootstrap_dispatched_at = :t, "
+                    "bootstrap_attempts = if_not_exists(bootstrap_attempts, :zero) + :one, "
+                    "updated_at = :u"
+                ),
+                ConditionExpression=(
+                    "onboarding_generation = :gen AND funnel_state = :submitted AND bootstrap_state = :not_started"
+                ),
+                ExpressionAttributeValues={
+                    ":dispatched": "dispatched",
+                    ":did": dispatch_id,
+                    ":t": now,
+                    ":u": now,
+                    ":zero": 0,
+                    ":one": 1,
+                    ":gen": onboarding_generation,
+                    ":submitted": "submitted",
+                    ":not_started": "not_started",
+                },
+            )
+            return BootstrapClaimResult.WON, dispatch_id
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            pass
+
+        current = await self.get(user_id, consistent_read=True)
+        if current is None or current.onboarding_generation != onboarding_generation:
+            # Superseded generation (or the row vanished) -- per INV-4 a
+            # silent no-op; the caller was holding a stale view of the
+            # company.
+            return BootstrapClaimResult.STALE_GENERATION, None
+        return BootstrapClaimResult.NOT_READY, None
+
+    async def mark_bootstrap_delivered(self, user_id: str, *, onboarding_generation: str, dispatch_id: str) -> None:
+        """Conditional ``bootstrap_state: dispatched -> delivered``, fenced
+        on ``onboarding_generation`` AND ``bootstrap_dispatch_id`` (so a
+        stale completion observer from a superseded dispatch attempt can
+        never mark a LATER attempt delivered). Also flips
+        ``funnel_state -> complete`` and stamps ``funnel_completed_at`` on
+        the SAME write -- OBSERVING Friday's ``chat.final`` is the single
+        event the architecture spec calls "the funnel's completion signal"
+        (§2, ``FunnelState`` docstring), replacing the old thread-emptiness
+        inference (#1391) this PR deletes.
+
+        A lost guard (``ConditionalCheckFailedException`` -- the generation
+        moved on, or a duplicate/re-delivered terminal for a dispatch that
+        already resolved) is swallowed: the completion observer that calls
+        this is fire-and-forget by contract (see the ``bootstrap_dispatcher``
+        module docstring), and a caller racing a superseded write has
+        nothing further to do.
+        """
+        table = self._table()
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key={"user_id": user_id},
+                UpdateExpression=(
+                    "SET bootstrap_state = :delivered, bootstrap_delivered_at = :t, "
+                    "funnel_state = :complete, funnel_completed_at = :t, updated_at = :t"
+                ),
+                ConditionExpression=(
+                    "onboarding_generation = :gen AND bootstrap_dispatch_id = :did AND bootstrap_state = :dispatched"
+                ),
+                ExpressionAttributeValues={
+                    ":delivered": "delivered",
+                    ":complete": "complete",
+                    ":t": datetime.now(timezone.utc).isoformat(),
+                    ":gen": onboarding_generation,
+                    ":did": dispatch_id,
+                    ":dispatched": "dispatched",
+                },
+            )
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            pass
+
+    async def mark_bootstrap_failed(
+        self, user_id: str, *, onboarding_generation: str, dispatch_id: str, reason: str
+    ) -> None:
+        """Conditional ``bootstrap_state: dispatched -> failed``, fenced the
+        same way as ``mark_bootstrap_delivered`` (generation + dispatch_id +
+        still-``dispatched``). Records *reason* on ``bootstrap_last_error``
+        for observability.
+
+        Deliberately does NOT touch ``funnel_state`` -- a failed kickoff
+        leaves the funnel ``submitted`` (not ``complete``), so the
+        generalized ``reconciliation_worker`` (spec PR-8) can find and retry
+        it later by resetting ``bootstrap_state`` back to ``not_started``.
+        Guard-fail is swallowed for the same reason as
+        ``mark_bootstrap_delivered``.
+        """
+        table = self._table()
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key={"user_id": user_id},
+                UpdateExpression=("SET bootstrap_state = :failed, bootstrap_last_error = :err, updated_at = :u"),
+                ConditionExpression=(
+                    "onboarding_generation = :gen AND bootstrap_dispatch_id = :did AND bootstrap_state = :dispatched"
+                ),
+                ExpressionAttributeValues={
+                    ":failed": "failed",
+                    ":err": reason,
+                    ":u": datetime.now(timezone.utc).isoformat(),
+                    ":gen": onboarding_generation,
+                    ":did": dispatch_id,
+                    ":dispatched": "dispatched",
+                },
+            )
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            pass
+
     async def claim_funnel_submission(
-        self, user_id: str, *, onboarding_generation: str, owner_id: Optional[str] = None
+        self, user_id: str, *, onboarding_generation: str, submitted_by: str, owner_id: Optional[str] = None
     ) -> FunnelClaimResult:
         """Conditional ``funnel_state: not_started -> submitted``, fenced on
         ``onboarding_generation`` (INV-4). Replaces the ``__onboarded__``
@@ -894,6 +1101,20 @@ class PaperclipRepo:
         conditional write already serializes concurrent submitters, and the
         two ways to lose (superseded generation vs. already submitted) are
         distinguished by one strongly-consistent re-read on failure.
+
+        ``submitted_by`` is the CLERK MEMBER ID of whoever is actually
+        POSTing ``/onboarding/brief`` -- NOT necessarily ``user_id`` (this
+        row's PK, which for an org is the ORG CREATOR who provisioned it —
+        see ``resolve_owner_row``). ``/onboarding/brief`` is open to any org
+        member, so a non-creator member can win this claim. Stamped onto
+        ``onboarding_submitted_by`` on the SAME write so the bootstrap
+        dispatcher (``core.services.bootstrap_dispatcher``) can address
+        Friday's kickoff session at the ACTUAL submitter, not the creator —
+        otherwise a non-creator submitter's live kickoff (and its
+        `chat.history`) lands in the creator's session instead of the
+        submitter's, who never sees the "I'm watching" prompt answered. For
+        a personal owner ``submitted_by == user_id`` always (there is only
+        one member), so this is a no-op change in that case.
 
         Callers MUST ``revert_funnel_submission`` on a later failure (before
         ``record_onboarding_ids`` lands) so a retry isn't permanently locked
@@ -917,12 +1138,16 @@ class PaperclipRepo:
                 await run_in_thread(
                     table.update_item,
                     Key={"user_id": user_id},
-                    UpdateExpression="SET funnel_state = :submitted, funnel_submitted_at = :t, updated_at = :u",
+                    UpdateExpression=(
+                        "SET funnel_state = :submitted, funnel_submitted_at = :t, "
+                        "onboarding_submitted_by = :sub, updated_at = :u"
+                    ),
                     ConditionExpression="onboarding_generation = :gen AND funnel_state = :not_started",
                     ExpressionAttributeValues={
                         ":submitted": "submitted",
                         ":not_started": "not_started",
                         ":gen": onboarding_generation,
+                        ":sub": submitted_by,
                         ":t": now,
                         ":u": now,
                     },
@@ -965,9 +1190,10 @@ class PaperclipRepo:
     ) -> None:
         """Record the seeded goal/project ids on the row. Written LAST (same
         ordering rationale as the old sentinel's ``record_onboarding_ids``):
-        BOOTSTRAP.md tells Friday to go to work, so both Paperclip rows must
-        exist and be linked here before it lands, or she wakes into a
-        company with no project.
+        the server-dispatched kickoff (``core.services.bootstrap_dispatcher``)
+        tells Friday to go to work, so both Paperclip rows must exist and be
+        linked here before it dispatches, or she wakes into a company with
+        no project.
 
         Guarded on ``onboarding_generation = :gen AND funnel_state =
         :submitted`` -- this can only ever land against the SAME claim this
@@ -1025,7 +1251,8 @@ class PaperclipRepo:
                 Key={"user_id": user_id},
                 UpdateExpression=(
                     "SET funnel_state = :not_started, updated_at = :u "
-                    "REMOVE funnel_submitted_at, onboarding_goal_id, onboarding_project_id"
+                    "REMOVE funnel_submitted_at, onboarding_goal_id, onboarding_project_id, "
+                    "onboarding_submitted_by"
                 ),
                 ConditionExpression="onboarding_generation = :gen AND funnel_state = :submitted",
                 ExpressionAttributeValues={

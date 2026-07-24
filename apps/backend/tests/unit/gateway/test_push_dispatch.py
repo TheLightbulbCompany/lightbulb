@@ -66,6 +66,11 @@ def _make_terminal_conn(owner_id="org_1"):
     conn._side_run_ids = {}
     conn._parked = False
     conn._parked_watchdog_task = None
+    # Run-completion observer registry (INV-5 bootstrap dispatcher). Not
+    # exercised by these push-dispatch tests, but _handle_message's
+    # TRUE-terminal branch always pops from it now.
+    conn._run_completion_callbacks = {}
+    conn._run_completion_tasks = set()
     return conn
 
 

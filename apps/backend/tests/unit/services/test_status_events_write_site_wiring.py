@@ -230,7 +230,9 @@ async def test_claim_funnel_submission_publishes_on_win(paperclip_repo):
 
     await paperclip_repo.put(_make_company(onboarding_generation="01G", funnel_state="not_started"))
     with patch("core.repositories.paperclip_repo.publish_status_changed") as mocked:
-        result = await paperclip_repo.claim_funnel_submission("owner_1", onboarding_generation="01G")
+        result = await paperclip_repo.claim_funnel_submission(
+            "owner_1", onboarding_generation="01G", submitted_by="owner_1"
+        )
     assert result is FunnelClaimResult.WON
     mocked.assert_called_once_with("owner_1")
 
@@ -241,7 +243,9 @@ async def test_claim_funnel_submission_does_not_publish_when_already_submitted(p
 
     await paperclip_repo.put(_make_company(onboarding_generation="01G", funnel_state="submitted"))
     with patch("core.repositories.paperclip_repo.publish_status_changed") as mocked:
-        result = await paperclip_repo.claim_funnel_submission("owner_1", onboarding_generation="01G")
+        result = await paperclip_repo.claim_funnel_submission(
+            "owner_1", onboarding_generation="01G", submitted_by="owner_1"
+        )
     assert result is FunnelClaimResult.ALREADY_SUBMITTED
     mocked.assert_not_called()
 
@@ -298,7 +302,7 @@ async def test_claim_funnel_submission_publishes_org_owner_key(paperclip_repo):
     )
     with patch("core.repositories.paperclip_repo.publish_status_changed") as mocked:
         result = await paperclip_repo.claim_funnel_submission(
-            "creator_1", onboarding_generation="01G", owner_id="org_acme"
+            "creator_1", onboarding_generation="01G", submitted_by="creator_1", owner_id="org_acme"
         )
     assert result is FunnelClaimResult.WON
     mocked.assert_called_once_with("org_acme")

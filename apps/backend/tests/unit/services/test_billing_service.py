@@ -639,7 +639,7 @@ async def test_change_provider_trial_local_refuses_use_trial_checkout(monkeypatc
     monkeypatch.setattr(billing_service.billing_repo, "set_provider_choice", set_choice)
     fake_manager = MagicMock()
     fake_manager.stop_user_service = AsyncMock()
-    fake_manager.reprovision_for_user = MagicMock()
+    fake_manager.drain_then_dispatch_provision = MagicMock()
     monkeypatch.setattr("core.containers.get_ecs_manager", lambda: fake_manager)
 
     with pytest.raises(billing_service.ChangeProviderError) as exc:
@@ -655,7 +655,7 @@ async def test_change_provider_trial_local_refuses_use_trial_checkout(monkeypatc
     # No provider write, no stop, no reprovision dispatch.
     set_choice.assert_not_awaited()
     fake_manager.stop_user_service.assert_not_awaited()
-    fake_manager.reprovision_for_user.assert_not_called()
+    fake_manager.drain_then_dispatch_provision.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -684,12 +684,12 @@ async def test_change_provider_into_bedrock_takes_cold_path(monkeypatch):
     monkeypatch.setattr(billing_service, "_hot_swap_provider", hot)
     # change_provider's cold path lazily imports get_ecs_manager from
     # core.containers, awaits .stop_user_service, and dispatches
-    # .reprovision_for_user(owner_id) as a background task (F1 fix) — patch
-    # at the source module, and capture the dispatched task instead of
-    # scheduling it so nothing outlives the test loop.
+    # .drain_then_dispatch_provision(owner_id) as a background task (F1
+    # fix) — patch at the source module, and capture the dispatched task
+    # instead of scheduling it so nothing outlives the test loop.
     fake_manager = MagicMock()
     fake_manager.stop_user_service = AsyncMock()
-    fake_manager.reprovision_for_user = MagicMock()
+    fake_manager.drain_then_dispatch_provision = MagicMock()
     monkeypatch.setattr("core.containers.get_ecs_manager", lambda: fake_manager)
     created: list = []
     monkeypatch.setattr(
@@ -708,9 +708,10 @@ async def test_change_provider_into_bedrock_takes_cold_path(monkeypatch):
     hot.assert_not_awaited()  # hot path skipped for bedrock target
     assert result["restart"] is True
     # Stop-first: the stop was AWAITED on the request path, then the
-    # drain+provision sequence was dispatched off-request for the owner.
+    # drain+provision sequence was dispatched off-request for the owner —
+    # drain-only, no second stop (which would clobber a poll-claimed row).
     fake_manager.stop_user_service.assert_awaited_once_with("user_x", reason="reprovision")
-    fake_manager.reprovision_for_user.assert_called_once_with("user_x")
+    fake_manager.drain_then_dispatch_provision.assert_called_once_with("user_x")
     assert len(created) == 1
 
 
@@ -767,7 +768,7 @@ async def test_change_provider_refreshes_owner_facts(monkeypatch):
     monkeypatch.setattr("core.services.owner_facts.write_owner_facts", facts_mock)
     fake_manager = MagicMock()
     fake_manager.stop_user_service = AsyncMock()
-    fake_manager.reprovision_for_user = MagicMock()
+    fake_manager.drain_then_dispatch_provision = MagicMock()
     monkeypatch.setattr("core.containers.get_ecs_manager", lambda: fake_manager)
     monkeypatch.setattr(
         billing_service.asyncio,

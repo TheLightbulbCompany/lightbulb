@@ -1213,14 +1213,17 @@ async def change_provider(
     #
     # Accepted race — a status-poll wake DURING the drain window: the
     # poll's retryable-state dispatch can claim the stopped row before
-    # reprovision_for_user's own delayed dispatch does. Benign by design:
-    # the single-flight lease admits exactly one executor (the loser
-    # stands down), both executors would apply the SAME committed
-    # provider, and task overlap on EFS is fenced one layer down —
+    # the drain-only task's delayed dispatch does. Benign by design: the
+    # single-flight lease admits exactly one executor (the loser stands
+    # down), both executors would apply the SAME committed provider, and
+    # task overlap on EFS is fenced one layer down —
     # SINGLE_WRITER_DEPLOYMENT_CONFIG (maximumPercent=100) keeps ECS from
     # starting the new task until the draining one has fully stopped, so
     # the drain-wait is defense-in-depth, not the single-writer fence.
     # The same window has always existed on the admin reprovision path.
+    # Load-bearing detail: the task below must NOT re-stop (see
+    # drain_then_dispatch_provision) or it would clobber the poll's claim
+    # and break exactly this guarantee.
     from core.containers import get_ecs_manager
     from core.containers.ecs_manager import EcsManagerError
 
@@ -1259,8 +1262,11 @@ async def change_provider(
             "Could not restart the container to apply the new provider. No changes were made — try again.",
             status_code=502,
         ) from e
-    # The task re-issues the (now no-op) stop before draining — harmless.
-    asyncio.create_task(manager.reprovision_for_user(owner_id))
+    # Drain-only continuation — deliberately NOT reprovision_for_user,
+    # whose leading re-stop would clobber a poll-claimed "provisioning"
+    # row back to "stopped" and let a second executor claim it (see
+    # drain_then_dispatch_provision's docstring).
+    asyncio.create_task(manager.drain_then_dispatch_provision(owner_id))
 
     return {
         "status": "ok",

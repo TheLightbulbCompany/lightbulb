@@ -1443,20 +1443,36 @@ class EcsManager:
         has fully drained (single EFS SQLite writer — see the drain-wait
         below); EFS, gateway token, and access point are all preserved.
         """
-        from core.services.container_provision import background_provision
-
         # Drop to desiredCount=0 so the dispatched provision takes the
         # scale-from-zero branch (re-register + write_user_configs), not the
         # running force-redeploy branch.
         await self.stop_user_service(user_id, reason="reprovision")
 
-        # Block until the old task is fully stopped before provisioning the new
-        # one. stop_user_service only issues desiredCount=0 and returns at once;
-        # ECS then takes up to the task's stop-timeout to actually kill it. The
-        # per-owner state lives in WAL-mode SQLite on EFS, which corrupts if the
-        # draining old task and the new task hold it open together (the same
-        # reason SINGLE_WRITER_DEPLOYMENT_CONFIG pins max=100). Waiting here
-        # guarantees a single writer across the reprovision.
+        return await self.drain_then_dispatch_provision(user_id)
+
+    async def drain_then_dispatch_provision(self, user_id: str) -> dict:
+        """Drain-wait + provision dispatch for a service that has ALREADY
+        been stopped by the caller. Deliberately does NOT re-issue the stop:
+        a status-poll wake can legitimately claim the exposed "stopped" row
+        before this runs, flipping it to "provisioning" — a second
+        stop_user_service here would clobber that back to "stopped" via
+        update_status's get→put, making the row claimable AGAIN and letting
+        this method's own dispatch start a second executor against the
+        poll's in-flight one. Skipping the stop keeps the single-flight
+        guarantee: if the poll's claim won, the dispatch below simply loses
+        the lease and stands down.
+
+        Block until the old task is fully stopped before provisioning the
+        new one. stop_user_service only issues desiredCount=0 and returns at
+        once; ECS then takes up to the task's stop-timeout to actually kill
+        it. The per-owner state lives in WAL-mode SQLite on EFS, which
+        corrupts if the draining old task and the new task hold it open
+        together (the same reason SINGLE_WRITER_DEPLOYMENT_CONFIG pins
+        max=100). Waiting here guarantees a single writer across the
+        reprovision.
+        """
+        from core.services.container_provision import background_provision
+
         await self._wait_for_service_drained(user_id)
 
         # clerk_user_id is unused by the reprovision path: provision reads

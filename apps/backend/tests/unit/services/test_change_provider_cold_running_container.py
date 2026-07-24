@@ -13,12 +13,15 @@ was left untouched — even though the caller was told ``restart: True``.
 
 The fix (spec PR-11): the cold path now awaits ``stop_user_service`` (one
 fast, fail-loud ECS call) and then dispatches
-``ecs_manager.reprovision_for_user`` as a background task — reprovision
-re-issues the (now no-op) stop, waits for the drain (up to 90s, which is why
-it must not be awaited on the request path), and only then dispatches
-``background_provision``. That lands the dispatch on the scale-from-zero
-branch (the only one that rewrites configs / re-registers the task def)
-instead of racing a still-"running" row and losing.
+``ecs_manager.drain_then_dispatch_provision`` as a background task — it
+waits for the drain (up to 90s, which is why it must not be awaited on the
+request path) and then dispatches ``background_provision``. That lands the
+dispatch on the scale-from-zero branch (the only one that rewrites configs /
+re-registers the task def) instead of racing a still-"running" row and
+losing. The task deliberately does NOT re-stop: a status-poll wake can
+legitimately claim the exposed "stopped" row first, and a second stop would
+clobber its "provisioning" status back to claimable and let a second
+executor start (see the poll-claim race test).
 
 These tests drive the REAL conditional write (moto) end-to-end through
 change_provider to pin the FIXED behavior:
@@ -150,16 +153,17 @@ def cold_change_env(containers_table):
         patch.object(billing_service, "put_metric", new=MagicMock()),
         # change_provider's cold path now lazily imports get_ecs_manager from
         # core.containers, awaits .stop_user_service, and dispatches
-        # .reprovision_for_user(owner_id) as a task — hand it a real
-        # EcsManager (ECS client mocked, see _real_manager) so the stop-first
-        # fix's stop -> drain -> dispatch sequence genuinely runs.
+        # .drain_then_dispatch_provision(owner_id) as a task — hand it a
+        # real EcsManager (ECS client mocked, see _real_manager) so the
+        # stop-first fix's stop -> drain -> dispatch sequence genuinely runs.
         patch("core.containers.get_ecs_manager", return_value=real_manager),
         # Capture BOTH dispatched tasks instead of scheduling them, so the
         # test can await them deterministically: billing_service dispatches
-        # reprovision_for_user (created[0]) and, inside it, ecs_manager
-        # dispatches background_provision (created[1]). Both modules do
-        # `import asyncio` at module scope — the SAME module object — so one
-        # patch of asyncio.create_task covers both call sites.
+        # drain_then_dispatch_provision (created[0]) and, inside it,
+        # ecs_manager dispatches background_provision (created[1]). Both
+        # modules do `import asyncio` at module scope — the SAME module
+        # object — so one patch of asyncio.create_task covers both call
+        # sites.
         patch.object(
             ecs_manager_module.asyncio,
             "create_task",
@@ -204,12 +208,13 @@ async def test_cold_provider_change_on_running_container_reprovisions(cold_chang
     assert row["status"] == "stopped"
 
     # The drain-wait + provision dispatch ran OFF the request path: exactly
-    # one reprovision_for_user task was dispatched. Run it — it re-issues the
-    # (no-op) stop, sees the drained service, and dispatches
-    # background_provision (created[1]). Then run that to completion.
-    assert len(env["created"]) == 1, "expected exactly one reprovision_for_user dispatch"
+    # one drain_then_dispatch_provision task was dispatched. Run it — it
+    # sees the drained service (NO second stop — see the poll-claim race
+    # test below) and dispatches background_provision (created[1]). Then
+    # run that to completion.
+    assert len(env["created"]) == 1, "expected exactly one drain-then-dispatch task"
     await env["created"][0]
-    assert len(env["created"]) == 2, "expected reprovision to dispatch background_provision"
+    assert len(env["created"]) == 2, "expected the drain task to dispatch background_provision"
     await env["created"][1]
 
     # Stop-first means the row was "stopped" by the time the claim ran: the
@@ -278,7 +283,7 @@ async def test_cold_provider_change_with_no_container_still_provisions(cold_chan
     result = await _run_cold_change(env["created"])
     assert result["restart"] is True
 
-    # Both dispatches still happen: reprovision_for_user, then
+    # Both dispatches still happen: drain_then_dispatch_provision, then
     # background_provision from inside it.
     assert len(env["created"]) == 1
     await env["created"][0]
@@ -295,6 +300,40 @@ async def test_cold_provider_change_with_no_container_still_provisions(cold_chan
 
     row = env["table"].get_item(Key={"owner_id": "user_cold"}).get("Item")
     assert row is not None and row["status"] == "provisioning"
+
+
+@pytest.mark.asyncio
+async def test_poll_claim_between_stop_and_drain_task_is_not_clobbered(cold_change_env):
+    """Single-flight under the accepted status-poll race: if a poll wake
+    claims the exposed "stopped" row BEFORE the drain task runs, the drain
+    task must neither clobber the claim (no second stop → no update_status
+    get→put over "provisioning") nor start a second executor — its own
+    dispatched background_provision loses the lease and stands down."""
+    from core.repositories import container_repo
+
+    env = cold_change_env
+    env["table"].put_item(Item={"owner_id": "user_cold", "status": "running", "service_name": "openclaw-user_cold-abc"})
+
+    await _run_cold_change(env["created"])
+    assert len(env["created"]) == 1  # the drain task, not yet run
+
+    # A status-poll wake lands NOW: real conditional claim on the stopped row.
+    poll_claim = await container_repo.try_claim_provision("user_cold")
+    assert poll_claim, "poll should win the claim on the exposed stopped row"
+
+    # Run the drain task. It must NOT reset the row to "stopped", and its
+    # dispatched background_provision must LOSE the lease and stand down.
+    await env["created"][0]
+    assert len(env["created"]) == 2
+    await env["created"][1]
+
+    env["ecs"].provision_user_container.assert_not_awaited()
+    env["metrics"].assert_called_once_with("claim_lost")
+
+    # The poll's claim survived untouched — still provisioning, same token.
+    row = env["table"].get_item(Key={"owner_id": "user_cold"}).get("Item")
+    assert row["status"] == "provisioning"
+    assert row["provision_claim_id"] == poll_claim
 
 
 @pytest.mark.asyncio

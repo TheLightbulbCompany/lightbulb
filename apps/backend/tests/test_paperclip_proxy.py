@@ -551,6 +551,10 @@ def test_http_disabled_company_redirects_to_chat(monkeypatch):
 
     class _DisabledCompany:
         status = "disabled"
+        # Personal rows carry org_id == user_id — a MATCHED terminal row,
+        # which is what the /chat redirect is for (a mismatched one gets
+        # the repair stub instead; see the org-scope tests).
+        org_id = "user_disabled"
 
     class _FakeRepo:
         def __init__(self, table_name: str) -> None:
@@ -1181,10 +1185,10 @@ def test_http_handoff_token_wins_over_stale_session_cookie(monkeypatch):
     assert claims["org_id"] == "org_acme"
 
 
-def _org_cookie_session_env(monkeypatch, row_org_id):
+def _org_cookie_session_env(monkeypatch, row_org_id, row_status="active"):
     """Shared setup for the established-session org-scope tests: a session
-    cookie carrying org context + an ACTIVE per-user row pointing at
-    ``row_org_id``."""
+    cookie carrying org context + a per-user row with ``row_status``
+    pointing at ``row_org_id``."""
     from types import SimpleNamespace
 
     import routers.paperclip_proxy as proxy_mod
@@ -1200,7 +1204,7 @@ def _org_cookie_session_env(monkeypatch, row_org_id):
 
         async def get(self, _user_id: str):
             return SimpleNamespace(
-                status="active",
+                status=row_status,
                 org_id=row_org_id,
                 paperclip_password_encrypted="irrelevant",
             )
@@ -1224,6 +1228,40 @@ def test_established_session_stubs_on_org_mismatched_active_row(monkeypatch):
     resp = client.get("/some/path", cookies={"isol8_paperclip": cookie})
 
     assert "Setting up your workspace" in resp.text
+
+
+@pytest.mark.parametrize("row_status", ["failed", "disabled"])
+def test_established_session_stubs_on_org_mismatched_terminal_row(monkeypatch, row_status):
+    """A terminal (failed/disabled) row recorded for a DIFFERENT owner
+    context says nothing about THIS owner's provision — it must read as
+    repair-pending (stub), not fall through to the terminal-status
+    redirect and abort the Teams handoff."""
+    from fastapi.testclient import TestClient
+
+    proxy_mod, cookie = _org_cookie_session_env(monkeypatch, row_org_id="user_org_member", row_status=row_status)
+
+    app = _build_http_app()
+    client = TestClient(app)
+    resp = client.get("/some/path", cookies={"isol8_paperclip": cookie}, follow_redirects=False)
+
+    assert resp.status_code != 302
+    assert "Setting up your workspace" in resp.text
+
+
+def test_established_session_redirects_on_own_terminal_row(monkeypatch):
+    """Control: a failed row recorded for THIS owner context still takes
+    the terminal-status redirect to /chat (explicit retry trigger) — the
+    mismatch-stub above must not swallow genuinely-failed provisions."""
+    from fastapi.testclient import TestClient
+
+    proxy_mod, cookie = _org_cookie_session_env(monkeypatch, row_org_id="org_acme", row_status="failed")
+
+    app = _build_http_app()
+    client = TestClient(app)
+    resp = client.get("/some/path", cookies={"isol8_paperclip": cookie}, follow_redirects=False)
+
+    assert resp.status_code == 302
+    assert "need=reprovision" in resp.headers["location"]
 
 
 def test_established_session_forwards_on_org_matched_active_row(monkeypatch):

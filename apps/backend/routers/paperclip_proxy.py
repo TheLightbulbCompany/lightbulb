@@ -1067,7 +1067,14 @@ async def proxy(path: str, request: Request) -> Response:
         # circuits on an active row whose org_id matches), so dispatching
         # on a mismatched-but-active row is safe.
         if existing is None or existing.status != "active" or existing.org_id != owner_id:
-            asyncio.create_task(ensure_user_ready(auth, provision_container=False))
+            # Watched dispatch (same wrapper as /container/status): a bare
+            # create_task swallows exceptions raised before the coroutine's
+            # own logging (gate/billing/DDB failures) as "Task exception
+            # was never retrieved" — the watcher logs them and emits the
+            # provision-error metric.
+            from routers.container import _dispatch_watched
+
+            _dispatch_watched(ensure_user_ready(auth, provision_container=False))
 
         # Mint cookie + 302 to clean URL. The cookie carries the org
         # context the handshake was validated under, so the established-
@@ -1089,34 +1096,37 @@ async def proxy(path: str, request: Request) -> Response:
     # ---- Established-session path: forward request to Paperclip ----
     repo = PaperclipRepo(table_name="paperclip-companies")
     company = await repo.get(auth.user_id)
-    if (
-        company is None
-        or company.status == "provisioning"
-        or (company.status == "active" and company.org_id != resolve_owner_id(auth))
-    ):
+    if company is None or company.status == "provisioning" or company.org_id != resolve_owner_id(auth):
         # Either: (a) handshake just spawned ensure_user_ready and the row
         # hasn't been written yet (typical first visit), or (b) it's
-        # actively in-flight, or (c) the row is active for a DIFFERENT
-        # owner context than this session's (org member whose row still
-        # points at a personal/previous-org company — the handshake that
-        # minted this session's cookie dispatched the join/repair, and
-        # the row re-points when it lands). All three converge via the
+        # actively in-flight, or (c) the row belongs to a DIFFERENT owner
+        # context than this session's (org member whose row still points
+        # at a personal/previous-org company — the handshake that minted
+        # this session's cookie dispatched the join/repair, and the row
+        # re-points when it lands). All three converge via the
         # auto-refresh stub; forwarding on (c) would drop the user into
-        # the WRONG workspace mid-repair. If no repair is in flight for
-        # (c) — a long-lived cookie navigating here directly — the app's
-        # canonical /container/status trigger repairs the row the next
-        # time /chat is open; a setting-up stub is strictly better than
-        # silently browsing the wrong company. Do NOT re-spawn from this
-        # path — the stub reloads every 2s and a re-spawn each cycle
-        # would queue duplicate concurrent provision runs that race
-        # against each other (provision_org is only safely idempotent
-        # for already-active rows; concurrent failed retries can flip a
-        # successful row back to "failed"). If the initial spawn somehow
-        # died silently, the user will eventually close the tab and
-        # re-handshake — that's the recovery path, NOT auto-respawn.
+        # the WRONG workspace mid-repair. (c) deliberately ignores the
+        # stale row's status: a "failed"/"disabled" verdict recorded for
+        # ANOTHER workspace says nothing about THIS owner's provision, so
+        # it must read as repair-pending here, not fall through to the
+        # terminal-status redirect below and abort the handoff. If no
+        # repair is in flight for (c) — a long-lived cookie navigating
+        # here directly — the app's canonical /container/status trigger
+        # repairs the row the next time /chat is open; a setting-up stub
+        # is strictly better than silently browsing the wrong company. Do
+        # NOT re-spawn from this path — the stub reloads every 2s and a
+        # re-spawn each cycle would queue duplicate concurrent provision
+        # runs that race against each other (provision_org is only safely
+        # idempotent for already-active rows; concurrent failed retries
+        # can flip a successful row back to "failed"). If the initial
+        # spawn somehow died silently, the user will eventually close the
+        # tab and re-handshake — that's the recovery path, NOT
+        # auto-respawn.
         return _provisioning_in_progress_response()
     if company.status != "active":
-        # status="failed" or status="disabled". Both require user to
+        # status="failed" or status="disabled" — and, per the org-scope
+        # check above, recorded for THIS owner context (a mismatched
+        # terminal row already returned the stub). Both require user to
         # re-enter via /chat: failed needs an explicit retry trigger
         # (re-handshake spawns a fresh provision attempt with no
         # concurrent races), disabled requires admin/billing to clear.

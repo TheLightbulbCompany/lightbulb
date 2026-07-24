@@ -189,10 +189,21 @@ def _make_company(**overrides):
 
 
 @pytest.mark.asyncio
-async def test_paperclip_put_publishes_status_changed(paperclip_repo):
+async def test_paperclip_put_org_publishes_org_owner_key(paperclip_repo):
+    """An org row's PK user_id is the CREATOR's personal id; the org's tabs
+    register under org_id, so the nudge must ride the org_id, not the PK."""
     with patch("core.repositories.paperclip_repo.publish_status_changed") as mocked:
-        await paperclip_repo.put(_make_company())
-    mocked.assert_called_once_with("owner_1")
+        await paperclip_repo.put(_make_company(user_id="creator_1", org_id="org_acme"))
+    mocked.assert_called_once_with("org_acme")
+
+
+@pytest.mark.asyncio
+async def test_paperclip_put_personal_publishes_user_id(paperclip_repo):
+    """A personal row (org_id echoes the user_id) nudges the user_id --
+    is_org_owner_id keeps a non-org org_id from being mistaken for the owner key."""
+    with patch("core.repositories.paperclip_repo.publish_status_changed") as mocked:
+        await paperclip_repo.put(_make_company(user_id="user_solo", org_id="user_solo"))
+    mocked.assert_called_once_with("user_solo")
 
 
 @pytest.mark.asyncio
@@ -268,3 +279,57 @@ async def test_revert_funnel_submission_does_not_publish_on_guard_failure(paperc
     with patch("core.repositories.paperclip_repo.publish_status_changed") as mocked:
         await paperclip_repo.revert_funnel_submission("owner_1", onboarding_generation="01G")
     mocked.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# org owner-key threading -- the brief-flow + status writers key their nudge on
+# the caller-supplied owner_id (org_id for orgs), NOT the row PK (user_id, which
+# for an org is the creator's personal id where no org tabs are registered).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_claim_funnel_submission_publishes_org_owner_key(paperclip_repo):
+    from core.repositories.paperclip_repo import FunnelClaimResult
+
+    # Row PK is the creator's personal id; the org's tabs are under org_acme.
+    await paperclip_repo.put(
+        _make_company(user_id="creator_1", org_id="org_acme", onboarding_generation="01G", funnel_state="not_started")
+    )
+    with patch("core.repositories.paperclip_repo.publish_status_changed") as mocked:
+        result = await paperclip_repo.claim_funnel_submission(
+            "creator_1", onboarding_generation="01G", owner_id="org_acme"
+        )
+    assert result is FunnelClaimResult.WON
+    mocked.assert_called_once_with("org_acme")
+
+
+@pytest.mark.asyncio
+async def test_record_onboarding_ids_publishes_org_owner_key(paperclip_repo):
+    await paperclip_repo.put(
+        _make_company(user_id="creator_1", org_id="org_acme", onboarding_generation="01G", funnel_state="submitted")
+    )
+    with patch("core.repositories.paperclip_repo.publish_status_changed") as mocked:
+        await paperclip_repo.record_onboarding_ids(
+            "creator_1", onboarding_generation="01G", goal_id="g", project_id="p", owner_id="org_acme"
+        )
+    mocked.assert_called_once_with("org_acme")
+
+
+@pytest.mark.asyncio
+async def test_revert_funnel_submission_publishes_org_owner_key(paperclip_repo):
+    await paperclip_repo.put(
+        _make_company(user_id="creator_1", org_id="org_acme", onboarding_generation="01G", funnel_state="submitted")
+    )
+    with patch("core.repositories.paperclip_repo.publish_status_changed") as mocked:
+        await paperclip_repo.revert_funnel_submission("creator_1", onboarding_generation="01G", owner_id="org_acme")
+    mocked.assert_called_once_with("org_acme")
+
+
+@pytest.mark.asyncio
+async def test_update_status_publishes_org_owner_key_when_supplied(paperclip_repo):
+    await paperclip_repo.put(_make_company(user_id="creator_1", org_id="org_acme", status="provisioning"))
+    with patch("core.repositories.paperclip_repo.publish_status_changed") as mocked:
+        landed = await paperclip_repo.update_status("creator_1", status="active", owner_id="org_acme")
+    assert landed is True
+    mocked.assert_called_once_with("org_acme")

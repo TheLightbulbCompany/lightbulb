@@ -53,6 +53,22 @@ from core.services.status_events import publish_status_changed
 logger = logging.getLogger(__name__)
 
 
+def _broadcast_owner_key(*, user_id: str, org_id: str | None) -> str:
+    """The id an owner's frontend WS tabs register under -- the value
+    ``publish_status_changed`` / ``broadcast_to_owner`` must key on.
+
+    For an org that is the Clerk ``org_id`` (``websocket_chat`` registers org
+    members under ``owner_id = x_org_id or x_user_id``); for a personal owner
+    it is the ``user_id``. This is NOT the paperclip-companies row PK: that PK
+    is the row's ``user_id``, which for an org is the CREATOR's personal Clerk
+    id (see ``resolve_owner_row``) -- an id no org tab is registered under, so
+    a nudge keyed on it silently misses every org tab. Guarded by
+    ``is_org_owner_id`` so a personal row whose ``org_id`` is empty/echoes the
+    user_id still resolves to the user_id.
+    """
+    return org_id if (org_id and is_org_owner_id(org_id)) else user_id
+
+
 class FunnelClaimResult(str, Enum):
     """What ``claim_funnel_submission`` decided, for the caller to act on.
 
@@ -270,7 +286,7 @@ class PaperclipRepo:
         if company.bootstrap_last_error is not None:
             item["bootstrap_last_error"] = company.bootstrap_last_error
         await run_in_thread(self._table().put_item, Item=item)
-        publish_status_changed(company.user_id)
+        publish_status_changed(_broadcast_owner_key(user_id=company.user_id, org_id=company.org_id))
 
     async def get(self, user_id: str, *, consistent_read: bool = False) -> Optional[PaperclipCompany]:
         resp = await run_in_thread(
@@ -544,6 +560,7 @@ class PaperclipRepo:
         last_error: Optional[str] = None,
         scheduled_purge_at: Optional[datetime] = None,
         not_if_status: Optional[PaperclipCompanyStatus] = None,
+        owner_id: Optional[str] = None,
     ) -> bool:
         """Update a row's status. Returns True iff the write landed.
 
@@ -553,6 +570,13 @@ class PaperclipRepo:
         an already-``active`` row to ``failed``: two overlapping ``provision_member``
         attempts for one member can race (e.g. /teams + /chat both reconciling),
         and the loser's failure path must not clobber the winner's active row.
+
+        ``owner_id`` is the realtime-nudge broadcast key (org_id for orgs, else
+        the personal user_id) -- the value frontend tabs register under. It is
+        NOT the row PK (``user_id``), which for an org is the creator's personal
+        id where no org tab is registered. Callers holding org context pass the
+        row's ``org_id``; when omitted the nudge falls back to ``user_id``
+        (always correct for personal owners).
         """
         update_expr = "SET #s = :s, updated_at = :u"
         expr_names = {"#s": "status"}
@@ -582,7 +606,7 @@ class PaperclipRepo:
         table = self._table()
         try:
             await run_in_thread(table.update_item, **kwargs)
-            publish_status_changed(user_id)
+            publish_status_changed(owner_id or user_id)
             return True
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             return False
@@ -850,7 +874,9 @@ class PaperclipRepo:
             return await self.find_owner_row(owner_id, include_inactive=include_inactive)
         return await self.get(owner_id, consistent_read=consistent_read)
 
-    async def claim_funnel_submission(self, user_id: str, *, onboarding_generation: str) -> FunnelClaimResult:
+    async def claim_funnel_submission(
+        self, user_id: str, *, onboarding_generation: str, owner_id: Optional[str] = None
+    ) -> FunnelClaimResult:
         """Conditional ``funnel_state: not_started -> submitted``, fenced on
         ``onboarding_generation`` (INV-4). Replaces the ``__onboarded__``
         sentinel's ``claim_onboarding`` -- see ``FunnelClaimResult`` for why
@@ -892,7 +918,7 @@ class PaperclipRepo:
                         ":u": now,
                     },
                 )
-                publish_status_changed(user_id)
+                publish_status_changed(owner_id or user_id)
                 return FunnelClaimResult.WON
             except table.meta.client.exceptions.ConditionalCheckFailedException:
                 pass
@@ -920,7 +946,13 @@ class PaperclipRepo:
         return FunnelClaimResult.STALE_GENERATION
 
     async def record_onboarding_ids(
-        self, user_id: str, *, onboarding_generation: str, goal_id: str, project_id: str
+        self,
+        user_id: str,
+        *,
+        onboarding_generation: str,
+        goal_id: str,
+        project_id: str,
+        owner_id: Optional[str] = None,
     ) -> None:
         """Record the seeded goal/project ids on the row. Written LAST (same
         ordering rationale as the old sentinel's ``record_onboarding_ids``):
@@ -957,9 +989,11 @@ class PaperclipRepo:
         # contract missing goal/project; without this second nudge nothing
         # repairs it promptly (ready-state polling is no longer frequent). See
         # publish_status_changed's module docstring (INV-1: nudge only).
-        publish_status_changed(user_id)
+        publish_status_changed(owner_id or user_id)
 
-    async def revert_funnel_submission(self, user_id: str, *, onboarding_generation: str) -> None:
+    async def revert_funnel_submission(
+        self, user_id: str, *, onboarding_generation: str, owner_id: Optional[str] = None
+    ) -> None:
         """Best-effort rollback: ``funnel_state: submitted -> not_started``,
         so a caller that won the claim but then failed mid-seed doesn't
         permanently lock the company out of onboarding (mirrors the old
@@ -999,7 +1033,7 @@ class PaperclipRepo:
         # that saw the optimistic "submitted" doesn't sit on a stale contract
         # after the seed failed and rolled back. Only reached when the write
         # actually landed (the swallowed guard-failure returns above).
-        publish_status_changed(user_id)
+        publish_status_changed(owner_id or user_id)
 
     async def scan_purge_due(self, now: datetime) -> list[PaperclipCompany]:
         """Return disabled rows whose ``scheduled_purge_at <= now`` via the GSI.

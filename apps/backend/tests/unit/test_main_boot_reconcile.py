@@ -150,7 +150,7 @@ async def test_reconcile_never_stops_trial_owner_with_live_conn():
 @pytest.mark.asyncio
 async def test_reconcile_tolerates_empty():
     """Zero running rows -> no-op, no error. Matches
-    _resume_provisioning_transitions's own empty-rows test: the pool getter
+    _resume_wake_resize_transitions's own empty-rows test: the pool getter
     may still be called (same shape as that function's unconditional
     get_ecs_manager() call), but nothing is dispatched off of it."""
     from main import _reconcile_trial_idle_containers
@@ -174,7 +174,7 @@ async def test_reconcile_tolerates_empty():
 @pytest.mark.asyncio
 async def test_reconcile_tolerates_ddb_failure():
     """get_by_status raising MUST NOT crash backend startup -- logged and
-    shrugged off, matching _resume_provisioning_transitions's posture."""
+    shrugged off, matching _resume_wake_resize_transitions's posture."""
     from main import _reconcile_trial_idle_containers
 
     with (

@@ -443,7 +443,10 @@ class TestCreateUserService:
     @pytest.mark.asyncio
     async def test_creates_service_and_repo_record(self, manager, mock_ecs_client, mock_efs_client):
         """create_user_service upserts repo record early, then creates access point, task def, service."""
-        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch("core.containers.ecs_manager.new_provision_generation", return_value="01ARZ3TESTGENERATION0"),
+        ):
             mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
             mock_repo.update_fields = AsyncMock(return_value=_make_container_dict())
 
@@ -451,7 +454,8 @@ class TestCreateUserService:
 
             assert service_name == "openclaw-user_test_123-f4ae64abb2db"
 
-            # Verify repo upsert called early
+            # Verify repo upsert called early, minting provision_generation
+            # (INV-2 single mint point) atomically with the row.
             mock_repo.upsert.assert_called_once_with(
                 "user_test_123",
                 {
@@ -460,6 +464,7 @@ class TestCreateUserService:
                     "status": "provisioning",
                     "substatus": None,
                     "owner_type": "personal",
+                    "provision_generation": "01ARZ3TESTGENERATION0",
                 },
             )
 
@@ -669,6 +674,41 @@ class TestCreateUserService:
                 await manager.create_user_service("user_test_123", "token-abc")
 
         assert mock_ecs_client.create_service.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_mints_provision_generation_ulid(self, manager, mock_ecs_client, mock_efs_client):
+        """create_user_service's row-creating upsert (event G1) mints a real
+        ULID provision_generation -- the single mint point (INV-2)."""
+        from ulid import ULID
+
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict())
+
+            await manager.create_user_service("user_test_123", "token-abc")
+
+            fields = mock_repo.upsert.call_args.args[1]
+            assert "provision_generation" in fields
+            # Round-trips through the real ULID parser -- proves it's a real
+            # ULID, not a placeholder string.
+            ULID.from_str(fields["provision_generation"])
+
+    @pytest.mark.asyncio
+    async def test_each_fresh_service_create_mints_a_new_generation(self, manager, mock_ecs_client, mock_efs_client):
+        """Two separate create_user_service calls (e.g. a wipe-and-reprovision)
+        each mint their OWN provision_generation -- a fresh service create
+        changes it, unlike a restart/redeploy (see the redeploy/scale-from-zero
+        tests below)."""
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict())
+
+            await manager.create_user_service("user_test_123", "token-abc")
+            await manager.create_user_service("user_test_123", "token-def")
+
+            first_gen = mock_repo.upsert.call_args_list[0].args[1]["provision_generation"]
+            second_gen = mock_repo.upsert.call_args_list[1].args[1]["provision_generation"]
+            assert first_gen != second_gen
 
 
 # ---------------------------------------------------------------------------
@@ -2350,6 +2390,76 @@ class TestProvisionUserContainer:
             cb = dc.get("deploymentCircuitBreaker") or {}
             assert cb.get("enable") is True
             assert cb.get("rollback") is False
+
+    @pytest.mark.asyncio
+    async def test_redeploy_preserves_provision_generation(self, manager, mock_ecs_client):
+        """A force-redeploy (existing service, running>0) MUST NOT mint or
+        overwrite provision_generation (INV-2) -- it's the same container
+        incarnation, just a fresh task. The redeploying branch never calls
+        create_user_service/upsert (the single mint point), and its
+        update_fields writes don't carry the key -- so the row's existing
+        value survives untouched."""
+        mock_ecs_client.describe_services.return_value = {
+            "services": [
+                {
+                    "serviceName": "openclaw-user_test_123-f4ae64abb2db",
+                    "status": "ACTIVE",
+                    "desiredCount": 1,
+                    "runningCount": 1,
+                }
+            ]
+        }
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(
+                return_value=_make_container_dict(status="running")
+            )
+            mock_repo.update_fields = AsyncMock()
+
+            await manager.provision_user_container("user_test_123", provider_choice="bedrock_claude")
+
+            mock_repo.upsert.assert_not_called()
+            for call in mock_repo.update_fields.call_args_list:
+                assert "provision_generation" not in call.args[1]
+
+    @pytest.mark.asyncio
+    async def test_scale_from_zero_restart_preserves_provision_generation(self, manager, mock_ecs_client, mock_efs_client):
+        """A scale-from-zero restart (existing service, desired=0) MUST NOT
+        mint or overwrite provision_generation (INV-2) -- same container
+        incarnation waking up. This branch never calls
+        create_user_service/upsert (the single mint point)."""
+        mock_ecs_client.describe_services.return_value = {
+            "services": [
+                {
+                    "serviceName": "openclaw-user_test_123-f4ae64abb2db",
+                    "status": "ACTIVE",
+                    "desiredCount": 0,
+                    "runningCount": 0,
+                }
+            ]
+        }
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+            patch.object(manager, "write_user_configs", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(
+                return_value=_make_container_dict(
+                    status="stopped",
+                    access_point_id="fsap-user-restart",
+                )
+            )
+            mock_repo.update_fields = AsyncMock()
+
+            await manager.provision_user_container("user_test_123", provider_choice="bedrock_claude")
+
+            mock_repo.upsert.assert_not_called()
+            for call in mock_repo.update_fields.call_args_list:
+                assert "provision_generation" not in call.args[1]
 
     @pytest.mark.asyncio
     async def test_provision_ecs_starting_no_poller_when_status_already_provisioning(self, manager, mock_ecs_client):

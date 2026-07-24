@@ -35,6 +35,7 @@ from core.containers.config import (
 from core.containers.workspace import get_workspace
 from core.repositories import billing_repo, container_repo
 from core.repositories.container_repo import ProvisionSuperseded
+from core.services.generation_ids import new_provision_generation
 
 logger = logging.getLogger(__name__)
 
@@ -825,6 +826,16 @@ class EcsManager:
             "status": "provisioning",
             "substatus": None,
             "owner_type": owner_type,
+            # The container-incarnation fence (INV-2). THE single mint point
+            # for provision_generation, system-wide — see
+            # core.services.generation_ids.new_provision_generation. Every
+            # other containers-row write path (scale-from-zero, force-redeploy,
+            # restart, provider hot-swap, Bedrock revoke/restore, Stripe
+            # conversion) goes through container_repo.update_fields /
+            # update_status / other scoped writers, none of which touch this
+            # field, so it survives all of them untouched. This PR is inert:
+            # no consumer reads it yet.
+            "provision_generation": new_provision_generation(),
         }
         if hook_token:
             upsert_fields["hook_token"] = hook_token

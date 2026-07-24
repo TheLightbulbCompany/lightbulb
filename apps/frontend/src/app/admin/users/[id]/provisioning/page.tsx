@@ -7,6 +7,7 @@ import { ErrorBanner } from "@/components/admin/ErrorBanner";
 import { StatusChip } from "@/components/admin/StatusChip";
 import { getProvisioning } from "@/app/admin/_lib/api";
 import { formatRelativeTime } from "@/app/admin/_lib/time";
+import { ProvisioningActionsPanel } from "./ProvisioningActionsPanel";
 
 export const metadata = { title: "Provisioning · Admin" };
 
@@ -289,7 +290,12 @@ export default async function AdminUserProvisioningPage({ params }: PageProps) {
         </div>
       </Card>
 
-      {/* Task 6 renders the levers panel (retry / reset-bootstrap) here. */}
+      {/* 7. Levers */}
+      <ProvisioningActionsPanel
+        userId={id}
+        bootstrapState={paperclip?.bootstrap_state ?? null}
+        containerStatus={containerRow?.status ?? null}
+      />
     </div>
   );
 }

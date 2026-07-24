@@ -24,6 +24,27 @@ def _assert_js_canonical_roundtrip(ts: str) -> None:
     assert reformatted == ts
 
 
+def _configure_fresh_workspace(ws):
+    """seed_workspace_state's one-shot gate checks whether the agent workspace
+    dir already exists; fresh (this provision creates it) → the state file is
+    seeded, so tests asserting the historical 6-write shape stay valid."""
+    ws.agent_workspace_path.return_value.is_dir.return_value = False
+    return ws
+
+
+def _configure_existing_workspace(ws, *, stale_state_file=False, shared_db=False):
+    """Existing workspace (reprovision): the state file is never re-written.
+    ``stale_state_file`` / ``shared_db`` drive the heal branch — a stale copy
+    is deleted only when the shared state DB proves a doctor pass has run."""
+    wsdir = ws.agent_workspace_path.return_value
+    wsdir.is_dir.return_value = True
+    # (workspace_dir / ".openclaw" / "workspace-state.json").is_file()
+    wsdir.__truediv__.return_value.__truediv__.return_value.is_file.return_value = stale_state_file
+    # (user_path(owner) / "state" / "openclaw.sqlite").is_file()
+    ws.user_path.return_value.__truediv__.return_value.__truediv__.return_value.is_file.return_value = shared_db
+    return ws
+
+
 @pytest.mark.asyncio
 async def test_skipped_when_no_paperclip_agents():
     """Empty list → seeder returns early without touching workspace."""
@@ -60,7 +81,7 @@ async def test_skipped_when_no_ceo_in_list():
 @pytest.mark.asyncio
 async def test_personal_owner_writes_four_files(monkeypatch):
     """Personal owner (user_*) → all four files written with personal content."""
-    workspace = MagicMock()
+    workspace = _configure_fresh_workspace(MagicMock())
     # write_file_if_missing returns True (file did not exist).
     workspace.write_file_if_missing = MagicMock(return_value=True)
 
@@ -169,7 +190,7 @@ async def test_personal_owner_writes_four_files(monkeypatch):
 @pytest.mark.asyncio
 async def test_org_owner_uses_org_template(monkeypatch):
     """Org owner (org_*) → USER.md uses org variant referencing the org name."""
-    workspace = MagicMock()
+    workspace = _configure_fresh_workspace(MagicMock())
     workspace.write_file_if_missing = MagicMock(return_value=True)
 
     fake_profile = {
@@ -204,10 +225,12 @@ async def test_org_owner_uses_org_template(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_skipped_existing_when_files_already_present(monkeypatch):
-    """Reprovision case: write_file_if_missing returns False → no error,
-    metric recorded for skipped_existing."""
-    workspace = MagicMock()
-    # All writes return False (files already exist on EFS).
+    """Reprovision case: existing workspace → the state file is NOT
+    re-attempted (one-shot, #1429 — a re-write into a migrated workspace
+    bricks every agent run), and write_file_if_missing returning False on the
+    templates records skipped_existing without error."""
+    workspace = _configure_existing_workspace(MagicMock())
+    # All template writes return False (files already exist on EFS).
     workspace.write_file_if_missing = MagicMock(return_value=False)
 
     async def fake_resolve(owner_id):
@@ -228,9 +251,13 @@ async def test_skipped_existing_when_files_already_present(monkeypatch):
         workspace=workspace,
     )
 
-    # Still attempted all six writes (5 markdown + 1 state file);
-    # write_file_if_missing handles the skip.
-    assert workspace.write_file_if_missing.call_count == 6
+    # Only the 5 markdown templates are attempted — the state file is one-shot
+    # and an existing workspace never gets it re-written (nor deleted, absent
+    # a stale copy + a migrated state DB).
+    assert workspace.write_file_if_missing.call_count == 5
+    attempted = [c.args[1] for c in workspace.write_file_if_missing.call_args_list]
+    assert not any(p.endswith("workspace-state.json") for p in attempted)
+    workspace.delete_file.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -243,7 +270,7 @@ async def test_state_file_written_first_with_setup_completed(monkeypatch):
     """
     import json as _json
 
-    workspace = MagicMock()
+    workspace = _configure_fresh_workspace(MagicMock())
     workspace.write_file_if_missing = MagicMock(return_value=True)
 
     async def fake_resolve(owner_id):
@@ -300,7 +327,7 @@ async def test_state_file_timestamps_are_js_canonical(monkeypatch):
     """
     import json as _json
 
-    workspace = MagicMock()
+    workspace = _configure_fresh_workspace(MagicMock())
     workspace.write_file_if_missing = MagicMock(return_value=True)
 
     async def fake_resolve(owner_id):
@@ -329,7 +356,7 @@ async def test_state_file_timestamps_are_js_canonical(monkeypatch):
 async def test_state_file_failure_does_not_block_template_writes(monkeypatch):
     """If workspace-state.json write raises, the six markdown templates
     still write (best-effort: state file is the floor, not the ceiling)."""
-    workspace = MagicMock()
+    workspace = _configure_fresh_workspace(MagicMock())
 
     # First call (state file) raises; subsequent calls (5 templates) succeed.
     side_effects = [OSError("disk full")] + [True] * 5
@@ -357,6 +384,124 @@ async def test_state_file_failure_does_not_block_template_writes(monkeypatch):
     assert workspace.write_file_if_missing.call_count == 6
     template_names = sorted(c.args[1].rsplit("/", 1)[-1] for c in workspace.write_file_if_missing.call_args_list[1:])
     assert template_names == ["AGENTS.md", "IDENTITY.md", "MEMORY.md", "SOUL.md", "USER.md"]
+
+
+# ---------------------------------------------------------------------------
+# seed_workspace_state — one-shot semantics + stale-copy heal (#1429)
+# ---------------------------------------------------------------------------
+#
+# Verified against the deployed fork tag v2026.7.2-isol8.1: the runtime gate
+# (assertNoUnmigratedWorkspaceState) is PRESENCE-ONLY — if the file exists,
+# every agent run throws. First boot's doctor imports it into the shared
+# SQLite store, records a sha256 receipt, and deletes the file; a re-seed
+# (fresh timestamp → new sha) makes every later doctor pass refuse cleanup
+# ("retired source now conflicts") — a permanent brick. Exercised on a REAL
+# Workspace over tmp_path: the one-shot gate is filesystem-shape-sensitive
+# and a MagicMock would happily pass states the fix exists to distinguish.
+
+
+@pytest.fixture
+def real_workspace(tmp_path, monkeypatch):
+    from core.containers.workspace import Workspace
+
+    # Skip the EFS access-point chown (uid 1000) — not permitted on dev boxes.
+    monkeypatch.setattr("core.config.settings.ENVIRONMENT", "local")
+    return Workspace(mount_path=str(tmp_path))
+
+
+def test_seed_workspace_state_seeds_only_a_fresh_workspace(real_workspace, tmp_path):
+    state = tmp_path / "user_x" / "workspace-uuid-f" / ".openclaw" / "workspace-state.json"
+
+    # Fresh workspace: seeded, with the JS-canonical timestamp contract.
+    assert friday_identity.seed_workspace_state(real_workspace, "user_x", "uuid-f") == "seeded"
+    import json as _json
+
+    payload = _json.loads(state.read_text())
+    assert payload["version"] == 1
+    _assert_js_canonical_roundtrip(payload["setupCompletedAt"])
+    _assert_js_canonical_roundtrip(payload["bootstrapSeededAt"])
+
+    # Re-run before any boot (retried provision): the workspace exists and the
+    # original seed is preserved byte-for-byte — it migrates cleanly on boot #1.
+    original = state.read_text()
+    assert friday_identity.seed_workspace_state(real_workspace, "user_x", "uuid-f") == "skipped"
+    assert state.read_text() == original
+
+
+def test_seed_workspace_state_never_rewrites_after_migration(real_workspace, tmp_path):
+    """THE #1429 fix: boot #1's doctor migrated the file into SQLite and
+    deleted it. A reprovision (the trial->paid conversion path) must NOT
+    re-write it — the re-seeded copy's sha no longer matches the migration
+    receipt, doctor refuses cleanup forever, and the presence-only runtime
+    gate bricks every agent run."""
+    state = tmp_path / "user_x" / "workspace-uuid-f" / ".openclaw" / "workspace-state.json"
+    assert friday_identity.seed_workspace_state(real_workspace, "user_x", "uuid-f") == "seeded"
+
+    # Boot #1: doctor imports + deletes the file (and creates the shared DB).
+    state.unlink()
+    (tmp_path / "user_x" / "state").mkdir()
+    (tmp_path / "user_x" / "state" / "openclaw.sqlite").write_bytes(b"")
+
+    # Reprovision: the old write_file_if_missing found the path empty and
+    # re-wrote it. One-shot must skip instead.
+    assert friday_identity.seed_workspace_state(real_workspace, "user_x", "uuid-f") == "skipped"
+    assert not state.exists()
+
+
+def test_seed_workspace_state_heals_an_already_bricked_workspace(real_workspace, tmp_path):
+    """Pre-fix cohort: the file was re-seeded into an already-migrated
+    workspace (shared state DB present). The stale copy's only runtime effect
+    is tripping the presence gate — delete it."""
+    state = tmp_path / "user_x" / "workspace-uuid-f" / ".openclaw" / "workspace-state.json"
+    assert friday_identity.seed_workspace_state(real_workspace, "user_x", "uuid-f") == "seeded"
+    (tmp_path / "user_x" / "state").mkdir()
+    (tmp_path / "user_x" / "state" / "openclaw.sqlite").write_bytes(b"")
+
+    assert friday_identity.seed_workspace_state(real_workspace, "user_x", "uuid-f") == "deleted_stale"
+    assert not state.exists()
+
+    # And the heal is itself one-shot: the next reprovision is a plain skip.
+    assert friday_identity.seed_workspace_state(real_workspace, "user_x", "uuid-f") == "skipped"
+
+
+def test_seed_workspace_state_keeps_an_unmigrated_seed(real_workspace, tmp_path):
+    """No shared state DB == the container never booted since seeding: the
+    file is the original un-migrated seed and must be left for boot #1's
+    doctor to import (deleting it would only lose the setup-completed marker)."""
+    state = tmp_path / "user_x" / "workspace-uuid-f" / ".openclaw" / "workspace-state.json"
+    assert friday_identity.seed_workspace_state(real_workspace, "user_x", "uuid-f") == "seeded"
+
+    assert friday_identity.seed_workspace_state(real_workspace, "user_x", "uuid-f") == "skipped"
+    assert state.is_file()
+
+
+@pytest.mark.asyncio
+async def test_pre_stage_heals_stale_state_file_on_existing_workspace(monkeypatch):
+    """Call-site wiring: an existing workspace with a stale re-seeded state
+    file AND a migrated shared DB gets the file deleted (never re-written)."""
+    workspace = _configure_existing_workspace(MagicMock(), stale_state_file=True, shared_db=True)
+    workspace.write_file_if_missing = MagicMock(return_value=False)
+
+    async def fake_resolve(owner_id):
+        return {
+            "kind": "personal",
+            "owner_display": "Sam",
+            "first_name_or_fallback": "Sam",
+            "full_name": "Sam Rivers",
+            "email": "sam@example.com",
+        }
+
+    monkeypatch.setattr(friday_identity, "_resolve_owner_profile", fake_resolve)
+
+    await friday_identity.pre_stage_friday_identity(
+        owner_id="user_abc",
+        paperclip_agents=[{"id": "uuid-1", "role": "ceo"}],
+        workspace=workspace,
+    )
+
+    workspace.delete_file.assert_called_once_with("user_abc", "workspace-uuid-1/.openclaw/workspace-state.json")
+    attempted = [c.args[1] for c in workspace.write_file_if_missing.call_args_list]
+    assert not any(p.endswith("workspace-state.json") for p in attempted)
 
 
 @pytest.mark.asyncio

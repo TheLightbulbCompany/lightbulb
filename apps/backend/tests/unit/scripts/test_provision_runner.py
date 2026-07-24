@@ -39,6 +39,7 @@ def repo(monkeypatch):
 
     monkeypatch.setattr(_repo_module, "claim_attempt", AsyncMock())
     monkeypatch.setattr(_repo_module, "get_by_owner_id", AsyncMock(return_value=None))
+    monkeypatch.setattr(_repo_module, "release_stranded_stop_to_error", AsyncMock(return_value=True))
     return _repo_module
 
 
@@ -143,7 +144,7 @@ async def test_claim_attempt_superseded_exits_20_before_any_provisioning(monkeyp
     manager.provision_user_container.assert_not_awaited()
 
 
-async def test_superseded_exits_20_without_row_read(monkeypatch, manager, repo):
+async def test_superseded_exits_20(monkeypatch, manager, repo):
     manager.provision_user_container.side_effect = ProvisionSuperseded("taken over")
     assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_SUPERSEDED
 
@@ -154,6 +155,68 @@ async def test_wait_for_running_superseded_exits_20(monkeypatch, manager, repo):
     provision_user_container checkpoints but loses the race on the terminal
     running/error write."""
     manager.wait_for_running.side_effect = ProvisionSuperseded("taken over mid-wait")
+    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_SUPERSEDED
+
+
+# ---------------------------------------------------------------------------
+# Superseded-without-successor verification (#1428)
+# ---------------------------------------------------------------------------
+#
+# ProvisionSuperseded used to be trusted as proof a successor owns the row.
+# It failed live: a conversion-marker get→put clobber erased the lease, this
+# runner "stood down" behind a successor that did not exist, and the row sat
+# stopped/claim-less/error-less with nothing running and nothing scheduled.
+# The superseded exit now re-reads the row and, on that exact stranded shape,
+# flips it to error(retryable) so the status poll's auto-retry re-dispatches.
+
+
+async def test_superseded_with_successor_claim_stands_down_quietly(monkeypatch, manager, repo):
+    """A claim on the row == a real successor. The quiet exit stays quiet —
+    and the runner must NOT second-guess the successor with a release."""
+    manager.provision_user_container.side_effect = ProvisionSuperseded("taken over")
+    repo.get_by_owner_id = AsyncMock(return_value={"status": "provisioning", "provision_claim_id": "claim-successor"})
+    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_SUPERSEDED
+    repo.release_stranded_stop_to_error.assert_not_awaited()
+
+
+async def test_superseded_with_row_gone_stands_down_quietly(monkeypatch, manager, repo):
+    """No row at all (deliberate delete) — nothing to release. (The repo
+    fixture's get_by_owner_id defaults to None, so this is also the shape the
+    older superseded tests above run through.)"""
+    manager.provision_user_container.side_effect = ProvisionSuperseded("taken over")
+    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_SUPERSEDED
+    repo.release_stranded_stop_to_error.assert_not_awaited()
+
+
+async def test_superseded_stranded_stopped_row_is_released_to_error(monkeypatch, manager, repo):
+    """THE strand: superseded, but the re-read shows a stopped row with NO
+    claim — nobody running, nothing scheduled. The runner must release it to
+    error(retryable) via the CAS so pollers can recover, and still exit 20
+    (the machine ABI is unchanged; the row write is the recovery arm)."""
+    manager.provision_user_container.side_effect = ProvisionSuperseded("clobbered")
+    repo.get_by_owner_id = AsyncMock(return_value={"status": "stopped"})
+    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_SUPERSEDED
+    repo.release_stranded_stop_to_error.assert_awaited_once()
+    assert repo.release_stranded_stop_to_error.await_args.args == ("user_a",)
+    assert "no successor" in repo.release_stranded_stop_to_error.await_args.kwargs["last_error"]
+
+
+async def test_superseded_unclaimed_provisioning_row_is_not_touched(monkeypatch, manager, repo):
+    """An UNCLAIMED provisioning row belongs to a wake/resize transition
+    (those paths never claim — see main.py's boot resume). The runner logs and
+    stands down; flipping it to error would clobber their in-process poller."""
+    manager.provision_user_container.side_effect = ProvisionSuperseded("taken over")
+    repo.get_by_owner_id = AsyncMock(return_value={"status": "provisioning"})
+    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_SUPERSEDED
+    repo.release_stranded_stop_to_error.assert_not_awaited()
+
+
+async def test_superseded_release_failure_still_exits_20(monkeypatch, manager, repo):
+    """The stranded-row release is best-effort: a DDB blip there must not
+    change the exit-code ABI (the machine still classifies Superseded)."""
+    manager.provision_user_container.side_effect = ProvisionSuperseded("clobbered")
+    repo.get_by_owner_id = AsyncMock(return_value={"status": "stopped"})
+    repo.release_stranded_stop_to_error = AsyncMock(side_effect=RuntimeError("ddb down"))
     assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_SUPERSEDED
 
 

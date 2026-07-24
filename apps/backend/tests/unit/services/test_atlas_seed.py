@@ -22,9 +22,18 @@ def _assert_js_canonical_roundtrip(ts: str) -> None:
     assert reformatted == ts
 
 
+def _mark_workspace_fresh(ws):
+    """seed_workspace_state's one-shot gate: a workspace dir that does not
+    exist yet means this provision creates it, so the state marker is seeded.
+    (An existing dir means reprovision — the marker is never re-written; see
+    friday_identity.seed_workspace_state, #1429.)"""
+    ws.agent_workspace_path.return_value.is_dir.return_value = False
+    return ws
+
+
 @pytest.fixture
 def workspace_stub():
-    ws = MagicMock()
+    ws = _mark_workspace_fresh(MagicMock())
     ws.calls = []
 
     def _write(user_id, path, content):
@@ -52,7 +61,7 @@ def captured_ws():
     ``write_file_if_missing`` skip-if-exists semantics — first write wins,
     later writes to the same path no-op. That's what makes the ACP pre-write
     of AGENTS.md beat the generic loop's vanilla write."""
-    ws = MagicMock()
+    ws = _mark_workspace_fresh(MagicMock())
     ws.written = {}
 
     def _write(user_id, path, content):
@@ -264,8 +273,16 @@ def force_ws():
     from write_file_if_missing (skip-if-exists). write_file_if_missing always
     returns False (pretend every file already exists) so that the only way a
     file gets staged is via write_file — proving the force path overwrites
-    where the default path would skip."""
+    where the default path would skip.
+
+    Modeled as an EXISTING, already-migrated workspace (dir present, no stale
+    state file, shared DB present) — force restage only ever targets existing
+    containers, and the state marker is exempt from force (#1429)."""
     ws = MagicMock()
+    wsdir = ws.agent_workspace_path.return_value
+    wsdir.is_dir.return_value = True
+    # (workspace_dir / ".openclaw" / "workspace-state.json").is_file() → False
+    wsdir.__truediv__.return_value.__truediv__.return_value.is_file.return_value = False
     ws.overwrote = []  # paths written via write_file
     ws.if_missing_calls = []  # paths attempted via write_file_if_missing
 
@@ -284,21 +301,37 @@ def force_ws():
 
 @pytest.mark.asyncio
 async def test_force_overwrites_existing_files(force_ws, fake_files_dir):
-    """force=True overwrites every staged file via write_file even when the file
-    already exists (where write_file_if_missing would skip) — so an existing
-    container picks up the rewritten bundle. write_file_if_missing is never used."""
+    """force=True overwrites every staged BUNDLE file via write_file even when
+    the file already exists (where write_file_if_missing would skip) — so an
+    existing container picks up the rewritten bundle. write_file_if_missing is
+    never used. The workspace-state.json marker is EXEMPT: force targets an
+    existing (booted, migrated) workspace, and re-writing the marker there
+    bricks every agent run (#1429)."""
     agents = [{"id": "uuid-atlas", "role": "general", "name": "Atlas"}]
     result = await pre_stage_atlas(owner_id="user_x", paperclip_agents=agents, workspace=force_ws, force=True)
     # Force path NEVER touches the skip-if-exists writer.
     assert force_ws.if_missing_calls == []
     # IDENTITY.md exists (write_if_missing would return False) yet was overwritten.
     assert "workspace-uuid-atlas/IDENTITY.md" in force_ws.overwrote
-    # workspace-state.json + the 3 bundle files (IDENTITY.md, build.lobster,
-    # skills/fast-io/SKILL.md) all force-written.
-    assert "workspace-uuid-atlas/.openclaw/workspace-state.json" in force_ws.overwrote
+    # The 3 bundle files (IDENTITY.md, build.lobster, skills/fast-io/SKILL.md)
+    # force-written; the one-shot state marker is NOT.
+    assert "workspace-uuid-atlas/.openclaw/workspace-state.json" not in force_ws.overwrote
     assert result["force"] is True
     assert result["reason"] is None
-    assert result["overwritten"] == len(force_ws.overwrote) == 4
+    assert result["overwritten"] == len(force_ws.overwrote) == 3
+
+
+@pytest.mark.asyncio
+async def test_force_never_rewrites_workspace_state(force_ws, fake_files_dir):
+    """The state marker is exempt from force in BOTH writers: no write_file, no
+    write_file_if_missing, and (with no stale copy on disk) no delete either."""
+    agents = [{"id": "uuid-atlas", "role": "general", "name": "Atlas"}]
+    await pre_stage_atlas(owner_id="user_x", paperclip_agents=agents, workspace=force_ws, force=True)
+
+    state_rel = "workspace-uuid-atlas/.openclaw/workspace-state.json"
+    assert state_rel not in force_ws.overwrote
+    assert state_rel not in force_ws.if_missing_calls
+    force_ws.delete_file.assert_not_called()
 
 
 @pytest.mark.asyncio

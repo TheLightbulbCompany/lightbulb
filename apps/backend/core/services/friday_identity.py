@@ -32,6 +32,17 @@ just incomplete) legacy file is a different code path than a malformed
 one — see ``js_iso_now``'s docstring for the byte-exact timestamp
 contract that migration validates.
 
+But it is seeded ONE-SHOT — only into a workspace this provision is
+CREATING, never re-written into one that already exists. See
+``seed_workspace_state`` for the verified upstream mechanism (#1429):
+first boot's doctor migrates the file into SQLite, records a sha256
+receipt, and DELETES the file; a reprovision that re-seeds it (fresh
+timestamp → different sha) makes every later doctor pass refuse cleanup
+("retired source now conflicts") while the presence-only runtime gate
+(``assertNoUnmigratedWorkspaceState``) throws ``Legacy workspace setup
+state requires migration`` on EVERY agent run — a permanent brick that
+even ``doctor --fix`` cannot clear.
+
 Best-effort throughout: failures log + emit metrics, never raise. The
 caller (``ecs_manager.write_user_configs``) wraps this in try/except
 so a Clerk outage or EFS hiccup never blocks container provision.
@@ -66,6 +77,68 @@ def js_iso_now() -> str:
     """
     now = datetime.now(timezone.utc)
     return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
+
+
+def seed_workspace_state(workspace: Workspace, owner_id: str, agent_uuid: str) -> str:
+    """One-shot seed of ``workspace-{agent_uuid}/.openclaw/workspace-state.json``.
+
+    Shared by both seed sites (Friday here, ``atlas_seed``). Returns the
+    action taken: ``"seeded"`` (fresh workspace, file written),
+    ``"skipped"`` (existing workspace left alone), or ``"deleted_stale"``
+    (existing workspace healed of a re-seeded copy — see below).
+
+    WHY ONE-SHOT (#1429, mechanism verified against the deployed fork tag
+    v2026.7.2-isol8.1):
+
+    OpenClaw 7.2 treats this file as a RETIRED legacy source. The runtime
+    never parses it — ``assertNoUnmigratedWorkspaceState``
+    (``src/agents/workspace-legacy-state.ts``) is a PRESENCE-ONLY gate hit on
+    every agent run: if the file exists at all, every run throws ``Legacy
+    workspace setup state requires migration … run openclaw doctor --fix``.
+    The doctor-on-boot pass (``state-migrations.workspace-setup.ts``) is what
+    keeps a fresh seed working: on the FIRST boot it imports the file into the
+    shared SQLite state store (``~/.openclaw/state/openclaw.sqlite``), records
+    a receipt carrying the file's sha256, and REMOVES the file.
+
+    That removal is what used to re-arm the bug: the paid-conversion
+    reprovision re-ran this seeder, ``write_file_if_missing`` found the
+    migrated-and-removed path empty, and re-wrote the file with a fresh
+    timestamp. On the next boot doctor found receipt + file, compared sha256s,
+    got a mismatch, and REFUSED cleanup ("Workspace state is in SQLite, but
+    the retired source now conflicts." — ``cleanupReceiptSource``) — leaving
+    the file in place for the runtime gate to throw on, permanently. Even
+    ``doctor --fix`` cannot clear that state. Hence: seed ONLY when the
+    workspace directory does not exist yet (this provision is creating it);
+    an existing workspace is never re-seeded, under any flag.
+
+    HEALING ALREADY-BRICKED WORKSPACES: on an existing workspace, if the file
+    is present AND the shared state DB exists (the container has booted 7.2's
+    doctor at least once — Friday/Atlas workspaces always predate the first
+    boot, so a coexisting DB means this file post-dates a migration pass or a
+    mid-migration crash), DELETE it. Provably safe per the upstream header
+    ("Runtime state never parses these files"): canonical state lives in
+    SQLite, the file's only runtime effect is tripping the presence gate, and
+    removal is exactly what doctor's own cleanup would do if the sha matched.
+    In the crash-window case the cost is bounded to losing a best-effort
+    marker whose ABSENCE is the normal vanilla-workspace path. When the DB
+    does not exist (container never booted since seeding) the file is the
+    original un-migrated seed and is left for the first boot to migrate.
+    """
+    state_rel = f"workspace-{agent_uuid}/.openclaw/workspace-state.json"
+    workspace_dir = workspace.agent_workspace_path(owner_id, agent_uuid)
+    if not workspace_dir.is_dir():
+        now_iso = js_iso_now()
+        workspace.write_file_if_missing(
+            owner_id,
+            state_rel,
+            json.dumps({"version": 1, "bootstrapSeededAt": now_iso, "setupCompletedAt": now_iso}),
+        )
+        return "seeded"
+    shared_state_db = workspace.user_path(owner_id) / "state" / "openclaw.sqlite"
+    if (workspace_dir / ".openclaw" / "workspace-state.json").is_file() and shared_state_db.is_file():
+        workspace.delete_file(owner_id, state_rel)
+        return "deleted_stale"
+    return "skipped"
 
 
 # ---------------------------------------------------------------------------
@@ -810,24 +883,27 @@ async def pre_stage_friday_identity(
     # treat our customized IDENTITY/SOUL/USER as evidence of a stale,
     # uncompleted setup wizard (see the module docstring's two REMAINING
     # reasons -- BOOTSTRAP.md is no longer one of them, it isn't seeded).
-    # Written FIRST (before the template loop) so a partial template-write
+    # Attempted FIRST (before the template loop) so a partial template-write
     # failure still leaves OpenClaw in a "treat as completed" state — it'll
     # fill any missing customized files with its own neutral templates
-    # rather than running the bootstrap wizard. Idempotent via
-    # write_file_if_missing.
-    now_iso = js_iso_now()
-    state_rel_path = f"workspace-{friday_uuid}/.openclaw/workspace-state.json"
-    workspace_state = {
-        "version": 1,
-        "bootstrapSeededAt": now_iso,
-        "setupCompletedAt": now_iso,
-    }
+    # rather than running the bootstrap wizard. ONE-SHOT: written only when
+    # this provision is creating the workspace; on an existing workspace it
+    # is never re-written (a re-seed after the first boot's doctor migration
+    # bricks every agent run — see seed_workspace_state, #1429), and a stale
+    # re-seeded copy from before this fix is deleted.
     try:
-        workspace.write_file_if_missing(owner_id, state_rel_path, json.dumps(workspace_state))
+        state_action = seed_workspace_state(workspace, owner_id, friday_uuid)
+        if state_action == "deleted_stale":
+            put_metric("friday_identity.seed.state_stale_deleted")
+            logger.warning(
+                "friday_identity: deleted stale re-seeded workspace-state.json for owner=%s "
+                "(already-migrated workspace — the file only re-bricks agent runs)",
+                owner_id,
+            )
     except Exception as exc:  # noqa: BLE001 — best-effort, log + continue
         put_metric("friday_identity.seed.state_error")
         logger.warning(
-            "friday_identity: workspace-state.json write failed for owner=%s: %s.",
+            "friday_identity: workspace-state.json seed failed for owner=%s: %s.",
             owner_id,
             exc,
         )

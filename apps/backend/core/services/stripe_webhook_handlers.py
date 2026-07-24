@@ -35,6 +35,7 @@ from core.dynamodb import utc_now_iso
 from core.observability.metrics import put_metric, timing
 from core.observability.product_analytics import capture_product_event
 from core.repositories import billing_repo, container_repo
+from core.services import webhook_dedup
 from core.services.billing_service import BillingService
 
 logger = logging.getLogger(__name__)
@@ -130,8 +131,14 @@ async def _stamp_conversion_dispatch(owner_id: str) -> None:
     """Claim the container row for a conversion. Awaited BEFORE every dispatch
     (webhook and self-heal alike) so the marker is durable even if the
     fire-and-forget task never gets to run, and so the rate-limit anchor is
-    already on the row when the next ~3s poll reads it."""
-    await container_repo.update_fields(
+    already on the row when the next ~3s poll reads it.
+
+    A SCOPED write (``update_conversion_fields``), never the get→put
+    ``update_fields``: every conversion-marker write can race a concurrent
+    provision claim, and a full-item put built from a pre-claim read
+    resurrects the stale status and erases the lease — see that helper's
+    docstring for the live incident this closed."""
+    await container_repo.update_conversion_fields(
         owner_id,
         {
             "conversion_pending": True,
@@ -139,6 +146,81 @@ async def _stamp_conversion_dispatch(owner_id: str) -> None:
             "conversion_started_at": utc_now_iso(),
         },
     )
+
+
+def _conversion_entry_key(owner_id: str, subscription_id: str) -> str:
+    """Dedup key for the conversion's single-flight entry CAS. Keyed on
+    (owner, Stripe subscription) — i.e. per subscription TRANSITION, since a
+    given subscription converts an owner off trial_local at most once. A
+    later re-subscribe is a new subscription id, so it gets a fresh key."""
+    return f"trial-conversion:{owner_id}:{subscription_id}"
+
+
+async def _claim_conversion_entry(owner_id: str, subscription_id: str) -> bool:
+    """Single-flight the conversion ENTRY across concurrently delivered
+    Stripe events. Returns True iff THIS event may run the conversion.
+
+    Stripe delivers several events per subscription change (.created,
+    .updated, another .updated from metadata stamping, ...), UNORDERED and
+    near-simultaneously — possibly to two backend tasks during a rolling
+    deploy. Each handler reads the billing row's old_status before any of
+    them persists the new one, so more than one event can see
+    ``trial_local -> active`` and enter the conversion branch. Two live
+    conversions then interleave stop / dispatch / release writes on the same
+    container row — the observed dev strand (#1428): the second attempt's
+    writes superseded the first attempt's SFN execution while landing none of
+    its own.
+
+    The gate is a conditional PutItem on the existing webhook-dedup table
+    (``webhook_dedup.record_event_or_skip`` — reused rather than a new
+    store): DynamoDB serializes it across all backend tasks, so exactly one
+    event records the key and every other finds it and no-ops.
+
+    Fail OPEN on infrastructure errors: if the dedup write itself blows up
+    (DDB blip, misconfig), running the conversion — protected one layer down
+    by the provision lease's own single-flight — beats silently stranding a
+    paying owner on the trial box with nothing left to re-fire it (Stripe's
+    retry re-enters this branch only while old_status is still trial_local).
+    """
+    try:
+        result = await webhook_dedup.record_event_or_skip(
+            _conversion_entry_key(owner_id, subscription_id),
+            source="stripe-trial-conversion",
+        )
+    except Exception:  # noqa: BLE001 — fail open, see docstring
+        logger.exception(
+            "Conversion-entry CAS failed for owner %s (sub %s) — proceeding un-deduped",
+            owner_id,
+            subscription_id,
+        )
+        return True
+    if result is webhook_dedup.WebhookDedupResult.ALREADY_SEEN:
+        put_metric("billing.trial_conversion.duplicate_entry")
+        logger.info(
+            "Skipping duplicate trial-conversion entry for owner %s (sub %s) — another event owns it",
+            owner_id,
+            subscription_id,
+        )
+        return False
+    return True
+
+
+async def _rollback_conversion_entry(owner_id: str, subscription_id: str) -> None:
+    """Drop the conversion-entry CAS row after a failed stamp/dispatch, so a
+    sibling event (or a Stripe redelivery) can re-enter the branch instead of
+    finding the claim of a conversion that never actually started. Best-effort:
+    if the delete fails the row's 30-day TTL is the backstop, and the
+    ``conversion_pending`` self-heal covers any conversion that got as far as
+    the stamp."""
+    try:
+        await webhook_dedup.delete_event(_conversion_entry_key(owner_id, subscription_id))
+    except Exception:  # noqa: BLE001 — rollback is best-effort
+        logger.warning(
+            "Could not roll back conversion-entry CAS for owner %s (sub %s)",
+            owner_id,
+            subscription_id,
+            exc_info=True,
+        )
 
 
 async def run_conversion_reprovision(owner_id: str) -> None:
@@ -169,11 +251,21 @@ async def run_conversion_reprovision(owner_id: str) -> None:
         dimensions={"outcome": "ok" if succeeded else "error"},
     )
 
+    # SCOPED release (``update_conversion_fields``), never the get→put
+    # ``update_fields``. This write races the provision claim of the dispatch
+    # task ``reprovision_for_user`` just created: the old full-item put here,
+    # built from a read taken before that claim landed, resurrected
+    # status="stopped" over the fresh "provisioning" and erased the lease —
+    # superseding the conversion's OWN SFN execution at its first checkpoint
+    # and stranding the row with nothing running and nothing scheduled (the
+    # #1428 dev incident's terminal state: stopped, lease-less, last_error
+    # null). The scoped write touches only the marker fields, so the claim —
+    # and the execution behind it — survive.
     fields: dict[str, Any] = {"substatus": None}
     if succeeded:
         fields["conversion_pending"] = False
     try:
-        await container_repo.update_fields(owner_id, fields)
+        await container_repo.update_conversion_fields(owner_id, fields)
     except Exception:
         # The stamp lapses on its own (the guard window is time-boxed), so a
         # failed release costs at most one redundant self-heal — never a wedge.
@@ -196,6 +288,35 @@ async def maybe_resume_stuck_conversion(owner_id: str, container: dict | None) -
         # No pending conversion. `guard` is still honoured: it covers the brief
         # window between a successful hand-off (which drops the flag) and
         # background_provision moving the row off "stopped".
+        #
+        # EXCEPT for the stranded shape: stopped, NO provision claim, NO
+        # recorded error. A healthy hand-off leaves either a claim (the
+        # dispatch won it — an SFN execution owns the row) or, transiently,
+        # this exact shape for the milliseconds before the claim lands. But a
+        # conversion whose dispatched execution was superseded with no
+        # successor (#1428) sits in it PERMANENTLY — nothing running, nothing
+        # scheduled — and honouring the guard here would stand the poll's
+        # wake path down for the full window on a row nobody owns. Release
+        # the guard instead: the caller's wake branch re-checks every gate
+        # (paid, trial, parked) and its dispatch is single-flight
+        # (try_claim_provision), so the worst case in the healthy-hand-off
+        # millisecond window is one redundant dispatch that loses the claim
+        # and stands down. The drain window itself is NOT exposed —
+        # conversion_pending is still True there, which keeps the branch
+        # above this one.
+        if (
+            guard
+            and container.get("status") == "stopped"
+            and not container.get("provision_claim_id")
+            and not container.get("last_error")
+        ):
+            put_metric("billing.trial_conversion.stranded_row")
+            logger.warning(
+                "Conversion left owner %s stopped with no provision claim and no error — "
+                "releasing the conversion guard so the status poll can wake the row",
+                owner_id,
+            )
+            return False
         return guard
     if guard:
         # In flight, or re-dispatched within the guard window. Hands off — this
@@ -210,8 +331,9 @@ async def maybe_resume_stuck_conversion(owner_id: str, container: dict | None) -
         if status not in _PAID_SUBSCRIPTION_STATUSES:
             # Not (or no longer) paid — e.g. the subscription was canceled
             # before the conversion landed. Drop the flag and let the ordinary
-            # auto-retry + provision gate handle the row.
-            await container_repo.update_fields(owner_id, {"conversion_pending": False})
+            # auto-retry + provision gate handle the row. Scoped write — the
+            # same lease-safety rule as every other marker write here.
+            await container_repo.update_conversion_fields(owner_id, {"conversion_pending": False})
             return False
 
         await _stamp_conversion_dispatch(owner_id)
@@ -711,31 +833,47 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
         #     task below never runs (deploy, crash), because Stripe's retry
         #     will never re-enter this branch. That flag is the only thing that
         #     lets the status path self-heal the conversion.
-        try:
-            await _stamp_conversion_dispatch(account["owner_id"])
-            asyncio.create_task(run_conversion_reprovision(account["owner_id"]))
-            # Trial funnel telemetry: the free-tier trial converting to
-            # paid billing — distinct from the generic trialing->active
-            # "trial_converted" the bridge below may also emit for a REAL
-            # (card-collected) Stripe trial; this one fires specifically off
-            # the local no-card trial_local start state.
-            capture_product_event(
-                distinct_id=_subscriber_distinct_id(account, event_data),
-                event="trial_converted",
-                properties={
-                    "from_status": old_status,
-                    "to_status": new_status,
-                    # Same persisted-only rule as the bridge below: claim the
-                    # metadata provider only when its row write committed.
-                    "provider_choice": (metadata_provider if provider_persisted else None)
-                    or account.get("provider_choice"),
-                },
-            )
-        except Exception:
-            logger.exception(
-                "Trial-conversion reprovision dispatch failed for owner %s",
-                account["owner_id"],
-            )
+        #
+        # SINGLE-FLIGHT entry (#1428): the whole block is gated on a CAS keyed
+        # on (owner, subscription id). Stripe delivers several events per
+        # subscription change and their handlers race the billing-row read
+        # above, so more than one can see old_status == "trial_local" and land
+        # here — two live conversions then interleave stop/dispatch/release
+        # writes on the same container row. Exactly one event claims the entry;
+        # the rest no-op it entirely (stamp, dispatch AND the trial_converted
+        # capture — it is the same transition, once). See
+        # _claim_conversion_entry for the full failure narrative.
+        if await _claim_conversion_entry(account["owner_id"], event_data["id"]):
+            try:
+                await _stamp_conversion_dispatch(account["owner_id"])
+                asyncio.create_task(run_conversion_reprovision(account["owner_id"]))
+                # Trial funnel telemetry: the free-tier trial converting to
+                # paid billing — distinct from the generic trialing->active
+                # "trial_converted" the bridge below may also emit for a REAL
+                # (card-collected) Stripe trial; this one fires specifically off
+                # the local no-card trial_local start state.
+                capture_product_event(
+                    distinct_id=_subscriber_distinct_id(account, event_data),
+                    event="trial_converted",
+                    properties={
+                        "from_status": old_status,
+                        "to_status": new_status,
+                        # Same persisted-only rule as the bridge below: claim the
+                        # metadata provider only when its row write committed.
+                        "provider_choice": (metadata_provider if provider_persisted else None)
+                        or account.get("provider_choice"),
+                    },
+                )
+            except Exception:
+                logger.exception(
+                    "Trial-conversion reprovision dispatch failed for owner %s",
+                    account["owner_id"],
+                )
+                # Free the entry claim so a sibling event / Stripe redelivery
+                # can retry a conversion that never got as far as the stamp.
+                # (If the stamp DID land, the conversion_pending self-heal is
+                # the recovery path either way.)
+                await _rollback_conversion_entry(account["owner_id"], event_data["id"])
 
     # Refresh the owner-facts file (plan/provider snapshot the bundled isol8
     # skill points agents at). Subscription-state flips land HERE — not via

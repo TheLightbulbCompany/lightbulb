@@ -494,3 +494,137 @@ def test_is_provision_claim_stale_matrix():
     assert container_repo.is_provision_claim_stale({"status": "provisioning", "provision_claimed_at": stale}) is True
     # Legacy wedged row: provisioning with no lease at all -> stale (recoverable).
     assert container_repo.is_provision_claim_stale({"status": "provisioning"}) is True
+
+
+# ---------------------------------------------------------------------------
+# update_conversion_fields — the SCOPED conversion-marker writer (#1428)
+#
+# The marker used to ride the get→put update_fields; racing the conversion's
+# own freshly dispatched claim, the stale full-item put resurrected
+# status="stopped" over "provisioning" and ERASED the lease — superseding the
+# conversion's own SFN execution with no successor. The scoped writer must be
+# physically incapable of that.
+
+
+@pytest.mark.asyncio
+async def test_update_conversion_fields_cannot_clobber_a_fresh_claim(dynamodb_table):
+    """The incident interleaving: claim lands first, marker write second. The
+    marker write must leave status AND every lease field intact."""
+    from core.repositories import container_repo
+
+    claim = await container_repo.try_claim_provision("user_conv", execution_name="provision-user_conv-abcd1234")
+    await container_repo.update_conversion_fields(
+        "user_conv",
+        {"conversion_pending": False, "substatus": None},
+    )
+
+    row = _row(dynamodb_table, "user_conv")
+    assert row["status"] == "provisioning", "marker write must never touch status"
+    assert row["provision_claim_id"] == claim
+    assert row["provision_attempt_token"] == claim
+    assert row["provision_execution_name"] == "provision-user_conv-abcd1234"
+    assert row["conversion_pending"] is False
+    assert row.get("substatus") is None  # written as NULL, same read shape as before
+
+
+@pytest.mark.asyncio
+async def test_update_conversion_fields_writes_the_stamp_fields(dynamodb_table):
+    from core.repositories import container_repo
+
+    dynamodb_table.put_item(Item={"owner_id": "user_stamp", "status": "running"})
+    await container_repo.update_conversion_fields(
+        "user_stamp",
+        {"conversion_pending": True, "substatus": "converting", "conversion_started_at": "2026-07-24T00:00:00+00:00"},
+    )
+
+    row = _row(dynamodb_table, "user_stamp")
+    assert row["conversion_pending"] is True
+    assert row["substatus"] == "converting"
+    assert row["conversion_started_at"] == "2026-07-24T00:00:00+00:00"
+    assert row["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_update_conversion_fields_rejects_non_marker_fields(dynamodb_table):
+    """The allowlist is the guarantee: this helper must never grow into a
+    general row writer (that is exactly the clobber class it replaces)."""
+    from core.repositories import container_repo
+
+    dynamodb_table.put_item(Item={"owner_id": "user_allow", "status": "running"})
+    with pytest.raises(ValueError, match="disallowed fields"):
+        await container_repo.update_conversion_fields("user_allow", {"status": "stopped"})
+    with pytest.raises(ValueError, match="disallowed fields"):
+        await container_repo.update_conversion_fields("user_allow", {"provision_claim_id": "x"})
+    assert _row(dynamodb_table, "user_allow")["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_update_conversion_fields_noops_on_an_absent_row(dynamodb_table):
+    """A concurrently deleted row must not be resurrected as a marker-only
+    ghost (mirrors stamp_stop_reason's condition)."""
+    from core.repositories import container_repo
+
+    await container_repo.update_conversion_fields("user_ghost", {"conversion_pending": True})
+    assert _row(dynamodb_table, "user_ghost") is None
+
+
+# ---------------------------------------------------------------------------
+# release_stranded_stop_to_error — recovery CAS for the superseded-without-
+# successor strand (#1428)
+
+
+@pytest.mark.asyncio
+async def test_stranded_release_flips_a_claimless_stopped_row(dynamodb_table):
+    from core.repositories import container_repo
+
+    dynamodb_table.put_item(Item={"owner_id": "user_strand", "status": "stopped", "stop_reason": "reprovision"})
+
+    released = await container_repo.release_stranded_stop_to_error("user_strand", last_error="no successor")
+
+    assert released is True
+    row = _row(dynamodb_table, "user_strand")
+    assert row["status"] == "error"
+    assert row["substatus"] == "provision_failed"
+    assert row["retryable"] is True
+    assert row["last_error"] == "no successor"
+    # ...and the error row is immediately re-claimable — the whole point.
+    assert await container_repo.try_claim_provision("user_strand") is not None
+
+
+@pytest.mark.asyncio
+async def test_stranded_release_refuses_when_a_claim_exists(dynamodb_table):
+    """A present claim == a successor exists; its liveness belongs to Branch A
+    / the stale-lease heuristic, never to this flip. All clauses evaluate
+    atomically, so a claim landing before the write wins."""
+    from core.repositories import container_repo
+
+    dynamodb_table.put_item(Item={"owner_id": "user_claimed", "status": "stopped", "provision_claim_id": "claim-live"})
+
+    assert await container_repo.release_stranded_stop_to_error("user_claimed", last_error="x") is False
+    row = _row(dynamodb_table, "user_claimed")
+    assert row["status"] == "stopped"
+    assert "last_error" not in row
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["running", "provisioning", "error"])
+async def test_stranded_release_only_targets_stopped_rows(dynamodb_table, status):
+    """running = healthy; unclaimed provisioning = a wake/resize transition's
+    row; error = already in the self-healing state. None may be flipped."""
+    from core.repositories import container_repo
+
+    dynamodb_table.put_item(Item={"owner_id": "user_other", "status": status})
+    assert await container_repo.release_stranded_stop_to_error("user_other", last_error="x") is False
+    assert _row(dynamodb_table, "user_other")["status"] == status
+
+
+@pytest.mark.asyncio
+async def test_stranded_release_refuses_a_parked_trial_box(dynamodb_table):
+    """stop_reason="trial_idle" is the deliberately parked trial box — it keeps
+    its wake-gated semantics and must never be error-flipped into an
+    unconditional poll retry."""
+    from core.repositories import container_repo
+
+    dynamodb_table.put_item(Item={"owner_id": "user_parked", "status": "stopped", "stop_reason": "trial_idle"})
+    assert await container_repo.release_stranded_stop_to_error("user_parked", last_error="x") is False
+    assert _row(dynamodb_table, "user_parked")["status"] == "stopped"

@@ -22,17 +22,19 @@ the rewritten bundle is NOT picked up. Pass ``force=True`` (see
 ``Workspace.write_file`` instead, so an existing container is brought current
 with the repo bundle. The bridge-URL substitution + ACP augmentation still
 apply under force (the loop is told to skip those pre-written files so the
-substituted/augmented copies survive).
+substituted/augmented copies survive). The ``.openclaw/workspace-state.json``
+marker is EXEMPT from force: it is seeded one-shot into a freshly created
+workspace only — re-writing it into a booted workspace bricks every agent run
+(see ``friday_identity.seed_workspace_state``, #1429).
 """
 
-import json
 import logging
 from pathlib import Path
 
 from core.config import settings
 from core.containers.workspace import Workspace
 from core.observability.metrics import put_metric
-from core.services.friday_identity import js_iso_now
+from core.services.friday_identity import seed_workspace_state
 
 logger = logging.getLogger(__name__)
 
@@ -205,14 +207,26 @@ async def pre_stage_atlas(
 
     # Pre-mark setup complete first so OpenClaw's boot reconcile doesn't rm
     # BOOTSTRAP.md when it sees Atlas's customized IDENTITY/SOUL/USER files.
-    now_iso = js_iso_now()
-    state_rel = f"workspace-{atlas_uuid}/.openclaw/workspace-state.json"
-    state = {"version": 1, "bootstrapSeededAt": now_iso, "setupCompletedAt": now_iso}
+    # ONE-SHOT and deliberately OUTSIDE the force path: the state file is
+    # seeded only when this provision is creating the workspace, never
+    # (re)written into an existing one — not even under force. The first
+    # boot's doctor migrates it into SQLite and deletes it; a re-write (a
+    # reprovision, or a force restage) re-arms the presence-only runtime gate
+    # against a now-conflicting receipt and bricks every agent run — see
+    # friday_identity.seed_workspace_state (#1429), which also deletes a
+    # stale pre-fix copy from an already-migrated workspace.
     try:
-        _stage(state_rel, json.dumps(state))
+        state_action = seed_workspace_state(workspace, owner_id, atlas_uuid)
+        if state_action == "deleted_stale":
+            put_metric("atlas_seed.state_stale_deleted")
+            logger.warning(
+                "atlas_seed: deleted stale re-seeded workspace-state.json for owner=%s "
+                "(already-migrated workspace — the file only re-bricks agent runs)",
+                owner_id,
+            )
     except Exception as exc:  # noqa: BLE001 — best-effort, log + continue
         put_metric("atlas_seed.state_error")
-        logger.warning("atlas_seed: workspace-state write failed owner=%s: %s", owner_id, exc)
+        logger.warning("atlas_seed: workspace-state seed failed owner=%s: %s", owner_id, exc)
 
     # When ACP is rolled out, write Atlas's AGENTS.md with the harness-
     # delegation section appended BEFORE the generic vendored-file loop. The

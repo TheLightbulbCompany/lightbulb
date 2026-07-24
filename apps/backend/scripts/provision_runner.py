@@ -117,8 +117,7 @@ async def run(owner_id: str, claim_id: str) -> int:
             attempt_token=attempt_token,
         )
     except ProvisionSuperseded:
-        logger.info("provision superseded for owner %s — standing down", owner_id)
-        return EXIT_SUPERSEDED
+        return await _stand_down_superseded(owner_id)
     except Exception as exc:  # noqa: BLE001 — classified into the exit-code ABI
         # provision_user_container already released the lease to error with
         # cause fields (via the same shared classifier); the exit code only
@@ -137,6 +136,95 @@ async def run(owner_id: str, claim_id: str) -> int:
     # external actor owns the row now — succeed quietly, write nothing.
     logger.info("owner %s left provisioning externally (status=%s)", owner_id, status)
     return EXIT_OK
+
+
+async def _stand_down_superseded(owner_id: str) -> int:
+    """The superseded exit — but VERIFIED, not assumed (#1428).
+
+    ``ProvisionSuperseded`` used to be treated as proof that a successor owns
+    the row, so the runner exited 20 and the machine stood down quietly. That
+    assumption failed live: a conversion-marker get→put clobbered the row —
+    resurrecting status="stopped" and ERASING the lease — so this runner's
+    next checkpoint saw a token mismatch and "stood down" behind a successor
+    that did not exist. Terminal state: stopped, no claim, no error, nothing
+    running and nothing scheduled; only a user-visit status poll healed it.
+
+    So before exiting, re-read the row and check who actually owns it:
+
+    - row gone, or a claim present → a real successor (or a deliberate
+      delete). The quiet exit was right; keep it. A present claim's own
+      liveness is dispatch Branch A / stale-lease territory — the runner
+      must not second-guess it from out here.
+    - NO claim + status "stopped" → the strand. Flip it to error(retryable)
+      via the ``release_stranded_stop_to_error`` CAS (atomic on exactly that
+      shape, so a claim landing between the read and the write wins and the
+      flip no-ops) and log LOUDLY — the poll's error auto-retry now recovers
+      the row on the owner's next poll instead of never.
+    - NO claim + "provisioning" → an unfenced wake/resize transition owns it
+      (those paths never claim); its in-process poller — or the stale-lease
+      heuristic after it — is the recovery path. Log, do not touch.
+    - NO claim + "error" → already in the self-healing state the flip would
+      produce. Log only.
+
+    Always returns EXIT_SUPERSEDED — the machine's ABI is unchanged; the row
+    write (not the exit code) is what re-arms recovery.
+    """
+    from core.repositories import container_repo
+
+    try:
+        row = await container_repo.get_by_owner_id(owner_id)
+    except Exception:  # noqa: BLE001 — verification is best-effort
+        logger.exception(
+            "provision superseded for owner %s — row verification failed, standing down blind",
+            owner_id,
+        )
+        return EXIT_SUPERSEDED
+    if row is None or row.get("provision_claim_id"):
+        logger.info(
+            "provision superseded for owner %s — standing down (successor claim present=%s, status=%s)",
+            owner_id,
+            bool(row and row.get("provision_claim_id")),
+            (row or {}).get("status"),
+        )
+        return EXIT_SUPERSEDED
+
+    status = row.get("status")
+    if status == "stopped":
+        released = False
+        try:
+            released = await container_repo.release_stranded_stop_to_error(
+                owner_id,
+                last_error="provision superseded with no successor claim — released for auto-retry",
+            )
+        except Exception:  # noqa: BLE001 — the flip is best-effort; the exit code stays the ABI
+            logger.exception("provision superseded for owner %s — stranded-row release failed", owner_id)
+        if released:
+            logger.error(
+                "provision superseded for owner %s with NO successor: row was stopped with no claim "
+                "and no error — flipped to error(retryable) so the status poll re-dispatches",
+                owner_id,
+            )
+        else:
+            logger.warning(
+                "provision superseded for owner %s: stopped row with no claim, but the stranded-row "
+                "release did not land (row moved on, or parked trial) — standing down",
+                owner_id,
+            )
+    elif status == "error":
+        logger.warning(
+            "provision superseded for owner %s with no successor claim — row already error "
+            "(retryable=%s); the status poll's auto-retry owns recovery",
+            owner_id,
+            row.get("retryable", True),
+        )
+    else:
+        logger.warning(
+            "provision superseded for owner %s with no successor claim (status=%s) — an unfenced "
+            "wake/resize transition or external actor owns the row; standing down",
+            owner_id,
+            status,
+        )
+    return EXIT_SUPERSEDED
 
 
 def main() -> None:

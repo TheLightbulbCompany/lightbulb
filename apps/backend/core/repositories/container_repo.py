@@ -491,6 +491,129 @@ async def release_provision_to_error(
             raise
 
 
+# The only row fields the trial->paid conversion marker is allowed to touch.
+# ``update_conversion_fields`` enforces this allowlist so no future caller can
+# quietly grow it into a status/lease writer (the clobber class it exists to
+# close).
+_CONVERSION_MARKER_FIELDS = frozenset({"conversion_pending", "substatus", "conversion_started_at"})
+
+
+async def update_conversion_fields(owner_id: str, fields: dict) -> None:
+    """Scoped, lease-safe write of the trial->paid conversion marker fields
+    onto an EXISTING containers row.
+
+    NEVER the get→put ``update_fields`` — that was a live incident: the
+    conversion's release write (``run_conversion_reprovision``) read the row
+    BEFORE its own freshly dispatched provision won ``try_claim_provision``,
+    then put the whole stale item back — resurrecting ``status="stopped"``
+    over the just-claimed "provisioning" AND erasing every lease field
+    (``provision_claim_id`` / ``provision_attempt_token`` /
+    ``provision_execution_name``). The already-started SFN runner then hit
+    ``ProvisionSuperseded`` at its first checkpoint and stood down, leaving a
+    PAYING owner stopped with nothing running and nothing scheduled. A scoped
+    ``update_item`` on exactly the marker fields cannot touch ``status`` or
+    the lease, so the race collapses to a cosmetic substatus overwrite at
+    worst (the claim's "claimed" label may be nulled for one poll; the next
+    checkpoint/status write refreshes it).
+
+    ``fields`` may only contain conversion marker keys (allowlist above);
+    anything else raises ``ValueError`` — this helper must never become a
+    general row writer. ``None`` values are written as DynamoDB NULL,
+    matching what the old put-based path stored (readers ``.get(...)`` both
+    shapes identically).
+
+    Conditioned on the row existing; a concurrently deleted row makes this a
+    silent no-op (nothing left to mark), mirroring ``stamp_stop_reason``.
+    """
+    unknown = set(fields) - _CONVERSION_MARKER_FIELDS
+    if unknown:
+        raise ValueError(f"update_conversion_fields: disallowed fields {sorted(unknown)}")
+    table = _get_table()
+    names: dict[str, str] = {}
+    set_parts: list[str] = []
+    values: dict = {":iso": utc_now_iso()}
+    for i, (key, value) in enumerate(fields.items()):
+        alias = f"#f{i}"
+        names[alias] = key
+        set_parts.append(f"{alias} = :v{i}")
+        values[f":v{i}"] = value
+    set_parts.append("updated_at = :iso")
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET " + ", ".join(set_parts),
+            ConditionExpression="attribute_exists(owner_id)",
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues=values,
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        return
+    publish_status_changed(owner_id)
+
+
+async def release_stranded_stop_to_error(owner_id: str, *, last_error: str) -> bool:
+    """CAS: flip a claim-less ``stopped`` row to ``error`` (retryable) so the
+    status poll's ordinary error auto-retry re-dispatches it.
+
+    The shape this targets is the superseded-without-successor strand: an SFN
+    runner detects supersession (its claim no longer on the row) and stands
+    down, but a re-read shows NO successor claim either — nobody is running
+    and nothing is scheduled. ``release_provision_to_error`` cannot land here
+    (it is conditioned on the CALLER's claim still matching AND
+    ``status="provisioning"``; the stranded row has neither), so this sibling
+    conditions on exactly the illegal steady-state instead:
+
+    - ``status = "stopped"``      — the observed strand. "error" rows already
+      self-heal via the poll (retryable defaults True there), and an
+      UNCLAIMED "provisioning" row belongs to a wake/resize transition
+      (those paths never claim — see main.py's boot resume) and must not be
+      clobbered under its in-process poller.
+    - ``attribute_not_exists(provision_claim_id)`` — a present claim means a
+      successor exists; its liveness is Branch A / stale-lease territory,
+      not ours.
+    - ``stop_reason <> "trial_idle"`` (or absent) — a deliberately parked
+      trial box keeps its wake-gated semantics; it must never be error-flipped
+      into an unconditional poll retry. (The payment/trial gates on the poll's
+      retry branch make this belt-and-suspenders, but the condition keeps the
+      flip honest at the source.)
+
+    All three clauses evaluate atomically at write time — no read-then-write
+    gap for a racing claim to slip through. Returns True iff the flip landed;
+    False when the row moved on (claimed, deleted, restarted) — which is
+    exactly the "a successor showed up after all" answer the caller wants.
+    """
+    table = _get_table()
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET #s = :err, substatus = :sub, #rt = :true, #le = :lasterr, updated_at = :iso",
+            ConditionExpression=(
+                "#s = :stopped AND attribute_not_exists(provision_claim_id) "
+                "AND (attribute_not_exists(stop_reason) OR stop_reason <> :trial_idle)"
+            ),
+            ExpressionAttributeNames={"#s": "status", "#rt": "retryable", "#le": "last_error"},
+            ExpressionAttributeValues={
+                ":err": "error",
+                ":sub": "provision_failed",
+                ":stopped": "stopped",
+                ":trial_idle": "trial_idle",
+                ":true": True,
+                ":lasterr": str(last_error)[:500],
+                ":iso": utc_now_iso(),
+            },
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise
+    publish_status_changed(owner_id)
+    return True
+
+
 def classify_provision_error(exc: BaseException) -> tuple[str, bool]:
     """Map a caught provision failure to ``(last_error, retryable)`` for
     ``release_provision_to_error``.

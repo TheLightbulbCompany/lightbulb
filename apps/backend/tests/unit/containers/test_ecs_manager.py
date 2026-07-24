@@ -3203,7 +3203,7 @@ class TestPerUserTaskSize:
     @pytest.mark.asyncio
     async def test_register_task_definition_uses_per_user_constants(self, manager, mock_ecs_client, mock_efs_client):
         """Per-user task definitions clone the CDK base but enforce the
-        canonical 0.5 vCPU / 1 GB shape — they don't inherit a stale base
+        canonical 1 vCPU / 4 GB shape — they don't inherit a stale base
         cpu/memory value."""
         from core.containers.ecs_manager import PER_USER_CPU, PER_USER_MEMORY_MIB
 

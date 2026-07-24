@@ -107,7 +107,7 @@ async def _apply_image_only_update(owner_id, update_id, size):
 async def test_apply_image_only_update_preserves_ultra_size():
     """An image-only roll for an ultra_pro owner must re-register the Ultra box,
     not the standard one — otherwise every routine image bump / fleet-force-apply
-    silently shrinks the container back to 0.5 vCPU / 2 GB."""
+    silently shrinks the container back to 1 vCPU / 4 GB."""
     kwargs = await _apply_image_only_update("owner_ultra", "upd_ultra", ("2048", "8192"))
     assert kwargs["new_cpu"] == "2048"
     assert kwargs["new_memory"] == "8192"

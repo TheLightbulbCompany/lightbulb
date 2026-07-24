@@ -77,7 +77,7 @@ class TestToolSearchGated:
 class TestBrowserBounds:
     def test_efficient_snapshots_and_tab_cleanup(self):
         """Upstream tab defaults (8 tabs / 120m idle) are desktop-sized; on a
-        0.5 vCPU / 2 GB task headless Chromium tabs are the OOM budget."""
+        1 vCPU / 4 GB task headless Chromium tabs are still a resource constraint."""
         browser = _cfg()["browser"]
         assert browser["snapshotDefaults"] == {"mode": "efficient"}
         assert browser["tabCleanup"] == {"idleMinutes": 30, "maxTabsPerSession": 4}

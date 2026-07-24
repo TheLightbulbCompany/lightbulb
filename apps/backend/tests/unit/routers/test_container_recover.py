@@ -30,20 +30,13 @@ class TestContainerRecover:
             mock_rpc.return_value = {}
             yield mock_rpc
 
-    @pytest.fixture(autouse=True)
-    def mock_billing_repo(self):
-        """Recovery reads provider_choice from billing_repo (keyed on
-        owner_id) before reprovisioning. Mock the lookup so tests don't
-        hit DDB.
-
-        Patches the lookup at its source — `resolve_provider_choice` now
-        lives in `core.services.container_provision` (the local copy in
-        `routers/container_recover` was deleted), so this is where
-        `billing_repo` is actually resolved."""
-        with patch("core.services.container_provision.billing_repo") as mock_repo:
-            # No row / no choice persisted -> falls through to bedrock_claude default.
-            mock_repo.get_by_owner_id = AsyncMock(return_value=None)
-            yield mock_repo
+    @pytest.fixture
+    def mock_dispatch_provision(self):
+        """Every reprovision sub-branch routes through the PROVISION executor
+        (spec §7) — dispatch_provision replaces the old direct
+        ecs_manager.provision_user_container call."""
+        with patch("routers.container_recover.dispatch_provision", new_callable=AsyncMock) as mock_dispatch:
+            yield mock_dispatch
 
     @pytest.fixture(autouse=True)
     def mock_trial_cap(self):
@@ -57,7 +50,7 @@ class TestContainerRecover:
 
     @pytest.mark.asyncio
     async def test_recover_stopped_container_reprovisions(
-        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc
+        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
     ):
         """Stopped container should trigger full re-provision."""
         mock_ecs_manager.resolve_running_container = AsyncMock(return_value=(None, None))
@@ -68,18 +61,17 @@ class TestContainerRecover:
                 "substatus": None,
             }
         )
-        mock_ecs_manager.provision_user_container = AsyncMock(return_value="openclaw-new")
 
         response = await async_client.post("/api/v1/container/recover")
         assert response.status_code == 200
         data = response.json()
         assert data["action"] == "reprovision"
         assert data["state"] == "CONTAINER_DOWN"
-        mock_ecs_manager.provision_user_container.assert_called_once()
+        mock_dispatch_provision.assert_called_once_with("user_test_123")
 
     @pytest.mark.asyncio
     async def test_recover_error_container_reprovisions(
-        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc
+        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
     ):
         """Error container should trigger full re-provision."""
         mock_ecs_manager.resolve_running_container = AsyncMock(return_value=(None, None))
@@ -91,19 +83,19 @@ class TestContainerRecover:
                 "last_error": "OutOfMemoryError",
             }
         )
-        mock_ecs_manager.provision_user_container = AsyncMock(return_value="openclaw-new")
 
         response = await async_client.post("/api/v1/container/recover")
         assert response.status_code == 200
         data = response.json()
         assert data["action"] == "reprovision"
         assert data["state"] == "CONTAINER_DOWN"
+        mock_dispatch_provision.assert_called_once_with("user_test_123")
 
     # --- GATEWAY_DOWN: restart gateway ---
 
     @pytest.mark.asyncio
     async def test_recover_gateway_down_restarts(
-        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc
+        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
     ):
         """Running container with unresponsive gateway should restart gateway."""
         container = {
@@ -123,10 +115,11 @@ class TestContainerRecover:
         data = response.json()
         assert data["action"] == "gateway_restart"
         assert data["state"] == "GATEWAY_DOWN_DEAD"
+        mock_dispatch_provision.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_recover_gateway_down_escalates_to_reprovision(
-        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc
+        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
     ):
         """If gateway restart fails, escalate to reprovision."""
         container = {
@@ -135,7 +128,6 @@ class TestContainerRecover:
             "status": "running",
         }
         mock_ecs_manager.resolve_running_container = AsyncMock(return_value=(container, "10.0.1.5"))
-        mock_ecs_manager.provision_user_container = AsyncMock(return_value="openclaw-new")
         # Both health check and restart fail
         mock_call_gateway_rpc.side_effect = ConnectionRefusedError()
 
@@ -143,12 +135,13 @@ class TestContainerRecover:
         assert response.status_code == 200
         data = response.json()
         assert data["action"] == "reprovision"
+        mock_dispatch_provision.assert_called_once_with("user_test_123")
 
     # --- HEALTHY: no-op ---
 
     @pytest.mark.asyncio
     async def test_recover_healthy_returns_none(
-        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc
+        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
     ):
         """Healthy system should return action=none."""
         container = {
@@ -164,12 +157,13 @@ class TestContainerRecover:
         data = response.json()
         assert data["action"] == "none"
         assert data["state"] == "HEALTHY"
+        mock_dispatch_provision.assert_not_called()
 
     # --- No container ---
 
     @pytest.mark.asyncio
     async def test_recover_no_container_returns_404(
-        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc
+        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
     ):
         """No container at all should return 404."""
         mock_ecs_manager.resolve_running_container = AsyncMock(return_value=(None, None))
@@ -177,18 +171,20 @@ class TestContainerRecover:
 
         response = await async_client.post("/api/v1/container/recover")
         assert response.status_code == 404
+        mock_dispatch_provision.assert_not_called()
 
     # --- The start guards (Task 13) ---
     #
     # /recover is the THIRD door onto a stopped container (after
-    # GET /container/status's auto-retry and POST /container/provision). It wakes
-    # the container through provision_user_container — whose own start is
-    # force=True, because that call IS a provision — so it cannot inherit the
-    # guards start_user_service applies. It checks them itself.
+    # GET /container/status's auto-retry and POST /container/provision). It
+    # wakes the container through the PROVISION executor (dispatch_provision)
+    # — whose runner starts with force=True, because that call IS a provision
+    # — so it cannot inherit the guards start_user_service applies. It checks
+    # them itself.
 
     @pytest.mark.asyncio
     async def test_recover_refuses_to_wake_an_over_cap_trial_owner(
-        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc
+        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
     ):
         """The free-tier cap is what scaled this container to zero. /recover must
         not be the way around it — same 402 limit card as the other two doors."""
@@ -196,7 +192,6 @@ class TestContainerRecover:
         mock_ecs_manager.get_service_status = AsyncMock(
             return_value={"owner_id": "user_test_123", "status": "stopped", "substatus": None}
         )
-        mock_ecs_manager.provision_user_container = AsyncMock(return_value="openclaw-new")
 
         with patch(
             "core.services.trial_cap.trial_block_reason",
@@ -206,22 +201,22 @@ class TestContainerRecover:
 
         assert response.status_code == 402
         assert response.json()["detail"]["blocked"]["code"] == "trial_daily_cap"
-        mock_ecs_manager.provision_user_container.assert_not_called()
+        mock_dispatch_provision.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_recover_refuses_to_wake_an_expired_trial_owner_under_the_cap(
-        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc
+        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
     ):
         """The OTHER half of the trial predicate. This door used to check only the
         daily cap, so an owner whose trial window had ENDED but who was under
-        today's $3 fell straight through to provision_user_container — whose start
-        is force=True and therefore skips start_user_service's own check — and woke
-        a container that was out of runway. Fresh Bedrock spend on a dead trial."""
+        today's $3 fell straight through to the executor — whose runner starts
+        with force=True and therefore skips start_user_service's own check —
+        and woke a container that was out of runway. Fresh Bedrock spend on a
+        dead trial."""
         mock_ecs_manager.resolve_running_container = AsyncMock(return_value=(None, None))
         mock_ecs_manager.get_service_status = AsyncMock(
             return_value={"owner_id": "user_test_123", "status": "stopped", "substatus": None}
         )
-        mock_ecs_manager.provision_user_container = AsyncMock(return_value="openclaw-new")
 
         with patch(
             "core.services.trial_cap.trial_block_reason",
@@ -231,11 +226,11 @@ class TestContainerRecover:
 
         assert response.status_code == 402
         assert response.json()["detail"]["blocked"]["code"] == "trial_expired"
-        mock_ecs_manager.provision_user_container.assert_not_called()
+        mock_dispatch_provision.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_recover_refuses_a_capped_owners_zombie_running_row(
-        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc
+        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
     ):
         """The cap kill's ECS stop transiently leaves a "running" row whose
         task is gone — exactly the running/no-IP shape. That branch
@@ -247,7 +242,6 @@ class TestContainerRecover:
                 None,
             )
         )
-        mock_ecs_manager.provision_user_container = AsyncMock(return_value="openclaw-new")
 
         with patch(
             "core.services.trial_cap.trial_block_reason",
@@ -257,11 +251,11 @@ class TestContainerRecover:
 
         assert response.status_code == 402
         assert response.json()["detail"]["blocked"]["code"] == "trial_daily_cap"
-        mock_ecs_manager.provision_user_container.assert_not_called()
+        mock_dispatch_provision.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_recover_stands_down_while_a_conversion_is_draining(
-        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc
+        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
     ):
         """A trial->paid conversion has scaled the container to zero and is
         blocked in its drain wait. A reprovision dispatched from here would land a
@@ -278,11 +272,10 @@ class TestContainerRecover:
                 "conversion_started_at": datetime.now(timezone.utc).isoformat(),
             }
         )
-        mock_ecs_manager.provision_user_container = AsyncMock(return_value="openclaw-new")
 
         with patch("core.services.trial_cap.trial_block_reason", new=AsyncMock(return_value=None)):
             response = await async_client.post("/api/v1/container/recover")
 
         assert response.status_code == 200
         assert response.json()["action"] == "already_recovering"
-        mock_ecs_manager.provision_user_container.assert_not_called()
+        mock_dispatch_provision.assert_not_called()

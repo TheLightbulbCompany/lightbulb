@@ -23,10 +23,8 @@ from core.services import container_wake, wake_policy
 from core.services.management_api_client import ManagementApiClientError
 from core.observability.metrics import put_metric, timing
 from core.repositories import container_repo
-from core.services.container_provision import (
-    resolve_provider_choice as _resolve_provider_choice,
-    background_provision as _background_provision,
-)
+from core.services.container_provision import background_provision as _background_provision
+from core.services.provision_dispatch import dispatch_provision
 from core.services.provision_gate import (
     evaluate_provision_gate,
     maybe_restore_trial_bedrock,
@@ -80,7 +78,7 @@ def _watch_provision_task(task: "asyncio.Task") -> None:
     "Task exception was never retrieved" — invisible to the W1
     provision-error alarm. Surface it: log the task's traceback and emit the
     SAME ``container.provision`` ``{status: error}`` metric the synchronous
-    provision path emits (see ``container_provision._emit_provision_metric``),
+    provision path emits (see ``container_provision.emit_provision_metric``),
     so a dispatch-path failure lands on the exact CloudWatch stream that alarm
     already watches. A cancelled task carries no failure. Best-effort
     throughout — a done-callback must never raise.
@@ -753,26 +751,24 @@ async def container_provision(
         is_admin=auth.is_org_admin if auth.is_org_context else True,
     )
 
-    # Provision new container — read the owner's saved provider_choice so the
-    # container is configured for the right LLM path (OAuth / BYO key /
-    # bedrock_claude). Keyed on owner_id via billing_repo.
-    try:
-        provider_choice, byo_provider = await _resolve_provider_choice(owner_id)
-        service_name = await get_ecs_manager().provision_user_container(
-            owner_id,
-            provider_choice=provider_choice,
-            byo_provider=byo_provider,
-        )
-        logger.info("Provisioned container %s for owner %s", service_name, owner_id)
-        return {
-            "status": "provisioning",
-            "service_name": service_name,
-            "owner_id": owner_id,
-            "already_existed": False,
-        }
-    except EcsManagerError as e:
-        logger.error("Provisioning failed for owner %s: %s", owner_id, e)
-        raise HTTPException(status_code=503, detail=str(e))
+    # Provision new container via the PROVISION Step Functions executor (spec
+    # §7 / PR-10) — the SOLE provisioning executor, no flag. dispatch_provision
+    # is a fast StartExecution call (the actual provider_choice read + ECS
+    # work happens inside scripts.provision_runner, a separate one-shot ECS
+    # task the state machine supervises) and never raises: a StartExecution
+    # failure releases the row to status="error" instead, picked up by this
+    # owner's next GET /container/status poll. Two provisioning systems must
+    # never be live at once, so this door no longer calls
+    # ecs_manager.provision_user_container directly.
+    await dispatch_provision(owner_id)
+    row = await container_repo.get_by_owner_id(owner_id)
+    logger.info("Dispatched provision for owner %s", owner_id)
+    return {
+        "status": (row or {}).get("status", "provisioning"),
+        "service_name": (row or {}).get("service_name"),
+        "owner_id": owner_id,
+        "already_existed": False,
+    }
 
 
 @router.post(
@@ -810,15 +806,9 @@ async def container_retry(
             detail=f"Container is in '{container.get('status')}' state, not retryable",
         )
 
-    try:
-        provider_choice, byo_provider = await _resolve_provider_choice(owner_id)
-        service_name = await ecs_manager.provision_user_container(
-            owner_id,
-            provider_choice=provider_choice,
-            byo_provider=byo_provider,
-        )
-    except EcsManagerError as e:
-        logger.error("Retry provisioning failed for owner %s: %s", owner_id, e)
-        raise HTTPException(status_code=502, detail="Provisioning failed")
-
-    return {"ok": True, "service_name": service_name}
+    # Route through the PROVISION executor (spec §7) — see /provision above
+    # for why this no longer calls ecs_manager.provision_user_container
+    # directly. dispatch_provision never raises.
+    await dispatch_provision(owner_id)
+    row = await container_repo.get_by_owner_id(owner_id)
+    return {"ok": True, "service_name": (row or {}).get("service_name")}

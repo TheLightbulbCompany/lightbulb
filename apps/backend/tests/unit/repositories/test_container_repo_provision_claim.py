@@ -268,6 +268,185 @@ async def test_upsert_preserves_the_lease_mid_provision(dynamodb_table):
     assert row["service_name"] == "svc-1"
 
 
+# ---------------------------------------------------------------------------
+# SFN reshape: claim_id/execution_name stamping (dispatch Branch B) +
+# provision_attempt_token (claim_attempt, hazard 1 fencing) + generation/
+# attempt_token conditioning on the fenced write helpers.
+
+
+@pytest.mark.asyncio
+async def test_try_claim_provision_stamps_execution_name_and_attempt_token(dynamodb_table):
+    from core.repositories import container_repo
+
+    claim = await container_repo.try_claim_provision(
+        "user_abc", claim_id="fixed-claim-uuid", execution_name="provision-user_abc-fixedcla"
+    )
+    assert claim == "fixed-claim-uuid"
+    row = _row(dynamodb_table, "user_abc")
+    assert row["provision_execution_name"] == "provision-user_abc-fixedcla"
+    assert row["provision_claim_id"] == "fixed-claim-uuid"
+    # Attempt 0's fencing token is the claim_id itself — deterministic, so
+    # dispatch_provision's execution_input() (which embeds it) stays
+    # byte-identical across a Branch-A re-issue for the same claim.
+    assert row["provision_attempt_token"] == "fixed-claim-uuid"
+    assert row["status"] == "provisioning"
+
+
+@pytest.mark.asyncio
+async def test_try_claim_provision_losing_claim_leaves_stamp_unchanged(dynamodb_table):
+    # A losing claim (fresh provisioning lease held by another claim) is one
+    # atomic conditional write: the loser's claim_id AND execution_name must
+    # both be rejected together — a half-applied stamp would point the winner's
+    # row at an execution that will never run.
+    from core.repositories import container_repo
+
+    won = await container_repo.try_claim_provision(
+        "user_ghi", claim_id="winner-claim", execution_name="provision-user_ghi-winnercl"
+    )
+    assert won == "winner-claim"
+    lost = await container_repo.try_claim_provision(
+        "user_ghi", claim_id="loser-claim", execution_name="provision-user_ghi-losercla"
+    )
+    assert lost is None
+    row = _row(dynamodb_table, "user_ghi")
+    assert row["provision_claim_id"] == "winner-claim"
+    assert row["provision_execution_name"] == "provision-user_ghi-winnercl"
+
+
+@pytest.mark.asyncio
+async def test_try_claim_provision_without_name_leaves_field_absent(dynamodb_table):
+    from core.repositories import container_repo
+
+    claim = await container_repo.try_claim_provision("user_def")
+    assert claim is not None
+    row = _row(dynamodb_table, "user_def")
+    assert "provision_execution_name" not in row
+    # Still stamps the attempt token (claim_id itself) even without a name —
+    # every claim, however dispatched, is fencible from attempt 0.
+    assert row["provision_attempt_token"] == claim
+
+
+@pytest.mark.asyncio
+async def test_takeover_stamps_attempt_token_too(dynamodb_table):
+    """A deliberate takeover door (conversion/admin/debug) also stamps
+    provision_attempt_token, so a direct provision_user_container(claim_id=...)
+    call from one of those doors is fenceable exactly like the SFN path."""
+    from core.repositories import container_repo
+
+    claim = await container_repo.takeover_provision("user_deliberate")
+    row = _row(dynamodb_table, "user_deliberate")
+    assert row["provision_attempt_token"] == claim
+
+
+# ---------------------------------------------------------------------------
+# claim_attempt — per-SFN-retry fencing (spec §7 hazard 1)
+
+
+@pytest.mark.asyncio
+async def test_claim_attempt_restamps_token_and_fences_the_straggler(dynamodb_table):
+    """THE HAZARD: an SFN retry mints a fresh attempt_token while claim_id and
+    the execution name stay stable. A straggler from the SUPERSEDED attempt
+    (still holding the OLD token in memory) must be rejected at its next
+    checkpoint, even though its claim_id still matches."""
+    from core.repositories import container_repo
+    from core.repositories.container_repo import ProvisionSuperseded
+
+    await container_repo.try_claim_provision("user_retry", claim_id="claim-1", execution_name="exec-1")
+    old_token = _row(dynamodb_table, "user_retry")["provision_attempt_token"]
+    assert old_token == "claim-1"
+
+    # SFN's BumpAttempt mints a fresh token for the new attempt; the new
+    # runner task re-stamps it as its FIRST action.
+    await container_repo.claim_attempt("user_retry", "claim-1", "fresh-attempt-token")
+    row = _row(dynamodb_table, "user_retry")
+    assert row["provision_attempt_token"] == "fresh-attempt-token"
+    assert row["provision_claim_id"] == "claim-1"  # unchanged — execution name still matches
+
+    # The straggler (still holding old_token) is fenced out at its NEXT
+    # checkpoint, even though claim_id alone would still pass.
+    with pytest.raises(ProvisionSuperseded):
+        await container_repo.update_container_leased(
+            "user_retry", "claim-1", {"substatus": "poison"}, attempt_token=old_token
+        )
+    assert _row(dynamodb_table, "user_retry")["substatus"] != "poison"
+
+    # The NEW attempt's own checkpoints, carrying the fresh token, succeed.
+    await container_repo.update_container_leased(
+        "user_retry", "claim-1", {"substatus": "legit"}, attempt_token="fresh-attempt-token"
+    )
+    assert _row(dynamodb_table, "user_retry")["substatus"] == "legit"
+
+
+@pytest.mark.asyncio
+async def test_claim_attempt_raises_superseded_when_claim_itself_was_taken_over(dynamodb_table):
+    from core.repositories import container_repo
+    from core.repositories.container_repo import ProvisionSuperseded
+
+    await container_repo.try_claim_provision("user_taken", claim_id="claim-old", execution_name="exec-old")
+    await container_repo.takeover_provision("user_taken")  # a deliberate door takes over
+
+    with pytest.raises(ProvisionSuperseded):
+        await container_repo.claim_attempt("user_taken", "claim-old", "new-attempt-token")
+
+
+# ---------------------------------------------------------------------------
+# generation / attempt_token conditioning on the fenced write helpers
+
+
+@pytest.mark.asyncio
+async def test_update_container_leased_generation_mismatch_raises_superseded(dynamodb_table):
+    from core.repositories import container_repo
+    from core.repositories.container_repo import ProvisionSuperseded
+
+    claim = await container_repo.try_claim_provision("user_gen")
+    await container_repo.update_fields("user_gen", {"provision_generation": "gen-old"})
+
+    with pytest.raises(ProvisionSuperseded):
+        await container_repo.update_container_leased("user_gen", claim, {"substatus": "poison"}, generation="gen-new")
+    assert _row(dynamodb_table, "user_gen")["substatus"] != "poison"
+
+    # Matching generation succeeds.
+    await container_repo.update_container_leased("user_gen", claim, {"substatus": "ok"}, generation="gen-old")
+    assert _row(dynamodb_table, "user_gen")["substatus"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_update_container_leased_generation_absent_on_row_is_permissive(dynamodb_table):
+    """A brand-new claim (fresh full-provision, generation not minted yet)
+    must not be blocked by a generation condition that has nothing to compare
+    against — attribute_not_exists(...) OR match, not AND."""
+    from core.repositories import container_repo
+
+    claim = await container_repo.try_claim_provision("user_nogen")
+    await container_repo.update_container_leased("user_nogen", claim, {"substatus": "ok"}, generation="anything")
+    assert _row(dynamodb_table, "user_nogen")["substatus"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_release_provision_to_error_attempt_token_mismatch_is_a_noop(dynamodb_table):
+    """Mirrors update_container_leased's attempt_token fence on the error
+    transition: a straggler's release must not clobber the current attempt's
+    error state."""
+    from core.repositories import container_repo
+
+    await container_repo.try_claim_provision("user_relgen", claim_id="claim-r", execution_name="exec-r")
+    await container_repo.claim_attempt("user_relgen", "claim-r", "current-token")
+
+    # Straggler holding the OLD (attempt-0) token tries to release -- no-op.
+    await container_repo.release_provision_to_error(
+        "user_relgen", "claim-r", last_error="stale attempt", attempt_token="claim-r"
+    )
+    assert _row(dynamodb_table, "user_relgen")["status"] == "provisioning"
+
+    # The CURRENT attempt's own release lands normally.
+    await container_repo.release_provision_to_error(
+        "user_relgen", "claim-r", last_error="real failure", attempt_token="current-token"
+    )
+    row = _row(dynamodb_table, "user_relgen")
+    assert row["status"] == "error"
+    assert row["last_error"] == "real failure"
+
+
 def test_is_provision_claim_stale_matrix():
     from core.repositories import container_repo
 

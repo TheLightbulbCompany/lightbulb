@@ -51,6 +51,13 @@ class Settings(BaseSettings):
     ECS_SUBNETS: str = os.getenv("ECS_SUBNETS", "")  # comma-separated
     ECS_SECURITY_GROUP_ID: str = os.getenv("ECS_SECURITY_GROUP_ID", "")
 
+    # PROVISION Step Functions state machine ARN — THE provisioning executor
+    # (spec §7, PR-10; no flag, active on merge). Dispatched by
+    # core.services.provision_dispatch.dispatch_provision via StartExecution;
+    # the one-shot scripts/provision_runner.py runs as an ECS task the
+    # machine supervises, never in-process in this backend.
+    PROVISION_STATE_MACHINE_ARN: str = os.getenv("PROVISION_STATE_MACHINE_ARN", "")
+
     # --- Cloud Map ---
     CLOUD_MAP_SERVICE_ARN: str = os.getenv("CLOUD_MAP_SERVICE_ARN", "")
     CLOUD_MAP_NAMESPACE_NAME: str = os.getenv("CLOUD_MAP_NAMESPACE_NAME", "")
